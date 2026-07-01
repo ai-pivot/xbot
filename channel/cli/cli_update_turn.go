@@ -216,6 +216,39 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 			return nil
 		}
 	}
+
+	// ── Race guard: queue if the current turn hasn't received its reply yet ──
+	// The agent's chatProcessLoop calls sendMessage (async via bus) then immediately
+	// calls drainAndProcessNotifications → injectCLIUserMessage (direct write to
+	// asyncCh). The injected message can arrive in asyncCh BEFORE the turn's
+	// outbound reply. Without this guard, handleInjectedUserMsg starts a new turn
+	// (incrementing agentTurnID), causing the pending reply to be treated as
+	// stale and dropped — losing ALL iterations from the completed turn.
+	//
+	// Two cases to guard:
+	//   1. m.typing == true: turn in progress, PhaseDone hasn't arrived yet
+	//   2. m.typing == false but replyReceived == false: PhaseDone arrived
+	//      (set typing=false via endAgentTurn) but the reply hasn't been
+	//      processed by handleAgentMessage yet.
+	shouldQueue := m.typing
+	if !shouldQueue && m.agentTurnID > 0 {
+		if flag := m.getTurnFlag(m.agentTurnID); flag != nil && flag.doneProcessed && !flag.replyReceived {
+			shouldQueue = true
+		}
+	}
+	if shouldQueue {
+		log.Debug("handleInjectedUserMsg: queuing — current turn reply not yet received")
+		m.messageQueue = append(m.messageQueue, queuedMsg{content: msg.content, chatID: m.chatID})
+		if m.bgTaskCountFn != nil {
+			m.bgTaskCount = m.bgTaskCountFn()
+		}
+		if m.agentCountFn != nil {
+			m.agentCount = m.agentCountFn()
+		}
+		m.rc.valid = false
+		return nil
+	}
+
 	m.messages = append(m.messages, cliMessage{
 		role:      "user",
 		content:   msg.content,

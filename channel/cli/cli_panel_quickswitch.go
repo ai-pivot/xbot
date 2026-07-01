@@ -100,9 +100,16 @@ func (m *cliModel) llmSource() llmData {
 	return d
 }
 
-// rebuildLLMRows rebuilds quickSwitchRows from the current source + filter.
+// rebuildLLMRows rebuilds quickSwitchRows from source data + current filter.
+// Uses quickSwitchCachedData when available (filter mode) to avoid per-keystroke
+// RPC calls to the backend.
 func (m *cliModel) rebuildLLMRows() {
-	d := m.llmSource()
+	var d llmData
+	if m.quickSwitchFiltering && m.quickSwitchCachedData.subs != nil {
+		d = m.quickSwitchCachedData
+	} else {
+		d = m.llmSource()
+	}
 	m.quickSwitchRows = m.buildLLMRows(d)
 }
 
@@ -534,6 +541,7 @@ func (m *cliModel) openEditSubscriptionPanel(subID string) {
 			m.showTempStatus(fmt.Sprintf("Failed to update: %v", err))
 		} else {
 			m.showTempStatus(fmt.Sprintf("Updated: %s", updated.Name))
+			m.reopenLLMPanelOn(curID, "")
 		}
 	})
 }
@@ -664,7 +672,7 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 			}
 		}
 		m.showTempStatus(fmt.Sprintf("Saved: %s", model))
-		m.reopenLLMPanelOn(model)
+		m.reopenLLMPanelOn(subID, model)
 	})
 }
 
@@ -736,13 +744,13 @@ func (m *cliModel) openAddModelPanel(defaultSubID string) {
 			return
 		}
 		m.showTempStatus(fmt.Sprintf("Added: %s", model))
-		m.reopenLLMPanelOn(model)
+		m.reopenLLMPanelOn(subID, model)
 	})
 }
 
 // reopenLLMPanelOn reopens the panel from the DB snapshot (no async /models
-// refresh) and parks the cursor on the given model if present.
-func (m *cliModel) reopenLLMPanelOn(focusModel string) {
+// refresh) and parks the cursor on the given (subID, model) if present.
+func (m *cliModel) reopenLLMPanelOn(subID, model string) {
 	if m.subscriptionMgr == nil {
 		return
 	}
@@ -751,10 +759,23 @@ func (m *cliModel) reopenLLMPanelOn(focusModel string) {
 	m.quickSwitchRefreshing = false
 	m.quickSwitchScrollY = 0
 	m.rebuildLLMRows()
-	for i, r := range m.quickSwitchRows {
-		if r.kind == qsModel && r.model.Model == focusModel {
-			m.quickSwitchCursor = i
-			return
+	// Match both SubID AND model to avoid selecting a same-named model
+	// from a different subscription.
+	if subID != "" && model != "" {
+		for i, r := range m.quickSwitchRows {
+			if r.kind == qsModel && r.model.Model == model && r.model.SubID == subID {
+				m.quickSwitchCursor = i
+				return
+			}
+		}
+	}
+	// Fallback: try matching just subID (e.g. after sub credential edit)
+	if subID != "" {
+		for i, r := range m.quickSwitchRows {
+			if r.kind == qsSub && r.sub.ID == subID {
+				m.quickSwitchCursor = i
+				return
+			}
 		}
 	}
 	m.cursorToActiveLLMRow()
@@ -1004,6 +1025,7 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		switch msg.Code {
 		case tea.KeyEsc:
 			m.quickSwitchFiltering = false
+			m.quickSwitchCachedData = llmData{} // clear cache
 			m.quickSwitchFilterInput.SetValue("")
 			m.rebuildLLMRows()
 			m.cursorToActiveLLMRow()
@@ -1021,6 +1043,7 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 				m.applyQuickSwitch()
 			} else {
 				m.quickSwitchFiltering = false
+				m.quickSwitchCachedData = llmData{}
 				m.quickSwitchFilterInput.SetValue("")
 				m.rebuildLLMRows()
 				m.cursorToActiveLLMRow()
@@ -1092,11 +1115,13 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		return true, nil
 	case "/":
 		m.quickSwitchFiltering = true
+		// Cache the source data so filter keystrokes don't trigger RPC
+		m.quickSwitchCachedData = m.llmSource()
 		m.quickSwitchFilterInput.SetValue("")
-		m.quickSwitchFilterInput.Focus()
+		cmd := m.quickSwitchFilterInput.Focus() // returns cursor-blink cmd
 		m.rebuildLLMRows()
 		m.quickSwitchCursor = 0
-		return true, nil
+		return true, cmd
 	}
 	return true, nil // block other keys
 }

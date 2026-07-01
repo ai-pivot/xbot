@@ -394,6 +394,7 @@ func (m *cliModel) resetToIdleState() {
 	m.quickSwitchFiltering = false
 	m.quickSwitchReturnToPanel = false
 	m.quickSwitchScrollY = 0
+	m.quickSwitchCachedData = llmData{}
 
 	// --- Command Palette ---
 	m.paletteOpen = false
