@@ -732,6 +732,15 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 					snap.Reasoning = msg.payload.Reasoning
 				}
 				if len(finalTools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
+					// Append a synthetic cancel indicator tool so the user
+					// sees "request canceled by user" in the tool list,
+					// similar to background task notifications.
+					finalTools = append(finalTools, protocol.ToolProgress{
+						Name:   "Cancelled",
+						Label:  "request canceled by user",
+						Status: "error",
+					})
+					snap.Tools = finalTools
 					m.progressState.iterations = append(m.progressState.iterations, snap)
 				}
 			}
