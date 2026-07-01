@@ -42,7 +42,6 @@ type runState struct {
 	sessionKey               string
 	offloadSessionKey        string
 	toolExecutor             func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error)
-	toolTimeout              time.Duration
 	autoNotify               bool
 	batchProgressByIteration bool
 	dynamicInjector          *DynamicContextInjector
@@ -108,11 +107,6 @@ func newRunState(cfg RunConfig) *runState {
 		toolExecutor = defaultToolExecutor(&cfg)
 	}
 
-	// toolTimeout is kept for API compat but no longer used to wrap tool contexts.
-	// Individual tools manage their own timeouts; engine only passes through the
-	// parent context (which carries user cancellation via Ctrl+C).
-	toolTimeout := cfg.ToolTimeout
-
 	messages := copyMessages(cfg.Messages)
 	for i := range messages {
 		if messages[i].Role != "system" && strings.Contains(messages[i].Content, "<system-reminder>") {
@@ -134,7 +128,6 @@ func newRunState(cfg RunConfig) *runState {
 		sessionKey:               sessionKey,
 		offloadSessionKey:        offloadSessionKey,
 		toolExecutor:             toolExecutor,
-		toolTimeout:              toolTimeout,
 		autoNotify:               autoNotify,
 		batchProgressByIteration: batchProgressByIteration,
 		messages:                 messages,
