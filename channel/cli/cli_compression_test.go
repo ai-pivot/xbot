@@ -42,11 +42,12 @@ func TestHistoryCompactedClearsPendingUserMsg(t *testing.T) {
 	}
 }
 
-// TestHistoryCompactedCreatesStreamingMessage verifies that the HistoryCompacted
-// handler creates a streaming message immediately. Without this, streamingMsgIdx
-// stays -1 and progress events have nowhere to render — the TUI freezes
-// (shows busy status but no live content updates).
-func TestHistoryCompactedCreatesStreamingMessage(t *testing.T) {
+// TestHistoryCompactedDoesNotCreateStreamingMessage verifies that the
+// HistoryCompacted handler does NOT create a streaming message. The
+// streaming target is restored from DB history by handleHistoryReload.
+// Creating a streaming message here would produce duplicate assistants
+// (one from here, one from DB) — the root cause of the double-assistant bug.
+func TestHistoryCompactedDoesNotCreateStreamingMessage(t *testing.T) {
 	model := initTestModel()
 	model.typing = true
 	model.agentTurnID = 5
@@ -66,82 +67,86 @@ func TestHistoryCompactedCreatesStreamingMessage(t *testing.T) {
 		HistoryCompacted: true,
 	})
 
-	// Streaming message MUST be created immediately
-	if model.streamingMsgIdx < 0 {
-		t.Fatal("streamingMsgIdx should be >= 0 after HistoryCompacted — " +
-			"without a streaming message, progress events can't render live content")
+	// streamingMsgIdx MUST be -1 — no streaming message during compReloading.
+	// handleHistoryReload will restore it from DB history.
+	if model.streamingMsgIdx >= 0 {
+		t.Fatal("streamingMsgIdx should be -1 after HistoryCompacted — " +
+			"creating a streaming message here causes duplicate assistants")
 	}
-	if model.streamingMsgIdx >= len(model.messages) {
-		t.Fatalf("streamingMsgIdx %d out of range (messages: %d)",
-			model.streamingMsgIdx, len(model.messages))
-	}
-	streamingMsg := model.messages[model.streamingMsgIdx]
-	if streamingMsg.role != "assistant" || !streamingMsg.isPartial {
-		t.Fatalf("streaming message should be assistant/isPartial, got role=%s isPartial=%v",
-			streamingMsg.role, streamingMsg.isPartial)
+	// compReloading MUST be true — blocks auto-start during async reload.
+	if !model.splashState.compReloading {
+		t.Fatal("compReloading should be true after HistoryCompacted")
 	}
 }
 
-// TestHistoryCompactedPreservesStreamingAfterReload verifies that after
-// HistoryCompacted creates a streaming message, a subsequent forceFullRebuild
-// reload preserves it. This ensures the streaming message survives the
-// compacted history being loaded from DB.
-func TestHistoryCompactedPreservesStreamingAfterReload(t *testing.T) {
+// TestHistoryCompactedRestoresStreamingFromDBAfterReload verifies that after
+// HistoryCompacted (which does NOT create a streaming message), the subsequent
+// handleHistoryReload finds the DB assistant and marks it as the streaming
+// target. This guarantees exactly ONE assistant — no dedup needed.
+func TestHistoryCompactedRestoresStreamingFromDBAfterReload(t *testing.T) {
 	model := initTestModel()
 	model.typing = true
 	model.agentTurnID = 5
 
-	// Send HistoryCompacted — creates streaming message
+	// Send HistoryCompacted — clears messages, sets compReloading
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:            "thinking",
 		Iteration:        5,
 		HistoryCompacted: true,
 	})
 
-	if model.streamingMsgIdx < 0 {
-		t.Fatal("streaming message should exist after HistoryCompacted")
+	// No streaming message during compReloading
+	if model.streamingMsgIdx >= 0 {
+		t.Fatal("streamingMsgIdx should be -1 during compReloading")
 	}
-	originalTurnID := model.messages[model.streamingMsgIdx].turnID
 
-	// Simulate progress event arriving after compression (new iteration)
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase:     "tool_exec",
-		Iteration: 6,
-		ActiveTools: []protocol.ToolProgress{
-			{Name: "Read", Status: "running"},
-		},
-	})
-
-	// Now simulate the reload completing with compacted history
+	// Reload completes with DB history containing an assistant
 	model.handleHistoryReload(cliHistoryReloadMsg{
 		channelName:      model.channelName,
 		chatID:           model.chatID,
 		forceFullRebuild: true,
 		history: []channel.HistoryMessage{
+			{Role: "user", Content: "hello", Timestamp: time.Now()},
 			{Role: "assistant", Content: "compacted context summary", Timestamp: time.Now()},
 		},
 	})
 
-	// Streaming message MUST still exist after reload
+	// compReloading must be cleared
+	if model.splashState.compReloading {
+		t.Fatal("compReloading should be cleared after reload")
+	}
+	// Streaming target must be the DB assistant (not a newly created message)
 	if model.streamingMsgIdx < 0 {
-		t.Fatal("streamingMsgIdx should still be >= 0 after forceFullRebuild reload — " +
-			"the streaming message must be preserved so progress events continue to render")
+		t.Fatal("streamingMsgIdx should be >= 0 after reload — DB assistant should be streaming target")
 	}
 	if model.streamingMsgIdx >= len(model.messages) {
-		t.Fatalf("streamingMsgIdx %d out of range after reload (messages: %d)",
-			model.streamingMsgIdx, len(model.messages))
+		t.Fatalf("streamingMsgIdx %d out of range (messages: %d)", model.streamingMsgIdx, len(model.messages))
 	}
-	// Verify it's the same streaming message (same turnID)
-	preservedMsg := model.messages[model.streamingMsgIdx]
-	if preservedMsg.turnID != originalTurnID {
-		t.Fatalf("streaming message turnID changed: expected %d, got %d",
-			originalTurnID, preservedMsg.turnID)
+	streaming := model.messages[model.streamingMsgIdx]
+	if streaming.role != "assistant" || !streaming.isPartial {
+		t.Fatalf("DB assistant should be marked as streaming target: role=%s isPartial=%v",
+			streaming.role, streaming.isPartial)
+	}
+	if streaming.content != "compacted context summary" {
+		t.Fatalf("streaming target should be DB assistant with DB content, got %q", streaming.content)
+	}
+
+	// Exactly ONE assistant — by design, not by dedup
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("expected exactly 1 assistant (by design), got %d", assistantCount)
 	}
 }
 
-// TestPostCompressionProgressUpdatesViewport verifies that after compression,
-// subsequent progress events actually update the viewport content. This is
-// the core regression test for the "TUI freezes after compression" bug.
+// TestPostCompressionProgressUpdatesViewport verifies that after compression
+// and reload, subsequent progress events render correctly. The streaming
+// target is the DB assistant (restored by handleHistoryReload), not a
+// separately created streaming message.
 func TestPostCompressionProgressUpdatesViewport(t *testing.T) {
 	model := initTestModel()
 	model.typing = true
@@ -154,8 +159,26 @@ func TestPostCompressionProgressUpdatesViewport(t *testing.T) {
 		HistoryCompacted: true,
 	})
 
-	// Tick to render
-	model.handleTickMsg()
+	// During compReloading, no streaming target
+	if model.streamingMsgIdx >= 0 {
+		t.Fatal("streamingMsgIdx should be -1 during compReloading")
+	}
+
+	// Reload completes with DB history
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName:      model.channelName,
+		chatID:           model.chatID,
+		forceFullRebuild: true,
+		history: []channel.HistoryMessage{
+			{Role: "user", Content: "hello", Timestamp: time.Now()},
+			{Role: "assistant", Content: "partial response", Timestamp: time.Now()},
+		},
+	})
+
+	// After reload, streaming target is the DB assistant
+	if model.streamingMsgIdx < 0 {
+		t.Fatal("streamingMsgIdx should be valid after reload")
+	}
 
 	// Post-compression progress event with tool call
 	sendProgress(model, &protocol.ProgressEvent{
@@ -174,11 +197,6 @@ func TestPostCompressionProgressUpdatesViewport(t *testing.T) {
 	}
 	if model.progressState.current.Iteration != 6 {
 		t.Fatalf("expected iteration 6, got %d", model.progressState.current.Iteration)
-	}
-
-	// Streaming message must still be valid for rendering
-	if model.streamingMsgIdx < 0 {
-		t.Fatal("streamingMsgIdx should be valid — TUI would freeze without it")
 	}
 
 	// Verify the viewport actually has content (not empty/frozen)

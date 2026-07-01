@@ -460,11 +460,17 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 // may have replaced many old messages with a single [Compacted context] summary.
 func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// Stale guard: discard results from a different session.
+	// MUST clear compReloading even on stale/error paths — HistoryCompacted
+	// set it to true, and if this reload is stale or errors, nothing else
+	// clears it. compReloading stuck true → auto-start blocked forever →
+	// TUI frozen (typing but no progress events create new turns).
 	if msg.channelName != m.channelName || msg.chatID != m.chatID {
+		m.splashState.compReloading = false
 		return
 	}
 	if msg.err != nil {
 		log.WithError(msg.err).Warn("Failed to reload history after compression")
+		m.splashState.compReloading = false
 		return
 	}
 	var newMessages []cliMessage
@@ -501,16 +507,47 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 		}
 	}
 	restoredStreamingIdx := -1
-	// Always preserve the streaming message when the engine is still running.
-	// The old code only preserved it for non-forceFullRebuild, but forceFullRebuild
-	// (from HistoryCompacted) also needs to preserve it — the HistoryCompacted
-	// handler creates the streaming message immediately so progress events have
-	// a rendering target while the async reload is in flight.
-	if m.typing && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-		streamingMsg := m.messages[m.streamingMsgIdx]
-		if streamingMsg.role == "assistant" && streamingMsg.isPartial {
-			restoredStreamingIdx = len(newMessages)
-			newMessages = append(newMessages, streamingMsg)
+	if msg.forceFullRebuild {
+		// Compression path: HistoryCompacted cleared all messages and did NOT
+		// create a streaming message (by design — prevents duplicates).
+		// DB history naturally contains the current turn's assistant (persisted
+		// before compression). Find it and mark as streaming target.
+		// This guarantees exactly ONE assistant per turn — no dedup needed.
+		if m.typing {
+			for i := len(newMessages) - 1; i >= 0; i-- {
+				if newMessages[i].role == "assistant" {
+					newMessages[i].isPartial = true
+					newMessages[i].turnID = m.agentTurnID
+					newMessages[i].dirty = true
+					restoredStreamingIdx = i
+					break
+				}
+			}
+			// Edge case: DB has no assistant yet (compression before first
+			// iteration persisted). This is the ONLY path that creates a
+			// streaming assistant during compression reload.
+			if restoredStreamingIdx < 0 {
+				newMessages = append(newMessages, cliMessage{
+					role:      "assistant",
+					content:   "",
+					timestamp: time.Now(),
+					isPartial: true,
+					dirty:     true,
+					turnID:    m.agentTurnID,
+				})
+				restoredStreamingIdx = len(newMessages) - 1
+			}
+		}
+	} else {
+		// Normal reload path: streaming message was created by startAgentTurn
+		// and is still in m.messages. Preserve it across the smart merge.
+		// No duplication risk — startAgentTurn creates exactly one.
+		if m.typing && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+			streamingMsg := m.messages[m.streamingMsgIdx]
+			if streamingMsg.role == "assistant" && streamingMsg.isPartial {
+				restoredStreamingIdx = len(newMessages)
+				newMessages = append(newMessages, streamingMsg)
+			}
 		}
 	}
 	// Smart merge: reuse rendered cache from existing messages to avoid

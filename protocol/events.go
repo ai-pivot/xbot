@@ -30,6 +30,10 @@ type ToolProgress struct {
 	Args      string    `json:"args,omitempty"`
 	ToolHints string    `json:"tool_hints,omitempty"`
 	StartedAt time.Time `json:"started_at,omitempty"`
+	// GenChars is the accumulated argument character count for generating tools
+	// (Status="generating"). Populated from streaming tool call deltas — shows
+	// real-time progress of argument generation (e.g. "42 chars").
+	GenChars int `json:"gen_chars,omitempty"`
 }
 
 // SubAgentInfo represents a sub-agent's structured progress status.
@@ -86,7 +90,12 @@ type ProgressEvent struct {
 	// before arguments finish generating. Each entry has Status="generating".
 	// This is a stream-only field (like StreamContent) — it must NOT enter
 	// snapshotIterationChange or any structured snapshot path.
-	StreamingTools   []ToolProgress  `json:"streaming_tools,omitempty"`
+	StreamingTools []ToolProgress `json:"streaming_tools,omitempty"`
+	// StreamTokens carries incremental completion token count during LLM streaming.
+	// Populated from Anthropic's message_delta usage events (OpenAI/DeepSeek only
+	// provide usage at stream end). When >0, TUI displays token count instead of
+	// char count for streaming progress.
+	StreamTokens     int64           `json:"stream_tokens,omitempty"`
 	IterationHistory []ProgressEvent `json:"iteration_history,omitempty"`
 	HistoryCompacted bool            `json:"history_compacted,omitempty"`
 	CWD              string          `json:"cwd,omitempty"`

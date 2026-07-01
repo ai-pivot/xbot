@@ -285,6 +285,12 @@ type RunConfig struct {
 	// Nil by default (no early tool detection).
 	StreamToolCallFunc func(toolCalls []llm.ToolCallDelta)
 
+	// StreamUsageFunc is called with incremental token usage during LLM streaming.
+	// Anthropic provides output_tokens in message_delta events during streaming;
+	// OpenAI/DeepSeek only provide usage at stream end. When available, the TUI
+	// shows real-time token count (e.g. "42 tokens") instead of char count.
+	StreamUsageFunc func(usage *llm.TokenUsage)
+
 	// ProgressSeq is a per-Run monotonic counter shared between notifyProgress
 	// and stream callbacks. Created by buildRunConfig, consumed by runState.
 	ProgressSeq *atomic.Uint64
@@ -422,19 +428,19 @@ func readArgsHasOffsetOrLimit(argsJSON string) bool {
 // which retries the entire stream cycle (connection + event collection), not just
 // the SSE connection. This ensures mid-stream errors (disconnects, server 5xx
 // during generation) are also retried with exponential backoff.
-func generateResponse(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string, stream bool, streamContentFn func(string), streamReasoningFn func(string), streamToolCallFn func([]llm.ToolCallDelta)) (*llm.LLMResponse, error) {
+func generateResponse(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string, stream bool, streamContentFn func(string), streamReasoningFn func(string), streamToolCallFn func([]llm.ToolCallDelta), streamUsageFn func(*llm.TokenUsage)) (*llm.LLMResponse, error) {
 	if stream {
 		if sc, ok := client.(llm.StreamingLLM); ok {
 			// Prefer the retry-enabled full stream cycle when available.
 			if rl, ok := client.(*llm.RetryLLM); ok {
-				return rl.GenerateStreamAndCollect(ctx, model, messages, tools, thinkingMode, streamContentFn, streamReasoningFn, streamToolCallFn)
+				return rl.GenerateStreamAndCollect(ctx, model, messages, tools, thinkingMode, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
 			}
 			eventCh, err := sc.GenerateStream(ctx, model, messages, tools, thinkingMode)
 			if err != nil {
 				return nil, err
 			}
-			if streamContentFn != nil || streamReasoningFn != nil || streamToolCallFn != nil {
-				return llm.CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn, streamToolCallFn)
+			if streamContentFn != nil || streamReasoningFn != nil || streamToolCallFn != nil || streamUsageFn != nil {
+				return llm.CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
 			}
 			return llm.CollectStream(ctx, eventCh)
 		}

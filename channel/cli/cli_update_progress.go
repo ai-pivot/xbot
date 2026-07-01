@@ -115,6 +115,14 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 		}
 	}
 
+	// Carry forward StreamTokens (incremental completion token count from
+	// Anthropic's message_delta events). Structured payloads from
+	// progressFinalizer don't carry StreamTokens — without carry-forward,
+	// the token count would flicker off on every structured progress update.
+	if prev.StreamTokens > 0 && m.progressState.current.StreamTokens == 0 && sameIter {
+		m.progressState.current.StreamTokens = prev.StreamTokens
+	}
+
 	// Carry forward StreamingTools.
 	// Structured payloads from progressFinalizer do not carry StreamingTools;
 	// without carry forward, a structured event arriving between two
@@ -197,6 +205,17 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.progressState.lastSeq = msg.payload.Seq
 	}
 
+	// Stream-only detection — MUST run before auto-start guard.
+	// Stream-only events (StreamContent, ReasoningStreamContent, StreamingTools,
+	// StreamTokens) have Phase="" and Iteration=0. Without this check here,
+	// the auto-start guard below sees Phase != "done" and triggers
+	// startAgentTurn() when typing=false — creating a DUPLICATE assistant
+	// message. This is the root cause of the double-assistant bug.
+	isStreamOnly := msg.payload != nil &&
+		msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
+		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
+			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
+
 	// New turn's first non-PhaseDone progress clears the cancel flag.
 	// This allows the new turn (started by bg notification injection or queue flush)
 	// to receive progress events, while still blocking stale progress from the
@@ -215,6 +234,10 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 
 	// Auto-start turn: when receiving progress for current session but not typing,
 	// start the turn. This handles first-switch to a running SubAgent session.
+	// Guard: !isStreamOnly — stream-only events are high-frequency streaming
+	// updates (content, reasoning, tool args, token counts), NOT turn-start
+	// signals. Without this guard, a StreamTokens-only event arriving after
+	// endAgentTurn (typing=false) triggers startAgentTurn → duplicate assistant.
 	// Guard: !suLoading — during session switch in remote mode, progress events
 	// from the old session may arrive before the RPC reconciles state. Starting
 	// a turn here would create an inconsistent state with no message history loaded.
@@ -222,7 +245,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// turn is paused (not ended). Late progress events from the engine must not
 	// trigger startAgentTurn → resetProgressState, which clears iterationHistory
 	// and makes all previous iterations disappear.
-	if !m.typing && !m.splashState.suLoading && !m.splashState.compReloading && msg.payload != nil && msg.payload.Phase != "done" && m.panelState.mode != "askuser" {
+	if !m.typing && !isStreamOnly && !m.splashState.suLoading && !m.splashState.compReloading && msg.payload != nil && msg.payload.Phase != "done" && m.panelState.mode != "askuser" {
 		log.WithFields(log.Fields{
 			"phase":     msg.payload.Phase,
 			"iteration": msg.payload.Iteration,
@@ -247,12 +270,10 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.splashState.suPhaseConfirmed = true
 	}
 
-	// Stream-only payloads (from StreamContentFunc/StreamReasoningFunc/StreamToolCallFunc)
-	// only carry stream fields. Merge into existing progress instead of replacing to
-	// preserve tool/iteration state.
-	isStreamOnly := msg.payload != nil &&
-		msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
-		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" || len(msg.payload.StreamingTools) > 0)
+	// Stream-only payloads (from StreamContentFunc/StreamReasoningFunc/
+	// StreamToolCallFunc/StreamUsageFunc) only carry stream fields. Merge
+	// into existing progress instead of replacing to preserve tool/iteration
+	// state. isStreamOnly is computed above (before auto-start guard).
 	if isStreamOnly {
 		if m.progressState.current != nil {
 			if msg.payload.StreamContent != "" {
@@ -263,6 +284,9 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			}
 			if len(msg.payload.StreamingTools) > 0 {
 				m.progressState.current.StreamingTools = msg.payload.StreamingTools
+			}
+			if msg.payload.StreamTokens > 0 {
+				m.progressState.current.StreamTokens = msg.payload.StreamTokens
 			}
 			// Refresh lastTokenUsage from current progress so the context bar
 			// stays visible even when structured events are lost to progressCh
@@ -366,33 +390,33 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.lastThinking = ""
 		m.invalidateAllCache(true)
 		m.rc.invalidateProgress()
-		// Do NOT set compReloading=true. The old code blocked auto-start until
-		// the async reload completed, but if the reload message was dropped
-		// (asyncCh full), compReloading stayed true forever — the streaming
-		// message was never recreated, freezing the TUI (busy but no updates).
-		// Instead, create the streaming message immediately. Progress events
-		// continue to render live content via updateStreamingOnly, even before
-		// the reload arrives with compacted history.
+		// Set compReloading=true to block auto-start (startAgentTurn) until the
+		// async reload arrives. Without this gate, a PhaseDone between
+		// HistoryCompacted and reload triggers endAgentTurn → typing=false,
+		// then the next progress event triggers startAgentTurn → resetProgressState
+		// → rebuild → flicker. Worse, startAgentTurn creates ANOTHER streaming
+		// message, producing duplicate assistants.
+		//
+		// The old reason for NOT setting compReloading (asyncCh full → permanent
+		// freeze) is no longer valid: reloadMessagesFromSession now uses blocking
+		// send with 3 retries / 15s timeout. handleHistoryReload ALWAYS clears
+		// compReloading (even on error/stale early returns) to prevent leaks.
+		m.splashState.compReloading = true
 		// Do NOT GotoBottom here — compression can happen while the user
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession
 		// → handleHistoryReload respects userScrolledUp/newContentHint.
 		m.reloadMessagesFromSession(true)
-		// Create streaming message immediately so progress events have a
-		// rendering target. handleHistoryReload preserves it when the
-		// compacted history arrives.
-		if m.typing {
-			m.messages = append(m.messages, cliMessage{
-				role:      "assistant",
-				content:   "",
-				timestamp: time.Now(),
-				isPartial: true,
-				dirty:     true,
-				turnID:    m.agentTurnID,
-			})
-			m.streamingMsgIdx = len(m.messages) - 1
-			m.rc.valid = false
-		}
+		// Do NOT create a streaming message here. The DB history from reload
+		// naturally contains the current turn's assistant message (persisted
+		// before compression). handleHistoryReload will find it and mark it
+		// as the streaming target (isPartial=true). Creating a separate
+		// streaming message here would produce TWO assistants — the one from
+		// DB and the one created here — which is the root cause of the
+		// duplicate assistant bug after compression.
+		//
+		// compReloading=true blocks auto-start (startAgentTurn) during the
+		// async reload, so no progress event can create another assistant.
 	}
 
 	// Cache token usage for context bar display — every progress event
@@ -618,9 +642,6 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 	// (Restarting the client restores them via ch.ConvertMessagesToHistory from DB,
 	// proving the data is valid — we just need to persist it in-memory too.)
 	if m.turnCancelled {
-		// Snapshot the final iteration (same logic as the non-cancelled path below).
-		// This is needed because snapshotIterationChange only fires on iteration
-		// *changes* (N→N+1), so a single-iteration turn won't have any snapshots yet.
 		if m.progressState.lastIter >= 0 {
 			alreadySnapped := slices.ContainsFunc(m.progressState.iterations, func(s cliIterationSnapshot) bool {
 				return s.Iteration == m.progressState.lastIter
@@ -644,18 +665,31 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 						finalTools = append(finalTools, t)
 					}
 				}
+				// Also include tools from prev (live progress before cancel).
+				if prev != nil {
+					for _, t := range prev.CompletedTools {
+						if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
+							return existing.Name == t.Name && existing.Label == t.Label
+						}) {
+							finalTools = append(finalTools, t)
+						}
+					}
+					for _, t := range prev.ActiveTools {
+						if t.Status == "done" || t.Status == "error" {
+							if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
+								return existing.Name == t.Name && existing.Label == t.Label
+							}) {
+								finalTools = append(finalTools, t)
+							}
+						}
+					}
+				}
 				snap := cliIterationSnapshot{
 					Iteration:   m.progressState.lastIter,
 					Thinking:    msg.payload.Thinking,
 					Tools:       finalTools,
 					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
-				// Capture streamed content as fallback when structured Thinking
-				// is empty. This happens when Ctrl+C interrupts mid-stream (LLM
-				// hasn't finished, recordAssistantMsg hasn't set ThinkingContent).
-				// prev holds the live progress the user was watching — its
-				// StreamContent/Thinking are correct for the current iteration.
-				// This preserves the "what you see is what stays" principle.
 				if snap.Thinking == "" && prev != nil {
 					if prev.Thinking != "" {
 						snap.Thinking = prev.Thinking
@@ -672,10 +706,6 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 				if snap.Reasoning == "" && prev != nil {
 					snap.Reasoning = prev.Reasoning
 				}
-				// Capture streamed reasoning as fallback (LLM was still streaming
-				// reasoning when Ctrl+C interrupted). Safe in cancel path: prev is
-				// the current iteration's live progress — ReasoningStreamContent is
-				// what the user saw on screen.
 				if snap.Reasoning == "" && prev != nil && prev.ReasoningStreamContent != "" {
 					snap.Reasoning = prev.ReasoningStreamContent
 				}
@@ -683,6 +713,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 					snap.Reasoning = msg.payload.Reasoning
 				}
 				if len(finalTools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
+					snap.Tools = finalTools
 					m.progressState.iterations = append(m.progressState.iterations, snap)
 				}
 			}

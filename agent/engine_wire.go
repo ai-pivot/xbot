@@ -379,7 +379,7 @@ func (a *Agent) buildMainRunConfig(
 		if a.channelFinder != nil {
 			var progressSeq atomic.Uint64
 			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq)
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq)
 		}
 	}
 
@@ -1959,7 +1959,7 @@ func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*Pr
 // and reasoning stream callbacks. Returns nil, nil if streaming is disabled or
 // no channels are available.
 // Plugin channels (e.g. TG) do NOT receive stream — they get structured progress instead.
-func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta)) {
+func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
 	var cliCh *cli.CLIChannel
 	var remoteCLICh channelpkg.ProgressSender
 	if ch, ok := a.channelFinder("cli"); ok {
@@ -2002,12 +2002,15 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
 		// Convert tool call deltas to ToolProgress with "generating" status.
+		// GenChars carries the accumulated argument char count for real-time
+		// progress display (e.g. "42 chars" while LLM is still streaming args).
 		tools := make([]protocol.ToolProgress, 0, len(toolCalls))
 		for _, tc := range toolCalls {
 			if tc.Name != "" {
 				tools = append(tools, protocol.ToolProgress{
-					Name:   tc.Name,
-					Status: "generating",
+					Name:     tc.Name,
+					Status:   "generating",
+					GenChars: len(tc.Arguments),
 				})
 			}
 		}
@@ -2030,7 +2033,27 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			webCh.SendProgress(chatID, payload)
 		}
 	}
-	return streamContentFunc, streamReasoningFunc, streamToolCallFunc
+	streamUsageFunc = func(usage *llm.TokenUsage) {
+		if usage == nil || usage.CompletionTokens == 0 {
+			return
+		}
+		seq := progressSeq.Add(1)
+		payload := &protocol.ProgressEvent{
+			ChatID:       qualifyChatID(channel, chatID),
+			Seq:          seq,
+			StreamTokens: usage.CompletionTokens,
+		}
+		if cliCh != nil {
+			cliCh.SendProgress(chatID, payload)
+		}
+		if remoteCLICh != nil {
+			remoteCLICh.SendProgress(chatID, payload)
+		}
+		if webCh != nil {
+			webCh.SendProgress(chatID, payload)
+		}
+	}
+	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc
 }
 
 // interactiveSessionsToStatuses converts InteractiveSessionInfo slice to

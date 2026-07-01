@@ -513,7 +513,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		releaseLLMSem = s.cfg.LLMSemAcquire(ctx)
 	}
 
-	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc)
+	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 
 	s.localLLMCalls++
 	if response != nil {
@@ -614,7 +614,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		s.structuredProgress.HistoryCompacted = false
 	}
 
-	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc)
+	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 	s.localLLMCalls++
 	if response != nil {
 		if response.Usage.PromptTokens > 0 {

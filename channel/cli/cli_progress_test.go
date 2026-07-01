@@ -28,7 +28,7 @@ func sendProgress(model *cliModel, payload *protocol.ProgressEvent) {
 func sendDone(model *cliModel, content string) {
 	model.typing = false
 	model.Update(cliOutboundMsg{
-		msg: channel.OutboundMsg{
+		msg: channel.OutboundMsg{Channel: model.channelName, ChatID: model.chatID,
 			Content:   content,
 			IsPartial: false,
 		},
@@ -525,7 +525,7 @@ func TestCancelMessageIgnoresStaleStreamingIndex(t *testing.T) {
 	model.streamingMsgIdx = 3
 	model.agentTurnID = 10
 
-	model.handleAgentMessage(channel.OutboundMsg{Metadata: map[string]string{"cancelled": "true"}})
+	model.handleAgentMessage(channel.OutboundMsg{Channel: model.channelName, ChatID: model.chatID, Metadata: map[string]string{"cancelled": "true"}})
 }
 
 func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
@@ -550,7 +550,7 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 		},
 	}
 
-	model.handleAgentMessage(channel.OutboundMsg{Metadata: map[string]string{"cancelled": "true"}})
+	model.handleAgentMessage(channel.OutboundMsg{Channel: model.channelName, ChatID: model.chatID, Metadata: map[string]string{"cancelled": "true"}})
 
 	if model.streamingMsgIdx != -1 {
 		t.Fatalf("streamingMsgIdx = %d, want -1 after cancel", model.streamingMsgIdx)
@@ -588,6 +588,174 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 		t.Error("expected Shell tool from current unsnapped iteration to be preserved")
 	}
 }
+
+// TestStreamTokensOnlyEventDoesNotReplaceProgressState is a regression test for
+// the root cause of double-assistant + flickering. streamUsageFunc sends a
+// ProgressEvent with ONLY StreamTokens (Phase="", Iteration=0, no other stream
+// fields). Before the fix, isStreamOnly did not check StreamTokens>0, so these
+// events fell through to the structured path and REPLACED m.progressState.current
+// with an empty shell — wiping Phase/Iteration/ActiveTools.
+func TestStreamTokensOnlyEventDoesNotReplaceProgressState(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Establish a structured progress state with Phase, Iteration, and tools.
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "running cmd", Status: "running", Iteration: 1},
+		},
+	})
+	originalPhase := model.progressState.current.Phase
+	originalIter := model.progressState.current.Iteration
+	originalActiveCount := len(model.progressState.current.ActiveTools)
+
+	// Send a StreamTokens-only event (simulating Anthropic message_delta usage).
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamTokens: 42,
+	})
+
+	if model.progressState.current == nil {
+		t.Fatal("progressState.current was nil after StreamTokens-only event — should have been merged")
+	}
+	if model.progressState.current.Phase != originalPhase {
+		t.Fatalf("Phase overwritten by StreamTokens-only event: got %q, want %q",
+			model.progressState.current.Phase, originalPhase)
+	}
+	if model.progressState.current.Iteration != originalIter {
+		t.Fatalf("Iteration overwritten by StreamTokens-only event: got %d, want %d",
+			model.progressState.current.Iteration, originalIter)
+	}
+	if len(model.progressState.current.ActiveTools) != originalActiveCount {
+		t.Fatalf("ActiveTools count changed after StreamTokens-only event: got %d, want %d",
+			len(model.progressState.current.ActiveTools), originalActiveCount)
+	}
+	if model.progressState.current.StreamTokens != 42 {
+		t.Fatalf("StreamTokens not merged: got %d, want 42",
+			model.progressState.current.StreamTokens)
+	}
+}
+
+// TestStreamTokensOnlyEventDoesNotCreateSecondAssistant verifies that a
+// StreamTokens-only event does not trigger startAgentTurn (which would create
+// a second streaming assistant message — the "double assistant" bug).
+func TestStreamTokensOnlyEventDoesNotCreateSecondAssistant(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	firstStreamingIdx := model.streamingMsgIdx
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" && msg.isPartial {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("expected 1 streaming assistant after startAgentTurn, got %d", assistantCount)
+	}
+
+	// Establish structured progress so Phase != "done".
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 1,
+	})
+
+	// Send StreamTokens-only events (multiple, like Anthropic message_delta).
+	for i := 0; i < 5; i++ {
+		sendProgress(model, &protocol.ProgressEvent{
+			StreamTokens: int64(10 * (i + 1)),
+		})
+	}
+
+	assistantCount = 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" && msg.isPartial {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("StreamTokens-only events created duplicate streaming assistants: got %d, want 1", assistantCount)
+	}
+	if model.streamingMsgIdx != firstStreamingIdx {
+		t.Fatalf("streamingMsgIdx changed by StreamTokens-only event: got %d, want %d",
+			model.streamingMsgIdx, firstStreamingIdx)
+	}
+}
+
+// TestStreamTokensOnlyEventMergesIntoExistingState verifies that consecutive
+// StreamTokens-only events accumulate StreamTokens without losing other fields.
+func TestStreamTokensOnlyEventMergesIntoExistingState(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:         "thinking",
+		Iteration:     2,
+		StreamContent: "hello",
+		StreamTokens:  10,
+	})
+	// A structured event may arrive (progressFinalizer) that doesn't carry
+	// StreamTokens — carry-forward preserves it.
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 2,
+	})
+	if model.progressState.current.StreamTokens != 10 {
+		t.Fatalf("StreamTokens lost after structured event (carry-forward failed): got %d, want 10",
+			model.progressState.current.StreamTokens)
+	}
+
+	// Now a new StreamTokens-only event arrives with updated count.
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamTokens: 25,
+	})
+	if model.progressState.current.StreamTokens != 25 {
+		t.Fatalf("StreamTokens not updated by stream-only event: got %d, want 25",
+			model.progressState.current.StreamTokens)
+	}
+	if model.progressState.current.Phase != "thinking" {
+		t.Fatalf("Phase lost after StreamTokens-only event: got %q, want %q",
+			model.progressState.current.Phase, "thinking")
+	}
+	if model.progressState.current.StreamContent != "hello" {
+		t.Fatalf("StreamContent lost after StreamTokens-only event: got %q, want %q",
+			model.progressState.current.StreamContent, "hello")
+	}
+}
+
+// TestCompReloadingClearedOnStaleAndErrorPaths verifies that compReloading is
+// cleared even when handleHistoryReload exits early (stale session or error).
+// Without this, a stale reload leaves compReloading=true forever, blocking
+// auto-start and freezing the TUI.
+func TestCompReloadingClearedOnStaleAndErrorPaths(t *testing.T) {
+	// Stale path: different chatID.
+	model := initTestModel()
+	model.splashState.compReloading = true
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName: "cli",
+		chatID:      "/different-session",
+	})
+	if model.splashState.compReloading {
+		t.Fatal("compReloading not cleared on stale session path")
+	}
+
+	// Error path: reload failed.
+	model.splashState.compReloading = true
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName: model.channelName,
+		chatID:      model.chatID,
+		err:         errDummy,
+	})
+	if model.splashState.compReloading {
+		t.Fatal("compReloading not cleared on error path")
+	}
+}
+
+var errDummy = &dummyError{"reload failed"}
+
+type dummyError struct{ msg string }
+
+func (e *dummyError) Error() string { return e.msg }
 
 func TestHistoryReloadForceFullRebuildDoesNotReuseStaleRenderedCache(t *testing.T) {
 	model := initTestModel()
@@ -1792,5 +1960,171 @@ func TestIncrementalPathSeparatorMatchesFullRebuild(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestHistoryReloadForceFullRebuildDBAssistantBecomesStreamingTarget verifies
+// that on forceFullRebuild (compression), the DB assistant is found and marked
+// as the streaming target — no separate streaming message created.
+func TestHistoryReloadForceFullRebuildDBAssistantBecomesStreamingTarget(t *testing.T) {
+	model := initTestModel()
+	model.typing = true
+	model.agentTurnID = 5
+
+	// forceFullRebuild (compression path): messages cleared, no streaming message
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName:      model.channelName,
+		chatID:           model.chatID,
+		forceFullRebuild: true,
+		history: []channel.HistoryMessage{
+			{Role: "user", Content: "current user", Timestamp: time.Now()},
+			{Role: "assistant", Content: "partial response from DB", Timestamp: time.Now()},
+		},
+	})
+
+	// Exactly ONE assistant — by design, not by dedup
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("expected exactly 1 assistant (by design), got %d", assistantCount)
+	}
+	if model.streamingMsgIdx < 0 || model.streamingMsgIdx >= len(model.messages) {
+		t.Fatalf("streamingMsgIdx out of range: %d (messages=%d)", model.streamingMsgIdx, len(model.messages))
+	}
+	streaming := model.messages[model.streamingMsgIdx]
+	if !streaming.isPartial {
+		t.Fatal("DB assistant should be marked as streaming target (isPartial=true)")
+	}
+	if streaming.content != "partial response from DB" {
+		t.Fatalf("streaming target should retain DB content, got %q", streaming.content)
+	}
+}
+
+// TestHistoryReloadForceFullRebuildNoAssistantCreatesOne verifies the edge case
+// where DB history has no assistant (compression before first iteration persisted).
+// This is the ONLY path that creates a streaming assistant during compression reload.
+func TestHistoryReloadForceFullRebuildNoAssistantCreatesOne(t *testing.T) {
+	model := initTestModel()
+	model.typing = true
+	model.agentTurnID = 5
+
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName:      model.channelName,
+		chatID:           model.chatID,
+		forceFullRebuild: true,
+		history: []channel.HistoryMessage{
+			{Role: "user", Content: "current user", Timestamp: time.Now()},
+		},
+	})
+
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("expected exactly 1 assistant (edge case creation), got %d", assistantCount)
+	}
+	if model.streamingMsgIdx < 0 {
+		t.Fatal("streamingMsgIdx should point to the created assistant")
+	}
+	streaming := model.messages[model.streamingMsgIdx]
+	if !streaming.isPartial {
+		t.Fatal("created streaming assistant should have isPartial=true")
+	}
+}
+
+// TestCancelDuringToolGeneratingPreservesPreviousIteration verifies that
+// Ctrl+C during tool generating (LLM streaming tool args) does NOT lose
+// the previous iteration's completed tools. Before the fix, the cancel
+// path only collected tools from msg.payload (PhaseDone) and
+// m.lastCompletedTools, missing prev which held the last structured
+// event's completed tools. This caused finalTools to be empty → no
+// snapshot → iterations empty → streaming message removed → previous
+// iteration data permanently lost.
+func TestCancelDuringToolGeneratingPreservesPreviousIteration(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Iteration 1: Shell completed
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "cd /home/user/src/xbot", Status: "done", Elapsed: 50, Iteration: 1},
+		},
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "cd /home/user/src/xbot", Status: "done", Elapsed: 50, Iteration: 1},
+		},
+	})
+
+	// The progress finalizer moves done tools to CompletedTools and clears ActiveTools.
+	// Simulate that state:
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 1,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "cd /home/user/src/xbot", Status: "done", Elapsed: 50, Iteration: 1},
+		},
+	})
+
+	// LLM starts generating a tool call (stream-only events).
+	// No structured event for iteration 2 arrives — stream-only merges into current.
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamingTools: []protocol.ToolProgress{
+			{Name: "Shell", Status: "generating", GenChars: 1600},
+		},
+	})
+
+	// Verify prev has the completed tools (merged state retains structured data)
+	if model.progressState.current == nil {
+		t.Fatal("progressState.current is nil before cancel")
+	}
+	if len(model.progressState.current.CompletedTools) == 0 {
+		t.Fatal("CompletedTools should be non-empty (merged from structured event)")
+	}
+
+	// Ctrl+C: set cancel state and send PhaseDone
+	model.turnCancelled = true
+	model.cancelTargetTurnID = model.agentTurnID
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 1, // PhaseDone with same iteration (no iteration 2 structured event arrived)
+	})
+
+	// Verify that the streaming message has baked iterations with the Shell tool.
+	// Note: endAgentTurn clears streamingMsgIdx to -1, so find the message by turnID.
+	var streaming cliMessage
+	found := false
+	for _, msg := range model.messages {
+		if msg.role == "assistant" && msg.turnID == model.agentTurnID {
+			streaming = msg
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no assistant message found for the cancelled turn — streaming message was removed")
+	}
+	if len(streaming.iterations) == 0 {
+		t.Fatal("streaming message has no iterations — previous iteration data was lost")
+	}
+
+	// Check that the Shell tool from iteration 1 is in the baked iterations
+	foundShell := false
+	for _, iter := range streaming.iterations {
+		for _, tool := range iter.Tools {
+			if tool.Name == "Shell" {
+				foundShell = true
+			}
+		}
+	}
+	if !foundShell {
+		t.Fatal("Shell tool from iteration 1 was not preserved in baked iterations after cancel during tool generating")
 	}
 }

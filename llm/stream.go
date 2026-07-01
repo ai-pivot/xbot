@@ -76,7 +76,7 @@ func safeCallback(ctx context.Context, f func(string), s string) {
 // It handles content, reasoning content, tool calls (accumulating deltas by index), usage, and finish reason.
 // Returns an error if the stream emits an EventError or if ctx is cancelled during collection.
 func CollectStream(ctx context.Context, eventCh <-chan StreamEvent) (*LLMResponse, error) {
-	return CollectStreamWithCallback(ctx, eventCh, nil, nil, nil)
+	return CollectStreamWithCallback(ctx, eventCh, nil, nil, nil, nil)
 }
 
 // CollectStreamWithCallback is like CollectStream but calls onContent with the
@@ -87,7 +87,7 @@ func CollectStream(ctx context.Context, eventCh <-chan StreamEvent) (*LLMRespons
 // the stream — this enables early tool detection (showing "generating tool X"
 // before arguments finish streaming, similar to Cursor). EventError handling
 // is identical to CollectStream (returns partial content).
-func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, onContent func(content string), onReasoning func(content string), onToolCall func(toolCalls []ToolCallDelta)) (*LLMResponse, error) {
+func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, onContent func(content string), onReasoning func(content string), onToolCall func(toolCalls []ToolCallDelta), onUsage func(usage *TokenUsage)) (*LLMResponse, error) {
 	var resp LLMResponse
 	var content strings.Builder
 	var reasoningContent strings.Builder
@@ -175,11 +175,29 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 				}
 				if ev.ToolCall.Name != "" {
 					tc.Name = ev.ToolCall.Name
-					// Early tool detection: notify callback when a tool name arrives.
-					// OpenAI/Anthropic send the tool name in the first chunk of each
-					// tool call, well before arguments finish streaming. This lets
-					// the UI show "✦ Read generating…" immediately.
-					if onToolCall != nil {
+				}
+				tc.Arguments += ev.ToolCall.Arguments
+				// Fire callback on every tool call event (name arrival + argument
+				// progress). Originally fired only on name arrival for early tool
+				// detection. Now also fires on argument deltas so the UI can show
+				// real-time argument generation progress (e.g. "42 chars").
+				// The TUI's ~100ms tick rate naturally coalesces high-frequency
+				// deltas — no explicit throttle needed here.
+				if onToolCall != nil {
+					func() {
+						defer func() { recover() }()
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+						onToolCall(snapshotToolCalls(toolCalls))
+					}()
+				}
+			case EventUsage:
+				if ev.Usage != nil {
+					resp.Usage = *ev.Usage
+					if onUsage != nil {
 						func() {
 							defer func() { recover() }()
 							select {
@@ -187,14 +205,9 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 								return
 							default:
 							}
-							onToolCall(snapshotToolCalls(toolCalls))
+							onUsage(ev.Usage)
 						}()
 					}
-				}
-				tc.Arguments += ev.ToolCall.Arguments
-			case EventUsage:
-				if ev.Usage != nil {
-					resp.Usage = *ev.Usage
 				}
 			case EventDone:
 				if ev.FinishReason != "" {
