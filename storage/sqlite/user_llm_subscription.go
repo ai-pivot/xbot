@@ -477,11 +477,33 @@ func (s *LLMSubscriptionService) Remove(id string) error {
 		return fmt.Errorf("system subscription is read-only")
 	}
 	conn := s.db.Conn()
-	_, err := conn.Exec("DELETE FROM user_llm_subscriptions WHERE id = ?", id)
+	tx, err := conn.Begin()
 	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Get sender_id before deleting (for user_default_model cleanup).
+	var senderID string
+	_ = tx.QueryRow("SELECT sender_id FROM user_llm_subscriptions WHERE id = ?", id).Scan(&senderID)
+
+	if _, err := tx.Exec("DELETE FROM user_llm_subscriptions WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete subscription: %w", err)
 	}
-	return nil
+	// Cascade: delete per-model config rows for this subscription.
+	if _, err := tx.Exec("DELETE FROM subscription_models WHERE subscription_id = ?", id); err != nil {
+		return fmt.Errorf("delete subscription_models: %w", err)
+	}
+	// Cascade: clear user_default_model if it points to the deleted subscription.
+	if senderID != "" {
+		if _, err := tx.Exec(
+			"DELETE FROM user_default_model WHERE sender_id = ? AND subscription_id = ?",
+			senderID, id,
+		); err != nil {
+			return fmt.Errorf("clear user_default_model: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // SetDefault sets a subscription as the default for its user.

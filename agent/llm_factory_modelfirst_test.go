@@ -109,7 +109,7 @@ func TestResolveLLM_ThinkingMode_GlobalUserSetting(t *testing.T) {
 	if err := settingsSvc.SetSetting(thinkingModeChannel, "cli_user", "thinking_mode", "enabled"); err != nil {
 		t.Fatalf("set thinking_mode: %v", err)
 	}
-	f.invalidateUserMemos("cli_user")
+	// No invalidation needed — ResolveLLM reads directly from DB.
 	if _, _, _, tm, _ := f.ResolveLLM("cli_user", chatID, "cli"); tm != "enabled" {
 		t.Errorf("thinkingMode = %q, want \"enabled\" from global user setting", tm)
 	}
@@ -198,70 +198,16 @@ func TestSetModelEnabled_InvalidatesSubscription(t *testing.T) {
 	}
 	f.mu.RLock()
 	_, hasClient := f.clientCache[clientCacheKey{subID: sub.ID, apiType: ""}]
-	_, hasMemo := f.sessionMemo[chatKey("cli_user", "/chat")]
 	f.mu.RUnlock()
 	if hasClient {
 		t.Error("clientCache entry should be invalidated after SetModelEnabled")
 	}
-	if hasMemo {
-		t.Error("sessionMemo should be invalidated after SetModelEnabled")
-	}
 }
 
-// TestRefreshSessionEntry_PreservesPerSessionModel is the regression test for the
-// 404 bug: a session whose subscription has an empty default model must NOT be
-// rebuilt with a poisoned f.defaultModel from a previous subscription.
-// RefreshSessionEntry must keep the per-session model (from tenants / cached entry).
-func TestRefreshSessionEntry_PreservesPerSessionModel(t *testing.T) {
-	f, subSvc, _ := newModelFirstTestFactory(t)
-
-	// Subscription whose default model is empty (like the "gpt" sub in the bug).
-	subGPT := &sqlite.LLMSubscription{
-		ID: "sub-gpt2", SenderID: "cli_user", Name: "gpt", Provider: "openai",
-		BaseURL: "https://api.gpt.example/v1", APIKey: "sk-gpt", Model: "",
-		IsDefault: true,
-	}
-	if err := subSvc.Add(subGPT); err != nil {
-		t.Fatalf("Add gpt: %v", err)
-	}
-	if err := subSvc.UpsertModel(subGPT.ID, "gpt-4o-audio-preview", 0, 0, "", ""); err != nil {
-		t.Fatalf("UpsertModel: %v", err)
-	}
-
-	chatID := "/home/proj:Agent-fix"
-	// Establish a per-session entry on the gpt subscription, then switch its
-	// model to gpt-4o-audio-preview (mirrors Ctrl+N per-session model switch).
-	if err := f.SwitchSubscription("cli_user", subGPT, chatID); err != nil {
-		t.Fatalf("SwitchSubscription: %v", err)
-	}
-	f.SwitchModel("cli_user", "gpt-4o-audio-preview", chatID)
-
-	// Persist the per-session selection to tenants (as the RPC switch_model does).
-	if err := f.tenantSvc.SetTenantSubscription("cli", chatID, subGPT.ID, "gpt-4o-audio-preview"); err != nil {
-		t.Fatalf("SetTenantSubscription: %v", err)
-	}
-
-	// A previous subscription left f.defaultModel pointing elsewhere. The bug
-	// caused RefreshSessionEntry to rebuild with this poisoned default. Simulate
-	// by setting f.defaultModel to an unrelated model name.
-	f.mu.Lock()
-	f.defaultModel = "kimi-k2.7-from-old-sub"
-	f.mu.Unlock()
-
-	// RefreshSessionEntry must preserve the per-session model, NOT fall back to
-	// the poisoned f.defaultModel.
-	f.RefreshSessionEntry("cli_user", chatID, "cli")
-
-	_, model, _, _, _ := f.GetLLMForChat("cli_user", chatID)
-	if model != "gpt-4o-audio-preview" {
-		t.Errorf("after RefreshSessionEntry, model = %q, want gpt-4o-audio-preview (per-session model lost → 404 bug)", model)
-	}
-}
-
-// TestCreateEntryFromSub_PicksSubModelNotPoisonedDefault verifies that when a
-// subscription has an empty Model but registered subscription_models rows,
-// createEntryFromSub picks the sub's model instead of f.defaultModel.
-func TestCreateEntryFromSub_PicksSubModelNotPoisonedDefault(t *testing.T) {
+// TestGetLLM_PicksSubModelNotPoisonedDefault verifies that when a subscription
+// has an empty Model but registered subscription_models rows, GetLLM picks
+// the sub's model via PickDefaultModelForSub instead of f.defaultModel.
+func TestGetLLM_PicksSubModelNotPoisonedDefault(t *testing.T) {
 	f, subSvc, _ := newModelFirstTestFactory(t)
 	sub := &sqlite.LLMSubscription{
 		ID: "sub-empty", SenderID: "cli_user", Name: "empty", Provider: "openai",
@@ -276,14 +222,15 @@ func TestCreateEntryFromSub_PicksSubModelNotPoisonedDefault(t *testing.T) {
 	if err := subSvc.UpsertModel(sub.ID, "real-model-b", 0, 0, "", ""); err != nil {
 		t.Fatalf("UpsertModel b: %v", err)
 	}
+	// Set as user default so GetDefault returns this sub.
+	if err := subSvc.SetDefault(sub.ID); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
 
 	f.mu.Lock()
 	f.defaultModel = "poisoned-from-old-sub"
 	f.mu.Unlock()
 
-	if err := f.SwitchSubscription("cli_user", sub, ""); err != nil {
-		t.Fatalf("SwitchSubscription: %v", err)
-	}
 	_, model, _, _, _ := f.GetLLM("cli_user")
 	if model == "poisoned-from-old-sub" {
 		t.Errorf("model = poisoned f.defaultModel %q; should pick a real model from the subscription", model)

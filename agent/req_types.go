@@ -73,10 +73,8 @@ const (
 	MethodGetAgentSessionDumpByFullKey = "get_agent_session_dump_by_full_key"
 	MethodListTenants                  = "list_tenants"
 	MethodGetEffectiveMaxContext       = "get_effective_max_context"
-	MethodClearPerChatMaxContext       = "clear_per_chat_max_context"
 	MethodSetMaxIterations             = "set_max_iterations"
 	MethodSetMaxConcurrency            = "set_max_concurrency"
-	MethodSetMaxContextTokens          = "set_max_context_tokens"
 	MethodSetCompressionThreshold      = "set_compression_threshold"
 	MethodApplyRuntimeSettings         = "apply_runtime_settings"
 	MethodRunnerCreate                 = "runner_create"
@@ -382,10 +380,6 @@ type getAgentSessionDumpByFullKeyReq struct {
 type getEffectiveMaxContextReq struct {
 	SenderID string `json:"sender_id"`
 	ChatID   string `json:"chat_id"`
-}
-
-type clearPerChatMaxContextReq struct {
-	ChatID string `json:"chat_id"`
 }
 
 type applyRuntimeSettingsReq struct {

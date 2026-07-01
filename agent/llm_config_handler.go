@@ -301,8 +301,6 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 
 	// Invalidate cached LLM client and HasCustomLLM cache
 	a.llmFactory.Invalidate(msg.SenderID)
-	a.llmFactory.invalidateUserMemos(msg.SenderID)
-	a.llmFactory.InvalidateCustomLLMCache(msg.SenderID)
 
 	// Display the persisted state (post update/create), not the raw input,
 	// so the user sees what actually got saved.
@@ -652,7 +650,6 @@ func (a *Agent) SetUserThinkingMode(senderID string, mode string) error {
 	if a.llmFactory != nil {
 		// Drop cached resolved thinking for every session so the next call
 		// re-reads the new global value from user_settings.
-		a.llmFactory.invalidateUserMemos(senderID)
 		a.llmFactory.InvalidateSender(senderID)
 	}
 	return nil
@@ -692,7 +689,6 @@ func (a *Agent) SetUserTierModel(senderID, tier, subID, model string) error {
 		return fmt.Errorf("save tier_%s: %w", tier, err)
 	}
 	if a.llmFactory != nil {
-		a.llmFactory.invalidateUserMemos(senderID)
 		a.llmFactory.InvalidateSender(senderID)
 	}
 	return nil
@@ -782,8 +778,6 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*ch
 
 	// Invalidate cached LLM client and HasCustomLLM cache
 	a.llmFactory.Invalidate(msg.SenderID)
-	a.llmFactory.invalidateUserMemos(msg.SenderID)
-	a.llmFactory.InvalidateCustomLLMCache(msg.SenderID)
 
 	return &channel.OutboundMsg{
 		Channel: msg.Channel,

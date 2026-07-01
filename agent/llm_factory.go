@@ -16,34 +16,12 @@ import (
 	"xbot/storage/sqlite"
 )
 
-// llmEntry bundles ALL per-key LLM state into a single struct.
-// This eliminates the "partial write" class of bugs where methods updated
-// some maps but forgot others (e.g. SetChatLLM not writing subscriptions).
-//
-// Every write method must create a complete llmEntry — it is impossible
-// to have an entry with a client but no subscription ID.
-//
-// subID is the authoritative subscription identifier. resolveSub(entry) reads
-// subscription data from DB via subID, falling back to the sub cache when DB
-// is unavailable (tests, startup races). This prevents model-from-sub-A +
-// config-from-sub-B cross-contamination: SwitchModel copies subID + sub
-// from the user entry, but resolveSub always queries DB first by subID.
-type llmEntry struct {
-	client          llm.LLM
-	model           string
-	subID           string                  // authoritative subscription identity
-	sub             *sqlite.LLMSubscription // cache (fallback when DB unavailable)
-	maxOutputTokens int
-	thinkingMode    string
-}
-
 // LLMFactory 管理用户自定义 LLM 客户端的创建和缓存。
 //
 // 设计原则：
-//   - 所有 per-user/per-chat 的 LLM 状态存储在单个 `entries` map 中
-//   - 每次写入必须提供完整的 llmEntry（client + model + sub + tokens + thinking）
-//   - 读取通过 getEntry() 获取完整 entry，从中派生所有值
-//   - per-chat max_context override 存在独立的 perChatMaxCtx 中（key=chatID）
+//   - LLM 客户端按 (subscription, apiType) 缓存在 clientCache 中（HTTP 连接池复用）
+//   - per-session 解析通过 ResolveLLM 从 DB (tenants + user_default_model) 读取，无内存缓存
+//   - per-model 配置（max_context, max_output_tokens, thinking_mode）从 subscription_models 表读取
 type LLMFactory struct {
 	subscriptionSvc *sqlite.LLMSubscriptionService
 	tenantSvc       *sqlite.TenantService // for per-session model restoration from DB
@@ -60,29 +38,27 @@ type LLMFactory struct {
 	// model name → max context tokens (from config model_contexts, not per-user)
 	modelContexts map[string]int
 
-	// Single source of truth for per-user and per-chat LLM state.
-	// Key = senderID (user-level) or chatKey(senderID, chatID) (per-chat).
-	entries map[string]*llmEntry
-
-	// Per-chat max_context override (user explicitly set in /settings).
-	// Key = chatID only (not senderID:chatID), because max_context is
-	// session-scoped, not subscription-scoped.
-	perChatMaxCtx map[string]int
-
 	// ─── Model-first resolution (v38+) ───────────────────────
 	// clientCache shares one LLM client per (subscription, apiType). A client is
 	// reusable across models of the same subscription — the model is supplied
 	// per request — so we cache at the subscription level, not the model level.
 	clientCache map[clientCacheKey]llm.LLM
-	// sessionMemo caches the per-session resolution (subID, model) read from DB
-	// (tenants + user_default_model). It is a pure memo of DB state: every write
-	// (SelectModel / SetUserDefaultModel / InvalidateSubscription) invalidates
-	// the affected keys, so the memo can never diverge from DB.
-	sessionMemo map[string]*resolvedEntry
 
-	mu                sync.RWMutex
-	llmSemManager     *llm.LLMSemaphoreManager
-	hasCustomLLMCache sync.Map
+	// proxyLLMs stores runtime-injected ProxyLLMs by senderID. These override
+	// DB-based resolution — when a runner has local LLM configured, the proxy
+	// takes priority over any cloud subscription. Not persisted: tied to the
+	// runner connection lifecycle (SetProxyLLM on connect, ClearProxyLLM on
+	// disconnect).
+	proxyLLMs sync.Map
+
+	mu            sync.RWMutex
+	llmSemManager *llm.LLMSemaphoreManager
+}
+
+// proxyEntry stores a runtime-injected ProxyLLM override.
+type proxyEntry struct {
+	client llm.LLM
+	model  string
 }
 
 // clientCacheKey identifies a shared LLM client by subscription + API type.
@@ -91,42 +67,17 @@ type clientCacheKey struct {
 	apiType string
 }
 
-// resolvedEntry is the memoized per-session resolution: which subscription +
-// model this session uses, plus the materialized client and derived config.
-type resolvedEntry struct {
-	subID           string
-	model           string
-	maxOutputTokens int
-	thinkingMode    string
-	client          llm.LLM
-}
-
 // NewLLMFactory 创建 LLM 工厂
 func NewLLMFactory(defaultLLM llm.LLM, defaultModel string) *LLMFactory {
 	return &LLMFactory{
 		defaultLLM:    defaultLLM,
 		defaultModel:  defaultModel,
-		entries:       make(map[string]*llmEntry),
 		modelContexts: make(map[string]int),
-		perChatMaxCtx: make(map[string]int),
 		clientCache:   make(map[clientCacheKey]llm.LLM),
-		sessionMemo:   make(map[string]*resolvedEntry),
 	}
 }
 
 // ─── Getters ─────────────────────────────────────────────
-
-func (f *LLMFactory) getEntry(key string) *llmEntry {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.entries[key]
-}
-
-func (f *LLMFactory) setEntry(key string, e *llmEntry) {
-	f.mu.Lock()
-	f.entries[key] = e
-	f.mu.Unlock()
-}
 
 // GetDefaultModel returns the default model name.
 func (f *LLMFactory) GetDefaultModel() string { return f.defaultModel }
@@ -172,6 +123,11 @@ func (f *LLMFactory) SetTenantSvc(svc *sqlite.TenantService) {
 	f.tenantSvc = svc
 }
 
+// GetTenantSvc returns the TenantService used for per-session model restoration.
+func (f *LLMFactory) GetTenantSvc() *sqlite.TenantService {
+	return f.tenantSvc
+}
+
 func (f *LLMFactory) SetConfigSubs(fn func() []config.SubscriptionConfig) {
 	f.mu.Lock()
 	f.configSubsFn = fn
@@ -198,15 +154,6 @@ func (f *LLMFactory) resolveModelContext(model string) int {
 	return ctx
 }
 
-// resolveSub returns the subscription for an entry. DB (by subID) takes priority;
-// falls back to the cached sub pointer when the subscription service is unavailable.
-func (f *LLMFactory) resolveSub(e *llmEntry) *sqlite.LLMSubscription {
-	if sub := f.lookupSub(e.subID); sub != nil {
-		return sub
-	}
-	return e.sub
-}
-
 // lookupSub fetches a subscription by ID from the subscription service.
 // Returns nil if the service is unavailable or the subscription doesn't exist.
 func (f *LLMFactory) lookupSub(subID string) *sqlite.LLMSubscription {
@@ -231,69 +178,11 @@ func (f *LLMFactory) resolveEffectiveContext(model string, subID string) int {
 	return f.resolveModelContext(model)
 }
 
-// resolveSubContext resolves max context using an llmEntry's subscription.
-// Priority: subscription_models table (v35+) → sub.PerModelConfigs (backward compat) → modelContexts.
-func (f *LLMFactory) resolveSubContext(model string, e *llmEntry) int {
-	if sub := f.resolveSub(e); sub != nil {
-		// 1. Check subscription_models (authoritative for v35+)
-		if f.subscriptionSvc != nil && e.subID != "" {
-			if sm, err := f.subscriptionSvc.GetModel(e.subID, model); err == nil && sm != nil && sm.MaxContext > 0 {
-				return sm.MaxContext
-			}
-		}
-		// 2. Fall back to PerModelConfigs (backward compat, pre-v35)
-		if v := sub.GetPerModelMaxContext(model); v > 0 {
-			return v
-		}
-	}
-	return f.resolveModelContext(model)
-}
-
 // GetEffectiveMaxContext is the single source of truth for "what max context should the UI show?".
-// Priority: per-chat override → per-model sub config → global model_contexts → 0.
+// Resolves via GetLLMForChat (per-session) when chatID is provided; GetLLM (global) otherwise.
 func (f *LLMFactory) GetEffectiveMaxContext(senderID, chatID string) int {
-	if chatID != "" {
-		f.mu.RLock()
-		if v, ok := f.perChatMaxCtx[chatID]; ok && v > 0 {
-			f.mu.RUnlock()
-			return v
-		}
-		f.mu.RUnlock()
-	}
-	key := senderID
-	if chatID != "" {
-		key = chatKey(senderID, chatID)
-	}
-	if e := f.getEntry(key); e != nil {
-		if mc := f.resolveSubContext(e.model, e); mc > 0 {
-			return mc
-		}
-	}
-	return 0
-}
-
-// ─── Per-chat max context ────────────────────────────────
-
-func (f *LLMFactory) SetPerChatMaxContext(chatID string, maxCtx int) {
-	f.mu.Lock()
-	if maxCtx > 0 {
-		f.perChatMaxCtx[chatID] = maxCtx
-	} else {
-		delete(f.perChatMaxCtx, chatID)
-	}
-	f.mu.Unlock()
-}
-
-func (f *LLMFactory) GetPerChatMaxContext(chatID string) int {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.perChatMaxCtx[chatID]
-}
-
-func (f *LLMFactory) ClearPerChatMaxContext(chatID string) {
-	f.mu.Lock()
-	delete(f.perChatMaxCtx, chatID)
-	f.mu.Unlock()
+	_, _, mc, _, _ := f.GetLLMForChat(senderID, chatID)
+	return mc
 }
 
 // ─── Primary LLM resolution ──────────────────────────────
@@ -301,17 +190,15 @@ func (f *LLMFactory) ClearPerChatMaxContext(chatID string) {
 func chatKey(senderID, chatID string) string { return senderID + ":" + chatID }
 
 // GetLLM returns (client, model, maxContext, thinkingMode, maxOutputTokens).
-// All subscription-derived values come from a single llmEntry, guaranteeing
-// consistency (same subscription for model, context, thinking, output).
-// Lookup order:
-//  1. In-memory cache (entries map)
-//  2. subscriptionSvc (DB default subscription)
-//  3. Global default LLM
+// ProxyLLM (runner local LLM) takes priority over DB subscriptions.
+// Falls back to the global default LLM when no subscription resolves.
 func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string, int) {
-	if e := f.getEntry(senderID); e != nil && e.client != nil {
-		return e.client, e.model, f.resolveSubContext(e.model, e), e.thinkingMode, e.maxOutputTokens
+	// ProxyLLM override (runner local LLM)
+	if v, ok := f.proxyLLMs.Load(senderID); ok {
+		if pe, ok := v.(proxyEntry); ok && pe.client != nil {
+			return pe.client, pe.model, f.resolveModelContext(pe.model), "", 0
+		}
 	}
-
 	if f.subscriptionSvc != nil {
 		sub, err := f.subscriptionSvc.GetDefault(senderID)
 		if err == nil && sub != nil && sub.BaseURL != "" && sub.APIKey != "" {
@@ -321,11 +208,25 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string, int)
 					"base_url": sub.BaseURL, "provider": sub.Provider,
 				}).Error("[LLMFactory] GetLLM: subscription has masked API key")
 			}
-			e := f.createEntryFromSub(sub, sub.Model)
-			if e != nil {
-				f.setEntry(senderID, e)
-				f.hasCustomLLMCache.Store(senderID, true)
-				return e.client, e.model, f.resolveSubContext(e.model, e), e.thinkingMode, e.maxOutputTokens
+			model := sub.Model
+			if model == "" {
+				model = f.PickDefaultModelForSub(sub)
+			}
+			if model == "" {
+				model = f.defaultModel
+			}
+			client := f.getOrCreateClient(sub, model)
+			if client != nil {
+				pmc := f.resolveModelConfig(sub.ID, model)
+				maxOut := pmc.maxOutputTokens
+				if maxOut == 0 {
+					maxOut = sub.MaxOutputTokens
+				}
+				thinking := pmc.thinkingMode
+				if thinking == "" {
+					thinking = f.userThinkingMode(senderID)
+				}
+				return client, model, f.resolveSubContextFor(sub.ID, model), thinking, maxOut
 			}
 		}
 	}
@@ -334,391 +235,139 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string, int)
 }
 
 // GetLLMForChat returns (client, model, maxContext, thinkingMode, maxOutputTokens).
-// All subscription-derived values come from a single llmEntry, guaranteeing
-// consistency. Priority: per-chat entry → user-level entry (with per-chat maxCtx override).
+// If chatID is non-empty, reads per-session (subID, model) from the tenants table;
+// falls back to GetLLM (global default) when no per-session override exists.
 func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, int, string, int) {
-	if chatID == "" {
-		return f.GetLLM(senderID)
-	}
-	key := chatKey(senderID, chatID)
-
-	// Per-chat cache hit
-	if e := f.getEntry(key); e != nil {
-		maxCtx := f.resolveSubContext(e.model, e)
-		f.mu.RLock()
-		if pcCtx, ok := f.perChatMaxCtx[chatID]; ok && pcCtx > 0 {
-			maxCtx = pcCtx
+	// ProxyLLM override (runner local LLM) — highest priority.
+	if v, ok := f.proxyLLMs.Load(senderID); ok {
+		if pe, ok := v.(proxyEntry); ok && pe.client != nil {
+			return pe.client, pe.model, f.resolveModelContext(pe.model), "", 0
 		}
-		f.mu.RUnlock()
-		// Lazy client recreation (SwitchModel clears client)
-		if e.client == nil && e.subID != "" {
-			e = f.createEntryFromSubID(e.subID, e.model)
-			if e != nil {
-				f.setEntry(key, e)
+	}
+	if chatID != "" && f.tenantSvc != nil {
+		// Try per-session override from tenants table.
+		// Channel may be "" or "cli" depending on write path.
+		subID, model, _ := f.tenantSvc.GetTenantSubscription("", chatID)
+		if subID == "" {
+			subID, model, _ = f.tenantSvc.GetTenantSubscription("cli", chatID)
+		}
+		if subID != "" {
+			sub, err := f.subscriptionSvc.Get(subID)
+			if err == nil && sub != nil && sub.BaseURL != "" {
+				if model == "" {
+					model = sub.Model
+				}
+				client := f.getOrCreateClient(sub, model)
+				if client != nil {
+					pmc := f.resolveModelConfig(sub.ID, model)
+					maxOut := pmc.maxOutputTokens
+					if maxOut == 0 {
+						maxOut = sub.MaxOutputTokens
+					}
+					thinking := pmc.thinkingMode
+					if thinking == "" {
+						thinking = f.userThinkingMode(senderID)
+					}
+					return client, model, f.resolveSubContextFor(sub.ID, model), thinking, maxOut
+				}
 			}
 		}
-		if e != nil && e.client != nil {
-			return e.client, e.model, maxCtx, e.thinkingMode, e.maxOutputTokens
-		}
 	}
-
-	// Per-chat max_context override without per-chat subscription
-	f.mu.RLock()
-	if pcCtx, ok := f.perChatMaxCtx[chatID]; ok && pcCtx > 0 {
-		f.mu.RUnlock()
-		client, model, _, thinkingMode, maxOut := f.GetLLM(senderID)
-		return client, model, pcCtx, thinkingMode, maxOut
-	}
-	f.mu.RUnlock()
-
 	return f.GetLLM(senderID)
 }
 
-// GetMaxOutputTokens returns the cached max_output_tokens.
-// When chatID is provided, checks the per-chat entry first (same source as GetLLMForChat).
-// Prefer using GetLLMForChat which returns all subscription-derived values in one call.
+// GetMaxOutputTokens returns the max_output_tokens for the user's active
+// subscription, resolved via GetLLM. Prefer using GetLLM which returns all
+// subscription-derived values in one call.
 func (f *LLMFactory) GetMaxOutputTokens(senderID string, chatID ...string) int {
-	if len(chatID) > 0 && chatID[0] != "" {
-		if e := f.getEntry(chatKey(senderID, chatID[0])); e != nil {
-			return e.maxOutputTokens
-		}
-	}
-	if e := f.getEntry(senderID); e != nil {
-		return e.maxOutputTokens
-	}
-	return 0
+	_, _, _, _, maxOut := f.GetLLM(senderID)
+	return maxOut
 }
 
-// HasCustomLLM checks if a user has custom LLM config.
+// HasCustomLLM checks if a user has custom LLM config: either a ProxyLLM
+// (runner local LLM) or a personal (non-system) DB subscription with credentials.
 func (f *LLMFactory) HasCustomLLM(senderID string) bool {
-	if val, ok := f.hasCustomLLMCache.Load(senderID); ok {
-		b, _ := val.(bool)
-		return b
-	}
-	if e := f.getEntry(senderID); e != nil && e.client != nil {
-		f.hasCustomLLMCache.Store(senderID, true)
+	if _, ok := f.proxyLLMs.Load(senderID); ok {
 		return true
 	}
-	// Check if the user has any personal (non-system) subscription with valid
-	// credentials. This replaces the old GetDefault check — there is no "default
-	// subscription" concept anymore; any configured subscription counts.
 	if f.subscriptionSvc != nil {
 		subs, err := f.subscriptionSvc.List(senderID)
 		if err == nil {
 			for _, sub := range subs {
 				if !sub.IsSystem && sub.BaseURL != "" && sub.APIKey != "" {
-					f.hasCustomLLMCache.Store(senderID, true)
 					return true
 				}
 			}
 		}
 	}
-	f.hasCustomLLMCache.Store(senderID, false)
 	return false
 }
 
-func (f *LLMFactory) InvalidateCustomLLMCache(senderID string) {
-	f.hasCustomLLMCache.Delete(senderID)
-}
-
-// ─── Write methods (all produce complete llmEntry) ───────
-
-// createEntryFromSub creates a complete llmEntry from a subscription.
-// Returns nil if the subscription config is invalid.
-func (f *LLMFactory) createEntryFromSub(sub *sqlite.LLMSubscription, model string) *llmEntry {
-	if sub == nil || sub.BaseURL == "" || sub.APIKey == "" {
-		return nil
-	}
-	if model == "" {
-		model = sub.Model
-	}
-	if model == "" {
-		// Do NOT fall straight back to f.defaultModel — that contaminates this
-		// entry (and f.defaultModel) with a model name from an unrelated
-		// subscription when the current subscription has no default model
-		// (the 404 bug). Pick a concrete model from this subscription first.
-		model = f.PickDefaultModelForSub(sub)
-	}
-	if model == "" {
-		model = f.defaultModel
-	}
-	// Resolve per-model APIType override, fallback to subscription-level
-	apiType := sub.APIType
-	if pm := sub.GetPerModelAPIType(model); pm != "" {
-		apiType = pm
-	}
-	cfg := &sqlite.UserLLMConfig{
-		Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey,
-		Model: model, MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode, APIType: apiType,
-		ID:             sub.ID,
-		OnModelsLoaded: f.makeOnModelsLoaded(sub.ID),
-	}
-	client, _ := f.createClient(cfg)
-	if client == nil {
-		return nil
-	}
-	return &llmEntry{
-		client: client, model: model, subID: sub.ID, sub: sub,
-		maxOutputTokens: sub.MaxOutputTokens, thinkingMode: sub.ThinkingMode,
-	}
-}
-
-// createEntryFromSubID looks up a subscription by ID then creates an entry.
-// This is the ID-based variant of createEntryFromSub — used when only the
-// subscription ID is available (e.g. lazy rebuild in GetLLMForChat).
-func (f *LLMFactory) createEntryFromSubID(subID, model string) *llmEntry {
-	if f.subscriptionSvc == nil || subID == "" {
-		return nil
-	}
-	sub, err := f.subscriptionSvc.Get(subID)
-	if err != nil || sub == nil {
-		return nil
-	}
-	return f.createEntryFromSub(sub, model)
-}
-
-// RefreshSessionEntry re-fetches the subscription for a per-session entry from DB
-// and rebuilds the entry. This must be called at the start of every Run so that
-// stale cached data from a previous Run never survives across message boundaries.
-//
-// When the per-chat entry does not exist (e.g. after server restart), it is
-// restored from the tenants table using (channel, chatID) — this ensures
-// per-session model choices survive restarts.
-func (f *LLMFactory) RefreshSessionEntry(senderID, chatID, channel string) {
-	if f.subscriptionSvc == nil || chatID == "" {
-		return
-	}
-	key := chatKey(senderID, chatID)
-	e := f.getEntry(key)
-	if e == nil || e.subID == "" {
-		// Cache miss: try restoring from tenants table before giving up.
-		// Without this, sessions that had per-session model switches lose
-		// their model on restart and fall back to the subscription default.
-		f.restoreEntryFromDB(senderID, chatID, channel)
-		return
-	}
-	sub, err := f.subscriptionSvc.Get(e.subID)
-	if err != nil || sub == nil {
-		return
-	}
-	// Preserve the per-session model across the refresh. The authoritative
-	// source is the tenants table (written by the per-session switch RPC);
-	// fall back to the cached entry's model, then the subscription default.
-	// Rebuilding with sub.Model unconditionally discards per-session model
-	// switches — and when sub.Model is empty, createEntryFromSub falls back to
-	// f.defaultModel, which may still hold a model name from a PREVIOUS
-	// subscription, producing a request to (new base_url, old model) → 404.
-	model := e.model
-	if f.tenantSvc != nil {
-		if dbSubID, dbModel, gerr := f.tenantSvc.GetTenantSubscription(channel, chatID); gerr == nil && dbSubID == sub.ID && dbModel != "" {
-			model = dbModel
-		}
-	}
-	if model == "" {
-		model = sub.Model
-	}
-	// Build new entry BEFORE acquiring the lock. createEntryFromSub makes HTTP
-	// calls (model list loading) that can take 5-30s. Holding f.mu during that
-	// call blocks every other goroutine that needs f.mu.RLock() — including
-	// getEntry, GetLLMForChat, and GetLLMForModel — freezing the entire agent loop.
-	newEntry := f.createEntryFromSub(sub, model)
-
-	f.mu.Lock()
-	current := f.entries[key]
-	if current == nil || current.subID == "" || current.subID != sub.ID {
-		f.mu.Unlock()
-		return
-	}
-	if newEntry != nil {
-		f.entries[key] = newEntry
-	}
-	f.mu.Unlock()
-}
-
-// restoreEntryFromDB recovers per-session subscription+model from the tenants
-// table and populates the in-memory cache. Called by RefreshSessionEntry when
-// the per-chat entry is empty (typically after server restart).
-func (f *LLMFactory) restoreEntryFromDB(senderID, chatID, channel string) {
-	if f.tenantSvc == nil || f.subscriptionSvc == nil {
-		return
-	}
-	subID, model, err := f.tenantSvc.GetTenantSubscription(channel, chatID)
-	if err != nil {
-		log.WithError(err).WithField("chat_id", chatID).Debug("restoreEntryFromDB: GetTenantSubscription failed")
-		return
-	}
-	if subID == "" {
-		return // no per-session mapping in DB
-	}
-	sub, err := f.subscriptionSvc.Get(subID)
-	if err != nil || sub == nil {
-		log.WithError(err).WithFields(log.Fields{
-			"chat_id": chatID, "sub_id": subID,
-		}).Debug("restoreEntryFromDB: subscription lookup failed")
-		return
-	}
-	effectiveModel := model
-	if effectiveModel == "" {
-		effectiveModel = sub.Model
-	}
-	e := f.createEntryFromSub(sub, effectiveModel)
-	if e != nil {
-		f.setEntry(chatKey(senderID, chatID), e)
-		log.WithFields(log.Fields{
-			"chat_id": chatID,
-			"channel": channel,
-			"sub_id":  subID,
-			"model":   effectiveModel,
-		}).Info("Restored per-session LLM from DB")
-	}
-}
-
 // SwitchSubscription switches a user's active LLM to the specified subscription.
-// Updates BOTH user-level (senderID) and per-chat (senderID:chatID) caches atomically.
+// With the entries cache removed, this only updates the global default LLM/model
+// for cli_user (so SubAgent fallback, ListModels(), and GetLLM follow the user's
+// last choice). Per-session state lives in DB (tenants table).
 func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscription, chatID string) error {
-	e := f.createEntryFromSub(sub, sub.Model)
-	if e == nil {
-		log.WithFields(log.Fields{
-			"sender_id": senderID, "sub_id": sub.ID,
-			"provider": sub.Provider, "base_url": sub.BaseURL,
-		}).Error("[LLM] SwitchSubscription: failed to create client")
-		return fmt.Errorf("failed to create LLM client for subscription %s", sub.ID)
+	if sub == nil {
+		return fmt.Errorf("SwitchSubscription: sub is required")
 	}
-
-	f.mu.Lock()
-	f.entries[senderID] = e
-	if chatID != "" {
-		f.entries[chatKey(senderID, chatID)] = &llmEntry{
-			client: e.client, model: e.model, subID: e.subID, sub: e.sub,
-			maxOutputTokens: e.maxOutputTokens, thinkingMode: e.thinkingMode,
-		}
-	}
-	// Update user-level default LLM so that SubAgent fallback, ListModels(),
-	// and GetLLM for sessions without per-session subscriptions all follow
-	// the user's last choice. In CLI mode, all sessions share senderID "cli_user",
-	// so this correctly reflects the user's global LLM preference.
 	if senderID == "cli_user" {
-		f.defaultLLM = e.client
-		f.defaultModel = e.model
+		client := f.createClientFromSub(sub, sub.Model)
+		f.mu.Lock()
+		if client != nil {
+			f.defaultLLM = client
+		}
+		f.defaultModel = sub.Model
+		f.mu.Unlock()
 	}
-	f.mu.Unlock()
-
-	log.WithFields(log.Fields{
-		"sender_id": senderID, "chat_id": chatID, "sub_id": sub.ID,
-		"sub_name": sub.Name, "model": e.model,
-		"max_output_tokens": e.maxOutputTokens, "thinking_mode": e.thinkingMode,
-	}).Debug("[LLM] SwitchSubscription: client created and cached")
-
-	f.hasCustomLLMCache.Store(senderID, true)
 	return nil
 }
 
-// SetSessionLLM sets the LLM for a specific session ONLY (no user-level update).
+// SetSessionLLM persists the per-session subscription mapping to the tenants
+// table. This is the write counterpart of GetLLMForChat's read path.
 func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubscription) error {
-	if chatID == "" || sub == nil {
-		return fmt.Errorf("SetSessionLLM: chatID and sub are required")
+	if f.tenantSvc != nil && chatID != "" && sub != nil {
+		return f.tenantSvc.SetTenantSubscription("cli", chatID, sub.ID, sub.Model)
 	}
-	e := f.createEntryFromSub(sub, sub.Model)
-	if e == nil {
-		return fmt.Errorf("failed to create LLM client for session %s", chatID)
-	}
-	f.setEntry(chatKey(senderID, chatID), e)
 	return nil
 }
 
 // SwitchModel switches the active model without changing subscription.
-// When chatID is provided, only the per-chat entry is updated (session-scoped).
-// When chatID is empty, the user-level entry is updated and per-chat caches are cleared.
+// Per-session switch (with chatID): no-op — persistence is handled by SelectModel.
+// User-level switch (no chatID): persists the model change to the default
+// subscription in DB so new sessions and GetLLM pick it up.
 func (f *LLMFactory) SwitchModel(senderID, model string, chatID ...string) {
 	effectiveChatID := ""
 	if len(chatID) > 0 {
 		effectiveChatID = chatID[0]
 	}
-
-	f.mu.Lock()
 	if effectiveChatID != "" {
-		key := chatKey(senderID, effectiveChatID)
-		if userEntry := f.entries[senderID]; userEntry != nil {
-			// Copy user-level subID and sub cache. resolveSubContext will query
-			// DB by subID first; the sub cache is only a fallback when DB is
-			// unavailable (tests, startup). This prevents stale sub pointers
-			// from causing model-from-sub-A + config-from-sub-B contamination.
-			f.entries[key] = &llmEntry{
-				subID: userEntry.subID, sub: userEntry.sub, model: model,
-				maxOutputTokens: userEntry.maxOutputTokens,
-				thinkingMode:    userEntry.thinkingMode,
-			}
-		} else {
-			f.entries[key] = &llmEntry{model: model}
-		}
-	} else {
-		prefix := senderID + ":"
-		for k := range f.entries {
-			if strings.HasPrefix(k, prefix) {
-				delete(f.entries, k)
-			}
-		}
-		if e := f.entries[senderID]; e != nil {
-			e.model = model
-		} else {
-			f.entries[senderID] = &llmEntry{model: model}
-		}
+		return
 	}
-	svc := f.subscriptionSvc
-	f.mu.Unlock()
-
-	// Only persist model change to the default subscription for user-level
-	// switches (no chatID). Per-session model switches (with chatID) must NOT
-	// modify the subscription — otherwise switching model in session A
-	// contaminates all sessions sharing the same subscription.
-	if effectiveChatID == "" && svc != nil && senderID != "" {
-		if sub, err := svc.GetDefault(senderID); err == nil && sub != nil && sub.Model != model && sub.ID != "" {
-			_ = svc.SetModel(sub.ID, model)
+	if f.subscriptionSvc != nil && senderID != "" {
+		if sub, err := f.subscriptionSvc.GetDefault(senderID); err == nil && sub != nil && sub.Model != model && sub.ID != "" {
+			_ = f.subscriptionSvc.SetModel(sub.ID, model)
 		}
 	}
 }
 
-// SetChatLLM caches an LLM client for a specific chat session.
-// IMPORTANT: Inherits subscription from user-level entry so that per-model
-// config lookups (MaxContext, MaxOutputTokens) still work correctly.
-// This fixes the root cause of "subscription switch loses max_context" bugs.
-func (f *LLMFactory) SetChatLLM(senderID, chatID string, client llm.LLM, model string) {
-	entry := &llmEntry{client: client, model: model}
-	// Inherit subscription metadata from user-level entry
-	f.mu.Lock()
-	if existing := f.entries[senderID]; existing != nil {
-		entry.subID = existing.subID
-		entry.sub = existing.sub
-		entry.maxOutputTokens = existing.maxOutputTokens
-		entry.thinkingMode = existing.thinkingMode
-	}
-	if chatID == "" {
-		f.entries[senderID] = entry
-	} else {
-		f.entries[chatKey(senderID, chatID)] = entry
-	}
-	f.mu.Unlock()
+// SetChatLLM is a no-op: per-session (subscription, model) lives in the tenants
+// table, not in an in-memory cache.
+func (f *LLMFactory) SetChatLLM(senderID, chatID, subID, model string) error {
+	return nil
 }
 
-// SetUserMaxOutputTokens updates the max_output_tokens for a user's entry.
+// SetUserMaxOutputTokens is a no-op: the DB path via UpdatePerModelConfig
+// (Agent.SetUserMaxOutputTokens) is authoritative.
 func (f *LLMFactory) SetUserMaxOutputTokens(senderID string, n int) {
-	f.mu.Lock()
-	if e := f.entries[senderID]; e != nil {
-		e.maxOutputTokens = n
-	}
-	f.mu.Unlock()
 }
 
-// SetUserThinkingMode updates the thinking_mode for a user's entry.
+// SetUserThinkingMode is a no-op: thinking mode is a global user setting stored
+// in user_settings DB via Agent.SetUserThinkingMode.
 func (f *LLMFactory) SetUserThinkingMode(senderID, mode string) {
-	f.mu.Lock()
-	if e := f.entries[senderID]; e != nil {
-		e.thinkingMode = mode
-	}
-	f.mu.Unlock()
 }
 
-// SetDefaults updates the global default LLM and clears ALL per-user caches.
+// SetDefaults updates the global default LLM and model.
 func (f *LLMFactory) SetDefaults(newLLM llm.LLM, newModel string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -729,8 +378,6 @@ func (f *LLMFactory) SetDefaults(newLLM llm.LLM, newModel string) {
 	}
 	f.defaultLLM = newLLM
 	f.defaultModel = newModel
-	f.entries = make(map[string]*llmEntry)
-	f.perChatMaxCtx = make(map[string]int)
 }
 
 // SetSystemLLM sets the factory's fallback LLM from the shared system
@@ -755,60 +402,37 @@ func (f *LLMFactory) SetDefaultThinkingMode(mode string) {
 	f.mu.Unlock()
 }
 
-// SetProxyLLM sets a ProxyLLM for a user, overriding per-user config.
-func (f *LLMFactory) SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string) {
-	f.mu.Lock()
-	f.entries[senderID] = &llmEntry{
-		client: proxy, model: model,
-		maxOutputTokens: 0, thinkingMode: "",
-	}
-	f.mu.Unlock()
+// SetProxyLLM injects a ProxyLLM (runner local LLM) for a user. This overrides
+// all DB-based resolution — when present, ResolveLLM/GetLLM/GetLLMForChat return
+// the proxy without consulting subscriptions or tenants table.
+// Not persisted: cleared on runner disconnect via ClearProxyLLM.
+func (f *LLMFactory) SetProxyLLM(senderID string, proxy llm.LLM, model string) {
+	f.proxyLLMs.Store(senderID, proxyEntry{client: proxy, model: model})
 }
 
-// ClearProxyLLM removes a ProxyLLM and ALL associated state.
+// ClearProxyLLM removes a ProxyLLM override. After this, resolution falls back
+// to DB subscriptions (tenants table → user_default_model → system default).
 func (f *LLMFactory) ClearProxyLLM(senderID string) {
-	f.mu.Lock()
-	delete(f.entries, senderID)
-	f.mu.Unlock()
+	f.proxyLLMs.Delete(senderID)
 }
 
-// Invalidate clears user-level and all per-chat caches for a sender.
-// Invalidate removes ALL cached entries for a sender — both user-level and
-// per-session (sender:chatID). Use with caution: this wipes every session's
-// LLM override and forces every session to fall back to the default subscription.
-// Prefer InvalidateSender (user-level only) or InvalidateSession (one session).
+// Invalidate is a no-op: no in-memory entries to clear. Client cache
+// invalidation is handled per-subscription via InvalidateSubscription.
 func (f *LLMFactory) Invalidate(senderID string) {
-	f.mu.Lock()
-	prefix := senderID + ":"
-	for k := range f.entries {
-		if k == senderID || strings.HasPrefix(k, prefix) {
-			delete(f.entries, k)
-		}
-	}
-	f.mu.Unlock()
 }
 
-// InvalidateSender removes only the user-level entry (senderID key),
-// preserving all per-session entries (senderID:chatID keys).
-// Safe to call from subscription field updates — per-session overrides survive.
+// InvalidateSender is a no-op: no in-memory entries or session memos to clear.
 func (f *LLMFactory) InvalidateSender(senderID string) {
-	f.mu.Lock()
-	delete(f.entries, senderID)
-	f.mu.Unlock()
 }
 
-// InvalidateSession removes the per-session entry for a specific chat.
+// InvalidateSession is a no-op: no in-memory entries to clear.
 func (f *LLMFactory) InvalidateSession(senderID, chatID string) {
-	f.mu.Lock()
-	delete(f.entries, chatKey(senderID, chatID))
-	f.mu.Unlock()
 }
 
-// InvalidateAll clears ALL caches.
+// InvalidateAll clears the client cache.
 func (f *LLMFactory) InvalidateAll() {
 	f.mu.Lock()
-	f.entries = make(map[string]*llmEntry)
-	f.perChatMaxCtx = make(map[string]int)
+	f.clientCache = make(map[clientCacheKey]llm.LLM)
 	f.mu.Unlock()
 }
 
@@ -894,8 +518,7 @@ func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
 //
 // This is the new authoritative resolution path. Per-session state lives in DB
 // (tenants.subscription_id + model for per-session; user_default_model for the
-// user-level default). The in-memory sessionMemo is a pure memo of that DB
-// state — every write invalidates the affected keys, so it can never diverge.
+// user-level default). Resolution reads DB on every call — no in-memory memo.
 //
 // LLM clients are cached per (subscription_id, apiType): one client serves all
 // models of a subscription, with the model supplied per request. This is the
@@ -1029,23 +652,14 @@ func (f *LLMFactory) getOrCreateClient(sub *sqlite.LLMSubscription, model string
 // Resolution order:
 //  1. Per-session (channel, chatID) from tenants table
 //  2. User-level default from user_default_model
-//  3. System default (defaultLLM)
-//
-// The sessionMemo caches the result; SelectModel / SetUserDefaultModel /
-// InvalidateSubscription invalidate the affected keys so the memo tracks DB.
+//  3. System default (defaultLLM via GetLLM)
 func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, string, int, string, int) {
-	key := senderID
-	if chatID != "" {
-		key = chatKey(senderID, chatID)
+	// ProxyLLM override (runner local LLM) — highest priority.
+	if v, ok := f.proxyLLMs.Load(senderID); ok {
+		if pe, ok := v.(proxyEntry); ok && pe.client != nil {
+			return pe.client, pe.model, f.resolveModelContext(pe.model), "", 0
+		}
 	}
-
-	f.mu.RLock()
-	memo := f.sessionMemo[key]
-	f.mu.RUnlock()
-	if memo != nil && memo.client != nil {
-		return memo.client, memo.model, f.resolveSubContextFor(memo.subID, memo.model), memo.thinkingMode, memo.maxOutputTokens
-	}
-
 	subID, model := "", ""
 	if chatID != "" && f.tenantSvc != nil {
 		subID, model, _ = f.tenantSvc.GetTenantSubscription(channel, chatID)
@@ -1058,13 +672,11 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 	}
 	if subID == "" {
 		// Fall back to the legacy user-level default subscription, then system default.
-		client, m, mc, tm, mo := f.GetLLM(senderID)
-		return client, m, mc, tm, mo
+		return f.GetLLM(senderID)
 	}
 	sub := f.lookupSub(subID)
 	if sub == nil {
-		client, m, mc, tm, mo := f.GetLLM(senderID)
-		return client, m, mc, tm, mo
+		return f.GetLLM(senderID)
 	}
 	if model == "" {
 		model = sub.Model
@@ -1073,13 +685,11 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 		model = f.PickDefaultModelForSub(sub)
 	}
 	if model == "" {
-		client, m, mc, tm, mo := f.GetLLM(senderID)
-		return client, m, mc, tm, mo
+		return f.GetLLM(senderID)
 	}
 	client := f.getOrCreateClient(sub, model)
 	if client == nil {
-		client, m, mc, tm, mo := f.GetLLM(senderID)
-		return client, m, mc, tm, mo
+		return f.GetLLM(senderID)
 	}
 	pmc := f.resolveModelConfig(sub.ID, model)
 	maxOut := pmc.maxOutputTokens
@@ -1096,19 +706,12 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 	if thinking == "" {
 		thinking = f.userThinkingMode(senderID)
 	}
-	entry := &resolvedEntry{
-		subID: sub.ID, model: model, client: client,
-		maxOutputTokens: maxOut, thinkingMode: thinking,
-	}
-	f.mu.Lock()
-	f.sessionMemo[key] = entry
-	f.mu.Unlock()
 	return client, model, f.resolveSubContextFor(sub.ID, model), thinking, maxOut
 }
 
 // ResolveActiveSubModel returns the subscription and model the given session is
-// currently using, mirroring ResolveLLM's resolution chain (sessionMemo →
-// tenants table → user_default_model → legacy GetDefault fallback) but WITHOUT
+// currently using, mirroring ResolveLLM's resolution chain (tenants table →
+// user_default_model → legacy GetDefault fallback) but WITHOUT
 // materializing or caching an LLM client. It is the model-first way to identify
 // a model — by the (subscription, model) pair — and replaces the legacy
 // "default subscription" (GetDefault) lookup used by per-model config setters
@@ -1122,18 +725,6 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 func (f *LLMFactory) ResolveActiveSubModel(senderID, chatID, channel string) (*sqlite.LLMSubscription, string, error) {
 	if f.subscriptionSvc == nil {
 		return nil, "", fmt.Errorf("ResolveActiveSubModel: subscription service unavailable")
-	}
-	key := senderID
-	if chatID != "" {
-		key = chatKey(senderID, chatID)
-	}
-	f.mu.RLock()
-	memo := f.sessionMemo[key]
-	f.mu.RUnlock()
-	if memo != nil {
-		if sub := f.lookupSub(memo.subID); sub != nil {
-			return sub, memo.model, nil
-		}
 	}
 	subID, model := "", ""
 	if chatID != "" && f.tenantSvc != nil {
@@ -1203,9 +794,6 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 			return fmt.Errorf("SelectModel: persist tenant: %w", err)
 		}
 	}
-	// Invalidate the session memo (and any user-level memo) so ResolveLLM re-reads.
-	f.invalidateMemo(senderID, chatID)
-	f.hasCustomLLMCache.Store(senderID, true)
 	// Update "last used model" (user_default_model repurposed) so new sessions
 	// inherit this (sub, model) pair. This is NOT "setting a default subscription" —
 	// the table now serves as last-used-model storage for session inheritance.
@@ -1300,7 +888,7 @@ func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlit
 }
 
 // SetUserDefaultModel sets the user-level default (subscription, model) used for
-// new sessions. Persists to user_default_model and invalidates the user's memos.
+// new sessions. Persists to user_default_model.
 func (f *LLMFactory) SetUserDefaultModel(senderID, subID, model string) error {
 	if f.subscriptionSvc == nil {
 		return fmt.Errorf("SetUserDefaultModel: subscription service unavailable")
@@ -1320,8 +908,6 @@ func (f *LLMFactory) SetUserDefaultModel(senderID, subID, model string) error {
 	if err := f.subscriptionSvc.SetUserDefaultModel(senderID, subID, model); err != nil {
 		return fmt.Errorf("SetUserDefaultModel: persist: %w", err)
 	}
-	f.invalidateUserMemos(senderID)
-	f.hasCustomLLMCache.Store(senderID, true)
 	return nil
 }
 
@@ -1353,8 +939,8 @@ func (f *LLMFactory) SetSubscriptionEnabled(subID string, enabled bool) error {
 	return nil
 }
 
-// InvalidateSubscription drops the client cache + all session memos referencing
-// a subscription. Called when a subscription's credentials/config change or one
+// InvalidateSubscription drops the client cache entries referencing a
+// subscription. Called when a subscription's credentials/config change or one
 // of its models is toggled.
 func (f *LLMFactory) InvalidateSubscription(subID string) {
 	if subID == "" {
@@ -1364,33 +950,6 @@ func (f *LLMFactory) InvalidateSubscription(subID string) {
 	for k := range f.clientCache {
 		if k.subID == subID {
 			delete(f.clientCache, k)
-		}
-	}
-	for k, e := range f.sessionMemo {
-		if e.subID == subID {
-			delete(f.sessionMemo, k)
-		}
-	}
-	f.mu.Unlock()
-}
-
-// invalidateMemo drops the memo for one session (and the user-level key).
-func (f *LLMFactory) invalidateMemo(senderID, chatID string) {
-	f.mu.Lock()
-	delete(f.sessionMemo, senderID)
-	if chatID != "" {
-		delete(f.sessionMemo, chatKey(senderID, chatID))
-	}
-	f.mu.Unlock()
-}
-
-// invalidateUserMemos drops all memos for a user (user-level + every session).
-func (f *LLMFactory) invalidateUserMemos(senderID string) {
-	prefix := senderID + ":"
-	f.mu.Lock()
-	for k := range f.sessionMemo {
-		if k == senderID || strings.HasPrefix(k, prefix) {
-			delete(f.sessionMemo, k)
 		}
 	}
 	f.mu.Unlock()

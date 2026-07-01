@@ -52,6 +52,7 @@ func TestHandleCLIRPCAdminAddSubscription_ListRoundTrip(t *testing.T) {
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
 
 	aCfg := &config.Config{}
 	ag := &agent.Agent{}
@@ -106,6 +107,7 @@ func TestHandleCLIRPCAddSubscription_PreservesCredentials(t *testing.T) {
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
 
 	aCfg := &config.Config{}
 	ag := &agent.Agent{}
@@ -163,6 +165,7 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
 
 	aCfg := &config.Config{}
 	ag := &agent.Agent{}
@@ -334,6 +337,7 @@ func TestHandleCLIRPCSetDefaultSubscriptionRefreshesSenderCache(t *testing.T) {
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
 	// Admin's subscriptions are stored under cliSenderID ("cli_user") in production.
 	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-gpt", SenderID: "cli_user", Name: "gpt", Provider: "openai", BaseURL: "https://gpt.example/v1", APIKey: "sk-gpt", Model: "gpt-4.1", IsDefault: true}); err != nil {
 		t.Fatalf("add gpt: %v", err)
@@ -383,6 +387,7 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
 	// Subscriptions belong to "cli_user" (business identity)
 	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-gpt", SenderID: "cli_user", Name: "gpt", Provider: "openai", BaseURL: "https://gpt.example/v1", APIKey: "sk-gpt", Model: "gpt-4.1", IsDefault: true}); err != nil {
 		t.Fatalf("add gpt: %v", err)
@@ -431,6 +436,7 @@ func TestHandleCLIRPCGetSessionSubscription(t *testing.T) {
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
 	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-a", SenderID: "cli_user", Name: "sub-a", Provider: "openai", BaseURL: "https://a.example/v1", APIKey: "sk-a", Model: "gpt-4o", IsDefault: true}); err != nil {
 		t.Fatalf("add sub-a: %v", err)
 	}
@@ -515,6 +521,7 @@ func TestSetDefaultSubscription_GlobalSwitch_PreservesPerSession(t *testing.T) {
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
 
 	aCfg := &config.Config{}
 	ag := &agent.Agent{}
@@ -621,6 +628,7 @@ func TestSetDefaultSubscription_PerSessionSwitch_DoesNotAffectOtherSessions(t *t
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
 
 	aCfg := &config.Config{}
 	ag := &agent.Agent{}

@@ -534,8 +534,18 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 			if err != nil {
 				return err
 			}
+			// Remove cascades: deletes subscription_models + user_default_model
+			// (if pointing to this sub) in a single transaction.
 			if err := svc.Remove(id); err != nil {
 				return err
+			}
+			// Clear stale tenant entries pointing to the deleted subscription.
+			// Without this, every ResolveLLM call wastes cycles looking up a
+			// non-existent subscription before falling back to system default.
+			if ts := ag.LLMFactory().GetTenantSvc(); ts != nil {
+				if err := ts.ClearSubscriptionFromTenants(id); err != nil {
+					log.WithError(err).WithField("sub_id", id).Warn("Failed to clear tenant subscription references")
+				}
 			}
 			ag.LLMFactory().InvalidateSender(sub.SenderID)
 			ag.LLMFactory().InvalidateSubscription(sub.ID)

@@ -1467,21 +1467,6 @@ func (a *Agent) SetMaxConcurrency(n int) {
 	a.userSemaphores.Clear()
 }
 
-// SetMaxContextTokens sets the max context token limit.
-// When chatID is non-empty, only the per-chat override is updated (session-scoped).
-// When chatID is empty, the global agent-level config is updated (backward compatible).
-func (a *Agent) SetMaxContextTokens(n int, chatID ...string) {
-	if len(chatID) > 0 && chatID[0] != "" {
-		// Per-session: store in LLMFactory's per-chat cache
-		a.llmFactory.SetPerChatMaxContext(chatID[0], n)
-	} else {
-		// Global: update agent-level config (backward compatible)
-		a.contextManagerMu.Lock()
-		a.contextManagerConfig.MaxContextTokens = n
-		a.contextManagerMu.Unlock()
-	}
-}
-
 func (a *Agent) SetCompressionThreshold(f float64) {
 	a.contextManagerMu.Lock()
 	a.contextManagerConfig.CompressionThreshold = f

@@ -242,3 +242,22 @@ func (s *TenantService) GetTenantRunner(channel, chatID string) (string, error) 
 	}
 	return runnerID, nil
 }
+
+// ClearSubscriptionFromTenants resets subscription_id and model for all tenant
+// rows currently pointing to the given subscription ID. Called when a subscription
+// is deleted — prevents stale references that would cause ResolveLLM to waste
+// cycles looking up a non-existent subscription before falling back to default.
+func (s *TenantService) ClearSubscriptionFromTenants(subID string) error {
+	if subID == "" {
+		return nil
+	}
+	conn := s.db.Conn()
+	_, err := conn.Exec(
+		"UPDATE tenants SET subscription_id = '', model = '' WHERE subscription_id = ?",
+		subID,
+	)
+	if err != nil {
+		return fmt.Errorf("clear tenant subscription: %w", err)
+	}
+	return nil
+}

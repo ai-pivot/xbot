@@ -277,17 +277,6 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		h.Ag.SetMaxConcurrency(p.N)
 		return nil
 	}))
-	t["set_max_context_tokens"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
-		MaxContext int    `json:"max_context"`
-		ChatID     string `json:"chat_id,omitempty"`
-	}) error {
-		if p.ChatID != "" {
-			h.Ag.SetMaxContextTokens(p.MaxContext, p.ChatID)
-		} else {
-			h.Ag.SetMaxContextTokens(p.MaxContext)
-		}
-		return nil
-	}))
 	t["set_compression_threshold"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Threshold float64 `json:"threshold"`
 	}) error {

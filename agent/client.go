@@ -539,17 +539,6 @@ func (c *Client) SetMaxConcurrency(n int) {
 	c.callVoid(MethodSetMaxConcurrency, setMaxConcurrencyReq{N: n})
 }
 
-func (c *Client) SetMaxContextTokens(n int, chatID ...string) {
-	chatIDVal := ""
-	if len(chatID) > 0 {
-		chatIDVal = chatID[0]
-	}
-	c.callVoid(MethodSetMaxContextTokens, struct {
-		MaxContext int    `json:"max_context"`
-		ChatID     string `json:"chat_id,omitempty"`
-	}{MaxContext: n, ChatID: chatIDVal})
-}
-
 func (c *Client) SetCompressionThreshold(f float64) {
 	c.callVoid(MethodSetCompressionThreshold, setCompressionThresholdReq{Threshold: f})
 }
@@ -576,10 +565,6 @@ func (c *Client) GetEffectiveMaxContext(senderID, chatID string) int {
 	var r int
 	_ = c.call(MethodGetEffectiveMaxContext, getEffectiveMaxContextReq{SenderID: senderID, ChatID: chatID}, &r)
 	return r
-}
-
-func (c *Client) ClearPerChatMaxContext(chatID string) {
-	c.callVoid(MethodClearPerChatMaxContext, clearPerChatMaxContextReq{ChatID: chatID})
 }
 
 // ---------------------------------------------------------------------------

@@ -586,7 +586,7 @@ func Run(args []string) error {
 			cfg.LLM.MaxOutputTokens = defSub.MaxOutputTokens
 			if newClient, err := createAdminLLM(cfg); err == nil {
 				ag.LLMFactory().SetSystemLLM(newClient, defSub.Model)
-				ag.LLMFactory().SetUserMaxOutputTokens(cliSenderID, defSub.MaxOutputTokens)
+				// max_output_tokens is per-model in DB now — no cache to seed.
 				// thinking_mode is no longer carried on the factory user cache
 				// from the subscription; it is a global user setting seeded below.
 				log.WithFields(log.Fields{"provider": defSub.Provider, "model": defSub.Model, "max_output_tokens": defSub.MaxOutputTokens}).Info("LLM client synced from DB default subscription")

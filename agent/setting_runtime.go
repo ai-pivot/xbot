@@ -109,23 +109,6 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 			}
 		},
 	},
-	"max_context_tokens": {
-		// max_context is subscription-scoped, stored in PerModelConfigs.
-		// Do NOT write to cfg.Agent.MaxContextTokens (global fallback only).
-		ApplyConfig: nil,
-		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
-			if ag == nil {
-				return
-			}
-			if n, err := strconv.Atoi(value); err == nil && n >= 0 {
-				if chatID != "" {
-					ag.SetMaxContextTokens(n, chatID)
-				} else {
-					ag.SetMaxContextTokens(n)
-				}
-			}
-		},
-	},
 	"enable_auto_compress": {
 		ApplyConfig: func(cfg *config.Config, value string) {
 			b := cli.ParseSettingBool(value)
@@ -162,7 +145,6 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 			if ag == nil || ag.llmFactory == nil {
 				return
 			}
-			ag.llmFactory.invalidateUserMemos(senderID)
 			ag.llmFactory.InvalidateSender(senderID)
 		},
 	},
