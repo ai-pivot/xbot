@@ -164,6 +164,102 @@ func TestRenderTurnBody_DifferentTextNotSuppressed(t *testing.T) {
 	}
 }
 
+// ─── Fix 6: Tools lost due to progressCh coalescing ─────────────────
+
+// TestSnapshotIterationChange_CoalescedToolsNotLost verifies that tools
+// are not lost when the "tools done" progress event is dropped by
+// progressCh coalescing. The engine guarantees all tools are done before
+// starting the next iteration, so ActiveTools with stale "running" status
+// must still be captured in the snapshot.
+func TestSnapshotIterationChange_CoalescedToolsNotLost(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Iteration 1: tools running (the "done" event will be coalesced away)
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Read", Label: "main.go", Status: "running", Iteration: 1},
+			{Name: "Grep", Label: "pattern", Status: "running", Iteration: 1},
+		},
+	})
+
+	// Iteration 2 arrives WITHOUT a "tools done" event (coalesced away).
+	// prev has ActiveTools with "running" status — but the engine has
+	// actually completed them (snapshotCompletedIteration ran before callLLM).
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 2,
+		Reasoning: "Now I see the issue...",
+	})
+
+	// The snapshot should contain BOTH tools despite "running" status.
+	if len(model.progressState.iterations) == 0 {
+		t.Fatal("should have at least 1 snapshotted iteration")
+	}
+	snap := model.progressState.iterations[0]
+	if len(snap.Tools) != 2 {
+		t.Errorf("should have 2 tools in snapshot (coalescing must not lose them), got %d", len(snap.Tools))
+	}
+	// Verify both tool labels are present
+	labels := make(map[string]bool)
+	for _, tool := range snap.Tools {
+		labels[tool.Label] = true
+	}
+	if !labels["main.go"] {
+		t.Error("tool 'main.go' missing from snapshot")
+	}
+	if !labels["pattern"] {
+		t.Error("tool 'pattern' missing from snapshot")
+	}
+}
+
+// TestSnapshotIterationChange_PendingToolsCaptured verifies that pending
+// (queued) tools are also captured when the iteration changes.
+func TestSnapshotIterationChange_PendingToolsCaptured(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Iteration 1: one tool running, one pending
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Read", Label: "f1.go", Status: "running", Iteration: 1},
+			{Name: "Grep", Label: "pat", Status: "pending", Iteration: 1},
+		},
+	})
+
+	// Iteration 2: both tools are done (engine completed them),
+	// but the "done" event was coalesced away.
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 2,
+	})
+
+	if len(model.progressState.iterations) == 0 {
+		t.Fatal("should have 1 snapshotted iteration")
+	}
+	snap := model.progressState.iterations[0]
+	if len(snap.Tools) != 2 {
+		t.Errorf("should have 2 tools (running + pending both captured), got %d", len(snap.Tools))
+	}
+}
+
+// TestDedupTools_RemovesDuplicates verifies the dedup helper.
+func TestDedupTools_RemovesDuplicates(t *testing.T) {
+	tools := []protocol.ToolProgress{
+		{Name: "Read", Label: "f.go", Status: "done"},
+		{Name: "Read", Label: "f.go", Status: "running"}, // duplicate (coalescing artifact)
+		{Name: "Grep", Label: "pat", Status: "done"},
+	}
+	result := dedupTools(tools)
+	if len(result) != 2 {
+		t.Errorf("should have 2 unique tools, got %d", len(result))
+	}
+}
+
 // ─── Fix 3: Queued (pending) tools visible ──────────────────────────
 
 // TestLiveIterationBlocks_PendingToolsVisible verifies that tools with

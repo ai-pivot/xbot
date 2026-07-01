@@ -8,6 +8,26 @@ import (
 	log "xbot/logger"
 )
 
+// dedupTools removes duplicate tools by Name+Label, keeping the first occurrence.
+// CompletedTools and ActiveTools can overlap when coalescing preserves stale state
+// (engine moved ActiveTools → CompletedTools, but coalescing dropped the "moved" event).
+func dedupTools(tools []protocol.ToolProgress) []protocol.ToolProgress {
+	if len(tools) <= 1 {
+		return tools
+	}
+	seen := make(map[string]bool, len(tools))
+	result := tools[:0]
+	for _, t := range tools {
+		key := t.Name + "\x00" + t.Label
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, t)
+	}
+	return result
+}
+
 // restoreIterationHistory converts IterationHistory from a reconnect snapshot
 // into local iteration history, bootstrapping tool StartedAt timestamps.
 func (m *cliModel) restoreIterationHistory(payload *protocol.ProgressEvent) {
@@ -578,11 +598,14 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 			}
 			if !alreadySnapped {
 				prevIterTools := prev.CompletedTools
-				for _, t := range prev.ActiveTools {
-					if t.Status == "done" || t.Status == "error" {
-						prevIterTools = append(prevIterTools, t)
-					}
-				}
+				// When iteration changes, ALL ActiveTools from the previous
+				// iteration are done — the engine guarantees this via
+				// snapshotCompletedIteration (moves ActiveTools → CompletedTools
+				// before starting the next iteration). The "running"/"pending"
+				// status in prev is stale due to progressCh coalescing dropping
+				// the "done" event. Capture ALL ActiveTools regardless of status.
+				prevIterTools = append(prevIterTools, prev.ActiveTools...)
+				prevIterTools = dedupTools(prevIterTools)
 				prevReasoning := prev.Reasoning
 				if prevReasoning == "" && m.reasoningByIter != nil {
 					prevReasoning = m.reasoningByIter[prev.Iteration]
@@ -608,13 +631,14 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 		}
 		if prev != nil {
 			prevIterTools := prev.CompletedTools
-			// Also include ActiveTools that completed (status=done/error) but
-			// haven't been moved to CompletedTools yet by progressFinalizer.
-			for _, t := range prev.ActiveTools {
-				if t.Status == "done" || t.Status == "error" {
-					prevIterTools = append(prevIterTools, t)
-				}
-			}
+			// When iteration changes, ALL ActiveTools from the previous
+			// iteration are done — the engine guarantees this via
+			// snapshotCompletedIteration (moves ActiveTools → CompletedTools
+			// before starting the next iteration). The "running"/"pending"
+			// status in prev is stale due to progressCh coalescing dropping
+			// the "done" event. Capture ALL ActiveTools regardless of status.
+			prevIterTools = append(prevIterTools, prev.ActiveTools...)
+			prevIterTools = dedupTools(prevIterTools)
 			prevReasoning := prev.Reasoning
 			if prevReasoning == "" {
 				prevReasoning = m.reasoningByIter[m.progressState.lastIter]

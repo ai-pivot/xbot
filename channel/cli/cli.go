@@ -584,6 +584,16 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			if payload.CWD == "" && old.CWD != "" {
 				payload.CWD = old.CWD
 			}
+			// Merge CompletedTools from the evicted event. The engine sends
+			// CompletedTools when tools finish (snapshotCompletedIteration),
+			// then clears them at the start of the next iteration (callLLM).
+			// If the "tools done" event is evicted by coalescing, the tool
+			// data is permanently lost — snapshotIterationChange on the CLI
+			// side never sees the "done" status, and tools disappear from
+			// the iteration history.
+			if len(old.CompletedTools) > 0 && len(payload.CompletedTools) == 0 {
+				payload.CompletedTools = old.CompletedTools
+			}
 		default:
 		}
 		select {
