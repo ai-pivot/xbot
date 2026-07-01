@@ -642,9 +642,15 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 	// (Restarting the client restores them via ch.ConvertMessagesToHistory from DB,
 	// proving the data is valid — we just need to persist it in-memory too.)
 	if m.turnCancelled {
-		// Snapshot the final iteration (same logic as the non-cancelled path below).
-		// This is needed because snapshotIterationChange only fires on iteration
-		// *changes* (N→N+1), so a single-iteration turn won't have any snapshots yet.
+		// Cancel indicator: always append to the last snapshot, whether it
+		// already exists or needs to be created. This guarantees the user
+		// sees "request canceled by user" regardless of when Ctrl+C hit.
+		cancelTool := protocol.ToolProgress{
+			Name:   "Cancelled",
+			Label:  "request canceled by user",
+			Status: "error",
+		}
+
 		if m.progressState.lastIter >= 0 {
 			alreadySnapped := slices.ContainsFunc(m.progressState.iterations, func(s cliIterationSnapshot) bool {
 				return s.Iteration == m.progressState.lastIter
@@ -701,11 +707,7 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
 				// Capture streamed content as fallback when structured Thinking
-				// is empty. This happens when Ctrl+C interrupts mid-stream (LLM
-				// hasn't finished, recordAssistantMsg hasn't set ThinkingContent).
-				// prev holds the live progress the user was watching — its
-				// StreamContent/Thinking are correct for the current iteration.
-				// This preserves the "what you see is what stays" principle.
+				// is empty. This happens when Ctrl+C interrupts mid-stream.
 				if snap.Thinking == "" && prev != nil {
 					if prev.Thinking != "" {
 						snap.Thinking = prev.Thinking
@@ -722,29 +724,49 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 				if snap.Reasoning == "" && prev != nil {
 					snap.Reasoning = prev.Reasoning
 				}
-				// Capture streamed reasoning as fallback (LLM was still streaming
-				// reasoning when Ctrl+C interrupted). Safe in cancel path: prev is
-				// the current iteration's live progress — ReasoningStreamContent is
-				// what the user saw on screen.
 				if snap.Reasoning == "" && prev != nil && prev.ReasoningStreamContent != "" {
 					snap.Reasoning = prev.ReasoningStreamContent
 				}
 				if snap.Reasoning == "" {
 					snap.Reasoning = msg.payload.Reasoning
 				}
-				if len(finalTools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
-					// Append a synthetic cancel indicator tool so the user
-					// sees "request canceled by user" in the tool list,
-					// similar to background task notifications.
-					finalTools = append(finalTools, protocol.ToolProgress{
-						Name:   "Cancelled",
-						Label:  "request canceled by user",
-						Status: "error",
-					})
-					snap.Tools = finalTools
-					m.progressState.iterations = append(m.progressState.iterations, snap)
+				// Always append cancel indicator on cancelled turns, even
+				// when there are no other tools/thinking/reasoning. Without
+				// this, a turn cancelled during pure LLM streaming (no
+				// tools, no thinking persisted) would have an empty
+				// finalTools slice → the guard below would skip the
+				// snapshot → the cancel indicator would never appear →
+				// the entire iteration would vanish from the viewport.
+				finalTools = append(finalTools, cancelTool)
+				snap.Tools = finalTools
+				m.progressState.iterations = append(m.progressState.iterations, snap)
+			} else {
+				// Iteration already snapshotted by snapshotIterationChange.
+				// Append cancel indicator to the existing snapshot so the
+				// user sees "request canceled by user" alongside the tools
+				// that were already recorded.
+				for i := range m.progressState.iterations {
+					if m.progressState.iterations[i].Iteration == m.progressState.lastIter {
+						// Avoid duplicate cancel tools (e.g. if PhaseDone
+						// somehow arrives twice).
+						alreadyHasCancel := slices.ContainsFunc(m.progressState.iterations[i].Tools, func(t protocol.ToolProgress) bool {
+							return t.Name == "Cancelled"
+						})
+						if !alreadyHasCancel {
+							m.progressState.iterations[i].Tools = append(m.progressState.iterations[i].Tools, cancelTool)
+						}
+						break
+					}
 				}
 			}
+		} else {
+			// No iteration was ever started (lastIter < 0). Create a minimal
+			// snapshot with just the cancel indicator so the user sees
+			// something instead of an empty turn.
+			m.progressState.iterations = append(m.progressState.iterations, cliIterationSnapshot{
+				Iteration: 0,
+				Tools:     []protocol.ToolProgress{cancelTool},
+			})
 		}
 		m.setTurnDoneProcessed(turnID)
 		// Bake iteration data into the streaming message BEFORE endAgentTurn

@@ -2128,3 +2128,126 @@ func TestCancelDuringToolGeneratingPreservesPreviousIteration(t *testing.T) {
 		t.Fatal("Shell tool from iteration 1 was not preserved in baked iterations after cancel during tool generating")
 	}
 }
+
+// TestCancelAlwaysInsertsIndicatorOnAlreadySnappedIteration verifies that
+// when the iteration was already snapshotted by snapshotIterationChange,
+// the cancel indicator is STILL appended to the existing snapshot.
+
+// TestCancelAlwaysInsertsIndicatorOnAlreadySnappedIteration verifies that
+// when the iteration was already snapshotted, the cancel indicator is
+// STILL appended to the existing snapshot.
+func TestCancelAlwaysInsertsIndicatorOnAlreadySnappedIteration(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Set up: iteration 1 with Shell, advance to iteration 2
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "ls", Status: "done", Elapsed: 10, Iteration: 1},
+		},
+	})
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 2,
+	})
+
+	// Manually pre-snapshot iteration 2 (simulating snapshotIterationChange)
+	model.progressState.iterations = append(model.progressState.iterations, cliIterationSnapshot{
+		Iteration: 2,
+		Tools: []protocol.ToolProgress{
+			{Name: "Read", Label: "file.go", Status: "done", Elapsed: 5},
+		},
+	})
+	model.progressState.lastIter = 2
+
+	// Ctrl+C
+	model.turnCancelled = true
+	model.cancelTargetTurnID = model.agentTurnID
+	sendProgress(model, &protocol.ProgressEvent{Phase: "done", Iteration: 2})
+
+	// Check baked message (endAgentTurn clears progressState)
+	for _, msg := range model.messages {
+		if msg.role != "assistant" || msg.turnID != model.agentTurnID {
+			continue
+		}
+		for _, iter := range msg.iterations {
+			if iter.Iteration == 2 {
+				for _, tool := range iter.Tools {
+					if tool.Name == "Cancelled" {
+						return // success
+					}
+				}
+			}
+		}
+	}
+	t.Fatal("cancel indicator not found on already-snapped iteration")
+}
+
+// TestCancelWithNoIterationCreatesMinimalCancelSnapshot verifies that
+// when Ctrl+C happens before any iteration (lastIter < 0), a minimal
+// snapshot with just the cancel indicator is created.
+func TestCancelWithNoIterationCreatesMinimalCancelSnapshot(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.progressState.lastIter = -1 // no iteration ever started
+
+	model.turnCancelled = true
+	model.cancelTargetTurnID = model.agentTurnID
+	sendProgress(model, &protocol.ProgressEvent{Phase: "done"})
+
+	for _, msg := range model.messages {
+		if msg.role != "assistant" || msg.turnID != model.agentTurnID {
+			continue
+		}
+		if len(msg.iterations) == 0 {
+			t.Fatal("expected at least one baked iteration with cancel indicator")
+		}
+		for _, iter := range msg.iterations {
+			for _, tool := range iter.Tools {
+				if tool.Name == "Cancelled" {
+					return // success
+				}
+			}
+		}
+	}
+	t.Fatal("cancel indicator not found in minimal cancel snapshot")
+}
+
+// TestCancelDoesNotDuplicateIndicator verifies that the cancel indicator
+// is not duplicated when PhaseDone arrives while already snapped.
+func TestCancelDoesNotDuplicateIndicator(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "ls", Status: "done", Elapsed: 10, Iteration: 1},
+		},
+	})
+
+	model.turnCancelled = true
+	model.cancelTargetTurnID = model.agentTurnID
+	sendProgress(model, &protocol.ProgressEvent{Phase: "done", Iteration: 1})
+
+	// Count cancel indicators in baked message
+	cancelCount := 0
+	for _, msg := range model.messages {
+		if msg.role != "assistant" {
+			continue
+		}
+		for _, iter := range msg.iterations {
+			for _, tool := range iter.Tools {
+				if tool.Name == "Cancelled" {
+					cancelCount++
+				}
+			}
+		}
+	}
+	if cancelCount != 1 {
+		t.Fatalf("expected exactly 1 cancel indicator, got %d", cancelCount)
+	}
+}
