@@ -47,10 +47,8 @@ func (m *cliModel) applyModelSwitch(nextModel, subID string) {
 	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(state, m.subscriptionMgr)
 	m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(state, m.subscriptionMgr))
 	SaveSessionLLMState(m.workDir, m.chatID, SessionLLMState{
-		SubscriptionID:   m.activeSubID,
-		Model:            nextModel,
-		MaxContextTokens: m.cachedMaxContextTokens,
-		MaxOutputTokens:  int(m.cachedMaxOutputTokens),
+		SubscriptionID: m.activeSubID,
+		Model:          nextModel,
 	}, m.remoteMode)
 	m.updateQuickSwitchModels(nextModel)
 	m.showTempStatus(fmt.Sprintf("Model: %s", nextModel))

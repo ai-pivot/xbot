@@ -723,7 +723,7 @@ func (m *cliModel) resolveCompressRatio() float64 {
 }
 
 // resolveMaxOutputTokens returns the max output tokens from settings values.
-// Falls back to 0 if unavailable (renderContextTopBorder will use 8192 as default).
+// Falls back to 0 if unavailable (renderContextTopBorder will use config.DefaultMaxOutputTokens as default).
 func (m *cliModel) resolveMaxOutputTokens() int64 {
 	if m.channel == nil || m.channel.config.GetCurrentValues == nil {
 		return 0

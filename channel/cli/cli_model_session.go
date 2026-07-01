@@ -73,13 +73,13 @@ type sessionState struct {
 	reasoningByIter      map[int]string
 	// Context bar state — preserved across session switches so the
 	// token usage bar doesn't disappear when switching between sessions.
-	lastTokenUsage         *protocol.TokenUsage
-	cachedMaxContextTokens int
-	cachedCompressRatio    float64
-	cachedMaxOutputTokens  int64
-	pendingUserMsg         *cliMessage // user message sent but not yet confirmed in DB
-	messageQueue           []queuedMsg
-	queueEditing           bool
+	// NOTE: max_context/max_output/compress_ratio are NOT persisted here —
+	// they are always resolved from DB on session restore. Only token usage
+	// (which comes from RPC) is cached for instant display before RPC returns.
+	lastTokenUsage *protocol.TokenUsage
+	pendingUserMsg *cliMessage // user message sent but not yet confirmed in DB
+	messageQueue   []queuedMsg
+	queueEditing   bool
 	// Per-session LLM configuration (survives session switches)
 	activeSubscriptionID string // subscription ID active in this session
 	activeModel          string // model active in this session (may differ from subscription default)
@@ -109,37 +109,34 @@ func (m *cliModel) saveCurrentSession() {
 		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 	}
 	m.savedSessions[key] = &sessionState{
-		progress:               m.progressState.current,
-		typing:                 m.typing,
-		agentTurnID:            m.agentTurnID,
-		inputReady:             m.inputReady,
-		needFlushQueue:         m.needFlushQueue,
-		lastProgressSeq:        m.progressState.lastSeq,
-		twVisible:              m.progressState.twVisible,
-		rwVisible:              m.progressState.rwVisible,
-		iterationHistory:       m.progressState.iterations,
-		lastSeenIteration:      m.progressState.lastIter,
-		streamingMsgIdx:        m.streamingMsgIdx,
-		typingStartTime:        m.typingStartTime,
-		lastReasoning:          m.lastReasoning,
-		lastThinking:           m.lastThinking,
-		turnCancelled:          m.turnCancelled,
-		typewriterTickActive:   m.progressState.twActive,
-		reasoningByIter:        m.reasoningByIter,
-		lastTokenUsage:         m.lastTokenUsage,
-		cachedMaxContextTokens: m.cachedMaxContextTokens,
-		cachedCompressRatio:    m.cachedCompressRatio,
-		cachedMaxOutputTokens:  m.cachedMaxOutputTokens,
-		messageQueue:           m.messageQueue,
-		queueEditing:           m.queueEditing,
-		pendingUserMsg:         m.pendingUserMsg,
-		activeSubscriptionID:   m.activeSubID,
-		activeModel:            m.cachedModelName,
-		textareaValue:          m.textarea.Value(),
-		inputHistory:           m.inputHistory,
-		inputHistoryIdx:        m.inputHistoryIdx,
-		inputDraft:             m.inputDraft,
-		bgTaskCount:            m.bgTaskCount,
+		progress:             m.progressState.current,
+		typing:               m.typing,
+		agentTurnID:          m.agentTurnID,
+		inputReady:           m.inputReady,
+		needFlushQueue:       m.needFlushQueue,
+		lastProgressSeq:      m.progressState.lastSeq,
+		twVisible:            m.progressState.twVisible,
+		rwVisible:            m.progressState.rwVisible,
+		iterationHistory:     m.progressState.iterations,
+		lastSeenIteration:    m.progressState.lastIter,
+		streamingMsgIdx:      m.streamingMsgIdx,
+		typingStartTime:      m.typingStartTime,
+		lastReasoning:        m.lastReasoning,
+		lastThinking:         m.lastThinking,
+		turnCancelled:        m.turnCancelled,
+		typewriterTickActive: m.progressState.twActive,
+		reasoningByIter:      m.reasoningByIter,
+		lastTokenUsage:       m.lastTokenUsage,
+		messageQueue:         m.messageQueue,
+		queueEditing:         m.queueEditing,
+		pendingUserMsg:       m.pendingUserMsg,
+		activeSubscriptionID: m.activeSubID,
+		activeModel:          m.cachedModelName,
+		textareaValue:        m.textarea.Value(),
+		inputHistory:         m.inputHistory,
+		inputHistoryIdx:      m.inputHistoryIdx,
+		inputDraft:           m.inputDraft,
+		bgTaskCount:          m.bgTaskCount,
 	}
 	// Persist todo list for current session (skip in ephemeral mode — nothing to persist)
 	if m.todoManager != nil && !m.ephemeral {
@@ -172,9 +169,10 @@ func (m *cliModel) restoreSession() {
 		m.progressState.twActive = saved.typewriterTickActive
 		m.reasoningByIter = saved.reasoningByIter
 		m.lastTokenUsage = saved.lastTokenUsage
-		m.cachedMaxContextTokens = saved.cachedMaxContextTokens
-		m.cachedCompressRatio = saved.cachedCompressRatio
-		m.cachedMaxOutputTokens = saved.cachedMaxOutputTokens
+		// max_context/max_output/compress_ratio are resolved from DB, not
+		// restored from local savedSession. They will be populated by
+		// resolveMaxContextTokens/resolveMaxOutputTokens/resolveCompressRatio
+		// or by RPC progress events on the next render cycle.
 		m.messageQueue = saved.messageQueue
 		m.queueEditing = saved.queueEditing
 		m.pendingUserMsg = saved.pendingUserMsg
@@ -236,8 +234,6 @@ func (m *cliModel) restoreSession() {
 		m.inputHistory = nil
 		m.inputHistoryIdx = -1
 		m.lastTokenUsage = nil
-		m.cachedMaxContextTokens = 0
-		m.cachedMaxOutputTokens = 0
 		m.cachedCompressRatio = 0
 		// Reset per-session subscription/model state so it doesn't leak from previous session.
 		// postRestoreSessionSetup() will restore the correct values from disk or global defaults.
