@@ -588,7 +588,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 		// Walk the directory and search files
 		err = filepath.WalkDir(baseDir, func(walkPath string, d os.DirEntry, walkErr error) error {
 			// Check context cancellation (Ctrl+C or timeout)
-			if err := searchCtx.Err(); err != nil {
+			if cerr := searchCtx.Err(); cerr != nil {
 				return filepath.SkipAll
 			}
 			if walkErr != nil {

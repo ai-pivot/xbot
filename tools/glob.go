@@ -279,7 +279,7 @@ func globWithDoublestar(ctx context.Context, baseDir, pattern string, maxResults
 
 	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
 		// Check context cancellation (Ctrl+C or timeout)
-		if err := ctx.Err(); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
 			return filepath.SkipAll
 		}
 		if err != nil {

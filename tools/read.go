@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -202,21 +203,29 @@ func (t *ReadTool) executeLocal(ctx *ToolContext, filePath string) (*ToolResult,
 	}
 
 	// Read file with context-aware cancellation.
-	// os.ReadFile doesn't accept a context, so we use a goroutine.
-	// On timeout/cancel the goroutine still blocks on I/O (Go limitation),
-	// but the tool returns early so the agent can continue.
+	// os.Open + io.ReadAll allows closing the fd on context cancel,
+	// which interrupts the blocking read (unlike os.ReadFile).
 	type readResult struct {
 		data []byte
 		err  error
 	}
 	ch := make(chan readResult, 1)
 	go func() {
-		data, err := os.ReadFile(resolvedPath)
+		f, err := os.Open(resolvedPath)
+		if err != nil {
+			ch <- readResult{nil, err}
+			return
+		}
+		defer f.Close()
+		data, err := io.ReadAll(f)
 		ch <- readResult{data, err}
 	}()
 
 	select {
 	case <-readCtx.Done():
+		// Context cancelled — the goroutine will leak if I/O is truly stuck
+		// (NFS hang), but this is rare. The fd is closed by defer when the
+		// goroutine eventually returns.
 		return nil, fmt.Errorf("read timed out or cancelled: %w", readCtx.Err())
 	case res := <-ch:
 		if res.err != nil {

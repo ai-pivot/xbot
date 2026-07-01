@@ -15,6 +15,7 @@ import (
 
 	"xbot/internal/cmdbuilder"
 	"xbot/llm"
+	log "xbot/logger"
 )
 
 const (
@@ -111,6 +112,11 @@ func (t *FileCreateTool) executeLocal(ctx *ToolContext, params FileCreateParams)
 	ioCtx, cancel := context.WithTimeout(parentCtx, EditLocalTimeout)
 	defer cancel()
 
+	// Single entry-point cancellation check
+	if err := ioCtx.Err(); err != nil {
+		return nil, fmt.Errorf("cancelled: %w", err)
+	}
+
 	filePath, err := ResolveWritePath(ctx, params.Path)
 	if err != nil {
 		return nil, err
@@ -130,11 +136,6 @@ func (t *FileCreateTool) executeLocal(ctx *ToolContext, params FileCreateParams)
 	// Create parent directories if needed
 	dir := filepath.Dir(filePath)
 	if dir != "." && dir != "" {
-		select {
-		case <-ioCtx.Done():
-			return nil, fmt.Errorf("cancelled: %w", ioCtx.Err())
-		default:
-		}
 		if params.RunAs != "" {
 			if err := cmdbuilder.MkdirAllAsUser(params.RunAs, dir, 0755); err != nil {
 				return nil, fmt.Errorf("failed to create directory as user %q: %w", params.RunAs, err)
@@ -304,6 +305,10 @@ func (t *FileReplaceTool) executeLocal(ctx *ToolContext, params FileReplaceParam
 	var content []byte
 	select {
 	case <-ioCtx.Done():
+		log.WithFields(log.Fields{
+			"file":    filePath,
+			"timeout": EditLocalTimeout,
+		}).Warn("File read timed out, goroutine may leak if I/O is stuck")
 		return nil, fmt.Errorf("read timed out or cancelled: %w", ioCtx.Err())
 	case res := <-readCh:
 		if res.err != nil {
