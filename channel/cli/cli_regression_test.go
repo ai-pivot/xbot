@@ -141,26 +141,55 @@ func TestRenderTurnBody_DedupAllIterations(t *testing.T) {
 
 // TestRenderTurnBody_DedupPrefixMatch verifies that prefix matching
 // catches cases where fallbackContent has extra trailing text (e.g.
-// error messages appended after the original reply).
+// error messages appended after the original reply), but ONLY when
+// the thinking covers >= 80% of the fallback (to avoid short-prefix
+// false positives that suppress legitimate replies).
 func TestRenderTurnBody_DedupPrefixMatch(t *testing.T) {
+	model := initTestModel()
+	model.ticker.frame = 0
+
+	// Thinking is the vast majority of fallback (>>80%)
+	iterations := []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Thinking:  "The register allocator fix is sufficient for the 5-parameter test",
+		},
+	}
+
+	// fallbackContent = thinking + a short trailing note (<20% extra)
+	fallback := "The register allocator fix is sufficient for the 5-parameter test\nDone."
+	body := model.renderTurnBody(iterations, nil, 80, fallback)
+	clean := stripAnsi(body)
+
+	// Should be deduped — only ONE occurrence
+	count := strings.Count(clean, "The register allocator fix is sufficient for the 5-parameter test")
+	if count != 1 {
+		t.Errorf("should be deduped (>=80%% prefix match), got %d occurrences:\n%s", count, clean)
+	}
+}
+
+// TestRenderTurnBody_ShortPrefixNotSuppressed verifies that a short
+// Thinking prefix does NOT suppress a longer legitimate fallbackContent.
+// e.g. Thinking="I will now", fallback="I will now analyze the code
+// and provide a fix" — the fallback must still be rendered.
+func TestRenderTurnBody_ShortPrefixNotSuppressed(t *testing.T) {
 	model := initTestModel()
 	model.ticker.frame = 0
 
 	iterations := []cliIterationSnapshot{
 		{
 			Iteration: 1,
-			Thinking:  "Analysis complete",
+			Thinking:  "I will now",
 		},
 	}
 
-	// fallbackContent has the iteration text plus extra trailing text
-	fallback := "Analysis complete\n\nNote: additional info"
+	fallback := "I will now analyze the code and provide a fix"
 	body := model.renderTurnBody(iterations, nil, 80, fallback)
+	clean := stripAnsi(body)
 
-	// "Analysis complete" should NOT be duplicated
-	count := strings.Count(body, "Analysis complete")
-	if count > 1 {
-		t.Errorf("'Analysis complete' should not be duplicated (prefix match), got %d:\n%s", count, body)
+	// The fallback MUST be rendered (not suppressed by short prefix)
+	if !strings.Contains(clean, "I will now analyze the code and provide a fix") {
+		t.Errorf("fallback should be rendered (short prefix must not suppress):\n%s", clean)
 	}
 }
 

@@ -123,19 +123,24 @@ func (m *cliModel) renderTurnBody(
 		// Avoid duplication: check ALL iterations (not just the last one).
 		// An earlier iteration may have produced the same text (e.g. the agent
 		// generated its reply in iteration 1, then called tools in later
-		// iterations). Using prefix matching handles cases where fallbackContent
-		// includes additional trailing text (e.g. error messages appended after
-		// the original reply).
+		// iterations).
 		alreadyRendered := false
 		for i := range iterations {
 			thinking := iterations[i].Thinking
 			if thinking == "" {
 				continue
 			}
-			// Exact match or prefix match (fallbackContent may have extra trailing text)
 			trimmedFallback := strings.TrimSpace(fallbackContent)
 			trimmedThinking := strings.TrimSpace(thinking)
-			if trimmedFallback == trimmedThinking ||
+			if trimmedFallback == trimmedThinking {
+				alreadyRendered = true
+				break
+			}
+			// Prefix match only when thinking covers the majority of fallback.
+			// Without the length guard, a short partial thinking like "I will now"
+			// would suppress a legitimate fallback "I will now analyze the code..."
+			if len(trimmedThinking) > 0 &&
+				float64(len(trimmedThinking)) >= float64(len(trimmedFallback))*0.8 &&
 				strings.HasPrefix(trimmedFallback, trimmedThinking) {
 				alreadyRendered = true
 				break
