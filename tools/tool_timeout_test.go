@@ -129,7 +129,8 @@ func TestReadTool_FileSizeLimit(t *testing.T) {
 		WorkspaceRoot: tmpDir,
 	}
 	tool := &ReadTool{}
-	result, err := tool.Execute(toolCtx, fmt.Sprintf(`{"path": "%s"}`, largeFile))
+	input, _ := json.Marshal(map[string]string{"path": largeFile})
+	result, err := tool.Execute(toolCtx, string(input))
 
 	if err == nil {
 		t.Fatal("expected error for oversized file, got nil")
@@ -157,7 +158,8 @@ func TestReadTool_ContextCancellation(t *testing.T) {
 		WorkspaceRoot: tmpDir,
 	}
 	tool := &ReadTool{}
-	result, err := tool.Execute(toolCtx, fmt.Sprintf(`{"path": "%s"}`, testFile))
+	input, _ := json.Marshal(map[string]string{"path": testFile})
+	result, err := tool.Execute(toolCtx, string(input))
 
 	if err == nil {
 		t.Fatal("expected error for cancelled read, got nil")
@@ -182,7 +184,12 @@ func TestFileReplaceTool_FileSizeLimit(t *testing.T) {
 		WorkspaceRoot: tmpDir,
 	}
 	tool := &FileReplaceTool{}
-	_, err := tool.Execute(toolCtx, fmt.Sprintf(`{"path": "%s", "old_string": "a", "new_string": "b"}`, largeFile))
+	input, _ := json.Marshal(map[string]string{
+		"path":       largeFile,
+		"old_string": "a",
+		"new_string": "b",
+	})
+	_, err := tool.Execute(toolCtx, string(input))
 
 	if err == nil {
 		t.Fatal("expected error for oversized file, got nil")
@@ -206,7 +213,12 @@ func TestFileCreateTool_RewriteFileSizeLimit(t *testing.T) {
 		WorkspaceRoot: tmpDir,
 	}
 	tool := &FileCreateTool{}
-	_, err := tool.Execute(toolCtx, fmt.Sprintf(`{"path": "%s", "content": "new", "rewrite": true}`, largeFile))
+	input, _ := json.Marshal(map[string]any{
+		"path":     largeFile,
+		"content":  "new",
+		"rewrite":  true,
+	})
+	_, err := tool.Execute(toolCtx, string(input))
 
 	if err == nil {
 		t.Fatal("expected error for rewrite of oversized file, got nil")
