@@ -98,9 +98,17 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	}
 
 	// Carry forward ReasoningStreamContent.
-	// Guard: only when prev didn't have text response yet — reasoning stream
-	// is the LLM's internal thinking; once the actual text response
-	// (StreamContent) starts, reasoning shouldn't reappear on the new event.
+	// During streaming: only carry forward when prev didn't have text response
+	// yet — reasoning stream is the LLM's internal thinking; once the actual
+	// text response (StreamContent) starts, reasoning shouldn't reappear.
+	//
+	// During tool execution (Phase="tool_exec"): ALWAYS carry forward.
+	// Structured events from the engine don't carry ReasoningStreamContent,
+	// and some providers (e.g. DeepSeek) only expose reasoning via streaming,
+	// not in the final response object. Without unconditional carry-forward
+	// here, the reasoning box intermittently disappears during tool execution
+	// when prev.StreamContent happens to be non-empty (set by a stream-only
+	// event that arrived between two structured events).
 	//
 	// IMPORTANT: use prev.StreamContent (NOT current.StreamContent).
 	// The StreamContent carry-forward above may have already set
@@ -110,7 +118,11 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	// AND reasoning stream content are on the previous progress state.
 	// This causes reasoning to visibly disappear mid-stream (regression).
 	if m.progressState.current.ReasoningStreamContent == "" && prev.ReasoningStreamContent != "" && sameIter {
-		if prev.StreamContent == "" {
+		phase := ""
+		if m.progressState.current != nil {
+			phase = m.progressState.current.Phase
+		}
+		if phase == "tool_exec" || prev.StreamContent == "" {
 			m.progressState.current.ReasoningStreamContent = prev.ReasoningStreamContent
 		}
 	}
