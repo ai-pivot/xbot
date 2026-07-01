@@ -165,7 +165,7 @@ func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*To
 		}
 	}
 
-	return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
+	return NewResultWithTips(sb.String(), "使用 Read 查看具体匹配行的完整上下文。"), nil
 }
 
 // executeLocal 在本地执行文件搜索（非沙箱模式）

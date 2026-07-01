@@ -3,7 +3,6 @@ package tools
 import (
 	"fmt"
 	"strings"
-	"time"
 )
 
 // RunInSandbox 在沙箱内执行命令并返回输出。
@@ -29,7 +28,7 @@ func RunInSandbox(ctx *ToolContext, command string, args ...string) (string, err
 		Command: command,
 		Args:    append([]string{command}, args...),
 		Shell:   false,
-		Timeout: 30 * time.Second,
+		Timeout: SandboxCtxTimeout,
 		UserID:  userID,
 	}
 	setSandboxDir(ctx, sandbox, &spec)
@@ -74,7 +73,7 @@ func RunInSandboxWithShell(ctx *ToolContext, shellCmd string) (string, error) {
 		Command: shell,
 		Args:    []string{shell, "-l", "-c", shellCmd},
 		Shell:   false,
-		Timeout: 30 * time.Second,
+		Timeout: SandboxCtxTimeout,
 		UserID:  userID,
 	}
 	setSandboxDir(ctx, sandbox, &spec)
@@ -109,7 +108,7 @@ func RunInSandboxRaw(ctx *ToolContext, command string, args ...string) (string, 
 		Command: command,
 		Args:    append([]string{command}, args...),
 		Shell:   false,
-		Timeout: 30 * time.Second,
+		Timeout: SandboxCtxTimeout,
 		UserID:  userID,
 	}
 	setSandboxDir(ctx, sandbox, &spec)
@@ -152,7 +151,7 @@ func RunInSandboxRawWithShell(ctx *ToolContext, shellCmd string) (string, error)
 		Command: shell,
 		Args:    LoginShellArgs(shell, shellCmd),
 		Shell:   false,
-		Timeout: 30 * time.Second,
+		Timeout: SandboxCtxTimeout,
 		UserID:  userID,
 	}
 	setSandboxDir(ctx, sandbox, &spec)

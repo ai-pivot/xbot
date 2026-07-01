@@ -33,4 +33,22 @@ const (
 
 	// Sandbox context timeout
 	SandboxCtxTimeout = 30 * time.Second
+
+	// HTTP timeouts
+	FetchHTTPTimeout    = 30 * time.Second // fetch.go HTTP client
+	DownloadHTTPTimeout = 60 * time.Second // download.go file download
+	TokenHTTPTimeout    = 30 * time.Second // download.go token request
+
+	// RPC / communication timeouts
+	AgentRPCTimeout      = 30 * time.Second // send_message.go agent RPC
+	MCPConnectTimeout    = 30 * time.Second // mcp_common.go MCP connection
+	LoginShellEnvTimeout = 10 * time.Second // mcp_common.go shell env detection
+
+	// Remote sandbox timeouts
+	RemoteSandboxExecTimeout = 60 * time.Second // remote_sandbox_exec.go default exec
+	RemoteSandboxSyncTimeout = 60 * time.Second // remote_sandbox.go sync operation
+
+	// Docker command timeouts
+	DockerCmdTimeout  = 30 * time.Second  // normal docker commands
+	DockerSlowTimeout = 120 * time.Second // slow docker operations (export/import)
 )
