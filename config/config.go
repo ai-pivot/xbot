@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -74,7 +73,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // OAuthConfig OAuth 配置
 type OAuthConfig struct {
-	Enable  bool   `json:"enabled"`
+	Enable  bool   `json:"enable"`
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
 	BaseURL string `json:"base_url"`
@@ -141,7 +140,7 @@ type OSSConfig struct {
 
 // EventWebhookConfig 事件 Webhook 配置
 type EventWebhookConfig struct {
-	Enable      bool   `json:"enabled"`
+	Enable      bool   `json:"enable"`
 	Host        string `json:"host"`
 	Port        int    `json:"port"`
 	BaseURL     string `json:"base_url"`
@@ -151,7 +150,7 @@ type EventWebhookConfig struct {
 
 // WebConfig Web 渠道配置
 type WebConfig struct {
-	Enable           bool   `json:"enabled"`
+	Enable           bool   `json:"enable"`
 	Host             string `json:"host"`
 	Port             int    `json:"port"`
 	StaticDir        string `json:"static_dir"`
@@ -316,7 +315,7 @@ type LogConfig struct {
 
 // PProfConfig pprof 配置
 type PProfConfig struct {
-	Enable bool   `json:"enabled"`
+	Enable bool   `json:"enable"`
 	Host   string `json:"host"`
 	Port   int    `json:"port"`
 }
@@ -369,17 +368,17 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"port": ftInt,
 	},
 	"web": {
-		"enabled":           ftBool,
+		"enable":            ftBool,
 		"port":              ftInt,
 		"persona_isolation": ftBool,
 		"invite_only":       ftBool,
 	},
 	"oauth": {
-		"enabled": ftBool,
+		"enable": ftBool,
 		"port":    ftInt,
 	},
 	"pprof": {
-		"enabled": ftBool,
+		"enable": ftBool,
 		"port":    ftInt,
 	},
 	"feishu": {
@@ -408,7 +407,7 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"ws_port": ftInt,
 	},
 	"event_webhook": {
-		"enabled":       ftBool,
+		"enable":         ftBool,
 		"port":          ftInt,
 		"max_body_size": ftInt64,
 		"rate_limit":    ftInt,
@@ -490,117 +489,6 @@ func normalizeObjectFields(objRaw json.RawMessage, schema map[string]fieldType) 
 		return objRaw, false
 	}
 	return out, true
-}
-
-// normalizeLegacyEnableKeys merges legacy "enable" keys into "enabled" keys
-// at the top level of each known config section. This ensures backward
-// compatibility with config files that use the old "enable" spelling.
-//
-// When BOTH "enable" and "enabled" exist, the "enable" value is dropped
-// (the canonical "enabled" key wins) to avoid duplicate JSON keys which
-// cause Go's unmarshaler to silently pick the last value.
-func normalizeLegacyEnableKeys(data []byte) []byte {
-	sections := []string{"web", "oauth", "pprof", "event_webhook"}
-	for _, section := range sections {
-		oldKey := fmt.Sprintf(`"%s": {`, section)
-		idx := bytes.Index(data, []byte(oldKey))
-		if idx < 0 {
-			continue
-		}
-		// Find the matching closing brace
-		depth := 0
-		start := idx + len(oldKey) - 1 // point to '{'
-		end := start
-		for i := start; i < len(data); i++ {
-			if data[i] == '{' {
-				depth++
-			} else if data[i] == '}' {
-				depth--
-				if depth == 0 {
-					end = i
-					break
-				}
-			}
-		}
-		if end == start {
-			continue
-		}
-		block := data[start : end+1]
-
-		hasEnabled := bytes.Contains(block, []byte(`"enabled"`))
-		hasEnable := bytes.Contains(block, []byte(`"enable"`))
-
-		if hasEnable && hasEnabled {
-			// Both exist — remove the legacy "enable" key entirely.
-			// Keep the canonical "enabled" key.
-			block = removeJSONKey(block, "enable")
-		} else if hasEnable && !hasEnabled {
-			// Only legacy key exists — rename it.
-			block = bytes.Replace(block, []byte(`"enable"`), []byte(`"enabled"`), 1)
-		}
-		// else: only "enabled" or neither — nothing to do.
-
-		data = append(data[:start], append(block, data[end+1:]...)...)
-	}
-	return data
-}
-
-// removeJSONKey removes a top-level key from a JSON object byte slice.
-// It handles the key with its value and trailing comma.
-func removeJSONKey(data []byte, key string) []byte {
-	keyQuoted := []byte(`"` + key + `"`)
-	idx := bytes.Index(data, keyQuoted)
-	if idx < 0 {
-		return data
-	}
-	// Find the value: skip whitespace and colon after the key
-	i := idx + len(keyQuoted)
-	for i < len(data) && (data[i] == ' ' || data[i] == '\t' || data[i] == ':' || data[i] == '\n') {
-		i++
-	}
-	// Now i points to the start of the value. Find the end of the value.
-	valEnd := i
-	if valEnd < len(data) && (data[valEnd] == '{' || data[valEnd] == '[') {
-		// Nested object/array — find matching close
-		depth := 0
-		for valEnd < len(data) {
-			if data[valEnd] == '{' || data[valEnd] == '[' {
-				depth++
-			} else if data[valEnd] == '}' || data[valEnd] == ']' {
-				depth--
-				if depth == 0 {
-					valEnd++
-					break
-				}
-			}
-			valEnd++
-		}
-	} else {
-		// Simple value — find comma or closing brace
-		for valEnd < len(data) && data[valEnd] != ',' && data[valEnd] != '}' {
-			valEnd++
-		}
-	}
-
-	// Check what's after the value: comma (and optional whitespace/newline)
-	afterEnd := valEnd
-	for afterEnd < len(data) && (data[afterEnd] == ' ' || data[afterEnd] == '\t' || data[afterEnd] == '\n') {
-		afterEnd++
-	}
-	if afterEnd < len(data) && data[afterEnd] == ',' {
-		afterEnd++ // consume the comma too
-	}
-
-	// Also consume leading whitespace/comma before the key
-	beforeStart := idx
-	for beforeStart > 0 && (data[beforeStart-1] == ' ' || data[beforeStart-1] == '\t' || data[beforeStart-1] == '\n') {
-		beforeStart--
-	}
-	if beforeStart > 0 && data[beforeStart-1] == ',' {
-		beforeStart--
-	}
-
-	return append(data[:beforeStart], data[afterEnd:]...)
 }
 
 // normalizeConfigTypes preprocesses raw JSON bytes to coerce string values
@@ -715,7 +603,6 @@ func LoadFromFile(path string) *Config {
 		return nil
 	}
 	// 预处理：将字符串值转换为 struct 期望的类型
-	data = normalizeLegacyEnableKeys(data)
 	data = normalizeConfigTypes(data)
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {

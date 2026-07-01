@@ -468,9 +468,9 @@ func TestNormalizeConfigTypes_StringPort(t *testing.T) {
 	// Simulates what install.sh (jq --arg) writes: port as string "8082"
 	raw := `{
    "server": {"host": "0.0.0.0", "port": "8082"},
-   "web": {"enabled": "true", "host": "127.0.0.1", "port": "8082"},
+   "web": {"enable": "true", "host": "127.0.0.1", "port": "8082"},
    "oauth": {"enable": "false", "port": "8081"},
-   "pprof": {"enabled": "true", "port": "6060"},
+   "pprof": {"enable": "true", "port": "6060"},
    "feishu": {"enabled": "true"},
    "qq": {"enabled": "false"},
    "napcat": {"enabled": "1"},
@@ -486,7 +486,7 @@ func TestNormalizeConfigTypes_StringPort(t *testing.T) {
    },
    "embedding": {"max_tokens": "2048"},
    "sandbox": {"ws_port": "8080"},
-   "event_webhook": {"enabled": "true", "port": "9090", "max_body_size": "1048576", "rate_limit": "100"},
+   "event_webhook": {"enable": "true", "port": "9090", "max_body_size": "1048576", "rate_limit": "100"},
    "plugins": {"enabled": "true", "allow_unverified": "false"},
    "llm": {"max_output_tokens": "8192"},
    "subscriptions": [
@@ -636,7 +636,7 @@ func TestNormalizeConfigTypes_AlreadyCorrect(t *testing.T) {
 	// When types are already correct, normalization should be a no-op
 	raw := `{
 	  "server": {"host": "0.0.0.0", "port": 8082},
-	  "web": {"enabled": true, "port": 8082},
+	  "web": {"enable": true, "port": 8082},
 	  "agent": {"max_iterations": 2000}
 	}`
 	dir := t.TempDir()
@@ -670,7 +670,7 @@ func TestNormalizeConfigTypes_PreservesUnknownFields(t *testing.T) {
 
 	dirtyConfig := `{
 	"server": {"host": "0.0.0.0", "port": "8082"},
-	"web": {"enabled": "true", "port": "8082", "custom_web_key": "preserved"},
+	"web": {"enable": "true", "port": "8082", "custom_web_key": "preserved"},
 	"agent": {"max_iterations": "2000"},
 	"my_custom_section": {"key": "value"},
 	"llm": {"provider": "openai", "model": "gpt-4o"}
@@ -723,7 +723,7 @@ func TestNormalizeConfigTypes_PreservesUnknownFields(t *testing.T) {
 	if !strings.Contains(content, `"port": 8082`) {
 		t.Errorf("server.port should be integer 8082, got:\n%s", content)
 	}
-	if !strings.Contains(content, `"enabled": true`) {
+	if !strings.Contains(content, `"enable": true`) {
 		t.Errorf("web.enable should be boolean true, got:\n%s", content)
 	}
 }
@@ -744,7 +744,7 @@ func TestSaveToFile_DirtyDataPreserved(t *testing.T) {
 
 	dirty := `{
 	"server": {"host": "0.0.0.0", "port": "8082"},
-	"web": {"enabled": "true", "port": "8082"},
+	"web": {"enable": "true", "port": "8082"},
 	"agent": {"max_iterations": "100"},
 	"llm": {"provider": "openai", "model": "gpt-4o"},
 	"custom_field": "keep_me"
