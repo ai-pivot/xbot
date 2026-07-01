@@ -24,7 +24,6 @@ current thinking text
 ╭ Reasoning ─────────────────────────────────────────────────────────────────╮
 │ current reasoning stream only                                              │
 ╰────────────────────────────────────────────────────────────────────────────╯
-  ◇◇◇◇◇ 29 chars
 
 === previous success and failure then active stream with success failure running ===
   · ✓ Previous tool succeeded 100ms
@@ -64,7 +63,6 @@ previous content and done tool
   · ✓ Previous done tool 100ms
 
 current content before completed tools
-  ◇◇◇◇◇ 38 chars
 
   · ✓ Current glob completed 100ms
   · ✗ Current patch failed 400ms

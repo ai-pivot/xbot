@@ -389,40 +389,6 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		})
 	}
 
-	// Streaming content/reasoning progress indicator.
-	// ONLY shows when the LLM is actively generating text (thinking phase or
-	// stream-only events). NOT when tools are executing — during tool_exec,
-	// StreamContent is a carry-forward residue, not live text.
-	// Also suppress when there are running/active tools — the tool spinners
-	// are the live indicators then, not the char/token counter.
-	var streamParts []string
-	hasRunningTools := false
-	for _, t := range p.ActiveTools {
-		if t.Status == "running" || t.Status == "active" {
-			hasRunningTools = true
-			break
-		}
-	}
-	isActiveStreaming := (p.Phase == "thinking" || p.Phase == "") && !hasRunningTools
-	if isActiveStreaming {
-		if st := p.StreamTokens; st > 0 {
-			streamParts = append(streamParts, formatTokenCount(st))
-		} else {
-			if rc := len(p.ReasoningStreamContent); rc > 0 {
-				streamParts = append(streamParts, formatCharCount(rc))
-			}
-			if sc := len(p.StreamContent); sc > 0 {
-				streamParts = append(streamParts, formatCharCount(sc))
-			}
-		}
-	}
-	if len(streamParts) > 0 {
-		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
-		text := "  " + s.ProgressRunning.Render(frame) + " " + s.ProgressElapsed.Render(strings.Join(streamParts, " · "))
-		blocks = append(blocks, turnBlock{kind: turnBlockPulse, text: text})
-		hasSpinner = true // suppress the bare spinner below
-	}
-
 	// Combine StreamingTools (generating), ActiveTools (active/done/error), and CompletedTools.
 	// Deduplicate by Name+Label to prevent the same tool appearing twice
 	// when it transitions across phases (generating → active → done → completed).

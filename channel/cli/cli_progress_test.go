@@ -1962,3 +1962,94 @@ func TestIncrementalPathSeparatorMatchesFullRebuild(t *testing.T) {
 		})
 	}
 }
+
+// TestHistoryReloadDedupTrailingAssistantFromDB verifies that when DB history
+// (from compression reload) already contains a trailing assistant message from
+// the current turn, handleHistoryReload does NOT append a second streaming
+// assistant — it merges them instead. Without this, compression produces
+// duplicate assistant messages in the viewport.
+func TestHistoryReloadDedupTrailingAssistantFromDB(t *testing.T) {
+	model := initTestModel()
+	model.messages = []cliMessage{
+		{role: "user", content: "current user", timestamp: time.Now(), dirty: true},
+	}
+	model.startAgentTurn()
+
+	// Simulate: HistoryCompacted created empty streaming message, then DB reload
+	// arrives with an assistant message from the current turn (persisted before
+	// compression). Both exist — without dedup, two assistants appear.
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName:      model.channelName,
+		chatID:           model.chatID,
+		forceFullRebuild: true,
+		history: []channel.HistoryMessage{
+			{Role: "user", Content: "current user", Timestamp: time.Now()},
+			{Role: "assistant", Content: "partial response from DB", Timestamp: time.Now()},
+		},
+	})
+
+	// Count assistant messages — should be exactly 1.
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("expected 1 assistant after reload with DB trailing assistant, got %d. messages: %+v",
+			assistantCount, model.messages)
+	}
+	// Streaming index should point at the merged message.
+	if model.streamingMsgIdx < 0 || model.streamingMsgIdx >= len(model.messages) {
+		t.Fatalf("streamingMsgIdx out of range: %d (messages=%d)", model.streamingMsgIdx, len(model.messages))
+	}
+	streaming := model.messages[model.streamingMsgIdx]
+	if !streaming.isPartial {
+		t.Fatal("merged streaming message should have isPartial=true")
+	}
+}
+
+// TestHistoryReloadReplacesDBAssistantWithLiveContent verifies that when the
+// streaming message has accumulated live content (progress arrived between
+// HistoryCompacted and reload), it replaces the DB assistant instead of being
+// dropped — the live content is more recent.
+func TestHistoryReloadReplacesDBAssistantWithLiveContent(t *testing.T) {
+	model := initTestModel()
+	model.messages = []cliMessage{
+		{role: "user", content: "current user", timestamp: time.Now(), dirty: true},
+	}
+	model.startAgentTurn()
+	// Simulate live content arriving before reload.
+	model.messages[model.streamingMsgIdx].content = "live streamed content"
+	model.messages[model.streamingMsgIdx].iterations = []cliIterationSnapshot{
+		{Iteration: 1, Thinking: "thinking"},
+	}
+
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName:      model.channelName,
+		chatID:           model.chatID,
+		forceFullRebuild: true,
+		history: []channel.HistoryMessage{
+			{Role: "user", Content: "current user", Timestamp: time.Now()},
+			{Role: "assistant", Content: "stale DB content", Timestamp: time.Now()},
+		},
+	})
+
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("expected 1 assistant, got %d", assistantCount)
+	}
+	streaming := model.messages[model.streamingMsgIdx]
+	if streaming.content != "live streamed content" {
+		t.Fatalf("live content was replaced by stale DB content: got %q, want %q",
+			streaming.content, "live streamed content")
+	}
+	if len(streaming.iterations) != 1 || streaming.iterations[0].Thinking != "thinking" {
+		t.Fatal("live iterations were lost when replacing DB assistant")
+	}
+}

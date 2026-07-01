@@ -507,16 +507,38 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 		}
 	}
 	restoredStreamingIdx := -1
-	// Always preserve the streaming message when the engine is still running.
-	// The old code only preserved it for non-forceFullRebuild, but forceFullRebuild
-	// (from HistoryCompacted) also needs to preserve it — the HistoryCompacted
-	// handler creates the streaming message immediately so progress events have
-	// a rendering target while the async reload is in flight.
+	// Preserve the streaming message when the engine is still running.
+	// HistoryCompacted creates an empty streaming message so progress events
+	// have a rendering target. But DB history (from reload) may ALSO contain
+	// an assistant message from the current turn (persisted before compression).
+	// Without dedup, both survive → duplicate assistant messages.
+	//
+	// Fix: if newMessages already ends with an assistant, the streaming message
+	// is redundant when empty (DB has the content). When the streaming message
+	// has accumulated content/iterations (progress arrived between
+	// HistoryCompacted and reload), replace the DB assistant with the streaming
+	// one — it has the most recent state.
 	if m.typing && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
 		streamingMsg := m.messages[m.streamingMsgIdx]
 		if streamingMsg.role == "assistant" && streamingMsg.isPartial {
-			restoredStreamingIdx = len(newMessages)
-			newMessages = append(newMessages, streamingMsg)
+			// Check if DB history already has a trailing assistant.
+			if n := len(newMessages); n > 0 && newMessages[n-1].role == "assistant" {
+				if streamingMsg.content == "" && len(streamingMsg.iterations) == 0 {
+					// Streaming message is empty — DB assistant has more content.
+					// Mark the DB assistant as the streaming target instead.
+					newMessages[n-1].isPartial = true
+					newMessages[n-1].turnID = streamingMsg.turnID
+					newMessages[n-1].dirty = true
+					restoredStreamingIdx = n - 1
+				} else {
+					// Streaming message has live content — replace DB assistant.
+					newMessages[n-1] = streamingMsg
+					restoredStreamingIdx = n - 1
+				}
+			} else {
+				restoredStreamingIdx = len(newMessages)
+				newMessages = append(newMessages, streamingMsg)
+			}
 		}
 	}
 	// Smart merge: reuse rendered cache from existing messages to avoid

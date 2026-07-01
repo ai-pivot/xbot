@@ -570,8 +570,6 @@ func (m *cliModel) handleUsageCommand() {
 	m.updateViewportContent()
 }
 
-// formatTokenCount is defined in cli_view.go — do not duplicate here.
-
 // fmtTokens formats large token counts with K/M suffixes for usage tables.
 //
 //nolint:unused
