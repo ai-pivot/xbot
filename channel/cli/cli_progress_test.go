@@ -2326,3 +2326,61 @@ func TestCancelFullFlowCancelToolVisible(t *testing.T) {
 		t.Fatalf("✗ error marker not visible in rendered output:\n%s", rendered)
 	}
 }
+
+// TestCancelAckWithoutPhaseDoneShowsCancelTool verifies the real-world bug:
+// when Ctrl+C cancels a turn and the cancel ack arrives WITHOUT PhaseDone
+// arriving first (server cancels mid-stream), the streaming message is
+// NOT removed — instead a minimal snapshot with cancel tool is created.
+func TestCancelAckWithoutPhaseDoneShowsCancelTool(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	turnID := model.agentTurnID
+
+	// Only stream-only events arrived (LLM generating tool args)
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamingTools: []protocol.ToolProgress{
+			{Name: "Shell", Status: "generating", GenChars: 1600},
+		},
+	})
+
+	// Ctrl+C — NO PhaseDone arrives, cancel ack comes directly
+	model.turnCancelled = true
+	model.cancelTargetTurnID = turnID
+	model.handleCancelAck(channel.OutboundMsg{ChatID: model.chatID}, turnID)
+
+	// Message must NOT be removed — must have cancel tool
+	var msg cliMessage
+	found := false
+	for _, m := range model.messages {
+		if m.role == "assistant" && m.turnID == turnID {
+			msg = m
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("streaming message was removed — should be kept with cancel tool")
+	}
+	if msg.isPartial {
+		t.Fatal("message should be finalized (isPartial=false)")
+	}
+	if len(msg.iterations) == 0 {
+		t.Fatal("message should have cancel tool iteration")
+	}
+	foundCancel := false
+	for _, iter := range msg.iterations {
+		for _, tool := range iter.Tools {
+			if tool.Name == "Cancelled" {
+				foundCancel = true
+			}
+		}
+	}
+	if !foundCancel {
+		t.Fatal("cancel tool not found — handleCancelAck removed message instead of creating cancel snapshot")
+	}
+	// Verify rendering
+	rendered := model.renderTurnBody(msg.iterations, nil, 80, msg.content)
+	if !strings.Contains(rendered, "request canceled by user") {
+		t.Fatalf("cancel tool not visible in rendered output:\n%s", rendered)
+	}
+}

@@ -509,16 +509,21 @@ func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 			streamingMsg.dirty = true
 			streamingMsg.iterations = iters
 		} else {
-			// Empty streaming message with no iteration data. Remove it.
-			m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
-			if m.streamingMsgIdx == cancelledIdx {
-				m.streamingMsgIdx = -1
-			} else if m.streamingMsgIdx > cancelledIdx {
-				m.streamingMsgIdx--
-			}
-			if cancelledIdx >= len(m.messages) {
-				m.rc.valid = false
-			}
+			// Empty streaming message with no iteration data. Instead of
+			// removing it, create a minimal snapshot with the cancel indicator
+			// so the user sees "request canceled by user". This handles the
+			// case where PhaseDone didn't arrive before cancel ack (e.g.
+			// server cancelled mid-stream without sending PhaseDone).
+			streamingMsg.isPartial = false
+			streamingMsg.dirty = true
+			streamingMsg.iterations = []cliIterationSnapshot{{
+				Iteration: 0,
+				Tools: []protocol.ToolProgress{{
+					Name:   "Cancelled",
+					Label:  "request canceled by user",
+					Status: "error",
+				}},
+			}}
 		}
 	}
 	// Clean up progress/streaming state for the cancelled turn.
