@@ -28,7 +28,7 @@ func sendProgress(model *cliModel, payload *protocol.ProgressEvent) {
 func sendDone(model *cliModel, content string) {
 	model.typing = false
 	model.Update(cliOutboundMsg{
-		msg: channel.OutboundMsg{
+		msg: channel.OutboundMsg{Channel: model.channelName, ChatID: model.chatID,
 			Content:   content,
 			IsPartial: false,
 		},
@@ -525,7 +525,7 @@ func TestCancelMessageIgnoresStaleStreamingIndex(t *testing.T) {
 	model.streamingMsgIdx = 3
 	model.agentTurnID = 10
 
-	model.handleAgentMessage(channel.OutboundMsg{Metadata: map[string]string{"cancelled": "true"}})
+	model.handleAgentMessage(channel.OutboundMsg{Channel: model.channelName, ChatID: model.chatID, Metadata: map[string]string{"cancelled": "true"}})
 }
 
 func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
@@ -550,7 +550,7 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 		},
 	}
 
-	model.handleAgentMessage(channel.OutboundMsg{Metadata: map[string]string{"cancelled": "true"}})
+	model.handleAgentMessage(channel.OutboundMsg{Channel: model.channelName, ChatID: model.chatID, Metadata: map[string]string{"cancelled": "true"}})
 
 	if model.streamingMsgIdx != -1 {
 		t.Fatalf("streamingMsgIdx = %d, want -1 after cancel", model.streamingMsgIdx)
@@ -2249,5 +2249,80 @@ func TestCancelDoesNotDuplicateIndicator(t *testing.T) {
 	}
 	if cancelCount != 1 {
 		t.Fatalf("expected exactly 1 cancel indicator, got %d", cancelCount)
+	}
+}
+
+// TestCancelFullFlowCancelToolVisible verifies the complete Ctrl+C flow:
+// startAgentTurn → progress → Ctrl+C → PhaseDone → cancel ack → check
+// that the cancel tool appears in the rendered output.
+func TestCancelFullFlowCancelToolVisible(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	turnID := model.agentTurnID
+
+	// Simulate a tool generating (LLM streaming tool args)
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 1,
+	})
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamingTools: []protocol.ToolProgress{
+			{Name: "Shell", Status: "generating", GenChars: 1600},
+		},
+	})
+
+	// Ctrl+C: set cancel state
+	model.turnCancelled = true
+	model.cancelTargetTurnID = turnID
+
+	// PhaseDone arrives (cancel path)
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 1,
+	})
+
+	// Cancel ack arrives
+	model.handleCancelAck(channel.OutboundMsg{ChatID: model.chatID}, turnID)
+
+	// Find the assistant message
+	var msg cliMessage
+	found := false
+	for _, m := range model.messages {
+		if m.role == "assistant" && m.turnID == turnID {
+			msg = m
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no assistant message found after cancel ack")
+	}
+	if msg.isPartial {
+		t.Fatal("message should be finalized (isPartial=false) after cancel ack")
+	}
+	if len(msg.iterations) == 0 {
+		t.Fatal("message should have baked iterations")
+	}
+
+	// Check cancel tool in iterations
+	foundCancel := false
+	for _, iter := range msg.iterations {
+		for _, tool := range iter.Tools {
+			if tool.Name == "Cancelled" && tool.Status == "error" {
+				foundCancel = true
+			}
+		}
+	}
+	if !foundCancel {
+		t.Fatal("cancel tool not found in baked iterations after full flow")
+	}
+
+	// Check rendering: render the message body
+	rendered := model.renderTurnBody(msg.iterations, nil, 80, msg.content)
+	if !strings.Contains(rendered, "request canceled by user") {
+		t.Fatalf("cancel tool not visible in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "✗") {
+		t.Fatalf("✗ error marker not visible in rendered output:\n%s", rendered)
 	}
 }
