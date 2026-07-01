@@ -24,6 +24,19 @@ const (
 	MaxGrepFileSize   = 1 * 1024 * 1024
 	MaxGrepLineLength = 500
 
+	// Per-tool local timeouts (non-sandbox mode)
+	GrepLocalTimeout = 60 * time.Second // large codebase search
+	GlobLocalTimeout = 30 * time.Second // file pattern matching
+	ReadLocalTimeout = 10 * time.Second // single file I/O
+	EditLocalTimeout = 10 * time.Second // single file I/O
+
+	// Per-tool file size limits (non-sandbox mode)
+	MaxReadFileSize = 10 * 1024 * 1024 // 10MB
+	MaxEditFileSize = 10 * 1024 * 1024 // 10MB
+
+	// Glob result limit
+	MaxGlobResults = 200
+
 	// Directory listing limits
 	MaxDirEntries        = 30
 	MaxProjectFilesShown = 12

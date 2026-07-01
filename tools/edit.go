@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"math"
@@ -102,21 +103,38 @@ func (t *FileCreateTool) sandboxCreate(ctx *ToolContext, path, content string, r
 }
 
 func (t *FileCreateTool) executeLocal(ctx *ToolContext, params FileCreateParams) (*ToolResult, error) {
+	// Per-tool timeout: 10s for single file I/O
+	parentCtx := context.Background()
+	if ctx != nil && ctx.Ctx != nil {
+		parentCtx = ctx.Ctx
+	}
+	ioCtx, cancel := context.WithTimeout(parentCtx, EditLocalTimeout)
+	defer cancel()
+
 	filePath, err := ResolveWritePath(ctx, params.Path)
 	if err != nil {
 		return nil, err
 	}
 
 	// Check if file already exists
-	if _, err := os.Stat(filePath); err == nil {
+	if info, statErr := os.Stat(filePath); statErr == nil {
 		if !params.Rewrite {
 			return nil, fmt.Errorf("file already exists: %s (use FileReplace to modify existing files, or set rewrite=true to overwrite)", filePath)
+		}
+		// File size check for rewrite mode
+		if info.Size() > MaxEditFileSize {
+			return nil, fmt.Errorf("file too large (>%d bytes): %s", MaxEditFileSize, filePath)
 		}
 	}
 
 	// Create parent directories if needed
 	dir := filepath.Dir(filePath)
 	if dir != "." && dir != "" {
+		select {
+		case <-ioCtx.Done():
+			return nil, fmt.Errorf("cancelled: %w", ioCtx.Err())
+		default:
+		}
 		if params.RunAs != "" {
 			if err := cmdbuilder.MkdirAllAsUser(params.RunAs, dir, 0755); err != nil {
 				return nil, fmt.Errorf("failed to create directory as user %q: %w", params.RunAs, err)
@@ -250,20 +268,50 @@ func (t *FileReplaceTool) executeInSandbox(ctx *ToolContext, path string, params
 }
 
 func (t *FileReplaceTool) executeLocal(ctx *ToolContext, params FileReplaceParams) (*ToolResult, error) {
+	// Per-tool timeout: 10s for single file I/O
+	parentCtx := context.Background()
+	if ctx != nil && ctx.Ctx != nil {
+		parentCtx = ctx.Ctx
+	}
+	ioCtx, cancel := context.WithTimeout(parentCtx, EditLocalTimeout)
+	defer cancel()
+
 	filePath, err := ResolveWritePath(ctx, params.Path)
 	if err != nil {
 		return nil, err
 	}
 
-	content, err := cmdbuilder.ReadFileAsUser(params.RunAs, filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
-	}
-
+	// File size check to prevent OOM on large files
 	info, err := os.Stat(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat file: %w", err)
 	}
+	if info.Size() > MaxEditFileSize {
+		return nil, fmt.Errorf("file too large (>%d bytes): %s — use Shell with sed to edit large files", MaxEditFileSize, filePath)
+	}
+
+	// Read file with context-aware cancellation
+	type readResult struct {
+		content []byte
+		err     error
+	}
+	readCh := make(chan readResult, 1)
+	go func() {
+		data, err := cmdbuilder.ReadFileAsUser(params.RunAs, filePath)
+		readCh <- readResult{data, err}
+	}()
+
+	var content []byte
+	select {
+	case <-ioCtx.Done():
+		return nil, fmt.Errorf("read timed out or cancelled: %w", ioCtx.Err())
+	case res := <-readCh:
+		if res.err != nil {
+			return nil, fmt.Errorf("failed to read file: %w", res.err)
+		}
+		content = res.content
+	}
+
 	mode := info.Mode().Perm()
 
 	newContent, result, err := doReplace(string(content), params, filePath)
@@ -312,7 +360,7 @@ func resolveSandboxPath(ctx *ToolContext, userPath string) string {
 // sandboxReadFile 通过 cat 读取沙箱内文件内容（保留原始内容，不做 TrimSpace）
 func sandboxReadFile(ctx *ToolContext, path string) (string, error) {
 	cmd := fmt.Sprintf("cat '%s'", strings.ReplaceAll(path, "'", "'\\''"))
-	content, err := RunInSandboxRawWithShell(ctx, cmd)
+	content, err := RunInSandboxRawWithShellTimeout(ctx, cmd, EditLocalTimeout)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file %s: %v", path, err)
 	}
@@ -324,7 +372,7 @@ func sandboxWriteFile(ctx *ToolContext, path, content string) error {
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	safePath := strings.ReplaceAll(path, "'", "'\\''")
 	cmd := fmt.Sprintf("echo '%s' | base64 -d > '%s'", encoded, safePath)
-	_, err := RunInSandboxWithShell(ctx, cmd)
+	_, err := RunInSandboxWithShellTimeout(ctx, cmd, EditLocalTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to write file %s: %v", path, err)
 	}
@@ -337,7 +385,7 @@ func sandboxWriteNewFile(ctx *ToolContext, path, content string) error {
 	safePath := strings.ReplaceAll(path, "'", "'\\''")
 	cmd := fmt.Sprintf("mkdir -p '%s' && echo '%s' | base64 -d > '%s'",
 		strings.ReplaceAll(filepath.Dir(path), "'", "'\\''"), encoded, safePath)
-	_, err := RunInSandboxWithShell(ctx, cmd)
+	_, err := RunInSandboxWithShellTimeout(ctx, cmd, EditLocalTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to create file %s: %v", path, err)
 	}
