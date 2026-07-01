@@ -493,33 +493,6 @@ func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 
 	if cancelledIdx >= 0 {
 		streamingMsg := &m.messages[cancelledIdx]
-		// Cancel indicator tool — always appended regardless of which branch
-		// we take. The user pressed Ctrl+C; they must see "request canceled
-		// by user" in the tool list, whether the message has content,
-		// pre-baked iterations, or is completely empty.
-		cancelTool := protocol.ToolProgress{
-			Name:   "Cancelled",
-			Label:  "request canceled by user",
-			Status: "error",
-		}
-		appendCancelTool := func() {
-			if len(streamingMsg.iterations) == 0 {
-				streamingMsg.iterations = []cliIterationSnapshot{{
-					Iteration: 0,
-					Tools:     []protocol.ToolProgress{cancelTool},
-				}}
-				return
-			}
-			last := &streamingMsg.iterations[len(streamingMsg.iterations)-1]
-			// Avoid duplicate cancel tools
-			for _, t := range last.Tools {
-				if t.Name == "Cancelled" {
-					return
-				}
-			}
-			last.Tools = append(last.Tools, cancelTool)
-		}
-
 		if strings.TrimSpace(streamingMsg.content) != "" {
 			// Streaming message accumulated real content (e.g. partial LLM text).
 			// Finalize it as a completed message so the user keeps what was streamed.
@@ -536,13 +509,17 @@ func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 			streamingMsg.dirty = true
 			streamingMsg.iterations = iters
 		} else {
-			// Empty streaming message with no iteration data. Create a
-			// minimal snapshot with just the cancel indicator.
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
+			// Empty streaming message with no iteration data. Remove it.
+			m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
+			if m.streamingMsgIdx == cancelledIdx {
+				m.streamingMsgIdx = -1
+			} else if m.streamingMsgIdx > cancelledIdx {
+				m.streamingMsgIdx--
+			}
+			if cancelledIdx >= len(m.messages) {
+				m.rc.valid = false
+			}
 		}
-		// Always append cancel tool — covers all branches above.
-		appendCancelTool()
 	}
 	// Clean up progress/streaming state for the cancelled turn.
 	if m.progressState.current != nil {
