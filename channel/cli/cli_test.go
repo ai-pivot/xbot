@@ -1847,3 +1847,54 @@ func assertRole(t *testing.T, msg channel.HistoryMessage, want string) {
 		t.Errorf("expected role=%q, got %q", want, msg.Role)
 	}
 }
+
+func TestConvert_CrashedTurn_ToolStatusFromToolMessages(t *testing.T) {
+	// Server crashed mid-turn: intermediate assistant messages have ToolCalls
+	// but NO Detail. Tool status must be inferred from tool result messages.
+	// Tool messages with content starting "Error:" → status "error".
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "run tests"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{
+			{ID: "c1", Name: "Shell", Arguments: "{}"},
+			{ID: "c2", Name: "Read", Arguments: "{}"},
+		}},
+		{Role: "tool", ToolCallID: "c1", ToolName: "Shell", ToolArguments: "{}", Content: "Error: command failed with exit code 1\n\nDo NOT retry..."},
+		{Role: "tool", ToolCallID: "c2", ToolName: "Read", ToolArguments: "{}", Content: "file content here"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{
+			{ID: "c3", Name: "Grep", Arguments: "{}"},
+		}},
+		{Role: "tool", ToolCallID: "c3", ToolName: "Grep", ToolArguments: "{}", Content: "Error: pattern not found"},
+	}
+	history := channel.ConvertMessagesToHistory(msgs)
+
+	if len(history) != 2 {
+		t.Fatalf("expected 2 messages (user + assistant), got %d", len(history))
+	}
+	assertRole(t, history[0], "user")
+	assertRole(t, history[1], "assistant")
+
+	if len(history[1].Iterations) != 2 {
+		t.Fatalf("expected 2 iterations, got %d", len(history[1].Iterations))
+	}
+
+	// Iteration 1: Shell failed (error), Read succeeded (done)
+	iter1 := history[1].Iterations[0]
+	if len(iter1.Tools) != 2 {
+		t.Fatalf("expected 2 tools in iter 1, got %d", len(iter1.Tools))
+	}
+	if iter1.Tools[0].Name != "Shell" || iter1.Tools[0].Status != "error" {
+		t.Errorf("expected Shell status=error, got name=%s status=%s", iter1.Tools[0].Name, iter1.Tools[0].Status)
+	}
+	if iter1.Tools[1].Name != "Read" || iter1.Tools[1].Status != "done" {
+		t.Errorf("expected Read status=done, got name=%s status=%s", iter1.Tools[1].Name, iter1.Tools[1].Status)
+	}
+
+	// Iteration 2: Grep failed (error)
+	iter2 := history[1].Iterations[1]
+	if len(iter2.Tools) != 1 {
+		t.Fatalf("expected 1 tool in iter 2, got %d", len(iter2.Tools))
+	}
+	if iter2.Tools[0].Name != "Grep" || iter2.Tools[0].Status != "error" {
+		t.Errorf("expected Grep status=error, got name=%s status=%s", iter2.Tools[0].Name, iter2.Tools[0].Status)
+	}
+}

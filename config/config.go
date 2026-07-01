@@ -375,11 +375,11 @@ var configTypeSchema = map[string]map[string]fieldType{
 	},
 	"oauth": {
 		"enable": ftBool,
-		"port":    ftInt,
+		"port":   ftInt,
 	},
 	"pprof": {
 		"enable": ftBool,
-		"port":    ftInt,
+		"port":   ftInt,
 	},
 	"feishu": {
 		"enabled": ftBool,
@@ -407,7 +407,7 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"ws_port": ftInt,
 	},
 	"event_webhook": {
-		"enable":         ftBool,
+		"enable":        ftBool,
 		"port":          ftInt,
 		"max_body_size": ftInt64,
 		"rate_limit":    ftInt,

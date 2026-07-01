@@ -393,6 +393,7 @@ func (m *cliModel) resetToIdleState() {
 	m.quickSwitchCursor = 0
 	m.quickSwitchFiltering = false
 	m.quickSwitchReturnToPanel = false
+	m.quickSwitchScrollY = 0
 
 	// --- Command Palette ---
 	m.paletteOpen = false

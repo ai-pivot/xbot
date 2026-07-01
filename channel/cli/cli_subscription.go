@@ -238,14 +238,15 @@ func (m *cliModel) refreshCachedThinkingMode() {
 
 // thinkingModeLabel renders the status-bar indicator for the current global
 // thinking mode. "" = auto (provider default), "enabled" = on, "disabled" = off.
+// Compact ASCII format for clean terminal rendering.
 func (m *cliModel) thinkingModeLabel() string {
 	switch m.cachedThinkingMode {
 	case "enabled":
-		return "🧠 on"
+		return m.styles.Accent.Render("think+")
 	case "disabled":
-		return "🧠 off"
+		return m.styles.TextMutedSt.Render("think-")
 	default:
-		return "🧠 auto"
+		return m.styles.TextMutedSt.Render("think")
 	}
 }
 

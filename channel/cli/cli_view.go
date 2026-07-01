@@ -293,10 +293,10 @@ func (m *cliModel) renderReadyStatus() string {
 	m.modelNameZoneXEnd = -1
 	if m.cachedModelName != "" {
 		modelHint := m.cachedModelName
-		// Show "订阅名 · 模型名" so models served by different subscriptions are
+		// Show "模型名(订阅名)" so models served by different subscriptions are
 		// distinguishable. On narrow screens fall back to the model name only.
 		if m.cachedSubName != "" && !m.isNarrow() {
-			modelHint = m.cachedSubName + " · " + m.cachedModelName
+			modelHint = m.cachedModelName + "(" + m.cachedSubName + ")"
 		}
 		// Track X position of the model name part for click detection.
 		// The model name is: prefixBeforeModel + modelHint
@@ -318,7 +318,7 @@ func (m *cliModel) renderReadyStatus() string {
 	m.thinkingZoneXStart = -1
 	m.thinkingZoneXEnd = -1
 	if !m.isNarrow() {
-		thinkingHint := m.thinkingModeLabel() + " [Ctrl+M]"
+		thinkingHint := m.thinkingModeLabel()
 		thinkingIdx := len(readyParts) // index where the indicator will be appended
 		prefixBeforeThinking := ""
 		if thinkingIdx > 0 {
