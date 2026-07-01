@@ -205,6 +205,17 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.progressState.lastSeq = msg.payload.Seq
 	}
 
+	// Stream-only detection — MUST run before auto-start guard.
+	// Stream-only events (StreamContent, ReasoningStreamContent, StreamingTools,
+	// StreamTokens) have Phase="" and Iteration=0. Without this check here,
+	// the auto-start guard below sees Phase != "done" and triggers
+	// startAgentTurn() when typing=false — creating a DUPLICATE assistant
+	// message. This is the root cause of the double-assistant bug.
+	isStreamOnly := msg.payload != nil &&
+		msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
+		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
+			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
+
 	// New turn's first non-PhaseDone progress clears the cancel flag.
 	// This allows the new turn (started by bg notification injection or queue flush)
 	// to receive progress events, while still blocking stale progress from the
@@ -223,6 +234,10 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 
 	// Auto-start turn: when receiving progress for current session but not typing,
 	// start the turn. This handles first-switch to a running SubAgent session.
+	// Guard: !isStreamOnly — stream-only events are high-frequency streaming
+	// updates (content, reasoning, tool args, token counts), NOT turn-start
+	// signals. Without this guard, a StreamTokens-only event arriving after
+	// endAgentTurn (typing=false) triggers startAgentTurn → duplicate assistant.
 	// Guard: !suLoading — during session switch in remote mode, progress events
 	// from the old session may arrive before the RPC reconciles state. Starting
 	// a turn here would create an inconsistent state with no message history loaded.
@@ -230,7 +245,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// turn is paused (not ended). Late progress events from the engine must not
 	// trigger startAgentTurn → resetProgressState, which clears iterationHistory
 	// and makes all previous iterations disappear.
-	if !m.typing && !m.splashState.suLoading && !m.splashState.compReloading && msg.payload != nil && msg.payload.Phase != "done" && m.panelState.mode != "askuser" {
+	if !m.typing && !isStreamOnly && !m.splashState.suLoading && !m.splashState.compReloading && msg.payload != nil && msg.payload.Phase != "done" && m.panelState.mode != "askuser" {
 		log.WithFields(log.Fields{
 			"phase":     msg.payload.Phase,
 			"iteration": msg.payload.Iteration,
@@ -258,16 +273,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// Stream-only payloads (from StreamContentFunc/StreamReasoningFunc/
 	// StreamToolCallFunc/StreamUsageFunc) only carry stream fields. Merge
 	// into existing progress instead of replacing to preserve tool/iteration
-	// state. Without StreamTokens in this check, usage-only events (Phase="",
-	// Iteration=0, StreamTokens>0, nothing else) fall through to the structured
-	// path and REPLACE m.progressState.current with an empty shell — wiping
-	// Phase/Iteration/ActiveTools. This causes flickering (progress state gone
-	// → next real event restores it → repeat) and can trigger startAgentTurn
-	// (Phase != "done") creating a duplicate streaming assistant message.
-	isStreamOnly := msg.payload != nil &&
-		msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
-		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
-			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
+	// state. isStreamOnly is computed above (before auto-start guard).
 	if isStreamOnly {
 		if m.progressState.current != nil {
 			if msg.payload.StreamContent != "" {
