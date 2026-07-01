@@ -214,9 +214,9 @@ func TestFileCreateTool_RewriteFileSizeLimit(t *testing.T) {
 	}
 	tool := &FileCreateTool{}
 	input, _ := json.Marshal(map[string]any{
-		"path":     largeFile,
-		"content":  "new",
-		"rewrite":  true,
+		"path":    largeFile,
+		"content": "new",
+		"rewrite": true,
 	})
 	_, err := tool.Execute(toolCtx, string(input))
 
