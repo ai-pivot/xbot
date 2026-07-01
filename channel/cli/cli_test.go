@@ -715,9 +715,11 @@ func TestCLIModelUpdateProgressDone(t *testing.T) {
 
 	_, _ = model.Update(progMsg)
 
-	// Progress should be cleared when phase is "done"
-	if model.progressState.current != nil {
-		t.Error("Progress should be nil after done phase")
+	// After "done" phase: endAgentTurn is called but no longer clears
+	// progressState.current (kept for flicker-free rendering between
+	// PhaseDone and handleAgentMessage). typing should be false.
+	if model.typing {
+		t.Error("typing should be false after done phase")
 	}
 }
 

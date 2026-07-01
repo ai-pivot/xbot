@@ -335,11 +335,14 @@ func (m *cliModel) updateStreamingOnly() {
 	msg := &m.messages[m.streamingMsgIdx]
 	s := &m.styles
 
-	// When there's no iteration data yet (turn just started, no progress arrived),
-	// fall back to the full renderMessage path. This is a brief transitional state
-	// that resolves within the first progress event.
+	// When there's no live iteration data (turn just started with no progress,
+	// OR turn ended and progress was cleared by endAgentTurn), fall back to
+	// the full renderMessage path. renderMessage handles both cases:
+	// - No iterations: renders content as plain text
+	// - Baked iterations (post-endAgentTurn): renders via msg.iterations
+	// This keeps the viewport stable between PhaseDone and handleAgentMessage.
 	hasIterData := len(m.progressState.iterations) > 0 || m.progressState.current != nil
-	if !hasIterData && len(msg.iterations) == 0 {
+	if !hasIterData {
 		var sb strings.Builder
 		sb.WriteString(m.rc.history)
 		msg.dirty = true
