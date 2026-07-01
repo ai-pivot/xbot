@@ -128,12 +128,6 @@ func (pm *PluginManager) SetWorkDir(wd string) {
 	// no-op
 }
 
-// WorkDir is deprecated. Returns empty string.
-// CWD is now managed by TenantSession as the single source of truth.
-func (pm *PluginManager) WorkDir() string {
-	return ""
-}
-
 // RefreshWorkDir updates the working directory on ALL active plugin contexts.
 // Call this when the session CWD changes (e.g. after Cd) so script plugins
 // re-execute in the new directory.
@@ -469,23 +463,7 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 		// Find plugin directory
 		pluginDir := pm.findPluginDir(dirs, m.ID)
 
-		entry := &PluginEntry{
-			Manifest: m,
-			State:    StateDiscovered,
-			Dir:      pluginDir,
-		}
-
-		// Create storage for this plugin
-		storage, err := NewFileStorage(pluginDir)
-		if err != nil {
-			log.WithField("plugin", m.ID).Warn("Failed to create storage: ", err)
-			storage = &noopStorage{}
-		}
-
-		// Create PluginContext with per-plugin log writer
-		logger := newPluginLogger(m.ID, pm.logMgr)
-		entry.Context = newPluginContext(m, storage, logger, pm.bus, pm.configStore, pm)
-		entry.Context.SetWidgetRegistry(pm.widgetRegistry)
+		entry := pm.newEntry(m, pluginDir, nil)
 
 		// Create runtime instance
 		if pm.runtimeFactory != nil {
@@ -511,6 +489,25 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 	}
 
 	return loaded, nil
+}
+
+// newEntry creates a PluginEntry with storage, logger, and context.
+// Shared by Discover, Register, Reload, and InstallPlugin.
+func (pm *PluginManager) newEntry(m *PluginManifest, pluginDir string, p Plugin) *PluginEntry {
+	storage, err := NewFileStorage(pluginDir)
+	if err != nil {
+		log.WithField("plugin", m.ID).Warn("Failed to create storage: ", err)
+		storage = &noopStorage{}
+	}
+	entry := &PluginEntry{
+		Manifest: m,
+		State:    StateDiscovered,
+		Dir:      pluginDir,
+		Plugin:   p,
+		Context:  newPluginContext(m, storage, newPluginLogger(m.ID, pm.logMgr), pm.bus, pm.configStore, pm),
+	}
+	entry.Context.SetWidgetRegistry(pm.widgetRegistry)
+	return entry
 }
 
 // findPluginDir locates the directory containing the plugin.
@@ -820,19 +817,7 @@ func (pm *PluginManager) Register(p Plugin) error {
 	}
 
 	pluginDir := filepath.Join(pm.xbotHome, "plugins", m.ID)
-	storage, err := NewFileStorage(pluginDir)
-	if err != nil {
-		storage = &noopStorage{}
-	}
-
-	entry := &PluginEntry{
-		Manifest: &m,
-		Plugin:   p,
-		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID, pm.logMgr), pm.bus, pm.configStore, pm),
-		State:    StateDiscovered,
-		Dir:      pluginDir,
-	}
-	entry.Context.SetWidgetRegistry(pm.widgetRegistry)
+	entry := pm.newEntry(&m, pluginDir, p)
 
 	pm.entries[m.ID] = entry
 	log.WithField("plugin", m.ID).Info("Native plugin registered")

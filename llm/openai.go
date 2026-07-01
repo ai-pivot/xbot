@@ -819,11 +819,6 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 		}
 	}
 	if err != nil {
-		log.Ctx(ctx).WithFields(log.Fields{
-			"provider": "openai",
-			"duration": time.Since(startTime).String(),
-			"error":    err.Error(),
-		}).Error("[LLM] Request failed")
 		return nil, fmt.Errorf("openai chat completion: %w", err)
 	}
 
@@ -967,21 +962,11 @@ func (o *OpenAILLM) newStreamingWithRetry(ctx context.Context, model string, mes
 			stream = o.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 			if retryErr := stream.Err(); retryErr != nil {
 				stream.Close()
-				log.Ctx(ctx).WithFields(log.Fields{
-					"provider": "openai", "model": model, "base_url": o.baseURL,
-					"error":    retryErr.Error(),
-					"raw_tail": o.captureStreamTail(),
-				}).Error("[LLM] Stream init error (after max_tokens retry)")
 				return nil, retryErr
 			}
 			return stream, nil
 		}
 		stream.Close()
-		log.Ctx(ctx).WithFields(log.Fields{
-			"provider": "openai", "model": model, "base_url": o.baseURL,
-			"error":    err.Error(),
-			"raw_tail": o.captureStreamTail(),
-		}).Error("[LLM] Stream init error")
 		return nil, err
 	}
 	return stream, nil
@@ -1127,9 +1112,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 			"base_url":    o.baseURL,
 			"chunk_count": chunkCount,
 			"duration":    time.Since(startTime).String(),
-			"error":       err.Error(),
-			"raw_tail":    o.captureStreamTail(),
-		}).Error("[LLM] Stream error")
+		}).Warn("[LLM] Stream error: " + err.Error())
 		eventChan <- StreamEvent{
 			Type:  EventError,
 			Error: err.Error(),
@@ -1265,20 +1248,3 @@ func (r *tailReader) Read(p []byte) (int, error) {
 }
 
 func (r *tailReader) Close() error { return r.inner.Close() }
-
-// captureStreamTail returns a truncated string of the captured streaming
-// response body tail, for inclusion in error logs. Resets the buffer.
-func (o *OpenAILLM) captureStreamTail() string {
-	o.streamBodyMu.Lock()
-	tail := make([]byte, len(o.streamBodyTail))
-	copy(tail, o.streamBodyTail)
-	o.streamBodyTail = o.streamBodyTail[:0]
-	o.streamBodyMu.Unlock()
-
-	s := string(tail)
-	const maxLogLen = 2000
-	if len(s) > maxLogLen {
-		s = "..." + s[len(s)-maxLogLen:]
-	}
-	return s
-}

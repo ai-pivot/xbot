@@ -137,14 +137,14 @@ func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessag
 	var rows *sql.Rows
 	if boundaryID.Valid {
 		rows, err = conn.Query(`
-			SELECT role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at
+			SELECT `+sessionMessageSelectCols+`
 				FROM session_messages
 				WHERE tenant_id = ? AND id >= ? AND COALESCE(display_only, 0) = 0
 				ORDER BY id ASC
 			`, tenantID, boundaryID.Int64)
 	} else {
 		rows, err = conn.Query(`
-				SELECT role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at
+				SELECT `+sessionMessageSelectCols+`
 				FROM session_messages
 				WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0
 				ORDER BY id ASC
@@ -172,7 +172,7 @@ func (s *SessionService) GetAllMessages(tenantID int64) ([]llm.ChatMessage, erro
 		return nil, err
 	}
 	rows, err := conn.Query(`
-		SELECT role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at
+		SELECT `+sessionMessageSelectCols+`
 		FROM session_messages
 		WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0
 		ORDER BY id ASC

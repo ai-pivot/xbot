@@ -416,17 +416,11 @@ func (a *AnthropicLLM) Generate(ctx context.Context, model string, messages []Ch
 	startTime := time.Now()
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
-		log.Ctx(ctx).WithError(err).WithField("provider", "anthropic").Error("[LLM] Request failed")
 		return nil, fmt.Errorf("anthropic API request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		log.Ctx(ctx).WithFields(log.Fields{
-			"provider":    "anthropic",
-			"status_code": resp.StatusCode,
-			"body":        string(bodyBytes),
-		}).Error("[LLM] API error")
 		return nil, fmt.Errorf("anthropic API error: status=%d, body=%s", resp.StatusCode, string(bodyBytes))
 	}
 	var apiResp anthropicResp
@@ -532,17 +526,11 @@ func (a *AnthropicLLM) GenerateStream(ctx context.Context, model string, message
 	startTime := time.Now()
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
-		log.Ctx(ctx).WithError(err).WithField("provider", "anthropic").Error("[LLM] Request failed")
 		return nil, fmt.Errorf("anthropic streaming API request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		log.Ctx(ctx).WithFields(log.Fields{
-			"provider":    "anthropic",
-			"status_code": resp.StatusCode,
-			"body":        string(bodyBytes),
-		}).Error("[LLM] API error")
 		return nil, fmt.Errorf("anthropic API error: status=%d, body=%s", resp.StatusCode, string(bodyBytes))
 	}
 	eventChan := make(chan StreamEvent, 100)

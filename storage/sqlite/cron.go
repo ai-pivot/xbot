@@ -86,20 +86,10 @@ func (s *CronService) GetJob(id string) (*CronJob, error) {
 		return nil, fmt.Errorf("scan cron job: %w", err)
 	}
 
-	var parseErr error
-	job.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
-	if parseErr != nil {
-		return nil, fmt.Errorf("parse created_at %q: %w", createdAt, parseErr)
-	}
-	job.NextRun, parseErr = time.Parse(time.RFC3339, nextRun)
-	if parseErr != nil {
-		return nil, fmt.Errorf("parse next_run %q: %w", nextRun, parseErr)
-	}
+	job.CreatedAt = parseSQLiteTime(createdAt)
+	job.NextRun = parseSQLiteTime(nextRun)
 	if lastTriggerStr != nil {
-		t, err := time.Parse(time.RFC3339, *lastTriggerStr)
-		if err != nil {
-			return nil, fmt.Errorf("parse last_trigger %q: %w", *lastTriggerStr, err)
-		}
+		t := parseSQLiteTime(*lastTriggerStr)
 		job.LastTrigger = &t
 	}
 	return job, nil
@@ -126,20 +116,10 @@ func (s *CronService) ListJobsBySender(senderID string) ([]*CronJob, error) {
 			&job.EverySeconds, &job.DelaySeconds, &job.At, &createdAt, &nextRun, &lastTriggerStr, &job.OneShot); err != nil {
 			return nil, fmt.Errorf("scan cron job row: %w", err)
 		}
-		var parseErr error
-		job.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse created_at %q for job %s: %w", createdAt, job.ID, parseErr)
-		}
-		job.NextRun, parseErr = time.Parse(time.RFC3339, nextRun)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse next_run %q for job %s: %w", nextRun, job.ID, parseErr)
-		}
+		job.CreatedAt = parseSQLiteTime(createdAt)
+		job.NextRun = parseSQLiteTime(nextRun)
 		if lastTriggerStr != nil {
-			t, err := time.Parse(time.RFC3339, *lastTriggerStr)
-			if err != nil {
-				return nil, fmt.Errorf("parse last_trigger %q for job %s: %w", *lastTriggerStr, job.ID, err)
-			}
+			t := parseSQLiteTime(*lastTriggerStr)
 			job.LastTrigger = &t
 		}
 		jobs = append(jobs, job)
@@ -171,20 +151,10 @@ func (s *CronService) ListAllJobs() ([]*CronJob, error) {
 			&job.EverySeconds, &job.DelaySeconds, &job.At, &createdAt, &nextRun, &lastTriggerStr, &job.OneShot); err != nil {
 			return nil, fmt.Errorf("scan cron job row: %w", err)
 		}
-		var parseErr error
-		job.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse created_at %q for job %s: %w", createdAt, job.ID, parseErr)
-		}
-		job.NextRun, parseErr = time.Parse(time.RFC3339, nextRun)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse next_run %q for job %s: %w", nextRun, job.ID, parseErr)
-		}
+		job.CreatedAt = parseSQLiteTime(createdAt)
+		job.NextRun = parseSQLiteTime(nextRun)
 		if lastTriggerStr != nil {
-			t, err := time.Parse(time.RFC3339, *lastTriggerStr)
-			if err != nil {
-				return nil, fmt.Errorf("parse last_trigger %q for job %s: %w", *lastTriggerStr, job.ID, err)
-			}
+			t := parseSQLiteTime(*lastTriggerStr)
 			job.LastTrigger = &t
 		}
 		jobs = append(jobs, job)
@@ -281,7 +251,7 @@ func (s *CronService) MigrateFromJSON(dataDir string) error {
 
 		// Parse created_at
 		if old.CreatedAt != "" {
-			job.CreatedAt, _ = time.Parse(time.RFC3339, old.CreatedAt)
+			job.CreatedAt = parseSQLiteTime(old.CreatedAt)
 		}
 		if job.CreatedAt.IsZero() {
 			job.CreatedAt = now
@@ -290,9 +260,10 @@ func (s *CronService) MigrateFromJSON(dataDir string) error {
 		// Calculate next_run and one_shot
 		job.OneShot = job.At != "" || job.DelaySeconds > 0
 		if job.At != "" {
-			t, err := time.ParseInLocation("2006-01-02T15:04:05", job.At, time.Local)
-			if err != nil {
-				t, _ = time.Parse(time.RFC3339, job.At)
+			var t time.Time
+			t, _ = time.ParseInLocation("2006-01-02T15:04:05", job.At, time.Local)
+			if t.IsZero() {
+				t = parseSQLiteTime(job.At)
 			}
 			job.NextRun = t
 		} else if job.DelaySeconds > 0 {

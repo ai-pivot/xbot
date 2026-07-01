@@ -215,6 +215,8 @@ type cliModel struct {
 	quickSwitchShowAll       bool                // show noise models (image/realtime/…)
 	quickSwitchRefreshing    bool                // /models refresh in flight
 	quickSwitchReturnToPanel bool                // return to settings panel after close
+	quickSwitchScrollY       int                 // vertical scroll offset for the panel
+	quickSwitchCachedData    llmData             // cached source for filter mode (avoids per-keystroke RPC)
 	subscriptionMgr          SubscriptionManager // injected by CLIChannel
 	llmSubscriber            LLMSubscriber       // injected by CLIChannel
 	cachedSubName            string              // owning subscription display name for status bar

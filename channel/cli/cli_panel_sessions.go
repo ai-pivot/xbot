@@ -456,10 +456,8 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 	// SaveSessionLLMState writes ALL fields (sub, model, maxContext, maxOutput) in one shot.
 	if m.activeSubID != "" {
 		SaveSessionLLMState(m.workDir, chatID, SessionLLMState{
-			SubscriptionID:   m.activeSubID,
-			Model:            m.cachedModelName,
-			MaxContextTokens: m.cachedMaxContextTokens,
-			MaxOutputTokens:  int(m.cachedMaxOutputTokens),
+			SubscriptionID: m.activeSubID,
+			Model:          m.cachedModelName,
 		}, m.remoteMode)
 	}
 	m.chatID = chatID

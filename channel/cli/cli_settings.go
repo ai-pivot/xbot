@@ -265,9 +265,9 @@ func (m *cliModel) saveSettings(values map[string]string) {
 						}
 						// Update local cache so the context bar reflects the new value immediately.
 						m.cachedMaxContextTokens = n
-						// Persist to session JSON so it survives session switches.
+						// DB is the single source of truth — no local JSON persistence.
+						// SaveSessionLLMState only persists SubscriptionID + Model.
 						existing := LoadSessionLLMState(m.workDir, m.chatID)
-						existing.MaxContextTokens = n
 						SaveSessionLLMState(m.workDir, m.chatID, existing, m.remoteMode)
 					}
 				}

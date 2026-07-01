@@ -159,7 +159,7 @@ func (h *Handler) Dispatch(msg runnerproto.RunnerMessage) *runnerproto.RunnerMes
 	h.ensureManagers()
 
 	switch msg.Type {
-	case "exec":
+	case runnerproto.ProtoExec:
 		return h.handleExec(msg)
 	case runnerproto.ProtoBgExec:
 		return h.handleBgExec(msg)
@@ -171,21 +171,21 @@ func (h *Handler) Dispatch(msg runnerproto.RunnerMessage) *runnerproto.RunnerMes
 		return handleLLMGenerate(msg, h.LLMClient, h.LogFunc)
 	case runnerproto.ProtoLLMModels:
 		return handleLLMModels(msg, h.LLMClient, h.LLMModels, h.LogFunc)
-	case "read_file":
+	case runnerproto.ProtoReadFile:
 		return h.handleReadFile(msg)
-	case "write_file":
+	case runnerproto.ProtoWriteFile:
 		return h.handleWriteFile(msg)
-	case "stat":
+	case runnerproto.ProtoStat:
 		return h.handleStat(msg)
-	case "read_dir":
+	case runnerproto.ProtoReadDir:
 		return h.handleReadDir(msg)
-	case "mkdir_all":
+	case runnerproto.ProtoMkdirAll:
 		return h.handleMkdirAll(msg)
-	case "remove":
+	case runnerproto.ProtoRemove:
 		return h.handleRemove(msg)
-	case "remove_all":
+	case runnerproto.ProtoRemoveAll:
 		return h.handleRemoveAll(msg)
-	case "download_file":
+	case runnerproto.ProtoDownloadFile:
 		return h.handleDownloadFile(msg)
 	case runnerproto.ProtoStdioStart:
 		return h.stdioMgr.HandleStart(msg)
@@ -204,6 +204,40 @@ func (h *Handler) DispatchFireAndForget(msg runnerproto.RunnerMessage) {
 	case runnerproto.ProtoStdioWrite:
 		h.stdioMgr.HandleWrite(msg)
 	}
+}
+
+// handleFileOp is a generic template for file operation handlers.
+// It handles the common pattern: Unmarshal → safePath → Execute → Respond.
+//
+// Parameters:
+//   - parseFn: unmarshals msg.Body into request type T
+//   - getPath: extracts the path string from the unmarshaled request
+//   - execFn: performs the actual operation using the safePath and parsed request,
+//     returning the response body (or nil for OK responses) and any error
+//   - respType: the response type constant for runnerproto.MakeResponse;
+//     when empty, the function returns runnerproto.MakeOK
+func handleFileOp[T any](h *Handler, msg runnerproto.RunnerMessage,
+	parseFn func(json.RawMessage) (T, error),
+	getPath func(T) string,
+	execFn func(safePath string, req T) (any, error),
+	respType string,
+) *runnerproto.RunnerMessage {
+	req, err := parseFn(msg.Body)
+	if err != nil {
+		return runnerproto.MakeError(msg.ID, "EINVAL", err.Error())
+	}
+	path, err := h.safePath(getPath(req))
+	if err != nil {
+		return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
+	}
+	result, err := execFn(path, req)
+	if err != nil {
+		return runnerproto.MakeError(msg.ID, runnerproto.ProtoErrorCode(err), err.Error())
+	}
+	if respType == "" {
+		return runnerproto.MakeOK(msg.ID)
+	}
+	return runnerproto.MakeResponse(msg.ID, respType, result)
 }
 
 func (h *Handler) handleExec(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {
@@ -253,172 +287,192 @@ func (h *Handler) handleExec(msg runnerproto.RunnerMessage) *runnerproto.RunnerM
 }
 
 func (h *Handler) handleReadFile(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {
-	var req runnerproto.ReadFileRequest
-	if err := json.Unmarshal(msg.Body, &req); err != nil {
-		return runnerproto.MakeError(msg.ID, "EINVAL", err.Error())
-	}
-	path, err := h.safePath(req.Path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
-	}
-	data, err := h.Executor.ReadFile(path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, runnerproto.ProtoErrorCode(err), err.Error())
-	}
-	if h.Verbose {
-		callLogf(h.LogFunc, "  read_file %s (%d bytes)", req.Path, len(data))
-	}
-	return runnerproto.MakeResponse(msg.ID, "file_content", runnerproto.FileContentResponse{
-		Data: base64.StdEncoding.EncodeToString(data),
-	})
+	return handleFileOp(h, msg,
+		func(raw json.RawMessage) (runnerproto.ReadFileRequest, error) {
+			var req runnerproto.ReadFileRequest
+			err := json.Unmarshal(raw, &req)
+			return req, err
+		},
+		func(req runnerproto.ReadFileRequest) string { return req.Path },
+		func(safePath string, req runnerproto.ReadFileRequest) (any, error) {
+			data, err := h.Executor.ReadFile(safePath)
+			if err != nil {
+				return nil, err
+			}
+			if h.Verbose {
+				callLogf(h.LogFunc, "  read_file %s (%d bytes)", req.Path, len(data))
+			}
+			return runnerproto.FileContentResponse{
+				Data: base64.StdEncoding.EncodeToString(data),
+			}, nil
+		},
+		"file_content",
+	)
 }
 
 func (h *Handler) handleWriteFile(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {
-	var req runnerproto.WriteFileRequest
-	if err := json.Unmarshal(msg.Body, &req); err != nil {
-		return runnerproto.MakeError(msg.ID, "EINVAL", err.Error())
-	}
-	path, err := h.safePath(req.Path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
-	}
-	data, err := base64.StdEncoding.DecodeString(req.Data)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EINVAL", "invalid base64: "+err.Error())
-	}
-	if err := h.Executor.WriteFile(path, data, os.FileMode(req.Perm)); err != nil {
-		return runnerproto.MakeError(msg.ID, runnerproto.ProtoErrorCode(err), err.Error())
-	}
-	if h.Verbose {
-		callLogf(h.LogFunc, "  write_file %s (%d bytes)", req.Path, len(data))
-	}
-	return runnerproto.MakeOK(msg.ID)
+	return handleFileOp(h, msg,
+		func(raw json.RawMessage) (runnerproto.WriteFileRequest, error) {
+			var req runnerproto.WriteFileRequest
+			err := json.Unmarshal(raw, &req)
+			return req, err
+		},
+		func(req runnerproto.WriteFileRequest) string { return req.Path },
+		func(safePath string, req runnerproto.WriteFileRequest) (any, error) {
+			data, err := base64.StdEncoding.DecodeString(req.Data)
+			if err != nil {
+				return nil, err
+			}
+			if err := h.Executor.WriteFile(safePath, data, os.FileMode(req.Perm)); err != nil {
+				return nil, err
+			}
+			if h.Verbose {
+				callLogf(h.LogFunc, "  write_file %s (%d bytes)", req.Path, len(data))
+			}
+			return nil, nil
+		},
+		"",
+	)
 }
 
 func (h *Handler) handleStat(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {
-	var req runnerproto.StatRequest
-	if err := json.Unmarshal(msg.Body, &req); err != nil {
-		return runnerproto.MakeError(msg.ID, "EINVAL", err.Error())
-	}
-	path, err := h.safePath(req.Path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
-	}
-	info, err := h.Executor.Stat(path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, runnerproto.ProtoErrorCode(err), err.Error())
-	}
-	return runnerproto.MakeResponse(msg.ID, "file_info", runnerproto.StatResponse{
-		Name:    info.Name,
-		Size:    info.Size,
-		Mode:    uint32(info.Mode),
-		ModTime: info.ModTime.Format(time.RFC3339),
-		IsDir:   info.IsDir,
-	})
+	return handleFileOp(h, msg,
+		func(raw json.RawMessage) (runnerproto.StatRequest, error) {
+			var req runnerproto.StatRequest
+			err := json.Unmarshal(raw, &req)
+			return req, err
+		},
+		func(req runnerproto.StatRequest) string { return req.Path },
+		func(safePath string, _ runnerproto.StatRequest) (any, error) {
+			info, err := h.Executor.Stat(safePath)
+			if err != nil {
+				return nil, err
+			}
+			return runnerproto.StatResponse{
+				Name:    info.Name,
+				Size:    info.Size,
+				Mode:    uint32(info.Mode),
+				ModTime: info.ModTime.Format(time.RFC3339),
+				IsDir:   info.IsDir,
+			}, nil
+		},
+		"file_info",
+	)
 }
 
 func (h *Handler) handleReadDir(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {
-	var req runnerproto.ReadDirRequest
-	if err := json.Unmarshal(msg.Body, &req); err != nil {
-		return runnerproto.MakeError(msg.ID, "EINVAL", err.Error())
-	}
-	path, err := h.safePath(req.Path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
-	}
-	entries, err := h.Executor.ReadDir(path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, runnerproto.ProtoErrorCode(err), err.Error())
-	}
-	resp := runnerproto.DirEntriesResponse{Entries: make([]runnerproto.DirEntryResponse, 0, len(entries))}
-	for _, e := range entries {
-		resp.Entries = append(resp.Entries, runnerproto.DirEntryResponse{
-			Name:  e.Name,
-			IsDir: e.IsDir,
-			Size:  e.Size,
-		})
-	}
-	if h.Verbose {
-		callLogf(h.LogFunc, "  read_dir %s (%d entries)", req.Path, len(resp.Entries))
-	}
-	return runnerproto.MakeResponse(msg.ID, "dir_entries", resp)
+	return handleFileOp(h, msg,
+		func(raw json.RawMessage) (runnerproto.ReadDirRequest, error) {
+			var req runnerproto.ReadDirRequest
+			err := json.Unmarshal(raw, &req)
+			return req, err
+		},
+		func(req runnerproto.ReadDirRequest) string { return req.Path },
+		func(safePath string, req runnerproto.ReadDirRequest) (any, error) {
+			entries, err := h.Executor.ReadDir(safePath)
+			if err != nil {
+				return nil, err
+			}
+			resp := runnerproto.DirEntriesResponse{Entries: make([]runnerproto.DirEntryResponse, 0, len(entries))}
+			for _, e := range entries {
+				resp.Entries = append(resp.Entries, runnerproto.DirEntryResponse{
+					Name:  e.Name,
+					IsDir: e.IsDir,
+					Size:  e.Size,
+				})
+			}
+			if h.Verbose {
+				callLogf(h.LogFunc, "  read_dir %s (%d entries)", req.Path, len(resp.Entries))
+			}
+			return resp, nil
+		},
+		"dir_entries",
+	)
 }
 
 func (h *Handler) handleMkdirAll(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {
-	var req runnerproto.PathRequest
-	if err := json.Unmarshal(msg.Body, &req); err != nil {
-		return runnerproto.MakeError(msg.ID, "EINVAL", err.Error())
-	}
-	path, err := h.safePath(req.Path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
-	}
-	if err := h.Executor.MkdirAll(path, os.FileMode(req.Perm)); err != nil {
-		return runnerproto.MakeError(msg.ID, runnerproto.ProtoErrorCode(err), err.Error())
-	}
-	if h.Verbose {
-		callLogf(h.LogFunc, "  mkdir_all %s", req.Path)
-	}
-	return runnerproto.MakeOK(msg.ID)
+	return handleFileOp(h, msg,
+		func(raw json.RawMessage) (runnerproto.PathRequest, error) {
+			var req runnerproto.PathRequest
+			err := json.Unmarshal(raw, &req)
+			return req, err
+		},
+		func(req runnerproto.PathRequest) string { return req.Path },
+		func(safePath string, req runnerproto.PathRequest) (any, error) {
+			if err := h.Executor.MkdirAll(safePath, os.FileMode(req.Perm)); err != nil {
+				return nil, err
+			}
+			if h.Verbose {
+				callLogf(h.LogFunc, "  mkdir_all %s", req.Path)
+			}
+			return nil, nil
+		},
+		"",
+	)
 }
 
 func (h *Handler) handleRemove(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {
-	var req runnerproto.PathRequest
-	if err := json.Unmarshal(msg.Body, &req); err != nil {
-		return runnerproto.MakeError(msg.ID, "EINVAL", err.Error())
-	}
-	path, err := h.safePath(req.Path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
-	}
-	if err := h.Executor.Remove(path); err != nil {
-		return runnerproto.MakeError(msg.ID, runnerproto.ProtoErrorCode(err), err.Error())
-	}
-	if h.Verbose {
-		callLogf(h.LogFunc, "  remove %s", req.Path)
-	}
-	return runnerproto.MakeOK(msg.ID)
+	return handleFileOp(h, msg,
+		func(raw json.RawMessage) (runnerproto.PathRequest, error) {
+			var req runnerproto.PathRequest
+			err := json.Unmarshal(raw, &req)
+			return req, err
+		},
+		func(req runnerproto.PathRequest) string { return req.Path },
+		func(safePath string, req runnerproto.PathRequest) (any, error) {
+			if err := h.Executor.Remove(safePath); err != nil {
+				return nil, err
+			}
+			if h.Verbose {
+				callLogf(h.LogFunc, "  remove %s", req.Path)
+			}
+			return nil, nil
+		},
+		"",
+	)
 }
 
 func (h *Handler) handleRemoveAll(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {
-	var req runnerproto.PathRequest
-	if err := json.Unmarshal(msg.Body, &req); err != nil {
-		return runnerproto.MakeError(msg.ID, "EINVAL", err.Error())
-	}
-	path, err := h.safePath(req.Path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
-	}
-	if err := h.Executor.RemoveAll(path); err != nil {
-		return runnerproto.MakeError(msg.ID, runnerproto.ProtoErrorCode(err), err.Error())
-	}
-	if h.Verbose {
-		callLogf(h.LogFunc, "  remove_all %s", req.Path)
-	}
-	return runnerproto.MakeOK(msg.ID)
+	return handleFileOp(h, msg,
+		func(raw json.RawMessage) (runnerproto.PathRequest, error) {
+			var req runnerproto.PathRequest
+			err := json.Unmarshal(raw, &req)
+			return req, err
+		},
+		func(req runnerproto.PathRequest) string { return req.Path },
+		func(safePath string, req runnerproto.PathRequest) (any, error) {
+			if err := h.Executor.RemoveAll(safePath); err != nil {
+				return nil, err
+			}
+			if h.Verbose {
+				callLogf(h.LogFunc, "  remove_all %s", req.Path)
+			}
+			return nil, nil
+		},
+		"",
+	)
 }
 
 func (h *Handler) handleDownloadFile(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {
-	var req runnerproto.DownloadFileRequest
-	if err := json.Unmarshal(msg.Body, &req); err != nil {
-		return runnerproto.MakeError(msg.ID, "EINVAL", err.Error())
-	}
-	path, err := h.safePath(req.OutputPath)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EPERM", err.Error())
-	}
-
-	// 5 分钟超时
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	size, err := h.Executor.DownloadFile(ctx, req.URL, path)
-	if err != nil {
-		return runnerproto.MakeError(msg.ID, "EIO", "download failed: "+err.Error())
-	}
-
-	callLogf(h.LogFunc, "  download_file %s → %s (%d bytes)", req.URL, req.OutputPath, size)
-	return runnerproto.MakeResponse(msg.ID, runnerproto.ProtoOK, runnerproto.DownloadFileResponse{Size: size})
+	return handleFileOp(h, msg,
+		func(raw json.RawMessage) (runnerproto.DownloadFileRequest, error) {
+			var req runnerproto.DownloadFileRequest
+			err := json.Unmarshal(raw, &req)
+			return req, err
+		},
+		func(req runnerproto.DownloadFileRequest) string { return req.OutputPath },
+		func(safePath string, req runnerproto.DownloadFileRequest) (any, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			size, err := h.Executor.DownloadFile(ctx, req.URL, safePath)
+			if err != nil {
+				return nil, err
+			}
+			callLogf(h.LogFunc, "  download_file %s → %s (%d bytes)", req.URL, req.OutputPath, size)
+			return runnerproto.DownloadFileResponse{Size: size}, nil
+		},
+		runnerproto.ProtoOK,
+	)
 }
 
 func (h *Handler) handleBgExec(msg runnerproto.RunnerMessage) *runnerproto.RunnerMessage {

@@ -678,7 +678,9 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 
 	// Get old name
 	row = conn.QueryRow(`SELECT label FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?`, ch, senderID, chatID)
-	_ = row.Scan(&oldName)
+	if err := row.Scan(&oldName); err != nil {
+		log.Warn("Failed to scan old name: ", err)
+	}
 	if oldName == "" {
 		_, oldName = cli.ParseChatID(chatID)
 	}
@@ -1828,7 +1830,9 @@ func (a *Agent) Run(ctx context.Context) error {
 								a.addReactionToMessage(msg.Channel, msg.ChatID, id, "CrossMark")
 							}
 						}
-						_ = a.sendMessage(msg.Channel, msg.ChatID, "⚠️ 已取消请求", cancelMeta)
+						if err := a.sendMessage(msg.Channel, msg.ChatID, "⚠️ 已取消请求", cancelMeta); err != nil {
+							log.Warn("Failed to send cancel message: ", err)
+						}
 					default:
 						// cancel 信号已发过
 						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
@@ -1837,7 +1841,9 @@ func (a *Agent) Run(ctx context.Context) error {
 					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending
 					a.pendingCancel.Store(cancelKey, true)
 					log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
-					_ = a.sendMessage(msg.Channel, msg.ChatID, "⏳ 请求已排队等待取消", cancelMeta)
+					if err := a.sendMessage(msg.Channel, msg.ChatID, "⏳ 请求已排队等待取消", cancelMeta); err != nil {
+						log.Warn("Failed to send queue message: ", err)
+					}
 				}
 				continue
 			}
@@ -2223,11 +2229,15 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				} else {
 					response.Metadata["cancelled"] = "true"
 				}
-				_ = a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata)
+				if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
+					log.Warn("Failed to send response: ", err)
+				}
 			} else {
 				// No response generated yet (cancelled mid-tool-call) — send empty
 				// message to signal turn end so CLI can clean up typing/progress state.
-				_ = a.sendMessage(msg.Channel, msg.ChatID, "", cancelMeta)
+				if err := a.sendMessage(msg.Channel, msg.ChatID, "", cancelMeta); err != nil {
+					log.Warn("Failed to send cancel ack: ", err)
+				}
 			}
 			// Turn done — response sent, safe to drain bg notifications
 			ss.busy.Store(false)

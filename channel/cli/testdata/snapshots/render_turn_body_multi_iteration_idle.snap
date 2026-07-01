@@ -5,13 +5,13 @@
 
 completed iteration text
 
-  · ✓ Read completed file
-  · ✓ Second completed file search
+  · ✓ Read completed file 200ms
+  · ✓ Second completed file search 100ms
 
 final assistant answer
 
 === idle fallback is skipped when last iteration already has it ===
-  · ✓ Earlier completed tool
+  · ✓ Earlier completed tool 100ms
 
 final assistant answer
 
@@ -20,8 +20,8 @@ final assistant answer
 │ reasoning-only completed iteration                                         │
 ╰────────────────────────────────────────────────────────────────────────────╯
 
-  · ✓ Read after reasoning
-  · ✗ Edit failed after reasoning
+  · ✓ Read after reasoning 100ms
+  · ✗ Edit failed after reasoning 200ms
   · ● Second tool still marked running
 
 === completed content plus tool only ===
@@ -31,15 +31,15 @@ final assistant answer
 
 content-only completed iteration
 
-  · ✓ Run content command
+  · ✓ Run content command 300ms
 
 === completed tools only mixed statuses ===
-  · ✓ First completed tool
-  · ✗ Second failed tool
+  · ✓ First completed tool 100ms
+  · ✗ Second failed tool 200ms
   · ● Third running tool
 
 === multiple tool only iterations with prior done and next running ===
-  · ✓ Previous iteration done
+  · ✓ Previous iteration done 100ms
   · ● Next iteration running
 
 === mixed completed iterations without live progress ===
@@ -49,17 +49,17 @@ content-only completed iteration
 
 content only iteration
 
-  · ✓ tool only iteration
+  · ✓ tool only iteration 100ms
 
 === multiple completed iterations with final content fallback ===
 ╭ Reasoning ─────────────────────────────────────────────────────────────────╮
 │ first completed reasoning                                                  │
 ╰────────────────────────────────────────────────────────────────────────────╯
 
-  · ✓ First completed tool
+  · ✓ First completed tool 100ms
 
 second completed content
 
-  · ✗ Second completed failed
+  · ✗ Second completed failed 200ms
 
 final fallback after multi iter

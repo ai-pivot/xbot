@@ -148,14 +148,12 @@ type dirSessions struct {
 }
 
 type dirSession struct {
-	Name             string   `json:"name"`
-	ChatID           string   `json:"chat_id"`
-	CreatedAt        flexTime `json:"created_at"`
-	CWD              string   `json:"cwd,omitempty"`                // per-session working directory (worktree path, etc.)
-	SubscriptionID   string   `json:"subscription_id,omitempty"`    // per-session subscription override
-	Model            string   `json:"model,omitempty"`              // per-session model override (within subscription)
-	MaxContextTokens int      `json:"max_context_tokens,omitempty"` // per-session max context tokens override
-	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`  // per-session max output tokens override
+	Name           string   `json:"name"`
+	ChatID         string   `json:"chat_id"`
+	CreatedAt      flexTime `json:"created_at"`
+	CWD            string   `json:"cwd,omitempty"`             // per-session working directory (worktree path, etc.)
+	SubscriptionID string   `json:"subscription_id,omitempty"` // per-session subscription override
+	Model          string   `json:"model,omitempty"`           // per-session model override (within subscription)
 }
 
 // sessionsDir returns the directory where per-directory session files are stored.
@@ -441,37 +439,36 @@ func GetLastActiveSession(workDir string) string {
 
 // ── Session LLM state: single source of truth ───────────────
 //
-// All per-session LLM state (subscription, model, max_context, max_output)
-// is stored in the dirSession JSON and accessed ONLY through these two functions.
-// This eliminates the "partial write" class of bugs where SaveSessionLLM and
-// SaveSessionMaxContext independently loaded/modified/saved the JSON file,
-// causing race conditions and state desync.
+// Per-session LLM state (subscription, model) is stored in the dirSession JSON
+// and accessed ONLY through these two functions. max_context and max_output
+// are NOT stored locally — they are always resolved from the DB.
 //
 // RULES:
-//   1. NEVER read dirSession.SubscriptionID/Model/MaxContextTokens directly — use LoadSessionLLMState
+//   1. NEVER read dirSession.SubscriptionID/Model directly — use LoadSessionLLMState
 //   2. NEVER write them individually — use SaveSessionLLMState
-//   3. To derive effective max_context for display, use ResolveEffectiveMaxContext
+//   3. To derive effective max_context/max_output for display, use ResolveEffectiveMaxContext/ResolveEffectiveMaxOutputTokens
+//   4. Context usage (promptTokens) must come from RPC progress events, not local files
 
 // SessionLLMState bundles ALL per-session LLM state.
 // Zero value means "use global defaults".
 type SessionLLMState struct {
-	SubscriptionID   string // active subscription for this session
-	Model            string // active model within the subscription
-	MaxContextTokens int    // per-session max_context override (0 = derive from sub)
-	MaxOutputTokens  int    // per-session max_output_tokens override (0 = derive from sub)
+	SubscriptionID string // active subscription for this session
+	Model          string // active model within the subscription
 }
 
 // IsZero returns true if no LLM state has been configured.
 func (s SessionLLMState) IsZero() bool {
-	return s.SubscriptionID == "" && s.Model == "" && s.MaxContextTokens == 0 && s.MaxOutputTokens == 0
+	return s.SubscriptionID == "" && s.Model == ""
 }
 
 // SaveSessionLLMState atomically writes ALL per-session LLM state to disk.
 // This replaces the old SaveSessionLLM + SaveSessionMaxContext pair.
 // Partial writes are impossible — either all fields are persisted or none.
 //
-// In remote mode (skipBackendFields=true), SubscriptionID/Model/MaxContextTokens
+// In remote mode (skipBackendFields=true), SubscriptionID/Model
 // are NOT written to local JSON — the backend DB is the source of truth.
+// MaxContextTokens/MaxOutputTokens are NEVER stored locally — they are
+// always resolved from the DB (subscription_models table) at display time.
 func SaveSessionLLMState(workDir, chatID string, state SessionLLMState, skipBackendFields ...bool) {
 	// Ephemeral sessions: skip sessions.json persistence entirely.
 	if IsEphemeralChatID(chatID) {
@@ -487,8 +484,6 @@ func SaveSessionLLMState(workDir, chatID string, state SessionLLMState, skipBack
 			if !skipSub {
 				ds.Sessions[i].SubscriptionID = state.SubscriptionID
 				ds.Sessions[i].Model = state.Model
-				ds.Sessions[i].MaxContextTokens = state.MaxContextTokens
-				ds.Sessions[i].MaxOutputTokens = state.MaxOutputTokens
 			}
 			_ = ds.save()
 			return
@@ -506,10 +501,8 @@ func LoadSessionLLMState(workDir, chatID string) SessionLLMState {
 	for i := range ds.Sessions {
 		if ds.Sessions[i].ChatID == chatID {
 			return SessionLLMState{
-				SubscriptionID:   ds.Sessions[i].SubscriptionID,
-				Model:            ds.Sessions[i].Model,
-				MaxContextTokens: ds.Sessions[i].MaxContextTokens,
-				MaxOutputTokens:  ds.Sessions[i].MaxOutputTokens,
+				SubscriptionID: ds.Sessions[i].SubscriptionID,
+				Model:          ds.Sessions[i].Model,
 			}
 		}
 	}
@@ -519,24 +512,19 @@ func LoadSessionLLMState(workDir, chatID string) SessionLLMState {
 // ResolveEffectiveMaxContext derives the effective max_context for a session.
 // Priority (strict, no ambiguity):
 //
-//  1. Session JSON MaxContextTokens (user explicitly set, or inherited from parent)
-//  2. ch.Subscription's PerModelConfigs[model].MaxContext (bound to subscription+model)
-//  3. 0 (caller falls back to schema DefaultValue, typically 200000)
+//  1. ch.Subscription's PerModelConfigs[model].MaxContext (DB: subscription_models table)
+//  2. ch.Subscription's MaxContext (DB: user_llm_subscriptions table)
+//  3. config.DefaultMaxContextTokens (global default)
 //
-// This is the ONLY function that should be called to get max_context for display
-// or runtime use. It replaces the old resolveMaxContextTokens which had broken
-// fallback chains through GetCurrentValues().
+// max_context is NEVER read from local JSON — the DB is the single source of truth.
+// SessionLLMState only carries SubscriptionID + Model (the user's session choice);
+// the actual limits are always resolved from the DB via the subscription manager.
 func ResolveEffectiveMaxContext(state SessionLLMState, subMgr SubscriptionManager) int {
-	// 1. Session JSON override (highest priority — user manually set this)
-	if state.MaxContextTokens > 0 {
-		return state.MaxContextTokens
-	}
-	// 2. ch.Subscription's per-model config
 	if subMgr != nil && state.SubscriptionID != "" {
 		if subs, err := subMgr.List(""); err == nil {
 			for _, sub := range subs {
 				if sub.ID == state.SubscriptionID {
-					// 2a. Per-model config (highest specificity)
+					// 1. Per-model config (highest specificity — from DB)
 					model := state.Model
 					if model == "" {
 						model = sub.Model
@@ -546,7 +534,7 @@ func ResolveEffectiveMaxContext(state SessionLLMState, subMgr SubscriptionManage
 							return pmc.MaxContext
 						}
 					}
-					// 2b. ch.Subscription-level MaxContext (fallback within sub)
+					// 2. Subscription-level MaxContext (from DB)
 					if sub.MaxContext > 0 {
 						return sub.MaxContext
 					}
@@ -555,19 +543,34 @@ func ResolveEffectiveMaxContext(state SessionLLMState, subMgr SubscriptionManage
 			}
 		}
 	}
-	// 3. No override found — use global default
+	// 3. Global default
 	return config.DefaultMaxContextTokens
 }
 
 // ResolveEffectiveMaxOutputTokens derives the effective max_output_tokens for a session.
+//
+// Priority:
+//  1. ch.Subscription's PerModelConfigs[model].MaxOutputTokens (DB: subscription_models table)
+//  2. ch.Subscription's MaxOutputTokens (DB: user_llm_subscriptions table)
+//  3. 0 (caller falls back to config.DefaultMaxOutputTokens)
+//
+// max_output_tokens is NEVER read from local JSON — the DB is the single source of truth.
 func ResolveEffectiveMaxOutputTokens(state SessionLLMState, subMgr SubscriptionManager) int {
-	if state.MaxOutputTokens > 0 {
-		return state.MaxOutputTokens
-	}
 	if subMgr != nil && state.SubscriptionID != "" {
 		if subs, err := subMgr.List(""); err == nil {
 			for _, sub := range subs {
 				if sub.ID == state.SubscriptionID {
+					// 1. Per-model config (highest specificity — from DB)
+					model := state.Model
+					if model == "" {
+						model = sub.Model
+					}
+					if model != "" {
+						if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxOutputTokens > 0 {
+							return pmc.MaxOutputTokens
+						}
+					}
+					// 2. Subscription-level MaxOutputTokens (from DB)
 					return sub.MaxOutputTokens
 				}
 			}
@@ -577,4 +580,5 @@ func ResolveEffectiveMaxOutputTokens(state SessionLLMState, subMgr SubscriptionM
 }
 
 // SaveSessionMaxContext and LoadSessionMaxContext have been removed.
-// Use SaveSessionLLMState/LoadSessionLLMState with MaxContextTokens field instead.
+// MaxContextTokens/MaxOutputTokens are no longer stored in local JSON —
+// they are always resolved from the DB via ResolveEffectiveMaxContext/ResolveEffectiveMaxOutputTokens.

@@ -3,7 +3,6 @@
 package textarea
 
 import (
-	"fmt"
 	"image/color"
 	"slices"
 	"strconv"
@@ -11,17 +10,17 @@ import (
 	"time"
 	"unicode"
 
+	"xbot/internal/textarea/memoization"
+	"xbot/internal/textarea/runeutil"
+
 	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/x/ansi"
 	rw "github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
-	"xbot/internal/textarea/memoization"
-	"xbot/internal/textarea/runeutil"
 )
 
 const (
@@ -204,10 +203,6 @@ type StyleState struct {
 	Prompt           lipgloss.Style
 }
 
-func (s StyleState) computedCursorLine() lipgloss.Style {
-	return s.CursorLine.Inherit(s.Base).Inline(true)
-}
-
 func (s StyleState) computedCursorLineNumber() lipgloss.Style {
 	return s.CursorLineNumber.
 		Inherit(s.CursorLine).
@@ -251,7 +246,7 @@ func (w line) Hash() string {
 	var h uint64 = 14695981039346656037 // offset64
 	for _, r := range w.runes {
 		v := uint32(r)
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			h ^= uint64(v & 0xFF)
 			h *= 1099511628211 // prime64
 			v >>= 8
@@ -259,7 +254,7 @@ func (w line) Hash() string {
 	}
 	// Mix in width to distinguish same content at different widths.
 	v := uint64(w.width)
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		h ^= v & 0xFF
 		h *= 1099511628211
 		v >>= 8
@@ -502,125 +497,9 @@ func (m *Model) updateVirtualCursorStyle() {
 }
 
 // SetValue sets the value of the text input.
-func (m *Model) SetValue(s string) {
-	m.Reset()
-	m.InsertString(s)
-	m.recalculateHeight()
-}
-
 // InsertString inserts a string at the cursor position.
-func (m *Model) InsertString(s string) {
-	m.insertRunesFromUserInput([]rune(s))
-	m.recalculateHeight()
-}
-
 // InsertRune inserts a rune at the cursor position.
-func (m *Model) InsertRune(r rune) {
-	m.insertRunesFromUserInput([]rune{r})
-	m.recalculateHeight()
-}
-
 // insertRunesFromUserInput inserts runes at the current cursor position.
-func (m *Model) insertRunesFromUserInput(runes []rune) {
-	// Clean up any special characters in the input provided by the
-	// clipboard. This avoids bugs due to e.g. tab characters and
-	// whatnot.
-	runes = m.san().Sanitize(runes)
-
-	if m.CharLimit > 0 {
-		availSpace := m.CharLimit - m.Length()
-		// If the char limit's been reached, cancel.
-		if availSpace <= 0 {
-			return
-		}
-		// If there's not enough space to paste the whole thing cut the pasted
-		// runes down so they'll fit.
-		if availSpace < len(runes) {
-			runes = runes[:availSpace]
-		}
-	}
-
-	// Split the input into lines.
-	var lines [][]rune
-	lstart := 0
-	for i := range runes {
-		if runes[i] == '\n' {
-			// Queue a line to become a new row in the text area below.
-			// Beware to clamp the max capacity of the slice, to ensure no
-			// data from different rows get overwritten when later edits
-			// will modify this line.
-			lines = append(lines, runes[lstart:i:i])
-			lstart = i + 1
-		}
-	}
-	if lstart <= len(runes) {
-		// The last line did not end with a newline character.
-		// Take it now.
-		lines = append(lines, runes[lstart:])
-	}
-
-	// Obey the maximum line limit.
-	if maxLines > 0 && len(m.value)+len(lines)-1 > maxLines {
-		allowedHeight := max(0, maxLines-len(m.value)+1)
-		lines = lines[:allowedHeight]
-	}
-
-	// Obey MaxContentHeight in visual rows when set.
-	if m.MaxContentHeight > 0 {
-		budget := m.MaxContentHeight - m.totalVisualLines()
-		// Trim lines from the end until we fit within the budget.
-		for len(lines) > 1 && m.visualLinesForInsert(lines) > budget {
-			lines = lines[:len(lines)-1]
-		}
-		if m.visualLinesForInsert(lines) > budget {
-			return
-		}
-	}
-
-	if len(lines) == 0 {
-		// Nothing left to insert.
-		return
-	}
-
-	// Save the remainder of the original line at the current
-	// cursor position.
-	tail := make([]rune, len(m.value[m.row][m.col:]))
-	copy(tail, m.value[m.row][m.col:])
-
-	// Paste the first line at the current cursor position.
-	m.value[m.row] = append(m.value[m.row][:m.col], lines[0]...)
-	m.col += len(lines[0])
-
-	if numExtraLines := len(lines) - 1; numExtraLines > 0 {
-		// Add the new lines.
-		// We try to reuse the slice if there's already space.
-		var newGrid [][]rune
-		if cap(m.value) >= len(m.value)+numExtraLines {
-			// Can reuse the extra space.
-			newGrid = m.value[:len(m.value)+numExtraLines]
-		} else {
-			// No space left; need a new slice.
-			newGrid = make([][]rune, len(m.value)+numExtraLines)
-			copy(newGrid, m.value[:m.row+1])
-		}
-		// Add all the rows that were after the cursor in the original
-		// grid at the end of the new grid.
-		copy(newGrid[m.row+1+numExtraLines:], m.value[m.row+1:])
-		m.value = newGrid
-		// Insert all the new lines in the middle.
-		for _, l := range lines[1:] {
-			m.row++
-			m.value[m.row] = l
-			m.col = len(l)
-		}
-	}
-
-	// Finally add the tail at the end of the last line inserted.
-	m.value[m.row] = append(m.value[m.row], tail...)
-
-	m.SetCursorColumn(m.col)
-}
-
 // Value returns the value of the text input.
 func (m Model) Value() string {
 	if m.value == nil {
@@ -652,16 +531,7 @@ func (m *Model) LineCount() int {
 }
 
 // Line returns the 0-indexed row position of the cursor.
-func (m Model) Line() int {
-	return m.row
-}
-
 // Column returns the 0-indexed column position of the cursor.
-func (m Model) Column() int {
-	return m.col
-}
-
-// ScrollYOffset returns the Y offset (top row) index of the current view, which
 // can be used to calculate the current scroll position.
 func (m Model) ScrollYOffset() int {
 	return m.viewport.YOffset()
@@ -675,84 +545,9 @@ func (m Model) ScrollPercent() float64 {
 
 // setCursorLineRelative moves the cursor by the given number of lines. Negative
 // values move the cursor up, positive values move the cursor down.
-func (m *Model) setCursorLineRelative(delta int) {
-	if delta == 0 {
-		return
-	}
-
-	li := m.LineInfo()
-	charOffset := max(m.lastCharOffset, li.CharOffset)
-	m.lastCharOffset = charOffset
-
-	// Without trailing spaces in the grid, StartColumn+Width gives the first
-	// character of the next visual line, and StartColumn-1 steps back across
-	// a wrap boundary.
-	const trailingStep = 1
-
-	if delta > 0 { //nolint:nestif
-		// Moving down.
-		for range delta {
-			if li.RowOffset+1 >= li.Height && m.row < len(m.value)-1 {
-				m.row++
-				m.col = 0
-			} else {
-				// Move the cursor to the start of the next virtual line.
-				m.col = min(li.StartColumn+li.Width, len(m.value[m.row])-1)
-			}
-			li = m.LineInfo()
-		}
-	} else {
-		// Moving up.
-		for range -delta {
-			if li.RowOffset <= 0 && m.row > 0 {
-				m.row--
-				m.col = len(m.value[m.row])
-			} else {
-				// Move the cursor to the end of the previous line.
-				m.col = li.StartColumn - trailingStep
-			}
-			li = m.LineInfo()
-		}
-	}
-
-	nli := m.LineInfo()
-	m.col = nli.StartColumn
-
-	if nli.Width <= 0 {
-		m.repositionView()
-		return
-	}
-
-	offset := 0
-	for offset < charOffset {
-		if m.row >= len(m.value) || m.col >= len(m.value[m.row]) || offset >= nli.CharWidth {
-			break
-		}
-		offset += rw.RuneWidth(m.value[m.row][m.col])
-		m.col++
-	}
-	m.repositionView()
-}
-
 // CursorDown moves the cursor down by one line.
-func (m *Model) CursorDown() {
-	m.setCursorLineRelative(1)
-}
-
 // CursorUp moves the cursor up by one line.
-func (m *Model) CursorUp() {
-	m.setCursorLineRelative(-1)
-}
-
-// SetCursorColumn moves the cursor to the given position. If the position is
 // out of bounds the cursor will be moved to the start or end accordingly.
-func (m *Model) SetCursorColumn(col int) {
-	m.col = clamp(col, 0, len(m.value[m.row]))
-	// Any time that we move the cursor horizontally we need to reset the last
-	// offset so that the horizontal position when navigating is adjusted.
-	m.lastCharOffset = 0
-}
-
 // CursorStart moves the cursor to the start of the input field.
 func (m *Model) CursorStart() {
 	m.SetCursorColumn(0)
@@ -805,77 +600,7 @@ func (m *Model) Reset() {
 // x is the terminal column (0-based), relative to the textarea content area.
 // This is a simplified version that positions the cursor on the current line.
 // For full (x, y) click support, use ClickAt instead.
-func (m *Model) Click(x int) {
-	if len(m.value) == 0 {
-		return
-	}
-
-	// Map x to rune offset in the current line
-	line := m.value[m.row]
-
-	// Accumulate visual width to find which rune corresponds to x
-	col := 0
-	visualW := 0
-	for _, r := range line {
-		rw := uniseg.StringWidth(string(r))
-		if visualW+rw > x {
-			break
-		}
-		visualW += rw
-		col++
-	}
-	m.col = clamp(col, 0, len(line))
-	m.lastCharOffset = 0
-	m.repositionView()
-}
-
-// ClickAt positions the cursor based on a mouse click at the given
-// terminal coordinates. x is the column, y is the visual line index
 // (both 0-based, relative to the textarea content area).
-func (m *Model) ClickAt(x, y int) {
-	if len(m.value) == 0 {
-		return
-	}
-
-	// Map visual line y to (logical row, rune offset)
-	visualLine := 0
-	for row, line := range m.value {
-		wrappedLines := m.memoizedWrap(line, m.width)
-		for wl, wrappedRunes := range wrappedLines {
-			if visualLine == y {
-				// Found the visual line — position cursor here
-				m.row = row
-
-				// Calculate base offset (runes before this wrapped segment)
-				baseOffset := 0
-				for i := 0; i < wl; i++ {
-					baseOffset += len(wrappedLines[i])
-				}
-
-				// Map x to rune offset within this wrapped segment
-				col := baseOffset
-				visualW := 0
-				for _, r := range wrappedRunes {
-					rw := uniseg.StringWidth(string(r))
-					if visualW+rw > x {
-						break
-					}
-					visualW += rw
-					col++
-				}
-				m.col = clamp(col, 0, len(line))
-				m.lastCharOffset = 0
-				m.repositionView()
-				return
-			}
-			visualLine++
-		}
-	}
-}
-
-// tokenRight returns the column after skipping one word/token to the right
-// from the given column. It skips spaces first, then advances through
-// non-boundary characters using isWordBoundary (whitespace or CJK chars).
 // Always advances at least one non-space character.
 func (m *Model) tokenRight(col int) int {
 	line := m.value[m.row]
@@ -982,22 +707,7 @@ func (m *Model) san() runeutil.Sanitizer {
 
 // deleteBeforeCursor deletes all text before the cursor. Returns whether or
 // not the cursor blink should be reset.
-func (m *Model) deleteBeforeCursor() {
-	m.value[m.row] = m.value[m.row][m.col:]
-	m.SetCursorColumn(0)
-}
-
-// deleteAfterCursor deletes all text after the cursor. Returns whether or not
-// the cursor blink should be reset. If input is masked delete everything after
 // the cursor so as not to reveal word breaks in the masked input.
-func (m *Model) deleteAfterCursor() {
-	m.value[m.row] = m.value[m.row][:m.col]
-	m.SetCursorColumn(len(m.value[m.row]))
-}
-
-// transposeLeft exchanges the runes at the cursor and immediately
-// before. No-op if the cursor is at the beginning of the line.  If
-// the cursor is not at the end of the line yet, moves the cursor to
 // the right.
 func (m *Model) transposeLeft() {
 	if m.col == 0 || len(m.value[m.row]) < 2 {
@@ -1013,85 +723,11 @@ func (m *Model) transposeLeft() {
 }
 
 // deleteWordLeft deletes the word left to the cursor.
-func (m *Model) deleteWordLeft() {
-	if m.col == 0 || len(m.value[m.row]) == 0 {
-		return
-	}
-
-	oldCol := m.col
-	m.SetCursorColumn(m.tokenLeft(m.col))
-
-	if oldCol > len(m.value[m.row]) {
-		m.value[m.row] = m.value[m.row][:m.col]
-	} else {
-		m.value[m.row] = append(m.value[m.row][:m.col], m.value[m.row][oldCol:]...)
-	}
-}
-
 // deleteWordRight deletes the word right to the cursor.
-func (m *Model) deleteWordRight() {
-	if m.col >= len(m.value[m.row]) || len(m.value[m.row]) == 0 {
-		return
-	}
-
-	oldCol := m.col
-	endCol := m.tokenRight(m.col)
-
-	if endCol > len(m.value[m.row]) {
-		m.value[m.row] = m.value[m.row][:oldCol]
-	} else {
-		m.value[m.row] = append(m.value[m.row][:oldCol], m.value[m.row][endCol:]...)
-	}
-
-	m.SetCursorColumn(oldCol)
-}
-
 // characterRight moves the cursor one character to the right.
-func (m *Model) characterRight() {
-	if m.col < len(m.value[m.row]) {
-		m.SetCursorColumn(m.col + 1)
-	} else {
-		if m.row < len(m.value)-1 {
-			m.row++
-			m.CursorStart()
-		}
-	}
-}
-
-// characterLeft moves the cursor one character to the left.
-// If insideLine is set, the cursor is moved to the last
 // character in the previous line, instead of one past that.
-func (m *Model) characterLeft(insideLine bool) {
-	if m.col == 0 && m.row != 0 {
-		m.row--
-		m.CursorEnd()
-		if !insideLine {
-			return
-		}
-	}
-	if m.col > 0 {
-		m.SetCursorColumn(m.col - 1)
-	}
-}
-
 // wordLeft moves the cursor one word to the left.
-func (m *Model) wordLeft() {
-	m.SetCursorColumn(m.tokenLeft(m.col))
-}
-
 // wordRight moves the cursor one word to the right.
-func (m *Model) wordRight() {
-	m.doWordRight(func(int, int) { /* nothing */ })
-}
-
-// doWordRight moves the cursor one word to the right, invoking fn for each
-// character traversed. The fn callback receives the character index within the
-// word and the absolute column position. This enables word-transform operations
-// (uppercase, lowercase, capitalize) to modify characters as the cursor moves.
-//
-// Uses isWordBoundary (whitespace or CJK characters) for word-edge detection.
-// On the first character (charIdx==0), always advance at least one rune
-// even if it is a word boundary (e.g. CJK char), so that CJK text
 // navigation works at single-character granularity.
 func (m *Model) doWordRight(fn func(charIdx int, pos int)) {
 	line := m.value[m.row]
@@ -1145,108 +781,16 @@ func (m *Model) capitalizeRight() {
 
 // LineInfo returns the number of characters from the start of the
 // (soft-wrapped) line and the (soft-wrapped) line width.
-func (m Model) LineInfo() LineInfo {
-	grid := m.memoizedWrap(m.value[m.row], m.width)
-
-	// Find out which line we are currently on. This can be determined by the
-	// m.col and counting the number of runes that we need to skip.
-	var counter int
-	for i, line := range grid {
-		// We've found the line that we are on
-		if counter+len(line) == m.col && i+1 < len(grid) {
-			// We wrap around to the next line if we are at the end of the
-			// previous line so that we can be at the very beginning of the row
-			return LineInfo{
-				CharOffset:   0,
-				ColumnOffset: 0,
-				Height:       len(grid),
-				RowOffset:    i + 1,
-				StartColumn:  m.col,
-				Width:        len(grid[i+1]),
-				CharWidth:    uniseg.StringWidth(string(line)),
-			}
-		}
-
-		if counter+len(line) >= m.col {
-			return LineInfo{
-				CharOffset:   uniseg.StringWidth(string(line[:max(0, m.col-counter)])),
-				ColumnOffset: m.col - counter,
-				Height:       len(grid),
-				RowOffset:    i,
-				StartColumn:  counter,
-				Width:        len(line),
-				CharWidth:    uniseg.StringWidth(string(line)),
-			}
-		}
-
-		counter += len(line)
-	}
-	return LineInfo{}
-}
-
-// repositionView repositions the view of the viewport based on the defined
 // scrolling behavior.
-func (m *Model) repositionView() {
-	minimum := m.viewport.YOffset()
-	maximum := minimum + m.viewport.Height() - 1
-	if row := m.cursorLineNumber(); row < minimum {
-		m.viewport.ScrollUp(minimum - row)
-	} else if row > maximum {
-		m.viewport.ScrollDown(row - maximum)
-	}
-}
-
 // Width returns the width of the textarea.
 func (m Model) Width() int {
 	return m.width
 }
 
 // MoveToBegin moves the cursor to the beginning of the input.
-func (m *Model) MoveToBegin() {
-	m.row = 0
-	m.SetCursorColumn(0)
-	m.repositionView()
-}
-
 // MoveToEnd moves the cursor to the end of the input.
-func (m *Model) MoveToEnd() {
-	m.row = len(m.value) - 1
-	m.SetCursorColumn(len(m.value[m.row]))
-	m.repositionView()
-}
-
-// PageUp moves the cursor up by one page. First call snaps to the first visible
 // line, subsequent calls move up by a full page.
-func (m *Model) PageUp() {
-	// If not on the first visible line, snap to it.
-	if offset := m.viewport.YOffset() - m.cursorLineNumber(); offset < 0 {
-		m.setCursorLineRelative(offset)
-		return
-	}
-
-	// Already on first visible line, move up by a full page.
-	m.setCursorLineRelative(-m.height)
-}
-
-// PageDown moves the cursor down by one page. First call snaps to the last
 // visible line, subsequent calls move down by a full page.
-func (m *Model) PageDown() {
-	// If not on the last visible line, snap to it.
-	if offset := m.cursorLineNumber() - m.viewport.YOffset(); offset < m.height-1 {
-		m.setCursorLineRelative(m.height - 1 - offset)
-		return
-	}
-
-	// Already on last visible line, move down by a full page.
-	m.setCursorLineRelative(m.height)
-}
-
-// SetWidth sets the width of the textarea to fit exactly within the given width.
-// This means that the textarea will account for the width of the prompt and
-// whether or not line numbers are being shown.
-//
-// Ensure that SetWidth is called after setting the Prompt and ShowLineNumbers,
-// It is important that the width of the textarea be exactly the given width
 // and no more.
 func (m *Model) SetWidth(w int) {
 	// Update prompt width only if there is no prompt function as
@@ -1323,404 +867,10 @@ func (m *Model) SetHeight(h int) {
 }
 
 // Update is the Bubble Tea update loop.
-func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	if !m.focus {
-		m.virtualCursor.Blur()
-		return m, nil
-	}
-
-	// Used to determine if the cursor should blink.
-	oldRow, oldCol := m.cursorLineNumber(), m.col
-
-	var cmds []tea.Cmd
-
-	if m.value[m.row] == nil {
-		m.value[m.row] = make([]rune, 0)
-	}
-
-	if m.cache == nil {
-		m.cache = memoization.NewMemoCache[line, [][]rune](wrapCacheCap)
-	}
-
-	switch msg := msg.(type) {
-	case tea.PasteMsg:
-		m.insertRunesFromUserInput([]rune(msg.Content))
-	case tea.KeyPressMsg:
-		switch {
-		case key.Matches(msg, m.KeyMap.DeleteAfterCursor):
-			m.col = clamp(m.col, 0, len(m.value[m.row]))
-			if m.col >= len(m.value[m.row]) {
-				m.mergeLineBelow(m.row)
-				break
-			}
-			m.deleteAfterCursor()
-		case key.Matches(msg, m.KeyMap.DeleteBeforeCursor):
-			m.col = clamp(m.col, 0, len(m.value[m.row]))
-			if m.col <= 0 {
-				m.mergeLineAbove(m.row)
-				break
-			}
-			m.deleteBeforeCursor()
-		case key.Matches(msg, m.KeyMap.DeleteCharacterBackward):
-			m.col = clamp(m.col, 0, len(m.value[m.row]))
-			if m.col <= 0 {
-				m.mergeLineAbove(m.row)
-				break
-			}
-			if len(m.value[m.row]) > 0 {
-				m.value[m.row] = append(m.value[m.row][:max(0, m.col-1)], m.value[m.row][m.col:]...)
-				if m.col > 0 {
-					m.SetCursorColumn(m.col - 1)
-				}
-			}
-		case key.Matches(msg, m.KeyMap.DeleteCharacterForward):
-			if len(m.value[m.row]) > 0 && m.col < len(m.value[m.row]) {
-				m.value[m.row] = slices.Delete(m.value[m.row], m.col, m.col+1)
-			}
-			if m.col >= len(m.value[m.row]) {
-				m.mergeLineBelow(m.row)
-				break
-			}
-		case key.Matches(msg, m.KeyMap.DeleteWordBackward):
-			if m.col <= 0 {
-				m.mergeLineAbove(m.row)
-				break
-			}
-			m.deleteWordLeft()
-		case key.Matches(msg, m.KeyMap.DeleteWordForward):
-			m.col = clamp(m.col, 0, len(m.value[m.row]))
-			if m.col >= len(m.value[m.row]) {
-				m.mergeLineBelow(m.row)
-				break
-			}
-			m.deleteWordRight()
-		case key.Matches(msg, m.KeyMap.InsertNewline):
-			if m.atContentLimit() {
-				return m, nil
-			}
-			m.col = clamp(m.col, 0, len(m.value[m.row]))
-			m.splitLine(m.row, m.col)
-		case key.Matches(msg, m.KeyMap.LineEnd):
-			m.CursorEnd()
-		case key.Matches(msg, m.KeyMap.LineStart):
-			m.CursorStart()
-		case key.Matches(msg, m.KeyMap.CharacterForward):
-			m.characterRight()
-		case key.Matches(msg, m.KeyMap.LineNext):
-			m.CursorDown()
-		case key.Matches(msg, m.KeyMap.WordForward):
-			m.wordRight()
-		case key.Matches(msg, m.KeyMap.Paste):
-			return m, Paste
-		case key.Matches(msg, m.KeyMap.CharacterBackward):
-			m.characterLeft(false /* insideLine */)
-		case key.Matches(msg, m.KeyMap.LinePrevious):
-			m.CursorUp()
-		case key.Matches(msg, m.KeyMap.WordBackward):
-			m.wordLeft()
-		case key.Matches(msg, m.KeyMap.InputBegin):
-			m.MoveToBegin()
-		case key.Matches(msg, m.KeyMap.InputEnd):
-			m.MoveToEnd()
-		case key.Matches(msg, m.KeyMap.PageUp):
-			m.PageUp()
-		case key.Matches(msg, m.KeyMap.PageDown):
-			m.PageDown()
-		case key.Matches(msg, m.KeyMap.LowercaseWordForward):
-			m.lowercaseRight()
-		case key.Matches(msg, m.KeyMap.UppercaseWordForward):
-			m.uppercaseRight()
-		case key.Matches(msg, m.KeyMap.CapitalizeWordForward):
-			m.capitalizeRight()
-		case key.Matches(msg, m.KeyMap.TransposeCharacterBackward):
-			m.transposeLeft()
-
-		default:
-			m.insertRunesFromUserInput([]rune(msg.Text))
-		}
-
-	case pasteMsg:
-		m.insertRunesFromUserInput([]rune(msg))
-
-	case pasteErrMsg:
-		m.Err = msg
-	}
-
-	m.recalculateHeight()
-
-	// Make sure we set the content of the viewport before updating it.
-	view := m.view()
-	m.viewport.SetContent(view)
-	vp, cmd := m.viewport.Update(msg)
-	m.viewport = &vp
-	cmds = append(cmds, cmd)
-
-	if m.useVirtualCursor {
-		m.virtualCursor, cmd = m.virtualCursor.Update(msg)
-
-		// If the cursor has moved, reset the blink state. This is a small UX
-		// nuance that makes cursor movement obvious and feel snappy.
-		newRow, newCol := m.cursorLineNumber(), m.col
-		if (newRow != oldRow || newCol != oldCol) && m.virtualCursor.Mode() == cursor.CursorBlink {
-			m.virtualCursor.IsBlinked = false
-			cmd = m.virtualCursor.Blink()
-		}
-		cmds = append(cmds, cmd)
-	}
-
-	m.repositionView()
-
-	return m, tea.Batch(cmds...)
-}
-
-func (m *Model) view() string {
-	if len(m.Value()) == 0 && m.row == 0 && m.col == 0 && m.Placeholder != "" {
-		return m.placeholderView()
-	}
-	m.virtualCursor.TextStyle = m.activeStyle().computedCursorLine()
-
-	var (
-		s        strings.Builder
-		style    lipgloss.Style
-		newLines int
-
-		lineInfo = m.LineInfo()
-		styles   = m.activeStyle()
-	)
-
-	displayLine := 0
-	for l, line := range m.value {
-		wrappedLines := m.memoizedWrap(line, m.width)
-
-		if m.row == l {
-			style = styles.computedCursorLine()
-		} else {
-			style = styles.computedText()
-		}
-
-		for wl, wrappedLine := range wrappedLines {
-			prompt := m.promptView(displayLine)
-			prompt = styles.computedPrompt().Render(prompt)
-			s.WriteString(style.Render(prompt))
-			displayLine++
-
-			if m.ShowLineNumbers {
-				if wl == 0 { // logical line
-					s.WriteString(m.lineNumberView(l+1, m.row == l))
-				} else { // soft-wrapped continuation
-					s.WriteString(m.lineNumberView(-1, m.row == l))
-				}
-			}
-
-			strwidth := uniseg.StringWidth(string(wrappedLine))
-			padding := m.width - strwidth
-			// When the line is exactly full and the cursor is at the end,
-			// there's no room for the cursor placeholder. Render the full
-			// text on this line and put the cursor alone on the next line.
-			cursorOverflow := padding == 0 && m.row == l &&
-				lineInfo.RowOffset == wl &&
-				lineInfo.ColumnOffset >= len(wrappedLine) &&
-				(wl == len(wrappedLines)-1 || m.col == len(line))
-			if m.row == l && lineInfo.RowOffset == wl && !cursorOverflow {
-				co := min(lineInfo.ColumnOffset, len(wrappedLine))
-				s.WriteString(style.Render(string(wrappedLine[:co])))
-				if co >= len(wrappedLine) {
-					m.virtualCursor.SetChar(" ")
-					s.WriteString(m.virtualCursor.View())
-					padding = max(0, padding-1)
-				} else {
-					m.virtualCursor.SetChar(string(wrappedLine[co]))
-					s.WriteString(style.Render(m.virtualCursor.View()))
-					s.WriteString(style.Render(string(wrappedLine[co+1:])))
-				}
-			} else {
-				s.WriteString(style.Render(string(wrappedLine)))
-			}
-			s.WriteString(style.Render(strings.Repeat(" ", max(0, padding))))
-			s.WriteRune('\n')
-			newLines++
-
-			// Cursor overflow: line was exactly full, put cursor on next line.
-			if cursorOverflow {
-				prompt := m.promptView(displayLine)
-				prompt = styles.computedPrompt().Render(prompt)
-				s.WriteString(style.Render(prompt))
-				displayLine++
-				if m.ShowLineNumbers {
-					s.WriteString(m.lineNumberView(-1, false))
-				}
-				m.virtualCursor.SetChar(" ")
-				s.WriteString(m.virtualCursor.View())
-				s.WriteString(style.Render(strings.Repeat(" ", max(0, m.width-1))))
-				s.WriteRune('\n')
-				newLines++
-			}
-		}
-	}
-
-	// Always show at least `m.Height` lines at all times.
-	// To do this we can simply pad out a few extra new lines in the view.
-	for range m.height {
-		s.WriteString(m.promptView(displayLine))
-		displayLine++
-
-		// Write end of buffer content
-		leftGutter := string(m.EndOfBufferCharacter)
-		rightGapWidth := m.Width() - uniseg.StringWidth(leftGutter)
-		rightGap := strings.Repeat(" ", max(0, rightGapWidth))
-		s.WriteString(styles.computedEndOfBuffer().Render(leftGutter + rightGap))
-		s.WriteRune('\n')
-	}
-
-	return s.String()
-}
-
 // View renders the text area in its current state.
-func (m Model) View() string {
-	// XXX: This is a workaround for the case where the viewport hasn't
-	// been initialized yet like during the initial render. In that case,
-	// we need to render the view again because Update hasn't been called
-	// yet to set the content of the viewport.
-	m.viewport.SetContent(m.view())
-	view := m.viewport.View()
-	styles := m.activeStyle()
-	return styles.Base.Render(view)
-}
-
 // promptView renders a single line of the prompt.
-func (m Model) promptView(displayLine int) (prompt string) {
-	prompt = m.Prompt
-	if m.promptFunc == nil {
-		return prompt
-	}
-	prompt = m.promptFunc(PromptInfo{
-		LineNumber: displayLine,
-		Focused:    m.focus,
-	})
-	width := lipgloss.Width(prompt)
-	if width < m.promptWidth {
-		prompt = fmt.Sprintf("%*s%s", m.promptWidth-width, "", prompt)
-	}
-
-	return m.activeStyle().computedPrompt().Render(prompt)
-}
-
-// lineNumberView renders the line number.
-//
-// If the argument is less than 0, a space styled as a line number is returned
-// instead. Such cases are used for soft-wrapped lines.
-//
-// The second argument indicates whether this line number is for a 'cursorline'
 // line number.
-func (m Model) lineNumberView(n int, isCursorLine bool) (str string) {
-	if !m.ShowLineNumbers {
-		return ""
-	}
-
-	if n <= 0 {
-		str = " "
-	} else {
-		str = strconv.Itoa(n)
-	}
-
-	// XXX: is textStyle really necessary here?
-	textStyle := m.activeStyle().computedText()
-	lineNumberStyle := m.activeStyle().computedLineNumber()
-	if isCursorLine {
-		textStyle = m.activeStyle().computedCursorLine()
-		lineNumberStyle = m.activeStyle().computedCursorLineNumber()
-	}
-
-	// Format line number dynamically based on the maximum number of lines.
-	digits := len(strconv.Itoa(m.MaxHeight))
-	str = fmt.Sprintf(" %*v ", digits, str)
-
-	return textStyle.Render(lineNumberStyle.Render(str))
-}
-
 // placeholderView returns the prompt and placeholder, if any.
-func (m Model) placeholderView() string {
-	var (
-		s      strings.Builder
-		p      = m.Placeholder
-		styles = m.activeStyle()
-	)
-	// word wrap lines
-	pwordwrap := ansi.Wordwrap(p, m.width, "")
-	// hard wrap lines (handles lines that could not be word wrapped)
-	pwrap := ansi.Hardwrap(pwordwrap, m.width, true)
-	// split string by new lines
-	plines := strings.Split(strings.TrimSpace(pwrap), "\n")
-
-	for i := range m.height {
-		isLineNumber := len(plines) > i
-
-		lineStyle := styles.computedPlaceholder()
-		if len(plines) > i {
-			lineStyle = styles.computedCursorLine()
-		}
-
-		// render prompt
-		prompt := m.promptView(i)
-		prompt = styles.computedPrompt().Render(prompt)
-		s.WriteString(lineStyle.Render(prompt))
-
-		// when show line numbers enabled:
-		// - render line number for only the cursor line
-		// - indent other placeholder lines
-		// this is consistent with vim with line numbers enabled
-		if m.ShowLineNumbers {
-			var ln int
-
-			switch {
-			case i == 0:
-				ln = i + 1
-				fallthrough
-			case len(plines) > i:
-				s.WriteString(m.lineNumberView(ln, isLineNumber))
-			default:
-			}
-		}
-
-		switch {
-		// first line
-		case i == 0:
-			// first character of first line as cursor with character
-			m.virtualCursor.TextStyle = styles.computedPlaceholder()
-
-			ch, rest, _, _ := uniseg.FirstGraphemeClusterInString(plines[0], 0)
-			m.virtualCursor.SetChar(ch)
-			s.WriteString(lineStyle.Render(m.virtualCursor.View()))
-
-			// the rest of the first line
-			s.WriteString(lineStyle.Render(styles.computedPlaceholder().Render(rest)))
-
-			// extend the first line with spaces to fill the width, so that
-			// the entire line is filled when cursorline is enabled.
-			gap := strings.Repeat(" ", max(0, m.width-lipgloss.Width(plines[0])))
-			s.WriteString(lineStyle.Render(gap))
-		// remaining lines
-		case len(plines) > i:
-			// current line placeholder text
-			if len(plines) > i {
-				placeholderLine := plines[i]
-				gap := strings.Repeat(" ", max(0, m.width-uniseg.StringWidth(plines[i])))
-				s.WriteString(lineStyle.Render(placeholderLine + gap))
-			}
-		default:
-			// end of line buffer character
-			eob := styles.computedEndOfBuffer().Render(string(m.EndOfBufferCharacter))
-			s.WriteString(eob)
-		}
-
-		// terminate with new line
-		s.WriteRune('\n')
-	}
-
-	m.viewport.SetContent(s.String())
-	return styles.Base.Render(m.viewport.View())
-}
-
 // Blink returns the blink command for the virtual cursor.
 func Blink() tea.Msg {
 	return cursor.Blink()
@@ -1768,191 +918,14 @@ func (m Model) Cursor() *tea.Cursor {
 	return c
 }
 
-func (m Model) memoizedWrap(runes []rune, width int) [][]rune {
-	input := line{runes: runes, width: width}
-	if v, ok := m.cache.Get(input); ok {
-		return v
-	}
-	v := wrap(runes, width)
-	m.cache.Set(input, v)
-	return v
-}
-
-// cursorLineNumber returns the line number that the cursor is on.
 // This accounts for soft wrapped lines.
-func (m Model) cursorLineNumber() int {
-	line := 0
-	for i := range m.row {
-		// Calculate the number of lines that the current line will be split
-		// into.
-		line += len(m.memoizedWrap(m.value[i], m.width))
-	}
-	line += m.LineInfo().RowOffset
-	return line
-}
-
-// hasCursorOverflow reports whether the current line will produce an extra
-// cursor-overflow visual line during rendering. This happens when the cursor
-// is at the end of the logical line AND the last visual line is exactly full
-// (strwidth == m.width), so the cursor placeholder cannot fit on that line
-// and is rendered alone on the next line.
-//
 // This must be kept in sync with the overflow logic in view().
-func (m *Model) hasCursorOverflow() bool {
-	if m.width <= 0 {
-		return false
-	}
-	line := m.value[m.row]
-	if m.col != len(line) {
-		return false
-	}
-	wrappedLines := m.memoizedWrap(line, m.width)
-	if len(wrappedLines) == 0 {
-		return false
-	}
-	last := wrappedLines[len(wrappedLines)-1]
-	return uniseg.StringWidth(string(last)) == m.width
-}
-
-// totalVisualLines returns the total number of display lines across all
 // logical lines, accounting for soft wraps.
-func (m *Model) totalVisualLines() int {
-	n := 0
-	for _, line := range m.value {
-		n += len(m.memoizedWrap(line, m.width))
-	}
-	if m.hasCursorOverflow() {
-		n++ // view() creates an extra line for the cursor
-	}
-	return n
-}
-
-// recalculateHeight recomputes and applies the textarea height based on
 // content when DynamicHeight is enabled. It is a no-op otherwise.
-func (m *Model) recalculateHeight() {
-	if !m.DynamicHeight {
-		return
-	}
-	minH := max(m.MinHeight, minHeight)
-	total := m.totalVisualLines()
-	h := max(total, minH)
-	if m.MaxHeight > 0 {
-		h = min(h, m.MaxHeight)
-	}
-	if maxOffset := total - h; m.viewport.YOffset() > maxOffset {
-		m.viewport.SetYOffset(max(0, maxOffset))
-	}
-	m.SetHeight(h)
-}
-
-// atContentLimit reports whether the textarea has reached its content limit.
-// When MaxContentHeight is set (> 0), it checks total visual lines.
-// Otherwise it falls back to the legacy MaxHeight logical-line check for
 // backward compatibility.
-func (m *Model) atContentLimit() bool {
-	if m.MaxContentHeight > 0 {
-		return m.totalVisualLines() >= m.MaxContentHeight
-	}
-	return m.MaxHeight > 0 && len(m.value) >= m.MaxHeight
-}
-
-// visualLinesForInsert estimates how many additional visual lines would result
-// from inserting the given lines at the current cursor position. The first
 // element merges into the current line; subsequent elements become new lines.
-func (m *Model) visualLinesForInsert(lines [][]rune) int {
-	if len(lines) == 0 {
-		return 0
-	}
-
-	// The current row's visual line count before insertion.
-	currentRowVisual := len(m.memoizedWrap(m.value[m.row], m.width))
-
-	// Simulate merging the first paste line into the current row.
-	merged := make([]rune, m.col+len(lines[0]))
-	copy(merged, m.value[m.row][:m.col])
-	copy(merged[m.col:], lines[0])
-	if len(lines) == 1 {
-		merged = append(merged, m.value[m.row][m.col:]...)
-	}
-	delta := len(m.memoizedWrap(merged, m.width)) - currentRowVisual
-
-	// Each additional line (beyond the first) is a new logical line.
-	// lines[0] is already accounted for in the merged calculation above.
-	for i, content := range lines {
-		if i == 0 {
-			// Skip: already counted in merged delta above.
-			// If there's only one line, merged already includes the tail.
-			continue
-		}
-		if i == len(lines)-1 {
-			content = append(content, m.value[m.row][m.col:]...)
-		}
-		delta += len(m.memoizedWrap(content, m.width))
-	}
-
-	return delta
-}
-
 // mergeLineBelow merges the current line the cursor is on with the line below.
-func (m *Model) mergeLineBelow(row int) {
-	if row >= len(m.value)-1 {
-		return
-	}
-
-	// To perform a merge, we will need to combine the two lines and then
-	m.value[row] = append(m.value[row], m.value[row+1]...)
-
-	// Shift all lines up by one
-	for i := row + 1; i < len(m.value)-1; i++ {
-		m.value[i] = m.value[i+1]
-	}
-
-	// And, remove the last line
-	if len(m.value) > 0 {
-		m.value = m.value[:len(m.value)-1]
-	}
-}
-
 // mergeLineAbove merges the current line the cursor is on with the line above.
-func (m *Model) mergeLineAbove(row int) {
-	if row <= 0 {
-		return
-	}
-
-	m.col = len(m.value[row-1])
-	m.row = m.row - 1
-
-	// To perform a merge, we will need to combine the two lines and then
-	m.value[row-1] = append(m.value[row-1], m.value[row]...)
-
-	// Shift all lines up by one
-	for i := row; i < len(m.value)-1; i++ {
-		m.value[i] = m.value[i+1]
-	}
-
-	// And, remove the last line
-	if len(m.value) > 0 {
-		m.value = m.value[:len(m.value)-1]
-	}
-}
-
-func (m *Model) splitLine(row, col int) {
-	// To perform a split, take the current line and keep the content before
-	// the cursor, take the content after the cursor and make it the content of
-	// the line underneath, and shift the remaining lines down by one
-	head, tailSrc := m.value[row][:col], m.value[row][col:]
-	tail := make([]rune, len(tailSrc))
-	copy(tail, tailSrc)
-
-	m.value = append(m.value[:row+1], m.value[row:]...)
-
-	m.value[row] = head
-	m.value[row+1] = tail
-
-	m.col = 0
-	m.row++
-}
-
 // Paste is a command for pasting from the clipboard into the text input.
 func Paste() tea.Msg {
 	str, err := clipboard.ReadAll()

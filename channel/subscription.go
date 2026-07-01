@@ -217,6 +217,16 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 		}
 	}
 
+	// Pre-scan tool messages to build a toolCallID → content map.
+	// Used as fallback for determining tool status (done/error) when
+	// assistant messages lack Detail (e.g. server crash mid-turn, old data).
+	toolResults := make(map[string]string)
+	for _, m := range msgs {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			toolResults[m.ToolCallID] = m.Content
+		}
+	}
+
 	for _, m := range msgs {
 		switch m.Role {
 		case "tool":
@@ -293,10 +303,17 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				curIterThinking = m.Content
 				curIterReasoning = m.ReasoningContent
 				for _, tc := range m.ToolCalls {
+					// Determine tool status from the corresponding tool result message.
+					// Tool errors are stored as content starting with "Error:" (see
+					// engine_run_tools.go: updateToolResultLine sets llmContent prefix).
+					status := "done"
+					if content, ok := toolResults[tc.ID]; ok && strings.HasPrefix(content, "Error:") {
+						status = "error"
+					}
 					curIterTools = append(curIterTools, protocol.ToolProgress{
 						Name:      tc.Name,
 						Label:     formatToolLabel(tc.Name, tc.Arguments),
-						Status:    "done",
+						Status:    status,
 						Elapsed:   0,
 						Iteration: curIterIdx,
 					})

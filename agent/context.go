@@ -65,16 +65,13 @@ func (pl *PromptLoader) load() {
 			return
 		}
 	}
-	// 最终 fallback
+	// 最终 fallback — 使用 template.Must 因为这是硬编码字符串，解析失败说明
+	// Go 的 text/template 包本身有 bug，panic 比静默 leaving nil tmpl 更安全。
 	fallback := EmbeddedFallbackPrompt()
 	if fallback == "" {
 		fallback = "你是 xbot。渠道：{{.Channel}} | 工作目录：{{.WorkDir}} | 当前目录：{{.CWD}}\n"
 	}
-	if t, err := template.New("system").Parse(fallback); err != nil {
-		log.Fatalf("Failed to parse default system prompt template: %v", err)
-	} else {
-		pl.tmpl = t
-	}
+	pl.tmpl = template.Must(template.New("system").Parse(fallback))
 	pl.lastMod = time.Time{}
 }
 

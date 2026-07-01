@@ -176,7 +176,7 @@ func TestSaveSessionLLMState_SkipBackendFields(t *testing.T) {
 	_ = ds.save()
 
 	// Save with skipBackendFields=true (remote mode) — subscription fields NOT written
-	state := SessionLLMState{SubscriptionID: "sub-1", Model: "gpt-4", MaxContextTokens: 128000}
+	state := SessionLLMState{SubscriptionID: "sub-1", Model: "gpt-4"}
 	SaveSessionLLMState(workDir, chatID, state, true)
 
 	loaded := LoadSessionLLMState(workDir, chatID)

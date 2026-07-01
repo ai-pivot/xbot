@@ -68,6 +68,7 @@ func (m *cliModel) openLLMPanel() {
 	m.quickSwitchFiltering = false
 	m.quickSwitchShowAll = false
 	m.quickSwitchRefreshing = true
+	m.quickSwitchScrollY = 0
 	ti := textinput.New()
 	ti.Placeholder = "Filter subscriptions / models…"
 	ti.Prompt = " > "
@@ -99,9 +100,16 @@ func (m *cliModel) llmSource() llmData {
 	return d
 }
 
-// rebuildLLMRows rebuilds quickSwitchRows from the current source + filter.
+// rebuildLLMRows rebuilds quickSwitchRows from source data + current filter.
+// Uses quickSwitchCachedData when available (filter mode) to avoid per-keystroke
+// RPC calls to the backend.
 func (m *cliModel) rebuildLLMRows() {
-	d := m.llmSource()
+	var d llmData
+	if m.quickSwitchFiltering && m.quickSwitchCachedData.subs != nil {
+		d = m.quickSwitchCachedData
+	} else {
+		d = m.llmSource()
+	}
 	m.quickSwitchRows = m.buildLLMRows(d)
 }
 
@@ -226,7 +234,7 @@ func setLLMCmdForSub(s ch.Subscription) string {
 func (m *cliModel) cursorToActiveLLMRow() {
 	if m.cachedModelName != "" {
 		for i, r := range m.quickSwitchRows {
-			if r.kind == qsModel && r.model.Model == m.cachedModelName {
+			if r.kind == qsModel && r.model.Model == m.cachedModelName && r.model.SubID == m.activeSubID {
 				m.quickSwitchCursor = i
 				return
 			}
@@ -533,6 +541,7 @@ func (m *cliModel) openEditSubscriptionPanel(subID string) {
 			m.showTempStatus(fmt.Sprintf("Failed to update: %v", err))
 		} else {
 			m.showTempStatus(fmt.Sprintf("Updated: %s", updated.Name))
+			m.reopenLLMPanelOn(curID, "")
 		}
 	})
 }
@@ -663,7 +672,7 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 			}
 		}
 		m.showTempStatus(fmt.Sprintf("Saved: %s", model))
-		m.reopenLLMPanelOn(model)
+		m.reopenLLMPanelOn(subID, model)
 	})
 }
 
@@ -735,24 +744,38 @@ func (m *cliModel) openAddModelPanel(defaultSubID string) {
 			return
 		}
 		m.showTempStatus(fmt.Sprintf("Added: %s", model))
-		m.reopenLLMPanelOn(model)
+		m.reopenLLMPanelOn(subID, model)
 	})
 }
 
 // reopenLLMPanelOn reopens the panel from the DB snapshot (no async /models
-// refresh) and parks the cursor on the given model if present.
-func (m *cliModel) reopenLLMPanelOn(focusModel string) {
+// refresh) and parks the cursor on the given (subID, model) if present.
+func (m *cliModel) reopenLLMPanelOn(subID, model string) {
 	if m.subscriptionMgr == nil {
 		return
 	}
 	m.quickSwitchMode = "llm"
 	m.quickSwitchFiltering = false
 	m.quickSwitchRefreshing = false
+	m.quickSwitchScrollY = 0
 	m.rebuildLLMRows()
-	for i, r := range m.quickSwitchRows {
-		if r.kind == qsModel && r.model.Model == focusModel {
-			m.quickSwitchCursor = i
-			return
+	// Match both SubID AND model to avoid selecting a same-named model
+	// from a different subscription.
+	if subID != "" && model != "" {
+		for i, r := range m.quickSwitchRows {
+			if r.kind == qsModel && r.model.Model == model && r.model.SubID == subID {
+				m.quickSwitchCursor = i
+				return
+			}
+		}
+	}
+	// Fallback: try matching just subID (e.g. after sub credential edit)
+	if subID != "" {
+		for i, r := range m.quickSwitchRows {
+			if r.kind == qsSub && r.sub.ID == subID {
+				m.quickSwitchCursor = i
+				return
+			}
 		}
 	}
 	m.cursorToActiveLLMRow()
@@ -778,15 +801,29 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 		return ""
 	}
 
+	// ── Compute available height for the list ──
+	// Overhead: header(1) + blank(1) + search(1) + refresh/blank(1) + hint(1) + imcmd(0-1) + borders(2)
+	// We reserve a fixed overhead and give the rest to scrollable rows.
+	const overhead = 7 // header + blank + search + refresh/blank + hint + borders
+	maxVisibleRows := height - overhead
+	if maxVisibleRows < 3 {
+		maxVisibleRows = 3
+	}
+
+	// ── Ensure cursor is visible ──
+	m.ensureQuickSwitchCursorVisible(maxVisibleRows)
+
+	// ── Build all lines ──
 	var lines []string
 	lines = append(lines, m.styles.PanelHeader.Render("Models & Subscriptions"))
 	lines = append(lines, "")
 
-	// Filter input (shown in filter mode, or as a hint line otherwise).
+	// Search input — always visible, shows hint when not filtering
 	if m.quickSwitchFiltering {
-		lines = append(lines, m.quickSwitchFilterInput.View())
+		searchLine := "🔍 " + m.quickSwitchFilterInput.View()
+		lines = append(lines, searchLine)
 	} else {
-		lines = append(lines, m.styles.TextMutedSt.Render("  press / to filter"))
+		lines = append(lines, m.styles.TextMutedSt.Render("🔍 press / to search"))
 	}
 	if m.quickSwitchRefreshing {
 		lines = append(lines, m.styles.TextMutedSt.Render("  ↻ 刷新模型列表…"))
@@ -809,16 +846,31 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 		lines = append(lines, "")
 	}
 
-	for i, r := range m.quickSwitchRows {
+	// ── Slice rows for scrolling ──
+	totalRows := len(m.quickSwitchRows)
+	start := m.quickSwitchScrollY
+	if start < 0 {
+		start = 0
+	}
+	if start > totalRows {
+		start = totalRows
+	}
+	end := start + maxVisibleRows
+	if end > totalRows {
+		end = totalRows
+	}
+
+	for i := start; i < end; i++ {
+		r := m.quickSwitchRows[i]
 		cursor := " "
-		style := m.styles.TextMutedSt
+		style := m.styles.TextSecondarySt
 		if i == m.quickSwitchCursor {
 			cursor = "▸"
 			style = m.styles.Accent
 		}
 		switch r.kind {
 		case qsSection:
-			lines = append(lines, m.styles.TextMutedSt.Render(" "+r.label))
+			lines = append(lines, m.styles.PanelDivider.Render(" "+r.label))
 		case qsSub:
 			name := r.sub.Name
 			if name == "" {
@@ -836,11 +888,11 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 			if r.sub.IsSystem {
 				sysTag = " 🔒"
 			}
-			lines = append(lines, style.Render(fmt.Sprintf(" %s %-28s%s%s%s", cursor, name, disabledTag, active, sysTag)))
+			lines = append(lines, style.Render(fmt.Sprintf(" %s %s%s%s%s", cursor, name, disabledTag, active, sysTag)))
 		case qsModel:
 			label := r.model.Model
 			if r.model.SubName != "" {
-				label = r.model.SubName + " · " + r.model.Model
+				label = r.model.Model + " (" + r.model.SubName + ")"
 			}
 			statusTag := ""
 			switch r.model.Status {
@@ -850,41 +902,38 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 				statusTag = " (disabled)"
 			}
 			mark := ""
-			if r.model.Model == m.cachedModelName {
+			if r.model.Model == m.cachedModelName && r.model.SubID == m.activeSubID {
 				mark = " ✓"
 			}
-			line := style.Render(fmt.Sprintf(" %s   %s%s%s", cursor, label, statusTag, mark))
+			// Disabled/offline models use muted style; active models use cursor style
+			modelStyle := style
 			if r.model.Status == "disabled" || r.model.Status == "offline" {
-				line = m.styles.TextMutedSt.Render(line)
+				modelStyle = m.styles.TextMutedSt
 			}
+			line := modelStyle.Render(fmt.Sprintf(" %s   %s%s%s", cursor, label, statusTag, mark))
 			lines = append(lines, line)
 		case qsAddSub, qsAddModel:
 			lines = append(lines, style.Render(fmt.Sprintf(" %s %s", cursor, r.label)))
 		}
 	}
 
+	// Scroll indicator
+	if totalRows > maxVisibleRows {
+		lines = append(lines, m.styles.TextMutedSt.Render(fmt.Sprintf(" ── %d-%d / %d ──", start+1, end, totalRows)))
+	}
+
 	panelContent := strings.Join(lines, "\n")
 	box := m.styles.PanelBox.Render(panelContent)
 
-	// Hint
+	// Hint — contextual based on cursor row type
 	var hint string
 	if m.quickSwitchFiltering {
 		hint = m.styles.PanelHint.Render(" Type to filter  ↑↓ Nav  Enter Select  Esc Exit filter")
 	} else {
-		showAllTag := ""
-		if m.quickSwitchShowAll {
-			showAllTag = "  [show all]"
-		}
-		hint = m.styles.PanelHint.Render(" ↑↓ Nav  Enter Select  R Refresh  E Edit  D Disable/Del  N Add model  S Show all" + showAllTag + "  / Filter  Esc Close")
+		hint = m.buildQuickSwitchHint()
 	}
 
-	// Vertical centering (rough).
-	listH := len(m.quickSwitchRows) + 5 // header + spacer + filter + refresh/spacer + items + borders
-	blankLines := max(0, (height-listH)/2)
 	var b strings.Builder
-	for i := 0; i < blankLines; i++ {
-		b.WriteString("\n")
-	}
 	b.WriteString(box)
 	b.WriteString("\n")
 	b.WriteString(hint)
@@ -897,6 +946,68 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 		}
 	}
 	return b.String()
+}
+
+// ensureQuickSwitchCursorVisible adjusts quickSwitchScrollY so that the cursor
+// row is within the visible window. Called before rendering.
+func (m *cliModel) ensureQuickSwitchCursorVisible(maxVisible int) {
+	if maxVisible <= 0 || len(m.quickSwitchRows) == 0 {
+		return
+	}
+	cur := m.quickSwitchCursor
+	if cur < m.quickSwitchScrollY {
+		m.quickSwitchScrollY = cur
+	}
+	if cur >= m.quickSwitchScrollY+maxVisible {
+		m.quickSwitchScrollY = cur - maxVisible + 1
+	}
+	// Clamp
+	if m.quickSwitchScrollY < 0 {
+		m.quickSwitchScrollY = 0
+	}
+	maxScroll := len(m.quickSwitchRows) - maxVisible
+	if m.quickSwitchScrollY > maxScroll {
+		m.quickSwitchScrollY = max(0, maxScroll)
+	}
+}
+
+// buildQuickSwitchHint returns a contextual hint string based on the current
+// cursor row type. Row-specific actions are rendered with Accent style for
+// visibility; common keys (Search, Esc, etc.) use PanelHint style.
+func (m *cliModel) buildQuickSwitchHint() string {
+	common := "  / Search  S Show all  R Refresh  Esc Close"
+	if m.quickSwitchShowAll {
+		common = "  / Search  S [show all]  R Refresh  Esc Close"
+	}
+
+	var rowHint string
+	if m.quickSwitchCursor < 0 || m.quickSwitchCursor >= len(m.quickSwitchRows) {
+		rowHint = "↑↓ Nav"
+	} else {
+		r := m.quickSwitchRows[m.quickSwitchCursor]
+		switch r.kind {
+		case qsSection:
+			rowHint = "↑↓ Nav"
+		case qsSub:
+			if r.sub.IsSystem {
+				rowHint = "🔒 System subscription (read-only)  ↑↓ Nav"
+			} else {
+				rowHint = "↑↓ Nav  Enter Toggle enabled  E Edit  D Delete  N Add model"
+			}
+		case qsModel:
+			if r.model.Status == "disabled" {
+				rowHint = "↑↓ Nav  Enter Select  E Enable  D Toggle"
+			} else {
+				rowHint = "↑↓ Nav  Enter Switch  E Edit params  D Disable"
+			}
+		case qsAddSub:
+			rowHint = "↑↓ Nav  Enter Add subscription"
+		case qsAddModel:
+			rowHint = "↑↓ Nav  Enter Add model"
+		}
+	}
+
+	return m.styles.PanelHint.Render(rowHint) + m.styles.TextMutedSt.Render(common)
 }
 
 // ─── Key handling ───────────────────────────────────────────────────────────
@@ -914,6 +1025,7 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		switch msg.Code {
 		case tea.KeyEsc:
 			m.quickSwitchFiltering = false
+			m.quickSwitchCachedData = llmData{} // clear cache
 			m.quickSwitchFilterInput.SetValue("")
 			m.rebuildLLMRows()
 			m.cursorToActiveLLMRow()
@@ -931,6 +1043,7 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 				m.applyQuickSwitch()
 			} else {
 				m.quickSwitchFiltering = false
+				m.quickSwitchCachedData = llmData{}
 				m.quickSwitchFilterInput.SetValue("")
 				m.rebuildLLMRows()
 				m.cursorToActiveLLMRow()
@@ -1002,11 +1115,13 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		return true, nil
 	case "/":
 		m.quickSwitchFiltering = true
+		// Cache the source data so filter keystrokes don't trigger RPC
+		m.quickSwitchCachedData = m.llmSource()
 		m.quickSwitchFilterInput.SetValue("")
-		m.quickSwitchFilterInput.Focus()
+		cmd := m.quickSwitchFilterInput.Focus() // returns cursor-blink cmd
 		m.rebuildLLMRows()
 		m.quickSwitchCursor = 0
-		return true, nil
+		return true, cmd
 	}
 	return true, nil // block other keys
 }

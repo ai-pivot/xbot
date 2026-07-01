@@ -412,30 +412,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.handleHistoryReload(msg)
 
 	case cliTokenRefreshMsg:
-		// Session guard: reject stale refresh from a different session.
-		// After compression, the old session's async goroutine may push a
-		// cliTokenRefreshMsg that arrives after the user has switched to
-		// another session. Without this guard, the stale data overwrites
-		// the current session's token usage, causing the context bar to
-		// "jump back" to the old compressed count.
-		if msg.channelName != m.channelName || msg.chatID != m.chatID {
-			break
-		}
-		if msg.tokenPrompt > 0 || msg.tokenCompletion > 0 {
-			// Only accept the DB value if we don't have a more recent value
-			// from engine progress events. After compression, the async
-			// refreshTokenStateAfterReload goroutine may read a stale value
-			// from DB (the compressed token count) while engine has already
-			// pushed the real post-LLM-call value via progress events.
-			// Accept when: nil (no data yet) or DB value is HIGHER (genuinely newer).
-			if m.lastTokenUsage == nil || msg.tokenPrompt > m.lastTokenUsage.PromptTokens {
-				m.lastTokenUsage = &protocol.TokenUsage{
-					PromptTokens:     msg.tokenPrompt,
-					CompletionTokens: msg.tokenCompletion,
-					TotalTokens:      msg.tokenPrompt + msg.tokenCompletion,
-				}
-			}
-		}
+		m.handleTokenRefresh(msg)
 
 	case cliToastClearMsg:
 		cmds = append(cmds, m.handleToastClear(msg)...)
@@ -448,19 +425,11 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		m.relayoutViewport()
 
 	case easterEggDoneMsg:
-		// 🥚 彩蛋关闭（按任意键触发）
-		m.dismissEasterEgg()
-		m.rc.valid = false
-		m.updateViewportContent()
+		m.handleEasterEggDone()
 		return m, nil
 
 	case easterEggMatrixTickMsg:
-		// 🥚 Matrix 代码雨动画帧推进
-		if m.easterEggState.mode == easterEggMatrix {
-			m.tickMatrix()
-			cmds = append(cmds, matrixTickCmd())
-		}
-		return m, tea.Batch(cmds...)
+		return m.handleEasterEggMatrixTick(cmds)
 
 	case cliPluginOverlayShowMsg:
 		cmds = append(cmds, m.handlePluginOverlayShow(msg)...)
@@ -950,4 +919,41 @@ func isMacOS() bool {
 // isLinux returns true if running on Linux.
 func isLinux() bool {
 	return runtime.GOOS == "linux"
+}
+
+// handleTokenRefresh processes a token usage refresh message.
+// It includes session guard logic to reject stale refreshes from
+// a different session, preventing the context bar from "jumping back"
+// to old compressed token counts after session switch.
+func (m *cliModel) handleTokenRefresh(msg cliTokenRefreshMsg) {
+	// Session guard: reject stale refresh from a different session.
+	if msg.channelName != m.channelName || msg.chatID != m.chatID {
+		return
+	}
+	if msg.tokenPrompt > 0 || msg.tokenCompletion > 0 {
+		if m.lastTokenUsage == nil || msg.tokenPrompt > m.lastTokenUsage.PromptTokens {
+			m.lastTokenUsage = &protocol.TokenUsage{
+				PromptTokens:     msg.tokenPrompt,
+				CompletionTokens: msg.tokenCompletion,
+				TotalTokens:      msg.tokenPrompt + msg.tokenCompletion,
+			}
+		}
+	}
+}
+
+// handleEasterEggDone dismisses the Easter egg overlay and refreshes viewport.
+func (m *cliModel) handleEasterEggDone() {
+	m.dismissEasterEgg()
+	m.rc.valid = false
+	m.updateViewportContent()
+}
+
+// handleEasterEggMatrixTick advances the Matrix animation frame
+// and returns a batched command for the next tick.
+func (m *cliModel) handleEasterEggMatrixTick(cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	if m.easterEggState.mode == easterEggMatrix {
+		m.tickMatrix()
+		cmds = append(cmds, matrixTickCmd())
+	}
+	return m, tea.Batch(cmds...)
 }

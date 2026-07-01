@@ -224,11 +224,6 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 	return m, nil
 }
 
-// NewMultiTenantWithOptions 创建带配置选项的会话管理器（向后兼容）
-func NewMultiTenantWithOptions(dbPath string, opts ...MultiTenantOption) (*MultiTenantSession, error) {
-	return NewMultiTenant(dbPath, opts...)
-}
-
 // SetMCPConfigPath 设置 MCP 配置文件路径
 func (m *MultiTenantSession) SetMCPConfigPath(path string) {
 	m.mu.Lock()

@@ -230,8 +230,12 @@ func (t *timeoutTool) Definition() ToolDef {
 	return t.inner.Definition()
 }
 
-// Execute runs the wrapped tool with a timeout-derivative context.
-func (t *timeoutTool) Execute(ctx context.Context, input string) (*ToolResult, error) {
+// executeFunc is the unified signature for tool execution, used by the
+// shared decorator cores to avoid duplicating logic between V1 and V2 paths.
+type executeFunc func(ctx context.Context, input string) (*ToolResult, error)
+
+// executeWithTimeout is the shared core for both V1 and V2 timeout paths.
+func (t *timeoutTool) executeWithTimeout(fn executeFunc, ctx context.Context, input string) (*ToolResult, error) {
 	childCtx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 
@@ -241,7 +245,7 @@ func (t *timeoutTool) Execute(ctx context.Context, input string) (*ToolResult, e
 	}
 	ch := make(chan outcome, 1)
 	go func() {
-		r, e := t.inner.Execute(childCtx, input)
+		r, e := fn(childCtx, input)
 		ch <- outcome{result: r, err: e}
 	}()
 
@@ -254,25 +258,19 @@ func (t *timeoutTool) Execute(ctx context.Context, input string) (*ToolResult, e
 	}
 }
 
+// Execute runs the wrapped tool with a timeout-derivative context.
+func (t *timeoutTool) Execute(ctx context.Context, input string) (*ToolResult, error) {
+	return t.executeWithTimeout(t.inner.Execute, ctx, input)
+}
+
 // ExecuteWithContext runs the wrapped tool's V2 method with a timeout.
 // If the inner tool does not implement PluginToolV2, it falls back to V1 Execute.
 func (t *timeoutTool) ExecuteWithContext(ctx *ToolCallContext, input string) (*ToolResult, error) {
 	v2, ok := t.inner.(PluginToolV2)
 	if !ok {
-		// Not V2 — delegate to V1 path
 		return t.Execute(ctx.Ctx, input)
 	}
-
-	childCtx, cancel := context.WithTimeout(ctx.Ctx, t.timeout)
-	defer cancel()
-
-	type outcome struct {
-		result *ToolResult
-		err    error
-	}
-	ch := make(chan outcome, 1)
-	go func() {
-		// Build a child ToolCallContext with the deadline context.
+	fn := func(childCtx context.Context, input string) (*ToolResult, error) {
 		childTCC := &ToolCallContext{
 			SessionID: ctx.SessionID,
 			Channel:   ctx.Channel,
@@ -280,17 +278,9 @@ func (t *timeoutTool) ExecuteWithContext(ctx *ToolCallContext, input string) (*T
 			UserID:    ctx.UserID,
 			Ctx:       childCtx,
 		}
-		r, e := v2.ExecuteWithContext(childTCC, input)
-		ch <- outcome{result: r, err: e}
-	}()
-
-	select {
-	case o := <-ch:
-		return o.result, o.err
-	case <-childCtx.Done():
-		name := t.inner.Definition().Name
-		return NewToolError(fmt.Sprintf("tool %s timed out after %s", name, t.timeout)), nil
+		return v2.ExecuteWithContext(childTCC, input)
 	}
+	return t.executeWithTimeout(fn, ctx.Ctx, input)
 }
 
 // ---------------------------------------------------------------------------
@@ -322,20 +312,18 @@ func (r *retryTool) Definition() ToolDef {
 	return r.inner.Definition()
 }
 
-// Execute runs the wrapped tool, retrying on Go error.
-func (r *retryTool) Execute(ctx context.Context, input string) (*ToolResult, error) {
+// executeWithRetry is the shared core for both V1 and V2 retry paths.
+func (r *retryTool) executeWithRetry(fn executeFunc, ctx context.Context, input string) (*ToolResult, error) {
 	var result *ToolResult
 	var err error
 	for attempt := 0; attempt <= r.maxRetries; attempt++ {
-		result, err = r.inner.Execute(ctx, input)
+		result, err = fn(ctx, input)
 		if err == nil {
 			return result, nil
 		}
-		// Don't retry if context is cancelled
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// Last attempt — don't sleep
 		if attempt < r.maxRetries {
 			time.Sleep(r.delay)
 		}
@@ -343,32 +331,22 @@ func (r *retryTool) Execute(ctx context.Context, input string) (*ToolResult, err
 	return result, err
 }
 
+// Execute runs the wrapped tool, retrying on Go error.
+func (r *retryTool) Execute(ctx context.Context, input string) (*ToolResult, error) {
+	return r.executeWithRetry(r.inner.Execute, ctx, input)
+}
+
 // ExecuteWithContext runs the wrapped tool's V2 method with retry logic.
 // If the inner tool does not implement PluginToolV2, it falls back to V1 Execute.
 func (r *retryTool) ExecuteWithContext(ctx *ToolCallContext, input string) (*ToolResult, error) {
 	v2, ok := r.inner.(PluginToolV2)
 	if !ok {
-		// Not V2 — delegate to V1 path
 		return r.Execute(ctx.Ctx, input)
 	}
-
-	var result *ToolResult
-	var err error
-	for attempt := 0; attempt <= r.maxRetries; attempt++ {
-		result, err = v2.ExecuteWithContext(ctx, input)
-		if err == nil {
-			return result, nil
-		}
-		// Don't retry if context is cancelled
-		if ctx.Ctx.Err() != nil {
-			return nil, ctx.Ctx.Err()
-		}
-		// Last attempt — don't sleep
-		if attempt < r.maxRetries {
-			time.Sleep(r.delay)
-		}
+	fn := func(_ context.Context, input string) (*ToolResult, error) {
+		return v2.ExecuteWithContext(ctx, input)
 	}
-	return result, err
+	return r.executeWithRetry(fn, ctx.Ctx, input)
 }
 
 // ---------------------------------------------------------------------------

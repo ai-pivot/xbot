@@ -1055,6 +1055,208 @@ func TestBgTaskInjectedUserMessage_RefreshesBgCount(t *testing.T) {
 	}
 }
 
+// TestBgTaskInjection_QueuedWhileTyping_PreservesReply verifies the race
+// condition fix: when a bg task notification arrives WHILE the current turn
+// is still in progress (typing=true), the notification must be queued — NOT
+// start a new turn. Starting a new turn would increment agentTurnID, causing
+// the pending reply to be treated as stale and dropped, losing all iterations.
+func TestBgTaskInjection_QueuedWhileTyping_PreservesReply(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	turn1 := model.agentTurnID
+
+	// Simulate some iterations
+	model.progressState.iterations = []cliIterationSnapshot{
+		{Iteration: 0, Tools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "go build", Status: "done", Elapsed: 100, Iteration: 0},
+		}},
+	}
+	model.progressState.lastIter = 0
+
+	// ── BG notification arrives WHILE typing (reply hasn't arrived) ──
+	model.Update(cliInjectedUserMsg{content: "[System Notification] bg task done"})
+
+	// Must NOT have started a new turn
+	if model.agentTurnID != turn1 {
+		t.Fatalf("agentTurnID should NOT change: expected %d, got %d — "+
+			"bg notification started a new turn, reply will be lost", turn1, model.agentTurnID)
+	}
+	if !model.typing {
+		t.Error("typing should still be true — bg notification interrupted the turn")
+	}
+
+	// Notification should be queued, not rendered as a user message
+	if len(model.messageQueue) != 1 {
+		t.Fatalf("expected 1 queued message, got %d", len(model.messageQueue))
+	}
+	userCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "user" {
+			userCount++
+		}
+	}
+	if userCount != 0 {
+		t.Errorf("expected 0 user messages (notification should be queued, not rendered), got %d", userCount)
+	}
+
+	// ── Now PhaseDone + reply arrive ──
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 0,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "go build", Status: "done", Elapsed: 100, Iteration: 0},
+		},
+	})
+	sendDone(model, "build succeeded")
+
+	// Reply must be preserved — find the assistant message
+	var assistantMsg *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == turn1 {
+			assistantMsg = &model.messages[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant reply for turn 1 was LOST — this is the regression bug")
+	}
+	if assistantMsg.content != "build succeeded" {
+		t.Errorf("assistant content mismatch: got %q", assistantMsg.content)
+	}
+	// Iterations must be preserved
+	if len(assistantMsg.iterations) != 1 {
+		t.Errorf("expected 1 iteration preserved, got %d", len(assistantMsg.iterations))
+	}
+}
+
+// TestBgTaskInjection_QueuedInDeadWindow_PreservesReply verifies the race
+// condition in the "dead window": PhaseDone has arrived (typing=false,
+// doneProcessed=true) but the reply hasn't been processed yet
+// (replyReceived=false). This is the exact window where the agent's
+// chatProcessLoop calls drainAndProcessNotifications after sendMessage but
+// before the async reply reaches the TUI.
+func TestBgTaskInjection_QueuedInDeadWindow_PreservesReply(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	turn1 := model.agentTurnID
+
+	// Simulate iteration
+	model.progressState.iterations = []cliIterationSnapshot{
+		{Iteration: 0, Tools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "ls", Status: "done", Elapsed: 50, Iteration: 0},
+		}},
+	}
+	model.progressState.lastIter = 0
+
+	// PhaseDone arrives — sets doneProcessed=true, typing=false
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 0,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "ls", Status: "done", Elapsed: 50, Iteration: 0},
+		},
+	})
+
+	// Verify dead window: typing=false but replyReceived=false
+	if model.typing {
+		t.Error("typing should be false after PhaseDone")
+	}
+	flag := model.getTurnFlag(turn1)
+	if flag == nil || !flag.doneProcessed {
+		t.Fatal("doneProcessed should be true after PhaseDone")
+	}
+	if flag.replyReceived {
+		t.Error("replyReceived should still be false — this is the dead window")
+	}
+
+	// ── BG notification arrives in the dead window ──
+	model.Update(cliInjectedUserMsg{content: "[System Notification] bg task done"})
+
+	// Must NOT have started a new turn
+	if model.agentTurnID != turn1 {
+		t.Fatalf("agentTurnID changed in dead window: expected %d, got %d — "+
+			"reply will be lost when it arrives", turn1, model.agentTurnID)
+	}
+
+	// Notification should be queued
+	if len(model.messageQueue) != 1 {
+		t.Fatalf("expected 1 queued message in dead window, got %d", len(model.messageQueue))
+	}
+
+	// ── Reply arrives ──
+	sendDone(model, "ls output")
+
+	// Reply must be preserved
+	var assistantMsg *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" && model.messages[i].turnID == turn1 {
+			assistantMsg = &model.messages[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("assistant reply was LOST in dead window — this is the regression bug")
+	}
+	if assistantMsg.content != "ls output" {
+		t.Errorf("assistant content: got %q, want %q", assistantMsg.content, "ls output")
+	}
+}
+
+// TestBgTaskInjection_FlushedAfterReply starts a new turn correctly verifies
+// that after the reply is received and the queued message is flushed, the
+// notification does start a new turn with correct content.
+func TestBgTaskInjection_FlushedAfterReply_StartsNewTurn(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// PhaseDone + reply complete the first turn
+	sendProgress(model, &protocol.ProgressEvent{Phase: "done", Iteration: 0})
+
+	// Inject bg notification WHILE typing (will be queued)
+	model.Update(cliInjectedUserMsg{content: "bg result: ok"})
+	if len(model.messageQueue) != 1 {
+		t.Fatalf("expected 1 queued, got %d", len(model.messageQueue))
+	}
+
+	// Reply arrives — triggers tryFlushMessageQueue
+	sendDone(model, "A1")
+	turn1Done := model.agentTurnID
+
+	// The flush should NOT start a new turn immediately within handleAgentMessage.
+	// tryFlushMessageQueue arms the tick handler to drain on the next tick.
+	// Simulate the tick
+	model.needFlushQueue = true
+	model.typing = false // ensure idle for flush
+
+	// Simulate tick flush
+	if model.needFlushQueue && len(model.messageQueue) > 0 && !model.typing {
+		queued := model.messageQueue[0]
+		model.messageQueue = model.messageQueue[1:]
+		model.messages = append(model.messages, cliMessage{
+			role:      "user",
+			content:   queued.content,
+			timestamp: time.Now(),
+			dirty:     true,
+		})
+		model.startAgentTurn()
+	}
+
+	// New turn should have started
+	if model.agentTurnID != turn1Done+1 {
+		t.Errorf("expected agentTurnID=%d (turn1+1), got %d", turn1Done+1, model.agentTurnID)
+	}
+	// The queued bg notification should now be a user message
+	foundBg := false
+	for _, msg := range model.messages {
+		if msg.role == "user" && strings.Contains(msg.content, "bg result") {
+			foundBg = true
+		}
+	}
+	if !foundBg {
+		t.Error("queued bg notification should be flushed as a user message")
+	}
+}
+
 func TestBgDrainCompletedTool_AppearsInIteration(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()

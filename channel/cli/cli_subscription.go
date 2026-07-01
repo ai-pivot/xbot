@@ -47,10 +47,8 @@ func (m *cliModel) applyModelSwitch(nextModel, subID string) {
 	m.cachedMaxContextTokens = ResolveEffectiveMaxContext(state, m.subscriptionMgr)
 	m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(state, m.subscriptionMgr))
 	SaveSessionLLMState(m.workDir, m.chatID, SessionLLMState{
-		SubscriptionID:   m.activeSubID,
-		Model:            nextModel,
-		MaxContextTokens: m.cachedMaxContextTokens,
-		MaxOutputTokens:  int(m.cachedMaxOutputTokens),
+		SubscriptionID: m.activeSubID,
+		Model:          nextModel,
 	}, m.remoteMode)
 	m.updateQuickSwitchModels(nextModel)
 	m.showTempStatus(fmt.Sprintf("Model: %s", nextModel))
@@ -240,14 +238,15 @@ func (m *cliModel) refreshCachedThinkingMode() {
 
 // thinkingModeLabel renders the status-bar indicator for the current global
 // thinking mode. "" = auto (provider default), "enabled" = on, "disabled" = off.
+// Compact ASCII format for clean terminal rendering.
 func (m *cliModel) thinkingModeLabel() string {
 	switch m.cachedThinkingMode {
 	case "enabled":
-		return "🧠 on"
+		return m.styles.Accent.Render("think+")
 	case "disabled":
-		return "🧠 off"
+		return m.styles.TextMutedSt.Render("think-")
 	default:
-		return "🧠 auto"
+		return m.styles.TextMutedSt.Render("think")
 	}
 }
 

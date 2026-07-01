@@ -213,6 +213,10 @@ func (m *cliModel) handleMouseClick(msg tea.MouseClickMsg) (bool, tea.Model, tea
 // handleViewportClick handles clicks on the viewport content area
 // (no zone matched). Detects clicks on reasoning box headers to toggle
 // expand/collapse, and clicks on tool tags for future expand support.
+//
+// NOTE: Currently this function is a no-op — it always returns false.
+// The coordinate calculations are kept as scaffolding for future
+// click-to-expand support on reasoning boxes and tool tags.
 func (m *cliModel) handleViewportClick(x, y int) bool {
 	// Convert absolute Y to viewport-relative Y
 	vpY := y - m.viewportYStart
@@ -1388,19 +1392,35 @@ func (m *cliModel) trackQuickSwitchZones(zb *mouseZoneBuilder) {
 	if m.quickSwitchMode != "llm" {
 		return
 	}
-	n := len(m.quickSwitchRows)
-	// Match viewQuickSwitch's centering formula (listH = N+5).
-	listH := n + 5
-	blankLines := max(0, (m.height-listH)/2)
-
-	zb.skip(blankLines)
+	// Match viewQuickSwitch layout: no vertical centering, starts from top.
+	// Line order: border(1) + header(1) + blank(1) + search(1) + refresh/blank(1) = 5
 	zb.skip(1) // PanelBox top border
 	zb.skip(1) // header
 	zb.skip(1) // spacer
-	zb.skip(1) // filter line
+	zb.skip(1) // search line
 	zb.skip(1) // refresh / spacer line
 
-	for i, r := range m.quickSwitchRows {
+	// Only track visible rows (accounting for scroll)
+	const overhead = 7
+	maxVisibleRows := m.height - overhead
+	if maxVisibleRows < 3 {
+		maxVisibleRows = 3
+	}
+	totalRows := len(m.quickSwitchRows)
+	start := m.quickSwitchScrollY
+	if start < 0 {
+		start = 0
+	}
+	if start > totalRows {
+		start = totalRows
+	}
+	end := start + maxVisibleRows
+	if end > totalRows {
+		end = totalRows
+	}
+
+	for i := start; i < end; i++ {
+		r := m.quickSwitchRows[i]
 		if r.kind == qsSection {
 			zb.skip(1) // section header — not clickable
 			continue
@@ -1408,6 +1428,10 @@ func (m *cliModel) trackQuickSwitchZones(zb *mouseZoneBuilder) {
 		zb.add(1, "quickSwitchItem", i)
 	}
 
+	// Scroll indicator (optional, 1 line) + border + hint
+	if totalRows > maxVisibleRows {
+		zb.skip(1) // scroll indicator
+	}
 	zb.skip(1) // PanelBox bottom border
 	zb.skip(1) // hint line
 }

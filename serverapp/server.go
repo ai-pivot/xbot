@@ -2,7 +2,6 @@ package serverapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -275,7 +274,7 @@ func GetPluginChannelConfig(cfg *config.Config, name string) map[string]string {
 }
 
 // registerChannels creates and registers all channels.
-func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, webDB *sql.DB, workDir string) (*feishu.FeishuChannel, *web.WebChannel, error) {
+func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, webDB *sqlite.DB, workDir string) (*feishu.FeishuChannel, *web.WebChannel, error) {
 	var feishuCh *feishu.FeishuChannel
 	var webCh *web.WebChannel
 	if cfg.Feishu.Enabled {
@@ -315,7 +314,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			webCh = web.NewWebChannel(web.WebChannelConfig{
 				Host:       cfg.Web.Host,
 				Port:       cfg.Web.Port,
-				DB:         webDB,
+				DB:         webDB.Conn(),
 				AdminToken: cfg.Admin.Token,
 				InviteOnly: cfg.Web.InviteOnly,
 				PublicURL:  cfg.Sandbox.PublicURL,
@@ -755,9 +754,9 @@ func Run(args []string) error {
 		tools.SetRunnerTokenDB(tokenDB.Conn())
 	}
 
-	var webDB *sql.DB
+	var webDB *sqlite.DB
 	if tokenDB != nil {
-		webDB = tokenDB.Conn()
+		webDB = tokenDB
 	}
 	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, ag, webDB, workDir)
 	if err != nil {
@@ -795,7 +794,7 @@ func Run(args []string) error {
 			feishuCh.SetAdminChatID(adminChatID)
 		}
 		if webDB != nil {
-			feishuCh.SetWebDB(webDB)
+			feishuCh.SetWebDB(webDB.Conn())
 		}
 
 		// 注入设置卡片回调（让飞书渠道能访问 Agent 的 LLM/Registry/Settings 功能）
