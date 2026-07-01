@@ -101,12 +101,15 @@ func TestEndAgentTurn_PreservesProgressState(t *testing.T) {
 
 // ─── Fix 2: renderTurnBody dedup checks all iterations ──────────────
 
-// TestRenderTurnBody_DedupAllIterations verifies that fallbackContent
-// is not duplicated when it matches an EARLIER iteration's Thinking
-// (not just the last one). The old code only checked the last iteration,
-// causing text duplication when the agent generated text in iteration 1
-// then called tools in later iterations.
-func TestRenderTurnBody_DedupAllIterations(t *testing.T) {
+// TestRenderTurnBody_DedupExactMatchAllIterations verifies that
+// fallbackContent is not duplicated when it exactly matches an EARLIER
+// iteration's Thinking. The old code only checked the last iteration.
+//
+// Root cause: iter.Thinking carries the assistant's reply text
+// (StructuredProgress.ThinkingContent = response text, NOT reasoning).
+// fallbackContent (msg.content) is the same text from a different path.
+// Exact match dedup prevents the double render.
+func TestRenderTurnBody_DedupExactMatchAllIterations(t *testing.T) {
 	model := initTestModel()
 	model.ticker.frame = 0
 
@@ -127,52 +130,20 @@ func TestRenderTurnBody_DedupAllIterations(t *testing.T) {
 		},
 	}
 
-	// fallbackContent matches iteration 1's Thinking exactly
 	fallback := "Let me analyze the code"
 	body := model.renderTurnBody(iterations, nil, 80, fallback)
 	clean := stripAnsi(body)
 
-	// The text should appear exactly ONCE, not twice
 	count := strings.Count(clean, "Let me analyze the code")
 	if count != 1 {
-		t.Errorf("fallbackContent should appear exactly once (dedup), got %d times:\n%s", count, clean)
+		t.Errorf("exact match should dedup to 1 occurrence, got %d:\n%s", count, clean)
 	}
 }
 
-// TestRenderTurnBody_DedupPrefixMatch verifies that prefix matching
-// catches cases where fallbackContent has extra trailing text (e.g.
-// error messages appended after the original reply), but ONLY when
-// the thinking covers >= 80% of the fallback (to avoid short-prefix
-// false positives that suppress legitimate replies).
-func TestRenderTurnBody_DedupPrefixMatch(t *testing.T) {
-	model := initTestModel()
-	model.ticker.frame = 0
-
-	// Thinking is the vast majority of fallback (>>80%)
-	iterations := []cliIterationSnapshot{
-		{
-			Iteration: 1,
-			Thinking:  "The register allocator fix is sufficient for the 5-parameter test",
-		},
-	}
-
-	// fallbackContent = thinking + a short trailing note (<20% extra)
-	fallback := "The register allocator fix is sufficient for the 5-parameter test\nDone."
-	body := model.renderTurnBody(iterations, nil, 80, fallback)
-	clean := stripAnsi(body)
-
-	// Should be deduped — only ONE occurrence
-	count := strings.Count(clean, "The register allocator fix is sufficient for the 5-parameter test")
-	if count != 1 {
-		t.Errorf("should be deduped (>=80%% prefix match), got %d occurrences:\n%s", count, clean)
-	}
-}
-
-// TestRenderTurnBody_ShortPrefixNotSuppressed verifies that a short
-// Thinking prefix does NOT suppress a longer legitimate fallbackContent.
-// e.g. Thinking="I will now", fallback="I will now analyze the code
-// and provide a fix" — the fallback must still be rendered.
-func TestRenderTurnBody_ShortPrefixNotSuppressed(t *testing.T) {
+// TestRenderTurnBody_DifferentTextNotSuppressed verifies that when
+// fallbackContent differs from iter.Thinking (e.g. LLM added more text
+// after tools), the fallback is rendered normally.
+func TestRenderTurnBody_DifferentTextNotSuppressed(t *testing.T) {
 	model := initTestModel()
 	model.ticker.frame = 0
 
@@ -187,9 +158,9 @@ func TestRenderTurnBody_ShortPrefixNotSuppressed(t *testing.T) {
 	body := model.renderTurnBody(iterations, nil, 80, fallback)
 	clean := stripAnsi(body)
 
-	// The fallback MUST be rendered (not suppressed by short prefix)
+	// The full fallback must be rendered — short Thinking must not suppress it
 	if !strings.Contains(clean, "I will now analyze the code and provide a fix") {
-		t.Errorf("fallback should be rendered (short prefix must not suppress):\n%s", clean)
+		t.Errorf("fallback should be rendered (different from Thinking):\n%s", clean)
 	}
 }
 

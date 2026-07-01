@@ -120,28 +120,16 @@ func (m *cliModel) renderTurnBody(
 		}
 	} else if fallbackContent != "" {
 		// Idle state: render the final assistant content after iterations.
-		// Avoid duplication: check ALL iterations (not just the last one).
-		// An earlier iteration may have produced the same text (e.g. the agent
-		// generated its reply in iteration 1, then called tools in later
-		// iterations).
+		// Dedup: if any iteration already rendered the same text (via
+		// ThinkingContent → iter.Thinking), skip the fallback to avoid
+		// duplication. iter.Thinking carries the assistant's reply text
+		// (StructuredProgress.ThinkingContent, which is the actual response
+		// text, NOT reasoning — the field name is historical).
+		// Exact match only: fallbackContent (msg.content) and iter.Thinking
+		// originate from the same LLM response, so they should be identical.
 		alreadyRendered := false
 		for i := range iterations {
-			thinking := iterations[i].Thinking
-			if thinking == "" {
-				continue
-			}
-			trimmedFallback := strings.TrimSpace(fallbackContent)
-			trimmedThinking := strings.TrimSpace(thinking)
-			if trimmedFallback == trimmedThinking {
-				alreadyRendered = true
-				break
-			}
-			// Prefix match only when thinking covers the majority of fallback.
-			// Without the length guard, a short partial thinking like "I will now"
-			// would suppress a legitimate fallback "I will now analyze the code..."
-			if len(trimmedThinking) > 0 &&
-				float64(len(trimmedThinking)) >= float64(len(trimmedFallback))*0.8 &&
-				strings.HasPrefix(trimmedFallback, trimmedThinking) {
+			if strings.TrimSpace(iterations[i].Thinking) == strings.TrimSpace(fallbackContent) {
 				alreadyRendered = true
 				break
 			}
