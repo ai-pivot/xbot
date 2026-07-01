@@ -1,0 +1,12 @@
+# https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository#configuring-the-template-chooser
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 Discussions 讨论区
+    url: https://github.com/ai-pivot/xbot/discussions
+    about: 提问、想法讨论、使用咨询请发到 Discussions 讨论区，而不是 Issue。
+  - name: 📖 文档站点
+    url: https://ai-pivot.github.io/xbot/
+    about: 查看完整文档（安装配置、渠道接入、插件开发等）。
+  - name: 🐛 已知问题列表
+    url: https://github.com/ai-pivot/xbot/issues?q=is%3Aopen+label%3Abug
+    about: 提交 Bug 前请先查看是否已有相同问题的 Issue。
