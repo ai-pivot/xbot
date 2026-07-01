@@ -442,15 +442,21 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		}
 	}
 
-	// Streaming content/reasoning char count indicator.
+	// Streaming content/reasoning progress indicator.
 	// Shows real-time generation progress for the current streaming response.
-	// Reasoning and content counts are shown separately when both are present.
+	// Priority: StreamTokens (from Anthropic message_delta) > char count.
+	// Token count is shown when the LLM API provides incremental usage events
+	// (Anthropic does via message_delta; OpenAI/DeepSeek only at stream end).
 	var streamParts []string
-	if rc := len(p.ReasoningStreamContent); rc > 0 {
-		streamParts = append(streamParts, formatCharCount(rc))
-	}
-	if sc := len(p.StreamContent); sc > 0 {
-		streamParts = append(streamParts, formatCharCount(sc))
+	if st := p.StreamTokens; st > 0 {
+		streamParts = append(streamParts, formatTokenCount(st))
+	} else {
+		if rc := len(p.ReasoningStreamContent); rc > 0 {
+			streamParts = append(streamParts, formatCharCount(rc))
+		}
+		if sc := len(p.StreamContent); sc > 0 {
+			streamParts = append(streamParts, formatCharCount(sc))
+		}
 	}
 	if len(streamParts) > 0 {
 		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]

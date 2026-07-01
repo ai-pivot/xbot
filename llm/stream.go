@@ -76,7 +76,7 @@ func safeCallback(ctx context.Context, f func(string), s string) {
 // It handles content, reasoning content, tool calls (accumulating deltas by index), usage, and finish reason.
 // Returns an error if the stream emits an EventError or if ctx is cancelled during collection.
 func CollectStream(ctx context.Context, eventCh <-chan StreamEvent) (*LLMResponse, error) {
-	return CollectStreamWithCallback(ctx, eventCh, nil, nil, nil)
+	return CollectStreamWithCallback(ctx, eventCh, nil, nil, nil, nil)
 }
 
 // CollectStreamWithCallback is like CollectStream but calls onContent with the
@@ -87,7 +87,7 @@ func CollectStream(ctx context.Context, eventCh <-chan StreamEvent) (*LLMRespons
 // the stream — this enables early tool detection (showing "generating tool X"
 // before arguments finish streaming, similar to Cursor). EventError handling
 // is identical to CollectStream (returns partial content).
-func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, onContent func(content string), onReasoning func(content string), onToolCall func(toolCalls []ToolCallDelta)) (*LLMResponse, error) {
+func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, onContent func(content string), onReasoning func(content string), onToolCall func(toolCalls []ToolCallDelta), onUsage func(usage *TokenUsage)) (*LLMResponse, error) {
 	var resp LLMResponse
 	var content strings.Builder
 	var reasoningContent strings.Builder
@@ -197,6 +197,17 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 			case EventUsage:
 				if ev.Usage != nil {
 					resp.Usage = *ev.Usage
+					if onUsage != nil {
+						func() {
+							defer func() { recover() }()
+							select {
+							case <-ctx.Done():
+								return
+							default:
+							}
+							onUsage(ev.Usage)
+						}()
+					}
 				}
 			case EventDone:
 				if ev.FinishReason != "" {

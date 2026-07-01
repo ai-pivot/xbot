@@ -345,6 +345,18 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
 			}
 		}
+		cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {
+			if usage == nil || usage.CompletionTokens == 0 {
+				return
+			}
+			seq := subAgentProgressSeq.Add(1)
+			localCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamTokens: usage.CompletionTokens})
+			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
+				cp := *snap.(*protocol.ProgressEvent)
+				cp.StreamTokens = usage.CompletionTokens
+				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
+			}
+		}
 	} else if remoteCh != nil {
 		cfg.StreamContentFunc = func(content string) {
 			seq := subAgentProgressSeq.Add(1)
@@ -361,6 +373,18 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
 				cp := *snap.(*protocol.ProgressEvent)
 				cp.ReasoningStreamContent = content
+				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
+			}
+		}
+		cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {
+			if usage == nil || usage.CompletionTokens == 0 {
+				return
+			}
+			seq := subAgentProgressSeq.Add(1)
+			remoteCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamTokens: usage.CompletionTokens})
+			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
+				cp := *snap.(*protocol.ProgressEvent)
+				cp.StreamTokens = usage.CompletionTokens
 				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
 			}
 		}

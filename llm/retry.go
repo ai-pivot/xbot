@@ -341,7 +341,7 @@ func (r *RetryLLM) GenerateStream(ctx context.Context, model string, messages []
 // streamContentFn / streamReasoningFn / streamToolCallFn 在每个 attempt 中都会被调用。
 // 重试过程中中间 attempt 的内容可能短暂出现在 UI 中，但最终只有成功 attempt
 // 的完整响应会被返回。
-func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string, streamContentFn func(string), streamReasoningFn func(string), streamToolCallFn func([]ToolCallDelta)) (*LLMResponse, error) {
+func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string, streamContentFn func(string), streamReasoningFn func(string), streamToolCallFn func([]ToolCallDelta), streamUsageFn func(*TokenUsage)) (*LLMResponse, error) {
 	release := r.acquire(ctx)
 	defer release()
 
@@ -389,8 +389,8 @@ func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, m
 			eventCh = r.ch
 		}
 
-		if streamContentFn != nil || streamReasoningFn != nil || streamToolCallFn != nil {
-			return CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn, streamToolCallFn)
+		if streamContentFn != nil || streamReasoningFn != nil || streamToolCallFn != nil || streamUsageFn != nil {
+			return CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
 		}
 		return CollectStream(ctx, eventCh)
 	})

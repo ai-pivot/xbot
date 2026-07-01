@@ -115,6 +115,14 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 		}
 	}
 
+	// Carry forward StreamTokens (incremental completion token count from
+	// Anthropic's message_delta events). Structured payloads from
+	// progressFinalizer don't carry StreamTokens — without carry-forward,
+	// the token count would flicker off on every structured progress update.
+	if prev.StreamTokens > 0 && m.progressState.current.StreamTokens == 0 && sameIter {
+		m.progressState.current.StreamTokens = prev.StreamTokens
+	}
+
 	// Carry forward StreamingTools.
 	// Structured payloads from progressFinalizer do not carry StreamingTools;
 	// without carry forward, a structured event arriving between two

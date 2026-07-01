@@ -24,7 +24,7 @@ func TestCollectStreamWithCallback_ToolCallEarlyDetection(t *testing.T) {
 	var snapshots [][]ToolCallDelta
 	resp, err := CollectStreamWithCallback(context.Background(), ch, nil, nil, func(toolCalls []ToolCallDelta) {
 		snapshots = append(snapshots, toolCalls)
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestCollectStreamWithCallback_MultiToolEarlyDetection(t *testing.T) {
 	var snapshots [][]ToolCallDelta
 	_, err := CollectStreamWithCallback(context.Background(), ch, nil, nil, func(toolCalls []ToolCallDelta) {
 		snapshots = append(snapshots, toolCalls)
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestCollectStreamWithCallback_NilToolCallCallback(t *testing.T) {
 	ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonToolCalls}
 	close(ch)
 
-	resp, err := CollectStreamWithCallback(context.Background(), ch, nil, nil, nil)
+	resp, err := CollectStreamWithCallback(context.Background(), ch, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

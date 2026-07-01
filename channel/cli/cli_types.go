@@ -364,6 +364,16 @@ func formatCharCount(n int) string {
 	return fmt.Sprintf("%.1fk chars", float64(n)/1000)
 }
 
+// formatTokenCount formats a token count for streaming progress display.
+// < 1000: "42 tokens"
+// >= 1000: "1.2k tokens"
+func formatTokenCount(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d tokens", n)
+	}
+	return fmt.Sprintf("%.1fk tokens", float64(n)/1000)
+}
+
 // ---------------------------------------------------------------------------
 // CLI ch.Channel Config
 // ---------------------------------------------------------------------------
