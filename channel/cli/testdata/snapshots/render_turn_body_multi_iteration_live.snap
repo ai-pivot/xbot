@@ -31,7 +31,6 @@ current thinking text
   · ✗ Previous tool failed 200ms
 
 current streamed content
-  ◇◇◇◇◇ 24 chars
 
   · ✓ Current active succeeded 300ms
   · ✗ Current active failed 400ms
@@ -50,7 +49,6 @@ previous content only
 ╭ Reasoning ─────────────────────────────────────────────────────────────────╮
 │ current reasoning before tools                                             │
 ╰────────────────────────────────────────────────────────────────────────────╯
-  ◇◇◇◇◇ 30 chars
 
   · ✓ Current read succeeded 200ms
   · ✗ Current edit failed 300ms

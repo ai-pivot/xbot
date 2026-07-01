@@ -390,21 +390,30 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 	}
 
 	// Streaming content/reasoning progress indicator.
-	// Shows real-time generation progress for the current streaming response.
-	// Placed right after content/reasoning, BEFORE tools and SubAgent tree —
-	// the indicator is about the LLM's own text generation, not tool execution.
-	// Priority: StreamTokens (from Anthropic message_delta) > char count.
-	// Token count is shown when the LLM API provides incremental usage events
-	// (Anthropic does via message_delta; OpenAI/DeepSeek only at stream end).
+	// ONLY shows when the LLM is actively generating text (thinking phase or
+	// stream-only events). NOT when tools are executing — during tool_exec,
+	// StreamContent is a carry-forward residue, not live text.
+	// Also suppress when there are running/active tools — the tool spinners
+	// are the live indicators then, not the char/token counter.
 	var streamParts []string
-	if st := p.StreamTokens; st > 0 {
-		streamParts = append(streamParts, formatTokenCount(st))
-	} else {
-		if rc := len(p.ReasoningStreamContent); rc > 0 {
-			streamParts = append(streamParts, formatCharCount(rc))
+	hasRunningTools := false
+	for _, t := range p.ActiveTools {
+		if t.Status == "running" || t.Status == "active" {
+			hasRunningTools = true
+			break
 		}
-		if sc := len(p.StreamContent); sc > 0 {
-			streamParts = append(streamParts, formatCharCount(sc))
+	}
+	isActiveStreaming := (p.Phase == "thinking" || p.Phase == "") && !hasRunningTools
+	if isActiveStreaming {
+		if st := p.StreamTokens; st > 0 {
+			streamParts = append(streamParts, formatTokenCount(st))
+		} else {
+			if rc := len(p.ReasoningStreamContent); rc > 0 {
+				streamParts = append(streamParts, formatCharCount(rc))
+			}
+			if sc := len(p.StreamContent); sc > 0 {
+				streamParts = append(streamParts, formatCharCount(sc))
+			}
 		}
 	}
 	if len(streamParts) > 0 {
