@@ -667,6 +667,32 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 						finalTools = append(finalTools, t)
 					}
 				}
+				// Also include tools from prev (live progress before cancel).
+				// When Ctrl+C interrupts during tool generating (LLM streaming
+				// tool args), msg.payload (PhaseDone) may not carry the previous
+				// iteration's completed tools — they're in prev, which holds the
+				// last structured event's data. Without this, finalTools is empty
+				// → no snapshot created → m.progressState.iterations stays empty
+				// → baking step has nothing → handleCancelAck removes streaming
+				// message → previous iteration data is LOST.
+				if prev != nil {
+					for _, t := range prev.CompletedTools {
+						if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
+							return existing.Name == t.Name && existing.Label == t.Label
+						}) {
+							finalTools = append(finalTools, t)
+						}
+					}
+					for _, t := range prev.ActiveTools {
+						if t.Status == "done" || t.Status == "error" {
+							if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
+								return existing.Name == t.Name && existing.Label == t.Label
+							}) {
+								finalTools = append(finalTools, t)
+							}
+						}
+					}
+				}
 				snap := cliIterationSnapshot{
 					Iteration:   m.progressState.lastIter,
 					Thinking:    msg.payload.Thinking,

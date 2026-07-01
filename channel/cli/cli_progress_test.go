@@ -2053,3 +2053,93 @@ func TestHistoryReloadReplacesDBAssistantWithLiveContent(t *testing.T) {
 		t.Fatal("live iterations were lost when replacing DB assistant")
 	}
 }
+
+// TestCancelDuringToolGeneratingPreservesPreviousIteration verifies that
+// Ctrl+C during tool generating (LLM streaming tool args) does NOT lose
+// the previous iteration's completed tools. Before the fix, the cancel
+// path only collected tools from msg.payload (PhaseDone) and
+// m.lastCompletedTools, missing prev which held the last structured
+// event's completed tools. This caused finalTools to be empty → no
+// snapshot → iterations empty → streaming message removed → previous
+// iteration data permanently lost.
+func TestCancelDuringToolGeneratingPreservesPreviousIteration(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Iteration 1: Shell completed
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "cd /home/user/src/xbot", Status: "done", Elapsed: 50, Iteration: 1},
+		},
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "cd /home/user/src/xbot", Status: "done", Elapsed: 50, Iteration: 1},
+		},
+	})
+
+	// The progress finalizer moves done tools to CompletedTools and clears ActiveTools.
+	// Simulate that state:
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 1,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "cd /home/user/src/xbot", Status: "done", Elapsed: 50, Iteration: 1},
+		},
+	})
+
+	// LLM starts generating a tool call (stream-only events).
+	// No structured event for iteration 2 arrives — stream-only merges into current.
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamingTools: []protocol.ToolProgress{
+			{Name: "Shell", Status: "generating", GenChars: 1600},
+		},
+	})
+
+	// Verify prev has the completed tools (merged state retains structured data)
+	if model.progressState.current == nil {
+		t.Fatal("progressState.current is nil before cancel")
+	}
+	if len(model.progressState.current.CompletedTools) == 0 {
+		t.Fatal("CompletedTools should be non-empty (merged from structured event)")
+	}
+
+	// Ctrl+C: set cancel state and send PhaseDone
+	model.turnCancelled = true
+	model.cancelTargetTurnID = model.agentTurnID
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 1, // PhaseDone with same iteration (no iteration 2 structured event arrived)
+	})
+
+	// Verify that the streaming message has baked iterations with the Shell tool.
+	// Note: endAgentTurn clears streamingMsgIdx to -1, so find the message by turnID.
+	var streaming cliMessage
+	found := false
+	for _, msg := range model.messages {
+		if msg.role == "assistant" && msg.turnID == model.agentTurnID {
+			streaming = msg
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no assistant message found for the cancelled turn — streaming message was removed")
+	}
+	if len(streaming.iterations) == 0 {
+		t.Fatal("streaming message has no iterations — previous iteration data was lost")
+	}
+
+	// Check that the Shell tool from iteration 1 is in the baked iterations
+	foundShell := false
+	for _, iter := range streaming.iterations {
+		for _, tool := range iter.Tools {
+			if tool.Name == "Shell" {
+				foundShell = true
+			}
+		}
+	}
+	if !foundShell {
+		t.Fatal("Shell tool from iteration 1 was not preserved in baked iterations after cancel during tool generating")
+	}
+}
