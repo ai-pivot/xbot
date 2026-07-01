@@ -560,13 +560,10 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	if msg.forceFullRebuild {
 		m.messages = newMessages
 		m.invalidateAllCache(false)
-		// If engine is still running, start turn immediately so new
-		// iterations get a streaming message. Without this, progress
-		// updates only appear in the progress panel — new iteration
-		// tools never render in the message area, making TUI look frozen.
-		if !m.typing && m.progressState.current != nil && m.progressState.current.Phase != "done" && m.panelState.mode != "askuser" {
-			m.startAgentTurn()
-		} else if m.typing && m.streamingMsgIdx < 0 {
+		// If engine is still running (typing=true), ensure a streaming message
+		// exists — compression may have cleared it. If typing=false, the turn
+		// ended during the reload (PhaseDone/endAgentTurn ran) — do NOT auto-start.
+		if m.typing && m.streamingMsgIdx < 0 {
 			// Compression happened mid-turn: HistoryCompacted cleared messages
 			// and streamingMsgIdx, but typing is still true. Without recreating
 			// the streaming message, subsequent progress/streaming events have

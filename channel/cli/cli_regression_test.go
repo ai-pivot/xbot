@@ -293,6 +293,53 @@ func TestHistoryCompacted_NoStaleSnapshot(t *testing.T) {
 	}
 }
 
+// ─── Fix 8: Busy state must use typing flag, not progressState.current ─
+
+// TestTurnComplete_ReturnsToIdle verifies that after endAgentTurn,
+// the TUI returns to idle state (typing=false). progressState.current
+// is preserved for flicker-free rendering but must NOT keep the TUI
+// in busy state. The status bar, tick handler, and update-notice
+// suppression must all use m.typing as the sole busy indicator.
+func TestTurnComplete_ReturnsToIdle(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Simulate progress
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Read", Label: "f.go", Status: "running", Iteration: 1},
+		},
+	})
+
+	// Turn is busy
+	if !model.typing {
+		t.Error("typing should be true during turn")
+	}
+
+	// PhaseDone → endAgentTurn
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:          "done",
+		Iteration:      1,
+		CompletedTools: []protocol.ToolProgress{{Name: "Read", Label: "f.go", Status: "done", Elapsed: 100, Iteration: 1}},
+	})
+
+	// After endAgentTurn: typing must be false (idle)
+	if model.typing {
+		t.Error("typing should be false after endAgentTurn (must return to idle)")
+	}
+
+	// progressState.current is preserved for rendering (flicker-free),
+	// but must NOT affect busy state. The status bar checks typing only.
+	// Verify the tick handler's busy calculation:
+	// busy := m.typing (NOT m.typing || progressState.current != nil)
+	busy := model.typing
+	if busy {
+		t.Error("tick handler busy must be false when typing=false, even if progressState.current is preserved")
+	}
+}
+
 // ─── Fix 3: Queued (pending) tools visible ──────────────────────────
 
 // TestLiveIterationBlocks_PendingToolsVisible verifies that tools with

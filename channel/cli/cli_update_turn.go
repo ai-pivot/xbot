@@ -316,7 +316,7 @@ func (m *cliModel) handleUpdateCheck(msg cliUpdateCheckMsg) {
 	// The notice would corrupt the progress panel layout and distract from
 	// the active iteration history the user needs to see.
 	// The notice is still stored in m.updateNotice for manual /update check.
-	if m.typing || (m.progressState.current != nil && m.progressState.current.Phase != "done" && m.progressState.current.Phase != "") {
+	if m.typing {
 		return
 	}
 	if msg.info.HasUpdate {
@@ -456,8 +456,11 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	}
 
 	// Spinner / progress update
-	sessionActive := m.progressState.current != nil && m.progressState.current.Phase != "done"
-	busy := m.typing || sessionActive
+	// m.typing is the authoritative busy state flag (set by startAgentTurn,
+	// cleared by endAgentTurn). progressState.current is rendering data,
+	// NOT a state flag — it's preserved after endAgentTurn for flicker-free
+	// rendering between PhaseDone and handleAgentMessage.
+	busy := m.typing
 	needsSpinnerTick := busy || m.progressState.busySessions
 
 	// Refresh bg task / agent counts every tick so the infobar and sidebar

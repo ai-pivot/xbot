@@ -474,7 +474,7 @@ func (m *cliModel) layoutPanel(titleBar string) string {
 func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	// Render status bar
 	var status string
-	if m.typing || m.progressState.current != nil {
+	if m.typing {
 		thinkingStatusStyle := m.styles.ThinkingSt
 		status = thinkingStatusStyle.Render(m.renderProgressStatus())
 	} else if m.checkingUpdate {
