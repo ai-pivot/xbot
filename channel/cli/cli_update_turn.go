@@ -230,7 +230,12 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	//   2. m.typing == false but replyReceived == false: PhaseDone arrived
 	//      (set typing=false via endAgentTurn) but the reply hasn't been
 	//      processed by handleAgentMessage yet.
-	shouldQueue := m.typing
+	//   3. m.turnCancelled == true: Ctrl+C PhaseDone arrived (typing=false)
+	//      but cancel ack hasn't been processed yet. Starting a new turn now
+	//      would orphan the cancelled turn's streaming message (still
+	//      isPartial in m.messages). The cancel ack will clean it up and
+	//      flush the queue via tryFlushMessageQueue.
+	shouldQueue := m.typing || m.turnCancelled
 	if !shouldQueue && m.agentTurnID > 0 {
 		if flag := m.getTurnFlag(m.agentTurnID); flag != nil && flag.doneProcessed && !flag.replyReceived {
 			shouldQueue = true
