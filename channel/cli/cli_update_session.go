@@ -507,35 +507,44 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 		}
 	}
 	restoredStreamingIdx := -1
-	// Preserve the streaming message when the engine is still running.
-	// HistoryCompacted creates an empty streaming message so progress events
-	// have a rendering target. But DB history (from reload) may ALSO contain
-	// an assistant message from the current turn (persisted before compression).
-	// Without dedup, both survive → duplicate assistant messages.
-	//
-	// Fix: if newMessages already ends with an assistant, the streaming message
-	// is redundant when empty (DB has the content). When the streaming message
-	// has accumulated content/iterations (progress arrived between
-	// HistoryCompacted and reload), replace the DB assistant with the streaming
-	// one — it has the most recent state.
-	if m.typing && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
-		streamingMsg := m.messages[m.streamingMsgIdx]
-		if streamingMsg.role == "assistant" && streamingMsg.isPartial {
-			// Check if DB history already has a trailing assistant.
-			if n := len(newMessages); n > 0 && newMessages[n-1].role == "assistant" {
-				if streamingMsg.content == "" && len(streamingMsg.iterations) == 0 {
-					// Streaming message is empty — DB assistant has more content.
-					// Mark the DB assistant as the streaming target instead.
-					newMessages[n-1].isPartial = true
-					newMessages[n-1].turnID = streamingMsg.turnID
-					newMessages[n-1].dirty = true
-					restoredStreamingIdx = n - 1
-				} else {
-					// Streaming message has live content — replace DB assistant.
-					newMessages[n-1] = streamingMsg
-					restoredStreamingIdx = n - 1
+	if msg.forceFullRebuild {
+		// Compression path: HistoryCompacted cleared all messages and did NOT
+		// create a streaming message (by design — prevents duplicates).
+		// DB history naturally contains the current turn's assistant (persisted
+		// before compression). Find it and mark as streaming target.
+		// This guarantees exactly ONE assistant per turn — no dedup needed.
+		if m.typing {
+			for i := len(newMessages) - 1; i >= 0; i-- {
+				if newMessages[i].role == "assistant" {
+					newMessages[i].isPartial = true
+					newMessages[i].turnID = m.agentTurnID
+					newMessages[i].dirty = true
+					restoredStreamingIdx = i
+					break
 				}
-			} else {
+			}
+			// Edge case: DB has no assistant yet (compression before first
+			// iteration persisted). This is the ONLY path that creates a
+			// streaming assistant during compression reload.
+			if restoredStreamingIdx < 0 {
+				newMessages = append(newMessages, cliMessage{
+					role:      "assistant",
+					content:   "",
+					timestamp: time.Now(),
+					isPartial: true,
+					dirty:     true,
+					turnID:    m.agentTurnID,
+				})
+				restoredStreamingIdx = len(newMessages) - 1
+			}
+		}
+	} else {
+		// Normal reload path: streaming message was created by startAgentTurn
+		// and is still in m.messages. Preserve it across the smart merge.
+		// No duplication risk — startAgentTurn creates exactly one.
+		if m.typing && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
+			streamingMsg := m.messages[m.streamingMsgIdx]
+			if streamingMsg.role == "assistant" && streamingMsg.isPartial {
 				restoredStreamingIdx = len(newMessages)
 				newMessages = append(newMessages, streamingMsg)
 			}

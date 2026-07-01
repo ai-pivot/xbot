@@ -407,21 +407,16 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		// lose their position. The subsequent reloadMessagesFromSession
 		// → handleHistoryReload respects userScrolledUp/newContentHint.
 		m.reloadMessagesFromSession(true)
-		// Create streaming message immediately so progress events have a
-		// rendering target. handleHistoryReload preserves it when the
-		// compacted history arrives.
-		if m.typing {
-			m.messages = append(m.messages, cliMessage{
-				role:      "assistant",
-				content:   "",
-				timestamp: time.Now(),
-				isPartial: true,
-				dirty:     true,
-				turnID:    m.agentTurnID,
-			})
-			m.streamingMsgIdx = len(m.messages) - 1
-			m.rc.valid = false
-		}
+		// Do NOT create a streaming message here. The DB history from reload
+		// naturally contains the current turn's assistant message (persisted
+		// before compression). handleHistoryReload will find it and mark it
+		// as the streaming target (isPartial=true). Creating a separate
+		// streaming message here would produce TWO assistants — the one from
+		// DB and the one created here — which is the root cause of the
+		// duplicate assistant bug after compression.
+		//
+		// compReloading=true blocks auto-start (startAgentTurn) during the
+		// async reload, so no progress event can create another assistant.
 	}
 
 	// Cache token usage for context bar display — every progress event
