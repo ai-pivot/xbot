@@ -589,6 +589,174 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 	}
 }
 
+// TestStreamTokensOnlyEventDoesNotReplaceProgressState is a regression test for
+// the root cause of double-assistant + flickering. streamUsageFunc sends a
+// ProgressEvent with ONLY StreamTokens (Phase="", Iteration=0, no other stream
+// fields). Before the fix, isStreamOnly did not check StreamTokens>0, so these
+// events fell through to the structured path and REPLACED m.progressState.current
+// with an empty shell — wiping Phase/Iteration/ActiveTools.
+func TestStreamTokensOnlyEventDoesNotReplaceProgressState(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Establish a structured progress state with Phase, Iteration, and tools.
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "running cmd", Status: "running", Iteration: 1},
+		},
+	})
+	originalPhase := model.progressState.current.Phase
+	originalIter := model.progressState.current.Iteration
+	originalActiveCount := len(model.progressState.current.ActiveTools)
+
+	// Send a StreamTokens-only event (simulating Anthropic message_delta usage).
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamTokens: 42,
+	})
+
+	if model.progressState.current == nil {
+		t.Fatal("progressState.current was nil after StreamTokens-only event — should have been merged")
+	}
+	if model.progressState.current.Phase != originalPhase {
+		t.Fatalf("Phase overwritten by StreamTokens-only event: got %q, want %q",
+			model.progressState.current.Phase, originalPhase)
+	}
+	if model.progressState.current.Iteration != originalIter {
+		t.Fatalf("Iteration overwritten by StreamTokens-only event: got %d, want %d",
+			model.progressState.current.Iteration, originalIter)
+	}
+	if len(model.progressState.current.ActiveTools) != originalActiveCount {
+		t.Fatalf("ActiveTools count changed after StreamTokens-only event: got %d, want %d",
+			len(model.progressState.current.ActiveTools), originalActiveCount)
+	}
+	if model.progressState.current.StreamTokens != 42 {
+		t.Fatalf("StreamTokens not merged: got %d, want 42",
+			model.progressState.current.StreamTokens)
+	}
+}
+
+// TestStreamTokensOnlyEventDoesNotCreateSecondAssistant verifies that a
+// StreamTokens-only event does not trigger startAgentTurn (which would create
+// a second streaming assistant message — the "double assistant" bug).
+func TestStreamTokensOnlyEventDoesNotCreateSecondAssistant(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	firstStreamingIdx := model.streamingMsgIdx
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" && msg.isPartial {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("expected 1 streaming assistant after startAgentTurn, got %d", assistantCount)
+	}
+
+	// Establish structured progress so Phase != "done".
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 1,
+	})
+
+	// Send StreamTokens-only events (multiple, like Anthropic message_delta).
+	for i := 0; i < 5; i++ {
+		sendProgress(model, &protocol.ProgressEvent{
+			StreamTokens: int64(10 * (i + 1)),
+		})
+	}
+
+	assistantCount = 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" && msg.isPartial {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("StreamTokens-only events created duplicate streaming assistants: got %d, want 1", assistantCount)
+	}
+	if model.streamingMsgIdx != firstStreamingIdx {
+		t.Fatalf("streamingMsgIdx changed by StreamTokens-only event: got %d, want %d",
+			model.streamingMsgIdx, firstStreamingIdx)
+	}
+}
+
+// TestStreamTokensOnlyEventMergesIntoExistingState verifies that consecutive
+// StreamTokens-only events accumulate StreamTokens without losing other fields.
+func TestStreamTokensOnlyEventMergesIntoExistingState(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:         "thinking",
+		Iteration:     2,
+		StreamContent: "hello",
+		StreamTokens:  10,
+	})
+	// A structured event may arrive (progressFinalizer) that doesn't carry
+	// StreamTokens — carry-forward preserves it.
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 2,
+	})
+	if model.progressState.current.StreamTokens != 10 {
+		t.Fatalf("StreamTokens lost after structured event (carry-forward failed): got %d, want 10",
+			model.progressState.current.StreamTokens)
+	}
+
+	// Now a new StreamTokens-only event arrives with updated count.
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamTokens: 25,
+	})
+	if model.progressState.current.StreamTokens != 25 {
+		t.Fatalf("StreamTokens not updated by stream-only event: got %d, want 25",
+			model.progressState.current.StreamTokens)
+	}
+	if model.progressState.current.Phase != "thinking" {
+		t.Fatalf("Phase lost after StreamTokens-only event: got %q, want %q",
+			model.progressState.current.Phase, "thinking")
+	}
+	if model.progressState.current.StreamContent != "hello" {
+		t.Fatalf("StreamContent lost after StreamTokens-only event: got %q, want %q",
+			model.progressState.current.StreamContent, "hello")
+	}
+}
+
+// TestCompReloadingClearedOnStaleAndErrorPaths verifies that compReloading is
+// cleared even when handleHistoryReload exits early (stale session or error).
+// Without this, a stale reload leaves compReloading=true forever, blocking
+// auto-start and freezing the TUI.
+func TestCompReloadingClearedOnStaleAndErrorPaths(t *testing.T) {
+	// Stale path: different chatID.
+	model := initTestModel()
+	model.splashState.compReloading = true
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName: "cli",
+		chatID:      "/different-session",
+	})
+	if model.splashState.compReloading {
+		t.Fatal("compReloading not cleared on stale session path")
+	}
+
+	// Error path: reload failed.
+	model.splashState.compReloading = true
+	model.handleHistoryReload(cliHistoryReloadMsg{
+		channelName: model.channelName,
+		chatID:      model.chatID,
+		err:         errDummy,
+	})
+	if model.splashState.compReloading {
+		t.Fatal("compReloading not cleared on error path")
+	}
+}
+
+var errDummy = &dummyError{"reload failed"}
+
+type dummyError struct{ msg string }
+
+func (e *dummyError) Error() string { return e.msg }
+
 func TestHistoryReloadForceFullRebuildDoesNotReuseStaleRenderedCache(t *testing.T) {
 	model := initTestModel()
 	now := time.Now()
