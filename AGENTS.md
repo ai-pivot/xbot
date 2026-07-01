@@ -9,6 +9,7 @@
 - Config: `~/.xbot/config.json`, env var overrides
 - Subscriptions: `~/.xbot/config.json` (CLI) or DB `user_llm_subscriptions` (Server) — the single source of truth for LLM config
 - Pre-commit: gofmt → golangci-lint → go build → go test
+- Issue templates: `.github/ISSUE_TEMPLATE/` — YAML forms (`*.yml`) for web UI, Markdown templates (`*.md`) for CLI/AI use with `gh issue create --template`. AI agents MUST read and fill the `.md` templates (not `.yml`) since YAML Issue Forms are web-UI-only and cannot be submitted via `gh issue create --body`.
 
 ## Knowledge Files
 
