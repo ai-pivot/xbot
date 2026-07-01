@@ -14,14 +14,17 @@ import (
 //   - timedOut: true if the context deadline was exceeded
 //   - rawErr: non-nil when the error is not a known exit/timeout case (should be returned to caller)
 func extractExitInfo(err error, ctxErr error) (exitCode int, timedOut bool, rawErr error) {
-	if ctxErr == context.DeadlineExceeded {
-		return -1, true, nil
-	}
+	// Check err first: when a process is killed by SIGKILL due to timeout,
+	// both err (*exec.ExitError) and ctxErr (DeadlineExceeded) are non-nil.
+	// The actual exit code from ExitError is more informative than a blanket -1.
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return exitErr.ExitCode(), false, nil
 		}
 		return 0, false, err
+	}
+	if ctxErr == context.DeadlineExceeded {
+		return -1, true, nil
 	}
 	return 0, false, nil
 }

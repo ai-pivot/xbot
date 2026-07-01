@@ -198,8 +198,14 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *c
 			tag = s.ProgressRunning.Render(frame+" "+label) + " " + s.ProgressRunning.Render(toolGeneratingHint(tool.Name))
 		case "error":
 			tag = s.ProgressError.Render("✗ " + label)
+			if tool.Elapsed > 0 {
+				tag += " " + s.ProgressElapsed.Render(formatElapsed(tool.Elapsed))
+			}
 		case "done":
 			tag = s.ProgressDone.Render("✓ " + label)
+			if tool.Elapsed > 0 {
+				tag += " " + s.ProgressElapsed.Render(formatElapsed(tool.Elapsed))
+			}
 		default:
 			tag = s.ProgressRunning.Render("● " + label)
 		}
@@ -468,12 +474,20 @@ func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) 
 			sb.WriteString(s.ProgressDim.Render("·"))
 			sb.WriteString(" ")
 			sb.WriteString(s.ProgressError.Render("✗ " + label))
+			if tool.Elapsed > 0 {
+				sb.WriteString(" ")
+				sb.WriteString(s.ProgressElapsed.Render(formatElapsed(tool.Elapsed)))
+			}
 			sb.WriteString("\n")
 		case "done":
 			sb.WriteString("  ")
 			sb.WriteString(s.ProgressDim.Render("·"))
 			sb.WriteString(" ")
 			sb.WriteString(s.ProgressDone.Render("✓ " + label))
+			if tool.Elapsed > 0 {
+				sb.WriteString(" ")
+				sb.WriteString(s.ProgressElapsed.Render(formatElapsed(tool.Elapsed)))
+			}
 			sb.WriteString("\n")
 		default: // running/active
 			var elapsedMs int64

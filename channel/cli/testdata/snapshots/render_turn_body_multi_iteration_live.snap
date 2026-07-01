@@ -1,11 +1,11 @@
 === previous tool done then active empty next iteration renders pulse ===
-  · ✓ Previous read succeeded
+  · ✓ Previous read succeeded 100ms
   ◇◇◇◇◇
 
 === previous content plus tool then active fallback stream text ===
 previous content before current stream
 
-  · ✓ Previous glob succeeded
+  · ✓ Previous glob succeeded 100ms
 
 current assistant fallback stream
 
@@ -14,43 +14,43 @@ current assistant fallback stream
 │ previous reasoning                                                         │
 ╰────────────────────────────────────────────────────────────────────────────╯
 
-  · ✓ Previous read after reasoning
+  · ✓ Previous read after reasoning 100ms
 
 current thinking text
 
 === previous tool then active reasoning stream does not render pulse ===
-  · ✓ Previous tool before reasoning
+  · ✓ Previous tool before reasoning 100ms
 
 ╭ Reasoning ─────────────────────────────────────────────────────────────────╮
 │ current reasoning stream only                                              │
 ╰────────────────────────────────────────────────────────────────────────────╯
 
 === previous success and failure then active stream with success failure running ===
-  · ✓ Previous tool succeeded
-  · ✗ Previous tool failed
+  · ✓ Previous tool succeeded 100ms
+  · ✗ Previous tool failed 200ms
 
 current streamed content
 
-  · ✓ Current active succeeded
-  · ✗ Current active failed
+  · ✓ Current active succeeded 300ms
+  · ✗ Current active failed 400ms
   · ◌ Current active running 1.5s
 
 === multiple previous tool only iterations then active running tool ===
-  · ✓ Iter one completed
-  · ✗ Iter two failed
+  · ✓ Iter one completed 100ms
+  · ✗ Iter two failed 200ms
   · ◌ Iter three still running 2.4s
 
 === previous content then active reasoning plus mixed tools ===
 previous content only
 
-  · ✓ Previous second iter done
+  · ✓ Previous second iter done 100ms
 
 ╭ Reasoning ─────────────────────────────────────────────────────────────────╮
 │ current reasoning before tools                                             │
 ╰────────────────────────────────────────────────────────────────────────────╯
 
-  · ✓ Current read succeeded
-  · ✗ Current edit failed
+  · ✓ Current read succeeded 200ms
+  · ✗ Current edit failed 300ms
   · ◌ Current shell running 2.4s
 
 === previous reasoning then active content plus completed tools ===
@@ -60,15 +60,15 @@ previous content only
 
 previous content and done tool
 
-  · ✓ Previous done tool
+  · ✓ Previous done tool 100ms
 
 current content before completed tools
 
-  · ✓ Current glob completed
-  · ✗ Current patch failed
+  · ✓ Current glob completed 100ms
+  · ✗ Current patch failed 400ms
 
 === multiple previous iterations then active subagents only ===
-  · ✓ Previous tool done
+  · ✓ Previous tool done 100ms
 
 previous content before subagent
 
