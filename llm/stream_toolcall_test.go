@@ -8,12 +8,14 @@ import (
 // TestCollectStreamWithCallback_ToolCallEarlyDetection verifies that the
 // onToolCall callback fires when a tool NAME arrives (first chunk), before
 // arguments finish streaming. This is the core of "early tool detection".
+// The callback also fires on argument deltas, enabling real-time progress.
 func TestCollectStreamWithCallback_ToolCallEarlyDetection(t *testing.T) {
 	ch := make(chan StreamEvent, 10)
 	// Tool name arrives in the first chunk — this is when the UI should
 	// immediately show "✦ Read generating…"
 	ch <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{Index: 0, ID: "call_1", Name: "Read"}}
-	// Arguments stream in subsequent chunks — callback should NOT fire again
+	// Arguments stream in subsequent chunks — callback fires for each delta
+	// so the UI can show progress (e.g. "9 chars", "18 chars").
 	ch <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{Index: 0, Arguments: `{"path":"`}}
 	ch <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{Index: 0, Arguments: `test.go"}`}}
 	ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonToolCalls}
@@ -26,20 +28,25 @@ func TestCollectStreamWithCallback_ToolCallEarlyDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Callback should fire exactly once — only when the name arrives,
-	// NOT for argument-only deltas.
-	if len(snapshots) != 1 {
-		t.Fatalf("onToolCall callback count = %d, want 1 (only fires on name arrival)", len(snapshots))
+	// Callback fires once per tool call event: 1 name + 2 arg deltas = 3
+	if len(snapshots) != 3 {
+		t.Fatalf("onToolCall callback count = %d, want 3 (1 name + 2 arg deltas)", len(snapshots))
 	}
+	// First snapshot: name detected, no args yet (early detection)
 	snap := snapshots[0]
-	if len(snap) != 1 {
-		t.Fatalf("snapshot has %d tool calls, want 1", len(snap))
+	if len(snap) != 1 || snap[0].Name != "Read" || snap[0].ID != "call_1" {
+		t.Errorf("first snapshot = %+v, want [Read/call_1]", snap)
 	}
-	if snap[0].Name != "Read" {
-		t.Errorf("snapshot[0].Name = %q, want %q", snap[0].Name, "Read")
+	if snap[0].Arguments != "" {
+		t.Errorf("first snapshot args = %q, want empty (name only)", snap[0].Arguments)
 	}
-	if snap[0].ID != "call_1" {
-		t.Errorf("snapshot[0].ID = %q, want %q", snap[0].ID, "call_1")
+	// Second snapshot: partial args
+	if snapshots[1][0].Arguments != `{"path":"` {
+		t.Errorf("second snapshot args = %q, want %q", snapshots[1][0].Arguments, `{"path":"`)
+	}
+	// Third snapshot: more args accumulated
+	if snapshots[2][0].Arguments != `{"path":"test.go"}` {
+		t.Errorf("third snapshot args = %q, want %q", snapshots[2][0].Arguments, `{"path":"test.go"}`)
 	}
 	// Final response should have complete tool call with full arguments
 	if len(resp.ToolCalls) != 1 {
@@ -51,8 +58,8 @@ func TestCollectStreamWithCallback_ToolCallEarlyDetection(t *testing.T) {
 }
 
 // TestCollectStreamWithCallback_MultiToolEarlyDetection verifies that the
-// onToolCall callback fires for each tool name as it arrives, and that
-// the snapshot includes all known tools at that point.
+// onToolCall callback fires for each tool call event (name arrival + argument
+// deltas), and that the snapshot includes all known tools at each point.
 func TestCollectStreamWithCallback_MultiToolEarlyDetection(t *testing.T) {
 	ch := make(chan StreamEvent, 10)
 	// First tool name arrives
@@ -73,23 +80,31 @@ func TestCollectStreamWithCallback_MultiToolEarlyDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Two callbacks: one when "Read" name arrives, one when "Shell" name arrives
-	if len(snapshots) != 2 {
-		t.Fatalf("onToolCall callback count = %d, want 2", len(snapshots))
+	// 4 callbacks: Read name, Read args, Shell name, Shell args
+	if len(snapshots) != 4 {
+		t.Fatalf("onToolCall callback count = %d, want 4 (2 names + 2 arg deltas)", len(snapshots))
 	}
-	// First snapshot: only Read known
+	// First snapshot: only Read known, no args
 	if len(snapshots[0]) != 1 || snapshots[0][0].Name != "Read" {
 		t.Errorf("first snapshot = %+v, want [Read]", snapshots[0])
 	}
-	// Second snapshot: both Read and Shell known
-	if len(snapshots[1]) != 2 {
-		t.Fatalf("second snapshot has %d tools, want 2", len(snapshots[1]))
+	if snapshots[0][0].Arguments != "" {
+		t.Errorf("first snapshot args = %q, want empty", snapshots[0][0].Arguments)
 	}
-	if snapshots[1][0].Name != "Read" {
-		t.Errorf("second snapshot[0].Name = %q, want Read", snapshots[1][0].Name)
+	// Second snapshot: Read with args
+	if snapshots[1][0].Arguments != `{"path":"a"}` {
+		t.Errorf("second snapshot Read args = %q, want %q", snapshots[1][0].Arguments, `{"path":"a"}`)
 	}
-	if snapshots[1][1].Name != "Shell" {
-		t.Errorf("second snapshot[1].Name = %q, want Shell", snapshots[1][1].Name)
+	// Third snapshot: both tools, Shell just named
+	if len(snapshots[2]) != 2 {
+		t.Fatalf("third snapshot has %d tools, want 2", len(snapshots[2]))
+	}
+	if snapshots[2][0].Name != "Read" || snapshots[2][1].Name != "Shell" {
+		t.Errorf("third snapshot names = [%s, %s], want [Read, Shell]", snapshots[2][0].Name, snapshots[2][1].Name)
+	}
+	// Fourth snapshot: both tools with args
+	if snapshots[3][1].Arguments != `{"command":"ls"}` {
+		t.Errorf("fourth snapshot Shell args = %q, want %q", snapshots[3][1].Arguments, `{"command":"ls"}`)
 	}
 }
 

@@ -30,6 +30,10 @@ type ToolProgress struct {
 	Args      string    `json:"args,omitempty"`
 	ToolHints string    `json:"tool_hints,omitempty"`
 	StartedAt time.Time `json:"started_at,omitempty"`
+	// GenChars is the accumulated argument character count for generating tools
+	// (Status="generating"). Populated from streaming tool call deltas — shows
+	// real-time progress of argument generation (e.g. "42 chars").
+	GenChars int `json:"gen_chars,omitempty"`
 }
 
 // SubAgentInfo represents a sub-agent's structured progress status.

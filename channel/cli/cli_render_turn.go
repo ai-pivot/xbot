@@ -195,7 +195,11 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *c
 		switch tool.Status {
 		case "generating":
 			frame := splashFrames[m.ticker.frame%len(splashFrames)]
-			tag = s.ProgressRunning.Render(frame+" "+label) + " " + s.ProgressRunning.Render(toolGeneratingHint(tool.Name))
+			hint := toolGeneratingHint(tool.Name)
+			if tool.GenChars > 0 {
+				hint += " " + s.ProgressElapsed.Render(formatCharCount(tool.GenChars))
+			}
+			tag = s.ProgressRunning.Render(frame+" "+label) + " " + s.ProgressRunning.Render(hint)
 		case "error":
 			tag = s.ProgressError.Render("✗ " + label)
 			if tool.Elapsed > 0 {
@@ -438,6 +442,23 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		}
 	}
 
+	// Streaming content/reasoning char count indicator.
+	// Shows real-time generation progress for the current streaming response.
+	// Reasoning and content counts are shown separately when both are present.
+	var streamParts []string
+	if rc := len(p.ReasoningStreamContent); rc > 0 {
+		streamParts = append(streamParts, formatCharCount(rc))
+	}
+	if sc := len(p.StreamContent); sc > 0 {
+		streamParts = append(streamParts, formatCharCount(sc))
+	}
+	if len(streamParts) > 0 {
+		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
+		text := "  " + s.ProgressRunning.Render(frame) + " " + s.ProgressElapsed.Render(strings.Join(streamParts, " · "))
+		blocks = append(blocks, turnBlock{kind: turnBlockPulse, text: text})
+		hasSpinner = true // suppress the bare spinner below
+	}
+
 	if !hasSpinner {
 		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
 		blocks = append(blocks, turnBlock{kind: turnBlockPulse, text: "  " + s.ProgressRunning.Render(frame)})
@@ -464,6 +485,9 @@ func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) 
 		case "generating":
 			frame := splashFrames[m.ticker.frame%len(splashFrames)]
 			hint := toolGeneratingHint(tool.Name)
+			if tool.GenChars > 0 {
+				hint = hint + " " + s.ProgressElapsed.Render(formatCharCount(tool.GenChars))
+			}
 			fmt.Fprintf(&sb, "  %s %s %s %s\n",
 				s.ProgressDim.Render("·"),
 				s.ProgressRunning.Render(frame),

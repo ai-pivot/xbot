@@ -2002,12 +2002,15 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
 		// Convert tool call deltas to ToolProgress with "generating" status.
+		// GenChars carries the accumulated argument char count for real-time
+		// progress display (e.g. "42 chars" while LLM is still streaming args).
 		tools := make([]protocol.ToolProgress, 0, len(toolCalls))
 		for _, tc := range toolCalls {
 			if tc.Name != "" {
 				tools = append(tools, protocol.ToolProgress{
-					Name:   tc.Name,
-					Status: "generating",
+					Name:     tc.Name,
+					Status:   "generating",
+					GenChars: len(tc.Arguments),
 				})
 			}
 		}

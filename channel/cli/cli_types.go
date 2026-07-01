@@ -354,6 +354,16 @@ func formatElapsed(ms int64) string {
 	return fmt.Sprintf("%dm%ds", mins, secs)
 }
 
+// formatCharCount formats a character count for streaming progress display.
+// < 1000: "123 chars"
+// >= 1000: "1.2k chars"
+func formatCharCount(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d chars", n)
+	}
+	return fmt.Sprintf("%.1fk chars", float64(n)/1000)
+}
+
 // ---------------------------------------------------------------------------
 // CLI ch.Channel Config
 // ---------------------------------------------------------------------------
