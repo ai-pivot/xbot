@@ -247,19 +247,6 @@ func TestSnapshotIterationChange_PendingToolsCaptured(t *testing.T) {
 	}
 }
 
-// TestDedupTools_RemovesDuplicates verifies the dedup helper.
-func TestDedupTools_RemovesDuplicates(t *testing.T) {
-	tools := []protocol.ToolProgress{
-		{Name: "Read", Label: "f.go", Status: "done"},
-		{Name: "Read", Label: "f.go", Status: "running"}, // duplicate (coalescing artifact)
-		{Name: "Grep", Label: "pat", Status: "done"},
-	}
-	result := dedupTools(tools)
-	if len(result) != 2 {
-		t.Errorf("should have 2 unique tools, got %d", len(result))
-	}
-}
-
 // ─── Fix 3: Queued (pending) tools visible ──────────────────────────
 
 // TestLiveIterationBlocks_PendingToolsVisible verifies that tools with

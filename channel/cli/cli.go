@@ -584,16 +584,14 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			if payload.CWD == "" && old.CWD != "" {
 				payload.CWD = old.CWD
 			}
-			// Merge CompletedTools from the evicted event. The engine sends
-			// CompletedTools when tools finish (snapshotCompletedIteration),
-			// then clears them at the start of the next iteration (callLLM).
-			// If the "tools done" event is evicted by coalescing, the tool
-			// data is permanently lost — snapshotIterationChange on the CLI
-			// side never sees the "done" status, and tools disappear from
-			// the iteration history.
-			if len(old.CompletedTools) > 0 && len(payload.CompletedTools) == 0 {
-				payload.CompletedTools = old.CompletedTools
-			}
+			// NOTE: CompletedTools/ActiveTools are NOT merged across coalescing.
+			// Merging iteration N's CompletedTools into iteration N+1's event
+			// causes cross-iteration tool attribution. Instead, the root fix is
+			// in snapshotIterationChange: when iteration changes, it captures
+			// ALL ActiveTools from prev (the engine guarantees they're done via
+			// snapshotCompletedIteration before callLLM starts the next iteration).
+			// prev may have stale "running" status due to coalescing dropping the
+			// "done" event, but the tool data is preserved in ActiveTools.
 		default:
 		}
 		select {

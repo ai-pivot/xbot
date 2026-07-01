@@ -8,26 +8,6 @@ import (
 	log "xbot/logger"
 )
 
-// dedupTools removes duplicate tools by Name+Label, keeping the first occurrence.
-// CompletedTools and ActiveTools can overlap when coalescing preserves stale state
-// (engine moved ActiveTools → CompletedTools, but coalescing dropped the "moved" event).
-func dedupTools(tools []protocol.ToolProgress) []protocol.ToolProgress {
-	if len(tools) <= 1 {
-		return tools
-	}
-	seen := make(map[string]bool, len(tools))
-	result := tools[:0]
-	for _, t := range tools {
-		key := t.Name + "\x00" + t.Label
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		result = append(result, t)
-	}
-	return result
-}
-
 // restoreIterationHistory converts IterationHistory from a reconnect snapshot
 // into local iteration history, bootstrapping tool StartedAt timestamps.
 func (m *cliModel) restoreIterationHistory(payload *protocol.ProgressEvent) {
@@ -605,7 +585,6 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 				// status in prev is stale due to progressCh coalescing dropping
 				// the "done" event. Capture ALL ActiveTools regardless of status.
 				prevIterTools = append(prevIterTools, prev.ActiveTools...)
-				prevIterTools = dedupTools(prevIterTools)
 				prevReasoning := prev.Reasoning
 				if prevReasoning == "" && m.reasoningByIter != nil {
 					prevReasoning = m.reasoningByIter[prev.Iteration]
@@ -638,7 +617,6 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 			// status in prev is stale due to progressCh coalescing dropping
 			// the "done" event. Capture ALL ActiveTools regardless of status.
 			prevIterTools = append(prevIterTools, prev.ActiveTools...)
-			prevIterTools = dedupTools(prevIterTools)
 			prevReasoning := prev.Reasoning
 			if prevReasoning == "" {
 				prevReasoning = m.reasoningByIter[m.progressState.lastIter]
@@ -795,27 +773,11 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 			return s.Iteration == m.progressState.lastIter
 		})
 		if !alreadySnapped {
-			var finalTools []protocol.ToolProgress
-			// Check progress.CompletedTools first (set by progressFinalizer)
-			finalTools = append(finalTools, msg.payload.CompletedTools...)
-			// Also include ActiveTools(done) not yet moved by progressFinalizer
-			for _, t := range msg.payload.ActiveTools {
-				if t.Status == "done" || t.Status == "error" {
-					if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
-						return existing.Name == t.Name && existing.Label == t.Label
-					}) {
-						finalTools = append(finalTools, t)
-					}
-				}
-			}
-			// Also include any from lastCompletedTools (race safety)
-			for _, t := range m.lastCompletedTools {
-				if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
-					return existing.Name == t.Name && existing.Label == t.Label
-				}) {
-					finalTools = append(finalTools, t)
-				}
-			}
+			// PhaseDone events always carry all completed tools in
+			// CompletedTools — progressFinalizer (engine_run.go:182-188)
+			// moves all ActiveTools → CompletedTools before setting Phase=Done.
+			// ActiveTools is always empty at PhaseDone. No fallback needed.
+			finalTools := msg.payload.CompletedTools
 			snap := cliIterationSnapshot{
 				Iteration:   m.progressState.lastIter,
 				Thinking:    msg.payload.Thinking,

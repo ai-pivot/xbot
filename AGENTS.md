@@ -343,3 +343,45 @@
 ## Project Context
 
 `ProjectContextMiddleware` auto-loads this file into system prompt. After code changes, update relevant Knowledge Files to keep documentation in sync.
+
+### No Hacks, No Fallbacks, No Defensive Programming
+
+**禁止 hack、兜底逻辑和防御性编程。从根源保证正确，而非叠加防护层。**
+
+这一原则是 TUI 渲染系统多年 bug 修复的教训总结。大量 bug 源于"加一层防御"而非"修根因"——每层防御本身引入新的边界条件，最终形成难以维护的防御栈，反而制造更多 bug。
+
+#### 核心规则
+
+1. **从根源修复，不加补丁**
+   - ❌ 数据在传输中丢失 → 加 dedup 函数去重丢失后的重复
+   - ✅ 数据在传输中丢失 → 修复传输层使数据不丢失
+   - ❌ 状态可能陈旧 → 加 `alreadySnapped` 检查覆盖陈旧场景
+   - ✅ 状态可能陈旧 → 修复状态管理使陈旧不可能发生
+
+2. **不写兜底链**
+   - ❌ `if a == "" { a = b }; if a == "" { a = c }; if a == "" { a = d }` — 四级 fallback 链
+   - ✅ 确定唯一权威数据源，只读那一个
+   - 如果数据可能因 coalescing/并发丢失，修复 coalescing/并发设计，而非加 fallback
+
+3. **不写防御性检查**
+   - ❌ `if prev != nil && prev.Iteration == expected && len(prev.ActiveTools) > 0` — 三重前提条件
+   - ✅ 保证调用前置条件由架构不变量保证，函数只处理正常路径
+   - 如果前置条件可能不满足，那是调用方的 bug，应在调用方修复
+
+4. **不写性能损害型防护**
+   - ❌ 每次 updateViewportContent 全量扫描 messages 做去重（O(N) per frame）
+   - ✅ 保证写入路径不产生重复（O(1)，写入即唯一）
+   - ❌ 每次 snapshot 分配 map 做去重
+   - ✅ 数据源保证无重叠，不需要去重
+
+5. **审计现有防御层**
+   - 修改代码时，检查周围的防御性代码是否因根因修复而变得多余
+   - 多余的防御代码必须一并删除——它们不是"安全网"，是噪声
+   - 每一层防御都应该有明确的 bug ID 或场景说明为什么需要存在
+
+#### 具体到 TUI 渲染
+
+- **progressCh coalescing**：buffer=1 channel 会丢弃事件。正确做法是理解哪些字段会被丢弃，在**数据源头**保证不丢失（如 `snapshotIterationChange` 利用引擎不变量 "iteration 切换时所有工具已完成"），而非在消费端加 fallback/dedup
+- **snapshotIterationChange**：引擎保证 iteration 切换时 `snapshotCompletedIteration` 已执行（ActiveTools → CompletedTools），所以 CLI 端直接捕获所有 ActiveTools 即可，不需要按 status 过滤、不需要 dedup、不需要 lastCompletedTools fallback
+- **handleProgressDone**：PhaseDone 事件经过 progressFinalizer，ActiveTools 必然为空、CompletedTools 必然包含全部工具。不需要扫描 ActiveTools、不需要 lastCompletedTools fallback
+- **renderTurnBody 去重**：同一 LLM response 文本从 `iter.Thinking`（ThinkingContent）和 `fallbackContent`（msg.content）两条路径渲染。精确匹配去重是正确做法——它们源自同一数据，必然相等。前缀匹配/百分比阈值是 hack
