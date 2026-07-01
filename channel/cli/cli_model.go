@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 	ch "xbot/channel"
 	"xbot/internal/textarea"
+	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/tools"
@@ -905,16 +907,94 @@ type cliPluginOverlayShowMsg struct {
 }
 
 // cliPluginOverlayHideMsg triggers hiding of the current plugin overlay.
-type cliPluginOverlayHideMsg struct{}
+type cliPluginOverlayHideMsg struct {
+	pluginID string
+}
 
 // cliPluginNotifyMsg carries a notification from a plugin to be shown as a toast.
 type cliPluginNotifyMsg struct {
-	level   string
-	title   string
-	message string
+	pluginID string
+	level    string
+	title    string
+	message  string
 }
 
 // cliPluginSoundMsg carries a sound playback request from a plugin.
 type cliPluginSoundMsg struct {
-	sound string
+	pluginID string
+	sound    string
+}
+
+// wirePluginEventBus subscribes to plugin event bus topics and routes events
+// into the Bubble Tea event loop via program.Send(). This is called once
+// during CLI channel startup after the model and program are both available.
+func (m *cliModel) wirePluginEventBus(program *tea.Program) {
+	if m.pluginMgrFn == nil {
+		return
+	}
+	mgr := m.pluginMgrFn()
+	bus := mgr.Bus()
+	if bus == nil {
+		return
+	}
+
+	// Helper that logs subscription failures instead of silently dropping them.
+	sub := func(topic string, handler plugin.PluginEventHandler) {
+		if err := bus.Subscribe(topic, handler); err != nil {
+			log.WithError(err).WithField("topic", topic).Warn("plugin event subscription failed")
+		}
+	}
+
+	// plugin:overlay:show — display a plugin's full-screen overlay
+	sub("plugin:overlay:show", func(ctx context.Context, topic string, data any) error {
+		d, ok := data.(map[string]string)
+		if !ok {
+			return nil
+		}
+		program.Send(cliPluginOverlayShowMsg{
+			pluginID:  d["plugin_id"],
+			overlayID: d["overlay_id"],
+		})
+		return nil
+	})
+
+	// plugin:overlay:hide — dismiss the current plugin overlay
+	sub("plugin:overlay:hide", func(ctx context.Context, topic string, data any) error {
+		d, ok := data.(map[string]string)
+		if !ok {
+			return nil
+		}
+		program.Send(cliPluginOverlayHideMsg{
+			pluginID: d["plugin_id"],
+		})
+		return nil
+	})
+
+	// plugin:notify — show a plugin notification as a toast
+	sub("plugin:notify", func(ctx context.Context, topic string, data any) error {
+		d, ok := data.(map[string]string)
+		if !ok {
+			return nil
+		}
+		program.Send(cliPluginNotifyMsg{
+			pluginID: d["plugin_id"],
+			level:    d["level"],
+			title:    d["title"],
+			message:  d["message"],
+		})
+		return nil
+	})
+
+	// plugin:sound:play — play a sound effect
+	sub("plugin:sound:play", func(ctx context.Context, topic string, data any) error {
+		d, ok := data.(map[string]string)
+		if !ok {
+			return nil
+		}
+		program.Send(cliPluginSoundMsg{
+			pluginID: d["plugin_id"],
+			sound:    d["sound"],
+		})
+		return nil
+	})
 }
