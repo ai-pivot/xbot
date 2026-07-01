@@ -255,12 +255,19 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.splashState.suPhaseConfirmed = true
 	}
 
-	// Stream-only payloads (from StreamContentFunc/StreamReasoningFunc/StreamToolCallFunc)
-	// only carry stream fields. Merge into existing progress instead of replacing to
-	// preserve tool/iteration state.
+	// Stream-only payloads (from StreamContentFunc/StreamReasoningFunc/
+	// StreamToolCallFunc/StreamUsageFunc) only carry stream fields. Merge
+	// into existing progress instead of replacing to preserve tool/iteration
+	// state. Without StreamTokens in this check, usage-only events (Phase="",
+	// Iteration=0, StreamTokens>0, nothing else) fall through to the structured
+	// path and REPLACE m.progressState.current with an empty shell — wiping
+	// Phase/Iteration/ActiveTools. This causes flickering (progress state gone
+	// → next real event restores it → repeat) and can trigger startAgentTurn
+	// (Phase != "done") creating a duplicate streaming assistant message.
 	isStreamOnly := msg.payload != nil &&
 		msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
-		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" || len(msg.payload.StreamingTools) > 0)
+		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
+			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
 	if isStreamOnly {
 		if m.progressState.current != nil {
 			if msg.payload.StreamContent != "" {
@@ -271,6 +278,9 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			}
 			if len(msg.payload.StreamingTools) > 0 {
 				m.progressState.current.StreamingTools = msg.payload.StreamingTools
+			}
+			if msg.payload.StreamTokens > 0 {
+				m.progressState.current.StreamTokens = msg.payload.StreamTokens
 			}
 			// Refresh lastTokenUsage from current progress so the context bar
 			// stays visible even when structured events are lost to progressCh
@@ -374,13 +384,18 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.lastThinking = ""
 		m.invalidateAllCache(true)
 		m.rc.invalidateProgress()
-		// Do NOT set compReloading=true. The old code blocked auto-start until
-		// the async reload completed, but if the reload message was dropped
-		// (asyncCh full), compReloading stayed true forever — the streaming
-		// message was never recreated, freezing the TUI (busy but no updates).
-		// Instead, create the streaming message immediately. Progress events
-		// continue to render live content via updateStreamingOnly, even before
-		// the reload arrives with compacted history.
+		// Set compReloading=true to block auto-start (startAgentTurn) until the
+		// async reload arrives. Without this gate, a PhaseDone between
+		// HistoryCompacted and reload triggers endAgentTurn → typing=false,
+		// then the next progress event triggers startAgentTurn → resetProgressState
+		// → rebuild → flicker. Worse, startAgentTurn creates ANOTHER streaming
+		// message, producing duplicate assistants.
+		//
+		// The old reason for NOT setting compReloading (asyncCh full → permanent
+		// freeze) is no longer valid: reloadMessagesFromSession now uses blocking
+		// send with 3 retries / 15s timeout. handleHistoryReload ALWAYS clears
+		// compReloading (even on error/stale early returns) to prevent leaks.
+		m.splashState.compReloading = true
 		// Do NOT GotoBottom here — compression can happen while the user
 		// is scrolled up reading old content. Forcing to bottom would
 		// lose their position. The subsequent reloadMessagesFromSession

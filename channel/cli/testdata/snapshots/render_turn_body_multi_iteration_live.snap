@@ -31,11 +31,11 @@ current thinking text
   · ✗ Previous tool failed 200ms
 
 current streamed content
+  ◇◇◇◇◇ 24 chars
 
   · ✓ Current active succeeded 300ms
   · ✗ Current active failed 400ms
   · ◌ Current active running 1.5s
-  ◇◇◇◇◇ 24 chars
 
 === multiple previous tool only iterations then active running tool ===
   · ✓ Iter one completed 100ms
@@ -50,11 +50,11 @@ previous content only
 ╭ Reasoning ─────────────────────────────────────────────────────────────────╮
 │ current reasoning before tools                                             │
 ╰────────────────────────────────────────────────────────────────────────────╯
+  ◇◇◇◇◇ 30 chars
 
   · ✓ Current read succeeded 200ms
   · ✗ Current edit failed 300ms
   · ◌ Current shell running 2.4s
-  ◇◇◇◇◇ 30 chars
 
 === previous reasoning then active content plus completed tools ===
 ╭ Reasoning ─────────────────────────────────────────────────────────────────╮
@@ -66,10 +66,10 @@ previous content and done tool
   · ✓ Previous done tool 100ms
 
 current content before completed tools
+  ◇◇◇◇◇ 38 chars
 
   · ✓ Current glob completed 100ms
   · ✗ Current patch failed 400ms
-  ◇◇◇◇◇ 38 chars
 
 === multiple previous iterations then active subagents only ===
   · ✓ Previous tool done 100ms

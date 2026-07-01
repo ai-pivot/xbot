@@ -460,11 +460,17 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 // may have replaced many old messages with a single [Compacted context] summary.
 func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// Stale guard: discard results from a different session.
+	// MUST clear compReloading even on stale/error paths — HistoryCompacted
+	// set it to true, and if this reload is stale or errors, nothing else
+	// clears it. compReloading stuck true → auto-start blocked forever →
+	// TUI frozen (typing but no progress events create new turns).
 	if msg.channelName != m.channelName || msg.chatID != m.chatID {
+		m.splashState.compReloading = false
 		return
 	}
 	if msg.err != nil {
 		log.WithError(msg.err).Warn("Failed to reload history after compression")
+		m.splashState.compReloading = false
 		return
 	}
 	var newMessages []cliMessage

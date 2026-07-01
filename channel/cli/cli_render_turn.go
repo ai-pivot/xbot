@@ -389,6 +389,31 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		})
 	}
 
+	// Streaming content/reasoning progress indicator.
+	// Shows real-time generation progress for the current streaming response.
+	// Placed right after content/reasoning, BEFORE tools and SubAgent tree —
+	// the indicator is about the LLM's own text generation, not tool execution.
+	// Priority: StreamTokens (from Anthropic message_delta) > char count.
+	// Token count is shown when the LLM API provides incremental usage events
+	// (Anthropic does via message_delta; OpenAI/DeepSeek only at stream end).
+	var streamParts []string
+	if st := p.StreamTokens; st > 0 {
+		streamParts = append(streamParts, formatTokenCount(st))
+	} else {
+		if rc := len(p.ReasoningStreamContent); rc > 0 {
+			streamParts = append(streamParts, formatCharCount(rc))
+		}
+		if sc := len(p.StreamContent); sc > 0 {
+			streamParts = append(streamParts, formatCharCount(sc))
+		}
+	}
+	if len(streamParts) > 0 {
+		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
+		text := "  " + s.ProgressRunning.Render(frame) + " " + s.ProgressElapsed.Render(strings.Join(streamParts, " · "))
+		blocks = append(blocks, turnBlock{kind: turnBlockPulse, text: text})
+		hasSpinner = true // suppress the bare spinner below
+	}
+
 	// Combine StreamingTools (generating), ActiveTools (active/done/error), and CompletedTools.
 	// Deduplicate by Name+Label to prevent the same tool appearing twice
 	// when it transitions across phases (generating → active → done → completed).
@@ -440,29 +465,6 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 			hasSpinner = true
 			blocks = append(blocks, turnBlock{kind: turnBlockTools, text: tree})
 		}
-	}
-
-	// Streaming content/reasoning progress indicator.
-	// Shows real-time generation progress for the current streaming response.
-	// Priority: StreamTokens (from Anthropic message_delta) > char count.
-	// Token count is shown when the LLM API provides incremental usage events
-	// (Anthropic does via message_delta; OpenAI/DeepSeek only at stream end).
-	var streamParts []string
-	if st := p.StreamTokens; st > 0 {
-		streamParts = append(streamParts, formatTokenCount(st))
-	} else {
-		if rc := len(p.ReasoningStreamContent); rc > 0 {
-			streamParts = append(streamParts, formatCharCount(rc))
-		}
-		if sc := len(p.StreamContent); sc > 0 {
-			streamParts = append(streamParts, formatCharCount(sc))
-		}
-	}
-	if len(streamParts) > 0 {
-		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
-		text := "  " + s.ProgressRunning.Render(frame) + " " + s.ProgressElapsed.Render(strings.Join(streamParts, " · "))
-		blocks = append(blocks, turnBlock{kind: turnBlockPulse, text: text})
-		hasSpinner = true // suppress the bare spinner below
 	}
 
 	if !hasSpinner {
