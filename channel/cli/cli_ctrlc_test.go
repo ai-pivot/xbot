@@ -489,11 +489,13 @@ func TestCtrlC_CancelAckNoQueueNoFlushFlag(t *testing.T) {
 }
 
 // TestCtrlC_CancelPathCapturesStreamContent verifies that when Ctrl+C
-// interrupts mid-stream (LLM hasn't finished, structured Thinking/Reasoning
-// not yet set), the cancel path in handleProgressDone captures StreamContent
-// and ReasoningStreamContent from the live progress (prev) into the snapshot.
-// Without this fix, the last reasoning block and content disappear after
-// Ctrl+C because they were only available via stream fields.
+// interrupts mid-stream (LLM hasn't finished, structured Thinking not yet
+// set), the cancel path in handleProgressDone captures StreamContent from
+// the live progress (prev) into the snapshot Thinking field.
+//
+// ReasoningStreamContent is NOT captured — it's a live-only streaming
+// accumulator that can contaminate snapshots across iterations. Only
+// structured Reasoning is used in snapshots.
 func TestCtrlC_CancelPathCapturesStreamContent(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn() // increments agentTurnID to 1
@@ -565,17 +567,22 @@ func TestCtrlC_CancelPathCapturesStreamContent(t *testing.T) {
 	if iter2.Iteration != 2 {
 		t.Fatalf("expected iteration 2, got %d", iter2.Iteration)
 	}
+	// Thinking captures StreamContent (preserves partial LLM output)
 	if iter2.Thinking != "I'm still generating this response..." {
 		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Thinking)
 	}
-	if iter2.Reasoning != "Let me think about this problem..." {
-		t.Errorf("iter2 Reasoning should capture ReasoningStreamContent, got %q", iter2.Reasoning)
+	// Reasoning is empty — RSC is live-only, NOT used in snapshots
+	if iter2.Reasoning != "" {
+		t.Errorf("iter2 Reasoning should be empty (no RSC fallback in snapshots), got %q", iter2.Reasoning)
 	}
 }
 
 // TestCtrlC_CancelAckCapturesStreamContent verifies that when cancel ack
 // arrives BEFORE PhaseDone, cancelledTurnIterations() captures StreamContent
-// and ReasoningStreamContent from the live progress (m.progressState.current).
+// from the live progress (m.progressState.current) for the Thinking field.
+//
+// ReasoningStreamContent is NOT captured — it's a live-only streaming
+// accumulator. Only structured Reasoning is used in snapshots.
 func TestCtrlC_CancelAckCapturesStreamContent(t *testing.T) {
 	model := initTestModel()
 	model.typing = true
@@ -638,13 +645,14 @@ func TestCtrlC_CancelAckCapturesStreamContent(t *testing.T) {
 		t.Fatalf("expected 2 iterations, got %d", len(assistantMsg.iterations))
 	}
 
-	// iter2 must have captured stream content
+	// iter2 must have captured stream content for Thinking (not Reasoning)
 	iter2 := assistantMsg.iterations[1]
 	if iter2.Thinking != "partial streamed output" {
 		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Thinking)
 	}
-	if iter2.Reasoning != "partial streamed reasoning" {
-		t.Errorf("iter2 Reasoning should capture ReasoningStreamContent, got %q", iter2.Reasoning)
+	// Reasoning is empty — RSC is live-only, NOT used in snapshots
+	if iter2.Reasoning != "" {
+		t.Errorf("iter2 Reasoning should be empty (no RSC fallback), got %q", iter2.Reasoning)
 	}
 }
 

@@ -567,15 +567,11 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 			if !alreadySnapped {
 				prevIterTools := prev.CompletedTools
 				prevIterTools = append(prevIterTools, prev.ActiveTools...)
-				prevReasoning := prev.Reasoning
-				if prevReasoning == "" {
-					prevReasoning = prev.ReasoningStreamContent
-				}
-				if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
+				if len(prevIterTools) > 0 || prev.Thinking != "" || prev.Reasoning != "" {
 					snap := cliIterationSnapshot{
 						Iteration:   prev.Iteration,
 						Thinking:    prev.Thinking,
-						Reasoning:   prevReasoning,
+						Reasoning:   prev.Reasoning,
 						Tools:       prevIterTools,
 						ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 					}
@@ -589,15 +585,11 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 		if prev != nil {
 			prevIterTools := prev.CompletedTools
 			prevIterTools = append(prevIterTools, prev.ActiveTools...)
-			prevReasoning := prev.Reasoning
-			if prevReasoning == "" {
-				prevReasoning = prev.ReasoningStreamContent
-			}
-			if len(prevIterTools) > 0 || prev.Thinking != "" || prevReasoning != "" {
+			if len(prevIterTools) > 0 || prev.Thinking != "" || prev.Reasoning != "" {
 				snap := cliIterationSnapshot{
 					Iteration:   m.progressState.lastIter,
 					Thinking:    prev.Thinking,
-					Reasoning:   prevReasoning,
+					Reasoning:   prev.Reasoning,
 					Tools:       prevIterTools,
 					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
@@ -669,9 +661,6 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 				}
 				if prev != nil {
 					snap.Reasoning = prev.Reasoning
-					if snap.Reasoning == "" {
-						snap.Reasoning = prev.ReasoningStreamContent
-					}
 				}
 				if snap.Reasoning == "" {
 					snap.Reasoning = msg.payload.Reasoning
