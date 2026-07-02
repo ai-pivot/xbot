@@ -241,6 +241,24 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 			shouldQueue = true
 		}
 	}
+
+	// Race fix: if typing=true was set by progress auto-start (not by a real
+	// user message), the injected notification IS the user message for this
+	// turn. Claim it by inserting the user message before the streaming message
+	// instead of queuing — queuing would produce a second assistant when flushed.
+	if shouldQueue && m.typing && m.turnAutoStarted {
+		m.turnAutoStarted = false
+		m.insertUserMessageBeforeStreaming(msg.content)
+		if m.bgTaskCountFn != nil {
+			m.bgTaskCount = m.bgTaskCountFn()
+		}
+		if m.agentCountFn != nil {
+			m.agentCount = m.agentCountFn()
+		}
+		m.rc.valid = false
+		return nil
+	}
+
 	if shouldQueue {
 		log.Debug("handleInjectedUserMsg: queuing — current turn reply not yet received")
 		m.messageQueue = append(m.messageQueue, queuedMsg{content: msg.content, chatID: m.chatID})

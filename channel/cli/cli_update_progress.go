@@ -263,6 +263,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			"chatID":    msg.payload.ChatID,
 		}).Info("handleProgressMsg: auto-start turn")
 		m.startAgentTurn()
+		m.turnAutoStarted = true
 	}
 
 	// suLoading guard: during session switch in remote mode, discard all

@@ -340,6 +340,85 @@ func TestTurnComplete_ReturnsToIdle(t *testing.T) {
 	}
 }
 
+// ─── Fix 9: Auto-start + injected message race → two assistants ────
+
+// TestInjectedUserMsg_ClaimsAutoStartedTurn verifies that when a progress
+// auto-start creates a streaming message (before the injected user message
+// arrives via asyncCh), handleInjectedUserMsg claims the turn by inserting
+// the user message before the streaming message — NOT queuing (which would
+// produce a second assistant when flushed).
+func TestInjectedUserMsg_ClaimsAutoStartedTurn(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn() // simulates auto-start (progress arrived first)
+	model.turnAutoStarted = true
+	oldTurnID := model.agentTurnID
+	oldStreamingIdx := model.streamingMsgIdx
+
+	// Injected user message arrives AFTER auto-start
+	model.Update(cliInjectedUserMsg{
+		content: "[System] Task done",
+		chatID:  model.channelName + ":" + model.chatID,
+	})
+
+	// The notification should NOT be queued
+	if len(model.messageQueue) != 0 {
+		t.Error("notification should NOT be queued when turn was auto-started")
+	}
+
+	// turnAutoStarted should be cleared
+	if model.turnAutoStarted {
+		t.Error("turnAutoStarted should be cleared after claiming turn")
+	}
+
+	// agentTurnID should NOT change (same turn)
+	if model.agentTurnID != oldTurnID {
+		t.Errorf("agentTurnID should not change: got %d, want %d", model.agentTurnID, oldTurnID)
+	}
+
+	// streamingMsgIdx should be shifted by 1 (user message inserted before it)
+	if model.streamingMsgIdx != oldStreamingIdx+1 {
+		t.Errorf("streamingMsgIdx should shift +1: got %d, want %d", model.streamingMsgIdx, oldStreamingIdx+1)
+	}
+
+	// User message should be immediately before the streaming message
+	if model.streamingMsgIdx < 1 {
+		t.Fatal("streamingMsgIdx too small")
+	}
+	userMsg := model.messages[model.streamingMsgIdx-1]
+	if userMsg.role != "user" {
+		t.Errorf("message before streaming should be 'user', got %q", userMsg.role)
+	}
+
+	// Should have exactly 1 assistant message (the streaming one from auto-start)
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Errorf("should have exactly 1 assistant, got %d", assistantCount)
+	}
+}
+
+// TestInjectedUserMsg_QueuesWhenTypingFromRealUser verifies that when
+// typing=true was set by a real user message (not auto-start), the
+// injected message IS queued (correct behavior).
+func TestInjectedUserMsg_QueuesWhenTypingFromRealUser(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	model.turnAutoStarted = false // explicitly false (real user message turn)
+
+	model.Update(cliInjectedUserMsg{
+		content: "[System] Task done",
+		chatID:  model.channelName + ":" + model.chatID,
+	})
+
+	if len(model.messageQueue) == 0 {
+		t.Error("notification should be queued when typing=true from real user message")
+	}
+}
+
 // ─── Fix 3: Queued (pending) tools visible ──────────────────────────
 
 // TestLiveIterationBlocks_PendingToolsVisible verifies that tools with

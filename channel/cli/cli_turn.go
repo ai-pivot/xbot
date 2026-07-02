@@ -169,6 +169,7 @@ func (m *cliModel) startAgentTurn() {
 		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 	}
 	m.turnDoneFlags[m.agentTurnID] = &turnDoneFlag{}
+	m.turnAutoStarted = false
 
 	// Clean up old turn entries (keep last 3 for late-arrival safety).
 	for id := range m.turnDoneFlags {
@@ -514,6 +515,30 @@ func (m *cliModel) purgeZombieMessages(turnID uint64, role string, keepIdx int) 
 // Returns true if a message was removed.
 // flushMessageQueue sends the first queued message (if any) when input becomes ready.
 // Returns a tea.Cmd to send the message, or nil if queue is empty.
+// insertUserMessageBeforeStreaming inserts a user message at the position
+// immediately before the streaming message. Used when handleInjectedUserMsg
+// claims an auto-started turn (progress auto-start created the streaming
+// message before the user message arrived via asyncCh).
+func (m *cliModel) insertUserMessageBeforeStreaming(content string) {
+	userMsg := cliMessage{
+		role:      "user",
+		content:   content,
+		timestamp: time.Now(),
+		dirty:     true,
+	}
+	idx := m.streamingMsgIdx
+	if idx < 0 || idx >= len(m.messages) {
+		// No streaming message — just append
+		m.messages = append(m.messages, userMsg)
+		return
+	}
+	// Insert before streaming message
+	m.messages = append(m.messages, cliMessage{}) // grow
+	copy(m.messages[idx+1:], m.messages[idx:])    // shift right
+	m.messages[idx] = userMsg
+	m.streamingMsgIdx++
+}
+
 func (m *cliModel) flushMessageQueue() {
 	if len(m.messageQueue) == 0 {
 		return

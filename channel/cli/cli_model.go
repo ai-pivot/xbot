@@ -244,13 +244,16 @@ type cliModel struct {
 	// --- §Session state save/restore ---
 	// Per-session saved state so switching sessions doesn't lose in-progress state.
 	// Key = "channelName:chatID". Messages are NOT saved here — DB is source of truth.
-	savedSessions      map[string]*sessionState
-	pendingUserMsg     *cliMessage       // most recent user message sent but not yet confirmed in DB
-	pendingSuRestore   *suHistoryLoadMsg // pre-start restore data, consumed by Init()
-	turnCancelled      bool              // true after Ctrl+C — prevents auto-start on stale progress
-	cancelTargetTurnID uint64            // turnID being cancelled; guards stale cancel ack from modifying wrong message
-	cancelAckProcessed bool              // true after first cancel ack handled; guards stale second cancel ack (Bug #2: async goroutine race)
-	idleTickCounter    int               // counts 100ms ticks in idle state; placeholder rotates every 30
+	savedSessions    map[string]*sessionState
+	pendingUserMsg   *cliMessage       // most recent user message sent but not yet confirmed in DB
+	pendingSuRestore *suHistoryLoadMsg // pre-start restore data, consumed by Init()
+	turnCancelled    bool              // true after Ctrl+C — prevents auto-start on stale progress
+	turnAutoStarted  bool              // true when turn was started by progress auto-start (no user message yet).
+	// handleInjectedUserMsg checks this to claim the auto-started turn
+	// instead of queuing (which would create a second assistant).
+	cancelTargetTurnID uint64 // turnID being cancelled; guards stale cancel ack from modifying wrong message
+	cancelAckProcessed bool   // true after first cancel ack handled; guards stale second cancel ack (Bug #2: async goroutine race)
+	idleTickCounter    int    // counts 100ms ticks in idle state; placeholder rotates every 30
 
 	// --- Deterministic rendering: per-turn completion tracking ---
 	// turnDoneFlags tracks whether specific events have been processed for a turn.
