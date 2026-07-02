@@ -106,13 +106,13 @@ Structured output based on task type.
 ### Step 3: Choose Tools
 
 Common tools for agents:
-- **Code**: Read, Grep, Glob, Shell, Edit
+- **Code**: Read, Grep, Glob, Shell, FileReplace, FileCreate
 - **Research**: WebSearch, Fetch, Grep, Glob
 - **Testing**: Shell, Read, Glob
 - **Communication**: feishu_send_message, feishu_docx_*
 
-If `tools` is omitted, the agent gets the full dynamic tool set (search_tools + load_tools).
-If `tools` is specified, only those tools are directly available — no search/load needed.
+If `tools` is omitted, the agent gets the full built-in tool set.
+If `tools` is specified, only those listed tools are directly available.
 
 ### Step 3.5: Choose Model Tier
 

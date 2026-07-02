@@ -779,7 +779,7 @@ func (rs *RemoteSandbox) syncToRunner(userID, workspace string) {
 	rs.syncing[userID] = true
 	rs.syncMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), RemoteSandboxSyncTimeout)
 	defer cancel()
 
 	log.WithFields(log.Fields{

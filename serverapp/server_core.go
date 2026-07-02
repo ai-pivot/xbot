@@ -127,11 +127,6 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
 	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 
-	if adminChatID := cfg.Admin.ChatID; adminChatID != "" {
-		ag.RegisterCoreTool(tools.NewLogsTool(adminChatID))
-		log.WithField("admin_chat_id", adminChatID).Info("Logs tool registered (admin only)")
-	}
-
 	ag.IndexGlobalTools()
 
 	// 5. Configure LLM.

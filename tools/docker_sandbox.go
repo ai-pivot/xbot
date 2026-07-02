@@ -56,9 +56,9 @@ func (s *DockerSandbox) Close() error {
 		if !c.started {
 			continue
 		}
-		if err := dockerRun(dockerCmdTimeout, "stop", "-t", "1", c.name); err != nil {
+		if err := dockerRun(DockerCmdTimeout, "stop", "-t", "1", c.name); err != nil {
 			log.WithError(err).Warnf("Failed to stop container %s", c.name)
-			dockerRun(dockerCmdTimeout, "rm", "-f", c.name)
+			dockerRun(DockerCmdTimeout, "rm", "-f", c.name)
 			delete(s.containers, userID)
 		} else {
 			c.started = false
@@ -79,7 +79,7 @@ func (s *DockerSandbox) CloseForUser(userID string) error {
 		return nil
 	}
 
-	if err := dockerRun(dockerCmdTimeout, "stop", "-t", "1", c.name); err != nil {
+	if err := dockerRun(DockerCmdTimeout, "stop", "-t", "1", c.name); err != nil {
 		log.WithError(err).Warnf("Failed to stop container %s for idle cleanup", c.name)
 	} else {
 		c.started = false
@@ -142,12 +142,12 @@ func (s *DockerSandbox) exportImportIfDirty(containerName, userID string) {
 	}
 
 	// 验证容器仍然存在且在运行（防止锁释放后被 CloseForUser 关闭导致操作无效容器）
-	if err := dockerRun(dockerCmdTimeout, "container", "inspect", containerName); err != nil {
+	if err := dockerRun(DockerCmdTimeout, "container", "inspect", containerName); err != nil {
 		log.WithError(err).Warnf("Container %s no longer exists, skipping export", containerName)
 		return
 	}
 
-	diffOut, err := dockerExec(dockerCmdTimeout, "diff", containerName)
+	diffOut, err := dockerExec(DockerCmdTimeout, "diff", containerName)
 	if err != nil {
 		log.WithError(err).Warnf("Failed to check diff for container %s, skipping export", containerName)
 		return
@@ -162,11 +162,11 @@ func (s *DockerSandbox) exportImportIfDirty(containerName, userID string) {
 	// 1. 获取当前镜像的元数据（docker export/import 会丢失 CMD/ENTRYPOINT/ENV 等）
 	//    优先从已有用户镜像读取，不存在则从基础镜像读取
 	sourceImage := userImage
-	if err := dockerRun(dockerCmdTimeout, "image", "inspect", sourceImage); err != nil {
+	if err := dockerRun(DockerCmdTimeout, "image", "inspect", sourceImage); err != nil {
 		sourceImage = s.image
 	}
 	inspectFmt := "{{json .Config.Cmd}}||{{json .Config.Entrypoint}}||{{.Config.WorkingDir}}||{{json .Config.Env}}"
-	inspectOut, _ := dockerExec(dockerCmdTimeout, "image", "inspect", "-f", inspectFmt, sourceImage)
+	inspectOut, _ := dockerExec(DockerCmdTimeout, "image", "inspect", "-f", inspectFmt, sourceImage)
 	var changes []string
 	if parts := strings.SplitN(strings.TrimSpace(string(inspectOut)), "||", 4); len(parts) == 4 {
 		if cmd := parts[0]; cmd != "" && cmd != "null" {
@@ -189,7 +189,7 @@ func (s *DockerSandbox) exportImportIfDirty(containerName, userID string) {
 
 	// 2. 记录旧镜像 ID（用于后续清理）
 	var oldImageID string
-	if out, err := dockerExec(dockerCmdTimeout, "image", "inspect", "-f", "{{.Id}}", userImage); err == nil {
+	if out, err := dockerExec(DockerCmdTimeout, "image", "inspect", "-f", "{{.Id}}", userImage); err == nil {
 		oldImageID = strings.TrimSpace(string(out))
 	}
 
@@ -215,10 +215,10 @@ func (s *DockerSandbox) exportImportIfDirty(containerName, userID string) {
 
 	// 5. 删除旧镜像（如果 ID 不同，说明 import 生成了新镜像）
 	if oldImageID != "" {
-		if newOut, err := dockerExec(dockerCmdTimeout, "image", "inspect", "-f", "{{.Id}}", userImage); err == nil {
+		if newOut, err := dockerExec(DockerCmdTimeout, "image", "inspect", "-f", "{{.Id}}", userImage); err == nil {
 			newImageID := strings.TrimSpace(string(newOut))
 			if newImageID != oldImageID {
-				if err := dockerRun(dockerCmdTimeout, "rmi", oldImageID); err != nil {
+				if err := dockerRun(DockerCmdTimeout, "rmi", oldImageID); err != nil {
 					log.WithError(err).Debugf("Failed to remove old image %s (may still be referenced)", oldImageID[:12])
 				} else {
 					log.Infof("Removed old image %s", oldImageID[:12])
@@ -250,7 +250,7 @@ func (s *DockerSandbox) exportImportFallback(containerName, userImage string, ch
 
 	// 记录旧镜像 ID
 	var oldImageID string
-	if out, err := dockerExec(dockerCmdTimeout, "image", "inspect", "-f", "{{.Id}}", userImage); err == nil {
+	if out, err := dockerExec(DockerCmdTimeout, "image", "inspect", "-f", "{{.Id}}", userImage); err == nil {
 		oldImageID = strings.TrimSpace(string(out))
 	}
 
@@ -267,10 +267,10 @@ func (s *DockerSandbox) exportImportFallback(containerName, userImage string, ch
 
 	// 删除旧镜像
 	if oldImageID != "" {
-		if newOut, err := dockerExec(dockerCmdTimeout, "image", "inspect", "-f", "{{.Id}}", userImage); err == nil {
+		if newOut, err := dockerExec(DockerCmdTimeout, "image", "inspect", "-f", "{{.Id}}", userImage); err == nil {
 			newImageID := strings.TrimSpace(string(newOut))
 			if newImageID != oldImageID {
-				if err := dockerRun(dockerCmdTimeout, "rmi", oldImageID); err != nil {
+				if err := dockerRun(DockerCmdTimeout, "rmi", oldImageID); err != nil {
 					log.WithError(err).Debugf("Failed to remove old image %s (may still be referenced)", oldImageID[:12])
 				} else {
 					log.Infof("Removed old image %s", oldImageID[:12])
@@ -417,8 +417,8 @@ func (s *DockerSandbox) ReadFile(ctx context.Context, path string, userID string
 		}
 	}
 	// Pass path as a separate argument to base64 (not via shell), avoiding shell injection.
-	// Use dockerSlowTimeout for large files that may take longer to transfer.
-	out, err := s.dockerExecInContainer(ctx, userID, "", dockerSlowTimeout,
+	// Use DockerSlowTimeout for large files that may take longer to transfer.
+	out, err := s.dockerExecInContainer(ctx, userID, "", DockerSlowTimeout,
 		"base64", path)
 	if err != nil {
 		if strings.Contains(string(out), "No such file") || strings.Contains(string(out), "cannot open") {
@@ -472,23 +472,23 @@ func (s *DockerSandbox) WriteFile(ctx context.Context, path string, data []byte,
 		return fmt.Errorf("data exceeds maximum size of %d bytes", MaxSandboxFileSize)
 	}
 	dir := filepath.Dir(path)
-	if _, err := s.dockerExecInContainer(ctx, userID, "", dockerCmdTimeout, "mkdir", "-p", dir); err != nil {
+	if _, err := s.dockerExecInContainer(ctx, userID, "", DockerCmdTimeout, "mkdir", "-p", dir); err != nil {
 		return fmt.Errorf("docker exec mkdir -p: %w", err)
 	}
 	// Write raw data via stdin to "cat > path" (redirect to file, stdout discarded by docker exec).
 	// path is shell-escaped to prevent injection, shell used only for the redirect operator.
-	if _, err := s.dockerExecWithStdin(ctx, userID, "", dockerSlowTimeout, data,
+	if _, err := s.dockerExecWithStdin(ctx, userID, "", DockerSlowTimeout, data,
 		"sh", "-c", fmt.Sprintf("cat > '%s'", shellEscape(path))); err != nil {
 		return fmt.Errorf("docker exec write: %w", err)
 	}
-	if _, err := s.dockerExecInContainer(ctx, userID, "", dockerCmdTimeout, "chmod", fmt.Sprintf("%o", uint32(perm)), path); err != nil {
+	if _, err := s.dockerExecInContainer(ctx, userID, "", DockerCmdTimeout, "chmod", fmt.Sprintf("%o", uint32(perm)), path); err != nil {
 		return fmt.Errorf("docker exec chmod: %w", err)
 	}
 	return nil
 }
 
 func (s *DockerSandbox) Stat(ctx context.Context, path string, userID string) (*SandboxFileInfo, error) {
-	out, err := s.dockerExecInContainer(ctx, userID, "", dockerCmdTimeout,
+	out, err := s.dockerExecInContainer(ctx, userID, "", DockerCmdTimeout,
 		"stat", "--format", "%s|%a|%Y|%F", path)
 	if err != nil {
 		if strings.Contains(string(out), "No such file") || strings.Contains(string(out), "cannot stat") {
@@ -529,7 +529,7 @@ func (s *DockerSandbox) Stat(ctx context.Context, path string, userID string) (*
 }
 
 func (s *DockerSandbox) ReadDir(ctx context.Context, path string, userID string) ([]DirEntry, error) {
-	out, err := s.dockerExecInContainer(ctx, userID, "", dockerCmdTimeout,
+	out, err := s.dockerExecInContainer(ctx, userID, "", DockerCmdTimeout,
 		"ls", "-1p", path)
 	if err != nil {
 		if strings.Contains(string(out), "No such file") || strings.Contains(string(out), "cannot access") {
@@ -558,7 +558,7 @@ func (s *DockerSandbox) ReadDir(ctx context.Context, path string, userID string)
 }
 
 func (s *DockerSandbox) MkdirAll(ctx context.Context, path string, perm os.FileMode, userID string) error {
-	_, err := s.dockerExecInContainer(ctx, userID, "", dockerCmdTimeout, "mkdir", "-p", "-m", fmt.Sprintf("%o", uint32(perm.Perm())), path)
+	_, err := s.dockerExecInContainer(ctx, userID, "", DockerCmdTimeout, "mkdir", "-p", "-m", fmt.Sprintf("%o", uint32(perm.Perm())), path)
 	if err != nil {
 		return fmt.Errorf("docker exec mkdir -p: %w", err)
 	}
@@ -566,7 +566,7 @@ func (s *DockerSandbox) MkdirAll(ctx context.Context, path string, perm os.FileM
 }
 
 func (s *DockerSandbox) Remove(ctx context.Context, path string, userID string) error {
-	_, err := s.dockerExecInContainer(ctx, userID, "", dockerCmdTimeout, "rm", path)
+	_, err := s.dockerExecInContainer(ctx, userID, "", DockerCmdTimeout, "rm", path)
 	if err != nil {
 		return fmt.Errorf("docker exec rm: %w", err)
 	}
@@ -574,7 +574,7 @@ func (s *DockerSandbox) Remove(ctx context.Context, path string, userID string) 
 }
 
 func (s *DockerSandbox) RemoveAll(ctx context.Context, path string, userID string) error {
-	_, err := s.dockerExecInContainer(ctx, userID, "", dockerSlowTimeout, "rm", "-rf", path)
+	_, err := s.dockerExecInContainer(ctx, userID, "", DockerSlowTimeout, "rm", "-rf", path)
 	if err != nil {
 		return fmt.Errorf("docker exec rm -rf: %w", err)
 	}
@@ -584,11 +584,11 @@ func (s *DockerSandbox) RemoveAll(ctx context.Context, path string, userID strin
 func (s *DockerSandbox) DownloadFile(ctx context.Context, url, outputPath, userID string) error {
 	// Create parent directory inside the container
 	dir := filepath.Dir(outputPath)
-	if _, err := s.dockerExecInContainer(ctx, userID, "", dockerCmdTimeout, "mkdir", "-p", dir); err != nil {
+	if _, err := s.dockerExecInContainer(ctx, userID, "", DockerCmdTimeout, "mkdir", "-p", dir); err != nil {
 		return fmt.Errorf("docker exec mkdir -p: %w", err)
 	}
 	// Use curl inside the container to download directly
-	out, err := s.dockerExecInContainer(ctx, userID, "", dockerSlowTimeout, "curl", "-fsSL", "-o", outputPath, url)
+	out, err := s.dockerExecInContainer(ctx, userID, "", DockerSlowTimeout, "curl", "-fsSL", "-o", outputPath, url)
 	if err != nil {
 		return fmt.Errorf("docker exec curl: %w: %s", err, string(out))
 	}
@@ -624,7 +624,7 @@ func (s *DockerSandbox) getOrCreateContainer(userID, workspace string) (containe
 	// Check if container is already running (under lock — only state checks).
 	// When workspace is empty (file operations like ReadFile/WriteFile don't have it),
 	// skip mount verification and reuse the running container as-is.
-	checkOutput, checkErr := dockerExec(dockerCmdTimeout, "inspect", "-f", "{{.State.Running}}", containerName)
+	checkOutput, checkErr := dockerExec(DockerCmdTimeout, "inspect", "-f", "{{.State.Running}}", containerName)
 	if checkErr == nil && strings.Contains(string(checkOutput), "true") {
 		if workspace == "" || s.verifyWorkspaceMount(containerName, workspace) {
 			s.mu.Unlock()
@@ -642,7 +642,7 @@ func (s *DockerSandbox) getOrCreateContainer(userID, workspace string) (containe
 	if s.containerExists(containerName) {
 		mountOK := workspace == "" || s.verifyWorkspaceMount(containerName, workspace)
 		if mountOK {
-			if startErr := dockerRun(dockerCmdTimeout, "start", containerName); startErr == nil {
+			if startErr := dockerRun(DockerCmdTimeout, "start", containerName); startErr == nil {
 				log.Infof("Started existing Docker container %s", containerName)
 				s.mu.Unlock()
 				shell = s.detectShell(containerName)
@@ -661,7 +661,7 @@ func (s *DockerSandbox) getOrCreateContainer(userID, workspace string) (containe
 	// Container does not exist — choose image: prefer user-specific image, otherwise base.
 	image := s.image
 	userImage := userImageName(userID)
-	if err := dockerRun(dockerCmdTimeout, "image", "inspect", userImage); err == nil {
+	if err := dockerRun(DockerCmdTimeout, "image", "inspect", userImage); err == nil {
 		image = userImage
 		log.Infof("Using user image %s for container %s", userImage, containerName)
 	}
@@ -694,7 +694,7 @@ func (s *DockerSandbox) getOrCreateContainer(userID, workspace string) (containe
 	// Re-acquire only to update the containers map.
 	s.mu.Unlock()
 
-	output, err := dockerExec(dockerCmdTimeout, runArgs...)
+	output, err := dockerExec(DockerCmdTimeout, runArgs...)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create container: %w, output: %s", err, string(output))
 	}
@@ -734,7 +734,7 @@ func (s *DockerSandbox) GetShell(userID string, workspace string) (string, error
 // detectShell 从容器内的 /etc/passwd 获取用户的默认 shell
 func (s *DockerSandbox) detectShell(containerName string) string {
 	// 获取 root 用户的默认 shell
-	output, err := dockerExec(dockerCmdTimeout, "exec", containerName,
+	output, err := dockerExec(DockerCmdTimeout, "exec", containerName,
 		"sh", "-c", "grep '^root:' /etc/passwd | cut -d: -f7")
 	if err != nil || len(strings.TrimSpace(string(output))) == 0 {
 		log.WithError(err).Warnf("Failed to detect shell for container %s, using /bin/sh", containerName)
@@ -761,7 +761,7 @@ func (s *DockerSandbox) toHostPath(containerPath string) string {
 
 // verifyWorkspaceMount checks that the container's /workspace bind mount points to the expected host path.
 func (s *DockerSandbox) verifyWorkspaceMount(containerName, expectedWorkspace string) bool {
-	output, err := dockerExec(dockerCmdTimeout, "inspect", "-f",
+	output, err := dockerExec(DockerCmdTimeout, "inspect", "-f",
 		`{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}`,
 		containerName)
 	if err != nil {
@@ -782,13 +782,13 @@ func (s *DockerSandbox) verifyWorkspaceMount(containerName, expectedWorkspace st
 
 // containerExists checks whether a Docker container exists (running or stopped).
 func (s *DockerSandbox) containerExists(containerName string) bool {
-	return dockerRun(dockerCmdTimeout, "inspect", "-f", "{{.Id}}", containerName) == nil
+	return dockerRun(DockerCmdTimeout, "inspect", "-f", "{{.Id}}", containerName) == nil
 }
 
 // forceRemove force-removes a container without export/import.
 // Export/import only happens via explicit user request (ExportAndImport).
 func (s *DockerSandbox) forceRemove(containerName string) {
-	if out, err := dockerExec(dockerCmdTimeout, "rm", "-f", containerName); err != nil {
+	if out, err := dockerExec(DockerCmdTimeout, "rm", "-f", containerName); err != nil {
 		log.WithError(err).Warnf("Failed to force-remove container %s: %s", containerName, strings.TrimSpace(string(out)))
 	} else {
 		log.Infof("Force-removed stale container %s", containerName)
@@ -812,7 +812,7 @@ func (s *DockerSandbox) migrateDinDWorkspaces() {
 	oldHostUsers := s.containerWorkDir + "/users"
 	newHostUsers := s.hostWorkDir + "/users"
 
-	checkOutput, err := dockerExec(dockerCmdTimeout, "run", "--rm",
+	checkOutput, err := dockerExec(DockerCmdTimeout, "run", "--rm",
 		"-v", oldHostUsers+":/dind_check:ro",
 		s.image,
 		"sh", "-c", "ls /dind_check 2>/dev/null | head -1")
@@ -822,7 +822,7 @@ func (s *DockerSandbox) migrateDinDWorkspaces() {
 
 	log.Warnf("DinD migration: found misplaced workspace data at host:%s, migrating to host:%s", oldHostUsers, newHostUsers)
 
-	if out, err := dockerExec(dockerSlowTimeout, "run", "--rm",
+	if out, err := dockerExec(DockerSlowTimeout, "run", "--rm",
 		"-v", oldHostUsers+":/old:ro",
 		"-v", newHostUsers+":/new",
 		s.image,
@@ -834,7 +834,7 @@ func (s *DockerSandbox) migrateDinDWorkspaces() {
 	// Cleanup: mount the PARENT of containerWorkDir, remove the base dir
 	parentDir := filepath.Dir(s.containerWorkDir)
 	baseName := filepath.Base(s.containerWorkDir)
-	if out, err := dockerExec(dockerCmdTimeout, "run", "--rm",
+	if out, err := dockerExec(DockerCmdTimeout, "run", "--rm",
 		"-v", parentDir+":/dind_cleanup",
 		s.image,
 		"sh", "-c", fmt.Sprintf("rm -rf /dind_cleanup/%s", baseName)); err != nil {
@@ -928,7 +928,7 @@ func (s *DockerSandbox) detectDinD(sandboxCfg config.SandboxConfig, workDir stri
 //
 // Returns (mountDest, mountSrc) directly — caller uses them as containerWorkDir/hostWorkDir.
 func (s *DockerSandbox) autoDetectDinDMount(workDir string) (containerMount, hostMount string) {
-	listOutput, err := dockerExec(dockerCmdTimeout, "ps", "-q")
+	listOutput, err := dockerExec(DockerCmdTimeout, "ps", "-q")
 	if err != nil {
 		log.Warnf("DinD auto-detect: docker ps failed: %v", err)
 		return "", ""
@@ -942,7 +942,7 @@ func (s *DockerSandbox) autoDetectDinDMount(workDir string) (containerMount, hos
 
 	var bestDest, bestSrc string
 	for _, id := range ids {
-		output, err := dockerExec(dockerCmdTimeout, "inspect", "-f",
+		output, err := dockerExec(DockerCmdTimeout, "inspect", "-f",
 			`{{range .Mounts}}{{.Destination}}={{.Source}}={{.Type}}`+"\n"+`{{end}}`,
 			id)
 		if err != nil {

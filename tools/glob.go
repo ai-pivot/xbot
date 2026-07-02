@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -141,7 +142,7 @@ func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*To
 	findCmd := fmt.Sprintf(
 		"find '%s' -type f %s -not -path '*/.*' -not -path '*/node_modules/*' 2>/dev/null | head -200",
 		escapedDir, findArgs)
-	output, err := RunInSandboxWithShell(ctx, findCmd)
+	output, err := RunInSandboxWithShellTimeout(ctx, findCmd, GlobLocalTimeout)
 	if err != nil {
 		// 如果是"没有匹配文件"的情况，返回空结果
 		if output == "" {
@@ -170,6 +171,14 @@ func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*To
 
 // executeLocal 在本地执行文件搜索（非沙箱模式）
 func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolResult, error) {
+	// Per-tool timeout: 30s for local file pattern matching
+	parentCtx := context.Background()
+	if ctx != nil && ctx.Ctx != nil {
+		parentCtx = ctx.Ctx
+	}
+	searchCtx, cancel := context.WithTimeout(parentCtx, GlobLocalTimeout)
+	defer cancel()
+
 	// Determine base directory
 	baseDir := path
 	if baseDir == "" {
@@ -213,7 +222,7 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 	for _, bp := range bracePatterns {
 		var bpMatches []string
 		if strings.Contains(bp, "**") {
-			bpMatches, err = globWithDoublestar(baseDir, bp)
+			bpMatches, err = globWithDoublestar(searchCtx, baseDir, bp, MaxGlobResults-len(matches))
 			if err != nil {
 				return nil, fmt.Errorf("glob search failed: %w", err)
 			}
@@ -239,10 +248,9 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 	}
 
 	// Limit results to avoid excessive output
-	const maxResults = 200
 	truncated := false
-	if len(matches) > maxResults {
-		matches = matches[:maxResults]
+	if len(matches) > MaxGlobResults {
+		matches = matches[:MaxGlobResults]
 		truncated = true
 	}
 
@@ -253,7 +261,7 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 		sb.WriteString("\n")
 	}
 	if truncated {
-		fmt.Fprintf(&sb, "\n(Results truncated. Showing first %d matches.)\n", maxResults)
+		fmt.Fprintf(&sb, "\n(Results truncated. Showing first %d matches.)\n", MaxGlobResults)
 	}
 
 	return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
@@ -262,13 +270,18 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 // globWithDoublestar handles glob patterns containing ** for recursive directory matching.
 // It splits the pattern at ** boundaries, walks the directory tree, and matches each
 // path segment against the corresponding pattern part.
-func globWithDoublestar(baseDir, pattern string) ([]string, error) {
+// maxResults caps the number of matches (0 = unlimited). Walk stops early when reached.
+func globWithDoublestar(ctx context.Context, baseDir, pattern string, maxResults int) ([]string, error) {
 	var matches []string
 
 	// Normalize the pattern separators
 	pattern = filepath.FromSlash(pattern)
 
 	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		// Check context cancellation (Ctrl+C or timeout)
+		if cerr := ctx.Err(); cerr != nil {
+			return filepath.SkipAll
+		}
 		if err != nil {
 			return nil // Skip files/dirs we can't access
 		}
@@ -297,6 +310,10 @@ func globWithDoublestar(baseDir, pattern string) ([]string, error) {
 		// Match the relative path against the pattern
 		if matchDoublestar(pattern, relPath) {
 			matches = append(matches, path)
+			// Early exit when maxResults reached
+			if maxResults > 0 && len(matches) >= maxResults {
+				return filepath.SkipAll
+			}
 		}
 
 		return nil
