@@ -225,22 +225,13 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	// (incrementing agentTurnID), causing the pending reply to be treated as
 	// stale and dropped — losing ALL iterations from the completed turn.
 	//
-	// Two cases to guard:
-	//   1. m.typing == true: turn in progress, PhaseDone hasn't arrived yet
-	//   2. m.typing == false but replyReceived == false: PhaseDone arrived
-	//      (set typing=false via endAgentTurn) but the reply hasn't been
-	//      processed by handleAgentMessage yet.
+	// Three cases to guard:
+	//   1. m.typing == true: turn in progress, reply hasn't arrived yet
+	//   2. !m.replyProcessed && !m.typing: PhaseDone arrived (set typing=false),
+	//      but the reply hasn't been processed by handleAgentMessage yet.
 	//   3. m.turnCancelled == true: Ctrl+C PhaseDone arrived (typing=false)
-	//      but cancel ack hasn't been processed yet. Starting a new turn now
-	//      would orphan the cancelled turn's streaming message (still
-	//      isPartial in m.messages). The cancel ack will clean it up and
-	//      flush the queue via tryFlushMessageQueue.
-	shouldQueue := m.typing || m.turnCancelled
-	if !shouldQueue && m.agentTurnID > 0 {
-		if flag := m.getTurnFlag(m.agentTurnID); flag != nil && flag.doneProcessed && !flag.replyReceived {
-			shouldQueue = true
-		}
-	}
+	//      but cancel ack hasn't been processed yet.
+	shouldQueue := m.typing || m.turnCancelled || !m.replyProcessed
 
 	// Race fix: if typing=true was set by progress auto-start (not by a real
 	// user message), the injected notification IS the user message for this
@@ -511,26 +502,16 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		}
 	}
 
-	// Queue flush
-	if m.needFlushQueue && !m.typing && !m.splashState.suLoading && len(m.messageQueue) > 0 {
-		prevTurnID := m.agentTurnID
-		canFlush := m.isTurnReplyReceived(prevTurnID)
-		if !canFlush && m.isTurnDoneProcessed(prevTurnID) && m.turnCancelled {
-			canFlush = true
-		}
-		if !canFlush && m.isTurnDoneProcessed(prevTurnID) {
-			prevFlag := m.getTurnFlag(prevTurnID)
-			if prevFlag != nil && !prevFlag.doneTime.IsZero() && time.Since(prevFlag.doneTime) > 2*time.Second {
-				log.WithField("turnID", prevTurnID).Warn("Queue flush timeout: forcing flush after 2s without reply")
-				canFlush = true
-			}
-		}
-
-		if canFlush {
-			m.needFlushQueue = false
-			m.flushMessageQueue()
-			return cmds
-		}
+	// Queue flush — only flush when reply has been fully processed.
+	// handleProgressDone may set needFlushQueue before the reply arrives;
+	// the tick handler must wait until replyProcessed is true (set by
+	// handleAgentMessage or handleCancelAck) to prevent premature flush
+	// that would start a new turn before the current turn's reply is
+	// attached to the assistant message.
+	if m.needFlushQueue && !m.typing && m.replyProcessed && !m.splashState.suLoading && len(m.messageQueue) > 0 {
+		m.needFlushQueue = false
+		m.flushMessageQueue()
+		return cmds
 	}
 
 	// Idle: placeholder rotation (every 30 ticks = ~3s)

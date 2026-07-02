@@ -90,6 +90,7 @@ type cliModel struct {
 	// --- Agent state ---
 	agentTurnID       uint64                       // monotonically increasing turn counter
 	typing            bool                         // agent 是否正在回复
+	replyProcessed    bool                         // true = reply (or cancel ack) has been fully processed for current turn
 	typingStartTime   time.Time                    // 本次处理开始时间
 	inputReady        bool                         // 输入就绪状态（agent 回复期间禁止发送）
 	sendInboundFn     func(ch.InboundMsg) bool     // forward to server via backend.SendInbound
@@ -157,10 +158,7 @@ type cliModel struct {
 	rc renderCache
 
 	// --- §2 工具可视化 ---
-	lastCompletedTools []protocol.ToolProgress // 每轮结束时快照，不依赖 m.progressState.current 生命周期
-	lastReasoning      string                  // 最后一次迭代的 reasoning_content，在 progress 清除前捕获
-	reasoningByIter    map[int]string          // per-iteration reasoning，snapshot 时用于精确查找
-	lastThinking       string                  // 最后一次迭代的 thinking_content，在 progress 清除前捕获
+	lastThinking string // 最后一次迭代的 thinking_content，在 progress 清除前捕获
 
 	// --- §8 Tab 补全 ---
 	completions    []string // 当前补全候选项
@@ -190,11 +188,6 @@ type cliModel struct {
 	// expandedTools tracks which tool lines are expanded to show detail bodies.
 	// Key format: "msgIdx:toolIdx" — identifies a specific tool within a specific message.
 	expandedTools map[string]bool
-
-	// --- §11b Pending Tool Summary ---
-	// PhaseDone may arrive before handleAgentMessage. Store the tool_summary
-	// here so handleAgentMessage can insert it at the correct position.
-	pendingToolSummary *cliMessage
 
 	// --- §13 Update Check ---
 
@@ -254,11 +247,6 @@ type cliModel struct {
 	cancelAckProcessed bool   // true after first cancel ack handled; guards stale second cancel ack (Bug #2: async goroutine race)
 	idleTickCounter    int    // counts 100ms ticks in idle state; placeholder rotates every 30
 
-	// --- Deterministic rendering: per-turn completion tracking ---
-	// turnDoneFlags tracks whether specific events have been processed for a turn.
-	// Keyed by agentTurnID. Entries for old turns are cleaned up in startAgentTurn.
-	turnDoneFlags map[uint64]*turnDoneFlag
-
 	// --- Mouse support ---
 	mouseZones mouseZoneBuilder // zone tracker for mouse hit testing (rebuilt each View())
 
@@ -304,15 +292,6 @@ type cliModel struct {
 
 	// === Runner Bridge ===
 	runnerBridge *RunnerBridge
-}
-
-// turnDoneFlag tracks completion events for a single agent turn.
-// Used to prevent duplicate message insertion when events arrive out of order
-// (e.g. PhaseDone before cliOutboundMsg, or late tool completion after cancel).
-type turnDoneFlag struct {
-	doneProcessed bool      // true after handleProgressDone has created the tool_summary
-	replyReceived bool      // true after handleAgentMessage has appended the assistant reply
-	doneTime      time.Time // when doneProcessed was set (for flush timeout fallback)
 }
 
 // cliMessage 单条消息
@@ -417,6 +396,7 @@ func newCLIModel() *cliModel {
 		typing:          false,
 		streamingMsgIdx: -1,
 		inputReady:      true,
+		replyProcessed:  true,
 		locale:          ch.GetLocale(""),
 		inputHistory:    make([]string, 0, 100),
 		inputHistoryIdx: -1,

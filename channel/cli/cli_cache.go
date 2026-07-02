@@ -64,8 +64,6 @@ func (m *cliModel) resetProgressState() {
 	m.progressState.iterations = nil
 	m.progressState.lastIter = 0
 	m.progressState.lastSeq = 0
-	m.lastReasoning = ""
-	m.reasoningByIter = nil
 	m.progressState.streamReasoningByIter = nil
 	m.progressState.current = nil
 	m.progressState.iterStart = time.Now() // wall-clock start for iteration 0

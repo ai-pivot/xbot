@@ -159,24 +159,13 @@ func (m *cliModel) toggleToolSummary() {
 func (m *cliModel) startAgentTurn() {
 	m.agentTurnID++
 	m.typing = true
+	m.replyProcessed = false
 	// Do NOT clear turnCancelled here — it must persist across turn boundaries
 	// to block stale PhaseDone/tool_summary from a cancelled turn. It is cleared
 	// when the new turn's first non-PhaseDone progress arrives (handleProgressMsg)
 	// or by endAgentTurn for the matching turnID (normal cancel completion path).
 
-	// Initialize turnDoneFlags for the new turn.
-	if m.turnDoneFlags == nil {
-		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
-	}
-	m.turnDoneFlags[m.agentTurnID] = &turnDoneFlag{}
 	m.turnAutoStarted = false
-
-	// Clean up old turn entries (keep last 3 for late-arrival safety).
-	for id := range m.turnDoneFlags {
-		if id+3 < m.agentTurnID {
-			delete(m.turnDoneFlags, id)
-		}
-	}
 
 	// Show initial progress so the user sees immediate feedback (spinner)
 	// without waiting for the first progress_structured event.
@@ -293,7 +282,7 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 
 	// --- Preserve progress state for flicker-free rendering ---
 	// DO NOT clear progressState.iterations, progressState.current,
-	// reasoningByIter, lastReasoning, or invalidateProgress() here.
+	// or invalidateProgress() here.
 	// These are needed by updateStreamingOnly to render the turn's final
 	// state between PhaseDone and handleAgentMessage. Clearing them causes
 	// updateStreamingOnly to render an empty progress block, then
@@ -305,7 +294,6 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	//   for the next turn, or explicitly when the turn is fully done)
 	// - startAgentTurn → resetProgressState: when a new turn begins
 	// - /clear, session switch: full state reset
-	m.lastCompletedTools = nil
 	m.typingStartTime = time.Time{}
 	m.progressState.twVisible = 0
 	m.progressState.rwVisible = 0
@@ -371,64 +359,6 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 		m.agentCount = m.agentCountFn()
 	}
 	m.updatePlaceholder()
-}
-
-// --- Deterministic rendering helpers ---
-
-// getTurnFlag returns the turnDoneFlag for the given turn, or nil if not tracked.
-// getTurnFlag returns the turnDoneFlag for the given turn, or nil if not tracked.
-func (m *cliModel) getTurnFlag(turnID uint64) *turnDoneFlag {
-	if m.turnDoneFlags == nil {
-		return nil
-	}
-	return m.turnDoneFlags[turnID]
-}
-
-// isTurnDoneProcessed returns true if handleProgressDone has already processed
-// the given turn (created tool_summary and ended the turn).
-// isTurnDoneProcessed returns true if handleProgressDone has already processed
-// the given turn (created tool_summary and ended the turn).
-func (m *cliModel) isTurnDoneProcessed(turnID uint64) bool {
-	f := m.getTurnFlag(turnID)
-	return f != nil && f.doneProcessed
-}
-
-// isTurnReplyReceived returns true if handleAgentMessage has already received
-// the assistant reply for the given turn.
-// isTurnReplyReceived returns true if handleAgentMessage has already received
-// the assistant reply for the given turn.
-func (m *cliModel) isTurnReplyReceived(turnID uint64) bool {
-	f := m.getTurnFlag(turnID)
-	return f != nil && f.replyReceived
-}
-
-// setTurnDoneProcessed marks the turn as having been processed by handleProgressDone.
-// setTurnDoneProcessed marks the turn as having been processed by handleProgressDone.
-func (m *cliModel) setTurnDoneProcessed(turnID uint64) {
-	if m.turnDoneFlags == nil {
-		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
-	}
-	f, ok := m.turnDoneFlags[turnID]
-	if !ok {
-		f = &turnDoneFlag{}
-		m.turnDoneFlags[turnID] = f
-	}
-	f.doneProcessed = true
-	f.doneTime = time.Now()
-}
-
-// setTurnReplyReceived marks the turn as having received the assistant reply.
-// setTurnReplyReceived marks the turn as having received the assistant reply.
-func (m *cliModel) setTurnReplyReceived(turnID uint64) {
-	if m.turnDoneFlags == nil {
-		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
-	}
-	f, ok := m.turnDoneFlags[turnID]
-	if !ok {
-		f = &turnDoneFlag{}
-		m.turnDoneFlags[turnID] = f
-	}
-	f.replyReceived = true
 }
 
 // findMessageByTurn finds the index of the last message with the given turnID and role.

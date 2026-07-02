@@ -66,76 +66,70 @@ func TestLiveIterationBlocks_SameNameStreamingTools(t *testing.T) {
 	}
 }
 
-// TestStreamingToolsCarryForward_SameIter verifies that carryForwardProgressState
-// preserves StreamingTools when a structured event replaces current within
+// TestStreamingToolsMerge_SameIter verifies that mergeProgressState
+// preserves StreamingTools when a structured event merges within
 // the same iteration.
-func TestStreamingToolsCarryForward_SameIter(t *testing.T) {
+func TestStreamingToolsMerge_SameIter(t *testing.T) {
 	model := newCLIModel()
 
-	// Simulate: StreamingTools set on current
-	prev := &protocol.ProgressEvent{
+	// Current has StreamingTools set
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:          "thinking",
 		Iteration:      1,
 		StreamingTools: []protocol.ToolProgress{{Name: "Read", Status: "generating"}},
 	}
-	model.progressState.current = prev
 
-	// Simulate: structured event arrives (same iteration, no StreamingTools)
+	// Structured event arrives (same iteration, no StreamingTools)
 	newPayload := &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 1,
-		// No StreamingTools — carry forward should restore from prev
 	}
-
-	// Set up for carryForwardProgressState
-	model.progressState.current = newPayload
-	model.carryForwardProgressState(prev)
+	model.mergeProgressState(newPayload)
 
 	if len(model.progressState.current.StreamingTools) == 0 {
-		t.Error("StreamingTools was not carried forward — expected 1 tool, got 0")
+		t.Error("StreamingTools should be preserved on same-iteration merge — expected 1 tool, got 0")
 	}
 	if model.progressState.current.StreamingTools[0].Name != "Read" {
-		t.Errorf("carried forward tool name = %q, want Read", model.progressState.current.StreamingTools[0].Name)
+		t.Errorf("preserved tool name = %q, want Read", model.progressState.current.StreamingTools[0].Name)
 	}
 }
 
-// TestStreamingToolsCarryForward_DifferentIter verifies that StreamingTools
-// are NOT carried forward when the new event belongs to a different iteration.
-// This tests the sameIter guard.
-func TestStreamingToolsCarryForward_DifferentIter(t *testing.T) {
+// TestStreamingToolsMerge_DifferentIter verifies that StreamingTools
+// are cleared when mergeProgressState detects an iteration change —
+// stream fields belong to the previous iteration.
+func TestStreamingToolsMerge_DifferentIter(t *testing.T) {
 	model := newCLIModel()
 
-	// Previous iteration had StreamingTools
-	prev := &protocol.ProgressEvent{
+	// Current is iteration 1 with StreamingTools
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:          "tool_exec",
 		Iteration:      1,
 		StreamingTools: []protocol.ToolProgress{{Name: "Read", Status: "generating"}},
 	}
 
-	// New event is a different iteration (2 vs 1) — carry forward should NOT happen
+	// New event is a different iteration (2 vs 1) — stream fields should be cleared
 	newPayload := &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 2,
 	}
-
-	model.progressState.current = newPayload
-	model.carryForwardProgressState(prev)
+	model.mergeProgressState(newPayload)
 
 	if len(model.progressState.current.StreamingTools) != 0 {
-		t.Errorf("StreamingTools should NOT carry forward across iterations, got %d tools",
+		t.Errorf("StreamingTools should be cleared on iteration change, got %d tools",
 			len(model.progressState.current.StreamingTools))
 	}
 }
 
-// TestStreamingToolsCarryForward_FiltersStaleActive verifies that carry
-// forward does NOT restore a tool that has already transitioned to
-// ActiveTools (running/done). This prevents the same tool rendering as
-// both "generating" and "running" simultaneously.
-func TestStreamingToolsCarryForward_FiltersStaleActive(t *testing.T) {
+// TestStreamingToolsMerge_FiltersTransitionedToActive verifies that
+// mergeProgressState removes StreamingTools that have transitioned to
+// ActiveTools — the tool moved from "generating" (LLM streaming args) to
+// "running", and keeping the stale "generating" entry causes duplicate
+// display (e.g. "Shell preparing…" persists alongside "Shell: running").
+func TestStreamingToolsMerge_FiltersTransitionedToActive(t *testing.T) {
 	model := newCLIModel()
 
-	// Previous: Read was generating
-	prev := &protocol.ProgressEvent{
+	// Current: Read and Grep were both generating
+	model.progressState.current = &protocol.ProgressEvent{
 		Iteration: 1,
 		StreamingTools: []protocol.ToolProgress{
 			{Name: "Read", Status: "generating"},
@@ -143,23 +137,20 @@ func TestStreamingToolsCarryForward_FiltersStaleActive(t *testing.T) {
 		},
 	}
 
-	// New event: Read has transitioned to running (ActiveTools),
-	// Grep is still generating (not in ActiveTools yet).
+	// New event: Read has transitioned to running (ActiveTools)
 	newPayload := &protocol.ProgressEvent{
 		Iteration:   1,
 		ActiveTools: []protocol.ToolProgress{{Name: "Read", Status: "running"}},
 	}
+	model.mergeProgressState(newPayload)
 
-	model.progressState.current = newPayload
-	model.carryForwardProgressState(prev)
-
-	// Only Grep should be carried forward — Read is already in ActiveTools
+	// Only Grep should remain — Read transitioned to ActiveTools
 	if len(model.progressState.current.StreamingTools) != 1 {
-		t.Fatalf("expected 1 carried-forward tool (Grep), got %d: %+v",
+		t.Fatalf("expected 1 remaining tool (Grep), got %d: %+v",
 			len(model.progressState.current.StreamingTools), model.progressState.current.StreamingTools)
 	}
 	if model.progressState.current.StreamingTools[0].Name != "Grep" {
-		t.Errorf("expected Grep, got %q", model.progressState.current.StreamingTools[0].Name)
+		t.Errorf("remaining tool name = %q, want Grep", model.progressState.current.StreamingTools[0].Name)
 	}
 }
 

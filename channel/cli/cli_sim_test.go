@@ -2477,7 +2477,7 @@ func TestSimTurnMultiIteration(t *testing.T) {
 	}
 	// Verify iterations are baked into messages (any role with iterations)
 	// NOTE: In multi-iteration simulation tests with auto-start-turn cycles,
-	// only the first iteration's tools are preserved in pendingToolSummary.
+	// only the first iteration's tools are preserved in progressState.iterations.
 	// This is a simulation edge case; in production, all iterations occur
 	// within a single turn and are properly accumulated.
 	insp := result.Inspections[0]

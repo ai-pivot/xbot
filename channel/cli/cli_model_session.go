@@ -57,6 +57,7 @@ type suHistoryLoadMsg struct {
 type sessionState struct {
 	progress             *protocol.ProgressEvent
 	typing               bool
+	replyProcessed       bool
 	agentTurnID          uint64
 	inputReady           bool
 	needFlushQueue       bool
@@ -67,11 +68,9 @@ type sessionState struct {
 	lastSeenIteration    int
 	streamingMsgIdx      int
 	typingStartTime      time.Time
-	lastReasoning        string
 	lastThinking         string
 	turnCancelled        bool
 	typewriterTickActive bool
-	reasoningByIter      map[int]string
 	// Context bar state — preserved across session switches so the
 	// token usage bar doesn't disappear when switching between sessions.
 	// NOTE: max_context/max_output/compress_ratio are NOT persisted here —
@@ -107,11 +106,11 @@ func (m *cliModel) saveCurrentSession() {
 	key := m.sessionKey()
 	if m.savedSessions == nil {
 		m.savedSessions = make(map[string]*sessionState)
-		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 	}
 	m.savedSessions[key] = &sessionState{
 		progress:             m.progressState.current,
 		typing:               m.typing,
+		replyProcessed:       m.replyProcessed,
 		agentTurnID:          m.agentTurnID,
 		inputReady:           m.inputReady,
 		needFlushQueue:       m.needFlushQueue,
@@ -122,11 +121,9 @@ func (m *cliModel) saveCurrentSession() {
 		lastSeenIteration:    m.progressState.lastIter,
 		streamingMsgIdx:      m.streamingMsgIdx,
 		typingStartTime:      m.typingStartTime,
-		lastReasoning:        m.lastReasoning,
 		lastThinking:         m.lastThinking,
 		turnCancelled:        m.turnCancelled,
 		typewriterTickActive: m.progressState.twActive,
-		reasoningByIter:      m.reasoningByIter,
 		lastTokenUsage:       m.lastTokenUsage,
 		messageQueue:         m.messageQueue,
 		queueEditing:         m.queueEditing,
@@ -154,6 +151,7 @@ func (m *cliModel) restoreSession() {
 	if saved, ok := m.savedSessions[key]; ok {
 		m.progressState.current = saved.progress
 		m.typing = saved.typing
+		m.replyProcessed = saved.replyProcessed
 		m.agentTurnID = saved.agentTurnID
 		m.inputReady = saved.inputReady
 		m.needFlushQueue = saved.needFlushQueue
@@ -164,11 +162,9 @@ func (m *cliModel) restoreSession() {
 		m.progressState.lastIter = saved.lastSeenIteration
 		m.streamingMsgIdx = saved.streamingMsgIdx
 		m.typingStartTime = saved.typingStartTime
-		m.lastReasoning = saved.lastReasoning
 		m.lastThinking = saved.lastThinking
 		m.turnCancelled = saved.turnCancelled
 		m.progressState.twActive = saved.typewriterTickActive
-		m.reasoningByIter = saved.reasoningByIter
 		m.lastTokenUsage = saved.lastTokenUsage
 		// max_context/max_output/compress_ratio are resolved from DB, not
 		// restored from local savedSession. They will be populated by
@@ -216,8 +212,6 @@ func (m *cliModel) restoreSession() {
 		m.rc.invalidateProgress()
 		m.progressState.lastIter = 0
 		m.typingStartTime = time.Time{}
-		m.lastReasoning = ""
-		m.reasoningByIter = nil
 		m.progressState.streamReasoningByIter = nil
 		m.lastThinking = ""
 		m.inputReady = false
@@ -229,7 +223,7 @@ func (m *cliModel) restoreSession() {
 		m.progressState.rwVisible = 0
 		m.progressState.twActive = false
 		m.pendingUserMsg = nil
-		m.agentTurnID = 0       // prevent stale turnDoneFlags match
+		m.agentTurnID = 0       // reset turn ID for new session
 		m.textarea.SetValue("") // clear input for new/unsaved session
 		m.inputDraft = ""
 		m.inputHistory = nil
@@ -291,9 +285,6 @@ func (m *cliModel) resetToIdleState() {
 	m.typing = false
 	m.typingStartTime = time.Time{}
 	m.inputReady = false
-	m.lastCompletedTools = nil
-	m.lastReasoning = ""
-	m.reasoningByIter = make(map[int]string)
 	m.progressState.streamReasoningByIter = nil
 	m.lastThinking = ""
 
@@ -302,7 +293,6 @@ func (m *cliModel) resetToIdleState() {
 	m.queueEditing = false
 	m.queueEditBuf = ""
 	m.needFlushQueue = false
-	m.pendingToolSummary = nil
 
 	// --- Progress State ---
 	m.progressState.current = nil
@@ -464,10 +454,7 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	// Clear session-scoped flags that must NOT leak across sessions.
 	// compressionReloading: if set by a previous session's HistoryCompacted event,
 	//   it permanently blocks auto-start in the new session (Bug: stale flag leak).
-	// turnDoneFlags: per-turn reply/done tracking from the old session is meaningless
-	//   in the new session and can cause premature queue flush (Bug: stale flags).
 	m.splashState.compReloading = false
-	m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 
 	// ── Session LLM state restoration ──────────────────────────
 	// Only when in-memory caches are empty (new session or TUI restart).
@@ -546,6 +533,7 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		// The server RPC (handleSuHistoryLoad) is the single source of truth.
 		m.progressState.current = nil
 		m.typing = false
+		m.replyProcessed = true
 		m.needFlushQueue = false
 		m.turnCancelled = false
 		m.progressState.twActive = false
