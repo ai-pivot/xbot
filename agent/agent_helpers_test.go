@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -112,40 +113,60 @@ func TestResolveMemoryProvider(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveGlobalSkillsDirs(t *testing.T) {
+	// Detect if ~/.agents/skills exists on this machine (auto-detection target)
+	agentsSkillsExists := false
+	var agentsSkillsAbs string
+	if home, err := os.UserHomeDir(); err == nil {
+		dir := filepath.Join(home, ".agents", "skills")
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			agentsSkillsExists = true
+			agentsSkillsAbs, _ = filepath.Abs(dir)
+		}
+	}
+
 	tests := []struct {
 		name      string
 		skillsDir string
-		want      []string
+		wantLen   int
 	}{
 		{
-			name:      "empty returns nil",
+			name:      "empty returns at least auto-detected dirs",
 			skillsDir: "",
-			want:      nil,
+			wantLen:   map[bool]int{true: 1, false: 0}[agentsSkillsExists],
 		},
 		{
-			name:      "non-empty returns single-element slice",
+			name:      "non-empty includes configured dir plus auto-detected",
 			skillsDir: filepath.Join("path", "to", "skills"),
-			want:      []string{filepath.Join("path", "to", "skills")},
+			wantLen:   map[bool]int{true: 2, false: 1}[agentsSkillsExists],
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := resolveGlobalSkillsDirs(tc.skillsDir)
-			if tc.want == nil {
-				if got != nil {
-					t.Errorf("resolveGlobalSkillsDirs(%q) = %v, want nil", tc.skillsDir, got)
+			if len(got) != tc.wantLen {
+				t.Fatalf("length mismatch: got %d, want %d (got=%v)", len(got), tc.wantLen, got)
+			}
+
+			// If a skillsDir was provided, it should be first
+			if tc.skillsDir != "" && tc.wantLen > 0 {
+				wantAbs, _ := filepath.Abs(tc.skillsDir)
+				if got[0] != wantAbs {
+					t.Errorf("got[0] = %q, want %q", got[0], wantAbs)
 				}
-			} else {
-				if len(got) != len(tc.want) {
-					t.Fatalf("length mismatch: got %d, want %d", len(got), len(tc.want))
-				}
-				// resolveGlobalSkillsDirs calls filepath.Abs, so compare absolute paths
-				wantAbs, _ := filepath.Abs(tc.want[0])
-				for i := range got {
-					if got[i] != wantAbs {
-						t.Errorf("got[%d] = %q, want %q", i, got[i], wantAbs)
+			}
+
+			// If ~/.agents/skills exists, it should be in the result
+			if agentsSkillsExists {
+				found := false
+				for _, d := range got {
+					if d == agentsSkillsAbs {
+						found = true
+						break
 					}
+				}
+				if !found {
+					t.Errorf("expected ~/.agents/skills (%s) to be in result, got %v", agentsSkillsAbs, got)
 				}
 			}
 		})
