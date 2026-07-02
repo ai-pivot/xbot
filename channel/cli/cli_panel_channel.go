@@ -22,7 +22,7 @@ var builtinChannelNames = []string{"web", "feishu", "qq", "napcat"}
 func (m *cliModel) openChannelPanel() {
 	m.panelState.mode = "channel"
 	m.relayoutViewport()
-	m.panelState.channelCursor = 0
+	m.panelState.misc.channelCursor = 0
 
 	// Fetch current channel configs (includes plugin channels)
 	if m.channel != nil && m.channel.config.ChannelConfigGetFn != nil {
@@ -31,26 +31,26 @@ func (m *cliModel) openChannelPanel() {
 			m.showSystemMsg("Failed to load channel configs: "+err.Error(), feedbackWarning)
 			cfgs = nil
 		}
-		m.panelState.channelCfg = cfgs
+		m.panelState.misc.channelCfg = cfgs
 	}
 
 	// Build channel list: built-in first (in fixed order), then plugin channels
-	items := make([]string, 0, len(builtinChannelNames)+len(m.panelState.channelCfg))
+	items := make([]string, 0, len(builtinChannelNames)+len(m.panelState.misc.channelCfg))
 	seen := make(map[string]bool)
 	for _, name := range builtinChannelNames {
 		items = append(items, name)
 		seen[name] = true
 	}
 	// Add plugin channels from config keys
-	if m.panelState.channelCfg != nil {
-		for name := range m.panelState.channelCfg {
+	if m.panelState.misc.channelCfg != nil {
+		for name := range m.panelState.misc.channelCfg {
 			if !seen[name] {
 				items = append(items, name)
 				seen[name] = true
 			}
 		}
 	}
-	m.panelState.channelItems = items
+	m.panelState.misc.channelItems = items
 }
 
 // updateChannelPanel handles key events in the channel config panel.
@@ -59,8 +59,8 @@ func (m *cliModel) updateChannelPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 	case msg.String() == "ctrl+c":
 		return m.closePanelAndResume()
 	case msg.Code == tea.KeyEsc:
-		m.panelState.channelItems = nil
-		m.panelState.channelCfg = nil
+		m.panelState.misc.channelItems = nil
+		m.panelState.misc.channelCfg = nil
 		if !m.popPanel() {
 			m.panelState.mode = ""
 			m.relayoutViewport()
@@ -68,20 +68,20 @@ func (m *cliModel) updateChannelPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		return true, m, nil
 
 	case msg.Code == tea.KeyUp:
-		if m.panelState.channelCursor > 0 {
-			m.panelState.channelCursor--
+		if m.panelState.misc.channelCursor > 0 {
+			m.panelState.misc.channelCursor--
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyDown:
-		if m.panelState.channelCursor < len(m.panelState.channelItems)-1 {
-			m.panelState.channelCursor++
+		if m.panelState.misc.channelCursor < len(m.panelState.misc.channelItems)-1 {
+			m.panelState.misc.channelCursor++
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyEnter:
-		if m.panelState.channelCursor >= 0 && m.panelState.channelCursor < len(m.panelState.channelItems) {
-			ch := m.panelState.channelItems[m.panelState.channelCursor]
+		if m.panelState.misc.channelCursor >= 0 && m.panelState.misc.channelCursor < len(m.panelState.misc.channelItems) {
+			ch := m.panelState.misc.channelItems[m.panelState.misc.channelCursor]
 			m.openChannelSettingsPanel(ch)
 		}
 		return true, m, nil
@@ -106,9 +106,9 @@ func (m *cliModel) viewChannelPanel() string {
 		contentW = 20
 	}
 
-	for i, ch := range m.panelState.channelItems {
+	for i, ch := range m.panelState.misc.channelItems {
 		prefix := "  "
-		if i == m.panelState.channelCursor {
+		if i == m.panelState.misc.channelCursor {
 			prefix = s.PanelCursor.Render("▸")
 		}
 
@@ -120,8 +120,8 @@ func (m *cliModel) viewChannelPanel() string {
 		// Show enabled/disabled status
 		status := "◦ disabled"
 		statusStyle := s.TextMutedSt
-		if m.panelState.channelCfg != nil {
-			if cfg, ok := m.panelState.channelCfg[ch]; ok {
+		if m.panelState.misc.channelCfg != nil {
+			if cfg, ok := m.panelState.misc.channelCfg[ch]; ok {
 				if v, ok2 := cfg["enabled"]; ok2 && v == "true" {
 					status = "● enabled"
 					statusStyle = s.ProgressDone
@@ -143,10 +143,10 @@ func (m *cliModel) viewChannelPanel() string {
 // pluginChannelSchema extracts the settings schema for a plugin channel
 // from the _schema field in panelChannelCfg (populated by getChannelConfigs RPC).
 func (m *cliModel) pluginChannelSchema(channel string) []ch.SettingDefinition {
-	if m.panelState.channelCfg == nil {
+	if m.panelState.misc.channelCfg == nil {
 		return nil
 	}
-	cfg, ok := m.panelState.channelCfg[channel]
+	cfg, ok := m.panelState.misc.channelCfg[channel]
 	if !ok {
 		return nil
 	}
@@ -232,8 +232,8 @@ func (m *cliModel) openChannelSettingsPanel(channel string) {
 
 	// Get current values from cached config or fetch from backend
 	values := make(map[string]string)
-	if m.panelState.channelCfg != nil {
-		if cfg, ok := m.panelState.channelCfg[channel]; ok {
+	if m.panelState.misc.channelCfg != nil {
+		if cfg, ok := m.panelState.misc.channelCfg[channel]; ok {
 			for k, v := range cfg {
 				values[k] = v
 			}
@@ -258,7 +258,7 @@ func (m *cliModel) openChannelSettingsPanel(channel string) {
 			// Refresh cached configs
 			if m.channel.config.ChannelConfigGetFn != nil {
 				if cfgs, err := m.channel.config.ChannelConfigGetFn(); err == nil {
-					m.panelState.channelCfg = cfgs
+					m.panelState.misc.channelCfg = cfgs
 				}
 			}
 			m.showTempStatus(fmt.Sprintf("✅ %s config saved", channel))

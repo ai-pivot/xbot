@@ -489,11 +489,13 @@ func TestCtrlC_CancelAckNoQueueNoFlushFlag(t *testing.T) {
 }
 
 // TestCtrlC_CancelPathCapturesStreamContent verifies that when Ctrl+C
-// interrupts mid-stream (LLM hasn't finished, structured Thinking/Reasoning
-// not yet set), the cancel path in handleProgressDone captures StreamContent
-// and ReasoningStreamContent from the live progress (prev) into the snapshot.
-// Without this fix, the last reasoning block and content disappear after
-// Ctrl+C because they were only available via stream fields.
+// interrupts mid-stream (LLM hasn't finished, structured Thinking not yet
+// set), the cancel path in handleProgressDone captures StreamContent from
+// the live progress (prev) into the snapshot Thinking field.
+//
+// ReasoningStreamContent is NOT captured — it's a live-only streaming
+// accumulator that can contaminate snapshots across iterations. Only
+// structured Reasoning is used in snapshots.
 func TestCtrlC_CancelPathCapturesStreamContent(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn() // increments agentTurnID to 1
@@ -565,17 +567,22 @@ func TestCtrlC_CancelPathCapturesStreamContent(t *testing.T) {
 	if iter2.Iteration != 2 {
 		t.Fatalf("expected iteration 2, got %d", iter2.Iteration)
 	}
+	// Thinking captures StreamContent (preserves partial LLM output)
 	if iter2.Thinking != "I'm still generating this response..." {
 		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Thinking)
 	}
-	if iter2.Reasoning != "Let me think about this problem..." {
-		t.Errorf("iter2 Reasoning should capture ReasoningStreamContent, got %q", iter2.Reasoning)
+	// Reasoning is empty — RSC is live-only, NOT used in snapshots
+	if iter2.Reasoning != "" {
+		t.Errorf("iter2 Reasoning should be empty (no RSC fallback in snapshots), got %q", iter2.Reasoning)
 	}
 }
 
 // TestCtrlC_CancelAckCapturesStreamContent verifies that when cancel ack
 // arrives BEFORE PhaseDone, cancelledTurnIterations() captures StreamContent
-// and ReasoningStreamContent from the live progress (m.progressState.current).
+// from the live progress (m.progressState.current) for the Thinking field.
+//
+// ReasoningStreamContent is NOT captured — it's a live-only streaming
+// accumulator. Only structured Reasoning is used in snapshots.
 func TestCtrlC_CancelAckCapturesStreamContent(t *testing.T) {
 	model := initTestModel()
 	model.typing = true
@@ -638,13 +645,14 @@ func TestCtrlC_CancelAckCapturesStreamContent(t *testing.T) {
 		t.Fatalf("expected 2 iterations, got %d", len(assistantMsg.iterations))
 	}
 
-	// iter2 must have captured stream content
+	// iter2 must have captured stream content for Thinking (not Reasoning)
 	iter2 := assistantMsg.iterations[1]
 	if iter2.Thinking != "partial streamed output" {
 		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Thinking)
 	}
-	if iter2.Reasoning != "partial streamed reasoning" {
-		t.Errorf("iter2 Reasoning should capture ReasoningStreamContent, got %q", iter2.Reasoning)
+	// Reasoning is empty — RSC is live-only, NOT used in snapshots
+	if iter2.Reasoning != "" {
+		t.Errorf("iter2 Reasoning should be empty (no RSC fallback), got %q", iter2.Reasoning)
 	}
 }
 
@@ -741,14 +749,13 @@ func TestCtrlC_PhaseDoneBakedIterationsNotOverwrittenByCancelAck(t *testing.T) {
 // TestCtrlC_CancelledTurnIterationsNilSafety verifies that
 // cancelledTurnIterations() does NOT panic when progressState.current is nil
 // (after endAgentTurn cleared it). It should return whatever iterations are
-// available from pendingToolSummary or progressState.iterations.
+// available from progressState.iterations.
 func TestCtrlC_CancelledTurnIterationsNilSafety(t *testing.T) {
 	model := initTestModel()
 
 	// Simulate post-endAgentTurn state: everything cleared
 	model.progressState.current = nil
 	model.progressState.iterations = nil
-	model.pendingToolSummary = nil
 
 	// Should return empty slice, NOT panic
 	iters := model.cancelledTurnIterations()
@@ -756,15 +763,13 @@ func TestCtrlC_CancelledTurnIterationsNilSafety(t *testing.T) {
 		t.Errorf("expected empty iterations when all state cleared, got %d", len(iters))
 	}
 
-	// Now with pendingToolSummary set (simulating pre-PhaseDone cancel ack)
-	model.pendingToolSummary = &cliMessage{
-		iterations: []cliIterationSnapshot{
-			{Iteration: 1, Thinking: "from PTS"},
-		},
+	// Now with progressState.iterations set (simulating pre-PhaseDone cancel ack)
+	model.progressState.iterations = []cliIterationSnapshot{
+		{Iteration: 1, Thinking: "from PTS"},
 	}
 	iters = model.cancelledTurnIterations()
 	if len(iters) != 1 {
-		t.Fatalf("expected 1 iteration from pendingToolSummary, got %d", len(iters))
+		t.Fatalf("expected 1 iteration from progressState.iterations, got %d", len(iters))
 	}
 	if iters[0].Thinking != "from PTS" {
 		t.Errorf("expected 'from PTS', got %q", iters[0].Thinking)
@@ -816,11 +821,11 @@ func TestCtrlC_NormalPhaseDoneDoesNotCaptureStreamContent(t *testing.T) {
 		},
 	})
 
-	// Find the pendingToolSummary iterations (stored for handleAgentMessage)
-	if model.pendingToolSummary == nil {
-		t.Fatal("pendingToolSummary should be set after normal PhaseDone")
+	// Verify iterations in progressState (stored by PhaseDone)
+	if len(model.progressState.iterations) < 2 {
+		t.Fatalf("expected at least 2 iterations in progressState, got %d", len(model.progressState.iterations))
 	}
-	iters := model.pendingToolSummary.iterations
+	iters := model.progressState.iterations
 	if len(iters) < 2 {
 		t.Fatalf("expected at least 2 iterations, got %d", len(iters))
 	}
@@ -901,5 +906,113 @@ func TestCtrlC_RenderNoDuplicationWithStreamContent(t *testing.T) {
 	count := strings.Count(plain, "Hello world response")
 	if count != 1 {
 		t.Errorf("streamText should appear exactly once in rendered output, got %d times.\nRendered:\n%s", count, plain)
+	}
+}
+
+// TestCtrlC_ViewportUpdatedImmediatelyAfterCancelAck is a regression test for
+// the "history disappears then re-renders" bug after Ctrl+C.
+//
+// Root cause: handleCancelAck called rerenderCachedMessage() but NOT
+// updateViewportContent(). The viewport kept showing stale streaming content
+// until the next 100ms tick — visually, the user saw history vanish then
+// reappear.
+//
+// Fix: call updateViewportContent() at the end of handleCancelAck so the
+// viewport reflects the finalized state in the same Update→View frame.
+//
+// This test verifies that immediately after the cancel ack Update() returns
+// (with no additional tick or updateViewportContent call), the viewport
+// already shows: (1) the user message, (2) the assistant's streamed content
+// as a finalized message, and (3) iteration tool data baked in.
+func TestCtrlC_ViewportUpdatedImmediatelyAfterCancelAck(t *testing.T) {
+	model := initTestModel()
+	model.typing = true
+	model.typingStartTime = time.Now()
+
+	turnID := model.agentTurnID
+
+	// User message
+	userMsg := cliMessage{role: "user", content: "test query", timestamp: time.Now(), dirty: true}
+	model.messages = append(model.messages, userMsg)
+	model.pendingUserMsg = &userMsg
+
+	// Streaming assistant message with partial content
+	model.streamingMsgIdx = len(model.messages)
+	model.messages = append(model.messages, cliMessage{
+		role:      "assistant",
+		content:   "partial response",
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    turnID,
+	})
+
+	// Simulate progress: iteration 1 with a completed tool
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "Shell: echo hi", Status: "done", Elapsed: 100, Iteration: 1},
+		},
+	})
+
+	// Ctrl+C
+	model.cancelTargetTurnID = turnID
+	model.turnCancelled = true
+	model.appendSystem(model.locale.CancelSent)
+	model.updateViewportContent()
+
+	// PhaseDone (cancel path) — bakes iterations into streaming message
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 1,
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "Shell: echo hi", Status: "done", Elapsed: 100, Iteration: 1},
+		},
+	})
+
+	// Cancel ack arrives — this is the critical moment.
+	// BEFORE the fix: viewport still showed stale streaming content.
+	// AFTER the fix: viewport immediately shows finalized state.
+	model.Update(cliOutboundMsg{
+		msg: channel.OutboundMsg{
+			Content:  "partial response",
+			Metadata: map[string]string{"cancelled": "true"},
+		},
+	})
+
+	// ★ Key assertion: viewport must already contain the user message and
+	// assistant content WITHOUT any additional updateViewportContent() call.
+	// If handleCancelAck didn't push to viewport, this would show stale
+	// streaming content or an empty viewport.
+	vpContent := stripANSI(model.viewport.View())
+
+	if !strings.Contains(vpContent, "test query") {
+		t.Errorf("user message missing from viewport immediately after cancel ack.\nViewport:\n%s", vpContent)
+	}
+	if !strings.Contains(vpContent, "partial response") {
+		t.Errorf("assistant content missing from viewport immediately after cancel ack.\nViewport:\n%s", vpContent)
+	}
+
+	// Verify the message is finalized (not partial)
+	for i, m := range model.messages {
+		if m.role == "assistant" && m.turnID == turnID {
+			if m.isPartial {
+				t.Errorf("assistant message at index %d still isPartial after cancel ack", i)
+			}
+			// Verify iterations were baked
+			if len(m.iterations) == 0 {
+				t.Error("assistant message should have baked iterations after cancel")
+			}
+			break
+		}
+	}
+
+	// Verify typing/streaming state is cleared
+	if model.typing {
+		t.Error("typing should be false after cancel ack")
+	}
+	if model.streamingMsgIdx >= 0 {
+		t.Error("streamingMsgIdx should be -1 after cancel ack")
 	}
 }

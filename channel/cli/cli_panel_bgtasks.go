@@ -14,30 +14,30 @@ func (m *cliModel) openBgTasksPanel() {
 	m.relayoutViewport() // 缩小 viewport 为 panel 腾出空间
 
 	// Fetch tasks — use callback (works for both local and remote mode)
-	m.panelState.bgTasks = m.listBgTasks()
+	m.panelState.misc.bgTasks = m.listBgTasks()
 
 	// Fetch agents and filter by current session
-	m.panelState.bgAgents = nil
+	m.panelState.misc.bgAgents = nil
 	if m.agentListFn != nil {
 		allAgents := m.agentListFn()
 		for _, ag := range allAgents {
 			if ag.ParentChatID == "" || ag.ParentChatID == m.chatID {
-				m.panelState.bgAgents = append(m.panelState.bgAgents, ag)
+				m.panelState.misc.bgAgents = append(m.panelState.misc.bgAgents, ag)
 			}
 		}
 	}
 
-	m.panelState.bgCursor = 0
-	m.panelState.bgViewing = false
+	m.panelState.misc.bgCursor = 0
+	m.panelState.misc.bgViewing = false
 	m.panelState.scrollY = 0
-	m.panelState.bgLogLines = nil
-	m.panelState.bgLogFollow = false
+	m.panelState.misc.bgLogLines = nil
+	m.panelState.misc.bgLogFollow = false
 	// Clamp cursor
-	totalItems := len(m.panelState.bgTasks) + len(m.panelState.bgAgents)
+	totalItems := len(m.panelState.misc.bgTasks) + len(m.panelState.misc.bgAgents)
 	if totalItems == 0 {
-		m.panelState.bgCursor = -1
-	} else if m.panelState.bgCursor >= totalItems {
-		m.panelState.bgCursor = totalItems - 1
+		m.panelState.misc.bgCursor = -1
+	} else if m.panelState.misc.bgCursor >= totalItems {
+		m.panelState.misc.bgCursor = totalItems - 1
 	}
 }
 
@@ -69,20 +69,20 @@ func (m *cliModel) killBgTask(taskID string) error {
 // Returns (handled, newModel, cmd).
 func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.Cmd) {
 	// Refresh task list
-	m.panelState.bgTasks = m.listBgTasks()
-	totalItems := len(m.panelState.bgTasks)
+	m.panelState.misc.bgTasks = m.listBgTasks()
+	totalItems := len(m.panelState.misc.bgTasks)
 
 	// Log viewing sub-mode
-	if m.panelState.bgViewing {
+	if m.panelState.misc.bgViewing {
 		switch {
 		case msg.Code == tea.KeyEsc || msg.String() == "ctrl+c":
 			// If navigator stack has a parent (e.g. sidebar direct-click),
 			// pop back to it (which closes the panel to main view).
 			// Otherwise, just exit log view back to task list.
 			if !m.popPanel() {
-				m.panelState.bgViewing = false
+				m.panelState.misc.bgViewing = false
 				m.panelState.scrollY = 0
-				m.panelState.bgLogLines = nil
+				m.panelState.misc.bgLogLines = nil
 			}
 			return true, m, nil
 		case msg.Code == tea.KeyUp:
@@ -90,24 +90,24 @@ func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 			if m.panelState.scrollY < 0 {
 				m.panelState.scrollY = 0
 			}
-			m.panelState.bgLogFollow = false
+			m.panelState.misc.bgLogFollow = false
 			return true, m, nil
 		case msg.Code == tea.KeyDown:
 			m.panelState.scrollY += 5
-			m.panelState.bgLogFollow = false
+			m.panelState.misc.bgLogFollow = false
 			return true, m, nil
 		case msg.Code == tea.KeyPgUp:
 			m.panelState.scrollY -= m.panelVisibleHeight()
 			if m.panelState.scrollY < 0 {
 				m.panelState.scrollY = 0
 			}
-			m.panelState.bgLogFollow = false
+			m.panelState.misc.bgLogFollow = false
 			return true, m, nil
 		default:
 			// PgDn: bubbletea doesn't have a constant, match by string
 			if msg.String() == "pgdown" {
 				m.panelState.scrollY += m.panelVisibleHeight()
-				m.panelState.bgLogFollow = false
+				m.panelState.misc.bgLogFollow = false
 				return true, m, nil
 			}
 		}
@@ -125,57 +125,57 @@ func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 		return true, m, nil
 
 	case msg.Code == tea.KeyUp:
-		if m.panelState.bgCursor > 0 {
-			m.panelState.bgCursor--
+		if m.panelState.misc.bgCursor > 0 {
+			m.panelState.misc.bgCursor--
 			m.ensureBgCursorVisible()
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyDown || msg.String() == "ctrl+j":
-		if m.panelState.bgCursor < totalItems-1 {
-			m.panelState.bgCursor++
+		if m.panelState.misc.bgCursor < totalItems-1 {
+			m.panelState.misc.bgCursor++
 			m.ensureBgCursorVisible()
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyEnter:
-		if m.panelState.bgCursor >= 0 && m.panelState.bgCursor < len(m.panelState.bgTasks) {
+		if m.panelState.misc.bgCursor >= 0 && m.panelState.misc.bgCursor < len(m.panelState.misc.bgTasks) {
 			// Task entry: view output log
-			task := m.panelState.bgTasks[m.panelState.bgCursor]
-			m.panelState.bgLogLines = sanitizeOutputLines(task.Output)
-			if len(m.panelState.bgLogLines) == 0 {
-				m.panelState.bgLogLines = []string{"(no output)"}
+			task := m.panelState.misc.bgTasks[m.panelState.misc.bgCursor]
+			m.panelState.misc.bgLogLines = sanitizeOutputLines(task.Output)
+			if len(m.panelState.misc.bgLogLines) == 0 {
+				m.panelState.misc.bgLogLines = []string{"(no output)"}
 			}
-			m.panelState.bgViewing = true
+			m.panelState.misc.bgViewing = true
 			m.panelState.scrollY = 0
-			m.panelState.bgLogFollow = true
+			m.panelState.misc.bgLogFollow = true
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyDelete || msg.String() == "ctrl+d":
 		// Kill selected running task
-		if m.panelState.bgCursor >= 0 && m.panelState.bgCursor < len(m.panelState.bgTasks) {
-			task := m.panelState.bgTasks[m.panelState.bgCursor]
+		if m.panelState.misc.bgCursor >= 0 && m.panelState.misc.bgCursor < len(m.panelState.misc.bgTasks) {
+			task := m.panelState.misc.bgTasks[m.panelState.misc.bgCursor]
 			if task.Status == BgTaskRunning {
 				if err := m.killBgTask(task.ID); err != nil {
 					m.showTempStatus(fmt.Sprintf(m.locale.KillFailed, err))
 					return true, m, m.clearTempStatusCmd()
 				}
 				// Refresh list after kill, filter out killed tasks
-				m.panelState.bgTasks = m.listBgTasks()
+				m.panelState.misc.bgTasks = m.listBgTasks()
 				var running []*BgTask
-				for _, t := range m.panelState.bgTasks {
+				for _, t := range m.panelState.misc.bgTasks {
 					if t.Status == BgTaskRunning {
 						running = append(running, t)
 					}
 				}
-				m.panelState.bgTasks = running
-				if len(m.panelState.bgTasks) == 0 {
+				m.panelState.misc.bgTasks = running
+				if len(m.panelState.misc.bgTasks) == 0 {
 					handled, m2, cmd := m.closePanelAndResume()
 					return handled, m2, cmd
 				}
-				if m.panelState.bgCursor >= len(m.panelState.bgTasks) {
-					m.panelState.bgCursor = len(m.panelState.bgTasks) - 1
+				if m.panelState.misc.bgCursor >= len(m.panelState.misc.bgTasks) {
+					m.panelState.misc.bgCursor = len(m.panelState.misc.bgTasks) - 1
 				}
 				return true, m, nil
 			}
@@ -188,7 +188,7 @@ func (m *cliModel) updateBgTasksPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea
 
 // viewBgTasksPanel renders the bg tasks panel.
 func (m *cliModel) viewBgTasksPanel() string {
-	if m.panelState.bgViewing {
+	if m.panelState.misc.bgViewing {
 		return m.viewBgTaskLog()
 	}
 	return m.viewBgTaskList()
@@ -214,14 +214,14 @@ func (m *cliModel) viewBgTaskList() string {
 		contentW = 20
 	}
 
-	totalItems := len(m.panelState.bgTasks)
+	totalItems := len(m.panelState.misc.bgTasks)
 
 	if totalItems == 0 {
 		sb.WriteString(s.PanelEmpty.Render(m.locale.BgTasksEmpty))
 	} else {
 		idx := 0
 		// Render tasks
-		for _, task := range m.panelState.bgTasks {
+		for _, task := range m.panelState.misc.bgTasks {
 			elapsed := time.Since(task.StartedAt).Round(time.Second)
 			if task.FinishedAt != nil {
 				elapsed = task.FinishedAt.Sub(task.StartedAt).Round(time.Second)
@@ -243,7 +243,7 @@ func (m *cliModel) viewBgTaskList() string {
 			}
 
 			prefix := "  "
-			if idx == m.panelState.bgCursor {
+			if idx == m.panelState.misc.bgCursor {
 				prefix = cursorStyle.Render("▸")
 			}
 
@@ -286,22 +286,22 @@ func (m *cliModel) viewBgTaskLog() string {
 	latestTasks := m.listBgTasks()
 
 	var title string
-	if m.panelState.bgCursor >= 0 && m.panelState.bgCursor < len(latestTasks) {
-		task := latestTasks[m.panelState.bgCursor]
+	if m.panelState.misc.bgCursor >= 0 && m.panelState.misc.bgCursor < len(latestTasks) {
+		task := latestTasks[m.panelState.misc.bgCursor]
 		cmd := truncateToWidth(task.Command, contentW-12)
 		title = fmt.Sprintf(m.locale.BgTaskLogTitle, task.ID, cmd)
 		// Update log lines from latest task output
-		oldCount := len(m.panelState.bgLogLines)
-		m.panelState.bgLogLines = sanitizeOutputLines(task.Output)
-		newCount := len(m.panelState.bgLogLines)
+		oldCount := len(m.panelState.misc.bgLogLines)
+		m.panelState.misc.bgLogLines = sanitizeOutputLines(task.Output)
+		newCount := len(m.panelState.misc.bgLogLines)
 		// Follow-tail: auto-scroll when new lines appear
-		if m.panelState.bgLogFollow && newCount > oldCount {
+		if m.panelState.misc.bgLogFollow && newCount > oldCount {
 			visibleH := m.panelVisibleHeight() - 1 // -1 for header line
 			m.panelState.scrollY = max(0, newCount-visibleH)
 		}
-	} else if m.panelState.bgCursor >= 0 && m.panelState.bgCursor < len(m.panelState.bgTasks) {
+	} else if m.panelState.misc.bgCursor >= 0 && m.panelState.misc.bgCursor < len(m.panelState.misc.bgTasks) {
 		// Fallback to cached task list if refresh returned empty
-		task := m.panelState.bgTasks[m.panelState.bgCursor]
+		task := m.panelState.misc.bgTasks[m.panelState.misc.bgCursor]
 		cmd := truncateToWidth(task.Command, contentW-12)
 		title = fmt.Sprintf(m.locale.BgTaskLogTitle, task.ID, cmd)
 	}
@@ -313,7 +313,7 @@ func (m *cliModel) viewBgTaskLog() string {
 	sb.WriteString(help)
 	sb.WriteString("\n")
 
-	lines := m.panelState.bgLogLines
+	lines := m.panelState.misc.bgLogLines
 	if len(lines) == 0 {
 		lines = []string{"(no output yet)"}
 	}

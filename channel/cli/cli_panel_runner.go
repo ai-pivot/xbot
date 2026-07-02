@@ -39,12 +39,12 @@ func (m *cliModel) openRunnerPanel() {
 		workspace = v
 	}
 
-	m.panelState.runnerServerTI = m.newPanelTextInput(serverURL, m.locale.RunnerServerPlaceholder)
-	m.panelState.runnerTokenTI = m.newPanelTextInput(token, m.locale.RunnerTokenPlaceholder)
-	m.panelState.runnerTokenTI.EchoMode = 0 // password mode
-	m.panelState.runnerTokenTI.EchoCharacter = '•'
-	m.panelState.runnerWS = m.newPanelTextInput(workspace, m.locale.RunnerWorkspacePlaceholder)
-	m.panelState.runnerEditField = 0
+	m.panelState.runner.runnerServerTI = m.newPanelTextInput(serverURL, m.locale.RunnerServerPlaceholder)
+	m.panelState.runner.runnerTokenTI = m.newPanelTextInput(token, m.locale.RunnerTokenPlaceholder)
+	m.panelState.runner.runnerTokenTI.EchoMode = 0 // password mode
+	m.panelState.runner.runnerTokenTI.EchoCharacter = '•'
+	m.panelState.runner.runnerWS = m.newPanelTextInput(workspace, m.locale.RunnerWorkspacePlaceholder)
+	m.panelState.runner.runnerEditField = 0
 }
 
 // updateRunnerPanel 处理 Runner 面板的键盘事件
@@ -55,10 +55,10 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 	}
 	if msg.Code == tea.KeyEsc {
 		// Clean up runner panel state
-		m.panelState.runnerServerTI = textinput.Model{}
-		m.panelState.runnerTokenTI = textinput.Model{}
-		m.panelState.runnerWS = textinput.Model{}
-		m.panelState.runnerEditField = 0
+		m.panelState.runner.runnerServerTI = textinput.Model{}
+		m.panelState.runner.runnerTokenTI = textinput.Model{}
+		m.panelState.runner.runnerWS = textinput.Model{}
+		m.panelState.runner.runnerEditField = 0
 		if !m.popPanel() {
 			m.closePanel()
 		}
@@ -69,13 +69,13 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 	if m.runnerBridge == nil {
 		// 将按键传递给当前编辑的 textinput
 		var cmd tea.Cmd
-		switch m.panelState.runnerEditField {
+		switch m.panelState.runner.runnerEditField {
 		case 0:
-			m.panelState.runnerServerTI, cmd = m.panelState.runnerServerTI.Update(msg)
+			m.panelState.runner.runnerServerTI, cmd = m.panelState.runner.runnerServerTI.Update(msg)
 		case 1:
-			m.panelState.runnerTokenTI, cmd = m.panelState.runnerTokenTI.Update(msg)
+			m.panelState.runner.runnerTokenTI, cmd = m.panelState.runner.runnerTokenTI.Update(msg)
 		case 2:
-			m.panelState.runnerWS, cmd = m.panelState.runnerWS.Update(msg)
+			m.panelState.runner.runnerWS, cmd = m.panelState.runner.runnerWS.Update(msg)
 		}
 		return true, m, cmd
 	}
@@ -92,10 +92,10 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 		if msg.Code == tea.KeyEnter {
 			m.runnerBridge.Disconnect()
 			m.panelState.mode = "settings"
-			m.panelState.runnerServerTI = textinput.Model{}
-			m.panelState.runnerTokenTI = textinput.Model{}
-			m.panelState.runnerWS = textinput.Model{}
-			m.panelState.runnerEditField = 0
+			m.panelState.runner.runnerServerTI = textinput.Model{}
+			m.panelState.runner.runnerTokenTI = textinput.Model{}
+			m.panelState.runner.runnerWS = textinput.Model{}
+			m.panelState.runner.runnerEditField = 0
 			m.relayoutViewport()
 			return true, m, nil
 		}
@@ -105,26 +105,26 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 	// 未连接：表单编辑
 	switch msg.Code {
 	case tea.KeyUp:
-		if m.panelState.runnerEditField > 0 {
-			m.panelState.runnerEditField--
+		if m.panelState.runner.runnerEditField > 0 {
+			m.panelState.runner.runnerEditField--
 		}
 		return true, m, nil
 
 	case tea.KeyDown:
-		if m.panelState.runnerEditField < 2 {
-			m.panelState.runnerEditField++
+		if m.panelState.runner.runnerEditField < 2 {
+			m.panelState.runner.runnerEditField++
 		}
 		return true, m, nil
 
 	case tea.KeyTab:
-		m.panelState.runnerEditField = (m.panelState.runnerEditField + 1) % 3
+		m.panelState.runner.runnerEditField = (m.panelState.runner.runnerEditField + 1) % 3
 		return true, m, nil
 
 	case tea.KeyEnter:
 		// 验证并连接
-		serverURL := strings.TrimSpace(m.panelState.runnerServerTI.Value())
-		token := strings.TrimSpace(m.panelState.runnerTokenTI.Value())
-		workspace := strings.TrimSpace(m.panelState.runnerWS.Value())
+		serverURL := strings.TrimSpace(m.panelState.runner.runnerServerTI.Value())
+		token := strings.TrimSpace(m.panelState.runner.runnerTokenTI.Value())
+		workspace := strings.TrimSpace(m.panelState.runner.runnerWS.Value())
 
 		if serverURL == "" {
 			m.showTempStatus(m.locale.RunnerServerRequired)
@@ -144,10 +144,10 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 
 		// 回到 settings，发起连接
 		m.panelState.mode = "settings"
-		m.panelState.runnerServerTI = textinput.Model{}
-		m.panelState.runnerTokenTI = textinput.Model{}
-		m.panelState.runnerWS = textinput.Model{}
-		m.panelState.runnerEditField = 0
+		m.panelState.runner.runnerServerTI = textinput.Model{}
+		m.panelState.runner.runnerTokenTI = textinput.Model{}
+		m.panelState.runner.runnerWS = textinput.Model{}
+		m.panelState.runner.runnerEditField = 0
 		m.relayoutViewport()
 
 		// 获取 LLM 客户端
@@ -168,13 +168,13 @@ func (m *cliModel) updateRunnerPanel(msg tea.KeyPressMsg) (bool, tea.Model, tea.
 
 	// 将按键传递给当前编辑的 textinput
 	var cmd tea.Cmd
-	switch m.panelState.runnerEditField {
+	switch m.panelState.runner.runnerEditField {
 	case 0:
-		m.panelState.runnerServerTI, cmd = m.panelState.runnerServerTI.Update(msg)
+		m.panelState.runner.runnerServerTI, cmd = m.panelState.runner.runnerServerTI.Update(msg)
 	case 1:
-		m.panelState.runnerTokenTI, cmd = m.panelState.runnerTokenTI.Update(msg)
+		m.panelState.runner.runnerTokenTI, cmd = m.panelState.runner.runnerTokenTI.Update(msg)
 	case 2:
-		m.panelState.runnerWS, cmd = m.panelState.runnerWS.Update(msg)
+		m.panelState.runner.runnerWS, cmd = m.panelState.runner.runnerWS.Update(msg)
 	}
 	return true, m, cmd
 }
@@ -238,9 +238,9 @@ func (m *cliModel) viewRunnerPanel() string {
 			input  textinput.Model
 			active bool
 		}{
-			{m.locale.RunnerServerLabel, m.panelState.runnerServerTI, m.panelState.runnerEditField == 0},
-			{m.locale.RunnerTokenLabel, m.panelState.runnerTokenTI, m.panelState.runnerEditField == 1},
-			{m.locale.RunnerWorkspaceLabel, m.panelState.runnerWS, m.panelState.runnerEditField == 2},
+			{m.locale.RunnerServerLabel, m.panelState.runner.runnerServerTI, m.panelState.runner.runnerEditField == 0},
+			{m.locale.RunnerTokenLabel, m.panelState.runner.runnerTokenTI, m.panelState.runner.runnerEditField == 1},
+			{m.locale.RunnerWorkspaceLabel, m.panelState.runner.runnerWS, m.panelState.runner.runnerEditField == 2},
 		}
 
 		for _, f := range fields {

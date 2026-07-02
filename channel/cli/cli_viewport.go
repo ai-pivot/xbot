@@ -317,8 +317,14 @@ func (m *cliModel) updateViewportContent() {
 		m.rc.allLinesHistLen = len(m.rc.histLines)
 		m.rc.allLinesGen = m.rc.histGen // sync generation so tick fast path can reuse
 		viewportSetLinesBypassMaxWidth(&m.viewport, m.rc.allLines, cw)
-		m.viewport.GotoBottom()
-		m.newContentHint = false
+		// Respect user scroll position — don't force scroll to bottom
+		// when the user has scrolled up to browse history.
+		if !m.userScrolledUp {
+			m.viewport.GotoBottom()
+			m.newContentHint = false
+		} else {
+			m.newContentHint = true
+		}
 	}
 }
 
@@ -352,8 +358,15 @@ func (m *cliModel) updateStreamingOnly() {
 		return
 	}
 
-	// --- Determine guide style (streaming = bright) ---
+	// --- Determine guide style (streaming = bright, turn ended = dim) ---
+	// When the turn has ended (typing=false) but streamingMsgIdx is still
+	// valid (PhaseDone arrived, handleAgentMessage not yet), use dim guide
+	// to match the finalized message style. This eliminates the guide color
+	// jump (bright→dim) that causes visible flicker at turn completion.
 	guideSt := s.GuideSt
+	if !m.typing {
+		guideSt = s.DimGuideSt
+	}
 	guideSym := "┊ "
 	const ansiReset = "\x1b[0m"
 	guidePrefix := ansiReset + guideSt.Render(guideSym) + ansiReset

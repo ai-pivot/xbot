@@ -539,9 +539,6 @@ func oneLineToolLabel(label string) string {
 // renderProgressBlock is a no-op: all progress rendering is now handled
 // inline by renderTurnBody / renderLiveIteration in the streaming message.
 func (m *cliModel) renderProgressBlock() string {
-	m.rc.progressBlock.content = ""
-	m.rc.progressBlock.fp = 0
-	m.rc.progressBlock.lines = nil
 	return ""
 }
 

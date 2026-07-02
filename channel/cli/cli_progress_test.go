@@ -1019,42 +1019,6 @@ func TestProgressRealisticSequence(t *testing.T) {
 	}
 }
 
-// Bug scenario: lastCompletedTools leaking across iterations
-func TestLastCompletedToolsLeak(t *testing.T) {
-	model := initTestModel()
-	model.typing = true
-	model.typingStartTime = time.Now()
-
-	// Iter 0: 1 tool
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 0, Thinking: "A",
-		CompletedTools: []protocol.ToolProgress{
-			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 0},
-		},
-	})
-	// Iter 1: 1 tool
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "B",
-		CompletedTools: []protocol.ToolProgress{
-			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 1},
-		},
-	})
-	// Iter 2: empty thinking (triggers iter 1 snapshot, should clear lastCompletedTools)
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: ""})
-
-	// Verify lastCompletedTools was cleared after iter 1 snapshot
-	if len(model.lastCompletedTools) != 0 {
-		t.Errorf("lastCompletedTools should be empty after iter switch, got %d entries", len(model.lastCompletedTools))
-	}
-
-	sendDone(model, "Done")
-
-	// Should have exactly 2 tools (Read + Edit), not 3 (no duplicate Edit)
-	if tools := countToolsInSummary(model); tools != 2 {
-		t.Errorf("Expected 2 tools (no leak), got %d", tools)
-	}
-}
-
 // Error tool Iteration: verify error tools have correct Iteration and don't
 // appear under the wrong iteration.
 func TestErrorToolIterationAttribution(t *testing.T) {
@@ -1325,16 +1289,9 @@ func TestBgTaskInjection_QueuedInDeadWindow_PreservesReply(t *testing.T) {
 		},
 	})
 
-	// Verify dead window: typing=false but replyReceived=false
+	// Verify dead window: typing=false after PhaseDone
 	if model.typing {
 		t.Error("typing should be false after PhaseDone")
-	}
-	flag := model.getTurnFlag(turn1)
-	if flag == nil || !flag.doneProcessed {
-		t.Fatal("doneProcessed should be true after PhaseDone")
-	}
-	if flag.replyReceived {
-		t.Error("replyReceived should still be false — this is the dead window")
 	}
 
 	// ── BG notification arrives in the dead window ──
@@ -2042,11 +1999,10 @@ func TestHistoryReloadForceFullRebuildNoAssistantCreatesOne(t *testing.T) {
 // TestCancelDuringToolGeneratingPreservesPreviousIteration verifies that
 // Ctrl+C during tool generating (LLM streaming tool args) does NOT lose
 // the previous iteration's completed tools. Before the fix, the cancel
-// path only collected tools from msg.payload (PhaseDone) and
-// m.lastCompletedTools, missing prev which held the last structured
-// event's completed tools. This caused finalTools to be empty → no
-// snapshot → iterations empty → streaming message removed → previous
-// iteration data permanently lost.
+// path only collected tools from msg.payload (PhaseDone), missing prev
+// which held the last structured event's completed tools. This caused
+// finalTools to be empty → no snapshot → iterations empty → streaming
+// message removed → previous iteration data permanently lost.
 func TestCancelDuringToolGeneratingPreservesPreviousIteration(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()

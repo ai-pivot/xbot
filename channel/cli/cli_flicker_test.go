@@ -16,7 +16,7 @@ import (
 // is still N.
 //
 // Fix: removed prev.ReasoningStreamContent fallback entirely. Only structured
-// sources (prev.Reasoning, reasoningByIter, lastReasoning) are used.
+// sources (prev.Reasoning) are used.
 // If structured Reasoning is not available, the snapshot has empty reasoning —
 // better to have no reasoning than WRONG reasoning.
 func TestReasoningNoContaminationOnIterationChange(t *testing.T) {
@@ -262,19 +262,19 @@ func TestReasoningPhaseDoneNoContamination(t *testing.T) {
 		ChatID:                 "cli:/test",
 	})
 
-	// PhaseDone — iterations move to pendingToolSummary, then cleared
+	// PhaseDone — iterations preserved in progressState.iterations
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "done",
 		Iteration: 1,
 		ChatID:    "cli:/test",
 	})
 
-	// Check pendingToolSummary (iterations are moved there by handleProgressDone)
-	if model.pendingToolSummary == nil {
-		t.Fatal("pendingToolSummary should be set after PhaseDone")
+	// Check progressState.iterations
+	if len(model.progressState.iterations) == 0 {
+		t.Fatal("progressState.iterations should have snapshots after PhaseDone")
 	}
 	found := false
-	for _, snap := range model.pendingToolSummary.iterations {
+	for _, snap := range model.progressState.iterations {
 		if snap.Iteration == 1 {
 			found = true
 			if strings.Contains(snap.Reasoning, "potential contaminant") {
@@ -287,6 +287,6 @@ func TestReasoningPhaseDoneNoContamination(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("PhaseDone should have created a snapshot for iteration 1 in pendingToolSummary")
+		t.Error("PhaseDone should have created a snapshot for iteration 1 in progressState.iterations")
 	}
 }

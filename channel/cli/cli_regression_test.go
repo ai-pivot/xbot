@@ -6,7 +6,7 @@ package cli
 // 1. Turn completion flicker: endAgentTurn preserves streamingMsgIdx + progress state
 // 2. Duplicate text rendering: renderTurnBody dedup checks all iterations
 // 3. Queued tools visible: liveIterationBlocks includes "pending" status
-// 4. Reasoning during tool exec: carryForwardProgressState carries ReasoningStreamContent
+// 4. Reasoning preserved on same iteration: mergeProgressState preserves stream fields
 // 5. Ctrl+C + system notification: handleInjectedUserMsg queues when turnCancelled
 
 import (
@@ -491,24 +491,23 @@ func TestRenderLiveToolTags_PendingStyle(t *testing.T) {
 	}
 }
 
-// ─── Fix 4: ReasoningStreamContent carried forward during tool_exec ─
+// ─── Fix 4: ReasoningStreamContent preserved by mergeProgressState ─
 
-// TestCarryForward_ReasoningStreamContent_ToolExec verifies that
-// ReasoningStreamContent is carried forward unconditionally during
-// tool_exec phase, even when prev.StreamContent is non-empty.
-func TestCarryForward_ReasoningStreamContent_ToolExec(t *testing.T) {
+// TestMergeProgress_ReasoningStreamContent_SameIter verifies that
+// ReasoningStreamContent is preserved on same-iteration merge
+// (mergeProgressState preserves all stream fields when iteration unchanged).
+func TestMergeProgress_ReasoningStreamContent_SameIter(t *testing.T) {
 	model := initTestModel()
 
-	// Previous progress: both StreamContent and ReasoningStreamContent set
-	prev := &protocol.ProgressEvent{
+	// Current progress state: both StreamContent and ReasoningStreamContent set
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:                  "thinking",
 		Iteration:              1,
 		StreamContent:          "Here is my answer",
 		ReasoningStreamContent: "I need to think about this carefully",
 	}
-	model.progressState.current = prev
 
-	// New structured event: tool_exec phase, no stream fields
+	// New structured event: tool_exec phase, same iteration, no stream fields
 	newPayload := &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 1,
@@ -516,11 +515,10 @@ func TestCarryForward_ReasoningStreamContent_ToolExec(t *testing.T) {
 			{Name: "Read", Status: "running", Iteration: 1},
 		},
 	}
-	model.progressState.current = newPayload
-	model.carryForwardProgressState(prev)
+	model.mergeProgressState(newPayload)
 
 	if model.progressState.current.ReasoningStreamContent == "" {
-		t.Error("ReasoningStreamContent should be carried forward during tool_exec even when prev.StreamContent is non-empty")
+		t.Error("ReasoningStreamContent should be preserved on same-iteration merge")
 	}
 	expected := "I need to think about this carefully"
 	if model.progressState.current.ReasoningStreamContent != expected {
@@ -529,33 +527,29 @@ func TestCarryForward_ReasoningStreamContent_ToolExec(t *testing.T) {
 	}
 }
 
-// TestCarryForward_ReasoningStreamContent_StreamingGuard verifies that
-// during streaming phase (NOT tool_exec), the original guard is preserved:
-// ReasoningStreamContent is NOT carried forward when prev.StreamContent
-// is non-empty.
-func TestCarryForward_ReasoningStreamContent_StreamingGuard(t *testing.T) {
+// TestMergeProgress_ReasoningStreamContent_IterationChange verifies that
+// ReasoningStreamContent is cleared when iteration changes — stream fields
+// belong to the previous iteration and must not leak into the next.
+func TestMergeProgress_ReasoningStreamContent_IterationChange(t *testing.T) {
 	model := initTestModel()
 
-	prev := &protocol.ProgressEvent{
+	model.progressState.current = &protocol.ProgressEvent{
 		Phase:                  "thinking",
 		Iteration:              1,
 		StreamContent:          "Here is my answer",
 		ReasoningStreamContent: "My reasoning process",
 	}
-	model.progressState.current = prev
 
-	// New event: still thinking/streaming phase
+	// New event: different iteration (2 vs 1)
 	newPayload := &protocol.ProgressEvent{
 		Phase:     "thinking",
-		Iteration: 1,
+		Iteration: 2,
 	}
-	model.progressState.current = newPayload
-	model.carryForwardProgressState(prev)
+	model.mergeProgressState(newPayload)
 
-	// During streaming (Phase != tool_exec), guard is active:
-	// ReasoningStreamContent should NOT be carried forward
+	// On iteration change, all stream fields should be cleared
 	if model.progressState.current.ReasoningStreamContent != "" {
-		t.Error("ReasoningStreamContent should NOT be carried forward during streaming when prev.StreamContent is non-empty")
+		t.Error("ReasoningStreamContent should be cleared on iteration change")
 	}
 }
 
@@ -695,9 +689,7 @@ func TestCtrlC_CancelAckFlushesQueuedNotification(t *testing.T) {
 		t.Error("needFlushQueue should be true after cancel ack with queued messages")
 	}
 
-	// Simulate the tick-driven queue flush: mark old turn as reply-received
-	// (cancel ack counts as reply), then flush.
-	model.setTurnReplyReceived(oldTurnID)
+	// Simulate the tick-driven queue flush after cancel ack
 	model.needFlushQueue = false
 	model.flushMessageQueue()
 

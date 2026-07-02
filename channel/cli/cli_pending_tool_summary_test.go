@@ -7,13 +7,10 @@ import (
 	"xbot/protocol"
 )
 
-// TestPendingToolSummary_NoLeakBetweenTurns verifies that pendingToolSummary
-// from Turn 1 does NOT leak into Turn 2. This is the root cause of
-// "U1 A1 U2 A1" bug: Turn 1's iterations (stored in pendingToolSummary)
-// survive into Turn 2 because startAgentTurn doesn't clear it. Turn 2's
-// PhaseDone dedup by iteration number skips Turn 2's iterations (same numbers
-// 0,1,2 as Turn 1), so handleAgentMessage bakes Turn 1's iterations into A2.
-func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
+// TestIterations_NoLeakBetweenTurns verifies that iterations from Turn 1
+// do NOT leak into Turn 2. startAgentTurn clears progressState.iterations
+// via resetProgressState, so each turn starts fresh.
+func TestIterations_NoLeakBetweenTurns(t *testing.T) {
 	model := initTestModel()
 
 	// ── Turn 1 ──
@@ -31,7 +28,7 @@ func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
 	}
 	model.progressState.lastIter = 1
 
-	// PhaseDone for Turn 1 (populates pendingToolSummary)
+	// PhaseDone for Turn 1
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "done",
 		Iteration: 1,
@@ -40,18 +37,8 @@ func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
 		},
 	})
 
-	// Verify pendingToolSummary has Turn 1's data
-	if model.pendingToolSummary == nil || len(model.pendingToolSummary.iterations) != 2 {
-		t.Fatalf("Turn 1: pendingToolSummary should have 2 iterations, got %v", model.pendingToolSummary)
-	}
-
 	// Agent reply for Turn 1
 	sendDone(model, "A1 response text")
-
-	// After consuming, pendingToolSummary should be cleared
-	if model.pendingToolSummary != nil {
-		t.Error("pendingToolSummary should be cleared after handleAgentMessage consumes it")
-	}
 
 	// Verify A1 has correct iterations
 	var a1 *cliMessage
@@ -76,9 +63,9 @@ func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
 		t.Fatal("agentTurnID should increment between turns")
 	}
 
-	// pendingToolSummary MUST be cleared by startAgentTurn
-	if model.pendingToolSummary != nil {
-		t.Fatal("pendingToolSummary must be cleared by startAgentTurn — stale Turn 1 data will leak into Turn 2")
+	// progressState.iterations MUST be cleared by startAgentTurn
+	if len(model.progressState.iterations) != 0 {
+		t.Fatal("progressState.iterations must be cleared by startAgentTurn — stale Turn 1 data will leak into Turn 2")
 	}
 
 	// Simulate Turn 2 iterations
@@ -104,16 +91,13 @@ func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
 		},
 	})
 
-	// Verify pendingToolSummary has ONLY Turn 2's data (3 iterations)
-	if model.pendingToolSummary == nil {
-		t.Fatal("Turn 2 PhaseDone should populate pendingToolSummary")
-	}
-	if len(model.pendingToolSummary.iterations) != 3 {
-		t.Errorf("Turn 2 pendingToolSummary should have 3 iterations, got %d", len(model.pendingToolSummary.iterations))
+	// Verify progressState.iterations has ONLY Turn 2's data (3 iterations)
+	if len(model.progressState.iterations) != 3 {
+		t.Errorf("Turn 2 progressState.iterations should have 3 iterations, got %d", len(model.progressState.iterations))
 	}
 
 	// Verify Turn 2's iterations are NOT Turn 1's
-	for _, it := range model.pendingToolSummary.iterations {
+	for _, it := range model.progressState.iterations {
 		if it.Thinking == "turn1-iter0" || it.Thinking == "turn1-iter1" {
 			t.Errorf("Turn 1 iteration leaked into Turn 2: %s", it.Thinking)
 		}
@@ -163,23 +147,21 @@ func TestPendingToolSummary_NoLeakBetweenTurns(t *testing.T) {
 	}
 }
 
-// TestPendingToolSummary_ClearedOnCancelAck verifies that cancel ack also
-// clears pendingToolSummary, preventing stale data from surviving into the
-// next turn after a cancelled turn.
-func TestPendingToolSummary_ClearedOnCancelAck(t *testing.T) {
+// TestIterations_ClearedOnCancelAck verifies that cancel ack properly finalizes
+// the streaming message with iterations baked in.
+func TestIterations_ClearedOnCancelAck(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
 	turn1 := model.agentTurnID
 	model.cancelTargetTurnID = turn1
 
-	// Populate iterationHistory + pendingToolSummary
+	// Populate iterationHistory
 	model.progressState.iterations = []cliIterationSnapshot{
 		{Iteration: 0, Thinking: "cancel-iter0", Tools: []protocol.ToolProgress{
 			{Name: "Read", Label: "file.go", Status: "done", Elapsed: 100, Iteration: 0},
 		}},
 	}
 	model.progressState.lastIter = 0
-	model.pendingToolSummary = &cliMessage{iterations: model.progressState.iterations}
 
 	// Cancel ack
 	model.Update(cliOutboundMsg{
@@ -189,8 +171,11 @@ func TestPendingToolSummary_ClearedOnCancelAck(t *testing.T) {
 		},
 	})
 
-	// pendingToolSummary must be cleared
-	if model.pendingToolSummary != nil {
-		t.Error("pendingToolSummary should be cleared after cancel ack")
+	// After cancel ack, the turn is finalized — verify the streaming message
+	// was properly handled (no hanging partial messages)
+	for _, msg := range model.messages {
+		if msg.role == "assistant" && msg.turnID == turn1 && msg.isPartial {
+			t.Error("Streaming message should not remain isPartial after cancel ack")
+		}
 	}
 }
