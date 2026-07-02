@@ -191,9 +191,14 @@ func (m *cliModel) refreshCachedModelName() {
 		// Fall through to local JSON as cache.
 	}
 	// ── Local mode / fallback: per-session model from disk ──────────
+	// Local JSON is the source of truth for this fallback path. Both
+	// cachedModelName AND activeSubID must come from the same record —
+	// updating only the model while keeping a stale activeSubID from a
+	// previous session creates impossible (model, subscription) pairs
+	// like "glm-5.2(dpsk)".
 	if state := LoadSessionLLMState(m.workDir, m.chatID); state.Model != "" {
 		m.cachedModelName = state.Model
-		if m.activeSubID == "" && state.SubscriptionID != "" {
+		if state.SubscriptionID != "" {
 			m.activeSubID = state.SubscriptionID
 		}
 		return
