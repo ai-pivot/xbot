@@ -118,11 +118,9 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	// AND reasoning stream content are on the previous progress state.
 	// This causes reasoning to visibly disappear mid-stream (regression).
 	if m.progressState.current.ReasoningStreamContent == "" && prev.ReasoningStreamContent != "" && sameIter {
-		phase := ""
-		if m.progressState.current != nil {
-			phase = m.progressState.current.Phase
-		}
-		if phase == "tool_exec" || prev.StreamContent == "" {
+		// m.progressState.current is guaranteed non-nil — we accessed
+		// .ReasoningStreamContent on the line above without panicking.
+		if m.progressState.current.Phase == "tool_exec" || prev.StreamContent == "" {
 			m.progressState.current.ReasoningStreamContent = prev.ReasoningStreamContent
 		}
 	}
