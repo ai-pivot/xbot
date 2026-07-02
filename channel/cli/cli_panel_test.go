@@ -203,8 +203,8 @@ func TestPanelBoxLeftAlign(t *testing.T) {
 		{Key: "name", Label: "Name", Type: channel.SettingTypeText, Category: "Test"},
 		{Key: "provider", Label: "Provider", Type: channel.SettingTypeText, DefaultValue: "openai", Category: "Test"},
 	}
-	m.panelState.schema = schema
-	m.panelState.values = map[string]string{"provider": "openai"}
+	m.panelState.settings.schema = schema
+	m.panelState.settings.values = map[string]string{"provider": "openai"}
 	m.panelState.cursor = 0
 	m.panelState.mode = "settings"
 
@@ -242,13 +242,13 @@ func TestAskUserQuestionWrapPreservesTextWithScrollbar(t *testing.T) {
 	// Text at exactly this width must survive applyScrollbar without truncation.
 	qWrapWidth := m.askUserQuestionWrapWidth()
 	question := strings.Repeat("a", qWrapWidth-lipgloss.Width("❓ ")+5) // slightly more than 1 line
-	m.panelState.askItems = []askItem{{
+	m.panelState.askUser.askItems = []askItem{{
 		Question: question,
 		Options:  []string{"one", "two", "three", "four", "five", "six"},
 	}}
-	m.panelState.askTab = 0
-	m.panelState.askOptCursor = map[int]int{0: 0}
-	m.panelState.askOptSel = map[int]map[int]bool{0: {}}
+	m.panelState.askUser.askTab = 0
+	m.panelState.askUser.askOptCursor = map[int]int{0: 0}
+	m.panelState.askUser.askOptSel = map[int]map[int]bool{0: {}}
 
 	rendered := m.layoutAskUser("")
 	got := strings.Count(stripANSI(rendered), "a")
@@ -268,13 +268,13 @@ func TestAskUserLongOptionWraps(t *testing.T) {
 	prefixW := 4
 	optWrapW := qWrapWidth - prefixW
 	longOpt := strings.Repeat("x", optWrapW+20) // longer than one line
-	m.panelState.askItems = []askItem{{
+	m.panelState.askUser.askItems = []askItem{{
 		Question: "Pick one",
 		Options:  []string{longOpt, "short"},
 	}}
-	m.panelState.askTab = 0
-	m.panelState.askOptCursor = map[int]int{0: 0}
-	m.panelState.askOptSel = map[int]map[int]bool{0: {}}
+	m.panelState.askUser.askTab = 0
+	m.panelState.askUser.askOptCursor = map[int]int{0: 0}
+	m.panelState.askUser.askOptSel = map[int]map[int]bool{0: {}}
 
 	raw := m.viewAskUserPanel()
 	lines := strings.Split(raw, "\n")
@@ -327,7 +327,7 @@ func TestSubscriptionGenerationGuard(t *testing.T) {
 	model.subGeneration = 5
 
 	// Simulate: settings panel opens with generation 5
-	model.panelState.subGeneration = model.subGeneration
+	model.panelState.settings.subGeneration = model.subGeneration
 
 	// Simulate: user edits some values
 	values := map[string]string{
@@ -344,7 +344,7 @@ func TestSubscriptionGenerationGuard(t *testing.T) {
 
 	// Simulate: the onSubmit callback runs (this is what the guard checks)
 	// After switch, stale subscription-scoped fields should be stripped
-	if model.panelState.subGeneration != model.subGeneration {
+	if model.panelState.settings.subGeneration != model.subGeneration {
 		for k := range values {
 			if isSubscriptionScopedSettingKey(k) {
 				delete(values, k)
@@ -370,7 +370,7 @@ func TestSubscriptionGenerationGuard(t *testing.T) {
 func TestSubscriptionGenerationGuardNoSwitch(t *testing.T) {
 	model := newCLIModel()
 	model.subGeneration = 5
-	model.panelState.subGeneration = 5 // same generation = no switch
+	model.panelState.settings.subGeneration = 5 // same generation = no switch
 
 	values := map[string]string{
 		"llm_provider":      "openai",
@@ -382,7 +382,7 @@ func TestSubscriptionGenerationGuardNoSwitch(t *testing.T) {
 	}
 
 	// Guard should NOT strip anything
-	if model.panelState.subGeneration != model.subGeneration {
+	if model.panelState.settings.subGeneration != model.subGeneration {
 		for k := range values {
 			if isSubscriptionScopedSettingKey(k) {
 				delete(values, k)

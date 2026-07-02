@@ -584,14 +584,14 @@ func (m *cliModel) handleSplashDone() []tea.Cmd {
 // handleApprovalRequest shows the approval dialog for a permission request.
 func (m *cliModel) handleApprovalRequest(msg approvalRequestMsg) (tea.Model, tea.Cmd) {
 	// Permission control: show approval dialog
-	m.panelState.approvalReq = &msg.request
-	m.panelState.approvalCh = msg.resultCh
-	m.panelState.approvalCursor = 0 // default to Approve
-	m.panelState.approvalDenyMode = false
-	m.panelState.approvalDenyTA = textinput.New()
-	m.panelState.approvalDenyTA.Placeholder = "Optional deny reason for LLM"
-	m.panelState.approvalDenyTA.CharLimit = 200
-	m.panelState.approvalDenyTA.SetWidth(60)
+	m.panelState.misc.approvalReq = &msg.request
+	m.panelState.misc.approvalCh = msg.resultCh
+	m.panelState.misc.approvalCursor = 0 // default to Approve
+	m.panelState.misc.approvalDenyMode = false
+	m.panelState.misc.approvalDenyTA = textinput.New()
+	m.panelState.misc.approvalDenyTA.Placeholder = "Optional deny reason for LLM"
+	m.panelState.misc.approvalDenyTA.CharLimit = 200
+	m.panelState.misc.approvalDenyTA.SetWidth(60)
 	m.panelState.mode = "approval"
 	m.rc.valid = false
 	return m, nil

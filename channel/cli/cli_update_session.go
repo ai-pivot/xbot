@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"slices"
-	"strconv"
 	"time"
 	"xbot/protocol"
 
@@ -68,6 +67,58 @@ func (m *cliModel) scheduleSessionsRefresh() {
 	}
 }
 
+// msgIdentity is the unified dedup key for history messages.
+// Uses role + timestamp because persisted DB messages are uniquely
+// identified by their (role, timestamp) pair — timestamp has nanosecond
+// precision and is set at persist time. turnID is intentionally excluded:
+// protocol.HistoryMessage (the DB representation) has no turnID field, so
+// including it would make the same logical message dedup differently
+// depending on whether it came from DB history or an in-memory turn.
+type msgIdentity struct {
+	role      string
+	timestamp time.Time
+}
+
+// toCLIMessage converts a protocol.HistoryMessage into a cliMessage
+// suitable for appending to m.messages. Shared by handleSuHistoryLoad,
+// handleHistoryLoad, and handleHistoryReload to avoid copy-paste drift.
+func toCLIMessage(hm protocol.HistoryMessage) cliMessage {
+	cm := cliMessage{
+		role:      hm.Role,
+		content:   hm.Content,
+		timestamp: hm.Timestamp,
+		isPartial: false,
+		dirty:     true,
+	}
+	if len(hm.Iterations) > 0 {
+		cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
+		for i, hi := range hm.Iterations {
+			cm.iterations[i] = cliIterationSnapshot(hi)
+		}
+	}
+	return cm
+}
+
+// dedupAppend appends incoming messages to existing, skipping any whose
+// msgIdentity (role + timestamp) already appears in existing. Returns the
+// resulting slice. Unifies the previously divergent dedup strategies in
+// handleSuHistoryLoad (role+"|"+timestamp) and handleHistoryLoad
+// (role+":"+turnID+":"+content) onto a single identity key.
+func dedupAppend(existing []cliMessage, incoming []cliMessage) []cliMessage {
+	seen := make(map[msgIdentity]bool, len(existing))
+	for _, m := range existing {
+		seen[msgIdentity{m.role, m.timestamp}] = true
+	}
+	for _, cm := range incoming {
+		id := msgIdentity{cm.role, cm.timestamp}
+		if !seen[id] {
+			existing = append(existing, cm)
+			seen[id] = true
+		}
+	}
+	return existing
+}
+
 // handleSuHistoryLoad processes /su user switch history load results.
 // Returns tea.Cmds to start the tick chain when active progress is restored.
 func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
@@ -97,34 +148,14 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		m.progressState.current = nil
 		m.inputReady = true
 	} else {
-		// Build a dedup set from existing messages.
-		// Key uses role + timestamp to handle sequences of identical-role
-		// messages (e.g. multiple tool_summary with empty content).
-		existingKeys := make(map[string]bool, len(m.messages))
-		for _, cm := range m.messages {
-			existingKeys[cm.role+"|"+cm.timestamp.Format(time.RFC3339Nano)] = true
-		}
+		// Dedup-append history: skip messages already present (role + timestamp).
+		// Handles sequences of identical-role messages (e.g. multiple
+		// tool_summary with empty content) — timestamp disambiguates them.
+		incoming := make([]cliMessage, 0, len(msg.history))
 		for _, hm := range msg.history {
-			key := hm.Role + "|" + hm.Timestamp.Format(time.RFC3339Nano)
-			if existingKeys[key] {
-				continue // already in messages, skip duplicate
-			}
-			existingKeys[key] = true
-			cm := cliMessage{
-				role:      hm.Role,
-				content:   hm.Content,
-				timestamp: hm.Timestamp,
-				isPartial: false,
-				dirty:     true,
-			}
-			if len(hm.Iterations) > 0 {
-				cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-				for i, hi := range hm.Iterations {
-					cm.iterations[i] = cliIterationSnapshot(hi)
-				}
-			}
-			m.messages = append(m.messages, cm)
+			incoming = append(incoming, toCLIMessage(hm))
 		}
+		m.messages = dedupAppend(m.messages, incoming)
 		// Restore pending user message if it was sent but not yet persisted to DB.
 		// This handles the race where the user sends a message and quickly switches
 		// sessions before the agent's eager-save completes.
@@ -477,20 +508,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	}
 	var newMessages []cliMessage
 	for _, hm := range msg.history {
-		cm := cliMessage{
-			role:      hm.Role,
-			content:   hm.Content,
-			timestamp: hm.Timestamp,
-			isPartial: false,
-			dirty:     true, // will be cleared by merge below if cached
-		}
-		if len(hm.Iterations) > 0 {
-			cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-			for i, hi := range hm.Iterations {
-				cm.iterations[i] = cliIterationSnapshot(hi)
-			}
-		}
-		newMessages = append(newMessages, cm)
+		newMessages = append(newMessages, toCLIMessage(hm))
 	}
 	// Restore pending user message if missing (same race as handleSuHistoryLoad)
 	if m.pendingUserMsg != nil {
@@ -622,24 +640,10 @@ func (m *cliModel) handleHistoryLoad(msg cliHistoryLoadMsg) {
 		return
 	}
 	if len(msg.history) > 0 {
-		// Deduplicate: build a set of existing message identity keys.
-		// Key = role + ":" + turnID + ":" + content — algorithmic dedup,
-		// no raw string matching. Messages with same identity are skipped.
-		existing := make(map[string]bool, len(m.messages))
-		for _, cm := range m.messages {
-			key := cm.role + ":" + strconv.FormatUint(cm.turnID, 36) + ":" + cm.content
-			existing[key] = true
-		}
-		added := 0
-		for _, cm := range msg.history {
-			key := cm.role + ":" + strconv.FormatUint(cm.turnID, 36) + ":" + cm.content
-			if existing[key] {
-				continue // skip duplicate
-			}
-			existing[key] = true
-			m.messages = append(m.messages, cm)
-			added++
-		}
+		// Dedup-append using unified identity key (role + timestamp).
+		before := len(m.messages)
+		m.messages = dedupAppend(m.messages, msg.history)
+		added := len(m.messages) - before
 		if added > 0 {
 			m.invalidateAllCache(false)
 			m.updateViewportContent()

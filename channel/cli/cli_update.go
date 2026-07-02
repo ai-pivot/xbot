@@ -184,19 +184,19 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		switch m.panelState.mode {
 		case "askuser":
 			// Check if current tab has options (use textinput) or free input (use textarea)
-			if m.panelState.askTab >= 0 && m.panelState.askTab < len(m.panelState.askItems) && len(m.panelState.askItems[m.panelState.askTab].Options) > 0 {
-				m.panelState.askOtherTI, cmd = m.panelState.askOtherTI.Update(paste)
+			if m.panelState.askUser.askTab >= 0 && m.panelState.askUser.askTab < len(m.panelState.askUser.askItems) && len(m.panelState.askUser.askItems[m.panelState.askUser.askTab].Options) > 0 {
+				m.panelState.askUser.askOtherTI, cmd = m.panelState.askUser.askOtherTI.Update(paste)
 			} else {
 				m.autoExpandAskTA()
-				m.panelState.askAnswerTA, cmd = m.panelState.askAnswerTA.Update(paste)
+				m.panelState.askUser.askAnswerTA, cmd = m.panelState.askUser.askAnswerTA.Update(paste)
 			}
 		case "settings":
-			if m.panelState.editing {
-				m.panelState.editTA, cmd = m.panelState.editTA.Update(paste)
+			if m.panelState.settings.editing {
+				m.panelState.settings.editTA, cmd = m.panelState.settings.editTA.Update(paste)
 			}
 		case "wizard":
-			if m.panelState.wizardStep == wizardAPIKey {
-				m.panelState.wizardKeyTI, cmd = m.panelState.wizardKeyTI.Update(paste)
+			if m.panelState.settings.wizardStep == wizardAPIKey {
+				m.panelState.settings.wizardKeyTI, cmd = m.panelState.settings.wizardKeyTI.Update(paste)
 			}
 		}
 		return m, cmd
@@ -261,7 +261,7 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		// will be forwarded to viewport/textarea at the end of Update().
 
 	case tea.KeyPressMsg:
-		if m.panelState.settingsSaving {
+		if m.panelState.settings.settingsSaving {
 			break // block input while settings are being saved
 		}
 		model, keyCmds, handled := m.handleKeyPress(msg, wasTyping)
@@ -653,9 +653,6 @@ func (m *cliModel) relayoutViewport() {
 		m.rc.wrapWidth = 0
 		m.rc.histMaxW = 0
 		m.rc.histLines = nil
-		m.rc.bumpHistGen()
-		m.rc.allLines = nil
-		m.rc.allLinesHistLen = 0
 		for i := range m.messages {
 			m.messages[i].dirty = true
 			m.messages[i].wrappedLines = nil

@@ -207,19 +207,18 @@ type cliModel struct {
 	// models + action rows); quickSwitchCursor indexes into it. Filtering is
 	// toggled by "/" (quickSwitchFiltering) so command letters (e/d/n/s) don't
 	// collide with typing.
-	quickSwitchMode          string              // ""=off, "llm"=unified panel open
-	quickSwitchRows          []qsRow             // flat row list the cursor indexes into
-	quickSwitchCursor        int                 // selected row index
-	quickSwitchFilterInput   textinput.Model     // filter input (focused only in filter mode)
-	quickSwitchFiltering     bool                // "/" filter mode active
-	quickSwitchShowAll       bool                // show noise models (image/realtime/…)
-	quickSwitchRefreshing    bool                // /models refresh in flight
-	quickSwitchReturnToPanel bool                // return to settings panel after close
-	quickSwitchScrollY       int                 // vertical scroll offset for the panel
-	quickSwitchCachedData    llmData             // cached source for filter mode (avoids per-keystroke RPC)
-	subscriptionMgr          SubscriptionManager // injected by CLIChannel
-	llmSubscriber            LLMSubscriber       // injected by CLIChannel
-	cachedSubName            string              // owning subscription display name for status bar
+	quickSwitchMode        string              // ""=off, "llm"=unified panel open
+	quickSwitchRows        []qsRow             // flat row list the cursor indexes into
+	quickSwitchCursor      int                 // selected row index
+	quickSwitchFilterInput textinput.Model     // filter input (focused only in filter mode)
+	quickSwitchFiltering   bool                // "/" filter mode active
+	quickSwitchShowAll     bool                // show noise models (image/realtime/…)
+	quickSwitchRefreshing  bool                // /models refresh in flight
+	quickSwitchScrollY     int                 // vertical scroll offset for the panel
+	quickSwitchCachedData  llmData             // cached source for filter mode (avoids per-keystroke RPC)
+	subscriptionMgr        SubscriptionManager // injected by CLIChannel
+	llmSubscriber          LLMSubscriber       // injected by CLIChannel
+	cachedSubName          string              // owning subscription display name for status bar
 
 	// --- §23 Command Palette (Ctrl+K) ---
 	paletteOpen           bool               // true = command palette overlay is active
@@ -755,45 +754,55 @@ type splashState struct {
 	compReloading    bool
 }
 
-// panelState groups 61 panel-related fields extracted from cliModel.
-type panelState struct {
-	mode              string
-	settingsSaving    bool
-	stack             []panelStackEntry
-	cursor            int
-	editing           bool
-	scrollY           int
-	editTA            textarea.Model
-	combo             bool
-	comboIdx          int
-	wizardStep        int
-	wizardLangSel     int
-	wizardProvSel     int
-	wizardKeyTI       textinput.Model
-	valuesBackup      map[string]string
-	cursorBackup      int
-	onSubmitBackup    func(values map[string]string)
-	askItems          []askItem
-	askTab            int
-	askOptSel         map[int]map[int]bool
-	askOptCursor      map[int]int
-	askAnswerTA       textarea.Model
-	askOtherTI        textinput.Model
-	askScrollY        int
-	askTotalLines     int
-	schema            []ch.SettingDefinition
-	schemaFull        []ch.SettingDefinition
-	isSetup           bool
+// settingsPanelState groups fields for the settings panel mode.
+type settingsPanelState struct {
+	settingsSaving bool
+	editing        bool
+	editTA         textarea.Model
+	combo          bool
+	comboIdx       int
+	wizardStep     int
+	wizardLangSel  int
+	wizardProvSel  int
+	wizardKeyTI    textinput.Model
+	schema         []ch.SettingDefinition
+	schemaFull     []ch.SettingDefinition
+	isSetup        bool
+	values         map[string]string
+	prevProvider   string
+	onSubmit       func(values map[string]string)
+	subGeneration  int
+}
+
+// askUserPanelState groups fields for the ask-user panel mode.
+type askUserPanelState struct {
+	askItems      []askItem
+	askTab        int
+	askOptSel     map[int]map[int]bool
+	askOptCursor  map[int]int
+	askAnswerTA   textarea.Model
+	askOtherTI    textinput.Model
+	askScrollY    int
+	askTotalLines int
+	onAnswer      func(answers map[string]string)
+	onCancel      func()
+}
+
+// runnerPanelState groups fields for the runner panel mode.
+type runnerPanelState struct {
+	runnerServerTI  textinput.Model
+	runnerTokenTI   textinput.Model
+	runnerWS        textinput.Model
+	runnerEditField int
+}
+
+// miscPanelState groups fields for danger/bgtasks/approval/channel/session panels.
+type miscPanelState struct {
 	approvalReq       *protocol.ApprovalRequest
 	approvalCh        chan<- protocol.ApprovalResult
 	approvalCursor    int
 	approvalDenyTA    textinput.Model
 	approvalDenyMode  bool
-	values            map[string]string
-	prevProvider      string
-	onSubmit          func(values map[string]string)
-	onAnswer          func(answers map[string]string)
-	onCancel          func()
 	bgTasks           []*BgTask
 	bgAgents          []panelAgentEntry
 	bgCursor          int
@@ -810,14 +819,22 @@ type panelState struct {
 	dangerConfirm     bool
 	dangerInput       textinput.Model
 	dangerOnExec      func(targetType string) error
-	runnerServerTI    textinput.Model
-	runnerTokenTI     textinput.Model
-	runnerWS          textinput.Model
-	runnerEditField   int
 	channelItems      []string
 	channelCursor     int
 	channelCfg        map[string]map[string]string
-	subGeneration     int
+}
+
+// panelState groups panel-related fields extracted from cliModel, organized by mode.
+type panelState struct {
+	mode    string
+	cursor  int
+	scrollY int
+	stack   []panelStackEntry
+
+	settings settingsPanelState
+	askUser  askUserPanelState
+	runner   runnerPanelState
+	misc     miscPanelState
 }
 
 // layoutConfig groups 13 fields extracted from cliModel.

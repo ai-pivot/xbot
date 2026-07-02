@@ -10,8 +10,8 @@ import (
 
 // TestAskUserIterationVisibility reproduces the bug:
 // When AskUser panel opens, previous iteration records disappear from the viewport.
-// Updated: renderProgressBlock always returns empty now (progress is inline in the
-// streaming assistant message). The test verifies iterationHistory preservation.
+// Updated: progress is rendered inline in the
+// streaming assistant message. The test verifies iterationHistory preservation.
 func TestAskUserIterationVisibility(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
@@ -132,8 +132,8 @@ func TestAskUserIterationSurvivesAnswer(t *testing.T) {
 	}
 
 	// Simulate answer callback
-	if model.panelState.onAnswer != nil {
-		model.panelState.onAnswer(map[string]string{"q0": "yes"})
+	if model.panelState.askUser.onAnswer != nil {
+		model.panelState.askUser.onAnswer(map[string]string{"q0": "yes"})
 	}
 
 	// After answer: startAgentTurn clears iterationHistory, but

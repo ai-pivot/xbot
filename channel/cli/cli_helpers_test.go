@@ -79,12 +79,17 @@ func TestIsSubscriptionScopedSettingKey(t *testing.T) {
 func TestOpenSettingsFromQuickSwitch_PreservesNonSubscriptionEdits(t *testing.T) {
 	model := newCLIModel()
 	model.channel = &CLIChannel{config: &CLIChannelConfig{}}
-	model.panelState.valuesBackup = map[string]string{
+	// Set up settings panel state with user edits to non-subscription settings.
+	model.panelState.mode = "settings"
+	model.panelState.cursor = 1
+	model.panelState.settings.values = map[string]string{
 		"theme":    "mono",
 		"language": "en",
 	}
-	model.panelState.cursorBackup = 1
-	model.panelState.onSubmitBackup = func(map[string]string) {}
+	model.panelState.settings.onSubmit = func(map[string]string) {}
+	// Push panel state (simulating Settings→QuickSwitch navigation).
+	model.pushPanel()
+	model.panelState.mode = "" // QuickSwitch opens, clearing panel mode
 	model.channel.config.GetCurrentValues = func() map[string]string {
 		return map[string]string{
 			"theme":    "midnight",
@@ -95,10 +100,10 @@ func TestOpenSettingsFromQuickSwitch_PreservesNonSubscriptionEdits(t *testing.T)
 	if model.panelState.mode != "settings" {
 		t.Fatalf("panelMode = %q, want settings", model.panelState.mode)
 	}
-	if got := model.panelState.values["theme"]; got != "mono" {
+	if got := model.panelState.settings.values["theme"]; got != "mono" {
 		t.Fatalf("theme = %q, want mono", got)
 	}
-	if got := model.panelState.values["language"]; got != "en" {
+	if got := model.panelState.settings.values["language"]; got != "en" {
 		t.Fatalf("language = %q, want en", got)
 	}
 }
@@ -622,26 +627,26 @@ func TestClosePanelAndResume_CleansUpPanelState(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.panelState.mode = "settings"
-	model.panelState.editing = true
-	model.panelState.combo = true
-	model.panelState.schema = []channel.SettingDefinition{{Key: "test"}}
-	model.panelState.values = map[string]string{"test": "value"}
+	model.panelState.settings.editing = true
+	model.panelState.settings.combo = true
+	model.panelState.settings.schema = []channel.SettingDefinition{{Key: "test"}}
+	model.panelState.settings.values = map[string]string{"test": "value"}
 
 	model.closePanelAndResume()
 
 	if model.panelState.mode != "" {
 		t.Error("panelMode should be cleared")
 	}
-	if model.panelState.editing {
+	if model.panelState.settings.editing {
 		t.Error("panelEdit should be false")
 	}
-	if model.panelState.combo {
+	if model.panelState.settings.combo {
 		t.Error("panelCombo should be false")
 	}
-	if model.panelState.schema != nil {
+	if model.panelState.settings.schema != nil {
 		t.Error("panelSchema should be nil")
 	}
-	if model.panelState.values != nil {
+	if model.panelState.settings.values != nil {
 		t.Error("panelValues should be nil")
 	}
 }
@@ -778,7 +783,7 @@ func TestSubmitAskAnswers_CallsCallback(t *testing.T) {
 	model.panelState.mode = "askuser"
 
 	var received map[string]string
-	model.panelState.onAnswer = func(answers map[string]string) {
+	model.panelState.askUser.onAnswer = func(answers map[string]string) {
 		received = answers
 	}
 
@@ -819,7 +824,7 @@ func TestSubmitAskAnswers_NilCallback(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.panelState.mode = "askuser"
-	model.panelState.onAnswer = nil
+	model.panelState.askUser.onAnswer = nil
 	model.typing = false
 
 	// Should not panic with nil callback
@@ -837,12 +842,12 @@ func TestSubmitAskAnswers_SavesCurrentFreeInputBeforeCollect(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.panelState.mode = "askuser"
-	model.panelState.askItems = []askItem{{Question: "q1"}, {Question: "q2", Other: "stale"}}
-	model.panelState.askTab = 1
-	model.panelState.askAnswerTA = model.newPanelTextArea("custom", 50, 3)
+	model.panelState.askUser.askItems = []askItem{{Question: "q1"}, {Question: "q2", Other: "stale"}}
+	model.panelState.askUser.askTab = 1
+	model.panelState.askUser.askAnswerTA = model.newPanelTextArea("custom", 50, 3)
 
 	model.saveCurrentFreeInput()
-	if got := model.panelState.askItems[1].Other; got != "custom" {
+	if got := model.panelState.askUser.askItems[1].Other; got != "custom" {
 		t.Fatalf("panelItems[1].Other = %q, want custom", got)
 	}
 }
@@ -850,10 +855,10 @@ func TestSubmitAskAnswers_SavesCurrentFreeInputBeforeCollect(t *testing.T) {
 func TestCollectAskAnswers_UncheckedOptionsExcluded(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelState.askItems = []askItem{
+	model.panelState.askUser.askItems = []askItem{
 		{Question: "color?", Options: []string{"Red", "Blue", "Green"}},
 	}
-	model.panelState.askOptSel = map[int]map[int]bool{
+	model.panelState.askUser.askOptSel = map[int]map[int]bool{
 		0: {0: true, 1: false, 2: true},
 	}
 
@@ -867,10 +872,10 @@ func TestCollectAskAnswers_UncheckedOptionsExcluded(t *testing.T) {
 func TestCollectAskAnswers_AllUncheckedReturnsEmpty(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelState.askItems = []askItem{
+	model.panelState.askUser.askItems = []askItem{
 		{Question: "color?", Options: []string{"Red", "Blue"}},
 	}
-	model.panelState.askOptSel = map[int]map[int]bool{
+	model.panelState.askUser.askOptSel = map[int]map[int]bool{
 		0: {0: false, 1: false},
 	}
 
@@ -1706,35 +1711,6 @@ func TestUpsertMessageByTurn_PurgesZombies(t *testing.T) {
 	}
 	if m.messages[1].content != "updated" {
 		t.Errorf("expected updated content, got %q", m.messages[1].content)
-	}
-}
-
-// TestCacheGenerationCounter verifies the generation counter mechanism
-// prevents stale allLines reuse after fullRebuild.
-func TestCacheGenerationCounter(t *testing.T) {
-	rc := &renderCache{}
-
-	// Initial state
-	if rc.histGen != 0 || rc.allLinesGen != 0 {
-		t.Fatal("generation counters should start at 0")
-	}
-
-	// Simulate histLines change
-	rc.bumpHistGen()
-	if rc.histGen != 1 {
-		t.Fatalf("expected histGen=1 after bump, got %d", rc.histGen)
-	}
-
-	// Simulate allLines build from current generation
-	rc.allLinesGen = rc.histGen
-	if rc.histGen != rc.allLinesGen {
-		t.Fatal("after sync, histGen should equal allLinesGen")
-	}
-
-	// Simulate another histLines change (e.g. fullRebuild)
-	rc.bumpHistGen()
-	if rc.histGen == rc.allLinesGen {
-		t.Fatal("after second bump, histGen should differ from allLinesGen (stale detection)")
 	}
 }
 

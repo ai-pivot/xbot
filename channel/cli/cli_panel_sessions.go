@@ -19,15 +19,15 @@ func (m *cliModel) openSessionsPanel() {
 	// sessionsListFn now handles everything (main + local dir + subagents).
 	// Only fall back to local dir sessions when there's no callback.
 	if m.sessionsListFn != nil {
-		m.panelState.sessItems = m.sessionsListFn()
+		m.panelState.misc.sessItems = m.sessionsListFn()
 	} else {
-		m.panelState.sessItems = m.listLocalDirSessions()
+		m.panelState.misc.sessItems = m.listLocalDirSessions()
 	}
 	// Position cursor on the currently active session
-	m.panelState.sessCursor = 0
-	for i, entry := range m.panelState.sessItems {
+	m.panelState.misc.sessCursor = 0
+	for i, entry := range m.panelState.misc.sessItems {
 		if entry.Active {
-			m.panelState.sessCursor = i
+			m.panelState.misc.sessCursor = i
 			break
 		}
 		// For agent sessions, match by chatID (Active is only set for main sessions)
@@ -37,12 +37,12 @@ func (m *cliModel) openSessionsPanel() {
 				agentChatID += ":" + entry.Instance
 			}
 			if agentChatID == m.chatID {
-				m.panelState.sessCursor = i
+				m.panelState.misc.sessCursor = i
 				break
 			}
 		}
 	}
-	m.panelState.sessViewing = false
+	m.panelState.misc.sessViewing = false
 	m.panelState.scrollY = 0
 	m.ensureSessionCursorVisible()
 }
@@ -52,39 +52,39 @@ func (m *cliModel) openSessionsPanel() {
 func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, tea.Cmd) {
 	switch {
 	case msg.Code == tea.KeyEsc:
-		if m.panelState.sessViewing {
-			m.panelState.sessViewing = false
+		if m.panelState.misc.sessViewing {
+			m.panelState.misc.sessViewing = false
 			m.panelState.scrollY = 0
 			return true, m, nil
 		}
 		if !m.popPanel() {
 			m.panelState.mode = ""
-			m.panelState.sessItems = nil
+			m.panelState.misc.sessItems = nil
 			m.relayoutViewport()
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyUp:
-		if !m.panelState.sessViewing && m.panelState.sessCursor > 0 {
-			m.panelState.sessCursor--
+		if !m.panelState.misc.sessViewing && m.panelState.misc.sessCursor > 0 {
+			m.panelState.misc.sessCursor--
 			m.ensureSessionCursorVisible()
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyDown:
-		if !m.panelState.sessViewing && m.panelState.sessCursor < len(m.panelState.sessItems)-1 {
-			m.panelState.sessCursor++
+		if !m.panelState.misc.sessViewing && m.panelState.misc.sessCursor < len(m.panelState.misc.sessItems)-1 {
+			m.panelState.misc.sessCursor++
 			m.ensureSessionCursorVisible()
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyEnter:
-		if m.panelState.sessViewing {
+		if m.panelState.misc.sessViewing {
 			// Viewing mode: Esc goes back, Enter does nothing
 			return true, m, nil
 		}
-		if m.panelState.sessCursor >= 0 && m.panelState.sessCursor < len(m.panelState.sessItems) {
-			entry := m.panelState.sessItems[m.panelState.sessCursor]
+		if m.panelState.misc.sessCursor >= 0 && m.panelState.misc.sessCursor < len(m.panelState.misc.sessItems) {
+			entry := m.panelState.misc.sessItems[m.panelState.misc.sessCursor]
 			switch entry.Type {
 			case "main":
 				// Switch to this chatroom + close panel
@@ -114,7 +114,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.restoreSession() // restore target session state (or reset to idle)
 					cmds := m.postRestoreSessionSetup()
 					m.panelState.mode = ""
-					m.panelState.sessItems = nil
+					m.panelState.misc.sessItems = nil
 					if len(cmds) > 0 {
 						return true, m, tea.Batch(cmds...)
 					}
@@ -122,7 +122,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 				} else {
 					// Already on this session, just close panel
 					m.panelState.mode = ""
-					m.panelState.sessItems = nil
+					m.panelState.misc.sessItems = nil
 					m.relayoutViewport()
 				}
 			case "agent":
@@ -157,7 +157,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					m.restoreSession() // restore target session state (or reset to idle)
 					cmds := m.postRestoreSessionSetup()
 					m.panelState.mode = ""
-					m.panelState.sessItems = nil
+					m.panelState.misc.sessItems = nil
 					if len(cmds) > 0 {
 						return true, m, tea.Batch(cmds...)
 					}
@@ -165,7 +165,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 				} else {
 					// Already on this session, just close panel
 					m.panelState.mode = ""
-					m.panelState.sessItems = nil
+					m.panelState.misc.sessItems = nil
 					m.relayoutViewport()
 				}
 			}
@@ -175,30 +175,30 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 	case msg.String() == "r":
 		// Refresh sessions list
 		if m.sessionsListFn != nil {
-			m.panelState.sessItems = m.sessionsListFn()
+			m.panelState.misc.sessItems = m.sessionsListFn()
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyHome:
-		if !m.panelState.sessViewing && len(m.panelState.sessItems) > 0 {
-			m.panelState.sessCursor = 0
+		if !m.panelState.misc.sessViewing && len(m.panelState.misc.sessItems) > 0 {
+			m.panelState.misc.sessCursor = 0
 			m.panelState.scrollY = 0
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyEnd:
-		if !m.panelState.sessViewing && len(m.panelState.sessItems) > 0 {
-			m.panelState.sessCursor = len(m.panelState.sessItems) - 1
+		if !m.panelState.misc.sessViewing && len(m.panelState.misc.sessItems) > 0 {
+			m.panelState.misc.sessCursor = len(m.panelState.misc.sessItems) - 1
 			m.ensureSessionCursorVisible()
 		}
 		return true, m, nil
 
 	case msg.Code == tea.KeyPgUp:
-		if !m.panelState.sessViewing {
+		if !m.panelState.misc.sessViewing {
 			visibleH := m.panelVisibleHeight()
-			m.panelState.sessCursor -= visibleH
-			if m.panelState.sessCursor < 0 {
-				m.panelState.sessCursor = 0
+			m.panelState.misc.sessCursor -= visibleH
+			if m.panelState.misc.sessCursor < 0 {
+				m.panelState.misc.sessCursor = 0
 			}
 			m.ensureSessionCursorVisible()
 		}
@@ -206,38 +206,38 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 
 	// N: create new session in current directory
 	case msg.String() == "n" || msg.String() == "N":
-		if !m.panelState.sessViewing {
+		if !m.panelState.misc.sessViewing {
 			return true, m, m.showSessionCreateDialog()
 		}
 
 	// D: delete selected session (except default) — with confirmation
 	case msg.String() == "d" || msg.String() == "D":
-		if !m.panelState.sessViewing && m.panelState.sessCursor >= 0 && m.panelState.sessCursor < len(m.panelState.sessItems) {
-			entry := m.panelState.sessItems[m.panelState.sessCursor]
+		if !m.panelState.misc.sessViewing && m.panelState.misc.sessCursor >= 0 && m.panelState.misc.sessCursor < len(m.panelState.misc.sessItems) {
+			entry := m.panelState.misc.sessItems[m.panelState.misc.sessCursor]
 			if entry.Type == "main" && entry.Label != defaultSessionName {
-				m.panelState.sessConfirmDelete = true
-				m.panelState.sessConfirmEntry = entry
+				m.panelState.misc.sessConfirmDelete = true
+				m.panelState.misc.sessConfirmEntry = entry
 			}
 		}
 		return true, m, nil
 
 	// Y: confirm delete (follows D)
-	case (msg.String() == "y" || msg.String() == "Y") && m.panelState.sessConfirmDelete:
-		m.panelState.sessConfirmDelete = false
-		cmd := m.deleteLocalSession(m.panelState.sessConfirmEntry)
+	case (msg.String() == "y" || msg.String() == "Y") && m.panelState.misc.sessConfirmDelete:
+		m.panelState.misc.sessConfirmDelete = false
+		cmd := m.deleteLocalSession(m.panelState.misc.sessConfirmEntry)
 		return true, m, cmd
 
 	// Any other key cancels delete confirmation
-	case m.panelState.sessConfirmDelete:
-		m.panelState.sessConfirmDelete = false
+	case m.panelState.misc.sessConfirmDelete:
+		m.panelState.misc.sessConfirmDelete = false
 		return true, m, nil
 
 	default:
-		if msg.String() == "pgdown" && !m.panelState.sessViewing {
+		if msg.String() == "pgdown" && !m.panelState.misc.sessViewing {
 			visibleH := m.panelVisibleHeight()
-			m.panelState.sessCursor += visibleH
-			if m.panelState.sessCursor >= len(m.panelState.sessItems) {
-				m.panelState.sessCursor = len(m.panelState.sessItems) - 1
+			m.panelState.misc.sessCursor += visibleH
+			if m.panelState.misc.sessCursor >= len(m.panelState.misc.sessItems) {
+				m.panelState.misc.sessCursor = len(m.panelState.misc.sessItems) - 1
 			}
 			m.ensureSessionCursorVisible()
 			return true, m, nil
@@ -248,7 +248,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 
 // viewSessionsPanel renders the sessions management panel.
 func (m *cliModel) viewSessionsPanel() string {
-	if m.panelState.sessViewing {
+	if m.panelState.misc.sessViewing {
 		return m.viewSessionsDetail()
 	}
 	return m.viewSessionsList()
@@ -260,10 +260,10 @@ func (m *cliModel) viewSessionsList() string {
 	cursorStyle := s.PanelCursor
 	header := s.PanelHeader.Render("Sessions")
 	help := s.PanelDesc.Render("↑↓ Navigate  Enter Switch/View  n New  d Delete  r Refresh  Esc Close")
-	total := len(m.panelState.sessItems)
+	total := len(m.panelState.misc.sessItems)
 	scrollHint := ""
 	if total > 1 {
-		scrollHint = s.PanelDesc.Render(fmt.Sprintf(" [%d/%d]", m.panelState.sessCursor+1, total))
+		scrollHint = s.PanelDesc.Render(fmt.Sprintf(" [%d/%d]", m.panelState.misc.sessCursor+1, total))
 	}
 
 	var sb strings.Builder
@@ -274,9 +274,9 @@ func (m *cliModel) viewSessionsList() string {
 	sb.WriteString("\n")
 
 	// Show delete confirmation prompt
-	if m.panelState.sessConfirmDelete {
+	if m.panelState.misc.sessConfirmDelete {
 		sb.WriteString(s.ErrorMsg.Render(
-			fmt.Sprintf("  ⚠ Delete session %q? [Y]es / [N]o", m.panelState.sessConfirmEntry.Label)))
+			fmt.Sprintf("  ⚠ Delete session %q? [Y]es / [N]o", m.panelState.misc.sessConfirmEntry.Label)))
 		sb.WriteString("\n")
 	}
 
@@ -285,14 +285,14 @@ func (m *cliModel) viewSessionsList() string {
 		contentW = 20
 	}
 
-	if len(m.panelState.sessItems) == 0 {
+	if len(m.panelState.misc.sessItems) == 0 {
 		sb.WriteString(s.PanelEmpty.Render("(no active sessions)"))
 		return sb.String()
 	}
 
-	for i, entry := range m.panelState.sessItems {
+	for i, entry := range m.panelState.misc.sessItems {
 		prefix := "  "
-		if i == m.panelState.sessCursor {
+		if i == m.panelState.misc.sessCursor {
 			prefix = cursorStyle.Render("▸")
 		}
 
@@ -389,8 +389,8 @@ func (m *cliModel) viewSessionsDetail() string {
 	s := &m.styles
 
 	var title string
-	if m.panelState.sessCursor >= 0 && m.panelState.sessCursor < len(m.panelState.sessItems) {
-		entry := m.panelState.sessItems[m.panelState.sessCursor]
+	if m.panelState.misc.sessCursor >= 0 && m.panelState.misc.sessCursor < len(m.panelState.misc.sessItems) {
+		entry := m.panelState.misc.sessItems[m.panelState.misc.sessCursor]
 		switch entry.Type {
 		case "main":
 			title = "👤 " + entry.Label
@@ -408,7 +408,7 @@ func (m *cliModel) viewSessionsDetail() string {
 	sb.WriteString(help)
 	sb.WriteString("\n")
 
-	for _, line := range m.panelState.bgLogLines {
+	for _, line := range m.panelState.misc.bgLogLines {
 		sb.WriteString(line)
 		sb.WriteString("\n")
 	}
@@ -491,7 +491,7 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 	cmds := m.postRestoreSessionSetup()
 	// Refresh sessions list cache so sidebar/sessions panel shows the new session
 	if m.sessionsListFn != nil {
-		m.panelState.sessItems = m.sessionsListFn()
+		m.panelState.misc.sessItems = m.sessionsListFn()
 	}
 	if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
 		m.channel.config.SessionsListRefresh()
@@ -550,7 +550,7 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 		cmds := m.postRestoreSessionSetup()
 		// Refresh sessions list so sidebar/sessions panel reflects the deletion
 		if m.sessionsListFn != nil {
-			m.panelState.sessItems = m.sessionsListFn()
+			m.panelState.misc.sessItems = m.sessionsListFn()
 		}
 		if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
 			m.channel.config.SessionsListRefresh()
@@ -560,7 +560,7 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 	}
 	// Non-active session deleted: refresh sidebar so it disappears immediately.
 	if m.sessionsListFn != nil {
-		m.panelState.sessItems = m.sessionsListFn()
+		m.panelState.misc.sessItems = m.sessionsListFn()
 	}
 	if m.channel != nil && m.channel.config.SessionsListRefresh != nil {
 		m.channel.config.SessionsListRefresh()
@@ -580,7 +580,7 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			// Close AskUser panel if it belongs to a different session
 			if m.panelState.mode == "askuser" && m.askUserSession != entry.ID {
 				m.panelState.mode = ""
-				m.panelState.askItems = nil
+				m.panelState.askUser.askItems = nil
 				m.relayoutViewport()
 			}
 			m.saveCurrentSession()
@@ -623,7 +623,7 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			// Close AskUser panel if it doesn't belong to the new agent session
 			if m.panelState.mode == "askuser" && m.askUserSession != agentChatID {
 				m.panelState.mode = ""
-				m.panelState.askItems = nil
+				m.panelState.askUser.askItems = nil
 				m.relayoutViewport()
 			}
 			m.saveCurrentSession()
