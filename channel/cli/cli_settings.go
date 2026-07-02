@@ -21,6 +21,18 @@ import (
 // saveSettings:  dispatches each key to its scope's writer.
 // maxContext:    resolves from subscription.PerModelConfigs[model].MaxContext.
 
+// isTierSettingKey returns true if the key is one of the tier_* settings.
+// Tier settings are registered in AllSettingDefs with ScopeUser but are
+// persisted to DB only — no runtime handler needed. They are stripped from
+// runtimeValues in saveSettings to avoid redundant DB writes in ApplySettings.
+func isTierSettingKey(key string) bool {
+	switch key {
+	case "tier_vanguard", "tier_balance", "tier_swift":
+		return true
+	}
+	return false
+}
+
 // ── read ─────────────────────────────────────────────────────────────
 
 // readSettings returns the current settings values for the /settings panel.
@@ -325,6 +337,11 @@ func (m *cliModel) saveSettings(values map[string]string) {
 			// above via UpdatePerModelConfig. Never pass it to ApplySettings —
 			// that would call SetMaxContextTokens globally and contaminate all models.
 			if k == "max_context_tokens" {
+				continue
+			}
+			// Tier settings already persisted above via settingsSvc. Strip them
+			// to avoid redundant DB write in main.go's ApplySettings loop.
+			if isTierSettingKey(k) {
 				continue
 			}
 			runtimeValues[k] = v

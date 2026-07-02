@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	ch "xbot/channel"
+	"xbot/protocol"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -68,6 +69,21 @@ func (m *cliModel) openSettingsPanel(schema []ch.SettingDefinition, values map[s
 			def.ReadOnly = true
 		}
 	}
+
+	// Inject cross-subscription model options for tier selectors.
+	// Tier values are stored as "subID|model" — options must match this format
+	// so the combo dropdown can pre-select the current value.
+	if m.channel != nil && m.channel.modelLister != nil {
+		entries := m.channel.modelLister.ListAllModelEntries()
+		tierKeys := map[string]bool{"tier_vanguard": true, "tier_balance": true, "tier_swift": true}
+		for i := range m.panelState.schemaFull {
+			def := &m.panelState.schemaFull[i]
+			if !tierKeys[def.Key] {
+				continue
+			}
+			def.Options = tierModelOptions(entries)
+		}
+	}
 	// Auto-fill base_url on panel open if provider has a known default
 	// and base_url is currently empty (typical for setup wizard).
 	if provider := m.panelState.values["llm_provider"]; provider != "" {
@@ -96,6 +112,25 @@ func (m *cliModel) openSettingsPanel(schema []ch.SettingDefinition, values map[s
 	ta.SetHeight(1)
 	ta.CharLimit = 200
 	m.panelState.editTA = ta
+}
+
+// tierModelOptions builds SettingOption list for tier selectors.
+// Values are encoded as "subID|model" (or plain "model" when SubID is empty)
+// to match the tier value format stored in DB.
+func tierModelOptions(entries []protocol.ModelEntry) []ch.SettingOption {
+	opts := make([]ch.SettingOption, 0, len(entries))
+	for _, e := range entries {
+		val := e.Model
+		if e.SubID != "" {
+			val = e.SubID + "|" + e.Model
+		}
+		label := e.Model
+		if e.SubName != "" {
+			label = e.Model + " (" + e.SubName + ")"
+		}
+		opts = append(opts, ch.SettingOption{Label: label, Value: val})
+	}
+	return opts
 }
 
 // rebuildVisibleSchema rebuilds panelSchema from panelSchemaFull,
@@ -689,7 +724,15 @@ func (m *cliModel) viewSettingsPanel() string {
 			if cur == "" {
 				displayVal = descStyle.Render(m.locale.PanelNotSet)
 			} else {
+				// Look up label from options for nicer display (e.g. tier selectors
+				// store "subID|model" but should show "model (subname)")
 				displayVal = valueSt.Render(cur)
+				for _, opt := range def.Options {
+					if opt.Value == cur {
+						displayVal = valueSt.Render(opt.Label)
+						break
+					}
+				}
 			}
 			if !def.ReadOnly && len(def.Options) > 0 {
 				displayVal += descStyle.Render(" ▾")

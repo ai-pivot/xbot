@@ -551,6 +551,11 @@ func LocaleZH() *UILocale {
 			// Subscription management entry (display-only, triggers quick switch)
 			{Key: "subscription_manage", Label: "📦 订阅管理", Type: SettingTypeText, Category: "模型与推理"},
 
+			// ── 模型等级（SubAgent 全局设置，跨订阅生效）──
+			{Key: "tier_vanguard", Label: "Vanguard（强）", Description: "SubAgent 指定 vanguard 等级时使用的模型，跨所有订阅选择", Type: SettingTypeCombo, Category: "模型等级 (SubAgent)"},
+			{Key: "tier_balance", Label: "Balance（中）", Description: "SubAgent 指定 balance 等级时使用的模型，跨所有订阅选择", Type: SettingTypeCombo, Category: "模型等级 (SubAgent)"},
+			{Key: "tier_swift", Label: "Swift（弱）", Description: "SubAgent 指定 swift 等级时使用的模型，跨所有订阅选择", Type: SettingTypeCombo, Category: "模型等级 (SubAgent)"},
+
 			// ── Agent 行为（用户级）──
 			{
 				Key: "enable_stream", Label: "流式输出", Description: "使用流式 API 调用 LLM（默认开启）",
@@ -955,6 +960,11 @@ func localeEN() *UILocale {
 			// Subscription management entry (display-only, triggers quick switch)
 			{Key: "subscription_manage", Label: "📦 Subscriptions", Type: SettingTypeText, Category: "Model & Reasoning"},
 
+			// ── Model tiers (SubAgent global, cross-subscription) ──
+			{Key: "tier_vanguard", Label: "Vanguard (strong)", Description: "Model used when SubAgent specifies vanguard tier, selected across all subscriptions", Type: SettingTypeCombo, Category: "Model Tiers (SubAgent)"},
+			{Key: "tier_balance", Label: "Balance (medium)", Description: "Model used when SubAgent specifies balance tier, selected across all subscriptions", Type: SettingTypeCombo, Category: "Model Tiers (SubAgent)"},
+			{Key: "tier_swift", Label: "Swift (weak)", Description: "Model used when SubAgent specifies swift tier, selected across all subscriptions", Type: SettingTypeCombo, Category: "Model Tiers (SubAgent)"},
+
 			// ── Agent behavior (user-level) ──
 			{
 				Key: "enable_stream", Label: "Stream Output", Description: "Use streaming API for LLM calls (on by default)",
@@ -1358,6 +1368,11 @@ func localeJA() *UILocale {
 			},
 			// Subscription management entry (display-only, triggers quick switch)
 			{Key: "subscription_manage", Label: "📦 サブスクリプション管理", Type: SettingTypeText, Category: "モデルと推論"},
+
+			// ── モデルティア（SubAgent グローバル設定、サブスクリプション横断）──
+			{Key: "tier_vanguard", Label: "Vanguard（強）", Description: "SubAgent が vanguard ティアを指定した場合に使用するモデル、全サブスクリプションから選択", Type: SettingTypeCombo, Category: "モデルティア (SubAgent)"},
+			{Key: "tier_balance", Label: "Balance（中）", Description: "SubAgent が balance ティアを指定した場合に使用するモデル、全サブスクリプションから選択", Type: SettingTypeCombo, Category: "モデルティア (SubAgent)"},
+			{Key: "tier_swift", Label: "Swift（弱）", Description: "SubAgent が swift ティアを指定した場合に使用するモデル、全サブスクリプションから選択", Type: SettingTypeCombo, Category: "モデルティア (SubAgent)"},
 
 			// ── Agent 動作（ユーザーレベル）──
 			{
