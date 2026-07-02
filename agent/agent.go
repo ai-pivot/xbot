@@ -76,14 +76,41 @@ func resolveMemoryProvider(cfg string) string {
 }
 
 func resolveGlobalSkillsDirs(skillsDir string) []string {
-	if skillsDir == "" {
-		return nil
+	var dirs []string
+
+	// 1. Add the configured/default xbot skills dir (~/.xbot/skills)
+	if skillsDir != "" {
+		abs, err := filepath.Abs(skillsDir)
+		if err == nil {
+			dirs = append(dirs, abs)
+		}
 	}
-	abs, err := filepath.Abs(skillsDir)
-	if err != nil {
-		return nil
+
+	// 2. Auto-detect Codex/Cursor-compatible global skills dir: ~/.agents/skills
+	//    This allows xbot to automatically pick up skills installed by Codex, Cursor,
+	//    or other agents that follow the ~/.agents/ convention, without requiring symlinks.
+	//    Only add it if the directory actually exists.
+	if home, err := os.UserHomeDir(); err == nil {
+		agentsSkillsDir := filepath.Join(home, ".agents", "skills")
+		if info, err := os.Stat(agentsSkillsDir); err == nil && info.IsDir() {
+			abs, err := filepath.Abs(agentsSkillsDir)
+			if err == nil {
+				// Avoid duplicates if skillsDir already points here
+				alreadyIncluded := false
+				for _, d := range dirs {
+					if d == abs {
+						alreadyIncluded = true
+						break
+					}
+				}
+				if !alreadyIncluded {
+					dirs = append(dirs, abs)
+				}
+			}
+		}
 	}
-	return []string{abs}
+
+	return dirs
 }
 
 // metaTools are tools that manage/search other tools — not useful to index.
