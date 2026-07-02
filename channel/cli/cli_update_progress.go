@@ -98,9 +98,17 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	}
 
 	// Carry forward ReasoningStreamContent.
-	// Guard: only when prev didn't have text response yet — reasoning stream
-	// is the LLM's internal thinking; once the actual text response
-	// (StreamContent) starts, reasoning shouldn't reappear on the new event.
+	// During streaming: only carry forward when prev didn't have text response
+	// yet — reasoning stream is the LLM's internal thinking; once the actual
+	// text response (StreamContent) starts, reasoning shouldn't reappear.
+	//
+	// During tool execution (Phase="tool_exec"): ALWAYS carry forward.
+	// Structured events from the engine don't carry ReasoningStreamContent,
+	// and some providers (e.g. DeepSeek) only expose reasoning via streaming,
+	// not in the final response object. Without unconditional carry-forward
+	// here, the reasoning box intermittently disappears during tool execution
+	// when prev.StreamContent happens to be non-empty (set by a stream-only
+	// event that arrived between two structured events).
 	//
 	// IMPORTANT: use prev.StreamContent (NOT current.StreamContent).
 	// The StreamContent carry-forward above may have already set
@@ -110,7 +118,9 @@ func (m *cliModel) carryForwardProgressState(prev *protocol.ProgressEvent) {
 	// AND reasoning stream content are on the previous progress state.
 	// This causes reasoning to visibly disappear mid-stream (regression).
 	if m.progressState.current.ReasoningStreamContent == "" && prev.ReasoningStreamContent != "" && sameIter {
-		if prev.StreamContent == "" {
+		// m.progressState.current is guaranteed non-nil — we accessed
+		// .ReasoningStreamContent on the line above without panicking.
+		if m.progressState.current.Phase == "tool_exec" || prev.StreamContent == "" {
 			m.progressState.current.ReasoningStreamContent = prev.ReasoningStreamContent
 		}
 	}
@@ -253,6 +263,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			"chatID":    msg.payload.ChatID,
 		}).Info("handleProgressMsg: auto-start turn")
 		m.startAgentTurn()
+		m.turnAutoStarted = true
 	}
 
 	// suLoading guard: during session switch in remote mode, discard all
@@ -417,6 +428,13 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		//
 		// compReloading=true blocks auto-start (startAgentTurn) during the
 		// async reload, so no progress event can create another assistant.
+
+		// RETURN: do not fall through to snapshotIterationChange or
+		// updateViewportContent. After compression, prev (captured before
+		// this handler) holds pre-compression data — snapshotIterationChange
+		// would use it to create a stale snapshot, polluting iteration history.
+		// The async reload will rebuild messages and viewport from DB.
+		return
 	}
 
 	// Cache token usage for context bar display — every progress event
@@ -566,11 +584,13 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 			}
 			if !alreadySnapped {
 				prevIterTools := prev.CompletedTools
-				for _, t := range prev.ActiveTools {
-					if t.Status == "done" || t.Status == "error" {
-						prevIterTools = append(prevIterTools, t)
-					}
-				}
+				// When iteration changes, ALL ActiveTools from the previous
+				// iteration are done — the engine guarantees this via
+				// snapshotCompletedIteration (moves ActiveTools → CompletedTools
+				// before starting the next iteration). The "running"/"pending"
+				// status in prev is stale due to progressCh coalescing dropping
+				// the "done" event. Capture ALL ActiveTools regardless of status.
+				prevIterTools = append(prevIterTools, prev.ActiveTools...)
 				prevReasoning := prev.Reasoning
 				if prevReasoning == "" && m.reasoningByIter != nil {
 					prevReasoning = m.reasoningByIter[prev.Iteration]
@@ -596,13 +616,13 @@ func (m *cliModel) snapshotIterationChange(payload *protocol.ProgressEvent, prev
 		}
 		if prev != nil {
 			prevIterTools := prev.CompletedTools
-			// Also include ActiveTools that completed (status=done/error) but
-			// haven't been moved to CompletedTools yet by progressFinalizer.
-			for _, t := range prev.ActiveTools {
-				if t.Status == "done" || t.Status == "error" {
-					prevIterTools = append(prevIterTools, t)
-				}
-			}
+			// When iteration changes, ALL ActiveTools from the previous
+			// iteration are done — the engine guarantees this via
+			// snapshotCompletedIteration (moves ActiveTools → CompletedTools
+			// before starting the next iteration). The "running"/"pending"
+			// status in prev is stale due to progressCh coalescing dropping
+			// the "done" event. Capture ALL ActiveTools regardless of status.
+			prevIterTools = append(prevIterTools, prev.ActiveTools...)
 			prevReasoning := prev.Reasoning
 			if prevReasoning == "" {
 				prevReasoning = m.reasoningByIter[m.progressState.lastIter]
@@ -759,27 +779,11 @@ func (m *cliModel) handleProgressDone(msg cliProgressMsg, prev *protocol.Progres
 			return s.Iteration == m.progressState.lastIter
 		})
 		if !alreadySnapped {
-			var finalTools []protocol.ToolProgress
-			// Check progress.CompletedTools first (set by progressFinalizer)
-			finalTools = append(finalTools, msg.payload.CompletedTools...)
-			// Also include ActiveTools(done) not yet moved by progressFinalizer
-			for _, t := range msg.payload.ActiveTools {
-				if t.Status == "done" || t.Status == "error" {
-					if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
-						return existing.Name == t.Name && existing.Label == t.Label
-					}) {
-						finalTools = append(finalTools, t)
-					}
-				}
-			}
-			// Also include any from lastCompletedTools (race safety)
-			for _, t := range m.lastCompletedTools {
-				if !slices.ContainsFunc(finalTools, func(existing protocol.ToolProgress) bool {
-					return existing.Name == t.Name && existing.Label == t.Label
-				}) {
-					finalTools = append(finalTools, t)
-				}
-			}
+			// PhaseDone events always carry all completed tools in
+			// CompletedTools — progressFinalizer (engine_run.go:182-188)
+			// moves all ActiveTools → CompletedTools before setting Phase=Done.
+			// ActiveTools is always empty at PhaseDone. No fallback needed.
+			finalTools := msg.payload.CompletedTools
 			snap := cliIterationSnapshot{
 				Iteration:   m.progressState.lastIter,
 				Thinking:    msg.payload.Thinking,

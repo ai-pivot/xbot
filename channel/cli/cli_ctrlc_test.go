@@ -242,10 +242,10 @@ func TestCtrlC_CancelAckPreservesBakedIterations(t *testing.T) {
 	if bakedIters == 0 {
 		t.Fatal("handleProgressDone should have baked iterations into streaming message")
 	}
-	// Verify iterationHistory was cleared by endAgentTurn
-	if len(model.progressState.iterations) != 0 {
-		t.Fatal("iterationHistory should be cleared after endAgentTurn")
-	}
+	// Progress state (iterations) is now preserved after endAgentTurn for
+	// flicker-free rendering (updateStreamingOnly uses it between PhaseDone
+	// and handleAgentMessage). It is cleared by startAgentTurn/resetProgressState.
+	// The baked iterations in the message are independent of progressState.
 
 	// Cancel ack arrives — this is where the bug occurs
 	model.Update(cliOutboundMsg{

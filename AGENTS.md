@@ -129,7 +129,7 @@
 - **Every assistant/tool_summary message is keyed by `agentTurnID` + `role`.** `upsertMessageByTurn(turnID, role, msg)` finds existing entries and updates in-place instead of appending duplicates. This prevents duplicate messages when PhaseDone and cliOutboundMsg arrive out of order.
 - **`upsertMessageByTurn` now also purges zombie duplicates.** After updating a message, it scans for OTHER messages with the same (turnID, role) pair and removes them. Without this, fallback paths (e.g. isPartial fallback creating a second streaming message) could leave zombies that render as duplicates.
 - **`dedupMessagesGuard()` runs at the TOP of `updateViewportContent()`.** This is the algorithmic guarantee layer: it scans `m.messages` for any (turnID, role) duplicates (turnID > 0) and purges earlier occurrences before rendering. Uses O(n) map-based identity detection — NOT string matching. Even if a race condition or unguarded append path creates a duplicate, it is silently purged here before reaching the viewport.
-- **`endAgentTurn` clears `streamingMsgIdx = -1`.** Without this, a delayed complete message from the previous turn can overwrite the new turn's streaming message via the stale index. The non-streaming path in `handleAgentMessage` also checks `m.messages[m.streamingMsgIdx].turnID == turnID` before overwriting.
+- **`endAgentTurn` does NOT clear `streamingMsgIdx` or `progressState`.** Keeping `streamingMsgIdx` valid ensures the tick handler uses `updateStreamingOnly` (streaming path) instead of `appendNewMessagesToCache` (which caches incomplete content → flicker). Progress state (`iterations`, `current`, `reasoningByIter`) is preserved for flicker-free rendering between PhaseDone and handleAgentMessage. It is cleared by `startAgentTurn` → `resetProgressState` when the next turn begins, or by `handleAgentMessage` when the reply arrives. `handleAgentMessage` sets `streamingMsgIdx = -1` and calls `rerenderCachedMessage` for a single clean transition.
 - **`isPartial` fallback checks `findMessageByTurn` before creating new message.** When `streamingMsgIdx` is stale (cleared by endAgentTurn), the fallback now searches for an existing message with the same turnID+role and reuses it, instead of appending a duplicate.
 - **Cache generation counter (`histGen`/`allLinesGen`) prevents stale `allLines` reuse.** Every site that modifies `histLines` calls `bumpHistGen()`. The tick fast path only reuses `allLines` when `histGen == allLinesGen`. This replaces the old length-only comparison (`histLen == allLinesHistLen`) which could not detect content changes when line count coincidentally matched — causing stale cache + new content to render together as duplicates.
 - **`turnDoneFlags` tracks per-turn completion state**: `doneProcessed` (PhaseDone created tool_summary) and `replyReceived` (handleAgentMessage appended assistant reply). `handleAgentMessage` checks `doneProcessed` to skip redundant tool_summary creation. **Cleared on session switch** in `postRestoreSessionSetup` to prevent stale flags from causing premature queue flush.
@@ -142,11 +142,12 @@
 - **Server-side cancel barrier via `ctx.Done()`** prevents stale progress events from arriving after Ctrl+C. `buildMainRunConfig` wraps every `ProgressEventHandler` with `select { case <-ctx.Done(): return; default: }`. When `/cancel` triggers `reqCancel()`, the ctx is cancelled, and all subsequent progress event handler calls return immediately — no stale progress/PhaseDone events leak through to trigger re-renders. No extra fields needed: the ctx is the natural cancellation mechanism already wired through `chatProcessLoop → processMessage → buildMainRunConfig`.
 - **`handleHistoryLoad` now deduplicates using identity keys.** Messages are keyed by `role + ":" + turnID + ":" + content` and duplicates are skipped during append. Prevents double-rendering when history reload races with in-flight messages.
 - **`compressionReloading` and `turnDoneFlags` are cleared in `postRestoreSessionSetup`.** Without clearing, a stale `compressionReloading=true` from the previous session permanently blocks auto-start in the new session, and stale `turnDoneFlags` can cause premature queue flush.
-- **`HistoryCompacted` handler MUST immediately create a streaming message and clear `pendingUserMsg`.** The old code set `compReloading=true` to block auto-start until the async reload completed, then relied on `handleHistoryReload` to recreate the streaming message. But `reloadMessagesFromSession` dropped the message on full `asyncCh` (silent `default`), making `compReloading` permanently true — no streaming message was ever created, freezing the TUI (busy but no live updates). Now the streaming message is created immediately, progress events render via `updateStreamingOnly` before the reload even arrives. `pendingUserMsg` is cleared to prevent duplicates: the reload fetches the user message from DB with system-guide text prepended, which doesn't match `pendingUserMsg.content` (raw input), causing `handleHistoryReload` to append it again.
+- **`HistoryCompacted` handler MUST return early, skipping `snapshotIterationChange` and `updateViewportContent`.** The handler clears `progressState.iterations=nil` and `lastIter=0`, but without `return`, execution falls through to `snapshotIterationChange(msg.payload, prev)` where `prev` (captured before the handler) holds pre-compression data. The mismatch path (`prev.Iteration != lastIter(0)`) creates a stale snapshot from pre-compression state, polluting iteration history. After compression, there is no useful `prev` data — the async reload rebuilds everything from DB. The handler MUST `return` after `reloadMessagesFromSession(true)`.
 - **`handleHistoryReload` MUST preserve the streaming message for ALL reloads, not just non-forceFullRebuild.** The old `!msg.forceFullRebuild` check meant forceFullRebuild (from compression) replaced messages WITHOUT preserving the streaming message. Combined with `compReloading` blocking auto-start, this left no streaming message at all. Now always preserves `streamingMsg` when `m.typing && m.streamingMsgIdx >= 0`.
 - **`reloadMessagesFromSession` MUST use blocking send with timeout, NOT silent `default` drop.** The old `select { case ... asyncCh <- msg: default: }` silently dropped the reload when asyncCh was full (256 buffer). There was no retry — the comment "next progress event will retry" was false. Now uses blocking send with 10s timeout.
 - **`liveIterationBlocks` deduplicates tools by `Name + Label`** — but `generating` tools skip dedup. Streaming tools have no labels yet (args still being generated), so two same-name tools (e.g. two `Read` calls) would share the same `Name+""` key and the second gets dropped. Fix: `Status=="generating"` tools are appended unconditionally, bypassing the `seen` map.
 - **`snapshotIterationChange` data mismatch path now creates a snapshot instead of discarding.** When `prev.Iteration != m.lastSeenIteration`, instead of skipping the snapshot entirely (which permanently loses iteration data), it creates a snapshot tagged with `prev.Iteration` after checking it wasn't already snapshotted.
+- **`progressState.current` is rendering data, NOT a state flag.** Busy/idle state is determined solely by `m.typing` (set by `startAgentTurn`, cleared by `endAgentTurn`). Using `progressState.current != nil` as a busy indicator causes the TUI to stay stuck in busy state after turn completion — `endAgentTurn` preserves `progressState.current` for flicker-free rendering, so it's never nil after a turn. All status bar, tick handler, and update-notice suppression checks must use `m.typing` only.
 - **`mergeSubAgentTrees` preserves children when `new.Children` is empty but `prev.Children` exists.** Instead of returning nil (dropping the subtree), it marks all prev children as done via `markAllDone()`. This prevents child progress trees from flickering when the server doesn't include children in every update frame.
 
 ### SubAgent Progress Identity
@@ -344,3 +345,45 @@
 ## Project Context
 
 `ProjectContextMiddleware` auto-loads this file into system prompt. After code changes, update relevant Knowledge Files to keep documentation in sync.
+
+### No Hacks, No Fallbacks, No Defensive Programming
+
+**禁止 hack、兜底逻辑和防御性编程。从根源保证正确，而非叠加防护层。**
+
+这一原则是 TUI 渲染系统多年 bug 修复的教训总结。大量 bug 源于"加一层防御"而非"修根因"——每层防御本身引入新的边界条件，最终形成难以维护的防御栈，反而制造更多 bug。
+
+#### 核心规则
+
+1. **从根源修复，不加补丁**
+   - ❌ 数据在传输中丢失 → 加 dedup 函数去重丢失后的重复
+   - ✅ 数据在传输中丢失 → 修复传输层使数据不丢失
+   - ❌ 状态可能陈旧 → 加 `alreadySnapped` 检查覆盖陈旧场景
+   - ✅ 状态可能陈旧 → 修复状态管理使陈旧不可能发生
+
+2. **不写兜底链**
+   - ❌ `if a == "" { a = b }; if a == "" { a = c }; if a == "" { a = d }` — 四级 fallback 链
+   - ✅ 确定唯一权威数据源，只读那一个
+   - 如果数据可能因 coalescing/并发丢失，修复 coalescing/并发设计，而非加 fallback
+
+3. **不写防御性检查**
+   - ❌ `if prev != nil && prev.Iteration == expected && len(prev.ActiveTools) > 0` — 三重前提条件
+   - ✅ 保证调用前置条件由架构不变量保证，函数只处理正常路径
+   - 如果前置条件可能不满足，那是调用方的 bug，应在调用方修复
+
+4. **不写性能损害型防护**
+   - ❌ 每次 updateViewportContent 全量扫描 messages 做去重（O(N) per frame）
+   - ✅ 保证写入路径不产生重复（O(1)，写入即唯一）
+   - ❌ 每次 snapshot 分配 map 做去重
+   - ✅ 数据源保证无重叠，不需要去重
+
+5. **审计现有防御层**
+   - 修改代码时，检查周围的防御性代码是否因根因修复而变得多余
+   - 多余的防御代码必须一并删除——它们不是"安全网"，是噪声
+   - 每一层防御都应该有明确的 bug ID 或场景说明为什么需要存在
+
+#### 具体到 TUI 渲染
+
+- **progressCh coalescing**：buffer=1 channel 会丢弃事件。正确做法是理解哪些字段会被丢弃，在**数据源头**保证不丢失（如 `snapshotIterationChange` 利用引擎不变量 "iteration 切换时所有工具已完成"），而非在消费端加 fallback/dedup
+- **snapshotIterationChange**：引擎保证 iteration 切换时 `snapshotCompletedIteration` 已执行（ActiveTools → CompletedTools），所以 CLI 端直接捕获所有 ActiveTools 即可，不需要按 status 过滤、不需要 dedup、不需要 lastCompletedTools fallback
+- **handleProgressDone**：PhaseDone 事件经过 progressFinalizer，ActiveTools 必然为空、CompletedTools 必然包含全部工具。不需要扫描 ActiveTools、不需要 lastCompletedTools fallback
+- **renderTurnBody 去重**：同一 LLM response 文本从 `iter.Thinking`（ThinkingContent）和 `fallbackContent`（msg.content）两条路径渲染。精确匹配去重是正确做法——它们源自同一数据，必然相等。前缀匹配/百分比阈值是 hack

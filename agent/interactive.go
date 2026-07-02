@@ -62,6 +62,7 @@ type interactiveAgent struct {
 	promptTokens     int64               // last known prompt token count (for TUI status bar)
 	completionTokens int64               // last known completion token count (for TUI status bar)
 	pendingMessages  []pendingUserMsg    // messages queued while Run is in progress
+	subID            string              // subscription ID for TUI status bar display
 }
 
 // drainPendingMessages drains all pending user messages queued while the SubAgent
@@ -1094,6 +1095,7 @@ func (a *Agent) SpawnInteractiveSession(
 		messages:         newMessages,
 		iterationHistory: out.IterationHistory,
 		cfg:              &cfg,
+		subID:            cfg.SubID,
 		lastUsed:         time.Now(),
 		lastReply:        out.Content,
 		background:       false,
@@ -2124,6 +2126,7 @@ type AgentSessionDump struct {
 
 	// Status bar metadata — used by TUI to render context bar, model name, etc.
 	ModelName        string  `json:"modelName,omitempty"`
+	SubscriptionID   string  `json:"subscriptionID,omitempty"`
 	MaxContextTokens int64   `json:"maxContextTokens,omitempty"`
 	MaxOutputTokens  int64   `json:"maxOutputTokens,omitempty"`
 	CompressRatio    float64 `json:"compressRatio,omitempty"`
@@ -2171,6 +2174,7 @@ func (a *Agent) GetAgentSessionDump(channel, chatID, roleName, instance string) 
 		Messages:         msgs,
 		IterationHistory: iters,
 		ModelName:        ia.modelName(),
+		SubscriptionID:   ia.subID,
 		MaxContextTokens: ia.maxContextTokens(),
 		MaxOutputTokens:  ia.maxOutputTokens(),
 		CompressRatio:    ia.compressRatio(),
@@ -2219,6 +2223,7 @@ func (a *Agent) GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump,
 		Messages:         msgs,
 		IterationHistory: iters,
 		ModelName:        ia.modelName(),
+		SubscriptionID:   ia.subID,
 		MaxContextTokens: ia.maxContextTokens(),
 		MaxOutputTokens:  ia.maxOutputTokens(),
 		CompressRatio:    ia.compressRatio(),

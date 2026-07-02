@@ -98,6 +98,11 @@ type RunConfig struct {
 	// 主 Agent 场景下为空（与 SessionKey 相同）。
 	RootSessionKey string
 
+	// SubID is the subscription ID used to build the LLM client.
+	// For SubAgents, this is the subscription that owns cfg.Model.
+	// Used by GetAgentSessionDump for TUI status bar display.
+	SubID string
+
 	// ProgressNotifier 进度通知回调（text-based, 用于通知父 Agent）。
 	// autoNotify 由 ProgressNotifier 或 ProgressEventHandler 的存在决定，
 	// 两者独立：ProgressNotifier 不再是 ProgressEventHandler 的门控条件。

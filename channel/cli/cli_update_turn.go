@@ -230,12 +230,35 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	//   2. m.typing == false but replyReceived == false: PhaseDone arrived
 	//      (set typing=false via endAgentTurn) but the reply hasn't been
 	//      processed by handleAgentMessage yet.
-	shouldQueue := m.typing
+	//   3. m.turnCancelled == true: Ctrl+C PhaseDone arrived (typing=false)
+	//      but cancel ack hasn't been processed yet. Starting a new turn now
+	//      would orphan the cancelled turn's streaming message (still
+	//      isPartial in m.messages). The cancel ack will clean it up and
+	//      flush the queue via tryFlushMessageQueue.
+	shouldQueue := m.typing || m.turnCancelled
 	if !shouldQueue && m.agentTurnID > 0 {
 		if flag := m.getTurnFlag(m.agentTurnID); flag != nil && flag.doneProcessed && !flag.replyReceived {
 			shouldQueue = true
 		}
 	}
+
+	// Race fix: if typing=true was set by progress auto-start (not by a real
+	// user message), the injected notification IS the user message for this
+	// turn. Claim it by inserting the user message before the streaming message
+	// instead of queuing — queuing would produce a second assistant when flushed.
+	if shouldQueue && m.typing && m.turnAutoStarted {
+		m.turnAutoStarted = false
+		m.insertUserMessageBeforeStreaming(msg.content)
+		if m.bgTaskCountFn != nil {
+			m.bgTaskCount = m.bgTaskCountFn()
+		}
+		if m.agentCountFn != nil {
+			m.agentCount = m.agentCountFn()
+		}
+		m.rc.valid = false
+		return nil
+	}
+
 	if shouldQueue {
 		log.Debug("handleInjectedUserMsg: queuing — current turn reply not yet received")
 		m.messageQueue = append(m.messageQueue, queuedMsg{content: msg.content, chatID: m.chatID})
@@ -311,7 +334,7 @@ func (m *cliModel) handleUpdateCheck(msg cliUpdateCheckMsg) {
 	// The notice would corrupt the progress panel layout and distract from
 	// the active iteration history the user needs to see.
 	// The notice is still stored in m.updateNotice for manual /update check.
-	if m.typing || (m.progressState.current != nil && m.progressState.current.Phase != "done" && m.progressState.current.Phase != "") {
+	if m.typing {
 		return
 	}
 	if msg.info.HasUpdate {
@@ -451,8 +474,11 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	}
 
 	// Spinner / progress update
-	sessionActive := m.progressState.current != nil && m.progressState.current.Phase != "done"
-	busy := m.typing || sessionActive
+	// m.typing is the authoritative busy state flag (set by startAgentTurn,
+	// cleared by endAgentTurn). progressState.current is rendering data,
+	// NOT a state flag — it's preserved after endAgentTurn for flicker-free
+	// rendering between PhaseDone and handleAgentMessage.
+	busy := m.typing
 	needsSpinnerTick := busy || m.progressState.busySessions
 
 	// Refresh bg task / agent counts every tick so the infobar and sidebar

@@ -33,6 +33,7 @@ type suHistoryLoadMsg struct {
 	tokenCompletion int64
 	// LLM state for TUI status bar rendering (model name, context limits, etc.)
 	modelName        string
+	subscriptionID   string
 	maxContextTokens int64
 	maxOutputTokens  int64
 	compressRatio    float64

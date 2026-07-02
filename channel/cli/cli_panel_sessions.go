@@ -452,13 +452,24 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 	}
 
 	m.saveCurrentSession()
-	// Inherit parent session's LLM state atomically.
-	// SaveSessionLLMState writes ALL fields (sub, model, maxContext, maxOutput) in one shot.
-	if m.activeSubID != "" {
+	// Bind the new session's model to DB immediately. In remote mode,
+	// SaveSessionLLMState skips local JSON (skipSub=true) AND does NOT write
+	// to the DB tenants table — the session would have no model binding in DB,
+	// forcing refreshCachedModelName to fall back to the global default (which
+	// may not match the parent session's model). Calling SelectModel writes
+	// (subID, model) to the tenants table atomically.
+	if m.activeSubID != "" && m.cachedModelName != "" {
+		if m.llmSubscriber != nil {
+			if err := m.llmSubscriber.SelectModel(m.senderID, m.activeSubID, m.cachedModelName, chatID); err != nil {
+				log.WithError(err).Warn("showSessionCreateDialog: SelectModel failed for new session")
+			}
+		}
+		// Also save to local JSON as cache (don't skip in remote mode — local
+		// JSON is the fallback when GetSessionSubscription RPC fails).
 		SaveSessionLLMState(m.workDir, chatID, SessionLLMState{
 			SubscriptionID: m.activeSubID,
 			Model:          m.cachedModelName,
-		}, m.remoteMode)
+		})
 	}
 	m.chatID = chatID
 	SetLastActiveSession(m.defaultChatID, chatID)

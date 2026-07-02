@@ -244,13 +244,16 @@ type cliModel struct {
 	// --- §Session state save/restore ---
 	// Per-session saved state so switching sessions doesn't lose in-progress state.
 	// Key = "channelName:chatID". Messages are NOT saved here — DB is source of truth.
-	savedSessions      map[string]*sessionState
-	pendingUserMsg     *cliMessage       // most recent user message sent but not yet confirmed in DB
-	pendingSuRestore   *suHistoryLoadMsg // pre-start restore data, consumed by Init()
-	turnCancelled      bool              // true after Ctrl+C — prevents auto-start on stale progress
-	cancelTargetTurnID uint64            // turnID being cancelled; guards stale cancel ack from modifying wrong message
-	cancelAckProcessed bool              // true after first cancel ack handled; guards stale second cancel ack (Bug #2: async goroutine race)
-	idleTickCounter    int               // counts 100ms ticks in idle state; placeholder rotates every 30
+	savedSessions    map[string]*sessionState
+	pendingUserMsg   *cliMessage       // most recent user message sent but not yet confirmed in DB
+	pendingSuRestore *suHistoryLoadMsg // pre-start restore data, consumed by Init()
+	turnCancelled    bool              // true after Ctrl+C — prevents auto-start on stale progress
+	turnAutoStarted  bool              // true when turn was started by progress auto-start (no user message yet).
+	// handleInjectedUserMsg checks this to claim the auto-started turn
+	// instead of queuing (which would create a second assistant).
+	cancelTargetTurnID uint64 // turnID being cancelled; guards stale cancel ack from modifying wrong message
+	cancelAckProcessed bool   // true after first cancel ack handled; guards stale second cancel ack (Bug #2: async goroutine race)
+	idleTickCounter    int    // counts 100ms ticks in idle state; placeholder rotates every 30
 
 	// --- Deterministic rendering: per-turn completion tracking ---
 	// turnDoneFlags tracks whether specific events have been processed for a turn.
@@ -634,11 +637,11 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 					todos = todosFn(channelName, chatID)
 				}
 				// Fetch LLM state from agent for SubAgent session status bar
-				var modelName string
+				var modelName, subID string
 				var maxCtx, maxOut, tokPrompt, tokComp int64
 				var compRatio float64
 				if llmStateFn != nil {
-					modelName, maxCtx, maxOut, compRatio, tokPrompt, tokComp = llmStateFn(chatID)
+					modelName, subID, maxCtx, maxOut, compRatio, tokPrompt, tokComp = llmStateFn(chatID)
 				}
 				// Fallback token state from DB if agent didn't provide it
 				if tokPrompt == 0 && tokenFn != nil {
@@ -648,7 +651,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 					history: history, err: err, channelName: channelName, chatID: chatID,
 					activeProgress: activeProgress, todos: todos,
 					tokenPrompt: tokPrompt, tokenCompletion: tokComp,
-					modelName: modelName, maxContextTokens: maxCtx,
+					modelName: modelName, subscriptionID: subID, maxContextTokens: maxCtx,
 					maxOutputTokens: maxOut, compressRatio: compRatio,
 				}
 			}

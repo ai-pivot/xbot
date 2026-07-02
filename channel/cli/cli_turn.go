@@ -169,6 +169,7 @@ func (m *cliModel) startAgentTurn() {
 		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 	}
 	m.turnDoneFlags[m.agentTurnID] = &turnDoneFlag{}
+	m.turnAutoStarted = false
 
 	// Clean up old turn entries (keep last 3 for late-arrival safety).
 	for id := range m.turnDoneFlags {
@@ -290,19 +291,22 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	// streamingMsgIdx is still valid here → updateStreamingOnly path.
 	m.relayoutViewport()
 
-	// --- Clear progress/typing state ---
-	// All state cleared AFTER the final render, so the viewport stays
-	// visually stable until handleAgentMessage re-renders the completed message.
+	// --- Preserve progress state for flicker-free rendering ---
+	// DO NOT clear progressState.iterations, progressState.current,
+	// reasoningByIter, lastReasoning, or invalidateProgress() here.
+	// These are needed by updateStreamingOnly to render the turn's final
+	// state between PhaseDone and handleAgentMessage. Clearing them causes
+	// updateStreamingOnly to render an empty progress block, then
+	// appendNewMessagesToCache renders the message with stale content —
+	// resulting in a visible flicker (two viewport content changes).
+	//
+	// Progress state is cleared by:
+	// - handleAgentMessage: after the reply is processed (via startAgentTurn
+	//   for the next turn, or explicitly when the turn is fully done)
+	// - startAgentTurn → resetProgressState: when a new turn begins
+	// - /clear, session switch: full state reset
 	m.lastCompletedTools = nil
-	m.progressState.iterations = nil
-	m.rc.invalidateProgress()
-	m.progressState.lastIter = 0
-	m.lastReasoning = ""
-	m.reasoningByIter = nil
-	m.progressState.streamReasoningByIter = nil
-	m.lastThinking = ""
 	m.typingStartTime = time.Time{}
-	m.progressState.current = nil
 	m.progressState.twVisible = 0
 	m.progressState.rwVisible = 0
 	m.typing = false
@@ -349,12 +353,19 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 		m.todos = nil
 		m.todosDoneCleared = false
 	}
-	// Clear streamingMsgIdx AFTER relayoutViewport: during relayout we need it
-	// valid so updateViewportContent uses updateStreamingOnly (no caching).
-	// After relayout, clear it so the tick handler doesn't keep rendering
-	// the old turn's message via updateStreamingOnly (would briefly flash
-	// previous turn content before the next real progress event).
-	m.streamingMsgIdx = -1
+	// DO NOT clear streamingMsgIdx here. Keeping it valid ensures the tick
+	// handler uses updateStreamingOnly (streaming path) instead of falling
+	// through to appendNewMessagesToCache, which would cache the streaming
+	// message with incomplete content (reply hasn't arrived yet). That causes
+	// a double-flicker: once when the partial content is cached, again when
+	// handleAgentMessage re-renders with the final content.
+	//
+	// The turnID guard at the top of endAgentTurn already prevents stale
+	// turns from interfering. handleAgentMessage will set streamingMsgIdx=-1
+	// and call rerenderCachedMessage for a single clean transition.
+	//
+	// If handleAgentMessage never arrives (error/cancel path), the cancel ack
+	// or the next startAgentTurn will reset streamingMsgIdx.
 	// Refresh agent count so the tick chain continues if agents exist
 	if m.agentCountFn != nil {
 		m.agentCount = m.agentCountFn()
@@ -504,6 +515,30 @@ func (m *cliModel) purgeZombieMessages(turnID uint64, role string, keepIdx int) 
 // Returns true if a message was removed.
 // flushMessageQueue sends the first queued message (if any) when input becomes ready.
 // Returns a tea.Cmd to send the message, or nil if queue is empty.
+// insertUserMessageBeforeStreaming inserts a user message at the position
+// immediately before the streaming message. Used when handleInjectedUserMsg
+// claims an auto-started turn (progress auto-start created the streaming
+// message before the user message arrived via asyncCh).
+func (m *cliModel) insertUserMessageBeforeStreaming(content string) {
+	userMsg := cliMessage{
+		role:      "user",
+		content:   content,
+		timestamp: time.Now(),
+		dirty:     true,
+	}
+	idx := m.streamingMsgIdx
+	if idx < 0 || idx >= len(m.messages) {
+		// No streaming message — just append
+		m.messages = append(m.messages, userMsg)
+		return
+	}
+	// Insert before streaming message
+	m.messages = append(m.messages, cliMessage{}) // grow
+	copy(m.messages[idx+1:], m.messages[idx:])    // shift right
+	m.messages[idx] = userMsg
+	m.streamingMsgIdx++
+}
+
 func (m *cliModel) flushMessageQueue() {
 	if len(m.messageQueue) == 0 {
 		return

@@ -623,10 +623,19 @@ func (a *Agent) buildSubAgentRunConfig(
 	var userMaxCtx int
 	var thinkingMode string
 	var maxOutputTokens int
+	var subID string
 	if model != "" {
 		llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens, _ = a.llmFactory.GetLLMForModel(originUserID, model)
+		// Resolve the subscription ID that owns this model for TUI display.
+		if sub, err := a.llmFactory.ResolveSubscriptionForModel(originUserID, subModel); err == nil && sub != nil {
+			subID = sub.ID
+		}
 	} else {
 		llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens = a.llmFactory.GetLLM(originUserID)
+		// For inherited LLM, resolve subscription from the default model.
+		if sub, err := a.llmFactory.ResolveSubscriptionForModel(originUserID, subModel); err == nil && sub != nil {
+			subID = sub.ID
+		}
 	}
 
 	// Stream — default ON; inherit from parent config unless explicitly disabled.
@@ -642,6 +651,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	cfg := RunConfig{
 		LLMClient:       llmClient,
 		Model:           subModel,
+		SubID:           subID,
 		ThinkingMode:    thinkingMode,
 		Stream:          stream,
 		MaxOutputTokens: maxOutputTokens,

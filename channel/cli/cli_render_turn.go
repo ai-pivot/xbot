@@ -120,12 +120,18 @@ func (m *cliModel) renderTurnBody(
 		}
 	} else if fallbackContent != "" {
 		// Idle state: render the final assistant content after iterations.
-		// Avoid duplication: skip if the last iteration already contains it.
+		// Dedup: if any iteration already rendered the same text (via
+		// ThinkingContent → iter.Thinking), skip the fallback to avoid
+		// duplication. iter.Thinking carries the assistant's reply text
+		// (StructuredProgress.ThinkingContent, which is the actual response
+		// text, NOT reasoning — the field name is historical).
+		// Exact match only: fallbackContent (msg.content) and iter.Thinking
+		// originate from the same LLM response, so they should be identical.
 		alreadyRendered := false
-		if len(iterations) > 0 {
-			last := iterations[len(iterations)-1]
-			if last.Thinking == fallbackContent {
+		for i := range iterations {
+			if strings.TrimSpace(iterations[i].Thinking) == strings.TrimSpace(fallbackContent) {
 				alreadyRendered = true
+				break
 			}
 		}
 		if !alreadyRendered {
@@ -415,7 +421,10 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		hasSpinner = true
 	}
 	for _, tool := range p.ActiveTools {
-		if tool.Status == "running" || tool.Status == "active" || tool.Status == "done" || tool.Status == "error" {
+		// "pending" = tool is queued (waiting for a serial predecessor to finish).
+		// Without showing pending tools, the CLI oscillates between showing
+		// 3 (generating) → 1 (only running) → 2 → 3 as serial execution progresses.
+		if tool.Status == "running" || tool.Status == "active" || tool.Status == "done" || tool.Status == "error" || tool.Status == "pending" {
 			addTool(tool)
 		}
 		if tool.Status == "running" || tool.Status == "active" {
@@ -486,6 +495,13 @@ func (m *cliModel) renderLiveToolTags(tools []protocol.ToolProgress, width int) 
 				sb.WriteString(s.ProgressElapsed.Render(formatElapsed(tool.Elapsed)))
 			}
 			sb.WriteString("\n")
+		case "pending":
+			// Queued tool: waiting for a serial predecessor to finish.
+			// Dimmed with ○ to distinguish from actively running (●).
+			fmt.Fprintf(&sb, "  %s %s %s\n",
+				s.ProgressDim.Render("·"),
+				s.TextMutedSt.Render("○ "+label),
+				s.TextMutedSt.Render("queued"))
 		case "done":
 			sb.WriteString("  ")
 			sb.WriteString(s.ProgressDim.Render("·"))

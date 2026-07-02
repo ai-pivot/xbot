@@ -584,6 +584,14 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			if payload.CWD == "" && old.CWD != "" {
 				payload.CWD = old.CWD
 			}
+			// NOTE: CompletedTools/ActiveTools are NOT merged across coalescing.
+			// Merging iteration N's CompletedTools into iteration N+1's event
+			// causes cross-iteration tool attribution. Instead, the root fix is
+			// in snapshotIterationChange: when iteration changes, it captures
+			// ALL ActiveTools from prev (the engine guarantees they're done via
+			// snapshotCompletedIteration before callLLM starts the next iteration).
+			// prev may have stale "running" status due to coalescing dropping the
+			// "done" event, but the tool data is preserved in ActiveTools.
 		default:
 		}
 		select {

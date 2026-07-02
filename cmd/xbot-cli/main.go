@@ -1543,12 +1543,12 @@ func main() {
 			return nil, nil
 		}
 		// SubAgent LLM state for TUI status bar (model name, context limits, token usage)
-		cliCfg.AgentSessionLLMStateFn = func(chatID string) (string, int64, int64, float64, int64, int64) {
+		cliCfg.AgentSessionLLMStateFn = func(chatID string) (string, string, int64, int64, float64, int64, int64) {
 			dump, ok := backend.GetAgentSessionDumpByFullKey(chatID)
 			if !ok || dump == nil {
-				return "", 0, 0, 0, 0, 0
+				return "", "", 0, 0, 0, 0, 0
 			}
-			return dump.ModelName, dump.MaxContextTokens, dump.MaxOutputTokens, dump.CompressRatio, dump.PromptTokens, dump.CompletionTokens
+			return dump.ModelName, dump.SubscriptionID, dump.MaxContextTokens, dump.MaxOutputTokens, dump.CompressRatio, dump.PromptTokens, dump.CompletionTokens
 		}
 	}
 
