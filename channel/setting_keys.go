@@ -88,6 +88,14 @@ var AllSettingDefs = []SettingDef{
 	{Key: "thinking_mode", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Enable thinking/reasoning mode (global toggle)", ValidValues: "|enabled|disabled", DefaultValue: ""},
 	{Key: "api_type", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "OpenAI API endpoint type: chat_completions or responses", ValidValues: "chat_completions|responses", DefaultValue: "chat_completions"},
 
+	// ── Model tier settings (user_settings DB, consumed by agent tier resolver) ──
+	// Stored under the "cli" channel. Values use "subID|model" format. Not Runtime
+	// (no.ApplyConfig/ApplyAgent handler needed — the agent reads them lazily via
+	// getSetting at SubAgent invocation time).
+	{Key: "tier_vanguard", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Model used for SubAgent vanguard tier (cross-subscription)", ValidValues: "subID|model or plain model name", DefaultValue: ""},
+	{Key: "tier_balance", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Model used for SubAgent balance tier (cross-subscription)", ValidValues: "subID|model or plain model name", DefaultValue: ""},
+	{Key: "tier_swift", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Model used for SubAgent swift tier (cross-subscription)", ValidValues: "subID|model or plain model name", DefaultValue: ""},
+
 	// ── User-scoped settings (user_settings DB) ──
 	{Key: "enable_stream", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "Show LLM output token-by-token", ValidValues: "true|false", DefaultValue: "true"},
 	{Key: "enable_masking", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Hide old tool results behind 📂 markers", ValidValues: "true|false", DefaultValue: "true"},
@@ -218,12 +226,17 @@ func IsUserScopedSettingKey(key string) bool {
 }
 
 // IsKnownNonRuntimeKey returns true for keys that don't need runtime handling
-// (UI-only, persistence-only, or action keys). These are keys NOT registered
-// in AllSettingDefs. Both CLI and Server use this to avoid warning logs for
-// known harmless keys.
+// (UI-only, persistence-only, action keys, or registered keys with Runtime=false).
+// Keys NOT registered in AllSettingDefs are treated as known non-runtime.
+// Keys registered with Runtime=false also don't need a handler.
+// Both CLI and Server use this to avoid warning logs for known harmless keys.
 func IsKnownNonRuntimeKey(key string) bool {
-	_, inDefs := allSettingDefsMap[key]
-	return !inDefs
+	d, ok := allSettingDefsMap[key]
+	if !ok {
+		return true // Not in defs at all — known harmless (UI-only, action, etc.)
+	}
+	// In defs but Runtime=false — doesn't need runtime handling (DB persistence only)
+	return !d.Runtime
 }
 
 // IsGlobalScopedSettingKey returns true if the key has ScopeGlobal.
