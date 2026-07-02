@@ -634,11 +634,11 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 					todos = todosFn(channelName, chatID)
 				}
 				// Fetch LLM state from agent for SubAgent session status bar
-				var modelName string
+				var modelName, subID string
 				var maxCtx, maxOut, tokPrompt, tokComp int64
 				var compRatio float64
 				if llmStateFn != nil {
-					modelName, maxCtx, maxOut, compRatio, tokPrompt, tokComp = llmStateFn(chatID)
+					modelName, subID, maxCtx, maxOut, compRatio, tokPrompt, tokComp = llmStateFn(chatID)
 				}
 				// Fallback token state from DB if agent didn't provide it
 				if tokPrompt == 0 && tokenFn != nil {
@@ -648,7 +648,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 					history: history, err: err, channelName: channelName, chatID: chatID,
 					activeProgress: activeProgress, todos: todos,
 					tokenPrompt: tokPrompt, tokenCompletion: tokComp,
-					modelName: modelName, maxContextTokens: maxCtx,
+					modelName: modelName, subscriptionID: subID, maxContextTokens: maxCtx,
 					maxOutputTokens: maxOut, compressRatio: compRatio,
 				}
 			}

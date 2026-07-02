@@ -205,10 +205,9 @@ func (m *cliModel) refreshCachedModelName() {
 	}
 	// Fallback: in-memory saved state (for sessions that were saved but not yet persisted)
 	if saved, ok := m.savedSessions[m.sessionKey()]; ok && saved.activeModel != "" {
+		// Both must come from the same record to avoid impossible (model, sub) pairs.
 		m.cachedModelName = saved.activeModel
-		if saved.activeSubscriptionID != "" {
-			m.activeSubID = saved.activeSubscriptionID
-		}
+		m.activeSubID = saved.activeSubscriptionID
 		return
 	}
 	// Fallback: only use global default when no per-session override exists

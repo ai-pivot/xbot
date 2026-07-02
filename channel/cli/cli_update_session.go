@@ -433,11 +433,13 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		}
 	}
 	// Restore LLM state for TUI status bar (model name, context limits, etc.)
-	// For SubAgent sessions, these come from AgentSessionDump. For normal
-	// sessions, they come from LoadSessionLLMState. Without this, the status
-	// bar shows the parent agent's model name and context limits.
+	// For SubAgent sessions, these come from AgentSessionDump. Both cachedModelName
+	// AND activeSubID must come from the same dump to avoid impossible (model, sub)
+	// pairs. The parent session's values are restored on switch-back via
+	// restoreSession → refreshCachedModelName.
 	if msg.modelName != "" {
 		m.cachedModelName = msg.modelName
+		m.activeSubID = msg.subscriptionID
 	}
 	if msg.maxContextTokens > 0 {
 		m.cachedMaxContextTokens = int(msg.maxContextTokens)
