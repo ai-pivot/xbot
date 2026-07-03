@@ -19,10 +19,10 @@ func TestIterations_NoLeakBetweenTurns(t *testing.T) {
 
 	// Simulate Turn 1 iterations
 	model.progressState.iterations = []cliIterationSnapshot{
-		{Iteration: 0, Thinking: "turn1-iter0", Tools: []protocol.ToolProgress{
+		{Iteration: 0, Content: "turn1-iter0", Tools: []protocol.ToolProgress{
 			{Name: "Read", Label: "file1.go", Status: "done", Elapsed: 100, Iteration: 0},
 		}},
-		{Iteration: 1, Thinking: "turn1-iter1", Tools: []protocol.ToolProgress{
+		{Iteration: 1, Content: "turn1-iter1", Tools: []protocol.ToolProgress{
 			{Name: "Shell", Label: "go build", Status: "done", Elapsed: 200, Iteration: 1},
 		}},
 	}
@@ -70,13 +70,13 @@ func TestIterations_NoLeakBetweenTurns(t *testing.T) {
 
 	// Simulate Turn 2 iterations
 	model.progressState.iterations = []cliIterationSnapshot{
-		{Iteration: 0, Thinking: "turn2-iter0", Tools: []protocol.ToolProgress{
+		{Iteration: 0, Content: "turn2-iter0", Tools: []protocol.ToolProgress{
 			{Name: "Edit", Label: "fix.go", Status: "done", Elapsed: 50, Iteration: 0},
 		}},
-		{Iteration: 1, Thinking: "turn2-iter1", Tools: []protocol.ToolProgress{
+		{Iteration: 1, Content: "turn2-iter1", Tools: []protocol.ToolProgress{
 			{Name: "Grep", Label: "search", Status: "done", Elapsed: 30, Iteration: 1},
 		}},
-		{Iteration: 2, Thinking: "turn2-iter2", Tools: []protocol.ToolProgress{
+		{Iteration: 2, Content: "turn2-iter2", Tools: []protocol.ToolProgress{
 			{Name: "Shell", Label: "go test", Status: "done", Elapsed: 150, Iteration: 2},
 		}},
 	}
@@ -98,8 +98,8 @@ func TestIterations_NoLeakBetweenTurns(t *testing.T) {
 
 	// Verify Turn 2's iterations are NOT Turn 1's
 	for _, it := range model.progressState.iterations {
-		if it.Thinking == "turn1-iter0" || it.Thinking == "turn1-iter1" {
-			t.Errorf("Turn 1 iteration leaked into Turn 2: %s", it.Thinking)
+		if it.Content == "turn1-iter0" || it.Content == "turn1-iter1" {
+			t.Errorf("Turn 1 iteration leaked into Turn 2: %s", it.Content)
 		}
 	}
 
@@ -122,8 +122,8 @@ func TestIterations_NoLeakBetweenTurns(t *testing.T) {
 		t.Errorf("A1 iterations = %d, want 2", len(assistants[0].iterations))
 	}
 	for _, it := range assistants[0].iterations {
-		if it.Thinking != "turn1-iter0" && it.Thinking != "turn1-iter1" {
-			t.Errorf("A1 has wrong iteration: %s", it.Thinking)
+		if it.Content != "turn1-iter0" && it.Content != "turn1-iter1" {
+			t.Errorf("A1 has wrong iteration: %s", it.Content)
 		}
 	}
 
@@ -132,9 +132,9 @@ func TestIterations_NoLeakBetweenTurns(t *testing.T) {
 		t.Errorf("A2 iterations = %d, want 3", len(assistants[1].iterations))
 	}
 	for _, it := range assistants[1].iterations {
-		if it.Thinking == "turn1-iter0" || it.Thinking == "turn1-iter1" {
+		if it.Content == "turn1-iter0" || it.Content == "turn1-iter1" {
 			t.Errorf("A2 has Turn 1 iteration leaked: %s — this is the 'U1 A1 U2 A1' bug",
-				it.Thinking)
+				it.Content)
 		}
 	}
 
@@ -157,7 +157,7 @@ func TestIterations_ClearedOnCancelAck(t *testing.T) {
 
 	// Populate iterationHistory
 	model.progressState.iterations = []cliIterationSnapshot{
-		{Iteration: 0, Thinking: "cancel-iter0", Tools: []protocol.ToolProgress{
+		{Iteration: 0, Content: "cancel-iter0", Tools: []protocol.ToolProgress{
 			{Name: "Read", Label: "file.go", Status: "done", Elapsed: 100, Iteration: 0},
 		}},
 	}

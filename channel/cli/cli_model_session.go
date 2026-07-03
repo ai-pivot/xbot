@@ -68,7 +68,7 @@ type sessionState struct {
 	lastSeenIteration    int
 	streamingMsgIdx      int
 	typingStartTime      time.Time
-	lastThinking         string
+	lastContent          string
 	turnCancelled        bool
 	typewriterTickActive bool
 	// Context bar state — preserved across session switches so the
@@ -121,7 +121,7 @@ func (m *cliModel) saveCurrentSession() {
 		lastSeenIteration:    m.progressState.lastIter,
 		streamingMsgIdx:      m.streamingMsgIdx,
 		typingStartTime:      m.typingStartTime,
-		lastThinking:         m.lastThinking,
+		lastContent:          m.lastContent,
 		turnCancelled:        m.turnCancelled,
 		typewriterTickActive: m.progressState.twActive,
 		lastTokenUsage:       m.lastTokenUsage,
@@ -162,7 +162,7 @@ func (m *cliModel) restoreSession() {
 		m.progressState.lastIter = saved.lastSeenIteration
 		m.streamingMsgIdx = saved.streamingMsgIdx
 		m.typingStartTime = saved.typingStartTime
-		m.lastThinking = saved.lastThinking
+		m.lastContent = saved.lastContent
 		m.turnCancelled = saved.turnCancelled
 		m.progressState.twActive = saved.typewriterTickActive
 		m.lastTokenUsage = saved.lastTokenUsage
@@ -213,7 +213,7 @@ func (m *cliModel) restoreSession() {
 		m.progressState.lastIter = 0
 		m.typingStartTime = time.Time{}
 		m.progressState.streamReasoningByIter = nil
-		m.lastThinking = ""
+		m.lastContent = ""
 		m.inputReady = false
 		m.needFlushQueue = false
 		m.messageQueue = nil
@@ -286,7 +286,7 @@ func (m *cliModel) resetToIdleState() {
 	m.typingStartTime = time.Time{}
 	m.inputReady = false
 	m.progressState.streamReasoningByIter = nil
-	m.lastThinking = ""
+	m.lastContent = ""
 
 	// --- Message Queue ---
 	m.messageQueue = nil

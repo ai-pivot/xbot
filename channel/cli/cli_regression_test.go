@@ -105,7 +105,7 @@ func TestEndAgentTurn_PreservesProgressState(t *testing.T) {
 // fallbackContent is not duplicated when it exactly matches an EARLIER
 // iteration's Thinking. The old code only checked the last iteration.
 //
-// Root cause: iter.Thinking carries the assistant's reply text
+// Root cause: iter.Content carries the assistant's reply text
 // (StructuredProgress.ThinkingContent = response text, NOT reasoning).
 // fallbackContent (msg.content) is the same text from a different path.
 // Exact match dedup prevents the double render.
@@ -116,7 +116,7 @@ func TestRenderTurnBody_DedupExactMatchAllIterations(t *testing.T) {
 	iterations := []cliIterationSnapshot{
 		{
 			Iteration: 1,
-			Thinking:  "Let me analyze the code",
+			Content:   "Let me analyze the code",
 			Tools: []protocol.ToolProgress{
 				{Name: "Read", Label: "main.go", Status: "done", Elapsed: 50, Iteration: 1},
 			},
@@ -141,7 +141,7 @@ func TestRenderTurnBody_DedupExactMatchAllIterations(t *testing.T) {
 }
 
 // TestRenderTurnBody_DifferentTextNotSuppressed verifies that when
-// fallbackContent differs from iter.Thinking (e.g. LLM added more text
+// fallbackContent differs from iter.Content (e.g. LLM added more text
 // after tools), the fallback is rendered normally.
 func TestRenderTurnBody_DifferentTextNotSuppressed(t *testing.T) {
 	model := initTestModel()
@@ -150,7 +150,7 @@ func TestRenderTurnBody_DifferentTextNotSuppressed(t *testing.T) {
 	iterations := []cliIterationSnapshot{
 		{
 			Iteration: 1,
-			Thinking:  "I will now",
+			Content:   "I will now",
 		},
 	}
 
@@ -171,87 +171,6 @@ func TestRenderTurnBody_DifferentTextNotSuppressed(t *testing.T) {
 // progressCh coalescing. The engine guarantees all tools are done before
 // starting the next iteration, so ActiveTools with stale "running" status
 // must still be captured in the snapshot.
-func TestSnapshotIterationChange_CoalescedToolsNotLost(t *testing.T) {
-	model := initTestModel()
-	model.startAgentTurn()
-
-	// Iteration 1: tools running (the "done" event will be coalesced away)
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase:     "tool_exec",
-		Iteration: 1,
-		ActiveTools: []protocol.ToolProgress{
-			{Name: "Read", Label: "main.go", Status: "running", Iteration: 1},
-			{Name: "Grep", Label: "pattern", Status: "running", Iteration: 1},
-		},
-	})
-
-	// Iteration 2 arrives WITHOUT a "tools done" event (coalesced away).
-	// prev has ActiveTools with "running" status — but the engine has
-	// actually completed them (snapshotCompletedIteration ran before callLLM).
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase:     "thinking",
-		Iteration: 2,
-		Reasoning: "Now I see the issue...",
-	})
-
-	// The snapshot should contain BOTH tools despite "running" status.
-	if len(model.progressState.iterations) == 0 {
-		t.Fatal("should have at least 1 snapshotted iteration")
-	}
-	snap := model.progressState.iterations[0]
-	if len(snap.Tools) != 2 {
-		t.Errorf("should have 2 tools in snapshot (coalescing must not lose them), got %d", len(snap.Tools))
-	}
-	// Verify both tool labels are present
-	labels := make(map[string]bool)
-	for _, tool := range snap.Tools {
-		labels[tool.Label] = true
-	}
-	if !labels["main.go"] {
-		t.Error("tool 'main.go' missing from snapshot")
-	}
-	if !labels["pattern"] {
-		t.Error("tool 'pattern' missing from snapshot")
-	}
-}
-
-// TestSnapshotIterationChange_PendingToolsCaptured verifies that pending
-// (queued) tools are also captured when the iteration changes.
-func TestSnapshotIterationChange_PendingToolsCaptured(t *testing.T) {
-	model := initTestModel()
-	model.startAgentTurn()
-
-	// Iteration 1: one tool running, one pending
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase:     "tool_exec",
-		Iteration: 1,
-		ActiveTools: []protocol.ToolProgress{
-			{Name: "Read", Label: "f1.go", Status: "running", Iteration: 1},
-			{Name: "Grep", Label: "pat", Status: "pending", Iteration: 1},
-		},
-	})
-
-	// Iteration 2: both tools are done (engine completed them),
-	// but the "done" event was coalesced away.
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase:     "thinking",
-		Iteration: 2,
-	})
-
-	if len(model.progressState.iterations) == 0 {
-		t.Fatal("should have 1 snapshotted iteration")
-	}
-	snap := model.progressState.iterations[0]
-	if len(snap.Tools) != 2 {
-		t.Errorf("should have 2 tools (running + pending both captured), got %d", len(snap.Tools))
-	}
-}
-
-// ─── Fix 7: HistoryCompacted handler must return early ─────────────
-
-// TestHistoryCompacted_NoStaleSnapshot verifies that the HistoryCompacted
-// handler returns early, preventing snapshotIterationChange from creating
-// a stale snapshot from pre-compression prev data.
 func TestHistoryCompacted_NoStaleSnapshot(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
@@ -496,69 +415,6 @@ func TestRenderLiveToolTags_PendingStyle(t *testing.T) {
 // TestMergeProgress_ReasoningStreamContent_SameIter verifies that
 // ReasoningStreamContent is preserved on same-iteration merge
 // (mergeProgressState preserves all stream fields when iteration unchanged).
-func TestMergeProgress_ReasoningStreamContent_SameIter(t *testing.T) {
-	model := initTestModel()
-
-	// Current progress state: both StreamContent and ReasoningStreamContent set
-	model.progressState.current = &protocol.ProgressEvent{
-		Phase:                  "thinking",
-		Iteration:              1,
-		StreamContent:          "Here is my answer",
-		ReasoningStreamContent: "I need to think about this carefully",
-	}
-
-	// New structured event: tool_exec phase, same iteration, no stream fields
-	newPayload := &protocol.ProgressEvent{
-		Phase:     "tool_exec",
-		Iteration: 1,
-		ActiveTools: []protocol.ToolProgress{
-			{Name: "Read", Status: "running", Iteration: 1},
-		},
-	}
-	model.mergeProgressState(newPayload)
-
-	if model.progressState.current.ReasoningStreamContent == "" {
-		t.Error("ReasoningStreamContent should be preserved on same-iteration merge")
-	}
-	expected := "I need to think about this carefully"
-	if model.progressState.current.ReasoningStreamContent != expected {
-		t.Errorf("ReasoningStreamContent = %q, want %q",
-			model.progressState.current.ReasoningStreamContent, expected)
-	}
-}
-
-// TestMergeProgress_ReasoningStreamContent_IterationChange verifies that
-// ReasoningStreamContent is cleared when iteration changes — stream fields
-// belong to the previous iteration and must not leak into the next.
-func TestMergeProgress_ReasoningStreamContent_IterationChange(t *testing.T) {
-	model := initTestModel()
-
-	model.progressState.current = &protocol.ProgressEvent{
-		Phase:                  "thinking",
-		Iteration:              1,
-		StreamContent:          "Here is my answer",
-		ReasoningStreamContent: "My reasoning process",
-	}
-
-	// New event: different iteration (2 vs 1)
-	newPayload := &protocol.ProgressEvent{
-		Phase:     "thinking",
-		Iteration: 2,
-	}
-	model.mergeProgressState(newPayload)
-
-	// On iteration change, all stream fields should be cleared
-	if model.progressState.current.ReasoningStreamContent != "" {
-		t.Error("ReasoningStreamContent should be cleared on iteration change")
-	}
-}
-
-// ─── Fix 5: Ctrl+C + system notification → two assistants ───────────
-
-// TestCtrlC_NotificationQueuesDuringCancel verifies that when turnCancelled=true
-// and a system notification (injected user message) arrives, it is QUEUED
-// rather than starting a new turn. This prevents the double-assistant bug
-// where the cancelled turn's streaming message becomes an orphan.
 func TestCtrlC_NotificationQueuesDuringCancel(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()

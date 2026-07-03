@@ -286,15 +286,7 @@ func (m *cliModel) updateViewportContent() {
 		return
 	}
 
-	// ── dedupGuard: algorithmic guarantee against duplicate rendering ──
-	// Only runs on the SLOW path (cache invalid or msgCount changed).
-	// Fast paths above guarantee: when rc.valid==true and msgCount unchanged,
-	// no new messages were added since last dedup check → skip is safe.
-	// Enforces the invariant that no two messages share the same (turnID, role)
-	// identity. Uses O(n) map-based identity check, NOT string matching.
-	m.dedupMessagesGuard()
-
-	// 慢速路径：全量重建
+	// 慢速路径：全量重建（dedupMessagesGuard 已删除 — 消息只有一个创建点）
 	m.fullRebuild()
 	if m.streamingMsgIdx >= 0 {
 		m.updateStreamingOnly()

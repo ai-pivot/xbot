@@ -1125,7 +1125,7 @@ func TestCLIModelRenderProgressBlockWithIterationHistory(t *testing.T) {
 	model.progressState.iterations = []cliIterationSnapshot{
 		{
 			Iteration: 0,
-			Thinking:  "Analyzing requirements",
+			Content:   "Analyzing requirements",
 			Tools: []protocol.ToolProgress{
 				{Name: "read", Label: "Reading file", Status: "done", Elapsed: 500},
 			},
@@ -1393,7 +1393,7 @@ func TestProgressEventFields(t *testing.T) {
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "glob", Label: "Globbing", Status: "done", Elapsed: 50},
 		},
-		Thinking: "Analyzing...",
+		Content: "Analyzing...",
 		SubAgents: []protocol.SubAgentInfo{
 			{Role: "reviewer", Status: "running", Desc: "Code review"},
 		},
@@ -1707,7 +1707,7 @@ func TestCLIChannelConfigEmpty(t *testing.T) {
 // iterSnapshot mirrors channel.iterSnapshot for test JSON construction.
 type iterSnapshot struct {
 	Iteration int            `json:"iteration"`
-	Thinking  string         `json:"thinking,omitempty"`
+	Content   string         `json:"thinking,omitempty"`
 	Reasoning string         `json:"reasoning,omitempty"`
 	Tools     []iterToolSnap `json:"tools"`
 }
@@ -1728,8 +1728,8 @@ func makeDetail(iterations []iterSnapshot) string {
 func TestConvert_NormalCompletedTurn(t *testing.T) {
 	// A normal completed turn: user → assistant(tool_calls) → tool → assistant(Detail + content)
 	detail := makeDetail([]iterSnapshot{
-		{Iteration: 1, Thinking: "think1", Tools: []iterToolSnap{{Name: "Shell", Label: "Shell", Status: "done", ElapsedMS: 500}}},
-		{Iteration: 2, Thinking: "think2", Tools: []iterToolSnap{{Name: "Read", Label: "Read file", Status: "done", ElapsedMS: 200}}},
+		{Iteration: 1, Content: "think1", Tools: []iterToolSnap{{Name: "Shell", Label: "Shell", Status: "done", ElapsedMS: 500}}},
+		{Iteration: 2, Content: "think2", Tools: []iterToolSnap{{Name: "Read", Label: "Read file", Status: "done", ElapsedMS: 200}}},
 	})
 	msgs := []llm.ChatMessage{
 		{Role: "user", Content: "hello"},

@@ -62,7 +62,7 @@ func TestRenderTurnBodyMultiIterationLiveOutput(t *testing.T) {
 			iterations: []cliIterationSnapshot{
 				{
 					Iteration: 1,
-					Thinking:  "previous content before current stream",
+					Content:   "previous content before current stream",
 					Tools: []protocol.ToolProgress{
 						{Name: "Glob", Label: "Previous glob succeeded", Status: "done", Elapsed: 100, Iteration: 1},
 					},
@@ -82,7 +82,7 @@ func TestRenderTurnBodyMultiIterationLiveOutput(t *testing.T) {
 					},
 				},
 			},
-			progress:        &protocol.ProgressEvent{Iteration: 2, Thinking: "current thinking text"},
+			progress:        &protocol.ProgressEvent{Iteration: 2, Content: "current thinking text"},
 			fallbackContent: "fallback assistant text",
 		},
 		{
@@ -113,7 +113,7 @@ func TestRenderTurnBodyMultiIterationLiveOutput(t *testing.T) {
 			},
 			progress: &protocol.ProgressEvent{
 				Iteration:     2,
-				Thinking:      "current thinking text",
+				Content:       "current thinking text",
 				StreamContent: "current streamed content",
 				ActiveTools: []protocol.ToolProgress{
 					{Name: "Read", Label: "Current active succeeded", Status: "done", Elapsed: 300},
@@ -149,7 +149,7 @@ func TestRenderTurnBodyMultiIterationLiveOutput(t *testing.T) {
 		{
 			name: "previous content then active reasoning plus mixed tools",
 			iterations: []cliIterationSnapshot{
-				{Iteration: 1, Thinking: "previous content only"},
+				{Iteration: 1, Content: "previous content only"},
 				{
 					Iteration: 2,
 					Tools: []protocol.ToolProgress{
@@ -173,7 +173,7 @@ func TestRenderTurnBodyMultiIterationLiveOutput(t *testing.T) {
 				{Iteration: 1, Reasoning: "previous reasoning only"},
 				{
 					Iteration: 2,
-					Thinking:  "previous content and done tool",
+					Content:   "previous content and done tool",
 					Tools: []protocol.ToolProgress{
 						{Name: "Read", Label: "Previous done tool", Status: "done", Elapsed: 100, Iteration: 2},
 					},
@@ -197,7 +197,7 @@ func TestRenderTurnBodyMultiIterationLiveOutput(t *testing.T) {
 						{Name: "Read", Label: "Previous tool done", Status: "done", Elapsed: 100, Iteration: 1},
 					},
 				},
-				{Iteration: 2, Thinking: "previous content before subagent"},
+				{Iteration: 2, Content: "previous content before subagent"},
 			},
 			progress: &protocol.ProgressEvent{
 				Iteration: 3,
@@ -233,7 +233,7 @@ func TestRenderTurnBodyMultiIterationIdleOutput(t *testing.T) {
 		{
 			Iteration: 1,
 			Reasoning: "completed reasoning",
-			Thinking:  "completed iteration text",
+			Content:   "completed iteration text",
 			Tools: []protocol.ToolProgress{
 				{Name: "Read", Label: "Read completed file", Status: "done", Elapsed: 200, Iteration: 1},
 			},
@@ -259,7 +259,7 @@ func TestRenderTurnBodyMultiIterationIdleOutput(t *testing.T) {
 		},
 		{
 			name:            "idle fallback is skipped when last iteration already has it",
-			iterations:      []cliIterationSnapshot{{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "Read", Label: "Earlier completed tool", Status: "done", Elapsed: 100, Iteration: 1}}}, {Iteration: 2, Thinking: "final assistant answer"}},
+			iterations:      []cliIterationSnapshot{{Iteration: 1, Tools: []protocol.ToolProgress{{Name: "Read", Label: "Earlier completed tool", Status: "done", Elapsed: 100, Iteration: 1}}}, {Iteration: 2, Content: "final assistant answer"}},
 			fallbackContent: "final assistant answer",
 		},
 		{
@@ -290,7 +290,7 @@ func TestRenderTurnBodyMultiIterationIdleOutput(t *testing.T) {
 				},
 				{
 					Iteration: 2,
-					Thinking:  "content-only completed iteration",
+					Content:   "content-only completed iteration",
 					Tools: []protocol.ToolProgress{
 						{Name: "Shell", Label: "Run content command", Status: "done", Elapsed: 300, Iteration: 2},
 					},
@@ -336,7 +336,7 @@ func TestRenderTurnBodyMultiIterationIdleOutput(t *testing.T) {
 			name: "mixed completed iterations without live progress",
 			iterations: []cliIterationSnapshot{
 				{Iteration: 1, Reasoning: "reasoning only iteration"},
-				{Iteration: 2, Thinking: "content only iteration"},
+				{Iteration: 2, Content: "content only iteration"},
 				{
 					Iteration: 3,
 					Tools: []protocol.ToolProgress{
@@ -357,7 +357,7 @@ func TestRenderTurnBodyMultiIterationIdleOutput(t *testing.T) {
 				},
 				{
 					Iteration: 2,
-					Thinking:  "second completed content",
+					Content:   "second completed content",
 					Tools: []protocol.ToolProgress{
 						{Name: "Edit", Label: "Second completed failed", Status: "error", Elapsed: 200, Iteration: 2},
 					},
@@ -377,7 +377,7 @@ func TestRenderTurnBodyMultiIterationIdleOutput(t *testing.T) {
 
 func TestStreamingSeparatorUsesAdjacentBlockKinds(t *testing.T) {
 	iterations := []cliIterationSnapshot{
-		{Iteration: 1, Thinking: "earlier content makes whole history mixed"},
+		{Iteration: 1, Content: "earlier content makes whole history mixed"},
 		{
 			Iteration: 2,
 			Tools: []protocol.ToolProgress{
@@ -535,7 +535,7 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 	model.progressState.iterations = []cliIterationSnapshot{
 		{
 			Iteration: 1,
-			Thinking:  "previous iteration",
+			Content:   "previous iteration",
 			Tools: []protocol.ToolProgress{
 				{Name: "Read", Label: "Previous read", Status: "done", Elapsed: 100, Iteration: 1},
 			},
@@ -544,7 +544,7 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 	model.progressState.lastIter = 2
 	model.progressState.current = &protocol.ProgressEvent{
 		Iteration: 2,
-		Thinking:  "current unsnapped iteration",
+		Content:   "current unsnapped iteration",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "Shell", Label: "Current build", Status: "done", Elapsed: 200, Iteration: 2},
 		},
@@ -846,7 +846,7 @@ func TestHistoryReloadPreservesActiveStreamingTurn(t *testing.T) {
 	model.progressState.iterations = []cliIterationSnapshot{
 		{
 			Iteration: 1,
-			Thinking:  "current turn thinking",
+			Content:   "current turn thinking",
 			Tools: []protocol.ToolProgress{
 				{Name: "Shell", Label: "running command", Status: "running", Iteration: 1},
 			},
@@ -875,7 +875,7 @@ func TestHistoryReloadPreservesActiveStreamingTurn(t *testing.T) {
 	if streaming.role != "assistant" || !streaming.isPartial {
 		t.Fatalf("active streaming assistant was not preserved: %+v", streaming)
 	}
-	if len(model.progressState.iterations) != 1 || model.progressState.iterations[0].Thinking != "current turn thinking" {
+	if len(model.progressState.iterations) != 1 || model.progressState.iterations[0].Content != "current turn thinking" {
 		t.Fatalf("iteration history was not preserved: %+v", model.progressState.iterations)
 	}
 	if !strings.Contains(model.viewport.View(), "running command") {
@@ -955,16 +955,16 @@ func TestProgressNoDuplication(t *testing.T) {
 	model.startAgentTurn()
 	model.typingStartTime = time.Now()
 
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "A"})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Content: "A"})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "A",
+		Phase: "tool_exec", Iteration: 1, Content: "A",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read file", Status: "done", Elapsed: 1000, Iteration: 1},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: "B"})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Content: "B"})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 2, Thinking: "B",
+		Phase: "tool_exec", Iteration: 2, Content: "B",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 500, Iteration: 2},
 		},
@@ -989,24 +989,24 @@ func TestProgressRealisticSequence(t *testing.T) {
 	model.typingStartTime = time.Now()
 
 	// Iter 0
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "Let me look"})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Content: "Let me look"})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "Let me look",
+		Phase: "tool_exec", Iteration: 1, Content: "Let me look",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read config", Status: "done", Elapsed: 500, Iteration: 1},
 			{Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 300, Iteration: 1},
 		},
 	})
 	// Iter 1
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: "Based on results"})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Content: "Based on results"})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 2, Thinking: "Based on results",
+		Phase: "tool_exec", Iteration: 2, Content: "Based on results",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "edit", Label: "Fix bug", Status: "done", Elapsed: 200, Iteration: 2},
 		},
 	})
 	// Iter 2: empty thinking (no tools)
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Thinking: ""})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Content: ""})
 
 	if len(model.progressState.iterations) == 0 {
 		t.Error("Expected iterationHistory to have entries")
@@ -1028,14 +1028,14 @@ func TestErrorToolIterationAttribution(t *testing.T) {
 
 	// Iter 0: a tool that errors
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "Trying A",
+		Phase: "tool_exec", Iteration: 1, Content: "Trying A",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read", Status: "error", Elapsed: 100, Iteration: 1},
 		},
 	})
 	// Iter 1: a tool that succeeds
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 2, Thinking: "Trying B",
+		Phase: "tool_exec", Iteration: 2, Content: "Trying B",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 2},
 		},
@@ -1078,14 +1078,14 @@ func TestCrossIterationToolsFiltered(t *testing.T) {
 
 	// Iter 0 with tool from iter 0
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "A",
+		Phase: "tool_exec", Iteration: 1, Content: "A",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 1},
 		},
 	})
 	// Iter 1 payload that accidentally includes a tool from iter 0 (stale)
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 2, Thinking: "B",
+		Phase: "tool_exec", Iteration: 2, Content: "B",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 1}, // stale
 			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 2},
@@ -1389,7 +1389,7 @@ func TestBgDrainCompletedTool_AppearsInIteration(t *testing.T) {
 
 	// Iter 0: normal tool + bg drain tool in same iteration
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "working",
+		Phase: "tool_exec", Iteration: 1, Content: "working",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read file", Status: "done", Elapsed: 100, Iteration: 1},
 			{Name: "background_task_result", Label: "bg:abc123", Status: "done", Elapsed: 30000, Iteration: 1},
@@ -1411,7 +1411,7 @@ func TestBgDrainCrossIterationDoesNotLeak(t *testing.T) {
 
 	// Iter 0: bg tool
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "working",
+		Phase: "tool_exec", Iteration: 1, Content: "working",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "background_task_result", Label: "bg:old", Status: "done", Elapsed: 1000, Iteration: 1},
 		},
@@ -1419,7 +1419,7 @@ func TestBgDrainCrossIterationDoesNotLeak(t *testing.T) {
 
 	// Iter 1: bg tool
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 2, Thinking: "working",
+		Phase: "tool_exec", Iteration: 2, Content: "working",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "background_task_result", Label: "bg:new", Status: "done", Elapsed: 2000, Iteration: 2},
 		},
@@ -1448,19 +1448,19 @@ func TestAgentSession_PhaseDone_PreservesIterations(t *testing.T) {
 
 	// Simulate 3 iterations of tool execution
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "investigating...",
+		Phase: "tool_exec", Iteration: 1, Content: "investigating...",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "Shell", Label: "uname -a", Status: "done", Elapsed: 100, Iteration: 1},
 		},
 	})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 2, Thinking: "checking logs...",
+		Phase: "tool_exec", Iteration: 2, Content: "checking logs...",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "Grep", Label: "error", Status: "done", Elapsed: 200, Iteration: 2},
 		},
 	})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 3, Thinking: "reading code...",
+		Phase: "tool_exec", Iteration: 3, Content: "reading code...",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "Read", Label: "main.go", Status: "done", Elapsed: 300, Iteration: 3},
 		},
@@ -1470,7 +1470,7 @@ func TestAgentSession_PhaseDone_PreservesIterations(t *testing.T) {
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "done",
 		Iteration: 3,
-		Thinking:  "Bug found: the crash is caused by a null pointer dereference.",
+		Content:   "Bug found: the crash is caused by a null pointer dereference.",
 	})
 
 	// After PhaseDone, the synthetic assistant message should have iterations
@@ -1507,23 +1507,23 @@ func TestAgentSession_MultipleSubAgents_DistinctToolEntries(t *testing.T) {
 
 	// Simulate 3 parallel SubAgent tool calls — each in a separate iteration
 	// so snapshotIterationChange properly captures all three.
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Thinking: "launching..."})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Content: "launching..."})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 1, Thinking: "launching...",
+		Phase: "tool_exec", Iteration: 1, Content: "launching...",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "SubAgent", Label: "SubAgent [explore/debug-1]: Investigate crash", Status: "done", Elapsed: 1000, Iteration: 1},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Thinking: "waiting on others..."})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Content: "waiting on others..."})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 2, Thinking: "waiting on others...",
+		Phase: "tool_exec", Iteration: 2, Content: "waiting on others...",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "SubAgent", Label: "SubAgent [explore/debug-2]: Investigate crash", Status: "done", Elapsed: 1200, Iteration: 2},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Thinking: "almost done..."})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Content: "almost done..."})
 	sendProgress(model, &protocol.ProgressEvent{
-		Phase: "tool_exec", Iteration: 3, Thinking: "almost done...",
+		Phase: "tool_exec", Iteration: 3, Content: "almost done...",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "SubAgent", Label: "SubAgent [explore/debug-3]: Investigate crash", Status: "done", Elapsed: 900, Iteration: 3},
 		},
@@ -1565,8 +1565,8 @@ func TestUpdateStreamingOnly_IncrementalAppend(t *testing.T) {
 
 		// Seed with 2 iterations, force full rebuild via width mismatch
 		model.progressState.iterations = []cliIterationSnapshot{
-			{Iteration: 1, Thinking: "first-iter-thinking"},
-			{Iteration: 2, Thinking: "second-iter-thinking"},
+			{Iteration: 1, Content: "first-iter-thinking"},
+			{Iteration: 2, Content: "second-iter-thinking"},
 		}
 		model.rc.streamCompletedWidth = -1
 		model.updateStreamingOnly()
@@ -1580,7 +1580,7 @@ func TestUpdateStreamingOnly_IncrementalAppend(t *testing.T) {
 
 		// Add a 3rd iteration — should trigger INCREMENTAL path (same width)
 		model.progressState.iterations = append(model.progressState.iterations,
-			cliIterationSnapshot{Iteration: 3, Thinking: "third-iter-thinking"})
+			cliIterationSnapshot{Iteration: 3, Content: "third-iter-thinking"})
 
 		model.updateStreamingOnly()
 
@@ -1623,8 +1623,8 @@ func TestUpdateStreamingOnly_IncrementalAppend(t *testing.T) {
 		model := setupModel()
 
 		model.progressState.iterations = []cliIterationSnapshot{
-			{Iteration: 1, Thinking: "iter-one"},
-			{Iteration: 2, Thinking: "iter-two"},
+			{Iteration: 1, Content: "iter-one"},
+			{Iteration: 2, Content: "iter-two"},
 		}
 		// First call at width W1
 		model.rc.streamCompletedWidth = -1
@@ -1633,7 +1633,7 @@ func TestUpdateStreamingOnly_IncrementalAppend(t *testing.T) {
 
 		// Add iteration + change cached width → should trigger full rebuild
 		model.progressState.iterations = append(model.progressState.iterations,
-			cliIterationSnapshot{Iteration: 3, Thinking: "iter-three"})
+			cliIterationSnapshot{Iteration: 3, Content: "iter-three"})
 		model.rc.streamCompletedWidth = 999 // mismatched → forces full rebuild
 
 		model.updateStreamingOnly()
@@ -1783,8 +1783,8 @@ func TestUpdateStreamingOnly_LiveOnlyRendersCurrentIteration(t *testing.T) {
 
 	// Completed iterations (should land in streamCompletedLines cache)
 	model.progressState.iterations = []cliIterationSnapshot{
-		{Iteration: 1, Thinking: "completed-thinking-iter1"},
-		{Iteration: 2, Thinking: "completed-thinking-iter2"},
+		{Iteration: 1, Content: "completed-thinking-iter1"},
+		{Iteration: 2, Content: "completed-thinking-iter2"},
 	}
 
 	// Live iteration (should be rendered fresh every tick, NOT from cache)
@@ -1879,7 +1879,7 @@ func TestIncrementalPathSeparatorMatchesFullRebuild(t *testing.T) {
 		},
 		{
 			name:    "content→reasoning",
-			iter1:   cliIterationSnapshot{Iteration: 1, Thinking: "thinking text"},
+			iter1:   cliIterationSnapshot{Iteration: 1, Content: "thinking text"},
 			iter2:   cliIterationSnapshot{Iteration: 2, Reasoning: "next reasoning"},
 			wantSep: 1,
 		},

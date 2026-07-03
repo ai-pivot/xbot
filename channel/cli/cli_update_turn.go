@@ -472,6 +472,19 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	busy := m.typing
 	needsSpinnerTick := busy || m.progressState.busySessions
 
+	// ── Pull-based consistency guarantee ──
+	// Every tick (100ms), read the complete backend snapshot and apply it.
+	// This provides a single authoritative state update point, overriding
+	// any inconsistency from partial push events. The push pipeline
+	// (handleProgressMsg) provides low-latency display updates between ticks;
+	// this tick pull ensures the state is always eventually consistent.
+	if busy && !m.splashState.suLoading && !m.splashState.compReloading &&
+		m.panelState.mode != "askuser" && !m.turnCancelled {
+		if snapshot := m.getActiveProgress(); snapshot != nil {
+			m.applyProgressSnapshot(snapshot)
+		}
+	}
+
 	// Refresh bg task / agent counts every tick so the infobar and sidebar
 	// stay accurate even when the agent is idle (no progress messages flowing).
 	prevBg := m.bgTaskCount

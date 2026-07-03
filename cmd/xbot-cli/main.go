@@ -1524,7 +1524,7 @@ func main() {
 						}
 						iters = append(iters, channel.HistoryIteration{
 							Iteration: snap.Iteration,
-							Thinking:  snap.Thinking,
+							Content:   snap.Content,
 							Reasoning: snap.Reasoning,
 							Tools:     tools,
 						})

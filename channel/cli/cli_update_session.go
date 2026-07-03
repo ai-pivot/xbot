@@ -348,7 +348,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			for _, ih := range msg.activeProgress.IterationHistory {
 				snap := cliIterationSnapshot{
 					Iteration: ih.Iteration,
-					Thinking:  ih.Thinking,
+					Content:   ih.Content,
 					Reasoning: ih.Reasoning,
 					Tools:     ih.CompletedTools,
 				}

@@ -30,7 +30,7 @@ type StructuredProgress struct {
 	Iteration        int
 	ActiveTools      []ToolProgress
 	CompletedTools   []ToolProgress
-	ThinkingContent  string // assistant's text output (streaming, for display)
+	Content          string // assistant's text output (streaming, for display)
 	ReasoningContent string // model's reasoning/thinking chain (reasoning_content field)
 	TokenUsage       *TokenUsageSnapshot
 	Todos            []TodoProgressItem
@@ -133,7 +133,7 @@ type SubAgentProgressDetail struct {
 	Lines    []string // 进度内容（所有行，已清理换行）
 	Depth    int      // 嵌套深度（0 = 直接子 Agent）
 	Instance string   // 子 Agent 实例 ID（用于区分同 role 的不同实例）
-	Thinking string   // 当前迭代的 assistant thinking/content（用于进度树描述）
+	Content  string   // 当前迭代的 assistant content（用于进度树描述）
 }
 
 // --- 辅助函数 ---
@@ -790,8 +790,8 @@ func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNod
 	// Description:优先使用 thinking content（LLM 迭代的实际输出），
 	// 这比工具行名称更能反映 SubAgent 当前在做什么。
 	desc := ""
-	if detail.Thinking != "" {
-		desc = detail.Thinking
+	if detail.Content != "" {
+		desc = detail.Content
 		if r := []rune(desc); len(r) > 80 {
 			desc = string(r[:80]) + "…"
 		}
