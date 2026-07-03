@@ -1055,6 +1055,13 @@ func (c *CLIChannel) handleProgressDrain() {
 // handleAsyncDrain is the SINGLE goroutine that forwards messages from asyncCh
 // to the Bubble Tea event loop via program.Send. This is the only non-readLoop
 // sender to p.msgs, ensuring key events get fair scheduling (~50% instead of ~25%).
+//
+// CATCH-UP DRAIN: when a cliProgressMsg is dequeued, all subsequent
+// cliProgressMsg still in asyncCh are drained and coalesced into a single
+// event before Send. This guarantees asyncCh never accumulates a backlog
+// of progress events — regardless of push frequency, the event loop
+// receives at most one merged progress event per drain cycle. Non-progress
+// messages interleaved are preserved in order.
 func (c *CLIChannel) handleAsyncDrain() {
 	defer c.wg.Done()
 
@@ -1066,11 +1073,80 @@ func (c *CLIChannel) handleAsyncDrain() {
 			c.programMu.Lock()
 			p := c.program
 			c.programMu.Unlock()
-			if p != nil {
-				p.Send(msg)
+			if p == nil {
+				continue
 			}
+
+			// Fast path: non-progress message — send immediately.
+			if _, ok := msg.(cliProgressMsg); !ok {
+				p.Send(msg)
+				continue
+			}
+
+			// Progress message — drain all pending progress from asyncCh,
+			// coalescing into a single event. Non-progress messages
+			// encountered are sent in order before continuing.
+			merged := msg.(cliProgressMsg)
+			for {
+				select {
+				case next := <-c.asyncCh:
+					if nextP, ok := next.(cliProgressMsg); ok {
+						merged = coalesceProgress(merged, nextP)
+					} else {
+						// Non-progress message sandwiched — flush merged
+						// progress, then send the non-progress message.
+						p.Send(merged)
+						p.Send(next)
+						goto drainDone
+					}
+				default:
+					// asyncCh empty — send the coalesced progress event.
+					p.Send(merged)
+					goto drainDone
+				}
+			}
+		drainDone:
 		}
 	}
+}
+
+// coalesceProgress merges two consecutive progress events into one.
+// b is newer than a. Rules:
+//   - If b is structured (Phase!="" or Iteration>0): b replaces a entirely
+//     (structured is authoritative).
+//   - If b is stream-only and a is structured: merge b's stream fields
+//     into a (structured state + latest stream content).
+//   - If both stream-only: keep b (newer cumulative content).
+func coalesceProgress(a, b cliProgressMsg) cliProgressMsg {
+	if b.payload == nil {
+		return a
+	}
+	// b is structured — authoritative replacement.
+	if b.payload.Phase != "" || b.payload.Iteration > 0 {
+		return b
+	}
+	// b is stream-only. If a is structured, merge stream fields into a.
+	if a.payload != nil && (a.payload.Phase != "" || a.payload.Iteration > 0) {
+		result := *a.payload
+		if b.payload.StreamContent != "" {
+			result.StreamContent = b.payload.StreamContent
+		}
+		if b.payload.ReasoningStreamContent != "" {
+			result.ReasoningStreamContent = b.payload.ReasoningStreamContent
+		}
+		if len(b.payload.StreamingTools) > 0 {
+			result.StreamingTools = b.payload.StreamingTools
+		}
+		if b.payload.StreamTokens > 0 {
+			result.StreamTokens = b.payload.StreamTokens
+		}
+		if b.payload.Seq > result.Seq {
+			result.Seq = b.payload.Seq
+		}
+		return cliProgressMsg{payload: &result}
+	}
+	// Both stream-only — keep b (newer).
+	return b
 }
 
 // handleTickDrain forwards tick messages from tickCh to BubbleTea independently
