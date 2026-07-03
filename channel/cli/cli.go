@@ -572,8 +572,13 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 					payload.ReasoningStreamContent = old.ReasoningStreamContent
 				}
 			}
-			// StreamingTools follow the same rule.
-			if sameOrUnknownIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
+			// StreamingTools: only merge when the structured event has NO
+			// ActiveTools. If ActiveTools is present, tools have moved past
+			// generating into running/done — merging stale StreamingTools
+			// would render a phantom "generating" line alongside the real
+			// "running" line for one frame (visual jitter).
+			if sameOrUnknownIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 &&
+				len(payload.ActiveTools) == 0 {
 				payload.StreamingTools = old.StreamingTools
 			}
 			// Merge TokenUsage and CWD regardless of old event type —
