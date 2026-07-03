@@ -95,12 +95,19 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 	// carry them and iterations match. Stream fields (StreamContent,
 	// ReasoningStreamContent, StreamTokens) come from stream-only events
 	// and may not be present in structured events from progressFinalizer.
+	//
+	// CRITICAL: when snapshot.Content is non-empty (content is finalized by
+	// recordAssistantMsg), do NOT preserve stale StreamContent — it was
+	// throttled and may be incomplete. The finalized Content is authoritative.
+	// Same for Reasoning vs ReasoningStreamContent.
+	// Without this guard, display shows truncated stream text instead of
+	// the full finalized content (visual: content "grows" after tool finishes).
 	prev := m.progressState.current
 	if prev != nil && snapshot.Iteration == prev.Iteration {
-		if snapshot.StreamContent == "" && prev.StreamContent != "" {
+		if snapshot.StreamContent == "" && prev.StreamContent != "" && snapshot.Content == "" {
 			snapshot.StreamContent = prev.StreamContent
 		}
-		if snapshot.ReasoningStreamContent == "" && prev.ReasoningStreamContent != "" {
+		if snapshot.ReasoningStreamContent == "" && prev.ReasoningStreamContent != "" && snapshot.Reasoning == "" {
 			snapshot.ReasoningStreamContent = prev.ReasoningStreamContent
 		}
 		if snapshot.StreamTokens == 0 && prev.StreamTokens > 0 {
