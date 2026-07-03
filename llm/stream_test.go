@@ -117,7 +117,21 @@ func TestCollectStream_ContextCancelled(t *testing.T) {
 }
 
 func TestCollectStream_EmptyChannel(t *testing.T) {
+	// A channel closed without EventDone indicates the stream was
+	// truncated (proxy/network issue). CollectStream should return an error.
 	ch := make(chan StreamEvent, 1)
+	close(ch)
+
+	_, err := CollectStream(context.Background(), ch)
+	if err == nil {
+		t.Fatal("expected error for channel closed without EventDone, got nil")
+	}
+}
+
+func TestCollectStream_ClosedWithDone(t *testing.T) {
+	// A channel closed after EventDone should succeed.
+	ch := make(chan StreamEvent, 2)
+	ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonStop}
 	close(ch)
 
 	resp, err := CollectStream(context.Background(), ch)
@@ -126,6 +140,9 @@ func TestCollectStream_EmptyChannel(t *testing.T) {
 	}
 	if resp.Content != "" {
 		t.Errorf("content = %q, want empty", resp.Content)
+	}
+	if resp.FinishReason != FinishReasonStop {
+		t.Errorf("finish_reason = %q, want %q", resp.FinishReason, FinishReasonStop)
 	}
 }
 

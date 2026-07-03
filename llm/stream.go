@@ -92,6 +92,7 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 	var content strings.Builder
 	var reasoningContent strings.Builder
 	toolCalls := make(map[int]*ToolCallDelta) // index → accumulated delta
+	var gotDone bool                          // tracks whether EventDone was explicitly received
 
 	// Idle timeout: if no chunk arrives for this duration, the stream is considered
 	// hung and we return an error. This replaces the old approach of using ctx deadline
@@ -131,6 +132,16 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 
 		case ev, ok := <-eventCh:
 			if !ok {
+				// If EventDone was never received, the stream was likely
+				// truncated by a proxy or network issue (clean TCP close
+				// without proper SSE termination). Return an error so the
+				// retry layer can attempt to recover.
+				if !gotDone {
+					resp.Content = content.String()
+					resp.ReasoningContent = reasoningContent.String()
+					resp.ToolCalls = orderedToolCalls(toolCalls)
+					return &resp, fmt.Errorf("stream ended without EventDone (possible truncation)")
+				}
 				// Channel closed normally — stream completed.
 				resp.Content = content.String()
 				resp.ReasoningContent = reasoningContent.String()
@@ -210,6 +221,7 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 					}
 				}
 			case EventDone:
+				gotDone = true
 				if ev.FinishReason != "" {
 					resp.FinishReason = ev.FinishReason
 				}
