@@ -46,27 +46,34 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	// Stream-only events: update stream fields on current state for immediate
 	// low-latency display. The tick pull will read the complete snapshot.
 	//
-	// LINEAR CONSISTENCY: stream-only events share the same Seq sequence as
-	// structured events. We enforce Seq monotonicity here — any event with
-	// Seq <= lastAppliedSeq is discarded. This prevents a stale stream event
-	// (delayed by progressCh coalescing) from overwriting a newer snapshot
-	// already applied by tick pull or a structured push event.
+	// LINEAR CONSISTENCY: stream-only events use a SEPARATE lastStreamSeq counter,
+	// NOT lastAppliedSeq. This is critical:
 	//
-	// Without this check:
-	//   1. Tick pull reads iteration=3 snapshot, Seq=102 → lastAppliedSeq=102
-	//   2. Stale stream event (Seq=99) arrives from progressCh
-	//   3. Writes old StreamContent into current → visual regression
+	// Stream events fire at 20-100 Hz (every LLM token chunk), while structured
+	// events fire at ~1 Hz (iteration transitions). They share the same Seq
+	// sequence counter on the backend. If stream events updated lastAppliedSeq,
+	// it would quickly reach Seq=100 (from stream chunks), permanently blocking
+	// tick pull (whose structured snapshot has the much lower Seq from the last
+	// structured event). Result: tick pull NEVER applies, client never sees
+	// iteration changes — stuck on old iteration's reasoning while server
+	// advances.
+	//
+	// The stale-stream guard uses lastStreamSeq: a stream event with
+	// Seq <= lastStreamSeq is a duplicate and discarded. But a stream event
+	// with Seq > lastStreamSeq is ALWAYS accepted, even if lastAppliedSeq
+	// (from structured events) is higher — because the stream event represents
+	// newer display data for the CURRENT iteration, not stale state.
 	isStreamOnly := msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
 		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
 			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
 
 	if isStreamOnly {
-		// Seq monotonic guard: discard stale events.
-		if msg.payload.Seq > 0 && msg.payload.Seq <= m.progressState.lastAppliedSeq {
+		// Stale stream event guard (separate from structured event Seq).
+		if msg.payload.Seq > 0 && msg.payload.Seq <= m.progressState.lastStreamSeq {
 			return
 		}
 		if msg.payload.Seq > 0 {
-			m.progressState.lastAppliedSeq = msg.payload.Seq
+			m.progressState.lastStreamSeq = msg.payload.Seq
 		}
 
 		if m.progressState.current != nil {

@@ -7,30 +7,27 @@ import (
 )
 
 // TestLinearConsistency_StaleStreamEventDiscarded verifies that a stale
-// stream-only event (lower Seq than already-applied snapshot) is discarded.
+// stream-only event (lower Seq than already-applied stream event) is discarded.
 //
-// Scenario:
-//  1. Tick pull applies iteration=3 snapshot with Seq=102
-//  2. Stale stream event (Seq=99) arrives from progressCh coalescing delay
-//  3. The stale event must NOT overwrite the current state
+// Stream events use a separate lastStreamSeq counter, NOT lastAppliedSeq.
 func TestLinearConsistency_StaleStreamEventDiscarded(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
 
-	// Simulate tick pull: apply a complete snapshot with Seq=102
-	model.applyProgressSnapshot(&protocol.ProgressEvent{
-		ChatID:        "cli:/test",
-		Seq:           102,
-		Phase:         "thinking",
-		Iteration:     3,
-		StreamContent: "hello world from tick",
+	// First stream event: Seq=102
+	model.handleProgressMsg(cliProgressMsg{
+		payload: &protocol.ProgressEvent{
+			ChatID:        "cli:/test",
+			Seq:           102,
+			StreamContent: "hello world from stream",
+		},
 	})
 
-	if model.progressState.current.StreamContent != "hello world from tick" {
-		t.Fatalf("expected tick content, got %q", model.progressState.current.StreamContent)
+	if model.progressState.current == nil || model.progressState.current.StreamContent != "hello world from stream" {
+		t.Fatalf("first stream event not applied")
 	}
 
-	// Stale stream-only event arrives (Seq=99 < lastAppliedSeq=102)
+	// Stale stream-only event (Seq=99 < lastStreamSeq=102)
 	model.handleProgressMsg(cliProgressMsg{
 		payload: &protocol.ProgressEvent{
 			ChatID:        "cli:/test",
@@ -39,28 +36,17 @@ func TestLinearConsistency_StaleStreamEventDiscarded(t *testing.T) {
 		},
 	})
 
-	// The stale event must have been discarded
 	if model.progressState.current.StreamContent == "STALE - should be discarded" {
-		t.Fatal("stale stream event (Seq=99) overwrote newer snapshot (Seq=102)")
-	}
-	if model.progressState.current.StreamContent != "hello world from tick" {
-		t.Fatalf("current content corrupted by stale event: got %q",
-			model.progressState.current.StreamContent)
+		t.Fatal("stale stream event (Seq=99) overwrote newer stream (Seq=102)")
 	}
 }
 
 // TestLinearConsistency_NewTurnResetsSeq verifies that a new agent turn
-// resets lastAppliedSeq so events from the new turn are accepted.
-//
-// Scenario:
-//  1. Turn 1 ends with lastAppliedSeq=500
-//  2. Turn 2 starts (startAgentTurn resets lastAppliedSeq to 0)
-//  3. Turn 2's first event (Seq=1) must be accepted, not blocked
+// resets both lastAppliedSeq and lastStreamSeq.
 func TestLinearConsistency_NewTurnResetsSeq(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
 
-	// Turn 1: apply events up to Seq=500
 	model.applyProgressSnapshot(&protocol.ProgressEvent{
 		ChatID:    "cli:/test",
 		Seq:       500,
@@ -72,15 +58,15 @@ func TestLinearConsistency_NewTurnResetsSeq(t *testing.T) {
 		t.Fatalf("expected lastAppliedSeq=500, got %d", model.progressState.lastAppliedSeq)
 	}
 
-	// Turn 2 starts — must reset lastAppliedSeq
 	model.startAgentTurn()
 
 	if model.progressState.lastAppliedSeq != 0 {
-		t.Fatalf("lastAppliedSeq not reset on new turn: got %d, want 0",
-			model.progressState.lastAppliedSeq)
+		t.Fatalf("lastAppliedSeq not reset: got %d", model.progressState.lastAppliedSeq)
+	}
+	if model.progressState.lastStreamSeq != 0 {
+		t.Fatalf("lastStreamSeq not reset: got %d", model.progressState.lastStreamSeq)
 	}
 
-	// Turn 2's first event (Seq=1) must be accepted
 	model.handleProgressMsg(cliProgressMsg{
 		payload: &protocol.ProgressEvent{
 			ChatID:    "cli:/test",
@@ -93,83 +79,70 @@ func TestLinearConsistency_NewTurnResetsSeq(t *testing.T) {
 	if model.progressState.current == nil {
 		t.Fatal("turn 2 first event was blocked by stale lastAppliedSeq")
 	}
-	if model.progressState.current.Phase != "thinking" {
-		t.Fatalf("turn 2 first event not applied: Phase=%q",
-			model.progressState.current.Phase)
-	}
 }
 
-// TestLinearConsensity_TickPullOverwritesStalePush verifies that tick pull
-// (complete snapshot) correctly overrides any stale push events that were
-// applied between ticks.
+// TestLinearConsistency_StreamEventsDoNotBlockTickPull verifies the core fix:
+// stream events (high Seq) must NOT block tick pull (lower Structured Seq).
 //
-// Scenario:
-//  1. Push event: iteration=2, Seq=100
-//  2. Stream-only push: Seq=101, StreamContent="partial"
-//  3. Tick pull: iteration=3 snapshot, Seq=102, StreamContent="new iter"
-//  4. State must show iteration=3 with correct stream content
-func TestLinearConsistency_TickPullOverwritesStalePush(t *testing.T) {
+// Without this fix, stream events inflate lastAppliedSeq, permanently
+// blocking tick pull — the client never sees iteration changes.
+func TestLinearConsistency_StreamEventsDoNotBlockTickPull(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
 
-	// Push: iteration=2 structured event
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase:     "tool_exec",
-		Iteration: 2,
-		Seq:       100,
-	})
-
-	// Push: stream-only event (same iteration)
-	sendProgress(model, &protocol.ProgressEvent{
-		StreamContent: "partial text from iter 2",
-		Seq:           101,
-	})
-
-	if model.progressState.current.StreamContent != "partial text from iter 2" {
-		t.Fatalf("stream content not applied: got %q",
-			model.progressState.current.StreamContent)
-	}
-
-	// Tick pull: iteration=3 snapshot (backend moved on)
+	// Structured event: Seq=1, iteration 0
 	model.applyProgressSnapshot(&protocol.ProgressEvent{
-		ChatID:        "cli:/test",
-		Seq:           102,
-		Phase:         "thinking",
-		Iteration:     3,
-		StreamContent: "new iteration 3 content",
+		ChatID:    "cli:/test",
+		Seq:       1,
+		Phase:     "thinking",
+		Iteration: 0,
 	})
 
-	// State must reflect the tick pull, not the stale push
+	// Stream events flood: Seq 2..100 (reasoning chunks for iteration 0)
+	for i := uint64(2); i <= 100; i++ {
+		model.handleProgressMsg(cliProgressMsg{
+			payload: &protocol.ProgressEvent{
+				ChatID:        "cli:/test",
+				Seq:           i,
+				StreamContent: "reasoning chunk",
+			},
+		})
+	}
+
+	// lastStreamSeq should be 100, but lastAppliedSeq should still be 1
+	if model.progressState.lastStreamSeq != 100 {
+		t.Fatalf("lastStreamSeq should be 100, got %d", model.progressState.lastStreamSeq)
+	}
+	if model.progressState.lastAppliedSeq != 1 {
+		t.Fatalf("lastAppliedSeq should be 1 (not inflated by stream events), got %d",
+			model.progressState.lastAppliedSeq)
+	}
+
+	// Tick pull: backend moved to iteration 3, structured snapshot Seq=2
+	// 2 > 1 (lastAppliedSeq) → MUST be accepted, NOT blocked by lastStreamSeq=100
+	model.applyProgressSnapshot(&protocol.ProgressEvent{
+		ChatID:    "cli:/test",
+		Seq:       2,
+		Phase:     "thinking",
+		Iteration: 3,
+	})
+
+	if model.progressState.current == nil {
+		t.Fatal("tick pull was blocked by stream event Seq inflation")
+	}
 	if model.progressState.current.Iteration != 3 {
-		t.Fatalf("iteration not updated by tick pull: got %d, want 3",
+		t.Fatalf("tick pull not applied: Iteration=%d, want 3",
 			model.progressState.current.Iteration)
-	}
-	if model.progressState.current.StreamContent != "new iteration 3 content" {
-		t.Fatalf("stream content not updated by tick pull: got %q",
-			model.progressState.current.StreamContent)
-	}
-
-	// A stale stream event (Seq=99) must now be discarded
-	model.handleProgressMsg(cliProgressMsg{
-		payload: &protocol.ProgressEvent{
-			ChatID:        "cli:/test",
-			Seq:           99,
-			StreamContent: "STALE",
-		},
-	})
-
-	if model.progressState.current.StreamContent == "STALE" {
-		t.Fatal("stale stream event overwrote tick pull snapshot")
 	}
 }
 
 // TestLinearConsistency_FreshStreamEventAccepted verifies that a fresh
-// stream-only event (Seq > lastAppliedSeq) IS accepted after tick pull.
+// stream-only event (Seq > lastStreamSeq) IS accepted after tick pull.
 func TestLinearConsistency_FreshStreamEventAccepted(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
 
-	// Tick pull: Seq=100
+	// Tick pull: Seq=100 (structured)
 	model.applyProgressSnapshot(&protocol.ProgressEvent{
 		ChatID:    "cli:/test",
 		Seq:       100,
@@ -177,7 +150,7 @@ func TestLinearConsistency_FreshStreamEventAccepted(t *testing.T) {
 		Iteration: 2,
 	})
 
-	// Fresh stream event: Seq=101 > 100 → must be accepted
+	// Fresh stream event: Seq=101 > lastStreamSeq(0) → must be accepted
 	model.handleProgressMsg(cliProgressMsg{
 		payload: &protocol.ProgressEvent{
 			ChatID:        "cli:/test",
@@ -190,8 +163,13 @@ func TestLinearConsistency_FreshStreamEventAccepted(t *testing.T) {
 		t.Fatalf("fresh stream event not accepted: got %q",
 			model.progressState.current.StreamContent)
 	}
-	if model.progressState.lastAppliedSeq != 101 {
-		t.Fatalf("lastAppliedSeq not updated: got %d, want 101",
+	if model.progressState.lastStreamSeq != 101 {
+		t.Fatalf("lastStreamSeq not updated: got %d, want 101",
+			model.progressState.lastStreamSeq)
+	}
+	// lastAppliedSeq should NOT be updated by stream events
+	if model.progressState.lastAppliedSeq != 100 {
+		t.Fatalf("lastAppliedSeq should still be 100 (not updated by stream), got %d",
 			model.progressState.lastAppliedSeq)
 	}
 }

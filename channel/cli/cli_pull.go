@@ -401,6 +401,7 @@ func (m *cliModel) handleHistoryCompactedSignal() {
 	m.progressState.iterations = nil
 	m.progressState.lastIter = 0
 	m.progressState.lastAppliedSeq = 0 // reset so post-compression snapshot is applied
+	m.progressState.lastStreamSeq = 0
 	m.invalidateAllCache(true)
 	m.rc.invalidateProgress()
 	m.splashState.compReloading = true
