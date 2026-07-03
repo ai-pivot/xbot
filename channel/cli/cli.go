@@ -1111,42 +1111,80 @@ func (c *CLIChannel) handleAsyncDrain() {
 }
 
 // coalesceProgress merges two consecutive progress events into one.
-// b is newer than a. Rules:
-//   - If b is structured (Phase!="" or Iteration>0): b replaces a entirely
-//     (structured is authoritative).
-//   - If b is stream-only and a is structured: merge b's stream fields
-//     into a (structured state + latest stream content).
-//   - If both stream-only: keep b (newer cumulative content).
+// b is newer than a. Each field is merged independently — take the
+// longest/non-empty value from either event. This prevents data loss
+// when stream events carry different fields independently (e.g. one
+// event updates content, another updates reasoning).
+//
+// Rules:
+//   - Structured fields (Phase, Iteration, Tools, Todos, etc.): b wins
+//     if b is structured (authoritative). Otherwise keep a's structured state.
+//   - Stream fields (StreamContent, ReasoningStreamContent, StreamingTools,
+//     StreamTokens): take the longer/larger value from either a or b.
+//   - Seq: take the max.
 func coalesceProgress(a, b cliProgressMsg) cliProgressMsg {
 	if b.payload == nil {
 		return a
 	}
-	// b is structured — authoritative replacement.
-	if b.payload.Phase != "" || b.payload.Iteration > 0 {
+	if a.payload == nil {
 		return b
 	}
-	// b is stream-only. If a is structured, merge stream fields into a.
-	if a.payload != nil && (a.payload.Phase != "" || a.payload.Iteration > 0) {
-		result := *a.payload
-		if b.payload.StreamContent != "" {
-			result.StreamContent = b.payload.StreamContent
-		}
-		if b.payload.ReasoningStreamContent != "" {
-			result.ReasoningStreamContent = b.payload.ReasoningStreamContent
-		}
-		if len(b.payload.StreamingTools) > 0 {
-			result.StreamingTools = b.payload.StreamingTools
-		}
-		if b.payload.StreamTokens > 0 {
-			result.StreamTokens = b.payload.StreamTokens
-		}
-		if b.payload.Seq > result.Seq {
-			result.Seq = b.payload.Seq
-		}
-		return cliProgressMsg{payload: &result}
+
+	pa := a.payload
+	pb := b.payload
+
+	// Start from b if structured, else from a (preserve structured state).
+	var result protocol.ProgressEvent
+	bStructured := pb.Phase != "" || pb.Iteration > 0
+	aStructured := pa.Phase != "" || pa.Iteration > 0
+
+	if bStructured {
+		result = *pb
+	} else if aStructured {
+		result = *pa
+	} else {
+		// Both stream-only — start from a (older), overlay b's fields.
+		result = *pa
 	}
-	// Both stream-only — keep b (newer).
-	return b
+
+	// Merge stream fields: take the LONGEST value from either event.
+	// Stream content is cumulative (each push sends full accumulated text),
+	// so longer = more complete. But different fields may come from
+	// different events, so we must check each independently.
+	if len(pb.StreamContent) > len(result.StreamContent) {
+		result.StreamContent = pb.StreamContent
+	}
+	if len(pb.ReasoningStreamContent) > len(result.ReasoningStreamContent) {
+		result.ReasoningStreamContent = pb.ReasoningStreamContent
+	}
+	if len(pb.StreamingTools) > len(result.StreamingTools) {
+		result.StreamingTools = pb.StreamingTools
+	}
+	if pb.StreamTokens > result.StreamTokens {
+		result.StreamTokens = pb.StreamTokens
+	}
+
+	// If b is structured, copy its structured fields (authoritative).
+	if bStructured {
+		result.Phase = pb.Phase
+		result.Iteration = pb.Iteration
+		result.Content = pb.Content
+		result.Reasoning = pb.Reasoning
+		result.ActiveTools = pb.ActiveTools
+		result.CompletedTools = pb.CompletedTools
+		result.TokenUsage = pb.TokenUsage
+		result.Todos = pb.Todos
+		result.HistoryCompacted = pb.HistoryCompacted
+		result.IterationHistory = pb.IterationHistory
+		result.SubAgents = pb.SubAgents
+	}
+
+	// Seq: take the max.
+	if pb.Seq > result.Seq {
+		result.Seq = pb.Seq
+	}
+
+	return cliProgressMsg{payload: &result}
 }
 
 // handleTickDrain forwards tick messages from tickCh to BubbleTea independently
