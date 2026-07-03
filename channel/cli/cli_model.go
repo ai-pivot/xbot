@@ -90,6 +90,7 @@ type cliModel struct {
 	// --- Agent state ---
 	agentTurnID       uint64                       // monotonically increasing turn counter
 	typing            bool                         // agent 是否正在回复
+	replyProcessed    bool                         // true = reply (or cancel ack) has been fully processed for current turn
 	typingStartTime   time.Time                    // 本次处理开始时间
 	inputReady        bool                         // 输入就绪状态（agent 回复期间禁止发送）
 	sendInboundFn     func(ch.InboundMsg) bool     // forward to server via backend.SendInbound
@@ -157,10 +158,7 @@ type cliModel struct {
 	rc renderCache
 
 	// --- §2 工具可视化 ---
-	lastCompletedTools []protocol.ToolProgress // 每轮结束时快照，不依赖 m.progressState.current 生命周期
-	lastReasoning      string                  // 最后一次迭代的 reasoning_content，在 progress 清除前捕获
-	reasoningByIter    map[int]string          // per-iteration reasoning，snapshot 时用于精确查找
-	lastThinking       string                  // 最后一次迭代的 thinking_content，在 progress 清除前捕获
+	lastContent string // 最后一次迭代的 thinking_content，在 progress 清除前捕获
 
 	// --- §8 Tab 补全 ---
 	completions    []string // 当前补全候选项
@@ -191,11 +189,6 @@ type cliModel struct {
 	// Key format: "msgIdx:toolIdx" — identifies a specific tool within a specific message.
 	expandedTools map[string]bool
 
-	// --- §11b Pending Tool Summary ---
-	// PhaseDone may arrive before handleAgentMessage. Store the tool_summary
-	// here so handleAgentMessage can insert it at the correct position.
-	pendingToolSummary *cliMessage
-
 	// --- §13 Update Check ---
 
 	updateNotice   *version.UpdateInfo // nil=nothing, non-nil=show notice
@@ -207,19 +200,18 @@ type cliModel struct {
 	// models + action rows); quickSwitchCursor indexes into it. Filtering is
 	// toggled by "/" (quickSwitchFiltering) so command letters (e/d/n/s) don't
 	// collide with typing.
-	quickSwitchMode          string              // ""=off, "llm"=unified panel open
-	quickSwitchRows          []qsRow             // flat row list the cursor indexes into
-	quickSwitchCursor        int                 // selected row index
-	quickSwitchFilterInput   textinput.Model     // filter input (focused only in filter mode)
-	quickSwitchFiltering     bool                // "/" filter mode active
-	quickSwitchShowAll       bool                // show noise models (image/realtime/…)
-	quickSwitchRefreshing    bool                // /models refresh in flight
-	quickSwitchReturnToPanel bool                // return to settings panel after close
-	quickSwitchScrollY       int                 // vertical scroll offset for the panel
-	quickSwitchCachedData    llmData             // cached source for filter mode (avoids per-keystroke RPC)
-	subscriptionMgr          SubscriptionManager // injected by CLIChannel
-	llmSubscriber            LLMSubscriber       // injected by CLIChannel
-	cachedSubName            string              // owning subscription display name for status bar
+	quickSwitchMode        string              // ""=off, "llm"=unified panel open
+	quickSwitchRows        []qsRow             // flat row list the cursor indexes into
+	quickSwitchCursor      int                 // selected row index
+	quickSwitchFilterInput textinput.Model     // filter input (focused only in filter mode)
+	quickSwitchFiltering   bool                // "/" filter mode active
+	quickSwitchShowAll     bool                // show noise models (image/realtime/…)
+	quickSwitchRefreshing  bool                // /models refresh in flight
+	quickSwitchScrollY     int                 // vertical scroll offset for the panel
+	quickSwitchCachedData  llmData             // cached source for filter mode (avoids per-keystroke RPC)
+	subscriptionMgr        SubscriptionManager // injected by CLIChannel
+	llmSubscriber          LLMSubscriber       // injected by CLIChannel
+	cachedSubName          string              // owning subscription display name for status bar
 
 	// --- §23 Command Palette (Ctrl+K) ---
 	paletteOpen           bool               // true = command palette overlay is active
@@ -254,11 +246,6 @@ type cliModel struct {
 	cancelTargetTurnID uint64 // turnID being cancelled; guards stale cancel ack from modifying wrong message
 	cancelAckProcessed bool   // true after first cancel ack handled; guards stale second cancel ack (Bug #2: async goroutine race)
 	idleTickCounter    int    // counts 100ms ticks in idle state; placeholder rotates every 30
-
-	// --- Deterministic rendering: per-turn completion tracking ---
-	// turnDoneFlags tracks whether specific events have been processed for a turn.
-	// Keyed by agentTurnID. Entries for old turns are cleaned up in startAgentTurn.
-	turnDoneFlags map[uint64]*turnDoneFlag
 
 	// --- Mouse support ---
 	mouseZones mouseZoneBuilder // zone tracker for mouse hit testing (rebuilt each View())
@@ -307,15 +294,6 @@ type cliModel struct {
 	runnerBridge *RunnerBridge
 }
 
-// turnDoneFlag tracks completion events for a single agent turn.
-// Used to prevent duplicate message insertion when events arrive out of order
-// (e.g. PhaseDone before cliOutboundMsg, or late tool completion after cancel).
-type turnDoneFlag struct {
-	doneProcessed bool      // true after handleProgressDone has created the tool_summary
-	replyReceived bool      // true after handleAgentMessage has appended the assistant reply
-	doneTime      time.Time // when doneProcessed was set (for flush timeout fallback)
-}
-
 // cliMessage 单条消息
 // queuedMsg is a user message waiting in the queue, bound to a specific chatID.
 // When flushed, it is only delivered to the session that was active when queued.
@@ -332,7 +310,7 @@ type cliMessage struct {
 	// --- turn identification for deterministic rendering ---
 	turnID uint64 // agentTurnID when this message was created (0 = not agent-generated)
 	// --- thinking/reasoning content (displayed in a collapsible box) ---
-	thinking string // raw reasoning text (stored when message is finalized)
+	reasoning string // raw reasoning text (stored when message is finalized)
 	// --- §1 增量渲染 ---
 	rendered    string // 缓存的渲染结果（ANSI 字符串）
 	dirty       bool   // 是否需要重新渲染
@@ -418,6 +396,7 @@ func newCLIModel() *cliModel {
 		typing:          false,
 		streamingMsgIdx: -1,
 		inputReady:      true,
+		replyProcessed:  true,
 		locale:          ch.GetLocale(""),
 		inputHistory:    make([]string, 0, 100),
 		inputHistoryIdx: -1,
@@ -755,45 +734,55 @@ type splashState struct {
 	compReloading    bool
 }
 
-// panelState groups 61 panel-related fields extracted from cliModel.
-type panelState struct {
-	mode              string
-	settingsSaving    bool
-	stack             []panelStackEntry
-	cursor            int
-	editing           bool
-	scrollY           int
-	editTA            textarea.Model
-	combo             bool
-	comboIdx          int
-	wizardStep        int
-	wizardLangSel     int
-	wizardProvSel     int
-	wizardKeyTI       textinput.Model
-	valuesBackup      map[string]string
-	cursorBackup      int
-	onSubmitBackup    func(values map[string]string)
-	askItems          []askItem
-	askTab            int
-	askOptSel         map[int]map[int]bool
-	askOptCursor      map[int]int
-	askAnswerTA       textarea.Model
-	askOtherTI        textinput.Model
-	askScrollY        int
-	askTotalLines     int
-	schema            []ch.SettingDefinition
-	schemaFull        []ch.SettingDefinition
-	isSetup           bool
+// settingsPanelState groups fields for the settings panel mode.
+type settingsPanelState struct {
+	settingsSaving bool
+	editing        bool
+	editTA         textarea.Model
+	combo          bool
+	comboIdx       int
+	wizardStep     int
+	wizardLangSel  int
+	wizardProvSel  int
+	wizardKeyTI    textinput.Model
+	schema         []ch.SettingDefinition
+	schemaFull     []ch.SettingDefinition
+	isSetup        bool
+	values         map[string]string
+	prevProvider   string
+	onSubmit       func(values map[string]string)
+	subGeneration  int
+}
+
+// askUserPanelState groups fields for the ask-user panel mode.
+type askUserPanelState struct {
+	askItems      []askItem
+	askTab        int
+	askOptSel     map[int]map[int]bool
+	askOptCursor  map[int]int
+	askAnswerTA   textarea.Model
+	askOtherTI    textinput.Model
+	askScrollY    int
+	askTotalLines int
+	onAnswer      func(answers map[string]string)
+	onCancel      func()
+}
+
+// runnerPanelState groups fields for the runner panel mode.
+type runnerPanelState struct {
+	runnerServerTI  textinput.Model
+	runnerTokenTI   textinput.Model
+	runnerWS        textinput.Model
+	runnerEditField int
+}
+
+// miscPanelState groups fields for danger/bgtasks/approval/channel/session panels.
+type miscPanelState struct {
 	approvalReq       *protocol.ApprovalRequest
 	approvalCh        chan<- protocol.ApprovalResult
 	approvalCursor    int
 	approvalDenyTA    textinput.Model
 	approvalDenyMode  bool
-	values            map[string]string
-	prevProvider      string
-	onSubmit          func(values map[string]string)
-	onAnswer          func(answers map[string]string)
-	onCancel          func()
 	bgTasks           []*BgTask
 	bgAgents          []panelAgentEntry
 	bgCursor          int
@@ -810,14 +799,22 @@ type panelState struct {
 	dangerConfirm     bool
 	dangerInput       textinput.Model
 	dangerOnExec      func(targetType string) error
-	runnerServerTI    textinput.Model
-	runnerTokenTI     textinput.Model
-	runnerWS          textinput.Model
-	runnerEditField   int
 	channelItems      []string
 	channelCursor     int
 	channelCfg        map[string]map[string]string
-	subGeneration     int
+}
+
+// panelState groups panel-related fields extracted from cliModel, organized by mode.
+type panelState struct {
+	mode    string
+	cursor  int
+	scrollY int
+	stack   []panelStackEntry
+
+	settings settingsPanelState
+	askUser  askUserPanelState
+	runner   runnerPanelState
+	misc     miscPanelState
 }
 
 // layoutConfig groups 13 fields extracted from cliModel.
@@ -839,21 +836,22 @@ type layoutConfig struct {
 
 // progressState groups 14 fields extracted from cliModel.
 type progressState struct {
-	current               *protocol.ProgressEvent
-	iterations            []cliIterationSnapshot
-	lastIter              int
-	lastSeq               uint64
-	iterStart             time.Time
-	busySessions          bool
-	unread                map[string]bool
-	busyStates            map[string]bool
-	liveStates            map[string]*liveSessionState
-	twActive              bool
-	twVisible             int
-	rwVisible             int
-	rwCjkSkip             bool
-	twCjkSkip             bool
-	streamReasoningByIter map[int]string // per-iteration stream-only reasoning, captured at arrival time
+	current        *protocol.ProgressEvent
+	iterations     []cliIterationSnapshot
+	lastIter       int
+	lastSeq        uint64
+	lastAppliedSeq uint64 // highest Seq applied via applyProgressSnapshot (structured events)
+	lastStreamSeq  uint64 // highest Seq from stream-only events (separate counter)
+	iterStart      time.Time
+	busySessions   bool
+	unread         map[string]bool
+	busyStates     map[string]bool
+	liveStates     map[string]*liveSessionState
+	twActive       bool
+	twVisible      int
+	rwVisible      int
+	rwCjkSkip      bool
+	twCjkSkip      bool
 }
 
 // --- Plugin Overlay ---

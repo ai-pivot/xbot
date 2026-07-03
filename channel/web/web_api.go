@@ -35,7 +35,7 @@ type historyResponse struct {
 type histProgress struct {
 	Phase            string             `json:"phase,omitempty"`
 	Iteration        int                `json:"iteration"`
-	Thinking         string             `json:"thinking,omitempty"`
+	Content          string             `json:"content,omitempty"`
 	ActiveTools      []histTool         `json:"active_tools,omitempty"`
 	CompletedTools   []histTool         `json:"completed_tools,omitempty"`
 	StreamContent    string             `json:"stream_content,omitempty"`
@@ -44,7 +44,7 @@ type histProgress struct {
 
 type histIterSnapshot struct {
 	Iteration      int        `json:"iteration"`
-	Thinking       string     `json:"thinking,omitempty"`
+	Content        string     `json:"content,omitempty"`
 	Reasoning      string     `json:"reasoning,omitempty"`
 	CompletedTools []histTool `json:"completed_tools,omitempty"`
 }
@@ -185,7 +185,7 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 			hp := &histProgress{
 				Phase:         p.Phase,
 				Iteration:     p.Iteration,
-				Thinking:      p.Thinking,
+				Content:       p.Content,
 				StreamContent: p.StreamContent,
 			}
 			for _, t := range p.ActiveTools {
@@ -202,7 +202,7 @@ func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, s
 			for _, iter := range p.IterationHistory {
 				snap := histIterSnapshot{
 					Iteration: iter.Iteration,
-					Thinking:  iter.Thinking,
+					Content:   iter.Content,
 					Reasoning: iter.Reasoning,
 				}
 				for _, t := range iter.CompletedTools {

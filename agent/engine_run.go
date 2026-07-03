@@ -329,7 +329,7 @@ func (s *runState) notifyProgress(extra string) {
 	}
 	thinking := ""
 	if s.structuredProgress != nil {
-		thinking = s.structuredProgress.ThinkingContent
+		thinking = s.structuredProgress.Content
 	}
 	if s.cfg.ProgressNotifier != nil {
 		s.cfg.ProgressNotifier([]string{buf.String()}, thinking)
@@ -392,7 +392,7 @@ func (s *runState) beginIteration(i int) {
 		s.structuredProgress.ActiveTools = nil
 		s.structuredProgress.CompletedTools = nil
 		s.structuredProgress.SubAgents = nil
-		s.structuredProgress.ThinkingContent = ""
+		s.structuredProgress.Content = ""
 		s.structuredProgress.ReasoningContent = ""
 	}
 	if s.structuredProgress != nil && s.cfg.TodoManager != nil && s.sessionKey != "" {
@@ -791,23 +791,23 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			}
 		}
 
-		// Update ThinkingContent and ReasoningContent so PhaseDone progress
+		// Update Content and ReasoningContent so PhaseDone progress
 		// carries the final reply and thinking. recordAssistantMsg is not called
 		// for final text responses (handleFinalResponse returns directly), so
 		// both fields must be set here for SubAgent session viewers and CLI
 		// tool_summary rendering.
 		if s.structuredProgress != nil {
 			if cleanContent != "" {
-				s.structuredProgress.ThinkingContent = cleanContent
+				s.structuredProgress.Content = cleanContent
 			} else if response.ReasoningContent != "" {
 				// Model returned only tool calls (no text) but has reasoning.
-				// Use reasoning as ThinkingContent so SubAgent progress tree
+				// Use reasoning as Content so SubAgent progress tree
 				// shows what the model is thinking rather than "💭 思考中...".
 				rc := response.ReasoningContent
 				if r := []rune(rc); len(r) > 200 {
 					rc = string(r[:200]) + "…"
 				}
-				s.structuredProgress.ThinkingContent = rc
+				s.structuredProgress.Content = rc
 			}
 			if response.ReasoningContent != "" {
 				s.structuredProgress.ReasoningContent = response.ReasoningContent
@@ -839,7 +839,7 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 		s.progressLines = append(s.progressLines, cleanContent)
 	}
 	if s.structuredProgress != nil && cleanContent != "" {
-		s.structuredProgress.ThinkingContent = cleanContent
+		s.structuredProgress.Content = cleanContent
 	}
 	// Wire the model's reasoning chain (reasoning_content) to progress
 	// so the CLI can display the thinking process to the user.

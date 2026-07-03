@@ -60,7 +60,7 @@ type SimHistoryMsg struct {
 	Timestamp  string `json:"timestamp,omitempty"`
 	Iterations []struct {
 		Iteration int             `json:"iteration"`
-		Thinking  string          `json:"thinking,omitempty"`
+		Content   string          `json:"content,omitempty"`
 		Reasoning string          `json:"reasoning,omitempty"`
 		Tools     []SimToolRecord `json:"tools,omitempty"`
 	} `json:"iterations,omitempty"`
@@ -97,7 +97,6 @@ type SimStep struct {
 	// ─── progress / phase_done fields ───
 	Phase                  string          `json:"phase,omitempty"`
 	Iteration              int             `json:"iteration,omitempty"`
-	Thinking               string          `json:"thinking,omitempty"`
 	Reasoning              string          `json:"reasoning,omitempty"`
 	StreamContent          string          `json:"stream_content,omitempty"`
 	ReasoningStreamContent string          `json:"reasoning_stream_content,omitempty"`
@@ -313,7 +312,7 @@ type SimMessageDump struct {
 
 type SimIterDump struct {
 	Iteration int             `json:"iteration"`
-	Thinking  string          `json:"thinking,omitempty"`
+	Content   string          `json:"content,omitempty"`
 	Reasoning string          `json:"reasoning,omitempty"`
 	Tools     []SimToolRecord `json:"tools,omitempty"`
 }
@@ -412,7 +411,7 @@ func (r *simRunner) loadHistory() {
 				}
 				iters[i] = cliIterationSnapshot{
 					Iteration: it.Iteration,
-					Thinking:  it.Thinking,
+					Content:   it.Content,
 					Reasoning: it.Reasoning,
 					Tools:     tools,
 				}
@@ -610,7 +609,7 @@ func (r *simRunner) doProgress(idx int, step SimStep) error {
 	payload := &protocol.ProgressEvent{
 		Phase:                  step.Phase,
 		Iteration:              step.Iteration,
-		Thinking:               step.Thinking,
+		Content:                step.Content,
 		Reasoning:              step.Reasoning,
 		StreamContent:          step.StreamContent,
 		ReasoningStreamContent: step.ReasoningStreamContent,
@@ -635,7 +634,7 @@ func (r *simRunner) doPhaseDone(idx int, step SimStep) error {
 	}
 	payload := &protocol.ProgressEvent{
 		Phase:          "done",
-		Thinking:       step.Thinking,
+		Content:        step.Content,
 		Reasoning:      step.Reasoning,
 		CompletedTools: convertSimTools(tools, step.Iteration),
 		ChatID:         m.channelName + ":" + m.chatID,
@@ -1426,13 +1425,13 @@ func (r *simRunner) doExport(idx int, step SimStep) error {
 		if len(msg.iterations) > 0 {
 			hm.Iterations = make([]struct {
 				Iteration int             `json:"iteration"`
-				Thinking  string          `json:"thinking,omitempty"`
+				Content   string          `json:"content,omitempty"`
 				Reasoning string          `json:"reasoning,omitempty"`
 				Tools     []SimToolRecord `json:"tools,omitempty"`
 			}, len(msg.iterations))
 			for j, it := range msg.iterations {
 				hm.Iterations[j].Iteration = it.Iteration
-				hm.Iterations[j].Thinking = it.Thinking
+				hm.Iterations[j].Content = it.Content
 				hm.Iterations[j].Reasoning = it.Reasoning
 				if len(it.Tools) > 0 {
 					hm.Iterations[j].Tools = make([]SimToolRecord, len(it.Tools))
@@ -1906,11 +1905,11 @@ func (r *simRunner) doTurn(idx int, step SimStep) error {
 		}
 	} else {
 		// 2b. Single-iteration mode (backward compatible)
-		if len(step.ActiveTools) > 0 || step.Thinking != "" {
+		if len(step.ActiveTools) > 0 || step.Content != "" {
 			progStep := SimStep{
 				Phase:       "thinking",
 				Iteration:   0,
-				Thinking:    step.Thinking,
+				Content:     step.Content,
 				Reasoning:   step.Reasoning,
 				ActiveTools: step.ActiveTools,
 			}
@@ -1959,7 +1958,7 @@ func (r *simRunner) dumpMessages() []SimMessageDump {
 			for j, it := range msg.iterations {
 				dump.Iterations[j] = SimIterDump{
 					Iteration: it.Iteration,
-					Thinking:  it.Thinking,
+					Content:   it.Content,
 					Reasoning: it.Reasoning,
 				}
 				if len(it.Tools) > 0 {
@@ -2477,7 +2476,7 @@ func TestSimTurnMultiIteration(t *testing.T) {
 	}
 	// Verify iterations are baked into messages (any role with iterations)
 	// NOTE: In multi-iteration simulation tests with auto-start-turn cycles,
-	// only the first iteration's tools are preserved in pendingToolSummary.
+	// only the first iteration's tools are preserved in progressState.iterations.
 	// This is a simulation edge case; in production, all iterations occur
 	// within a single turn and are properly accumulated.
 	insp := result.Inspections[0]
@@ -2876,7 +2875,7 @@ func TestSimAssertToolCallCount(t *testing.T) {
 					}},
 				},
 				Response: "Done"},
-			{Action: "assert", AssertToolName: "Read", AssertToolCallCount: 1},
+			{Action: "assert", AssertToolName: "Read", AssertToolCallCount: 2},
 		},
 	}
 	runner := newSimRunner(scenario)

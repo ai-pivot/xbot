@@ -57,6 +57,7 @@ type suHistoryLoadMsg struct {
 type sessionState struct {
 	progress             *protocol.ProgressEvent
 	typing               bool
+	replyProcessed       bool
 	agentTurnID          uint64
 	inputReady           bool
 	needFlushQueue       bool
@@ -67,11 +68,9 @@ type sessionState struct {
 	lastSeenIteration    int
 	streamingMsgIdx      int
 	typingStartTime      time.Time
-	lastReasoning        string
-	lastThinking         string
+	lastContent          string
 	turnCancelled        bool
 	typewriterTickActive bool
-	reasoningByIter      map[int]string
 	// Context bar state — preserved across session switches so the
 	// token usage bar doesn't disappear when switching between sessions.
 	// NOTE: max_context/max_output/compress_ratio are NOT persisted here —
@@ -107,11 +106,11 @@ func (m *cliModel) saveCurrentSession() {
 	key := m.sessionKey()
 	if m.savedSessions == nil {
 		m.savedSessions = make(map[string]*sessionState)
-		m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 	}
 	m.savedSessions[key] = &sessionState{
 		progress:             m.progressState.current,
 		typing:               m.typing,
+		replyProcessed:       m.replyProcessed,
 		agentTurnID:          m.agentTurnID,
 		inputReady:           m.inputReady,
 		needFlushQueue:       m.needFlushQueue,
@@ -122,11 +121,9 @@ func (m *cliModel) saveCurrentSession() {
 		lastSeenIteration:    m.progressState.lastIter,
 		streamingMsgIdx:      m.streamingMsgIdx,
 		typingStartTime:      m.typingStartTime,
-		lastReasoning:        m.lastReasoning,
-		lastThinking:         m.lastThinking,
+		lastContent:          m.lastContent,
 		turnCancelled:        m.turnCancelled,
 		typewriterTickActive: m.progressState.twActive,
-		reasoningByIter:      m.reasoningByIter,
 		lastTokenUsage:       m.lastTokenUsage,
 		messageQueue:         m.messageQueue,
 		queueEditing:         m.queueEditing,
@@ -154,6 +151,7 @@ func (m *cliModel) restoreSession() {
 	if saved, ok := m.savedSessions[key]; ok {
 		m.progressState.current = saved.progress
 		m.typing = saved.typing
+		m.replyProcessed = saved.replyProcessed
 		m.agentTurnID = saved.agentTurnID
 		m.inputReady = saved.inputReady
 		m.needFlushQueue = saved.needFlushQueue
@@ -164,11 +162,9 @@ func (m *cliModel) restoreSession() {
 		m.progressState.lastIter = saved.lastSeenIteration
 		m.streamingMsgIdx = saved.streamingMsgIdx
 		m.typingStartTime = saved.typingStartTime
-		m.lastReasoning = saved.lastReasoning
-		m.lastThinking = saved.lastThinking
+		m.lastContent = saved.lastContent
 		m.turnCancelled = saved.turnCancelled
 		m.progressState.twActive = saved.typewriterTickActive
-		m.reasoningByIter = saved.reasoningByIter
 		m.lastTokenUsage = saved.lastTokenUsage
 		// max_context/max_output/compress_ratio are resolved from DB, not
 		// restored from local savedSession. They will be populated by
@@ -216,10 +212,7 @@ func (m *cliModel) restoreSession() {
 		m.rc.invalidateProgress()
 		m.progressState.lastIter = 0
 		m.typingStartTime = time.Time{}
-		m.lastReasoning = ""
-		m.reasoningByIter = nil
-		m.progressState.streamReasoningByIter = nil
-		m.lastThinking = ""
+		m.lastContent = ""
 		m.inputReady = false
 		m.needFlushQueue = false
 		m.messageQueue = nil
@@ -229,7 +222,7 @@ func (m *cliModel) restoreSession() {
 		m.progressState.rwVisible = 0
 		m.progressState.twActive = false
 		m.pendingUserMsg = nil
-		m.agentTurnID = 0       // prevent stale turnDoneFlags match
+		m.agentTurnID = 0       // reset turn ID for new session
 		m.textarea.SetValue("") // clear input for new/unsaved session
 		m.inputDraft = ""
 		m.inputHistory = nil
@@ -291,18 +284,13 @@ func (m *cliModel) resetToIdleState() {
 	m.typing = false
 	m.typingStartTime = time.Time{}
 	m.inputReady = false
-	m.lastCompletedTools = nil
-	m.lastReasoning = ""
-	m.reasoningByIter = make(map[int]string)
-	m.progressState.streamReasoningByIter = nil
-	m.lastThinking = ""
+	m.lastContent = ""
 
 	// --- Message Queue ---
 	m.messageQueue = nil
 	m.queueEditing = false
 	m.queueEditBuf = ""
 	m.needFlushQueue = false
-	m.pendingToolSummary = nil
 
 	// --- Progress State ---
 	m.progressState.current = nil
@@ -335,65 +323,64 @@ func (m *cliModel) resetToIdleState() {
 
 	// --- Panel State ---
 	m.panelState.mode = ""
-	m.panelState.settingsSaving = false
+	m.panelState.settings.settingsSaving = false
 	m.panelState.stack = nil
 	m.panelState.cursor = 0
-	m.panelState.editing = false
+	m.panelState.settings.editing = false
 	m.panelState.scrollY = 0
-	m.panelState.editTA = textarea.Model{}
-	m.panelState.combo = false
-	m.panelState.comboIdx = 0
-	m.panelState.askItems = nil
-	m.panelState.askTab = 0
-	m.panelState.askOptSel = make(map[int]map[int]bool)
-	m.panelState.askOptCursor = make(map[int]int)
-	m.panelState.askAnswerTA = textarea.Model{}
-	m.panelState.askOtherTI = textinput.Model{}
-	m.panelState.askScrollY = 0
-	m.panelState.askTotalLines = 0
-	m.panelState.schema = nil
-	m.panelState.approvalReq = nil
-	m.panelState.approvalCh = nil
-	m.panelState.approvalCursor = 0
-	m.panelState.approvalDenyTA = textinput.Model{}
-	m.panelState.approvalDenyMode = false
-	m.panelState.values = make(map[string]string)
-	m.panelState.prevProvider = ""
-	m.panelState.onSubmit = nil
-	m.panelState.onAnswer = nil
-	m.panelState.onCancel = nil
-	m.panelState.bgTasks = nil
-	m.panelState.bgAgents = nil
-	m.panelState.bgCursor = 0
-	m.panelState.bgViewing = false
-	m.panelState.bgLogLines = nil
-	m.panelState.bgLogFollow = false
-	m.panelState.sessItems = nil
-	m.panelState.sessCursor = 0
-	m.panelState.sessViewing = false
-	m.panelState.sessConfirmDelete = false
-	m.panelState.sessConfirmEntry = SessionPanelEntry{}
-	m.panelState.dangerItems = nil
-	m.panelState.dangerCursor = 0
-	m.panelState.dangerConfirm = false
-	m.panelState.dangerInput = textinput.Model{}
-	m.panelState.dangerOnExec = nil
-	m.panelState.runnerServerTI = textinput.Model{}
-	m.panelState.runnerTokenTI = textinput.Model{}
-	m.panelState.runnerWS = textinput.Model{}
-	m.panelState.runnerEditField = 0
+	m.panelState.settings.editTA = textarea.Model{}
+	m.panelState.settings.combo = false
+	m.panelState.settings.comboIdx = 0
+	m.panelState.askUser.askItems = nil
+	m.panelState.askUser.askTab = 0
+	m.panelState.askUser.askOptSel = make(map[int]map[int]bool)
+	m.panelState.askUser.askOptCursor = make(map[int]int)
+	m.panelState.askUser.askAnswerTA = textarea.Model{}
+	m.panelState.askUser.askOtherTI = textinput.Model{}
+	m.panelState.askUser.askScrollY = 0
+	m.panelState.askUser.askTotalLines = 0
+	m.panelState.settings.schema = nil
+	m.panelState.misc.approvalReq = nil
+	m.panelState.misc.approvalCh = nil
+	m.panelState.misc.approvalCursor = 0
+	m.panelState.misc.approvalDenyTA = textinput.Model{}
+	m.panelState.misc.approvalDenyMode = false
+	m.panelState.settings.values = make(map[string]string)
+	m.panelState.settings.prevProvider = ""
+	m.panelState.settings.onSubmit = nil
+	m.panelState.askUser.onAnswer = nil
+	m.panelState.askUser.onCancel = nil
+	m.panelState.misc.bgTasks = nil
+	m.panelState.misc.bgAgents = nil
+	m.panelState.misc.bgCursor = 0
+	m.panelState.misc.bgViewing = false
+	m.panelState.misc.bgLogLines = nil
+	m.panelState.misc.bgLogFollow = false
+	m.panelState.misc.sessItems = nil
+	m.panelState.misc.sessCursor = 0
+	m.panelState.misc.sessViewing = false
+	m.panelState.misc.sessConfirmDelete = false
+	m.panelState.misc.sessConfirmEntry = SessionPanelEntry{}
+	m.panelState.misc.dangerItems = nil
+	m.panelState.misc.dangerCursor = 0
+	m.panelState.misc.dangerConfirm = false
+	m.panelState.misc.dangerInput = textinput.Model{}
+	m.panelState.misc.dangerOnExec = nil
+	m.panelState.runner.runnerServerTI = textinput.Model{}
+	m.panelState.runner.runnerTokenTI = textinput.Model{}
+	m.panelState.runner.runnerWS = textinput.Model{}
+	m.panelState.runner.runnerEditField = 0
 	m.updateNotice = nil
 	m.checkingUpdate = false
-	m.panelState.channelItems = nil
-	m.panelState.channelCursor = 0
-	m.panelState.channelCfg = make(map[string]map[string]string)
+	m.panelState.misc.channelItems = nil
+	m.panelState.misc.channelCursor = 0
+	m.panelState.misc.channelCfg = make(map[string]map[string]string)
 
 	// --- Quick Switch State ---
 	m.quickSwitchMode = ""
 	m.quickSwitchRows = nil
 	m.quickSwitchCursor = 0
 	m.quickSwitchFiltering = false
-	m.quickSwitchReturnToPanel = false
 	m.quickSwitchScrollY = 0
 	m.quickSwitchCachedData = llmData{}
 
@@ -465,10 +452,7 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	// Clear session-scoped flags that must NOT leak across sessions.
 	// compressionReloading: if set by a previous session's HistoryCompacted event,
 	//   it permanently blocks auto-start in the new session (Bug: stale flag leak).
-	// turnDoneFlags: per-turn reply/done tracking from the old session is meaningless
-	//   in the new session and can cause premature queue flush (Bug: stale flags).
 	m.splashState.compReloading = false
-	m.turnDoneFlags = make(map[uint64]*turnDoneFlag)
 
 	// ── Session LLM state restoration ──────────────────────────
 	// Only when in-memory caches are empty (new session or TUI restart).
@@ -547,6 +531,7 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		// The server RPC (handleSuHistoryLoad) is the single source of truth.
 		m.progressState.current = nil
 		m.typing = false
+		m.replyProcessed = true
 		m.needFlushQueue = false
 		m.turnCancelled = false
 		m.progressState.twActive = false

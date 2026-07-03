@@ -17,7 +17,7 @@ import (
 func makeMarkdownIteration(n int) cliIterationSnapshot {
 	return cliIterationSnapshot{
 		Iteration: n,
-		Thinking: fmt.Sprintf(`Looking at step **%d**, I need to:
+		Content: fmt.Sprintf(`Looking at step **%d**, I need to:
 
 1. Read the relevant files in `+"`pkg/%d`"+`
 2. Analyze the data structure

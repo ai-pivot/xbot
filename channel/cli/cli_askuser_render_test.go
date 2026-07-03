@@ -152,8 +152,8 @@ func TestAskUserAnswerPreservesViewportIterations(t *testing.T) {
 	}
 
 	// Answer the AskUser question
-	if model.panelState.onAnswer != nil {
-		model.panelState.onAnswer(map[string]string{"q0": "yes"})
+	if model.panelState.askUser.onAnswer != nil {
+		model.panelState.askUser.onAnswer(map[string]string{"q0": "yes"})
 	}
 
 	// After answer: find the pre-AskUser assistant message (non-partial, not the new streaming one)

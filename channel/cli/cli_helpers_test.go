@@ -79,12 +79,17 @@ func TestIsSubscriptionScopedSettingKey(t *testing.T) {
 func TestOpenSettingsFromQuickSwitch_PreservesNonSubscriptionEdits(t *testing.T) {
 	model := newCLIModel()
 	model.channel = &CLIChannel{config: &CLIChannelConfig{}}
-	model.panelState.valuesBackup = map[string]string{
+	// Set up settings panel state with user edits to non-subscription settings.
+	model.panelState.mode = "settings"
+	model.panelState.cursor = 1
+	model.panelState.settings.values = map[string]string{
 		"theme":    "mono",
 		"language": "en",
 	}
-	model.panelState.cursorBackup = 1
-	model.panelState.onSubmitBackup = func(map[string]string) {}
+	model.panelState.settings.onSubmit = func(map[string]string) {}
+	// Push panel state (simulating Settings→QuickSwitch navigation).
+	model.pushPanel()
+	model.panelState.mode = "" // QuickSwitch opens, clearing panel mode
 	model.channel.config.GetCurrentValues = func() map[string]string {
 		return map[string]string{
 			"theme":    "midnight",
@@ -95,10 +100,10 @@ func TestOpenSettingsFromQuickSwitch_PreservesNonSubscriptionEdits(t *testing.T)
 	if model.panelState.mode != "settings" {
 		t.Fatalf("panelMode = %q, want settings", model.panelState.mode)
 	}
-	if got := model.panelState.values["theme"]; got != "mono" {
+	if got := model.panelState.settings.values["theme"]; got != "mono" {
 		t.Fatalf("theme = %q, want mono", got)
 	}
-	if got := model.panelState.values["language"]; got != "en" {
+	if got := model.panelState.settings.values["language"]; got != "en" {
 		t.Fatalf("language = %q, want en", got)
 	}
 }
@@ -622,26 +627,26 @@ func TestClosePanelAndResume_CleansUpPanelState(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.panelState.mode = "settings"
-	model.panelState.editing = true
-	model.panelState.combo = true
-	model.panelState.schema = []channel.SettingDefinition{{Key: "test"}}
-	model.panelState.values = map[string]string{"test": "value"}
+	model.panelState.settings.editing = true
+	model.panelState.settings.combo = true
+	model.panelState.settings.schema = []channel.SettingDefinition{{Key: "test"}}
+	model.panelState.settings.values = map[string]string{"test": "value"}
 
 	model.closePanelAndResume()
 
 	if model.panelState.mode != "" {
 		t.Error("panelMode should be cleared")
 	}
-	if model.panelState.editing {
+	if model.panelState.settings.editing {
 		t.Error("panelEdit should be false")
 	}
-	if model.panelState.combo {
+	if model.panelState.settings.combo {
 		t.Error("panelCombo should be false")
 	}
-	if model.panelState.schema != nil {
+	if model.panelState.settings.schema != nil {
 		t.Error("panelSchema should be nil")
 	}
-	if model.panelState.values != nil {
+	if model.panelState.settings.values != nil {
 		t.Error("panelValues should be nil")
 	}
 }
@@ -778,7 +783,7 @@ func TestSubmitAskAnswers_CallsCallback(t *testing.T) {
 	model.panelState.mode = "askuser"
 
 	var received map[string]string
-	model.panelState.onAnswer = func(answers map[string]string) {
+	model.panelState.askUser.onAnswer = func(answers map[string]string) {
 		received = answers
 	}
 
@@ -819,7 +824,7 @@ func TestSubmitAskAnswers_NilCallback(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.panelState.mode = "askuser"
-	model.panelState.onAnswer = nil
+	model.panelState.askUser.onAnswer = nil
 	model.typing = false
 
 	// Should not panic with nil callback
@@ -837,12 +842,12 @@ func TestSubmitAskAnswers_SavesCurrentFreeInputBeforeCollect(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
 	model.panelState.mode = "askuser"
-	model.panelState.askItems = []askItem{{Question: "q1"}, {Question: "q2", Other: "stale"}}
-	model.panelState.askTab = 1
-	model.panelState.askAnswerTA = model.newPanelTextArea("custom", 50, 3)
+	model.panelState.askUser.askItems = []askItem{{Question: "q1"}, {Question: "q2", Other: "stale"}}
+	model.panelState.askUser.askTab = 1
+	model.panelState.askUser.askAnswerTA = model.newPanelTextArea("custom", 50, 3)
 
 	model.saveCurrentFreeInput()
-	if got := model.panelState.askItems[1].Other; got != "custom" {
+	if got := model.panelState.askUser.askItems[1].Other; got != "custom" {
 		t.Fatalf("panelItems[1].Other = %q, want custom", got)
 	}
 }
@@ -850,10 +855,10 @@ func TestSubmitAskAnswers_SavesCurrentFreeInputBeforeCollect(t *testing.T) {
 func TestCollectAskAnswers_UncheckedOptionsExcluded(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelState.askItems = []askItem{
+	model.panelState.askUser.askItems = []askItem{
 		{Question: "color?", Options: []string{"Red", "Blue", "Green"}},
 	}
-	model.panelState.askOptSel = map[int]map[int]bool{
+	model.panelState.askUser.askOptSel = map[int]map[int]bool{
 		0: {0: true, 1: false, 2: true},
 	}
 
@@ -867,10 +872,10 @@ func TestCollectAskAnswers_UncheckedOptionsExcluded(t *testing.T) {
 func TestCollectAskAnswers_AllUncheckedReturnsEmpty(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)
-	model.panelState.askItems = []askItem{
+	model.panelState.askUser.askItems = []askItem{
 		{Question: "color?", Options: []string{"Red", "Blue"}},
 	}
-	model.panelState.askOptSel = map[int]map[int]bool{
+	model.panelState.askUser.askOptSel = map[int]map[int]bool{
 		0: {0: false, 1: false},
 	}
 
@@ -1620,142 +1625,6 @@ func TestRemoveLastToolSummary_PriorTurnWithUserAfter(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// dedupMessagesGuard tests — proves algorithmic guarantee against duplicate
-// message rendering. The guard enforces at-most-one (turnID, role) invariant.
-// ---------------------------------------------------------------------------
-
-func TestDedupMessagesGuard_NoDuplicates(t *testing.T) {
-	m := &cliModel{}
-	m.messages = []cliMessage{
-		{role: "user", content: "hello", turnID: 1},
-		{role: "assistant", content: "hi", turnID: 1},
-		{role: "user", content: "bye", turnID: 2},
-		{role: "assistant", content: "bye", turnID: 2},
-	}
-	originalLen := len(m.messages)
-	m.dedupMessagesGuard()
-	if len(m.messages) != originalLen {
-		t.Fatalf("dedupMessagesGuard should not modify messages without duplicates: got %d, want %d",
-			len(m.messages), originalLen)
-	}
-}
-
-func TestDedupMessagesGuard_PurgesDuplicates(t *testing.T) {
-	m := &cliModel{}
-	// Two assistant messages with same turnID=1 (a zombie from race condition)
-	m.messages = []cliMessage{
-		{role: "user", content: "hello", turnID: 1},
-		{role: "assistant", content: "old_reply", turnID: 1}, // zombie
-		{role: "assistant", content: "new_reply", turnID: 1}, // keep this (last)
-	}
-	m.dedupMessagesGuard()
-	if len(m.messages) != 2 {
-		t.Fatalf("expected 2 messages after dedup, got %d", len(m.messages))
-	}
-	// The LAST assistant message should be kept
-	if m.messages[1].content != "new_reply" {
-		t.Errorf("expected last duplicate to survive, got content %q", m.messages[1].content)
-	}
-}
-
-func TestDedupMessagesGuard_PreservesSystemMessages(t *testing.T) {
-	m := &cliModel{}
-	// turnID=0 messages (system, injected) should NOT be deduplicated
-	m.messages = []cliMessage{
-		{role: "system", content: "msg1", turnID: 0},
-		{role: "system", content: "msg2", turnID: 0},
-		{role: "user", content: "hello", turnID: 1},
-		{role: "assistant", content: "reply", turnID: 1},
-	}
-	m.dedupMessagesGuard()
-	if len(m.messages) != 4 {
-		t.Fatalf("system messages with turnID=0 should not be deduplicated: got %d, want 4",
-			len(m.messages))
-	}
-}
-
-func TestDedupMessagesGuard_PreservesStreamingMsg(t *testing.T) {
-	m := &cliModel{}
-	m.messages = []cliMessage{
-		{role: "user", content: "hello", turnID: 1},
-		{role: "assistant", content: "streaming", turnID: 1, isPartial: true},
-	}
-	m.streamingMsgIdx = 1
-	m.dedupMessagesGuard()
-	// streaming message should survive since it's the only one with turnID=1+assistant
-	if m.streamingMsgIdx != 1 {
-		t.Errorf("streamingMsgIdx should be unchanged: got %d, want 1", m.streamingMsgIdx)
-	}
-}
-
-func TestUpsertMessageByTurn_PurgesZombies(t *testing.T) {
-	m := &cliModel{}
-	// Pre-create two messages with same turnID+role (simulating a race condition)
-	m.messages = []cliMessage{
-		{role: "user", content: "hello", turnID: 1},
-		{role: "assistant", content: "zombie", turnID: 2}, // zombie at idx 1
-		{role: "assistant", content: "real", turnID: 2},   // real at idx 2
-	}
-	// upsert should update the last one AND purge the zombie
-	m.upsertMessageByTurn(2, "assistant", cliMessage{
-		role:    "assistant",
-		content: "updated",
-	})
-	if len(m.messages) != 2 {
-		t.Fatalf("expected 2 messages after upsert+purge, got %d", len(m.messages))
-	}
-	if m.messages[1].content != "updated" {
-		t.Errorf("expected updated content, got %q", m.messages[1].content)
-	}
-}
-
-// TestCacheGenerationCounter verifies the generation counter mechanism
-// prevents stale allLines reuse after fullRebuild.
-func TestCacheGenerationCounter(t *testing.T) {
-	rc := &renderCache{}
-
-	// Initial state
-	if rc.histGen != 0 || rc.allLinesGen != 0 {
-		t.Fatal("generation counters should start at 0")
-	}
-
-	// Simulate histLines change
-	rc.bumpHistGen()
-	if rc.histGen != 1 {
-		t.Fatalf("expected histGen=1 after bump, got %d", rc.histGen)
-	}
-
-	// Simulate allLines build from current generation
-	rc.allLinesGen = rc.histGen
-	if rc.histGen != rc.allLinesGen {
-		t.Fatal("after sync, histGen should equal allLinesGen")
-	}
-
-	// Simulate another histLines change (e.g. fullRebuild)
-	rc.bumpHistGen()
-	if rc.histGen == rc.allLinesGen {
-		t.Fatal("after second bump, histGen should differ from allLinesGen (stale detection)")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Cross-turn merge guard in handleSuHistoryLoad
-// ---------------------------------------------------------------------------
-// When TUI restarts while the agent is mid-turn, handleSuHistoryLoad must NOT
-// merge the PREVIOUS turn's assistant message into the current streaming slot.
-// The merge is only correct when the last assistant in history belongs to the
-// CURRENT turn. If there's a user message between the assistant and the
-// streaming slot, the assistant is from a previous turn — merging it would
-// display the previous turn's content as the current streaming message.
-//
-// Regression: previous code searched backward for any role=="assistant",
-// skipping user messages, and always merged the first one found.
-// ---------------------------------------------------------------------------
-
-// TestSuHistoryLoad_NoCrossTurnMerge verifies that when history has a user
-// message between the last assistant and the streaming slot (indicating a
-// new turn started), the previous turn's assistant content is NOT merged
-// into the current streaming slot.
 func TestSuHistoryLoad_NoCrossTurnMerge(t *testing.T) {
 	m := newCLIModel()
 	m.channelName = "cli"

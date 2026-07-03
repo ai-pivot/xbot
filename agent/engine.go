@@ -391,7 +391,7 @@ type RunOutput struct {
 // IterationSnapshot captures the tool summary of a completed iteration.
 type IterationSnapshot struct {
 	Iteration int                     `json:"iteration"`
-	Thinking  string                  `json:"thinking,omitempty"`
+	Content   string                  `json:"content,omitempty"`
 	Reasoning string                  `json:"reasoning,omitempty"`
 	Tools     []IterationToolSnapshot `json:"tools"`
 }

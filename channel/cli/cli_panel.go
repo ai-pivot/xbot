@@ -39,9 +39,9 @@ func (m *cliModel) pushPanel() {
 		mode:     m.panelState.mode,
 		cursor:   m.panelState.cursor,
 		scrollY:  m.panelState.scrollY,
-		values:   m.panelState.values,
-		schema:   m.panelState.schema,
-		onSubmit: m.panelState.onSubmit,
+		values:   m.panelState.settings.values,
+		schema:   m.panelState.settings.schema,
+		onSubmit: m.panelState.settings.onSubmit,
 	})
 }
 
@@ -73,11 +73,11 @@ func (m *cliModel) popPanel() bool {
 	m.panelState.mode = entry.mode
 	m.panelState.cursor = entry.cursor
 	m.panelState.scrollY = entry.scrollY
-	m.panelState.values = entry.values
-	m.panelState.schema = entry.schema
-	m.panelState.onSubmit = entry.onSubmit
-	m.panelState.editing = false
-	m.panelState.combo = false
+	m.panelState.settings.values = entry.values
+	m.panelState.settings.schema = entry.schema
+	m.panelState.settings.onSubmit = entry.onSubmit
+	m.panelState.settings.editing = false
+	m.panelState.settings.combo = false
 	m.relayoutViewport()
 	return true
 }
@@ -112,36 +112,35 @@ func (m *cliModel) closePanel() {
 	}
 	m.panelState.mode = ""
 	m.panelState.stack = nil
-	m.panelState.editing = false
-	m.panelState.combo = false
-	m.panelState.schema = nil
-	m.panelState.values = nil
-	m.panelState.prevProvider = ""
-	m.panelState.onSubmit = nil
-	m.panelState.askItems = nil
-	m.panelState.askTab = 0
-	m.panelState.askOptSel = nil
-	m.panelState.askOptCursor = nil
+	m.panelState.settings.editing = false
+	m.panelState.settings.combo = false
+	m.panelState.settings.schema = nil
+	m.panelState.settings.values = nil
+	m.panelState.settings.prevProvider = ""
+	m.panelState.settings.onSubmit = nil
+	m.panelState.askUser.askItems = nil
+	m.panelState.askUser.askTab = 0
+	m.panelState.askUser.askOptSel = nil
+	m.panelState.askUser.askOptCursor = nil
 	// Bg tasks/agents panel cleanup
 	m.cleanupCompletedBgTasks()
-	m.panelState.bgTasks = nil
-	m.panelState.bgAgents = nil
-	m.panelState.bgViewing = false
+	m.panelState.misc.bgTasks = nil
+	m.panelState.misc.bgAgents = nil
+	m.panelState.misc.bgViewing = false
 	m.panelState.scrollY = 0
-	m.panelState.bgLogLines = nil
-	m.panelState.bgLogFollow = false
+	m.panelState.misc.bgLogLines = nil
+	m.panelState.misc.bgLogFollow = false
 	// Danger zone cleanup
-	m.panelState.dangerItems = nil
-	m.panelState.dangerCursor = 0
-	m.panelState.dangerConfirm = false
-	m.panelState.dangerOnExec = nil
+	m.panelState.misc.dangerItems = nil
+	m.panelState.misc.dangerCursor = 0
+	m.panelState.misc.dangerConfirm = false
+	m.panelState.misc.dangerOnExec = nil
 	// Runner panel cleanup
-	m.panelState.runnerServerTI = textinput.Model{}
-	m.panelState.runnerTokenTI = textinput.Model{}
-	m.panelState.runnerWS = textinput.Model{}
-	m.panelState.runnerEditField = 0
-	// 恢复 viewport 到正常模式高度
-	m.panelState.scrollY = 0
+	m.panelState.runner.runnerServerTI = textinput.Model{}
+	m.panelState.runner.runnerTokenTI = textinput.Model{}
+	m.panelState.runner.runnerWS = textinput.Model{}
+	m.panelState.runner.runnerEditField = 0
+	// 恢复 viewport 到正常模式高度（scrollY 已在上方重置）
 	m.relayoutViewport()
 }
 
