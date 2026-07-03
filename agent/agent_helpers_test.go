@@ -116,7 +116,14 @@ func TestResolveGlobalSkillsDirs(t *testing.T) {
 	// Use a temp HOME directory so tests are deterministic and don't depend on
 	// the host machine's ~/.agents/skills directory.
 	tmpHome := t.TempDir()
+	// Set HOME for Unix/macOS/Linux and USERPROFILE for Windows.
+	// os.UserHomeDir() on Windows checks USERPROFILE first, then HOMEDRIVE+HOMEPATH, then HOME.
+	// On Unix it only checks HOME. Setting both ensures cross-platform coverage.
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	// Also clear HOMEDRIVE/HOMEPATH to prevent them from interfering on Windows.
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 
 	// Helper to build absolute paths inside tmpHome
 	homePath := func(parts ...string) string {
