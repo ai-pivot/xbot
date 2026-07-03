@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -320,7 +321,7 @@ func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include str
 	// pipefail 会将其传播为错误，导致有效结果被丢弃。
 	grepCmd += " | head -200"
 
-	output, err := RunInSandboxWithShell(ctx, grepCmd)
+	output, err := RunInSandboxWithShellTimeout(ctx, grepCmd, GrepLocalTimeout)
 	if err != nil {
 		// SIGPIPE (exit 141) 是 head 正常关闭管道导致的，不是真正的错误
 		if output != "" && !strings.Contains(output, "No matches found") {
@@ -384,7 +385,7 @@ func (t *GrepTool) executeInSandbox(ctx *ToolContext, pattern, path, include str
 }
 
 // searchFile searches a single file for the pattern and returns matches with optional context lines.
-func searchFile(path string, re *regexp.Regexp, contextLines int) ([]grepMatch, error) {
+func searchFile(ctx context.Context, path string, re *regexp.Regexp, contextLines int) ([]grepMatch, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -396,7 +397,17 @@ func searchFile(path string, re *regexp.Regexp, contextLines int) ([]grepMatch, 
 	scanner := bufio.NewScanner(f)
 	// Increase buffer for long lines
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	lineCount := 0
 	for scanner.Scan() {
+		// Check context cancellation every 100 lines
+		if lineCount%100 == 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+		}
+		lineCount++
 		line := scanner.Text()
 		// Quick binary detection: if a line has invalid UTF-8 or null bytes, skip the file
 		if !utf8.ValidString(line) || strings.ContainsRune(line, 0) {
@@ -507,6 +518,14 @@ func splitBraceAlternatives(s string) []string {
 
 // executeLocal 在本地执行 grep 搜索（非沙箱模式）
 func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string, ignoreCase bool, contextLines int) (*ToolResult, error) {
+	// Per-tool timeout: 60s for local codebase search
+	parentCtx := context.Background()
+	if ctx != nil && ctx.Ctx != nil {
+		parentCtx = ctx.Ctx
+	}
+	searchCtx, cancel := context.WithTimeout(parentCtx, GrepLocalTimeout)
+	defer cancel()
+
 	// Compile regex
 	regexPattern := pattern
 	if ignoreCase {
@@ -554,7 +573,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 		if info.Size() > maxGrepFileSize {
 			return nil, fmt.Errorf("file too large (>%d bytes): %s", maxGrepFileSize, baseDir)
 		}
-		fileMatches, err := searchFile(baseDir, re, contextLines)
+		fileMatches, err := searchFile(searchCtx, baseDir, re, contextLines)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search file: %w", err)
 		}
@@ -568,6 +587,10 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 
 		// Walk the directory and search files
 		err = filepath.WalkDir(baseDir, func(walkPath string, d os.DirEntry, walkErr error) error {
+			// Check context cancellation (Ctrl+C or timeout)
+			if cerr := searchCtx.Err(); cerr != nil {
+				return filepath.SkipAll
+			}
 			if walkErr != nil {
 				return nil // skip inaccessible files
 			}
@@ -610,7 +633,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 			}
 
 			// Search file
-			fileMatches, err := searchFile(walkPath, re, contextLines)
+			fileMatches, err := searchFile(searchCtx, walkPath, re, contextLines)
 			if err != nil {
 				return nil // skip files that can't be read
 			}
@@ -627,6 +650,32 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 		if err != nil {
 			return nil, fmt.Errorf("search failed: %w", err)
 		}
+	}
+
+	// Context cancelled or timed out — distinguish from "no matches"
+	if cerr := searchCtx.Err(); cerr != nil {
+		if len(matches) > 0 {
+			// Partial results before cancellation
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "Found %d match(es) (search interrupted — results may be incomplete):\n\n", len(matches))
+			currentFile := ""
+			for _, m := range matches {
+				if m.File != currentFile {
+					if currentFile != "" {
+						sb.WriteString("\n")
+					}
+					currentFile = m.File
+					fmt.Fprintf(&sb, "## %s\n", m.File)
+				}
+				line := m.Line
+				if len(line) > maxGrepLineLength {
+					line = line[:maxGrepLineLength] + "..."
+				}
+				fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
+			}
+			return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
+		}
+		return nil, fmt.Errorf("search interrupted or timed out: %w", cerr)
 	}
 
 	if len(matches) == 0 {

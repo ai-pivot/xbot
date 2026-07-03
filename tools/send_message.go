@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"xbot/bus"
 	"xbot/llm"
@@ -129,12 +128,12 @@ func (t *SendMessageTool) sendToAgent(ctx *ToolContext, addr, message string) (*
 	if ctx.MessageSender == nil {
 		return nil, fmt.Errorf("message sending not available in this context")
 	}
-	// 30s timeout protection to prevent indefinite blocking on agent RPC.
+	// Timeout protection to prevent indefinite blocking on agent RPC.
 	baseCtx := ctx.Ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	timeoutCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(baseCtx, AgentRPCTimeout)
 	defer cancel()
 	timeoutToolCtx := *ctx
 	timeoutToolCtx.Ctx = timeoutCtx
@@ -186,12 +185,12 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 		return nil, fmt.Errorf("message sending not available in this context")
 	}
 
-	// 30s timeout protection to prevent indefinite blocking on agent RPCs.
+	// Timeout protection to prevent indefinite blocking on agent RPCs.
 	baseCtx := ctx.Ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	timeoutCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(baseCtx, AgentRPCTimeout)
 	defer cancel()
 	ctxWithTimeout := *ctx
 	ctxWithTimeout.Ctx = timeoutCtx

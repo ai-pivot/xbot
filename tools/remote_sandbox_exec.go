@@ -17,7 +17,7 @@ func (rs *RemoteSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, 
 
 	timeout := spec.Timeout
 	if timeout == 0 {
-		timeout = 60 * time.Second
+		timeout = RemoteSandboxExecTimeout
 	}
 
 	reqBody, err := json.Marshal(ExecRequest{

@@ -251,7 +251,7 @@ func buildMinimalExecEnv(envList []string) []string {
 // Windows: powershell.exe -Command "[Environment]::GetEnvironmentVariables() | ..."
 // Returns empty slice on failure (caller will use fallback).
 func getLoginShellEnv() []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), LoginShellEnvTimeout)
 	defer cancel()
 
 	var cmd *exec.Cmd
@@ -396,7 +396,7 @@ func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, wo
 			Dir:        "",
 			ServerName: serverName,
 		}
-		connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		connectCtx, cancel := context.WithTimeout(ctx, MCPConnectTimeout)
 		defer cancel()
 		session, err := sharedMCPClient.Connect(connectCtx, transport, nil)
 		if err != nil {
@@ -426,7 +426,7 @@ func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, wo
 		TerminateDuration: 5 * time.Second,
 	}
 
-	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	connectCtx, cancel := context.WithTimeout(ctx, MCPConnectTimeout)
 	defer cancel()
 
 	session, err := sharedMCPClient.Connect(connectCtx, transport, nil)
@@ -464,7 +464,7 @@ func ConnectHTTPServer(ctx context.Context, cfg MCPServerConfig) (*mcp.ClientSes
 		transport.HTTPClient = newHeaderInjectorClient(cfg.Headers)
 	}
 
-	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	connectCtx, cancel := context.WithTimeout(ctx, MCPConnectTimeout)
 	defer cancel()
 
 	session, err := sharedMCPClient.Connect(connectCtx, transport, nil)
@@ -493,7 +493,7 @@ type MCPInitResult struct {
 // InitializeMCPClient lists tools and extracts server instructions from an already-connected session.
 // With the official SDK, Connect() auto-initializes; this function collects the results.
 func InitializeMCPClient(ctx context.Context, session *mcp.ClientSession) (*MCPInitResult, error) {
-	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	connectCtx, cancel := context.WithTimeout(ctx, MCPConnectTimeout)
 	defer cancel()
 
 	var tools []*mcp.Tool
@@ -643,7 +643,7 @@ func (t *headerInjectorTransport) RoundTrip(req *http.Request) (*http.Response, 
 // newHeaderInjectorClient creates an http.Client that injects custom headers into every request.
 func newHeaderInjectorClient(headers map[string]string) *http.Client {
 	return &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: MCPConnectTimeout,
 		Transport: &headerInjectorTransport{
 			base:    http.DefaultTransport,
 			headers: headers,
