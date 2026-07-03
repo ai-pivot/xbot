@@ -104,19 +104,6 @@ func (m *cliModel) startAgentTurn() {
 // Earlier tool_summaries in the active turn are also preserved as fallback:
 // if IterationHistory is empty (e.g. reconnect before RPC snapshot arrives),
 // the tool_summary rendering is better than showing nothing at all.
-// removeLastToolSummary removes only the LAST tool_summary message from m.messages.
-//
-// When the agent turn is active, ch.ConvertMessagesToHistory produces a tool_summary
-// from intermediate assistant messages of the in-progress turn. The progress
-// block (m.progressState.current + m.progressState.iterations) owns iteration display for the active
-// turn — the static tool_summary from ch.ConvertMessagesToHistory would duplicate
-// content with mismatched (globally-cumulative vs per-turn) iteration numbers.
-//
-// Only the LAST tool_summary is removed. Previous turns' tool_summaries are
-// preserved — those have no live progress panel to replace them.
-// Earlier tool_summaries in the active turn are also preserved as fallback:
-// if IterationHistory is empty (e.g. reconnect before RPC snapshot arrives),
-// the tool_summary rendering is better than showing nothing at all.
 func (m *cliModel) removeLastToolSummary() {
 	// Find the last tool_summary message (closest to end of messages).
 	lastIdx := -1
