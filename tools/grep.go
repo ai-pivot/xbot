@@ -652,6 +652,32 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 		}
 	}
 
+	// Context cancelled or timed out — distinguish from "no matches"
+	if cerr := searchCtx.Err(); cerr != nil {
+		if len(matches) > 0 {
+			// Partial results before cancellation
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "Found %d match(es) (search interrupted — results may be incomplete):\n\n", len(matches))
+			currentFile := ""
+			for _, m := range matches {
+				if m.File != currentFile {
+					if currentFile != "" {
+						sb.WriteString("\n")
+					}
+					currentFile = m.File
+					fmt.Fprintf(&sb, "## %s\n", m.File)
+				}
+				line := m.Line
+				if len(line) > maxGrepLineLength {
+					line = line[:maxGrepLineLength] + "..."
+				}
+				fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
+			}
+			return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
+		}
+		return nil, fmt.Errorf("search interrupted or timed out: %w", cerr)
+	}
+
 	if len(matches) == 0 {
 		return NewResultWithTips("No matches found.", "尝试换一个关键词，或检查路径/正则是否正确。"), nil
 	}

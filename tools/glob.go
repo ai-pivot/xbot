@@ -220,6 +220,10 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 	seen := make(map[string]bool)
 
 	for _, bp := range bracePatterns {
+		// Check context before each pattern (Ctrl+C / timeout)
+		if cerr := searchCtx.Err(); cerr != nil {
+			break
+		}
 		var bpMatches []string
 		if strings.Contains(bp, "**") {
 			bpMatches, err = globWithDoublestar(searchCtx, baseDir, bp, MaxGlobResults-len(matches))
@@ -242,6 +246,21 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 	}
 
 	slices.Sort(matches)
+
+	// Context cancelled or timed out — distinguish from "no matches"
+	if cerr := searchCtx.Err(); cerr != nil {
+		if len(matches) > 0 {
+			// Partial results before cancellation
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "Found %d matching file(s) (search interrupted — results may be incomplete):\n", len(matches))
+			for _, match := range matches {
+				sb.WriteString(match)
+				sb.WriteString("\n")
+			}
+			return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
+		}
+		return nil, fmt.Errorf("glob search interrupted or timed out: %w", cerr)
+	}
 
 	if len(matches) == 0 {
 		return NewResultWithTips("No files matched the pattern.", "检查 glob 模式语法，或尝试更宽泛的匹配（如 **/*.go）。"), nil

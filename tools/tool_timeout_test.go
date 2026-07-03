@@ -31,13 +31,14 @@ func TestGrepTool_ContextCancellation(t *testing.T) {
 	})
 
 	result, err := tool.Execute(toolCtx, string(input))
-	if err != nil {
-		t.Fatalf("cancelled search should not return error: %v", err)
+	if err == nil {
+		t.Fatal("cancelled search should return error, not success")
 	}
-	// With pre-cancelled context, WalkDir skips all files → 0 matches
-	if !strings.Contains(result.Summary, "No matches found") {
-		t.Errorf("expected 'No matches found' for cancelled search, got: %s", result.Summary)
+	// With pre-cancelled context, should return timeout/cancel error
+	if !strings.Contains(err.Error(), "interrupted") && !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected 'interrupted/timed out' error for cancelled search, got: %v", err)
 	}
+	_ = result
 }
 
 // --- Glob context cancellation ---
@@ -60,13 +61,14 @@ func TestGlobTool_ContextCancellation(t *testing.T) {
 	})
 
 	result, err := tool.Execute(toolCtx, string(input))
-	if err != nil {
-		t.Fatalf("cancelled glob should not return error: %v", err)
+	if err == nil {
+		t.Fatal("cancelled glob should return error, not success")
 	}
-	// With pre-cancelled context, WalkDir skips immediately → 0 matches
-	if !strings.Contains(result.Summary, "No files matched") {
-		t.Errorf("expected 'No files matched' for cancelled glob, got: %s", result.Summary)
+	// With pre-cancelled context, should return timeout/cancel error
+	if !strings.Contains(err.Error(), "interrupted") && !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected 'interrupted/timed out' error for cancelled glob, got: %v", err)
 	}
+	_ = result
 }
 
 // --- Glob early truncation ---
@@ -252,5 +254,44 @@ func TestSearchFile_ContextCancellation(t *testing.T) {
 	}
 	if err != context.Canceled {
 		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+// --- Grep partial results on cancellation ---
+
+func TestGrepTool_PartialResultsOnCancellation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create multiple files with matches
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("file_%d.go", i)
+		content := fmt.Sprintf("package main\n\nfunc hello%d() {}\n", i)
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Create a context that's already cancelled — WalkDir may collect
+	// 0 matches before hitting the ctx check (SkipAll), but the key
+	// assertion is: we get an error, not "No matches found" success.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	toolCtx := &ToolContext{
+		Ctx:           ctx,
+		WorkspaceRoot: tmpDir,
+	}
+	tool := &GrepTool{}
+	input, _ := json.Marshal(map[string]any{
+		"pattern": "func",
+		"path":    tmpDir,
+	})
+
+	_, err := tool.Execute(toolCtx, string(input))
+	if err == nil {
+		t.Fatal("expected error for cancelled search with matches in dir")
+	}
+	if !strings.Contains(err.Error(), "interrupted") && !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected interrupted/timed out error, got: %v", err)
 	}
 }
