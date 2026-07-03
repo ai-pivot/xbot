@@ -212,7 +212,6 @@ func (m *cliModel) restoreSession() {
 		m.rc.invalidateProgress()
 		m.progressState.lastIter = 0
 		m.typingStartTime = time.Time{}
-		m.progressState.streamReasoningByIter = nil
 		m.lastContent = ""
 		m.inputReady = false
 		m.needFlushQueue = false
@@ -285,7 +284,6 @@ func (m *cliModel) resetToIdleState() {
 	m.typing = false
 	m.typingStartTime = time.Time{}
 	m.inputReady = false
-	m.progressState.streamReasoningByIter = nil
 	m.lastContent = ""
 
 	// --- Message Queue ---

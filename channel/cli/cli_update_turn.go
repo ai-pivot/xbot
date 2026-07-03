@@ -516,7 +516,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	}
 
 	// Queue flush — only flush when reply has been fully processed.
-	// handleProgressDone may set needFlushQueue before the reply arrives;
+	// applyProgressSnapshot may set needFlushQueue before the reply arrives;
 	// the tick handler must wait until replyProcessed is true (set by
 	// handleAgentMessage or handleCancelAck) to prevent premature flush
 	// that would start a new turn before the current turn's reply is

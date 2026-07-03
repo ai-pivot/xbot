@@ -121,9 +121,9 @@ func (m *cliModel) renderTurnBody(
 	} else if fallbackContent != "" {
 		// Idle state: render the final assistant content after iterations.
 		// Dedup: if any iteration already rendered the same text (via
-		// ThinkingContent → iter.Content), skip the fallback to avoid
+		// Content → iter.Content), skip the fallback to avoid
 		// duplication. iter.Content carries the assistant's reply text
-		// (StructuredProgress.ThinkingContent, which is the actual response
+		// (StructuredProgress.Content, which is the actual response
 		// text, NOT reasoning — the field name is historical).
 		// Exact match only: fallbackContent (msg.content) and iter.Content
 		// originate from the same LLM response, so they should be identical.

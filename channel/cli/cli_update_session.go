@@ -209,7 +209,7 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 			m.startAgentTurn()
 		}
 		// startAgentTurn calls resetProgressState which sets lastSeenIteration=0.
-		// Restore it from the server snapshot to prevent snapshotIterationChange
+		// Restore it from the server snapshot to prevent applyProgressSnapshot
 		// from creating a spurious "iteration 0" snapshot on the next live
 		// progress event (symptom: #0 and #1 both show the same reasoning).
 		if msg.activeProgress.Iteration > 0 {

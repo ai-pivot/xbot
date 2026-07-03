@@ -555,7 +555,7 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			// Iteration==0 (unknown). If payload has a structured
 			// iteration (>0) and old is stream-only, the old content
 			// likely belongs to the previous iteration (already
-			// snapshotted by snapshotIterationChange). Merging it
+			// snapshotted by applyProgressSnapshot). Merging it
 			// into the new payload causes reasoning to render twice —
 			// once in completed iterations, once in live.
 			//
@@ -587,7 +587,7 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			// NOTE: CompletedTools/ActiveTools are NOT merged across coalescing.
 			// Merging iteration N's CompletedTools into iteration N+1's event
 			// causes cross-iteration tool attribution. Instead, the root fix is
-			// in snapshotIterationChange: when iteration changes, it captures
+			// in applyProgressSnapshot: when iteration changes, it captures
 			// ALL ActiveTools from prev (the engine guarantees they're done via
 			// snapshotCompletedIteration before callLLM starts the next iteration).
 			// prev may have stale "running" status due to coalescing dropping the

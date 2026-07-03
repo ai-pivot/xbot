@@ -836,22 +836,21 @@ type layoutConfig struct {
 
 // progressState groups 14 fields extracted from cliModel.
 type progressState struct {
-	current               *protocol.ProgressEvent
-	iterations            []cliIterationSnapshot
-	lastIter              int
-	lastSeq               uint64
-	lastAppliedSeq        uint64 // highest Seq applied via applyProgressSnapshot
-	iterStart             time.Time
-	busySessions          bool
-	unread                map[string]bool
-	busyStates            map[string]bool
-	liveStates            map[string]*liveSessionState
-	twActive              bool
-	twVisible             int
-	rwVisible             int
-	rwCjkSkip             bool
-	twCjkSkip             bool
-	streamReasoningByIter map[int]string // per-iteration stream-only reasoning, captured at arrival time
+	current        *protocol.ProgressEvent
+	iterations     []cliIterationSnapshot
+	lastIter       int
+	lastSeq        uint64
+	lastAppliedSeq uint64 // highest Seq applied via applyProgressSnapshot
+	iterStart      time.Time
+	busySessions   bool
+	unread         map[string]bool
+	busyStates     map[string]bool
+	liveStates     map[string]*liveSessionState
+	twActive       bool
+	twVisible      int
+	rwVisible      int
+	rwCjkSkip      bool
+	twCjkSkip      bool
 }
 
 // --- Plugin Overlay ---

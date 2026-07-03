@@ -47,9 +47,8 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		}
 	} else {
 		// ChatID empty: this is a defensive warning. Messages without proper
-		// session identity risk cross-session contamination. The dedupMessagesGuard
-		// will catch any resulting duplicates, but the root cause should be fixed
-		// at the sender. Log at error level to make it visible.
+		// session identity risk cross-session contamination. Log at error level
+		// to make it visible.
 		log.WithFields(log.Fields{
 			"msg_channel":    msg.Channel,
 			"msg_chatid":     msg.ChatID,
@@ -131,7 +130,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 
 		// Compute iterations to bake into the assistant message.
 		// Use progressState.iterations (PhaseDone does NOT clear it anymore).
-		// Dedup by iteration number: snapshotIterationChange creates per-iteration
+		// Dedup by iteration number: applyProgressSnapshot creates per-iteration
 		// snapshots before PhaseDone may create a conflated one with ALL completed tools.
 		// Fallback: preserve existing iterations from the streaming message
 		// (e.g. saved by cancel ack before this response arrived).
@@ -151,11 +150,11 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		// Append the last iteration from m.progressState.current if it wasn't already
 		// captured in iterationHistory. The last iteration's data (tools,
 		// reasoning) is typically in m.progressState.current but hasn't been snapshotted
-		// by snapshotIterationChange (which only fires on iteration N→N+1
+		// by applyProgressSnapshot (which only fires on iteration N→N+1
 		// transitions). Without this, AskUser messages lose the last
 		// iteration's tools from the viewport.
 		// Guard: use progressState.current.CompletedTools (maintained in-place
-		// by mergeProgressState) and only run when the iteration is genuinely missing.
+		// by applyProgressSnapshot) and only run when the iteration is genuinely missing.
 		if m.progressState.current != nil && m.progressState.lastIter >= 0 {
 			iterNum := m.progressState.lastIter
 			if m.progressState.current.Iteration > 0 {
@@ -384,7 +383,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				var finalTools []protocol.ToolProgress
 				// Filter to only include tools from the current iteration.
 				// Without filtering, stale tools from previous iterations
-				// (carried in CompletedTools by mergeProgressState) would
+				// (carried in CompletedTools by applyProgressSnapshot) would
 				// pollute this iteration's snapshot.
 				for _, t := range m.progressState.current.CompletedTools {
 					if t.Iteration == m.progressState.lastIter {
