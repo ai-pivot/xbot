@@ -601,6 +601,26 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 	}
 }
 
+// SendStreamContent sends streaming LLM content to the CLI.
+// CLIChannel treats this the same as SendProgress with stream-only fields —
+// this method exists to satisfy the channel.ProgressSender interface so the
+// backend can treat all channels uniformly without type assertions.
+func (c *CLIChannel) SendStreamContent(chatID, content, reasoning string) {
+	if c.program == nil {
+		return
+	}
+	payload := &protocol.ProgressEvent{
+		ChatID: chatID,
+	}
+	if content != "" {
+		payload.StreamContent = content
+	}
+	if reasoning != "" {
+		payload.ReasoningStreamContent = reasoning
+	}
+	c.SendProgress(chatID, payload)
+}
+
 // SetProcessing externally sets the typing/processing state (for remote reconnect).
 func (c *CLIChannel) SetProcessing(processing bool) {
 	if c.program == nil {

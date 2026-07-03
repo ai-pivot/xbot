@@ -1980,39 +1980,31 @@ func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*Pr
 	}
 }
 
-// buildStreamCallbacks resolves CLI and Web channels and returns stream content
-// and reasoning stream callbacks. Returns nil, nil if streaming is disabled or
-// no channels are available.
-// Plugin channels (e.g. TG) do NOT receive stream — they get structured progress instead.
+// buildStreamCallbacks collects all channels implementing ProgressSender and
+// returns stream callbacks that push to ALL of them uniformly.
 //
-// RATE LIMITING: stream push is throttled to max 5/sec (200ms interval).
-// Each callback always writes to atomic streamState (for GetActiveProgress
-// reconnect recovery). The push is gated by a simple time-based throttle —
-// if <200ms since last push, skip (the next callback that passes will push
-// newer content). Structured events (progressFinalizer) always carry the
-// final Content/Reasoning, so throttled tokens are not lost.
+// Capability-based: a channel declares "I want stream push" by implementing
+// the ProgressSender interface. No type assertions to concrete types — the
+// backend treats local CLI, remote CLI, and web identically.
+//
+// RATE LIMITING: content/reasoning push throttled to ~16/sec (60ms interval)
+// via atomic CAS — matches typewriter tick (50ms) so typer always has fresh
+// content. Tool calls and token usage are low-frequency, not throttled.
+// All callbacks also write to atomic streamState for GetActiveProgress reconnect.
 func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
-	var cliCh *cli.CLIChannel
-	var remoteCLICh channelpkg.ProgressSender
-	if ch, ok := a.channelFinder("cli"); ok {
-		if cc, ok := ch.(*cli.CLIChannel); ok {
-			cliCh = cc
-		} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
-			remoteCLICh = rc
-		}
-	}
-	var webCh *web.WebChannel
-	if ch, ok := a.channelFinder("web"); ok {
-		if wc, ok := ch.(*web.WebChannel); ok {
-			webCh = wc
+	// Collect all ProgressSender channels — capability declaration, no special-casing.
+	var senders []channelpkg.ProgressSender
+	for _, name := range []string{"cli", "web"} {
+		if ch, ok := a.channelFinder(name); ok {
+			if ps, ok := ch.(channelpkg.ProgressSender); ok {
+				senders = append(senders, ps)
+			}
 		}
 	}
 
 	progressKey := qualifyChatID(channel, chatID)
 
-	// Rate limiter: max ~16 pushes per second (60ms minimum interval).
-	// Matches typewriter tick (50ms) — typer always has fresh content.
-	// Atomic CAS ensures thread-safety across concurrent callbacks.
+	// Shared rate limiter: 60ms interval (matches typer tick 50ms).
 	var lastPushMs atomic.Int64
 	throttle := func() bool {
 		now := time.Now().UnixMilli()
@@ -2023,6 +2015,18 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		return false
 	}
 
+	// broadcast pushes to all ProgressSender channels uniformly.
+	broadcastStream := func(content, reasoning string) {
+		for _, s := range senders {
+			s.SendStreamContent(chatID, content, reasoning)
+		}
+	}
+	broadcastProgress := func(payload *protocol.ProgressEvent) {
+		for _, s := range senders {
+			s.SendProgress(chatID, payload)
+		}
+	}
+
 	streamContentFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
@@ -2031,15 +2035,8 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			return
 		}
 		seq := progressSeq.Add(1)
-		if cliCh != nil {
-			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: progressKey, Seq: seq, StreamContent: content})
-		}
-		if remoteCLICh != nil {
-			remoteCLICh.SendStreamContent(chatID, content, "")
-		}
-		if webCh != nil {
-			webCh.SendStreamContent(chatID, content, "")
-		}
+		broadcastStream(content, "")
+		_ = seq // seq is embedded in streamState, not needed for SendStreamContent
 	}
 	streamReasoningFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
@@ -2048,16 +2045,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		if !throttle() {
 			return
 		}
-		seq := progressSeq.Add(1)
-		if cliCh != nil {
-			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: progressKey, Seq: seq, ReasoningStreamContent: content})
-		}
-		if remoteCLICh != nil {
-			remoteCLICh.SendStreamContent(chatID, "", content)
-		}
-		if webCh != nil {
-			webCh.SendStreamContent(chatID, "", content)
-		}
+		broadcastStream("", content)
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
 		tools := make([]protocol.ToolProgress, 0, len(toolCalls))
@@ -2076,22 +2064,12 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamingTools = tools
 		})
-		// Tool calls are low-frequency (one burst per tool), don't throttle.
 		seq := progressSeq.Add(1)
-		payload := &protocol.ProgressEvent{
+		broadcastProgress(&protocol.ProgressEvent{
 			ChatID:         progressKey,
 			Seq:            seq,
 			StreamingTools: tools,
-		}
-		if cliCh != nil {
-			cliCh.SendProgress(chatID, payload)
-		}
-		if remoteCLICh != nil {
-			remoteCLICh.SendProgress(chatID, payload)
-		}
-		if webCh != nil {
-			webCh.SendProgress(chatID, payload)
-		}
+		})
 	}
 	streamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {
@@ -2100,22 +2078,12 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamTokens = usage.CompletionTokens
 		})
-		// Token usage is low-frequency (once per LLM call), don't throttle.
 		seq := progressSeq.Add(1)
-		payload := &protocol.ProgressEvent{
+		broadcastProgress(&protocol.ProgressEvent{
 			ChatID:       progressKey,
 			Seq:          seq,
 			StreamTokens: usage.CompletionTokens,
-		}
-		if cliCh != nil {
-			cliCh.SendProgress(chatID, payload)
-		}
-		if remoteCLICh != nil {
-			remoteCLICh.SendProgress(chatID, payload)
-		}
-		if webCh != nil {
-			webCh.SendProgress(chatID, payload)
-		}
+		})
 	}
 	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc
 }
