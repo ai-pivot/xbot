@@ -110,18 +110,3 @@ func markAllDone(agents []protocol.SubAgentInfo) []protocol.SubAgentInfo {
 	}
 	return result
 }
-
-// pruneDoneSubAgents removes agents (and their children) that are already
-// marked "done". This prevents zombie entries from accumulating across
-// iteration boundaries when no new SubAgent data arrives.
-// Agents still "running" or "pending" are kept (they may complete soon).
-func pruneDoneSubAgents(agents []protocol.SubAgentInfo) []protocol.SubAgentInfo {
-	var kept []protocol.SubAgentInfo
-	for _, a := range agents {
-		a.Children = pruneDoneSubAgents(a.Children)
-		if a.Status != "done" && a.Status != "error" {
-			kept = append(kept, a)
-		}
-	}
-	return kept
-}

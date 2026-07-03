@@ -47,9 +47,8 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		}
 	} else {
 		// ChatID empty: this is a defensive warning. Messages without proper
-		// session identity risk cross-session contamination. The dedupMessagesGuard
-		// will catch any resulting duplicates, but the root cause should be fixed
-		// at the sender. Log at error level to make it visible.
+		// session identity risk cross-session contamination. Log at error level
+		// to make it visible.
 		log.WithFields(log.Fields{
 			"msg_channel":    msg.Channel,
 			"msg_chatid":     msg.ChatID,
@@ -89,10 +88,9 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 			m.cacheTokenUsage(m.progressState.current.TokenUsage)
 		}
 		m.streamingMsgIdx = -1
-		m.pendingToolSummary = nil // prevent cross-turn leak (same class as U1 A1 U2 A1 bug)
 		m.progressState.current = nil
-		m.setTurnReplyReceived(turnID)
 		m.endAgentTurn(turnID)
+		m.replyProcessed = true
 		if turnID == m.agentTurnID {
 			m.inputReady = true
 			m.tryFlushMessageQueue()
@@ -131,15 +129,20 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		var completedMsgIdx int
 
 		// Compute iterations to bake into the assistant message.
-		// If PhaseDone already processed this turn, use iterations stored in pendingToolSummary.
-		// Otherwise (PhaseDone hasn't arrived yet), use local iterationHistory.
+		// Use progressState.iterations (PhaseDone does NOT clear it anymore).
+		// Dedup by iteration number: applyProgressSnapshot creates per-iteration
+		// snapshots before PhaseDone may create a conflated one with ALL completed tools.
 		// Fallback: preserve existing iterations from the streaming message
 		// (e.g. saved by cancel ack before this response arrived).
 		var bakeIterations []cliIterationSnapshot
-		if m.isTurnDoneProcessed(turnID) && m.pendingToolSummary != nil {
-			bakeIterations = m.pendingToolSummary.iterations
-		} else if len(m.progressState.iterations) > 0 {
-			bakeIterations = append([]cliIterationSnapshot{}, m.progressState.iterations...)
+		if len(m.progressState.iterations) > 0 {
+			seen := make(map[int]bool)
+			for _, it := range m.progressState.iterations {
+				if !seen[it.Iteration] {
+					seen[it.Iteration] = true
+					bakeIterations = append(bakeIterations, it)
+				}
+			}
 		}
 		if len(bakeIterations) == 0 && m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) {
 			bakeIterations = m.messages[m.streamingMsgIdx].iterations
@@ -147,13 +150,12 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		// Append the last iteration from m.progressState.current if it wasn't already
 		// captured in iterationHistory. The last iteration's data (tools,
 		// reasoning) is typically in m.progressState.current but hasn't been snapshotted
-		// by snapshotIterationChange (which only fires on iteration N→N+1
+		// by applyProgressSnapshot (which only fires on iteration N→N+1
 		// transitions). Without this, AskUser messages lose the last
 		// iteration's tools from the viewport.
-		// Guard: use lastCompletedTools (filtered per-iteration) instead of
-		// m.progressState.current.CompletedTools (may contain stale tools from earlier
-		// iterations), and only run when the iteration is genuinely missing.
-		if m.progressState.current != nil && m.progressState.lastIter >= 0 && msg.WaitingUser {
+		// Guard: use progressState.current.CompletedTools (maintained in-place
+		// by applyProgressSnapshot) and only run when the iteration is genuinely missing.
+		if m.progressState.current != nil && m.progressState.lastIter >= 0 {
 			iterNum := m.progressState.lastIter
 			if m.progressState.current.Iteration > 0 {
 				iterNum = m.progressState.current.Iteration
@@ -166,33 +168,31 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				}
 			}
 			if !alreadyBaked {
-				// Use lastCompletedTools — these are per-iteration filtered
-				// (cleared by snapshotIterationChange on N→N+1), unlike
-				// m.progressState.current.CompletedTools which accumulates stale tools.
 				var finalTools []protocol.ToolProgress
-				finalTools = append(finalTools, m.lastCompletedTools...)
+				for _, t := range m.progressState.current.CompletedTools {
+					if t.Iteration == 0 || t.Iteration == iterNum {
+						finalTools = append(finalTools, t)
+					}
+				}
 				for _, t := range m.progressState.current.ActiveTools {
 					if t.Status == "done" || t.Status == "error" {
-						if !containsToolProgress(finalTools, t) {
+						if (t.Iteration == 0 || t.Iteration == iterNum) && !containsToolProgress(finalTools, t) {
 							finalTools = append(finalTools, t)
 						}
 					}
 				}
 				reasoning := m.progressState.current.Reasoning
-				if reasoning == "" && m.reasoningByIter != nil {
-					reasoning = m.reasoningByIter[iterNum]
-				}
 				if reasoning == "" {
-					reasoning = m.lastReasoning
+					reasoning = m.progressState.current.ReasoningStreamContent
 				}
 				snap := cliIterationSnapshot{
 					Iteration:   iterNum,
-					Thinking:    m.progressState.current.Thinking,
+					Content:     m.progressState.current.Content,
 					Reasoning:   reasoning,
 					Tools:       finalTools,
 					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
-				if len(snap.Tools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
+				if len(snap.Tools) > 0 || snap.Content != "" || snap.Reasoning != "" {
 					bakeIterations = append(bakeIterations, snap)
 				}
 			}
@@ -208,25 +208,31 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 			m.messages[m.streamingMsgIdx].iterations = bakeIterations
 			completedMsgIdx = m.streamingMsgIdx
 		} else {
-			// 新增完整的 assistant 消息 — use upsert to prevent duplicates
-			assistantMsg := cliMessage{
-				role:       "assistant",
-				content:    content,
-				timestamp:  time.Now(),
-				isPartial:  false,
-				dirty:      true,
-				turnID:     turnID,
-				iterations: bakeIterations,
+			// Find existing assistant message for this turn, or append new.
+			existingIdx := m.findMessageByTurn(turnID, "assistant")
+			if existingIdx >= 0 {
+				m.messages[existingIdx] = cliMessage{
+					role:       "assistant",
+					content:    content,
+					timestamp:  time.Now(),
+					isPartial:  false,
+					dirty:      true,
+					turnID:     turnID,
+					iterations: bakeIterations,
+				}
+				completedMsgIdx = existingIdx
+			} else {
+				m.messages = append(m.messages, cliMessage{
+					role:       "assistant",
+					content:    content,
+					timestamp:  time.Now(),
+					isPartial:  false,
+					dirty:      true,
+					turnID:     turnID,
+					iterations: bakeIterations,
+				})
+				completedMsgIdx = len(m.messages) - 1
 			}
-			completedMsgIdx = m.upsertMessageByTurn(turnID, "assistant", assistantMsg)
-		}
-		// Clear pendingToolSummary after consuming — prevents stale iteration
-		// data from Turn N leaking into Turn N+1's bakeIterations.
-		// Exception: when WaitingUser=true, the turn is paused (not ended).
-		// pendingToolSummary must survive so iterations remain available when
-		// the user answers and the turn resumes.
-		if !msg.WaitingUser {
-			m.pendingToolSummary = nil
 		}
 		// 重置流式状态
 		m.streamingMsgIdx = -1
@@ -240,31 +246,23 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		// boundary. When handleAgentMessage arrives after the next structured
 		// progress has advanced m.progressState.current.Iteration, ReasoningStreamContent may
 		// still contain the previous iteration's content — causing the previous
-		// iteration's reasoning to be misattributed to m.reasoningByIter[newIter].
+		// iteration's reasoning to be misattributed.
 		if turnID == m.agentTurnID && m.progressState.current != nil {
-			reasoning := m.progressState.current.Reasoning
-			if reasoning != "" {
-				m.lastReasoning = reasoning
-				if m.reasoningByIter == nil {
-					m.reasoningByIter = make(map[int]string)
-				}
-				iter := m.progressState.current.Iteration
-				if iter >= 0 {
-					m.reasoningByIter[iter] = reasoning
-				}
-			}
-			if m.progressState.current.Thinking != "" {
-				m.lastThinking = m.progressState.current.Thinking
+			if m.progressState.current.Content != "" {
+				m.lastContent = m.progressState.current.Content
 			}
 		}
 		// Store captured thinking on the completed message for Thinking Box rendering.
 		if completedMsgIdx >= 0 && completedMsgIdx < len(m.messages) {
-			thinking := m.lastReasoning
+			thinking := ""
+			if m.progressState.current != nil {
+				thinking = m.progressState.current.Reasoning
+			}
 			if thinking == "" {
-				thinking = m.lastThinking
+				thinking = m.lastContent
 			}
 			if thinking != "" {
-				m.messages[completedMsgIdx].thinking = thinking
+				m.messages[completedMsgIdx].reasoning = thinking
 			}
 		}
 		// Targeted re-render: the message was already cached by
@@ -356,18 +354,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 						answerParts = append(answerParts, fmt.Sprintf("  %s → %s", item.Question, ans))
 					}
 					m.showSystemMsg(strings.Join(answerParts, "\n"), feedbackInfo)
-					// Persist pre-AskUser iteration history AFTER startAgentTurn.
-					// startAgentTurn clears pendingToolSummary (to prevent stale
-					// cross-turn data), so we must save iterationHistory AFTER
-					// the clear, not before.
-					savedIterHistory := append([]cliIterationSnapshot{}, m.progressState.iterations...)
 					m.startAgentTurn()
-					if len(savedIterHistory) > 0 {
-						if m.pendingToolSummary == nil {
-							m.pendingToolSummary = &cliMessage{}
-						}
-						m.pendingToolSummary.iterations = savedIterHistory
-					}
 					m.updateViewportContent()
 				}, func() {
 					// Clean up persisted pending question on cancel.
@@ -384,7 +371,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		}
 
 		// Snapshot the final iteration before clearing
-		if m.progressState.lastIter >= 0 && (len(m.lastCompletedTools) > 0 || m.lastReasoning != "" || m.lastThinking != "") {
+		if m.progressState.current != nil && m.progressState.lastIter >= 0 && (len(m.progressState.current.CompletedTools) > 0 || m.lastContent != "") {
 			alreadySnapped := false
 			for _, s := range m.progressState.iterations {
 				if s.Iteration == m.progressState.lastIter {
@@ -393,25 +380,30 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				}
 			}
 			if !alreadySnapped {
-				// Filter tools by Iteration field to ensure correct attribution
 				var finalTools []protocol.ToolProgress
-				for _, t := range m.lastCompletedTools {
+				// Filter to only include tools from the current iteration.
+				// Without filtering, stale tools from previous iterations
+				// (carried in CompletedTools by applyProgressSnapshot) would
+				// pollute this iteration's snapshot.
+				for _, t := range m.progressState.current.CompletedTools {
 					if t.Iteration == m.progressState.lastIter {
 						finalTools = append(finalTools, t)
 					}
 				}
-				reasoning := m.lastReasoning
-				if reasoning == "" && m.reasoningByIter != nil {
-					reasoning = m.reasoningByIter[m.progressState.lastIter]
+				for _, t := range m.progressState.current.ActiveTools {
+					if (t.Status == "done" || t.Status == "error") && t.Iteration == m.progressState.lastIter {
+						finalTools = append(finalTools, t)
+					}
 				}
+				reasoning := m.progressState.current.Reasoning
 				snap := cliIterationSnapshot{
 					Iteration:   m.progressState.lastIter,
 					Reasoning:   reasoning,
-					Thinking:    m.lastThinking,
+					Content:     m.lastContent,
 					Tools:       finalTools,
 					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
-				if len(finalTools) > 0 || reasoning != "" || m.lastThinking != "" {
+				if len(finalTools) > 0 || reasoning != "" || m.lastContent != "" {
 					m.progressState.iterations = append(m.progressState.iterations, snap)
 				}
 			}
@@ -419,7 +411,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 
 		// Update assistant message iterations if we have richer local data
 		// that wasn't captured at assistant message creation time (step above).
-		// The assistant message already has iterations from pendingToolSummary
+		// The assistant message already has iterations from progressState.iterations
 		// (if PhaseDone arrived first) or from iterationHistory (if not).
 		// The final snapshot just above may have added more iterations.
 		if len(m.progressState.iterations) > 0 {
@@ -447,8 +439,8 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		// previous iterations to disappear. The turn will be ended later when
 		// the agent completes after receiving the user's answer.
 		if !msg.WaitingUser {
-			m.setTurnReplyReceived(turnID)
 			m.endAgentTurn(turnID)
+			m.replyProcessed = true
 			if turnID == m.agentTurnID {
 				m.inputReady = true
 				m.tryFlushMessageQueue()
@@ -468,8 +460,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 	// Find the streaming message that belongs to the cancelled turn.
 	// When a new turn starts (via startAgentTurn) before the cancel ack
-	// arrives, m.streamingMsgIdx points to the NEW turn's message and
-	// m.pendingToolSummary may still hold OLD turn's iteration data.
+	// arrives, m.streamingMsgIdx points to the NEW turn's message.
 	// Using cancelTargetTurnID ensures we only finalize the correct message.
 	cancelledIdx := -1
 	if m.cancelTargetTurnID != 0 {
@@ -493,23 +484,23 @@ func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 
 	if cancelledIdx >= 0 {
 		streamingMsg := &m.messages[cancelledIdx]
-		if strings.TrimSpace(streamingMsg.content) != "" {
-			// Streaming message accumulated real content (e.g. partial LLM text).
-			// Finalize it as a completed message so the user keeps what was streamed.
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
-			if len(streamingMsg.iterations) == 0 {
-				streamingMsg.iterations = m.cancelledTurnIterations()
-			}
-		} else if len(streamingMsg.iterations) > 0 {
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
-		} else if iters := m.cancelledTurnIterations(); len(iters) > 0 {
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
+
+		// ALWAYS capture the live iteration from progressState. The old
+		// branching logic conditionally skipped cancelledTurnIterations()
+		// when streamingMsg.iterations was non-empty (from AskUser/partial
+		// reply), losing the latest live iteration. PhaseDone may not arrive
+		// (ctx wrapper drops it on cancel), so this fallback is the ONLY
+		// way to capture the live iteration from m.progressState.current.
+		iters := m.cancelledTurnIterations()
+		if len(iters) > 0 {
 			streamingMsg.iterations = iters
-		} else {
-			// Empty streaming message with no iteration data. Remove it.
+		}
+		streamingMsg.isPartial = false
+		streamingMsg.dirty = true
+
+		// If the streaming message has NO content and NO iterations,
+		// there's nothing to display — remove it.
+		if strings.TrimSpace(streamingMsg.content) == "" && len(streamingMsg.iterations) == 0 {
 			m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
 			if m.streamingMsgIdx == cancelledIdx {
 				m.streamingMsgIdx = -1
@@ -537,15 +528,21 @@ func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 	if m.streamingMsgIdx >= 0 {
 		m.streamingMsgIdx = -1
 	}
-	m.pendingToolSummary = nil
 	m.progressState.current = nil
 	m.typing = false
 	m.turnCancelled = false
+	m.replyProcessed = true
 	m.cancelTargetTurnID = 0
 	m.cancelAckProcessed = true
 	m.inputReady = true
 	m.tryFlushMessageQueue()
 	m.rerenderCachedMessage(cancelledIdx)
+	// Push the updated cache to the viewport immediately so View() renders
+	// the correct content in this frame. Without this, the viewport shows
+	// stale streaming content until the next 100ms tick — the user perceives
+	// this as "history disappears then re-renders" because the streaming view
+	// (inline iterations/tools) is suddenly replaced by the idle view.
+	m.updateViewportContent()
 }
 
 // tryFlushMessageQueue arms the tick handler to drain queued messages
@@ -558,9 +555,7 @@ func (m *cliModel) tryFlushMessageQueue() {
 
 func (m *cliModel) cancelledTurnIterations() []cliIterationSnapshot {
 	var iterations []cliIterationSnapshot
-	if m.pendingToolSummary != nil && len(m.pendingToolSummary.iterations) > 0 {
-		iterations = append(iterations, m.pendingToolSummary.iterations...)
-	} else if len(m.progressState.iterations) > 0 {
+	if len(m.progressState.iterations) > 0 {
 		iterations = append(iterations, m.progressState.iterations...)
 	}
 	if m.progressState.current == nil {
@@ -584,12 +579,6 @@ func (m *cliModel) cancelledTurnIterations() []cliIterationSnapshot {
 		}
 	}
 	reasoning := m.progressState.current.Reasoning
-	if reasoning == "" && m.reasoningByIter != nil {
-		reasoning = m.reasoningByIter[iterNum]
-	}
-	if reasoning == "" {
-		reasoning = m.lastReasoning
-	}
 	// Capture streamed reasoning as fallback (LLM was still streaming when
 	// Ctrl+C interrupted). m.progressState.current is the live progress the
 	// user was watching — ReasoningStreamContent is what they saw on screen.
@@ -599,18 +588,18 @@ func (m *cliModel) cancelledTurnIterations() []cliIterationSnapshot {
 	// Capture streamed content as fallback when structured Thinking is empty.
 	// This preserves partial LLM output that was streamed but not yet finalized
 	// by recordAssistantMsg when Ctrl+C interrupted.
-	content := m.progressState.current.Thinking
+	content := m.progressState.current.Content
 	if content == "" && m.progressState.current.StreamContent != "" {
 		content = m.progressState.current.StreamContent
 	}
 	snap := cliIterationSnapshot{
 		Iteration:   iterNum,
-		Thinking:    content,
+		Content:     content,
 		Reasoning:   reasoning,
 		Tools:       tools,
 		ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 	}
-	if snap.Thinking != "" || snap.Reasoning != "" || len(snap.Tools) > 0 {
+	if snap.Content != "" || snap.Reasoning != "" || len(snap.Tools) > 0 {
 		iterations = append(iterations, snap)
 	}
 	return append([]cliIterationSnapshot{}, iterations...)

@@ -335,7 +335,7 @@ const (
 // cliIterationSnapshot captures a completed iteration for the progress panel.
 type cliIterationSnapshot struct {
 	Iteration   int
-	Thinking    string
+	Content     string
 	Reasoning   string // model's reasoning/thinking chain (reasoning_content)
 	Tools       []protocol.ToolProgress
 	ElapsedWall int64 // wall-clock duration of the iteration (ms)

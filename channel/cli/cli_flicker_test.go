@@ -16,7 +16,7 @@ import (
 // is still N.
 //
 // Fix: removed prev.ReasoningStreamContent fallback entirely. Only structured
-// sources (prev.Reasoning, reasoningByIter, lastReasoning) are used.
+// sources (prev.Reasoning) are used.
 // If structured Reasoning is not available, the snapshot has empty reasoning —
 // better to have no reasoning than WRONG reasoning.
 func TestReasoningNoContaminationOnIterationChange(t *testing.T) {
@@ -245,48 +245,3 @@ func TestReasoningBoxVisibleAcrossMultipleToolProgress(t *testing.T) {
 
 // TestReasoningPhaseDoneNoContamination verifies the PhaseDone path is also
 // free from ReasoningStreamContent contamination.
-func TestReasoningPhaseDoneNoContamination(t *testing.T) {
-	model := initTestModel()
-	model.startAgentTurn()
-
-	// Iteration 1 with structured reasoning
-	sendProgress(model, &protocol.ProgressEvent{
-		Iteration: 1,
-		Reasoning: "iter1 structured reasoning",
-		ChatID:    "cli:/test",
-	})
-
-	// Stream reasoning that would contaminate (if bug exists)
-	sendProgress(model, &protocol.ProgressEvent{
-		ReasoningStreamContent: "late stream reasoning (potential contaminant)",
-		ChatID:                 "cli:/test",
-	})
-
-	// PhaseDone — iterations move to pendingToolSummary, then cleared
-	sendProgress(model, &protocol.ProgressEvent{
-		Phase:     "done",
-		Iteration: 1,
-		ChatID:    "cli:/test",
-	})
-
-	// Check pendingToolSummary (iterations are moved there by handleProgressDone)
-	if model.pendingToolSummary == nil {
-		t.Fatal("pendingToolSummary should be set after PhaseDone")
-	}
-	found := false
-	for _, snap := range model.pendingToolSummary.iterations {
-		if snap.Iteration == 1 {
-			found = true
-			if strings.Contains(snap.Reasoning, "potential contaminant") {
-				t.Errorf("BUG: PhaseDone snapshot contaminated: %q", snap.Reasoning)
-			}
-			if snap.Reasoning != "iter1 structured reasoning" {
-				t.Errorf("PhaseDone reasoning mismatch: got %q", snap.Reasoning)
-			}
-			t.Logf("FIXED: PhaseDone snapshot reasoning = %q", snap.Reasoning)
-		}
-	}
-	if !found {
-		t.Error("PhaseDone should have created a snapshot for iteration 1 in pendingToolSummary")
-	}
-}

@@ -78,29 +78,33 @@ func (m *cliModel) invalidateAllCache(updateViewport bool) {
 }
 
 func (m *cliModel) openSettingsFromQuickSwitch() {
-	if m.channel == nil || len(m.panelState.valuesBackup) == 0 {
+	if m.channel == nil || len(m.panelState.stack) == 0 {
 		return
 	}
+	entry := m.panelState.stack[len(m.panelState.stack)-1]
+	if entry.mode != "settings" {
+		return
+	}
+	// Pop the stack entry — we consume it to restore the settings panel.
+	m.panelState.stack = m.panelState.stack[:len(m.panelState.stack)-1]
+
 	schema := m.channel.SettingsSchema()
 	if len(schema) == 0 {
 		return
 	}
 	// Re-read ALL values fresh (including LLM fields from new active subscription)
 	values := m.mergeCLISettingsValues()
-	// Overlay non-subscription values from backup (preserves user's in-memory
-	// edits to global/user-scoped settings like thinking_mode, sandbox_mode).
-	for k, v := range m.panelState.valuesBackup {
+	// Overlay non-subscription values from the saved settings state (preserves
+	// user's in-memory edits to global/user-scoped settings like thinking_mode,
+	// sandbox_mode).
+	for k, v := range entry.values {
 		if ch.IsSubscriptionScopedSettingKey(k) {
 			continue
 		}
 		values[k] = v
 	}
-	cursor := m.panelState.cursorBackup
-	onSubmit := m.panelState.onSubmitBackup
-	m.panelState.valuesBackup = nil
-	m.panelState.onSubmitBackup = nil
-	m.openSettingsPanel(schema, values, onSubmit)
-	m.panelState.cursor = cursor
+	m.openSettingsPanel(schema, values, entry.onSubmit)
+	m.panelState.cursor = entry.cursor
 }
 
 func (m *cliModel) applyThemeAndRebuild(theme string) {
@@ -166,7 +170,7 @@ func (m *cliModel) doSaveSettings(onSubmit func(map[string]string), vals map[str
 	lang, hasLang := vals["language"]
 	// Capture feedback string now (m.locale is only safe to read in Update)
 	feedbackMsg := m.locale.SettingsSaved
-	if m.panelState.isSetup {
+	if m.panelState.settings.isSetup {
 		feedbackMsg = m.locale.SetupComplete
 	}
 
@@ -221,7 +225,7 @@ func (m *cliModel) reloadSettingsCaches() {
 // handleSettingsSavedMsg processes the async settings save result.
 // Called from Update() to apply theme/locale/layout changes and refresh the viewport.
 func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
-	m.panelState.settingsSaving = false // unblock user input
+	m.panelState.settings.settingsSaving = false // unblock user input
 	visualChanged := false
 	if msg.themeChanged {
 		m.applyThemeAndRebuild(msg.theme)
@@ -246,8 +250,8 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 		m.appendSystem(msg.feedbackMsg)
 	}
 	// After setup wizard completes, show welcome message with TUI usage tips.
-	if m.panelState.isSetup {
-		m.panelState.isSetup = false
+	if m.panelState.settings.isSetup {
+		m.panelState.settings.isSetup = false
 		if m.locale.SetupWelcome != "" {
 			m.appendSystem(m.locale.SetupWelcome)
 		}
@@ -266,8 +270,8 @@ func (m *cliModel) handleSettingsSavedMsg(msg cliSettingsSavedMsg) tea.Cmd {
 func (m *cliModel) submitAskAnswers() (bool, tea.Model, tea.Cmd) {
 	m.saveCurrentFreeInput()
 	answers := m.collectAskAnswers()
-	if m.panelState.onAnswer != nil {
-		m.panelState.onAnswer(answers)
+	if m.panelState.askUser.onAnswer != nil {
+		m.panelState.askUser.onAnswer(answers)
 	}
 	m.closePanel()
 	// NOTE: tickCmd() is NOT returned here. If agent is typing, the tick chain

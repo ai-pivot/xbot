@@ -153,8 +153,8 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			}
 		} else {
 			// Thinking Box
-			if !msg.isPartial && msg.thinking != "" {
-				thinkingLines := strings.Split(strings.TrimSpace(msg.thinking), "\n")
+			if !msg.isPartial && msg.reasoning != "" {
+				thinkingLines := strings.Split(strings.TrimSpace(msg.reasoning), "\n")
 				const maxTL = 10
 				if len(thinkingLines) > 0 {
 					var display []string

@@ -555,7 +555,7 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			// Iteration==0 (unknown). If payload has a structured
 			// iteration (>0) and old is stream-only, the old content
 			// likely belongs to the previous iteration (already
-			// snapshotted by snapshotIterationChange). Merging it
+			// snapshotted by applyProgressSnapshot). Merging it
 			// into the new payload causes reasoning to render twice —
 			// once in completed iterations, once in live.
 			//
@@ -572,8 +572,13 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 					payload.ReasoningStreamContent = old.ReasoningStreamContent
 				}
 			}
-			// StreamingTools follow the same rule.
-			if sameOrUnknownIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
+			// StreamingTools: only merge when the structured event has NO
+			// ActiveTools. If ActiveTools is present, tools have moved past
+			// generating into running/done — merging stale StreamingTools
+			// would render a phantom "generating" line alongside the real
+			// "running" line for one frame (visual jitter).
+			if sameOrUnknownIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 &&
+				len(payload.ActiveTools) == 0 {
 				payload.StreamingTools = old.StreamingTools
 			}
 			// Merge TokenUsage and CWD regardless of old event type —
@@ -587,7 +592,7 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			// NOTE: CompletedTools/ActiveTools are NOT merged across coalescing.
 			// Merging iteration N's CompletedTools into iteration N+1's event
 			// causes cross-iteration tool attribution. Instead, the root fix is
-			// in snapshotIterationChange: when iteration changes, it captures
+			// in applyProgressSnapshot: when iteration changes, it captures
 			// ALL ActiveTools from prev (the engine guarantees they're done via
 			// snapshotCompletedIteration before callLLM starts the next iteration).
 			// prev may have stale "running" status due to coalescing dropping the
@@ -599,6 +604,26 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 		default:
 		}
 	}
+}
+
+// SendStreamContent sends streaming LLM content to the CLI.
+// CLIChannel treats this the same as SendProgress with stream-only fields —
+// this method exists to satisfy the channel.ProgressSender interface so the
+// backend can treat all channels uniformly without type assertions.
+func (c *CLIChannel) SendStreamContent(chatID, content, reasoning string) {
+	if c.program == nil {
+		return
+	}
+	payload := &protocol.ProgressEvent{
+		ChatID: chatID,
+	}
+	if content != "" {
+		payload.StreamContent = content
+	}
+	if reasoning != "" {
+		payload.ReasoningStreamContent = reasoning
+	}
+	c.SendProgress(chatID, payload)
 }
 
 // SetProcessing externally sets the typing/processing state (for remote reconnect).
@@ -1035,6 +1060,13 @@ func (c *CLIChannel) handleProgressDrain() {
 // handleAsyncDrain is the SINGLE goroutine that forwards messages from asyncCh
 // to the Bubble Tea event loop via program.Send. This is the only non-readLoop
 // sender to p.msgs, ensuring key events get fair scheduling (~50% instead of ~25%).
+//
+// CATCH-UP DRAIN: when a cliProgressMsg is dequeued, all subsequent
+// cliProgressMsg still in asyncCh are drained and coalesced into a single
+// event before Send. This guarantees asyncCh never accumulates a backlog
+// of progress events — regardless of push frequency, the event loop
+// receives at most one merged progress event per drain cycle. Non-progress
+// messages interleaved are preserved in order.
 func (c *CLIChannel) handleAsyncDrain() {
 	defer c.wg.Done()
 
@@ -1046,11 +1078,118 @@ func (c *CLIChannel) handleAsyncDrain() {
 			c.programMu.Lock()
 			p := c.program
 			c.programMu.Unlock()
-			if p != nil {
-				p.Send(msg)
+			if p == nil {
+				continue
 			}
+
+			// Fast path: non-progress message — send immediately.
+			if _, ok := msg.(cliProgressMsg); !ok {
+				p.Send(msg)
+				continue
+			}
+
+			// Progress message — drain all pending progress from asyncCh,
+			// coalescing into a single event. Non-progress messages
+			// encountered are sent in order before continuing.
+			merged := msg.(cliProgressMsg)
+			for {
+				select {
+				case next := <-c.asyncCh:
+					if nextP, ok := next.(cliProgressMsg); ok {
+						merged = coalesceProgress(merged, nextP)
+					} else {
+						// Non-progress message sandwiched — flush merged
+						// progress, then send the non-progress message.
+						p.Send(merged)
+						p.Send(next)
+						goto drainDone
+					}
+				default:
+					// asyncCh empty — send the coalesced progress event.
+					p.Send(merged)
+					goto drainDone
+				}
+			}
+		drainDone:
 		}
 	}
+}
+
+// coalesceProgress merges two consecutive progress events into one.
+// b is newer than a. Each field is merged independently — take the
+// longest/non-empty value from either event. This prevents data loss
+// when stream events carry different fields independently (e.g. one
+// event updates content, another updates reasoning).
+//
+// Rules:
+//   - Structured fields (Phase, Iteration, Tools, Todos, etc.): b wins
+//     if b is structured (authoritative). Otherwise keep a's structured state.
+//   - Stream fields (StreamContent, ReasoningStreamContent, StreamingTools,
+//     StreamTokens): take the longer/larger value from either a or b.
+//   - Seq: take the max.
+func coalesceProgress(a, b cliProgressMsg) cliProgressMsg {
+	if b.payload == nil {
+		return a
+	}
+	if a.payload == nil {
+		return b
+	}
+
+	pa := a.payload
+	pb := b.payload
+
+	// Start from b if structured, else from a (preserve structured state).
+	var result protocol.ProgressEvent
+	bStructured := pb.Phase != "" || pb.Iteration > 0
+	aStructured := pa.Phase != "" || pa.Iteration > 0
+
+	if bStructured {
+		result = *pb
+	} else if aStructured {
+		result = *pa
+	} else {
+		// Both stream-only — start from a (older), overlay b's fields.
+		result = *pa
+	}
+
+	// Merge stream fields: take the LONGEST value from either event.
+	// Stream content is cumulative (each push sends full accumulated text),
+	// so longer = more complete. But different fields may come from
+	// different events, so we must check each independently.
+	if len(pb.StreamContent) > len(result.StreamContent) {
+		result.StreamContent = pb.StreamContent
+	}
+	if len(pb.ReasoningStreamContent) > len(result.ReasoningStreamContent) {
+		result.ReasoningStreamContent = pb.ReasoningStreamContent
+	}
+	if len(pb.StreamingTools) > len(result.StreamingTools) {
+		result.StreamingTools = pb.StreamingTools
+	}
+	if pb.StreamTokens > result.StreamTokens {
+		result.StreamTokens = pb.StreamTokens
+	}
+
+	// If b is structured, copy its structured fields (authoritative).
+	if bStructured {
+		result.Phase = pb.Phase
+		result.Iteration = pb.Iteration
+		result.Content = pb.Content
+		result.Reasoning = pb.Reasoning
+		result.ActiveTools = pb.ActiveTools
+		result.CompletedTools = pb.CompletedTools
+		result.TokenUsage = pb.TokenUsage
+		result.Todos = pb.Todos
+		result.HistoryCompacted = pb.HistoryCompacted
+		result.IterationHistory = pb.IterationHistory
+		result.SubAgents = pb.SubAgents
+	}
+
+	// Seq: take the max.
+	if pb.Seq > result.Seq {
+		result.Seq = pb.Seq
+	}
+
+	return cliProgressMsg{payload: &result}
 }
 
 // handleTickDrain forwards tick messages from tickCh to BubbleTea independently

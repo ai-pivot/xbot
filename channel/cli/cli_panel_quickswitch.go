@@ -1069,12 +1069,8 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	// Command mode.
 	switch msg.Code {
 	case tea.KeyEsc:
-		returnToSettings := m.quickSwitchReturnToPanel
-		m.quickSwitchReturnToPanel = false
 		m.quickSwitchMode = ""
-		if returnToSettings {
-			m.openSettingsFromQuickSwitch()
-		}
+		m.openSettingsFromQuickSwitch()
 		return true, nil
 	case tea.KeyUp:
 		m.moveLLMCursor(-1)

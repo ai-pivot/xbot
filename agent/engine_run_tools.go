@@ -364,7 +364,7 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 	if s.structuredProgress != nil && len(s.structuredProgress.CompletedTools) > 0 {
 		snap := IterationSnapshot{
 			Iteration: iteration,
-			Thinking:  s.structuredProgress.ThinkingContent,
+			Content:   s.structuredProgress.Content,
 			Reasoning: s.structuredProgress.ReasoningContent,
 			Tools:     make([]IterationToolSnapshot, len(s.structuredProgress.CompletedTools)),
 		}

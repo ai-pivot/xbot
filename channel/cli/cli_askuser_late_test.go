@@ -13,7 +13,7 @@ import (
 // arrives after openAskUserPanel sets m.typing=false.
 // handleProgressMsg's auto-start turn logic then calls
 // startAgentTurn() → resetProgressState(), clearing iterationHistory.
-// Updated: renderProgressBlock always returns empty now (inline rendering).
+// Updated: progress is rendered inline in the streaming message.
 // The test verifies iterationHistory and progress are preserved.
 func TestAskUserLateProgressClearsState(t *testing.T) {
 	model := initTestModel()
@@ -82,7 +82,7 @@ func TestAskUserLateProgressClearsState(t *testing.T) {
 
 // TestAskUserTickPreservesIterations verifies that tick handler
 // doesn't destroy iteration state when AskUser panel is open.
-// Updated: renderProgressBlock always returns empty now (inline rendering).
+// Updated: progress is rendered inline in the streaming message.
 func TestAskUserTickPreservesIterations(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()

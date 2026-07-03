@@ -324,7 +324,7 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 		// AskUser split layout: wheel always scrolls the askuser panel.
 		// The user controls the main viewport via Shift+↑/↓.
 		if m.panelState.mode == "askuser" {
-			m.panelState.askScrollY = max(0, m.panelState.askScrollY-3)
+			m.panelState.askUser.askScrollY = max(0, m.panelState.askUser.askScrollY-3)
 			return true, m, nil
 		}
 		// Check if wheel is in panel area (non-askuser panels)
@@ -358,7 +358,7 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 		// AskUser split layout: wheel always scrolls the askuser panel.
 		// The user controls the main viewport via Shift+↑/↓.
 		if m.panelState.mode == "askuser" {
-			m.panelState.askScrollY += 3
+			m.panelState.askUser.askScrollY += 3
 			return true, m, nil
 		}
 		// Check if wheel is in panel area (non-askuser panels)
@@ -394,12 +394,12 @@ func (m *cliModel) handleMouseWheel(msg tea.MouseWheelMsg) (bool, tea.Model, tea
 
 // commitPanelEdit saves the current edit value back to panelValues.
 func (m *cliModel) commitPanelEdit() {
-	if !m.panelState.editing || m.panelState.cursor >= len(m.panelState.schema) {
+	if !m.panelState.settings.editing || m.panelState.cursor >= len(m.panelState.settings.schema) {
 		return
 	}
-	def := m.panelState.schema[m.panelState.cursor]
+	def := m.panelState.settings.schema[m.panelState.cursor]
 	if !def.ReadOnly {
-		m.panelState.values[def.Key] = strings.TrimSpace(m.panelState.editTA.Value())
+		m.panelState.settings.values[def.Key] = strings.TrimSpace(m.panelState.settings.editTA.Value())
 	}
 }
 
@@ -407,12 +407,12 @@ func (m *cliModel) commitPanelEdit() {
 // Single click: activate item (same as Enter) after moving cursor.
 // If currently in edit/combo mode, close the overlay first.
 func (m *cliModel) clickPanelItem(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelState.mode == "settings" && idx < len(m.panelState.schema) {
+	if m.panelState.mode == "settings" && idx < len(m.panelState.settings.schema) {
 		// Close any active overlay before switching to a new item
-		if m.panelState.editing || m.panelState.combo {
+		if m.panelState.settings.editing || m.panelState.settings.combo {
 			m.commitPanelEdit()
-			m.panelState.editing = false
-			m.panelState.combo = false
+			m.panelState.settings.editing = false
+			m.panelState.settings.combo = false
 		}
 		m.panelState.cursor = idx
 		return m.activatePanelItem()
@@ -424,28 +424,28 @@ func (m *cliModel) clickPanelItem(idx int) (bool, tea.Model, tea.Cmd) {
 
 // clickPanelToggle handles clicking a toggle setting.
 func (m *cliModel) clickPanelToggle(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelState.mode != "settings" || idx >= len(m.panelState.schema) {
+	if m.panelState.mode != "settings" || idx >= len(m.panelState.settings.schema) {
 		return false, m, nil
 	}
 	// Close any active overlay first
-	if m.panelState.editing || m.panelState.combo {
+	if m.panelState.settings.editing || m.panelState.settings.combo {
 		m.commitPanelEdit()
-		m.panelState.editing = false
-		m.panelState.combo = false
+		m.panelState.settings.editing = false
+		m.panelState.settings.combo = false
 	}
-	def := m.panelState.schema[idx]
+	def := m.panelState.settings.schema[idx]
 	if def.ReadOnly || def.Type != ch.SettingTypeToggle {
 		return false, m, nil
 	}
-	cur := m.panelState.values[def.Key]
-	m.panelState.values[def.Key] = toggleVal(cur)
+	cur := m.panelState.settings.values[def.Key]
+	m.panelState.settings.values[def.Key] = toggleVal(cur)
 	return true, m, nil
 }
 
 // clickPanelOpenURL handles clicking the "获取密钥" button.
 // Opens the provider's API key management page in the default browser.
 func (m *cliModel) clickPanelOpenURL() (bool, tea.Model, tea.Cmd) {
-	provider := m.panelState.values["llm_provider"]
+	provider := m.panelState.settings.values["llm_provider"]
 	guide, ok := ch.ProviderSetupGuides[provider]
 	if !ok || guide.URL == "" {
 		return true, m, nil
@@ -456,11 +456,11 @@ func (m *cliModel) clickPanelOpenURL() (bool, tea.Model, tea.Cmd) {
 
 // clickPanelSave handles clicking the "保存设置" button.
 func (m *cliModel) clickPanelSave() (bool, tea.Model, tea.Cmd) {
-	onSubmit := m.panelState.onSubmit
-	panelVals := m.panelState.values
+	onSubmit := m.panelState.settings.onSubmit
+	panelVals := m.panelState.settings.values
 	m.closePanel()
 	if onSubmit != nil && panelVals != nil {
-		m.panelState.settingsSaving = true
+		m.panelState.settings.settingsSaving = true
 		return true, m, m.doSaveSettings(onSubmit, panelVals)
 	}
 	return true, m, nil
@@ -474,32 +474,32 @@ func (m *cliModel) clickPanelCancel() (bool, tea.Model, tea.Cmd) {
 
 // clickPanelCombo handles clicking a combo/select setting.
 func (m *cliModel) clickPanelCombo(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelState.mode != "settings" || idx >= len(m.panelState.schema) {
+	if m.panelState.mode != "settings" || idx >= len(m.panelState.settings.schema) {
 		return false, m, nil
 	}
 	// Close any active overlay first (unless clicking same combo to toggle off)
-	def := m.panelState.schema[idx]
+	def := m.panelState.settings.schema[idx]
 	if def.ReadOnly || (def.Type != ch.SettingTypeCombo && def.Type != ch.SettingTypeSelect) {
 		return false, m, nil
 	}
 	m.panelState.cursor = idx
-	if m.panelState.combo && m.panelState.cursor == idx {
+	if m.panelState.settings.combo && m.panelState.cursor == idx {
 		// Click same combo again to close
-		m.panelState.combo = false
+		m.panelState.settings.combo = false
 		return true, m, nil
 	}
 	// Close previous edit if any
-	if m.panelState.editing {
+	if m.panelState.settings.editing {
 		m.commitPanelEdit()
-		m.panelState.editing = false
+		m.panelState.settings.editing = false
 	}
-	m.panelState.combo = true
-	m.panelState.comboIdx = 0
+	m.panelState.settings.combo = true
+	m.panelState.settings.comboIdx = 0
 	// Pre-select current value
-	cur := m.panelState.values[def.Key]
+	cur := m.panelState.settings.values[def.Key]
 	for i, opt := range def.Options {
 		if opt.Value == cur {
-			m.panelState.comboIdx = i
+			m.panelState.settings.comboIdx = i
 			break
 		}
 	}
@@ -510,13 +510,13 @@ func (m *cliModel) clickPanelCombo(idx int) (bool, tea.Model, tea.Cmd) {
 
 // clickPanelComboItem handles clicking an item in an open combo dropdown.
 func (m *cliModel) clickPanelComboItem(optIdx int) (bool, tea.Model, tea.Cmd) {
-	if !m.panelState.combo || m.panelState.cursor >= len(m.panelState.schema) {
+	if !m.panelState.settings.combo || m.panelState.cursor >= len(m.panelState.settings.schema) {
 		return false, m, nil
 	}
-	def := m.panelState.schema[m.panelState.cursor]
+	def := m.panelState.settings.schema[m.panelState.cursor]
 	if optIdx < len(def.Options) {
-		m.panelState.values[def.Key] = def.Options[optIdx].Value
-		m.panelState.combo = false
+		m.panelState.settings.values[def.Key] = def.Options[optIdx].Value
+		m.panelState.settings.combo = false
 	}
 	return true, m, nil
 }
@@ -524,10 +524,10 @@ func (m *cliModel) clickPanelComboItem(optIdx int) (bool, tea.Model, tea.Cmd) {
 // activatePanelItem simulates pressing Enter on the current panel cursor item.
 // Handles both regular setting types and special entries (runner, danger, subscription).
 func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
-	if m.panelState.cursor >= len(m.panelState.schema) {
+	if m.panelState.cursor >= len(m.panelState.settings.schema) {
 		return false, m, nil
 	}
-	def := m.panelState.schema[m.panelState.cursor]
+	def := m.panelState.settings.schema[m.panelState.cursor]
 	if def.ReadOnly {
 		return true, m, nil
 	}
@@ -543,53 +543,47 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 		m.openDangerPanelFromSettings()
 		return true, m, nil
 	case "subscription_manage":
-		m.panelState.valuesBackup = make(map[string]string, len(m.panelState.values))
-		for k, v := range m.panelState.values {
-			m.panelState.valuesBackup[k] = v
-		}
-		m.panelState.cursorBackup = m.panelState.cursor
-		m.panelState.onSubmitBackup = m.panelState.onSubmit
+		m.pushPanel()
 		m.panelState.mode = ""
 		m.relayoutViewport()
-		m.quickSwitchReturnToPanel = true
 		m.openQuickSwitch("")
 		return true, m, nil
 	}
 
 	switch def.Type {
 	case ch.SettingTypeToggle:
-		cur := m.panelState.values[def.Key]
-		m.panelState.values[def.Key] = toggleVal(cur)
+		cur := m.panelState.settings.values[def.Key]
+		m.panelState.settings.values[def.Key] = toggleVal(cur)
 		return true, m, nil
 	case ch.SettingTypeSelect:
 		opts := def.Options
 		if len(opts) == 0 {
 			return true, m, nil
 		}
-		cur := m.panelState.values[def.Key]
+		cur := m.panelState.settings.values[def.Key]
 		for i, opt := range opts {
 			if opt.Value == cur {
 				next := (i + 1) % len(opts)
-				m.panelState.values[def.Key] = opts[next].Value
+				m.panelState.settings.values[def.Key] = opts[next].Value
 				break
 			}
 		}
 		return true, m, nil
 	case ch.SettingTypeCombo:
-		if m.panelState.combo {
-			m.panelState.combo = false
+		if m.panelState.settings.combo {
+			m.panelState.settings.combo = false
 		} else if len(def.Options) > 0 {
-			m.panelState.combo = true
-			m.panelState.comboIdx = 0
+			m.panelState.settings.combo = true
+			m.panelState.settings.comboIdx = 0
 			extraLines := 2 + min(len(def.Options), 8)
 			m.ensureSettingsCursorVisible(extraLines)
 		}
 		return true, m, nil
 	default:
 		// text/number/password/textarea: enter edit mode
-		m.panelState.editing = true
-		m.panelState.editTA = m.newPanelTextArea(m.panelState.values[def.Key], 50, 1)
-		m.panelState.editTA.Focus()
+		m.panelState.settings.editing = true
+		m.panelState.settings.editTA = m.newPanelTextArea(m.panelState.settings.values[def.Key], 50, 1)
+		m.panelState.settings.editTA.Focus()
 		m.ensureSettingsCursorVisible(3)
 		return true, m, nil
 	}
@@ -598,31 +592,31 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 // --- AskUser click handlers ---
 
 func (m *cliModel) clickAskUserOption(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelState.mode != "askuser" || m.panelState.askTab >= len(m.panelState.askItems) {
+	if m.panelState.mode != "askuser" || m.panelState.askUser.askTab >= len(m.panelState.askUser.askItems) {
 		return false, m, nil
 	}
-	item := m.panelState.askItems[m.panelState.askTab]
+	item := m.panelState.askUser.askItems[m.panelState.askUser.askTab]
 	if idx >= len(item.Options) {
 		return false, m, nil
 	}
 	// Toggle selection
-	if m.panelState.askOptSel[m.panelState.askTab] == nil {
-		m.panelState.askOptSel[m.panelState.askTab] = make(map[int]bool)
+	if m.panelState.askUser.askOptSel[m.panelState.askUser.askTab] == nil {
+		m.panelState.askUser.askOptSel[m.panelState.askUser.askTab] = make(map[int]bool)
 	}
-	m.panelState.askOptSel[m.panelState.askTab][idx] = !m.panelState.askOptSel[m.panelState.askTab][idx]
+	m.panelState.askUser.askOptSel[m.panelState.askUser.askTab][idx] = !m.panelState.askUser.askOptSel[m.panelState.askUser.askTab][idx]
 	return true, m, nil
 }
 
 func (m *cliModel) clickAskUserTab(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelState.mode != "askuser" || idx >= len(m.panelState.askItems) {
+	if m.panelState.mode != "askuser" || idx >= len(m.panelState.askUser.askItems) {
 		return false, m, nil
 	}
-	m.panelState.askTab = idx
+	m.panelState.askUser.askTab = idx
 	return true, m, nil
 }
 
 func (m *cliModel) clickAskUserSubmit() (bool, tea.Model, tea.Cmd) {
-	if m.panelState.mode != "askuser" || m.panelState.onAnswer == nil {
+	if m.panelState.mode != "askuser" || m.panelState.askUser.onAnswer == nil {
 		return false, m, nil
 	}
 	// Reuse the same submission logic as keyboard Enter (collectAskAnswers
@@ -711,29 +705,29 @@ func (m *cliModel) executeRewind() (bool, tea.Model, tea.Cmd) {
 // --- Approval click handler ---
 
 func (m *cliModel) clickApprovalBtn(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelState.approvalReq == nil {
+	if m.panelState.misc.approvalReq == nil {
 		return false, m, nil
 	}
 	if idx == 0 {
 		// Approve
-		m.panelState.approvalCh <- protocol.ApprovalResult{Approved: true}
-		m.panelState.approvalReq = nil
+		m.panelState.misc.approvalCh <- protocol.ApprovalResult{Approved: true}
+		m.panelState.misc.approvalReq = nil
 		m.panelState.mode = ""
 		return true, m, nil
 	}
 	if idx == 1 {
 		// Deny
-		if m.panelState.approvalDenyMode {
+		if m.panelState.misc.approvalDenyMode {
 			// Submit deny with reason
-			reason := m.panelState.approvalDenyTA.Value()
-			m.panelState.approvalCh <- protocol.ApprovalResult{Approved: false, DenyReason: reason}
-			m.panelState.approvalReq = nil
+			reason := m.panelState.misc.approvalDenyTA.Value()
+			m.panelState.misc.approvalCh <- protocol.ApprovalResult{Approved: false, DenyReason: reason}
+			m.panelState.misc.approvalReq = nil
 			m.panelState.mode = ""
 			return true, m, nil
 		}
-		m.panelState.approvalDenyMode = true
-		m.panelState.approvalDenyTA.Focus()
-		m.panelState.approvalCursor = 1
+		m.panelState.misc.approvalDenyMode = true
+		m.panelState.misc.approvalDenyTA.Focus()
+		m.panelState.misc.approvalCursor = 1
 		return true, m, nil
 	}
 	return false, m, nil
@@ -765,13 +759,13 @@ func (m *cliModel) clickTextarea(x, y int) (bool, tea.Model, tea.Cmd) {
 
 func (m *cliModel) clickPanelTextarea(x, y int) (bool, tea.Model, tea.Cmd) {
 	// Click on panel edit textarea
-	if m.panelState.editing {
+	if m.panelState.settings.editing {
 		contentX := x - 1
 		if contentX < 0 {
 			contentX = 0
 		}
-		y = y + m.panelState.editTA.ScrollYOffset()
-		m.panelState.editTA.ClickAt(contentX, y)
+		y = y + m.panelState.settings.editTA.ScrollYOffset()
+		m.panelState.settings.editTA.ClickAt(contentX, y)
 	}
 	return true, m, nil
 }
@@ -804,10 +798,10 @@ func (m *cliModel) clickCompletionsItem(idx int) (bool, tea.Model, tea.Cmd) {
 // --- Sessions click handler ---
 
 func (m *cliModel) clickSessionsItem(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelState.mode != "sessions" || idx >= len(m.panelState.sessItems) {
+	if m.panelState.mode != "sessions" || idx >= len(m.panelState.misc.sessItems) {
 		return false, m, nil
 	}
-	m.panelState.sessCursor = idx
+	m.panelState.misc.sessCursor = idx
 	return true, m, nil
 }
 
@@ -817,27 +811,27 @@ func (m *cliModel) clickBgTasksItem(idx int) (bool, tea.Model, tea.Cmd) {
 	if m.panelState.mode != "bgtasks" {
 		return false, m, nil
 	}
-	m.panelState.bgCursor = idx
+	m.panelState.misc.bgCursor = idx
 	return true, m, nil
 }
 
 // --- Danger click handler ---
 
 func (m *cliModel) clickDangerItem(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelState.mode != "danger" || idx >= len(m.panelState.dangerItems) {
+	if m.panelState.mode != "danger" || idx >= len(m.panelState.misc.dangerItems) {
 		return false, m, nil
 	}
-	m.panelState.dangerCursor = idx
+	m.panelState.misc.dangerCursor = idx
 	return true, m, nil
 }
 
 // --- ch.Channel click handler ---
 
 func (m *cliModel) clickChannelItem(idx int) (bool, tea.Model, tea.Cmd) {
-	if m.panelState.mode != "channel" || idx >= len(m.panelState.channelItems) {
+	if m.panelState.mode != "channel" || idx >= len(m.panelState.misc.channelItems) {
 		return false, m, nil
 	}
-	m.panelState.channelCursor = idx
+	m.panelState.misc.channelCursor = idx
 	return true, m, nil
 }
 
@@ -848,18 +842,18 @@ func (m *cliModel) clickRunnerField(idx int) (bool, tea.Model, tea.Cmd) {
 		return false, m, nil
 	}
 	// Focus the clicked textinput field
-	m.panelState.runnerEditField = idx
+	m.panelState.runner.runnerEditField = idx
 	// Blur all fields, focus selected one
-	m.panelState.runnerServerTI.Blur()
-	m.panelState.runnerTokenTI.Blur()
-	m.panelState.runnerWS.Blur()
+	m.panelState.runner.runnerServerTI.Blur()
+	m.panelState.runner.runnerTokenTI.Blur()
+	m.panelState.runner.runnerWS.Blur()
 	switch idx {
 	case 0:
-		m.panelState.runnerServerTI.Focus()
+		m.panelState.runner.runnerServerTI.Focus()
 	case 1:
-		m.panelState.runnerTokenTI.Focus()
+		m.panelState.runner.runnerTokenTI.Focus()
 	case 2:
-		m.panelState.runnerWS.Focus()
+		m.panelState.runner.runnerWS.Focus()
 	}
 	return true, m, nil
 }
@@ -1087,119 +1081,20 @@ func (m *cliModel) trackPanelZones(zb *mouseZoneBuilder) {
 // Zones must account for scroll offset (panelScrollY).
 func (m *cliModel) trackSettingsZones(zb *mouseZoneBuilder, visibleH, contentStartY int) {
 	scrollY := m.panelState.scrollY
+	rows := m.buildSettingsLayout()
 
-	// Build the complete line map (same logic as viewSettingsPanel)
-	type lineInfo struct {
-		isItem       bool
-		itemIndex    int    // >= 0: schema item, < 0: combo option (-(optIdx+1))
-		isButton     bool   // true for clickable button lines
-		buttonAction string // "openURL", "save"
-		buttonURL    string // URL to open (for openURL action)
-	}
-
-	var lines []lineInfo
-
-	// Header line
-	lines = append(lines, lineInfo{})
-	// Divider line
-	lines = append(lines, lineInfo{})
-
-	lastCat := ""
-	for i := range m.panelState.schema {
-		def := m.panelState.schema[i]
-		if def.Category != lastCat {
-			lastCat = def.Category
-			lines = append(lines, lineInfo{}) // blank line
-			lines = append(lines, lineInfo{}) // category header
-		}
-		lines = append(lines, lineInfo{isItem: true, itemIndex: i})
-
-		// Description lines shown when cursor is on this field.
-		if i == m.panelState.cursor && def.Description != "" {
-			descLines := strings.Count(def.Description, "\n") + 1
-			for k := 0; k < descLines; k++ {
-				lines = append(lines, lineInfo{})
-			}
-		}
-
-		// API Key field: always show "获取密钥" button line.
-		if def.Key == "llm_api_key" {
-			provider := m.panelState.values["llm_provider"]
-			if provider != "" {
-				guide, hasGuide := ch.ProviderSetupGuides[provider]
-				if hasGuide && guide.URL != "" {
-					lines = append(lines, lineInfo{isButton: true, buttonAction: "openURL", buttonURL: guide.URL})
-				} else if hasGuide && guide.URL == "" {
-					lines = append(lines, lineInfo{}) // info text (Ollama)
-				}
-			}
-		}
-
-		// Inline overlay: combo/edit rendered right after cursor item (Crush-style)
-		if i == m.panelState.cursor {
-			if m.panelState.editing {
-				lines = append(lines, lineInfo{}) // input line
-				lines = append(lines, lineInfo{}) // hint line
-				lines = append(lines, lineInfo{}) // trailing newline
-			} else if m.panelState.combo && len(def.Options) > 0 {
-				maxShow := 8
-				start := 0
-				if m.panelState.comboIdx >= maxShow {
-					start = m.panelState.comboIdx - maxShow + 1
-				}
-				end := min(start+maxShow, len(def.Options))
-				for j := start; j < end; j++ {
-					lines = append(lines, lineInfo{isItem: true, itemIndex: -(j + 1)})
-					// Selected combo option may show a description line.
-					if j == m.panelState.comboIdx && def.Options[j].Description != "" {
-						lines = append(lines, lineInfo{})
-					}
-				}
-				lines = append(lines, lineInfo{}) // hint line
-			}
-		}
-	}
-
-	// Bottom buttons (when no overlay active)
-	if !m.panelState.editing && !m.panelState.combo {
-		lines = append(lines, lineInfo{})                                     // blank line
-		lines = append(lines, lineInfo{isButton: true, buttonAction: "save"}) // save+cancel buttons row
-		lines = append(lines, lineInfo{})                                     // keyboard hint line
-	}
-
-	// Now apply scroll offset and track zones
-	for ln := scrollY; ln < len(lines) && zb.y < contentStartY+visibleH; ln++ {
-		info := lines[ln]
-		if info.isItem {
-			if info.itemIndex >= 0 {
-				def := m.panelState.schema[info.itemIndex]
-				zoneID := "panelItem"
-				switch def.Type {
-				case ch.SettingTypeToggle:
-					zoneID = "panelToggle"
-				case ch.SettingTypeCombo:
-					zoneID = "panelCombo"
-				}
-				zb.add(1, zoneID, info.itemIndex)
-			} else {
-				// Combo dropdown item (negative index)
-				zb.add(1, "panelComboItem", -(info.itemIndex + 1))
-			}
-		} else if info.isButton {
-			switch info.buttonAction {
-			case "openURL":
-				zb.add(1, "panelOpenURL", 0) // URL stored in lineInfo, looked up at click time
-			case "save":
-				// Save button: left portion of the line
-				// Cancel button: right portion
-				// Approximate positions — save is at x=2..20, cancel at x=24..36
-				zb.addX(0, 2, 22, "panelSave", 0)
-				zb.addX(0, 24, 38, "panelCancel", 0)
-				zb.skip(1)
-			default:
-				zb.skip(1)
-			}
-		} else {
+	// Apply scroll offset and register zones for visible lines
+	for ln := scrollY; ln < len(rows) && zb.y < contentStartY+visibleH; ln++ {
+		row := rows[ln]
+		switch {
+		case row.zoneID == "panelSaveCancel":
+			// Save button: left portion of the line; Cancel button: right portion
+			zb.addX(0, 2, 22, "panelSave", 0)
+			zb.addX(0, 24, 38, "panelCancel", 0)
+			zb.skip(1)
+		case row.zoneID != "":
+			zb.add(1, row.zoneID, row.zoneIdx)
+		default:
 			zb.skip(1)
 		}
 	}
@@ -1221,7 +1116,7 @@ func (m *cliModel) trackSessionsZones(zb *mouseZoneBuilder, visibleH int) {
 	lineIdx++
 
 	// Delete confirmation (if shown)
-	if m.panelState.sessConfirmDelete {
+	if m.panelState.misc.sessConfirmDelete {
 		if lineIdx >= scrollY {
 			zb.skip(1)
 		} else {
@@ -1230,7 +1125,7 @@ func (m *cliModel) trackSessionsZones(zb *mouseZoneBuilder, visibleH int) {
 		lineIdx++
 	}
 
-	for i := range m.panelState.sessItems {
+	for i := range m.panelState.misc.sessItems {
 		if lineIdx >= scrollY {
 			zb.add(1, "sessionsItem", i)
 		} else {
@@ -1245,11 +1140,11 @@ func (m *cliModel) trackSessionsZones(zb *mouseZoneBuilder, visibleH int) {
 func (m *cliModel) trackBgTasksZones(zb *mouseZoneBuilder, visibleH int) {
 	// Header + help line
 	zb.skip(1)
-	if m.panelState.bgViewing {
+	if m.panelState.misc.bgViewing {
 		// Log view: header only, log lines are not clickable
 		return
 	}
-	for i := range m.panelState.bgTasks {
+	for i := range m.panelState.misc.bgTasks {
 		zb.add(1, "bgtaskItem", i)
 	}
 }
@@ -1260,13 +1155,13 @@ func (m *cliModel) trackBgTasksZones(zb *mouseZoneBuilder, visibleH int) {
 func (m *cliModel) trackDangerZones(zb *mouseZoneBuilder, visibleH int) {
 	// Header line
 	zb.skip(1)
-	if m.panelState.dangerConfirm {
+	if m.panelState.misc.dangerConfirm {
 		// Confirm sub-mode: 4 info lines + input line
 		zb.skip(4) // confirm text, desc, blank, type prompt
 		zb.add(1, "dangerInput", 0)
 	} else {
 		// Selection mode
-		for i := range m.panelState.dangerItems {
+		for i := range m.panelState.misc.dangerItems {
 			zb.add(1, "dangerItem", i)
 		}
 	}
@@ -1277,7 +1172,7 @@ func (m *cliModel) trackDangerZones(zb *mouseZoneBuilder, visibleH int) {
 func (m *cliModel) trackChannelZones(zb *mouseZoneBuilder, visibleH int) {
 	// header+help line + empty line from "\n\n"
 	zb.skip(2)
-	for i := range m.panelState.channelItems {
+	for i := range m.panelState.misc.channelItems {
 		zb.add(1, "channelItem", i)
 	}
 }
@@ -1502,7 +1397,7 @@ func (m *cliModel) trackAskUserZones(zb *mouseZoneBuilder) {
 }
 
 func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
-	if len(m.panelState.askItems) == 0 {
+	if len(m.panelState.askUser.askItems) == 0 {
 		return
 	}
 
@@ -1516,14 +1411,14 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 	var lines []askLine
 
 	// Tab bar (if multiple questions): all tabs rendered on ONE line by viewAskUserPanel().
-	if len(m.panelState.askItems) > 1 {
+	if len(m.panelState.askUser.askItems) > 1 {
 		lines = append(lines, askLine{isTabLine: true})
 		lines = append(lines, askLine{}) // blank line ("\n\n" → 1 blank after tab line)
 	}
 
 	// Current tab content
-	if m.panelState.askTab >= 0 && m.panelState.askTab < len(m.panelState.askItems) {
-		item := m.panelState.askItems[m.panelState.askTab]
+	if m.panelState.askUser.askTab >= 0 && m.panelState.askUser.askTab < len(m.panelState.askUser.askItems) {
+		item := m.panelState.askUser.askItems[m.panelState.askUser.askTab]
 		// Question text (may wrap to multiple lines — not tracked as zones)
 		// Keep this in sync with viewAskUserPanel/ensureAskUserCursorVisible.
 		prefix := "❓ " + item.Question
@@ -1560,7 +1455,7 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 			// "Other" input (not tracked as click zone — textinput handles its own input)
 			lines = append(lines, askLine{})
 			// Submit button (only on last tab)
-			if m.panelState.askTab == len(m.panelState.askItems)-1 {
+			if m.panelState.askUser.askTab == len(m.panelState.askUser.askItems)-1 {
 				lines = append(lines, askLine{zoneID: "askUserSubmit", index: 0})
 			}
 		}
@@ -1568,7 +1463,7 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 	}
 
 	// Apply scroll offset: skip lines before askPanelScrollY, stop at visible height
-	scrollY := m.panelState.askScrollY
+	scrollY := m.panelState.askUser.askScrollY
 	visibleH := m.askUserPanelVisibleHeight()
 	end := len(lines)
 	if end > scrollY+visibleH {
@@ -1581,12 +1476,12 @@ func (m *cliModel) trackAskUserContentZones(zb *mouseZoneBuilder) {
 			// All tabs on one line — register each with X bounds.
 			// PanelBox border(1) + padding(1) = 2 chars before content.
 			x := 2
-			for i := range m.panelState.askItems {
+			for i := range m.panelState.askUser.askItems {
 				label := fmt.Sprintf(" %d ", i+1)
 				w := len(label)
 				zb.addX(0, x, x+w, "askUserTab", i)
 				x += w
-				if i < len(m.panelState.askItems)-1 {
+				if i < len(m.panelState.askUser.askItems)-1 {
 					x += 1 // separator "│"
 				}
 			}
@@ -1660,20 +1555,20 @@ func (m *cliModel) clickSidebarBgTask(index int) (bool, tea.Model, tea.Cmd) {
 	m.openBgTasksPanel()
 
 	// Validate index against the panel's task list
-	if index < 0 || index >= len(m.panelState.bgTasks) {
+	if index < 0 || index >= len(m.panelState.misc.bgTasks) {
 		return true, m, nil
 	}
 
 	// Select the clicked task and enter log view
-	m.panelState.bgCursor = index
-	task := m.panelState.bgTasks[index]
-	m.panelState.bgLogLines = sanitizeOutputLines(task.Output)
-	if len(m.panelState.bgLogLines) == 0 {
-		m.panelState.bgLogLines = []string{"(no output)"}
+	m.panelState.misc.bgCursor = index
+	task := m.panelState.misc.bgTasks[index]
+	m.panelState.misc.bgLogLines = sanitizeOutputLines(task.Output)
+	if len(m.panelState.misc.bgLogLines) == 0 {
+		m.panelState.misc.bgLogLines = []string{"(no output)"}
 	}
-	m.panelState.bgViewing = true
+	m.panelState.misc.bgViewing = true
 	m.panelState.scrollY = 0
-	m.panelState.bgLogFollow = true
+	m.panelState.misc.bgLogFollow = true
 
 	// Push main-view onto navigator stack so ESC from log view
 	// closes the panel entirely (popPanel restores mode="" = main view).

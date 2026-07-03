@@ -329,6 +329,13 @@ type Agent struct {
 	// key: "channel:chatID" -> *protocol.ProgressEvent
 	lastProgressSnapshot sync.Map
 
+	// streamState stores live LLM streaming content per chat, updated by stream
+	// callbacks (streamContentFunc/streamReasoningFunc/streamToolCallFunc).
+	// GetActiveProgress merges these fields into the returned snapshot.
+	// This replaces the old push-based stream event pipeline for local CLI.
+	// key: "channel:chatID" -> *atomic.Pointer[protocol.ProgressEvent]
+	streamState sync.Map
+
 	// iterationHistories stores completed iteration snapshots per active chat.
 	// key: "channel:chatID" -> *[]protocol.ProgressEvent (one per completed iteration)
 	// On turn end, the entry is deleted.
@@ -2848,6 +2855,7 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 
 	// Store snapshot for mid-session reconnect
 	a.lastProgressSnapshot.Store(progressKey, payload)
+	a.clearStreamState(progressKey)
 }
 
 // emitBuiltinProgressDone sends a PhaseDone progress event and cleans up the snapshot.

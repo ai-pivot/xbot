@@ -1,21 +1,5 @@
 package cli
 
-// blockLinesCache caches rendered output with pre-split lines for incremental assembly.
-type blockLinesCache struct {
-	content string
-	fp      uint64
-	width   int
-	lines   []string
-}
-
-// reset clears the cache entry.
-func (c *blockLinesCache) reset() {
-	c.content = ""
-	c.fp = 0
-	c.width = 0
-	c.lines = nil
-}
-
 // renderCache aggregates all render caching state for cliModel.
 // All fields are accessed through methods to prevent direct field manipulation.
 type renderCache struct {
@@ -30,12 +14,8 @@ type renderCache struct {
 	histMaxW    int    // actual max display width of cached wrapped lines
 	histLines   []string
 
-	// Progress block cache (now minimal — renderProgressBlock is a no-op).
-	progressBlock blockLinesCache
-
 	// Tick-level dirty detection for updateViewportContent fast path.
 	lastTickHistLen int    // len(rc.history) at last tick
-	lastTickProgFP  uint64 // progressBlock.fp at last tick
 	lastTickRewFP   uint64 // fnvHash64(rewindBlock) at last tick
 
 	// Reused slice for viewport line assembly across ticks.
@@ -95,9 +75,7 @@ func (rc *renderCache) resetAll() {
 	rc.wrapWidth = 0
 	rc.histMaxW = 0
 	rc.histLines = nil
-	rc.progressBlock.reset()
 	rc.lastTickHistLen = 0
-	rc.lastTickProgFP = 0
 	rc.lastTickRewFP = 0
 	rc.allLines = nil
 	rc.allLinesHistLen = 0
@@ -124,7 +102,6 @@ func (rc *renderCache) resetAll() {
 
 // invalidateProgress resets all progress-related caches (called on iteration change).
 func (rc *renderCache) invalidateProgress() {
-	rc.progressBlock.reset()
 	// Completed iteration lines depend on iterationHistory which changed.
 	rc.streamCompletedLines = nil
 	rc.streamCompletedCount = 0
