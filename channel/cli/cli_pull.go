@@ -106,6 +106,39 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 			snapshot.StreamTokens = prev.StreamTokens
 		}
 	}
+
+	// Preserve StartedAt for running tools across snapshot replacement.
+	// Backend sends Elapsed (static ms) but not StartedAt. Without this,
+	// the live elapsed timer in renderToolTags resets to 0 on every
+	// applyProgressSnapshot call (showing "0ms" instead of ticking).
+	if prev != nil {
+		prevRunning := make(map[string]time.Time)
+		for _, t := range prev.ActiveTools {
+			if t.Status == "running" && !t.StartedAt.IsZero() {
+				prevRunning[t.Name+t.Label] = t.StartedAt
+			}
+		}
+		for i := range snapshot.ActiveTools {
+			t := &snapshot.ActiveTools[i]
+			if t.Status == "running" && t.StartedAt.IsZero() {
+				if startedAt, ok := prevRunning[t.Name+t.Label]; ok {
+					t.StartedAt = startedAt
+				} else {
+					// New running tool — start timer now.
+					t.StartedAt = time.Now()
+				}
+			}
+		}
+	} else {
+		// No previous state — bootstrap StartedAt for any running tools.
+		for i := range snapshot.ActiveTools {
+			t := &snapshot.ActiveTools[i]
+			if t.Status == "running" && t.StartedAt.IsZero() {
+				t.StartedAt = time.Now()
+			}
+		}
+	}
+
 	m.progressState.current = snapshot
 	if snapshot.Iteration > m.progressState.lastIter {
 		m.progressState.lastIter = snapshot.Iteration
