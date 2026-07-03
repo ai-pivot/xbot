@@ -331,7 +331,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 	subThrottle := func() bool {
 		now := time.Now().UnixMilli()
 		last := lastSubPushMs.Load()
-		if now-last >= 200 {
+		if now-last >= 60 {
 			return lastSubPushMs.CompareAndSwap(last, now)
 		}
 		return false

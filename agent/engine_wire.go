@@ -2010,13 +2010,14 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 
 	progressKey := qualifyChatID(channel, chatID)
 
-	// Rate limiter: max 5 pushes per second (200ms minimum interval).
+	// Rate limiter: max ~16 pushes per second (60ms minimum interval).
+	// Matches typewriter tick (50ms) — typer always has fresh content.
 	// Atomic CAS ensures thread-safety across concurrent callbacks.
 	var lastPushMs atomic.Int64
 	throttle := func() bool {
 		now := time.Now().UnixMilli()
 		last := lastPushMs.Load()
-		if now-last >= 200 {
+		if now-last >= 60 {
 			return lastPushMs.CompareAndSwap(last, now)
 		}
 		return false
