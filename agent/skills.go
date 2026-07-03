@@ -202,11 +202,12 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string, proj
 
 	// 注入目录路径，供 skill-creator 参考新建位置
 	if len(s.globalDirs) > 0 {
-		fmt.Fprintf(&sb, "**Skills 存储目录**: %s\n\n", s.globalDirs[0])
+		fmt.Fprintf(&sb, "**全局 Skills 目录**: %s\n\n", strings.Join(s.globalDirs, ", "))
 	}
 	// 注入项目本地目录提示
 	if pDir != "" {
-		fmt.Fprintf(&sb, "**项目 Skills 目录**: %s\n\n", filepath.Join(pDir, ".xbot", "skills"))
+		fmt.Fprintf(&sb, "**项目 Skills 目录**: %s 或 %s/.agents/skills（自动向上递归查找）\n\n",
+			filepath.Join(pDir, ".xbot", "skills"), pDir)
 	}
 
 	sb.WriteString("<available_skills>\n")
@@ -221,50 +222,91 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string, proj
 	return sb.String()
 }
 
-// scanProjectSkills scans {projectDir}/.xbot/skills/ for project-local skills.
-// Returns skills that are NOT already present in the existing list (avoids duplicates).
+// scanProjectSkills scans project-local skills directories and returns skills
+// NOT already present in the existing list (avoids duplicates).
+// It scans two locations:
+//  1. {projectDir}/.xbot/skills/ (native xbot convention)
+//  2. {projectDir}/.agents/skills/ and all parent directories up to root
+//     (Codex/Cursor convention — walks up like git finds .git)
 func (s *SkillStore) scanProjectSkills(projectDir string, existing []SkillInfo) []SkillInfo {
-	projectSkillsDir := filepath.Join(projectDir, ".xbot", "skills")
-	entries, err := os.ReadDir(projectSkillsDir)
-	if err != nil {
-		return nil // directory doesn't exist — not an error
-	}
-
 	// Build set of existing names for dedup
 	existingNames := make(map[string]bool, len(existing))
 	for _, sk := range existing {
 		existingNames[sk.Name] = true
 	}
+	// Track visited dirs to avoid scanning same directory twice
+	seenPaths := make(map[string]bool)
 
 	var result []SkillInfo
-	for _, e := range entries {
-		skillDir := filepath.Join(projectSkillsDir, e.Name())
-		info, err := os.Stat(skillDir)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		skillFile := filepath.Join(skillDir, "SKILL.md")
-		if _, err := os.Stat(skillFile); err != nil {
-			continue
-		}
-		data, err := os.ReadFile(skillFile)
+
+	// Helper: scan a single skill directory and append new skills.
+	// Uses evalRealPath to resolve symlinks for accurate deduplication.
+	scanDir := func(skillsDir string) {
+		abs, err := filepath.Abs(skillsDir)
 		if err != nil {
-			continue
+			return
 		}
-		name, description := parseSkillFrontmatter(data)
-		if name == "" {
-			name = e.Name()
+		// Resolve symlinks for dedup — EvalSymlinks fails on non-existent dirs,
+		// which is fine because ReadDir will also fail on them below.
+		real := abs
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			real = resolved
 		}
-		// Skip if already present from global/embedded/user
-		if existingNames[name] {
-			continue
+		if seenPaths[real] {
+			return
 		}
-		result = append(result, SkillInfo{
-			Name:        name,
-			Description: description,
-			Path:        skillDir,
-		})
+		seenPaths[real] = true
+
+		entries, err := os.ReadDir(abs)
+		if err != nil {
+			return // directory doesn't exist — not an error
+		}
+		for _, e := range entries {
+			skillDir := filepath.Join(abs, e.Name())
+			info, err := os.Stat(skillDir)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			skillFile := filepath.Join(skillDir, "SKILL.md")
+			if _, err := os.Stat(skillFile); err != nil {
+				continue
+			}
+			data, err := os.ReadFile(skillFile)
+			if err != nil {
+				continue
+			}
+			name, description := parseSkillFrontmatter(data)
+			if name == "" {
+				name = e.Name()
+			}
+			// Skip if already present from global/embedded/user
+			if existingNames[name] {
+				continue
+			}
+			existingNames[name] = true // also dedup across multiple project dirs
+			result = append(result, SkillInfo{
+				Name:        name,
+				Description: description,
+				Path:        skillDir,
+			})
+		}
 	}
+
+	// 1. Scan native xbot project dir: {projectDir}/.xbot/skills
+	scanDir(filepath.Join(projectDir, ".xbot", "skills"))
+
+	// 2. Scan Codex/Cursor-compatible .agents/skills, walking up parent dirs
+	//    (like git walks up to find .git)
+	dir := projectDir
+	for {
+		scanDir(filepath.Join(dir, ".agents", "skills"))
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break // reached root
+		}
+		dir = parent
+	}
+
 	return result
 }
 
