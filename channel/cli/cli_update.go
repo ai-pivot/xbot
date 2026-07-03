@@ -612,7 +612,7 @@ func (m *cliModel) layoutViewportHeight() int {
 // Optimized: only invalidates render caches when viewport width actually
 // changes. Height-only changes (e.g. todo bar appearing/disappearing,
 // panel open/close) just resize the viewport without rebuilding all messages.
-// This avoids O(N) fullRebuild on every endAgentTurn / handleProgressDone.
+// This avoids O(N) fullRebuild on every endAgentTurn / applyProgressSnapshot.
 func (m *cliModel) relayoutViewport() {
 	if m.width == 0 || m.height == 0 {
 		return

@@ -249,7 +249,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 
 		cliPayload := &protocol.ProgressEvent{
 			ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
-			Iteration: s.Iteration, Thinking: s.ThinkingContent,
+			Iteration: s.Iteration, Content: s.Content,
 			Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
 		}
 		for _, t := range s.ActiveTools {
@@ -283,7 +283,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		} else if remoteCh != nil {
 			wsPayload := &protocol.ProgressEvent{
 				ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
-				Iteration: s.Iteration, Thinking: s.ThinkingContent,
+				Iteration: s.Iteration, Content: s.Content,
 				Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
 			}
 			for _, t := range s.ActiveTools {
@@ -494,7 +494,7 @@ func wireSubAgentProgress(ctx context.Context, subCtx context.Context, cfg *RunC
 					Lines:    lines,
 					Depth:    myDepth,
 					Instance: instance,
-					Thinking: thinking,
+					Content:  thinking,
 				})
 			}
 		}
@@ -718,12 +718,12 @@ func (a *Agent) SpawnInteractiveSession(
 			if notifyMgr != nil {
 				var sb strings.Builder
 				fmt.Fprintf(&sb, "Iteration %d completed.\n", snap.Iteration)
-				if snap.Thinking != "" {
-					thinking := snap.Thinking
+				if snap.Content != "" {
+					thinking := snap.Content
 					if len(thinking) > 200 {
 						thinking = thinking[len(thinking)-200:]
 					}
-					fmt.Fprintf(&sb, "Thinking: %s\n", thinking)
+					fmt.Fprintf(&sb, "Content: %s\n", thinking)
 				}
 				for _, t := range snap.Tools {
 					fmt.Fprintf(&sb, "- %s [%s, %dms]", t.Name, t.Status, t.ElapsedMS)
@@ -1273,7 +1273,7 @@ func (a *Agent) SendToInteractiveSession(
 						Lines:    lines,
 						Depth:    myDepth,
 						Instance: inst,
-						Thinking: thinking,
+						Content:  thinking,
 					})
 				}
 			}
@@ -1747,13 +1747,13 @@ func (a *Agent) InspectInteractiveSession(
 		fmt.Fprintf(&sb, "\n### Recent Iterations (last %d):\n", len(snapshots))
 		for _, snap := range snapshots {
 			fmt.Fprintf(&sb, "\n**Iteration %d**\n", snap.Iteration)
-			if snap.Thinking != "" {
-				thinking := snap.Thinking
+			if snap.Content != "" {
+				thinking := snap.Content
 				if len(thinking) > 300 {
 					thinking = thinking[len(thinking)-300:]
 					thinking = "..." + thinking
 				}
-				fmt.Fprintf(&sb, "Thinking: %s\n", thinking)
+				fmt.Fprintf(&sb, "Content: %s\n", thinking)
 			}
 			if snap.Reasoning != "" {
 				reasoning := snap.Reasoning
@@ -2093,8 +2093,8 @@ func summarizeInteractivePreviewLocked(ia *interactiveAgent) string {
 	}
 	if n := len(ia.iterationHistory); n > 0 {
 		snap := ia.iterationHistory[n-1]
-		if snap.Thinking != "" {
-			return snap.Thinking
+		if snap.Content != "" {
+			return snap.Content
 		}
 		if snap.Reasoning != "" {
 			return snap.Reasoning

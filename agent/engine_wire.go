@@ -299,15 +299,27 @@ func (a *Agent) buildMainRunConfig(
 
 	// 结构化进度事件推送（web, cli, and plugin ProgressSender channels）
 	// Progress handlers are wrapped with ctx so that when the user presses Ctrl+C
-	// (reqCancel cancels ctx), no more progress events are forwarded to the CLI.
-	// This guarantees the cancel ack is the last event — no stale progress/PhaseDone
-	// events leak through to trigger re-renders that lose iteration display data.
+	// (reqCancel cancels ctx), stale progress events are not forwarded to the CLI.
+	//
+	// EXCEPTION: PhaseDone is always allowed through, even after cancellation.
+	// PhaseDone carries the authoritative final iteration snapshot (completed
+	// tools, content, reasoning). Without it, the CLI's finalizeTurnFromSnapshot
+	// never runs, and the latest live iteration is lost from the TUI (even though
+	// it was persisted to DB by recordIterationSnapshot). The cancel ack's
+	// handleCancelAck has a fallback (cancelledTurnIterations), but it's not
+	// guaranteed to capture the live iteration in all code paths.
 	if (channel == "web" || channel == "cli" || isProgressSenderCh) && a.channelFinder != nil {
 		done := ctx.Done() // capture for closure
 		wrap := func(h func(*ProgressEvent)) func(*ProgressEvent) {
 			return func(ev *ProgressEvent) {
 				select {
 				case <-done:
+					// Allow PhaseDone through even after cancellation — it carries
+					// the final iteration data needed by the CLI for proper turn
+					// finalization. Other events are dropped (stale progress).
+					if ev != nil && ev.Structured != nil && ev.Structured.Phase == PhaseDone {
+						h(ev)
+					}
 					return
 				default:
 				}
@@ -1337,7 +1349,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 					Lines:    lines,
 					Depth:    myDepth,
 					Instance: instance,
-					Thinking: thinking,
+					Content:  thinking,
 				})
 			}
 		}
@@ -1621,7 +1633,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				Phase:            string(s.Phase),
 				Seq:              s.Seq,
 				Iteration:        s.Iteration,
-				Thinking:         s.ThinkingContent,
+				Content:          s.Content,
 				Reasoning:        s.ReasoningContent,
 				HistoryCompacted: s.HistoryCompacted,
 				CWD:              s.CWD,
@@ -1683,7 +1695,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				Seq:              s.Seq,
 				Phase:            string(s.Phase),
 				Iteration:        s.Iteration,
-				Thinking:         s.ThinkingContent,
+				Content:          s.Content,
 				Reasoning:        s.ReasoningContent,
 				HistoryCompacted: s.HistoryCompacted,
 				CWD:              s.CWD,
@@ -1741,7 +1753,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				Seq:              s.Seq,
 				Phase:            string(s.Phase),
 				Iteration:        s.Iteration,
-				Thinking:         s.ThinkingContent,
+				Content:          s.Content,
 				Reasoning:        s.ReasoningContent,
 				HistoryCompacted: s.HistoryCompacted,
 				CWD:              s.CWD,
@@ -1817,7 +1829,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 			Phase:            string(s.Phase),
 			Seq:              s.Seq,
 			Iteration:        s.Iteration,
-			Thinking:         s.ThinkingContent,
+			Content:          s.Content,
 			Reasoning:        s.ReasoningContent,
 			HistoryCompacted: s.HistoryCompacted,
 			CWD:              s.CWD,
@@ -1913,7 +1925,7 @@ func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*Pr
 			Phase:            string(s.Phase),
 			Seq:              s.Seq,
 			Iteration:        s.Iteration,
-			Thinking:         s.ThinkingContent,
+			Content:          s.Content,
 			Reasoning:        s.ReasoningContent,
 			HistoryCompacted: s.HistoryCompacted,
 			CWD:              s.CWD,

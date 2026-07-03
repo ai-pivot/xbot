@@ -195,14 +195,14 @@ func TestCtrlC_CancelAckPreservesBakedIterations(t *testing.T) {
 	model.progressState.iterations = []cliIterationSnapshot{
 		{
 			Iteration: 1,
-			Thinking:  "analyzing the code",
+			Content:   "analyzing the code",
 			Tools: []protocol.ToolProgress{
 				{Name: "Read", Label: "main.go", Status: "done", Elapsed: 100, Iteration: 1},
 			},
 		},
 		{
 			Iteration: 2,
-			Thinking:  "found the bug",
+			Content:   "found the bug",
 			Tools: []protocol.ToolProgress{
 				{Name: "Shell", Label: "go test", Status: "done", Elapsed: 200, Iteration: 2},
 			},
@@ -518,7 +518,7 @@ func TestCtrlC_CancelPathCapturesStreamContent(t *testing.T) {
 		{
 			Iteration: 1,
 			Reasoning: "previous reasoning",
-			Thinking:  "previous content",
+			Content:   "previous content",
 			Tools:     []protocol.ToolProgress{{Name: "Read", Label: "file.go", Status: "done", Elapsed: 100}},
 		},
 	}
@@ -565,8 +565,8 @@ func TestCtrlC_CancelPathCapturesStreamContent(t *testing.T) {
 	if iter2.Iteration != 2 {
 		t.Fatalf("expected iteration 2, got %d", iter2.Iteration)
 	}
-	if iter2.Thinking != "I'm still generating this response..." {
-		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Thinking)
+	if iter2.Content != "I'm still generating this response..." {
+		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Content)
 	}
 	if iter2.Reasoning != "Let me think about this problem..." {
 		t.Errorf("iter2 Reasoning should capture ReasoningStreamContent, got %q", iter2.Reasoning)
@@ -640,8 +640,8 @@ func TestCtrlC_CancelAckCapturesStreamContent(t *testing.T) {
 
 	// iter2 must have captured stream content
 	iter2 := assistantMsg.iterations[1]
-	if iter2.Thinking != "partial streamed output" {
-		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Thinking)
+	if iter2.Content != "partial streamed output" {
+		t.Errorf("iter2 Thinking should capture StreamContent, got %q", iter2.Content)
 	}
 	if iter2.Reasoning != "partial streamed reasoning" {
 		t.Errorf("iter2 Reasoning should capture ReasoningStreamContent, got %q", iter2.Reasoning)
@@ -672,7 +672,7 @@ func TestCtrlC_PhaseDoneBakedIterationsNotOverwrittenByCancelAck(t *testing.T) {
 
 	// Two iterations: iter1 has structured data, iter2 is being streamed
 	model.progressState.iterations = []cliIterationSnapshot{
-		{Iteration: 1, Thinking: "iter1 content", Reasoning: "iter1 reasoning",
+		{Iteration: 1, Content: "iter1 content", Reasoning: "iter1 reasoning",
 			Tools: []protocol.ToolProgress{{Name: "Read", Label: "a.go", Status: "done"}}},
 	}
 	model.progressState.lastIter = 2
@@ -705,8 +705,8 @@ func TestCtrlC_PhaseDoneBakedIterationsNotOverwrittenByCancelAck(t *testing.T) {
 		t.Fatalf("expected 2 baked iterations after PhaseDone, got %d", bakedCount)
 	}
 	// iter2 must have captured stream content
-	if assistantMsg.iterations[1].Thinking != "streamed iter2 content" {
-		t.Errorf("iter2 Thinking = %q, want streamed content", assistantMsg.iterations[1].Thinking)
+	if assistantMsg.iterations[1].Content != "streamed iter2 content" {
+		t.Errorf("iter2 Thinking = %q, want streamed content", assistantMsg.iterations[1].Content)
 	}
 
 	// Step 2: Cancel ack arrives — must NOT overwrite baked iterations
@@ -732,9 +732,9 @@ func TestCtrlC_PhaseDoneBakedIterationsNotOverwrittenByCancelAck(t *testing.T) {
 			len(assistantMsg.iterations), bakedCount)
 	}
 	// Stream-captured content must survive cancel ack
-	if assistantMsg.iterations[1].Thinking != "streamed iter2 content" {
+	if assistantMsg.iterations[1].Content != "streamed iter2 content" {
 		t.Errorf("iter2 Thinking corrupted by cancel ack: got %q",
-			assistantMsg.iterations[1].Thinking)
+			assistantMsg.iterations[1].Content)
 	}
 }
 
@@ -757,14 +757,14 @@ func TestCtrlC_CancelledTurnIterationsNilSafety(t *testing.T) {
 
 	// Now with progressState.iterations set (simulating pre-PhaseDone cancel ack)
 	model.progressState.iterations = []cliIterationSnapshot{
-		{Iteration: 1, Thinking: "from PTS"},
+		{Iteration: 1, Content: "from PTS"},
 	}
 	iters = model.cancelledTurnIterations()
 	if len(iters) != 1 {
 		t.Fatalf("expected 1 iteration from progressState.iterations, got %d", len(iters))
 	}
-	if iters[0].Thinking != "from PTS" {
-		t.Errorf("expected 'from PTS', got %q", iters[0].Thinking)
+	if iters[0].Content != "from PTS" {
+		t.Errorf("expected 'from PTS', got %q", iters[0].Content)
 	}
 }
 
@@ -791,14 +791,14 @@ func TestCtrlC_NormalPhaseDoneDoesNotCaptureStreamContent(t *testing.T) {
 
 	// Set up: iteration 2 with EMPTY Thinking but non-empty StreamContent
 	model.progressState.iterations = []cliIterationSnapshot{
-		{Iteration: 1, Thinking: "iter1", Tools: []protocol.ToolProgress{{Name: "Read", Label: "a.go", Status: "done"}}},
+		{Iteration: 1, Content: "iter1", Tools: []protocol.ToolProgress{{Name: "Read", Label: "a.go", Status: "done"}}},
 	}
 	model.progressState.lastIter = 2
 	model.progressState.current = &protocol.ProgressEvent{
 		Phase:         "tool_exec",
 		Iteration:     2,
 		StreamContent: "this should NOT be captured in normal path",
-		Thinking:      "", // empty: simulates progressCh coalescing
+		Content:       "", // empty: simulates progressCh coalescing
 	}
 
 	// Normal PhaseDone (turnCancelled is FALSE)
@@ -807,7 +807,7 @@ func TestCtrlC_NormalPhaseDoneDoesNotCaptureStreamContent(t *testing.T) {
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "done",
 		Iteration: 2,
-		Thinking:  "", // also empty in payload
+		Content:   "", // also empty in payload
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "Shell", Label: "go test", Status: "done", Elapsed: 100, Iteration: 2},
 		},
@@ -825,7 +825,7 @@ func TestCtrlC_NormalPhaseDoneDoesNotCaptureStreamContent(t *testing.T) {
 	// The last iteration's Thinking should be EMPTY, not stream content.
 	// This proves the normal path does NOT capture stream content.
 	lastIter := iters[len(iters)-1]
-	if lastIter.Thinking == "this should NOT be captured in normal path" {
+	if lastIter.Content == "this should NOT be captured in normal path" {
 		t.Error("normal PhaseDone path captured StreamContent — this risks cross-iteration contamination")
 	}
 }
@@ -833,7 +833,7 @@ func TestCtrlC_NormalPhaseDoneDoesNotCaptureStreamContent(t *testing.T) {
 // TestCtrlC_RenderNoDuplicationWithStreamContent verifies that rendering
 // after Ctrl+C does NOT produce duplicate content when both the streaming
 // message content and the last iteration's Thinking carry similar text.
-// renderTurnBody's dedup (last.Thinking == fallbackContent) must catch this.
+// renderTurnBody's dedup (last.Content == fallbackContent) must catch this.
 func TestCtrlC_RenderNoDuplicationWithStreamContent(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
@@ -858,7 +858,7 @@ func TestCtrlC_RenderNoDuplicationWithStreamContent(t *testing.T) {
 	model.progressState.current = &protocol.ProgressEvent{
 		Iteration:     1,
 		StreamContent: streamText, // same as streaming message content
-		Thinking:      "",         // structured empty
+		Content:       "",         // structured empty
 	}
 
 	model.cancelTargetTurnID = turnID

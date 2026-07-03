@@ -78,7 +78,6 @@ type ProgressEvent struct {
 	Phase                  string            `json:"phase,omitempty"`
 	ActiveTools            []ToolProgress    `json:"active_tools,omitempty"`
 	CompletedTools         []ToolProgress    `json:"completed_tools,omitempty"`
-	Thinking               string            `json:"thinking,omitempty"`
 	SubAgents              []SubAgentInfo    `json:"sub_agents,omitempty"`
 	Todos                  []TodoItem        `json:"todos,omitempty"`
 	TokenUsage             *TokenUsage       `json:"token_usage,omitempty"`
@@ -107,7 +106,7 @@ func (ProgressEvent) EventVersion() int { return 1 }
 // HistoryIteration represents a completed iteration in history.
 type HistoryIteration struct {
 	Iteration   int            `json:"iteration"`
-	Thinking    string         `json:"thinking,omitempty"`
+	Content     string         `json:"content,omitempty"`
 	Reasoning   string         `json:"reasoning,omitempty"`
 	Tools       []ToolProgress `json:"tools,omitempty"`
 	ElapsedWall int64          `json:"elapsed_wall"`

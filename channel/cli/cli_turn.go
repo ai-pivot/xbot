@@ -4,121 +4,9 @@ import (
 	"strings"
 	"time"
 
-	log "xbot/logger"
 	"xbot/protocol"
 )
 
-// dedupMessagesGuard is the algorithmic guarantee layer against duplicate
-// message rendering. It enforces the invariant that for any (turnID, role)
-// pair where turnID > 0, there is AT MOST ONE message in m.messages.
-//
-// This guard runs at the TOP of updateViewportContent(), before any rendering.
-// It uses O(n) map-based identity detection — NOT string matching. Even if a
-// race condition or unguarded append path creates a duplicate, it is silently
-// purged here before reaching the viewport.
-//
-// Design rationale: the guard is idempotent and side-effect-free when no
-// duplicates exist (the common case). When duplicates ARE found, the LAST
-// occurrence is kept (it has the most up-to-date content from upsert), and
-// earlier zombies are removed. The streamingMsgIdx is adjusted if it pointed
-// to a purged message.
-func (m *cliModel) dedupMessagesGuard() {
-	if len(m.messages) < 2 {
-		return
-	}
-	// Track last seen index for each (turnID, role) identity.
-	// turnID=0 is excluded (system messages, injected user messages that
-	// legitimately can share turnID=0).
-	type identity struct {
-		turnID uint64
-		role   string
-	}
-	lastIdx := make(map[identity]int, len(m.messages))
-	counts := make(map[identity]int, len(m.messages))
-	for i := range m.messages {
-		if m.messages[i].turnID == 0 {
-			continue
-		}
-		id := identity{m.messages[i].turnID, m.messages[i].role}
-		lastIdx[id] = i
-		counts[id]++
-	}
-	if len(lastIdx) == 0 {
-		return
-	}
-	// Check if any duplicates exist (any identity with count > 1).
-	hasDup := false
-	for _, c := range counts {
-		if c > 1 {
-			hasDup = true
-			break
-		}
-	}
-	if !hasDup {
-		return
-	}
-	// Purge zombies: keep only the last occurrence of each identity.
-	filtered := m.messages[:0]
-	purgeCount := 0
-	for i := range m.messages {
-		if m.messages[i].turnID == 0 {
-			filtered = append(filtered, m.messages[i])
-			continue
-		}
-		id := identity{m.messages[i].turnID, m.messages[i].role}
-		if lastIdx[id] == i {
-			filtered = append(filtered, m.messages[i])
-		} else {
-			purgeCount++
-		}
-	}
-	if purgeCount > 0 {
-		log.WithFields(log.Fields{
-			"purged": purgeCount,
-			"before": len(m.messages),
-			"after":  len(filtered),
-		}).Warn("dedupMessagesGuard: purged duplicate messages before render")
-		m.messages = filtered
-		// Fix streamingMsgIdx if it shifted due to compaction.
-		m.fixStreamingMsgIdx()
-		// Invalidate cache since message indices changed.
-		m.rc.valid = false
-		m.rc.bumpHistGen()
-	}
-}
-
-// fixStreamingMsgIdx adjusts streamingMsgIdx after message list compaction.
-// It searches for the streaming message by turnID+isPartial identity.
-// fixStreamingMsgIdx adjusts streamingMsgIdx after message list compaction.
-// It searches for the streaming message by turnID+isPartial identity.
-func (m *cliModel) fixStreamingMsgIdx() {
-	if m.streamingMsgIdx < 0 {
-		return
-	}
-	if m.streamingMsgIdx >= len(m.messages) {
-		// Index out of range — try to find by turnID
-		m.streamingMsgIdx = -1
-		return
-	}
-	// Verify the message at streamingMsgIdx is still the streaming message.
-	// If messages were compacted, it may have shifted.
-	if m.messages[m.streamingMsgIdx].isPartial {
-		return // still valid
-	}
-	// Search for the streaming message by isPartial flag.
-	for i := range m.messages {
-		if m.messages[i].isPartial {
-			m.streamingMsgIdx = i
-			return
-		}
-	}
-	m.streamingMsgIdx = -1
-}
-
-// toggleToolSummary toggles the tool-summary expanded state,
-// invalidates all cached rendering, clears cachedHistory, and refreshes the viewport.
-// It preserves the viewport scroll position anchored to the first visible message,
-// so Ctrl+O doesn't cause a jarring jump when tool summary lines change.
 // toggleToolSummary toggles the tool-summary expanded state,
 // invalidates all cached rendering, clears cachedHistory, and refreshes the viewport.
 // It preserves the viewport scroll position anchored to the first visible message,
@@ -363,8 +251,6 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 
 // findMessageByTurn finds the index of the last message with the given turnID and role.
 // Returns -1 if not found.
-// findMessageByTurn finds the index of the last message with the given turnID and role.
-// Returns -1 if not found.
 func (m *cliModel) findMessageByTurn(turnID uint64, role string) int {
 	// Search from end — the most recent message is the most likely match.
 	for i := len(m.messages) - 1; i >= 0; i-- {
@@ -375,76 +261,6 @@ func (m *cliModel) findMessageByTurn(turnID uint64, role string) int {
 	return -1
 }
 
-// upsertMessageByTurn finds an existing message with the given turnID+role and
-// updates it in-place. If not found, appends the message. Returns the final index.
-// This is the core mechanism for deterministic rendering: duplicate events update
-// existing slots instead of creating new messages.
-//
-// Algorithmic dedup guarantee: after this call, there is AT MOST ONE message
-// with the given (turnID, role) pair. If multiple zombies existed (created by
-// race conditions or fallback paths), they are all purged except the updated one.
-// upsertMessageByTurn finds an existing message with the given turnID+role and
-// updates it in-place. If not found, appends the message. Returns the final index.
-// This is the core mechanism for deterministic rendering: duplicate events update
-// existing slots instead of creating new messages.
-//
-// Algorithmic dedup guarantee: after this call, there is AT MOST ONE message
-// with the given (turnID, role) pair. If multiple zombies existed (created by
-// race conditions or fallback paths), they are all purged except the updated one.
-func (m *cliModel) upsertMessageByTurn(turnID uint64, role string, msg cliMessage) int {
-	idx := m.findMessageByTurn(turnID, role)
-	if idx >= 0 {
-		// Update in-place: preserve position in the message list.
-		m.messages[idx] = msg
-		m.messages[idx].turnID = turnID
-		// Purge zombie duplicates: any OTHER messages with the same turnID+role
-		// at different indices. These can be created by fallback paths
-		// (e.g. isPartial fallback in handleAgentMessage creating a second
-		// streaming message for the same turn). Without purge, both would
-		// be rendered, causing visual duplication.
-		m.purgeZombieMessages(turnID, role, idx)
-		return idx
-	}
-	// Not found: append at end.
-	msg.turnID = turnID
-	m.messages = append(m.messages, msg)
-	return len(m.messages) - 1
-}
-
-// purgeZombieMessages removes all messages with the given turnID+role EXCEPT
-// the one at keepIdx. This is an O(n) sweep but only runs when a duplicate
-// is detected (rare). It guarantees structural uniqueness of (turnID, role).
-// purgeZombieMessages removes all messages with the given turnID+role EXCEPT
-// the one at keepIdx. This is an O(n) sweep but only runs when a duplicate
-// is detected (rare). It guarantees structural uniqueness of (turnID, role).
-func (m *cliModel) purgeZombieMessages(turnID uint64, role string, keepIdx int) {
-	if len(m.messages) <= 1 {
-		return
-	}
-	filtered := m.messages[:0] // compact in-place
-	for i := range m.messages {
-		if i != keepIdx && m.messages[i].turnID == turnID && m.messages[i].role == role {
-			continue // purge zombie
-		}
-		filtered = append(filtered, m.messages[i])
-	}
-	if len(filtered) != len(m.messages) {
-		log.WithFields(log.Fields{
-			"turnID": turnID, "role": role,
-			"purged": len(m.messages) - len(filtered),
-		}).Debug("purgeZombieMessages: removed duplicate messages")
-		m.messages = filtered
-	}
-}
-
-// removeMessageByTurn removes the last message with the given turnID+role.
-// Returns true if a message was removed.
-// flushMessageQueue sends the first queued message (if any) when input becomes ready.
-// Returns a tea.Cmd to send the message, or nil if queue is empty.
-// removeMessageByTurn removes the last message with the given turnID+role.
-// Returns true if a message was removed.
-// flushMessageQueue sends the first queued message (if any) when input becomes ready.
-// Returns a tea.Cmd to send the message, or nil if queue is empty.
 // insertUserMessageBeforeStreaming inserts a user message at the position
 // immediately before the streaming message. Used when handleInjectedUserMsg
 // claims an auto-started turn (progress auto-start created the streaming

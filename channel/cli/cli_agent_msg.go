@@ -47,9 +47,8 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		}
 	} else {
 		// ChatID empty: this is a defensive warning. Messages without proper
-		// session identity risk cross-session contamination. The dedupMessagesGuard
-		// will catch any resulting duplicates, but the root cause should be fixed
-		// at the sender. Log at error level to make it visible.
+		// session identity risk cross-session contamination. Log at error level
+		// to make it visible.
 		log.WithFields(log.Fields{
 			"msg_channel":    msg.Channel,
 			"msg_chatid":     msg.ChatID,
@@ -131,7 +130,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 
 		// Compute iterations to bake into the assistant message.
 		// Use progressState.iterations (PhaseDone does NOT clear it anymore).
-		// Dedup by iteration number: snapshotIterationChange creates per-iteration
+		// Dedup by iteration number: applyProgressSnapshot creates per-iteration
 		// snapshots before PhaseDone may create a conflated one with ALL completed tools.
 		// Fallback: preserve existing iterations from the streaming message
 		// (e.g. saved by cancel ack before this response arrived).
@@ -151,12 +150,12 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		// Append the last iteration from m.progressState.current if it wasn't already
 		// captured in iterationHistory. The last iteration's data (tools,
 		// reasoning) is typically in m.progressState.current but hasn't been snapshotted
-		// by snapshotIterationChange (which only fires on iteration N→N+1
+		// by applyProgressSnapshot (which only fires on iteration N→N+1
 		// transitions). Without this, AskUser messages lose the last
 		// iteration's tools from the viewport.
 		// Guard: use progressState.current.CompletedTools (maintained in-place
-		// by mergeProgressState) and only run when the iteration is genuinely missing.
-		if m.progressState.current != nil && m.progressState.lastIter >= 0 && msg.WaitingUser {
+		// by applyProgressSnapshot) and only run when the iteration is genuinely missing.
+		if m.progressState.current != nil && m.progressState.lastIter >= 0 {
 			iterNum := m.progressState.lastIter
 			if m.progressState.current.Iteration > 0 {
 				iterNum = m.progressState.current.Iteration
@@ -170,10 +169,14 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 			}
 			if !alreadyBaked {
 				var finalTools []protocol.ToolProgress
-				finalTools = append(finalTools, m.progressState.current.CompletedTools...)
+				for _, t := range m.progressState.current.CompletedTools {
+					if t.Iteration == 0 || t.Iteration == iterNum {
+						finalTools = append(finalTools, t)
+					}
+				}
 				for _, t := range m.progressState.current.ActiveTools {
 					if t.Status == "done" || t.Status == "error" {
-						if !containsToolProgress(finalTools, t) {
+						if (t.Iteration == 0 || t.Iteration == iterNum) && !containsToolProgress(finalTools, t) {
 							finalTools = append(finalTools, t)
 						}
 					}
@@ -184,12 +187,12 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				}
 				snap := cliIterationSnapshot{
 					Iteration:   iterNum,
-					Thinking:    m.progressState.current.Thinking,
+					Content:     m.progressState.current.Content,
 					Reasoning:   reasoning,
 					Tools:       finalTools,
 					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
-				if len(snap.Tools) > 0 || snap.Thinking != "" || snap.Reasoning != "" {
+				if len(snap.Tools) > 0 || snap.Content != "" || snap.Reasoning != "" {
 					bakeIterations = append(bakeIterations, snap)
 				}
 			}
@@ -245,8 +248,8 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		// still contain the previous iteration's content — causing the previous
 		// iteration's reasoning to be misattributed.
 		if turnID == m.agentTurnID && m.progressState.current != nil {
-			if m.progressState.current.Thinking != "" {
-				m.lastThinking = m.progressState.current.Thinking
+			if m.progressState.current.Content != "" {
+				m.lastContent = m.progressState.current.Content
 			}
 		}
 		// Store captured thinking on the completed message for Thinking Box rendering.
@@ -256,10 +259,10 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				thinking = m.progressState.current.Reasoning
 			}
 			if thinking == "" {
-				thinking = m.lastThinking
+				thinking = m.lastContent
 			}
 			if thinking != "" {
-				m.messages[completedMsgIdx].thinking = thinking
+				m.messages[completedMsgIdx].reasoning = thinking
 			}
 		}
 		// Targeted re-render: the message was already cached by
@@ -368,7 +371,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		}
 
 		// Snapshot the final iteration before clearing
-		if m.progressState.current != nil && m.progressState.lastIter >= 0 && (len(m.progressState.current.CompletedTools) > 0 || m.lastThinking != "") {
+		if m.progressState.current != nil && m.progressState.lastIter >= 0 && (len(m.progressState.current.CompletedTools) > 0 || m.lastContent != "") {
 			alreadySnapped := false
 			for _, s := range m.progressState.iterations {
 				if s.Iteration == m.progressState.lastIter {
@@ -380,7 +383,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				var finalTools []protocol.ToolProgress
 				// Filter to only include tools from the current iteration.
 				// Without filtering, stale tools from previous iterations
-				// (carried in CompletedTools by mergeProgressState) would
+				// (carried in CompletedTools by applyProgressSnapshot) would
 				// pollute this iteration's snapshot.
 				for _, t := range m.progressState.current.CompletedTools {
 					if t.Iteration == m.progressState.lastIter {
@@ -396,11 +399,11 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				snap := cliIterationSnapshot{
 					Iteration:   m.progressState.lastIter,
 					Reasoning:   reasoning,
-					Thinking:    m.lastThinking,
+					Content:     m.lastContent,
 					Tools:       finalTools,
 					ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 				}
-				if len(finalTools) > 0 || reasoning != "" || m.lastThinking != "" {
+				if len(finalTools) > 0 || reasoning != "" || m.lastContent != "" {
 					m.progressState.iterations = append(m.progressState.iterations, snap)
 				}
 			}
@@ -481,23 +484,23 @@ func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 
 	if cancelledIdx >= 0 {
 		streamingMsg := &m.messages[cancelledIdx]
-		if strings.TrimSpace(streamingMsg.content) != "" {
-			// Streaming message accumulated real content (e.g. partial LLM text).
-			// Finalize it as a completed message so the user keeps what was streamed.
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
-			if len(streamingMsg.iterations) == 0 {
-				streamingMsg.iterations = m.cancelledTurnIterations()
-			}
-		} else if len(streamingMsg.iterations) > 0 {
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
-		} else if iters := m.cancelledTurnIterations(); len(iters) > 0 {
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
+
+		// ALWAYS capture the live iteration from progressState. The old
+		// branching logic conditionally skipped cancelledTurnIterations()
+		// when streamingMsg.iterations was non-empty (from AskUser/partial
+		// reply), losing the latest live iteration. PhaseDone may not arrive
+		// (ctx wrapper drops it on cancel), so this fallback is the ONLY
+		// way to capture the live iteration from m.progressState.current.
+		iters := m.cancelledTurnIterations()
+		if len(iters) > 0 {
 			streamingMsg.iterations = iters
-		} else {
-			// Empty streaming message with no iteration data. Remove it.
+		}
+		streamingMsg.isPartial = false
+		streamingMsg.dirty = true
+
+		// If the streaming message has NO content and NO iterations,
+		// there's nothing to display — remove it.
+		if strings.TrimSpace(streamingMsg.content) == "" && len(streamingMsg.iterations) == 0 {
 			m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
 			if m.streamingMsgIdx == cancelledIdx {
 				m.streamingMsgIdx = -1
@@ -585,18 +588,18 @@ func (m *cliModel) cancelledTurnIterations() []cliIterationSnapshot {
 	// Capture streamed content as fallback when structured Thinking is empty.
 	// This preserves partial LLM output that was streamed but not yet finalized
 	// by recordAssistantMsg when Ctrl+C interrupted.
-	content := m.progressState.current.Thinking
+	content := m.progressState.current.Content
 	if content == "" && m.progressState.current.StreamContent != "" {
 		content = m.progressState.current.StreamContent
 	}
 	snap := cliIterationSnapshot{
 		Iteration:   iterNum,
-		Thinking:    content,
+		Content:     content,
 		Reasoning:   reasoning,
 		Tools:       tools,
 		ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
 	}
-	if snap.Thinking != "" || snap.Reasoning != "" || len(snap.Tools) > 0 {
+	if snap.Content != "" || snap.Reasoning != "" || len(snap.Tools) > 0 {
 		iterations = append(iterations, snap)
 	}
 	return append([]cliIterationSnapshot{}, iterations...)

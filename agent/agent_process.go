@@ -182,7 +182,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 				for i, ev := range *hist {
 					iterHistory[i] = IterationSnapshot{
 						Iteration: ev.Iteration,
-						Thinking:  ev.Thinking,
+						Content:   ev.Content,
 						Reasoning: ev.Reasoning,
 					}
 					for _, t := range ev.CompletedTools {

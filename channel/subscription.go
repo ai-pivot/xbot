@@ -39,7 +39,7 @@ type DailyTokenUsage struct {
 // iterSnapshot mirrors agent.IterationSnapshot for JSON unmarshaling Detail field.
 type iterSnapshot struct {
 	Iteration int            `json:"iteration"`
-	Thinking  string         `json:"thinking,omitempty"`
+	Content   string         `json:"content,omitempty"`
 	Reasoning string         `json:"reasoning,omitempty"`
 	Tools     []iterToolSnap `json:"tools"`
 }
@@ -176,7 +176,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 		if len(curIterTools) > 0 || curIterThinking != "" || curIterReasoning != "" {
 			pendingIters = append(pendingIters, HistoryIteration{
 				Iteration: curIterIdx,
-				Thinking:  curIterThinking,
+				Content:   curIterThinking,
 				Reasoning: curIterReasoning,
 				Tools:     curIterTools,
 			})
@@ -260,7 +260,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						}
 						iters = append(iters, HistoryIteration{
 							Iteration: snap.Iteration,
-							Thinking:  snap.Thinking,
+							Content:   snap.Content,
 							Reasoning: snap.Reasoning,
 							Tools:     toolList,
 						})

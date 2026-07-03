@@ -158,7 +158,7 @@ type cliModel struct {
 	rc renderCache
 
 	// --- §2 工具可视化 ---
-	lastThinking string // 最后一次迭代的 thinking_content，在 progress 清除前捕获
+	lastContent string // 最后一次迭代的 thinking_content，在 progress 清除前捕获
 
 	// --- §8 Tab 补全 ---
 	completions    []string // 当前补全候选项
@@ -310,7 +310,7 @@ type cliMessage struct {
 	// --- turn identification for deterministic rendering ---
 	turnID uint64 // agentTurnID when this message was created (0 = not agent-generated)
 	// --- thinking/reasoning content (displayed in a collapsible box) ---
-	thinking string // raw reasoning text (stored when message is finalized)
+	reasoning string // raw reasoning text (stored when message is finalized)
 	// --- §1 增量渲染 ---
 	rendered    string // 缓存的渲染结果（ANSI 字符串）
 	dirty       bool   // 是否需要重新渲染
@@ -836,21 +836,21 @@ type layoutConfig struct {
 
 // progressState groups 14 fields extracted from cliModel.
 type progressState struct {
-	current               *protocol.ProgressEvent
-	iterations            []cliIterationSnapshot
-	lastIter              int
-	lastSeq               uint64
-	iterStart             time.Time
-	busySessions          bool
-	unread                map[string]bool
-	busyStates            map[string]bool
-	liveStates            map[string]*liveSessionState
-	twActive              bool
-	twVisible             int
-	rwVisible             int
-	rwCjkSkip             bool
-	twCjkSkip             bool
-	streamReasoningByIter map[int]string // per-iteration stream-only reasoning, captured at arrival time
+	current        *protocol.ProgressEvent
+	iterations     []cliIterationSnapshot
+	lastIter       int
+	lastSeq        uint64
+	lastAppliedSeq uint64 // highest Seq applied via applyProgressSnapshot
+	iterStart      time.Time
+	busySessions   bool
+	unread         map[string]bool
+	busyStates     map[string]bool
+	liveStates     map[string]*liveSessionState
+	twActive       bool
+	twVisible      int
+	rwVisible      int
+	rwCjkSkip      bool
+	twCjkSkip      bool
 }
 
 // --- Plugin Overlay ---

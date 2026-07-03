@@ -183,7 +183,7 @@ func visibleMsgGroupIndices(messages []cliMessage) []int {
 // updateViewportContent 更新 viewport 显示内容（§1 增量渲染）
 func (m *cliModel) updateViewportContent() {
 	// 快速路径：流式消息 + 缓存有效
-	// dedupMessagesGuard 不需要在此路径运行：流式更新只改内容不增消息。
+	// dedupMessagesGuard 已删除 — 消息只有一个创建点：流式更新只改内容不增消息。
 	if m.streamingMsgIdx >= 0 && m.rc.valid {
 		if m.streamingMsgIdx >= len(m.messages) {
 			m.streamingMsgIdx = -1
@@ -286,15 +286,7 @@ func (m *cliModel) updateViewportContent() {
 		return
 	}
 
-	// ── dedupGuard: algorithmic guarantee against duplicate rendering ──
-	// Only runs on the SLOW path (cache invalid or msgCount changed).
-	// Fast paths above guarantee: when rc.valid==true and msgCount unchanged,
-	// no new messages were added since last dedup check → skip is safe.
-	// Enforces the invariant that no two messages share the same (turnID, role)
-	// identity. Uses O(n) map-based identity check, NOT string matching.
-	m.dedupMessagesGuard()
-
-	// 慢速路径：全量重建
+	// 慢速路径：全量重建（dedupMessagesGuard 已删除 — 消息只有一个创建点）
 	m.fullRebuild()
 	if m.streamingMsgIdx >= 0 {
 		m.updateStreamingOnly()
