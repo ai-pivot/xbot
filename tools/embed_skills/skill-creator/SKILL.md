@@ -77,7 +77,8 @@ To find the correct path, look at the system prompt section `# Available Skills`
 
 1. **Discovery** — Every message, all skill names + descriptions appear in the system prompt
 2. **Loading** — LLM calls `Skill(name=..., action=load)` to read SKILL.md
-3. **Tool loading** — LLM **immediately** calls `load_tools` for all tools listed in the skill's "Required Tools" section
+3. **Tool usage** — All tools are always available; use them directly
+   as listed in the skill's "Required Tools" section
 4. **File listing** — `Skill(name=..., action=list_files)` returns full paths of all files in the skill
 5. **Execution** — LLM runs scripts via `Shell` tool using the paths from `list_files`
 
@@ -92,7 +93,7 @@ search_tools(query="send feishu message")  → finds feishu_send_message, etc.
 search_tools(query="github pull request")  → finds mcp_github_create_pr, etc.
 ```
 
-Include the discovered tool names in the skill body so the LLM knows which tools to `load_tools` after activating the skill.
+Include the discovered tool names in the skill body so the LLM knows which tools the skill expects to use.
 
 ### 2. Write SKILL.md
 
@@ -105,7 +106,7 @@ description: What this skill does and WHEN to activate it. Be specific — this 
 # My Skill
 
 ## Required Tools
-After loading this skill, immediately call `load_tools` for these tools:
+These tools are used by this skill (all are always available):
 - feishu_send_message
 - feishu_search_wiki
 
@@ -113,7 +114,7 @@ After loading this skill, immediately call `load_tools` for these tools:
 Step-by-step instructions for the LLM...
 ```
 
-**Critical**: Every skill MUST include a "Required Tools" section listing tools to load. After `Skill(action=load)` returns, the LLM must **immediately** call `load_tools` for all listed tools before doing anything else.
+**Note**: Every skill SHOULD include a "Required Tools" section listing which tools the skill expects to use. All tools are always available to the agent — this section is documentation, not a load trigger.
 
 ### 3. Add scripts (optional)
 
@@ -146,7 +147,7 @@ Skill(name=my-skill, action=load, file=references/api-spec.md)
 ## Updating a Skill
 
 1. `Skill(name=..., action=load)` — read current content
-2. `Edit` tool — modify SKILL.md or other files
+2. `FileReplace`/`FileCreate` tool — modify SKILL.md or other files
 3. `Skill(name=..., action=list_files)` — verify file layout
 
 ## Writing Guidelines

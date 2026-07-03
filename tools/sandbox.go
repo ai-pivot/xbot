@@ -10,7 +10,7 @@ import (
 // The returned cancel function should be deferred to avoid resource leaks.
 // This is used for single sandbox calls where no caller context is available.
 func SandboxCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Second)
+	return context.WithTimeout(context.Background(), SandboxCtxTimeout)
 }
 
 // ExecSpec defines the parameters for a sandbox command execution.

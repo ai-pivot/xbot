@@ -11,8 +11,6 @@ import (
 	log "xbot/logger"
 )
 
-const defaultShellTimeout = 120 * time.Second
-
 // ShellTool 执行命令工具
 type ShellTool struct{}
 
@@ -82,17 +80,15 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 		return nil, fmt.Errorf("command contains control characters (null bytes or other non-printable characters)")
 	}
 
-	const maxShellTimeout = 600 * time.Second
-
-	timeout := defaultShellTimeout
+	timeout := DefaultShellTimeout
 	if params.Timeout > 0 {
 		timeout = time.Duration(params.Timeout) * time.Second
-		if timeout > maxShellTimeout {
+		if timeout > MaxShellTimeout {
 			log.WithFields(log.Fields{
 				"requested": timeout,
-				"max":       maxShellTimeout,
+				"max":       MaxShellTimeout,
 			}).Warn("Shell timeout exceeds maximum, capping")
-			timeout = maxShellTimeout
+			timeout = MaxShellTimeout
 		}
 	}
 

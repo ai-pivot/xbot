@@ -26,8 +26,8 @@ sessions **only for that channel**. This enables use cases like:
 4. LLM calls a channel tool → xbot sends "execute_tool" RPC → channel process executes
 ```
 
-The tools are **always visible** for their channel (like core tools), no
-`load_tools` activation needed. They are invisible to all other channels.
+The tools are **always visible** for their channel (like core tools).
+They are invisible to all other channels.
 
 ## Protocol
 
@@ -322,7 +322,7 @@ It is sent dynamically at runtime by the channel process after receiving
 ## Design Notes
 
 - **Channel tools are always visible** for their channel (like core tools).
-  They do NOT require `load_tools` activation.
+  They do not require any activation step.
 - **Tool name conflicts**: if a channel tool has the same name as a global
   tool, the channel version takes priority within that channel's sessions.
 - **Lifecycle**: channel tools are automatically cleaned up when the channel

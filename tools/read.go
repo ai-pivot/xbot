@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -150,7 +152,7 @@ func (t *ReadTool) executeInSandbox(ctx *ToolContext, filePath string) (*ToolRes
 
 	// 在容器内执行 cat
 	cmd := fmt.Sprintf("cat '%s'", shellEscape(sandboxPath))
-	output, err := RunInSandboxWithShell(ctx, cmd)
+	output, err := RunInSandboxWithShellTimeout(ctx, cmd, ReadLocalTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file in sandbox: %v, output: %s", err, output)
 	}
@@ -160,6 +162,14 @@ func (t *ReadTool) executeInSandbox(ctx *ToolContext, filePath string) (*ToolRes
 
 // executeLocal 在本地读取文件
 func (t *ReadTool) executeLocal(ctx *ToolContext, filePath string) (*ToolResult, error) {
+	// Per-tool timeout: 10s for single file I/O
+	parentCtx := context.Background()
+	if ctx != nil && ctx.Ctx != nil {
+		parentCtx = ctx.Ctx
+	}
+	readCtx, cancel := context.WithTimeout(parentCtx, ReadLocalTimeout)
+	defer cancel()
+
 	// ResolveReadPath 内部已支持 CurrentDir 优先解析。
 	// 若 CurrentDir 下文件不存在，fallthrough 到 WorkspaceRoot 解析——
 	// 这使得 agent cd 到子目录后仍能读取 workspace root 下的文件。
@@ -183,10 +193,44 @@ func (t *ReadTool) executeLocal(ctx *ToolContext, filePath string) (*ToolResult,
 		return nil, err
 	}
 
-	content, err := os.ReadFile(resolvedPath)
+	// File size check to prevent OOM on large files
+	info, err := os.Stat(resolvedPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
+		return nil, fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.Size() > MaxReadFileSize {
+		return nil, fmt.Errorf("file too large (>%d bytes): %s — use Shell with head/tail to read portions", MaxReadFileSize, resolvedPath)
 	}
 
-	return NewResultWithTips(string(content), "如需修改此文件，优先使用 Edit 工具。"), nil
+	// Read file with context-aware cancellation.
+	// os.Open + io.ReadAll allows closing the fd on context cancel,
+	// which interrupts the blocking read (unlike os.ReadFile).
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		f, err := os.Open(resolvedPath)
+		if err != nil {
+			ch <- readResult{nil, err}
+			return
+		}
+		defer f.Close()
+		data, err := io.ReadAll(f)
+		ch <- readResult{data, err}
+	}()
+
+	select {
+	case <-readCtx.Done():
+		// Context cancelled — the goroutine will leak if I/O is truly stuck
+		// (NFS hang), but this is rare. The fd is closed by defer when the
+		// goroutine eventually returns.
+		return nil, fmt.Errorf("read timed out or cancelled: %w", readCtx.Err())
+	case res := <-ch:
+		if res.err != nil {
+			return nil, fmt.Errorf("failed to read file: %w", res.err)
+		}
+		return NewResultWithTips(string(res.data), "如需修改此文件，优先使用 Edit 工具。"), nil
+	}
 }

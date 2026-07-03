@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -496,7 +497,7 @@ func TestSearchFile_ContextLines(t *testing.T) {
 	}
 
 	re := regexp.MustCompile("match here")
-	matches, err := searchFile(filepath.Join(tmpDir, "test.txt"), re, 2)
+	matches, err := searchFile(context.Background(), filepath.Join(tmpDir, "test.txt"), re, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
