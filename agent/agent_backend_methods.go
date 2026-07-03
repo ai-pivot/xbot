@@ -62,6 +62,11 @@ func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
 	// Shallow copy to avoid data race: agent may update snapshot fields concurrently.
 	result := *snapshot
 
+	// Merge live stream state (updated by stream callbacks between structured events).
+	// This is the pull-model replacement for stream event push — the client reads
+	// live streaming content via tick pull instead of receiving push events.
+	a.mergeStreamState(key, &result)
+
 	// Agent sessions: correct Phase from authoritative running state.
 	// interactiveSubAgents stores entries keyed by interactiveKey (no "agent:" prefix),
 	// so we look up with chatID directly. When running=true but Phase="done"

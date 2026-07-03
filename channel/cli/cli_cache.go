@@ -69,7 +69,6 @@ func (m *cliModel) resetProgressState() {
 	// reset to 0 on every Run(). If we don't reset, events from the new turn
 	// (Seq=1,2,3...) would be blocked by the previous turn's high Seq.
 	m.progressState.lastAppliedSeq = 0
-	m.progressState.lastStreamSeq = 0
 	m.progressState.current = nil
 	m.progressState.iterStart = time.Now() // wall-clock start for iteration 0
 	m.typingStartTime = time.Now()

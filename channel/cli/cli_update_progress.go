@@ -43,69 +43,9 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.turnCancelled = false
 	}
 
-	// Stream-only events: update stream fields on current state for immediate
-	// low-latency display. The tick pull will read the complete snapshot.
-	//
-	// LINEAR CONSISTENCY: stream-only events use a SEPARATE lastStreamSeq counter,
-	// NOT lastAppliedSeq. This is critical:
-	//
-	// Stream events fire at 20-100 Hz (every LLM token chunk), while structured
-	// events fire at ~1 Hz (iteration transitions). They share the same Seq
-	// sequence counter on the backend. If stream events updated lastAppliedSeq,
-	// it would quickly reach Seq=100 (from stream chunks), permanently blocking
-	// tick pull (whose structured snapshot has the much lower Seq from the last
-	// structured event). Result: tick pull NEVER applies, client never sees
-	// iteration changes — stuck on old iteration's reasoning while server
-	// advances.
-	//
-	// The stale-stream guard uses lastStreamSeq: a stream event with
-	// Seq <= lastStreamSeq is a duplicate and discarded. But a stream event
-	// with Seq > lastStreamSeq is ALWAYS accepted, even if lastAppliedSeq
-	// (from structured events) is higher — because the stream event represents
-	// newer display data for the CURRENT iteration, not stale state.
-	isStreamOnly := msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
-		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
-			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
-
-	if isStreamOnly {
-		// Stale stream event guard (separate from structured event Seq).
-		if msg.payload.Seq > 0 && msg.payload.Seq <= m.progressState.lastStreamSeq {
-			return
-		}
-		if msg.payload.Seq > 0 {
-			m.progressState.lastStreamSeq = msg.payload.Seq
-		}
-
-		if m.progressState.current != nil {
-			cur := m.progressState.current
-			if msg.payload.StreamContent != "" {
-				cur.StreamContent = msg.payload.StreamContent
-			}
-			if msg.payload.ReasoningStreamContent != "" {
-				cur.ReasoningStreamContent = msg.payload.ReasoningStreamContent
-			}
-			if len(msg.payload.StreamingTools) > 0 {
-				cur.StreamingTools = msg.payload.StreamingTools
-			}
-			if msg.payload.StreamTokens > 0 {
-				cur.StreamTokens = msg.payload.StreamTokens
-			}
-		} else if m.typing {
-			// Turn started but no structured progress yet — create minimal state.
-			m.progressState.current = msg.payload
-		}
-		// Update Seq for dedup (stream events share the Seq sequence).
-		if msg.payload.Seq > 0 {
-			m.progressState.lastSeq = msg.payload.Seq
-		}
-		if msg.payload.TokenUsage != nil {
-			m.cacheTokenUsage(msg.payload.TokenUsage)
-		}
-		m.updateViewportContent()
-		return
-	}
-
-	// Structured event or PhaseDone: apply through snapshot pipeline.
+	// PULL MODEL: stream-only push events no longer exist — backend writes
+	// to atomic streamState, clients read via GetActiveProgress tick pull.
+	// All progress events that arrive here are structured (Phase/Iteration).
 	// Seq check within applyProgressSnapshot handles dedup.
 	if msg.payload.Seq > 0 {
 		m.progressState.lastSeq = msg.payload.Seq
