@@ -75,37 +75,46 @@ func resolveMemoryProvider(cfg string) string {
 	return cfg
 }
 
+// evalRealPath resolves a path to its real absolute path, following symlinks.
+// Falls back to filepath.Abs on error.
+func evalRealPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
+	}
+	return real
+}
+
 func resolveGlobalSkillsDirs(skillsDir string) []string {
 	var dirs []string
 
 	// 1. Add the configured/default xbot skills dir (~/.xbot/skills)
 	if skillsDir != "" {
-		abs, err := filepath.Abs(skillsDir)
-		if err == nil {
-			dirs = append(dirs, abs)
-		}
+		dirs = append(dirs, evalRealPath(skillsDir))
 	}
 
 	// 2. Auto-detect Codex/Cursor-compatible global skills dir: ~/.agents/skills
 	//    This allows xbot to automatically pick up skills installed by Codex, Cursor,
 	//    or other agents that follow the ~/.agents/ convention, without requiring symlinks.
-	//    Only add it if the directory actually exists.
+	//    Only add it if the directory actually exists, and deduplicate by real path
+	//    (in case skillsDir is a symlink pointing to ~/.agents/skills or vice versa).
 	if home, err := os.UserHomeDir(); err == nil {
 		agentsSkillsDir := filepath.Join(home, ".agents", "skills")
 		if info, err := os.Stat(agentsSkillsDir); err == nil && info.IsDir() {
-			abs, err := filepath.Abs(agentsSkillsDir)
-			if err == nil {
-				// Avoid duplicates if skillsDir already points here
-				alreadyIncluded := false
-				for _, d := range dirs {
-					if d == abs {
-						alreadyIncluded = true
-						break
-					}
+			real := evalRealPath(agentsSkillsDir)
+			alreadyIncluded := false
+			for _, d := range dirs {
+				if d == real {
+					alreadyIncluded = true
+					break
 				}
-				if !alreadyIncluded {
-					dirs = append(dirs, abs)
-				}
+			}
+			if !alreadyIncluded {
+				dirs = append(dirs, real)
 			}
 		}
 	}

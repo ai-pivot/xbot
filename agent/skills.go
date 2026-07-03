@@ -201,10 +201,8 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string, proj
 	sb.WriteString("When a user's message starts with `/xxxx`, prioritize finding a matching skill name and activate it before processing the request.\n\n")
 
 	// 注入目录路径，供 skill-creator 参考新建位置
-	// Show all global dirs (xbot native + auto-detected Codex/Cursor compatible dirs)
 	if len(s.globalDirs) > 0 {
-		fmt.Fprintf(&sb, "**全局 Skills 目录**: %s\n", strings.Join(s.globalDirs, ", "))
-		fmt.Fprintf(&sb, "（自动识别 ~/.xbot/skills 和 ~/.agents/skills 两个全局目录）\n\n")
+		fmt.Fprintf(&sb, "**全局 Skills 目录**: %s\n\n", strings.Join(s.globalDirs, ", "))
 	}
 	// 注入项目本地目录提示
 	if pDir != "" {
@@ -241,16 +239,23 @@ func (s *SkillStore) scanProjectSkills(projectDir string, existing []SkillInfo) 
 
 	var result []SkillInfo
 
-	// Helper: scan a single skill directory and append new skills
+	// Helper: scan a single skill directory and append new skills.
+	// Uses evalRealPath to resolve symlinks for accurate deduplication.
 	scanDir := func(skillsDir string) {
 		abs, err := filepath.Abs(skillsDir)
 		if err != nil {
 			return
 		}
-		if seenPaths[abs] {
+		// Resolve symlinks for dedup — EvalSymlinks fails on non-existent dirs,
+		// which is fine because ReadDir will also fail on them below.
+		real := abs
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			real = resolved
+		}
+		if seenPaths[real] {
 			return
 		}
-		seenPaths[abs] = true
+		seenPaths[real] = true
 
 		entries, err := os.ReadDir(abs)
 		if err != nil {
