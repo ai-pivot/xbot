@@ -1707,7 +1707,7 @@ func TestCLIChannelConfigEmpty(t *testing.T) {
 // iterSnapshot mirrors channel.iterSnapshot for test JSON construction.
 type iterSnapshot struct {
 	Iteration int            `json:"iteration"`
-	Content   string         `json:"thinking,omitempty"`
+	Content   string         `json:"content,omitempty"`
 	Reasoning string         `json:"reasoning,omitempty"`
 	Tools     []iterToolSnap `json:"tools"`
 }

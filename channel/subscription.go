@@ -39,7 +39,7 @@ type DailyTokenUsage struct {
 // iterSnapshot mirrors agent.IterationSnapshot for JSON unmarshaling Detail field.
 type iterSnapshot struct {
 	Iteration int            `json:"iteration"`
-	Content   string         `json:"thinking,omitempty"`
+	Content   string         `json:"content,omitempty"`
 	Reasoning string         `json:"reasoning,omitempty"`
 	Tools     []iterToolSnap `json:"tools"`
 }

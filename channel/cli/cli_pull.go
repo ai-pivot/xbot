@@ -36,6 +36,18 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 		return
 	}
 
+	// Defensive copy: GetActiveProgress returns a shallow copy of the engine's
+	// snapshot, but slice fields (ActiveTools, etc.) share the backing array.
+	// We mutate ActiveTools[i].StartedAt below — without this copy, we'd
+	// pollute the engine's stored snapshot. Deep-copy only the slices we
+	// mutate; other slices are read-only.
+	snap := *snapshot
+	if len(snap.ActiveTools) > 0 {
+		snap.ActiveTools = make([]protocol.ToolProgress, len(snap.ActiveTools))
+		copy(snap.ActiveTools, snapshot.ActiveTools)
+	}
+	snapshot = &snap
+
 	// Seq check: skip if we've already applied this or a newer snapshot.
 	// This deduplicates push events and tick reads — the latest snapshot wins.
 	if snapshot.Seq > 0 && snapshot.Seq <= m.progressState.lastAppliedSeq {
