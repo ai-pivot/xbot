@@ -330,3 +330,68 @@ func TestRegression_NewTurnBlockedByOldSeq(t *testing.T) {
 		t.Fatal("turn 2 first event blocked by stale lastAppliedSeq from turn 1")
 	}
 }
+
+// ── Bug: content truncated when tool generating event arrives ──
+// Root cause: streamContentFunc was throttled (60ms). When content
+// callback was skipped (within throttle window), the full content only
+// went to atomic streamState but was NOT pushed. Then unthrottled
+// streamToolCallFunc pushed with empty StreamContent → coalescing
+// preserved stale incomplete content from the last throttled push.
+//
+// Fix: removed throttle entirely. catch-up drain in handleAsyncDrain
+// prevents backlog. Every callback pushes immediately.
+func TestRegression_ContentTruncatedWhenToolGeneratingArrives(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Stream content arrives (complete text)
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamContent: "Let me update the controllers CMake",
+	})
+
+	if model.progressState.current.StreamContent != "Let me update the controllers CMake" {
+		t.Fatalf("stream content not applied: got %q",
+			model.progressState.current.StreamContent)
+	}
+
+	// Tool call event arrives immediately after (no throttle delay)
+	// This event does NOT carry StreamContent
+	sendProgress(model, &protocol.ProgressEvent{
+		StreamingTools: []protocol.ToolProgress{{Name: "FileReplace", Status: "generating"}},
+	})
+
+	// StreamContent must be preserved — not lost or truncated
+	if model.progressState.current.StreamContent != "Let me update the controllers CMake" {
+		t.Errorf("StreamContent lost when tool generating arrived: got %q, want %q",
+			model.progressState.current.StreamContent, "Let me update the controllers CMake")
+	}
+	// StreamingTools must be set
+	if len(model.progressState.current.StreamingTools) != 1 {
+		t.Errorf("StreamingTools not set: got %d tools", len(model.progressState.current.StreamingTools))
+	}
+}
+
+// ── Bug: coalesceProgress drops content when tool event has no content ──
+// Same root cause in the coalescing layer: stream-only content event
+// coalesced with stream-only tool event (no content) must preserve
+// content from the first event.
+func TestRegression_CoalesceDropsContentOnToolEvent(t *testing.T) {
+	a := cliProgressMsg{payload: &protocol.ProgressEvent{
+		Seq:           1,
+		StreamContent: "Let me update the controllers CMake",
+	}}
+	b := cliProgressMsg{payload: &protocol.ProgressEvent{
+		Seq:            2,
+		StreamingTools: []protocol.ToolProgress{{Name: "FileReplace", Status: "generating"}},
+	}}
+
+	merged := coalesceProgress(a, b)
+
+	if merged.payload.StreamContent != "Let me update the controllers CMake" {
+		t.Errorf("content lost when coalescing with tool event: got %q, want %q",
+			merged.payload.StreamContent, "Let me update the controllers CMake")
+	}
+	if len(merged.payload.StreamingTools) != 1 {
+		t.Errorf("StreamingTools lost: got %d tools", len(merged.payload.StreamingTools))
+	}
+}

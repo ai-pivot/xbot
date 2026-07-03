@@ -328,35 +328,22 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 	}
 
 	// Wire stream callbacks — capability-based push via ProgressSender interface.
-	// No local/remote branching — sender is whatever the channel registered as.
+	// No throttle: catch-up drain in handleAsyncDrain prevents backlog.
+	// Throttling caused content truncation (content callback skipped →
+	// next unthrottled toolCallFunc push carried empty StreamContent).
 	cfg.Stream = true
 	var subAgentProgressSeq atomic.Uint64
 	cfg.ProgressSeq = &subAgentProgressSeq
-	var lastSubPushMs atomic.Int64
-	subThrottle := func() bool {
-		now := time.Now().UnixMilli()
-		last := lastSubPushMs.Load()
-		if now-last >= 60 {
-			return lastSubPushMs.CompareAndSwap(last, now)
-		}
-		return false
-	}
 	cfg.StreamContentFunc = func(content string) {
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
 		})
-		if !subThrottle() {
-			return
-		}
 		sender.SendStreamContent(key, content, "")
 	}
 	cfg.StreamReasoningFunc = func(content string) {
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.ReasoningStreamContent = content
 		})
-		if !subThrottle() {
-			return
-		}
 		sender.SendStreamContent(key, "", content)
 	}
 	cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {

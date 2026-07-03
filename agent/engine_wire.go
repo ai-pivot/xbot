@@ -2004,17 +2004,6 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 
 	progressKey := qualifyChatID(channel, chatID)
 
-	// Shared rate limiter: 60ms interval (matches typer tick 50ms).
-	var lastPushMs atomic.Int64
-	throttle := func() bool {
-		now := time.Now().UnixMilli()
-		last := lastPushMs.Load()
-		if now-last >= 60 {
-			return lastPushMs.CompareAndSwap(last, now)
-		}
-		return false
-	}
-
 	// broadcast pushes to all ProgressSender channels uniformly.
 	broadcastStream := func(content, reasoning string) {
 		for _, s := range senders {
@@ -2027,24 +2016,22 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 	}
 
+	// No throttle: every callback pushes immediately. Backlog is prevented
+	// by catch-up drain in handleAsyncDrain (coalesces all pending progress
+	// events into one before Send). Throttling caused content truncation:
+	// content callback was skipped (60ms), then unthrottled toolCallFunc
+	// pushed with empty StreamContent → coalescing preserved stale incomplete
+	// content from the last throttled push.
 	streamContentFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
 		})
-		if !throttle() {
-			return
-		}
-		seq := progressSeq.Add(1)
 		broadcastStream(content, "")
-		_ = seq // seq is embedded in streamState, not needed for SendStreamContent
 	}
 	streamReasoningFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.ReasoningStreamContent = content
 		})
-		if !throttle() {
-			return
-		}
 		broadcastStream("", content)
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
