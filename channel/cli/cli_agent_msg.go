@@ -484,23 +484,23 @@ func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 
 	if cancelledIdx >= 0 {
 		streamingMsg := &m.messages[cancelledIdx]
-		if strings.TrimSpace(streamingMsg.content) != "" {
-			// Streaming message accumulated real content (e.g. partial LLM text).
-			// Finalize it as a completed message so the user keeps what was streamed.
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
-			if len(streamingMsg.iterations) == 0 {
-				streamingMsg.iterations = m.cancelledTurnIterations()
-			}
-		} else if len(streamingMsg.iterations) > 0 {
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
-		} else if iters := m.cancelledTurnIterations(); len(iters) > 0 {
-			streamingMsg.isPartial = false
-			streamingMsg.dirty = true
+
+		// ALWAYS capture the live iteration from progressState. The old
+		// branching logic conditionally skipped cancelledTurnIterations()
+		// when streamingMsg.iterations was non-empty (from AskUser/partial
+		// reply), losing the latest live iteration. PhaseDone may not arrive
+		// (ctx wrapper drops it on cancel), so this fallback is the ONLY
+		// way to capture the live iteration from m.progressState.current.
+		iters := m.cancelledTurnIterations()
+		if len(iters) > 0 {
 			streamingMsg.iterations = iters
-		} else {
-			// Empty streaming message with no iteration data. Remove it.
+		}
+		streamingMsg.isPartial = false
+		streamingMsg.dirty = true
+
+		// If the streaming message has NO content and NO iterations,
+		// there's nothing to display — remove it.
+		if strings.TrimSpace(streamingMsg.content) == "" && len(streamingMsg.iterations) == 0 {
 			m.messages = append(m.messages[:cancelledIdx], m.messages[cancelledIdx+1:]...)
 			if m.streamingMsgIdx == cancelledIdx {
 				m.streamingMsgIdx = -1
