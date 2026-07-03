@@ -391,7 +391,7 @@ func (a *Agent) buildMainRunConfig(
 		if a.channelFinder != nil {
 			var progressSeq atomic.Uint64
 			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel)
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq)
 		}
 	}
 
@@ -1984,20 +1984,79 @@ func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*Pr
 // and reasoning stream callbacks. Returns nil, nil if streaming is disabled or
 // no channels are available.
 // Plugin channels (e.g. TG) do NOT receive stream — they get structured progress instead.
-func (a *Agent) buildStreamCallbacks(chatID, channel string) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
-	// PULL MODEL: stream callbacks write to atomic streamState only.
-	// All clients (local CLI, remote CLI, web) read via GetActiveProgress
-	// at their own tick frequency — zero push, zero channel pressure.
+//
+// RATE LIMITING: stream push is throttled to max 5/sec (200ms interval).
+// Each callback always writes to atomic streamState (for GetActiveProgress
+// reconnect recovery). The push is gated by a simple time-based throttle —
+// if <200ms since last push, skip (the next callback that passes will push
+// newer content). Structured events (progressFinalizer) always carry the
+// final Content/Reasoning, so throttled tokens are not lost.
+func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
+	var cliCh *cli.CLIChannel
+	var remoteCLICh channelpkg.ProgressSender
+	if ch, ok := a.channelFinder("cli"); ok {
+		if cc, ok := ch.(*cli.CLIChannel); ok {
+			cliCh = cc
+		} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
+			remoteCLICh = rc
+		}
+	}
+	var webCh *web.WebChannel
+	if ch, ok := a.channelFinder("web"); ok {
+		if wc, ok := ch.(*web.WebChannel); ok {
+			webCh = wc
+		}
+	}
+
 	progressKey := qualifyChatID(channel, chatID)
+
+	// Rate limiter: max 5 pushes per second (200ms minimum interval).
+	// Atomic CAS ensures thread-safety across concurrent callbacks.
+	var lastPushMs atomic.Int64
+	throttle := func() bool {
+		now := time.Now().UnixMilli()
+		last := lastPushMs.Load()
+		if now-last >= 200 {
+			return lastPushMs.CompareAndSwap(last, now)
+		}
+		return false
+	}
+
 	streamContentFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
 		})
+		if !throttle() {
+			return
+		}
+		seq := progressSeq.Add(1)
+		if cliCh != nil {
+			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: progressKey, Seq: seq, StreamContent: content})
+		}
+		if remoteCLICh != nil {
+			remoteCLICh.SendStreamContent(chatID, content, "")
+		}
+		if webCh != nil {
+			webCh.SendStreamContent(chatID, content, "")
+		}
 	}
 	streamReasoningFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.ReasoningStreamContent = content
 		})
+		if !throttle() {
+			return
+		}
+		seq := progressSeq.Add(1)
+		if cliCh != nil {
+			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: progressKey, Seq: seq, ReasoningStreamContent: content})
+		}
+		if remoteCLICh != nil {
+			remoteCLICh.SendStreamContent(chatID, "", content)
+		}
+		if webCh != nil {
+			webCh.SendStreamContent(chatID, "", content)
+		}
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
 		tools := make([]protocol.ToolProgress, 0, len(toolCalls))
@@ -2016,6 +2075,22 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string) (streamContentFunc 
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamingTools = tools
 		})
+		// Tool calls are low-frequency (one burst per tool), don't throttle.
+		seq := progressSeq.Add(1)
+		payload := &protocol.ProgressEvent{
+			ChatID:         progressKey,
+			Seq:            seq,
+			StreamingTools: tools,
+		}
+		if cliCh != nil {
+			cliCh.SendProgress(chatID, payload)
+		}
+		if remoteCLICh != nil {
+			remoteCLICh.SendProgress(chatID, payload)
+		}
+		if webCh != nil {
+			webCh.SendProgress(chatID, payload)
+		}
 	}
 	streamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {
@@ -2024,6 +2099,22 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string) (streamContentFunc 
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamTokens = usage.CompletionTokens
 		})
+		// Token usage is low-frequency (once per LLM call), don't throttle.
+		seq := progressSeq.Add(1)
+		payload := &protocol.ProgressEvent{
+			ChatID:       progressKey,
+			Seq:          seq,
+			StreamTokens: usage.CompletionTokens,
+		}
+		if cliCh != nil {
+			cliCh.SendProgress(chatID, payload)
+		}
+		if remoteCLICh != nil {
+			remoteCLICh.SendProgress(chatID, payload)
+		}
+		if webCh != nil {
+			webCh.SendProgress(chatID, payload)
+		}
 	}
 	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc
 }

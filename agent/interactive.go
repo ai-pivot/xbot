@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"xbot/bus"
@@ -322,18 +323,46 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		a.lastProgressSnapshot.Store(agentProgressKey, cliPayload)
 	}
 
-	// Wire stream callbacks — PULL MODEL: write to atomic streamState only.
-	// All clients read via GetActiveProgress at their own tick frequency.
+	// Wire stream callbacks — push with 5/sec rate limit + atomic streamState for reconnect.
 	cfg.Stream = true
+	var subAgentProgressSeq atomic.Uint64
+	cfg.ProgressSeq = &subAgentProgressSeq
+	var lastSubPushMs atomic.Int64
+	subThrottle := func() bool {
+		now := time.Now().UnixMilli()
+		last := lastSubPushMs.Load()
+		if now-last >= 200 {
+			return lastSubPushMs.CompareAndSwap(last, now)
+		}
+		return false
+	}
 	cfg.StreamContentFunc = func(content string) {
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
 		})
+		if !subThrottle() {
+			return
+		}
+		seq := subAgentProgressSeq.Add(1)
+		if localCh != nil {
+			localCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
+		} else if remoteCh != nil {
+			remoteCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
+		}
 	}
 	cfg.StreamReasoningFunc = func(content string) {
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.ReasoningStreamContent = content
 		})
+		if !subThrottle() {
+			return
+		}
+		seq := subAgentProgressSeq.Add(1)
+		if localCh != nil {
+			localCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
+		} else if remoteCh != nil {
+			remoteCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
+		}
 	}
 	cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {
@@ -342,6 +371,12 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.StreamTokens = usage.CompletionTokens
 		})
+		seq := subAgentProgressSeq.Add(1)
+		if localCh != nil {
+			localCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamTokens: usage.CompletionTokens})
+		} else if remoteCh != nil {
+			remoteCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamTokens: usage.CompletionTokens})
+		}
 	}
 }
 

@@ -840,7 +840,8 @@ type progressState struct {
 	iterations     []cliIterationSnapshot
 	lastIter       int
 	lastSeq        uint64
-	lastAppliedSeq uint64 // highest Seq applied via applyProgressSnapshot
+	lastAppliedSeq uint64 // highest Seq applied via applyProgressSnapshot (structured events)
+	lastStreamSeq  uint64 // highest Seq from stream-only events (separate counter)
 	iterStart      time.Time
 	busySessions   bool
 	unread         map[string]bool

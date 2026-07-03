@@ -8,19 +8,21 @@ import (
 
 // handleProgressMsg processes progress update events from the agent.
 //
-// SIMPLIFIED: All complex state management (mergeProgressState,
-// snapshotIterationChange, handleProgressDone) has been replaced by
-// applyProgressSnapshot in cli_pull.go, which is called from both
-// here (push events) and the tick handler (100ms pull).
+// Two types of events:
+//  1. Stream-only (Phase=="", Iteration==0): low-latency stream display updates
+//     (content, reasoning, tool calls, token usage). Server pushes these at max
+//     5/sec (200ms throttle). These update stream fields on current state directly.
+//  2. Structured (Phase!="", Iteration>0): iteration transitions, PhaseDone, todos.
+//     These go through applyProgressSnapshot for authoritative state update.
 //
-// Push events provide low-latency display updates; the tick pull
-// provides consistency guarantee by reading the complete backend snapshot.
+// Seq monotonic guard: stream events use lastStreamSeq (separate from
+// lastAppliedSeq) so high-frequency stream events don't block structured events.
 func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	if msg.payload == nil {
 		return
 	}
 
-	// Session filter: only process progress for the currently viewed session.
+	// Session filter
 	if msg.payload.ChatID == "" {
 		log.WithFields(log.Fields{
 			"phase":     msg.payload.Phase,
@@ -43,10 +45,46 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		m.turnCancelled = false
 	}
 
-	// PULL MODEL: stream-only push events no longer exist — backend writes
-	// to atomic streamState, clients read via GetActiveProgress tick pull.
-	// All progress events that arrive here are structured (Phase/Iteration).
-	// Seq check within applyProgressSnapshot handles dedup.
+	// Classify event type.
+	isStreamOnly := msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
+		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
+			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
+
+	if isStreamOnly {
+		// Stale stream event guard (separate counter — don't block structured events).
+		if msg.payload.Seq > 0 && msg.payload.Seq <= m.progressState.lastStreamSeq {
+			return
+		}
+		if msg.payload.Seq > 0 {
+			m.progressState.lastStreamSeq = msg.payload.Seq
+		}
+
+		if m.progressState.current != nil {
+			cur := m.progressState.current
+			if msg.payload.StreamContent != "" {
+				cur.StreamContent = msg.payload.StreamContent
+			}
+			if msg.payload.ReasoningStreamContent != "" {
+				cur.ReasoningStreamContent = msg.payload.ReasoningStreamContent
+			}
+			if len(msg.payload.StreamingTools) > 0 {
+				cur.StreamingTools = msg.payload.StreamingTools
+			}
+			if msg.payload.StreamTokens > 0 {
+				cur.StreamTokens = msg.payload.StreamTokens
+			}
+		} else if m.typing {
+			// Turn started but no structured progress yet — create minimal state.
+			m.progressState.current = msg.payload
+		}
+		if msg.payload.TokenUsage != nil {
+			m.cacheTokenUsage(msg.payload.TokenUsage)
+		}
+		m.updateViewportContent()
+		return
+	}
+
+	// Structured event or PhaseDone: apply through snapshot pipeline.
 	if msg.payload.Seq > 0 {
 		m.progressState.lastSeq = msg.payload.Seq
 	}

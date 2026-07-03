@@ -8,17 +8,6 @@ import (
 	log "xbot/logger"
 )
 
-// getActiveProgress reads the complete backend progress snapshot.
-// In local mode: direct function call via ChannelTransport (O(1)).
-// In remote mode: WS RPC call (network latency, but still fast).
-// Returns nil if no active turn exists for this session.
-func (m *cliModel) getActiveProgress() *protocol.ProgressEvent {
-	if m.channel != nil && m.channel.config != nil && m.channel.config.GetActiveProgressFn != nil {
-		return m.channel.config.GetActiveProgressFn(m.channelName, m.chatID)
-	}
-	return nil
-}
-
 // applyProgressSnapshot applies a complete backend snapshot to the local state.
 // This is the SINGLE authoritative state update point — called from both
 // handleProgressMsg (on push events) and handleTickMsg (every 100ms).
@@ -401,6 +390,7 @@ func (m *cliModel) handleHistoryCompactedSignal() {
 	m.progressState.iterations = nil
 	m.progressState.lastIter = 0
 	m.progressState.lastAppliedSeq = 0 // reset so post-compression snapshot is applied
+	m.progressState.lastStreamSeq = 0
 	m.invalidateAllCache(true)
 	m.rc.invalidateProgress()
 	m.splashState.compReloading = true
