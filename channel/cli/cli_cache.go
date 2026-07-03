@@ -64,6 +64,11 @@ func (m *cliModel) resetProgressState() {
 	m.progressState.iterations = nil
 	m.progressState.lastIter = 0
 	m.progressState.lastSeq = 0
+	// LINEAR CONSISTENCY: reset lastAppliedSeq on new turn.
+	// Backend's progressSeq is a local atomic.Uint64 in buildMainRunConfig,
+	// reset to 0 on every Run(). If we don't reset, events from the new turn
+	// (Seq=1,2,3...) would be blocked by the previous turn's high Seq.
+	m.progressState.lastAppliedSeq = 0
 	m.progressState.streamReasoningByIter = nil
 	m.progressState.current = nil
 	m.progressState.iterStart = time.Now() // wall-clock start for iteration 0

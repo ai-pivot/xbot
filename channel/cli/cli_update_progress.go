@@ -45,11 +45,30 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 
 	// Stream-only events: update stream fields on current state for immediate
 	// low-latency display. The tick pull will read the complete snapshot.
+	//
+	// LINEAR CONSISTENCY: stream-only events share the same Seq sequence as
+	// structured events. We enforce Seq monotonicity here — any event with
+	// Seq <= lastAppliedSeq is discarded. This prevents a stale stream event
+	// (delayed by progressCh coalescing) from overwriting a newer snapshot
+	// already applied by tick pull or a structured push event.
+	//
+	// Without this check:
+	//   1. Tick pull reads iteration=3 snapshot, Seq=102 → lastAppliedSeq=102
+	//   2. Stale stream event (Seq=99) arrives from progressCh
+	//   3. Writes old StreamContent into current → visual regression
 	isStreamOnly := msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
 		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
 			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
 
 	if isStreamOnly {
+		// Seq monotonic guard: discard stale events.
+		if msg.payload.Seq > 0 && msg.payload.Seq <= m.progressState.lastAppliedSeq {
+			return
+		}
+		if msg.payload.Seq > 0 {
+			m.progressState.lastAppliedSeq = msg.payload.Seq
+		}
+
 		if m.progressState.current != nil {
 			cur := m.progressState.current
 			if msg.payload.StreamContent != "" {
