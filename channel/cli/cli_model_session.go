@@ -498,6 +498,13 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 					m.cachedModelName = defSub.Model
 					m.cachedMaxContextTokens = resolveSubMaxContext(defSub)
 					m.cachedMaxOutputTokens = int64(resolveSubMaxOutputTokens(defSub))
+					// Refresh valuesCache for this subscription so resolveMaxContext()
+					// reads the correct max_context_tokens. Without this, valuesCache
+					// retains the previous session's subscription data, causing the
+					// context bar to show wrong max context after session switches.
+					if m.channel != nil && m.channel.config.RefreshValuesCache != nil {
+						m.channel.config.RefreshValuesCache(defSub.ID)
+					}
 				}
 			}
 			if m.cachedMaxContextTokens == 0 {
