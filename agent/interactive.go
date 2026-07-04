@@ -338,13 +338,13 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
 		})
-		sender.SendStreamContent(key, content, "")
+		sender.SendStreamContent(agentProgressKey, content, "")
 	}
 	cfg.StreamReasoningFunc = func(content string) {
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.ReasoningStreamContent = content
 		})
-		sender.SendStreamContent(key, "", content)
+		sender.SendStreamContent(agentProgressKey, "", content)
 	}
 	cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {

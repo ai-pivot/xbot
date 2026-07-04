@@ -2006,7 +2006,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	// broadcast pushes to all ProgressSender channels uniformly.
 	broadcastStream := func(content, reasoning string) {
 		for _, s := range senders {
-			s.SendStreamContent(chatID, content, reasoning)
+			s.SendStreamContent(progressKey, content, reasoning)
 		}
 	}
 	broadcastProgress := func(payload *protocol.ProgressEvent) {
