@@ -510,7 +510,9 @@ func (a *Agent) listLLMSubsFn(channel string) func(ch, senderID string) []tools.
 
 // getActiveSubFieldFn returns a function that reads a single field from the
 // active subscription. Used by config tool's get action for subscription-scoped keys.
-func (a *Agent) getActiveSubFieldFn(channel string) func(key string) (string, error) {
+// For llm_model, uses ResolveActiveSubModel to respect per-session model switches
+// (Ctrl+N / SelectModel) instead of returning the subscription's default model.
+func (a *Agent) getActiveSubFieldFn(channel, chatID string) func(key string) (string, error) {
 	if a.llmFactory == nil {
 		return nil
 	}
@@ -523,6 +525,20 @@ func (a *Agent) getActiveSubFieldFn(channel string) func(key string) (string, er
 		senderID := a.cliSenderID
 		if senderID == "" {
 			senderID = "cli_user"
+		}
+		// For llm_model: resolve from per-session state (tenants table) so
+		// the returned model matches what the status bar shows. GetDefault
+		// only returns the subscription's default model, which is wrong when
+		// the user has switched models via Ctrl+N for this session.
+		if key == "llm_model" {
+			sub, model, err := a.llmFactory.ResolveActiveSubModel(senderID, chatID, channel)
+			if err == nil && sub != nil {
+				if model == "" {
+					model = sub.Model
+				}
+				return model, nil
+			}
+			// Fallback to GetDefault if ResolveActiveSubModel fails
 		}
 		sub, err := svc.GetDefault(senderID)
 		if err != nil {
