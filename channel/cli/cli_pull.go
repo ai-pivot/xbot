@@ -185,10 +185,19 @@ func (m *cliModel) snapshotIterationLocal(prev *protocol.ProgressEvent) {
 			return
 		}
 	}
-	tools := prev.CompletedTools
-	// Include ALL active tools — when iteration changes, active tools
-	// belong to the completed iteration (engine transitions them to done).
-	tools = append(tools, prev.ActiveTools...)
+	// When we snapshot an iteration, it means the iteration has ENDED.
+	// All tools that were "running" or "pending" have completed — the done
+	// event may have been lost in progressSlot coalescing (drain goroutine
+	// didn't wake between the done push and the next-iteration thinking push).
+	// Mark them as "done" — otherwise they stay yellow forever in the history.
+	tools := make([]protocol.ToolProgress, 0, len(prev.CompletedTools)+len(prev.ActiveTools))
+	tools = append(tools, prev.CompletedTools...)
+	for _, t := range prev.ActiveTools {
+		if t.Status == "running" || t.Status == "pending" || t.Status == "" {
+			t.Status = "done"
+		}
+		tools = append(tools, t)
+	}
 	reasoning := prev.Reasoning
 	if reasoning == "" {
 		reasoning = prev.ReasoningStreamContent
@@ -304,10 +313,14 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 			finalTools := snapshot.CompletedTools
 			if len(finalTools) == 0 && cur != nil {
 				finalTools = cur.CompletedTools
+				// Include ALL active tools — the iteration is ending, so all
+				// running/pending tools have completed. Mark them as done
+				// (the done event may have been lost in progressSlot coalescing).
 				for _, t := range cur.ActiveTools {
-					if t.Status == "done" || t.Status == "error" {
-						finalTools = append(finalTools, t)
+					if t.Status == "running" || t.Status == "pending" || t.Status == "" {
+						t.Status = "done"
 					}
+					finalTools = append(finalTools, t)
 				}
 			}
 			// Filter by iteration to prevent cross-iteration tool contamination.

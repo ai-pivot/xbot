@@ -174,11 +174,15 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 						finalTools = append(finalTools, t)
 					}
 				}
+				// Include ALL active tools — turn is ending, so running/pending
+				// tools have completed. Mark them as done (done event may have
+				// been lost in progressSlot coalescing).
 				for _, t := range m.progressState.current.ActiveTools {
-					if t.Status == "done" || t.Status == "error" {
-						if (t.Iteration == 0 || t.Iteration == iterNum) && !containsToolProgress(finalTools, t) {
-							finalTools = append(finalTools, t)
-						}
+					if t.Status == "running" || t.Status == "pending" || t.Status == "" {
+						t.Status = "done"
+					}
+					if (t.Iteration == 0 || t.Iteration == iterNum) && !containsToolProgress(finalTools, t) {
+						finalTools = append(finalTools, t)
 					}
 				}
 				reasoning := m.progressState.current.Reasoning
