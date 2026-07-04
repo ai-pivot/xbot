@@ -657,6 +657,7 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 			if ev.ContentBlock != nil {
 				switch ev.ContentBlock.Type {
 				case "tool_use":
+					hasContent = true
 					tc := &ToolCall{
 						ID:        ev.ContentBlock.ID,
 						Name:      ev.ContentBlock.Name,
@@ -695,10 +696,11 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 				eventChan <- StreamEvent{Type: EventContent, Content: delta.Text}
 			}
 			if delta.Type == "thinking_delta" && delta.Thinking != "" {
-				// Anthropic extended thinking delta
+				hasContent = true
 				eventChan <- StreamEvent{Type: EventReasoningContent, ReasoningContent: delta.Thinking}
 			}
 			if delta.Type == "input_json_delta" && delta.PartialJSON != "" {
+				hasContent = true
 				if tc, ok := toolCallsByIndex[ev.Index]; ok {
 					tc.Arguments += delta.PartialJSON
 					eventChan <- StreamEvent{
