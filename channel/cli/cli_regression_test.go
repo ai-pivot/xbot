@@ -395,3 +395,49 @@ func TestRegression_CoalesceDropsContentOnToolEvent(t *testing.T) {
 		t.Errorf("StreamingTools lost: got %d tools", len(merged.payload.StreamingTools))
 	}
 }
+
+// ── Bug: stream content events have unqualified ChatID → TUI discards ──
+// Root cause: SendStreamContent implementations had inconsistent ChatID
+// qualification. Stream callbacks now go through SendProgress with
+// qualified payload.ChatID — this test verifies the TUI accepts them.
+func TestRegression_StreamContentChatIDQualified(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Stream content event with QUALIFIED ChatID (what stream callbacks now send)
+	sendProgress(model, &protocol.ProgressEvent{
+		ChatID:        "cli:/test",
+		StreamContent: "content via qualified ChatID",
+	})
+
+	if model.progressState.current == nil {
+		t.Fatal("stream content event with qualified ChatID was discarded by session filter")
+	}
+	if model.progressState.current.StreamContent != "content via qualified ChatID" {
+		t.Errorf("StreamContent not applied: got %q",
+			model.progressState.current.StreamContent)
+	}
+}
+
+// ── Bug: raw ChatID stream event must be rejected by session filter ──
+// This is the negative test — verifies that unqualified ChatID events
+// are still filtered out (the original bug scenario).
+func TestRegression_RawChatIDStreamEventRejected(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	// initTestModel sets chatID="/test", channelName="cli"
+	// currentKey = "cli:/test"
+
+	// Send event with RAW ChatID (the old bug)
+	model.handleProgressMsg(cliProgressMsg{
+		payload: &protocol.ProgressEvent{
+			ChatID:        "/test", // raw, unqualified
+			StreamContent: "should be rejected",
+		},
+	})
+
+	if model.progressState.current != nil &&
+		model.progressState.current.StreamContent == "should be rejected" {
+		t.Error("raw ChatID event was accepted — session filter broken")
+	}
+}

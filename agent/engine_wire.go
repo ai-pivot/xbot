@@ -2004,34 +2004,40 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	progressKey := qualifyChatID(channel, chatID)
 
 	// broadcast pushes to all ProgressSender channels uniformly.
-	broadcastStream := func(content, reasoning string) {
-		for _, s := range senders {
-			s.SendStreamContent(progressKey, content, reasoning)
-		}
-	}
+	// chatID (raw) is the routing key for SendProgress's first parameter.
+	// payload.ChatID (qualified progressKey) is the session identity for
+	// the TUI's handleProgressMsg filter. These are two different semantics —
+	// never mix them.
 	broadcastProgress := func(payload *protocol.ProgressEvent) {
+		if payload.ChatID == "" {
+			payload.ChatID = progressKey
+		}
 		for _, s := range senders {
 			s.SendProgress(chatID, payload)
 		}
 	}
 
-	// No throttle: every callback pushes immediately. Backlog is prevented
-	// by catch-up drain in handleAsyncDrain (coalesces all pending progress
-	// events into one before Send). Throttling caused content truncation:
-	// content callback was skipped (60ms), then unthrottled toolCallFunc
-	// pushed with empty StreamContent → coalescing preserved stale incomplete
-	// content from the last throttled push.
+	// All stream callbacks go through broadcastProgress with a qualified
+	// ChatID. This replaces the old SendStreamContent path which had
+	// inconsistent ChatID qualification across implementations (CLIChannel
+	// used raw, RemoteCLI/Web qualified manually).
 	streamContentFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
 		})
-		broadcastStream(content, "")
+		broadcastProgress(&protocol.ProgressEvent{
+			ChatID:        progressKey,
+			StreamContent: content,
+		})
 	}
 	streamReasoningFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.ReasoningStreamContent = content
 		})
-		broadcastStream("", content)
+		broadcastProgress(&protocol.ProgressEvent{
+			ChatID:                 progressKey,
+			ReasoningStreamContent: content,
+		})
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
 		tools := make([]protocol.ToolProgress, 0, len(toolCalls))

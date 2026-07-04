@@ -327,10 +327,10 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		a.lastProgressSnapshot.Store(agentProgressKey, cliPayload)
 	}
 
-	// Wire stream callbacks — capability-based push via ProgressSender interface.
-	// No throttle: catch-up drain in handleAsyncDrain prevents backlog.
-	// Throttling caused content truncation (content callback skipped →
-	// next unthrottled toolCallFunc push carried empty StreamContent).
+	// Wire stream callbacks — unified SendProgress path with qualified ChatID.
+	// No SendStreamContent: all stream events go through SendProgress with
+	// payload.ChatID = agentProgressKey (qualified). This ensures consistent
+	// ChatID semantics across all ProgressSender implementations.
 	cfg.Stream = true
 	var subAgentProgressSeq atomic.Uint64
 	cfg.ProgressSeq = &subAgentProgressSeq
@@ -338,13 +338,19 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
 		})
-		sender.SendStreamContent(agentProgressKey, content, "")
+		sender.SendProgress(key, &protocol.ProgressEvent{
+			ChatID:        agentProgressKey,
+			StreamContent: content,
+		})
 	}
 	cfg.StreamReasoningFunc = func(content string) {
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.ReasoningStreamContent = content
 		})
-		sender.SendStreamContent(agentProgressKey, "", content)
+		sender.SendProgress(key, &protocol.ProgressEvent{
+			ChatID:                 agentProgressKey,
+			ReasoningStreamContent: content,
+		})
 	}
 	cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {
