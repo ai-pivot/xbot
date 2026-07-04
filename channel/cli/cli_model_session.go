@@ -455,73 +455,56 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	m.splashState.compReloading = false
 
 	// ── Session LLM state restoration ──────────────────────────
-	// Only when in-memory caches are empty (new session or TUI restart).
-	// Uses unified LoadSessionLLMState + applySessionLLMState to ensure
-	// activeSubID, cachedModelName, cachedMaxContextTokens, cachedMaxOutputTokens
-	// are ALWAYS consistent. No scattered field-by-field assignments.
-	if m.activeSubID == "" && m.cachedModelName == "" {
-		// Agent sessions: skip default subscription fallback — the model name,
-		// context limits, and token usage come from the SubAgent's config via
-		// handleSuHistoryLoad (AgentSessionLLMStateFn). Setting the default
-		// subscription here would show the parent agent's model name instead.
-		if m.channelName == "agent" {
-			// No-op: model name will be populated by handleSuHistoryLoad
-		} else {
-			state := LoadSessionLLMState(m.workDir, m.chatID)
-			if !state.IsZero() {
-				// Found persisted LLM state on disk — apply to caches atomically
-				m.applySessionLLMState(state)
-				// Refresh values cache so GetCurrentValues() reflects the session's
-				// per-session subscription, not the previous session's or the startup default.
-				if m.channel != nil && m.channel.config.RefreshValuesCache != nil && state.SubscriptionID != "" {
-					m.channel.config.RefreshValuesCache(state.SubscriptionID)
-				}
-				// Restore the actual LLM client via SwitchLLM (creates new client)
-				if state.SubscriptionID != "" && m.subscriptionMgr != nil {
-					if subs, err := m.subscriptionMgr.List(""); err == nil {
-						for i := range subs {
-							if subs[i].ID == state.SubscriptionID {
-								if m.channel != nil && m.channel.config.SwitchLLM != nil {
-									switchFn := m.channel.config.SwitchLLM
-									target := subs[i]
-									m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
-										err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
-										return cliSwitchLLMDoneMsg{
-											err:       err,
-											subID:     target.ID,
-											subName:   target.Name,
-											subModel:  target.Model,
-											maxCtx:    resolveSubMaxContext(&target),
-											maxOutTok: resolveSubMaxOutputTokens(&target),
-											mgr:       m.subscriptionMgr,
-										}
-									})
-								}
-								break
+	// ALWAYS re-resolve from DB on session switch. The in-memory savedSessions
+	// cache may have stale max_context values (user changed per-model config
+	// in another window, or session was never visited before). DB is authoritative.
+	// Agent sessions are excluded — their LLM state comes from handleSuHistoryLoad.
+	if m.channelName != "agent" {
+		state := LoadSessionLLMState(m.workDir, m.chatID)
+		if !state.IsZero() {
+			m.applySessionLLMState(state)
+			if m.channel != nil && m.channel.config.RefreshValuesCache != nil && state.SubscriptionID != "" {
+				m.channel.config.RefreshValuesCache(state.SubscriptionID)
+			}
+			if state.SubscriptionID != "" && m.subscriptionMgr != nil {
+				if subs, err := m.subscriptionMgr.List(""); err == nil {
+					for i := range subs {
+						if subs[i].ID == state.SubscriptionID {
+							if m.channel != nil && m.channel.config.SwitchLLM != nil {
+								switchFn := m.channel.config.SwitchLLM
+								target := subs[i]
+								m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
+									err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
+									return cliSwitchLLMDoneMsg{
+										err:       err,
+										subID:     target.ID,
+										subName:   target.Name,
+										subModel:  target.Model,
+										maxCtx:    resolveSubMaxContext(&target),
+										maxOutTok: resolveSubMaxOutputTokens(&target),
+										mgr:       m.subscriptionMgr,
+									}
+								})
 							}
+							break
 						}
 					}
 				}
-			} else {
-				// No per-session override on disk — load global default subscription
-				if m.subscriptionMgr != nil {
-					if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
-						m.activeSubID = defSub.ID
-						m.cachedModelName = defSub.Model
-						m.cachedMaxContextTokens = resolveSubMaxContext(defSub)
-						m.cachedMaxOutputTokens = int64(resolveSubMaxOutputTokens(defSub))
-					}
+			}
+		} else {
+			if m.subscriptionMgr != nil {
+				if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
+					m.activeSubID = defSub.ID
+					m.cachedModelName = defSub.Model
+					m.cachedMaxContextTokens = resolveSubMaxContext(defSub)
+					m.cachedMaxOutputTokens = int64(resolveSubMaxOutputTokens(defSub))
 				}
-				// Resolve cachedMaxContextTokens if still zero (e.g. default sub
-				// had no per-model config and resolveSubMaxContext returned 0).
-				// Without this, the context bar stays as a white line until
-				// the first progress event triggers the lazy resolve.
-				if m.cachedMaxContextTokens == 0 {
-					m.cachedMaxContextTokens = m.resolveMaxContextTokens()
-				}
-				if m.cachedMaxOutputTokens == 0 {
-					m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
-				}
+			}
+			if m.cachedMaxContextTokens == 0 {
+				m.cachedMaxContextTokens = m.resolveMaxContextTokens()
+			}
+			if m.cachedMaxOutputTokens == 0 {
+				m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
 			}
 		}
 	}
