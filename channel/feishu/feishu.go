@@ -1108,7 +1108,7 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 
 	// AskUser text reply fallback: if there's a pending AskUser for this chat+user,
 	// treat the text message as the answer instead of a new conversation turn.
-	askKey, pending := f.findPendingAskUser(chatID, senderID)
+	askKey, pending := f.findPendingAskUser(chatID, senderID, chatType)
 	if pending != nil && f.tryResolveAskUserByText(askKey, finalContent, senderID, senderName, chatID, chatType, msgTime, requestID, metadata) {
 		return nil
 	}
@@ -2030,9 +2030,25 @@ func (f *FeishuChannel) buildSimpleAskUserCard(questions []ch.AskQItem) map[stri
 }
 
 // findPendingAskUser looks up a pending AskUser state by chat+user.
-// In P2P chats, msg.ChatID is senderID (open_id), but card/text callbacks
-// return the real P2P chat_id (oc_xxx). So we try both key formats.
-func (f *FeishuChannel) findPendingAskUser(chatID, senderID string) (string, *feishuPendingAskUser) {
+//
+// In P2P chats, the session uses senderID (open_id) as ChatID, so the pending
+// state is registered as "senderID:senderID". However, text messages and card
+// callbacks return the real P2P chat_id (oc_xxx), so the primary key
+// "oc_xxx:senderID" won't match and we fall back to checking "senderID:senderID".
+//
+// chatType controls the P2P fallback:
+//   - "group": the P2P fallback MUST NOT apply. Otherwise a group message from
+//     a user who has a pending P2P AskUser would be consumed as the AskUser
+//     answer, routing the reply to the P2P chat and losing the group message
+//     (issue #174).
+//   - "p2p": the P2P fallback applies — this is the expected path for P2P text
+//     replies.
+//   - "" (unknown): the fallback applies. This is used for card callbacks,
+//     where the SDK callback Context doesn't expose chat_type. The fallback is
+//     safe there because a group AskUser card callback matches the primary key
+//     (the group oc_xxx is registered and returned identically), so the
+//     fallback is only reached for genuine P2P callbacks.
+func (f *FeishuChannel) findPendingAskUser(chatID, senderID, chatType string) (string, *feishuPendingAskUser) {
 	primaryKey := chatID + ":" + senderID
 	f.askUserMu.Lock()
 	if pending, ok := f.askUsers[primaryKey]; ok {
@@ -2040,10 +2056,12 @@ func (f *FeishuChannel) findPendingAskUser(chatID, senderID string) (string, *fe
 		return primaryKey, pending
 	}
 	// P2P fallback: the pending state was registered with senderID as ChatID
-	p2pKey := senderID + ":" + senderID
-	if pending, ok := f.askUsers[p2pKey]; ok {
-		f.askUserMu.Unlock()
-		return p2pKey, pending
+	if chatType != "group" {
+		p2pKey := senderID + ":" + senderID
+		if pending, ok := f.askUsers[p2pKey]; ok {
+			f.askUserMu.Unlock()
+			return p2pKey, pending
+		}
 	}
 	f.askUserMu.Unlock()
 	return "", nil
@@ -2060,8 +2078,9 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 		return nil, false
 	}
 
-	// Find pending AskUser for this chat+user
-	askKey, pending := f.findPendingAskUser(chatID, senderID)
+	// Find pending AskUser for this chat+user.
+	// chatType is "" for card callbacks (the SDK Context doesn't expose it).
+	askKey, pending := f.findPendingAskUser(chatID, senderID, "")
 
 	if pending == nil {
 		// Log all existing keys for debugging key mismatch
