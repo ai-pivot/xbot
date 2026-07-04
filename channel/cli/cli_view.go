@@ -2134,7 +2134,7 @@ func newCtxBarStyles() ctxBarStyles {
 // the bar ALWAYS renders — as a filled bar when token data is available,
 // or as an empty bar when lastTokenUsage is nil (e.g. before first LLM call).
 // This prevents the jarring "bar disappears" flash that happened when
-// lastTokenUsage was temporarily nil due to progressCh coalescing.
+// lastTokenUsage was temporarily nil due to progressSlot coalescing.
 func (m *cliModel) renderContextTopBorder(borderColor color.Color, renderedBox string) string {
 	maxTokens := int64(m.cachedMaxContextTokens)
 	if maxTokens <= 0 {

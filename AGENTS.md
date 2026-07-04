@@ -378,7 +378,7 @@
 
 #### 具体到 TUI 渲染
 
-- **progressCh coalescing**：buffer=1 channel 会丢弃事件。`mergeProgressState` 原地合并设计使流式字段不受结构化事件影响——丢弃的结构化事件不会清空流式数据，无需 carryForward 补偿。
+- **progressSlot coalescing**（原 progressCh buffer=1 已替换）：`SendProgress` 使用 mutex-protected `progressSlot` + buffer-1 `progressSignal` 替代旧 buffer-1 channel。旧设计中 eviction+re-insert 有 race window，结构化的 "done" 事件可被静默丢弃，导致工具永久卡在 "running"（● 不变 ✓）。新设计：`progressSlot` 始终持有最新合并后的事件，`handleProgressDrain` 读取并清空 slot。结构化事件永远不会丢失——stream-only 不能驱逐 structured，structured 替换时保留 stream fields/TokenUsage/CWD。`coalesceProgress`（asyncCh 层）仍保留用于合并连续 progress 消息。
 - **snapshotIterationChange**：引擎保证 iteration 切换时 `snapshotCompletedIteration` 已执行（ActiveTools → CompletedTools）。`mergeProgressState` 在合并前做浅拷贝保护 prev，snapshot 直接从 prev 读取所有字段，无需 fallback 链。
 - **handleProgressDone**：PhaseDone 事件经过 progressFinalizer，CompletedTools 包含全部工具。按 `lastIter` 过滤 CompletedTools 防止跨迭代工具污染。无 `lastCompletedTools`、无 `pendingToolSummary`——iterations 直接保留在 `progressState.iterations` 中供 `handleAgentMessage` 读取。
 - **turnDoneFlags/pendingToolSummary 已删除**：用单一 `replyProcessed bool` 替代。`handleProgressDone` 完成后 iterations 保留在 `progressState` 中（endAgentTurn 不清除），`handleAgentMessage` 直接读取。队列刷新用 `!m.replyProcessed` 守卫 dead window。

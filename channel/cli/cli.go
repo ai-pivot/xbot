@@ -36,13 +36,13 @@ import (
 
 func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 	ch := &CLIChannel{
-		config:     cfg,
-		workDir:    cfg.WorkDir,
-		msgChan:    make(chan ch.OutboundMsg, cliMsgBufSize),
-		progressCh: make(chan *protocol.ProgressEvent, 1), // buffered-1: latest progress wins
-		tickCh:     make(chan tea.Msg, 1),                 // buffered-1: tick, drop on full
-		asyncCh:    make(chan tea.Msg, 256),               // unified async send: progress + outbound
-		stopCh:     make(chan struct{}),
+		config:         cfg,
+		workDir:        cfg.WorkDir,
+		msgChan:        make(chan ch.OutboundMsg, cliMsgBufSize),
+		progressSignal: make(chan struct{}, 1),  // buffer-1: latest progress wins
+		tickCh:         make(chan tea.Msg, 1),   // buffered-1: tick, drop on full
+		asyncCh:        make(chan tea.Msg, 256), // unified async send: progress + outbound
+		stopCh:         make(chan struct{}),
 	}
 	// Global ticker goroutine: sends cliTickMsg every 100ms to tickCh.
 	// tickCh is separate from asyncCh so tick flood never blocks business messages.
@@ -267,7 +267,7 @@ func (c *CLIChannel) Start() error {
 	c.wg.Add(1)
 	go c.handleOutbound()
 
-	// 启动 progress coalescing goroutine: drains progressCh and forwards
+	// 启动 progress coalescing goroutine: drains progressSlot and forwards
 	// to the unified async ch.
 	c.wg.Add(1)
 	clipanic.Go("ch.CLIChannel.handleProgressDrain", c.handleProgressDrain)
@@ -477,132 +477,89 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 		payload.ChatID = chatID
 	}
 
-	// Stream-only events (Phase=="", Iteration==0) are high-frequency
-	// streaming animation updates that carry no structured data. They
-	// should never evict structured events that carry TokenUsage and
-	// iteration state for the context bar and progress panel.
+	// Merge payload into the mutex-protected progressSlot. The slot always
+	// holds the latest (merged) event. progressSignal wakes the drain goroutine.
+	//
+	// Merge rules (same semantics as the old buffer-1 eviction logic, but
+	// race-free because it's under a mutex):
+	//   - Stream-only (Phase=="", Iteration==0) NEVER replaces structured.
+	//     Stream fields are merged into the structured event's slot.
+	//   - Structured replaces structured/stream-only, but preserves stream
+	//     fields, TokenUsage, and CWD from the old event when the new one
+	//     doesn't carry them (same iteration only for stream content).
+	//   - Stream-only merging into stream-only: merge stream fields.
+	c.progressMu.Lock()
+	old := c.progressSlot
 	isStreamOnly := payload.Phase == "" && payload.Iteration == 0
 
-	select {
-	case c.progressCh <- payload:
-	default:
-		if isStreamOnly {
-			// Channel full, but both old and new are stream-only.
-			// Merge the stream fields (StreamContent, ReasoningStreamContent,
-			// StreamingTools) instead of dropping — this prevents early tool
-			// detection events (StreamingTools) from being silently discarded
-			// when a preceding StreamContent event still occupies the channel.
-			select {
-			case old := <-c.progressCh:
-				if old.Phase == "" && old.Iteration == 0 {
-					// Both stream-only: merge fields, old value wins when
-					// new doesn't have it.
-					if payload.StreamContent == "" && old.StreamContent != "" {
-						payload.StreamContent = old.StreamContent
-					}
-					if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
-						payload.ReasoningStreamContent = old.ReasoningStreamContent
-					}
-					if len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
-						payload.StreamingTools = old.StreamingTools
-					}
-					// Re-send merged event
-					select {
-					case c.progressCh <- payload:
-					default:
-					}
-				} else {
-					// Old event is structured — put it back, drop stream-only.
-					select {
-					case c.progressCh <- old:
-					default:
-					}
-				}
-			default:
-				// Race: channel became empty, try again
-				select {
-				case c.progressCh <- payload:
-				default:
-				}
+	if old == nil {
+		c.progressSlot = payload
+	} else if isStreamOnly {
+		oldIsStreamOnly := old.Phase == "" && old.Iteration == 0
+		if oldIsStreamOnly {
+			// Both stream-only: merge fields, old wins when new doesn't have it.
+			if payload.StreamContent == "" && old.StreamContent != "" {
+				payload.StreamContent = old.StreamContent
 			}
-			return
-		}
-		// New event is structured (non-stream-only). The old event in the
-		// channel could be either stream-only or structured.
-		//
-		// Stream-only events carry live LLM output (ReasoningStreamContent,
-		// StreamContent, StreamingTools) that has not yet been finalized
-		// into structured fields. If a structured event evicts a stream-only
-		// event, the live content is permanently lost — the user sees
-		// reasoning/text vanish mid-display (severe UX bug).
-		//
-		// When the old event is also structured, the new event carries
-		// fresher state (newer iteration/tools). We merge TokenUsage, CWD,
-		// and any stream fields the old event may have accumulated from
-		// previously-merged stream events — this preserves stream content
-		// across structured→structured eviction chains.
-		select {
-		case old := <-c.progressCh:
-			// Merge live stream fields from the evicted event into
-			// the new event so stream content survives coalescing.
-			// Two scenarios: the old event may be stream-only (first
-			// eviction; Phase=="" && Iteration==0) or structured
-			// (chained eviction where structured accumulated stream
-			// fields from prior merges). Both need the same merge.
-			//
-			// Guard: only merge stream fields when old and payload
-			// belong to the same iteration. Stream-only events have
-			// Iteration==0 (unknown). If payload has a structured
-			// iteration (>0) and old is stream-only, the old content
-			// likely belongs to the previous iteration (already
-			// snapshotted by applyProgressSnapshot). Merging it
-			// into the new payload causes reasoning to render twice —
-			// once in completed iterations, once in live.
-			//
-			// payload.Iteration==0 branch: payload's iteration is
-			// unknown (stream-only or edge-case structured event with
-			// Iteration==0). Conservatively allow merge — the stream
-			// content is presumed to belong to the same logical turn.
-			sameOrUnknownIter := payload.Iteration == old.Iteration || payload.Iteration == 0
-			if sameOrUnknownIter {
-				if payload.StreamContent == "" && old.StreamContent != "" {
-					payload.StreamContent = old.StreamContent
-				}
-				if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
-					payload.ReasoningStreamContent = old.ReasoningStreamContent
-				}
+			if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
+				payload.ReasoningStreamContent = old.ReasoningStreamContent
 			}
-			// StreamingTools: only merge when the structured event has NO
-			// ActiveTools. If ActiveTools is present, tools have moved past
-			// generating into running/done — merging stale StreamingTools
-			// would render a phantom "generating" line alongside the real
-			// "running" line for one frame (visual jitter).
-			if sameOrUnknownIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 &&
-				len(payload.ActiveTools) == 0 {
+			if len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 {
 				payload.StreamingTools = old.StreamingTools
 			}
-			// Merge TokenUsage and CWD regardless of old event type —
-			// context-bar data must never be lost to eviction.
-			if payload.TokenUsage == nil && old.TokenUsage != nil {
-				payload.TokenUsage = old.TokenUsage
+			c.progressSlot = payload
+		} else {
+			// Old is structured — stream-only can't evict it. Merge stream
+			// fields into the structured slot (same iteration guard).
+			sameOrUnknownIter := payload.Iteration == old.Iteration || payload.Iteration == 0
+			if sameOrUnknownIter {
+				if old.StreamContent == "" && payload.StreamContent != "" {
+					old.StreamContent = payload.StreamContent
+				}
+				if old.ReasoningStreamContent == "" && payload.ReasoningStreamContent != "" {
+					old.ReasoningStreamContent = payload.ReasoningStreamContent
+				}
+				if len(old.StreamingTools) == 0 && len(payload.StreamingTools) > 0 {
+					old.StreamingTools = payload.StreamingTools
+				}
 			}
-			if payload.CWD == "" && old.CWD != "" {
-				payload.CWD = old.CWD
+			// old stays as c.progressSlot (structured wins)
+		}
+	} else {
+		// New is structured. Replace old, but preserve stream fields,
+		// TokenUsage, and CWD from old when new doesn't carry them.
+		oldIsStreamOnly := old.Phase == "" && old.Iteration == 0
+		sameOrUnknownIter := payload.Iteration == old.Iteration || payload.Iteration == 0
+		if sameOrUnknownIter {
+			if payload.StreamContent == "" && old.StreamContent != "" {
+				payload.StreamContent = old.StreamContent
 			}
-			// NOTE: CompletedTools/ActiveTools are NOT merged across coalescing.
-			// Merging iteration N's CompletedTools into iteration N+1's event
-			// causes cross-iteration tool attribution. Instead, the root fix is
-			// in applyProgressSnapshot: when iteration changes, it captures
-			// ALL ActiveTools from prev (the engine guarantees they're done via
-			// snapshotCompletedIteration before callLLM starts the next iteration).
-			// prev may have stale "running" status due to coalescing dropping the
-			// "done" event, but the tool data is preserved in ActiveTools.
-		default:
+			if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
+				payload.ReasoningStreamContent = old.ReasoningStreamContent
+			}
 		}
-		select {
-		case c.progressCh <- payload:
-		default:
+		// StreamingTools: only merge when structured event has NO ActiveTools.
+		if sameOrUnknownIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 &&
+			len(payload.ActiveTools) == 0 {
+			payload.StreamingTools = old.StreamingTools
 		}
+		// Merge TokenUsage and CWD regardless of old type.
+		if payload.TokenUsage == nil && old.TokenUsage != nil {
+			payload.TokenUsage = old.TokenUsage
+		}
+		if payload.CWD == "" && old.CWD != "" {
+			payload.CWD = old.CWD
+		}
+		_ = oldIsStreamOnly // not needed — structured replaces both types
+		c.progressSlot = payload
+	}
+	c.progressMu.Unlock()
+
+	// Non-blocking signal: wakes drain goroutine. If already pending,
+	// the drain will pick up the latest slot state.
+	select {
+	case c.progressSignal <- struct{}{}:
+	default:
 	}
 }
 
@@ -1020,8 +977,7 @@ func (c *CLIChannel) handleOutbound() {
 	}
 }
 
-// handleProgressDrain drains the progress coalescing channel and forwards
-// handleProgressDrain drains progressCh and forwards non-blockingly
+// handleProgressDrain drains the progress slot and forwards non-blockingly
 // to the unified asyncCh. Drops stale progress when event loop is behind
 // (asyncCh full) — the next progress event will be fresher.
 func (c *CLIChannel) handleProgressDrain() {
@@ -1031,7 +987,16 @@ func (c *CLIChannel) handleProgressDrain() {
 		select {
 		case <-c.stopCh:
 			return
-		case payload := <-c.progressCh:
+		case <-c.progressSignal:
+			// Drain the slot — take whatever is there (may be nil if a
+			// previous drain already consumed it).
+			c.progressMu.Lock()
+			payload := c.progressSlot
+			c.progressSlot = nil
+			c.progressMu.Unlock()
+			if payload == nil {
+				continue
+			}
 			select {
 			case c.asyncCh <- cliProgressMsg{payload: payload}:
 			default:

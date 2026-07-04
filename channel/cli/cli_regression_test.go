@@ -58,14 +58,14 @@ func TestRegression_ContentTruncatedDuringToolExec(t *testing.T) {
 }
 
 // ── Bug: phantom "generating" tool line appears alongside "running" ──
-// Root cause: progressCh coalescing unconditionally merged old
+// Root cause: progressSlot coalescing unconditionally merged old
 // StreamingTools into new structured events. When tool transitions
 // generating→running, structured event carries ActiveTools but also
 // inherits stale StreamingTools → both rendered for one frame.
 //
 // Fix: only merge StreamingTools when payload.ActiveTools is empty.
 func TestRegression_GhostGeneratingToolDuringTransition(t *testing.T) {
-	// This tests the progressCh coalescing in SendProgress (cli.go).
+	// This tests the progressSlot coalescing in SendProgress (cli.go).
 	// We simulate two events that would be coalesced:
 	// A = stream-only with StreamingTools (generating)
 	// B = structured with ActiveTools (running)
