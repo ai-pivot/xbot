@@ -147,6 +147,15 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 		}
 	}
 
+	// Merge SubAgent trees: structured events don't always carry SubAgents
+	// (engine only includes them when resolveSubAgents returns non-empty).
+	// Without merging, the tree flickers — appears when SubAgents are present,
+	// vanishes when the next structured event omits them. mergeSubAgentTrees
+	// preserves prev's running agents and marks dropped ones as done.
+	if prev != nil {
+		snapshot.SubAgents = mergeSubAgentTrees(prev.SubAgents, snapshot.SubAgents)
+	}
+
 	m.progressState.current = snapshot
 	if snapshot.Iteration > m.progressState.lastIter {
 		m.progressState.lastIter = snapshot.Iteration
