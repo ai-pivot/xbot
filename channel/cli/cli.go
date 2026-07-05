@@ -559,6 +559,20 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			// Non-blocking send: if asyncCh is full, the old event is dropped
 			// (same as before, but at least we tried).
 			oldCopy := *old
+			// Deep-copy slice fields to avoid sharing backing arrays with the
+			// slot (still referenced by progressSlot until we replace it below).
+			// If another goroutine reads progressSlot between this copy and the
+			// slot replacement, it could see partially mutated slice elements.
+			oldCopy.ActiveTools = append([]protocol.ToolProgress(nil), old.ActiveTools...)
+			oldCopy.CompletedTools = append([]protocol.ToolProgress(nil), old.CompletedTools...)
+			oldCopy.SubAgents = append([]protocol.SubAgentInfo(nil), old.SubAgents...)
+			oldCopy.StreamingTools = append([]protocol.ToolProgress(nil), old.StreamingTools...)
+			oldCopy.ToolCalls = append([]protocol.ToolCallSnapshot(nil), old.ToolCalls...)
+			oldCopy.Todos = append([]protocol.TodoItem(nil), old.Todos...)
+			if old.TokenUsage != nil {
+				tu := *old.TokenUsage
+				oldCopy.TokenUsage = &tu
+			}
 			select {
 			case c.asyncCh <- cliProgressMsg{payload: &oldCopy}:
 			default:

@@ -100,6 +100,8 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		} else if existingIdx := m.findMessageByTurn(turnID, "assistant"); existingIdx >= 0 {
 			m.messages[existingIdx].isPartial = false
 			m.messages[existingIdx].dirty = true
+		} else {
+			log.WithField("turnID", turnID).Warn("handleAgentMessage: streaming message not found to finalize")
 		}
 		m.streamingMsgIdx = -1
 		m.progressState.current = nil
