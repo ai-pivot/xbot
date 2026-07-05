@@ -87,6 +87,22 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		if m.progressState.current != nil {
 			m.cacheTokenUsage(m.progressState.current.TokenUsage)
 		}
+		// Finalize the streaming message: even though the reply is empty,
+		// the streaming message (created by startAgentTurn) must be marked
+		// as completed. Without this, isPartial stays true and the message
+		// renders as a streaming "..." block forever. When the next turn
+		// starts (e.g. bg task notification), a new streaming message is
+		// created alongside the old one → two Assistant blocks appear.
+		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) &&
+			m.messages[m.streamingMsgIdx].turnID == turnID {
+			m.messages[m.streamingMsgIdx].isPartial = false
+			m.messages[m.streamingMsgIdx].dirty = true
+		} else if existingIdx := m.findMessageByTurn(turnID, "assistant"); existingIdx >= 0 {
+			m.messages[existingIdx].isPartial = false
+			m.messages[existingIdx].dirty = true
+		} else {
+			log.WithField("turnID", turnID).Warn("handleAgentMessage: streaming message not found to finalize")
+		}
 		m.streamingMsgIdx = -1
 		m.progressState.current = nil
 		m.endAgentTurn(turnID)

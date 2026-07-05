@@ -345,6 +345,32 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 			if len(finalTools) > 0 || content != "" || reasoning != "" {
 				m.progressState.iterations = append(m.progressState.iterations, snap)
 			}
+		} else {
+			// Already snapshotted — but the existing snapshot may have empty
+			// Content/Reasoning if snapshotIterationLocal captured it before
+			// recordAssistantMsg finalized the content. Update the existing
+			// snapshot with the finalized content from PhaseDone to prevent
+			// renderTurnBody's dedup from failing (which would render the
+			// content twice: once from iterations, once from fallbackContent).
+			finalContent := snapshot.Content
+			if finalContent == "" && cur != nil {
+				finalContent = cur.Content
+			}
+			finalReasoning := snapshot.Reasoning
+			if finalReasoning == "" && cur != nil {
+				finalReasoning = cur.Reasoning
+			}
+			for i := range m.progressState.iterations {
+				if m.progressState.iterations[i].Iteration == finalIter {
+					if m.progressState.iterations[i].Content == "" && finalContent != "" {
+						m.progressState.iterations[i].Content = finalContent
+					}
+					if m.progressState.iterations[i].Reasoning == "" && finalReasoning != "" {
+						m.progressState.iterations[i].Reasoning = finalReasoning
+					}
+					break
+				}
+			}
 		}
 	}
 

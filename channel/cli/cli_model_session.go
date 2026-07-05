@@ -455,41 +455,21 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	m.splashState.compReloading = false
 
 	// ── Session LLM state restoration ──────────────────────────
-	// ALWAYS re-resolve from DB on session switch. The in-memory savedSessions
-	// cache may have stale max_context values (user changed per-model config
-	// in another window, or session was never visited before). DB is authoritative.
+	// Re-resolve from disk on session switch. The in-memory savedSessions
+	// cache may have stale max_context values. DB is authoritative.
 	// Agent sessions are excluded — their LLM state comes from handleSuHistoryLoad.
+	//
+	// NOTE: We do NOT send a SwitchLLM RPC here. The per-session (subID, model)
+	// is already in the tenants table; ResolveLLM reads from DB every call.
+	// SwitchLLM → SetDefault → SetSessionLLM would overwrite the DB with
+	// target.Model (subscription default), which may differ from the per-session
+	// model the user chose — wiping it to "" when the subscription has no default.
 	if m.channelName != "agent" {
 		state := LoadSessionLLMState(m.workDir, m.chatID)
 		if !state.IsZero() {
 			m.applySessionLLMState(state)
 			if m.channel != nil && m.channel.config.RefreshValuesCache != nil && state.SubscriptionID != "" {
 				m.channel.config.RefreshValuesCache(state.SubscriptionID)
-			}
-			if state.SubscriptionID != "" && m.subscriptionMgr != nil {
-				if subs, err := m.subscriptionMgr.List(""); err == nil {
-					for i := range subs {
-						if subs[i].ID == state.SubscriptionID {
-							if m.channel != nil && m.channel.config.SwitchLLM != nil {
-								switchFn := m.channel.config.SwitchLLM
-								target := subs[i]
-								m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
-									err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
-									return cliSwitchLLMDoneMsg{
-										err:       err,
-										subID:     target.ID,
-										subName:   target.Name,
-										subModel:  target.Model,
-										maxCtx:    resolveSubMaxContext(&target),
-										maxOutTok: resolveSubMaxOutputTokens(&target),
-										mgr:       m.subscriptionMgr,
-									}
-								})
-							}
-							break
-						}
-					}
-				}
 			}
 		} else {
 			if m.subscriptionMgr != nil {
@@ -498,6 +478,13 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 					m.cachedModelName = defSub.Model
 					m.cachedMaxContextTokens = resolveSubMaxContext(defSub)
 					m.cachedMaxOutputTokens = int64(resolveSubMaxOutputTokens(defSub))
+					// Refresh valuesCache for this subscription so resolveMaxContext()
+					// reads the correct max_context_tokens. Without this, valuesCache
+					// retains the previous session's subscription data, causing the
+					// context bar to show wrong max context after session switches.
+					if m.channel != nil && m.channel.config.RefreshValuesCache != nil {
+						m.channel.config.RefreshValuesCache(defSub.ID)
+					}
 				}
 			}
 			if m.cachedMaxContextTokens == 0 {

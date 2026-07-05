@@ -537,20 +537,51 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
 				payload.ReasoningStreamContent = old.ReasoningStreamContent
 			}
+			// StreamingTools: only merge when structured event has NO ActiveTools.
+			if sameOrUnknownIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 &&
+				len(payload.ActiveTools) == 0 {
+				payload.StreamingTools = old.StreamingTools
+			}
+			// Merge TokenUsage and CWD regardless of old type.
+			if payload.TokenUsage == nil && old.TokenUsage != nil {
+				payload.TokenUsage = old.TokenUsage
+			}
+			if payload.CWD == "" && old.CWD != "" {
+				payload.CWD = old.CWD
+			}
+		} else if !oldIsStreamOnly {
+			// Old is a structured event from a DIFFERENT iteration.
+			// Don't silently drop it — forward to asyncCh before replacing.
+			// Without this, when structured events for iterations N and N+1
+			// arrive before the drain goroutine delivers iteration N, the
+			// intermediate iteration's snapshot is lost forever (the TUI
+			// never receives it, so snapshotIterationLocal never runs for it).
+			// Non-blocking send: if asyncCh is full, the old event is dropped
+			// (same as before, but at least we tried).
+			oldCopy := *old
+			// Deep-copy slice fields to avoid sharing backing arrays with the
+			// slot (still referenced by progressSlot until we replace it below).
+			// If another goroutine reads progressSlot between this copy and the
+			// slot replacement, it could see partially mutated slice elements.
+			oldCopy.ActiveTools = append([]protocol.ToolProgress(nil), old.ActiveTools...)
+			oldCopy.CompletedTools = append([]protocol.ToolProgress(nil), old.CompletedTools...)
+			oldCopy.SubAgents = append([]protocol.SubAgentInfo(nil), old.SubAgents...)
+			oldCopy.StreamingTools = append([]protocol.ToolProgress(nil), old.StreamingTools...)
+			oldCopy.ToolCalls = append([]protocol.ToolCallSnapshot(nil), old.ToolCalls...)
+			oldCopy.Todos = append([]protocol.TodoItem(nil), old.Todos...)
+			if old.TokenUsage != nil {
+				tu := *old.TokenUsage
+				oldCopy.TokenUsage = &tu
+			}
+			select {
+			case c.asyncCh <- cliProgressMsg{payload: &oldCopy}:
+			default:
+				log.WithFields(log.Fields{
+					"old_iter": old.Iteration,
+					"new_iter": payload.Iteration,
+				}).Warn("SendProgress: asyncCh full, dropping structured event from previous iteration")
+			}
 		}
-		// StreamingTools: only merge when structured event has NO ActiveTools.
-		if sameOrUnknownIter && len(payload.StreamingTools) == 0 && len(old.StreamingTools) > 0 &&
-			len(payload.ActiveTools) == 0 {
-			payload.StreamingTools = old.StreamingTools
-		}
-		// Merge TokenUsage and CWD regardless of old type.
-		if payload.TokenUsage == nil && old.TokenUsage != nil {
-			payload.TokenUsage = old.TokenUsage
-		}
-		if payload.CWD == "" && old.CWD != "" {
-			payload.CWD = old.CWD
-		}
-		_ = oldIsStreamOnly // not needed — structured replaces both types
 		c.progressSlot = payload
 	}
 	c.progressMu.Unlock()
