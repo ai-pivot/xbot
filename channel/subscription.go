@@ -329,11 +329,21 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 					history[len(history)-1].Content = m.Content
 					history[len(history)-1].Timestamp = m.Timestamp
 				} else {
-					history = append(history, HistoryMessage{
+					hm := HistoryMessage{
 						Role:      "assistant",
 						Content:   m.Content,
 						Timestamp: m.Timestamp,
-					})
+					}
+					// For turns with no tools, Detail is not set (snapshotCompletedIteration
+					// is only called from executeToolCalls). ReasoningContent is on the
+					// ChatMessage but would be lost without wrapping it in an iteration.
+					if m.ReasoningContent != "" {
+						hm.Iterations = []HistoryIteration{{
+							Iteration: 0,
+							Reasoning: m.ReasoningContent,
+						}}
+					}
+					history = append(history, hm)
 				}
 			}
 		default:
