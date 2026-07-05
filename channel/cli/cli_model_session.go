@@ -473,13 +473,24 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 							if m.channel != nil && m.channel.config.SwitchLLM != nil {
 								switchFn := m.channel.config.SwitchLLM
 								target := subs[i]
+								// Use per-session model (state.Model), NOT target.Model
+								// (subscription default). The subscription's Model field
+								// may be empty when models are registered only in
+								// subscription_models table. Using target.Model="" causes
+								// handleSwitchLLMDoneMsg → SetDefault → SetSessionLLM to
+								// write model="" to tenants table, wiping the per-session
+								// model. This mirrors the fix in scheduleSessionLLMRestore.
+								model := target.Model
+								if state.Model != "" {
+									model = state.Model
+								}
 								m.pendingCmds = append(m.pendingCmds, func() tea.Msg {
-									err := switchFn(target.Provider, target.BaseURL, target.APIKey, target.Model)
+									err := switchFn(target.Provider, target.BaseURL, target.APIKey, model)
 									return cliSwitchLLMDoneMsg{
 										err:       err,
 										subID:     target.ID,
 										subName:   target.Name,
-										subModel:  target.Model,
+										subModel:  model,
 										maxCtx:    resolveSubMaxContext(&target),
 										maxOutTok: resolveSubMaxOutputTokens(&target),
 										mgr:       m.subscriptionMgr,
