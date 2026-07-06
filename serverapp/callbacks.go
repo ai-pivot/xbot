@@ -602,7 +602,8 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 				existing.APIKey = sub.APIKey
 			}
 			if sub.Model != "" {
-				existing.Model = sub.Model
+				// Model is user-level now — upsert to subscription_models, not sub.Model.
+				_ = svc.UpsertModel(existing.ID, sub.Model, 0, 0, "", "")
 			}
 			if err := svc.Update(existing); err != nil {
 				return err

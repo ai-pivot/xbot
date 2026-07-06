@@ -17,6 +17,8 @@ const (
 	MethodSelectModel                  = "select_model"
 	MethodSetDefaultModel              = "set_default_model"
 	MethodSetModelEnabled              = "set_model_enabled"
+	MethodRemoveModel                  = "remove_model"
+	MethodUpsertModel                  = "upsert_model"
 	MethodSetSubscriptionEnabled       = "set_subscription_enabled"
 	MethodSetUserMaxContext            = "set_user_max_context"
 	MethodGetUserMaxContext            = "get_user_max_context"

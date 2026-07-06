@@ -129,8 +129,8 @@ func TestSubscriptionPersistence(t *testing.T) {
 
 	// Test syncLLMFromActiveSub derives cfg.LLM from active subscription
 	syncLLMFromActiveSub(cfg)
-	if cfg.LLM.Model != "glm-5" {
-		t.Errorf("cfg.LLM.Model should be 'glm-5' after syncLLMFromActiveSub, got %q", cfg.LLM.Model)
+	if cfg.LLM.Model != "" {
+		t.Errorf("cfg.LLM.Model should be empty (model is user-level now), got %q", cfg.LLM.Model)
 	}
 	if cfg.LLM.Provider != "openai" {
 		t.Errorf("cfg.LLM.Provider should be 'openai', got %q", cfg.LLM.Provider)
@@ -148,9 +148,9 @@ func TestSubscriptionPersistence(t *testing.T) {
 		t.Fatalf("save after model change: %v", err)
 	}
 
-	// Verify cfg.LLM.Model and active subscription Model are both consistent
-	if cfg.LLM.Model != "glm-5-turbo" {
-		t.Errorf("cfg.LLM.Model should be 'glm-5-turbo', got %q", cfg.LLM.Model)
+	// Verify cfg.LLM.Model is empty (model is user-level, not in cfg.LLM)
+	if cfg.LLM.Model != "" {
+		t.Errorf("cfg.LLM.Model should be empty (model is user-level now), got %q", cfg.LLM.Model)
 	}
 	activeModel = ""
 	for _, s := range cfg.Subscriptions {
@@ -165,8 +165,8 @@ func TestSubscriptionPersistence(t *testing.T) {
 
 	// Reload and verify persistence
 	loaded = config.LoadFromFile(cfgPath)
-	if loaded.LLM.Model != "glm-5-turbo" {
-		t.Errorf("loaded cfg.LLM.Model should be 'glm-5-turbo', got %q", loaded.LLM.Model)
+	if loaded.LLM.Model != "" {
+		t.Errorf("loaded cfg.LLM.Model should be empty (model is user-level now), got %q", loaded.LLM.Model)
 	}
 	activeModel = ""
 	for _, s := range loaded.Subscriptions {
@@ -357,8 +357,8 @@ func TestLoadLLMFromDBSubscriptionPrefersDB(t *testing.T) {
 
 	loadLLMFromDBSubscription(backend, cfg)
 
-	if cfg.LLM.BaseURL != "https://db.example/v1" || cfg.LLM.APIKey != "db-key" || cfg.LLM.Model != "db-model" {
-		t.Fatalf("expected cfg.LLM to be loaded from DB default subscription, got %+v", cfg.LLM)
+	if cfg.LLM.BaseURL != "https://db.example/v1" || cfg.LLM.APIKey != "db-key" || cfg.LLM.Model != "" {
+		t.Fatalf("expected cfg.LLM to be loaded from DB (Model empty, model is user-level), got %+v", cfg.LLM)
 	}
 }
 

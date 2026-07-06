@@ -32,16 +32,19 @@ func TestListAllModelEntries_EmptyModel_WithCachedModels(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	// Simulate what OnModelsLoaded would do after a successful /models fetch
+	// Simulate what OnModelsLoaded would do after a successful /models fetch:
+	// upsert into subscription_models (no more CachedModels column writes).
 	fetchedModels := []string{"/data/models/skyai/GLM-5.2-W4AFP8"}
-	if err := subSvc.UpdateCachedModels(sub.ID, fetchedModels); err != nil {
-		t.Fatalf("UpdateCachedModels: %v", err)
+	for _, m := range fetchedModels {
+		if err := subSvc.UpsertModel(sub.ID, m, 0, 0, "", ""); err != nil {
+			t.Fatalf("UpsertModel: %v", err)
+		}
 	}
 
-	// Verify it persisted to DB
-	got, _ := subSvc.Get(sub.ID)
-	if len(got.CachedModels) != 1 || got.CachedModels[0] != "/data/models/skyai/GLM-5.2-W4AFP8" {
-		t.Fatalf("DB CachedModels = %v, want [/data/models/skyai/GLM-5.2-W4AFP8]", got.CachedModels)
+	// Verify it persisted to DB via subscription_models
+	rows, _ := subSvc.GetModels(sub.ID)
+	if len(rows) != 1 || rows[0].Model != "/data/models/skyai/GLM-5.2-W4AFP8" {
+		t.Fatalf("subscription_models = %v, want [/data/models/skyai/GLM-5.2-W4AFP8]", rows)
 	}
 
 	// Now check ListAllModelEntriesForUser shows the model
@@ -128,12 +131,12 @@ func TestRefreshModelEntries_PopulatesCachedModels(t *testing.T) {
 		t.Errorf("model not found in entries after refresh: %+v", entries)
 	}
 
-	// Verify CachedModels persisted to DB
-	got, _ := subSvc.Get(sub.ID)
-	if len(got.CachedModels) == 0 {
-		t.Error("CachedModels still empty in DB after refresh")
+	// Verify models persisted to DB via subscription_models (UpsertModel in OnModelsLoaded)
+	rows, _ := subSvc.GetModels(sub.ID)
+	if len(rows) == 0 {
+		t.Error("subscription_models still empty in DB after refresh")
 	} else {
-		t.Logf("CachedModels in DB: %v", got.CachedModels)
+		t.Logf("subscription_models in DB: %d rows", len(rows))
 	}
 }
 

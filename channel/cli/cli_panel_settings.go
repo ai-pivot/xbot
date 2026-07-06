@@ -521,7 +521,7 @@ func (m *cliModel) updateSettingsPanel(msg tea.KeyPressMsg) (bool, tea.Model, te
 				m.panelState.mode = ""
 				m.relayoutViewport()
 				m.openQuickSwitch("")
-				return true, m, nil
+				return true, m, tea.Batch(m.drainPendingCmds()...)
 			}
 			switch def.Type {
 			case ch.SettingTypeToggle:

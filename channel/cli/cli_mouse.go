@@ -265,6 +265,7 @@ func (m *cliModel) clickFooterHint(index int) (bool, tea.Model, tea.Cmd) {
 	case "ctrl+n":
 		if m.subscriptionMgr != nil {
 			m.openQuickSwitch("")
+			return true, m, tea.Batch(m.drainPendingCmds()...)
 		}
 		return true, m, nil
 	case "ctrl+m":
@@ -547,7 +548,7 @@ func (m *cliModel) activatePanelItem() (bool, tea.Model, tea.Cmd) {
 		m.panelState.mode = ""
 		m.relayoutViewport()
 		m.openQuickSwitch("")
-		return true, m, nil
+		return true, m, tea.Batch(m.drainPendingCmds()...)
 	}
 
 	switch def.Type {
@@ -636,7 +637,7 @@ func (m *cliModel) clickPaletteItem(idx int) (bool, tea.Model, tea.Cmd) {
 	}
 	// Execute the command (same as Enter)
 	m.applyPaletteCommand()
-	return true, m, nil
+	return true, m, tea.Batch(m.drainPendingCmds()...)
 }
 
 func (m *cliModel) clickPaletteTab(idx int) (bool, tea.Model, tea.Cmd) {

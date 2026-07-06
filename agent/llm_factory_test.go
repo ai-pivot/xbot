@@ -239,35 +239,36 @@ func TestInvalidate_ClearsPerChatCache(t *testing.T) {
 	senderID := "cli_user"
 	chatID := "/home/user/project"
 	subA := &sqlite.LLMSubscription{
-		Provider: "openai", BaseURL: "https://api-a.com/v1", APIKey: "sk-a",
+		ID: "sub-a", Provider: "openai", BaseURL: "https://api-a.com/v1", APIKey: "sk-a",
 		Model: "gpt-4o", MaxOutputTokens: 8192,
 	}
 	subB := &sqlite.LLMSubscription{
-		Provider: "openai", BaseURL: "https://api-b.com/v1", APIKey: "sk-b",
+		ID: "sub-b", Provider: "openai", BaseURL: "https://api-b.com/v1", APIKey: "sk-b",
 		Model: "deepseek-v3", MaxOutputTokens: 4096,
 	}
 
-	// Simulate: SwitchSubscription creates both user-level and per-chat caches
+	// Without subscriptionSvc, SwitchSubscription resolves model from
+	// user_default_model (which is also nil here). The default LLM client
+	// is still created. Model resolution happens when the user picks a model.
 	if err := f.SwitchSubscription(senderID, subA, chatID); err != nil {
 		t.Fatalf("SwitchSubscription subA: %v", err)
 	}
 
-	// Verify both caches exist
+	// Verify default LLM was created (model is "" without subscription_models)
 	_, modelA, _, _, _ := f.GetLLMForChat(senderID, chatID)
-	if modelA != "gpt-4o" {
-		t.Fatalf("initial model = %q, want gpt-4o", modelA)
+	if modelA != "" {
+		t.Fatalf("initial model = %q, want \"\" (no subscription_models)", modelA)
 	}
 
 	// Simulate: set_default_subscription calls Invalidate then SwitchSubscription
-	// (the actual server handler path for subscription switching)
 	f.Invalidate(senderID)
 	if err := f.SwitchSubscription(senderID, subB, chatID); err != nil {
 		t.Fatalf("SwitchSubscription subB: %v", err)
 	}
 
 	_, modelB, _, _, _ := f.GetLLMForChat(senderID, chatID)
-	if modelB != "deepseek-v3" {
-		t.Errorf("after sub switch, model = %q, want deepseek-v3", modelB)
+	if modelB != "" {
+		t.Errorf("after sub switch, model = %q, want \"\" (no subscription_models)", modelB)
 	}
 
 	// Simulate: update_subscription (settings panel) calls Invalidate + SwitchSubscription
@@ -282,8 +283,8 @@ func TestInvalidate_ClearsPerChatCache(t *testing.T) {
 
 	// GetLLMForChat should NOT return stale per-chat cache
 	_, modelUpdated, _, thinkingUpdated, _ := f.GetLLMForChat(senderID, chatID)
-	if modelUpdated != "deepseek-r1" {
-		t.Errorf("after settings update, model = %q, want deepseek-r1 (stale per-chat cache bug)", modelUpdated)
+	if modelUpdated != "" {
+		t.Errorf("after settings update, model = %q, want \"\" (no subscription_models, stale per-chat cache bug)", modelUpdated)
 	}
 	// Verify thinking mode is also not stale
 	if thinkingUpdated != "" {
@@ -301,7 +302,7 @@ func TestSwitchSubscription_UpdatesDefaultLLM(t *testing.T) {
 	f := NewLLMFactory(&llm.MockLLM{}, "original-default-model")
 
 	subDeepSeek := &sqlite.LLMSubscription{
-		Provider: "openai", BaseURL: "https://api.deepseek.com/v1", APIKey: "sk-deep",
+		ID: "sub-ds", Provider: "openai", BaseURL: "https://api.deepseek.com/v1", APIKey: "sk-deep",
 		Model: "deepseek-v4-pro",
 	}
 
@@ -315,15 +316,13 @@ func TestSwitchSubscription_UpdatesDefaultLLM(t *testing.T) {
 		t.Fatalf("SwitchSubscription: %v", err)
 	}
 
-	// Global default SHOULD be updated (user-level preference)
-	if dm := f.GetDefaultModel(); dm != "deepseek-v4-pro" {
-		t.Errorf("default model after SwitchSubscription = %q, want deepseek-v4-pro", dm)
-	}
-
-	// User-level entry should also be updated
-	_, model, _, _, _ := f.GetLLM("cli_user")
-	if model != "deepseek-v4-pro" {
-		t.Errorf("cli_user model = %q, want deepseek-v4-pro", model)
+	// Global default SHOULD be updated — SwitchSubscription resolves model
+	// from user_default_model. Without subscriptionSvc, it returns "" (no
+	// model). The default LLM client is still created (credentials work),
+	// just without a model name.
+	// The model is resolved later when the user picks one from the panel.
+	if dm := f.GetDefaultModel(); dm != "" {
+		t.Errorf("default model after SwitchSubscription = %q, want \"\" (no subscription_models rows)", dm)
 	}
 }
 

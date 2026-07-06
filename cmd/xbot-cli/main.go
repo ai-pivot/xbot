@@ -404,7 +404,7 @@ func loadLLMFromDBSubscription(client *agent.Client, cfg *config.Config) bool {
 	cfg.LLM.Provider = sub.Provider
 	cfg.LLM.BaseURL = sub.BaseURL
 	cfg.LLM.APIKey = sub.APIKey
-	cfg.LLM.Model = sub.Model
+	cfg.LLM.Model = ""
 	cfg.LLM.MaxOutputTokens = client.GetUserMaxOutputTokens(cliSenderID)
 	cfg.LLM.ThinkingMode = client.GetUserThinkingMode(cliSenderID)
 	return true
@@ -512,7 +512,8 @@ func updateActiveSubscription(client *agent.Client, cfg *config.Config, values m
 		}
 	}
 	if v, ok := values["llm_model"]; ok && strings.TrimSpace(v) != "" {
-		sub.Model = strings.TrimSpace(v)
+		// Model is user-level — upsert to subscription_models via RPC.
+		_ = client.UpsertModel(sub.ID, strings.TrimSpace(v), 0, 0, "", "")
 	}
 	if v, ok := values["llm_base_url"]; ok && strings.TrimSpace(v) != "" {
 		sub.BaseURL = strings.TrimSpace(v)
@@ -2027,7 +2028,7 @@ func syncLLMFromActiveSub(cfg *config.Config) {
 			cfg.LLM.Provider = sc.Provider
 			cfg.LLM.BaseURL = sc.BaseURL
 			cfg.LLM.APIKey = sc.APIKey
-			cfg.LLM.Model = sc.Model
+			cfg.LLM.Model = ""
 			cfg.LLM.MaxOutputTokens = sc.MaxOutputTokens
 			cfg.LLM.ThinkingMode = sc.ThinkingMode
 			return
@@ -2234,6 +2235,14 @@ func (m *backendSubscriptionManager) UpdatePerModelConfig(id, model string, pmc 
 
 func (m *backendSubscriptionManager) SetModelEnabled(id, model string, enabled bool) error {
 	return m.client.SetModelEnabled(id, model, enabled)
+}
+
+func (m *backendSubscriptionManager) RemoveModel(id, model string) error {
+	return m.client.RemoveModel(id, model)
+}
+
+func (m *backendSubscriptionManager) UpsertModel(id, model string, maxContext, maxOutput int, apiType, thinkingMode string) error {
+	return m.client.UpsertModel(id, model, maxContext, maxOutput, apiType, thinkingMode)
 }
 
 func (m *backendSubscriptionManager) SetSubscriptionEnabled(id string, enabled bool) error {

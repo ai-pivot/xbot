@@ -24,10 +24,10 @@ import (
 //	    · gpt-image-1  (noise)
 //	  ▸ deepseek       disabled
 //	    · deepseek-v4  offline
-//	  ➕ Add subscription
+//	  + Add subscription
 //	Models
 //	  ... (all selectable models across subs, 订阅名 · 模型名)
-//	  ➕ Add model
+//	  + Add model
 //
 // Key scheme (command mode): letters are commands; `/` toggles filter mode so
 // letters can be typed without colliding with e/d/n/s. Model params are edited
@@ -45,10 +45,12 @@ const (
 
 // qsRow is one line of the unified LLM panel.
 type qsRow struct {
-	kind  qsRowKind
-	sub   ch.Subscription     // qsSub
-	model protocol.ModelEntry // qsModel
-	label string              // qsSection / qsAddSub / qsAddModel
+	kind     qsRowKind
+	sub      ch.Subscription     // qsSub
+	model    protocol.ModelEntry // qsModel
+	label    string              // qsSection / qsAddSub / qsAddModel
+	subID    string              // qsModel: owning subscription ID (for expand tracking)
+	expanded bool                // qsSub: whether this sub is expanded (showing models)
 }
 
 // openQuickSwitch opens the unified LLM panel. The mode argument is kept for
@@ -58,8 +60,29 @@ func (m *cliModel) openQuickSwitch(_ string) {
 	m.openLLMPanel()
 }
 
-// openLLMPanel builds the unified panel from the DB snapshot and kicks off a
-// background /models refresh.
+// drainPendingCmds returns pending cmds and clears the list. Used by callers
+// after openQuickSwitch to flush async cmds (e.g. refreshModelEntriesCmd).
+func (m *cliModel) drainPendingCmds() []tea.Cmd {
+	if len(m.pendingCmds) == 0 {
+		return nil
+	}
+	cmds := m.pendingCmds
+	m.pendingCmds = nil
+	return cmds
+}
+
+// openLLMPanel builds the unified panel from cached data (or DB on first
+// access), then kicks off a background /models API refresh.
+//
+// Execution order (no blocking):
+//  1. rebuildLLMRows() → llmCache.Get() → sync DB read (~ms), panel renders
+//  2. refreshModelEntriesCmd → goroutine → /models API (seconds), updates
+//     panel via cliModelEntriesRefreshedMsg when done
+//
+// The two steps don't conflict: step 1 completes synchronously inside Update,
+// step 2 runs in a BubbleTea goroutine that only starts AFTER Update returns.
+// By the time the refresh RPC reaches the server, the sync RPCs from step 1
+// have already completed.
 func (m *cliModel) openLLMPanel() {
 	if m.subscriptionMgr == nil {
 		return
@@ -75,8 +98,14 @@ func (m *cliModel) openLLMPanel() {
 	ti.CharLimit = 80
 	ti.SetWidth(40)
 	m.quickSwitchFilterInput = ti
+
+	// Step 1: expand active sub, then single rebuild (not twice).
+	if m.activeSubID != "" {
+		m.expandOnly(m.activeSubID)
+	}
 	m.rebuildLLMRows()
 	m.cursorToActiveLLMRow()
+	// Step 2: kick off background /models refresh — updates panel when done.
 	m.pendingCmds = append(m.pendingCmds, m.refreshModelEntriesCmd())
 }
 
@@ -100,21 +129,19 @@ func (m *cliModel) llmSource() llmData {
 	return d
 }
 
-// rebuildLLMRows rebuilds quickSwitchRows from source data + current filter.
-// Uses quickSwitchCachedData when available (filter mode) to avoid per-keystroke
-// RPC calls to the backend.
+// rebuildLLMRows rebuilds quickSwitchRows from cached data + current filter.
+// Reads from llmCache (sync DB read on first access, cache thereafter) —
+// no blocking RPC on the main thread (issue #199).
 func (m *cliModel) rebuildLLMRows() {
-	var d llmData
-	if m.quickSwitchFiltering && m.quickSwitchCachedData.subs != nil {
-		d = m.quickSwitchCachedData
-	} else {
-		d = m.llmSource()
-	}
+	d := m.llmCache.Get()
 	m.quickSwitchRows = m.buildLLMRows(d)
 }
 
-// buildLLMRows assembles the flat row list (sections + subs + models + actions),
-// applying the noise filter and the text filter.
+// buildLLMRows assembles the tree-structured row list for the unified panel.
+// Subscriptions are top-level rows; expanded subscriptions show their models
+// (and an "Add model" row) indented underneath. No separate "Models" section.
+//
+// Filter mode: matching subscriptions auto-expand and show only matching models.
 func (m *cliModel) buildLLMRows(d llmData) []qsRow {
 	q := strings.ToLower(strings.TrimSpace(m.quickSwitchFilterInput.Value()))
 	filtering := m.quickSwitchFiltering && q != ""
@@ -131,49 +158,59 @@ func (m *cliModel) buildLLMRows(d llmData) []qsRow {
 	}
 
 	var rows []qsRow
+	rows = append(rows, qsRow{kind: qsSection, label: "Subscriptions"})
 
-	// --- Subscriptions section ---
-	subRows := make([]qsRow, 0, len(d.subs))
 	for _, s := range d.subs {
 		name := s.Name
 		if name == "" {
 			name = s.ID
 		}
-		if match(name) {
-			subRows = append(subRows, qsRow{kind: qsSub, sub: s})
-		}
-	}
-	if len(subRows) > 0 || !filtering {
-		rows = append(rows, qsRow{kind: qsSection, label: "Subscriptions"})
-	}
-	rows = append(rows, subRows...)
-	// "Add subscription" sits at the end of the subscription list, not at the
-	// bottom of the whole panel — it groups with the section it acts on.
-	if !filtering {
-		rows = append(rows, qsRow{kind: qsAddSub, label: "➕ Add subscription"})
-	}
 
-	// --- Models section ---
-	modelRows := make([]qsRow, 0, len(d.entries))
-	for _, e := range d.entries {
-		if !m.quickSwitchShowAll && isNoiseModel(e.Model) {
+		// In filter mode: include sub if its name matches OR any of its models match.
+		subMatches := match(name)
+		modelMatches := false
+		var matchingModels []protocol.ModelEntry
+		for _, e := range d.entries {
+			if e.SubID != s.ID {
+				continue
+			}
+			if !m.quickSwitchShowAll && isNoiseModel(e.Model) {
+				continue
+			}
+			if filtering {
+				if match(e.Model, e.Status, name) {
+					modelMatches = true
+					matchingModels = append(matchingModels, e)
+				}
+			} else {
+				matchingModels = append(matchingModels, e)
+			}
+		}
+
+		if filtering && !subMatches && !modelMatches {
 			continue
 		}
-		if match(e.SubName, e.Model, e.Status) {
-			modelRows = append(modelRows, qsRow{kind: qsModel, model: e})
+
+		// Auto-expand in filter mode if models match (even if sub name doesn't).
+		exp := m.expandedSubs[s.ID]
+		if filtering && modelMatches {
+			exp = true
+		}
+
+		rows = append(rows, qsRow{kind: qsSub, sub: s, expanded: exp, subID: s.ID})
+
+		if exp {
+			for _, e := range matchingModels {
+				rows = append(rows, qsRow{kind: qsModel, model: e, subID: s.ID})
+			}
+			if !filtering {
+				rows = append(rows, qsRow{kind: qsAddModel, label: "+ Add custom model", subID: s.ID})
+			}
 		}
 	}
-	if len(modelRows) > 0 || (!filtering && m.quickSwitchShowAll) {
-		// In command mode keep the section header; when filtering, only show it
-		// if there are matching model rows.
-		if !filtering || len(modelRows) > 0 {
-			rows = append(rows, qsRow{kind: qsSection, label: "Models"})
-		}
-	}
-	rows = append(rows, modelRows...)
-	// "Add model" sits at the end of the models list.
+
 	if !filtering {
-		rows = append(rows, qsRow{kind: qsAddModel, label: "➕ Add model"})
+		rows = append(rows, qsRow{kind: qsAddSub, label: "+ Add subscription"})
 	}
 
 	if m.quickSwitchCursor >= len(rows) {
@@ -200,9 +237,9 @@ func (m *cliModel) currentLLMPanelSub() (ch.Subscription, bool) {
 					return s.sub, true
 				}
 			}
-			// Fall back to a fresh source lookup (cursor row may be a model
+			// Fall back to cache lookup (cursor row may be a model
 			// whose sub row is filtered out).
-			d := m.llmSource()
+			d := m.llmCache.Get()
 			for _, s := range d.subs {
 				if s.ID == r.model.SubID {
 					return s, true
@@ -231,7 +268,9 @@ func setLLMCmdForSub(s ch.Subscription) string {
 
 // cursorToActiveLLMRow parks the cursor on the active model's row (fall back to
 // the active subscription row, else the first sub row, else 0).
+// Caller must ensure quickSwitchRows is already built (via rebuildLLMRows).
 func (m *cliModel) cursorToActiveLLMRow() {
+
 	if m.cachedModelName != "" {
 		for i, r := range m.quickSwitchRows {
 			if r.kind == qsModel && r.model.Model == m.cachedModelName && r.model.SubID == m.activeSubID {
@@ -268,7 +307,8 @@ func (m *cliModel) applyQuickSwitch() {
 	case qsSection:
 		// no-op
 	case qsSub:
-		m.toggleSubscription(row.sub)
+		// Enter on subscription row = toggle expand/collapse
+		m.toggleExpand(row.sub.ID)
 	case qsModel:
 		m.switchToModelRow(row.model)
 	case qsAddSub:
@@ -276,8 +316,25 @@ func (m *cliModel) applyQuickSwitch() {
 		m.openAddSubscriptionPanel()
 	case qsAddModel:
 		m.quickSwitchMode = ""
-		m.openAddModelPanel("")
+		m.openAddModelPanel(row.subID)
 	}
+}
+
+// toggleExpand flips the expansion state of a subscription in the panel.
+// Accordion mode: expanding one subscription collapses all others.
+func (m *cliModel) toggleExpand(subID string) {
+	if m.expandedSubs[subID] {
+		delete(m.expandedSubs, subID)
+	} else {
+		m.expandOnly(subID)
+	}
+	m.rebuildLLMRows()
+}
+
+// expandOnly expands exactly one subscription, collapsing all others.
+func (m *cliModel) expandOnly(subID string) {
+	m.expandedSubs = make(map[string]bool)
+	m.expandedSubs[subID] = true
 }
 
 // subIsSystem reports whether the subscription with the given ID is the shared
@@ -315,6 +372,7 @@ func (m *cliModel) toggleSubscription(sub ch.Subscription) {
 		warning = " — active session's models hidden; switch model to continue"
 	}
 	m.showTempStatus(fmt.Sprintf("%s: %s%s", verb, sub.Name, warning))
+	m.llmCache.Invalidate()
 	m.rebuildLLMRows()
 	m.cursorToActiveLLMRow()
 }
@@ -360,10 +418,11 @@ func (m *cliModel) disableCurrentRow() {
 	switch row.kind {
 	case qsSub:
 		if row.sub.IsSystem {
-			m.showTempStatus("系统订阅只读，不可删除")
+			m.showTempStatus("系统订阅只读，不可禁用")
 			return
 		}
-		m.deleteSubscription(row.sub.ID)
+		// D on subscription row = toggle enabled/disabled
+		m.toggleSubscription(row.sub)
 	case qsModel:
 		if row.model.SubID == "" || m.subIsSystem(row.model.SubID) {
 			return
@@ -404,6 +463,26 @@ func (m *cliModel) toggleModelEnabled(subID, model, status string) {
 		verb = "Enabled"
 	}
 	m.showTempStatus(fmt.Sprintf("%s: %s", verb, model))
+	m.llmCache.Invalidate()
+	m.rebuildLLMRows()
+	m.cursorToActiveLLMRow()
+}
+
+// deleteModelRow permanently removes a model from subscription_models.
+func (m *cliModel) deleteModelRow(subID, model string) {
+	if m.subscriptionMgr == nil {
+		return
+	}
+	if subID == "" || m.subIsSystem(subID) {
+		m.showTempStatus("系统订阅模型不可删除")
+		return
+	}
+	if err := m.subscriptionMgr.RemoveModel(subID, model); err != nil {
+		m.showTempStatus(fmt.Sprintf("删除失败: %v", err))
+		return
+	}
+	m.showTempStatus(fmt.Sprintf("已删除: %s", model))
+	m.llmCache.Invalidate()
 	m.rebuildLLMRows()
 	m.cursorToActiveLLMRow()
 }
@@ -599,6 +678,7 @@ func (m *cliModel) deleteSubscription(subID string) {
 		return
 	}
 	m.showTempStatus(fmt.Sprintf("Deleted: %s", name))
+	m.llmCache.Invalidate()
 	m.rebuildLLMRows()
 	m.cursorToActiveLLMRow()
 }
@@ -633,7 +713,6 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 		enabledDef = "disabled"
 	}
 	schema := []ch.SettingDefinition{
-		{Key: "__header__", Label: "Edit Model: " + model, Description: "Parameters are stored per (subscription, model). 0 = use subscription default.", Type: ch.SettingTypeText, DefaultValue: ""},
 		{Key: "pm_enabled", Label: "Enabled", Description: "Disabled models show greyed and are rejected on switch", Type: ch.SettingTypeSelect, DefaultValue: enabledDef, Options: []ch.SettingOption{
 			{Label: "Enabled", Value: "enabled"},
 			{Label: "Disabled", Value: "disabled"},
@@ -876,6 +955,11 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 			if name == "" {
 				name = r.sub.ID
 			}
+			// Expand/collapse marker
+			expMark := "▸"
+			if r.expanded {
+				expMark = "▾"
+			}
 			disabledTag := ""
 			if !r.sub.Enabled {
 				disabledTag = " (disabled)"
@@ -888,32 +972,27 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 			if r.sub.IsSystem {
 				sysTag = " 🔒"
 			}
-			lines = append(lines, style.Render(fmt.Sprintf(" %s %s%s%s%s", cursor, name, disabledTag, active, sysTag)))
+			lines = append(lines, style.Render(fmt.Sprintf(" %s %s %s%s%s%s", cursor, expMark, name, disabledTag, active, sysTag)))
 		case qsModel:
 			label := r.model.Model
-			if r.model.SubName != "" {
-				label = r.model.Model + " (" + r.model.SubName + ")"
-			}
 			statusTag := ""
-			switch r.model.Status {
-			case "offline":
-				statusTag = " (offline)"
-			case "disabled":
+			if r.model.Status == "disabled" {
 				statusTag = " (disabled)"
 			}
 			mark := ""
 			if r.model.Model == m.cachedModelName && r.model.SubID == m.activeSubID {
 				mark = " ✓"
 			}
-			// Disabled/offline models use muted style; active models use cursor style
 			modelStyle := style
-			if r.model.Status == "disabled" || r.model.Status == "offline" {
+			if r.model.Status == "disabled" {
 				modelStyle = m.styles.TextMutedSt
 			}
-			line := modelStyle.Render(fmt.Sprintf(" %s   %s%s%s", cursor, label, statusTag, mark))
+			line := modelStyle.Render(fmt.Sprintf(" %s     %s%s%s", cursor, label, statusTag, mark))
 			lines = append(lines, line)
-		case qsAddSub, qsAddModel:
+		case qsAddSub:
 			lines = append(lines, style.Render(fmt.Sprintf(" %s %s", cursor, r.label)))
+		case qsAddModel:
+			lines = append(lines, m.styles.TextMutedSt.Render(fmt.Sprintf(" %s     %s", cursor, r.label)))
 		}
 	}
 
@@ -990,15 +1069,23 @@ func (m *cliModel) buildQuickSwitchHint() string {
 			rowHint = "↑↓ Nav"
 		case qsSub:
 			if r.sub.IsSystem {
-				rowHint = "🔒 System subscription (read-only)  ↑↓ Nav"
+				if r.expanded {
+					rowHint = "🔒 ↑↓ Nav  Enter/← Collapse  E View params  N Add model"
+				} else {
+					rowHint = "🔒 ↑↓ Nav  Enter/→ Expand  N Add model"
+				}
 			} else {
-				rowHint = "↑↓ Nav  Enter Toggle enabled  E Edit  D Delete  N Add model"
+				if r.expanded {
+					rowHint = "↑↓ Nav  Enter/← Collapse  E Edit  D Toggle enabled  X Delete  N Add model"
+				} else {
+					rowHint = "↑↓ Nav  Enter/→ Expand  E Edit  D Toggle enabled  X Delete  N Add model"
+				}
 			}
 		case qsModel:
 			if r.model.Status == "disabled" {
-				rowHint = "↑↓ Nav  Enter Select  E Enable  D Toggle"
+				rowHint = "↑↓ Nav  Enter Select  E Enable  X Delete"
 			} else {
-				rowHint = "↑↓ Nav  Enter Switch  E Edit params  D Disable"
+				rowHint = "↑↓ Nav  Enter Switch  E Edit params  X Delete"
 			}
 		case qsAddSub:
 			rowHint = "↑↓ Nav  Enter Add subscription"
@@ -1025,7 +1112,6 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		switch msg.Code {
 		case tea.KeyEsc:
 			m.quickSwitchFiltering = false
-			m.quickSwitchCachedData = llmData{} // clear cache
 			m.quickSwitchFilterInput.SetValue("")
 			m.rebuildLLMRows()
 			m.cursorToActiveLLMRow()
@@ -1043,7 +1129,6 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 				m.applyQuickSwitch()
 			} else {
 				m.quickSwitchFiltering = false
-				m.quickSwitchCachedData = llmData{}
 				m.quickSwitchFilterInput.SetValue("")
 				m.rebuildLLMRows()
 				m.cursorToActiveLLMRow()
@@ -1086,6 +1171,42 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 			return true, tea.Batch(pending...)
 		}
 		return true, nil
+	case tea.KeyRight:
+		// → on subscription row = expand (accordion: collapses others)
+		if m.quickSwitchCursor < len(m.quickSwitchRows) && m.quickSwitchRows[m.quickSwitchCursor].kind == qsSub {
+			subID := m.quickSwitchRows[m.quickSwitchCursor].sub.ID
+			if !m.expandedSubs[subID] {
+				m.expandOnly(subID)
+				m.rebuildLLMRows()
+			}
+		}
+		return true, nil
+	case tea.KeyLeft:
+		// ← on subscription row = collapse (stay on sub row)
+		// ← on model row = collapse parent subscription (jump to sub row)
+		if m.quickSwitchCursor < len(m.quickSwitchRows) {
+			r := m.quickSwitchRows[m.quickSwitchCursor]
+			switch r.kind {
+			case qsSub:
+				if m.expandedSubs[r.sub.ID] {
+					delete(m.expandedSubs, r.sub.ID)
+					m.rebuildLLMRows()
+				}
+			case qsModel:
+				if m.expandedSubs[r.subID] {
+					delete(m.expandedSubs, r.subID)
+					m.rebuildLLMRows()
+					// Position cursor on the parent sub row.
+					for i, row := range m.quickSwitchRows {
+						if row.kind == qsSub && row.sub.ID == r.subID {
+							m.quickSwitchCursor = i
+							break
+						}
+					}
+				}
+			}
+		}
+		return true, nil
 	}
 	switch msg.String() {
 	case "e":
@@ -1093,6 +1214,18 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		return true, nil
 	case "d":
 		m.disableCurrentRow()
+		return true, nil
+	case "x":
+		// X on subscription row = delete subscription; on model row = delete model
+		if m.quickSwitchCursor < len(m.quickSwitchRows) {
+			r := m.quickSwitchRows[m.quickSwitchCursor]
+			switch r.kind {
+			case qsSub:
+				m.deleteSubscription(r.sub.ID)
+			case qsModel:
+				m.deleteModelRow(r.model.SubID, r.model.Model)
+			}
+		}
 		return true, nil
 	case "n":
 		m.quickSwitchMode = ""
@@ -1111,8 +1244,6 @@ func (m *cliModel) handleQuickSwitchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		return true, nil
 	case "/":
 		m.quickSwitchFiltering = true
-		// Cache the source data so filter keystrokes don't trigger RPC
-		m.quickSwitchCachedData = m.llmSource()
 		m.quickSwitchFilterInput.SetValue("")
 		cmd := m.quickSwitchFilterInput.Focus() // returns cursor-blink cmd
 		m.rebuildLLMRows()
@@ -1151,8 +1282,11 @@ type cliModelEntriesRefreshedMsg struct {
 	entries []protocol.ModelEntry
 }
 
-// refreshModelEntriesCmd issues the backend refresh (blocking RPC) in a
+// refreshModelEntriesCmd issues the backend refresh (/models API, slow) in a
 // goroutine and emits cliModelEntriesRefreshedMsg with the fresh entries.
+// RefreshModelEntries() internally persists results to DB (CachedModels) —
+// this is the "DB write" half of the double-write. The handler does the
+// "cache write" half via llmCache.Apply().
 func (m *cliModel) refreshModelEntriesCmd() tea.Cmd {
 	return func() tea.Msg {
 		var entries []protocol.ModelEntry
@@ -1163,12 +1297,19 @@ func (m *cliModel) refreshModelEntriesCmd() tea.Cmd {
 	}
 }
 
-// handleModelEntriesRefreshed applies the fresh entry list to the panel if it
-// is still open. Preserves the cursor (clamped) and filter state.
+// handleModelEntriesRefreshed applies the fresh entry list to the cache and
+// rebuilds rows. RefreshModelEntries already wrote to DB — here we update the
+// cache (the second half of double-write) and rebuild the panel.
 func (m *cliModel) handleModelEntriesRefreshed(msg cliModelEntriesRefreshedMsg) {
 	m.quickSwitchRefreshing = false
-	if m.quickSwitchMode != "llm" || len(msg.entries) == 0 {
+	if m.quickSwitchMode != "llm" {
 		return
 	}
+	// Double-write: DB already updated by RefreshModelEntries.
+	// Apply refreshed entries to cache — even if empty (models may have been
+	// deleted, cache must reflect that).
+	d := m.llmCache.Get()
+	d.entries = msg.entries
+	m.llmCache.Apply(d)
 	m.rebuildLLMRows()
 }

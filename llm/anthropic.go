@@ -580,7 +580,6 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 	var lastUsage *TokenUsage
 	lastFinishReason := FinishReasonStop
 	doneSent := false
-	hasContent := false // track whether any content/tool_call was received
 	for {
 		select {
 		case <-ctx.Done():
@@ -592,13 +591,7 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 		if err != nil {
 			if err == io.EOF {
 				if !doneSent {
-					if hasContent {
-						// Received content but never got message_stop event —
-						// stream was likely truncated by proxy/network.
-						eventChan <- StreamEvent{Type: EventError, Error: "stream ended without message_stop (possible truncation)"}
-					} else {
-						eventChan <- StreamEvent{Type: EventDone}
-					}
+					eventChan <- StreamEvent{Type: EventDone}
 				}
 				return
 			}
@@ -657,7 +650,6 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 			if ev.ContentBlock != nil {
 				switch ev.ContentBlock.Type {
 				case "tool_use":
-					hasContent = true
 					tc := &ToolCall{
 						ID:        ev.ContentBlock.ID,
 						Name:      ev.ContentBlock.Name,
@@ -692,15 +684,13 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 				continue
 			}
 			if delta.Type == "text_delta" && delta.Text != "" {
-				hasContent = true
 				eventChan <- StreamEvent{Type: EventContent, Content: delta.Text}
 			}
 			if delta.Type == "thinking_delta" && delta.Thinking != "" {
-				hasContent = true
+				// Anthropic extended thinking delta
 				eventChan <- StreamEvent{Type: EventReasoningContent, ReasoningContent: delta.Thinking}
 			}
 			if delta.Type == "input_json_delta" && delta.PartialJSON != "" {
-				hasContent = true
 				if tc, ok := toolCallsByIndex[ev.Index]; ok {
 					tc.Arguments += delta.PartialJSON
 					eventChan <- StreamEvent{

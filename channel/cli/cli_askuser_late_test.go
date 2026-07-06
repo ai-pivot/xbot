@@ -9,7 +9,7 @@ import (
 )
 
 // TestAskUserLateProgressClearsState reproduces the real-world bug:
-// A late-arriving progress event (still in progressSlot from the engine)
+// A late-arriving progress event (still in progressCh from the engine)
 // arrives after openAskUserPanel sets m.typing=false.
 // handleProgressMsg's auto-start turn logic then calls
 // startAgentTurn() → resetProgressState(), clearing iterationHistory.

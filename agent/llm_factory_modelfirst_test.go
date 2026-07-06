@@ -205,8 +205,8 @@ func TestSetModelEnabled_InvalidatesSubscription(t *testing.T) {
 }
 
 // TestGetLLM_PicksSubModelNotPoisonedDefault verifies that when a subscription
-// has an empty Model but registered subscription_models rows, GetLLM picks
-// the sub's model via PickDefaultModelForSub instead of f.defaultModel.
+// has registered subscription_models rows, GetLLM resolves the model from
+// user_default_model instead of f.defaultModel.
 func TestGetLLM_PicksSubModelNotPoisonedDefault(t *testing.T) {
 	f, subSvc, _ := newModelFirstTestFactory(t)
 	sub := &sqlite.LLMSubscription{
@@ -226,6 +226,10 @@ func TestGetLLM_PicksSubModelNotPoisonedDefault(t *testing.T) {
 	if err := subSvc.SetDefault(sub.ID); err != nil {
 		t.Fatalf("SetDefault: %v", err)
 	}
+	// Set user_default_model with a real model (model is user-level now).
+	if err := f.SetUserDefaultModel("cli_user", sub.ID, "real-model-a"); err != nil {
+		t.Fatalf("SetUserDefaultModel: %v", err)
+	}
 
 	f.mu.Lock()
 	f.defaultModel = "poisoned-from-old-sub"
@@ -233,10 +237,10 @@ func TestGetLLM_PicksSubModelNotPoisonedDefault(t *testing.T) {
 
 	_, model, _, _, _ := f.GetLLM("cli_user")
 	if model == "poisoned-from-old-sub" {
-		t.Errorf("model = poisoned f.defaultModel %q; should pick a real model from the subscription", model)
+		t.Errorf("model = poisoned f.defaultModel %q; should pick from user_default_model", model)
 	}
-	if model != "real-model-a" && model != "real-model-b" {
-		t.Errorf("model = %q, want one of the subscription's registered models", model)
+	if model != "real-model-a" {
+		t.Errorf("model = %q, want real-model-a (from user_default_model)", model)
 	}
 }
 
@@ -327,8 +331,8 @@ func TestResolveSubscriptionForModel_FallbackToCachedModels(t *testing.T) {
 	if err := subSvc.Add(sub); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := subSvc.UpdateCachedModels(sub.ID, []string{"cached-only-model"}); err != nil {
-		t.Fatalf("UpdateCachedModels: %v", err)
+	if err := subSvc.UpsertModel(sub.ID, "cached-only-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel: %v", err)
 	}
 	owner, err := f.ResolveSubscriptionForModel("cli_user", "cached-only-model")
 	if err != nil {
@@ -360,11 +364,10 @@ func TestListAllModelsForUser_ExcludesDisabled(t *testing.T) {
 	if err := subSvc.SetModelEnabled(sub.ID, "m-disabled", false); err != nil {
 		t.Fatalf("SetModelEnabled: %v", err)
 	}
-	// List is /models-driven (CachedModels + sub.Model); subscription_models rows
-	// only carry params/enabled. Put all three in CachedModels so the disabled
-	// one is actually present-then-excluded (not just absent).
-	if err := subSvc.UpdateCachedModels(sub.ID, []string{"m-enabled", "m-disabled", "m-cached"}); err != nil {
-		t.Fatalf("UpdateCachedModels: %v", err)
+	// All three models are in subscription_models (UpsertModel already called
+	// for m-enabled and m-disabled above). Add m-cached too.
+	if err := subSvc.UpsertModel(sub.ID, "m-cached", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel m-cached: %v", err)
 	}
 
 	models := f.ListAllModelsForUser("cli_user")
@@ -479,12 +482,12 @@ func TestMakeOnModelsLoaded_PersistsCachedModels(t *testing.T) {
 	}
 	cb([]string{"c-1", "c-2", "c-3"})
 
-	got, err := subSvc.Get(sub.ID)
+	got, err := subSvc.GetModels(sub.ID)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("GetModels: %v", err)
 	}
-	if len(got.CachedModels) != 3 || got.CachedModels[0] != "c-1" {
-		t.Errorf("CachedModels = %v, want [c-1 c-2 c-3]", got.CachedModels)
+	if len(got) != 3 {
+		t.Errorf("subscription_models rows = %d, want 3", len(got))
 	}
 	// The persisted models now appear in the entry list with the owner's name.
 	entries := f.ListAllModelEntriesForUser("cli_user")
@@ -518,12 +521,16 @@ func TestRefreshModelEntriesForUser_NoLoaderGraceful(t *testing.T) {
 	if err := subSvc.Add(sub); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	// Register r-default in subscription_models (sub.Model is no longer a source).
+	if err := subSvc.UpsertModel(sub.ID, "r-default", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel: %v", err)
+	}
 	before := f.ListAllModelEntriesForUser("cli_user")
 	after := f.RefreshModelEntriesForUser("cli_user")
 	if len(before) != len(after) {
 		t.Fatalf("refresh changed entry count: before=%v after=%v", before, after)
 	}
-	// r-default (sub.Model) must still be present.
+	// r-default must still be present.
 	found := false
 	for _, e := range after {
 		if e.Model == "r-default" {
@@ -553,12 +560,21 @@ func TestListAllModelEntriesForUser_PairsSubName(t *testing.T) {
 	if err := subSvc.Add(subA); err != nil {
 		t.Fatalf("Add A: %v", err)
 	}
+	if err := subSvc.UpsertModel(subA.ID, "a-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel a-model: %v", err)
+	}
 	if err := subSvc.Add(subB); err != nil {
 		t.Fatalf("Add B: %v", err)
 	}
-	// subB fetched list includes b-fetched (normal, no row) and b-disabled (row disabled).
-	if err := subSvc.UpdateCachedModels(subB.ID, []string{"b-fetched", "b-disabled"}); err != nil {
-		t.Fatalf("UpdateCachedModels: %v", err)
+	if err := subSvc.UpsertModel(subB.ID, "b-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel b-model: %v", err)
+	}
+	// subB fetched list includes b-fetched and b-disabled. Upsert both into subscription_models.
+	if err := subSvc.UpsertModel(subB.ID, "b-fetched", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel b-fetched: %v", err)
+	}
+	if err := subSvc.UpsertModel(subB.ID, "b-disabled", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel b-disabled: %v", err)
 	}
 	// b-manual: a record but NOT fetched → offline (selectable).
 	if err := subSvc.UpsertModel(subB.ID, "b-manual", 0, 0, "", ""); err != nil {
@@ -578,10 +594,10 @@ func TestListAllModelEntriesForUser_PairsSubName(t *testing.T) {
 		got[e.Model] = e
 	}
 	wantStatus := map[string]string{
-		"a-model":    "normal",   // sub.Model
-		"b-model":    "normal",   // sub.Model
-		"b-fetched":  "normal",   // in CachedModels, no row
-		"b-manual":   "offline",  // record, not fetched
+		"a-model":    "normal",   // in subscription_models
+		"b-model":    "normal",   // in subscription_models
+		"b-fetched":  "normal",   // in subscription_models
+		"b-manual":   "normal",   // in subscription_models (no more offline)
 		"b-disabled": "disabled", // row enabled=0
 	}
 	for model, wantSt := range wantStatus {
@@ -619,7 +635,7 @@ func TestListAllModelEntriesForUser_PairsSubName(t *testing.T) {
 		t.Errorf("ListAllModelsForUser should exclude disabled b-disabled, got %v", names)
 	}
 	if !containsModel(names, "b-manual") {
-		t.Errorf("ListAllModelsForUser should include offline b-manual (selectable), got %v", names)
+		t.Errorf("ListAllModelsForUser should include b-manual, got %v", names)
 	}
 
 	// Disabling subscription B hides all its models entirely.
@@ -652,8 +668,14 @@ func TestListAllModelEntriesForUser_ListsSameModelPerSubscription(t *testing.T) 
 	if err := subSvc.Add(subA); err != nil {
 		t.Fatalf("Add A: %v", err)
 	}
+	if err := subSvc.UpsertModel(subA.ID, "shared-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel shared-model A: %v", err)
+	}
 	if err := subSvc.Add(subB); err != nil {
 		t.Fatalf("Add B: %v", err)
+	}
+	if err := subSvc.UpsertModel(subB.ID, "shared-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel shared-model B: %v", err)
 	}
 	// Both subs serve the same model name (sub.Model). The picker must emit two
 	// distinct entries — one per subscription — so the user can disambiguate.

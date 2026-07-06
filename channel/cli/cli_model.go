@@ -200,18 +200,19 @@ type cliModel struct {
 	// models + action rows); quickSwitchCursor indexes into it. Filtering is
 	// toggled by "/" (quickSwitchFiltering) so command letters (e/d/n/s) don't
 	// collide with typing.
-	quickSwitchMode        string              // ""=off, "llm"=unified panel open
-	quickSwitchRows        []qsRow             // flat row list the cursor indexes into
-	quickSwitchCursor      int                 // selected row index
-	quickSwitchFilterInput textinput.Model     // filter input (focused only in filter mode)
-	quickSwitchFiltering   bool                // "/" filter mode active
-	quickSwitchShowAll     bool                // show noise models (image/realtime/…)
-	quickSwitchRefreshing  bool                // /models refresh in flight
-	quickSwitchScrollY     int                 // vertical scroll offset for the panel
-	quickSwitchCachedData  llmData             // cached source for filter mode (avoids per-keystroke RPC)
-	subscriptionMgr        SubscriptionManager // injected by CLIChannel
-	llmSubscriber          LLMSubscriber       // injected by CLIChannel
-	cachedSubName          string              // owning subscription display name for status bar
+	quickSwitchMode        string                      // ""=off, "llm"=unified panel open
+	quickSwitchRows        []qsRow                     // flat row list the cursor indexes into
+	quickSwitchCursor      int                         // selected row index
+	quickSwitchFilterInput textinput.Model             // filter input (focused only in filter mode)
+	quickSwitchFiltering   bool                        // "/" filter mode active
+	quickSwitchShowAll     bool                        // show noise models (image/realtime/…)
+	quickSwitchRefreshing  bool                        // /models refresh in flight
+	quickSwitchScrollY     int                         // vertical scroll offset for the panel
+	expandedSubs           map[string]bool             // expanded subscription IDs (tree fold state)
+	llmCache               *asyncRefreshCache[llmData] // cache-aside: sync DB read + async /models refresh
+	subscriptionMgr        SubscriptionManager         // injected by CLIChannel
+	llmSubscriber          LLMSubscriber               // injected by CLIChannel
+	cachedSubName          string                      // owning subscription display name for status bar
 
 	// --- §23 Command Palette (Ctrl+K) ---
 	paletteOpen           bool               // true = command palette overlay is active
@@ -384,7 +385,7 @@ func newCLIModel() *cliModel {
 	// Ticker
 	tk := newAnimTicker(diamondPulseFrames, currentTheme.Warning)
 
-	return &cliModel{
+	m := &cliModel{
 		viewport:        vp,
 		textarea:        ta,
 		ticker:          tk,
@@ -420,7 +421,19 @@ func newCLIModel() *cliModel {
 			busyStates: make(map[string]bool),
 			liveStates: make(map[string]*liveSessionState),
 		},
+		expandedSubs: make(map[string]bool),
 	}
+
+	// llmCache: cache-aside for subscriptions + model entries.
+	// loadSync reads from DB (fast, ~ms), satisfying the UI instantly.
+	// The /models API refresh runs async and applies results via Apply().
+	// Initialized here with a closure that captures the model pointer —
+	// subscriptionMgr/channel are injected later but available at Get() time.
+	m.llmCache = newAsyncRefreshCache(func() llmData {
+		return m.llmSource()
+	})
+
+	return m
 }
 
 type cliOutboundMsg struct {

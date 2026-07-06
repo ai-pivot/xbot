@@ -518,6 +518,26 @@ func (c *Client) SetModelEnabled(subID, model string, enabled bool) error {
 	}{SubID: subID, Model: model, Enabled: enabled}, nil)
 }
 
+// RemoveModel permanently deletes a model from subscription_models.
+func (c *Client) RemoveModel(subID, model string) error {
+	return c.call(MethodRemoveModel, struct {
+		SubID string `json:"sub_id"`
+		Model string `json:"model"`
+	}{SubID: subID, Model: model}, nil)
+}
+
+// UpsertModel inserts or updates a model in subscription_models.
+func (c *Client) UpsertModel(subID, model string, maxContext, maxOutput int, apiType, thinkingMode string) error {
+	return c.call(MethodUpsertModel, struct {
+		SubID        string `json:"sub_id"`
+		Model        string `json:"model"`
+		MaxContext   int    `json:"max_context"`
+		MaxOutput    int    `json:"max_output"`
+		APIType      string `json:"api_type"`
+		ThinkingMode string `json:"thinking_mode"`
+	}{SubID: subID, Model: model, MaxContext: maxContext, MaxOutput: maxOutput, APIType: apiType, ThinkingMode: thinkingMode}, nil)
+}
+
 // SetSubscriptionEnabled toggles a subscription's enabled flag (v40). A disabled
 // subscription stops contributing models to the picker.
 func (c *Client) SetSubscriptionEnabled(subID string, enabled bool) error {

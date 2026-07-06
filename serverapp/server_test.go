@@ -363,6 +363,11 @@ func TestHandleCLIRPCSetDefaultSubscriptionRefreshesSenderCache(t *testing.T) {
 	if _, err := HandleCLIRPC(table, "set_default_subscription", params, "admin"); err != nil {
 		t.Fatalf("HandleCLIRPC set_default_subscription: %v", err)
 	}
+	// Set user-level default model (model is user-level now, not sub.Model)
+	setDefModel, _ := json.Marshal(map[string]any{"sub_id": "sub-glm", "model": "glm-5.1"})
+	if _, err := HandleCLIRPC(table, "set_default_model", setDefModel, "admin"); err != nil {
+		t.Fatalf("HandleCLIRPC set_default_model: %v", err)
+	}
 	_, model, _, _, _ = factory.GetLLM("cli_user")
 	if model != "glm-5.1" {
 		t.Fatalf("expected switched glm model, got %q", model)
@@ -414,6 +419,11 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 	params, _ := json.Marshal(map[string]string{"id": "sub-glm"})
 	if _, err := HandleCLIRPC(table, "set_default_subscription", params, "admin"); err != nil {
 		t.Fatalf("HandleCLIRPC set_default_subscription: %v", err)
+	}
+	// Set user-level default model (model is user-level now)
+	setDefModel, _ := json.Marshal(map[string]any{"sub_id": "sub-glm", "model": "glm-5.1"})
+	if _, err := HandleCLIRPC(table, "set_default_model", setDefModel, "admin"); err != nil {
+		t.Fatalf("HandleCLIRPC set_default_model: %v", err)
 	}
 	// The key assertion: GetLLM("cli_user") must see the new model
 	_, model, _, _, _ = factory.GetLLM("cli_user")
@@ -571,13 +581,17 @@ func TestSetDefaultSubscription_GlobalSwitch_PreservesPerSession(t *testing.T) {
 		}
 	}
 
-	// Step 1: Set per-session GLM for chatA
+	// Step 1: Set per-session GLM for chatA + select its model
 	setSessParams, _ := json.Marshal(map[string]any{
 		"id":      glmID,
 		"chat_id": "/home/user/src/proj-a:Agent-001",
 	})
 	if _, err := HandleCLIRPC(table, "set_default_subscription", setSessParams, "admin"); err != nil {
 		t.Fatalf("set per-session GLM: %v", err)
+	}
+	selGLM, _ := json.Marshal(map[string]any{"sub_id": glmID, "model": "glm-5", "chat_id": "/home/user/src/proj-a:Agent-001"})
+	if _, err := HandleCLIRPC(table, "select_model", selGLM, "admin"); err != nil {
+		t.Fatalf("select glm model for chatA: %v", err)
 	}
 
 	// Verify: chatA has per-session GLM
@@ -586,13 +600,17 @@ func TestSetDefaultSubscription_GlobalSwitch_PreservesPerSession(t *testing.T) {
 		t.Fatalf("chatA model after per-session set = %q, want glm-5", modelA)
 	}
 
-	// Step 2: Global switch to DeepSeek (chatID="")
+	// Step 2: Global switch to DeepSeek (chatID="") + set default model
 	setGlobalParams, _ := json.Marshal(map[string]any{
 		"id":      dsID,
 		"chat_id": "",
 	})
 	if _, err := HandleCLIRPC(table, "set_default_subscription", setGlobalParams, "admin"); err != nil {
 		t.Fatalf("global switch to deepseek: %v", err)
+	}
+	setDefModelDS, _ := json.Marshal(map[string]any{"sub_id": dsID, "model": "deepseek-v4-pro"})
+	if _, err := HandleCLIRPC(table, "set_default_model", setDefModelDS, "admin"); err != nil {
+		t.Fatalf("set default deepseek model: %v", err)
 	}
 
 	// Step 3: Verify: chatA STILL has per-session GLM (must not be wiped)
@@ -601,15 +619,20 @@ func TestSetDefaultSubscription_GlobalSwitch_PreservesPerSession(t *testing.T) {
 		t.Errorf("chatA model after global switch = %q, want glm-5 (per-session must survive)", modelA2)
 	}
 
-	// Step 4: Verify: chatB (no per-session) uses DeepSeek (global default)
+	// Step 4: Verify: chatB (no per-session) uses DeepSeek (user_default_model)
 	_, modelB, _, _, _ := factory.GetLLMForChat("cli_user", "/home/user/src/proj-b:Agent-002")
 	if modelB != "deepseek-v4-pro" {
-		t.Errorf("chatB model after global switch = %q, want deepseek-v4-pro (user-level)", modelB)
+		t.Errorf("chatB model after global switch = %q, want deepseek-v4-pro (user_default_model)", modelB)
 	}
 
-	// Step 5: Verify: defaultLLM updated to DeepSeek (user-level preference)
-	if dm := factory.GetDefaultModel(); dm != "deepseek-v4-pro" {
-		t.Errorf("defaultModel after global switch = %q, want deepseek-v4-pro", dm)
+	// Step 5: Verify: user_default_model is DeepSeek
+	udm, _ := factory.GetSubscriptionSvc().GetUserDefaultModel("cli_user")
+	if udm == nil || udm.Model != "deepseek-v4-pro" {
+		if udm == nil {
+			t.Errorf("user_default_model is nil, want deepseek-v4-pro")
+		} else {
+			t.Errorf("defaultModel after global switch = %q, want deepseek-v4-pro", udm.Model)
+		}
 	}
 }
 
@@ -675,16 +698,25 @@ func TestSetDefaultSubscription_PerSessionSwitch_DoesNotAffectOtherSessions(t *t
 		}
 	}
 
-	// Set GLM as global default
+	// Set GLM as global default, then select its model as default
 	setGlobalGLM, _ := json.Marshal(map[string]any{"id": glmID, "chat_id": ""})
 	if _, err := HandleCLIRPC(table, "set_default_subscription", setGlobalGLM, "admin"); err != nil {
 		t.Fatalf("set global default: %v", err)
 	}
+	// Set user-level default model (model is user-level now)
+	selGLM, _ := json.Marshal(map[string]any{"sub_id": glmID, "model": "glm-5"})
+	if _, err := HandleCLIRPC(table, "set_default_model", selGLM, "admin"); err != nil {
+		t.Fatalf("set default glm model: %v", err)
+	}
 
-	// Set per-session DeepSeek for chatA
+	// Set per-session DeepSeek for chatA + select its model
 	setSessDS, _ := json.Marshal(map[string]any{"id": dsID, "chat_id": "/proj-a:Agent-001"})
 	if _, err := HandleCLIRPC(table, "set_default_subscription", setSessDS, "admin"); err != nil {
 		t.Fatalf("set per-session deepseek: %v", err)
+	}
+	selDS, _ := json.Marshal(map[string]any{"sub_id": dsID, "model": "deepseek-v4-pro", "chat_id": "/proj-a:Agent-001"})
+	if _, err := HandleCLIRPC(table, "select_model", selDS, "admin"); err != nil {
+		t.Fatalf("select deepseek model: %v", err)
 	}
 
 	// Verify: chatA uses DeepSeek (per-session)
@@ -693,16 +725,20 @@ func TestSetDefaultSubscription_PerSessionSwitch_DoesNotAffectOtherSessions(t *t
 		t.Errorf("chatA = %q, want deepseek-v4-pro", modelA)
 	}
 
-	// Verify: chatB uses GLM (global default, not affected by chatA's per-session)
+	// Verify: chatB also uses DeepSeek — SelectModel updates user_default_model
+	// (last-used-model semantics), so new sessions inherit the last selected model.
 	_, modelB, _, _, _ := factory.GetLLMForChat("cli_user", "/proj-b:Agent-002")
-	if modelB != "glm-5" {
-		t.Errorf("chatB = %q, want glm-5 (global default, not affected by chatA)", modelB)
+	if modelB != "deepseek-v4-pro" {
+		t.Errorf("chatB = %q, want deepseek-v4-pro (last-used model inherited)", modelB)
 	}
 
-	// Verify: defaultLLM is DeepSeek (last global SetDefault from handleSwitchLLMDoneMsg)
-	// Note: The per-session switch doesn't change global default in this test
-	// because we don't call the TUI callback path. The RPC only sets per-chat entry.
-	if dm := factory.GetDefaultModel(); dm != "glm-5" {
-		t.Errorf("defaultModel = %q, want glm-5 (set by global switch)", dm)
+	// Verify: defaultModel in user_default_model is DeepSeek (last-used model)
+	udm, _ := factory.GetSubscriptionSvc().GetUserDefaultModel("cli_user")
+	if udm == nil || udm.Model != "deepseek-v4-pro" {
+		if udm == nil {
+			t.Errorf("user_default_model is nil, want deepseek-v4-pro")
+		} else {
+			t.Errorf("user_default_model = %q, want deepseek-v4-pro (last-used model)", udm.Model)
+		}
 	}
 }

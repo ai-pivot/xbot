@@ -738,6 +738,17 @@ func (s *LLMSubscriptionService) SetModelEnabled(subID, model string, enabled bo
 	return nil
 }
 
+// RemoveModel deletes a model from subscription_models. Unlike SetModelEnabled
+// (which only toggles enabled), this permanently removes the model record.
+func (s *LLMSubscriptionService) RemoveModel(subID, model string) error {
+	conn := s.db.Conn()
+	_, err := conn.Exec(`DELETE FROM subscription_models WHERE subscription_id = ? AND model = ?`, subID, model)
+	if err != nil {
+		return fmt.Errorf("remove model: %w", err)
+	}
+	return nil
+}
+
 // ─── user_default_model (v38) ──────────────────────────
 
 // UserDefaultModel holds a user's default (subscription, model) used to resolve

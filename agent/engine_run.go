@@ -1486,9 +1486,8 @@ func (s *runState) injectSyntheticToolPair(
 		Role:    "assistant",
 		Content: assistantContent,
 		ToolCalls: []llm.ToolCall{{
-			ID:        toolID,
-			Name:      toolName,
-			Arguments: "{}", // must be valid JSON; empty string "" causes 400 on strict backends (e.g. SGLang)
+			ID:   toolID,
+			Name: toolName,
 		}},
 	}
 

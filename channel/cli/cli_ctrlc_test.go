@@ -798,7 +798,7 @@ func TestCtrlC_NormalPhaseDoneDoesNotCaptureStreamContent(t *testing.T) {
 		Phase:         "tool_exec",
 		Iteration:     2,
 		StreamContent: "this should NOT be captured in normal path",
-		Content:       "", // empty: simulates progressSlot coalescing
+		Content:       "", // empty: simulates progressCh coalescing
 	}
 
 	// Normal PhaseDone (turnCancelled is FALSE)

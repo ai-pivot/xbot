@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 	"xbot/channel"
+	"xbot/protocol"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
 
@@ -47,6 +49,32 @@ func (m *mockSubscriptionManager) Add(sub *channel.Subscription) error {
 }
 
 func (m *mockSubscriptionManager) Remove(id string) error {
+	return nil
+}
+
+func (m *mockSubscriptionManager) UpsertModel(id, model string, maxContext, maxOutput int, apiType, thinkingMode string) error {
+	for i := range m.subs {
+		if m.subs[i].ID == id {
+			if m.subs[i].PerModelConfigs == nil {
+				m.subs[i].PerModelConfigs = make(map[string]channel.PerModelConfig)
+			}
+			pmc := m.subs[i].PerModelConfigs[model]
+			pmc.MaxContext = maxContext
+			pmc.MaxOutputTokens = maxOutput
+			pmc.APIType = apiType
+			pmc.Enabled = true
+			m.subs[i].PerModelConfigs[model] = pmc
+		}
+	}
+	return nil
+}
+
+func (m *mockSubscriptionManager) RemoveModel(id, model string) error {
+	for i := range m.subs {
+		if m.subs[i].ID == id {
+			delete(m.subs[i].PerModelConfigs, model)
+		}
+	}
 	return nil
 }
 
@@ -111,6 +139,14 @@ func (m *mockSubscriptionManager) SetSubscriptionEnabled(id string, enabled bool
 	return nil
 }
 
+// openLLMPanelForTest opens the panel. Now that data is read synchronously
+// from DB via llmCache.Get(), no drain step is needed — rows are populated
+// immediately on open.
+func openLLMPanelForTest(t *testing.T, m *cliModel) {
+	t.Helper()
+	m.openQuickSwitch("")
+}
+
 // findLLMRowBySubID returns the row index of the subscription with the given ID
 // in the unified LLM panel, or -1 if not found.
 func findLLMRowBySubID(m *cliModel, subID string) int {
@@ -145,10 +181,16 @@ func TestApplyQuickSwitch(t *testing.T) {
 				return map[string]string{"theme": "midnight"}
 			},
 		},
+		modelLister: &fakeModelLister{
+			entries: []protocol.ModelEntry{
+				{SubID: "sub1", Model: "glm-4", Status: "normal"},
+				{SubID: "sub2", Model: "gpt-4.1", Status: "normal"},
+			},
+		},
 	}
 
 	// Open the unified LLM panel.
-	model.openQuickSwitch("")
+	openLLMPanelForTest(t, model)
 	if model.quickSwitchMode != "llm" {
 		t.Fatalf("expected quickSwitchMode=llm, got %s", model.quickSwitchMode)
 	}
@@ -163,12 +205,12 @@ func TestApplyQuickSwitch(t *testing.T) {
 		t.Fatalf("expected cursor=%d (active sub), got %d", idx1, model.quickSwitchCursor)
 	}
 
-	// Move cursor to sub2 and apply — this toggles enabled (true → false).
+	// Move cursor to sub2 and press D to toggle enabled (true → false).
 	model.quickSwitchCursor = idx2
-	model.applyQuickSwitch()
+	model.disableCurrentRow()
 
 	if mgr.subs[1].Enabled {
-		t.Errorf("expected sub2 disabled after toggle, got enabled=true")
+		t.Errorf("expected sub2 disabled after D toggle, got enabled=true")
 	}
 	// No async subscription switch should be queued.
 	for _, c := range model.pendingCmds {
@@ -181,13 +223,37 @@ func TestApplyQuickSwitch(t *testing.T) {
 		t.Errorf("expected panel to stay open, got quickSwitchMode=%q", model.quickSwitchMode)
 	}
 
-	// Toggle again (false → true). Re-resolve the row index (rebuild may have
+	// Toggle again (false → true) via D. Re-resolve the row index (rebuild may have
 	// moved it) and apply.
 	idx2 = findLLMRowBySubID(model, "sub2")
 	model.quickSwitchCursor = idx2
-	model.applyQuickSwitch()
+	model.disableCurrentRow()
 	if !mgr.subs[1].Enabled {
-		t.Errorf("expected sub2 re-enabled after second toggle, got enabled=false")
+		t.Errorf("expected sub2 re-enabled after second D toggle, got enabled=false")
+	}
+
+	// Verify: → key expands sub2 (Enter also expands/collapses).
+	idx2 = findLLMRowBySubID(model, "sub2")
+	model.quickSwitchCursor = idx2
+	model.handleQuickSwitchKey(tea.KeyPressMsg{Code: tea.KeyRight}) // → expand sub2
+	if !model.expandedSubs["sub2"] {
+		t.Error("expected sub2 expanded after → key, got collapsed")
+	}
+	// sub2 models should now be visible in rows.
+	hasSub2Model := false
+	for _, r := range model.quickSwitchRows {
+		if r.kind == qsModel && r.subID == "sub2" {
+			hasSub2Model = true
+			break
+		}
+	}
+	if !hasSub2Model {
+		t.Error("expected sub2 model rows visible after expand")
+	}
+	// ← key collapses sub2
+	model.handleQuickSwitchKey(tea.KeyPressMsg{Code: tea.KeyLeft}) // ← collapse sub2
+	if model.expandedSubs["sub2"] {
+		t.Error("expected sub2 collapsed after ← key, got expanded")
 	}
 }
 
@@ -411,7 +477,7 @@ func TestApplyQuickSwitchNilChannel(t *testing.T) {
 	model.subscriptionMgr = mgr
 	// channel is nil!
 
-	model.openQuickSwitch("")
+	openLLMPanelForTest(t, model)
 	if idx := findLLMRowBySubID(model, "sub1"); idx >= 0 {
 		model.quickSwitchCursor = idx
 	}
@@ -443,7 +509,7 @@ func TestApplyQuickSwitchNilSwitchLLM(t *testing.T) {
 		},
 	}
 
-	model.openQuickSwitch("")
+	openLLMPanelForTest(t, model)
 	if idx := findLLMRowBySubID(model, "sub1"); idx >= 0 {
 		model.quickSwitchCursor = idx
 	}
@@ -463,7 +529,7 @@ func TestOpenQuickSwitchWithEmptySubs(t *testing.T) {
 	model := newCLIModel()
 	model.subscriptionMgr = mgr
 
-	model.openQuickSwitch("")
+	openLLMPanelForTest(t, model)
 
 	if model.quickSwitchMode != "llm" {
 		t.Fatalf("expected mode=llm, got %s", model.quickSwitchMode)

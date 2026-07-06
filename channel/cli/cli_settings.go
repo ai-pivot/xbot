@@ -165,10 +165,9 @@ func (m *cliModel) saveSettings(values map[string]string) {
 					}
 				}
 				if v, ok := values["llm_model"]; ok && strings.TrimSpace(v) != "" {
-					if updated.Model != strings.TrimSpace(v) {
-						updated.Model = strings.TrimSpace(v)
-						changed = true
-					}
+					// Model is user-level — upsert to subscription_models, not sub.Model.
+					_ = m.subscriptionMgr.UpsertModel(updated.ID, strings.TrimSpace(v), 0, 0, "", "")
+					changed = true
 				}
 				if v, ok := values["llm_base_url"]; ok && strings.TrimSpace(v) != "" && !strings.Contains(v, "****") {
 					if updated.BaseURL != strings.TrimSpace(v) {
@@ -213,7 +212,9 @@ func (m *cliModel) saveSettings(values map[string]string) {
 			if v, ok := values["llm_api_key"]; ok {
 				newSub.APIKey = strings.TrimSpace(v)
 			}
-			if v, ok := values["llm_model"]; ok {
+			if v, ok := values["llm_model"]; ok && strings.TrimSpace(v) != "" {
+				// Model is user-level — stored in newSub.Model temporarily,
+				// upserted to subscription_models after Add.
 				newSub.Model = strings.TrimSpace(v)
 			}
 			if v, ok := values["llm_base_url"]; ok {
@@ -239,7 +240,7 @@ func (m *cliModel) saveSettings(values map[string]string) {
 					m.activeSubID = newSub.ID
 					m.applySessionLLMState(SessionLLMState{
 						SubscriptionID: newSub.ID,
-						Model:          newSub.Model,
+						Model:          "", // model is user-level, resolved from user_default_model
 					})
 				}
 			}

@@ -1120,27 +1120,6 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		return
 	}
 
-	// Detect stream truncation: the HTTP connection was closed cleanly
-	// (stream.Err() == nil) but no finish_reason was ever received and no
-	// tool calls were seen. This happens when a proxy (xray, Cloudflare, etc.)
-	// silently closes the SSE connection mid-stream. Without this check, the
-	// truncated content is returned as a "successful" response, causing the
-	// caller to treat partial output as complete.
-	if lastFinishReason == "" && !hasToolCalls && chunkCount > 0 {
-		l.WithFields(log.Fields{
-			"provider":    "openai",
-			"model":       model,
-			"base_url":    o.baseURL,
-			"chunk_count": chunkCount,
-			"duration":    time.Since(startTime).String(),
-		}).Warn("[LLM] Stream ended without finish_reason — likely truncated by proxy/network")
-		eventChan <- StreamEvent{
-			Type:  EventError,
-			Error: "stream ended without finish_reason (possible truncation)",
-		}
-		return
-	}
-
 	// BUG 2 fix: 先发 Usage，再发 Done。确保消费方在处理 Done 之前拿到 usage。
 	if lastUsage != nil {
 		eventChan <- StreamEvent{

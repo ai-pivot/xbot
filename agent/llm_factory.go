@@ -208,9 +208,9 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string, int)
 					"base_url": sub.BaseURL, "provider": sub.Provider,
 				}).Error("[LLMFactory] GetLLM: subscription has masked API key")
 			}
-			model := sub.Model
-			if model == "" {
-				model = f.PickDefaultModelForSub(sub)
+			model := ""
+			if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil {
+				model = udm.Model
 			}
 			if model == "" {
 				model = f.defaultModel
@@ -312,12 +312,19 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 		return fmt.Errorf("SwitchSubscription: sub is required")
 	}
 	if senderID == "cli_user" {
-		client := f.createClientFromSub(sub, sub.Model)
+		// Model is user-level — resolve from user_default_model, not sub.Model.
+		model := ""
+		if f.subscriptionSvc != nil {
+			if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil {
+				model = udm.Model
+			}
+		}
+		client := f.createClientFromSub(sub, model)
 		f.mu.Lock()
 		if client != nil {
 			f.defaultLLM = client
 		}
-		f.defaultModel = sub.Model
+		f.defaultModel = model
 		f.mu.Unlock()
 	}
 	return nil
@@ -327,7 +334,14 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 // table. This is the write counterpart of GetLLMForChat's read path.
 func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubscription) error {
 	if f.tenantSvc != nil && chatID != "" && sub != nil {
-		return f.tenantSvc.SetTenantSubscription("cli", chatID, sub.ID, sub.Model)
+		// Model is user-level — resolve from user_default_model, not sub.Model.
+		model := ""
+		if f.subscriptionSvc != nil {
+			if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil {
+				model = udm.Model
+			}
+		}
+		return f.tenantSvc.SetTenantSubscription("cli", chatID, sub.ID, model)
 	}
 	return nil
 }
@@ -508,8 +522,13 @@ func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
 		return nil
 	}
 	return func(models []string) {
-		if sub, err := f.subscriptionSvc.Get(subID); err == nil && sub != nil {
-			_ = f.subscriptionSvc.UpdateCachedModels(subID, models)
+		// /models API returned a fresh model list — upsert each into
+		// subscription_models so they show up in the picker. No more
+		// CachedModels column writes.
+		for _, m := range models {
+			if m != "" {
+				_ = f.subscriptionSvc.UpsertModel(subID, m, 0, 0, "", "")
+			}
 		}
 	}
 }
@@ -527,29 +546,6 @@ func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
 //
 // These methods are additive alongside the legacy Switch*/Set*/Invalidate*
 // matrix. The legacy matrix is removed once RPC + CLI migrate (later chunk).
-
-// PickDefaultModelForSub returns a sensible default model for a subscription
-// when neither the caller nor the subscription specifies one. Prefers the first
-// enabled subscription_models row, then the first cached API model. Returns ""
-// if none is found (caller falls back to the global default).
-func (f *LLMFactory) PickDefaultModelForSub(sub *sqlite.LLMSubscription) string {
-	if sub == nil {
-		return ""
-	}
-	if f.subscriptionSvc != nil && sub.ID != "" {
-		if models, err := f.subscriptionSvc.GetModels(sub.ID); err == nil {
-			for _, m := range models {
-				if m.Enabled {
-					return m.Model
-				}
-			}
-		}
-	}
-	if len(sub.CachedModels) > 0 {
-		return sub.CachedModels[0]
-	}
-	return ""
-}
 
 // modelPerModelConfig holds the per-model overrides read from subscription_models.
 type modelPerModelConfig struct {
@@ -679,12 +675,6 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 		return f.GetLLM(senderID)
 	}
 	if model == "" {
-		model = sub.Model
-	}
-	if model == "" {
-		model = f.PickDefaultModelForSub(sub)
-	}
-	if model == "" {
 		return f.GetLLM(senderID)
 	}
 	client := f.getOrCreateClient(sub, model)
@@ -747,12 +737,6 @@ func (f *LLMFactory) ResolveActiveSubModel(senderID, chatID, channel string) (*s
 		if sub == nil {
 			return nil, "", fmt.Errorf("ResolveActiveSubModel: no active subscription for user %s", senderID)
 		}
-		if model == "" {
-			model = sub.Model
-		}
-		if model == "" {
-			model = f.PickDefaultModelForSub(sub)
-		}
 		return sub, model, nil
 	}
 	sub := f.lookupSub(subID)
@@ -760,10 +744,7 @@ func (f *LLMFactory) ResolveActiveSubModel(senderID, chatID, channel string) (*s
 		return nil, "", fmt.Errorf("ResolveActiveSubModel: subscription %s not found", subID)
 	}
 	if model == "" {
-		model = sub.Model
-	}
-	if model == "" {
-		model = f.PickDefaultModelForSub(sub)
+		return sub, "", nil // model will be resolved by caller via user_default_model
 	}
 	return sub, model, nil
 }
@@ -863,20 +844,6 @@ func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlit
 		}
 		for _, sm := range models {
 			if sm.Model == model && sm.Enabled {
-				return true
-			}
-		}
-		return false
-	}); owner != nil {
-		return owner, nil
-	}
-	// Pass 2: CachedModels and sub.Model (models not registered as rows).
-	if owner := find(func(sub *sqlite.LLMSubscription) bool {
-		if sub.Model == model {
-			return true
-		}
-		for _, m := range sub.CachedModels {
-			if m == model {
 				return true
 			}
 		}
@@ -997,9 +964,6 @@ func (f *LLMFactory) ListAllModelEntriesForUser(senderID string) []protocol.Mode
 // contribute nothing. Emitted in subscription order (stable), system subscription
 // first (it is injected at the head of the list by the storage layer).
 func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool) []protocol.ModelEntry {
-	// seen keyed by (subID, model) so the same model from different subscriptions
-	// is listed once per subscription, while a single subscription never emits the
-	// same model twice (e.g. a model present in both CachedModels and sub.Model).
 	seen := make(map[string]bool)
 	var result []protocol.ModelEntry
 	add := func(subID, subName, model, status string) {
@@ -1013,9 +977,6 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 		seen[key] = true
 		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model, Status: status})
 	}
-	// systemModelLabel tags models that come from the global default LLM (no
-	// owning subscription). Shown as "system · model" in the picker so they're
-	// not bare among subscription-owned entries.
 	const systemModelLabel = "system"
 	if f.subscriptionSvc == nil {
 		for _, m := range f.defaultLLM.ListModels() {
@@ -1034,14 +995,12 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 		return result
 	}
 
-	// Only enabled subscriptions contribute. Cache their subscription_models rows
-	// (the "record") and their fetched CachedModels set.
+	// Only enabled subscriptions contribute. Models come from subscription_models
+	// table + sub.Model. No CachedModels — all models treated equally.
 	type subInfo struct {
-		sub    *sqlite.LLMSubscription
-		rows   []*sqlite.SubscriptionModel
-		fetch  map[string]bool
-		rowEn  map[string]bool // model → enabled flag from row (absent ⇒ true)
-		rowHas map[string]bool // model → has a subscription_models record
+		sub   *sqlite.LLMSubscription
+		rows  []*sqlite.SubscriptionModel
+		rowEn map[string]bool // model → enabled flag from row (absent ⇒ true)
 	}
 	infos := make([]subInfo, 0, len(subs))
 	for _, sub := range subs {
@@ -1049,50 +1008,23 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 			continue
 		}
 		rows, _ := f.subscriptionSvc.GetModels(sub.ID)
-		fetch := make(map[string]bool, len(sub.CachedModels))
-		for _, m := range sub.CachedModels {
-			if m != "" {
-				fetch[m] = true
-			}
-		}
 		rowEn := make(map[string]bool, len(rows))
-		rowHas := make(map[string]bool, len(rows))
 		for _, r := range rows {
-			rowHas[r.Model] = true
 			rowEn[r.Model] = r.Enabled
 		}
-		infos = append(infos, subInfo{sub: sub, rows: rows, fetch: fetch, rowEn: rowEn, rowHas: rowHas})
+		infos = append(infos, subInfo{sub: sub, rows: rows, rowEn: rowEn})
 	}
-	// statusOf computes the per-(sub,model) status.
-	//   disabled: row.enabled == false
-	//   normal:   fetched (in CachedModels) OR it's sub.Model, and not disabled
-	//   offline:  has a record (row) but not fetched, and not disabled
+	// statusOf: only "normal" or "disabled". No "offline".
 	statusOf := func(i int, m string) string {
 		info := infos[i]
-		if info.rowHas[m] && !info.rowEn[m] {
+		if en, ok := info.rowEn[m]; ok && !en {
 			return "disabled"
 		}
-		if info.fetch[m] || m == info.sub.Model {
-			return "normal"
-		}
-		return "offline"
+		return "normal"
 	}
-	// candidates(i) = every model subscription i knows about (fetched + default
-	// + records), deduped by name and SORTED for deterministic emission order.
-	// Map iteration (s.fetch / s.rows) is randomized in Go, so without sorting
-	// the picker display order — and tests comparing two separate calls — would
-	// be nondeterministic.
 	candidates := func(i int) []string {
 		s := infos[i]
 		set := make(map[string]bool)
-		for m := range s.fetch {
-			if m != "" {
-				set[m] = true
-			}
-		}
-		if s.sub.Model != "" {
-			set[s.sub.Model] = true
-		}
 		for _, r := range s.rows {
 			if r.Model != "" {
 				set[r.Model] = true
@@ -1105,10 +1037,6 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 		sort.Strings(cs)
 		return cs
 	}
-	// Emit every (subscription, model) pair in subscription order. The picker
-	// shows each pair as its own row so a user can pick the specific subscription
-	// that serves a model (e.g. "system · deepseek-v4-pro" vs "deepseek ·
-	// deepseek-v4-pro"). `add` dedups within a subscription by model name.
 	for i := range infos {
 		for _, m := range candidates(i) {
 			if m == "" {
@@ -1204,8 +1132,8 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			r := resultByID[s.ID]
-			// Model is only the client's default; /models fetch is independent of it.
-			client := f.createClientFromSub(s, s.Model)
+			// /models fetch only needs credentials — model name is irrelevant.
+			client := f.createClientFromSub(s, "")
 			if client == nil {
 				r.Status = "noclient"
 				r.Error = "无法创建 LLM 客户端（检查 provider/base_url）"
@@ -1225,11 +1153,10 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != "", "err": err.Error()}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
 				return
 			}
-			// Re-read the sub to get the persisted CachedModels count (the
-			// OnModelsLoaded callback updates it asynchronously inside the SDK).
+			// Re-read to count subscription_models rows (OnModelsLoaded upserts them).
 			r.Status = "ok"
-			if updated, gerr := f.subscriptionSvc.Get(s.ID); gerr == nil && updated != nil {
-				r.ModelCount = len(updated.CachedModels)
+			if models, gerr := f.subscriptionSvc.GetModels(s.ID); gerr == nil {
+				r.ModelCount = len(models)
 			}
 		}(sub)
 	}
@@ -1309,7 +1236,12 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 		subs, err := f.subscriptionSvc.List(senderID)
 		if err == nil {
 			for _, sub := range subs {
-				if sub.BaseURL == "" || sub.APIKey == "" || len(sub.CachedModels) > 0 {
+				if sub.BaseURL == "" || sub.APIKey == "" {
+					continue
+				}
+				// Check if subscription already has models registered.
+				models, _ := f.subscriptionSvc.GetModels(sub.ID)
+				if len(models) > 0 {
 					continue
 				}
 				client := f.createClientFromSub(sub, resolvedModel)
@@ -1321,17 +1253,13 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 					_ = loader.LoadModelsFromAPI(ctx)
 				}
 				cancel()
-				updatedSubs, err2 := f.subscriptionSvc.List(senderID)
-				if err2 == nil {
-					for _, us := range updatedSubs {
-						if us.ID == sub.ID {
-							for _, m := range us.CachedModels {
-								if m == resolvedModel {
-									log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "api-load"}).Info("[LLM] GetLLMForModel: found after API load")
-									return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
-								}
-							}
-						}
+				// After API load, OnModelsLoaded upserts into subscription_models.
+				// Check if the target model is now registered.
+				updatedModels, _ := f.subscriptionSvc.GetModels(sub.ID)
+				for _, sm := range updatedModels {
+					if sm.Model == resolvedModel {
+						log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "api-load"}).Info("[LLM] GetLLMForModel: found after API load")
+						return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 					}
 				}
 			}
@@ -1409,14 +1337,10 @@ func (f *LLMFactory) buildModelSubscriptionMap(senderID string) map[string]*sqli
 				if sub.BaseURL == "" || sub.APIKey == "" {
 					continue
 				}
-				for _, modelName := range sub.CachedModels {
-					if _, exists := m[modelName]; !exists {
-						m[modelName] = sub
-					}
-				}
-				if sub.Model != "" {
-					if _, exists := m[sub.Model]; !exists {
-						m[sub.Model] = sub
+				models, _ := f.subscriptionSvc.GetModels(sub.ID)
+				for _, sm := range models {
+					if _, exists := m[sm.Model]; !exists {
+						m[sm.Model] = sub
 					}
 				}
 			}
