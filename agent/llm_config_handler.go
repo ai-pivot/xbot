@@ -164,9 +164,6 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 			cfg.BaseURL = value
 		case "api_key":
 			cfg.APIKey = value
-		case "model":
-			// Model is user-level — don't write to cfg.Model.
-			// Upsert to subscription_models happens in the caller.
 		case "max_context":
 			var maxCtx int
 			if _, err := fmt.Sscanf(value, "%d", &maxCtx); err == nil {
@@ -249,12 +246,6 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 		}
 		if seenKeys["api_key"] {
 			existing.APIKey = cfg.APIKey
-		}
-		if seenKeys["model"] {
-			// Model is user-level — upsert to subscription_models, not sub.Model.
-			if a.llmFactory != nil && a.llmFactory.GetSubscriptionSvc() != nil && existing.ID != "" {
-				_ = a.llmFactory.GetSubscriptionSvc().UpsertModel(existing.ID, cfg.Model, 0, 0, "", "")
-			}
 		}
 		if seenKeys["max_context"] {
 			existing.MaxContext = cfg.MaxContext

@@ -527,7 +527,9 @@ func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
 		// CachedModels column writes.
 		for _, m := range models {
 			if m != "" {
-				_ = f.subscriptionSvc.UpsertModel(subID, m, 0, 0, "", "")
+				if err := f.subscriptionSvc.UpsertModel(subID, m, 0, 0, "", ""); err != nil {
+					log.WithFields(log.Fields{"sub_id": subID, "model": m, "error": err}).Warn("[LLMFactory] OnModelsLoaded: UpsertModel failed")
+				}
 			}
 		}
 	}

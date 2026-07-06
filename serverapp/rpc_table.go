@@ -342,6 +342,9 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		SubID string `json:"sub_id"`
 		Model string `json:"model"`
 	}) error {
+		if p.SubID == "" || p.Model == "" {
+			return fmt.Errorf("sub_id and model are required")
+		}
 		svc := h.Ag.LLMFactory().GetSubscriptionSvc()
 		if svc == nil {
 			return fmt.Errorf("subscription service not available")
@@ -357,6 +360,9 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		APIType      string `json:"api_type"`
 		ThinkingMode string `json:"thinking_mode"`
 	}) error {
+		if p.SubID == "" || p.Model == "" {
+			return fmt.Errorf("sub_id and model are required")
+		}
 		svc := h.Ag.LLMFactory().GetSubscriptionSvc()
 		if svc == nil {
 			return fmt.Errorf("subscription service not available")
@@ -528,11 +534,6 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		dbSub.SenderID = rpcBizID(ctx)
 		if err := svc.Add(dbSub); err != nil {
 			return err
-		}
-		// If a default model was specified, register it in subscription_models
-		// so it shows up in the model picker.
-		if p.Sub.Model != "" {
-			return svc.UpsertModel(dbSub.ID, p.Sub.Model, 0, 0, "", "")
 		}
 		return nil
 	})
@@ -1351,10 +1352,6 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	dbSub.APIType = p.Sub.APIType
 	// MaxOutputTokens: always accept
 	dbSub.MaxOutputTokens = p.Sub.MaxOutputTokens
-	// Model: upsert to subscription_models (user-level, not sub.Model)
-	if strings.TrimSpace(p.Sub.Model) != "" {
-		_ = svc.UpsertModel(dbSub.ID, p.Sub.Model, 0, 0, "", "")
-	}
 	// Provider: accept only if non-empty AND non-masked
 	if strings.TrimSpace(p.Sub.Provider) != "" && !strings.Contains(p.Sub.Provider, "****") {
 		dbSub.Provider = p.Sub.Provider

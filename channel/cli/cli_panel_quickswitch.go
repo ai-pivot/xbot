@@ -1284,9 +1284,9 @@ type cliModelEntriesRefreshedMsg struct {
 
 // refreshModelEntriesCmd issues the backend refresh (/models API, slow) in a
 // goroutine and emits cliModelEntriesRefreshedMsg with the fresh entries.
-// RefreshModelEntries() internally persists results to DB (CachedModels) —
-// this is the "DB write" half of the double-write. The handler does the
-// "cache write" half via llmCache.Apply().
+// RefreshModelEntries() internally persists results to DB (subscription_models
+// via UpsertModel in OnModelsLoaded) — this is the "DB write" half of the
+// double-write. The handler does the "cache write" half via llmCache.Apply().
 func (m *cliModel) refreshModelEntriesCmd() tea.Cmd {
 	return func() tea.Msg {
 		var entries []protocol.ModelEntry

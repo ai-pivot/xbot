@@ -511,10 +511,6 @@ func updateActiveSubscription(client *agent.Client, cfg *config.Config, values m
 			sub.APIKey = key
 		}
 	}
-	if v, ok := values["llm_model"]; ok && strings.TrimSpace(v) != "" {
-		// Model is user-level — upsert to subscription_models via RPC.
-		_ = client.UpsertModel(sub.ID, strings.TrimSpace(v), 0, 0, "", "")
-	}
 	if v, ok := values["llm_base_url"]; ok && strings.TrimSpace(v) != "" {
 		sub.BaseURL = strings.TrimSpace(v)
 	}

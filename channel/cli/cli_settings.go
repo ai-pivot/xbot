@@ -164,11 +164,6 @@ func (m *cliModel) saveSettings(values map[string]string) {
 						changed = true
 					}
 				}
-				if v, ok := values["llm_model"]; ok && strings.TrimSpace(v) != "" {
-					// Model is user-level — upsert to subscription_models, not sub.Model.
-					_ = m.subscriptionMgr.UpsertModel(updated.ID, strings.TrimSpace(v), 0, 0, "", "")
-					changed = true
-				}
 				if v, ok := values["llm_base_url"]; ok && strings.TrimSpace(v) != "" && !strings.Contains(v, "****") {
 					if updated.BaseURL != strings.TrimSpace(v) {
 						updated.BaseURL = strings.TrimSpace(v)
