@@ -196,7 +196,7 @@ func (a *Agent) buildBaseRunConfig(
 		ListLLMSubs: a.listLLMSubsFn(channel),
 
 		// Subscription read/write — from LLMFactory (for config tool)
-		GetActiveSubFieldFn: a.getActiveSubFieldFn(channel),
+		GetActiveSubFieldFn: a.getActiveSubFieldFn(channel, chatID),
 		UpdateActiveSubFn:   a.updateActiveSubFn(channel),
 
 		// LLM 并发限流回调（per-tenant）
@@ -294,6 +294,12 @@ func (a *Agent) buildMainRunConfig(
 				}
 			}
 		}
+	} else {
+		// Non-cli/web channel without preReplyNotify: still set a no-op notifier
+		// so autoNotify is enabled and progressFinalizer generates PhaseDone.
+		// Without this, CLI users viewing this session via /su never receive
+		// PhaseDone → TUI stuck in busy state forever.
+		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	}
 
 	// 结构化进度事件推送（web, cli, and plugin ProgressSender channels）
@@ -307,7 +313,7 @@ func (a *Agent) buildMainRunConfig(
 	// it was persisted to DB by recordIterationSnapshot). The cancel ack's
 	// handleCancelAck has a fallback (cancelledTurnIterations), but it's not
 	// guaranteed to capture the live iteration in all code paths.
-	if (channel == "web" || channel == "cli" || isProgressSenderCh) && a.channelFinder != nil {
+	if a.channelFinder != nil {
 		done := ctx.Done() // capture for closure
 		wrap := func(h func(*ProgressEvent)) func(*ProgressEvent) {
 			return func(ev *ProgressEvent) {
@@ -335,10 +341,19 @@ func (a *Agent) buildMainRunConfig(
 				cfg.ProgressEventHandler = wrap(handler)
 			}
 		default:
-			// Plugin channel with ProgressSender (e.g. TG) — build a handler
-			// that sends progress_structured events via the channel's SendProgress.
-			if handler := a.buildPluginProgressEventHandler(chatID, channel); handler != nil {
-				cfg.ProgressEventHandler = wrap(handler)
+			// For all other channels (feishu, qq, etc.) and plugin ProgressSender
+			// channels — build a CLI progress handler so the CLI TUI receives
+			// structured progress events and PhaseDone when viewing these sessions
+			// via /su. Without this, CLI never gets PhaseDone → finalizeTurnFromSnapshot
+			// never runs → m.typing stays true forever (TUI stuck in busy state).
+			if isProgressSenderCh {
+				if handler := a.buildPluginProgressEventHandler(chatID, channel); handler != nil {
+					cfg.ProgressEventHandler = wrap(handler)
+				}
+			} else {
+				if handler := a.buildCLIProgressEventHandler(chatID, channel); handler != nil {
+					cfg.ProgressEventHandler = wrap(handler)
+				}
 			}
 		}
 	}
@@ -946,7 +961,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 	cfg.RemoteTUICtrlFn = a.buildRemoteTUICtrlFn(channel, chatID)
 	cfg.ChatRenameFn = a.renameSession
 	cfg.ListLLMSubs = a.listLLMSubsFn(channel)
-	cfg.GetActiveSubFieldFn = a.getActiveSubFieldFn(channel)
+	cfg.GetActiveSubFieldFn = a.getActiveSubFieldFn(channel, chatID)
 	cfg.UpdateActiveSubFn = a.updateActiveSubFn(channel)
 
 	var sessionOnce sync.Once
@@ -2004,34 +2019,40 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	progressKey := qualifyChatID(channel, chatID)
 
 	// broadcast pushes to all ProgressSender channels uniformly.
-	broadcastStream := func(content, reasoning string) {
-		for _, s := range senders {
-			s.SendStreamContent(chatID, content, reasoning)
-		}
-	}
+	// chatID (raw) is the routing key for SendProgress's first parameter.
+	// payload.ChatID (qualified progressKey) is the session identity for
+	// the TUI's handleProgressMsg filter. These are two different semantics —
+	// never mix them.
 	broadcastProgress := func(payload *protocol.ProgressEvent) {
+		if payload.ChatID == "" {
+			payload.ChatID = progressKey
+		}
 		for _, s := range senders {
 			s.SendProgress(chatID, payload)
 		}
 	}
 
-	// No throttle: every callback pushes immediately. Backlog is prevented
-	// by catch-up drain in handleAsyncDrain (coalesces all pending progress
-	// events into one before Send). Throttling caused content truncation:
-	// content callback was skipped (60ms), then unthrottled toolCallFunc
-	// pushed with empty StreamContent → coalescing preserved stale incomplete
-	// content from the last throttled push.
+	// All stream callbacks go through broadcastProgress with a qualified
+	// ChatID. This replaces the old SendStreamContent path which had
+	// inconsistent ChatID qualification across implementations (CLIChannel
+	// used raw, RemoteCLI/Web qualified manually).
 	streamContentFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
 		})
-		broadcastStream(content, "")
+		broadcastProgress(&protocol.ProgressEvent{
+			ChatID:        progressKey,
+			StreamContent: content,
+		})
 	}
 	streamReasoningFunc = func(content string) {
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.ReasoningStreamContent = content
 		})
-		broadcastStream("", content)
+		broadcastProgress(&protocol.ProgressEvent{
+			ChatID:                 progressKey,
+			ReasoningStreamContent: content,
+		})
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
 		tools := make([]protocol.ToolProgress, 0, len(toolCalls))

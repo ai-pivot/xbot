@@ -58,14 +58,14 @@ func TestRegression_ContentTruncatedDuringToolExec(t *testing.T) {
 }
 
 // ── Bug: phantom "generating" tool line appears alongside "running" ──
-// Root cause: progressCh coalescing unconditionally merged old
+// Root cause: progressSlot coalescing unconditionally merged old
 // StreamingTools into new structured events. When tool transitions
 // generating→running, structured event carries ActiveTools but also
 // inherits stale StreamingTools → both rendered for one frame.
 //
 // Fix: only merge StreamingTools when payload.ActiveTools is empty.
 func TestRegression_GhostGeneratingToolDuringTransition(t *testing.T) {
-	// This tests the progressCh coalescing in SendProgress (cli.go).
+	// This tests the progressSlot coalescing in SendProgress (cli.go).
 	// We simulate two events that would be coalesced:
 	// A = stream-only with StreamingTools (generating)
 	// B = structured with ActiveTools (running)
@@ -393,5 +393,100 @@ func TestRegression_CoalesceDropsContentOnToolEvent(t *testing.T) {
 	}
 	if len(merged.payload.StreamingTools) != 1 {
 		t.Errorf("StreamingTools lost: got %d tools", len(merged.payload.StreamingTools))
+	}
+}
+
+// ── Bug: stream content events have unqualified ChatID → TUI discards ──
+// Root cause: SendStreamContent implementations had inconsistent ChatID
+// qualification. Stream callbacks now go through SendProgress with
+// qualified payload.ChatID — this test verifies the TUI accepts them.
+func TestRegression_StreamContentChatIDQualified(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Stream content event with QUALIFIED ChatID (what stream callbacks now send)
+	sendProgress(model, &protocol.ProgressEvent{
+		ChatID:        "cli:/test",
+		StreamContent: "content via qualified ChatID",
+	})
+
+	if model.progressState.current == nil {
+		t.Fatal("stream content event with qualified ChatID was discarded by session filter")
+	}
+	if model.progressState.current.StreamContent != "content via qualified ChatID" {
+		t.Errorf("StreamContent not applied: got %q",
+			model.progressState.current.StreamContent)
+	}
+}
+
+// ── Bug: raw ChatID stream event must be rejected by session filter ──
+// This is the negative test — verifies that unqualified ChatID events
+// are still filtered out (the original bug scenario).
+func TestRegression_RawChatIDStreamEventRejected(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	// initTestModel sets chatID="/test", channelName="cli"
+	// currentKey = "cli:/test"
+
+	// Send event with RAW ChatID (the old bug)
+	model.handleProgressMsg(cliProgressMsg{
+		payload: &protocol.ProgressEvent{
+			ChatID:        "/test", // raw, unqualified
+			StreamContent: "should be rejected",
+		},
+	})
+
+	if model.progressState.current != nil &&
+		model.progressState.current.StreamContent == "should be rejected" {
+		t.Error("raw ChatID event was accepted — session filter broken")
+	}
+}
+
+// ── Bug: tool stays yellow (running) forever in iteration history ──
+// Root cause: when done event is lost in progressSlot coalescing (drain
+// goroutine doesn't wake between done push and next-iteration thinking
+// push), snapshotIterationLocal captured the tool with Status="running"
+// in the iteration snapshot → stays yellow forever.
+//
+// Fix: when snapshotting an iteration, mark all running/pending tools
+// as "done". An iteration snapshot means the iteration has ended —
+// any tool that was running has completed.
+func TestRegression_ToolStuckRunningInSnapshot(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Iteration 0: tool running (done event was lost)
+	sendProgress(model, &protocol.ProgressEvent{
+		ChatID:      "cli:/test",
+		Seq:         1,
+		Phase:       "tool_exec",
+		Iteration:   0,
+		ActiveTools: []protocol.ToolProgress{{Name: "config", Status: "running", Iteration: 0}},
+	})
+
+	// Iteration changes to 1 (thinking) — done event was lost
+	sendProgress(model, &protocol.ProgressEvent{
+		ChatID:    "cli:/test",
+		Seq:       2,
+		Phase:     "thinking",
+		Iteration: 1,
+	})
+
+	// Check iteration 0 snapshot — tool must NOT be "running"
+	if len(model.progressState.iterations) == 0 {
+		t.Fatal("no iteration snapshot created")
+	}
+	iter0 := model.progressState.iterations[0]
+	if iter0.Iteration != 0 {
+		t.Fatalf("expected iteration 0, got %d", iter0.Iteration)
+	}
+	if len(iter0.Tools) == 0 {
+		t.Fatal("no tools in iteration 0 snapshot")
+	}
+	for _, tool := range iter0.Tools {
+		if tool.Status == "running" || tool.Status == "pending" {
+			t.Errorf("tool %q stuck as %q in snapshot — should be done",
+				tool.Name, tool.Status)
+		}
 	}
 }

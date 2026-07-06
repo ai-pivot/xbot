@@ -510,9 +510,19 @@ type CLIChannel struct {
 	// 3+ senders, key events get ~25% scheduling probability. By consolidating
 	// ALL non-critical sends through one channel + one goroutine, we reduce
 	// concurrent senders to 2 (readLoop + drain), giving keys ~50% chance.
-	progressCh chan *protocol.ProgressEvent
-	tickCh     chan tea.Msg // dedicated tick channel (buffer 1, drop on full)
-	asyncCh    chan tea.Msg // unified async send channel (buffered)
+	//
+	// progressSlot + progressSignal replaces the old buffer-1 progressCh.
+	// The slot is a mutex-protected "latest event" holder — SendProgress
+	// merges incoming events into the slot (stream-only merge with structured,
+	// or structured replaces). progressSignal (buffer-1) just wakes the drain
+	// goroutine. This eliminates the eviction race in the old buffer-1 channel
+	// where structured "done" events could be silently lost (tool stuck as
+	// running forever).
+	progressMu     sync.Mutex
+	progressSlot   *protocol.ProgressEvent
+	progressSignal chan struct{}
+	tickCh         chan tea.Msg // dedicated tick channel (buffer 1, drop on full)
+	asyncCh        chan tea.Msg // unified async send channel (buffered)
 
 	// Services (injected by Agent or main)
 	settingsSvc        SettingsService    // interface for GetSettings/SetSetting

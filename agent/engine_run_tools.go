@@ -113,6 +113,18 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 	batch.results[entry.index] = toolExecResult{err: execErr, result: result, elapsed: elapsed}
 	s.updateToolResultProgress(ctx, entry, batch, result, execErr, elapsed)
 	s.updateToolResultLine(ctx, entry, batch, tc, result, execErr, elapsed)
+	// Notify immediately so the TUI sees the done/error status BEFORE
+	// snapshotCompletedIteration clears ActiveTools and prepareForIteration
+	// starts the next iteration. Without this, for fast tools (e.g. config,
+	// Read), the done status is set but not pushed until the dispatcher's
+	// notifyProgress — which fires synchronously right before snapshot and
+	// next-iteration-thinking. The progressSlot drain goroutine doesn't get
+	// a chance to run between them, so only the final "thinking, everything
+	// cleared" event survives → tool goes from yellow(running) straight to
+	// snapshot, never showing green(done).
+	if s.autoNotify {
+		s.notifyProgress("")
+	}
 }
 
 // updateToolResultProgress updates the structured progress entry for a completed tool.

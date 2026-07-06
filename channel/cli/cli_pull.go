@@ -147,6 +147,15 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 		}
 	}
 
+	// Merge SubAgent trees: structured events don't always carry SubAgents
+	// (engine only includes them when resolveSubAgents returns non-empty).
+	// Without merging, the tree flickers — appears when SubAgents are present,
+	// vanishes when the next structured event omits them. mergeSubAgentTrees
+	// preserves prev's running agents and marks dropped ones as done.
+	if prev != nil {
+		snapshot.SubAgents = mergeSubAgentTrees(prev.SubAgents, snapshot.SubAgents)
+	}
+
 	m.progressState.current = snapshot
 	if snapshot.Iteration > m.progressState.lastIter {
 		m.progressState.lastIter = snapshot.Iteration
@@ -176,10 +185,19 @@ func (m *cliModel) snapshotIterationLocal(prev *protocol.ProgressEvent) {
 			return
 		}
 	}
-	tools := prev.CompletedTools
-	// Include ALL active tools — when iteration changes, active tools
-	// belong to the completed iteration (engine transitions them to done).
-	tools = append(tools, prev.ActiveTools...)
+	// When we snapshot an iteration, it means the iteration has ENDED.
+	// All tools that were "running" or "pending" have completed — the done
+	// event may have been lost in progressSlot coalescing (drain goroutine
+	// didn't wake between the done push and the next-iteration thinking push).
+	// Mark them as "done" — otherwise they stay yellow forever in the history.
+	tools := make([]protocol.ToolProgress, 0, len(prev.CompletedTools)+len(prev.ActiveTools))
+	tools = append(tools, prev.CompletedTools...)
+	for _, t := range prev.ActiveTools {
+		if t.Status == "running" || t.Status == "pending" || t.Status == "" {
+			t.Status = "done"
+		}
+		tools = append(tools, t)
+	}
 	reasoning := prev.Reasoning
 	if reasoning == "" {
 		reasoning = prev.ReasoningStreamContent
@@ -247,11 +265,13 @@ func (m *cliModel) restoreIterationsFromSnapshot(snapshot *protocol.ProgressEven
 }
 
 // finalizeTurnFromSnapshot handles Phase=done from the snapshot.
-// For main sessions: handleAgentMessage is the authoritative end-of-turn
+// For CLI sessions: handleAgentMessage is the authoritative end-of-turn
 // signal (creates the final assistant message). PhaseDone from snapshot
 // just snapshots the final iteration and marks turn state.
-// For agent sessions (SubAgent viewer): no outbound message arrives,
-// so we create the assistant message here from the snapshot's Content.
+// For non-CLI sessions (agent viewer, feishu, web, etc.): the outbound
+// message goes to the originating channel, not the CLI channel — no
+// cliOutboundMsg ever arrives. We create the assistant message here from
+// the snapshot's Content (carried via structured progress events).
 func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 	turnID := m.agentTurnID
 	cur := m.progressState.current
@@ -293,10 +313,14 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 			finalTools := snapshot.CompletedTools
 			if len(finalTools) == 0 && cur != nil {
 				finalTools = cur.CompletedTools
+				// Include ALL active tools — the iteration is ending, so all
+				// running/pending tools have completed. Mark them as done
+				// (the done event may have been lost in progressSlot coalescing).
 				for _, t := range cur.ActiveTools {
-					if t.Status == "done" || t.Status == "error" {
-						finalTools = append(finalTools, t)
+					if t.Status == "running" || t.Status == "pending" || t.Status == "" {
+						t.Status = "done"
 					}
+					finalTools = append(finalTools, t)
 				}
 			}
 			// Filter by iteration to prevent cross-iteration tool contamination.
@@ -320,6 +344,32 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 			}
 			if len(finalTools) > 0 || content != "" || reasoning != "" {
 				m.progressState.iterations = append(m.progressState.iterations, snap)
+			}
+		} else {
+			// Already snapshotted — but the existing snapshot may have empty
+			// Content/Reasoning if snapshotIterationLocal captured it before
+			// recordAssistantMsg finalized the content. Update the existing
+			// snapshot with the finalized content from PhaseDone to prevent
+			// renderTurnBody's dedup from failing (which would render the
+			// content twice: once from iterations, once from fallbackContent).
+			finalContent := snapshot.Content
+			if finalContent == "" && cur != nil {
+				finalContent = cur.Content
+			}
+			finalReasoning := snapshot.Reasoning
+			if finalReasoning == "" && cur != nil {
+				finalReasoning = cur.Reasoning
+			}
+			for i := range m.progressState.iterations {
+				if m.progressState.iterations[i].Iteration == finalIter {
+					if m.progressState.iterations[i].Content == "" && finalContent != "" {
+						m.progressState.iterations[i].Content = finalContent
+					}
+					if m.progressState.iterations[i].Reasoning == "" && finalReasoning != "" {
+						m.progressState.iterations[i].Reasoning = finalReasoning
+					}
+					break
+				}
 			}
 		}
 	}
@@ -351,10 +401,14 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 		}
 	}
 
-	// Agent session (SubAgent viewer): no outbound message arrives.
-	// Create assistant message from snapshot content.
-	if m.channelName == "agent" && !m.typing {
+	// Non-CLI sessions (agent viewer, feishu, web, etc.): the outbound
+	// message goes to the originating channel, not the CLI channel.
+	// Create assistant message from snapshot/progress content.
+	if m.channelName != "cli" && !m.typing {
 		assistantContent := snapshot.Content
+		if assistantContent == "" && cur != nil {
+			assistantContent = cur.Content
+		}
 		if assistantContent == "" {
 			assistantContent = snapshot.StreamContent
 		}
@@ -372,6 +426,8 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 			}
 			if snapshot.Reasoning != "" {
 				asstMsg.reasoning = snapshot.Reasoning
+			} else if cur != nil && cur.Reasoning != "" {
+				asstMsg.reasoning = cur.Reasoning
 			}
 			// Find existing or append new — single creation point for agent sessions.
 			existingIdx := m.findMessageByTurn(turnID, "assistant")

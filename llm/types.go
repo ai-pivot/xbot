@@ -78,20 +78,26 @@ func SanitizeMessages(messages []ChatMessage) []ChatMessage {
 	messages = messages[:n]
 
 	// Pass 2: Fix tool_calls with invalid JSON arguments.
-	// Partially streamed tool_calls can have broken JSON (e.g. {"command":"ls without closing).
-	// Instead of stripping them (which creates unpaired tool results), fix the args to a
-	// valid JSON with a _truncated marker. The tool executor checks this marker before
-	// execution and returns a precise truncation error to the LLM.
+	// - Empty string "" → "{}" (synthetic tool calls with no args; SGLang rejects "" as invalid JSON)
+	// - Broken JSON (e.g. {"command":"ls without closing) → {"_truncated":true}
+	//   The tool executor checks this marker before execution and returns a precise truncation error to the LLM.
 	for i := range messages {
 		if messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
 			continue
 		}
 		for j := range messages[i].ToolCalls {
-			if !isValidToolCallArgs(messages[i].ToolCalls[j].Arguments) {
+			args := messages[i].ToolCalls[j].Arguments
+			if args == "" {
 				log.WithFields(log.Fields{
 					"tool_name": messages[i].ToolCalls[j].Name,
 					"tool_id":   messages[i].ToolCalls[j].ID,
-					"args_len":  len(messages[i].ToolCalls[j].Arguments),
+				}).Warn("[SanitizeMessages] Fixing tool_call with empty arguments, set to {}")
+				messages[i].ToolCalls[j].Arguments = "{}"
+			} else if !json.Valid([]byte(args)) {
+				log.WithFields(log.Fields{
+					"tool_name": messages[i].ToolCalls[j].Name,
+					"tool_id":   messages[i].ToolCalls[j].ID,
+					"args_len":  len(args),
 				}).Warn("[SanitizeMessages] Fixing tool_call with invalid JSON arguments (truncated)")
 				messages[i].ToolCalls[j].Arguments = `{"_truncated":true}`
 			}
@@ -224,15 +230,6 @@ func toolIDSeenInRange(messages []ChatMessage, start, end int, id string) bool {
 		}
 	}
 	return false
-}
-
-// isValidToolCallArgs returns true if the argument string is valid JSON (or empty).
-// Partially streamed tool_call arguments may contain broken JSON like {"command":"ls
-func isValidToolCallArgs(args string) bool {
-	if args == "" || args == "{}" {
-		return true
-	}
-	return json.Valid([]byte(args))
 }
 
 // NewUserMessage 创建用户消息
