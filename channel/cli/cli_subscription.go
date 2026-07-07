@@ -167,11 +167,8 @@ func (m *cliModel) refreshCachedSubName() {
 }
 
 // refreshCachedModelName caches the current model name to avoid repeated lookups in View().
-// Should be called after channel init, config changes, and settings saves.
-// Prefers per-session override (from disk or in-memory state) over global default.
-// refreshCachedModelName caches the current model name to avoid repeated lookups in View().
-// Should be called after channel init, config changes, and settings saves.
-// Prefers per-session override (from disk or in-memory state) over global default.
+// Should be called after channel init, config changes, settings saves, and session switches.
+// Prefers per-session override (from DB tenants table or disk) over global default.
 func (m *cliModel) refreshCachedModelName() {
 	defer m.refreshCachedSubName() // keep status-bar "订阅名 · 模型名" in sync with activeSubID
 	if m.channel == nil {

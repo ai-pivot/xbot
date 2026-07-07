@@ -1864,6 +1864,314 @@ func TestHistoryReloadForceFullRebuildNoAssistantCreatesOne(t *testing.T) {
 	}
 }
 
+// TestNonCLI_Session_NoDuplicationAfterPhaseDone verifies that when viewing
+// a non-CLI session (e.g., feishu) via /su, the final assistant content is
+// NOT rendered twice after PhaseDone.
+//
+// Root cause: endAgentTurn preserves progressState.current (for flicker-free
+// rendering). updateStreamingOnly renders BOTH completed iterations (which
+// include the final iteration with Content + Reasoning) AND liveLines from
+// progressState.current (same Content + Reasoning). For CLI sessions,
+// handleAgentMessage clears streamingMsgIdx shortly after, fixing the
+// duplication. For non-CLI sessions, handleAgentMessage never arrives →
+// streamingMsgIdx stays valid → updateStreamingOnly runs every tick →
+// persistent duplication.
+//
+// Fix: skip liveLines rendering when !m.typing (turn ended).
+func TestNonCLI_Session_NoDuplicationAfterPhaseDone(t *testing.T) {
+	model := initTestModel()
+	model.channelName = "feishu"
+	model.chatID = "feishu:ou_test"
+
+	// Add a user message before the streaming message so histLines is populated
+	model.messages = append(model.messages, cliMessage{
+		role:      "user",
+		content:   "你好",
+		timestamp: time.Now(),
+		dirty:     true,
+	})
+	// Create the streaming assistant message
+	model.messages = append(model.messages, cliMessage{
+		role:      "assistant",
+		turnID:    1,
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+	})
+	model.streamingMsgIdx = 1
+	model.agentTurnID = 1
+
+	// Populate histLines via fullRebuild (renders user message into cache)
+	model.fullRebuild()
+	if len(model.rc.histLines) == 0 {
+		t.Fatal("histLines should be populated after fullRebuild")
+	}
+
+	finalContent := "你好！定时巡检任务已经全部清除了。有什么需要帮忙的吗？"
+	finalReasoning := "All cron jobs have been removed. Let me respond."
+
+	// Simulate the post-PhaseDone state directly:
+	// 1. progressState.iterations has the final iteration with Content + Reasoning
+	//    (snapshotted by finalizeTurnFromSnapshot)
+	// 2. progressState.current still has the same Content + Reasoning
+	//    (preserved by endAgentTurn, NOT cleared)
+	// 3. typing = false (turn ended)
+	// 4. streamingMsgIdx still valid (non-CLI session, handleAgentMessage never arrives)
+	model.progressState.iterations = []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Tools: []protocol.ToolProgress{
+				{Name: "Cron", Label: "Cron: remove", Status: "done", Elapsed: 542, Iteration: 1},
+			},
+		},
+		{
+			Iteration: 2,
+			Tools: []protocol.ToolProgress{
+				{Name: "Cron", Label: "Cron: list", Status: "done", Elapsed: 607, Iteration: 2},
+			},
+		},
+		{
+			Iteration: 3,
+			Content:   finalContent,
+			Reasoning: finalReasoning,
+		},
+	}
+	model.progressState.current = &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 3,
+		Content:   finalContent,
+		Reasoning: finalReasoning,
+	}
+	// Bake iterations into the streaming message (as finalizeTurnFromSnapshot does)
+	baked := make([]cliIterationSnapshot, len(model.progressState.iterations))
+	copy(baked, model.progressState.iterations)
+	model.messages[model.streamingMsgIdx].iterations = baked
+	model.messages[model.streamingMsgIdx].content = finalContent
+	model.messages[model.streamingMsgIdx].dirty = true
+
+	// Simulate post-endAgentTurn state: typing=false, streamingMsgIdx preserved
+	model.typing = false
+	// rc.valid is true from fullRebuild; streamingMsgIdx >= 0
+	// → updateViewportContent will use updateStreamingOnly fast path
+
+	// Simulate a tick rendering
+	model.updateStreamingOnly()
+
+	vpContent := stripANSI(model.viewport.View())
+
+	// Count occurrences of the final content
+	count := strings.Count(vpContent, finalContent)
+	if count > 1 {
+		t.Errorf("final content appears %d times in viewport (expected 1).\nViewport:\n%s",
+			count, vpContent)
+	}
+
+	// Also verify reasoning isn't duplicated
+	reasoningCount := strings.Count(vpContent, finalReasoning)
+	if reasoningCount > 1 {
+		t.Errorf("reasoning appears %d times in viewport (expected 1).\nViewport:\n%s",
+			reasoningCount, vpContent)
+	}
+}
+
+// TestCLI_Session_NoDuplicationAfterPhaseDone verifies the same fix doesn't
+// break CLI sessions: after PhaseDone, the streaming message should show
+// completed iterations without live duplication.
+func TestCLI_Session_NoDuplicationAfterPhaseDone(t *testing.T) {
+	model := initTestModel()
+
+	// Add a user message before the streaming message
+	model.messages = append(model.messages, cliMessage{
+		role:      "user",
+		content:   "run echo hi",
+		timestamp: time.Now(),
+		dirty:     true,
+	})
+	model.messages = append(model.messages, cliMessage{
+		role:      "assistant",
+		turnID:    1,
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+	})
+	model.streamingMsgIdx = 1
+	model.agentTurnID = 1
+	model.fullRebuild()
+
+	finalContent := "Done! The output is: hi"
+	finalReasoning := "The command succeeded."
+
+	model.progressState.iterations = []cliIterationSnapshot{
+		{
+			Iteration: 1,
+			Tools: []protocol.ToolProgress{
+				{Name: "Shell", Label: "echo hi", Status: "done", Elapsed: 100, Iteration: 1},
+			},
+		},
+		{
+			Iteration: 2,
+			Content:   finalContent,
+			Reasoning: finalReasoning,
+		},
+	}
+	model.progressState.current = &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 2,
+		Content:   finalContent,
+		Reasoning: finalReasoning,
+	}
+	baked := make([]cliIterationSnapshot, len(model.progressState.iterations))
+	copy(baked, model.progressState.iterations)
+	model.messages[model.streamingMsgIdx].iterations = baked
+	model.messages[model.streamingMsgIdx].content = finalContent
+	model.messages[model.streamingMsgIdx].dirty = true
+	model.typing = false
+
+	model.updateStreamingOnly()
+
+	vpContent := stripANSI(model.viewport.View())
+
+	count := strings.Count(vpContent, finalContent)
+	if count > 1 {
+		t.Errorf("final content appears %d times in viewport (expected 1).\nViewport:\n%s",
+			count, vpContent)
+	}
+}
+
+// TestPostRestoreSessionSetup_PreservesPerSessionModel verifies that switching
+// back to a session preserves the per-session model choice (e.g. set via Ctrl+N).
+//
+// Root cause: postRestoreSessionSetup had its own LLM state resolution logic
+// (LoadSessionLLMState → GetDefault fallback) that bypassed the DB tenants table.
+// In remote mode, local JSON is never written (skipBackendFields=true), so
+// LoadSessionLLMState always returned zero → GetDefault("") returned the
+// subscription's default Model (often ""), overwriting the correct per-session
+// model that restoreSession() had just restored from savedSessions.
+//
+// Fix: postRestoreSessionSetup now calls refreshCachedModelName() which checks
+// the DB tenants table (GetSessionSubscription RPC) first, then local JSON,
+// then savedSessions, then GetDefault as last resort.
+func TestPostRestoreSessionSetup_PreservesPerSessionModel(t *testing.T) {
+	mgr := &mockSubscriptionManager{
+		subs: []channel.Subscription{
+			{ID: "sub1", Name: "glm", Provider: "openai", Model: "glm-4", Active: true, Enabled: true},
+		},
+		defaultID: "sub1",
+		// Simulate DB tenants table: default session has per-session model "glm-5.2"
+		// (user switched via Ctrl+N, which calls SelectModel → writes to tenants table)
+		sessionLLM: map[string]sessionLLMEntry{
+			"/test": {subID: "sub1", model: "glm-5.2"},
+		},
+	}
+
+	model := initTestModel()
+	model.handleResize(80, 24)
+	model.subscriptionMgr = mgr
+	model.remoteMode = true
+	model.channel = &CLIChannel{
+		subscriptionMgr: mgr,
+		config: &CLIChannelConfig{
+			RefreshValuesCache: func(string) {},
+			GetCurrentValues:   func() map[string]string { return nil },
+		},
+	}
+
+	// Simulate: restoreSession already restored the correct model from savedSessions
+	model.cachedModelName = "glm-5.2"
+	model.activeSubID = "sub1"
+
+	// Act: postRestoreSessionSetup should NOT overwrite with GetDefault's Model ("glm-4")
+	model.postRestoreSessionSetup()
+
+	// Assert: per-session model is preserved (from DB, not GetDefault)
+	if model.cachedModelName != "glm-5.2" {
+		t.Errorf("cachedModelName = %q, want glm-5.2 (per-session model from DB)\n"+
+			"GetDefault would have returned glm-4 (subscription default)", model.cachedModelName)
+	}
+	if model.activeSubID != "sub1" {
+		t.Errorf("activeSubID = %q, want sub1", model.activeSubID)
+	}
+}
+
+// TestPostRestoreSessionSetup_DefaultFallbackForNewSession verifies that a
+// brand-new session (no DB entry, no local JSON, no savedSessions) falls back
+// to GetDefault correctly.
+func TestPostRestoreSessionSetup_DefaultFallbackForNewSession(t *testing.T) {
+	mgr := &mockSubscriptionManager{
+		subs: []channel.Subscription{
+			{ID: "sub1", Name: "glm", Provider: "openai", Model: "glm-4", Active: true, Enabled: true},
+		},
+		defaultID: "sub1",
+		// No sessionLLM entry for this chatID — simulates a brand-new session
+	}
+
+	model := initTestModel()
+	model.handleResize(80, 24)
+	model.subscriptionMgr = mgr
+	model.remoteMode = true
+	model.channel = &CLIChannel{
+		subscriptionMgr: mgr,
+		config: &CLIChannelConfig{
+			RefreshValuesCache: func(string) {},
+			GetCurrentValues:   func() map[string]string { return nil },
+		},
+	}
+
+	// No saved state — cachedModelName and activeSubID are empty
+	model.cachedModelName = ""
+	model.activeSubID = ""
+
+	model.postRestoreSessionSetup()
+
+	// Assert: fell back to GetDefault
+	if model.cachedModelName != "glm-4" {
+		t.Errorf("cachedModelName = %q, want glm-4 (from GetDefault fallback)", model.cachedModelName)
+	}
+	if model.activeSubID != "sub1" {
+		t.Errorf("activeSubID = %q, want sub1", model.activeSubID)
+	}
+}
+
+// TestPostRestoreSessionSetup_DBOverridesSavedSessions verifies that when
+// restoreSession() restored an old model from savedSessions, but the DB has
+// a different (newer) per-session model, the DB value wins.
+func TestPostRestoreSessionSetup_DBOverridesSavedSessions(t *testing.T) {
+	mgr := &mockSubscriptionManager{
+		subs: []channel.Subscription{
+			{ID: "sub1", Name: "glm", Provider: "openai", Model: "glm-4", Active: true, Enabled: true},
+		},
+		defaultID: "sub1",
+		// DB has the latest per-session model
+		sessionLLM: map[string]sessionLLMEntry{
+			"/test": {subID: "sub1", model: "glm-5.2"},
+		},
+	}
+
+	model := initTestModel()
+	model.handleResize(80, 24)
+	model.subscriptionMgr = mgr
+	model.remoteMode = true
+	model.channel = &CLIChannel{
+		subscriptionMgr: mgr,
+		config: &CLIChannelConfig{
+			RefreshValuesCache: func(string) {},
+			GetCurrentValues:   func() map[string]string { return nil },
+		},
+	}
+
+	// Simulate: restoreSession() restored a STALE model from savedSessions
+	model.cachedModelName = "old-model"
+	model.activeSubID = "sub1"
+
+	model.postRestoreSessionSetup()
+
+	// Assert: DB value wins over savedSessions
+	if model.cachedModelName != "glm-5.2" {
+		t.Errorf("cachedModelName = %q, want glm-5.2 (DB is authoritative over savedSessions)",
+			model.cachedModelName)
+	}
+}
+
 // TestCancelDuringToolGeneratingPreservesPreviousIteration verifies that
 // Ctrl+C during tool generating (LLM streaming tool args) does NOT lose
 // the previous iteration's completed tools. Before the fix, the cancel

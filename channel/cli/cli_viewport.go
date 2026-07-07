@@ -455,9 +455,18 @@ func (m *cliModel) updateStreamingOnly() {
 	// Uses renderLiveIteration directly, then combines with completed.
 	// Separator logic matches renderTurnBody: no blank line when both sides
 	// only have tools (running tools should be continuous with completed tools).
+	//
+	// CRITICAL: skip live rendering when !m.typing (turn ended). The final
+	// iteration is already in progressState.iterations (snapshotted by
+	// finalizeTurnFromSnapshot before endAgentTurn). Rendering liveLines
+	// from progressState.current duplicates the final iteration's Content
+	// + Reasoning. For CLI sessions this is momentary (handleAgentMessage
+	// clears streamingMsgIdx), but for non-CLI sessions (/su to feishu/web)
+	// handleAgentMessage never arrives → streamingMsgIdx stays valid →
+	// updateStreamingOnly runs every tick → persistent duplication.
 	var liveLines []string
 	liveMaxW := 0
-	if m.progressState.current != nil {
+	if m.progressState.current != nil && m.typing {
 		liveBlocks := m.liveIterationBlocks(m.progressState.current, contentWidth, msg.content)
 		liveContent := renderTurnBlocks(liveBlocks)
 		liveContent = strings.TrimRight(liveContent, "\n")

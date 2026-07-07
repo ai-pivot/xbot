@@ -21,6 +21,15 @@ type mockSubscriptionManager struct {
 
 	// Track UpdatePerModelConfig calls for assertions.
 	pmcUpdates []mockPMCUpdate
+
+	// Per-session LLM state: chatID → (subID, model). Simulates the DB tenants table.
+	// GetSessionSubscription returns from this map; empty string = "no entry in DB".
+	sessionLLM map[string]sessionLLMEntry
+}
+
+type sessionLLMEntry struct {
+	subID string
+	model string
 }
 
 type mockPMCUpdate struct {
@@ -113,6 +122,11 @@ func (m *mockSubscriptionManager) UpdatePerModelConfig(id, model string, pmc cha
 }
 
 func (m *mockSubscriptionManager) GetSessionSubscription(senderID, chatID string) (string, string, error) {
+	if m.sessionLLM != nil {
+		if entry, ok := m.sessionLLM[chatID]; ok {
+			return entry.subID, entry.model, nil
+		}
+	}
 	return "", "", nil
 }
 
