@@ -451,6 +451,22 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		}
 	}
 
+	// Suppress pulse when any tools are present. The pulse spinner is an
+	// "idle indicator" for the thinking phase (no tools, no content). When
+	// tools exist in ANY status (pending, running, done, error, completed),
+	// the iteration is actively working — showing the pulse adds a spurious
+	// line that appears/disappears as tools transition between states.
+	//
+	// Without this, sequential tool execution causes height jitter:
+	//   Tool A running, B pending → hasSpinner=true (running) → no pulse → N lines
+	//   Tool A done, B pending    → hasSpinner=false          → pulse    → N+1 lines
+	//   Tool A done, B running   → hasSpinner=true (running) → no pulse → N lines
+	//   Tool A done, B done      → hasSpinner=false          → pulse    → N+1 lines
+	// This H→H+1→H oscillation is the visible jitter.
+	if len(tools) > 0 {
+		hasSpinner = true
+	}
+
 	if !hasSpinner {
 		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
 		blocks = append(blocks, turnBlock{kind: turnBlockPulse, text: "  " + s.ProgressRunning.Render(frame)})
