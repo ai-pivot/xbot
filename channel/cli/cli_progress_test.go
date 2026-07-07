@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -2357,6 +2358,336 @@ func TestPostRestoreSessionSetup_AutoBindsBalanceTier(t *testing.T) {
 	// Verify SelectModel was called to persist the binding
 	if len(subscriber.selectModelCalls) != 1 {
 		t.Fatalf("expected 1 SelectModel call, got %d", len(subscriber.selectModelCalls))
+	}
+}
+
+// ── Corner case tests: UI/server data consistency ──
+// These tests verify invariants that must hold regardless of event ordering,
+// timing, or coalescing. They ensure the UI iterations always match the
+// server's authoritative IterationHistory.
+
+// TestConsistency_DBMoreEntriesThanLocal verifies that when the DB
+// IterationHistory has more entries than the local state (e.g. after
+// missing push events), restoreIterationsFromSnapshot rebuilds from DB.
+func TestConsistency_DBMoreEntriesThanLocal(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Local has 1 iteration (from a previous DB restore)
+	model.progressState.iterations = []cliIterationSnapshot{
+		{Iteration: 1, Content: "old", Tools: []protocol.ToolProgress{{Name: "Read", Status: "done"}}},
+	}
+
+	// DB now has 3 iterations (server processed more while we weren't looking)
+	dbHistory := []protocol.ProgressEvent{
+		{Iteration: 1, Content: "first", CompletedTools: []protocol.ToolProgress{{Name: "Read", Label: "file1", Status: "done", Iteration: 1}}},
+		{Iteration: 2, Content: "second", CompletedTools: []protocol.ToolProgress{{Name: "Shell", Label: "ls", Status: "done", Iteration: 2}}},
+		{Iteration: 3, Content: "third", CompletedTools: []protocol.ToolProgress{{Name: "Grep", Label: "pattern", Status: "done", Iteration: 3}}},
+	}
+
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Phase: "thinking", Iteration: 4,
+	}, dbHistory...)
+
+	// Local must be rebuilt from DB — 3 iterations with correct content
+	if len(model.progressState.iterations) != 3 {
+		t.Fatalf("expected 3 iterations after DB rebuild, got %d", len(model.progressState.iterations))
+	}
+	for i, want := range []string{"first", "second", "third"} {
+		if model.progressState.iterations[i].Content != want {
+			t.Errorf("iter %d content = %q, want %q", i+1, model.progressState.iterations[i].Content, want)
+		}
+	}
+}
+
+// TestConsistency_PhaseDoneWhenDBHasFinalIter verifies no duplicate when
+// DB IterationHistory already contains the final iteration.
+func TestConsistency_PhaseDoneWhenDBHasFinalIter(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	finalContent := "Final report content"
+	dbHistory := []protocol.ProgressEvent{
+		{Iteration: 1, Content: "step1", CompletedTools: []protocol.ToolProgress{{Name: "Read", Status: "done", Iteration: 1}}},
+		{Iteration: 2, Content: finalContent, CompletedTools: []protocol.ToolProgress{{Name: "Write", Status: "done", Iteration: 2}}},
+	}
+
+	// Send PhaseDone with IterationHistory that already has iter 2
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:            "done",
+		Iteration:        2,
+		Content:          finalContent,
+		IterationHistory: dbHistory,
+	})
+
+	// Should have exactly 2 iterations — no duplicate of iter 2
+	if len(model.progressState.iterations) != 2 {
+		t.Fatalf("expected 2 iterations (no dup), got %d", len(model.progressState.iterations))
+	}
+	// Both should have correct content
+	if model.progressState.iterations[1].Content != finalContent {
+		t.Errorf("iter 2 content = %q, want %q", model.progressState.iterations[1].Content, finalContent)
+	}
+}
+
+// TestConsistency_PhaseDoneWhenDBMissingFinalIter verifies that
+// finalizeTurnFromSnapshot adds the final iteration when DB hasn't
+// captured it yet (PhaseDone arrives before recordIterationSnapshot).
+func TestConsistency_PhaseDoneWhenDBMissingFinalIter(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// DB has iter 1 but not iter 2 (the final one)
+	dbHistory := []protocol.ProgressEvent{
+		{Iteration: 1, Content: "step1", CompletedTools: []protocol.ToolProgress{{Name: "Read", Status: "done", Iteration: 1}}},
+	}
+
+	// First, restore from DB
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 2, Content: "",
+		CompletedTools: []protocol.ToolProgress{{Name: "Write", Label: "report", Status: "done", Iteration: 2}},
+	}, dbHistory...)
+
+	if len(model.progressState.iterations) != 1 {
+		t.Fatalf("expected 1 iteration from DB, got %d", len(model.progressState.iterations))
+	}
+
+	// PhaseDone arrives — DB hasn't captured iter 2 yet (no IterationHistory)
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 2,
+		Content:   "Final report",
+		Reasoning: "Done thinking",
+	})
+
+	// Should now have 2 iterations: iter 1 (from DB) + iter 2 (from finalize)
+	if len(model.progressState.iterations) != 2 {
+		t.Fatalf("expected 2 iterations after PhaseDone, got %d", len(model.progressState.iterations))
+	}
+	if model.progressState.iterations[1].Iteration != 2 {
+		t.Errorf("iter[1].Iteration = %d, want 2", model.progressState.iterations[1].Iteration)
+	}
+	if model.progressState.iterations[1].Content != "Final report" {
+		t.Errorf("iter[1].Content = %q, want 'Final report'", model.progressState.iterations[1].Content)
+	}
+}
+
+// TestConsistency_RepeatedTickPullsNoRebuild verifies that multiple tick
+// pulls with the same IterationHistory don't cause unnecessary rebuilds.
+func TestConsistency_RepeatedTickPullsNoRebuild(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	dbHistory := []protocol.ProgressEvent{
+		{Iteration: 1, Content: "step1", CompletedTools: []protocol.ToolProgress{{Name: "Read", Status: "done", Iteration: 1}}},
+		{Iteration: 2, Content: "step2", CompletedTools: []protocol.ToolProgress{{Name: "Shell", Status: "done", Iteration: 2}}},
+	}
+
+	// First pull — builds from DB
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Phase: "thinking", Iteration: 3,
+	}, dbHistory...)
+
+	// Mutate local iterations to detect rebuild (if rebuild happens, mutation is lost)
+	model.progressState.iterations[0].Content = "MUTATED"
+
+	// Second pull — same count, should skip
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Phase: "thinking", Iteration: 3,
+	}, dbHistory...)
+
+	// Should NOT have rebuilt — mutation persists
+	if model.progressState.iterations[0].Content != "MUTATED" {
+		t.Error("restoreIterationsFromSnapshot rebuilt despite same count — O(1) skip broken")
+	}
+}
+
+// TestConsistency_FinalizeThenTickPullNoDuplicate verifies that after
+// finalizeTurnFromSnapshot adds the final iteration, a subsequent tick
+// pull with DB data including that iteration doesn't create a duplicate.
+func TestConsistency_FinalizeThenTickPullNoDuplicate(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// PhaseDone — finalize adds iter 2
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 2,
+		Content:   "final",
+		Reasoning: "done",
+	})
+
+	countAfterFinalize := len(model.progressState.iterations)
+	if countAfterFinalize != 1 {
+		t.Fatalf("expected 1 iteration after finalize, got %d", countAfterFinalize)
+	}
+
+	// Simulate a late tick pull with DB data that includes iter 2
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Phase: "done", Iteration: 2,
+	}, protocol.ProgressEvent{Iteration: 2, Content: "final", CompletedTools: []protocol.ToolProgress{}})
+
+	// Should still have 1 iteration — no duplicate
+	if len(model.progressState.iterations) != countAfterFinalize {
+		t.Errorf("iteration count changed from %d to %d after late tick pull (duplicate created)",
+			countAfterFinalize, len(model.progressState.iterations))
+	}
+}
+
+// TestConsistency_CancelCapturesStreamContent verifies that when a turn
+// is cancelled mid-stream, finalizeTurnFromSnapshot captures the
+// partial StreamContent (not just empty Content).
+func TestConsistency_CancelCapturesStreamContent(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Simulate streaming content (partial response)
+	model.progressState.current = &protocol.ProgressEvent{
+		Iteration:     1,
+		Phase:         "thinking",
+		StreamContent: "Partial response being typed...",
+		Content:       "", // Content not finalized yet
+		ChatID:        "cli:/test",
+	}
+
+	// Simulate Ctrl+C cancel
+	model.turnCancelled = true
+
+	// PhaseDone arrives after cancel
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 1,
+		Content:   "", // PhaseDone has no Content (stream was interrupted)
+		ChatID:    "cli:/test",
+	})
+
+	// The finalized iteration should have the partial StreamContent
+	if len(model.progressState.iterations) == 0 {
+		t.Fatal("no iteration created after cancel + PhaseDone")
+	}
+	iter := model.progressState.iterations[0]
+	if iter.Content != "Partial response being typed..." {
+		t.Errorf("iter.Content = %q, want partial StreamContent", iter.Content)
+	}
+}
+
+// TestConsistency_EmptyTurnNoIterations verifies that a turn with zero
+// iterations (e.g. immediate final response, no tools) doesn't crash
+// and produces correct (possibly empty) iterations.
+func TestConsistency_EmptyTurnNoIterations(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// PhaseDone with iteration 0 and content — no prior iterations
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 0,
+		Content:   "Hello!",
+		ChatID:    "cli:/test",
+	})
+
+	// Should have at most 1 iteration (iter 0 with content)
+	if len(model.progressState.iterations) > 1 {
+		t.Errorf("expected 0-1 iterations for empty turn, got %d", len(model.progressState.iterations))
+	}
+}
+
+// TestConsistency_StaleSeqSkipped verifies that an event with an old Seq
+// is skipped by the seq guard in applyProgressSnapshot.
+func TestConsistency_StaleSeqSkipped(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// First event with Seq=5
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 1, Seq: 5,
+		CompletedTools: []protocol.ToolProgress{{Name: "Read", Status: "done", Iteration: 1}},
+	})
+
+	originalCount := len(model.progressState.iterations)
+
+	// Stale event with Seq=3 (older) — should be skipped
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase: "tool_exec", Iteration: 2, Seq: 3,
+		CompletedTools: []protocol.ToolProgress{{Name: "Shell", Status: "done", Iteration: 2}},
+	})
+
+	// No change — stale event was skipped
+	if len(model.progressState.iterations) != originalCount {
+		t.Errorf("stale event was not skipped: iterations changed from %d to %d",
+			originalCount, len(model.progressState.iterations))
+	}
+}
+
+// TestConsistency_PushEventsAloneDoNotCreateIterations verifies that
+// push events without IterationHistory never create local iteration
+// snapshots. This is the core guarantee after removing snapshotIterationLocal.
+func TestConsistency_PushEventsAloneDoNotCreateIterations(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Send several push events with increasing iteration numbers
+	// but NO IterationHistory field
+	for i := 1; i <= 5; i++ {
+		sendProgress(model, &protocol.ProgressEvent{
+			Phase:          "tool_exec",
+			Iteration:      i,
+			Seq:            uint64(i),
+			Content:        fmt.Sprintf("iter %d content", i),
+			Reasoning:      fmt.Sprintf("iter %d reasoning", i),
+			CompletedTools: []protocol.ToolProgress{{Name: "Read", Label: fmt.Sprintf("file%d", i), Status: "done", Elapsed: 100, Iteration: i}},
+			ChatID:         "cli:/test",
+		})
+	}
+
+	// No local iterations should have been created — all data lives
+	// only in m.progressState.current (the live state). Iterations come
+	// exclusively from DB IterationHistory or finalizeTurnFromSnapshot.
+	if len(model.progressState.iterations) != 0 {
+		t.Errorf("push events created %d local iterations — expected 0 (snapshotIterationLocal removed)",
+			len(model.progressState.iterations))
+	}
+
+	// But current state should reflect the latest push event
+	if model.progressState.current == nil {
+		t.Fatal("progressState.current is nil after push events")
+	}
+	if model.progressState.current.Iteration != 5 {
+		t.Errorf("current.Iteration = %d, want 5", model.progressState.current.Iteration)
+	}
+}
+
+// TestConsistency_DBHistorySupersedesFinalize verifies that if both
+// DB IterationHistory and finalizeTurnFromSnapshot provide data for the
+// same iteration, the DB data wins (it's authoritative).
+// This happens when PhaseDone arrives and DB already has the final iteration,
+// then finalize is skipped (alreadySnapped=true).
+func TestConsistency_DBHistorySupersedesFinalize(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	dbContent := "DB authoritative content"
+	dbTools := []protocol.ToolProgress{{Name: "Read", Label: "file.go", Status: "done", Elapsed: 500, Iteration: 1}}
+
+	// DB has iter 1 with authoritative data
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Phase: "thinking", Iteration: 2,
+	}, protocol.ProgressEvent{Iteration: 1, Content: dbContent, CompletedTools: dbTools})
+
+	// PhaseDone for iter 2 (final) — DB doesn't have iter 2 yet
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 2,
+		Content:   "final reply",
+	})
+
+	// iter 1 should still have DB content (not overwritten by finalize)
+	if model.progressState.iterations[0].Content != dbContent {
+		t.Errorf("iter 1 content = %q, want %q (DB data should be authoritative)",
+			model.progressState.iterations[0].Content, dbContent)
+	}
+	if len(model.progressState.iterations[0].Tools) != 1 || model.progressState.iterations[0].Tools[0].Name != "Read" {
+		t.Errorf("iter 1 tools don't match DB data")
 	}
 }
 
