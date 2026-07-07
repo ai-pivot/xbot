@@ -478,6 +478,17 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		// If not, savedSessions/local JSON/GetDefault provide the fallback.
 		m.refreshCachedModelName()
 
+		// Auto-bind: if the session has no per-session binding in the DB
+		// (new session, channel-created session, or never-configured session),
+		// proactively bind a model so the status bar shows it immediately.
+		// Priority: Balance tier → last-used model.
+		// Idempotent — ensureSessionModelBinding checks GetSessionSubscription
+		// and skips sessions that already have a binding.
+		// This mirrors the auto-bind in ResolveLLM (agent side), ensuring ALL
+		// sessions follow the same path regardless of creation origin.
+		m.ensureSessionModelBinding()
+		m.refreshCachedModelName()
+
 		// Resolve context limits from the now-correct activeSubID + cachedModelName.
 		state := SessionLLMState{
 			SubscriptionID: m.activeSubID,

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/sirupsen/logrus"
 	ch "xbot/channel"
 
@@ -220,6 +222,75 @@ func (m *cliModel) refreshCachedModelName() {
 	if m.channel.modelLister != nil {
 		m.modelCount = len(m.channel.modelLister.ListAllModels())
 	}
+}
+
+// ensureSessionModelBinding auto-binds a model to the current session when it
+// has no per-session binding in the tenants table. This is the CLI-side mirror
+// of LLMFactory.ensureSessionModel, ensuring the status bar shows the model
+// immediately on session switch without waiting for the first agent message.
+//
+// Idempotent: if the session already has a binding (GetSessionSubscription
+// returns non-empty), the function is a no-op.
+//
+// Priority:
+//  1. Balance tier config (user_settings "tier_balance") — "subID|model" format
+//  2. Last-used model (GetDefault — returns the user's default subscription)
+//
+// Uses settingsSvc to read tier config and llmSubscriber.SelectModel to bind.
+func (m *cliModel) ensureSessionModelBinding() {
+	if m.channel == nil || m.llmSubscriber == nil {
+		return
+	}
+
+	// Already bound? Skip — idempotent guard.
+	// GetSessionSubscription checks the tenants table (same source as
+	// refreshCachedModelName step 1). If it returns a subID, the session
+	// already has a per-session model — no auto-bind needed.
+	if m.channel.subscriptionMgr != nil {
+		if subID, _, err := m.channel.subscriptionMgr.GetSessionSubscription(m.senderID, m.chatID); err == nil && subID != "" {
+			return
+		}
+	}
+
+	// Priority 1: Balance tier config.
+	if m.channel.settingsSvc != nil {
+		if vals, err := m.channel.settingsSvc.GetSettings(ch.ThinkingModeChannel, m.senderID); err == nil && vals != nil {
+			if raw := vals["tier_balance"]; raw != "" {
+				subID, model := parseTierValueCLI(raw)
+				if subID != "" && model != "" {
+					if err := m.llmSubscriber.SelectModel(m.senderID, subID, model, m.chatID); err == nil {
+						m.cachedModelName = model
+						m.activeSubID = subID
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// Priority 2: Last-used model (GetDefault).
+	if m.subscriptionMgr != nil {
+		if defSub, err := m.subscriptionMgr.GetDefault(m.senderID); err == nil && defSub != nil && defSub.Model != "" {
+			if err := m.llmSubscriber.SelectModel(m.senderID, defSub.ID, defSub.Model, m.chatID); err == nil {
+				m.cachedModelName = defSub.Model
+				m.activeSubID = defSub.ID
+				return
+			}
+		}
+	}
+
+	// No model to bind — leave cachedModelName empty. ResolveLLM will still
+	// auto-bind on first message via the agent-side ensureSessionModel.
+}
+
+// parseTierValueCLI splits a tier config value into (subID, model).
+// Supports both "subID|model" (new format) and plain "model" (legacy).
+func parseTierValueCLI(s string) (subID, model string) {
+	s = strings.TrimSpace(s)
+	if idx := strings.Index(s, "|"); idx >= 0 {
+		return s[:idx], s[idx+1:]
+	}
+	return "", s
 }
 
 // refreshCachedThinkingMode loads the global thinking_mode user setting from

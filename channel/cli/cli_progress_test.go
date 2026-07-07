@@ -2172,6 +2172,173 @@ func TestPostRestoreSessionSetup_DBOverridesSavedSessions(t *testing.T) {
 	}
 }
 
+// TestEnsureSessionModelBinding_BalanceTier verifies that when a session has
+// no model, ensureSessionModelBinding auto-binds to the Balance tier model.
+func TestEnsureSessionModelBinding_BalanceTier(t *testing.T) {
+	mgr := &mockSubscriptionManager{
+		subs: []channel.Subscription{
+			{ID: "sub1", Name: "glm", Model: "glm-4", Enabled: true},
+		},
+		defaultID: "sub1",
+	}
+	subscriber := &mockLLMSubscriber{}
+	settingsSvc := &testSettingsService{
+		getResult: map[string]string{
+			"tier_balance": "sub1|glm-5.2",
+		},
+	}
+
+	model := initTestModel()
+	model.subscriptionMgr = mgr
+	model.llmSubscriber = subscriber
+	model.channel = &CLIChannel{
+		subscriptionMgr: mgr,
+		settingsSvc:     settingsSvc,
+		config:          &CLIChannelConfig{},
+	}
+	model.cachedModelName = ""
+	model.activeSubID = ""
+
+	model.ensureSessionModelBinding()
+
+	if model.cachedModelName != "glm-5.2" {
+		t.Errorf("cachedModelName = %q, want glm-5.2 (from Balance tier)", model.cachedModelName)
+	}
+	if model.activeSubID != "sub1" {
+		t.Errorf("activeSubID = %q, want sub1", model.activeSubID)
+	}
+	if len(subscriber.selectModelCalls) != 1 {
+		t.Fatalf("expected 1 SelectModel call, got %d", len(subscriber.selectModelCalls))
+	}
+	call := subscriber.selectModelCalls[0]
+	if call.subID != "sub1" || call.model != "glm-5.2" {
+		t.Errorf("SelectModel called with (sub=%s, model=%s), want (sub1, glm-5.2)", call.subID, call.model)
+	}
+}
+
+// TestEnsureSessionModelBinding_FallbackToDefault verifies that when Balance
+// tier is not configured, ensureSessionModelBinding falls back to GetDefault.
+func TestEnsureSessionModelBinding_FallbackToDefault(t *testing.T) {
+	mgr := &mockSubscriptionManager{
+		subs: []channel.Subscription{
+			{ID: "sub1", Name: "glm", Model: "glm-4", Enabled: true},
+		},
+		defaultID: "sub1",
+	}
+	subscriber := &mockLLMSubscriber{}
+	settingsSvc := &testSettingsService{
+		getResult: map[string]string{}, // no tier_balance configured
+	}
+
+	model := initTestModel()
+	model.subscriptionMgr = mgr
+	model.llmSubscriber = subscriber
+	model.channel = &CLIChannel{
+		subscriptionMgr: mgr,
+		settingsSvc:     settingsSvc,
+		config:          &CLIChannelConfig{},
+	}
+	model.cachedModelName = ""
+	model.activeSubID = ""
+
+	model.ensureSessionModelBinding()
+
+	if model.cachedModelName != "glm-4" {
+		t.Errorf("cachedModelName = %q, want glm-4 (from GetDefault fallback)", model.cachedModelName)
+	}
+	if model.activeSubID != "sub1" {
+		t.Errorf("activeSubID = %q, want sub1", model.activeSubID)
+	}
+	if len(subscriber.selectModelCalls) != 1 {
+		t.Fatalf("expected 1 SelectModel call, got %d", len(subscriber.selectModelCalls))
+	}
+}
+
+// TestEnsureSessionModelBinding_NoModelAvailable verifies that when neither
+// Balance tier nor GetDefault has a model, no binding is created.
+func TestEnsureSessionModelBinding_NoModelAvailable(t *testing.T) {
+	mgr := &mockSubscriptionManager{
+		subs: []channel.Subscription{
+			{ID: "sub1", Name: "glm", Model: "", Enabled: true}, // empty Model
+		},
+		defaultID: "sub1",
+	}
+	subscriber := &mockLLMSubscriber{}
+	settingsSvc := &testSettingsService{
+		getResult: map[string]string{}, // no tier_balance
+	}
+
+	model := initTestModel()
+	model.subscriptionMgr = mgr
+	model.llmSubscriber = subscriber
+	model.channel = &CLIChannel{
+		subscriptionMgr: mgr,
+		settingsSvc:     settingsSvc,
+		config:          &CLIChannelConfig{},
+	}
+	model.cachedModelName = ""
+	model.activeSubID = ""
+
+	model.ensureSessionModelBinding()
+
+	// No model available — should remain empty, no SelectModel call.
+	if model.cachedModelName != "" {
+		t.Errorf("cachedModelName = %q, want empty (no model available)", model.cachedModelName)
+	}
+	if len(subscriber.selectModelCalls) != 0 {
+		t.Errorf("expected 0 SelectModel calls, got %d", len(subscriber.selectModelCalls))
+	}
+}
+
+// TestPostRestoreSessionSetup_AutoBindsBalanceTier verifies that
+// postRestoreSessionSetup auto-binds the Balance tier model for a new session.
+func TestPostRestoreSessionSetup_AutoBindsBalanceTier(t *testing.T) {
+	mgr := &mockSubscriptionManager{
+		subs: []channel.Subscription{
+			{ID: "sub1", Name: "glm", Model: "glm-4", Enabled: true},
+		},
+		defaultID: "sub1",
+		// No sessionLLM entry — new session with no binding
+	}
+	subscriber := &mockLLMSubscriber{}
+	settingsSvc := &testSettingsService{
+		getResult: map[string]string{
+			"tier_balance": "sub1|glm-5.2",
+		},
+	}
+
+	model := initTestModel()
+	model.handleResize(80, 24)
+	model.subscriptionMgr = mgr
+	model.llmSubscriber = subscriber
+	model.remoteMode = true
+	model.channel = &CLIChannel{
+		subscriptionMgr: mgr,
+		settingsSvc:     settingsSvc,
+		config: &CLIChannelConfig{
+			RefreshValuesCache: func(string) {},
+			GetCurrentValues:   func() map[string]string { return nil },
+		},
+	}
+	// Simulate a brand-new session: no saved state, no model
+	model.cachedModelName = ""
+	model.activeSubID = ""
+
+	model.postRestoreSessionSetup()
+
+	// After postRestoreSessionSetup, the session should be auto-bound to Balance tier
+	if model.cachedModelName != "glm-5.2" {
+		t.Errorf("cachedModelName = %q, want glm-5.2 (auto-bound from Balance tier)", model.cachedModelName)
+	}
+	if model.activeSubID != "sub1" {
+		t.Errorf("activeSubID = %q, want sub1", model.activeSubID)
+	}
+	// Verify SelectModel was called to persist the binding
+	if len(subscriber.selectModelCalls) != 1 {
+		t.Fatalf("expected 1 SelectModel call, got %d", len(subscriber.selectModelCalls))
+	}
+}
+
 // TestCancelDuringToolGeneratingPreservesPreviousIteration verifies that
 // Ctrl+C during tool generating (LLM streaming tool args) does NOT lose
 // the previous iteration's completed tools. Before the fix, the cancel

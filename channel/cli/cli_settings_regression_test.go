@@ -567,19 +567,20 @@ func TestCycleModel_PreservesPerModelMaxContext(t *testing.T) {
 
 // mockLLMSubscriber tracks SelectModel calls for assertions.
 type mockLLMSubscriber struct {
-	switchModelCalls []mockSwitchModelCall
 	switchSubCalls   []mockSwitchSubCall
+	selectModelCalls []mockSelectModelCall
 	defaultModel     string
-}
-
-type mockSwitchModelCall struct {
-	senderID string
-	model    string
-	chatID   string
 }
 
 type mockSwitchSubCall struct {
 	senderID string
+	chatID   string
+}
+
+type mockSelectModelCall struct {
+	senderID string
+	subID    string
+	model    string
 	chatID   string
 }
 
@@ -589,7 +590,7 @@ func (m *mockLLMSubscriber) SwitchSubscription(senderID string, sub *channel.Sub
 }
 
 func (m *mockLLMSubscriber) SelectModel(senderID, subID, model, chatID string) error {
-	m.switchModelCalls = append(m.switchModelCalls, mockSwitchModelCall{senderID, model, chatID})
+	m.selectModelCalls = append(m.selectModelCalls, mockSelectModelCall{senderID, subID, model, chatID})
 	return nil
 }
 
@@ -683,10 +684,10 @@ func TestHandleSwitchLLMDone_RestoresPerSessionModel(t *testing.T) {
 	m.handleSwitchLLMDoneMsg(done)
 
 	// SelectModel must have been called with the per-session model
-	if len(mockSub.switchModelCalls) != 1 {
-		t.Fatalf("expected 1 SelectModel call, got %d", len(mockSub.switchModelCalls))
+	if len(mockSub.selectModelCalls) != 1 {
+		t.Fatalf("expected 1 SelectModel call, got %d", len(mockSub.selectModelCalls))
 	}
-	call := mockSub.switchModelCalls[0]
+	call := mockSub.selectModelCalls[0]
 	if call.model != "model-b" {
 		t.Errorf("SelectModel model = %q, want model-b", call.model)
 	}
