@@ -16,7 +16,9 @@ type mockSubscriptionManager struct {
 	subs      []channel.Subscription
 	defaultID string
 	addCalled bool
+	addListID string
 	setDefID  string
+	setDefIDs []string
 	saveErr   error
 
 	// Track UpdatePerModelConfig calls for assertions.
@@ -44,7 +46,11 @@ func (m *mockSubscriptionManager) GetDefault(_ string) (*channel.Subscription, e
 
 func (m *mockSubscriptionManager) Add(sub *channel.Subscription) error {
 	m.addCalled = true
-	m.subs = append(m.subs, *sub)
+	stored := *sub
+	if stored.ID == "" && m.addListID != "" {
+		stored.ID = m.addListID
+	}
+	m.subs = append(m.subs, stored)
 	return m.saveErr
 }
 
@@ -80,6 +86,7 @@ func (m *mockSubscriptionManager) RemoveModel(id, model string) error {
 
 func (m *mockSubscriptionManager) SetDefault(id, chatID string) error {
 	m.setDefID = id
+	m.setDefIDs = append(m.setDefIDs, id)
 	for i := range m.subs {
 		m.subs[i].Active = m.subs[i].ID == id
 	}
