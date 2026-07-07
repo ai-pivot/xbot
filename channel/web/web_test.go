@@ -909,3 +909,80 @@ func TestPushPluginWidgetsPerSession_Incremental(t *testing.T) {
 		t.Error("third push with different content should have sent a message")
 	}
 }
+
+// TestRPCNonBlocking verifies that a slow RPC does not block subsequent RPCs.
+// Before the fix, readPump processed RPCs serially — a long-running
+// refresh_model_entries (up to 8s per subscription) blocked all subsequent
+// RPC responses. After the fix, each RPC is dispatched to a goroutine so
+// readPump can continue reading messages.
+func TestRPCNonBlocking(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+
+	// Custom RPCHandler: "slow_method" sleeps 300ms, "fast_method" returns immediately.
+	wc.SetRPCHandler(func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
+		switch method {
+		case "slow_method":
+			time.Sleep(300 * time.Millisecond)
+			return json.RawMessage(`"slow_done"`), nil
+		case "fast_method":
+			return json.RawMessage(`"fast_done"`), nil
+		default:
+			return nil, fmt.Errorf("unknown method: %s", method)
+		}
+	})
+
+	// Register + Login
+	regResp, _ := http.Post(server.URL+"/api/auth/register", "application/json", strings.NewReader(`{"username":"rpcuser","password":"pw"}`))
+	regResp.Body.Close()
+	loginResp, _ := http.Post(server.URL+"/api/auth/login", "application/json", strings.NewReader(`{"username":"rpcuser","password":"pw"}`))
+	loginResp.Body.Close()
+
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Cookies() {
+		if c.Name == webSessionCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no session cookie")
+	}
+
+	conn := makeWSConnection(t, server.URL, sessionCookie.Name+"="+sessionCookie.Value)
+	defer conn.Close()
+	time.Sleep(50 * time.Millisecond) // let readPump start
+
+	// Send slow RPC first, then fast RPC immediately.
+	slowReq, _ := json.Marshal(protocol.WSClientMessage{Type: protocol.MsgTypeRPC, ID: "rpc-slow", Method: "slow_method"})
+	fastReq, _ := json.Marshal(protocol.WSClientMessage{Type: protocol.MsgTypeRPC, ID: "rpc-fast", Method: "fast_method"})
+
+	if err := conn.WriteMessage(websocket.TextMessage, slowReq); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, fastReq); err != nil {
+		t.Fatal(err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	// The fast RPC response MUST arrive before the slow RPC response.
+	// If readPump is still serial (pre-fix), the fast response is delayed
+	// by at least 300ms (the slow RPC's sleep).
+	var firstResp protocol.WSMessage
+	if err := conn.ReadJSON(&firstResp); err != nil {
+		t.Fatalf("read first response: %v", err)
+	}
+
+	if firstResp.ID != "rpc-fast" {
+		t.Errorf("expected fast RPC response first, got ID=%s (slow RPC should still be sleeping)", firstResp.ID)
+	}
+
+	var secondResp protocol.WSMessage
+	if err := conn.ReadJSON(&secondResp); err != nil {
+		t.Fatalf("read second response: %v", err)
+	}
+	if secondResp.ID != "rpc-slow" {
+		t.Errorf("expected slow RPC response second, got ID=%s", secondResp.ID)
+	}
+}

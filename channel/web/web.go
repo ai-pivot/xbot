@@ -961,7 +961,20 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 			continue
 		case protocol.MsgTypeRPC:
-			// CLI RemoteBackend RPC request — dispatch to server-side handler
+			// CLI RemoteBackend RPC request — dispatch to server-side handler.
+			//
+			// RPC processing runs in a goroutine so readPump can continue
+			// reading the next WebSocket message. Without this, a long-running
+			// RPC (e.g. refresh_model_entries, which fetches /models from every
+			// subscription with up to 8s timeout each) blocks readPump and
+			// queues all subsequent RPCs — the CLI UI appears frozen for
+			// model switches, settings, etc. until the slow RPC completes.
+			//
+			// Concurrency safety: each RPC carries a unique client-generated ID.
+			// The response is matched by ID on the client side, so out-of-order
+			// completion is safe. Dependent RPC sequences from the same caller
+			// are naturally ordered because RemoteTransport.Call blocks until
+			// the response arrives before the caller sends the next request.
 			if wc.callbacks.RPCHandler == nil {
 				continue
 			}
@@ -974,33 +987,35 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				log.WithError(err).Debug("Invalid RPC message from CLI client")
 				continue
 			}
-			var result json.RawMessage
-			var rpcErr error
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						log.WithField("method", rpcReq.Method).
-							WithField("rpc_id", rpcReq.ID).
-							WithField("stack", string(debug.Stack())).
-							WithError(fmt.Errorf("%v", r)).
-							Error("RPC handler panic")
-						rpcErr = fmt.Errorf("internal error: %v", r)
-					}
+			go func(id, method string, params json.RawMessage, userID string) {
+				var result json.RawMessage
+				var rpcErr error
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.WithField("method", method).
+								WithField("rpc_id", id).
+								WithField("stack", string(debug.Stack())).
+								WithError(fmt.Errorf("%v", r)).
+								Error("RPC handler panic")
+							rpcErr = fmt.Errorf("internal error: %v", r)
+						}
+					}()
+					result, rpcErr = wc.callbacks.RPCHandler(method, params, userID)
 				}()
-				result, rpcErr = wc.callbacks.RPCHandler(rpcReq.Method, rpcReq.Params, c.userID)
-			}()
-			rpcMsg := protocol.WSMessage{Type: protocol.MsgTypeRPCResponse, ID: rpcReq.ID}
-			if rpcErr != nil {
-				rpcMsg.Error = rpcErr.Error()
-			} else if result != nil {
-				rpcMsg.Result = result
-			}
-			select {
-			case c.sendCh <- rpcMsg:
-			case <-time.After(10 * time.Second):
-				log.WithField("rpc_id", rpcReq.ID).WithField("method", rpcReq.Method).
-					Error("RPC response send timeout (10s)")
-			}
+				rpcMsg := protocol.WSMessage{Type: protocol.MsgTypeRPCResponse, ID: id}
+				if rpcErr != nil {
+					rpcMsg.Error = rpcErr.Error()
+				} else if result != nil {
+					rpcMsg.Result = result
+				}
+				select {
+				case c.sendCh <- rpcMsg:
+				case <-time.After(10 * time.Second):
+					log.WithField("rpc_id", id).WithField("method", method).
+						Error("RPC response send timeout (10s)")
+				}
+			}(rpcReq.ID, rpcReq.Method, rpcReq.Params, c.userID)
 			continue
 		case protocol.MsgTypeSubscribe:
 			// Subscribe to a business chatID so the Hub can route
