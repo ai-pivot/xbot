@@ -37,8 +37,30 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 	}
 	snapshot = &snap
 
+	// Restore iteration history from snapshot BEFORE the Seq check.
+	//
+	// Push events (from ProgressEventHandler) carry the current iteration's
+	// state but NOT IterationHistory — that field is only populated by
+	// GetActiveProgress (tick pull), which reads from the agent's
+	// iterationHistories map. The tick pull reuses the same Seq as the
+	// last push event (it reads the stored snapshot), so the Seq check
+	// below would skip it — but the tick pull's IterationHistory may have
+	// grown since the push event (recordIterationSnapshot runs AFTER
+	// SendProgress in the ProgressEventHandler).
+	//
+	// By restoring iterations before the Seq check, we guarantee that:
+	// 1. Push events (no IterationHistory) → restoreIterationsFromSnapshot
+	//    is a no-op (empty field → early return)
+	// 2. Tick pulls (with IterationHistory) → iterations are always rebuilt
+	//    from DB, even if the Seq matches the last push event
+	// 3. restoreIterationsFromSnapshot's own count check (O(1)) prevents
+	//    unnecessary rebuilds when nothing changed
+	m.restoreIterationsFromSnapshot(snapshot)
+
 	// Seq check: skip if we've already applied this or a newer snapshot.
 	// This deduplicates push events and tick reads — the latest snapshot wins.
+	// Note: restoreIterationsFromSnapshot already ran above, so iteration
+	// history is always up-to-date regardless of Seq dedup.
 	if snapshot.Seq > 0 && snapshot.Seq <= m.progressState.lastAppliedSeq {
 		return
 	}
@@ -52,14 +74,6 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 		m.handleHistoryCompactedSignal()
 		return
 	}
-
-	// Restore iteration history from snapshot (backend tracks this).
-	// The backend's IterationHistory is the SINGLE source of truth for
-	// completed iterations. recordIterationSnapshot on the agent side only
-	// appends after snapshotCompletedIteration runs — meaning the iteration
-	// is truly complete (Content set by recordAssistantMsg, Tools collected
-	// by snapshotCompletedIteration). No local snapshot logic is needed.
-	m.restoreIterationsFromSnapshot(snapshot)
 
 	// PhaseDone: turn completed. The outbound reply (handleAgentMessage) is
 	// the authoritative end-of-turn signal for main sessions. For agent

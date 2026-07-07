@@ -484,6 +484,20 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	}
 	countsChanged := m.bgTaskCount != prevBg || m.agentCount != prevAgent
 
+	// Tick pull: fetch authoritative progress snapshot from the backend.
+	// Push events (from ProgressEventHandler) do NOT carry IterationHistory —
+	// that field is only available from GetActiveProgress, which reads the
+	// agent's iterationHistories map. Without this pull, the CLI would never
+	// receive completed iteration data during a live turn.
+	// The pull is O(1) on the agent side (sync.Map read + slice copy) and
+	// applyProgressSnapshot's Seq check + restoreIterationsFromSnapshot's
+	// count check prevent redundant work.
+	if m.typing && m.channel != nil && m.channel.config.GetActiveProgressFn != nil {
+		if snapshot := m.channel.config.GetActiveProgressFn(m.channelName, m.chatID); snapshot != nil {
+			m.applyProgressSnapshot(snapshot)
+		}
+	}
+
 	if (m.bgTaskCount > 0) || (m.agentCount > 0) || needsSpinnerTick {
 		m.ticker.tick()
 		hasStreamContent := m.progressState.current != nil && m.progressState.current.StreamContent != "" && m.progressState.twVisible < len([]rune(m.progressState.current.StreamContent))
