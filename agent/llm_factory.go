@@ -522,13 +522,14 @@ func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
 		return nil
 	}
 	return func(models []string) {
-		// /models API returned a fresh model list — upsert each into
-		// subscription_models so they show up in the picker. No more
-		// CachedModels column writes.
+		// /models API returned a fresh model list — register each into
+		// subscription_models so they show up in the picker. Use EnsureModel
+		// (INSERT OR IGNORE) NOT UpsertModel, so existing per-model configs
+		// (max_context, max_output_tokens, api_type) are preserved.
 		for _, m := range models {
 			if m != "" {
-				if err := f.subscriptionSvc.UpsertModel(subID, m, 0, 0, "", ""); err != nil {
-					log.WithFields(log.Fields{"sub_id": subID, "model": m, "error": err}).Warn("[LLMFactory] OnModelsLoaded: UpsertModel failed")
+				if err := f.subscriptionSvc.EnsureModel(subID, m); err != nil {
+					log.WithFields(log.Fields{"sub_id": subID, "model": m, "error": err}).Warn("[LLMFactory] OnModelsLoaded: EnsureModel failed")
 				}
 			}
 		}

@@ -359,7 +359,7 @@ func (m *cliModel) layoutSearch(titleBar, input string) string {
 			fmt.Sprintf(m.locale.SearchNavFormat, m.searchState.query, m.searchState.idx+1, len(m.searchState.results)))
 	}
 	return fmt.Sprintf("%s\n%s\n%s\n%s",
-		titleBar, m.viewport.View(), searchBar, input)
+		titleBar, m.renderViewportFast(), searchBar, input)
 }
 
 // layoutAskUser renders the askuser panel layout: title bar, viewport,
@@ -415,9 +415,9 @@ func (m *cliModel) layoutAskUser(titleBar string) string {
 	// with the bottom border line (which would overflow terminal width).
 	var middleBlock string
 	if scrollHint != "" {
-		middleBlock = fmt.Sprintf("%s\n%s\n%s", m.viewport.View(), boxedAsk, scrollHint)
+		middleBlock = fmt.Sprintf("%s\n%s\n%s", m.renderViewportFast(), boxedAsk, scrollHint)
 	} else {
-		middleBlock = fmt.Sprintf("%s\n%s", m.viewport.View(), boxedAsk)
+		middleBlock = fmt.Sprintf("%s\n%s", m.renderViewportFast(), boxedAsk)
 	}
 
 	// Sidebar support — askuser is a split layout (viewport + panel), sidebar
@@ -530,7 +530,7 @@ func (m *cliModel) layoutMain(titleBar, input, completionsHint string) string {
 	// When sidebar is visible, this whole section is squeezed to chatWidth
 	// and the todo bar moves to the sidebar instead.
 	var middleLines []string
-	middleLines = append(middleLines, m.viewport.View())
+	middleLines = append(middleLines, m.renderViewportFast())
 	if status != "" {
 		middleLines = append(middleLines, status)
 	}

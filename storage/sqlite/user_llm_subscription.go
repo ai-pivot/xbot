@@ -692,6 +692,28 @@ func (s *LLMSubscriptionService) upsertModelTx(tx interface {
 	return nil
 }
 
+// EnsureModel registers that a model exists for a subscription (from /models
+// fetch). Unlike UpsertModel, it does NOT overwrite existing per-model configs —
+// if the row already exists, it is left untouched. New rows get zero-value configs.
+//
+// This is the correct method for OnModelsLoaded callbacks: /models API only
+// tells us "this model exists", not "reset its configuration to zero".
+func (s *LLMSubscriptionService) EnsureModel(subID, model string) error {
+	if subID == "" || model == "" {
+		return nil
+	}
+	conn := s.db.Conn()
+	_, err := conn.Exec(`
+		INSERT OR IGNORE INTO subscription_models
+			(id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type)
+		VALUES (lower(hex(randomblob(16))), ?, ?, 0, 0, '', '')
+	`, subID, model)
+	if err != nil {
+		return fmt.Errorf("ensure model: %w", err)
+	}
+	return nil
+}
+
 // SetSubscriptionEnabled toggles a subscription's enabled flag (v40). A disabled
 // subscription stops contributing models to the picker (ListAllModelsForUser and
 // ResolveSubscriptionForModel skip it) without deleting its credentials/models.
