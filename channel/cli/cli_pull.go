@@ -54,18 +54,12 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 	}
 
 	// Restore iteration history from snapshot (backend tracks this).
-	// This replaces snapshotIterationChange — the backend is the single
-	// source of truth for completed iterations.
+	// The backend's IterationHistory is the SINGLE source of truth for
+	// completed iterations. recordIterationSnapshot on the agent side only
+	// appends after snapshotCompletedIteration runs — meaning the iteration
+	// is truly complete (Content set by recordAssistantMsg, Tools collected
+	// by snapshotCompletedIteration). No local snapshot logic is needed.
 	m.restoreIterationsFromSnapshot(snapshot)
-
-	// Local iteration snapshot for low-latency display between ticks.
-	// When iteration increases, snapshot the previous iteration.
-	// The authoritative history comes from restoreIterationsFromSnapshot above;
-	// this just ensures immediate display without waiting for tick pull.
-	if m.progressState.current != nil && snapshot.Iteration > m.progressState.current.Iteration &&
-		m.progressState.current.Iteration >= 0 {
-		m.snapshotIterationLocal(m.progressState.current)
-	}
 
 	// PhaseDone: turn completed. The outbound reply (handleAgentMessage) is
 	// the authoritative end-of-turn signal for main sessions. For agent
@@ -169,52 +163,6 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 
 	// Sync todos (with change detection to avoid unnecessary relayout).
 	m.syncProgressTodos(snapshot)
-}
-
-// snapshotIterationLocal captures a completed iteration for immediate display.
-// Simple and best-effort — the authoritative history comes from the backend
-// via restoreIterationsFromSnapshot. This just ensures low-latency rendering
-// between tick pulls.
-func (m *cliModel) snapshotIterationLocal(prev *protocol.ProgressEvent) {
-	if prev == nil {
-		return
-	}
-	// Skip if already snapshotted (dedup by iteration number).
-	for _, existing := range m.progressState.iterations {
-		if existing.Iteration == prev.Iteration {
-			return
-		}
-	}
-	// When we snapshot an iteration, it means the iteration has ENDED.
-	// All tools that were "running" or "pending" have completed — the done
-	// event may have been lost in progressSlot coalescing (drain goroutine
-	// didn't wake between the done push and the next-iteration thinking push).
-	// Mark them as "done" — otherwise they stay yellow forever in the history.
-	tools := make([]protocol.ToolProgress, 0, len(prev.CompletedTools)+len(prev.ActiveTools))
-	tools = append(tools, prev.CompletedTools...)
-	for _, t := range prev.ActiveTools {
-		if t.Status == "running" || t.Status == "pending" || t.Status == "" {
-			t.Status = "done"
-		}
-		tools = append(tools, t)
-	}
-	reasoning := prev.Reasoning
-	if reasoning == "" {
-		reasoning = prev.ReasoningStreamContent
-	}
-	if len(tools) > 0 || prev.Content != "" || reasoning != "" {
-		snap := cliIterationSnapshot{
-			Iteration:   prev.Iteration,
-			Content:     prev.Content,
-			Reasoning:   reasoning,
-			Tools:       tools,
-			ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
-		}
-		m.progressState.iterations = append(m.progressState.iterations, snap)
-	}
-	m.progressState.lastIter = prev.Iteration + 1
-	m.progressState.iterStart = time.Now()
-	m.rc.invalidateProgress()
 }
 
 // restoreIterationsFromSnapshot rebuilds local iteration history from the
@@ -345,33 +293,9 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 			if len(finalTools) > 0 || content != "" || reasoning != "" {
 				m.progressState.iterations = append(m.progressState.iterations, snap)
 			}
-		} else {
-			// Already snapshotted — but the existing snapshot may have empty
-			// Content/Reasoning if snapshotIterationLocal captured it before
-			// recordAssistantMsg finalized the content. Update the existing
-			// snapshot with the finalized content from PhaseDone to prevent
-			// renderTurnBody's dedup from failing (which would render the
-			// content twice: once from iterations, once from fallbackContent).
-			finalContent := snapshot.Content
-			if finalContent == "" && cur != nil {
-				finalContent = cur.Content
-			}
-			finalReasoning := snapshot.Reasoning
-			if finalReasoning == "" && cur != nil {
-				finalReasoning = cur.Reasoning
-			}
-			for i := range m.progressState.iterations {
-				if m.progressState.iterations[i].Iteration == finalIter {
-					if m.progressState.iterations[i].Content == "" && finalContent != "" {
-						m.progressState.iterations[i].Content = finalContent
-					}
-					if m.progressState.iterations[i].Reasoning == "" && finalReasoning != "" {
-						m.progressState.iterations[i].Reasoning = finalReasoning
-					}
-					break
-				}
-			}
 		}
+		// If already snapshotted (from DB IterationHistory via restoreIterationsFromSnapshot),
+		// the data is authoritative and complete — no update needed.
 	}
 
 	// Bake iterations into the streaming message before ending turn.

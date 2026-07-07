@@ -442,20 +442,19 @@ func TestRegression_RawChatIDStreamEventRejected(t *testing.T) {
 	}
 }
 
-// ── Bug: tool stays yellow (running) forever in iteration history ──
-// Root cause: when done event is lost in progressSlot coalescing (drain
-// goroutine doesn't wake between done push and next-iteration thinking
-// push), snapshotIterationLocal captured the tool with Status="running"
-// in the iteration snapshot → stays yellow forever.
+// ── Bug: iteration snapshots must come from DB, not local capture ──
+// snapshotIterationLocal was removed because it could capture incomplete
+// iterations (empty Content/Tools) during streaming. Now iterations ONLY
+// come from restoreIterationsFromSnapshot (DB IterationHistory, authoritative)
+// or finalizeTurnFromSnapshot (PhaseDone, carries finalized state).
 //
-// Fix: when snapshotting an iteration, mark all running/pending tools
-// as "done". An iteration snapshot means the iteration has ended —
-// any tool that was running has completed.
-func TestRegression_ToolStuckRunningInSnapshot(t *testing.T) {
+// This test verifies that push events alone (without IterationHistory) do
+// NOT create local snapshots — the data must come from DB.
+func TestRegression_NoLocalSnapshotFromPushEvents(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
 
-	// Iteration 0: tool running (done event was lost)
+	// Iteration 0: tool running (push event, no IterationHistory)
 	sendProgress(model, &protocol.ProgressEvent{
 		ChatID:      "cli:/test",
 		Seq:         1,
@@ -464,7 +463,7 @@ func TestRegression_ToolStuckRunningInSnapshot(t *testing.T) {
 		ActiveTools: []protocol.ToolProgress{{Name: "config", Status: "running", Iteration: 0}},
 	})
 
-	// Iteration changes to 1 (thinking) — done event was lost
+	// Iteration changes to 1 (push event, no IterationHistory)
 	sendProgress(model, &protocol.ProgressEvent{
 		ChatID:    "cli:/test",
 		Seq:       2,
@@ -472,21 +471,8 @@ func TestRegression_ToolStuckRunningInSnapshot(t *testing.T) {
 		Iteration: 1,
 	})
 
-	// Check iteration 0 snapshot — tool must NOT be "running"
-	if len(model.progressState.iterations) == 0 {
-		t.Fatal("no iteration snapshot created")
-	}
-	iter0 := model.progressState.iterations[0]
-	if iter0.Iteration != 0 {
-		t.Fatalf("expected iteration 0, got %d", iter0.Iteration)
-	}
-	if len(iter0.Tools) == 0 {
-		t.Fatal("no tools in iteration 0 snapshot")
-	}
-	for _, tool := range iter0.Tools {
-		if tool.Status == "running" || tool.Status == "pending" {
-			t.Errorf("tool %q stuck as %q in snapshot — should be done",
-				tool.Name, tool.Status)
-		}
+	// No local snapshot should be created from push events alone.
+	if len(model.progressState.iterations) != 0 {
+		t.Errorf("expected 0 local snapshots from push events, got %d", len(model.progressState.iterations))
 	}
 }

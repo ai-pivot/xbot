@@ -25,6 +25,18 @@ func sendProgress(model *cliModel, payload *protocol.ProgressEvent) {
 	model.Update(cliProgressMsg{payload: payload})
 }
 
+// sendProgressWithHistory sends a progress event that also carries
+// IterationHistory from the backend. Use this when the test expects
+// completed iterations to be available in the local state — push events
+// alone (without IterationHistory) do not create local snapshots.
+func sendProgressWithHistory(model *cliModel, payload *protocol.ProgressEvent, history ...protocol.ProgressEvent) {
+	if payload.ChatID == "" {
+		payload.ChatID = model.channelName + ":" + model.chatID
+	}
+	payload.IterationHistory = history
+	model.Update(cliProgressMsg{payload: payload})
+}
+
 func sendDone(model *cliModel, content string) {
 	model.typing = false
 	model.Update(cliOutboundMsg{
@@ -830,7 +842,8 @@ func TestProgressNoDuplication(t *testing.T) {
 			{Name: "read", Label: "Read file", Status: "done", Elapsed: 1000, Iteration: 1},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Content: "B"})
+	sendProgressWithHistory(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Content: "B"},
+		protocol.ProgressEvent{Iteration: 1, Content: "A", CompletedTools: []protocol.ToolProgress{{Name: "read", Label: "Read file", Status: "done", Elapsed: 1000, Iteration: 1}}})
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 2, Content: "B",
 		CompletedTools: []protocol.ToolProgress{
@@ -866,7 +879,8 @@ func TestProgressRealisticSequence(t *testing.T) {
 		},
 	})
 	// Iter 1
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Content: "Based on results"})
+	sendProgressWithHistory(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Content: "Based on results"},
+		protocol.ProgressEvent{Iteration: 1, Content: "Let me look", CompletedTools: []protocol.ToolProgress{{Name: "read", Label: "Read config", Status: "done", Elapsed: 500, Iteration: 1}, {Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 300, Iteration: 1}}})
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 2, Content: "Based on results",
 		CompletedTools: []protocol.ToolProgress{
@@ -874,7 +888,9 @@ func TestProgressRealisticSequence(t *testing.T) {
 		},
 	})
 	// Iter 2: empty thinking (no tools)
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Content: ""})
+	sendProgressWithHistory(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Content: ""},
+		protocol.ProgressEvent{Iteration: 1, Content: "Let me look", CompletedTools: []protocol.ToolProgress{{Name: "read", Label: "Read config", Status: "done", Elapsed: 500, Iteration: 1}, {Name: "grep", Label: "Search pattern", Status: "done", Elapsed: 300, Iteration: 1}}},
+		protocol.ProgressEvent{Iteration: 2, Content: "Based on results", CompletedTools: []protocol.ToolProgress{{Name: "edit", Label: "Fix bug", Status: "done", Elapsed: 200, Iteration: 2}}})
 
 	if len(model.progressState.iterations) == 0 {
 		t.Error("Expected iterationHistory to have entries")
@@ -902,12 +918,12 @@ func TestErrorToolIterationAttribution(t *testing.T) {
 		},
 	})
 	// Iter 1: a tool that succeeds
-	sendProgress(model, &protocol.ProgressEvent{
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 2, Content: "Trying B",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 2},
 		},
-	})
+	}, protocol.ProgressEvent{Iteration: 1, Content: "Trying A", CompletedTools: []protocol.ToolProgress{{Name: "read", Label: "Read", Status: "error", Elapsed: 100, Iteration: 1}}})
 
 	sendDone(model, "Done")
 
@@ -952,13 +968,13 @@ func TestCrossIterationToolsFiltered(t *testing.T) {
 		},
 	})
 	// Iter 1 payload that accidentally includes a tool from iter 0 (stale)
-	sendProgress(model, &protocol.ProgressEvent{
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 2, Content: "B",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 1}, // stale
 			{Name: "edit", Label: "Edit", Status: "done", Elapsed: 200, Iteration: 2},
 		},
-	})
+	}, protocol.ProgressEvent{Iteration: 1, Content: "A", CompletedTools: []protocol.ToolProgress{{Name: "read", Label: "Read", Status: "done", Elapsed: 100, Iteration: 1}}})
 
 	sendDone(model, "Done")
 
@@ -1286,12 +1302,12 @@ func TestBgDrainCrossIterationDoesNotLeak(t *testing.T) {
 	})
 
 	// Iter 1: bg tool
-	sendProgress(model, &protocol.ProgressEvent{
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 2, Content: "working",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "background_task_result", Label: "bg:new", Status: "done", Elapsed: 2000, Iteration: 2},
 		},
-	})
+	}, protocol.ProgressEvent{Iteration: 1, Content: "working", CompletedTools: []protocol.ToolProgress{{Name: "background_task_result", Label: "bg:old", Status: "done", Elapsed: 1000, Iteration: 1}}})
 
 	// Final done — snapshot both iterations into summary
 	sendDone(model, "done")
@@ -1321,18 +1337,20 @@ func TestAgentSession_PhaseDone_PreservesIterations(t *testing.T) {
 			{Name: "Shell", Label: "uname -a", Status: "done", Elapsed: 100, Iteration: 1},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 2, Content: "checking logs...",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "Grep", Label: "error", Status: "done", Elapsed: 200, Iteration: 2},
 		},
-	})
-	sendProgress(model, &protocol.ProgressEvent{
+	}, protocol.ProgressEvent{Iteration: 1, Content: "investigating...", CompletedTools: []protocol.ToolProgress{{Name: "Shell", Label: "uname -a", Status: "done", Elapsed: 100, Iteration: 1}}})
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 3, Content: "reading code...",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "Read", Label: "main.go", Status: "done", Elapsed: 300, Iteration: 3},
 		},
-	})
+	},
+		protocol.ProgressEvent{Iteration: 1, Content: "investigating...", CompletedTools: []protocol.ToolProgress{{Name: "Shell", Label: "uname -a", Status: "done", Elapsed: 100, Iteration: 1}}},
+		protocol.ProgressEvent{Iteration: 2, Content: "checking logs...", CompletedTools: []protocol.ToolProgress{{Name: "Grep", Label: "error", Status: "done", Elapsed: 200, Iteration: 2}}})
 
 	// Send the final PhaseDone with the assistant reply
 	sendProgress(model, &protocol.ProgressEvent{
@@ -1382,14 +1400,17 @@ func TestAgentSession_MultipleSubAgents_DistinctToolEntries(t *testing.T) {
 			{Name: "SubAgent", Label: "SubAgent [explore/debug-1]: Investigate crash", Status: "done", Elapsed: 1000, Iteration: 1},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Content: "waiting on others..."})
+	sendProgressWithHistory(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Content: "waiting on others..."},
+		protocol.ProgressEvent{Iteration: 1, Content: "launching...", CompletedTools: []protocol.ToolProgress{{Name: "SubAgent", Label: "SubAgent [explore/debug-1]: Investigate crash", Status: "done", Elapsed: 1000, Iteration: 1}}})
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 2, Content: "waiting on others...",
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "SubAgent", Label: "SubAgent [explore/debug-2]: Investigate crash", Status: "done", Elapsed: 1200, Iteration: 2},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Content: "almost done..."})
+	sendProgressWithHistory(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 3, Content: "almost done..."},
+		protocol.ProgressEvent{Iteration: 1, Content: "launching...", CompletedTools: []protocol.ToolProgress{{Name: "SubAgent", Label: "SubAgent [explore/debug-1]: Investigate crash", Status: "done", Elapsed: 1000, Iteration: 1}}},
+		protocol.ProgressEvent{Iteration: 2, Content: "waiting on others...", CompletedTools: []protocol.ToolProgress{{Name: "SubAgent", Label: "SubAgent [explore/debug-2]: Investigate crash", Status: "done", Elapsed: 1200, Iteration: 2}}})
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase: "tool_exec", Iteration: 3, Content: "almost done...",
 		CompletedTools: []protocol.ToolProgress{
