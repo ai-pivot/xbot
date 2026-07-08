@@ -432,6 +432,64 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 	}
 }
 
+// TestSelectModelRPC_UsesRequestedChannel verifies /su model selection writes the
+// target channel tenant row instead of always writing cli:<chatID>.
+func TestSelectModelRPC_UsesRequestedChannel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	tenantSvc := sqlite.NewTenantService(db)
+	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(tenantSvc)
+	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-feishu", SenderID: "cli_user", Name: "xin", Provider: "openai", BaseURL: "https://api.example/v1", APIKey: "sk-test", Model: ""}); err != nil {
+		t.Fatalf("add sub: %v", err)
+	}
+
+	aCfg := &config.Config{}
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
+
+	chatID := "oc_bdfc1763e017e00ed4d7341de424f438"
+	if err := tenantSvc.SetTenantSubscription("cli", chatID, "sub-cli", "old-cli-model"); err != nil {
+		t.Fatalf("seed cli tenant: %v", err)
+	}
+
+	params, _ := json.Marshal(map[string]string{
+		"sender_id": "cli_user",
+		"channel":   "feishu",
+		"chat_id":   chatID,
+		"sub_id":    "sub-feishu",
+		"model":     "glm-5.2",
+	})
+	if _, err := HandleCLIRPC(table, "select_model", params, "admin"); err != nil {
+		t.Fatalf("select_model: %v", err)
+	}
+
+	subID, model, err := tenantSvc.GetTenantSubscription("feishu", chatID)
+	if err != nil {
+		t.Fatalf("get feishu tenant: %v", err)
+	}
+	if subID != "sub-feishu" || model != "glm-5.2" {
+		t.Fatalf("feishu tenant = (%q,%q), want (sub-feishu,glm-5.2)", subID, model)
+	}
+
+	cliSubID, cliModel, err := tenantSvc.GetTenantSubscription("cli", chatID)
+	if err != nil {
+		t.Fatalf("get cli tenant: %v", err)
+	}
+	if cliSubID != "sub-cli" || cliModel != "old-cli-model" {
+		t.Fatalf("cli tenant was changed to (%q,%q), want original (sub-cli,old-cli-model)", cliSubID, cliModel)
+	}
+}
+
 // TestHandleCLIRPCGetSessionSubscription verifies the get_session_subscription RPC.
 // Tests the fallback path (LLMFactory cache) since MultiSession is not wired in this test.
 func TestHandleCLIRPCGetSessionSubscription(t *testing.T) {

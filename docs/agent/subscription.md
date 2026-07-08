@@ -73,7 +73,7 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 
 | RPC | 说明 |
 |-----|------|
-| `select_model` | per-session (subID, model)，走 `SelectModel`。需 chatID（用户级用 `set_default_model`） |
+| `select_model` | per-session (subID, model)，走 `SelectModel`。需 chatID（用户级用 `set_default_model`），并且必须传目标 `channel`；`/su` 到 Feishu/Web/Agent 等非 CLI 会话时，模型绑定写入 `(channel, chatID)`，不能默认写 `cli:<chatID>` |
 | `set_default_model` | 用户级默认 (subID, model)，走 `SetUserDefaultModel` |
 | `set_model_enabled` | 切换模型 enabled，走 `SetModelEnabled` |
 | `set_subscription_enabled` | **v40** 切换订阅 enabled，走 `SetSubscriptionEnabled` |

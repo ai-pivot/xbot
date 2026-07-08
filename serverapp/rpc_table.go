@@ -311,12 +311,16 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	// select_model: model-first per-session selection. Sets (subID, model) for a
 	// chat via the ResolveLLM/SelectModel path.
 	t["select_model"] = rpc1void(func(ctx context.Context, p struct {
-		SubID  string `json:"sub_id"`
-		Model  string `json:"model"`
-		ChatID string `json:"chat_id,omitempty"`
+		SubID   string `json:"sub_id"`
+		Model   string `json:"model"`
+		ChatID  string `json:"chat_id,omitempty"`
+		Channel string `json:"channel,omitempty"`
 	}) error {
 		bizID := rpcBizID(ctx)
-		channel := "cli"
+		channel := p.Channel
+		if channel == "" {
+			channel = "cli"
+		}
 		if p.ChatID == "" {
 			return fmt.Errorf("select_model requires a chat_id (use set_default_model for the user-level default)")
 		}
@@ -489,12 +493,17 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 	t["list_subscriptions"] = rpc0err(h.listSubscriptions)
 	t["get_default_subscription"] = rpc0err(h.getDefaultSubscription)
 	t["get_session_subscription"] = rpc1(func(ctx context.Context, p struct {
-		ChatID string `json:"chat_id"`
+		ChatID  string `json:"chat_id"`
+		Channel string `json:"channel,omitempty"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
+		channel := p.Channel
+		if channel == "" {
+			channel = "cli"
+		}
 		// Read from tenants table (persistent backend source of truth).
 		if h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
-			subID, model, _ := sqlite.NewTenantService(h.Ag.MultiSession().DB()).GetTenantSubscription("cli", p.ChatID)
+			subID, model, _ := sqlite.NewTenantService(h.Ag.MultiSession().DB()).GetTenantSubscription(channel, p.ChatID)
 			if subID != "" {
 				return map[string]string{"subscription_id": subID, "model": model}, nil
 			}

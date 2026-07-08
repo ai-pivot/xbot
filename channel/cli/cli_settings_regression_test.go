@@ -578,10 +578,11 @@ type mockSwitchSubCall struct {
 }
 
 type mockSelectModelCall struct {
-	senderID string
-	subID    string
-	model    string
-	chatID   string
+	senderID    string
+	channelName string
+	subID       string
+	model       string
+	chatID      string
 }
 
 func (m *mockLLMSubscriber) SwitchSubscription(senderID string, sub *channel.Subscription, chatID string) error {
@@ -589,8 +590,8 @@ func (m *mockLLMSubscriber) SwitchSubscription(senderID string, sub *channel.Sub
 	return nil
 }
 
-func (m *mockLLMSubscriber) SelectModel(senderID, subID, model, chatID string) error {
-	m.selectModelCalls = append(m.selectModelCalls, mockSelectModelCall{senderID, subID, model, chatID})
+func (m *mockLLMSubscriber) SelectModel(senderID, channelName, subID, model, chatID string) error {
+	m.selectModelCalls = append(m.selectModelCalls, mockSelectModelCall{senderID: senderID, channelName: channelName, subID: subID, model: model, chatID: chatID})
 	return nil
 }
 

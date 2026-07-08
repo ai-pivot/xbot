@@ -2245,8 +2245,8 @@ func (m *backendSubscriptionManager) SetSubscriptionEnabled(id string, enabled b
 	return m.client.SetSubscriptionEnabled(id, enabled)
 }
 
-func (m *backendSubscriptionManager) GetSessionSubscription(senderID, chatID string) (string, string, error) {
-	return m.client.GetSessionSubscription(senderID, chatID)
+func (m *backendSubscriptionManager) GetSessionSubscription(senderID, channelName, chatID string) (string, string, error) {
+	return m.client.GetSessionSubscription(senderID, channelName, chatID)
 }
 
 // backendLLMSubscriber implements cli.LLMSubscriber via Backend interface.
@@ -2271,11 +2271,11 @@ func (s *backendLLMSubscriber) SwitchSubscription(senderID string, sub *channel.
 // resolves the owning subscription server-side by model name), this pins the
 // exact subscription the user picked — necessary now that the picker lists the
 // same model name once per subscription that serves it.
-func (s *backendLLMSubscriber) SelectModel(senderID, subID, model, chatID string) error {
+func (s *backendLLMSubscriber) SelectModel(senderID, channelName, subID, model, chatID string) error {
 	if senderID == "" {
 		senderID = cliSenderID
 	}
-	return s.client.SelectModel(senderID, subID, model, chatID)
+	return s.client.SelectModel(senderID, channelName, subID, model, chatID)
 }
 
 func (s *backendLLMSubscriber) GetDefaultModel() string {

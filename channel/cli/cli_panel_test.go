@@ -121,7 +121,7 @@ func (m *mockSubscriptionManager) UpdatePerModelConfig(id, model string, pmc cha
 	return nil
 }
 
-func (m *mockSubscriptionManager) GetSessionSubscription(senderID, chatID string) (string, string, error) {
+func (m *mockSubscriptionManager) GetSessionSubscription(senderID, channelName, chatID string) (string, string, error) {
 	if m.sessionLLM != nil {
 		if entry, ok := m.sessionLLM[chatID]; ok {
 			return entry.subID, entry.model, nil

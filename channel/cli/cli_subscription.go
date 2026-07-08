@@ -28,7 +28,7 @@ func (m *cliModel) applyModelSwitch(nextModel, subID string) {
 		return
 	}
 	if m.llmSubscriber != nil && subID != "" {
-		if err := m.llmSubscriber.SelectModel(m.senderID, subID, nextModel, m.chatID); err != nil {
+		if err := m.llmSubscriber.SelectModel(m.senderID, m.channelName, subID, nextModel, m.chatID); err != nil {
 			logrus.WithError(err).WithField("sub_id", subID).Warn("applyModelSwitch: SelectModel failed")
 		}
 	}
@@ -37,7 +37,7 @@ func (m *cliModel) applyModelSwitch(nextModel, subID string) {
 	// (ownerSubID, model) to tenants; GetSessionSubscription reads it back. This
 	// works in local mode too (same RPC path through ChannelTransport → ServerCore).
 	if m.channel != nil && m.channel.subscriptionMgr != nil {
-		if subID, _, err := m.channel.subscriptionMgr.GetSessionSubscription(m.senderID, m.chatID); err == nil && subID != "" {
+		if subID, _, err := m.channel.subscriptionMgr.GetSessionSubscription(m.senderID, m.channelName, m.chatID); err == nil && subID != "" {
 			m.activeSubID = subID
 		}
 	}
@@ -181,7 +181,7 @@ func (m *cliModel) refreshCachedModelName() {
 	// The backend persists this in the tenants table (via SetSessionLLM).
 	// Local JSON is NOT authoritative for subscription fields in remote mode.
 	if m.remoteMode && m.channel.subscriptionMgr != nil {
-		if subID, model, err := m.channel.subscriptionMgr.GetSessionSubscription(m.senderID, m.chatID); err == nil && subID != "" {
+		if subID, model, err := m.channel.subscriptionMgr.GetSessionSubscription(m.senderID, m.channelName, m.chatID); err == nil && subID != "" {
 			m.cachedModelName = model
 			m.activeSubID = subID
 			return
@@ -247,7 +247,7 @@ func (m *cliModel) ensureSessionModelBinding() {
 	// refreshCachedModelName step 1). If it returns a subID, the session
 	// already has a per-session model — no auto-bind needed.
 	if m.channel.subscriptionMgr != nil {
-		if subID, _, err := m.channel.subscriptionMgr.GetSessionSubscription(m.senderID, m.chatID); err == nil && subID != "" {
+		if subID, _, err := m.channel.subscriptionMgr.GetSessionSubscription(m.senderID, m.channelName, m.chatID); err == nil && subID != "" {
 			return
 		}
 	}
@@ -258,7 +258,7 @@ func (m *cliModel) ensureSessionModelBinding() {
 			if raw := vals["tier_balance"]; raw != "" {
 				subID, model := parseTierValueCLI(raw)
 				if subID != "" && model != "" {
-					if err := m.llmSubscriber.SelectModel(m.senderID, subID, model, m.chatID); err == nil {
+					if err := m.llmSubscriber.SelectModel(m.senderID, m.channelName, subID, model, m.chatID); err == nil {
 						m.cachedModelName = model
 						m.activeSubID = subID
 						return
@@ -271,7 +271,7 @@ func (m *cliModel) ensureSessionModelBinding() {
 	// Priority 2: Last-used model (GetDefault).
 	if m.subscriptionMgr != nil {
 		if defSub, err := m.subscriptionMgr.GetDefault(m.senderID); err == nil && defSub != nil && defSub.Model != "" {
-			if err := m.llmSubscriber.SelectModel(m.senderID, defSub.ID, defSub.Model, m.chatID); err == nil {
+			if err := m.llmSubscriber.SelectModel(m.senderID, m.channelName, defSub.ID, defSub.Model, m.chatID); err == nil {
 				m.cachedModelName = defSub.Model
 				m.activeSubID = defSub.ID
 				return
