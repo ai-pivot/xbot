@@ -75,6 +75,36 @@ func TestSaveSettings_MaxContextNotPassedToApplySettings(t *testing.T) {
 	}
 }
 
+func TestSaveSettings_FirstRunUsesCreatedSubscriptionIDFromList(t *testing.T) {
+	mgr := &mockSubscriptionManager{addListID: "sub-created"}
+	m := newCLIModel()
+	m.channel = &CLIChannel{config: &CLIChannelConfig{}}
+	m.subscriptionMgr = mgr
+	m.chatID = "chat-1"
+
+	m.saveSettings(map[string]string{
+		"llm_provider": "openai",
+		"llm_api_key":  "sk-test",
+		"llm_base_url": "https://api.openai.com/v1",
+		"llm_model":    "gpt-4.1",
+	})
+
+	if !mgr.addCalled {
+		t.Fatal("expected Add to be called")
+	}
+	if len(mgr.setDefIDs) != 2 {
+		t.Fatalf("expected global and session SetDefault calls, got %d (%v)", len(mgr.setDefIDs), mgr.setDefIDs)
+	}
+	for _, id := range mgr.setDefIDs {
+		if id != "sub-created" {
+			t.Fatalf("SetDefault called with id %q, want sub-created; calls=%v", id, mgr.setDefIDs)
+		}
+	}
+	if m.activeSubID != "sub-created" {
+		t.Fatalf("activeSubID = %q, want sub-created", m.activeSubID)
+	}
+}
+
 // TestSaveSettings_MaxContextPreservesMaxOutputTokens verifies that writing
 // max_context via channel.PerModelConfig does NOT zero out an existing MaxOutputTokens
 // for the same model.

@@ -1416,9 +1416,15 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(p.ID) == "" {
+		return fmt.Errorf("subscription id is required")
+	}
 	sub, err := svc.Get(p.ID)
 	if err != nil {
 		return err
+	}
+	if sub == nil {
+		return fmt.Errorf("subscription not found")
 	}
 	if !isAdmin(rpcAuthID(ctx)) && sub.SenderID != bizID {
 		return fmt.Errorf("subscription not found")

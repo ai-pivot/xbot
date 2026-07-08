@@ -840,6 +840,7 @@ func (m *cliModel) reopenLLMPanelOn(subID, model string) {
 	if m.subscriptionMgr == nil {
 		return
 	}
+	m.llmCache.Invalidate() // clear stale cache so rebuildLLMRows reads fresh from DB
 	m.quickSwitchMode = "llm"
 	m.quickSwitchFiltering = false
 	m.quickSwitchRefreshing = false
