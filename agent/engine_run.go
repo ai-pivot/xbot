@@ -1431,10 +1431,9 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	// --- Background notification draining (bg tasks + bg subagents) ---
 	// Cancel-aware: skip draining if ctx is already cancelled. The cancel
 	// signal may have arrived during the LLM call above. Draining now would
-	// inject notifications into a Run that is about to return cancelled —
-	// those notifications would be lost (consumed from bgRunPending but never
-	// processed by the LLM). Skipping keeps them in bgRunPending for the
-	// drainAndProcessNotifications call after the turn ends.
+	// inject notifications into a Run that is about to return cancelled.
+	// Skipping leaves them in bgRunPending so handleCancelledRun can discard
+	// this session's pending notifications before the cancel ack reaches the UI.
 	if s.cfg.DrainBgNotifications != nil && ctx.Err() == nil {
 		pending := s.cfg.DrainBgNotifications()
 		for _, notif := range pending {

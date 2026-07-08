@@ -119,6 +119,8 @@ func (m *cliModel) sendToAgent(content string) {
 		m.showSystemMsg(m.locale.SetupNoLLM, feedbackWarning)
 		return
 	}
+	m.finalizeStaleStreamingBeforeNewUserMessage()
+
 	userCliMsg := cliMessage{
 		role:      "user",
 		content:   content,
@@ -159,6 +161,8 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 
 	// 解析 @ 文件引用，提取文件路径
 	media := parseFileReferences(content)
+
+	m.finalizeStaleStreamingBeforeNewUserMessage()
 
 	// 添加用户消息到历史
 	userCliMsg := cliMessage{

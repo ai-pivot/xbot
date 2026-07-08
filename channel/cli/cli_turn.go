@@ -35,10 +35,33 @@ func (m *cliModel) toggleToolSummary() {
 	}
 }
 
-// openSettingsFromQuickSwitch restores the settings panel after a subscription quick switch.
-// The subscription generation guard (in onSubmit) prevents stale LLM fields from being
-// written back. Here we only need to refresh LLM display values from the new active
-// subscription and preserve global settings from the backup.
+// finalizeStaleStreamingBeforeNewUserMessage converts a completed previous
+// turn's streaming placeholder into a normal history message before appending
+// a new user message. PhaseDone intentionally keeps streamingMsgIdx/progress
+// alive until the final assistant reply arrives, but sendMessage refreshes the
+// viewport before startAgentTurn. Without this handoff, that refresh can render
+// the previous turn's live stream below the new user message.
+func (m *cliModel) finalizeStaleStreamingBeforeNewUserMessage() {
+	if m.typing || m.streamingMsgIdx < 0 || m.streamingMsgIdx >= len(m.messages) {
+		return
+	}
+	msg := &m.messages[m.streamingMsgIdx]
+	if msg.role != "assistant" || !msg.isPartial {
+		m.streamingMsgIdx = -1
+		return
+	}
+	if len(msg.iterations) == 0 && len(m.progressState.iterations) > 0 {
+		msg.iterations = make([]cliIterationSnapshot, len(m.progressState.iterations))
+		copy(msg.iterations, m.progressState.iterations)
+	}
+	msg.isPartial = false
+	msg.dirty = true
+	m.streamingMsgIdx = -1
+	m.progressState.current = nil
+	m.progressState.iterations = nil
+	m.rc.invalidateProgress()
+}
+
 // startAgentTurn transitions the model into the "agent processing" state:
 // sets typing=true, updates placeholder, disables input, resets progress,
 // and queues a tick command to ensure the spinner/progress chain starts.

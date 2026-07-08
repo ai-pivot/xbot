@@ -106,11 +106,10 @@ func (a *Agent) wireBgNotificationDrain(sessionKey string) func() []tools.BgNoti
 			a.bgRunPending = append(a.bgRunPending, others...)
 			a.bgRunPendingMu.Unlock()
 		}
-		// Track drained notifications for re-queue on cancel.
+		// Track drained notifications so cancel can discard them explicitly.
 		// If the Run is cancelled after draining, these notifications were
-		// consumed from bgRunPending but never processed by the LLM.
-		// handleCancelledRun will put them back so drainAndProcessNotifications
-		// can deliver them as user messages.
+		// consumed from bgRunPending and should not be delivered as a fresh
+		// user message after Ctrl+C.
 		if len(mine) > 0 {
 			if state, ok := a.bgSessionStates.Load(sessionKey); ok {
 				ss := state.(*bgSessionState)
@@ -225,25 +224,46 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	a.injectBgUserMessage(channelName, chatID, senderID, combined)
 }
 
+func (a *Agent) discardPendingBgNotifications(sessionKey string) int {
+	a.bgRunPendingMu.Lock()
+	defer a.bgRunPendingMu.Unlock()
+
+	pending := a.bgRunPending
+	a.bgRunPending = nil
+	discarded := 0
+	for _, n := range pending {
+		if n.SessionKey() == sessionKey {
+			discarded++
+			continue
+		}
+		a.bgRunPending = append(a.bgRunPending, n)
+	}
+	return discarded
+}
+
 // handleCancelledRun persists un-saved engine messages and iteration history
 // when a Run is cancelled, then returns a minimal OutboundMessage so the
 // channel knows processing ended.
 func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
-	// Discard notifications that were drained into this cancelled Run.
-	// The user pressed Ctrl+C — they want everything to stop, not have the
-	// notification re-delivered as a new turn after cancel. The drained
-	// notifications were consumed from bgRunPending and are now gone.
-	// This is the correct behavior: cancel = stop all work.
+	// Discard notifications for this session when a Run is cancelled.
+	// Ctrl+C means stop this work, so neither notifications already injected
+	// into the cancelled Run nor notifications still pending for this session
+	// should start a fresh turn after the cancel ack.
 	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
+	discardedPending := a.discardPendingBgNotifications(sessionKey)
+	discardedDrained := 0
 	if state, ok := a.bgSessionStates.Load(sessionKey); ok {
 		ss := state.(*bgSessionState)
 		ss.drainedThisRunMu.Lock()
-		drainedCount := len(ss.drainedThisRun)
+		discardedDrained = len(ss.drainedThisRun)
 		ss.drainedThisRun = nil
 		ss.drainedThisRunMu.Unlock()
-		if drainedCount > 0 {
-			log.Ctx(ctx).WithField("count", drainedCount).Info("Discarded drained notifications after cancel (user requested stop)")
-		}
+	}
+	if discardedPending+discardedDrained > 0 {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"pending": discardedPending,
+			"drained": discardedDrained,
+		}).Info("Discarded background notifications after cancel (user requested stop)")
 	}
 
 	// Save any un-persisted engine messages from the interrupted iteration.

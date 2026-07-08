@@ -19,6 +19,62 @@ func initTestModel() *cliModel {
 	return model
 }
 
+func TestStartNewMessageFinalizesStaleStreamingTurn(t *testing.T) {
+	model := initTestModel()
+	model.ticker.frame = 0
+
+	model.messages = append(model.messages, cliMessage{
+		role:      "assistant",
+		timestamp: time.Now(),
+		isPartial: true,
+		dirty:     true,
+		turnID:    1,
+	})
+	model.streamingMsgIdx = 0
+	model.agentTurnID = 1
+	model.typing = false
+	model.progressState.iterations = []cliIterationSnapshot{{
+		Iteration: 1,
+		Content:   "old completed iteration",
+	}}
+	model.progressState.current = &protocol.ProgressEvent{
+		Iteration:     1,
+		StreamContent: "old live stream must not render under next user message",
+	}
+
+	model.finalizeStaleStreamingBeforeNewUserMessage()
+	model.messages = append(model.messages, cliMessage{
+		role:      "user",
+		content:   "next user message",
+		timestamp: time.Now(),
+		dirty:     true,
+	})
+	model.updateViewportContent()
+
+	if model.streamingMsgIdx != -1 {
+		t.Fatalf("streamingMsgIdx = %d, want -1", model.streamingMsgIdx)
+	}
+	if model.progressState.current != nil {
+		t.Fatal("progressState.current was not cleared")
+	}
+	if len(model.progressState.iterations) != 0 {
+		t.Fatalf("progressState.iterations len = %d, want 0", len(model.progressState.iterations))
+	}
+	if model.messages[0].isPartial {
+		t.Fatal("previous assistant message is still partial")
+	}
+	if len(model.messages[0].iterations) != 1 || model.messages[0].iterations[0].Content != "old completed iteration" {
+		t.Fatalf("previous assistant iterations = %+v, want old completed iteration baked", model.messages[0].iterations)
+	}
+	viewportText := model.viewport.View()
+	if strings.Contains(viewportText, "old live stream must not render") {
+		t.Fatalf("old live stream leaked into viewport:\n%s", viewportText)
+	}
+	if !strings.Contains(viewportText, "next user message") {
+		t.Fatalf("new user message missing from viewport:\n%s", viewportText)
+	}
+}
+
 func sendProgress(model *cliModel, payload *protocol.ProgressEvent) {
 	if payload.ChatID == "" {
 		payload.ChatID = model.channelName + ":" + model.chatID

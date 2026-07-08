@@ -177,7 +177,7 @@ func TestRun_CancelPreservesEngineMessages(t *testing.T) {
 // The fix ensures:
 // - Cancel interception does NOT send premature cancel ack (Part 1)
 // - DrainBgNotifications skips when ctx is cancelled (Part 2)
-// - Drained notifications are re-queued on cancel (Part 3)
+// - Drained notifications are discarded on cancel (Part 3)
 
 // makeTestNotif creates a BgNotification with the given session key.
 // Uses CronFired because it has exported fields (no unexported sessionKey).
@@ -191,7 +191,7 @@ func makeTestNotif(sessionKey, id string) tools.BgNotification {
 
 // TestWireBgNotificationDrain_TracksDrained verifies that wireBgNotificationDrain
 // records drained notifications into bgSessionState.drainedThisRun so they can
-// be re-queued if the Run is cancelled.
+// be discarded explicitly if the Run is cancelled.
 func TestWireBgNotificationDrain_TracksDrained(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -275,10 +275,10 @@ func TestWireBgNotificationDrain_OtherSessionNotTracked(t *testing.T) {
 	}
 }
 
-// TestClearDrainedThisRun_PreventsStaleReQueue verifies that clearDrainedThisRun
-// prevents notifications from a completed turn from being re-queued if the next
+// TestClearDrainedThisRun_PreventsStaleCancelDiscard verifies that clearDrainedThisRun
+// prevents notifications from a completed turn from being discarded if the next
 // turn is cancelled.
-func TestClearDrainedThisRun_PreventsStaleReQueue(t *testing.T) {
+func TestClearDrainedThisRun_PreventsStaleCancelDiscard(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -358,6 +358,12 @@ func TestHandleCancelledRun_DiscardsDrainedNotifications(t *testing.T) {
 	ss.drainedThisRun = append(ss.drainedThisRun, notif)
 	ss.drainedThisRunMu.Unlock()
 
+	pendingSameSession := makeTestNotif(sessionKey, "pending-same-session")
+	pendingOtherSession := makeTestNotif("cli:other-chat", "pending-other-session")
+	a.bgRunPendingMu.Lock()
+	a.bgRunPending = append(a.bgRunPending, pendingSameSession, pendingOtherSession)
+	a.bgRunPendingMu.Unlock()
+
 	msg := bus.InboundMessage{
 		Channel: "cli", ChatID: "test-chat", Content: "test", SenderID: "user-1",
 	}
@@ -376,9 +382,12 @@ func TestHandleCancelledRun_DiscardsDrainedNotifications(t *testing.T) {
 	queued := a.bgRunPending
 	a.bgRunPendingMu.Unlock()
 
-	if len(queued) != 0 {
-		t.Fatalf("bgRunPending has %d after cancel, want 0 — "+
-			"cancelled Run must NOT re-queue notifications", len(queued))
+	if len(queued) != 1 {
+		t.Fatalf("bgRunPending has %d after cancel, want only other session notification", len(queued))
+	}
+	cron, ok := queued[0].(*tools.CronFired)
+	if !ok || cron.Message != "pending-other-session" {
+		t.Fatalf("bgRunPending kept %+v, want pending-other-session", queued[0])
 	}
 
 	// drainedThisRun should be cleared
@@ -387,6 +396,61 @@ func TestHandleCancelledRun_DiscardsDrainedNotifications(t *testing.T) {
 	ss.drainedThisRunMu.Unlock()
 	if trackedLen != 0 {
 		t.Errorf("drainedThisRun should be empty after cancel, got %d", trackedLen)
+	}
+}
+
+func TestHandleBgNotifySignal_DiscardAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	a := &Agent{
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
+	}
+
+	sessionKey := "cli:test-chat"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	ss.discardBgAfterCancel.Store(true)
+
+	pendingSameSession := makeTestNotif(sessionKey, "pending-same-session")
+	pendingOtherSession := makeTestNotif("cli:other-chat", "pending-other-session")
+	a.bgRunPendingMu.Lock()
+	a.bgRunPending = append(a.bgRunPending, pendingSameSession, pendingOtherSession)
+	a.bgRunPendingMu.Unlock()
+
+	a.handleBgNotifySignal(sessionKey, ss)
+
+	a.bgRunPendingMu.Lock()
+	queued := a.bgRunPending
+	a.bgRunPendingMu.Unlock()
+
+	if len(queued) != 1 {
+		t.Fatalf("bgRunPending has %d after suppressed notify, want only other session notification", len(queued))
+	}
+	cron, ok := queued[0].(*tools.CronFired)
+	if !ok || cron.Message != "pending-other-session" {
+		t.Fatalf("bgRunPending kept %+v, want pending-other-session", queued[0])
+	}
+}
+
+func TestInjectedBgNotificationMetadata(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	a := &Agent{
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
+	}
+
+	a.injectBgUserMessage("cli", "test-chat", "system", "bg task done")
+
+	select {
+	case msg := <-a.bus.Inbound:
+		if msg.Metadata[bgNotificationMetadataKey] != "true" {
+			t.Fatalf("injected bg notification metadata = %v, want %s=true", msg.Metadata, bgNotificationMetadataKey)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for injected bg notification")
 	}
 }
 
