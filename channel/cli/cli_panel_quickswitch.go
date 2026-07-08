@@ -555,6 +555,7 @@ func (m *cliModel) openAddSubscriptionPanel() {
 			m.showTempStatus(fmt.Sprintf("Failed to add subscription: %v", err))
 		} else {
 			m.showTempStatus(fmt.Sprintf("Added subscription: %s", sub.Name))
+			m.reopenLLMPanelOn(sub.ID, "")
 		}
 	})
 }
@@ -833,6 +834,7 @@ func (m *cliModel) reopenLLMPanelOn(subID, model string) {
 	if m.subscriptionMgr == nil {
 		return
 	}
+	m.llmCache.Invalidate() // clear stale cache so rebuildLLMRows reads fresh from DB
 	m.quickSwitchMode = "llm"
 	m.quickSwitchFiltering = false
 	m.quickSwitchRefreshing = false
