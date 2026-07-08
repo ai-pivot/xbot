@@ -772,6 +772,26 @@ func (o *OpenAILLM) buildThinkingOptions(thinkingMode string) []option.RequestOp
 	return opts
 }
 
+func shouldFallbackToStreamForNonStreamResponse(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "text/event-stream") && strings.Contains(msg, "not") && strings.Contains(msg, "application/json")
+}
+
+func (o *OpenAILLM) generateViaStreamFallback(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
+	eventCh, err := o.GenerateStream(ctx, model, messages, tools, thinkingMode)
+	if err != nil {
+		return nil, fmt.Errorf("openai stream fallback: %w", err)
+	}
+	resp, err := CollectStream(ctx, eventCh)
+	if err != nil {
+		return nil, fmt.Errorf("openai stream fallback collect: %w", err)
+	}
+	return resp, nil
+}
+
 // Generate 生成 LLM 响应
 func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
 	// Route to Responses API if configured
@@ -819,6 +839,10 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 		}
 	}
 	if err != nil {
+		if shouldFallbackToStreamForNonStreamResponse(err) {
+			log.Ctx(ctx).WithError(err).WithField("model", model).Warn("[LLM] Non-stream request returned SSE; falling back to stream collection")
+			return o.generateViaStreamFallback(ctx, model, messages, tools, thinkingMode)
+		}
 		return nil, fmt.Errorf("openai chat completion: %w", err)
 	}
 
