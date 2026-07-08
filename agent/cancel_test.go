@@ -431,6 +431,31 @@ func TestHandleBgNotifySignal_DiscardAfterCancel(t *testing.T) {
 	if !ok || cron.Message != "pending-other-session" {
 		t.Fatalf("bgRunPending kept %+v, want pending-other-session", queued[0])
 	}
+
+	// One-shot: suppress flag must be cleared after first use.
+	if ss.discardBgAfterCancel.Load() {
+		t.Fatal("discardBgAfterCancel still true after suppress — must be one-shot")
+	}
+
+	// Second notify: new notification should NOT be suppressed.
+	newNotif := makeTestNotif(sessionKey, "new-after-cancel")
+	a.bgRunPendingMu.Lock()
+	a.bgRunPending = append(a.bgRunPending, newNotif)
+	a.bgRunPendingMu.Unlock()
+
+	a.handleBgNotifySignal(sessionKey, ss)
+
+	a.bgRunPendingMu.Lock()
+	queued = a.bgRunPending
+	a.bgRunPendingMu.Unlock()
+
+	// busy=false so drainAndProcessNotifications should have consumed it.
+	// bgRunPending may still hold the other-session notification from before.
+	for _, n := range queued {
+		if cf, ok := n.(*tools.CronFired); ok && cf.Message == "new-after-cancel" {
+			t.Fatal("new notification was suppressed — suppress must be one-shot")
+		}
+	}
 }
 
 func TestInjectedBgNotificationMetadata(t *testing.T) {

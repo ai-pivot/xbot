@@ -260,8 +260,9 @@ type bgSessionState struct {
 	drainedThisRunMu sync.Mutex
 	drainedThisRun   []tools.BgNotification
 
-	// discardBgAfterCancel suppresses same-session background notification drains
-	// after Ctrl+C until the next non-background inbound message arrives.
+	// discardBgAfterCancel is a one-shot flag: set on cancel, cleared after
+	// the first suppress (either in handleBgNotifySignal or chatWorker).
+	// This prevents Ctrl+C from permanently silencing future bg notifications.
 	discardBgAfterCancel atomic.Bool
 }
 
@@ -2100,6 +2101,9 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 			isBgNotification := msg.Metadata != nil && msg.Metadata[bgNotificationMetadataKey] == "true"
 			if ss.discardBgAfterCancel.Load() && isBgNotification {
 				log.WithField("session", chatKey).Info("Dropped injected background notification after cancel")
+				// One-shot: clear the suppress flag so future bg notifications
+				// are processed normally.
+				ss.discardBgAfterCancel.Store(false)
 				continue
 			}
 			ss.discardBgAfterCancel.Store(false)
@@ -2180,6 +2184,9 @@ func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
 	// post-turn drain to pick up (guaranteed after response is sent).
 	if ss.discardBgAfterCancel.Load() {
 		discarded := a.discardPendingBgNotifications(chatKey)
+		// One-shot: clear the suppress flag so future bg notifications
+		// (e.g. new cron fires) are processed normally.
+		ss.discardBgAfterCancel.Store(false)
 		if discarded > 0 {
 			log.WithFields(log.Fields{
 				"session": chatKey,
