@@ -1759,10 +1759,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
 				}
 			}
-			remoteCLICh.SendProgress(chatID, payload)
-			// Store progress snapshot for remote CLI reconnect recovery.
-			// Without this, GetActiveProgress returns nil after CLI restart
-			// because only the local cliCh path stored snapshots.
+			// Build cliPayload for lastProgressSnapshot (same fields as payload).
 			cliPayload := &protocol.ProgressEvent{
 				ChatID:           progressKey,
 				Seq:              s.Seq,
@@ -1803,6 +1800,8 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
 				}
 			}
+			remoteCLICh.SendProgress(chatID, payload)
+			// Store progress snapshot for remote CLI reconnect recovery.
 			a.recordIterationSnapshot(progressKey, func(prev *protocol.ProgressEvent) bool {
 				return s.Iteration > prev.Iteration && prev.Iteration >= 0
 			})

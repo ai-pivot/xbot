@@ -2368,14 +2368,20 @@ func TestPostRestoreSessionSetup_AutoBindsBalanceTier(t *testing.T) {
 
 // TestConsistency_DBMoreEntriesThanLocal verifies that when the DB
 // IterationHistory has more entries than the local state (e.g. after
-// missing push events), restoreIterationsFromSnapshot rebuilds from DB.
+// missing push events), restoreIterationsFromSnapshot appends the new
+// entries from DB while preserving existing local entries.
+//
+// In production, local iterations are always created by a previous
+// restoreIterationsFromSnapshot call (which copies from DB), so existing
+// entries always match DB content. The incremental append path avoids
+// invalidating the render cache, preventing flicker on iteration transition.
 func TestConsistency_DBMoreEntriesThanLocal(t *testing.T) {
 	model := initTestModel()
 	model.startAgentTurn()
 
-	// Local has 1 iteration (from a previous DB restore)
+	// Local has 1 iteration (from a previous DB restore — content matches DB)
 	model.progressState.iterations = []cliIterationSnapshot{
-		{Iteration: 1, Content: "old", Tools: []protocol.ToolProgress{{Name: "Read", Status: "done"}}},
+		{Iteration: 1, Content: "first", Tools: []protocol.ToolProgress{{Name: "Read", Status: "done"}}},
 	}
 
 	// DB now has 3 iterations (server processed more while we weren't looking)
@@ -2389,13 +2395,18 @@ func TestConsistency_DBMoreEntriesThanLocal(t *testing.T) {
 		Phase: "thinking", Iteration: 4,
 	}, dbHistory...)
 
-	// Local must be rebuilt from DB — 3 iterations with correct content
+	// Local should have 3 iterations — existing iter 1 preserved + new 2,3 appended
 	if len(model.progressState.iterations) != 3 {
-		t.Fatalf("expected 3 iterations after DB rebuild, got %d", len(model.progressState.iterations))
+		t.Fatalf("expected 3 iterations after incremental append, got %d", len(model.progressState.iterations))
 	}
-	for i, want := range []string{"first", "second", "third"} {
-		if model.progressState.iterations[i].Content != want {
-			t.Errorf("iter %d content = %q, want %q", i+1, model.progressState.iterations[i].Content, want)
+	// Iter 1 should be preserved (not rebuilt)
+	if model.progressState.iterations[0].Content != "first" {
+		t.Errorf("iter 1 content = %q, want %q (preserved)", model.progressState.iterations[0].Content, "first")
+	}
+	// Iter 2 and 3 should be appended from DB
+	for i, want := range []string{"second", "third"} {
+		if model.progressState.iterations[i+1].Content != want {
+			t.Errorf("iter %d content = %q, want %q", i+2, model.progressState.iterations[i+1].Content, want)
 		}
 	}
 }
