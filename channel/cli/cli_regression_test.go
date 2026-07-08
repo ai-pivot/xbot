@@ -93,6 +93,32 @@ func TestRegression_GhostGeneratingToolDuringTransition(t *testing.T) {
 	}
 }
 
+func TestRegression_GhostGeneratingToolAfterError(t *testing.T) {
+	a := cliProgressMsg{payload: &protocol.ProgressEvent{
+		Seq:            1,
+		StreamingTools: []protocol.ToolProgress{{Name: "FileReplace", Status: "generating"}},
+	}}
+	b := cliProgressMsg{payload: &protocol.ProgressEvent{
+		Seq:       2,
+		Phase:     "tool_exec",
+		Iteration: 1,
+		CompletedTools: []protocol.ToolProgress{{
+			Name:      "FileReplace",
+			Status:    "error",
+			Iteration: 1,
+		}},
+	}}
+
+	merged := coalesceProgress(a, b)
+
+	if len(merged.payload.StreamingTools) > 0 {
+		t.Fatalf("stale generating tool survived structured error: %+v", merged.payload.StreamingTools)
+	}
+	if len(merged.payload.CompletedTools) != 1 || merged.payload.CompletedTools[0].Status != "error" {
+		t.Fatalf("structured error tool not preserved: %+v", merged.payload.CompletedTools)
+	}
+}
+
 // ── Bug: coalesceProgress loses StreamContent when next event has ReasoningStreamContent ──
 // Root cause: old coalesceProgress took "keep b (newer)" for stream-only,
 // losing a's StreamContent when b only carried ReasoningStreamContent.
@@ -474,5 +500,98 @@ func TestRegression_NoLocalSnapshotFromPushEvents(t *testing.T) {
 	// No local snapshot should be created from push events alone.
 	if len(model.progressState.iterations) != 0 {
 		t.Errorf("expected 0 local snapshots from push events, got %d", len(model.progressState.iterations))
+	}
+}
+
+func TestRegression_IterationAdvancePushCarriesCompletedHistory(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// C is currently rendered live with reasoning, content, and a generating tool.
+	sendProgress(model, &protocol.ProgressEvent{
+		ChatID:                 "cli:/test",
+		Seq:                    1,
+		Phase:                  "tool_exec",
+		Iteration:              2,
+		StreamContent:          "content C",
+		ReasoningStreamContent: "reasoning C",
+		StreamingTools:         []protocol.ToolProgress{{Name: "Shell", Status: "generating"}},
+	})
+
+	// D arrives as a push event. It must carry C in IterationHistory, otherwise
+	// applying D replaces current and C disappears until the next tick pull.
+	sendProgress(model, &protocol.ProgressEvent{
+		ChatID:    "cli:/test",
+		Seq:       2,
+		Phase:     "thinking",
+		Iteration: 3,
+		IterationHistory: []protocol.ProgressEvent{{
+			ChatID:    "cli:/test",
+			Phase:     "tool_exec",
+			Iteration: 2,
+			Content:   "content C",
+			Reasoning: "reasoning C",
+			CompletedTools: []protocol.ToolProgress{{
+				Name:      "Shell",
+				Status:    "done",
+				Iteration: 2,
+			}},
+		}},
+	})
+
+	if len(model.progressState.iterations) != 1 {
+		t.Fatalf("expected C restored as completed history on D push, got %d", len(model.progressState.iterations))
+	}
+	got := model.progressState.iterations[0]
+	if got.Iteration != 2 || got.Content != "content C" || got.Reasoning != "reasoning C" {
+		t.Fatalf("C history not preserved across iteration advance: %+v", got)
+	}
+	if len(got.Tools) != 1 || got.Tools[0].Name != "Shell" {
+		t.Fatalf("C tool history not preserved: %+v", got.Tools)
+	}
+	if model.progressState.current == nil || model.progressState.current.Iteration != 3 {
+		t.Fatalf("expected current to advance to D, got %+v", model.progressState.current)
+	}
+}
+
+func TestRegression_GeneratingToolPreservedUntilStructuredToolState(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	sendProgress(model, &protocol.ProgressEvent{
+		ChatID:         "cli:/test",
+		Seq:            1,
+		Phase:          "tool_exec",
+		Iteration:      2,
+		StreamingTools: []protocol.ToolProgress{{Name: "Shell", Status: "generating"}},
+	})
+
+	// A sparse structured snapshot for the same iteration must not briefly erase
+	// the generating tool before the real done/active tool state arrives.
+	sendProgress(model, &protocol.ProgressEvent{
+		ChatID:    "cli:/test",
+		Seq:       2,
+		Phase:     "tool_exec",
+		Iteration: 2,
+	})
+
+	if len(model.progressState.current.StreamingTools) != 1 || model.progressState.current.StreamingTools[0].Name != "Shell" {
+		t.Fatalf("generating tool disappeared on sparse same-iteration snapshot: %+v", model.progressState.current)
+	}
+
+	// Once a structured tool state arrives, generating must not linger alongside done.
+	sendProgress(model, &protocol.ProgressEvent{
+		ChatID:         "cli:/test",
+		Seq:            3,
+		Phase:          "tool_exec",
+		Iteration:      2,
+		CompletedTools: []protocol.ToolProgress{{Name: "Shell", Status: "done", Iteration: 2}},
+	})
+
+	if len(model.progressState.current.StreamingTools) != 0 {
+		t.Fatalf("generating tool lingered after structured done arrived: %+v", model.progressState.current.StreamingTools)
+	}
+	if len(model.progressState.current.CompletedTools) != 1 || model.progressState.current.CompletedTools[0].Name != "Shell" {
+		t.Fatalf("done tool state missing after structured snapshot: %+v", model.progressState.current.CompletedTools)
 	}
 }

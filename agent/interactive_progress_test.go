@@ -155,6 +155,68 @@ func TestGetActiveProgress_KeyFormatConsistency(t *testing.T) {
 
 func NewTestAgent() *Agent { return &Agent{} }
 
+func TestRecordIterationAdvanceAndAttachHistory_AttachesPreviousIteration(t *testing.T) {
+	a := NewTestAgent()
+	key := "cli:/cwd"
+	prev := &protocol.ProgressEvent{
+		ChatID:      key,
+		Phase:       "tool_exec",
+		Iteration:   2,
+		Content:     "content C",
+		Reasoning:   "reasoning C",
+		ActiveTools: []protocol.ToolProgress{{Name: "Shell", Status: "done", Iteration: 2}},
+	}
+	a.lastProgressSnapshot.Store(key, prev)
+
+	next := &protocol.ProgressEvent{ChatID: key, Phase: "thinking", Iteration: 3}
+	a.recordIterationAdvanceAndAttachHistory(key, next.Iteration, next)
+
+	if len(next.IterationHistory) != 1 {
+		t.Fatalf("expected previous iteration attached to outgoing payload, got %d", len(next.IterationHistory))
+	}
+	got := next.IterationHistory[0]
+	if got.Iteration != 2 || got.Content != "content C" || got.Reasoning != "reasoning C" {
+		t.Fatalf("wrong history snapshot attached: %+v", got)
+	}
+	if len(got.ActiveTools) != 1 || got.ActiveTools[0].Name != "Shell" {
+		t.Fatalf("tool progress not preserved in attached history: %+v", got.ActiveTools)
+	}
+}
+
+func TestRecordIterationAdvanceAndAttachHistory_StripsNestedHistory(t *testing.T) {
+	a := NewTestAgent()
+	key := "cli:/cwd"
+	prev := &protocol.ProgressEvent{
+		ChatID:    key,
+		Phase:     "tool_exec",
+		Iteration: 2,
+		Content:   "content C",
+		IterationHistory: []protocol.ProgressEvent{{
+			Iteration: 1,
+			Content:   "nested history must not be retained",
+		}},
+	}
+	a.lastProgressSnapshot.Store(key, prev)
+
+	next := &protocol.ProgressEvent{ChatID: key, Phase: "thinking", Iteration: 3}
+	a.recordIterationAdvanceAndAttachHistory(key, next.Iteration, next)
+
+	if len(next.IterationHistory) != 1 {
+		t.Fatalf("expected one flattened history entry, got %d", len(next.IterationHistory))
+	}
+	if len(next.IterationHistory[0].IterationHistory) != 0 {
+		t.Fatalf("nested IterationHistory leaked into outgoing payload: %+v", next.IterationHistory[0].IterationHistory)
+	}
+	histPtr, ok := a.iterationHistories.Load(key)
+	if !ok {
+		t.Fatal("iteration history was not stored")
+	}
+	hist := *histPtr.(*[]protocol.ProgressEvent)
+	if len(hist) != 1 || len(hist[0].IterationHistory) != 0 {
+		t.Fatalf("nested IterationHistory stored internally: %+v", hist)
+	}
+}
+
 // TestBackgroundCompletion_FinalReplyInMessages verifies that the background mode
 // path in SpawnInteractiveSession appends the final assistant reply (out.Content)
 // to placeholder.messages, so GetAgentSessionDumpByFullKey returns it.

@@ -2911,7 +2911,7 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 	}
 
 	// Store snapshot for mid-session reconnect
-	a.lastProgressSnapshot.Store(progressKey, payload)
+	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 	a.clearStreamState(progressKey)
 }
 

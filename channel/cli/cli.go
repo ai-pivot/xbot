@@ -1152,14 +1152,28 @@ func coalesceProgress(a, b cliProgressMsg) cliProgressMsg {
 	// Stream content is cumulative (each push sends full accumulated text),
 	// so longer = more complete. But different fields may come from
 	// different events, so we must check each independently.
+	if len(pa.StreamContent) > len(result.StreamContent) {
+		result.StreamContent = pa.StreamContent
+	}
 	if len(pb.StreamContent) > len(result.StreamContent) {
 		result.StreamContent = pb.StreamContent
+	}
+	if len(pa.ReasoningStreamContent) > len(result.ReasoningStreamContent) {
+		result.ReasoningStreamContent = pa.ReasoningStreamContent
 	}
 	if len(pb.ReasoningStreamContent) > len(result.ReasoningStreamContent) {
 		result.ReasoningStreamContent = pb.ReasoningStreamContent
 	}
-	if len(pb.StreamingTools) > len(result.StreamingTools) {
-		result.StreamingTools = pb.StreamingTools
+	if len(result.ActiveTools) == 0 && len(result.CompletedTools) == 0 {
+		if len(pa.StreamingTools) > len(result.StreamingTools) {
+			result.StreamingTools = pa.StreamingTools
+		}
+		if len(pb.StreamingTools) > len(result.StreamingTools) {
+			result.StreamingTools = pb.StreamingTools
+		}
+	}
+	if pa.StreamTokens > result.StreamTokens {
+		result.StreamTokens = pa.StreamTokens
 	}
 	if pb.StreamTokens > result.StreamTokens {
 		result.StreamTokens = pb.StreamTokens

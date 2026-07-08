@@ -186,6 +186,26 @@ func (a *Agent) cleanupExpiredSessions() {
 	})
 }
 
+func progressSnapshotWithoutHistory(src *protocol.ProgressEvent) *protocol.ProgressEvent {
+	if src == nil {
+		return nil
+	}
+	clone := *src
+	clone.IterationHistory = nil
+	return &clone
+}
+
+func progressHistoryWithoutNested(hist []protocol.ProgressEvent) []protocol.ProgressEvent {
+	if len(hist) == 0 {
+		return nil
+	}
+	result := make([]protocol.ProgressEvent, len(hist))
+	for i := range hist {
+		result[i] = *progressSnapshotWithoutHistory(&hist[i])
+	}
+	return result
+}
+
 // recordIterationSnapshot appends the previous snapshot to iteration history if the
 // shouldAppend predicate returns true. Uses CAS loop to avoid TOCTOU races on sync.Map.
 func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *protocol.ProgressEvent) bool) {
@@ -193,13 +213,13 @@ func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *prot
 	if !loaded {
 		return
 	}
-	prev := prevSnap.(*protocol.ProgressEvent)
+	prev := progressSnapshotWithoutHistory(prevSnap.(*protocol.ProgressEvent))
 	if !shouldAppend(prev) {
 		return
 	}
 	for {
 		histPtr, _ := a.iterationHistories.LoadOrStore(key, &[]protocol.ProgressEvent{})
-		hist := *histPtr.(*[]protocol.ProgressEvent)
+		hist := progressHistoryWithoutNested(*histPtr.(*[]protocol.ProgressEvent))
 		already := false
 		for _, h := range hist {
 			if h.Iteration == prev.Iteration {
@@ -208,12 +228,33 @@ func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *prot
 			}
 		}
 		if already {
-			return
+			if a.iterationHistories.CompareAndSwap(key, histPtr, &hist) {
+				return
+			}
+			continue
 		}
 		updated := append(hist, *prev)
 		if a.iterationHistories.CompareAndSwap(key, histPtr, &updated) {
 			return
 		}
+	}
+}
+
+// recordIterationAdvanceAndAttachHistory records the previous iteration before
+// sending a newer structured progress event, then attaches the authoritative
+// completed-iteration history to the outgoing payload. This keeps TUI state
+// linear: if current advances from C to D, C is already present in
+// IterationHistory on the same event.
+func (a *Agent) recordIterationAdvanceAndAttachHistory(key string, nextIteration int, payload *protocol.ProgressEvent) {
+	if payload == nil {
+		return
+	}
+	a.recordIterationSnapshot(key, func(prev *protocol.ProgressEvent) bool {
+		return nextIteration > prev.Iteration && prev.Iteration >= 0
+	})
+	if histPtr, ok := a.iterationHistories.Load(key); ok {
+		hist := *histPtr.(*[]protocol.ProgressEvent)
+		payload.IterationHistory = progressHistoryWithoutNested(hist)
 	}
 }
 
@@ -282,6 +323,8 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			}
 		}
 
+		a.recordIterationAdvanceAndAttachHistory(agentProgressKey, s.Iteration, cliPayload)
+
 		if localCh != nil {
 			localCh.SendProgress(key, cliPayload)
 		} else if remoteCh != nil {
@@ -315,16 +358,16 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 					MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
 				}
 			}
+			if len(cliPayload.IterationHistory) > 0 {
+				wsPayload.IterationHistory = make([]protocol.ProgressEvent, len(cliPayload.IterationHistory))
+				copy(wsPayload.IterationHistory, cliPayload.IterationHistory)
+			}
 			// Route progress to the agent session's hub key (interactiveKey format)
 			// so the remote CLI client subscribed to this agent session receives it.
 			remoteCh.SendProgress(key, wsPayload)
 		}
 
-		// Save snapshot + track iteration history for mid-session reconnect.
-		a.recordIterationSnapshot(agentProgressKey, func(prev *protocol.ProgressEvent) bool {
-			return s.Iteration > prev.Iteration && prev.Iteration >= 0
-		})
-		a.lastProgressSnapshot.Store(agentProgressKey, cliPayload)
+		a.lastProgressSnapshot.Store(agentProgressKey, progressSnapshotWithoutHistory(cliPayload))
 	}
 
 	// Wire stream callbacks — unified SendProgress path with qualified ChatID.

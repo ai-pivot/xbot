@@ -99,8 +99,9 @@ func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
 	if histPtr, ok := a.iterationHistories.Load(key); ok {
 		hist := *histPtr.(*[]protocol.ProgressEvent)
 		if len(hist) > 0 {
-			result.IterationHistory = make([]protocol.ProgressEvent, len(hist))
-			copy(result.IterationHistory, hist)
+			flat := progressHistoryWithoutNested(hist)
+			a.iterationHistories.CompareAndSwap(key, histPtr, &flat)
+			result.IterationHistory = flat
 			return &result
 		}
 	}

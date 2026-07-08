@@ -1696,12 +1696,9 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
 				}
 			}
+			a.recordIterationAdvanceAndAttachHistory(progressKey, s.Iteration, payload)
 			cliCh.SendProgress(chatID, payload)
-			// Save snapshot + track iteration history for mid-session reconnect.
-			a.recordIterationSnapshot(progressKey, func(prev *protocol.ProgressEvent) bool {
-				return s.Iteration > prev.Iteration && prev.Iteration >= 0
-			})
-			a.lastProgressSnapshot.Store(progressKey, payload)
+			a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 			a.clearStreamState(progressKey)
 		}
 		if remoteCLICh != nil {
@@ -1800,12 +1797,13 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
 				}
 			}
+			a.recordIterationAdvanceAndAttachHistory(progressKey, s.Iteration, cliPayload)
+			if len(cliPayload.IterationHistory) > 0 {
+				payload.IterationHistory = make([]protocol.ProgressEvent, len(cliPayload.IterationHistory))
+				copy(payload.IterationHistory, cliPayload.IterationHistory)
+			}
 			remoteCLICh.SendProgress(chatID, payload)
-			// Store progress snapshot for remote CLI reconnect recovery.
-			a.recordIterationSnapshot(progressKey, func(prev *protocol.ProgressEvent) bool {
-				return s.Iteration > prev.Iteration && prev.Iteration >= 0
-			})
-			a.lastProgressSnapshot.Store(progressKey, cliPayload)
+			a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(cliPayload))
 			a.clearStreamState(progressKey)
 			log.WithFields(log.Fields{
 				"key":       progressKey,
@@ -1910,7 +1908,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 			return s.Iteration > prev.Iteration && prev.Iteration >= 0
 		})
 		// Save current iteration snapshot
-		a.lastProgressSnapshot.Store(progressKey, payload)
+		a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 		a.clearStreamState(progressKey)
 	}
 }

@@ -39,22 +39,14 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 
 	// Restore iteration history from snapshot BEFORE the Seq check.
 	//
-	// Push events (from ProgressEventHandler) carry the current iteration's
-	// state but NOT IterationHistory — that field is only populated by
-	// GetActiveProgress (tick pull), which reads from the agent's
-	// iterationHistories map. The tick pull reuses the same Seq as the
-	// last push event (it reads the stored snapshot), so the Seq check
-	// below would skip it — but the tick pull's IterationHistory may have
-	// grown since the push event (recordIterationSnapshot runs AFTER
-	// SendProgress in the ProgressEventHandler).
+	// Iteration-advance push events carry IterationHistory so TUI never observes
+	// current advancing from C to D while C is absent from completed history.
+	// Tick pulls also carry IterationHistory and may reuse the same Seq as the
+	// last push event, so restoring before Seq dedup keeps completed iterations
+	// authoritative even when only history changed.
 	//
-	// By restoring iterations before the Seq check, we guarantee that:
-	// 1. Push events (no IterationHistory) → restoreIterationsFromSnapshot
-	//    is a no-op (empty field → early return)
-	// 2. Tick pulls (with IterationHistory) → iterations are always rebuilt
-	//    from DB, even if the Seq matches the last push event
-	// 3. restoreIterationsFromSnapshot's own count check (O(1)) prevents
-	//    unnecessary rebuilds when nothing changed
+	// Push events without IterationHistory remain no-ops here: they update current
+	// only and never create local completed snapshots.
 	m.restoreIterationsFromSnapshot(snapshot)
 
 	// Seq check: skip if we've already applied this or a newer snapshot.
@@ -120,6 +112,9 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 		}
 		if snapshot.StreamTokens == 0 && prev.StreamTokens > 0 {
 			snapshot.StreamTokens = prev.StreamTokens
+		}
+		if len(snapshot.StreamingTools) == 0 && len(snapshot.ActiveTools) == 0 && len(snapshot.CompletedTools) == 0 && len(prev.StreamingTools) > 0 {
+			snapshot.StreamingTools = prev.StreamingTools
 		}
 	}
 
