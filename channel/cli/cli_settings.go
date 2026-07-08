@@ -197,14 +197,6 @@ func (m *cliModel) saveSettings(values map[string]string) {
 			}
 		} else if hasSubValues {
 			// No active subscription — create one (first-run / wizard setup).
-			existingSubIDs := map[string]bool{}
-			if subs, err := m.subscriptionMgr.List(""); err == nil {
-				for _, sub := range subs {
-					if sub.ID != "" {
-						existingSubIDs[sub.ID] = true
-					}
-				}
-			}
 			newSub := &ch.Subscription{
 				Name:   "default",
 				Active: true,
@@ -227,8 +219,8 @@ func (m *cliModel) saveSettings(values map[string]string) {
 				if err := m.subscriptionMgr.Add(newSub); err != nil {
 					logrus.WithFields(logrus.Fields{"err": err}).Warn("saveSettings: subscription create failed")
 				} else {
-					subID := m.createdSubscriptionID(newSub, existingSubIDs)
-					if subID == "" {
+					// Add populates newSub.ID with the server-generated ID.
+					if newSub.ID == "" {
 						logrus.WithFields(logrus.Fields{
 							"provider": newSub.Provider,
 							"base_url": newSub.BaseURL,
@@ -240,18 +232,18 @@ func (m *cliModel) saveSettings(values map[string]string) {
 					// Must pass chatID="" so the RPC handler takes the global
 					// path (svc.SetDefault + SwitchSubscription), NOT the
 					// per-session path which skips both.
-					_ = m.subscriptionMgr.SetDefault(subID, "")
+					_ = m.subscriptionMgr.SetDefault(newSub.ID, "")
 					// Also bind to the current session so GetSessionSubscription
 					// finds it immediately and the LLM factory has a per-chat entry.
-					_ = m.subscriptionMgr.SetDefault(subID, m.chatID)
+					_ = m.subscriptionMgr.SetDefault(newSub.ID, m.chatID)
 					// Sync TUI caches immediately — applySessionLLMState is the
 					// single source of truth for cachedModelName/activeSubID.
 					// Without this, refreshCachedModelName may fire before
 					// GetDefault reflects the new subscription (RPC timing),
 					// letting auto-discover pick a wrong model from ListModels().
-					m.activeSubID = subID
+					m.activeSubID = newSub.ID
 					m.applySessionLLMState(SessionLLMState{
-						SubscriptionID: subID,
+						SubscriptionID: newSub.ID,
 						Model:          "", // model is user-level, resolved from user_default_model
 					})
 				}
@@ -370,35 +362,6 @@ func (m *cliModel) saveSettings(values map[string]string) {
 	if m.channel != nil && m.channel.config.RefreshValuesCache != nil && m.activeSubID != "" {
 		m.channel.config.RefreshValuesCache(m.activeSubID)
 	}
-}
-
-func (m *cliModel) createdSubscriptionID(created *ch.Subscription, existingIDs map[string]bool) string {
-	if created == nil {
-		return ""
-	}
-	if created.ID != "" {
-		return created.ID
-	}
-	if m.subscriptionMgr == nil {
-		return ""
-	}
-	subs, err := m.subscriptionMgr.List("")
-	if err != nil {
-		return ""
-	}
-	for i := len(subs) - 1; i >= 0; i-- {
-		sub := subs[i]
-		if sub.ID == "" || existingIDs[sub.ID] {
-			continue
-		}
-		if sub.Name == created.Name &&
-			sub.Provider == created.Provider &&
-			sub.BaseURL == created.BaseURL &&
-			sub.Model == created.Model {
-			return sub.ID
-		}
-	}
-	return ""
 }
 
 // ── resolve helpers ──────────────────────────────────────────────────

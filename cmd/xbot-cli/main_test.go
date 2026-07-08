@@ -727,12 +727,17 @@ func (t *fakeTransport) Call(method string, payload json.RawMessage) (json.RawMe
 		if err := json.Unmarshal(payload, &req); err != nil {
 			return nil, err
 		}
-		err := t.subSvc.Add(&sqlite.LLMSubscription{
+		dbSub := &sqlite.LLMSubscription{
 			ID: req.Sub.ID, SenderID: req.SenderID, Name: req.Sub.Name,
 			Provider: req.Sub.Provider, BaseURL: req.Sub.BaseURL, APIKey: req.Sub.APIKey,
 			Model: req.Sub.Model, IsDefault: req.Sub.Active,
-		})
-		return json.RawMessage("null"), err
+		}
+		if err := t.subSvc.Add(dbSub); err != nil {
+			return nil, err
+		}
+		return json.Marshal(struct {
+			ID string `json:"id"`
+		}{ID: dbSub.ID})
 
 	case agent.MethodRemoveSubscription:
 		var req struct {

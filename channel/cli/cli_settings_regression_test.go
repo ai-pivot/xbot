@@ -75,7 +75,7 @@ func TestSaveSettings_MaxContextNotPassedToApplySettings(t *testing.T) {
 	}
 }
 
-func TestSaveSettings_FirstRunUsesCreatedSubscriptionIDFromList(t *testing.T) {
+func TestSaveSettings_FirstRunUsesCreatedSubscriptionID(t *testing.T) {
 	mgr := &mockSubscriptionManager{addListID: "sub-created"}
 	m := newCLIModel()
 	m.channel = &CLIChannel{config: &CLIChannelConfig{}}

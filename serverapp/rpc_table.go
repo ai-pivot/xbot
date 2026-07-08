@@ -505,7 +505,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		}
 		return map[string]string{}, nil
 	})
-	t["add_subscription"] = rpc1void(func(ctx context.Context, p struct {
+	t["add_subscription"] = rpc1(func(ctx context.Context, p struct {
 		Sub struct {
 			Name            string `json:"name"`
 			Provider        string `json:"provider"`
@@ -516,10 +516,12 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			MaxOutputTokens int    `json:"max_output_tokens"`
 			ThinkingMode    string `json:"thinking_mode"`
 		} `json:"sub"`
-	}) error {
+	}) (struct {
+		ID string `json:"id"`
+	}, error) {
 		svc, err := h.requireSubscriptionSvc()
 		if err != nil {
-			return err
+			return struct{ ID string `json:"id"` }{}, err
 		}
 		dbSub := &sqlite.LLMSubscription{
 			Name:            p.Sub.Name,
@@ -533,9 +535,9 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		}
 		dbSub.SenderID = rpcBizID(ctx)
 		if err := svc.Add(dbSub); err != nil {
-			return err
+			return struct{ ID string `json:"id"` }{}, err
 		}
-		return nil
+		return struct{ ID string `json:"id"` }{ID: dbSub.ID}, nil
 	})
 	t["update_subscription"] = rpc1void(h.updateSubscription)
 	t["update_per_model_config"] = rpc1void(func(ctx context.Context, p struct {

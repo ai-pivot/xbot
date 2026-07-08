@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	ch "xbot/channel"
 	"xbot/protocol"
 
@@ -544,7 +543,6 @@ func (m *cliModel) openAddSubscriptionPanel() {
 			name = "unnamed"
 		}
 		sub := &ch.Subscription{
-			ID:       fmt.Sprintf("sub_%d", time.Now().UnixNano()),
 			Name:     name,
 			Provider: values["sub_provider"],
 			BaseURL:  values["sub_base_url"],

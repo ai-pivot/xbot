@@ -658,8 +658,11 @@ func (c *Client) GetDefaultSubscription(senderID string) (*protocol.Subscription
 	return r, c.call(MethodGetDefaultSubscription, getDefaultSubscriptionReq{SenderID: senderID}, &r)
 }
 
-func (c *Client) AddSubscription(senderID string, sub protocol.Subscription) error {
-	return c.call(MethodAddSubscription, addSubscriptionReq{
+func (c *Client) AddSubscription(senderID string, sub protocol.Subscription) (string, error) {
+	var resp struct {
+		ID string `json:"id"`
+	}
+	err := c.call(MethodAddSubscription, addSubscriptionReq{
 		SenderID: senderID,
 		Sub: channelSubscriptionJSON{
 			ID: sub.ID, Name: sub.Name, Provider: sub.Provider,
@@ -668,7 +671,8 @@ func (c *Client) AddSubscription(senderID string, sub protocol.Subscription) err
 			MaxOutputTokens: sub.MaxOutputTokens, ThinkingMode: sub.ThinkingMode,
 			PerModelConfigs: sub.PerModelConfigs,
 		},
-	}, nil)
+	}, &resp)
+	return resp.ID, err
 }
 
 func (c *Client) RemoveSubscription(id string) error {

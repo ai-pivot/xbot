@@ -46,11 +46,10 @@ func (m *mockSubscriptionManager) GetDefault(_ string) (*channel.Subscription, e
 
 func (m *mockSubscriptionManager) Add(sub *channel.Subscription) error {
 	m.addCalled = true
-	stored := *sub
-	if stored.ID == "" && m.addListID != "" {
-		stored.ID = m.addListID
+	if sub.ID == "" && m.addListID != "" {
+		sub.ID = m.addListID
 	}
-	m.subs = append(m.subs, stored)
+	m.subs = append(m.subs, *sub)
 	return m.saveErr
 }
 

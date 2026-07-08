@@ -376,7 +376,7 @@ func seedLocalDBSubscriptions(client *agent.Client, cfg *config.Config) error {
 	}
 	hasActive := hasActiveSeedSubscription(sourceSubs)
 	for i, sc := range sourceSubs {
-		if err := client.AddSubscription(cliSenderID, protocol.Subscription{
+		if _, err := client.AddSubscription(cliSenderID, protocol.Subscription{
 			ID:              sc.ID,
 			Name:            sc.Name,
 			Provider:        sc.Provider,
@@ -482,20 +482,11 @@ func updateActiveSubscription(client *agent.Client, cfg *config.Config, values m
 			}
 		}
 		// thinking_mode is no longer written onto subscription rows (global user setting).
-		if err := client.AddSubscription(cliSenderID, newSub); err != nil {
+		subID, err := client.AddSubscription(cliSenderID, newSub)
+		if err != nil {
 			return fmt.Errorf("create subscription: %w", err)
 		}
-		// Find the newly created subscription and set it as default
-		subs, listErr := client.ListSubscriptions(cliSenderID)
-		if listErr != nil {
-			return fmt.Errorf("list subscriptions after create: %w", listErr)
-		}
-		for _, s := range subs {
-			if s.Provider == provider && s.Model == model && s.APIKey == apiKey {
-				_ = client.SetDefaultSubscription(s.ID, "")
-				break
-			}
-		}
+		_ = client.SetDefaultSubscription(subID, "")
 		return nil
 	}
 
@@ -2202,7 +2193,11 @@ func (m *backendSubscriptionManager) GetDefault(senderID string) (*channel.Subsc
 }
 
 func (m *backendSubscriptionManager) Add(sub *channel.Subscription) error {
-	return m.client.AddSubscription(cliSenderID, *sub)
+	id, err := m.client.AddSubscription(cliSenderID, *sub)
+	if err == nil {
+		sub.ID = id
+	}
+	return err
 }
 
 func (m *backendSubscriptionManager) Remove(id string) error {
