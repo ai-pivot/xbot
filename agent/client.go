@@ -491,13 +491,14 @@ func (c *Client) SetUserModel(senderID, subID, model string) error {
 
 // SelectModel sets the per-session (subscription, model) for a chat.
 // Model-first replacement for SwitchModel when the subscription is known.
-func (c *Client) SelectModel(senderID, subID, model, chatID string) error {
+func (c *Client) SelectModel(senderID, channelName, subID, model, chatID string) error {
 	return c.call(MethodSelectModel, struct {
 		SenderID string `json:"sender_id"`
+		Channel  string `json:"channel"`
 		SubID    string `json:"sub_id"`
 		Model    string `json:"model"`
 		ChatID   string `json:"chat_id,omitempty"`
-	}{SenderID: senderID, SubID: subID, Model: model, ChatID: chatID}, nil)
+	}{SenderID: senderID, Channel: channelName, SubID: subID, Model: model, ChatID: chatID}, nil)
 }
 
 // SetDefaultModel sets the user-level default (subscription, model) for new sessions.
@@ -681,9 +682,9 @@ func (c *Client) SetDefaultSubscription(id string, chatID string) error {
 
 // GetSessionSubscription returns the session→subscription mapping from the backend.
 // Returns (subscriptionID, model). Empty strings if no mapping exists.
-func (c *Client) GetSessionSubscription(senderID, chatID string) (subscriptionID, model string, err error) {
+func (c *Client) GetSessionSubscription(senderID, channelName, chatID string) (subscriptionID, model string, err error) {
 	var result map[string]string
-	if err := c.call(MethodGetSessionSubscription, map[string]string{"chat_id": chatID}, &result); err != nil {
+	if err := c.call(MethodGetSessionSubscription, map[string]string{"channel": channelName, "chat_id": chatID}, &result); err != nil {
 		return "", "", err
 	}
 	return result["subscription_id"], result["model"], nil

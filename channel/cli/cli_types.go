@@ -599,7 +599,7 @@ type SubscriptionManager interface {
 	SetSubscriptionEnabled(id string, enabled bool) error
 	// GetSessionSubscription queries the backend for the session→subscription mapping.
 	// Returns empty strings if no mapping exists (server restart, first-time session, etc.).
-	GetSessionSubscription(senderID, chatID string) (subscriptionID, model string, err error)
+	GetSessionSubscription(senderID, channelName, chatID string) (subscriptionID, model string, err error)
 }
 
 // LLMSubscriber switches the active LLM for a user (called when subscription changes).
@@ -609,7 +609,7 @@ type LLMSubscriber interface {
 	// model picker when the row carries an owning SubID, so the user picks the
 	// exact subscription that serves a model even when the same model name is
 	// served by multiple subscriptions.
-	SelectModel(senderID, subID, model, chatID string) error
+	SelectModel(senderID, channelName, subID, model, chatID string) error
 	GetDefaultModel() string
 }
 

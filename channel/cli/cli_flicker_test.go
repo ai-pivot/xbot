@@ -245,3 +245,184 @@ func TestReasoningBoxVisibleAcrossMultipleToolProgress(t *testing.T) {
 
 // TestReasoningPhaseDoneNoContamination verifies the PhaseDone path is also
 // free from ReasoningStreamContent contamination.
+
+// ==================== Iteration Transition Flicker Tests ====================
+//
+// These tests verify the fix for the flicker bug where an iteration would
+// disappear for one frame and then reappear when transitioning from live
+// (in-progress) to completed (snapshotted).
+//
+// Root cause: restoreIterationsFromSnapshot did a full rebuild (discarding
+// existing iterations and recreating from backend snapshot) + called
+// invalidateProgress() which cleared streamPrefixLen, forcing updateStreamingOnly
+// to take the slow path (full prefix rebuild) on the next tick.
+//
+// Fix: incremental append (only add new iterations) + no invalidateProgress.
+
+// TestRestoreIterations_IncrementalAppend verifies that restoring iterations
+// from a snapshot only appends new iterations without rebuilding existing ones.
+// This is critical for flicker prevention: existing iterations' rendered cache
+// lines (streamCompletedLines) remain valid.
+func TestRestoreIterations_IncrementalAppend(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Simulate push events that create iteration 1 via live rendering
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 1,
+		Reasoning: "reasoning for iter 1",
+		Content:   "content for iter 1",
+		ChatID:    "cli:/test",
+	})
+
+	// Simulate tick pull carrying IterationHistory with 1 entry
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Iteration: 2,
+		ChatID:    "cli:/test",
+	}, protocol.ProgressEvent{
+		Iteration:      1,
+		Reasoning:      "reasoning for iter 1",
+		Content:        "content for iter 1",
+		CompletedTools: []protocol.ToolProgress{{Name: "Shell", Label: "echo hi", Status: "done"}},
+	})
+
+	if len(model.progressState.iterations) != 1 {
+		t.Fatalf("expected 1 completed iteration, got %d", len(model.progressState.iterations))
+	}
+
+	iter1 := model.progressState.iterations[0]
+	if iter1.Content != "content for iter 1" {
+		t.Errorf("iter 1 content = %q, want %q", iter1.Content, "content for iter 1")
+	}
+	if iter1.Reasoning != "reasoning for iter 1" {
+		t.Errorf("iter 1 reasoning = %q, want %q", iter1.Reasoning, "reasoning for iter 1")
+	}
+
+	// Now add iteration 2 to history — should append, not rebuild
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Iteration: 3,
+		ChatID:    "cli:/test",
+	}, protocol.ProgressEvent{
+		Iteration: 1,
+		Content:   "content for iter 1",
+		Reasoning: "reasoning for iter 1",
+	}, protocol.ProgressEvent{
+		Iteration: 2,
+		Content:   "content for iter 2",
+		Reasoning: "reasoning for iter 2",
+	})
+
+	if len(model.progressState.iterations) != 2 {
+		t.Fatalf("expected 2 completed iterations, got %d", len(model.progressState.iterations))
+	}
+
+	// Iteration 1 should be UNCHANGED (not rebuilt)
+	if model.progressState.iterations[0].Content != "content for iter 1" {
+		t.Errorf("iter 1 content changed after incremental append: %q",
+			model.progressState.iterations[0].Content)
+	}
+
+	// Iteration 2 should be the new one
+	if model.progressState.iterations[1].Content != "content for iter 2" {
+		t.Errorf("iter 2 content = %q, want %q",
+			model.progressState.iterations[1].Content, "content for iter 2")
+	}
+}
+
+// TestRestoreIterations_PreservesExistingDataAcrossTicks verifies that
+// data from push events is NOT lost when a tick pull brings IterationHistory.
+// The old full-rebuild code would replace push-derived data with DB-derived
+// data, potentially losing field precision (e.g. ElapsedWall).
+func TestRestoreIterations_PreservesExistingDataAcrossTicks(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Push event for iteration 1 with rich data
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 1,
+		Content:   "push content",
+		Reasoning: "push reasoning",
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Read", Label: "file.go", Status: "running"},
+		},
+		ChatID: "cli:/test",
+	})
+
+	// Tick pull: same iteration 1 now in IterationHistory (tool completed)
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Iteration: 2,
+		ChatID:    "cli:/test",
+	}, protocol.ProgressEvent{
+		Iteration: 1,
+		Content:   "push content",
+		Reasoning: "push reasoning",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Read", Label: "file.go", Status: "done", Summary: "42 lines"},
+		},
+	})
+
+	if len(model.progressState.iterations) != 1 {
+		t.Fatalf("expected 1 iteration, got %d", len(model.progressState.iterations))
+	}
+
+	iter := model.progressState.iterations[0]
+	// Content and reasoning should match (from IterationHistory, which is authoritative)
+	if iter.Content != "push content" {
+		t.Errorf("content = %q, want %q", iter.Content, "push content")
+	}
+	if iter.Reasoning != "push reasoning" {
+		t.Errorf("reasoning = %q, want %q", iter.Reasoning, "push reasoning")
+	}
+	// Tools should come from the IterationHistory snapshot
+	if len(iter.Tools) != 1 || iter.Tools[0].Name != "Read" {
+		t.Errorf("expected 1 tool (Read), got %+v", iter.Tools)
+	}
+	if iter.Tools[0].Status != "done" {
+		t.Errorf("tool status = %q, want %q", iter.Tools[0].Status, "done")
+	}
+}
+
+// TestRestoreIterations_IdempotentWhenCountMatches verifies that calling
+// restoreIterationsFromSnapshot with the same count does nothing —
+// no append, no rebuild, no cache invalidation.
+func TestRestoreIterations_IdempotentWhenCountMatches(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// First restore: 1 iteration
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Iteration: 2,
+		ChatID:    "cli:/test",
+	}, protocol.ProgressEvent{
+		Iteration: 1,
+		Content:   "original content",
+	})
+
+	if len(model.progressState.iterations) != 1 {
+		t.Fatalf("expected 1 iteration after first restore, got %d", len(model.progressState.iterations))
+	}
+
+	originalSlice := model.progressState.iterations[0]
+
+	// Second restore: same count (1 iteration), same data
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Iteration: 2,
+		ChatID:    "cli:/test",
+	}, protocol.ProgressEvent{
+		Iteration: 1,
+		Content:   "original content",
+	})
+
+	// Should still be exactly 1 iteration
+	if len(model.progressState.iterations) != 1 {
+		t.Fatalf("expected 1 iteration after idempotent restore, got %d", len(model.progressState.iterations))
+	}
+
+	// Data should be unchanged
+	if model.progressState.iterations[0].Content != originalSlice.Content {
+		t.Errorf("content changed during idempotent restore: %q vs %q",
+			model.progressState.iterations[0].Content, originalSlice.Content)
+	}
+}

@@ -1627,11 +1627,20 @@ func TestCLIModelIterationAccumulation(t *testing.T) {
 	}}
 	model.Update(prog0b)
 
-	// Iteration 1: thinking — should snapshot iteration 0
+	// Iteration 1: thinking with IterationHistory from DB.
+	// The backend's recordIterationSnapshot appends the previous iteration
+	// when a new iteration's structured event arrives. This is the authoritative
+	// source — local snapshotIterationLocal was removed.
 	prog1 := cliProgressMsg{payload: &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 1,
 		ChatID:    "cli:/test",
+		IterationHistory: []protocol.ProgressEvent{{
+			Iteration:      0,
+			Content:        "",
+			Reasoning:      "",
+			CompletedTools: []protocol.ToolProgress{{Name: "read", Label: "Reading", Status: "done", Elapsed: 100}},
+		}},
 	}}
 	model.Update(prog1)
 	if len(model.progressState.iterations) != 1 {

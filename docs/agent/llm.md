@@ -23,6 +23,7 @@
 - `finish_reason` in intermediate chunks causes premature termination — check only after loop ends (`openai.go:788`)
 - Must send Usage before Done event (`openai.go:836`)
 - Provider without `finish_reason` but with tool_calls: infer reason as tool_calls (`openai.go:844`)
+- OpenAI-compatible `Generate` is a non-stream API, but some providers return `text/event-stream` even for non-stream requests. If `openai-go` fails with the explicit SSE-not-JSON content-type error, `Generate` falls back to `GenerateStream` + `CollectStream` and still returns a complete `LLMResponse`. This keeps compaction/non-stream callers provider-agnostic without masking ordinary JSON/API errors.
 
 ## Reasoning History Replay
 

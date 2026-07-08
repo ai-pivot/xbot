@@ -29,7 +29,7 @@ func TestAskUserLateProgressClearsState(t *testing.T) {
 			{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 1},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2})
+	sendProgressWithHistory(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2}, protocol.ProgressEvent{Iteration: 1, CompletedTools: []protocol.ToolProgress{{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 1}}})
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 2,
@@ -62,13 +62,15 @@ func TestAskUserLateProgressClearsState(t *testing.T) {
 	}
 
 	// Now simulate a LATE progress event arriving after the panel is open.
-	sendProgress(model, &protocol.ProgressEvent{
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
 		Phase:     "thinking",
 		Iteration: 3,
 		CompletedTools: []protocol.ToolProgress{
 			{Name: "AskUser", Label: "asked question", Status: "done", Elapsed: 100, Iteration: 3},
 		},
-	})
+	},
+		protocol.ProgressEvent{Iteration: 1, CompletedTools: []protocol.ToolProgress{{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 1}}},
+		protocol.ProgressEvent{Iteration: 2, CompletedTools: []protocol.ToolProgress{{Name: "Shell", Label: "echo done", Status: "done", Elapsed: 200, Iteration: 2}}})
 
 	// The late progress event should NOT clear iterationHistory.
 	if len(model.progressState.iterations) == 0 {
@@ -97,7 +99,7 @@ func TestAskUserTickPreservesIterations(t *testing.T) {
 			{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 1},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2})
+	sendProgressWithHistory(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2}, protocol.ProgressEvent{Iteration: 1, CompletedTools: []protocol.ToolProgress{{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 1}}})
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 2,

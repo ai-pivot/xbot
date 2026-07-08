@@ -311,12 +311,16 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	// select_model: model-first per-session selection. Sets (subID, model) for a
 	// chat via the ResolveLLM/SelectModel path.
 	t["select_model"] = rpc1void(func(ctx context.Context, p struct {
-		SubID  string `json:"sub_id"`
-		Model  string `json:"model"`
-		ChatID string `json:"chat_id,omitempty"`
+		SubID   string `json:"sub_id"`
+		Model   string `json:"model"`
+		ChatID  string `json:"chat_id,omitempty"`
+		Channel string `json:"channel,omitempty"`
 	}) error {
 		bizID := rpcBizID(ctx)
-		channel := "cli"
+		channel := p.Channel
+		if channel == "" {
+			channel = "cli"
+		}
 		if p.ChatID == "" {
 			return fmt.Errorf("select_model requires a chat_id (use set_default_model for the user-level default)")
 		}
@@ -489,12 +493,17 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 	t["list_subscriptions"] = rpc0err(h.listSubscriptions)
 	t["get_default_subscription"] = rpc0err(h.getDefaultSubscription)
 	t["get_session_subscription"] = rpc1(func(ctx context.Context, p struct {
-		ChatID string `json:"chat_id"`
+		ChatID  string `json:"chat_id"`
+		Channel string `json:"channel,omitempty"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
+		channel := p.Channel
+		if channel == "" {
+			channel = "cli"
+		}
 		// Read from tenants table (persistent backend source of truth).
 		if h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
-			subID, model, _ := sqlite.NewTenantService(h.Ag.MultiSession().DB()).GetTenantSubscription("cli", p.ChatID)
+			subID, model, _ := sqlite.NewTenantService(h.Ag.MultiSession().DB()).GetTenantSubscription(channel, p.ChatID)
 			if subID != "" {
 				return map[string]string{"subscription_id": subID, "model": model}, nil
 			}
@@ -507,14 +516,16 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 	})
 	t["add_subscription"] = rpc1void(func(ctx context.Context, p struct {
 		Sub struct {
-			Name            string `json:"name"`
-			Provider        string `json:"provider"`
-			BaseURL         string `json:"base_url"`
-			APIKey          string `json:"api_key"`
-			Model           string `json:"model"`
-			Active          bool   `json:"active"`
-			MaxOutputTokens int    `json:"max_output_tokens"`
-			ThinkingMode    string `json:"thinking_mode"`
+			ID              string                             `json:"id"`
+			Name            string                             `json:"name"`
+			Provider        string                             `json:"provider"`
+			BaseURL         string                             `json:"base_url"`
+			APIKey          string                             `json:"api_key"`
+			Model           string                             `json:"model"`
+			Active          bool                               `json:"active"`
+			MaxOutputTokens int                                `json:"max_output_tokens"`
+			ThinkingMode    string                             `json:"thinking_mode"`
+			PerModelConfigs map[string]protocol.PerModelConfig `json:"per_model_configs"`
 		} `json:"sub"`
 	}) error {
 		svc, err := h.requireSubscriptionSvc()
@@ -522,6 +533,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			return err
 		}
 		dbSub := &sqlite.LLMSubscription{
+			ID:              p.Sub.ID,
 			Name:            p.Sub.Name,
 			Provider:        p.Sub.Provider,
 			BaseURL:         p.Sub.BaseURL,
@@ -530,6 +542,12 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			MaxOutputTokens: p.Sub.MaxOutputTokens,
 			ThinkingMode:    p.Sub.ThinkingMode,
 			IsDefault:       p.Sub.Active,
+		}
+		if len(p.Sub.PerModelConfigs) > 0 {
+			dbSub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(p.Sub.PerModelConfigs))
+			for model, cfg := range p.Sub.PerModelConfigs {
+				dbSub.PerModelConfigs[model] = sqlite.PerModelConfig(cfg)
+			}
 		}
 		dbSub.SenderID = rpcBizID(ctx)
 		if err := svc.Add(dbSub); err != nil {

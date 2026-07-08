@@ -73,7 +73,7 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 
 | RPC | 说明 |
 |-----|------|
-| `select_model` | per-session (subID, model)，走 `SelectModel`。需 chatID（用户级用 `set_default_model`） |
+| `select_model` | per-session (subID, model)，走 `SelectModel`。需 chatID（用户级用 `set_default_model`），并且必须传目标 `channel`；`/su` 到 Feishu/Web/Agent 等非 CLI 会话时，模型绑定写入 `(channel, chatID)`，不能默认写 `cli:<chatID>` |
 | `set_default_model` | 用户级默认 (subID, model)，走 `SetUserDefaultModel` |
 | `set_model_enabled` | 切换模型 enabled，走 `SetModelEnabled` |
 | `set_subscription_enabled` | **v40** 切换订阅 enabled，走 `SetSubscriptionEnabled` |
@@ -504,6 +504,8 @@ master #179 用了 v38（`tenants.runner_id`）；model-first 重设计也用了
 - **点状态栏模型名 = 打开面板**（`cli_mouse.go` "modelName" → `openQuickSwitch("")`）。
 - **订阅编辑面板只改凭证/默认值**：`openEditSubscriptionPanel` 不再带逐模型 toggles（逐模型参数只在模型行 `E` 编辑，避免两处入口冗余）；`Update` 时保留 `target.PerModelConfigs` 不动。
 - 状态栏 `订阅名 · 模型名` 靠 `cachedSubName`，由 `refreshCachedSubName` 在 `activeSubID` 变更路径（`applyModelSwitch` / `refreshCachedModelName` defer / `applySessionLLMState`）刷新——每次一次 `List("")` RPC，**View() 只读缓存**，绝不能在每帧 RPC。订阅重命名后状态栏订阅名可能短暂滞后（下次 activeSubID 变更或面板刷新才更新），可接受。
+
+- **面板缓存规则**：`llmCache` 只服务打开面板时的快速渲染和过滤/展开等纯本地重排。任何订阅/模型元数据变更（新增/编辑/删除订阅、启停订阅、添加模型、编辑模型参数、启停模型）后都必须走 `rebuildLLMRowsFresh()` 或 `reopenLLMPanelOn()`，从 `llmSource()` 重新读取完整 `subs+entries` 快照后再重建 rows；不能只调用 `rebuildLLMRows()` 读取旧 cache。后台 `/models` 刷新完成 (`cliModelEntriesRefreshedMsg`) 时也必须重新读取订阅列表，再合并刷新返回的 entries，避免刷新飞行期间新增/编辑的订阅被旧 cache 覆盖。`add_subscription` RPC 必须保留客户端传入的 `id` 和 `per_model_configs`，否则 TUI 刷新后拿到的订阅 ID 会与刚创建的本地 ID 不一致，导致定位/后续模型操作错位。
 
 ### 16. `OnModelsLoaded` 必须在 model-first 路径注入；选择器开面板必须实时刷新
 

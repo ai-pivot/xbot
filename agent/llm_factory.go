@@ -522,13 +522,14 @@ func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
 		return nil
 	}
 	return func(models []string) {
-		// /models API returned a fresh model list — upsert each into
-		// subscription_models so they show up in the picker. No more
-		// CachedModels column writes.
+		// /models API returned a fresh model list — register each into
+		// subscription_models so they show up in the picker. Use EnsureModel
+		// (INSERT OR IGNORE) NOT UpsertModel, so existing per-model configs
+		// (max_context, max_output_tokens, api_type) are preserved.
 		for _, m := range models {
 			if m != "" {
-				if err := f.subscriptionSvc.UpsertModel(subID, m, 0, 0, "", ""); err != nil {
-					log.WithFields(log.Fields{"sub_id": subID, "model": m, "error": err}).Warn("[LLMFactory] OnModelsLoaded: UpsertModel failed")
+				if err := f.subscriptionSvc.EnsureModel(subID, m); err != nil {
+					log.WithFields(log.Fields{"sub_id": subID, "model": m, "error": err}).Warn("[LLMFactory] OnModelsLoaded: EnsureModel failed")
 				}
 			}
 		}
@@ -649,8 +650,14 @@ func (f *LLMFactory) getOrCreateClient(sub *sqlite.LLMSubscription, model string
 //
 // Resolution order:
 //  1. Per-session (channel, chatID) from tenants table
-//  2. User-level default from user_default_model
-//  3. System default (defaultLLM via GetLLM)
+//  2. User-level default from user_default_model (last-used model)
+//  3. Auto-bind: Balance tier → user_default_model (persists to tenants table)
+//  4. System default (defaultLLM via GetLLM)
+//
+// Auto-bind (step 3) ensures ALL sessions — CLI, Web, Feishu, etc. — get a
+// per-session model binding on first use, not just those created via the CLI
+// session panel. Priority: Balance tier config → last-used model. If neither
+// exists, falls through to system default.
 func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, string, int, string, int) {
 	// ProxyLLM override (runner local LLM) — highest priority.
 	if v, ok := f.proxyLLMs.Load(senderID); ok {
@@ -666,6 +673,15 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 		if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil {
 			subID = udm.SubscriptionID
 			model = udm.Model
+		}
+	}
+	if subID == "" {
+		// No per-session or user-level binding. Auto-bind to make this session
+		// self-contained: future ResolveLLM calls for this session will hit
+		// the tenants table directly (step 1), skipping the auto-bind path.
+		if f.ensureSessionModel(senderID, chatID, channel) {
+			// Re-read after binding succeeded.
+			subID, model, _ = f.tenantSvc.GetTenantSubscription(channel, chatID)
 		}
 	}
 	if subID == "" {
@@ -785,6 +801,59 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 		log.WithError(err).Warn("SelectModel: failed to update last-used model")
 	}
 	return nil
+}
+
+// ensureSessionModel auto-binds a model to a session that has no per-session
+// binding in the tenants table. This ensures ALL sessions (CLI, Web, Feishu,
+// etc.) get an explicit model binding on first use, not just those created via
+// the CLI session panel.
+//
+// Priority:
+//  1. Balance tier config (user_settings "tier_balance") — the preferred default
+//  2. Last-used model (user_default_model table) — fallback when Balance is unset
+//
+// If neither exists, no binding is created (the caller falls through to GetLLM).
+// Already-bound sessions are skipped (idempotent — safe to call every turn).
+//
+// On success, the session is bound via SelectModel (writes to both tenants table
+// and user_default_model), so subsequent ResolveLLM calls hit the tenants table
+// directly without entering this path again.
+func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
+	if chatID == "" || f.tenantSvc == nil || f.subscriptionSvc == nil {
+		return false
+	}
+	// Already bound? Skip.
+	if subID, _, _ := f.tenantSvc.GetTenantSubscription(channel, chatID); subID != "" {
+		return false
+	}
+
+	// Priority 1: Balance tier config.
+	if tierSubID, tierModel, _ := f.resolveTierModel(senderID, "balance"); tierSubID != "" && tierModel != "" {
+		if err := f.SelectModel(senderID, chatID, channel, tierSubID, tierModel); err == nil {
+			log.WithFields(log.Fields{
+				"chatID": chatID, "subID": tierSubID, "model": tierModel,
+				"source": "balance_tier",
+			}).Info("ensureSessionModel: auto-bound session to Balance tier model")
+			return true
+		}
+	}
+
+	// Priority 2: Last-used model (user_default_model).
+	// SelectModel writes to both tenants table (per-session) and user_default_model
+	// (per-user). When user_default_model exists but tenants doesn't, we bind it
+	// to make the session self-contained.
+	if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil &&
+		udm.SubscriptionID != "" && udm.Model != "" {
+		if err := f.SelectModel(senderID, chatID, channel, udm.SubscriptionID, udm.Model); err == nil {
+			log.WithFields(log.Fields{
+				"chatID": chatID, "subID": udm.SubscriptionID, "model": udm.Model,
+				"source": "last_used_model",
+			}).Info("ensureSessionModel: auto-bound session to last-used model")
+			return true
+		}
+	}
+
+	return false
 }
 
 // ResolveSubscriptionForModel finds the subscription that provides the given

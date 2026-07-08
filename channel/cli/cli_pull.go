@@ -37,8 +37,22 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 	}
 	snapshot = &snap
 
+	// Restore iteration history from snapshot BEFORE the Seq check.
+	//
+	// Iteration-advance push events carry IterationHistory so TUI never observes
+	// current advancing from C to D while C is absent from completed history.
+	// Tick pulls also carry IterationHistory and may reuse the same Seq as the
+	// last push event, so restoring before Seq dedup keeps completed iterations
+	// authoritative even when only history changed.
+	//
+	// Push events without IterationHistory remain no-ops here: they update current
+	// only and never create local completed snapshots.
+	m.restoreIterationsFromSnapshot(snapshot)
+
 	// Seq check: skip if we've already applied this or a newer snapshot.
 	// This deduplicates push events and tick reads — the latest snapshot wins.
+	// Note: restoreIterationsFromSnapshot already ran above, so iteration
+	// history is always up-to-date regardless of Seq dedup.
 	if snapshot.Seq > 0 && snapshot.Seq <= m.progressState.lastAppliedSeq {
 		return
 	}
@@ -51,20 +65,6 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 	if snapshot.HistoryCompacted {
 		m.handleHistoryCompactedSignal()
 		return
-	}
-
-	// Restore iteration history from snapshot (backend tracks this).
-	// This replaces snapshotIterationChange — the backend is the single
-	// source of truth for completed iterations.
-	m.restoreIterationsFromSnapshot(snapshot)
-
-	// Local iteration snapshot for low-latency display between ticks.
-	// When iteration increases, snapshot the previous iteration.
-	// The authoritative history comes from restoreIterationsFromSnapshot above;
-	// this just ensures immediate display without waiting for tick pull.
-	if m.progressState.current != nil && snapshot.Iteration > m.progressState.current.Iteration &&
-		m.progressState.current.Iteration >= 0 {
-		m.snapshotIterationLocal(m.progressState.current)
 	}
 
 	// PhaseDone: turn completed. The outbound reply (handleAgentMessage) is
@@ -112,6 +112,9 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 		}
 		if snapshot.StreamTokens == 0 && prev.StreamTokens > 0 {
 			snapshot.StreamTokens = prev.StreamTokens
+		}
+		if len(snapshot.StreamingTools) == 0 && len(snapshot.ActiveTools) == 0 && len(snapshot.CompletedTools) == 0 && len(prev.StreamingTools) > 0 {
+			snapshot.StreamingTools = prev.StreamingTools
 		}
 	}
 
@@ -169,52 +172,6 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 
 	// Sync todos (with change detection to avoid unnecessary relayout).
 	m.syncProgressTodos(snapshot)
-}
-
-// snapshotIterationLocal captures a completed iteration for immediate display.
-// Simple and best-effort — the authoritative history comes from the backend
-// via restoreIterationsFromSnapshot. This just ensures low-latency rendering
-// between tick pulls.
-func (m *cliModel) snapshotIterationLocal(prev *protocol.ProgressEvent) {
-	if prev == nil {
-		return
-	}
-	// Skip if already snapshotted (dedup by iteration number).
-	for _, existing := range m.progressState.iterations {
-		if existing.Iteration == prev.Iteration {
-			return
-		}
-	}
-	// When we snapshot an iteration, it means the iteration has ENDED.
-	// All tools that were "running" or "pending" have completed — the done
-	// event may have been lost in progressSlot coalescing (drain goroutine
-	// didn't wake between the done push and the next-iteration thinking push).
-	// Mark them as "done" — otherwise they stay yellow forever in the history.
-	tools := make([]protocol.ToolProgress, 0, len(prev.CompletedTools)+len(prev.ActiveTools))
-	tools = append(tools, prev.CompletedTools...)
-	for _, t := range prev.ActiveTools {
-		if t.Status == "running" || t.Status == "pending" || t.Status == "" {
-			t.Status = "done"
-		}
-		tools = append(tools, t)
-	}
-	reasoning := prev.Reasoning
-	if reasoning == "" {
-		reasoning = prev.ReasoningStreamContent
-	}
-	if len(tools) > 0 || prev.Content != "" || reasoning != "" {
-		snap := cliIterationSnapshot{
-			Iteration:   prev.Iteration,
-			Content:     prev.Content,
-			Reasoning:   reasoning,
-			Tools:       tools,
-			ElapsedWall: time.Since(m.progressState.iterStart).Milliseconds(),
-		}
-		m.progressState.iterations = append(m.progressState.iterations, snap)
-	}
-	m.progressState.lastIter = prev.Iteration + 1
-	m.progressState.iterStart = time.Now()
-	m.rc.invalidateProgress()
 }
 
 // restoreIterationsFromSnapshot rebuilds local iteration history from the
@@ -345,33 +302,9 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 			if len(finalTools) > 0 || content != "" || reasoning != "" {
 				m.progressState.iterations = append(m.progressState.iterations, snap)
 			}
-		} else {
-			// Already snapshotted — but the existing snapshot may have empty
-			// Content/Reasoning if snapshotIterationLocal captured it before
-			// recordAssistantMsg finalized the content. Update the existing
-			// snapshot with the finalized content from PhaseDone to prevent
-			// renderTurnBody's dedup from failing (which would render the
-			// content twice: once from iterations, once from fallbackContent).
-			finalContent := snapshot.Content
-			if finalContent == "" && cur != nil {
-				finalContent = cur.Content
-			}
-			finalReasoning := snapshot.Reasoning
-			if finalReasoning == "" && cur != nil {
-				finalReasoning = cur.Reasoning
-			}
-			for i := range m.progressState.iterations {
-				if m.progressState.iterations[i].Iteration == finalIter {
-					if m.progressState.iterations[i].Content == "" && finalContent != "" {
-						m.progressState.iterations[i].Content = finalContent
-					}
-					if m.progressState.iterations[i].Reasoning == "" && finalReasoning != "" {
-						m.progressState.iterations[i].Reasoning = finalReasoning
-					}
-					break
-				}
-			}
 		}
+		// If already snapshotted (from DB IterationHistory via restoreIterationsFromSnapshot),
+		// the data is authoritative and complete — no update needed.
 	}
 
 	// Bake iterations into the streaming message before ending turn.

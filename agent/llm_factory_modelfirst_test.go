@@ -509,6 +509,83 @@ func TestMakeOnModelsLoaded_PersistsCachedModels(t *testing.T) {
 	}
 }
 
+// TestMakeOnModelsLoaded_DoesNotOverwritePerModelConfig is a regression test
+// for the bug where /models refresh (via OnModelsLoaded callback) zeroed out
+// user-configured max_context / max_output_tokens / api_type.
+//
+// Root cause: makeOnModelsLoaded called UpsertModel(subID, m, 0, 0, "", "")
+// whose ON CONFLICT DO UPDATE SET clause unconditionally overwrote all fields
+// with zero values, destroying existing per-model configs.
+//
+// Fix: makeOnModelsLoaded now calls EnsureModel (INSERT OR IGNORE), which only
+// inserts new rows and never touches existing ones.
+func TestMakeOnModelsLoaded_DoesNotOverwritePerModelConfig(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-reg", SenderID: "cli_user", Name: "regression", Provider: "openai",
+		BaseURL: "https://api.reg.example/v1", APIKey: "sk-reg", IsDefault: true,
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Simulate the user configuring max_context/max_output/api_type via the
+	// model edit panel (update_per_model_config RPC path).
+	if err := subSvc.UpsertModel(sub.ID, "model-a", 128000, 8192, "", "responses"); err != nil {
+		t.Fatalf("UpsertModel: %v", err)
+	}
+	// model-b: only registered (no user config yet), should appear with zero values.
+	if err := subSvc.EnsureModel(sub.ID, "model-b"); err != nil {
+		t.Fatalf("EnsureModel: %v", err)
+	}
+
+	// Fire OnModelsLoaded as if /models API returned both models.
+	cb := f.makeOnModelsLoaded(sub.ID)
+	if cb == nil {
+		t.Fatal("makeOnModelsLoaded returned nil")
+	}
+	cb([]string{"model-a", "model-b"})
+
+	// model-a: user config must be preserved.
+	subs, err := subSvc.List("cli_user")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var regSub *sqlite.LLMSubscription
+	for _, s := range subs {
+		if s.ID == sub.ID {
+			regSub = s
+			break
+		}
+	}
+	if regSub == nil {
+		t.Fatal("subscription not found in List result")
+	}
+
+	pmcA, ok := regSub.PerModelConfigs["model-a"]
+	if !ok {
+		t.Fatal("model-a missing from PerModelConfigs after OnModelsLoaded")
+	}
+	if pmcA.MaxContext != 128000 {
+		t.Errorf("model-a MaxContext = %d, want 128000 (OnModelsLoaded must not overwrite)", pmcA.MaxContext)
+	}
+	if pmcA.MaxOutputTokens != 8192 {
+		t.Errorf("model-a MaxOutputTokens = %d, want 8192", pmcA.MaxOutputTokens)
+	}
+	if pmcA.APIType != "responses" {
+		t.Errorf("model-a APIType = %q, want %q", pmcA.APIType, "responses")
+	}
+
+	// model-b: registered by EnsureModel with zero values, should still be zero.
+	pmcB, ok := regSub.PerModelConfigs["model-b"]
+	if !ok {
+		t.Fatal("model-b missing from PerModelConfigs")
+	}
+	if pmcB.MaxContext != 0 {
+		t.Errorf("model-b MaxContext = %d, want 0", pmcB.MaxContext)
+	}
+}
+
 // TestRefreshModelEntriesForUser_NoLoaderGraceful verifies RefreshModelEntriesForUser
 // degrades gracefully when LLM clients don't implement ModelLoader (e.g. MockLLM
 // in tests): it returns the current entry list without error.

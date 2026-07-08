@@ -106,6 +106,18 @@ func (a *Agent) wireBgNotificationDrain(sessionKey string) func() []tools.BgNoti
 			a.bgRunPending = append(a.bgRunPending, others...)
 			a.bgRunPendingMu.Unlock()
 		}
+		// Track drained notifications so cancel can discard them explicitly.
+		// If the Run is cancelled after draining, these notifications were
+		// consumed from bgRunPending and should not be delivered as a fresh
+		// user message after Ctrl+C.
+		if len(mine) > 0 {
+			if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+				ss := state.(*bgSessionState)
+				ss.drainedThisRunMu.Lock()
+				ss.drainedThisRun = append(ss.drainedThisRun, mine...)
+				ss.drainedThisRunMu.Unlock()
+			}
+		}
 		return mine
 	}
 }
@@ -114,6 +126,10 @@ func (a *Agent) wireBgNotificationDrain(sessionKey string) func() []tools.BgNoti
 // from bgRunPending and processes them via processBgNotification/processSubAgentBgNotification.
 // Called by chatProcessLoop after each turn completes (response sent), and by
 // chatWorker when idle. Safe for concurrent use — bgRunPendingMu serializes access.
+//
+// Batching: ALL drained notifications are merged into a SINGLE user message
+// (joined by separators). This avoids spamming the TUI with N separate messages
+// and triggering N separate agent turns when multiple bg tasks complete at once.
 func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	a.bgRunPendingMu.Lock()
 	pending := a.bgRunPending
@@ -134,24 +150,122 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 		a.bgRunPending = append(a.bgRunPending, others...)
 		a.bgRunPendingMu.Unlock()
 	}
+	if len(mine) == 0 {
+		return
+	}
+
+	parts := strings.SplitN(sessionKey, ":", 2)
+	if len(parts) != 2 {
+		log.WithField("session_key", sessionKey).Warn("drainAndProcessNotifications: invalid session key")
+		return
+	}
+	channelName, chatID := parts[0], parts[1]
+
+	// Format all notifications into content strings, collect senderID
+	var contents []string
+	senderID := ""
 	for _, notif := range mine {
+		var content string
 		switch n := notif.(type) {
 		case *tools.BackgroundTask:
-			a.processBgNotification(n)
+			// Offload large output per-task
+			outputOverride := ""
+			if a.offloadStore != nil && n.Output != "" {
+				offloadCtx := context.Background()
+				if offloaded, ok := a.offloadStore.MaybeOffload(offloadCtx, sessionKey,
+					"background_task_result", n.Command, n.Output,
+					"", "", ""); ok {
+					outputOverride = offloaded.Summary
+				}
+			}
+			content = tools.FormatBgTaskCompletion(n, outputOverride)
+			if senderID == "" {
+				senderID = n.SenderID()
+			}
 		case *tools.SubAgentBgNotify:
-			a.processSubAgentBgNotification(n)
+			if n.Type != tools.SubAgentBgNotifyCompleted {
+				continue // drop progress during idle
+			}
+			content = tools.FormatSubAgentBgNotify(n)
+			if senderID == "" {
+				senderID = n.SenderID()
+			}
 		case *tools.CronFired:
-			a.processCronFiredNotification(n)
+			content = fmt.Sprintf("⏰ [定时任务触发] %s", n.Message)
+			if senderID == "" {
+				senderID = n.SenderID()
+			}
 		case *tools.AsyncMessageNotification:
-			a.processAsyncMessageNotification(n)
+			content = n.Content
+			if senderID == "" {
+				senderID = n.SenderID()
+			}
+		default:
+			continue
+		}
+		if content != "" {
+			contents = append(contents, content)
 		}
 	}
+
+	if len(contents) == 0 {
+		return
+	}
+
+	// Merge into a single message
+	combined := strings.Join(contents, "\n\n---\n\n")
+
+	log.WithFields(log.Fields{
+		"channel":     channelName,
+		"chat_id":     chatID,
+		"notif_count": len(contents),
+	}).Info("Bg notifications: injecting as batched user message")
+
+	a.injectBgUserMessage(channelName, chatID, senderID, combined)
+}
+
+func (a *Agent) discardPendingBgNotifications(sessionKey string) int {
+	a.bgRunPendingMu.Lock()
+	defer a.bgRunPendingMu.Unlock()
+
+	pending := a.bgRunPending
+	a.bgRunPending = nil
+	discarded := 0
+	for _, n := range pending {
+		if n.SessionKey() == sessionKey {
+			discarded++
+			continue
+		}
+		a.bgRunPending = append(a.bgRunPending, n)
+	}
+	return discarded
 }
 
 // handleCancelledRun persists un-saved engine messages and iteration history
 // when a Run is cancelled, then returns a minimal OutboundMessage so the
 // channel knows processing ended.
 func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
+	// Discard notifications for this session when a Run is cancelled.
+	// Ctrl+C means stop this work, so neither notifications already injected
+	// into the cancelled Run nor notifications still pending for this session
+	// should start a fresh turn after the cancel ack.
+	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
+	discardedPending := a.discardPendingBgNotifications(sessionKey)
+	discardedDrained := 0
+	if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+		ss := state.(*bgSessionState)
+		ss.drainedThisRunMu.Lock()
+		discardedDrained = len(ss.drainedThisRun)
+		ss.drainedThisRun = nil
+		ss.drainedThisRunMu.Unlock()
+	}
+	if discardedPending+discardedDrained > 0 {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"pending": discardedPending,
+			"drained": discardedDrained,
+		}).Info("Discarded background notifications after cancel (user requested stop)")
+	}
+
 	// Save any un-persisted engine messages from the interrupted iteration.
 	for _, em := range out.EngineMessages {
 		if err := assertNoSystemPersist(em); err != nil {

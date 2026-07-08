@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -377,26 +378,26 @@ func TestDrainAndProcessNotifications_ConcurrentSafety(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// Count messages in bus.Inbound — should be exactly 10 (no duplicates, no losses)
+	// Count messages in bus.Inbound — should be exactly 1 (batched, no duplicates, no losses)
 	count := 0
 	timeout := time.After(2 * time.Second)
-	for count < 10 {
+	for count < 1 {
 		select {
 		case <-a.bus.Inbound:
 			count++
 		case <-timeout:
-			t.Fatalf("expected 10 messages in bus.Inbound, got %d (duplicates or losses)", count)
+			t.Fatalf("expected 1 batched message in bus.Inbound, got %d (duplicates or losses)", count)
 		}
 	}
 
 	// Check no more messages (no duplicates)
 	select {
 	case <-a.bus.Inbound:
-		t.Fatal("should not have more than 10 messages — possible duplicate")
+		t.Fatal("should not have more than 1 message — possible duplicate")
 	default:
 	}
 
-	t.Logf("SUCCESS: exactly 10 of 10 notifications processed (no duplicates, no losses)")
+	t.Logf("SUCCESS: exactly 1 batched message for 10 notifications (no duplicates, no losses)")
 }
 
 // TestDrainAndProcessNotifications_AfterResponseSent verifies the KEY INVARIANT:
@@ -726,36 +727,29 @@ func TestDrainAndProcessNotifications_MixedTypes(t *testing.T) {
 
 	a.drainAndProcessNotifications(chatKey)
 
-	// Should receive 2 messages in bus.Inbound
+	// Should receive 1 batched message in bus.Inbound (bg task + cron merged)
 	var msgs []bus.InboundMessage
 	timeout := time.After(2 * time.Second)
-	for len(msgs) < 2 {
+	for len(msgs) < 1 {
 		select {
 		case msg := <-a.bus.Inbound:
 			msgs = append(msgs, msg)
 		case <-timeout:
-			t.Fatalf("expected 2 messages in bus.Inbound, got %d", len(msgs))
+			t.Fatalf("expected 1 batched message in bus.Inbound, got %d", len(msgs))
 		}
 	}
 
-	// One should be a cron message (⏰ prefix), one should be a bg task message
-	hasCron := false
-	hasBgTask := false
-	for _, msg := range msgs {
-		if containsPrefix(msg.Content, "⏰") {
-			hasCron = true
-		} else {
-			hasBgTask = true
-		}
-	}
+	// The single message should contain both cron (⏰) and bg task content
+	hasCron := strings.Contains(msgs[0].Content, "⏰")
+	hasBgTask := strings.Contains(msgs[0].Content, "[System Notification]")
 	if !hasCron {
-		t.Error("expected one message with ⏰ prefix (cron)")
+		t.Error("expected batched message to contain ⏰ prefix (cron)")
 	}
 	if !hasBgTask {
-		t.Error("expected one message without ⏰ prefix (bg task)")
+		t.Error("expected batched message to contain [System Notification] (bg task)")
 	}
 
-	t.Logf("SUCCESS: both bg task and CronFired notifications processed in mixed drain")
+	t.Logf("SUCCESS: bg task and CronFired merged into 1 batched message")
 }
 
 // TestBgNotifyLoop_CronFired_NoSession_ProcessesDirectly is the regression test for

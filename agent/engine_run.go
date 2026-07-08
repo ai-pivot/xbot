@@ -1429,7 +1429,12 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	s.validateInvariantsAt(ctx, "post_persist")
 
 	// --- Background notification draining (bg tasks + bg subagents) ---
-	if s.cfg.DrainBgNotifications != nil {
+	// Cancel-aware: skip draining if ctx is already cancelled. The cancel
+	// signal may have arrived during the LLM call above. Draining now would
+	// inject notifications into a Run that is about to return cancelled.
+	// Skipping leaves them in bgRunPending so handleCancelledRun can discard
+	// this session's pending notifications before the cancel ack reaches the UI.
+	if s.cfg.DrainBgNotifications != nil && ctx.Err() == nil {
 		pending := s.cfg.DrainBgNotifications()
 		for _, notif := range pending {
 			switch n := notif.(type) {

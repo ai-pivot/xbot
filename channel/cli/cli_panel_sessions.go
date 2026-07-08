@@ -460,7 +460,7 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 	// (subID, model) to the tenants table atomically.
 	if m.activeSubID != "" && m.cachedModelName != "" {
 		if m.llmSubscriber != nil {
-			if err := m.llmSubscriber.SelectModel(m.senderID, m.activeSubID, m.cachedModelName, chatID); err != nil {
+			if err := m.llmSubscriber.SelectModel(m.senderID, "cli", m.activeSubID, m.cachedModelName, chatID); err != nil {
 				log.WithError(err).Warn("showSessionCreateDialog: SelectModel failed for new session")
 			}
 		}

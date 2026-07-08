@@ -94,6 +94,9 @@ Optional channel capabilities via interfaces in `capability.go`:
 ### CLI Iteration Snapshots (Tool Summary)
 
 - Iteration snapshots track reasoning, thinking, tools, and wall-clock time per iteration
+- **Iteration-advance progress push must carry completed history**: before sending a structured event that advances current from C to D, record C into `iterationHistories` and attach `IterationHistory` to that same outgoing payload. The TUI must never observe `current=D` while completed history still lacks C; otherwise C's reasoning/content/tool block briefly disappears until the next tick pull.
+- **Progress history must stay flat**: `lastProgressSnapshot` and every `iterationHistories` entry must have `IterationHistory=nil`. Only outgoing RPC/push payloads may carry a flat `IterationHistory` copy. Storing payloads with nested `IterationHistory` causes exponential history growth and can OOM during reconnect/progress restore.
+- **Sparse same-iteration snapshots preserve generating tools**: `StreamingTools` is stream-only like `StreamContent`. When a same-iteration structured snapshot has no `StreamingTools`, `ActiveTools`, or `CompletedTools`, carry forward previous `StreamingTools` so an ultra-fast generating→done tool does not vanish for one frame. Once any structured tool state arrives, it replaces generating state.
 - **Deduplication**: when `PhaseDone` and `handleAgentMessage` both snapshot the same iteration, prefer PhaseDone version (has complete reasoning from server)
 - `ElapsedWall` must be set in ALL snapshot creation paths (iteration change, PhaseDone, handleAgentMessage) — missing it causes fallback to sum only last iteration's tool.Elapsed
 - Title bar shows `[host:port]` in remote mode (parsed from `RemoteBackend.ServerURL()`)

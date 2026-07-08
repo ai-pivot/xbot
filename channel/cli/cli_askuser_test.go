@@ -26,7 +26,7 @@ func TestAskUserIterationVisibility(t *testing.T) {
 			{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 1},
 		},
 	})
-	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2})
+	sendProgressWithHistory(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2}, protocol.ProgressEvent{Iteration: 1, CompletedTools: []protocol.ToolProgress{{Name: "Read", Label: "Read go.mod", Status: "done", Elapsed: 500, Iteration: 1}}})
 	sendProgress(model, &protocol.ProgressEvent{
 		Phase:     "tool_exec",
 		Iteration: 2,

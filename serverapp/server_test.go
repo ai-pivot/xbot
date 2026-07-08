@@ -151,6 +151,61 @@ func TestHandleCLIRPCAddSubscription_PreservesCredentials(t *testing.T) {
 	}
 }
 
+func TestHandleCLIRPCAddSubscription_PreservesIDAndPerModelConfigs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
+
+	aCfg := &config.Config{}
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
+
+	addParams, _ := json.Marshal(map[string]any{
+		"sub": map[string]any{
+			"id":       "sub_ui_created",
+			"name":     "codex",
+			"provider": "openai",
+			"base_url": "https://api.openai-proxy.org/v1",
+			"api_key":  "sk-secret-key-12345",
+			"per_model_configs": map[string]any{
+				"glm-5.2": map[string]any{
+					"max_context":       1000000,
+					"max_output_tokens": 8192,
+					"api_type":          "responses",
+				},
+			},
+		},
+	})
+	if _, err := HandleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
+		t.Fatalf("add_subscription: %v", err)
+	}
+
+	sub, err := subSvc.Get("sub_ui_created")
+	if err != nil {
+		t.Fatalf("get subscription: %v", err)
+	}
+	if sub == nil {
+		t.Fatal("expected subscription with client-provided ID")
+	}
+	pmc, ok := sub.PerModelConfigs["glm-5.2"]
+	if !ok {
+		t.Fatal("expected per-model config to be preserved")
+	}
+	if pmc.MaxContext != 1000000 || pmc.MaxOutputTokens != 8192 || pmc.APIType != "responses" {
+		t.Fatalf("unexpected per-model config: %+v", pmc)
+	}
+}
+
 // TestHandleCLIRPCUpdateSubscription_PreservesCredentials verifies that
 // update_subscription RPC correctly deserializes and preserves base_url and api_key.
 func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
@@ -429,6 +484,64 @@ func TestHandleCLIRPCSetDefaultSubscription_CrossIdentity(t *testing.T) {
 	_, model, _, _, _ = factory.GetLLM("cli_user")
 	if model != "glm-5.1" {
 		t.Fatalf("expected switched glm model for cli_user, got %q (LLM factory cached under wrong key)", model)
+	}
+}
+
+// TestSelectModelRPC_UsesRequestedChannel verifies /su model selection writes the
+// target channel tenant row instead of always writing cli:<chatID>.
+func TestSelectModelRPC_UsesRequestedChannel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	tenantSvc := sqlite.NewTenantService(db)
+	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(tenantSvc)
+	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-feishu", SenderID: "cli_user", Name: "xin", Provider: "openai", BaseURL: "https://api.example/v1", APIKey: "sk-test", Model: ""}); err != nil {
+		t.Fatalf("add sub: %v", err)
+	}
+
+	aCfg := &config.Config{}
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
+
+	chatID := "oc_bdfc1763e017e00ed4d7341de424f438"
+	if err := tenantSvc.SetTenantSubscription("cli", chatID, "sub-cli", "old-cli-model"); err != nil {
+		t.Fatalf("seed cli tenant: %v", err)
+	}
+
+	params, _ := json.Marshal(map[string]string{
+		"sender_id": "cli_user",
+		"channel":   "feishu",
+		"chat_id":   chatID,
+		"sub_id":    "sub-feishu",
+		"model":     "glm-5.2",
+	})
+	if _, err := HandleCLIRPC(table, "select_model", params, "admin"); err != nil {
+		t.Fatalf("select_model: %v", err)
+	}
+
+	subID, model, err := tenantSvc.GetTenantSubscription("feishu", chatID)
+	if err != nil {
+		t.Fatalf("get feishu tenant: %v", err)
+	}
+	if subID != "sub-feishu" || model != "glm-5.2" {
+		t.Fatalf("feishu tenant = (%q,%q), want (sub-feishu,glm-5.2)", subID, model)
+	}
+
+	cliSubID, cliModel, err := tenantSvc.GetTenantSubscription("cli", chatID)
+	if err != nil {
+		t.Fatalf("get cli tenant: %v", err)
+	}
+	if cliSubID != "sub-cli" || cliModel != "old-cli-model" {
+		t.Fatalf("cli tenant was changed to (%q,%q), want original (sub-cli,old-cli-model)", cliSubID, cliModel)
 	}
 }
 

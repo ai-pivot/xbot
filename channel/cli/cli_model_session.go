@@ -456,8 +456,13 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	m.splashState.compReloading = false
 
 	// ── Session LLM state restoration ──────────────────────────
-	// Re-resolve from disk on session switch. The in-memory savedSessions
-	// cache may have stale max_context values. DB is authoritative.
+	// refreshCachedModelName is the SINGLE source of truth for per-session
+	// LLM state resolution. It checks (in order):
+	//   1. DB tenants table (GetSessionSubscription RPC) — authoritative in remote mode
+	//   2. Local Session JSON — authoritative in local mode / cache fallback
+	//   3. In-memory savedSessions — live state not yet persisted to disk
+	//   4. GetDefault — global fallback for brand-new sessions
+	//
 	// Agent sessions are excluded — their LLM state comes from handleSuHistoryLoad.
 	//
 	// NOTE: We do NOT send a SwitchLLM RPC here. The per-session (subID, model)
@@ -466,34 +471,36 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 	// target.Model (subscription default), which may differ from the per-session
 	// model the user chose — wiping it to "" when the subscription has no default.
 	if m.channelName != "agent" {
-		state := LoadSessionLLMState(m.workDir, m.chatID)
-		if !state.IsZero() {
-			m.applySessionLLMState(state)
-			if m.channel != nil && m.channel.config.RefreshValuesCache != nil && state.SubscriptionID != "" {
-				m.channel.config.RefreshValuesCache(state.SubscriptionID)
-			}
-		} else {
-			if m.subscriptionMgr != nil {
-				if defSub, err := m.subscriptionMgr.GetDefault(""); err == nil && defSub != nil {
-					m.activeSubID = defSub.ID
-					m.cachedModelName = defSub.Model
-					m.cachedMaxContextTokens = resolveSubMaxContext(defSub)
-					m.cachedMaxOutputTokens = int64(resolveSubMaxOutputTokens(defSub))
-					// Refresh valuesCache for this subscription so resolveMaxContext()
-					// reads the correct max_context_tokens. Without this, valuesCache
-					// retains the previous session's subscription data, causing the
-					// context bar to show wrong max context after session switches.
-					if m.channel != nil && m.channel.config.RefreshValuesCache != nil {
-						m.channel.config.RefreshValuesCache(defSub.ID)
-					}
-				}
-			}
-			if m.cachedMaxContextTokens == 0 {
-				m.cachedMaxContextTokens = m.resolveMaxContextTokens()
-			}
-			if m.cachedMaxOutputTokens == 0 {
-				m.cachedMaxOutputTokens = m.resolveMaxOutputTokens()
-			}
+		// restoreSession() may have already set cachedModelName/activeSubID from
+		// savedSessions. refreshCachedModelName re-validates against the DB (remote)
+		// or local JSON (local), which are the persistent sources of truth. If the
+		// DB has a per-session model (e.g. user switched via Ctrl+N), it wins.
+		// If not, savedSessions/local JSON/GetDefault provide the fallback.
+		m.refreshCachedModelName()
+
+		// Auto-bind: if the session has no per-session binding in the DB
+		// (new session, channel-created session, or never-configured session),
+		// proactively bind a model so the status bar shows it immediately.
+		// Priority: Balance tier → last-used model.
+		// Idempotent — ensureSessionModelBinding checks GetSessionSubscription
+		// and skips sessions that already have a binding.
+		// This mirrors the auto-bind in ResolveLLM (agent side), ensuring ALL
+		// sessions follow the same path regardless of creation origin.
+		m.ensureSessionModelBinding()
+		m.refreshCachedModelName()
+
+		// Resolve context limits from the now-correct activeSubID + cachedModelName.
+		state := SessionLLMState{
+			SubscriptionID: m.activeSubID,
+			Model:          m.cachedModelName,
+		}
+		m.cachedMaxContextTokens = ResolveEffectiveMaxContext(state, m.subscriptionMgr)
+		m.cachedMaxOutputTokens = int64(ResolveEffectiveMaxOutputTokens(state, m.subscriptionMgr))
+
+		// Refresh valuesCache so context bar / settings panel read correct
+		// subscription data for this session.
+		if m.activeSubID != "" && m.channel != nil && m.channel.config.RefreshValuesCache != nil {
+			m.channel.config.RefreshValuesCache(m.activeSubID)
 		}
 	}
 

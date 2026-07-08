@@ -318,6 +318,51 @@ func TestTreePanel_RefreshUpdatesCache(t *testing.T) {
 	}
 }
 
+// TestTreePanel_FreshReopenSeesAddedSubscription covers the regression where
+// adding a subscription updated storage but the open Models panel kept rendering
+// the already-loaded llmCache until the CLI restarted.
+func TestTreePanel_FreshReopenSeesAddedSubscription(t *testing.T) {
+	model := newQuickSwitchTestModel()
+	model.openQuickSwitch("")
+
+	mgr := model.subscriptionMgr.(*mockSubscriptionManager)
+	mgr.subs = append(mgr.subs, channel.Subscription{ID: "sub3", Name: "new-sub", Provider: "openai", Enabled: true})
+
+	model.reopenLLMPanelOn("sub3", "")
+
+	if idx := findLLMRowBySubID(model, "sub3"); idx < 0 {
+		t.Fatal("expected newly added subscription row after fresh reopen")
+	}
+	if got := len(model.llmCache.Get().subs); got != 3 {
+		t.Fatalf("expected cache to contain 3 subscriptions, got %d", got)
+	}
+}
+
+// TestTreePanel_RefreshReReadsSubscriptions verifies a background /models
+// refresh does not combine fresh model entries with a stale subscription list.
+func TestTreePanel_RefreshReReadsSubscriptions(t *testing.T) {
+	model := newQuickSwitchTestModel()
+	model.openQuickSwitch("")
+
+	mgr := model.subscriptionMgr.(*mockSubscriptionManager)
+	mgr.subs = append(mgr.subs, channel.Subscription{ID: "sub3", Name: "new-sub", Provider: "openai", Enabled: true})
+	newEntries := []protocol.ModelEntry{
+		{SubID: "sub1", Model: "glm-4", Status: "normal"},
+		{SubID: "sub3", Model: "new-model", Status: "offline"},
+	}
+	model.handleModelEntriesRefreshed(cliModelEntriesRefreshedMsg{entries: newEntries})
+
+	if idx := findLLMRowBySubID(model, "sub3"); idx < 0 {
+		t.Fatal("expected refreshed panel to include subscription added while refresh was in flight")
+	}
+	if got := len(model.llmCache.Get().subs); got != 3 {
+		t.Fatalf("expected cache to contain 3 subscriptions after refresh, got %d", got)
+	}
+	if got := len(model.llmCache.Get().entries); got != len(newEntries) {
+		t.Fatalf("expected %d refreshed entries, got %d", len(newEntries), got)
+	}
+}
+
 // TestTreePanel_SessionSwitchClearsCacheAndExpanded verifies that switching
 // sessions invalidates both cache and expansion state.
 func TestTreePanel_SessionSwitchClearsCacheAndExpanded(t *testing.T) {

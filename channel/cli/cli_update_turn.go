@@ -396,34 +396,16 @@ func (m *cliModel) handleCtrlC() (tea.Model, tea.Cmd, bool) {
 		m.queueEditBuf = ""
 		m.textarea.SetValue("")
 	}
-	// 3. 如果 agent 正在处理：
-	//    - 有排队消息：先删除最后一条（再按清空全部，再按 cancel agent）
-	//    - 无排队消息：发送 cancel
+	// 3. 如果 agent 正在处理：始终立即发送 cancel，同时清空排队消息。
+	//    不再要求用户按多次 Ctrl+C 来逐条删除排队消息 — 那段时间里 agent 继续在跑，
+	//    用户体验是 "Ctrl+C 没反应"。
 	if m.typing {
-		queueLen := len(m.messageQueue)
-		if queueLen > 0 {
-			if m.queueEditing {
-				// 正在编辑排队消息 → 取消编辑并删除该消息
-				removed := m.messageQueue[len(m.messageQueue)-1].content
-				m.messageQueue = m.messageQueue[:len(m.messageQueue)-1]
-				m.queueEditing = false
-				m.queueEditBuf = ""
-				m.textarea.SetValue("")
-				m.showSystemMsg(fmt.Sprintf(m.locale.QueueItemRemoved, removed), feedbackInfo)
-			} else if queueLen > 1 {
-				// 多条排队 → 删除最后一条
-				removed := m.messageQueue[len(m.messageQueue)-1].content
-				m.messageQueue = m.messageQueue[:len(m.messageQueue)-1]
-				m.showSystemMsg(fmt.Sprintf(m.locale.QueueItemRemoved+". "+m.locale.QueueCleared, removed, len(m.messageQueue)), feedbackInfo)
-			} else {
-				// 只剩一条 → 清空全部
-				m.messageQueue = nil
-				m.showSystemMsg(fmt.Sprintf(m.locale.QueueCleared, queueLen), feedbackInfo)
-			}
-		} else {
-			m.sendCancel()
-			m.turnCancelled = true // prevent stale progress from auto-starting after cancel
+		if len(m.messageQueue) > 0 {
+			m.messageQueue = nil
+			m.showSystemMsg("已清空排队消息", feedbackInfo)
 		}
+		m.sendCancel()
+		m.turnCancelled = true // prevent stale progress from auto-starting after cancel
 		return m, nil, true
 	}
 	// 4. 空闲状态：清空输入
@@ -483,6 +465,20 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 		m.agentCount = m.agentCountFn()
 	}
 	countsChanged := m.bgTaskCount != prevBg || m.agentCount != prevAgent
+
+	// Tick pull: fetch authoritative progress snapshot from the backend.
+	// Push events (from ProgressEventHandler) do NOT carry IterationHistory —
+	// that field is only available from GetActiveProgress, which reads the
+	// agent's iterationHistories map. Without this pull, the CLI would never
+	// receive completed iteration data during a live turn.
+	// The pull is O(1) on the agent side (sync.Map read + slice copy) and
+	// applyProgressSnapshot's Seq check + restoreIterationsFromSnapshot's
+	// count check prevent redundant work.
+	if m.typing && m.channel != nil && m.channel.config.GetActiveProgressFn != nil {
+		if snapshot := m.channel.config.GetActiveProgressFn(m.channelName, m.chatID); snapshot != nil {
+			m.applyProgressSnapshot(snapshot)
+		}
+	}
 
 	if (m.bgTaskCount > 0) || (m.agentCount > 0) || needsSpinnerTick {
 		m.ticker.tick()

@@ -27,7 +27,7 @@ func (m *cliModel) handleSwitchLLMDoneMsg(done cliSwitchLLMDoneMsg) (tea.Model, 
 		// session had a different model choice (e.g. user switched via Ctrl+N),
 		// SelectModel pins the exact (subID, model) pair for this session.
 		if done.subModel != "" && done.subID != "" && m.llmSubscriber != nil {
-			m.llmSubscriber.SelectModel(m.senderID, done.subID, done.subModel, m.chatID)
+			m.llmSubscriber.SelectModel(m.senderID, "cli", done.subID, done.subModel, m.chatID)
 		}
 		// Update per-session LLM state.
 		state := SessionLLMState{

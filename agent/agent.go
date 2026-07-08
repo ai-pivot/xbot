@@ -251,6 +251,29 @@ func (a *Agent) IndexGlobalTools() {
 type bgSessionState struct {
 	notifyCh chan struct{} // buffered(1): signal that bgRunPending has new items
 	busy     atomic.Bool   // true while chatProcessLoop is processing a turn
+
+	// drainedThisRun tracks notifications consumed by DrainBgNotifications
+	// during the current Run. If the Run is cancelled (ctx.Done), these
+	// notifications were consumed from bgRunPending and must be discarded so
+	// Ctrl+C does not trigger a fresh turn from the same notification.
+	// Cleared on normal/error completion (notifications were processed).
+	drainedThisRunMu sync.Mutex
+	drainedThisRun   []tools.BgNotification
+
+	// discardBgAfterCancel is a one-shot flag: set on cancel, cleared after
+	// the first suppress (either in handleBgNotifySignal or chatWorker).
+	// This prevents Ctrl+C from permanently silencing future bg notifications.
+	discardBgAfterCancel atomic.Bool
+}
+
+const bgNotificationMetadataKey = "xbot_internal_bg_notification"
+
+// clearDrainedThisRun discards tracked notifications after a successful/error
+// turn completion. Called by chatProcessLoop before drainAndProcessNotifications.
+func (ss *bgSessionState) clearDrainedThisRun() {
+	ss.drainedThisRunMu.Lock()
+	ss.drainedThisRun = nil
+	ss.drainedThisRunMu.Unlock()
 }
 
 // Agent 核心 Agent 引擎
@@ -1880,7 +1903,6 @@ func (a *Agent) Run(ctx context.Context) error {
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 				cancelKey := msg.Channel + ":" + msg.ChatID
-				cancelMeta := map[string]string{"cancelled": "true", "no_patch": "true"}
 				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
 				if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
 					select {
@@ -1892,20 +1914,23 @@ func (a *Agent) Run(ctx context.Context) error {
 								a.addReactionToMessage(msg.Channel, msg.ChatID, id, "CrossMark")
 							}
 						}
-						if err := a.sendMessage(msg.Channel, msg.ChatID, "⚠️ 已取消请求", cancelMeta); err != nil {
-							log.Warn("Failed to send cancel message: ", err)
-						}
+						// Do NOT send a cancel ack here. The cancel ack (with
+						// cancelled=true metadata) is sent by chatProcessLoop's
+						// wasCancelled path AFTER Run returns. Sending it here
+						// would make the TUI transition to idle while the Run
+						// is still executing — the cancel signal is asynchronous
+						// (consumed by cancelListener goroutine), so there is a
+						// window where TUI is idle but the agent is still working.
 					default:
 						// cancel 信号已发过
 						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
 					}
 				} else {
-					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending
+					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending。
+					// 不发送 cancelledMeta — 那会让 TUI 提前进入 idle。
+					// 真正的 cancel ack 由 wasCancelled 路径在 Run 被取消后发送。
 					a.pendingCancel.Store(cancelKey, true)
 					log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
-					if err := a.sendMessage(msg.Channel, msg.ChatID, "⏳ 请求已排队等待取消", cancelMeta); err != nil {
-						log.Warn("Failed to send queue message: ", err)
-					}
 				}
 				continue
 			}
@@ -2073,6 +2098,16 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 				return
 			}
 
+			isBgNotification := msg.Metadata != nil && msg.Metadata[bgNotificationMetadataKey] == "true"
+			if ss.discardBgAfterCancel.Load() && isBgNotification {
+				log.WithField("session", chatKey).Info("Dropped injected background notification after cancel")
+				// One-shot: clear the suppress flag so future bg notifications
+				// are processed normally.
+				ss.discardBgAfterCancel.Store(false)
+				continue
+			}
+			ss.discardBgAfterCancel.Store(false)
+
 			// 指令消息分发：根据 Concurrent() 决定执行方式
 			if cmd := a.commands.Match(msg.Content); cmd != nil {
 				log.Ctx(ctx).WithFields(log.Fields{
@@ -2135,16 +2170,33 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 			}
 
 		case <-ss.notifyCh:
-			// bg notification arrived — drain and process ONLY when chatProcessLoop is idle.
-			// When busy, notifications stay in bgRunPending for chatProcessLoop's
-			// post-turn drain to pick up (guaranteed after response is sent).
-			if !ss.busy.Load() {
-				a.drainAndProcessNotifications(chatKey)
-			}
+			a.handleBgNotifySignal(chatKey, ss)
 
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
+	// bg notification arrived — drain and process ONLY when chatProcessLoop is idle.
+	// When busy, notifications stay in bgRunPending for chatProcessLoop's
+	// post-turn drain to pick up (guaranteed after response is sent).
+	if ss.discardBgAfterCancel.Load() {
+		discarded := a.discardPendingBgNotifications(chatKey)
+		// One-shot: clear the suppress flag so future bg notifications
+		// (e.g. new cron fires) are processed normally.
+		ss.discardBgAfterCancel.Store(false)
+		if discarded > 0 {
+			log.WithFields(log.Fields{
+				"session": chatKey,
+				"count":   discarded,
+			}).Info("Discarded background notifications after cancel")
+		}
+		return
+	}
+	if !ss.busy.Load() {
+		a.drainAndProcessNotifications(chatKey)
 	}
 }
 
@@ -2301,9 +2353,11 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					log.Warn("Failed to send cancel ack: ", err)
 				}
 			}
-			// Turn done — response sent, safe to drain bg notifications
+			// Cancel means stop this turn and discard same-session bg notifications.
+			// Do not post-turn drain here: injecting a bg notification immediately
+			// after the cancel ack can make the server busy while the TUI is idle.
+			ss.discardBgAfterCancel.Store(true)
 			ss.busy.Store(false)
-			a.drainAndProcessNotifications(chatKey)
 			continue
 		}
 
@@ -2320,6 +2374,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				}
 			}
 			// Turn done — error response sent, safe to drain bg notifications
+			ss.clearDrainedThisRun()
 			ss.busy.Store(false)
 			a.drainAndProcessNotifications(chatKey)
 			continue
@@ -2371,6 +2426,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		// This is the CRITICAL ordering: all response sends happen BEFORE this point,
 		// so injectCLIUserMessage in drainAndProcessNotifications cannot race with
 		// the turn's reply on asyncCh.
+		ss.clearDrainedThisRun()
 		ss.busy.Store(false)
 		a.drainAndProcessNotifications(chatKey)
 	}
@@ -2588,6 +2644,23 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 				Source: msg.Channel,
 			})
 		}()
+	}
+
+	// Cancel early-exit: if ctx was cancelled during setup (e.g. user pressed
+	// Ctrl+C while buildPrompt/buildMainRunConfig was running), bail out now
+	// instead of entering Run. This is especially important for the first
+	// message in a session, where setup involves DB tenant creation, workspace
+	// initialization, and MCP configuration — all synchronous and collectively
+	// can take several seconds. Without this check, cancel during first-message
+	// setup would silently wait until Run's first iteration to take effect.
+	if ctx.Err() != nil {
+		log.Ctx(ctx).Info("processMessage: ctx cancelled during setup, skipping Run")
+		return &channel.OutboundMsg{
+			Channel:  msg.Channel,
+			ChatID:   msg.ChatID,
+			Content:  "",
+			Metadata: map[string]string{"cancelled": "true"},
+		}, nil
 	}
 
 	out := Run(ctx, cfg)
@@ -2873,7 +2946,7 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 	}
 
 	// Store snapshot for mid-session reconnect
-	a.lastProgressSnapshot.Store(progressKey, payload)
+	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 	a.clearStreamState(progressKey)
 }
 
@@ -2996,11 +3069,16 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 // injectInbound 向入站队列注入消息，触发 Agent 完整处理循环。
 // 用于 cron 调度和后台任务通知等内部系统消息。
 func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
+	a.injectInboundWithMetadata(channel, chatID, senderID, content, nil)
+}
+
+func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content string, metadata map[string]string) {
 	msg := bus.InboundMessage{
 		Channel:   channel,
 		SenderID:  senderID,
 		ChatID:    chatID,
 		Content:   content,
+		Metadata:  metadata,
 		Time:      time.Now(),
 		RequestID: log.NewRequestID(),
 	}
@@ -3058,121 +3136,6 @@ func (a *Agent) bgNotifyLoop() {
 	}
 }
 
-// processBgNotification handles a background task completion when no Run() is active.
-// Injects the task result as a user message via injectBgUserMessage, triggering the standard
-// processMessage → Assemble → Run pipeline. This matches Claude Code's behavior:
-// bg task completion = environment notification = user message to the LLM.
-func (a *Agent) processBgNotification(task *tools.BackgroundTask) {
-	sessionKey := task.SessionKey()
-	if sessionKey == "" {
-		log.WithField("task_id", task.ID).Warn("Bg task notification: no session key, dropping")
-		return
-	}
-
-	parts := strings.SplitN(sessionKey, ":", 2)
-	if len(parts) != 2 {
-		log.WithField("session_key", sessionKey).Warn("Bg task: invalid session key format")
-		return
-	}
-	channelName, chatID := parts[0], parts[1]
-
-	// Offload large task output so the agent can retrieve it via offload_recall.
-	// Without this, FormatBgTaskCompletion truncates the output to 2000 chars
-	// and says "use offload_recall" without providing an actual offload ID.
-	outputOverride := ""
-	if a.offloadStore != nil && task.Output != "" {
-		offloadCtx := context.Background()
-		if offloaded, ok := a.offloadStore.MaybeOffload(offloadCtx, sessionKey,
-			"background_task_result", task.Command, task.Output,
-			"" /*workspaceRoot*/, "" /*sandboxWorkDir*/, "" /*userID*/); ok {
-			outputOverride = offloaded.Summary
-			log.WithFields(log.Fields{
-				"task_id":    task.ID,
-				"offload_id": offloaded.ID,
-			}).Info("Bg task output offloaded")
-		}
-	}
-
-	content := tools.FormatBgTaskCompletion(task, outputOverride)
-	log.WithFields(log.Fields{
-		"task_id": task.ID,
-		"channel": channelName,
-		"chat_id": chatID,
-	}).Info("Bg task notification: injecting as user message")
-
-	a.injectBgUserMessage(channelName, chatID, task.SenderID(), content)
-}
-
-// processCronFiredNotification handles a cron fired notification when no Run() is active.
-// It parses the session key and injects the cron message as a user message via injectBgUserMessage.
-func (a *Agent) processCronFiredNotification(c *tools.CronFired) {
-	parts := strings.SplitN(c.SessionKey(), ":", 2)
-	if len(parts) != 2 {
-		log.WithField("session_key", c.SessionKey()).Warn("CronFired notification: invalid session key")
-		return
-	}
-	channelName, chatID := parts[0], parts[1]
-	content := fmt.Sprintf("⏰ [定时任务触发] %s", c.Message)
-
-	log.WithFields(log.Fields{
-		"channel": channelName,
-		"chat_id": chatID,
-		"message": tools.Truncate(c.Message, 80),
-	}).Info("CronFired notification: injecting as user message")
-
-	a.injectBgUserMessage(channelName, chatID, c.SenderID(), content)
-}
-
-// processSubAgentBgNotification handles a bg subagent notification when no Run() is active.
-// Only completion notifications trigger a new Run; progress notifications are dropped
-// (they're only meaningful during an active Run, where they're injected as tool results).
-func (a *Agent) processSubAgentBgNotification(n *tools.SubAgentBgNotify) {
-	// During idle, only completion matters — progress would waste an LLM call
-	if n.Type != tools.SubAgentBgNotifyCompleted {
-		log.WithFields(log.Fields{
-			"role":     n.Role,
-			"instance": n.Instance,
-			"type":     n.Type,
-		}).Debug("Dropping bg subagent progress notification (agent idle)")
-		return
-	}
-
-	parts := strings.SplitN(n.SessionKey(), ":", 2)
-	if len(parts) != 2 {
-		log.WithField("session_key", n.SessionKey()).Warn("Bg subagent notification: invalid session key")
-		return
-	}
-	channelName, chatID := parts[0], parts[1]
-	content := tools.FormatSubAgentBgNotify(n)
-
-	log.WithFields(log.Fields{
-		"role":     n.Role,
-		"instance": n.Instance,
-		"type":     n.Type,
-		"channel":  channelName,
-	}).Info("Bg subagent notification: injecting as user message")
-
-	a.injectBgUserMessage(channelName, chatID, n.SenderID(), content)
-}
-
-// processAsyncMessageNotification handles an async message notification when
-// the target session is idle (no active Run). Injects as user message with
-// TUI notification and correct senderID for LLM subscription resolution.
-func (a *Agent) processAsyncMessageNotification(n *tools.AsyncMessageNotification) {
-	parts := strings.SplitN(n.SessionKey(), ":", 2)
-	if len(parts) != 2 {
-		log.WithField("session_key", n.SessionKey()).Warn("Async message notification: invalid session key")
-		return
-	}
-	channelName, chatID := parts[0], parts[1]
-	log.WithFields(log.Fields{
-		"source":  n.Source,
-		"channel": channelName,
-		"chat_id": chatID,
-	}).Info("Async message notification: injecting as user message (idle)")
-	a.injectBgUserMessage(channelName, chatID, n.SenderID(), n.Content)
-}
-
 // injectBgUserMessage is the unified entry point for injecting background notification
 // content as a user message. It reads senderID from the notification to preserve
 // correct sender context (workspace, sandbox, memory, LLM config).
@@ -3184,7 +3147,9 @@ func (a *Agent) processAsyncMessageNotification(n *tools.AsyncMessageNotificatio
 // fires, which lacks the user message in m.messages.
 func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content string) {
 	a.injectCLIUserMessage(channelName, chatID, content)
-	a.injectInbound(channelName, chatID, senderID, content)
+	a.injectInboundWithMetadata(channelName, chatID, senderID, content, map[string]string{
+		bgNotificationMetadataKey: "true",
+	})
 }
 
 // buildBgNotificationRunConfig is no longer needed — idle bg notifications

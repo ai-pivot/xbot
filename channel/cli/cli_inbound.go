@@ -102,11 +102,14 @@ func (m *cliModel) sendInboundWait(msg ch.InboundMsg, timeout time.Duration) boo
 func (m *cliModel) sendCancel() {
 	m.cancelTargetTurnID = m.agentTurnID
 	m.cancelAckProcessed = false // reset — awaiting first cancel ack for this turn
+	// Show feedback FIRST, then send. In remote mode, sendInbound does a
+	// synchronous WS write that can block — showing the message after it
+	// would delay user-visible feedback until the write completes.
+	m.showSystemMsg(m.locale.CancelSent, feedbackInfo)
 	if !m.sendInbound(m.newInbound("/cancel", nil)) {
 		m.showSystemMsg("Cancel failed: agent channel busy, try again", feedbackError)
 		return
 	}
-	m.showSystemMsg(m.locale.CancelSent, feedbackInfo)
 }
 
 // sendToAgent 发送命令到 agent，并添加用户消息到历史（§3 命令透传机制）
@@ -116,6 +119,8 @@ func (m *cliModel) sendToAgent(content string) {
 		m.showSystemMsg(m.locale.SetupNoLLM, feedbackWarning)
 		return
 	}
+	m.finalizeStaleStreamingBeforeNewUserMessage()
+
 	userCliMsg := cliMessage{
 		role:      "user",
 		content:   content,
@@ -156,6 +161,8 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 
 	// 解析 @ 文件引用，提取文件路径
 	media := parseFileReferences(content)
+
+	m.finalizeStaleStreamingBeforeNewUserMessage()
 
 	// 添加用户消息到历史
 	userCliMsg := cliMessage{
