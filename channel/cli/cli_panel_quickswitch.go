@@ -137,6 +137,15 @@ func (m *cliModel) rebuildLLMRows() {
 	m.quickSwitchRows = m.buildLLMRows(d)
 }
 
+// rebuildLLMRowsFresh reloads subscriptions + model entries from the sync source
+// before rebuilding rows. Use after any subscription/model metadata mutation so
+// the open panel does not keep a stale llmCache snapshot.
+func (m *cliModel) rebuildLLMRowsFresh() {
+	d := m.llmSource()
+	m.llmCache.Apply(d)
+	m.quickSwitchRows = m.buildLLMRows(d)
+}
+
 // buildLLMRows assembles the tree-structured row list for the unified panel.
 // Subscriptions are top-level rows; expanded subscriptions show their models
 // (and an "Add model" row) indented underneath. No separate "Models" section.
@@ -372,8 +381,7 @@ func (m *cliModel) toggleSubscription(sub ch.Subscription) {
 		warning = " — active session's models hidden; switch model to continue"
 	}
 	m.showTempStatus(fmt.Sprintf("%s: %s%s", verb, sub.Name, warning))
-	m.llmCache.Invalidate()
-	m.rebuildLLMRows()
+	m.rebuildLLMRowsFresh()
 	m.cursorToActiveLLMRow()
 }
 
@@ -463,8 +471,7 @@ func (m *cliModel) toggleModelEnabled(subID, model, status string) {
 		verb = "Enabled"
 	}
 	m.showTempStatus(fmt.Sprintf("%s: %s", verb, model))
-	m.llmCache.Invalidate()
-	m.rebuildLLMRows()
+	m.rebuildLLMRowsFresh()
 	m.cursorToActiveLLMRow()
 }
 
@@ -482,8 +489,7 @@ func (m *cliModel) deleteModelRow(subID, model string) {
 		return
 	}
 	m.showTempStatus(fmt.Sprintf("已删除: %s", model))
-	m.llmCache.Invalidate()
-	m.rebuildLLMRows()
+	m.rebuildLLMRowsFresh()
 	m.cursorToActiveLLMRow()
 }
 
@@ -555,6 +561,8 @@ func (m *cliModel) openAddSubscriptionPanel() {
 			m.showTempStatus(fmt.Sprintf("Failed to add subscription: %v", err))
 		} else {
 			m.showTempStatus(fmt.Sprintf("Added subscription: %s", sub.Name))
+			m.expandOnly(sub.ID)
+			m.reopenLLMPanelOn(sub.ID, "")
 		}
 	})
 }
@@ -678,8 +686,7 @@ func (m *cliModel) deleteSubscription(subID string) {
 		return
 	}
 	m.showTempStatus(fmt.Sprintf("Deleted: %s", name))
-	m.llmCache.Invalidate()
-	m.rebuildLLMRows()
+	m.rebuildLLMRowsFresh()
 	m.cursorToActiveLLMRow()
 }
 
@@ -837,7 +844,7 @@ func (m *cliModel) reopenLLMPanelOn(subID, model string) {
 	m.quickSwitchFiltering = false
 	m.quickSwitchRefreshing = false
 	m.quickSwitchScrollY = 0
-	m.rebuildLLMRows()
+	m.rebuildLLMRowsFresh()
 	// Match both SubID AND model to avoid selecting a same-named model
 	// from a different subscription.
 	if subID != "" && model != "" {
@@ -1305,11 +1312,11 @@ func (m *cliModel) handleModelEntriesRefreshed(msg cliModelEntriesRefreshedMsg) 
 	if m.quickSwitchMode != "llm" {
 		return
 	}
-	// Double-write: DB already updated by RefreshModelEntries.
-	// Apply refreshed entries to cache — even if empty (models may have been
-	// deleted, cache must reflect that).
-	d := m.llmCache.Get()
+	// RefreshModelEntries has already persisted provider results. Re-read the
+	// full sync snapshot so subscriptions edited while the refresh was in flight
+	// are not overwritten by a stale cache entry.
+	d := m.llmSource()
 	d.entries = msg.entries
 	m.llmCache.Apply(d)
-	m.rebuildLLMRows()
+	m.quickSwitchRows = m.buildLLMRows(d)
 }

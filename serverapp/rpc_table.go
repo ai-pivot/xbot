@@ -516,14 +516,16 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 	})
 	t["add_subscription"] = rpc1void(func(ctx context.Context, p struct {
 		Sub struct {
-			Name            string `json:"name"`
-			Provider        string `json:"provider"`
-			BaseURL         string `json:"base_url"`
-			APIKey          string `json:"api_key"`
-			Model           string `json:"model"`
-			Active          bool   `json:"active"`
-			MaxOutputTokens int    `json:"max_output_tokens"`
-			ThinkingMode    string `json:"thinking_mode"`
+			ID              string                             `json:"id"`
+			Name            string                             `json:"name"`
+			Provider        string                             `json:"provider"`
+			BaseURL         string                             `json:"base_url"`
+			APIKey          string                             `json:"api_key"`
+			Model           string                             `json:"model"`
+			Active          bool                               `json:"active"`
+			MaxOutputTokens int                                `json:"max_output_tokens"`
+			ThinkingMode    string                             `json:"thinking_mode"`
+			PerModelConfigs map[string]protocol.PerModelConfig `json:"per_model_configs"`
 		} `json:"sub"`
 	}) error {
 		svc, err := h.requireSubscriptionSvc()
@@ -531,6 +533,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			return err
 		}
 		dbSub := &sqlite.LLMSubscription{
+			ID:              p.Sub.ID,
 			Name:            p.Sub.Name,
 			Provider:        p.Sub.Provider,
 			BaseURL:         p.Sub.BaseURL,
@@ -539,6 +542,12 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			MaxOutputTokens: p.Sub.MaxOutputTokens,
 			ThinkingMode:    p.Sub.ThinkingMode,
 			IsDefault:       p.Sub.Active,
+		}
+		if len(p.Sub.PerModelConfigs) > 0 {
+			dbSub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(p.Sub.PerModelConfigs))
+			for model, cfg := range p.Sub.PerModelConfigs {
+				dbSub.PerModelConfigs[model] = sqlite.PerModelConfig(cfg)
+			}
 		}
 		dbSub.SenderID = rpcBizID(ctx)
 		if err := svc.Add(dbSub); err != nil {

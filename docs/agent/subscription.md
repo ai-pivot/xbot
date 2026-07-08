@@ -505,6 +505,8 @@ master #179 用了 v38（`tenants.runner_id`）；model-first 重设计也用了
 - **订阅编辑面板只改凭证/默认值**：`openEditSubscriptionPanel` 不再带逐模型 toggles（逐模型参数只在模型行 `E` 编辑，避免两处入口冗余）；`Update` 时保留 `target.PerModelConfigs` 不动。
 - 状态栏 `订阅名 · 模型名` 靠 `cachedSubName`，由 `refreshCachedSubName` 在 `activeSubID` 变更路径（`applyModelSwitch` / `refreshCachedModelName` defer / `applySessionLLMState`）刷新——每次一次 `List("")` RPC，**View() 只读缓存**，绝不能在每帧 RPC。订阅重命名后状态栏订阅名可能短暂滞后（下次 activeSubID 变更或面板刷新才更新），可接受。
 
+- **面板缓存规则**：`llmCache` 只服务打开面板时的快速渲染和过滤/展开等纯本地重排。任何订阅/模型元数据变更（新增/编辑/删除订阅、启停订阅、添加模型、编辑模型参数、启停模型）后都必须走 `rebuildLLMRowsFresh()` 或 `reopenLLMPanelOn()`，从 `llmSource()` 重新读取完整 `subs+entries` 快照后再重建 rows；不能只调用 `rebuildLLMRows()` 读取旧 cache。后台 `/models` 刷新完成 (`cliModelEntriesRefreshedMsg`) 时也必须重新读取订阅列表，再合并刷新返回的 entries，避免刷新飞行期间新增/编辑的订阅被旧 cache 覆盖。`add_subscription` RPC 必须保留客户端传入的 `id` 和 `per_model_configs`，否则 TUI 刷新后拿到的订阅 ID 会与刚创建的本地 ID 不一致，导致定位/后续模型操作错位。
+
 ### 16. `OnModelsLoaded` 必须在 model-first 路径注入；选择器开面板必须实时刷新
 
 model-first 重构曾把 `OnModelsLoaded` 回调丢线：`createClientFromSub`（及 entry 构造路径）构造 `UserLLMConfig` 时不设 `OnModelsLoaded`，导致每个订阅 client 即便异步拉到 `/models` 也不写回 `CachedModels`。症状：模型选择器/Ctrl+N 每个订阅只看到 `sub.Model`（一个），**provider 真实可用模型全部缺失**（"列表不全"，deepseek/glm 只显示 1-2 个）。修复：`makeOnModelsLoaded(subID)` 在三处 `createClient` 调用点注入（`createClientFromSub` + 两处 entry 构造），回调内 `Get(subID)` nil-check 后 `UpdateCachedModels`（`UpdateCachedModels` 对不存在的 subID 会 nil-deref，必须先 Get 守卫）。

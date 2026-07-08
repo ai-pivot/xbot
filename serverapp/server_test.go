@@ -151,6 +151,61 @@ func TestHandleCLIRPCAddSubscription_PreservesCredentials(t *testing.T) {
 	}
 }
 
+func TestHandleCLIRPCAddSubscription_PreservesIDAndPerModelConfigs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
+	subSvc := sqlite.NewLLMSubscriptionService(db)
+	factory.SetSubscriptionSvc(subSvc)
+	factory.SetTenantSvc(sqlite.NewTenantService(db))
+
+	aCfg := &config.Config{}
+	ag := &agent.Agent{}
+	ag.SetLLMFactory(factory)
+	table := BuildRPCTable(aCfg, ag, nil, nil, nil)
+
+	addParams, _ := json.Marshal(map[string]any{
+		"sub": map[string]any{
+			"id":       "sub_ui_created",
+			"name":     "codex",
+			"provider": "openai",
+			"base_url": "https://api.openai-proxy.org/v1",
+			"api_key":  "sk-secret-key-12345",
+			"per_model_configs": map[string]any{
+				"glm-5.2": map[string]any{
+					"max_context":       1000000,
+					"max_output_tokens": 8192,
+					"api_type":          "responses",
+				},
+			},
+		},
+	})
+	if _, err := HandleCLIRPC(table, "add_subscription", addParams, "admin"); err != nil {
+		t.Fatalf("add_subscription: %v", err)
+	}
+
+	sub, err := subSvc.Get("sub_ui_created")
+	if err != nil {
+		t.Fatalf("get subscription: %v", err)
+	}
+	if sub == nil {
+		t.Fatal("expected subscription with client-provided ID")
+	}
+	pmc, ok := sub.PerModelConfigs["glm-5.2"]
+	if !ok {
+		t.Fatal("expected per-model config to be preserved")
+	}
+	if pmc.MaxContext != 1000000 || pmc.MaxOutputTokens != 8192 || pmc.APIType != "responses" {
+		t.Fatalf("unexpected per-model config: %+v", pmc)
+	}
+}
+
 // TestHandleCLIRPCUpdateSubscription_PreservesCredentials verifies that
 // update_subscription RPC correctly deserializes and preserves base_url and api_key.
 func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
