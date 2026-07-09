@@ -1251,6 +1251,22 @@ func (t *streamCaptureTransport) RoundTrip(req *http.Request) (*http.Response, e
 		return resp, err
 	}
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+
+	// Some OpenAI-compatible servers (e.g. sglang, vLLM) return text/plain
+	// for JSON API responses like /v1/models. The OpenAI Go SDK requires
+	// application/json to pick the JSON decoder; without this rewrite,
+	// model list fetching silently fails. Only rewrite 2xx responses to
+	// /models endpoints — error responses keep their original content-type
+	// so error diagnostics (HTML error pages, plain-text rate limit messages)
+	// are preserved.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 &&
+		resp.Body != nil &&
+		strings.Contains(req.URL.Path, "/models") &&
+		!strings.Contains(contentType, "application/json") &&
+		!strings.Contains(contentType, "text/event-stream") {
+		resp.Header.Set("Content-Type", "application/json")
+	}
+
 	if resp.Body != nil && strings.Contains(contentType, "text/event-stream") {
 		resp.Header.Set("Content-Type", contentType)
 		t.o.streamBodyMu.Lock()
