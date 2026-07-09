@@ -19,6 +19,32 @@ const settingsCardActionPrefix = "settings_"
 
 const marketPageSize = 5
 
+// feishuProviderSelectValue converts a stored (provider, apiType) pair to the
+// select dropdown value used in Feishu form cards. Mirrors the CLI
+// providerToSelectValue logic.
+func feishuProviderSelectValue(provider, apiType string) string {
+	if provider == "anthropic" {
+		return "anthropic"
+	}
+	if apiType == "responses" {
+		return "openai_responses"
+	}
+	return "openai"
+}
+
+// feishuSplitProvider converts the select dropdown value back to (provider,
+// apiType). Mirrors the CLI selectValueToProvider logic.
+func feishuSplitProvider(selectValue string) (provider, apiType string) {
+	switch selectValue {
+	case "anthropic":
+		return "anthropic", ""
+	case "openai_responses":
+		return "openai", "responses"
+	default:
+		return "openai", ""
+	}
+}
+
 // SettingsCardOpts carries optional state for building the settings card (e.g. pagination).
 type SettingsCardOpts struct {
 	MySkillPage     int
@@ -335,7 +361,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 
 	case "settings_submit_edit_subscription":
 		subID := parsed["subscription_id"]
-		provider := formStr(actionData, "provider")
+		provider, apiType := feishuSplitProvider(formStr(actionData, "provider"))
 		baseURL := formStr(actionData, "base_url")
 		apiKey := formStr(actionData, "api_key")
 		name := formStr(actionData, "name")
@@ -349,6 +375,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			if err := f.settingsCallbacks.LLMUpdateSubscription(subID, &ch.Subscription{
 				Name:     name,
 				Provider: provider,
+				APIType:  apiType,
 				BaseURL:  baseURL,
 				APIKey:   apiKey,
 			}); err != nil {
@@ -374,7 +401,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		return f.buildAddSubscriptionCard(senderID)
 
 	case "settings_submit_subscription":
-		provider := formStr(actionData, "provider")
+		provider, apiType := feishuSplitProvider(formStr(actionData, "provider"))
 		baseURL := formStr(actionData, "base_url")
 		apiKey := formStr(actionData, "api_key")
 		name := formStr(actionData, "name")
@@ -388,6 +415,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			if err := f.settingsCallbacks.LLMAddSubscription(senderID, &ch.Subscription{
 				Name:     name,
 				Provider: provider,
+				APIType:  apiType,
 				BaseURL:  baseURL,
 				APIKey:   apiKey,
 			}); err != nil {
@@ -1173,7 +1201,8 @@ func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]an
 				"content": "选择 Provider",
 			},
 			"options": []map[string]any{
-				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Complete（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Responses"}, "value": "openai_responses"},
 				{"text": map[string]any{"tag": "plain_text", "content": "Anthropic"}, "value": "anthropic"},
 			},
 		},
@@ -1245,7 +1274,7 @@ func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]an
 // buildEditSubscriptionCard builds the edit subscription form with current values.
 func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[string]any, error) {
 	// Get current subscription data
-	var currentName, currentProvider, currentBaseURL string
+	var currentName, currentProvider, currentBaseURL, currentAPIType string
 	if f.settingsCallbacks.LLMListSubscriptions != nil {
 		subs, _ := f.settingsCallbacks.LLMListSubscriptions(senderID)
 		for _, s := range subs {
@@ -1253,6 +1282,7 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 				currentName = s.Name
 				currentProvider = s.Provider
 				currentBaseURL = s.BaseURL
+				currentAPIType = s.APIType
 				break
 			}
 		}
@@ -1284,9 +1314,10 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 				"tag":     "plain_text",
 				"content": "选择 Provider",
 			},
-			"initial_option": currentProvider,
+			"initial_option": feishuProviderSelectValue(currentProvider, currentAPIType),
 			"options": []map[string]any{
-				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Complete（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Responses"}, "value": "openai_responses"},
 				{"text": map[string]any{"tag": "plain_text", "content": "Anthropic"}, "value": "anthropic"},
 			},
 		},
