@@ -115,8 +115,25 @@ func (m *cliModel) renderTurnBody(
 	}
 
 	if liveProgress != nil {
-		for _, block := range m.liveIterationBlocks(liveProgress, contentWidth, fallbackContent) {
-			appendTurnBlock(&sb, &lastKind, &hasBlock, block)
+		blocks := m.liveIterationBlocks(liveProgress, contentWidth, fallbackContent)
+		// Check whether any previous iteration had tools. When the live
+		// iteration is completely empty (no tools, content, reasoning)
+		// but a previous iteration had completed tools, we are in a
+		// transition gap between iterations — not a "thinking" gap.
+		// In that case suppress the idle pulse spinner.
+		prevHadTools := false
+		for i := range iterations {
+			if len(iterations[i].Tools) > 0 {
+				prevHadTools = true
+				break
+			}
+		}
+		if prevHadTools && len(blocks) == 1 && blocks[0].kind == turnBlockPulse {
+			// The only block is a pulse — drop it.
+		} else {
+			for _, block := range blocks {
+				appendTurnBlock(&sb, &lastKind, &hasBlock, block)
+			}
 		}
 	} else if fallbackContent != "" {
 		// Idle state: render the final assistant content after iterations.
@@ -350,7 +367,7 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 
 	if p.Phase == "compressing" {
 		hasSpinner = true
-		frame := diamondPulseFrames[m.ticker.frame%len(diamondPulseFrames)]
+		frame := splashFrames[m.ticker.frame%len(splashFrames)]
 		blocks = append(blocks, turnBlock{
 			kind: turnBlockPulse,
 			text: "  " + s.ProgressRunning.Render(frame) + " " + s.ProgressRunning.Render(m.locale.StatusCompressing),

@@ -963,7 +963,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 	// meant chat switching via POST /api/chats/{id}/switch had no effect
 	// on WS message routing — messages went to the old (default) session.
 	// Now each message handler resolves chatID dynamically via
-	// wc.getCurrentChatID(c.userID) so chat switches take effect immediately.
+	// wc.GetCurrentSession(c.userID) so chat switches take effect immediately.
 
 	for {
 		_, raw, err := c.conn.ReadMessage()
