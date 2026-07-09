@@ -1,6 +1,5 @@
-=== previous tool done then active empty next iteration renders pulse ===
+=== previous tool done then active empty next iteration no pulse ===
   · ✓ Previous read succeeded 100ms
-  ◇◇◇◇◇
 
 === previous content plus tool then active fallback stream text ===
 previous content before current stream
