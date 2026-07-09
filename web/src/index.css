@@ -1,62 +1,447 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "dockview/dist/styles/dockview.css";
+/* KaTeX math rendering styles (Spec 4 Markdown). */
+@import "katex/dist/katex.min.css";
 
-@theme {
-  --color-slate-50: #f5f5f7;
-  --color-slate-100: #e5e5ea;
-  --color-slate-200: #d1d1d6;
-  --color-slate-300: #aeaeb2;
-  --color-slate-400: #8e8e93;
-  --color-slate-500: #6e6e73;
-  --color-slate-600: #48484a;
-  --color-slate-700: #3a3a3c;
-  --color-slate-800: #2c2c2e;
-  --color-slate-900: #151517;
-  --color-slate-950: #000000;
+/* dark variant driven by <html class="dark"> */
+@custom-variant dark (&:is(.dark *));
 
-  --color-gray-50: #f5f5f7;
-  --color-gray-100: #e5e5ea;
-  --color-gray-200: #d1d1d6;
-  --color-gray-300: #aeaeb2;
-  --color-gray-400: #8e8e93;
-  --color-gray-500: #6e6e73;
-  --color-gray-600: #48484a;
-  --color-gray-700: #3a3a3c;
-  --color-gray-800: #2c2c2e;
-  --color-gray-900: #151517;
-  --color-gray-950: #000000;
+/*
+ * Design tokens — VSCode-style palette (Spec 1 设计系统基础).
+ *
+ * Two layers of variables:
+ *   1. Application semantic tokens (--accent, --bg-primary, --border, ...) —
+ *      the Spec contract; ThemeProvider mutates --accent* at runtime to apply
+ *      the user's accent color while keeping the rest of the palette fixed.
+ *   2. shadcn semantic tokens (--background, --foreground, --primary, ...) —
+ *      reference layer 1 so shadcn components render with the VSCode palette.
+ *
+ * Light theme (default :root).
+ */
+:root {
+  /* ── Spec semantic palette (light) ── */
+  --accent: #3388bb;
+  --accent-hover: #2a7aa8;
+  --accent-foreground: #ffffff;
 
-  --color-blue-300: #64d2ff;
-  --color-blue-400: #409cff;
-  --color-blue-500: #007AFF;
-  --color-blue-600: #007AFF;
-  --color-blue-700: #0071e3;
-  --color-blue-800: #0055b3;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f3f3f3;
+  --bg-tertiary: #e4e4e4;
+  --border: #e0e0e0;
+  --text-primary: #1e1e1e;
+  --text-secondary: #6b6b6b;
+  --text-muted: #999999;
 
-  --color-indigo-400: #7c7aff;
-  --color-indigo-500: #5e5ce6;
-  --color-indigo-600: #5856d6;
+  --status-running: #3388bb;
+  --status-waiting: #e6a700;
+  --status-idle: #6b6b6b;
+  --status-error: #d1242f;
 
-  --color-green-400: #30d158;
-  --color-green-900: #1a3a24;
-  --color-red-400: #ff453a;
-  --color-red-800: #5c1a1a;
-  --color-red-900: #3a1010;
-  --color-yellow-400: #ffd60a;
-  --color-yellow-500: #ffcc00;
+  --editor-bg: #ffffff;
+  --editor-gutter: #f0f0f0;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', 'Inter', 'Noto Sans SC', 'PingFang SC', sans-serif;
+  /* Diff viewer line tints (Spec 6 §3.5). Green/red at low alpha so they
+   * read as backgrounds over the editor surface in light theme. */
+  --diff-added: rgba(34, 170, 136, 0.16);
+  --diff-removed: rgba(209, 36, 47, 0.16);
+
+  --radius: 0.5rem;
 }
 
-@import "./styles/base.css";
-@import "./styles/mobile.css";
-@import "./styles/markdown.css";
-@import "./styles/tiptap.css";
-@import "./styles/codeblock.css";
-@import "./styles/chat/index.css";
-@import "./styles/sidebar.css";
-@import "./styles/settings.css";
-@import "./styles/bookmark.css";
-@import "./styles/confirm.css";
-@import "./styles/login.css";
-@import "./styles/progress.css";
-@import "./styles/theme.css";
+/* shadcn semantic tokens (light) → VSCode palette */
+:root {
+  --background: var(--bg-primary);
+  --foreground: var(--text-primary);
+  --card: var(--bg-primary);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-primary);
+  --popover-foreground: var(--text-primary);
+
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-foreground);
+
+  --secondary: var(--bg-secondary);
+  --secondary-foreground: var(--text-primary);
+
+  --muted: var(--bg-secondary);
+  --muted-foreground: var(--text-secondary);
+
+  /* `--accent` / `--accent-foreground` inherit the Spec theme color defined
+     in the palette block above (== brand #3388BB); do not shadow them here. */
+
+  --destructive: var(--status-error);
+  --destructive-foreground: #ffffff;
+
+  /* `--border` inherits the Spec palette value; `--input` references it. */
+  --input: var(--border);
+  --ring: var(--accent);
+
+  --chart-1: var(--accent);
+  --chart-2: #2a7aa8;
+  --chart-3: #e6a700;
+  --chart-4: #6b6b6b;
+  --chart-5: #d1242f;
+
+  --sidebar: var(--bg-secondary);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent);
+  --sidebar-primary-foreground: var(--accent-foreground);
+  --sidebar-accent: var(--bg-tertiary);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--accent);
+}
+
+/* Dark theme — <html class="dark"> */
+.dark {
+  --accent: #3388bb;
+  --accent-hover: #4499cc;
+  --accent-foreground: #ffffff;
+
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-tertiary: #2d2d2d;
+  --border: #3c3c3c;
+  --text-primary: #cccccc;
+  --text-secondary: #858585;
+  --text-muted: #6b6b6b;
+
+  --status-running: #3388bb;
+  --status-waiting: #e6a700;
+  --status-idle: #858585;
+  --status-error: #f48771;
+
+  --editor-bg: #1e1e1e;
+  --editor-gutter: #1e1e1e;
+
+  /* Dark-theme diff tints: slightly higher alpha so they stay visible on the
+   * dark editor surface (VSCode uses ~rgba(155,185,85,.2)/rgba(255,0,0,.2)). */
+  --diff-added: rgba(74, 200, 142, 0.22);
+  --diff-removed: rgba(244, 135, 113, 0.22);
+}
+
+.dark {
+  --background: var(--bg-primary);
+  --foreground: var(--text-primary);
+  --card: var(--bg-secondary);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-primary);
+  --popover-foreground: var(--text-primary);
+
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-foreground);
+
+  --secondary: var(--bg-tertiary);
+  --secondary-foreground: var(--text-primary);
+
+  --muted: var(--bg-tertiary);
+  --muted-foreground: var(--text-secondary);
+
+  /* `--accent` / `--accent-foreground` inherit the Spec theme color from the
+     .dark palette block above; do not shadow them here. */
+
+  --destructive: var(--status-error);
+  --destructive-foreground: #ffffff;
+
+  /* `--border` inherits the Spec dark palette value; `--input` references it. */
+  --input: var(--border);
+  --ring: var(--accent);
+
+  --chart-1: var(--accent);
+  --chart-2: #4499cc;
+  --chart-3: #e6a700;
+  --chart-4: #858585;
+  --chart-5: #f48771;
+
+  --sidebar: var(--bg-secondary);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent);
+  --sidebar-primary-foreground: var(--accent-foreground);
+  --sidebar-accent: var(--bg-tertiary);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--accent);
+}
+
+/*
+ * Expose palette to Tailwind v4 utility layer. shadcn components use
+ * bg-background / text-foreground / bg-primary ... mapped to the tokens above.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Spec palette as raw color utilities: bg-bg-primary, text-text-secondary, ... */
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary: var(--bg-tertiary);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-app-accent: var(--accent);
+  --color-app-accent-hover: var(--accent-hover);
+  --color-app-accent-foreground: var(--accent-foreground);
+  --color-status-running: var(--status-running);
+  --color-status-waiting: var(--status-waiting);
+  --color-status-idle: var(--status-idle);
+  --color-status-error: var(--status-error);
+  --color-editor-bg: var(--editor-bg);
+  --color-editor-gutter: var(--editor-gutter);
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display',
+      'SF Pro Text', 'Helvetica Neue', 'Inter', 'Noto Sans SC', 'PingFang SC',
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Global scrollbar — VSCode style: thin, borderless, semi-transparent ── */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: rgba(128, 128, 128, 0.35);
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(128, 128, 128, 0.6);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Syntax highlighting tokens (Spec 4 Markdown). VSCode Dark+ palette, switched
+ * via .dark. Highlight.js tokens (.hljs-keyword, ...) read these so code blocks
+ * follow the theme without bundling a CSS theme file.
+ * ------------------------------------------------------------------------- */
+:root {
+  --syntax-text: var(--text-primary);
+  --syntax-keyword: #569cd6;
+  --syntax-string: #ce9178;
+  --syntax-number: #b5cea8;
+  --syntax-comment: #6a9955;
+  --syntax-attr: #9cdcfe;
+  --syntax-title: #dcdcaa;
+  --syntax-builtin: #4ec9b0;
+  --syntax-type: #4ec9b0;
+  --syntax-meta: #808080;
+  --syntax-regex: #d16969;
+}
+.dark {
+  --syntax-text: #d4d4d4;
+  --syntax-keyword: #569cd6;
+  --syntax-string: #ce9178;
+  --syntax-number: #b5cea8;
+  --syntax-comment: #6a9955;
+  --syntax-attr: #9cdcfe;
+  --syntax-title: #dcdcaa;
+  --syntax-builtin: #4ec9b0;
+  --syntax-type: #4ec9b0;
+  --syntax-meta: #808080;
+  --syntax-regex: #d16969;
+}
+.hljs {
+  color: var(--syntax-text);
+  background: transparent;
+}
+.hljs-comment, .hljs-quote { color: var(--syntax-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-meta .hljs-keyword {
+  color: var(--syntax-keyword);
+}
+.hljs-string, .hljs-regexp, .hljs-addition { color: var(--syntax-string); }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: var(--syntax-number); }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--syntax-title); }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: var(--syntax-attr); }
+.hljs-built_in, .hljs-class .hljs-title, .hljs-type { color: var(--syntax-builtin); }
+.hljs-meta, .hljs-tag { color: var(--syntax-meta); }
+.hljs-attr + .hljs-string { color: var(--syntax-string); }
+.hljs-deletion { color: var(--status-error); }
+
+/* ---------------------------------------------------------------------------
+ * Markdown body typography (Spec 4). Minimal prose styles so agent output
+ * (headings, lists, tables, blockquotes) renders cleanly inside chat bubbles
+ * without pulling in a full typography plugin. KISS.
+ * ------------------------------------------------------------------------- */
+.markdown-body {
+  word-break: break-word;
+}
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1em 0 0.5em;
+}
+.markdown-body h1 { font-size: 1.4em; }
+.markdown-body h2 { font-size: 1.25em; }
+.markdown-body h3 { font-size: 1.1em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body p { margin: 0.5em 0; }
+.markdown-body ul, .markdown-body ol { margin: 0.5em 0; padding-left: 1.5em; }
+.markdown-body li { margin: 0.2em 0; }
+.markdown-body blockquote {
+  border-left: 3px solid var(--border);
+  margin: 0.5em 0;
+  padding: 0 0.75em;
+  color: var(--text-secondary);
+}
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  display: block;
+  overflow-x: auto;
+}
+.markdown-body th, .markdown-body td {
+  border: 1px solid var(--border);
+  padding: 0.35em 0.6em;
+  text-align: left;
+}
+.markdown-body th { background: var(--bg-secondary); font-weight: 600; }
+.markdown-body hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
+/* KaTeX display blocks stay scrollable on narrow widths. */
+.markdown-body .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.25em 0; }
+
+/* content-visibility: skip rendering offscreen Agent message cards (Spec 4 perf).
+ * The virtualizer already keeps the DOM light, but this protects the live
+ * streaming card and any non-virtualized fallback from layout thrash. */
+.agent-msg-card { content-visibility: auto; contain-intrinsic-size: auto 96px; }
+
+/* ── Dockview theme override — follow app light/dark palette ────────────────
+ * dockview's `.dockview-theme-vs` hardcodes dark background variables (#1e1e1e
+ * etc), ignoring the app's `.dark` class. We override these CSS variables to
+ * reference the app's semantic tokens, so dockview panels automatically follow
+ * the light/dark theme without runtime switching.
+ */
+.dockview-theme-vs {
+  --dv-group-view-background-color: var(--bg-primary);
+  --dv-tabs-and-actions-container-background-color: var(--bg-secondary);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--bg-primary);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--bg-tertiary);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--bg-primary);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--bg-tertiary);
+  --dv-draggable-tabs-active-tab-color: var(--text-primary);
+  --dv-draggable-tabs-inactive-tab-color: var(--text-secondary);
+  /* Override VS theme's default 20px tab height to match our 35px TabHeader */
+  --dv-tabs-and-actions-container-height: 35px;
+  --dv-tabs-and-actions-container-font-size: 13px;
+}
+
+/* Remove VS theme decorative borders — replaces fragile inline style approach */
+.dockview-theme-vs .dv-tab {
+  border-top: none !important;
+  background-color: transparent !important;
+}
+.dockview-theme-vs .dv-tabs-and-actions-container {
+  border-bottom: none !important;
+}
+
+/* ── Shimmer color variable — defined for both themes ────────────────────── */
+:root { --shimmer-color: rgba(0, 0, 0, 0.06); }
+.dark { --shimmer-color: rgba(255, 255, 255, 0.08); }
+
+/* ── "正在思考" character sweep effect ───────────────────────────────────────
+ * Each character lights up in sequence, then the whole text dims and
+ * repeats — a bold, borderless loading indicator.
+ */
+@keyframes thinkingCharSweep {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}
+.thinking-shimmer {
+  font-size: 0.875rem;
+  letter-spacing: 0.05em;
+}
+.thinking-char {
+  display: inline-block;
+  animation: thinkingCharSweep 1.5s ease-in-out infinite;
+}
+
+/* ── Fold/expand animation ───────────────────────────────────────────────────
+ * Smooth height/opacity transition for FoldedLine content using
+ * CSS grid-template-rows (0fr → 1fr) — more natural than max-height
+ * because it animates to actual content height without guessing a max.
+ */
+.fold-container {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease-out, opacity 0.2s ease-out;
+  opacity: 0;
+}
+.fold-container.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.fold-content {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Arrow rotation for fold toggles */
+.fold-arrow {
+  transition: transform 0.2s ease-out;
+  display: inline-block;
+}
+.fold-arrow.open {
+  transform: rotate(90deg);
+}
