@@ -1504,7 +1504,7 @@ func parseWebAgentTenantChatID(chatID string) (webAgentTenantInfo, bool) {
 	}
 	channel := parent[:channelSep]
 	for _, r := range channel {
-		if !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' {
 			return webAgentTenantInfo{}, false
 		}
 	}
@@ -1767,8 +1767,7 @@ func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID stri
 		if info.parentChannel != "agent" {
 			return false
 		}
-		var parentExists bool
-		parentExists = wc.tenantExists("agent", info.parentChatID)
+		parentExists := wc.tenantExists("agent", info.parentChatID)
 		if !parentExists {
 			return false
 		}
@@ -1794,17 +1793,6 @@ func (wc *WebChannel) IsAdminIdentity(senderID string) bool {
 	}
 	id, err := strconv.Atoi(strings.TrimPrefix(senderID, "web-"))
 	return err == nil && id == 1
-}
-
-// getCurrentChatID returns the currently active chatID for a user.
-// Defaults to senderID (backward compatible).
-func (wc *WebChannel) getCurrentChatID(senderID string) string {
-	wc.userCurrentSessionMu.RLock()
-	defer wc.userCurrentSessionMu.RUnlock()
-	if sel, ok := wc.userCurrentSession[senderID]; ok {
-		return sel.ChatID
-	}
-	return senderID
 }
 
 // GetCurrentSession returns the active SessionSelector (channel + chatID).

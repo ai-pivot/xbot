@@ -1287,7 +1287,7 @@ func splitQualifiedSessionKey(value string) (channel, chatID string, ok bool) {
 	}
 	channel = value[:idx]
 	for _, r := range channel {
-		if !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' {
 			return "", "", false
 		}
 	}
@@ -1341,10 +1341,6 @@ func subAgentRowKey(row web.UserChatWithPreview) string {
 		return row.FullKey
 	}
 	return row.ChatID
-}
-
-func appendSubAgentRow(rows []web.UserChatWithPreview, seen map[string]bool, parentChannel string, s agent.InteractiveSessionInfo) []web.UserChatWithPreview {
-	return upsertSubAgentRow(rows, seen, parentChannel, s)
 }
 
 func upsertSubAgentRow(rows []web.UserChatWithPreview, seen map[string]bool, parentChannel string, s agent.InteractiveSessionInfo) []web.UserChatWithPreview {
