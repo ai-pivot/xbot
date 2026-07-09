@@ -27,11 +27,11 @@ func TestV35Migration_SubscriptionModelsTable(t *testing.T) {
 		t.Fatalf("tenants.model_id column should exist: %v", err)
 	}
 
-	// Verify schema version is 44
+	// Verify schema version is current
 	var version int
 	conn.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version)
-	if version != 44 {
-		t.Errorf("schema version = %d, want 44", version)
+	if version != schemaVersion {
+		t.Errorf("schema version = %d, want %d", version, schemaVersion)
 	}
 
 	// Verify migration is idempotent

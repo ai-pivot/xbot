@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,245 +16,263 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// REST API handlers
+// Web-only session APIs
 // ---------------------------------------------------------------------------
 
-type historyResponse struct {
-	OK             bool          `json:"ok"`
-	Messages       []histMsg     `json:"messages,omitempty"`
-	Processing     bool          `json:"processing,omitempty"`      // true if backend is actively processing a request
-	ActiveProgress *histProgress `json:"active_progress,omitempty"` // live progress snapshot for in-progress turns
-	LastSeq        uint64        `json:"last_seq,omitempty"`        // seq of active_progress snapshot (for WS sync)
-	ChatID         string        `json:"chat_id,omitempty"`         // current active chatID (for page-refresh recovery)
-	Channel        string        `json:"channel,omitempty"`         // current active channel (for page-refresh recovery)
-	Error          string        `json:"error,omitempty"`
-	Deleted        int64         `json:"deleted,omitempty"`
+func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, senderID, channelName, chatID string) (SessionSelector, bool) {
+	if channelName == "" && chatID == "" {
+		return wc.GetCurrentSession(senderID), true
+	}
+	if channelName == "" {
+		channelName = "web"
+	}
+	if chatID == "" {
+		chatID = senderID
+	}
+	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, channelName, chatID) {
+		jsonErrorResponse(w, http.StatusForbidden, "access denied")
+		return SessionSelector{}, false
+	}
+	return SessionSelector{Channel: channelName, ChatID: chatID}, true
 }
 
-type histProgress struct {
-	Phase            string             `json:"phase,omitempty"`
-	Iteration        int                `json:"iteration"`
-	Content          string             `json:"content,omitempty"`
-	ActiveTools      []histTool         `json:"active_tools,omitempty"`
-	CompletedTools   []histTool         `json:"completed_tools,omitempty"`
-	StreamContent    string             `json:"stream_content,omitempty"`
-	IterationHistory []histIterSnapshot `json:"iteration_history,omitempty"` // completed iterations 1..N-1
+func (wc *WebChannel) apiSessionFromQuery(w http.ResponseWriter, r *http.Request, senderID string) (SessionSelector, bool) {
+	return wc.resolveAPISession(w, r, senderID, r.URL.Query().Get("channel"), r.URL.Query().Get("chat_id"))
 }
 
-type histIterSnapshot struct {
-	Iteration      int        `json:"iteration"`
-	Content        string     `json:"content,omitempty"`
-	Reasoning      string     `json:"reasoning,omitempty"`
-	CompletedTools []histTool `json:"completed_tools,omitempty"`
-}
-
-type histTool struct {
-	Name    string `json:"name,omitempty"`
-	Label   string `json:"label,omitempty"`
-	Status  string `json:"status,omitempty"`
-	Summary string `json:"summary,omitempty"`
-}
-
-type histMsg struct {
-	ID          int64   `json:"id"`
-	Role        string  `json:"role"`
-	Content     string  `json:"content"`
-	CreatedAt   string  `json:"created_at,omitempty"`
-	ToolCalls   *string `json:"tool_calls,omitempty"`
-	Detail      *string `json:"detail,omitempty"`       // iteration history JSON for assistant messages
-	DisplayOnly bool    `json:"display_only,omitempty"` // true for cron results (not part of LLM context)
-}
-
-// handleHistory handles GET|DELETE /api/history
+// handleHistory handles GET /api/history for Web session snapshots.
 func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	senderID := senderIDFromContext(r.Context())
 	if senderID == "" {
 		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	sel, ok := wc.apiSessionFromQuery(w, r, senderID)
+	if !ok {
+		return
+	}
+	if wc.callbacks.HistorySnapshot == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "chat_id": sel.ChatID, "channel": sel.Channel})
+		return
+	}
+	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel)
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	snapshot.ChatID = sel.ChatID
+	snapshot.Channel = sel.Channel
+	if es := wc.getEventStream(sel.ChatID); es != nil {
+		snapshot.LastSeq = es.lastSeq()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"messages":        snapshot.Messages,
+		"processing":      snapshot.Processing,
+		"active_progress": snapshot.ActiveProgress,
+		"last_seq":        snapshot.LastSeq,
+		"chat_id":         snapshot.ChatID,
+		"channel":         snapshot.Channel,
+	})
+}
 
+// handleHistoryRewind handles POST /api/history/rewind.
+func (wc *WebChannel) handleHistoryRewind(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		Channel  string `json:"channel"`
+		ChatID   string `json:"chat_id"`
+		CutoffMS int64  `json:"cutoff_ms"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.CutoffMS <= 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "cutoff_ms is required")
+		return
+	}
+	sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
+	if !ok {
+		return
+	}
+	if wc.callbacks.RewindHistory == nil {
+		jsonErrorResponse(w, http.StatusNotImplemented, "rewind not available")
+		return
+	}
+	result, err := wc.callbacks.RewindHistory(senderID, sel, time.UnixMilli(body.CutoffMS))
+	if err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "draft": result.Draft, "rewind_result": result.RewindResult})
+}
+
+// handleCWD handles GET/PUT /api/cwd.
+func (wc *WebChannel) handleCWD(w http.ResponseWriter, r *http.Request) {
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
-		wc.handleHistoryGet(w, r, senderID)
-	case http.MethodDelete:
-		wc.handleHistoryDelete(w, r, senderID)
+		sel, ok := wc.apiSessionFromQuery(w, r, senderID)
+		if !ok {
+			return
+		}
+		if wc.callbacks.GetCWD == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "dir": ""})
+			return
+		}
+		dir, err := wc.callbacks.GetCWD(senderID, sel)
+		if err != nil {
+			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "dir": dir, "chat_id": sel.ChatID, "channel": sel.Channel})
+	case http.MethodPut:
+		var body struct {
+			Channel string `json:"channel"`
+			ChatID  string `json:"chat_id"`
+			Dir     string `json:"dir"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonErrorResponse(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
+		if !ok {
+			return
+		}
+		if wc.callbacks.SetCWD == nil {
+			jsonErrorResponse(w, http.StatusNotImplemented, "cwd not available")
+			return
+		}
+		if err := wc.callbacks.SetCWD(senderID, sel, body.Dir); err != nil {
+			jsonErrorResponse(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "dir": body.Dir, "chat_id": sel.ChatID, "channel": sel.Channel})
 	default:
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-// handleHistoryGet returns the message history for the current user.
-func (wc *WebChannel) handleHistoryGet(w http.ResponseWriter, r *http.Request, senderID string) {
-
-	// Use the currently active session (channel + chatID, respects chat switching)
-	sel := wc.getCurrentSession(senderID)
-
-	// Cross-channel access requires admin.
-	if sel.Channel != "web" && !wc.isAdmin(r.Context(), senderID) {
-		jsonErrorResponse(w, http.StatusForbidden, "access denied")
+func (wc *WebChannel) handleTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	// Find tenant ID for this user's active session
-	var tenantID int64
-	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
-	).Scan(&tenantID)
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	sel, ok := wc.apiSessionFromQuery(w, r, senderID)
+	if !ok {
+		return
+	}
+	if wc.callbacks.CronTasks == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tasks": []any{}})
+		return
+	}
+	tasks, err := wc.callbacks.CronTasks(senderID, sel)
 	if err != nil {
-		// No tenant yet = no history
-		writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: nil, ChatID: sel.ChatID, Channel: sel.Channel})
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	// Count user messages as the history window.
-	// Find the id of the 50th most recent user message, then fetch all displayable
-	// messages from that point onward.
-	limit := 50
-	var boundaryID sql.NullInt64
-	err = wc.db.QueryRow(`
-			SELECT id FROM session_messages
-			WHERE tenant_id = ? AND role = 'user'
-			ORDER BY id DESC
-			LIMIT 1 OFFSET ?
-		`, tenantID, limit).Scan(&boundaryID)
-	if err != nil && err != sql.ErrNoRows {
-		writeJSON(w, http.StatusInternalServerError, historyResponse{OK: false, Error: "query failed"})
-		return
-	}
-
-	var rows *sql.Rows
-	if boundaryID.Valid {
-		rows, err = wc.db.Query(`
-				SELECT id, role, content, created_at, tool_calls, detail, COALESCE(display_only, 0)
-				FROM session_messages
-				WHERE tenant_id = ? AND id >= ? AND role IN ('user', 'assistant')
-				ORDER BY id ASC
-			`, tenantID, boundaryID.Int64)
-	} else {
-		rows, err = wc.db.Query(`
-				SELECT id, role, content, created_at, tool_calls, detail, COALESCE(display_only, 0)
-				FROM session_messages
-				WHERE tenant_id = ? AND role IN ('user', 'assistant')
-				ORDER BY id ASC
-			`, tenantID)
-	}
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, historyResponse{OK: false, Error: "query failed"})
-		return
-	}
-	defer rows.Close()
-
-	var messages []histMsg
-	for rows.Next() {
-		var m histMsg
-		var toolCalls, detail sql.NullString
-		var displayOnly int
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.CreatedAt, &toolCalls, &detail, &displayOnly); err != nil {
-			continue
-		}
-		if toolCalls.Valid {
-			m.ToolCalls = &toolCalls.String
-		}
-		if detail.Valid {
-			m.Detail = &detail.String
-		}
-		m.DisplayOnly = displayOnly == 1
-		messages = append(messages, m)
-	}
-
-	processing := false
-	if wc.callbacks.IsProcessing != nil {
-		// For cross-channel browsing, use activeProgress as the processing indicator
-		// since IsProcessing(senderID) checks the admin's own session, not the browsed one.
-		if sel.Channel != "web" {
-			// Cross-channel: rely on activeProgress below instead
-		} else {
-			processing = wc.callbacks.IsProcessing(senderID)
-		}
-	}
-
-	// Always attempt to get active progress snapshot, regardless of IsProcessing.
-	// IsProcessing only returns true during an active Run, but lastProgressSnapshot
-	// persists after Run completes. This ensures the frontend can restore state
-	// even if the user refreshes between Runs (agent just finished but progress
-	// data is still available).
-	var activeProgress *histProgress
-	if wc.callbacks.GetActiveProgress != nil {
-		if p := wc.callbacks.GetActiveProgress(sel.Channel, sel.ChatID); p != nil && p.Phase != "done" {
-			hp := &histProgress{
-				Phase:         p.Phase,
-				Iteration:     p.Iteration,
-				Content:       p.Content,
-				StreamContent: p.StreamContent,
-			}
-			for _, t := range p.ActiveTools {
-				hp.ActiveTools = append(hp.ActiveTools, histTool{
-					Name: t.Name, Label: t.Label, Status: t.Status, Summary: t.Summary,
-				})
-			}
-			for _, t := range p.CompletedTools {
-				hp.CompletedTools = append(hp.CompletedTools, histTool{
-					Name: t.Name, Label: t.Label, Status: t.Status, Summary: t.Summary,
-				})
-			}
-			// Attach iteration history (completed iterations 1..N-1)
-			for _, iter := range p.IterationHistory {
-				snap := histIterSnapshot{
-					Iteration: iter.Iteration,
-					Content:   iter.Content,
-					Reasoning: iter.Reasoning,
-				}
-				for _, t := range iter.CompletedTools {
-					snap.CompletedTools = append(snap.CompletedTools, histTool{
-						Name: t.Name, Label: t.Label, Status: t.Status, Summary: t.Summary,
-					})
-				}
-				hp.IterationHistory = append(hp.IterationHistory, snap)
-			}
-			activeProgress = hp
-		}
-	}
-
-	// Include current event stream seq so frontend can WS sync from this point
-	var lastSeq uint64
-	if es := wc.getEventStream(sel.ChatID); es != nil {
-		lastSeq = es.lastSeq()
-	}
-
-	writeJSON(w, http.StatusOK, historyResponse{OK: true, Messages: messages, Processing: processing, ActiveProgress: activeProgress, LastSeq: lastSeq, ChatID: sel.ChatID, Channel: sel.Channel})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tasks": tasks})
 }
 
-// handleHistoryDelete clears all messages for the current user.
-func (wc *WebChannel) handleHistoryDelete(w http.ResponseWriter, r *http.Request, senderID string) {
-	// Use the currently active session (channel + chatID, respects chat switching)
-	sel := wc.getCurrentSession(senderID)
-
-	// Cross-channel history deletion is not allowed — admin can browse but
-	// not delete other channels' history from the Web UI.
-	if sel.Channel != "web" {
-		jsonErrorResponse(w, http.StatusForbidden, "cannot delete cross-channel history")
+func (wc *WebChannel) handleBackgroundTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	// Find tenant ID for this user's active session
-	var tenantID int64
-	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
-	).Scan(&tenantID)
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	sel, ok := wc.apiSessionFromQuery(w, r, senderID)
+	if !ok {
+		return
+	}
+	if wc.callbacks.BackgroundTasks == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tasks": []any{}})
+		return
+	}
+	tasks, err := wc.callbacks.BackgroundTasks(senderID, sel)
 	if err != nil {
-		// No tenant yet = nothing to delete
-		writeJSON(w, http.StatusOK, historyResponse{OK: true})
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tasks": tasks})
+}
 
-	result, err := wc.db.Exec("DELETE FROM session_messages WHERE tenant_id = ?", tenantID)
+func (wc *WebChannel) handleCommands(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if wc.callbacks.CommandList == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "commands": []any{}})
+		return
+	}
+	commands, err := wc.callbacks.CommandList(senderID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, historyResponse{OK: false, Error: "delete failed"})
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "commands": commands})
+}
 
-	deleted, _ := result.RowsAffected()
-	writeJSON(w, http.StatusOK, historyResponse{OK: true, Deleted: deleted})
+func (wc *WebChannel) handleSessionSubscription(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	sel, ok := wc.apiSessionFromQuery(w, r, senderID)
+	if !ok {
+		return
+	}
+	if wc.callbacks.SessionSubscription == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	result, err := wc.callbacks.SessionSubscription(senderID, sel)
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := map[string]any{"ok": true}
+	for k, v := range result {
+		out[k] = v
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,7 +1224,7 @@ func (wc *WebChannel) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find tenant ID for this user's active session
-	sel := wc.getCurrentSession(senderID)
+	sel := wc.GetCurrentSession(senderID)
 	// Cross-channel access requires admin.
 	if sel.Channel != "web" && !wc.isAdmin(r.Context(), senderID) {
 		jsonErrorResponse(w, http.StatusForbidden, "access denied")
@@ -1319,148 +1336,6 @@ func snippetAround(content, queryLower string) string {
 	return snippet
 }
 
-// handleSessions handles GET /api/sessions — lists all ChatRooms for the user.
-// Returns both the main conversation (human↔agent) and SubAgent conversations (agent↔agent).
-func (wc *WebChannel) handleSessions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	senderID := senderIDFromContext(r.Context())
-	if senderID == "" {
-		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	rooms := []ChatRoom{}
-
-	// Main chatroom (human ↔ agent)
-	rooms = append(rooms, ChatRoom{
-		ID:      "main",
-		Type:    "main",
-		Label:   "主会话",
-		Members: "You ↔ Agent",
-	})
-
-	// SubAgent chatrooms (agent ↔ agent)
-	if wc.callbacks.SessionsList != nil {
-		sessions := wc.callbacks.SessionsList(senderID)
-		rooms = append(rooms, sessions...)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rooms": rooms})
-}
-
-// handleSessionMessages handles GET /api/sessions/messages — returns messages for a ChatRoom.
-// For "main" room: returns the main conversation history from DB.
-// For SubAgent rooms: returns the SubAgent's conversation messages.
-func (wc *WebChannel) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	senderID := senderIDFromContext(r.Context())
-	if senderID == "" {
-		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	roomID := r.URL.Query().Get("id")
-	if roomID == "" {
-		// Legacy support: role + instance
-		roleName := r.URL.Query().Get("role")
-		instance := r.URL.Query().Get("instance")
-		if roleName == "" || instance == "" {
-			jsonErrorResponse(w, http.StatusBadRequest, "id (or role+instance) is required")
-			return
-		}
-		roomID = roleName + "/" + instance
-	}
-
-	// Main room: fetch from DB
-	if roomID == "main" {
-		wc.handleMainSessionMessages(w, r, senderID)
-		return
-	}
-
-	// SubAgent room: fetch from agent
-	parts := strings.SplitN(roomID, "/", 2)
-	if len(parts) != 2 {
-		jsonErrorResponse(w, http.StatusBadRequest, "invalid room id")
-		return
-	}
-	roleName, instance := parts[0], parts[1]
-
-	if wc.callbacks.SessionMessages == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}})
-		return
-	}
-
-	messages, found := wc.callbacks.SessionMessages(senderID, roleName, instance)
-	if !found {
-		jsonErrorResponse(w, http.StatusNotFound, "session not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": messages})
-}
-
-// handleMainSessionMessages returns the main conversation history as session messages.
-func (wc *WebChannel) handleMainSessionMessages(w http.ResponseWriter, r *http.Request, senderID string) {
-	// Use the currently active session (channel + chatID, respects chat switching)
-	sel := wc.getCurrentSession(senderID)
-	// Cross-channel access requires admin.
-	if sel.Channel != "web" && !wc.isAdmin(r.Context(), senderID) {
-		jsonErrorResponse(w, http.StatusForbidden, "access denied")
-		return
-	}
-	var tenantID int64
-	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
-	).Scan(&tenantID)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}})
-		return
-	}
-
-	limit := 50
-	var boundaryID sql.NullInt64
-	if err := wc.db.QueryRow(`
-			SELECT id FROM session_messages
-			WHERE tenant_id = ? AND role = 'user'
-			ORDER BY id DESC LIMIT 1 OFFSET ?`, tenantID, limit).Scan(&boundaryID); err != nil && err != sql.ErrNoRows {
-		jsonErrorResponse(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-
-	var rows *sql.Rows
-	if boundaryID.Valid {
-		rows, err = wc.db.Query(`
-			SELECT role, content FROM session_messages
-			WHERE tenant_id = ? AND id >= ? AND role IN ('user', 'assistant')
-			ORDER BY id ASC`, tenantID, boundaryID.Int64)
-	} else {
-		rows, err = wc.db.Query(`
-			SELECT role, content FROM session_messages
-			WHERE tenant_id = ? AND role IN ('user', 'assistant')
-			ORDER BY id ASC`, tenantID)
-	}
-	if err != nil {
-		jsonErrorResponse(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	defer rows.Close()
-
-	var msgs []ch.SessionChatMessage
-	for rows.Next() {
-		var role, content string
-		if err := rows.Scan(&role, &content); err != nil {
-			continue
-		}
-		msgs = append(msgs, ch.SessionChatMessage{Role: role, Content: content})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": msgs})
-}
-
 // ── Chatroom Management APIs ──
 
 // handleChats handles GET/POST /api/chats — list or create chatrooms.
@@ -1473,32 +1348,83 @@ func (wc *WebChannel) handleChats(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		if wc.callbacks.ChatList == nil {
+		if wc.callbacks.ChatList == nil && wc.callbacks.SessionTree == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chats": []any{}})
 			return
 		}
+		sel := wc.GetCurrentSession(senderID)
+
+		// No channel parameter means the Web admin view: show web + cli in one
+		// list. Keep ?channel=... for compatibility with older clients.
+		if _, ok := r.URL.Query()["channel"]; !ok {
+			if wc.callbacks.SessionTree != nil {
+				result, err := wc.callbacks.SessionTree(senderID, sel, wc.isAdmin(r.Context(), senderID))
+				if err != nil {
+					jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				chats := make([]UserChatWithPreview, 0, len(result.Sessions))
+				for _, node := range result.Sessions {
+					chats = append(chats, node.UserChatWithPreview)
+				}
+				writeJSON(w, http.StatusOK, map[string]any{
+					"ok":               true,
+					"chats":            chats, // compatibility for older Web builds
+					"sessions":         result.Sessions,
+					"orphan_subagents": result.OrphanSubAgents,
+				})
+				return
+			}
+			var all []UserChatWithPreview
+			webCurrent := ""
+			if sel.Channel == "web" {
+				webCurrent = sel.ChatID
+			}
+			webChats, err := wc.callbacks.ChatList(senderID, webCurrent, "web")
+			if err != nil {
+				jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			all = append(all, webChats...)
+
+			if wc.isAdmin(r.Context(), senderID) {
+				cliCurrent := ""
+				if sel.Channel == "cli" {
+					cliCurrent = sel.ChatID
+				}
+				cliChats, err := wc.callbacks.ChatList(senderID, cliCurrent, "cli")
+				if err != nil {
+					jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				all = append(all, cliChats...)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chats": all})
+			return
+		}
+
 		channel := r.URL.Query().Get("channel")
 		if channel == "" {
 			channel = "web"
 		}
-		// Non-admin users can only browse web sessions.
+		if channel == "agent" {
+			jsonErrorResponse(w, http.StatusBadRequest, "agent sessions are only available via /api/session-tree")
+			return
+		}
 		if !wc.isAdmin(r.Context(), senderID) && channel != "web" {
 			jsonErrorResponse(w, http.StatusForbidden, "access denied")
 			return
 		}
-		// getCurrentSession already returns the right {channel, chatID};
-		// only use it when the requested channel matches the active session.
-		sel := wc.getCurrentSession(senderID)
-		currentChatID := sel.ChatID
-		if sel.Channel != channel {
-			// Listing a different channel — no "current" chat to highlight
-			currentChatID = ""
+		currentChatID := ""
+		if sel.Channel == channel {
+			currentChatID = sel.ChatID
 		}
 		chats, err := wc.callbacks.ChatList(senderID, currentChatID, channel)
 		if err != nil {
 			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		chats = filterSubAgentChatRows(chats)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chats": chats})
 
 	case http.MethodPost:
@@ -1518,11 +1444,125 @@ func (wc *WebChannel) handleChats(w http.ResponseWriter, r *http.Request) {
 			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		wc.userCurrentSessionMu.Lock()
+		wc.userCurrentSession[senderID] = SessionSelector{Channel: "web", ChatID: chatID}
+		wc.userCurrentSessionMu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chat_id": chatID})
 
 	default:
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func filterSubAgentChatRows(rows []UserChatWithPreview) []UserChatWithPreview {
+	if len(rows) == 0 {
+		return rows
+	}
+	filtered := rows[:0]
+	for _, row := range rows {
+		if webChatRowLooksLikeSubAgent(row) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func webChatRowLooksLikeSubAgent(row UserChatWithPreview) bool {
+	if row.Channel == "agent" || row.Type == "agent" || row.Type == "subagent" {
+		return true
+	}
+	if row.ParentChannel != "" || row.ParentChatID != "" || row.Role != "" || row.Instance != "" {
+		return true
+	}
+	fullKey := row.FullKey
+	if fullKey == "" {
+		fullKey = row.ChatID
+	}
+	return webChatIDLooksLikeSubAgent(fullKey)
+}
+
+func webChatIDLooksLikeSubAgent(chatID string) bool {
+	_, ok := parseWebAgentTenantChatID(chatID)
+	return ok
+}
+
+type webAgentTenantInfo struct {
+	parentChannel string
+	parentChatID  string
+}
+
+func parseWebAgentTenantChatID(chatID string) (webAgentTenantInfo, bool) {
+	slash := strings.LastIndex(chatID, "/")
+	if slash <= 0 || slash == len(chatID)-1 {
+		return webAgentTenantInfo{}, false
+	}
+	parent := chatID[:slash]
+	channelSep := strings.Index(parent, ":")
+	if channelSep <= 0 || channelSep == len(parent)-1 {
+		return webAgentTenantInfo{}, false
+	}
+	channel := parent[:channelSep]
+	for _, r := range channel {
+		if !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+			return webAgentTenantInfo{}, false
+		}
+	}
+	return webAgentTenantInfo{parentChannel: channel, parentChatID: parent[channelSep+1:]}, true
+}
+
+// handleSubAgents handles GET /api/subagents. This endpoint is Web-only: it
+// normalizes historical agent tenants and live interactive sessions into rows
+// the sidebar can render under their parent sessions.
+func (wc *WebChannel) handleSubAgents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if wc.callbacks.SubAgentList == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "subagents": []any{}})
+		return
+	}
+	rows, err := wc.callbacks.SubAgentList(senderID, wc.isAdmin(r.Context(), senderID))
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "subagents": rows})
+}
+
+// handleSessionTree handles GET /api/session-tree. This is Web-only and keeps
+// the sidebar's parent/child matching on the server, aligned with TUI session
+// entry construction.
+func (wc *WebChannel) handleSessionTree(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if wc.callbacks.SessionTree == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sessions": []any{}})
+		return
+	}
+	result, err := wc.callbacks.SessionTree(senderID, wc.GetCurrentSession(senderID), wc.isAdmin(r.Context(), senderID))
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":               true,
+		"sessions":         result.Sessions,
+		"orphan_subagents": result.OrphanSubAgents,
+	})
 }
 
 // handleChatSwitch handles POST /api/chats/{chatID}/switch — switch active chatroom.
@@ -1675,76 +1715,85 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleContextInfo handles GET /api/context-info — returns structured token usage data.
-func (wc *WebChannel) handleContextInfo(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
+// canAccessSession checks whether a browser-authenticated user may address a
+// session. Web UUID chats are owned through user_chats; non-web sessions are
+// admin-only and must exist in tenants.
+func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, senderID, channelName, chatID string) bool {
+	if channelName == "" {
+		channelName = "web"
 	}
-	senderID := senderIDFromContext(r.Context())
-	if senderID == "" {
-		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
-		return
+	if chatID == "" {
+		return true
 	}
+	if channelName == "web" {
+		return wc.userOwnsChat(senderID, chatID)
+	}
+	if wc.db == nil {
+		return false
+	}
+	if channelName == "agent" {
+		return wc.canAccessAgentSession(webUserID, senderID, chatID)
+	}
+	if senderID != "admin" && webUserID != 1 {
+		return false
+	}
+	return wc.tenantExists(channelName, chatID)
+}
 
-	// Use the currently active session (channel + chatID, respects chat switching)
-	sel := wc.getCurrentSession(senderID)
-	// Cross-channel access requires admin.
-	if sel.Channel != "web" && !wc.isAdmin(r.Context(), senderID) {
-		jsonErrorResponse(w, http.StatusForbidden, "access denied")
-		return
-	}
-
-	// Find tenant ID for this user's active session
-	var tenantID int64
+func (wc *WebChannel) tenantExists(channelName, chatID string) bool {
+	var count int
 	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
-	).Scan(&tenantID)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":            true,
-			"prompt_tokens": 0,
-			"max_tokens":    0,
-			"usage_pct":     0,
-			"source":        "none",
-		})
-		return
+		"SELECT COUNT(*) FROM tenants WHERE channel = ? AND chat_id = ?",
+		channelName, chatID,
+	).Scan(&count)
+	return err == nil && count > 0
+}
+
+func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID string) bool {
+	if !wc.tenantExists("agent", chatID) {
+		return false
 	}
-
-	// Get persisted token state (from last LLM API response)
-	var promptTokens int64
-	wc.db.QueryRow(
-		"SELECT COALESCE(last_prompt_tokens, 0) FROM tenant_state WHERE tenant_id = ?",
-		tenantID,
-	).Scan(&promptTokens)
-
-	// Get max context tokens from user config
-	maxTokens := 0
-	if wc.callbacks.LLMGetMaxContext != nil {
-		// For cross-channel browsing, maxTokens from admin's config is not meaningful.
-		// Only compute usage_pct for the admin's own (web) sessions.
-		if sel.Channel == "web" {
-			maxTokens = wc.callbacks.LLMGetMaxContext(senderID, "", "")
+	if senderID == "admin" || webUserID == 1 {
+		return true
+	}
+	info, ok := parseWebAgentTenantChatID(chatID)
+	if !ok {
+		return false
+	}
+	for depth := 0; depth < 32; depth++ {
+		if info.parentChannel == "web" {
+			return wc.userOwnsChat(senderID, info.parentChatID)
 		}
+		if info.parentChannel != "agent" {
+			return false
+		}
+		var parentExists bool
+		parentExists = wc.tenantExists("agent", info.parentChatID)
+		if !parentExists {
+			return false
+		}
+		var next webAgentTenantInfo
+		next, ok = parseWebAgentTenantChatID(info.parentChatID)
+		if !ok {
+			return false
+		}
+		info = next
 	}
+	return false
+}
 
-	usagePct := float64(0)
-	if maxTokens > 0 && promptTokens > 0 {
-		usagePct = float64(promptTokens) / float64(maxTokens) * 100
+// IsAdminIdentity reports whether a Web senderID belongs to an admin web user.
+// It is used by the server RPC bridge, where only the senderID survives after
+// WebSocket auth and the original HTTP request context is no longer available.
+func (wc *WebChannel) IsAdminIdentity(senderID string) bool {
+	if senderID == "admin" {
+		return true
 	}
-
-	source := "none"
-	if promptTokens > 0 {
-		source = "api" // Always API since we persist from LLM responses
+	if !strings.HasPrefix(senderID, "web-") || wc.db == nil {
+		return false
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":            true,
-		"prompt_tokens": promptTokens,
-		"max_tokens":    maxTokens,
-		"usage_pct":     usagePct,
-		"source":        source,
-	})
+	id, err := strconv.Atoi(strings.TrimPrefix(senderID, "web-"))
+	return err == nil && id == 1
 }
 
 // getCurrentChatID returns the currently active chatID for a user.
@@ -1758,8 +1807,9 @@ func (wc *WebChannel) getCurrentChatID(senderID string) string {
 	return senderID
 }
 
-// getCurrentSession returns the active SessionSelector (channel + chatID).
-func (wc *WebChannel) getCurrentSession(senderID string) SessionSelector {
+// GetCurrentSession returns the active SessionSelector (channel + chatID).
+// Used internally by web_api.go and web.go for session routing.
+func (wc *WebChannel) GetCurrentSession(senderID string) SessionSelector {
 	wc.userCurrentSessionMu.RLock()
 	defer wc.userCurrentSessionMu.RUnlock()
 	if sel, ok := wc.userCurrentSession[senderID]; ok {
@@ -1902,4 +1952,77 @@ func (wc *WebChannel) handleChannels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channels": channels})
+}
+
+// handleContextInfo handles GET /api/context-info — returns structured token usage data.
+// Ported from master branch to support the web UI context bar.
+func (wc *WebChannel) handleContextInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	// Use the currently active session (channel + chatID, respects chat switching)
+	sel := wc.GetCurrentSession(senderID)
+	// Cross-channel access requires admin.
+	if sel.Channel != "web" && !wc.isAdmin(r.Context(), senderID) {
+		jsonErrorResponse(w, http.StatusForbidden, "access denied")
+		return
+	}
+
+	// Find tenant ID for this user's active session
+	var tenantID int64
+	err := wc.db.QueryRow(
+		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
+	).Scan(&tenantID)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":            true,
+			"prompt_tokens": 0,
+			"max_tokens":    0,
+			"usage_pct":     0,
+			"source":        "none",
+		})
+		return
+	}
+
+	// Get persisted token state (from last LLM API response)
+	var promptTokens int64
+	wc.db.QueryRow(
+		"SELECT COALESCE(last_prompt_tokens, 0) FROM tenant_state WHERE tenant_id = ?",
+		tenantID,
+	).Scan(&promptTokens)
+
+	// Get max context tokens from user config
+	maxTokens := 0
+	if wc.callbacks.LLMGetMaxContext != nil {
+		// For cross-channel browsing, maxTokens from admin's config is not meaningful.
+		// Only compute usage_pct for the admin's own (web) sessions.
+		if sel.Channel == "web" {
+			maxTokens = wc.callbacks.LLMGetMaxContext(senderID, "", "")
+		}
+	}
+
+	usagePct := float64(0)
+	if maxTokens > 0 && promptTokens > 0 {
+		usagePct = float64(promptTokens) / float64(maxTokens) * 100
+	}
+
+	source := "none"
+	if promptTokens > 0 {
+		source = "api" // Always API since we persist from LLM responses
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"prompt_tokens": promptTokens,
+		"max_tokens":    maxTokens,
+		"usage_pct":     usagePct,
+		"source":        source,
+	})
 }

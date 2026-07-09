@@ -2035,13 +2035,17 @@ func resolveOriginIDs(msg bus.InboundMessage) (channel, chatID, sender string) {
 
 // InteractiveSessionInfo represents a snapshot of an interactive agent session.
 type InteractiveSessionInfo struct {
-	Role       string
-	Instance   string
-	Running    bool
-	Background bool
-	Task       string // one-shot subagent task description (empty for interactive)
-	Preview    string // latest progress/last reply summary for panel display
-	ChatID     string // parent session's chatID (for cross-session listing)
+	Role          string
+	Instance      string
+	Running       bool
+	Background    bool
+	Task          string // one-shot subagent task description (empty for interactive)
+	Preview       string // latest progress/last reply summary for panel display
+	ChatID        string // parent session's chatID (for cross-session listing)
+	Key           string // full interactive session key: channel:chatID/role[:instance]
+	ParentKey     string // direct parent interactive key when nested, empty for main sessions
+	ParentChannel string // direct parent channel derived from ParentKey or Key
+	ParentChatID  string // direct parent chatID derived from ParentKey or Key
 }
 
 // ListInteractiveSessions returns info about all interactive sessions matching the given channel/chatID prefix.
@@ -2070,20 +2074,40 @@ func (a *Agent) ListInteractiveSessions(channel, chatID string) []InteractiveSes
 			return true
 		}
 		ia.mu.Lock()
+		parentChannel, parentChatID := parseInteractiveKeyParent(keyStr)
+		if ia.parentKey != "" {
+			parentChannel, parentChatID = "agent", ia.parentKey
+		}
 		info := InteractiveSessionInfo{
-			Role:       ia.roleName,
-			Instance:   ia.instance,
-			Running:    ia.running,
-			Background: ia.background,
-			Task:       ia.task,
-			Preview:    summarizeInteractivePreviewLocked(ia),
-			ChatID:     parseInteractiveKeyChatID(keyStr),
+			Role:          ia.roleName,
+			Instance:      ia.instance,
+			Running:       ia.running,
+			Background:    ia.background,
+			Task:          ia.task,
+			Preview:       summarizeInteractivePreviewLocked(ia),
+			ChatID:        parseInteractiveKeyChatID(keyStr),
+			Key:           keyStr,
+			ParentKey:     ia.parentKey,
+			ParentChannel: parentChannel,
+			ParentChatID:  parentChatID,
 		}
 		ia.mu.Unlock()
 		results = append(results, info)
 		return true
 	})
 	return results
+}
+
+func parseInteractiveKeyParent(key string) (channel, chatID string) {
+	slashIdx := strings.LastIndex(key, "/")
+	if slashIdx <= 0 {
+		return "", ""
+	}
+	colonIdx := strings.Index(key, ":")
+	if colonIdx < 0 || colonIdx >= slashIdx {
+		return "", ""
+	}
+	return key[:colonIdx], key[colonIdx+1 : slashIdx]
 }
 
 // parseInteractiveKeyChatID extracts the parent chatID from an interactive key.

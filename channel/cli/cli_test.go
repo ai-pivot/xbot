@@ -961,7 +961,7 @@ func TestCLIModelRenderProgressStatus(t *testing.T) {
 		phase    string
 		expected string
 	}{
-		{"thinking", "Thinking"},
+		{"thinking", "#0"},
 		{"tool_exec", "#0"},
 		{"compressing", "compressing"},
 		{"retrying", "retrying"},

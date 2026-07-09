@@ -119,7 +119,7 @@ When Ctrl+C cancels a turn, `handleCancelledRun` does not start a fresh bg-notif
 ## Context Management
 
 - `Pipeline.Assemble()` safely deduplicates system messages (used to panic) (`middleware.go:170`)
-- Cd tool: must update both `tc.CurrentDir` and `cfg.InitialCWD` (`engine_test.go:1514`)
+- Cd tool: must update both `tc.CurrentDir` and `cfg.InitialCWD` (`engine_test.go:1429`, `TestBuildToolContext_SubAgentCdPersists`)
 - Dynamic context injection detects CWD changes via `dynamic_context.go`
 
 ## Observation Masking

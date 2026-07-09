@@ -87,3 +87,37 @@ func (r *CommandRegistry) Commands() []Command {
 	copy(result, r.commands)
 	return result
 }
+
+// DescribedCommand is an optional interface for commands that expose a
+// human-readable description. Built-in commands and pluginCmdAdapter implement
+// it; commands without a description simply omit the method.
+type DescribedCommand interface {
+	Description() string
+}
+
+// CommandInfo is a lightweight, JSON-friendly description of a registered
+// command, suitable for external consumers such as the web UI Tab-completion.
+type CommandInfo struct {
+	Name        string   `json:"name"`
+	Aliases     []string `json:"aliases,omitempty"`
+	Description string   `json:"description,omitempty"`
+}
+
+// CommandList returns metadata for every registered command (built-in + plugin).
+// Commands whose type does not implement DescribedCommand get an empty
+// description — callers should treat an empty description as "no description".
+func (r *CommandRegistry) CommandList() []CommandInfo {
+	cmds := r.Commands()
+	result := make([]CommandInfo, 0, len(cmds))
+	for _, cmd := range cmds {
+		info := CommandInfo{
+			Name:    cmd.Name(),
+			Aliases: cmd.Aliases(),
+		}
+		if dc, ok := cmd.(DescribedCommand); ok {
+			info.Description = dc.Description()
+		}
+		result = append(result, info)
+	}
+	return result
+}

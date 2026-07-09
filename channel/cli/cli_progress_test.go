@@ -115,7 +115,7 @@ func TestRenderTurnBodyMultiIterationLiveOutput(t *testing.T) {
 		fallbackContent string
 	}{
 		{
-			name: "previous tool done then active empty next iteration renders pulse",
+			name: "previous tool done then active empty next iteration no pulse",
 			iterations: []cliIterationSnapshot{
 				{
 					Iteration: 1,
@@ -477,8 +477,8 @@ func TestRenderLiveIterationCompressingShowsStatus(t *testing.T) {
 	if !strings.Contains(rendered, "compressing") {
 		t.Fatalf("compressing phase should render status text, got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "◇") {
-		t.Fatalf("compressing phase should show pulse spinner animation, got:\n%s", rendered)
+	if strings.Contains(rendered, "◇") {
+		t.Fatalf("compressing phase should NOT show diamondPulse spinner, got:\n%s", rendered)
 	}
 }
 

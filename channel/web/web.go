@@ -108,6 +108,22 @@ type WebCallbacks struct {
 	// GetActiveProgress returns the latest progress snapshot for an active turn.
 	// Used by Web history API to restore progress state on page refresh.
 	GetActiveProgress func(channel, chatID string) *protocol.ProgressEvent
+	// HistorySnapshot returns a Web-only history snapshot with runtime state.
+	HistorySnapshot func(senderID string, sel SessionSelector) (HistorySnapshot, error)
+	// RewindHistory rewinds a Web-accessible session to a selected user message.
+	RewindHistory func(senderID string, sel SessionSelector, cutoff time.Time) (RewindHistoryResult, error)
+	// GetCWD returns the current directory for a Web-accessible session.
+	GetCWD func(senderID string, sel SessionSelector) (string, error)
+	// SetCWD sets the current directory for a Web-accessible session.
+	SetCWD func(senderID string, sel SessionSelector, dir string) error
+	// BackgroundTasks returns background shell tasks for a Web-accessible session.
+	BackgroundTasks func(senderID string, sel SessionSelector) (any, error)
+	// CronTasks returns scheduled tasks for a Web-accessible session.
+	CronTasks func(senderID string, sel SessionSelector) (any, error)
+	// CommandList returns slash-command completion metadata for the Web UI.
+	CommandList func(senderID string) ([]CommandInfo, error)
+	// SessionSubscription returns the model/subscription selected for a Web-accessible session.
+	SessionSubscription func(senderID string, sel SessionSelector) (map[string]string, error)
 	// LLMSetConfig sets user's personal LLM config.
 	LLMSetConfig func(senderID, provider, baseURL, apiKey, model string, maxOutputTokens int, thinkingMode string) error
 	// LLMDelete reverts user to global LLM config.
@@ -145,6 +161,10 @@ type WebCallbacks struct {
 	// ChatList returns all chatrooms for a user (main + user-created).
 	// channel parameter selects which channel's sessions to list ("web", "cli", etc.).
 	ChatList func(senderID, currentChatID, channel string) ([]UserChatWithPreview, error)
+	// SubAgentList returns Web-only SubAgent rows for the sidebar tree.
+	SubAgentList func(senderID string, admin bool) ([]UserChatWithPreview, error)
+	// SessionTree returns Web-only main sessions with SubAgent children already attached.
+	SessionTree func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error)
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
 	ChatCreate func(senderID, label string) (string, error)
 	// ChatDelete deletes a chatroom (except the default one).
@@ -156,12 +176,60 @@ type WebCallbacks struct {
 // UserChatWithPreview is a chatroom with metadata for API responses.
 // This mirrors storage/sqlite.UserChatWithPreview to avoid channel→storage dependency.
 type UserChatWithPreview struct {
-	ChatID     string `json:"chat_id"`
-	Channel    string `json:"channel,omitempty"` // channel name (e.g. "web", "cli", "feishu")
-	Label      string `json:"label"`
-	LastActive string `json:"last_active"` // RFC3339
-	Preview    string `json:"preview"`
-	IsCurrent  bool   `json:"is_current"`
+	ChatID        string                `json:"chat_id"`
+	Channel       string                `json:"channel,omitempty"` // channel name (e.g. "web", "cli", "feishu")
+	Label         string                `json:"label"`
+	LastActive    string                `json:"last_active"` // RFC3339
+	Preview       string                `json:"preview"`
+	IsCurrent     bool                  `json:"is_current"`
+	Type          string                `json:"type,omitempty"` // "agent" for historical SubAgent tenant rows
+	FullKey       string                `json:"full_key,omitempty"`
+	Role          string                `json:"role,omitempty"`
+	Instance      string                `json:"instance,omitempty"`
+	ParentChatID  string                `json:"parent_chat_id,omitempty"`
+	ParentChannel string                `json:"parent_channel,omitempty"`
+	Historical    bool                  `json:"historical,omitempty"`
+	Running       bool                  `json:"running,omitempty"`
+	Status        string                `json:"status,omitempty"`
+	Synthetic     bool                  `json:"synthetic,omitempty"`
+	Children      []UserChatWithPreview `json:"children,omitempty"`
+}
+
+// SessionTreeNode is a Web-only sidebar row. Children are SubAgent rows
+// matched by the backend using the same parent identity rules as the TUI.
+type SessionTreeNode struct {
+	UserChatWithPreview
+}
+
+// SessionTreeResult is the Web-only sidebar tree response. OrphanSubAgents are
+// returned separately instead of being silently dropped when a historical row's
+// parent is not in the current main-session list.
+type SessionTreeResult struct {
+	Sessions        []SessionTreeNode     `json:"sessions"`
+	OrphanSubAgents []UserChatWithPreview `json:"orphan_subagents,omitempty"`
+}
+
+// HistorySnapshot is the Web-only /api/history response payload.
+type HistorySnapshot struct {
+	Messages       []protocol.HistoryMessage `json:"messages,omitempty"`
+	Processing     bool                      `json:"processing,omitempty"`
+	ActiveProgress *protocol.ProgressEvent   `json:"active_progress,omitempty"`
+	LastSeq        uint64                    `json:"last_seq,omitempty"`
+	ChatID         string                    `json:"chat_id,omitempty"`
+	Channel        string                    `json:"channel,omitempty"`
+}
+
+// RewindHistoryResult is the Web-only /api/history/rewind response payload.
+type RewindHistoryResult struct {
+	Draft        string                 `json:"draft"`
+	RewindResult *protocol.RewindResult `json:"rewind_result,omitempty"`
+}
+
+// CommandInfo is a JSON-friendly slash-command descriptor for Web completion.
+type CommandInfo struct {
+	Name        string   `json:"name"`
+	Aliases     []string `json:"aliases,omitempty"`
+	Description string   `json:"description,omitempty"`
 }
 
 // ChatRoom represents a conversation between the user and/or agents.
@@ -330,9 +398,15 @@ func (wc *WebChannel) Start() error {
 
 	// REST API
 	mux.HandleFunc("/api/history", wc.authMiddleware(wc.handleHistory))
+	mux.HandleFunc("/api/history/rewind", wc.authMiddleware(wc.handleHistoryRewind))
 	mux.HandleFunc("/api/settings", wc.authMiddleware(wc.handleSettings))
 	mux.HandleFunc("/api/runner/token", wc.authMiddleware(wc.handleRunnerToken))
 	mux.HandleFunc("/api/search", wc.authMiddleware(wc.handleSearch))
+	mux.HandleFunc("/api/cwd", wc.authMiddleware(wc.handleCWD))
+	mux.HandleFunc("/api/tasks", wc.authMiddleware(wc.handleTasks))
+	mux.HandleFunc("/api/background-tasks", wc.authMiddleware(wc.handleBackgroundTasks))
+	mux.HandleFunc("/api/commands", wc.authMiddleware(wc.handleCommands))
+	mux.HandleFunc("/api/session-subscription", wc.authMiddleware(wc.handleSessionSubscription))
 
 	// Multi-runner API
 	mux.HandleFunc("/api/runners", wc.authMiddleware(wc.handleRunners))
@@ -355,18 +429,22 @@ func (wc *WebChannel) Start() error {
 	// File API
 	mux.HandleFunc("/api/files/upload", wc.authMiddleware(wc.handleFileUpload))
 
-	// Sessions API
-	mux.HandleFunc("/api/sessions", wc.authMiddleware(wc.handleSessions))
-	mux.HandleFunc("/api/sessions/messages", wc.authMiddleware(wc.handleSessionMessages))
+	// File System API (browse, read, search, stat)
+	mux.HandleFunc("/api/fs/list", wc.authMiddleware(wc.handleFsList))
+	mux.HandleFunc("/api/fs/read", wc.authMiddleware(wc.handleFsRead))
+	mux.HandleFunc("/api/fs/search", wc.authMiddleware(wc.handleFsSearch))
+	mux.HandleFunc("/api/fs/stat", wc.authMiddleware(wc.handleFsStat))
 
 	// Chatroom API
 	mux.HandleFunc("/api/chats", wc.authMiddleware(wc.handleChats))
+	mux.HandleFunc("/api/session-tree", wc.authMiddleware(wc.handleSessionTree))
+	mux.HandleFunc("/api/subagents", wc.authMiddleware(wc.handleSubAgents))
 	mux.HandleFunc("/api/chats/{chatID}/switch", wc.authMiddleware(wc.handleChatSwitch))
 	mux.HandleFunc("/api/chats/{chatID}/rename", wc.authMiddleware(wc.handleChatRename))
 	mux.HandleFunc("/api/chats/{chatID}", wc.authMiddleware(wc.handleChatDelete))
-	mux.HandleFunc("/api/context-info", wc.authMiddleware(wc.handleContextInfo))
 
 	// Cross-channel browsing API
+	mux.HandleFunc("/api/context-info", wc.authMiddleware(wc.handleContextInfo))
 	mux.HandleFunc("/api/channels", wc.authMiddleware(wc.handleChannels))
 
 	// Static files
@@ -731,7 +809,7 @@ func (wc *WebChannel) validateCLIToken(token string) (string, error) {
 // Waits up to 2s for the client's sync message, then replays.
 func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
 	// Resolve the user's currently active session (channel + chatID, respects chat switching)
-	sel := wc.getCurrentSession(senderID)
+	sel := wc.GetCurrentSession(senderID)
 	chatID := sel.ChatID
 	// The client sends sync immediately after WS connect.
 	// If no sync arrives within 2s, send current state anyway (backward compat).
@@ -931,16 +1009,24 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// Reuse existing /cancel mechanism: push "/cancel" text into msgBus.
 			// Resolve business channel/chatID from getCurrentSession (same as message handler)
 			// so the cancel key matches the one used during message processing.
-			cancelSel := wc.getCurrentSession(c.userID)
+			cancelSel := wc.GetCurrentSession(c.userID)
 			msgChannel := cancelSel.Channel
 			msgChatID := cancelSel.ChatID
 			msgSenderID := c.userID
 			msgSenderName := username
-			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
-				// Only CLI relay connections may override channel/chatID/sender.
-				// Web browser clients must use their authenticated identity.
+			if msg.Channel != "" && msg.ChatID != "" {
 				msgChannel = msg.Channel
 				msgChatID = msg.ChatID
+				webUserID := 0
+				if si != nil {
+					webUserID = si.userID
+				}
+				if !c.isCLI && !wc.canAccessSession(context.Background(), webUserID, c.userID, msgChannel, msgChatID) {
+					log.WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client cancel denied")
+					continue
+				}
+			}
+			if c.isCLI {
 				if msg.SenderID != "" {
 					msgSenderID = msg.SenderID
 				}
@@ -1031,11 +1117,22 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// can subscribe to their business chatID (workspace path).
 			if !c.isCLI {
 				// Web client: allow subscribing to the user's current active chat
-				// (set via POST /api/chats/{id}/switch) or their default senderID.
-				activeChatID := wc.getCurrentChatID(c.userID)
-				if subMsg.ChatID != c.userID && subMsg.ChatID != activeChatID {
-					log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID, "user_id": c.userID}).Warn("Hub: web client tried to subscribe to foreign chatID, denied")
-					continue
+				// (set via POST /api/chats/{id}/switch), their default senderID,
+				// or an authorized SubAgent tenant for a visible parent session.
+				activeSel := wc.GetCurrentSession(c.userID)
+				if subMsg.ChatID != c.userID && subMsg.ChatID != activeSel.ChatID {
+					webUserID := 0
+					if si != nil {
+						webUserID = si.userID
+					}
+					channelName := "web"
+					if webChatIDLooksLikeSubAgent(subMsg.ChatID) {
+						channelName = "agent"
+					}
+					if !wc.canAccessSession(context.Background(), webUserID, c.userID, channelName, subMsg.ChatID) {
+						log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID, "user_id": c.userID}).Warn("Hub: web client tried to subscribe to foreign chatID, denied")
+						continue
+					}
 				}
 			}
 			wc.hub.subscribe(c.id, subMsg.ChatID)
@@ -1091,17 +1188,25 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 
 			// Resolve active session (channel + chatID) — supports cross-channel browsing.
-			sel := wc.getCurrentSession(c.userID)
+			sel := wc.GetCurrentSession(c.userID)
 			msgChannel := sel.Channel
 			msgSenderID := c.userID
 			msgSenderName := username
 			msgChatID := sel.ChatID
 			msgChatType := "p2p"
-			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
-				// Only CLI relay connections may override channel/chatID/sender.
-				// Web browser clients must use their authenticated identity.
+			if msg.Channel != "" && msg.ChatID != "" {
 				msgChannel = msg.Channel
 				msgChatID = msg.ChatID
+				webUserID := 0
+				if si != nil {
+					webUserID = si.userID
+				}
+				if !c.isCLI && !wc.canAccessSession(context.Background(), webUserID, c.userID, msgChannel, msgChatID) {
+					log.WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client message denied")
+					continue
+				}
+			}
+			if c.isCLI {
 				if msg.SenderID != "" {
 					msgSenderID = msg.SenderID
 				}
@@ -1131,12 +1236,14 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			wc.hub.subscribe(c.id, msgChatID)
 
 			// Eagerly save user message so history API can return it during processing.
-			// Skip bang commands (! prefix) — they should never be persisted.
+			// Skip command inputs (! and / prefixes). TUI handles slash commands
+			// locally, so Web must not persist command text such as /new as chat
+			// history before the agent command handler runs.
 			// For remote CLI (business channel=cli), do NOT eager-save here: this web-layer
 			// helper persists by web sender/chat tenant, while remote CLI history must be
 			// stored under business tenant (channel=cli, chat_id=<abs cwd>) inside agent.processMessage().
 			trimmed := strings.TrimSpace(content)
-			if msgChannel != "cli" && (len(trimmed) <= 1 || trimmed[0] != '!') {
+			if shouldEagerSaveUserMessage(msgChannel, trimmed) {
 				if err := eagerSaveUserMsg(wc.db, msgChannel, msgChatID, content); err != nil {
 					log.WithError(err).Warn("Failed to eager-save user message")
 				}
@@ -1164,12 +1271,20 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 			// Resolve business channel/chatID (same as message/cancel handlers)
 			// so the response routes to the correct chatroom session.
-			respSel := wc.getCurrentSession(c.userID)
+			respSel := wc.GetCurrentSession(c.userID)
 			respChatID := respSel.ChatID
 			respChannel := respSel.Channel
-			if c.isCLI && msg.Channel != "" && msg.ChatID != "" {
+			if msg.Channel != "" && msg.ChatID != "" {
 				respChatID = msg.ChatID
 				respChannel = msg.Channel
+				webUserID := 0
+				if si != nil {
+					webUserID = si.userID
+				}
+				if !c.isCLI && !wc.canAccessSession(context.Background(), webUserID, c.userID, respChannel, respChatID) {
+					log.WithFields(log.Fields{"channel": respChannel, "chat_id": respChatID, "user_id": c.userID}).Warn("Web client ask_user_response denied")
+					continue
+				}
 			}
 			if resp.Cancelled {
 				// User cancelled — send /cancel equivalent
@@ -1318,6 +1433,13 @@ func (wc *WebChannel) sessionCleanup() {
 			wc.sessionsMu.Unlock()
 		}
 	}
+}
+
+func shouldEagerSaveUserMessage(channel, trimmedContent string) bool {
+	if channel == "cli" {
+		return false
+	}
+	return trimmedContent == "" || (trimmedContent[0] != '!' && trimmedContent[0] != '/')
 }
 
 // isImageExt returns true if the file extension is a common image format.

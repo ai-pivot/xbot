@@ -1,12 +1,17 @@
 package serverapp
 
 import (
+	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	_ "modernc.org/sqlite"
 	"xbot/agent"
 	"xbot/channel"
+	"xbot/channel/web"
 	"xbot/config"
 	llm "xbot/llm"
 	"xbot/storage/sqlite"
@@ -31,6 +36,1097 @@ func newTestConfig() *config.Config {
 			EnableAutoCompress: &enableAutoCompress,
 		},
 		TavilyAPIKey: "tv-test",
+	}
+}
+
+func TestSessionKeyOwnerUsesLastSlashForCLIAbsolutePaths(t *testing.T) {
+	cases := []struct {
+		key  string
+		want string
+	}{
+		{key: "cli:/repo/project:Agent-main/review:1", want: "/repo/project:Agent-main"},
+		{key: "agent:cli:/repo/project:Agent-main/review:1/fix:2", want: "cli:/repo/project:Agent-main/review:1"},
+		{key: "web:chat_123/explore", want: "chat_123"},
+	}
+	for _, tc := range cases {
+		if got := sessionKeyOwner(tc.key); got != tc.want {
+			t.Fatalf("sessionKeyOwner(%q) = %q, want %q", tc.key, got, tc.want)
+		}
+	}
+}
+
+func TestIsInteractiveSubAgentTenant(t *testing.T) {
+	cases := []struct {
+		name    string
+		channel string
+		chatID  string
+		want    bool
+	}{
+		{
+			name:    "agent channel tenant",
+			channel: "agent",
+			chatID:  "cli:/repo:Agent-main/explore:oneshot",
+			want:    true,
+		},
+		{
+			name:    "qualified interactive key",
+			channel: "cli",
+			chatID:  "cli:/repo:Agent-main/explore:oneshot",
+			want:    true,
+		},
+		{
+			name:    "cross channel qualified interactive key",
+			channel: "web",
+			chatID:  "cli:/repo:Agent-main/explore:oneshot",
+			want:    true,
+		},
+		{
+			name:    "normal cli session with slash path",
+			channel: "cli",
+			chatID:  "/repo/project:Agent-main",
+			want:    false,
+		},
+		{
+			name:    "web default session",
+			channel: "web",
+			chatID:  "admin",
+			want:    false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isInteractiveSubAgentTenant(tc.channel, tc.chatID); got != tc.want {
+				t.Fatalf("isInteractiveSubAgentTenant(%q, %q) = %v, want %v", tc.channel, tc.chatID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDisplayLabelForTenantCLI(t *testing.T) {
+	cases := []struct {
+		name   string
+		chatID string
+		label  string
+		want   string
+	}{
+		{
+			name:   "db label wins",
+			chatID: "/repo:Agent-main",
+			label:  "custom label",
+			want:   "custom label",
+		},
+		{
+			name:   "named cli session",
+			chatID: "/repo/project:Agent-main",
+			want:   "Agent-main",
+		},
+		{
+			name:   "default cli directory session",
+			chatID: "/repo/project",
+			want:   "project",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := displayLabelForTenant("cli", tc.chatID, tc.label); got != tc.want {
+				t.Fatalf("displayLabelForTenant(cli, %q, %q) = %q, want %q", tc.chatID, tc.label, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseAgentTenantChatID(t *testing.T) {
+	info, ok := parseAgentTenantChatID("cli:/repo/project:Agent-main/code-reviewer:oneshot-1")
+	if !ok {
+		t.Fatal("parseAgentTenantChatID returned !ok")
+	}
+	if info.parentChannel != "cli" {
+		t.Fatalf("parentChannel = %q", info.parentChannel)
+	}
+	if info.parentChatID != "/repo/project:Agent-main" {
+		t.Fatalf("parentChatID = %q", info.parentChatID)
+	}
+	if info.role != "code-reviewer" {
+		t.Fatalf("role = %q", info.role)
+	}
+	if info.instance != "oneshot-1" {
+		t.Fatalf("instance = %q", info.instance)
+	}
+
+	info, ok = parseAgentTenantChatID("web:chat_123/explore")
+	if !ok {
+		t.Fatal("parseAgentTenantChatID without instance returned !ok")
+	}
+	if info.parentChannel != "web" || info.parentChatID != "chat_123" || info.role != "explore" || info.instance != "" {
+		t.Fatalf("unexpected no-instance parse: %#v", info)
+	}
+}
+
+func TestBuildSessionTreeAttachesAgentToParent(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{{
+			ChatID: "cli:/repo/project:Agent-main/review:oneshot-1", Channel: "agent",
+			Type: "agent", ParentChannel: "cli", ParentChatID: "/repo/project:Agent-main",
+			Role: "review", Instance: "oneshot-1",
+		}},
+	)
+	if len(tree.Sessions) != 1 {
+		t.Fatalf("len(tree.Sessions) = %d", len(tree.Sessions))
+	}
+	if len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected one child, got %#v", tree.Sessions[0].Children)
+	}
+	if tree.Sessions[0].Children[0].ChatID != "cli:/repo/project:Agent-main/review:oneshot-1" {
+		t.Fatalf("wrong child attached: %#v", tree.Sessions[0].Children[0])
+	}
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+}
+
+func TestBuildSessionTreeAttachesLegacyCLIParentByUniqueSessionName(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{{
+			ChatID: "cli:Agent-main/review:oneshot-1", Channel: "agent",
+			Type: "agent", ParentChannel: "cli", ParentChatID: "Agent-main",
+			Role: "review", Instance: "oneshot-1",
+		}},
+	)
+	if len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected legacy child attached by unique session name, got %#v", tree)
+	}
+	if tree.Sessions[0].Children[0].ParentChatID != "/repo/project:Agent-main" {
+		t.Fatalf("child parent was not canonicalized: %#v", tree.Sessions[0].Children[0])
+	}
+}
+
+func TestBuildSessionTreeNormalizesAgentRowsFromChatID(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{{
+			ChatID:  "cli:/repo/project:Agent-main/review:oneshot-1",
+			Channel: "agent",
+			Label:   "default",
+			Preview: "checking code",
+		}},
+	)
+	if len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected normalized child attached, got %#v", tree)
+	}
+	child := tree.Sessions[0].Children[0]
+	if child.Type != "agent" || child.ParentChannel != "cli" || child.ParentChatID != "/repo/project:Agent-main" {
+		t.Fatalf("child was not normalized: %#v", child)
+	}
+	if child.Role != "review" || child.Instance != "oneshot-1" {
+		t.Fatalf("child role/instance not parsed: %#v", child)
+	}
+	if child.FullKey != "cli:/repo/project:Agent-main/review:oneshot-1" {
+		t.Fatalf("child full key not exposed: %#v", child)
+	}
+	if child.Label == "default" || child.Label == "" {
+		t.Fatalf("child label was not normalized: %#v", child)
+	}
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+}
+
+func TestBuildSessionTreePartitionsSubAgentRowsFromMains(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{
+			{
+				ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+			},
+			{
+				ChatID:  "cli:/repo/project:Agent-main/review:oneshot-1",
+				Channel: "web",
+				Label:   "default",
+				Preview: "checking code",
+			},
+		},
+		nil,
+	)
+	if len(tree.Sessions) != 1 {
+		t.Fatalf("expected only main session at top level, got %#v", tree.Sessions)
+	}
+	if tree.Sessions[0].ChatID != "/repo/project:Agent-main" {
+		t.Fatalf("wrong top-level session: %#v", tree.Sessions[0])
+	}
+	if len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected SubAgent child, got %#v", tree.Sessions[0].Children)
+	}
+	child := tree.Sessions[0].Children[0]
+	if child.ChatID != "cli:/repo/project:Agent-main/review:oneshot-1" || child.Label != "review/oneshot-1" {
+		t.Fatalf("wrong child attached: %#v", child)
+	}
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+}
+
+func TestNormalizeSubAgentRowIgnoresStaleMainParentMetadata(t *testing.T) {
+	row, ok := normalizeSubAgentRow(web.UserChatWithPreview{
+		ChatID:        "cli:/repo/project:Agent-main/review:oneshot-1",
+		Channel:       "agent",
+		ParentChannel: "web",
+		ParentChatID:  "stale",
+		Role:          "stale-role",
+		Instance:      "stale-instance",
+	}, "")
+	if !ok {
+		t.Fatal("normalizeSubAgentRow returned !ok")
+	}
+	if row.ParentChannel != "cli" || row.ParentChatID != "/repo/project:Agent-main" {
+		t.Fatalf("stale main parent metadata should not override full key: %#v", row)
+	}
+	if row.Role != "review" || row.Instance != "oneshot-1" {
+		t.Fatalf("stale role/instance was not overwritten: %#v", row)
+	}
+}
+
+func TestNormalizeSubAgentRowPreservesExplicitAgentParentMetadata(t *testing.T) {
+	row, ok := normalizeSubAgentRow(web.UserChatWithPreview{
+		ChatID:        "agent:cli:/repo/project:Agent-main/review:1/fix:2",
+		Channel:       "agent",
+		ParentChannel: "agent",
+		ParentChatID:  "cli:/repo/project:Agent-main/review:1",
+	}, "")
+	if !ok {
+		t.Fatal("normalizeSubAgentRow returned !ok")
+	}
+	if row.ParentChannel != "agent" || row.ParentChatID != "cli:/repo/project:Agent-main/review:1" {
+		t.Fatalf("explicit agent parent metadata was not preserved: %#v", row)
+	}
+}
+
+func TestNormalizeSubAgentRowParsesExplicitFullKey(t *testing.T) {
+	row, ok := normalizeSubAgentRow(web.UserChatWithPreview{
+		ChatID:  "row-id",
+		FullKey: "cli:/repo/project:Agent-main/review:oneshot-1",
+		Channel: "agent",
+	}, "")
+	if !ok {
+		t.Fatal("normalizeSubAgentRow returned !ok")
+	}
+	if row.ChatID != "cli:/repo/project:Agent-main/review:oneshot-1" || row.FullKey != "cli:/repo/project:Agent-main/review:oneshot-1" {
+		t.Fatalf("unexpected ids: %#v", row)
+	}
+	if row.ParentChannel != "cli" || row.ParentChatID != "/repo/project:Agent-main" || row.Role != "review" || row.Instance != "oneshot-1" {
+		t.Fatalf("explicit full key was not parsed: %#v", row)
+	}
+}
+
+func TestBuildSessionTreeKeepsAmbiguousLegacyCLIParentOrphan(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{
+			{ChatID: "/repo/a:Agent-main", Channel: "cli", Label: "Agent-main"},
+			{ChatID: "/repo/b:Agent-main", Channel: "cli", Label: "Agent-main"},
+		},
+		[]web.UserChatWithPreview{{
+			ChatID: "cli:Agent-main/review:oneshot-1", Channel: "agent",
+			Type: "agent", ParentChannel: "cli", ParentChatID: "Agent-main",
+			Role: "review", Instance: "oneshot-1",
+		}},
+	)
+	if len(tree.OrphanSubAgents) != 1 {
+		t.Fatalf("expected ambiguous legacy child to remain orphan, got %#v", tree)
+	}
+}
+
+func TestListCLIChatSessionsUsesLocalSessionStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XBOT_HOME", home)
+	sessionsDir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionData := `{
+  "dir": "/repo/project",
+  "sessions": [
+    {"name":"default","chat_id":"/repo/project","created_at":"2026-07-01T00:00:00Z"},
+    {"name":"Agent-main","chat_id":"/repo/project:Agent-main","created_at":"2026-07-02T00:00:00Z"}
+  ],
+  "last_active": "/repo/project:Agent-main"
+}`
+	if err := os.WriteFile(filepath.Join(sessionsDir, "test.json"), []byte(sessionData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	db := newTenantPreviewDB(t)
+	insertTenant(t, db, "cli", "/repo/project:Agent-main", "2026-07-08T10:00:00Z", "db label", "latest preview")
+	insertTenant(t, db, "cli", "cli:/repo/project:Agent-main/review:1", "2026-07-08T11:00:00Z", "", "should not be main")
+	insertTenant(t, db, "agent", "cli:/repo/project:Agent-main/review:1", "2026-07-08T11:00:00Z", "", "agent preview")
+
+	rows, err := listCLIChatSessions(db, "/repo/project:Agent-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, rows = %#v", len(rows), rows)
+	}
+	if rows[0].ChatID != "/repo/project:Agent-main" || rows[0].Label != "db label" || rows[0].Preview != "latest preview" {
+		t.Fatalf("unexpected first row: %#v", rows[0])
+	}
+	for _, row := range rows {
+		if row.ChatID == "cli:/repo/project:Agent-main/review:1" {
+			t.Fatalf("interactive key leaked as main session: %#v", rows)
+		}
+	}
+
+	agents, err := listTenantsByChannel(db, "agent", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := buildSessionTree(rows, agents)
+	if len(tree.Sessions) == 0 || len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected agent child attached to local CLI parent, got %#v", tree)
+	}
+}
+
+func TestListCLIChatSessionsKeepsDBOnlyParents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XBOT_HOME", home)
+	sessionsDir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionData := `{
+  "dir": "/repo/local",
+  "sessions": [
+    {"name":"default","chat_id":"/repo/local","created_at":"2026-07-01T00:00:00Z"}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(sessionsDir, "test.json"), []byte(sessionData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	db := newTenantPreviewDB(t)
+	insertTenant(t, db, "cli", "/repo/db-only:Agent-main", "2026-07-08T10:00:00Z", "", "parent preview")
+	insertTenant(t, db, "agent", "cli:/repo/db-only:Agent-main/review:1", "2026-07-08T11:00:00Z", "", "agent preview")
+
+	rows, err := listCLIChatSessions(db, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.ChatID == "/repo/db-only:Agent-main" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("DB-only CLI parent was dropped: %#v", rows)
+	}
+	agents, err := listTenantsByChannel(db, "agent", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := buildSessionTree(rows, agents)
+	var attached bool
+	for _, node := range tree.Sessions {
+		if node.ChatID == "/repo/db-only:Agent-main" && len(node.Children) == 1 {
+			attached = true
+		}
+	}
+	if !attached {
+		t.Fatalf("expected DB-only parent to receive agent child, got %#v", tree)
+	}
+}
+
+func TestBuildSessionTreeKeepsOrphanSubAgents(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "parent", Channel: "web", Label: "parent",
+		}},
+		[]web.UserChatWithPreview{{
+			ChatID: "feishu:missing/review", Channel: "agent",
+			Type: "agent", ParentChannel: "feishu", ParentChatID: "missing",
+			Role: "review",
+		}},
+	)
+	if len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 0 {
+		t.Fatalf("unexpected attached tree: %#v", tree)
+	}
+	if len(tree.OrphanSubAgents) != 1 || tree.OrphanSubAgents[0].ParentChatID != "missing" {
+		t.Fatalf("expected orphan child, got %#v", tree.OrphanSubAgents)
+	}
+}
+
+func TestBuildSessionTreeSynthesizesMissingCLIParent(t *testing.T) {
+	tree := buildSessionTree(
+		nil,
+		[]web.UserChatWithPreview{{
+			ChatID:     "cli:/repo/project:Agent-main/review:oneshot-1",
+			Channel:    "agent",
+			LastActive: "2026-07-08T10:00:00Z",
+			Preview:    "agent preview",
+		}},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	if len(tree.Sessions) != 1 {
+		t.Fatalf("expected synthesized parent, got %#v", tree)
+	}
+	parent := tree.Sessions[0]
+	if parent.Channel != "cli" || parent.ChatID != "/repo/project:Agent-main" || parent.Label != "Agent-main" {
+		t.Fatalf("unexpected synthesized parent: %#v", parent.UserChatWithPreview)
+	}
+	if !parent.Synthetic {
+		t.Fatalf("synthesized parent must be marked synthetic: %#v", parent.UserChatWithPreview)
+	}
+	if len(parent.Children) != 1 || parent.Children[0].ParentChatID != parent.ChatID {
+		t.Fatalf("child not attached to synthesized parent: %#v", tree)
+	}
+}
+
+func TestBuildSessionTreeSynthesizesMissingWebParent(t *testing.T) {
+	tree := buildSessionTree(
+		nil,
+		[]web.UserChatWithPreview{{
+			ChatID:     "web:chat_123/explore:sub2",
+			Channel:    "agent",
+			LastActive: "2026-07-08T10:00:00Z",
+			Preview:    "agent preview",
+		}},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	if len(tree.Sessions) != 1 {
+		t.Fatalf("expected synthesized parent, got %#v", tree)
+	}
+	parent := tree.Sessions[0]
+	if parent.Channel != "web" || parent.ChatID != "chat_123" {
+		t.Fatalf("unexpected synthesized parent: %#v", parent.UserChatWithPreview)
+	}
+	if !parent.Synthetic {
+		t.Fatalf("synthesized parent must be marked synthetic: %#v", parent.UserChatWithPreview)
+	}
+	if len(parent.Children) != 1 || parent.Children[0].ParentChatID != parent.ChatID {
+		t.Fatalf("child not attached to synthesized parent: %#v", tree)
+	}
+}
+
+func TestBuildSessionTreeAttachesNestedAgentToAgentParent(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{
+			{
+				ChatID:     "cli:/repo/project:Agent-main/review:1",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:00Z",
+			},
+			{
+				ChatID:     "agent:cli:/repo/project:Agent-main/review:1/fix:2",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:01Z",
+			},
+		},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	if len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected root child, got %#v", tree)
+	}
+	review := tree.Sessions[0].Children[0]
+	if review.ParentChannel != "cli" || review.ParentChatID != "/repo/project:Agent-main" {
+		t.Fatalf("unexpected review parent: %#v", review)
+	}
+	if len(review.Children) != 1 {
+		t.Fatalf("expected nested child, got %#v", review.Children)
+	}
+	fix := review.Children[0]
+	if fix.ParentChannel != "agent" || fix.ParentChatID != review.ChatID || fix.Role != "fix" || fix.Instance != "2" {
+		t.Fatalf("unexpected nested child: %#v", fix)
+	}
+}
+
+func TestBuildSessionTreePreservesExplicitAgentParentMetadata(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{
+			{
+				ChatID:     "cli:/repo/project:Agent-main/review:1",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:00Z",
+			},
+			{
+				ChatID:        "cli:/repo/project:Agent-main/fix:2",
+				FullKey:       "cli:/repo/project:Agent-main/fix:2",
+				Channel:       "agent",
+				ParentChannel: "agent",
+				ParentChatID:  "cli:/repo/project:Agent-main/review:1",
+				LastActive:    "2026-07-08T10:00:01Z",
+				Preview:       "patching",
+			},
+		},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	review := tree.Sessions[0].Children[0]
+	if len(review.Children) != 1 {
+		t.Fatalf("expected explicit-parent child under review, got %#v", review.Children)
+	}
+	fix := review.Children[0]
+	if fix.ParentChannel != "agent" || fix.ParentChatID != review.ChatID {
+		t.Fatalf("explicit parent metadata was not preserved: %#v", fix)
+	}
+	if fix.Label != "fix/2" || fix.Preview != "patching" {
+		t.Fatalf("label/preview should remain separate: %#v", fix)
+	}
+}
+
+func TestBuildSessionTreeMatchesNestedParentByFullKeyAlias(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{
+			{
+				ChatID:     "row-review",
+				FullKey:    "cli:/repo/project:Agent-main/review:1",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:00Z",
+			},
+			{
+				ChatID:        "row-fix",
+				FullKey:       "agent:cli:/repo/project:Agent-main/review:1/fix:2",
+				Channel:       "agent",
+				ParentChannel: "agent",
+				ParentChatID:  "cli:/repo/project:Agent-main/review:1",
+				LastActive:    "2026-07-08T10:00:01Z",
+			},
+		},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	review := tree.Sessions[0].Children[0]
+	if review.ChatID != "cli:/repo/project:Agent-main/review:1" || review.FullKey != "cli:/repo/project:Agent-main/review:1" {
+		t.Fatalf("unexpected review: %#v", review)
+	}
+	if len(review.Children) != 1 {
+		t.Fatalf("expected nested child by full key alias, got %#v", review.Children)
+	}
+	if review.Children[0].ChatID != "agent:cli:/repo/project:Agent-main/review:1/fix:2" || review.Children[0].FullKey != "agent:cli:/repo/project:Agent-main/review:1/fix:2" {
+		t.Fatalf("unexpected nested child: %#v", review.Children[0])
+	}
+}
+
+func TestBuildSessionTreeMatchesNestedParentByFullKeyWhenParentCameFromMains(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{
+			{
+				ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+			},
+			{
+				ChatID:     "row-review",
+				FullKey:    "cli:/repo/project:Agent-main/review:1",
+				Channel:    "web",
+				Label:      "default",
+				LastActive: "2026-07-08T10:00:00Z",
+			},
+			{
+				ChatID:        "row-fix",
+				FullKey:       "agent:cli:/repo/project:Agent-main/review:1/fix:2",
+				Channel:       "web",
+				Label:         "default",
+				ParentChannel: "agent",
+				ParentChatID:  "cli:/repo/project:Agent-main/review:1",
+				LastActive:    "2026-07-08T10:00:01Z",
+			},
+		},
+		nil,
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	if len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected review under main only, got %#v", tree)
+	}
+	review := tree.Sessions[0].Children[0]
+	if review.ChatID != "cli:/repo/project:Agent-main/review:1" || review.Label != "review/1" {
+		t.Fatalf("unexpected review child: %#v", review)
+	}
+	if len(review.Children) != 1 || review.Children[0].ChatID != "agent:cli:/repo/project:Agent-main/review:1/fix:2" || review.Children[0].Label != "fix/2" {
+		t.Fatalf("expected fix under review, got %#v", review.Children)
+	}
+}
+
+func TestBuildSessionTreeKeepsSameAgentInstanceUnderDifferentParents(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{
+			{ChatID: "/repo/a:Agent-main", Channel: "cli", Label: "Agent A"},
+			{ChatID: "/repo/b:Agent-main", Channel: "cli", Label: "Agent B"},
+		},
+		[]web.UserChatWithPreview{
+			{ChatID: "cli:/repo/a:Agent-main/review:1", Channel: "agent", LastActive: "2026-07-08T10:00:00Z"},
+			{ChatID: "cli:/repo/b:Agent-main/review:1", Channel: "agent", LastActive: "2026-07-08T10:00:01Z"},
+		},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	for _, node := range tree.Sessions {
+		if len(node.Children) != 1 || node.Children[0].Role != "review" || node.Children[0].Instance != "1" {
+			t.Fatalf("each parent should keep its own review/1 child, got %#v", tree)
+		}
+	}
+}
+
+func TestBuildSessionTreeAliasesSurviveMainSliceGrowth(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/real:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{
+			{
+				ChatID:     "cli:/repo/missing:Agent-other/review:1",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:00Z",
+			},
+			{
+				ChatID:     "cli:/repo/real:Agent-main/fix:1",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:01Z",
+			},
+		},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	var foundReal bool
+	for _, node := range tree.Sessions {
+		if node.ChatID != "/repo/real:Agent-main" {
+			continue
+		}
+		foundReal = true
+		if len(node.Children) != 1 || node.Children[0].ChatID != "cli:/repo/real:Agent-main/fix:1" {
+			t.Fatalf("real parent lost child after main slice growth: %#v", tree)
+		}
+	}
+	if !foundReal {
+		t.Fatalf("real parent missing: %#v", tree)
+	}
+}
+
+func TestBuildSessionTreeAliasesSurviveChildSliceGrowth(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{
+			{
+				ChatID:     "cli:/repo/project:Agent-main/review:1",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:00Z",
+			},
+			{
+				ChatID:     "cli:/repo/project:Agent-main/lint:1",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:01Z",
+			},
+			{
+				ChatID:     "agent:cli:/repo/project:Agent-main/review:1/fix:2",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:02Z",
+			},
+		},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	if len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 2 {
+		t.Fatalf("expected two direct children, got %#v", tree)
+	}
+	var review *web.UserChatWithPreview
+	for i := range tree.Sessions[0].Children {
+		if tree.Sessions[0].Children[i].Role == "review" {
+			review = &tree.Sessions[0].Children[i]
+		}
+	}
+	if review == nil || len(review.Children) != 1 || review.Children[0].Role != "fix" {
+		t.Fatalf("nested child was not attached to review after child slice growth: %#v", tree)
+	}
+}
+
+func TestBuildSessionTreeUsesFullKeyWhenAgentChatIDIsReused(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{
+			{ChatID: "/repo/a:Agent-main", Channel: "cli", Label: "Agent A"},
+			{ChatID: "/repo/b:Agent-main", Channel: "cli", Label: "Agent B"},
+		},
+		[]web.UserChatWithPreview{
+			{ChatID: "review-row", FullKey: "cli:/repo/a:Agent-main/review:1", Channel: "agent", LastActive: "2026-07-08T10:00:00Z"},
+			{ChatID: "review-row", FullKey: "cli:/repo/b:Agent-main/review:1", Channel: "agent", LastActive: "2026-07-08T10:00:01Z"},
+			{ChatID: "fix-row-a", FullKey: "agent:cli:/repo/a:Agent-main/review:1/fix:2", Channel: "agent", ParentChannel: "agent", ParentChatID: "cli:/repo/a:Agent-main/review:1", LastActive: "2026-07-08T10:00:02Z"},
+			{ChatID: "fix-row-b", FullKey: "agent:cli:/repo/b:Agent-main/review:1/fix:2", Channel: "agent", ParentChannel: "agent", ParentChatID: "cli:/repo/b:Agent-main/review:1", LastActive: "2026-07-08T10:00:03Z"},
+		},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	for _, node := range tree.Sessions {
+		if len(node.Children) != 1 {
+			t.Fatalf("expected one review child per parent, got %#v", tree)
+		}
+		review := node.Children[0]
+		if review.ChatID != "cli:"+node.ChatID+"/review:1" || len(review.Children) != 1 {
+			t.Fatalf("expected nested fix under reused review-row for %s, got %#v", node.ChatID, review)
+		}
+		wantPrefix := "agent:cli:" + node.ChatID + "/review:1/fix:2"
+		if review.Children[0].FullKey != wantPrefix {
+			t.Fatalf("fix attached to wrong reused review row: parent=%s child=%#v", node.ChatID, review.Children[0])
+		}
+	}
+}
+
+func TestBuildSessionTreeExplicitAgentParentSortsBeforeChild(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{
+			{
+				ChatID:        "row-fix",
+				FullKey:       "cli:/repo/project:Agent-main/fix:2",
+				Channel:       "agent",
+				ParentChannel: "agent",
+				ParentChatID:  "cli:/repo/project:Agent-main/review:1",
+				LastActive:    "2026-07-08T10:00:01Z",
+			},
+			{
+				ChatID:     "row-review",
+				FullKey:    "cli:/repo/project:Agent-main/review:1",
+				Channel:    "agent",
+				LastActive: "2026-07-08T10:00:00Z",
+			},
+		},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	if len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected one review child, got %#v", tree)
+	}
+	review := tree.Sessions[0].Children[0]
+	if review.ChatID != "cli:/repo/project:Agent-main/review:1" || review.Synthetic {
+		t.Fatalf("expected real review parent, got %#v", review)
+	}
+	if len(review.Children) != 1 || review.Children[0].ChatID != "cli:/repo/project:Agent-main/fix:2" {
+		t.Fatalf("expected fix under real review without duplicate synthetic parent, got %#v", review.Children)
+	}
+}
+
+func TestBuildSessionTreeSynthesizesMissingNestedAgentParent(t *testing.T) {
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID: "/repo/project:Agent-main", Channel: "cli", Label: "Agent-main",
+		}},
+		[]web.UserChatWithPreview{{
+			ChatID:     "agent:cli:/repo/project:Agent-main/review:1/fix:2",
+			Channel:    "agent",
+			LastActive: "2026-07-08T10:00:01Z",
+			Preview:    "fixing",
+		}},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	if len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected synthesized agent parent, got %#v", tree)
+	}
+	review := tree.Sessions[0].Children[0]
+	if review.ChatID != "cli:/repo/project:Agent-main/review:1" || review.ParentChannel != "cli" || review.ParentChatID != "/repo/project:Agent-main" {
+		t.Fatalf("unexpected synthesized review: %#v", review)
+	}
+	if !review.Synthetic || review.Role != "review" || review.Instance != "1" {
+		t.Fatalf("synthesized agent metadata missing: %#v", review)
+	}
+	if len(review.Children) != 1 {
+		t.Fatalf("expected nested child under synthesized agent, got %#v", review.Children)
+	}
+	fix := review.Children[0]
+	if fix.ChatID != "agent:cli:/repo/project:Agent-main/review:1/fix:2" || fix.Role != "fix" || fix.Instance != "2" {
+		t.Fatalf("unexpected nested child: %#v", fix)
+	}
+}
+
+func TestBuildSessionTreeSynthesizesMissingCLIParentForHistoricalAgent(t *testing.T) {
+	tree := buildSessionTree(
+		nil,
+		[]web.UserChatWithPreview{{
+			ChatID:     "cli:/vePFS-Mindverse/user/intern/yihang:Agent-brave-panda/code-reviewer:oneshot-code-reviewer-1",
+			Channel:    "agent",
+			LastActive: "2026-07-06T02:24:54Z",
+			Preview:    "reviewing",
+		}},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	if len(tree.Sessions) != 1 {
+		t.Fatalf("expected synthesized CLI parent, got %#v", tree.Sessions)
+	}
+	parent := tree.Sessions[0]
+	if parent.Channel != "cli" || parent.ChatID != "/vePFS-Mindverse/user/intern/yihang:Agent-brave-panda" || !parent.Synthetic {
+		t.Fatalf("unexpected synthesized parent: %#v", parent)
+	}
+	if parent.Label != "Agent-brave-panda" {
+		t.Fatalf("expected CLI session name label, got %#v", parent)
+	}
+	if len(parent.Children) != 1 {
+		t.Fatalf("expected SubAgent child, got %#v", parent.Children)
+	}
+	child := parent.Children[0]
+	if child.Label != "code-reviewer/oneshot-code-reviewer-1" || child.ParentChannel != "cli" || child.ParentChatID != parent.ChatID {
+		t.Fatalf("unexpected child: %#v", child)
+	}
+}
+
+func TestSubAgentRowFromNestedInteractiveSessionUsesFullKeyParent(t *testing.T) {
+	row := subAgentRowFromInteractiveSession("agent", agent.InteractiveSessionInfo{
+		ChatID:   "web:web-chat/review:1",
+		Key:      "agent:web:web-chat/review:1/fix:2",
+		Role:     "fix",
+		Instance: "2",
+		Preview:  "patching",
+		Running:  true,
+	})
+	if row.ChatID != "agent:web:web-chat/review:1/fix:2" {
+		t.Fatalf("unexpected chat id: %#v", row)
+	}
+	if row.ParentChannel != "agent" || row.ParentChatID != "web:web-chat/review:1" {
+		t.Fatalf("unexpected parent: %#v", row)
+	}
+	if row.Role != "fix" || row.Instance != "2" || !row.Running || row.Historical {
+		t.Fatalf("unexpected row fields: %#v", row)
+	}
+	if row.Label != "fix/2" || row.Preview != "patching" {
+		t.Fatalf("label and preview should be separate: %#v", row)
+	}
+}
+
+func TestSubAgentRowFromInteractiveSessionUsesDirectParentMetadata(t *testing.T) {
+	row := subAgentRowFromInteractiveSession("agent", agent.InteractiveSessionInfo{
+		ChatID:        "web:web-chat/review:1",
+		Key:           "agent:web:web-chat/review:1/fix:2",
+		ParentKey:     "web:web-chat/review:1",
+		ParentChannel: "agent",
+		ParentChatID:  "web:web-chat/review:1",
+		Role:          "fix",
+		Instance:      "2",
+		Preview:       "patching",
+		Running:       true,
+	})
+	if row.ChatID != "agent:web:web-chat/review:1/fix:2" || row.FullKey != row.ChatID {
+		t.Fatalf("unexpected chat id: %#v", row)
+	}
+	if row.ParentChannel != "agent" || row.ParentChatID != "web:web-chat/review:1" {
+		t.Fatalf("unexpected direct parent metadata: %#v", row)
+	}
+	if row.Label == "default" || row.Role != "fix" || row.Instance != "2" {
+		t.Fatalf("unexpected label: %#v", row)
+	}
+}
+
+func TestBuildSessionTreeUsesLiveOneShotSubAgentRows(t *testing.T) {
+	row := subAgentRowFromInteractiveSession("cli", agent.InteractiveSessionInfo{
+		ChatID:   "/repo:Agent-main",
+		Key:      "cli:/repo:Agent-main/review:oneshot-review-1",
+		Role:     "review",
+		Instance: "oneshot-review-1",
+		Preview:  "checking",
+		Running:  false,
+	})
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID:     "/repo:Agent-main",
+			Channel:    "cli",
+			Label:      "Agent-main",
+			LastActive: "2026-07-08T00:00:00Z",
+		}},
+		[]web.UserChatWithPreview{row},
+	)
+	if len(tree.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", tree.OrphanSubAgents)
+	}
+	if len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected one child under parent, got %#v", tree)
+	}
+	child := tree.Sessions[0].Children[0]
+	if child.Channel != "agent" || child.ChatID != "cli:/repo:Agent-main/review:oneshot-review-1" {
+		t.Fatalf("unexpected child identity: %#v", child)
+	}
+	if child.ParentChannel != "cli" || child.ParentChatID != "/repo:Agent-main" {
+		t.Fatalf("unexpected parent metadata: %#v", child)
+	}
+	if child.Label != "review/oneshot-review-1" || child.Label == "default" {
+		t.Fatalf("unexpected child label: %#v", child)
+	}
+}
+
+func TestListTenantsByChannelReturnsPersistedOneShotSubAgentRows(t *testing.T) {
+	db := newTenantPreviewDB(t)
+	insertTenant(
+		t,
+		db,
+		"agent",
+		"cli:/repo:Agent-main/review:oneshot-review-1",
+		"2026-07-08T00:00:01Z",
+		"",
+		"review result",
+	)
+	rows, err := listTenantsByChannel(db, "agent", "")
+	if err != nil {
+		t.Fatalf("listTenantsByChannel: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected one agent row, got %#v", rows)
+	}
+	row := rows[0]
+	if row.Channel != "agent" || row.Type != "agent" || row.FullKey != row.ChatID {
+		t.Fatalf("unexpected agent identity: %#v", row)
+	}
+	if row.ParentChannel != "cli" || row.ParentChatID != "/repo:Agent-main" {
+		t.Fatalf("unexpected parent metadata: %#v", row)
+	}
+	if row.Role != "review" || row.Instance != "oneshot-review-1" || row.Label != "review/oneshot-review-1" {
+		t.Fatalf("unexpected label fields: %#v", row)
+	}
+
+	tree := buildSessionTree(
+		[]web.UserChatWithPreview{{
+			ChatID:     "/repo:Agent-main",
+			Channel:    "cli",
+			Label:      "Agent-main",
+			LastActive: "2026-07-08T00:00:00Z",
+		}},
+		rows,
+	)
+	if len(tree.OrphanSubAgents) != 0 || len(tree.Sessions) != 1 || len(tree.Sessions[0].Children) != 1 {
+		t.Fatalf("expected persisted SubAgent under parent, got %#v", tree)
+	}
+}
+
+func TestSubAgentRowBelongsToAllowedWebParentFollowsNestedAgentChain(t *testing.T) {
+	row, ok := normalizeSubAgentRow(web.UserChatWithPreview{
+		ChatID: "agent:web:web-chat/review:1/fix:2",
+	}, "")
+	if !ok {
+		t.Fatal("normalizeSubAgentRow returned !ok")
+	}
+	if !subAgentRowBelongsToAllowedWebParent(row, map[string]bool{"web-chat": true}) {
+		t.Fatalf("expected nested row to belong to web-chat: %#v", row)
+	}
+	if subAgentRowBelongsToAllowedWebParent(row, map[string]bool{"other": true}) {
+		t.Fatalf("unexpected access for wrong parent: %#v", row)
+	}
+}
+
+func newTenantPreviewDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	schema := `
+CREATE TABLE tenants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
+  last_active_at TEXT NOT NULL
+);
+CREATE TABLE user_chats (
+  channel TEXT NOT NULL,
+  sender_id TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE session_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL
+);`
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func insertTenant(t *testing.T, db *sql.DB, channel, chatID, lastActive, label, preview string) {
+	t.Helper()
+	res, err := db.Exec(`INSERT INTO tenants(channel, chat_id, last_active_at) VALUES (?, ?, ?)`, channel, chatID, lastActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if label != "" {
+		if _, err := db.Exec(`INSERT INTO user_chats(channel, sender_id, chat_id, label) VALUES (?, 'user', ?, ?)`, channel, chatID, label); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if preview != "" {
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO session_messages(tenant_id, role, content) VALUES (?, 'assistant', ?)`, id, preview); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestParseTenantTimeHandlesGoTimeString(t *testing.T) {
+	got := parseTenantTime("2026-07-08 17:19:29.830941332 +0000 UTC m=+612.945459238")
+	if got.IsZero() {
+		t.Fatal("parseTenantTime returned zero")
+	}
+	if got.Format("2006-01-02T15:04:05") != "2026-07-08T17:19:29" {
+		t.Fatalf("unexpected parsed time: %s", got.Format(time.RFC3339Nano))
+	}
+}
+
+func TestListWebChatIDsForSenderIncludesDefaultAndCreatedChats(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Conn().Exec(
+		"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES ('web', 'web-2', 'chat_abc', 'A')",
+	); err != nil {
+		t.Fatalf("insert user chat: %v", err)
+	}
+	got, err := listWebChatIDsForSender(db.Conn(), "web-2")
+	if err != nil {
+		t.Fatalf("listWebChatIDsForSender: %v", err)
+	}
+	if !got["web-2"] || !got["chat_abc"] {
+		t.Fatalf("missing expected chat ids: %#v", got)
+	}
+	if got["web-1"] {
+		t.Fatalf("unexpected other sender in chat ids: %#v", got)
 	}
 }
 

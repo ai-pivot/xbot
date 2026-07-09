@@ -1168,11 +1168,16 @@ func isAdmin(authSenderID string) bool { return authSenderID == adminSenderID }
 // Key format: "channel:chatID/roleName[:instance]"
 // Returns empty string if the format is invalid.
 func sessionKeyOwner(key string) string {
-	parts := strings.SplitN(key, ":", 2)
+	slash := strings.LastIndex(key, "/")
+	if slash <= 0 {
+		return ""
+	}
+	parent := key[:slash]
+	parts := strings.SplitN(parent, ":", 2)
 	if len(parts) < 2 {
 		return ""
 	}
-	return strings.SplitN(parts[1], "/", 2)[0]
+	return parts[1]
 }
 
 // senderIDFromParams extracts the business sender_id from RPC params.

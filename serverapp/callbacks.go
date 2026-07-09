@@ -3,9 +3,11 @@ package serverapp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"xbot/protocol"
@@ -16,6 +18,7 @@ import (
 	"xbot/channel/web"
 	"xbot/config"
 	log "xbot/logger"
+	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -309,6 +312,98 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetActiveProgress(channel, chatID, 0) // web always requests full history
 	}
+	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector) (web.HistorySnapshot, error) {
+		if ag.MultiSession() == nil {
+			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
+		}
+		if db := ag.MultiSession().DB(); db != nil {
+			if _, err := sqlite.NewTenantService(db).GetOrCreateTenantID(sel.Channel, sel.ChatID); err != nil {
+				log.WithError(err).Warn("Web history: failed to update last_active_at")
+			}
+		}
+		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
+		if err != nil {
+			return web.HistorySnapshot{}, err
+		}
+		msgs, err := sess.GetMessages()
+		if err != nil {
+			return web.HistorySnapshot{}, err
+		}
+		progress := ag.GetActiveProgress(sel.Channel, sel.ChatID)
+		if progress != nil && progress.Phase == "done" {
+			progress = nil
+		}
+		return web.HistorySnapshot{
+			Messages:       channel.ConvertMessagesToHistory(msgs),
+			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
+			ActiveProgress: progress,
+			ChatID:         sel.ChatID,
+			Channel:        sel.Channel,
+		}, nil
+	}
+	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, cutoff time.Time) (web.RewindHistoryResult, error) {
+		return rewindWebHistory(ag, sel.Channel, sel.ChatID, cutoff)
+	}
+	callbacks.GetCWD = func(senderID string, sel web.SessionSelector) (string, error) {
+		return webSessionCWD(ag, sel.Channel, sel.ChatID), nil
+	}
+	callbacks.SetCWD = func(senderID string, sel web.SessionSelector, dir string) error {
+		return ag.SetCWD(sel.Channel, sel.ChatID, dir)
+	}
+	callbacks.BackgroundTasks = func(senderID string, sel web.SessionSelector) (any, error) {
+		if ag.BgTaskManager() == nil {
+			return []webBgTaskJSON{}, nil
+		}
+		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
+	}
+	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
+		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+			return []any{}, nil
+		}
+		if _, err := sqlite.NewTenantService(ag.MultiSession().DB()).GetOrCreateTenantID(sel.Channel, sel.ChatID); err != nil {
+			return nil, fmt.Errorf("resolve tenant: %w", err)
+		}
+		return sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByChannelChatID(sel.Channel, sel.ChatID)
+	}
+	callbacks.CommandList = func(senderID string) ([]web.CommandInfo, error) {
+		byName := make(map[string]web.CommandInfo, len(channel.TUISlashCommands))
+		for _, name := range channel.TUISlashCommands {
+			byName[name] = web.CommandInfo{Name: name}
+		}
+		if ag.Commands() != nil {
+			for _, cmd := range ag.Commands().CommandList() {
+				if cmd.Name == "" {
+					continue
+				}
+				byName[cmd.Name] = web.CommandInfo{Name: cmd.Name, Aliases: cmd.Aliases, Description: cmd.Description}
+			}
+		}
+		result := make([]web.CommandInfo, 0, len(byName))
+		for _, name := range channel.TUISlashCommands {
+			if cmd, ok := byName[name]; ok {
+				result = append(result, cmd)
+				delete(byName, name)
+			}
+		}
+		for _, cmd := range byName {
+			result = append(result, cmd)
+		}
+		return result, nil
+	}
+	callbacks.SessionSubscription = func(senderID string, sel web.SessionSelector) (map[string]string, error) {
+		if ag.MultiSession() != nil && ag.MultiSession().DB() != nil {
+			subID, model, _ := sqlite.NewTenantService(ag.MultiSession().DB()).GetTenantSubscription(sel.Channel, sel.ChatID)
+			if subID != "" {
+				return map[string]string{"subscription_id": subID, "model": model}, nil
+			}
+		}
+		if ag.LLMFactory() != nil {
+			if sub, model, err := ag.LLMFactory().ResolveActiveSubModel(senderID, sel.ChatID, sel.Channel); err == nil && sub != nil {
+				return map[string]string{"subscription_id": sub.ID, "model": model}, nil
+			}
+		}
+		return map[string]string{}, nil
+	}
 	// Wire SessionsList
 	callbacks.SessionsList = func(senderID string) []web.SessionInfo {
 		sessions := ag.ListInteractiveSessions("web", senderID)
@@ -361,11 +456,127 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 					Preview:    c.Preview,
 					IsCurrent:  c.IsCurrent,
 				}
+				applyWebRunningStatus(ag, &result[i])
 			}
 			return result, nil
 		}
 		// For non-web channels (admin only): list all tenants in that channel.
-		return listTenantsByChannel(webDB.Conn(), channel, currentChatID)
+		if channel == "cli" {
+			rows, err := listCLIChatSessions(webDB.Conn(), currentChatID)
+			applyWebRunningStatuses(ag, rows)
+			return rows, err
+		}
+		rows, err := listTenantsByChannel(webDB.Conn(), channel, currentChatID)
+		applyWebRunningStatuses(ag, rows)
+		return rows, err
+	}
+	callbacks.SubAgentList = func(senderID string, admin bool) ([]web.UserChatWithPreview, error) {
+		if webDB == nil {
+			return nil, nil
+		}
+		allowedWebParents := map[string]bool{}
+		if !admin {
+			var err error
+			allowedWebParents, err = listWebChatIDsForSender(webDB.Conn(), senderID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		var rows []web.UserChatWithPreview
+		if admin {
+			var err error
+			rows, err = listTenantsByChannel(webDB.Conn(), "agent", "")
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			agentRows, err := listTenantsByChannel(webDB.Conn(), "agent", "")
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range agentRows {
+				if subAgentRowBelongsToAllowedWebParent(row, allowedWebParents) {
+					rows = append(rows, row)
+				}
+			}
+		}
+		seen := make(map[string]bool, len(rows))
+		for _, row := range rows {
+			seen[subAgentRowKey(row)] = true
+		}
+		for _, s := range ag.ListInteractiveSessions("web", "") {
+			if admin || allowedWebParents[s.ChatID] {
+				rows = upsertSubAgentRow(rows, seen, "web", s)
+			}
+		}
+		if admin {
+			for _, s := range ag.ListInteractiveSessions("cli", "") {
+				rows = upsertSubAgentRow(rows, seen, "cli", s)
+			}
+			for _, s := range ag.ListInteractiveSessions("agent", "") {
+				rows = upsertSubAgentRow(rows, seen, "agent", s)
+			}
+		} else {
+			for _, s := range ag.ListInteractiveSessions("agent", "") {
+				row := subAgentRowFromInteractiveSession("agent", s)
+				if subAgentRowBelongsToAllowedWebParent(row, allowedWebParents) {
+					rows = upsertSubAgentRow(rows, seen, "agent", s)
+				}
+			}
+		}
+		applyWebRunningStatuses(ag, rows)
+		return rows, nil
+	}
+	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool) (web.SessionTreeResult, error) {
+		if webDB == nil {
+			return web.SessionTreeResult{}, nil
+		}
+		var mains []web.UserChatWithPreview
+		webCurrent := ""
+		if current.Channel == "web" {
+			webCurrent = current.ChatID
+		}
+		cs := sqlite.NewChatService(webDB)
+		webChats, err := cs.ListUserChats("web", senderID, webCurrent)
+		if err != nil {
+			return web.SessionTreeResult{}, err
+		}
+		for _, c := range webChats {
+			mains = append(mains, web.UserChatWithPreview{
+				ChatID:     c.ChatID,
+				Channel:    "web",
+				Label:      c.Label,
+				LastActive: c.LastActive.Format(time.RFC3339),
+				Preview:    c.Preview,
+				IsCurrent:  c.IsCurrent,
+			})
+			applyWebRunningStatus(ag, &mains[len(mains)-1])
+		}
+		if admin {
+			cliCurrent := ""
+			if current.Channel == "cli" {
+				cliCurrent = current.ChatID
+			}
+			cliChats, err := listCLIChatSessions(webDB.Conn(), cliCurrent)
+			if err != nil {
+				return web.SessionTreeResult{}, err
+			}
+			applyWebRunningStatuses(ag, cliChats)
+			mains = append(mains, cliChats...)
+			webTenants, err := listTenantsByChannel(webDB.Conn(), "web", webCurrent)
+			if err != nil {
+				return web.SessionTreeResult{}, err
+			}
+			applyWebRunningStatuses(ag, webTenants)
+			mains = appendMissingSessionRows(mains, webTenants)
+		}
+
+		subagents, err := callbacks.SubAgentList(senderID, admin)
+		if err != nil {
+			return web.SessionTreeResult{}, err
+		}
+		applyWebRunningStatuses(ag, subagents)
+		return buildSessionTree(mains, subagents), nil
 	}
 	callbacks.ChatCreate = func(senderID, label string) (string, error) {
 		if webDB == nil {
@@ -391,6 +602,160 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	return callbacks
 }
 
+func applyWebRunningStatuses(ag *agent.Agent, rows []web.UserChatWithPreview) {
+	for i := range rows {
+		applyWebRunningStatus(ag, &rows[i])
+	}
+}
+
+func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
+	if ag == nil || row == nil {
+		return
+	}
+	ch := row.Channel
+	if ch == "" {
+		ch = "web"
+	}
+	chatID := row.ChatID
+	if row.FullKey != "" && (ch == "agent" || row.Type == "agent") {
+		chatID = row.FullKey
+	}
+	row.Running = ag.IsProcessingByChannel(ch, chatID)
+	if row.Running {
+		row.Status = "running"
+	} else if row.Status == "" {
+		row.Status = "idle"
+	}
+	for i := range row.Children {
+		applyWebRunningStatus(ag, &row.Children[i])
+	}
+}
+
+func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
+	dir := session.LoadPersistedCWD(channelName, chatID)
+	if dir == "" && channelName == "cli" {
+		if workDir, _ := parseCLIChatID(chatID); workDir != "" {
+			dir = workDir
+		}
+	}
+	if dir == "" && ag != nil && ag.MultiSession() != nil {
+		if sess, ok := ag.MultiSession().GetSession(channelName, chatID); ok && sess != nil {
+			dir = sess.GetCurrentDir()
+		}
+	}
+	return dir
+}
+
+func rewindWebHistory(ag *agent.Agent, channelName, chatID string, cutoff time.Time) (web.RewindHistoryResult, error) {
+	if ag == nil || ag.MultiSession() == nil {
+		return web.RewindHistoryResult{}, fmt.Errorf("multi-session not available")
+	}
+	sess, err := ag.MultiSession().GetOrCreateSession(channelName, chatID)
+	if err != nil {
+		return web.RewindHistoryResult{}, err
+	}
+	msgs, err := sess.GetMessages()
+	if err != nil {
+		return web.RewindHistoryResult{}, err
+	}
+	history := channel.ConvertMessagesToHistory(msgs)
+	compactCutoff := -1
+	selectedEligibleOrdinal := 0
+	draft := ""
+	for i, msg := range history {
+		if msg.Role != "user" {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(msg.Content), "[Compacted context]") {
+			compactCutoff = i
+			selectedEligibleOrdinal = 0
+		}
+		if compactCutoff >= 0 && i < compactCutoff {
+			continue
+		}
+		selectedEligibleOrdinal++
+		if msg.Timestamp.Equal(cutoff) || msg.Timestamp.After(cutoff) {
+			if !msg.Timestamp.Equal(cutoff) {
+				selectedEligibleOrdinal--
+				break
+			}
+			draft = msg.Content
+			break
+		}
+	}
+	if draft == "" {
+		return web.RewindHistoryResult{}, fmt.Errorf("rewind target not found")
+	}
+	var checkpoint *protocol.RewindResult
+	if result, err := ag.RewindCheckpoint(channelName, chatID, selectedEligibleOrdinal); err != nil {
+		log.WithError(err).Warn("rewind checkpoint failed")
+	} else {
+		checkpoint = result
+	}
+	if err := ag.MultiSession().TrimHistory(channelName, chatID, cutoff); err != nil {
+		return web.RewindHistoryResult{}, err
+	}
+	return web.RewindHistoryResult{Draft: draft, RewindResult: checkpoint}, nil
+}
+
+type webBgTaskJSON struct {
+	ID         string `json:"id"`
+	Command    string `json:"command"`
+	Status     string `json:"status"`
+	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at,omitempty"`
+	Output     string `json:"output"`
+	ExitCode   int    `json:"exit_code"`
+	Error      string `json:"error,omitempty"`
+}
+
+func marshalWebBgTasks(tasks []*tools.BackgroundTask) []webBgTaskJSON {
+	result := make([]webBgTaskJSON, len(tasks))
+	for i, t := range tasks {
+		result[i] = webBgTaskJSON{t.ID, t.Command, string(t.Status), t.StartedAt.Format(time.RFC3339), "", t.Output, t.ExitCode, t.Error}
+		if t.FinishedAt != nil {
+			result[i].FinishedAt = t.FinishedAt.Format(time.RFC3339)
+		}
+	}
+	return result
+}
+
+func appendMissingSessionRows(base, extra []web.UserChatWithPreview) []web.UserChatWithPreview {
+	seen := make(map[string]bool, len(base))
+	for _, row := range base {
+		seen[sessionTreeKey(row.Channel, row.ChatID)] = true
+	}
+	for _, row := range extra {
+		key := sessionTreeKey(row.Channel, row.ChatID)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		base = append(base, row)
+	}
+	return base
+}
+
+func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, error) {
+	result := map[string]bool{senderID: true}
+	rows, err := db.Query("SELECT chat_id FROM user_chats WHERE channel = 'web' AND sender_id = ?", senderID)
+	if err != nil {
+		return nil, fmt.Errorf("list web chat ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var chatID string
+		if err := rows.Scan(&chatID); err != nil {
+			return nil, fmt.Errorf("scan web chat id: %w", err)
+		}
+		result[chatID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate web chat ids: %w", err)
+	}
+	return result, nil
+}
+
 // listTenantsByChannel lists all tenants for a given channel (e.g. "cli", "feishu").
 // Used by admin to browse sessions from other channels in the Web UI.
 // Returns the last user/assistant message as preview.
@@ -398,6 +763,9 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 	// Single query with correlated subquery for preview — avoids N+1 pattern.
 	rows, err := db.Query(`
 		SELECT t.id, t.chat_id, t.last_active_at,
+		       COALESCE((SELECT uc.label FROM user_chats uc
+		        WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
+		        LIMIT 1), '') AS label,
 		       (SELECT sm.content FROM session_messages sm
 		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
 		        ORDER BY sm.id DESC LIMIT 1) AS preview
@@ -412,41 +780,729 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 	var result []web.UserChatWithPreview
 	for rows.Next() {
 		var tenantID int64
-		var chatID, lastActiveStr string
+		var chatID, lastActiveStr, label string
 		var preview sql.NullString
-		if err := rows.Scan(&tenantID, &chatID, &lastActiveStr, &preview); err != nil {
+		if err := rows.Scan(&tenantID, &chatID, &lastActiveStr, &label, &preview); err != nil {
 			log.WithError(err).Warn("Failed to scan tenant row in listTenantsByChannel")
 			continue
 		}
-
 		previewStr := preview.String
 		if runes := []rune(previewStr); len(runes) > 80 {
 			previewStr = string(runes[:80])
 		}
 
-		// Try RFC3339 first, then SQLite's "2006-01-02 15:04:05" format
-		// (DEFAULT CURRENT_TIMESTAMP produces the latter).
-		lastActive, err := time.Parse(time.RFC3339, lastActiveStr)
-		if err != nil {
-			lastActive, err = time.Parse("2006-01-02 15:04:05", lastActiveStr)
-			if err != nil {
-				log.WithError(err).WithField("raw", lastActiveStr).Warn("Failed to parse last_active_at in listTenantsByChannel")
-			}
-		}
+		lastActive := parseTenantTime(lastActiveStr)
 
-		result = append(result, web.UserChatWithPreview{
+		chat := web.UserChatWithPreview{
 			ChatID:     chatID,
 			Channel:    channel,
-			Label:      chatID, // For non-web channels, use chatID as label
+			Label:      displayLabelForTenant(channel, chatID, label),
 			LastActive: lastActive.Format(time.RFC3339),
 			Preview:    previewStr,
 			IsCurrent:  chatID == currentChatID,
-		})
+		}
+		if channel == "agent" {
+			normalized, ok := normalizeSubAgentRow(chat, previewStr)
+			if !ok {
+				continue
+			}
+			chat = normalized
+		} else if isInteractiveSubAgentTenant(channel, chatID) {
+			continue
+		}
+		result = append(result, chat)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate tenants: %w", err)
 	}
 	return result, nil
+}
+
+type cliDirSessionsFile struct {
+	Dir      string              `json:"dir"`
+	Sessions []cliDirSessionFile `json:"sessions"`
+}
+
+type cliDirSessionFile struct {
+	Name      string    `json:"name"`
+	ChatID    string    `json:"chat_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func listCLIChatSessions(db *sql.DB, currentChatID string) ([]web.UserChatWithPreview, error) {
+	tenantRows, err := listTenantsByChannel(db, "cli", currentChatID)
+	if err != nil {
+		return nil, err
+	}
+	tenantByChatID := make(map[string]web.UserChatWithPreview, len(tenantRows))
+	for _, row := range tenantRows {
+		tenantByChatID[row.ChatID] = row
+	}
+
+	localRows, err := listCLISessionsFromLocalStore(currentChatID, tenantByChatID)
+	if err != nil {
+		log.WithError(err).Warn("Failed to list CLI sessions from local store; falling back to tenant list")
+		return tenantRows, nil
+	}
+	if len(localRows) == 0 {
+		return tenantRows, nil
+	}
+	merged := make([]web.UserChatWithPreview, 0, len(localRows)+len(tenantRows))
+	seen := make(map[string]bool, len(localRows))
+	for _, row := range localRows {
+		merged = append(merged, row)
+		seen[row.ChatID] = true
+	}
+	for _, row := range tenantRows {
+		if seen[row.ChatID] || isInteractiveSubAgentTenant("cli", row.ChatID) {
+			continue
+		}
+		merged = append(merged, row)
+	}
+	sortUserChats(merged)
+	return merged, nil
+}
+
+func listCLISessionsFromLocalStore(currentChatID string, tenantByChatID map[string]web.UserChatWithPreview) ([]web.UserChatWithPreview, error) {
+	paths, err := filepath.Glob(filepath.Join(config.XbotHome(), "sessions", "*.json"))
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	var rows []web.UserChatWithPreview
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var file cliDirSessionsFile
+		if err := json.Unmarshal(data, &file); err != nil {
+			continue
+		}
+		if shouldSkipWebCLISessionDir(file.Dir) {
+			continue
+		}
+		for _, sess := range file.Sessions {
+			if sess.ChatID == "" || seen[sess.ChatID] || isInteractiveSubAgentTenant("cli", sess.ChatID) {
+				continue
+			}
+			seen[sess.ChatID] = true
+			row := web.UserChatWithPreview{
+				ChatID:     sess.ChatID,
+				Channel:    "cli",
+				Label:      displayLabelForCLILocalSession(sess, file.Dir),
+				LastActive: sess.CreatedAt.Format(time.RFC3339),
+				IsCurrent:  sess.ChatID == currentChatID,
+			}
+			if tenant, ok := tenantByChatID[sess.ChatID]; ok {
+				row.LastActive = tenant.LastActive
+				row.Preview = tenant.Preview
+				row.IsCurrent = tenant.IsCurrent
+				if tenant.Label != "" {
+					row.Label = tenant.Label
+				}
+			}
+			rows = append(rows, row)
+		}
+	}
+	sortUserChats(rows)
+	return rows, nil
+}
+
+func shouldSkipWebCLISessionDir(dir string) bool {
+	if dir == "" {
+		return true
+	}
+	return strings.Contains(dir, "/tmp/Test")
+}
+
+func displayLabelForCLILocalSession(sess cliDirSessionFile, dir string) string {
+	if sess.Name != "" && sess.Name != "default" {
+		return sess.Name
+	}
+	if base := filepath.Base(strings.TrimRight(dir, string(filepath.Separator))); base != "" && base != "." {
+		return base
+	}
+	if dir != "" {
+		return dir
+	}
+	return sess.ChatID
+}
+
+func sortUserChats(rows []web.UserChatWithPreview) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].LastActive > rows[j].LastActive
+	})
+}
+
+func parseTenantTime(raw string) time.Time {
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t
+		}
+	}
+	if idx := strings.Index(raw, " m="); idx > 0 {
+		return parseTenantTime(raw[:idx])
+	}
+	log.WithField("raw", raw).Warn("Failed to parse last_active_at in listTenantsByChannel")
+	return time.Time{}
+}
+
+func buildSessionTree(mains, subagents []web.UserChatWithPreview) web.SessionTreeResult {
+	builder := newSessionTreeBuilder(len(mains))
+	allSubagents := make([]web.UserChatWithPreview, 0, len(subagents))
+	allSubagents = append(allSubagents, subagents...)
+	for _, main := range mains {
+		if rowLooksLikeSubAgent(main) {
+			allSubagents = append(allSubagents, main)
+			continue
+		}
+		builder.addMain(main)
+	}
+	normalized := make([]web.UserChatWithPreview, 0, len(allSubagents))
+	for _, sa := range allSubagents {
+		row, ok := normalizeSubAgentRow(sa, sa.Preview)
+		if !ok {
+			continue
+		}
+		normalized = append(normalized, row)
+	}
+	sort.SliceStable(normalized, func(i, j int) bool {
+		return agentTreeDepth(normalized[i]) < agentTreeDepth(normalized[j])
+	})
+	var orphans []web.UserChatWithPreview
+	for _, sa := range normalized {
+		sa.Channel = "agent"
+		sa.Type = "agent"
+		if !builder.attachAgent(sa) {
+			orphans = append(orphans, sa)
+		}
+	}
+	return web.SessionTreeResult{Sessions: builder.nodes, OrphanSubAgents: orphans}
+}
+
+func agentTreeDepth(row web.UserChatWithPreview) int {
+	if row.ParentChannel == "agent" && row.ParentChatID != "" {
+		parent := row.ParentChatID
+		depth := 1
+		for depth < 32 {
+			info, ok := parseAgentTenantChatID(parent)
+			if !ok {
+				return depth
+			}
+			depth++
+			if info.parentChannel != "agent" {
+				return depth
+			}
+			parent = info.parentChatID
+		}
+		return depth
+	}
+	key := row.FullKey
+	if key == "" {
+		key = row.ChatID
+	}
+	depth := 0
+	for depth < 32 {
+		info, ok := parseAgentTenantChatID(key)
+		if !ok {
+			return depth
+		}
+		depth++
+		if info.parentChannel != "agent" {
+			return depth
+		}
+		key = info.parentChatID
+	}
+	return depth
+}
+
+func rowLooksLikeSubAgent(row web.UserChatWithPreview) bool {
+	if row.Channel == "agent" || row.Type == "agent" || row.Type == "subagent" {
+		return true
+	}
+	if row.ParentChannel != "" || row.ParentChatID != "" || row.Role != "" || row.Instance != "" {
+		return true
+	}
+	fullKey := row.FullKey
+	if fullKey == "" {
+		fullKey = row.ChatID
+	}
+	_, ok := parseAgentTenantChatID(fullKey)
+	return ok
+}
+
+func canSynthesizeSessionTreeParent(sa web.UserChatWithPreview) bool {
+	if sa.ParentChannel == "" || sa.ParentChatID == "" {
+		return false
+	}
+	if sa.ParentChannel == "cli" {
+		return looksLikeCLIChatID(sa.ParentChatID)
+	}
+	return sa.ParentChannel == "web"
+}
+
+func synthesizedParentRow(sa web.UserChatWithPreview) web.UserChatWithPreview {
+	label := displayLabelForTenant(sa.ParentChannel, sa.ParentChatID, "")
+	return web.UserChatWithPreview{
+		ChatID:     sa.ParentChatID,
+		Channel:    sa.ParentChannel,
+		Label:      label,
+		LastActive: sa.LastActive,
+		Preview:    "",
+		Type:       "main",
+		Synthetic:  true,
+	}
+}
+
+type sessionTreeNodeRef struct {
+	channel   string
+	chatID    string
+	mainIndex int
+	childPath []int
+}
+
+type sessionTreeBuilder struct {
+	nodes             []web.SessionTreeNode
+	aliases           map[string]sessionTreeNodeRef
+	ambiguousAliases  map[string]bool
+	fallbackAliases   map[string]sessionTreeNodeRef
+	ambiguousFallback map[string]bool
+}
+
+func newSessionTreeBuilder(capacity int) *sessionTreeBuilder {
+	return &sessionTreeBuilder{
+		nodes:             make([]web.SessionTreeNode, 0, capacity),
+		aliases:           make(map[string]sessionTreeNodeRef, capacity*2),
+		ambiguousAliases:  make(map[string]bool),
+		fallbackAliases:   make(map[string]sessionTreeNodeRef),
+		ambiguousFallback: make(map[string]bool),
+	}
+}
+
+func (b *sessionTreeBuilder) addMain(main web.UserChatWithPreview) *web.UserChatWithPreview {
+	main.Type = "main"
+	if main.Channel == "" {
+		main.Channel = "web"
+	}
+	b.nodes = append(b.nodes, web.SessionTreeNode{UserChatWithPreview: main})
+	idx := len(b.nodes) - 1
+	b.indexMain(idx)
+	return &b.nodes[idx].UserChatWithPreview
+}
+
+func (b *sessionTreeBuilder) indexMain(idx int) {
+	node := &b.nodes[idx].UserChatWithPreview
+	ref := sessionTreeNodeRef{channel: node.Channel, chatID: node.ChatID, mainIndex: idx}
+	b.setAlias(sessionTreeKey(node.Channel, node.ChatID), ref)
+	for _, key := range sessionTreeFallbackKeys(node.Channel, node.ChatID) {
+		if existing, ok := b.fallbackAliases[key]; ok && !sameSessionTreeRef(existing, ref) {
+			b.ambiguousFallback[key] = true
+			continue
+		}
+		b.fallbackAliases[key] = ref
+	}
+}
+
+func (b *sessionTreeBuilder) attachAgent(agent web.UserChatWithPreview) bool {
+	parent, ok := b.resolveParent(agent)
+	if !ok {
+		return false
+	}
+	parentNode := b.nodeForRef(parent)
+	if parentNode == nil {
+		return false
+	}
+	agent.ParentChannel = parent.channel
+	agent.ParentChatID = parent.chatID
+	parentNode.Children = append(parentNode.Children, agent)
+	b.indexAgent(parent, len(parentNode.Children)-1)
+	return true
+}
+
+func (b *sessionTreeBuilder) indexAgent(parent sessionTreeNodeRef, childIndex int) {
+	node := b.nodeForRef(parent)
+	if node == nil || childIndex < 0 || childIndex >= len(node.Children) {
+		return
+	}
+	child := &node.Children[childIndex]
+	path := append([]int(nil), parent.childPath...)
+	path = append(path, childIndex)
+	ref := sessionTreeNodeRef{channel: "agent", chatID: child.ChatID, mainIndex: parent.mainIndex, childPath: path}
+	b.setAlias(sessionTreeKey("agent", child.ChatID), ref)
+	if child.FullKey != "" {
+		b.setAlias(sessionTreeKey("agent", child.FullKey), ref)
+	}
+}
+
+func (b *sessionTreeBuilder) setAlias(key string, ref sessionTreeNodeRef) {
+	if existing, ok := b.aliases[key]; ok && !sameSessionTreeRef(existing, ref) {
+		b.ambiguousAliases[key] = true
+		return
+	}
+	b.aliases[key] = ref
+}
+
+func (b *sessionTreeBuilder) resolveParent(agent web.UserChatWithPreview) (sessionTreeNodeRef, bool) {
+	if agent.ParentChannel == "agent" {
+		return b.resolveAgentParent(agent.ParentChatID, agent.LastActive)
+	}
+	if parent, ok := b.lookupMainParent(agent.ParentChannel, agent.ParentChatID); ok {
+		return parent, true
+	}
+	if !canSynthesizeSessionTreeParent(agent) {
+		return sessionTreeNodeRef{}, false
+	}
+	parent := b.addMain(synthesizedParentRow(agent))
+	return sessionTreeNodeRef{channel: parent.Channel, chatID: parent.ChatID, mainIndex: len(b.nodes) - 1}, true
+}
+
+func (b *sessionTreeBuilder) resolveAgentParent(agentChatID, lastActive string) (sessionTreeNodeRef, bool) {
+	if parent, ok := b.lookupAgent(agentChatID); ok {
+		return parent, true
+	}
+	parent, ok := normalizeSubAgentRow(web.UserChatWithPreview{
+		ChatID:     agentChatID,
+		Channel:    "agent",
+		LastActive: lastActive,
+		Synthetic:  true,
+	}, "")
+	if !ok {
+		return sessionTreeNodeRef{}, false
+	}
+	parent.Synthetic = true
+	if !b.attachAgent(parent) {
+		return sessionTreeNodeRef{}, false
+	}
+	return b.lookupAgent(agentChatID)
+}
+
+func (b *sessionTreeBuilder) lookupAgent(chatID string) (sessionTreeNodeRef, bool) {
+	key := sessionTreeKey("agent", chatID)
+	if b.ambiguousAliases[key] {
+		return sessionTreeNodeRef{}, false
+	}
+	if ref, ok := b.aliases[key]; ok {
+		return ref, true
+	}
+	return sessionTreeNodeRef{}, false
+}
+
+func (b *sessionTreeBuilder) lookupMainParent(channel, chatID string) (sessionTreeNodeRef, bool) {
+	key := sessionTreeKey(channel, chatID)
+	if !b.ambiguousAliases[key] {
+		if ref, ok := b.aliases[key]; ok {
+			return ref, true
+		}
+	}
+	if b.ambiguousAliases[key] {
+		return sessionTreeNodeRef{}, false
+	}
+	explicitChannel, explicitChatID, hasExplicit := splitQualifiedSessionKey(chatID)
+	if hasExplicit {
+		explicitKey := sessionTreeKey(explicitChannel, explicitChatID)
+		if b.ambiguousAliases[explicitKey] {
+			return sessionTreeNodeRef{}, false
+		}
+		if ref, ok := b.aliases[explicitKey]; ok {
+			return ref, true
+		}
+		channel = explicitChannel
+		chatID = explicitChatID
+	}
+	for _, key := range sessionTreeFallbackKeys(channel, chatID) {
+		if b.ambiguousFallback[key] {
+			continue
+		}
+		if ref, ok := b.fallbackAliases[key]; ok {
+			return ref, true
+		}
+	}
+	return sessionTreeNodeRef{}, false
+}
+
+func (b *sessionTreeBuilder) nodeForRef(ref sessionTreeNodeRef) *web.UserChatWithPreview {
+	if ref.mainIndex < 0 || ref.mainIndex >= len(b.nodes) {
+		return nil
+	}
+	node := &b.nodes[ref.mainIndex].UserChatWithPreview
+	for _, idx := range ref.childPath {
+		if idx < 0 || idx >= len(node.Children) {
+			return nil
+		}
+		node = &node.Children[idx]
+	}
+	return node
+}
+
+func sameSessionTreeRef(a, b sessionTreeNodeRef) bool {
+	if a.channel != b.channel || a.chatID != b.chatID || a.mainIndex != b.mainIndex || len(a.childPath) != len(b.childPath) {
+		return false
+	}
+	for i := range a.childPath {
+		if a.childPath[i] != b.childPath[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func looksLikeCLIChatID(chatID string) bool {
+	workDir, name := parseCLIChatID(chatID)
+	return looksLikeWorkDir(workDir) || name != "default"
+}
+
+func sessionTreeFallbackKeys(channel, chatID string) []string {
+	if channel == "" {
+		channel = "web"
+	}
+	keys := []string{}
+	if channel == "cli" {
+		name := cliSessionNameFromChatID(chatID)
+		if name != "" && name != "default" {
+			keys = append(keys, sessionTreeKey(channel, name))
+		}
+	}
+	return keys
+}
+
+func cliSessionNameFromChatID(chatID string) string {
+	idx := strings.LastIndex(chatID, ":")
+	if idx <= 0 || idx == len(chatID)-1 {
+		return chatID
+	}
+	return chatID[idx+1:]
+}
+
+func splitQualifiedSessionKey(value string) (channel, chatID string, ok bool) {
+	idx := strings.Index(value, ":")
+	if idx <= 0 || idx == len(value)-1 {
+		return "", "", false
+	}
+	channel = value[:idx]
+	for _, r := range channel {
+		if !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != '-' {
+			return "", "", false
+		}
+	}
+	return channel, value[idx+1:], true
+}
+
+func sessionTreeKey(channel, chatID string) string {
+	if channel == "" {
+		channel = "web"
+	}
+	return channel + ":" + chatID
+}
+
+type agentTenantInfo struct {
+	parentChannel string
+	parentChatID  string
+	role          string
+	instance      string
+}
+
+func normalizeSubAgentRow(row web.UserChatWithPreview, preview string) (web.UserChatWithPreview, bool) {
+	fullKey := row.FullKey
+	if fullKey == "" {
+		fullKey = row.ChatID
+	}
+	explicitParentChannel := row.ParentChannel
+	explicitParentChatID := row.ParentChatID
+	info, ok := parseAgentTenantChatID(fullKey)
+	if !ok {
+		return web.UserChatWithPreview{}, false
+	}
+	row.Channel = "agent"
+	row.Type = "agent"
+	row.ChatID = fullKey
+	row.FullKey = fullKey
+	row.Role = info.role
+	row.Instance = info.instance
+	row.ParentChannel = info.parentChannel
+	row.ParentChatID = info.parentChatID
+	if explicitParentChannel == "agent" && explicitParentChatID != "" {
+		row.ParentChannel = explicitParentChannel
+		row.ParentChatID = explicitParentChatID
+	}
+	row.Historical = !row.Running
+	row.Label = subAgentDisplayLabel(row.Role, row.Instance, preview)
+	return row, true
+}
+
+func subAgentRowKey(row web.UserChatWithPreview) string {
+	if row.FullKey != "" {
+		return row.FullKey
+	}
+	return row.ChatID
+}
+
+func appendSubAgentRow(rows []web.UserChatWithPreview, seen map[string]bool, parentChannel string, s agent.InteractiveSessionInfo) []web.UserChatWithPreview {
+	return upsertSubAgentRow(rows, seen, parentChannel, s)
+}
+
+func upsertSubAgentRow(rows []web.UserChatWithPreview, seen map[string]bool, parentChannel string, s agent.InteractiveSessionInfo) []web.UserChatWithPreview {
+	row := subAgentRowFromInteractiveSession(parentChannel, s)
+	key := subAgentRowKey(row)
+	if seen[key] {
+		for i := range rows {
+			if subAgentRowKey(rows[i]) == key {
+				lastActive := rows[i].LastActive
+				rows[i] = row
+				rows[i].LastActive = lastActive
+				break
+			}
+		}
+		return rows
+	}
+	seen[key] = true
+	return append(rows, row)
+}
+
+func subAgentRowFromInteractiveSession(parentChannel string, s agent.InteractiveSessionInfo) web.UserChatWithPreview {
+	chatID := s.Key
+	if chatID == "" {
+		chatID = fmt.Sprintf("%s:%s/%s", parentChannel, s.ChatID, s.Role)
+		if s.Instance != "" {
+			chatID += ":" + s.Instance
+		}
+	}
+	row, ok := normalizeSubAgentRow(web.UserChatWithPreview{
+		ChatID:     chatID,
+		FullKey:    chatID,
+		Channel:    "agent",
+		Label:      subAgentDisplayLabel(s.Role, s.Instance, s.Preview),
+		LastActive: time.Now().Format(time.RFC3339),
+		Preview:    s.Preview,
+		Running:    s.Running,
+	}, s.Preview)
+	if !ok {
+		return web.UserChatWithPreview{}
+	}
+	row.Running = s.Running
+	row.Historical = false
+	if s.ParentChannel != "" && s.ParentChatID != "" {
+		row.ParentChannel = s.ParentChannel
+		row.ParentChatID = s.ParentChatID
+	}
+	return row
+}
+
+func subAgentRowBelongsToAllowedWebParent(row web.UserChatWithPreview, allowedWebParents map[string]bool) bool {
+	parentChannel := row.ParentChannel
+	parentChatID := row.ParentChatID
+	for depth := 0; depth < 32; depth++ {
+		if parentChannel == "web" {
+			return allowedWebParents[parentChatID]
+		}
+		if parentChannel != "agent" {
+			return false
+		}
+		info, ok := parseAgentTenantChatID(parentChatID)
+		if !ok {
+			return false
+		}
+		parentChannel = info.parentChannel
+		parentChatID = info.parentChatID
+	}
+	return false
+}
+
+func parseAgentTenantChatID(chatID string) (agentTenantInfo, bool) {
+	slash := strings.LastIndex(chatID, "/")
+	if slash <= 0 || slash == len(chatID)-1 {
+		return agentTenantInfo{}, false
+	}
+	parent := chatID[:slash]
+	roleInstance := chatID[slash+1:]
+	colon := strings.LastIndex(roleInstance, ":")
+	role := roleInstance
+	instance := ""
+	if colon > 0 && colon < len(roleInstance)-1 {
+		role = roleInstance[:colon]
+		instance = roleInstance[colon+1:]
+	}
+	channelSep := strings.Index(parent, ":")
+	if channelSep <= 0 || channelSep == len(parent)-1 {
+		return agentTenantInfo{}, false
+	}
+	return agentTenantInfo{
+		parentChannel: parent[:channelSep],
+		parentChatID:  parent[channelSep+1:],
+		role:          role,
+		instance:      instance,
+	}, true
+}
+
+func subAgentDisplayLabel(role, instance, _ string) string {
+	base := role
+	if base == "" {
+		base = instance
+	}
+	if base == "" {
+		base = "SubAgent"
+	}
+	if instance != "" {
+		return base + "/" + instance
+	}
+	return base
+}
+
+func isInteractiveSubAgentTenant(channel, chatID string) bool {
+	if channel == "agent" || strings.HasPrefix(chatID, "agent:") {
+		return true
+	}
+	if _, ok := parseAgentTenantChatID(chatID); ok {
+		return true
+	}
+	prefix := channel + ":"
+	return strings.HasPrefix(chatID, prefix) && strings.Contains(chatID[len(prefix):], "/")
+}
+
+func displayLabelForTenant(channel, chatID, label string) string {
+	if label != "" {
+		return label
+	}
+	if channel != "cli" {
+		return chatID
+	}
+	workDir, name := parseCLIChatID(chatID)
+	if name == "" || name == "default" {
+		if base := filepath.Base(strings.TrimRight(workDir, string(filepath.Separator))); base != "" && base != "." {
+			return base
+		}
+		return workDir
+	}
+	return name
+}
+
+func parseCLIChatID(chatID string) (workDir, sessionName string) {
+	idx := strings.LastIndex(chatID, ":")
+	if idx <= 0 || idx == len(chatID)-1 {
+		return chatID, "default"
+	}
+	prefix := chatID[:idx]
+	suffix := chatID[idx+1:]
+	if !looksLikeWorkDir(prefix) {
+		return chatID, "default"
+	}
+	return prefix, suffix
+}
+
+func looksLikeWorkDir(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, ".") || strings.HasPrefix(s, "~") {
+		return true
+	}
+	return len(s) >= 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/')
 }
 
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1484,6 +1485,30 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	oneshotIA.running = false
 	if out != nil {
 		oneshotIA.lastReply = out.Content
+		oneshotIA.promptTokens = out.LastPromptTokens
+		oneshotIA.completionTokens = out.LastCompletionTokens
+		if len(cfg.Messages) > 0 {
+			oneshotIA.systemPrompt = cfg.Messages[0]
+		}
+		if len(out.Messages) > 0 {
+			start := 0
+			if out.Messages[0].Role == "system" {
+				start = 1
+			}
+			oneshotIA.messages = make([]llm.ChatMessage, len(out.Messages)-start)
+			copy(oneshotIA.messages, out.Messages[start:])
+		}
+		if out.Content != "" {
+			oneshotIA.messages = append(oneshotIA.messages, llm.NewAssistantMessage(out.Content))
+		} else {
+			oneshotIA.messages = append(oneshotIA.messages, llm.NewAssistantMessage("(empty response)"))
+		}
+		if out.ReasoningContent != "" && len(oneshotIA.messages) > 0 {
+			oneshotIA.messages[len(oneshotIA.messages)-1].ReasoningContent = out.ReasoningContent
+		}
+		if len(out.IterationHistory) > 0 {
+			oneshotIA.iterationHistory = out.IterationHistory
+		}
 		log.Ctx(ctx).WithField("iteration_count", len(oneshotIA.iterationHistory)).Info("oneshot subagent completed")
 	} else {
 		log.Ctx(ctx).Warn("oneshot subagent returned nil output")
@@ -1492,8 +1517,21 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		return &channelpkg.OutboundMsg{}, nil
 	}
 	oneshotIA.mu.Unlock()
+	if agentTenantSession != nil && out.Content != "" {
+		assistantMsg := llm.NewAssistantMessage(out.Content)
+		assistantMsg.ReasoningContent = out.ReasoningContent
+		if len(out.IterationHistory) > 0 {
+			if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+				assistantMsg.Detail = string(jsonBytes)
+			}
+		}
+		if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
+			log.Ctx(ctx).WithError(err).Warn("Failed to save one-shot agent assistant message with detail")
+		}
+	}
 	// Cascade-cancel any bg sessions spawned during this one-shot's Run(),
-	// then destroy the one-shot session immediately (no TTL retention).
+	// then destroy the one-shot session immediately. Persisted agent tenant
+	// history remains available for Web history/session-tree reads.
 	a.cancelChildSessions(oneshotKey)
 	a.destroyInteractiveSession(oneshotKey)
 
