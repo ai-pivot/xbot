@@ -71,9 +71,7 @@ func TestDrainAndProcessNotifications_Synchronous(t *testing.T) {
 		t.Fatal("timed out waiting for notification from NotifyCh")
 	}
 
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, notif)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotification(notif)
 
 	a.drainAndProcessNotifications("cli:test-chat")
 
@@ -89,9 +87,7 @@ func TestDrainAndProcessNotifications_Synchronous(t *testing.T) {
 		t.Fatal("drainAndProcessNotifications should have synchronously injected notification into bus.Inbound")
 	}
 
-	a.bgRunPendingMu.Lock()
-	remaining := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	remaining := a.pendingBgNotifications("cli:test-chat")
 	if len(remaining) != 0 {
 		t.Errorf("bgRunPending should be empty after draining matching session, got %d items", len(remaining))
 	}
@@ -133,9 +129,7 @@ func TestDrainAndProcessNotifications_CrossSessionIsolation(t *testing.T) {
 	}
 
 	// Buffer both
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, notifs...)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotifications(notifs)
 
 	// Drain only chat-a's notifications
 	a.drainAndProcessNotifications("cli:chat-a")
@@ -154,10 +148,7 @@ func TestDrainAndProcessNotifications_CrossSessionIsolation(t *testing.T) {
 		}
 	}
 
-	// chat-b's notification should still be in bgRunPending
-	a.bgRunPendingMu.Lock()
-	remaining := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	remaining := a.pendingBgNotifications("cli:chat-b")
 	if len(remaining) != 1 {
 		t.Fatalf("bgRunPending should have exactly 1 item (chat-b's), got %d", len(remaining))
 	}
@@ -210,9 +201,7 @@ func TestBgNotifyLoop_AlwaysBuffers_NoIdlePath(t *testing.T) {
 	}
 
 	// Verify notification is in bgRunPending (not processed directly)
-	a.bgRunPendingMu.Lock()
-	pending := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	pending := a.pendingBgNotifications(chatKey)
 
 	if len(pending) == 0 {
 		t.Fatal("bgRunPending should have the notification — bgNotifyLoop must ALWAYS buffer, never process directly")
@@ -361,9 +350,7 @@ func TestDrainAndProcessNotifications_ConcurrentSafety(t *testing.T) {
 	}
 
 	// Buffer all at once
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, notifs...)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotifications(notifs)
 
 	// Drain concurrently from two goroutines (simulating chatProcessLoop + chatWorker race)
 	var wg sync.WaitGroup
@@ -440,9 +427,7 @@ func TestDrainAndProcessNotifications_AfterResponseSent(t *testing.T) {
 		return 0, nil
 	})
 	notif := <-mgr.NotifyCh
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, notif)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotification(notif)
 
 	// Simulate chatProcessLoop turn
 	ss.busy.Store(true)
@@ -523,9 +508,8 @@ func TestBgNotifyLoop_NoDirectProcessing_WithActiveSession(t *testing.T) {
 
 	// Wait for bgNotifyLoop to read, buffer, and signal all 5 notifications
 	requireEventual(t, 5*time.Second, 10*time.Millisecond, func() error {
-		a.bgRunPendingMu.Lock()
-		n := len(a.bgRunPending)
-		a.bgRunPendingMu.Unlock()
+		pending := a.pendingBgNotifications(chatKey)
+		n := len(pending)
 		if n < 5 {
 			return fmt.Errorf("bgRunPending has %d/5 notifications", n)
 		}
@@ -586,9 +570,7 @@ func TestDrainAndProcessNotifications_CronFired(t *testing.T) {
 		Sid:     "user-1",
 		Message: "check server status",
 	}
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, cronNotif)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotification(cronNotif)
 
 	a.drainAndProcessNotifications("cli:test-chat")
 
@@ -609,9 +591,7 @@ func TestDrainAndProcessNotifications_CronFired(t *testing.T) {
 	}
 
 	// Verify nothing left in bgRunPending
-	a.bgRunPendingMu.Lock()
-	remaining := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	remaining := a.pendingBgNotifications("cli:test-chat")
 	if len(remaining) != 0 {
 		t.Errorf("bgRunPending should be empty after draining, got %d items", len(remaining))
 	}
@@ -656,9 +636,7 @@ func TestBgNotifyLoop_CronFired_BuffersAndSignals(t *testing.T) {
 	}
 
 	// Verify notification is in bgRunPending (not processed directly)
-	a.bgRunPendingMu.Lock()
-	pending := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	pending := a.pendingBgNotifications(chatKey)
 
 	if len(pending) == 0 {
 		t.Fatal("bgRunPending should have the CronFired notification")
@@ -721,9 +699,7 @@ func TestDrainAndProcessNotifications_MixedTypes(t *testing.T) {
 		Sid:     "user-1",
 		Message: "check health",
 	}
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, bgNotif, cronNotif)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotifications([]tools.BgNotification{bgNotif, cronNotif})
 
 	a.drainAndProcessNotifications(chatKey)
 
