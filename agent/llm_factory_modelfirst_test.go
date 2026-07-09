@@ -149,6 +149,49 @@ func TestResolveLLM_FallsBackToSystemDefault(t *testing.T) {
 	}
 }
 
+// TestResolveLLM_NonCLIChannel_InheritsTierConfig verifies that a non-CLI channel
+// (e.g. GitHub) with a different senderID can still auto-bind to the Balance tier
+// model configured under the canonical sender "cli_user". This is the fix for
+// GitHub PR review requests failing with empty model because tier config was
+// per-sender scoped.
+func TestResolveLLM_NonCLIChannel_InheritsTierConfig(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	db2, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db2: %v", err)
+	}
+	t.Cleanup(func() { db2.Close() })
+	settingsSvc := NewSettingsService(sqlite.NewUserSettingsService(db2))
+	f.SetSettingsService(settingsSvc)
+
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-balance", SenderID: "cli_user", Name: "balance-sub", Provider: "openai",
+		BaseURL: "https://api.balance.example/v1", APIKey: "sk-balance", Model: "",
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Set Balance tier config under the canonical sender "cli_user".
+	if err := settingsSvc.SetSetting(thinkingModeChannel, "cli_user", "tier_balance", sub.ID+"|deepseek-v4-pro"); err != nil {
+		t.Fatalf("set tier_balance: %v", err)
+	}
+
+	// A GitHub channel session with a different senderID should inherit the
+	// tier config via canonical sender fallback and auto-bind the model.
+	githubSender := "ai-pivot/xbot#pr-999"
+	_, model, _, _, _ := f.ResolveLLM(githubSender, githubSender, "github")
+	if model != "deepseek-v4-pro" {
+		t.Errorf("model = %q, want deepseek-v4-pro (Balance tier via canonical sender fallback)", model)
+	}
+
+	// Verify the session was persisted to the tenants table.
+	subID, persistedModel, _ := f.tenantSvc.GetTenantSubscription("github", githubSender)
+	if subID != sub.ID || persistedModel != "deepseek-v4-pro" {
+		t.Errorf("tenants table = (%q, %q), want (%q, deepseek-v4-pro)", subID, persistedModel, sub.ID)
+	}
+}
+
 // TestSelectModel_RejectsDisabledModel verifies that selecting a disabled model
 // fails and does not persist.
 func TestSelectModel_RejectsDisabledModel(t *testing.T) {

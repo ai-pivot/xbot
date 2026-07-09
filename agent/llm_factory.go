@@ -1475,10 +1475,32 @@ func (f *LLMFactory) resolveTierModel(senderID, value string) (subID, model stri
 	return "", "", true
 }
 
+// canonicalSettingsSender is the sender ID under which global user settings
+// (tier configs, thinking_mode) are stored via the CLI settings panel. Non-CLI
+// channels (GitHub, Feishu, Web) have different sender IDs, so global setting
+// queries fall back to this canonical sender — making tier/thinking config a
+// single per-user value regardless of which channel the LLM call comes from.
+const canonicalSettingsSender = "cli_user"
+
+// getGlobalSetting reads a global user setting from the canonical channel,
+// falling back to the canonical sender "cli_user" when the current sender has
+// no value. This lets non-CLI channels inherit the CLI user's global config
+// (tier, thinking_mode) without each channel needing its own copy.
+func (f *LLMFactory) getGlobalSetting(senderID, key string) string {
+	if val := f.getSetting(senderID, thinkingModeChannel, key); val != "" {
+		return val
+	}
+	if senderID != canonicalSettingsSender {
+		return f.getSetting(canonicalSettingsSender, thinkingModeChannel, key)
+	}
+	return ""
+}
+
 // userTierModel returns the per-user tier model setting from user_settings DB.
 // Value is "subID|model" or legacy plain "model". Returns "" when unset.
+// Falls back to canonical sender so non-CLI channels inherit CLI tier config.
 func (f *LLMFactory) userTierModel(senderID, tier string) string {
-	return f.getSetting(senderID, thinkingModeChannel, "tier_"+tier)
+	return f.getGlobalSetting(senderID, "tier_"+tier)
 }
 
 // parseTierValue splits a tier config value into (subID, model).
@@ -1618,8 +1640,9 @@ const thinkingModeChannel = channel.ThinkingModeChannel
 // userThinkingMode returns the global thinking_mode user setting for a sender
 // (the Ctrl+M toggle / /settings Select), stored under the canonical channel.
 // Returns "" (auto) when unset or the settings service is unavailable.
+// Falls back to canonical sender so non-CLI channels inherit CLI thinking_mode.
 // Per-model overrides still win above this; sub.ThinkingMode is no longer
 // consulted.
 func (f *LLMFactory) userThinkingMode(senderID string) string {
-	return f.getSetting(senderID, thinkingModeChannel, "thinking_mode")
+	return f.getGlobalSetting(senderID, "thinking_mode")
 }
