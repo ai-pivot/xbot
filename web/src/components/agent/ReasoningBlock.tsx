@@ -1,0 +1,44 @@
+/**
+ * ReasoningBlock — renders the agent's reasoning/thinking text (Spec 4 §3.3, §3.5).
+ *
+ * In the new folding model this component is used as the *content* inside a
+ * FoldedLine — it renders the Markdown body only. The folding arrow and toggle
+ * are handled by the parent FoldedLine. When `streaming` is true, a shimmer
+ * indicator is appended to the content.
+ */
+import { memo } from 'react'
+
+import { MarkdownRenderer } from './MarkdownRenderer'
+import { useI18n } from '@/providers/i18n'
+
+interface ReasoningBlockProps {
+  content: string
+  /** True while the reasoning is still being streamed (shows indicator). */
+  streaming?: boolean
+}
+
+export const ReasoningBlock = memo(function ReasoningBlock({
+  content,
+  streaming = false,
+}: ReasoningBlockProps) {
+  const { t } = useI18n()
+  if (!content) return null
+
+  return (
+    <div className="py-1">
+      <MarkdownRenderer content={content} className="text-xs text-text-secondary" />
+      {streaming && (
+        <span
+          className="mt-1 inline-flex items-center gap-1 text-[11px] text-text-muted"
+          aria-label={t('agent.reasoningStreaming')}
+        >
+          <span
+            className="size-1.5 rounded-full animate-pulse"
+            style={{ backgroundColor: 'var(--status-running)' }}
+          />
+          <span>{t('agent.reasoningStreaming')}</span>
+        </span>
+      )}
+    </div>
+  )
+})

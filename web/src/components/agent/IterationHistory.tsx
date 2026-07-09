@@ -1,0 +1,64 @@
+/**
+ * IterationGroup — renders a single iteration: T → C → O order (Spec 4 §3.3).
+ *
+ * Replaces the old IterationHistory component. Each iteration renders:
+ *   - T (reasoning): FoldedLine, always folded by default
+ *   - C (tools): FoldedToolGroup (merges consecutive tools at minimal/all levels)
+ *   - O (text output): MarkdownRenderer, always shown
+ *
+ * The component is used by TurnBody for committed iterations, and by
+ * AssistantMessage for the "all" level summary expansion.
+ */
+import { memo } from 'react'
+
+import { FoldedLine } from './FoldedLine'
+import { FoldedToolGroup } from './FoldedToolGroup'
+import { MarkdownRenderer } from './MarkdownRenderer'
+import { ReasoningBlock } from './ReasoningBlock'
+import { useI18n } from '@/providers/i18n'
+import type { CollapseLevel } from '@/types/agent'
+import type { WebIteration } from '@/types/shared'
+
+interface IterationGroupProps {
+  iteration: WebIteration
+  level: CollapseLevel
+}
+
+export const IterationGroup = memo(function IterationGroup({
+  iteration,
+  level,
+}: IterationGroupProps) {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex flex-col gap-1">
+      {/* T: reasoning (always folded by default) — show character count, not T0/T1 */}
+      {iteration.reasoning && (
+        <FoldedLine
+          title={t('agent.thinkingChars', { count: iteration.reasoning.length })}
+          defaultOpen={false}
+        >
+          <ReasoningBlock content={iteration.reasoning} />
+        </FoldedLine>
+      )}
+
+      {/* C: tool calls (FoldedToolGroup handles merging) */}
+      {iteration.tools.length > 0 && (
+        <FoldedToolGroup tools={iteration.tools} level={level} />
+      )}
+
+      {/* O: text output (always shown) */}
+      {iteration.thinking && (
+        <MarkdownRenderer
+          content={iteration.thinking}
+          className="text-sm text-text-primary"
+        />
+      )}
+
+      {/* Fallback: if nothing in this iteration, show a subtle hint */}
+      {!iteration.reasoning && iteration.tools.length === 0 && !iteration.thinking && (
+        <span className="text-xs text-text-muted">{t('agent.none')}</span>
+      )}
+    </div>
+  )
+})
