@@ -116,6 +116,8 @@ export function useTabManager(): TabManager {
     setActiveTabId(active)
   }, [])
 
+  const openTabInternalRef = useRef<(input: Omit<Tab, 'id'>) => string>(() => '')
+
   const bindApi = useCallback(
     (api: DockviewApi | null) => {
       apiRef.current = api
@@ -127,7 +129,7 @@ export function useTabManager(): TabManager {
       resync()
       const queued = pending.current
       pending.current = []
-      queued.forEach((t) => openTabInternal(t))
+      queued.forEach((t) => openTabInternalRef.current(t))
       // Cleanup is owned by the container's effect; store disposers on the api ref.
       ;(apiRef as unknown as { _dispose?: () => void })._dispose = () => {
         offAdd.dispose()
@@ -138,7 +140,7 @@ export function useTabManager(): TabManager {
     [resync],
   )
 
-  const openTabInternal = useCallback((input: Omit<Tab, 'id'>): string => {
+  const openTab = useCallback((input: Omit<Tab, 'id'>): string => {
     if (input.type === 'terminal') return ''
     const api = apiRef.current
     if (!api) {
@@ -199,10 +201,8 @@ export function useTabManager(): TabManager {
     return tabId
   }, [])
 
-  const openTab = useCallback(
-    (input: Omit<Tab, 'id'>): string => openTabInternal(input),
-    [openTabInternal],
-  )
+  // Keep the ref in sync so bindApi can flush queued tabs through openTab.
+  openTabInternalRef.current = openTab
 
   const closeTab = useCallback((id: string) => {
     const api = apiRef.current

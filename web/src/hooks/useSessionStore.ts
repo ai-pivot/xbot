@@ -119,7 +119,7 @@ interface RawChat {
   synthetic?: boolean
   children?: RawChat[]
 }
-interface RawTreeNode extends RawChat {}
+type RawTreeNode = RawChat
 interface CreateChatResponse {
   ok: boolean
   chat_id?: string

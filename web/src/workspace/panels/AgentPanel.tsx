@@ -13,7 +13,7 @@ import { toast } from 'sonner'
 import { RotateCcw } from 'lucide-react'
 
 import { useAskUser } from '@/hooks/useAskUser'
-import { useChatMessages } from '@/hooks/useChatMessages'
+import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
 import { useCollapseLevel } from '@/hooks/useCollapseLevel'
 import { useProgressStream } from '@/hooks/useProgressStream'
 import { useTodos } from '@/hooks/useTodos'
@@ -182,11 +182,14 @@ export function AgentPanel({ params }: PanelProps) {
     setRewindOpen(true)
   }, [busy, chat.messages])
 
-  const sendMessage = useCallback((content: string, attachments?: Parameters<typeof chat.sendMessage>[1]) => {
+  const sendMessageRef = useRef(chat.sendMessage)
+  sendMessageRef.current = chat.sendMessage
+
+  const sendMessage = useCallback((content: string, attachments?: Attachments) => {
     setRewindResult(null)
     setFollowResetToken((v) => v + 1)
-    chat.sendMessage(content, attachments)
-  }, [chat])
+    sendMessageRef.current(content, attachments)
+  }, [])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
