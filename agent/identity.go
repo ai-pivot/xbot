@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/base32"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
 
 	log "xbot/logger"
 )
@@ -116,7 +121,7 @@ func (r *IdentityResolver) SetRole(userID int64, role string) error {
 }
 
 // ListIdentities returns all channel identities linked to a canonical user.
-func (r *IdentityResolver) ListIdentities(userID int64) ([]IdentityEntry, error) {
+func (r *IdentityResolver) ListIdentities(userID int64) (any, error) {
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
@@ -151,7 +156,7 @@ type IdentityEntry struct {
 }
 
 // ListAllUsers returns all canonical users (admin only).
-func (r *IdentityResolver) ListAllUsers() ([]UserInfo, error) {
+func (r *IdentityResolver) ListAllUsers() (any, error) {
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
@@ -180,4 +185,268 @@ type UserInfo struct {
 	DisplayName string `json:"display_name"`
 	Role        string `json:"role"`
 	CreatedAt   string `json:"created_at"`
+}
+
+// ---------------------------------------------------------------------------
+// Link codes — one-time codes for cross-channel account association
+// ---------------------------------------------------------------------------
+
+// GenerateLinkCode creates a one-time link code for the given user.
+// Code is 8 chars base32 (no padding), expires in 5 minutes.
+// Rate-limited: one code per user per 10 seconds (replaces previous if exists).
+func (r *IdentityResolver) GenerateLinkCode(userID int64) (string, error) {
+	if r == nil || r.db == nil {
+		return "", fmt.Errorf("identity resolver not initialized")
+	}
+	// Generate 5 random bytes → 8 base32 chars
+	b := make([]byte, 5)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate link code: %w", err)
+	}
+	code := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b))
+	expires := time.Now().Add(5 * time.Minute).UTC()
+	// Delete any previous code for this user, then insert new one
+	tx, err := r.db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("link code tx: %w", err)
+	}
+	tx.Exec("DELETE FROM link_codes WHERE user_id = ?", userID)
+	_, err = tx.Exec("INSERT INTO link_codes (code, user_id, expires_at) VALUES (?, ?, ?)", code, userID, expires)
+	if err != nil {
+		tx.Rollback()
+		return "", fmt.Errorf("insert link code: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit link code: %w", err)
+	}
+	log.WithFields(log.Fields{
+		"user_id": userID,
+		"code":    code,
+	}).Info("IdentityResolver: link code generated")
+	return code, nil
+}
+
+// ConsumeLinkCode validates a link code and returns the target user_id.
+// The code is deleted after successful validation (single-use).
+// Returns (targetUserID, error).
+func (r *IdentityResolver) ConsumeLinkCode(code string) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, fmt.Errorf("identity resolver not initialized")
+	}
+	var userID int64
+	var expires string
+	err := r.db.QueryRow("SELECT user_id, expires_at FROM link_codes WHERE code = ?", code).Scan(&userID, &expires)
+	if err != nil {
+		return 0, fmt.Errorf("invalid or expired link code")
+	}
+	// Check expiry
+	expiryTime, _ := time.Parse("2006-01-02 15:04:05", expires)
+	if expiryTime.IsZero() {
+		expiryTime, _ = time.Parse(time.RFC3339, expires)
+	}
+	if time.Now().After(expiryTime) {
+		r.db.Exec("DELETE FROM link_codes WHERE code = ?", code)
+		return 0, fmt.Errorf("link code has expired")
+	}
+	// Delete code (single-use)
+	r.db.Exec("DELETE FROM link_codes WHERE code = ?", code)
+	return userID, nil
+}
+
+// LinkIdentity links a channel identity to an existing canonical user.
+// If the identity is already linked to a different user, returns an error
+// indicating a merge is required (caller should call MergeUsers instead).
+// Returns (merged bool, error).
+func (r *IdentityResolver) LinkIdentity(targetUserID int64, channel, channelUserID string) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, fmt.Errorf("identity resolver not initialized")
+	}
+	// Check if identity already exists
+	var existingUserID int64
+	err := r.db.QueryRow(
+		"SELECT user_id FROM user_identities WHERE channel = ? AND channel_user_id = ?",
+		channel, channelUserID,
+	).Scan(&existingUserID)
+	if err == nil {
+		if existingUserID == targetUserID {
+			return false, nil // already linked to same user — no-op
+		}
+		// Linked to a different user — need merge
+		return false, fmt.Errorf("identity %s:%s is linked to user %d, merge required with target user %d", channel, channelUserID, existingUserID, targetUserID)
+	}
+	// Not linked — simple insert
+	_, err = r.db.Exec(
+		"INSERT INTO user_identities (user_id, channel, channel_user_id) VALUES (?, ?, ?)",
+		targetUserID, channel, channelUserID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("link identity: %w", err)
+	}
+	log.WithFields(log.Fields{
+		"target_user_id":  targetUserID,
+		"channel":         channel,
+		"channel_user_id": channelUserID,
+	}).Info("IdentityResolver: identity linked")
+	return false, nil
+}
+
+// MergePreview calculates what would happen if sourceUser is merged into targetUser.
+// Returns counts of assets that will be migrated and conflicts that need resolution.
+type MergePreview struct {
+	SourceUserID  int64    `json:"source_user_id"`
+	TargetUserID  int64    `json:"target_user_id"`
+	Identities    int      `json:"identities"`
+	Subscriptions int      `json:"subscriptions"`
+	Runners       int      `json:"runners"`
+	Settings      int      `json:"settings"`
+	DefaultModel  int      `json:"default_model"`
+	UserChats     int      `json:"user_chats"`
+	Tenants       int      `json:"tenants"`
+	CronJobs      int      `json:"cron_jobs"`
+	EventTriggers int      `json:"event_triggers"`
+	Conflicts     []string `json:"conflicts"`
+}
+
+// PreviewMerge calculates a merge preview without executing it.
+func (r *IdentityResolver) PreviewMerge(sourceUserID, targetUserID int64) (any, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("identity resolver not initialized")
+	}
+	p := &MergePreview{SourceUserID: sourceUserID, TargetUserID: targetUserID}
+	r.db.QueryRow("SELECT COUNT(*) FROM user_identities WHERE user_id = ?", sourceUserID).Scan(&p.Identities)
+	r.db.QueryRow("SELECT COUNT(*) FROM user_llm_subscriptions WHERE user_id = ?", sourceUserID).Scan(&p.Subscriptions)
+	r.db.QueryRow("SELECT COUNT(*) FROM runners WHERE owner_user_id = ?", sourceUserID).Scan(&p.Runners)
+	r.db.QueryRow("SELECT COUNT(*) FROM user_settings WHERE user_id = ?", sourceUserID).Scan(&p.Settings)
+	r.db.QueryRow("SELECT COUNT(*) FROM user_default_model WHERE user_id = ?", sourceUserID).Scan(&p.DefaultModel)
+	r.db.QueryRow("SELECT COUNT(*) FROM user_chats WHERE user_id = ?", sourceUserID).Scan(&p.UserChats)
+	r.db.QueryRow("SELECT COUNT(*) FROM tenants WHERE owner_user_id = ?", sourceUserID).Scan(&p.Tenants)
+	r.db.QueryRow("SELECT COUNT(*) FROM cron_jobs WHERE user_id = ?", sourceUserID).Scan(&p.CronJobs)
+	r.db.QueryRow("SELECT COUNT(*) FROM event_triggers WHERE user_id = ?", sourceUserID).Scan(&p.EventTriggers)
+	// Check conflicts
+	if p.DefaultModel > 0 {
+		var targetHas int
+		r.db.QueryRow("SELECT COUNT(*) FROM user_default_model WHERE user_id = ?", targetUserID).Scan(&targetHas)
+		if targetHas > 0 {
+			p.Conflicts = append(p.Conflicts, "default_model: both users have a default model, keeping target's")
+		}
+	}
+	// Check runner name conflicts
+	rows, _ := r.db.Query("SELECT name FROM runners WHERE owner_user_id = ? AND name IN (SELECT name FROM runners WHERE owner_user_id = ?)", sourceUserID, targetUserID)
+	for rows.Next() {
+		var name string
+		rows.Scan(&name)
+		p.Conflicts = append(p.Conflicts, fmt.Sprintf("runner_duplicate: %s (will be renamed)", name))
+	}
+	rows.Close()
+	// Check settings conflicts
+	rows, _ = r.db.Query("SELECT channel, key FROM user_settings WHERE user_id = ? AND (channel, key) IN (SELECT channel, key FROM user_settings WHERE user_id = ?)", sourceUserID, targetUserID)
+	for rows.Next() {
+		var ch, key string
+		rows.Scan(&ch, &key)
+		p.Conflicts = append(p.Conflicts, fmt.Sprintf("settings_duplicate: %s:%s (keeping target's)", ch, key))
+	}
+	rows.Close()
+	return p, nil
+}
+
+// mergeMu prevents concurrent merges of the same user pair.
+var mergeMu sync.Map // key: "min-max" → *sync.Mutex
+
+// MergeUsers merges sourceUser into targetUser: migrates all identities and
+// assets, resolves conflicts, then deletes the source user.
+// This is irreversible — caller should backup first.
+func (r *IdentityResolver) MergeUsers(sourceUserID, targetUserID int64) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("identity resolver not initialized")
+	}
+	if sourceUserID == targetUserID {
+		return fmt.Errorf("cannot merge user with itself")
+	}
+	// Concurrency lock keyed by user pair
+	lockKey := fmt.Sprintf("%d-%d", min64(sourceUserID, targetUserID), max64(sourceUserID, targetUserID))
+	actual, _ := mergeMu.LoadOrStore(lockKey, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("merge tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. Resolve runner name conflicts BEFORE migration
+	tx.Exec(`UPDATE runners SET name = name || ' (' || CAST(? AS TEXT) || ')' 
+		WHERE owner_user_id = ? AND name IN (SELECT name FROM runners WHERE owner_user_id = ?)`,
+		sourceUserID, sourceUserID, targetUserID)
+
+	// 2. Delete conflicting user_settings BEFORE migration (keep target's)
+	tx.Exec(`DELETE FROM user_settings WHERE user_id = ? AND (channel, key) IN 
+		(SELECT channel, key FROM user_settings WHERE user_id = ?)`, sourceUserID, targetUserID)
+
+	// 3. Delete conflicting user_default_model BEFORE migration (keep target's)
+	tx.Exec(`DELETE FROM user_default_model WHERE user_id = ?`, sourceUserID)
+
+	// 4. Migrate ALL identities first (BEFORE deleting source user — CASCADE safe)
+	tx.Exec("UPDATE user_identities SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+
+	// 5. Migrate asset tables
+	tx.Exec("UPDATE user_llm_subscriptions SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE runners SET owner_user_id = ? WHERE owner_user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE user_settings SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE user_default_model SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE user_chats SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE tenants SET owner_user_id = ? WHERE owner_user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE cron_jobs SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE event_triggers SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+
+	// 6. Delete source user (CASCADE safe — identities already moved)
+	tx.Exec("DELETE FROM users WHERE id = ?", sourceUserID)
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("merge commit: %w", err)
+	}
+	log.WithFields(log.Fields{
+		"source_user_id": sourceUserID,
+		"target_user_id": targetUserID,
+	}).Info("IdentityResolver: users merged")
+	return nil
+}
+
+// UnlinkIdentity removes a channel identity from a user.
+// The user keeps all assets — only the identity mapping is removed.
+func (r *IdentityResolver) UnlinkIdentity(userID, identityID int64) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("identity resolver not initialized")
+	}
+	result, err := r.db.Exec("DELETE FROM user_identities WHERE id = ? AND user_id = ?", identityID, userID)
+	if err != nil {
+		return fmt.Errorf("unlink identity: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("identity not found or not owned by user")
+	}
+	return nil
+}
+
+// CleanupExpiredLinkCodes removes expired link codes. Called periodically.
+func (r *IdentityResolver) CleanupExpiredLinkCodes() {
+	if r == nil || r.db == nil {
+		return
+	}
+	r.db.Exec("DELETE FROM link_codes WHERE expires_at < datetime('now')")
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

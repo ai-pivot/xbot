@@ -268,15 +268,17 @@ func (h *Hub) broadcastToCLI(msg protocol.WSMessage) {
 
 // Client represents a single WebSocket client
 type Client struct {
-	conn      *websocket.Conn
-	sendCh    chan protocol.WSMessage
-	done      chan struct{}
-	closeOnce sync.Once
-	hub       *Hub
-	userID    string
-	id        string                      // unique client ID (UUID), generated at connection time
-	syncCh    atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq
-	isCLI     bool                        // true if client_type=cli (runner token auth)
+	conn            *websocket.Conn
+	sendCh          chan protocol.WSMessage
+	done            chan struct{}
+	closeOnce       sync.Once
+	hub             *Hub
+	userID          string
+	id              string                      // unique client ID (UUID), generated at connection time
+	syncCh          atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq
+	isCLI           bool                        // true if client_type=cli (runner token auth)
+	canonicalUserID int64                       // canonical user ID (from IdentityResolver)
+	canonicalRole   string                      // user role ("admin" | "user")
 
 	// statelessSlot holds the latest stateless message per type (progress,
 	// stream_content, etc.).  Each type is kept at most once — newer values

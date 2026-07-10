@@ -599,6 +599,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		cs := sqlite.NewChatService(webDB)
 		return cs.RenameChat("web", senderID, chatID, label)
 	}
+
+	// Identity resolver — wire agent's IdentityResolver to WebChannel
+	callbacks.IdentityResolver = ag.IdentityResolver()
+
 	return callbacks
 }
 

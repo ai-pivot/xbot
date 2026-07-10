@@ -171,6 +171,59 @@ type WebCallbacks struct {
 	ChatDelete func(senderID, chatID string) error
 	// ChatRename renames a chatroom.
 	ChatRename func(senderID, chatID, label string) error
+
+	// IdentityResolver provides canonical user identity resolution, link code
+	// generation, merge preview/execution, and admin user management.
+	IdentityResolver IdentityResolverAPI
+}
+
+// IdentityResolverAPI is the interface WebChannel uses for account linking.
+// Implemented by *agent.IdentityResolver.
+type IdentityResolverAPI interface {
+	Resolve(channel, channelUserID string) (int64, string, error)
+	IsAdmin(userID int64) bool
+	SetRole(userID int64, role string) error
+	ListIdentities(userID int64) (any, error)
+	ListAllUsers() (any, error)
+	GenerateLinkCode(userID int64) (string, error)
+	ConsumeLinkCode(code string) (int64, error)
+	LinkIdentity(targetUserID int64, channel, channelUserID string) (bool, error)
+	PreviewMerge(sourceUserID, targetUserID int64) (any, error)
+	MergeUsers(sourceUserID, targetUserID int64) error
+	UnlinkIdentity(userID, identityID int64) error
+}
+
+// IdentityEntry is a channel identity linked to a canonical user.
+type IdentityEntry struct {
+	ID            int64  `json:"id"`
+	UserID        int64  `json:"user_id"`
+	Channel       string `json:"channel"`
+	ChannelUserID string `json:"channel_user_id"`
+	LinkedAt      string `json:"linked_at"`
+}
+
+// UserInfo represents a canonical user's metadata.
+type UserInfo struct {
+	ID          int64  `json:"id"`
+	DisplayName string `json:"display_name"`
+	Role        string `json:"role"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// MergePreview shows what would happen if sourceUser is merged into targetUser.
+type MergePreview struct {
+	SourceUserID  int64    `json:"source_user_id"`
+	TargetUserID  int64    `json:"target_user_id"`
+	Identities    int      `json:"identities"`
+	Subscriptions int      `json:"subscriptions"`
+	Runners       int      `json:"runners"`
+	Settings      int      `json:"settings"`
+	DefaultModel  int      `json:"default_model"`
+	UserChats     int      `json:"user_chats"`
+	Tenants       int      `json:"tenants"`
+	CronJobs      int      `json:"cron_jobs"`
+	EventTriggers int      `json:"event_triggers"`
+	Conflicts     []string `json:"conflicts"`
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.
@@ -446,6 +499,16 @@ func (wc *WebChannel) Start() error {
 	// Cross-channel browsing API
 	mux.HandleFunc("/api/context-info", wc.authMiddleware(wc.handleContextInfo))
 	mux.HandleFunc("/api/channels", wc.authMiddleware(wc.handleChannels))
+
+	// Account linking + identity management API
+	mux.HandleFunc("/api/account/link-code", wc.authMiddleware(wc.handleLinkCode))
+	mux.HandleFunc("/api/account/link", wc.authMiddleware(wc.handleLink))
+	mux.HandleFunc("/api/account/identities", wc.authMiddleware(wc.handleIdentities))
+	mux.HandleFunc("/api/account/identities/{id}", wc.authMiddleware(wc.handleUnlinkIdentity))
+
+	// Admin management API
+	mux.HandleFunc("/api/admin/users", wc.authMiddleware(wc.handleAdminUsers))
+	mux.HandleFunc("/api/admin/users/{id}/role", wc.authMiddleware(wc.handleAdminSetRole))
 
 	// Static files
 	if wc.staticDir != "" {
@@ -727,6 +790,19 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		username = si.username
 	}
 
+	// Resolve canonical user identity (injects user_id + role for agent layer).
+	var wsUserID int64
+	var wsRole string
+	if wc.callbacks.IdentityResolver != nil {
+		resolveChannel := "web"
+		if si != nil && si.feishuUserID != "" {
+			resolveChannel = "feishu"
+		} else if senderID == "admin" || senderID == "cli_user" {
+			resolveChannel = "cli"
+		}
+		wsUserID, wsRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, senderID)
+	}
+
 	// Upgrade to WebSocket
 	conn, err := wc.wsUpgrader().Upgrade(w, r, nil)
 	if err != nil {
@@ -736,14 +812,16 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	isCLI := r.URL.Query().Get("client_type") == "cli"
 	client := &Client{
-		conn:         conn,
-		sendCh:       make(chan protocol.WSMessage, webSendChBufSize),
-		done:         make(chan struct{}),
-		hub:          wc.hub,
-		userID:       senderID,
-		id:           strings.ReplaceAll(uuid.New().String(), "-", ""),
-		isCLI:        isCLI,
-		statelessSig: make(chan struct{}, 1),
+		conn:            conn,
+		sendCh:          make(chan protocol.WSMessage, webSendChBufSize),
+		done:            make(chan struct{}),
+		hub:             wc.hub,
+		userID:          senderID,
+		id:              strings.ReplaceAll(uuid.New().String(), "-", ""),
+		isCLI:           isCLI,
+		canonicalUserID: wsUserID,
+		canonicalRole:   wsRole,
+		statelessSig:    make(chan struct{}, 1),
 	}
 
 	wc.hub.addClient(client.id, client)
@@ -1185,6 +1263,11 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 
 			if feishuUserID != "" {
 				metadata["feishu_user_id"] = feishuUserID
+			}
+			// Inject canonical user identity for agent layer
+			if c.canonicalUserID > 0 {
+				metadata["user_id"] = strconv.FormatInt(c.canonicalUserID, 10)
+				metadata["user_role"] = c.canonicalRole
 			}
 
 			// Resolve active session (channel + chatID) — supports cross-channel browsing.

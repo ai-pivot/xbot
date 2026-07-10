@@ -438,6 +438,18 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 	case "/plugin":
 		return m.handlePluginCommand(parts)
 
+	case "/link-account":
+		// /link-account <code> — link this CLI identity to another channel's user
+		if len(parts) < 2 {
+			m.showSystemMsg("用法: /link-account <code>\n\n在 Web 端「设置 → 账号关联」生成关联码，然后在此处输入。", feedbackWarning)
+			return nil
+		}
+		code := parts[1]
+		m.sendToAgent("/link-account " + code) // passthrough to agent-level handler
+
+	case "/unlink-account":
+		m.sendToAgent("/unlink-account") // passthrough to agent-level handler
+
 	default:
 		// /debug subcommands for runtime diagnostics
 		if strings.HasPrefix(command, "/debug") {
