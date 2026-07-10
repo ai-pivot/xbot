@@ -56,6 +56,39 @@ func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
 
 // ownOrAdmin checks that the caller owns the resource or has admin privileges.
 // Empty chatID is treated as self-access (defaults to caller's bizID).
+// Also checks canonical session ownership: if the session (channel+chatID) is
+// owned by the same canonical user_id, access is granted even if chatID != bizID.
+func (h *RPCContext) ownOrAdmin(ctx context.Context, channel, chatID string) bool {
+	if isAdmin(ctx) || chatID == "" || chatID == rpcBizID(ctx) {
+		return true
+	}
+	// Check canonical session ownership
+	if h.Ag != nil && h.Ag.IdentityResolver() != nil {
+		userID := rpcUserID(ctx)
+		if userID > 0 {
+			return h.sessionOwnedByUser(channel, chatID, userID)
+		}
+	}
+	return false
+}
+
+// sessionOwnedByUser checks if a tenant (channel+chatID) has owner_user_id == userID.
+func (h *RPCContext) sessionOwnedByUser(channel, chatID string, userID int64) bool {
+	if h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
+		return false
+	}
+	var ownerUserID int64
+	err := h.Ag.MultiSession().DB().Conn().QueryRow(
+		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = ? AND chat_id = ?`,
+		channel, chatID,
+	).Scan(&ownerUserID)
+	if err != nil {
+		return false
+	}
+	return ownerUserID == userID
+}
+
+// ownOrAdminLegacy is the old signature for handlers that don't have channel context.
 func ownOrAdmin(ctx context.Context, chatID string) error {
 	if isAdmin(ctx) || chatID == "" || chatID == rpcBizID(ctx) {
 		return nil
@@ -785,7 +818,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" {
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Update last_active_at so we can restore the most recent session on restart.
@@ -826,7 +859,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(ctx) && p.ChatID != bizID {
+		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
@@ -862,7 +895,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.Channel == "" {
 			p.Channel = "cli"
 		}
-		if !isAdmin(ctx) && p.ChatID != bizID {
+		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
@@ -919,7 +952,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(ctx) && p.ChatID != bizID {
+		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return fmt.Errorf("access denied")
 		}
 		var cutoff time.Time
@@ -939,7 +972,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		// is_processing requires explicit chatID or admin.
 		// Unlike other handlers, empty chatID does NOT default to self.
-		if !isAdmin(ctx) && p.ChatID != rpcBizID(ctx) {
+		if !isAdmin(ctx) && p.ChatID != rpcBizID(ctx) && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return false, fmt.Errorf("access denied")
 		}
 		return h.Ag.IsProcessingByChannel(p.Channel, p.ChatID), nil
@@ -953,7 +986,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.Channel == "" {
 			p.Channel = "web"
 		}
-		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" {
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		return h.Ag.GetActiveProgress(p.Channel, p.ChatID, p.FromIteration), nil
@@ -970,7 +1003,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" {
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		return h.Ag.GetTodos(p.Channel, p.ChatID), nil
@@ -1276,13 +1309,15 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 // HandleCLIRPC dispatches RPC requests from CLI RemoteBackend clients.
 func HandleCLIRPC(table RPCTable, method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
 	bizID := senderIDFromParams(params, senderID)
-	// CLI token auth: admin gets admin role, runner tokens get user role.
-	// Full identity resolution happens at WS auth (validateCLIToken) — this is a fallback.
+	// Resolve canonical user identity via IdentityResolver when available.
+	// This ensures role and userID are correctly set for all access checks.
+	userID := int64(0)
 	role := "user"
 	if senderID == "admin" || senderID == "cli_user" {
 		role = "admin"
+		userID = 1
 	}
-	ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, 0, role)
+	ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, userID, role)
 	return table.Dispatch(ctx, method, params)
 }
 

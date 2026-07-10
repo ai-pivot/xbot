@@ -1734,10 +1734,31 @@ func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, sende
 	if channelName == "agent" {
 		return wc.canAccessAgentSession(webUserID, senderID, chatID)
 	}
-	if senderID != "admin" && webUserID != 1 {
-		return false
+	// For non-web channels (cli, feishu, etc.): check admin role or canonical ownership.
+	// Check IdentityResolver first (canonical role from DB)
+	if wc.callbacks.IdentityResolver != nil {
+		uid, role, err := wc.callbacks.IdentityResolver.Resolve("web", senderID)
+		if err == nil && uid > 0 {
+			if role == "admin" {
+				return wc.tenantExists(channelName, chatID)
+			}
+			// Non-admin: check canonical session ownership
+			var ownerUserID int64
+			err := wc.db.QueryRow(
+				"SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = ? AND chat_id = ?",
+				channelName, chatID,
+			).Scan(&ownerUserID)
+			if err == nil && ownerUserID == uid {
+				return true
+			}
+			return false
+		}
 	}
-	return wc.tenantExists(channelName, chatID)
+	// Legacy fallback: web-1 or "admin" is admin
+	if senderID == "admin" || webUserID == 1 {
+		return wc.tenantExists(channelName, chatID)
+	}
+	return false
 }
 
 func (wc *WebChannel) tenantExists(channelName, chatID string) bool {
@@ -1752,6 +1773,14 @@ func (wc *WebChannel) tenantExists(channelName, chatID string) bool {
 func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID string) bool {
 	if !wc.tenantExists("agent", chatID) {
 		return false
+	}
+	// Admin via IdentityResolver or legacy checks
+	if wc.callbacks.IdentityResolver != nil {
+		if uid, _, err := wc.callbacks.IdentityResolver.Resolve("web", senderID); err == nil && uid > 0 {
+			if wc.callbacks.IdentityResolver.IsAdmin(uid) {
+				return true
+			}
+		}
 	}
 	if senderID == "admin" || webUserID == 1 {
 		return true
