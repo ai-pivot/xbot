@@ -78,15 +78,6 @@ func (m *cliModel) startAgentTurn() {
 
 	m.turnAutoStarted = false
 
-	// Show initial progress so the user sees immediate feedback (spinner)
-	// without waiting for the first progress_structured event.
-	if m.progressState.current == nil {
-		m.progressState.current = &protocol.ProgressEvent{
-			Phase:     "thinking",
-			Iteration: 0,
-		}
-		m.rc.valid = false
-	}
 	// NOTE: Callers are responsible for ensuring the tick chain starts:
 	//   - Inside Bubble Tea Update: return tickCmd() in the cmd chain
 	//   - Outside Update (callbacks): append to m.pendingCmds before calling
@@ -99,6 +90,18 @@ func (m *cliModel) startAgentTurn() {
 	m.updatePlaceholder()
 	m.inputReady = false
 	m.resetProgressState()
+	// Show initial progress so the user sees immediate feedback (spinner)
+	// without waiting for the first progress_structured event.
+	// MUST be called AFTER resetProgressState — resetProgressState clears
+	// progressState.current to nil, which causes updateStreamingOnly to
+	// fall back to renderMessage (empty content, no pulse). With a non-nil
+	// "thinking" state, liveIterationBlocks renders a pulse spinner on the
+	// very first tick — immediate visual feedback.
+	m.progressState.current = &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 0,
+	}
+	m.rc.valid = false
 	// Create an empty streaming assistant message at turn start.
 	// This allows all progress/iteration data to be rendered inline
 	// from the very beginning, eliminating the need for a separate

@@ -70,6 +70,7 @@ func (m *cliModel) resetProgressState() {
 	// (Seq=1,2,3...) would be blocked by the previous turn's high Seq.
 	m.progressState.lastAppliedSeq = 0
 	m.progressState.lastStreamSeq = 0
+	m.progressState.pullTick = 0
 	m.progressState.current = nil
 	m.progressState.iterStart = time.Now() // wall-clock start for iteration 0
 	m.typingStartTime = time.Now()
