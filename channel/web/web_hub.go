@@ -119,17 +119,26 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 			continue
 		}
 		if !isStatefulMsg(msg) {
-			// Stateless messages (progress, stream_content, etc.) are superseded
+			// Stateless messages (stream_content, etc.) are superseded
 			// by newer ones of the same type — store only the latest per type
 			// in the stateless slot so writePump always sends the freshest snapshot.
 			c.storeStateless(&msg)
 			sent = true
 		} else {
+			// Stateful messages (text, inject_user, structured progress, etc.)
+			// use best-effort delivery. If sendCh is full (client network slow),
+			// the event is dropped from the push path — but the server's
+			// authoritative state (lastProgressSnapshot + iterationHistories) is
+			// already updated BEFORE the push. The client detects the gap via
+			// Seq jump and triggers an immediate GetActiveProgress RPC (snapshot +
+			// log replay), which bypasses the Hub's sendCh entirely (RPC goes
+			// through direct WS write). This is the Raft model: AppendEntries
+			// (push) is best-effort, InstallSnapshot (pull) is authoritative.
 			select {
 			case c.sendCh <- msg:
 				sent = true
 			default:
-				log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.sendToClient: sendCh full, dropping message")
+				log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.sendToClient: sendCh full, dropping stateful message (will be recovered via snapshot pull)")
 			}
 		}
 	}
@@ -299,11 +308,26 @@ func newRingBuffer(size int) *ringBuffer {
 
 // isStatefulMsg returns true for message types where every intermediate event
 // matters (text, inject_user, ask_user, etc.). Returns false for state-snapshot
-// types where only the latest value is meaningful (progress, stream_content).
+// types where only the latest value is meaningful (stream_content, etc.).
+//
+// Structured progress events (phase transitions, iteration deltas, PhaseDone,
+// HistoryCompacted) are stateful — they carry iteration history deltas that
+// must be delivered reliably and in order. Losing one means a permanently
+// missing iteration in the TUI. Stream-only progress events (just
+// StreamContent/ReasoningStreamContent) remain stateless.
 func isStatefulMsg(msg protocol.WSMessage) bool {
 	switch msg.Type {
-	case protocol.MsgTypeProgress, protocol.MsgTypeStreamContent,
+	case protocol.MsgTypeStreamContent,
 		protocol.MsgTypeSyncProgress, protocol.MsgTypeRunnerStatus:
+		return false
+	case protocol.MsgTypeProgress:
+		if msg.Progress != nil {
+			p := msg.Progress
+			if p.Phase != "" || p.Iteration > 0 ||
+				len(p.IterationHistory) > 0 || p.HistoryCompacted {
+				return true
+			}
+		}
 		return false
 	default:
 		return true

@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	ch "xbot/channel"
@@ -115,7 +116,9 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 	}
 
 	if msg.IsPartial {
-		// Update existing streaming message (created by startAgentTurn) or create new one.
+		// Update existing streaming message (created by startAgentTurn) or reuse one.
+		// NEVER create a new assistant message if the last message is already an
+		// assistant — this would produce two consecutive Assistant blocks.
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) &&
 			m.messages[m.streamingMsgIdx].turnID == turnID {
 			// Update existing streaming message
@@ -128,8 +131,20 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 			m.messages[existingIdx].content = content
 			m.messages[existingIdx].isPartial = true
 			m.messages[existingIdx].dirty = true
+		} else if len(m.messages) > 0 && m.messages[len(m.messages)-1].role == "assistant" &&
+			m.messages[len(m.messages)-1].isPartial && m.messages[len(m.messages)-1].content == "" {
+			// Last message is an EMPTY streaming placeholder — reuse it instead of
+			// creating a new one. This is the hard guard against two consecutive
+			// Assistant blocks. Only applies to empty placeholders, NOT to
+			// completed assistants from previous turns (which have content and
+			// should be preserved as separate messages).
+			m.streamingMsgIdx = len(m.messages) - 1
+			m.messages[m.streamingMsgIdx].content = content
+			m.messages[m.streamingMsgIdx].isPartial = true
+			m.messages[m.streamingMsgIdx].dirty = true
+			m.messages[m.streamingMsgIdx].turnID = turnID
 		} else {
-			// Create new streaming message (fallback)
+			// Create new streaming message (only when last message is NOT an assistant)
 			m.streamingMsgIdx = len(m.messages)
 			m.messages = append(m.messages, cliMessage{
 				role:      "assistant",
@@ -221,11 +236,15 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		if m.streamingMsgIdx >= 0 && m.streamingMsgIdx < len(m.messages) &&
 			m.messages[m.streamingMsgIdx].turnID == turnID {
 			// 更新流式消息为完整消息 (turnID 校验：防止跨 turn 覆盖)
+			// MERGE iterations: finalizeTurnFromSnapshot may have already baked
+			// iterations that progressState.iterations lost (due to progressSlot
+			// coalescing or Hub storeStateless overwrite). Take the union of
+			// existing and new iterations, dedup by iteration number.
 			m.messages[m.streamingMsgIdx].content = content
 			m.messages[m.streamingMsgIdx].isPartial = false
 			m.messages[m.streamingMsgIdx].dirty = true
 			m.messages[m.streamingMsgIdx].turnID = turnID
-			m.messages[m.streamingMsgIdx].iterations = bakeIterations
+			m.messages[m.streamingMsgIdx].iterations = mergeIterations(m.messages[m.streamingMsgIdx].iterations, bakeIterations)
 			completedMsgIdx = m.streamingMsgIdx
 		} else {
 			// Find existing assistant message for this turn, or append new.
@@ -238,20 +257,37 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 					isPartial:  false,
 					dirty:      true,
 					turnID:     turnID,
-					iterations: bakeIterations,
+					iterations: mergeIterations(m.messages[existingIdx].iterations, bakeIterations),
 				}
 				completedMsgIdx = existingIdx
 			} else {
-				m.messages = append(m.messages, cliMessage{
-					role:       "assistant",
-					content:    content,
-					timestamp:  time.Now(),
-					isPartial:  false,
-					dirty:      true,
-					turnID:     turnID,
-					iterations: bakeIterations,
-				})
-				completedMsgIdx = len(m.messages) - 1
+				// No existing assistant for this turn — check if last message
+				// is an EMPTY placeholder assistant. Only reuse if it's empty;
+				// a completed assistant from a previous turn must be preserved.
+				if len(m.messages) > 0 && m.messages[len(m.messages)-1].role == "assistant" &&
+					m.messages[len(m.messages)-1].isPartial && m.messages[len(m.messages)-1].content == "" {
+					m.messages[len(m.messages)-1] = cliMessage{
+						role:       "assistant",
+						content:    content,
+						timestamp:  time.Now(),
+						isPartial:  false,
+						dirty:      true,
+						turnID:     turnID,
+						iterations: mergeIterations(m.messages[len(m.messages)-1].iterations, bakeIterations),
+					}
+					completedMsgIdx = len(m.messages) - 1
+				} else {
+					m.messages = append(m.messages, cliMessage{
+						role:       "assistant",
+						content:    content,
+						timestamp:  time.Now(),
+						isPartial:  false,
+						dirty:      true,
+						turnID:     turnID,
+						iterations: bakeIterations,
+					})
+					completedMsgIdx = len(m.messages) - 1
+				}
 			}
 		}
 		// 重置流式状态
@@ -632,4 +668,47 @@ func containsToolProgress(tools []protocol.ToolProgress, needle protocol.ToolPro
 		}
 	}
 	return false
+}
+
+// mergeIterations takes the union of two iteration snapshots, deduplicating
+// by iteration number. When both slices have an entry for the same iteration,
+// the one from `newer` wins (it typically has more complete data from
+// progressState). This prevents handleAgentMessage from overwriting iterations
+// that were already baked by finalizeTurnFromSnapshot — the exact bug that
+// caused iteration 0 to permanently disappear when PhaseDone arrived before
+// the outbound reply.
+func mergeIterations(existing, newer []cliIterationSnapshot) []cliIterationSnapshot {
+	if len(existing) == 0 {
+		return newer
+	}
+	if len(newer) == 0 {
+		return existing
+	}
+	merged := make([]cliIterationSnapshot, 0, len(existing)+len(newer))
+	seen := make(map[int]bool, len(existing)+len(newer))
+	// Start with existing (may have iterations from finalizeTurnFromSnapshot)
+	for _, it := range existing {
+		if !seen[it.Iteration] {
+			seen[it.Iteration] = true
+			merged = append(merged, it)
+		}
+	}
+	// Add new iterations from bakeIterations (newer data wins for dupes)
+	mergedIdx := make(map[int]int)
+	for i, it := range merged {
+		mergedIdx[it.Iteration] = i
+	}
+	for _, it := range newer {
+		if idx, ok := mergedIdx[it.Iteration]; ok {
+			merged[idx] = it // newer wins
+		} else {
+			merged = append(merged, it)
+			mergedIdx[it.Iteration] = len(merged) - 1
+		}
+	}
+	// Sort by iteration number for stable rendering
+	slices.SortFunc(merged, func(a, b cliIterationSnapshot) int {
+		return a.Iteration - b.Iteration
+	})
+	return merged
 }

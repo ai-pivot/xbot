@@ -106,6 +106,8 @@ func (m *cliModel) startAgentTurn() {
 	// This allows all progress/iteration data to be rendered inline
 	// from the very beginning, eliminating the need for a separate
 	// progress panel fallback.
+	// Note: the rendering-level guard (appendNewMessagesToCache/fullRebuild)
+	// handles merging duplicate or stale assistants — no removal needed here.
 	m.messages = append(m.messages, cliMessage{
 		role:      "assistant",
 		content:   "",

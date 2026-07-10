@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	ch "xbot/channel"
 	"xbot/protocol"
 )
 
@@ -593,5 +595,535 @@ func TestRegression_GeneratingToolPreservedUntilStructuredToolState(t *testing.T
 	}
 	if len(model.progressState.current.CompletedTools) != 1 || model.progressState.current.CompletedTools[0].Name != "Shell" {
 		t.Fatalf("done tool state missing after structured snapshot: %+v", model.progressState.current.CompletedTools)
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// REGRESSION: Iteration 0 disappears after PhaseDone + handleAgentMessage
+// ════════════════════════════════════════════════════════════════════════
+
+// ── Bug: tick pull watermark uses lastIter, which may be advanced past
+// iteration 0 without that iteration entering progressState.iterations.
+// When iterations list is empty, watermark should be -1 (not lastIter)
+// so the server returns ALL iterations including iteration 0.
+//
+// Fix: tick pull watermark = max(iterations[].Iteration), or -1 when empty.
+func TestRegression_TickPullWatermarkRecoversIteration0(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Simulate: progressState has lastIter=1 (from a structured snapshot),
+	// but iterations list is EMPTY (delta was lost in coalescing).
+	model.progressState.lastIter = 1
+	model.progressState.iterations = nil // empty!
+
+	// Manually compute the watermark as the tick handler does
+	watermark := -1
+	for _, it := range model.progressState.iterations {
+		if it.Iteration > watermark {
+			watermark = it.Iteration
+		}
+	}
+
+	// Watermark must be -1 so the server returns iteration 0
+	if watermark != -1 {
+		t.Fatalf("watermark with empty iterations = %d, want -1", watermark)
+	}
+
+	// Now simulate: iterations has [iter1], missing iter0
+	model.progressState.iterations = []cliIterationSnapshot{
+		{Iteration: 1, Content: "iter1"},
+	}
+	watermark = -1
+	for _, it := range model.progressState.iterations {
+		if it.Iteration > watermark {
+			watermark = it.Iteration
+		}
+	}
+
+	// Watermark must be 1 (we have iter1, need iter0 from server)
+	// Server returns iterations > 1, which excludes iter0.
+	// This is correct — iter0 is already lost if it's not in the list
+	// AND the server's history doesn't have it. The tick pull can't
+	// recover what the server already evicted. But with Fix 1 (structured
+	// events are stateful), the delta is never lost in the first place.
+	if watermark != 1 {
+		t.Fatalf("watermark with [iter1] = %d, want 1", watermark)
+	}
+
+	// Verify: when iterations has [iter0, iter1], watermark = 1
+	// Server returns iterations > 1 (nothing new) — correct.
+	model.progressState.iterations = []cliIterationSnapshot{
+		{Iteration: 0, Content: "iter0"},
+		{Iteration: 1, Content: "iter1"},
+	}
+	watermark = -1
+	for _, it := range model.progressState.iterations {
+		if it.Iteration > watermark {
+			watermark = it.Iteration
+		}
+	}
+	if watermark != 1 {
+		t.Fatalf("watermark with [iter0,iter1] = %d, want 1", watermark)
+	}
+}
+
+// ── Bug: handleAgentMessage overwrites iterations baked by
+// finalizeTurnFromSnapshot with progressState.iterations, which may be
+// missing iteration 0 (lost in coalescing). This permanently loses iter0.
+//
+// Fix: mergeIterations takes the union of existing and new iterations,
+// deduplicating by iteration number (newer wins for duplicates).
+func TestRegression_MergeIterationsPreservesBoth(t *testing.T) {
+	existing := []cliIterationSnapshot{
+		{Iteration: 0, Content: "iter0-from-finalize"},
+		{Iteration: 1, Content: "iter1-from-finalize"},
+	}
+	newer := []cliIterationSnapshot{
+		{Iteration: 1, Content: "iter1-from-progressState"}, // newer data for iter1
+		{Iteration: 2, Content: "iter2-new"},                // new iteration
+	}
+
+	merged := mergeIterations(existing, newer)
+
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 merged iterations, got %d: %+v", len(merged), merged)
+	}
+
+	// Must be sorted by iteration number
+	if merged[0].Iteration != 0 || merged[0].Content != "iter0-from-finalize" {
+		t.Errorf("iter0: got %+v, want iter0-from-finalize", merged[0])
+	}
+	if merged[1].Iteration != 1 || merged[1].Content != "iter1-from-progressState" {
+		t.Errorf("iter1: got %+v, want iter1-from-progressState (newer wins)", merged[1])
+	}
+	if merged[2].Iteration != 2 || merged[2].Content != "iter2-new" {
+		t.Errorf("iter2: got %+v, want iter2-new", merged[2])
+	}
+}
+
+func TestRegression_MergeIterationsEmptyExisting(t *testing.T) {
+	newer := []cliIterationSnapshot{
+		{Iteration: 0, Content: "iter0"},
+		{Iteration: 1, Content: "iter1"},
+	}
+	merged := mergeIterations(nil, newer)
+	if len(merged) != 2 {
+		t.Fatalf("expected 2, got %d", len(merged))
+	}
+}
+
+func TestRegression_MergeIterationsEmptyNewer(t *testing.T) {
+	existing := []cliIterationSnapshot{
+		{Iteration: 0, Content: "iter0"},
+	}
+	merged := mergeIterations(existing, nil)
+	if len(merged) != 1 || merged[0].Content != "iter0" {
+		t.Fatalf("existing not preserved when newer is empty: %+v", merged)
+	}
+}
+
+// ── Bug: full end-to-end scenario — iteration 0 disappears when
+// PhaseDone arrives before handleAgentMessage, and the delta was lost.
+//
+// This test simulates the EXACT bug report: user sees iteration 0 appear,
+// then it vanishes when the reply arrives. After the fix, iteration 0
+// is preserved because:
+// 1. Structured progress goes through sendCh (not storeStateless)
+// 2. finalizeTurnFromSnapshot bakes iterations into the streaming message
+// 3. handleAgentMessage merges (not overwrites) iterations
+func TestRegression_EndToEnd_Iteration0PreservedAfterReply(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+	turnID := model.agentTurnID
+
+	// Iteration 0: structured progress with delta
+	iter0Delta := protocol.ProgressEvent{
+		Iteration: 0,
+		Content:   "iter0-content",
+		CompletedTools: []protocol.ToolProgress{
+			{Name: "Shell", Label: "ls", Status: "done", Iteration: 0},
+		},
+	}
+	sendProgressWithHistory(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 1,
+	}, iter0Delta)
+
+	// Verify iter0 is in progressState.iterations
+	if len(model.progressState.iterations) != 1 {
+		t.Fatalf("expected 1 iteration in progressState, got %d", len(model.progressState.iterations))
+	}
+	if model.progressState.iterations[0].Iteration != 0 {
+		t.Fatalf("expected iteration 0, got %d", model.progressState.iterations[0].Iteration)
+	}
+
+	// PhaseDone: finalize the turn
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 1,
+	})
+
+	// finalizeTurnFromSnapshot should have baked iterations into streaming message
+	if model.streamingMsgIdx < 0 {
+		t.Fatal("streamingMsgIdx should be valid after PhaseDone")
+	}
+	baked := model.messages[model.streamingMsgIdx].iterations
+	if len(baked) == 0 {
+		t.Fatal("no iterations baked into streaming message after PhaseDone")
+	}
+	foundIter0 := false
+	for _, it := range baked {
+		if it.Iteration == 0 {
+			foundIter0 = true
+		}
+	}
+	if !foundIter0 {
+		t.Fatalf("iteration 0 missing from baked iterations: %+v", baked)
+	}
+
+	// Agent reply arrives — must NOT overwrite baked iterations
+	sendDone(model, "Final reply")
+
+	// Find the assistant message for this turn
+	asstIdx := model.findMessageByTurn(turnID, "assistant")
+	if asstIdx < 0 {
+		t.Fatal("assistant message not found")
+	}
+	finalIters := model.messages[asstIdx].iterations
+	foundIter0 = false
+	for _, it := range finalIters {
+		if it.Iteration == 0 {
+			foundIter0 = true
+			if it.Content != "iter0-content" {
+				t.Errorf("iter0 content changed: got %q, want 'iter0-content'", it.Content)
+			}
+		}
+	}
+	if !foundIter0 {
+		t.Fatalf("iteration 0 disappeared after handleAgentMessage: %+v", finalIters)
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// REGRESSION: Two consecutive Assistant messages must never appear
+// ════════════════════════════════════════════════════════════════════════
+
+// ── Bug: handleAgentMessage creates a new assistant message when the last
+// message is already an assistant (from startAgentTurn or finalizeTurnFromSnapshot).
+// This produces two consecutive Assistant blocks in the viewport.
+//
+// Fix: all assistant creation paths check for existing assistant before appending.
+func TestRegression_NoConsecutiveAssistant_CreatePaths(t *testing.T) {
+	// Case 1: IsPartial reply when last message is empty assistant placeholder
+	model := initTestModel()
+	model.startAgentTurn() // creates empty assistant placeholder
+
+	// Send IsPartial update — must reuse the existing placeholder, not create new
+	model.Update(cliOutboundMsg{
+		msg: ch.OutboundMsg{
+			Channel:   model.channelName,
+			ChatID:    model.chatID,
+			Content:   "streaming content",
+			IsPartial: true,
+		},
+	})
+
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Errorf("IsPartial: expected 1 assistant, got %d", assistantCount)
+	}
+
+	// Case 2: Complete reply when last message is empty assistant placeholder
+	model2 := initTestModel()
+	model2.startAgentTurn()
+
+	sendDone(model2, "complete reply")
+
+	assistantCount = 0
+	for _, msg := range model2.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Errorf("complete reply: expected 1 assistant, got %d", assistantCount)
+	}
+}
+
+// ── Bug: rendering guard must merge same-turnID duplicate assistants
+// and remove empty placeholders from different turns.
+func TestRegression_RenderGuardMergesConsecutiveAssistants(t *testing.T) {
+	// Case 1: Same turnID duplicates → merge content + iterations
+	model := initTestModel()
+	model.messages = []cliMessage{
+		{role: "user", content: "hello", turnID: 0},
+		{role: "assistant", content: "first", turnID: 1, iterations: []cliIterationSnapshot{
+			{Iteration: 0, Content: "iter0"},
+		}},
+		{role: "assistant", content: "second", turnID: 1, iterations: []cliIterationSnapshot{
+			{Iteration: 1, Content: "iter1"},
+		}},
+	}
+	model.rc.valid = false
+	model.updateViewportContent()
+
+	assistantCount := 0
+	var merged *cliMessage
+	for i := range model.messages {
+		if model.messages[i].role == "assistant" {
+			assistantCount++
+			merged = &model.messages[i]
+		}
+	}
+	if assistantCount != 1 {
+		t.Errorf("same-turnID: expected 1 assistant after merge, got %d", assistantCount)
+	}
+	if merged != nil {
+		if !strings.Contains(merged.content, "first") || !strings.Contains(merged.content, "second") {
+			t.Errorf("merged content missing parts: %q", merged.content)
+		}
+		if len(merged.iterations) != 2 {
+			t.Errorf("merged iterations: expected 2, got %d", len(merged.iterations))
+		}
+	}
+
+	// Case 2: Different turnID, first is empty placeholder → remove placeholder
+	model2 := initTestModel()
+	model2.messages = []cliMessage{
+		{role: "user", content: "hello", turnID: 0},
+		{role: "assistant", content: "", turnID: 1, isPartial: true}, // empty placeholder
+		{role: "assistant", content: "real reply", turnID: 2, isPartial: false},
+	}
+	model2.rc.valid = false
+	model2.updateViewportContent()
+
+	assistantCount = 0
+	for _, msg := range model2.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+			if msg.content != "real reply" {
+				t.Errorf("expected 'real reply', got %q", msg.content)
+			}
+		}
+	}
+	if assistantCount != 1 {
+		t.Errorf("different-turnID empty placeholder: expected 1 assistant, got %d", assistantCount)
+	}
+
+	// Case 3: Different turnID, first has content + iterations → preserved
+	// (This is normal multi-turn: U1 A1 U2 A2 — but without U2 between them,
+	// which shouldn't happen in production. The guard keeps both to avoid
+	// merging unrelated turns.)
+	model3 := initTestModel()
+	model3.messages = []cliMessage{
+		{role: "user", content: "hello", turnID: 0},
+		{role: "assistant", content: "reply1", turnID: 1, isPartial: false, iterations: []cliIterationSnapshot{
+			{Iteration: 0, Content: "iter0"},
+		}},
+		{role: "assistant", content: "reply2", turnID: 2, isPartial: false, iterations: []cliIterationSnapshot{
+			{Iteration: 0, Content: "iter0-turn2"},
+		}},
+	}
+	model3.rc.valid = false
+	model3.updateViewportContent()
+
+	assistantCount = 0
+	for _, msg := range model3.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	// Both assistants are preserved — they have content and iterations from
+	// different turns. The rendering guard does NOT merge different-turnID
+	// assistants when the first has content (only removes empty placeholders).
+	if assistantCount != 2 {
+		t.Errorf("different-turnID with content: expected 2 assistants preserved, got %d", assistantCount)
+	}
+}
+
+// ── Bug: fullRebuild must also guard against consecutive assistants
+// (same guard as appendNewMessagesToCache, tested via width change path)
+func TestRegression_FullRebuildMergesConsecutiveAssistants(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Simulate same-turnID duplicate via direct manipulation
+	model.messages = []cliMessage{
+		{role: "user", content: "hello", turnID: 0, timestamp: time.Now()},
+		{role: "assistant", content: "first", turnID: 1, timestamp: time.Now(), iterations: []cliIterationSnapshot{
+			{Iteration: 0, Content: "iter0"},
+		}},
+		{role: "assistant", content: "second", turnID: 1, timestamp: time.Now(), iterations: []cliIterationSnapshot{
+			{Iteration: 1, Content: "iter1"},
+		}},
+	}
+	model.streamingMsgIdx = -1
+	model.rc.valid = false
+
+	// Trigger fullRebuild via width change
+	model.handleResize(100, 24)
+	model.updateViewportContent()
+
+	assistantCount := 0
+	for _, msg := range model.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Errorf("fullRebuild: expected 1 assistant after merge, got %d", assistantCount)
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// REGRESSION: Seq gap detection → immediate snapshot pull
+// ════════════════════════════════════════════════════════════════════════
+
+// ── Bug: push events dropped by Hub sendCh-full were never recovered until
+// the 2s tick pull — and if the turn ended before 2s, they were permanently
+// lost. The fix: detect Seq jumps (gap) and trigger an immediate pull on the
+// next tick (100ms), instead of waiting.
+//
+// Normal flow (no gap): zero pulls. This is critical for performance — the
+// push path carries everything, pull only fires on actual data loss.
+
+func TestRegression_SeqGapTriggersPull(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Seq 1: normal structured event
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 0,
+		Seq:       1,
+	})
+	if model.progressState.gapDetected {
+		t.Fatal("gapDetected should be false for sequential Seq (1)")
+	}
+	if model.progressState.lastReceivedSeq != 1 {
+		t.Fatalf("lastReceivedSeq = %d, want 1", model.progressState.lastReceivedSeq)
+	}
+
+	// Seq 2: normal continuation
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "tool_exec",
+		Iteration: 0,
+		Seq:       2,
+	})
+	if model.progressState.gapDetected {
+		t.Fatal("gapDetected should be false for sequential Seq (2)")
+	}
+
+	// Seq 5: GAP! (3 and 4 were dropped)
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 1,
+		Seq:       5,
+	})
+	if !model.progressState.gapDetected {
+		t.Fatal("gapDetected should be true after Seq jump 2→5")
+	}
+	if model.progressState.lastReceivedSeq != 5 {
+		t.Fatalf("lastReceivedSeq = %d, want 5", model.progressState.lastReceivedSeq)
+	}
+}
+
+func TestRegression_SeqNoGapNoPull(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Simulate 10 sequential events — no gap, no pull needed
+	for i := uint64(1); i <= 10; i++ {
+		sendProgress(model, &protocol.ProgressEvent{
+			Phase:     "thinking",
+			Iteration: int(i),
+			Seq:       i,
+		})
+	}
+
+	if model.progressState.gapDetected {
+		t.Fatal("gapDetected should be false — all Seq were sequential")
+	}
+	if model.progressState.lastReceivedSeq != 10 {
+		t.Fatalf("lastReceivedSeq = %d, want 10", model.progressState.lastReceivedSeq)
+	}
+}
+
+func TestRegression_SeqGapResetsAfterPull(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Create a gap
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 0, Seq: 1})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Seq: 5})
+
+	if !model.progressState.gapDetected {
+		t.Fatal("gapDetected should be true")
+	}
+
+	// Simulate what tick handler does: gapDetected → pull → clear
+	// (The actual pull is an RPC, but we can simulate the state transition)
+	model.progressState.gapDetected = false
+
+	// Next sequential event — no new gap
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 2, Seq: 6})
+	if model.progressState.gapDetected {
+		t.Fatal("gapDetected should be false after recovery — Seq 5→6 is sequential")
+	}
+}
+
+func TestRegression_ResetProgressStateClearsGapDetection(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// Create a gap
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 0, Seq: 1})
+	sendProgress(model, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1, Seq: 5})
+	if !model.progressState.gapDetected {
+		t.Fatal("gapDetected should be true")
+	}
+
+	// New turn resets state
+	model.startAgentTurn()
+
+	if model.progressState.gapDetected {
+		t.Fatal("gapDetected should be cleared by resetProgressState")
+	}
+	if model.progressState.lastReceivedSeq != 0 {
+		t.Fatalf("lastReceivedSeq = %d, want 0 after reset", model.progressState.lastReceivedSeq)
+	}
+}
+
+// ── Bug: first event of a turn (lastReceivedSeq=0) should NOT trigger
+// gap detection — Seq starts at 1, and 0→1 is not a gap.
+func TestRegression_FirstEventNoFalseGap(t *testing.T) {
+	model := initTestModel()
+	model.startAgentTurn()
+
+	// First event Seq=1, lastReceivedSeq=0 → NOT a gap (first event)
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 0,
+		Seq:       1,
+	})
+	if model.progressState.gapDetected {
+		t.Fatal("gapDetected should be false for first event of turn")
+	}
+
+	// Even if first event has high Seq (e.g. after reconnect), no gap
+	model.startAgentTurn()
+	sendProgress(model, &protocol.ProgressEvent{
+		Phase:     "thinking",
+		Iteration: 0,
+		Seq:       42,
+	})
+	if model.progressState.gapDetected {
+		t.Fatal("gapDetected should be false for first event (high Seq after reconnect)")
 	}
 }

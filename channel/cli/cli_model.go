@@ -622,8 +622,9 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 				history, err := dumpFn(chatID)
 				var activeProgress *protocol.ProgressEvent
 				if progressFn != nil {
-					// /su switch: request full history (fromIter=0)
-					activeProgress = progressFn(channelName, chatID, 0)
+					// /su switch: request full history (fromIter=-1) — new session needs
+					// ALL iterations including iteration 0.
+					activeProgress = progressFn(channelName, chatID, -1)
 				}
 				var todos []protocol.TodoItem
 				if todosFn != nil {
@@ -660,10 +661,11 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 	return func() tea.Msg {
 		history, err := loader(channelName, chatID)
 		// Also fetch active progress for seamless session switch recovery.
-		// /su switch: request full history (fromIter=0) — new session needs all iterations.
+		// /su switch: request full history (fromIter=-1) — new session needs all
+		// iterations including iteration 0.
 		var activeProgress *protocol.ProgressEvent
 		if progressFn != nil {
-			activeProgress = progressFn(channelName, chatID, 0)
+			activeProgress = progressFn(channelName, chatID, -1)
 		}
 		// Fetch server-side TODO list to overwrite local cache on first switch.
 		var todos []protocol.TodoItem
@@ -849,7 +851,7 @@ type layoutConfig struct {
 	cachedChatKey  int
 }
 
-// progressState groups 14 fields extracted from cliModel.
+// progressState groups fields extracted from cliModel.
 type progressState struct {
 	current        *protocol.ProgressEvent
 	iterations     []cliIterationSnapshot
@@ -857,7 +859,6 @@ type progressState struct {
 	lastSeq        uint64
 	lastAppliedSeq uint64 // highest Seq applied via applyProgressSnapshot (structured events)
 	lastStreamSeq  uint64 // highest Seq from stream-only events (separate counter)
-	pullTick       int    // tick pull counter: increments each 100ms tick, RPC fires at 20 (2s)
 	iterStart      time.Time
 	busySessions   bool
 	unread         map[string]bool
@@ -868,6 +869,16 @@ type progressState struct {
 	rwVisible      int
 	rwCjkSkip      bool
 	twCjkSkip      bool
+
+	// Seq gap detection (Raft-style log consistency).
+	// lastReceivedSeq tracks the highest Seq seen from push events.
+	// When a push arrives with Seq > lastReceivedSeq+1, there's a gap —
+	// events were dropped (sendCh full) or lost (WS disconnect).
+	// gapDetected triggers an immediate GetActiveProgress pull on the next
+	// tick (100ms) — the only pull trigger in normal operation.
+	// Normal flow: Seq increments by 1 each event, no gap, zero pulls.
+	lastReceivedSeq uint64
+	gapDetected     bool
 }
 
 // --- Plugin Overlay ---

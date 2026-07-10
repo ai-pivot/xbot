@@ -466,23 +466,31 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	}
 	countsChanged := m.bgTaskCount != prevBg || m.agentCount != prevAgent
 
-	// Tick pull: fetch authoritative progress snapshot from the backend.
+	// Gap-triggered snapshot pull.
 	//
-	// Push events carry only the delta (the single iteration that just completed),
-	// so the tick pull serves as a SAFETY NET — it recovers iterations lost to
-	// progressSlot coalescing or WS disconnects. The pull frequency is 2s (every
-	// 20th tick at 100ms), not 100ms — infrequent enough to be negligible CPU,
-	// frequent enough to recover at most 1 missed iteration (turns rarely produce
-	// >1 iteration per 2s).
+	// Push events (best-effort, like Raft AppendEntries) carry a monotonic Seq.
+	// When the client detects a Seq jump (e.g. 2→5, meaning events 3,4 were
+	// dropped by Hub sendCh-full or WS disconnect), it sets gapDetected=true.
+	// On the next tick (100ms), we immediately pull the authoritative snapshot
+	// from the server (like Raft InstallSnapshot), which includes the complete
+	// iteration history filtered by watermark.
 	//
-	// Watermark: we send m.progressState.lastIter so the server returns only
-	// iterations we don't already have. This keeps pull payloads proportional
-	// to the gap size, not the total turn length.
+	// Normal flow: Seq increments by 1, no gap, ZERO pulls. Push carries everything.
+	// Recovery flow: gap → pull once → gapDetected cleared → back to push-only.
+	// Reconnect flow: WS reconnect triggers /su path (full DB restore + fromIter=-1).
+	//
+	// Watermark: max iteration from local iterations list, or -1 when empty
+	// (so server returns ALL iterations including iteration 0).
 	if m.typing && m.channel != nil && m.channel.config.GetActiveProgressFn != nil {
-		m.progressState.pullTick++
-		if m.progressState.pullTick >= 20 {
-			m.progressState.pullTick = 0
-			if snapshot := m.channel.config.GetActiveProgressFn(m.channelName, m.chatID, m.progressState.lastIter); snapshot != nil {
+		if m.progressState.gapDetected {
+			m.progressState.gapDetected = false
+			watermark := -1
+			for _, it := range m.progressState.iterations {
+				if it.Iteration > watermark {
+					watermark = it.Iteration
+				}
+			}
+			if snapshot := m.channel.config.GetActiveProgressFn(m.channelName, m.chatID, watermark); snapshot != nil {
 				m.applyProgressSnapshot(snapshot)
 			}
 		}

@@ -366,9 +366,13 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 				asstMsg.reasoning = cur.Reasoning
 			}
 			// Find existing or append new — single creation point for agent sessions.
+			// Guard: never create two consecutive assistant messages. If the last
+			// message is already an assistant, update it instead of appending.
 			existingIdx := m.findMessageByTurn(turnID, "assistant")
 			if existingIdx >= 0 {
 				m.messages[existingIdx] = asstMsg
+			} else if len(m.messages) > 0 && m.messages[len(m.messages)-1].role == "assistant" {
+				m.messages[len(m.messages)-1] = asstMsg
 			} else {
 				m.messages = append(m.messages, asstMsg)
 			}

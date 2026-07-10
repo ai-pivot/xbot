@@ -85,6 +85,19 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	}
 
 	// Structured event or PhaseDone: apply through snapshot pipeline.
+	// Seq gap detection: if Seq jumps by more than 1, we missed events
+	// (sendCh full → push dropped). Set gapDetected so the next tick
+	// immediately pulls a snapshot instead of waiting 30s.
+	// Skip gap detection for Seq=0 (local/agent events without Seq) or
+	// when this is the first event of the turn (lastReceivedSeq=0).
+	if msg.payload.Seq > 0 && m.progressState.lastReceivedSeq > 0 {
+		if msg.payload.Seq > m.progressState.lastReceivedSeq+1 {
+			m.progressState.gapDetected = true
+		}
+	}
+	if msg.payload.Seq > 0 && msg.payload.Seq > m.progressState.lastReceivedSeq {
+		m.progressState.lastReceivedSeq = msg.payload.Seq
+	}
 	if msg.payload.Seq > 0 {
 		m.progressState.lastSeq = msg.payload.Seq
 	}
