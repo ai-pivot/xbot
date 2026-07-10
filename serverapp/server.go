@@ -2,6 +2,7 @@ package serverapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -541,9 +542,17 @@ func Run(args []string) error {
 	}
 
 	// Initialize canonical user identity resolver.
-	// wiredDB is sharedDB (opened earlier); use its connection for identity lookups.
+	// Uses the shared DB if available (OAuth enabled), otherwise opens a direct
+	// connection to the DB path — IdentityResolver should always be available
+	// in server mode regardless of OAuth config.
+	var identityDB *sql.DB
 	if sharedDB != nil {
-		resolver := agent.NewIdentityResolver(sharedDB.Conn())
+		identityDB = sharedDB.Conn()
+	} else {
+		identityDB, _ = sql.Open("sqlite3", dbPath)
+	}
+	if identityDB != nil {
+		resolver := agent.NewIdentityResolver(identityDB)
 		ag.SetIdentityResolver(resolver)
 	}
 

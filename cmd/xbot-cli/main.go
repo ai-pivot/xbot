@@ -1406,16 +1406,20 @@ func main() {
 			if app.client == nil {
 				return "", fmt.Errorf("agent not initialized")
 			}
-			// RPC to server to generate link code for user_id=1 (CLI admin)
+			// RPC to server to generate link code for current user
 			result, err := app.client.CallRPC("generate_link_code", map[string]any{})
 			if err != nil {
 				return "", err
 			}
 			var resp struct {
-				Code string `json:"code"`
+				Code  string `json:"code"`
+				Error string `json:"error"`
 			}
 			if err := json.Unmarshal(result, &resp); err != nil {
 				return "", err
+			}
+			if resp.Error != "" {
+				return "", fmt.Errorf("%s", resp.Error)
 			}
 			return resp.Code, nil
 		},
