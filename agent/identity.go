@@ -390,6 +390,17 @@ func (r *IdentityResolver) MergeUsers(sourceUserID, targetUserID int64) error {
 	// 4. Migrate ALL identities first (BEFORE deleting source user — CASCADE safe)
 	tx.Exec("UPDATE user_identities SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
 
+	// 4.5 Role escalation: if source is admin, target becomes admin too.
+	// This prevents privilege loss when merging an admin user (e.g. cli_user)
+	// into a non-admin user. Admin is the highest role — merging an admin
+	// into a regular user should escalate the target, not demote the source.
+	var sourceRole, targetRole string
+	tx.QueryRow("SELECT role FROM users WHERE id = ?", sourceUserID).Scan(&sourceRole)
+	tx.QueryRow("SELECT role FROM users WHERE id = ?", targetUserID).Scan(&targetRole)
+	if sourceRole == "admin" && targetRole != "admin" {
+		tx.Exec("UPDATE users SET role = 'admin' WHERE id = ?", targetUserID)
+	}
+
 	// 5. Migrate asset tables
 	tx.Exec("UPDATE user_llm_subscriptions SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
 	tx.Exec("UPDATE runners SET owner_user_id = ? WHERE owner_user_id = ?", targetUserID, sourceUserID)
