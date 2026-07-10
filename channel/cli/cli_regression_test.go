@@ -916,7 +916,31 @@ func TestRegression_RenderGuardMergesConsecutiveAssistants(t *testing.T) {
 		t.Errorf("different-turnID empty placeholder: expected 1 assistant, got %d", assistantCount)
 	}
 
-	// Case 3: Different turnID, first has content + iterations → preserved
+	// Case 2b: Different turnID, first is isPartial=true WITH content+iterations
+	// (finalizeTurnFromSnapshot baked iterations but didn't clear isPartial).
+	// Must be removed — isPartial=true means the message was never finalized.
+	model2b := initTestModel()
+	model2b.messages = []cliMessage{
+		{role: "user", content: "hello", turnID: 0},
+		{role: "assistant", content: "stale stream", turnID: 1, isPartial: true, iterations: []cliIterationSnapshot{
+			{Iteration: 0, Content: "iter0"},
+		}},
+		{role: "assistant", content: "", turnID: 2, isPartial: true},
+	}
+	model2b.rc.valid = false
+	model2b.updateViewportContent()
+
+	assistantCount = 0
+	for _, msg := range model2b.messages {
+		if msg.role == "assistant" {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Errorf("isPartial with content+iterations: expected 1 assistant (stale removed), got %d", assistantCount)
+	}
+
+	// Case 3: Different turnID, first is isPartial=FALSE with content + iterations → preserved
 	// (This is normal multi-turn: U1 A1 U2 A2 — but without U2 between them,
 	// which shouldn't happen in production. The guard keeps both to avoid
 	// merging unrelated turns.)
@@ -939,11 +963,11 @@ func TestRegression_RenderGuardMergesConsecutiveAssistants(t *testing.T) {
 			assistantCount++
 		}
 	}
-	// Both assistants are preserved — they have content and iterations from
-	// different turns. The rendering guard does NOT merge different-turnID
-	// assistants when the first has content (only removes empty placeholders).
+	// Both assistants are preserved — they are isPartial=false (completed)
+	// with content and iterations from different turns. The guard only
+	// removes isPartial=true stale placeholders, not finalized messages.
 	if assistantCount != 2 {
-		t.Errorf("different-turnID with content: expected 2 assistants preserved, got %d", assistantCount)
+		t.Errorf("isPartial=false with content: expected 2 assistants preserved, got %d", assistantCount)
 	}
 }
 

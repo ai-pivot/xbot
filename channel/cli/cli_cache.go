@@ -156,8 +156,10 @@ func (m *cliModel) rerenderCachedMessage(msgIdx int) {
 // dedupConsecutiveAssistants eliminates consecutive assistant messages before
 // rendering. Two cases:
 //  1. SAME turnID: true duplicates from different creation paths → merge content+iterations
-//  2. DIFFERENT turnID + first is empty placeholder (isPartial, content="", no iterations)
-//     → remove the empty placeholder
+//  2. DIFFERENT turnID + first is isPartial (stale streaming placeholder never
+//     finalized by handleAgentMessage) → remove the stale placeholder.
+//     This covers empty placeholders AND placeholders with content/iterations
+//     (e.g., finalizeTurnFromSnapshot baked iterations but didn't clear isPartial).
 //
 // This ensures the user NEVER sees two consecutive Assistant blocks.
 // Called by both appendNewMessagesToCache and fullRebuild.
@@ -186,8 +188,14 @@ func (m *cliModel) dedupConsecutiveAssistants() {
 			m.messages = append(m.messages[:i+1], m.messages[i+2:]...)
 			merged = true
 			i--
-		} else if m.messages[i].isPartial && m.messages[i].content == "" && len(m.messages[i].iterations) == 0 {
-			// Case 2: different turnID, truly empty placeholder — remove it
+		} else if m.messages[i].isPartial {
+			// Case 2: different turnID, isPartial=true — stale streaming placeholder
+			// that was never finalized by handleAgentMessage. This happens when:
+			//   - endAgentTurn preserved streamingMsgIdx but handleAgentMessage
+			//     hasn't arrived yet, and a new turn starts (auto-start, bg task)
+			//   - finalizeTurnFromSnapshot baked iterations but didn't clear isPartial
+			// startAgentTurn now calls finalizeStaleStreamingBeforeNewUserMessage
+			// to prevent this, but dedup is the safety net.
 			m.messages = append(m.messages[:i], m.messages[i+1:]...)
 			merged = true
 			i--
