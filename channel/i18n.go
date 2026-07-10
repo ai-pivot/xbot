@@ -100,6 +100,13 @@ type UILocale struct {
 	HelpCmds           []HelpCmdEntry
 	HelpKeys           []HelpKeyEntry
 
+	// --- E1b. Copy command ---
+	CopySuccess     string
+	CopyFailed      string
+	CopyNoAssistant string
+	CopyNoMessages  string
+	CopyUsage       string
+
 	// --- E2. Fold messages (§19) ---
 	MsgTooShortToFold string
 	MsgExpanded       string
@@ -334,6 +341,7 @@ func LocaleZH() *UILocale {
 			{Cmd: "/commands", Desc: "打开命令面板 (Ctrl+K)"},
 			{Cmd: "/cancel", Desc: "取消当前操作"},
 			{Cmd: "/clear", Desc: "清空聊天记录"},
+			{Cmd: "/copy", Desc: "复制消息到剪贴板"},
 			{Cmd: "/compress", Desc: "压缩上下文"},
 			{Cmd: "/set-llm", Desc: "创建/更新个人 LLM 订阅"},
 			{Cmd: "/unset-llm", Desc: "删除个人默认订阅"},
@@ -366,6 +374,13 @@ func LocaleZH() *UILocale {
 			{Key: "^", Desc: "后台任务面板"},
 			{Key: "Ctrl+C", Desc: "取消操作/删除排队消息"},
 		},
+
+		// --- E1b. Copy command ---
+		CopySuccess:     "已复制到剪贴板",
+		CopyFailed:      "复制失败",
+		CopyNoAssistant: "没有可复制的助手消息",
+		CopyNoMessages:  "没有可复制的消息",
+		CopyUsage:       "用法: /copy [last|all]",
 
 		// --- E2. Fold messages (§19) ---
 		MsgTooShortToFold: "消息太短，无法折叠（需超过 %d 行）",
@@ -744,6 +759,7 @@ func localeEN() *UILocale {
 			{Cmd: "/commands", Desc: "Open command palette (Ctrl+K)"},
 			{Cmd: "/cancel", Desc: "Cancel current operation"},
 			{Cmd: "/clear", Desc: "Clear chat history"},
+			{Cmd: "/copy", Desc: "Copy message to clipboard"},
 			{Cmd: "/compress", Desc: "Compress context"},
 			{Cmd: "/set-llm", Desc: "Create/update personal LLM subscription"},
 			{Cmd: "/unset-llm", Desc: "Delete personal default subscription"},
@@ -776,6 +792,13 @@ func localeEN() *UILocale {
 			{Key: "^", Desc: "Background tasks panel"},
 			{Key: "Ctrl+C", Desc: "Cancel / remove queued messages"},
 		},
+
+		// --- E1b. Copy command ---
+		CopySuccess:     "Copied to clipboard",
+		CopyFailed:      "Copy failed",
+		CopyNoAssistant: "No assistant message to copy",
+		CopyNoMessages:  "No messages to copy",
+		CopyUsage:       "Usage: /copy [last|all]",
 
 		// --- E2. Fold messages (§19) ---
 		MsgTooShortToFold: "Message too short to fold (needs > %d lines)",
@@ -1153,6 +1176,7 @@ func localeJA() *UILocale {
 			{Cmd: "/commands", Desc: "コマンドパレットを開く (Ctrl+K)"},
 			{Cmd: "/cancel", Desc: "現在の操作をキャンセル"},
 			{Cmd: "/clear", Desc: "チャット履歴をクリア"},
+			{Cmd: "/copy", Desc: "メッセージをクリップボードにコピー"},
 			{Cmd: "/compress", Desc: "コンテキストを圧縮"},
 			{Cmd: "/set-model", Desc: "モデル切替"},
 			{Cmd: "/models", Desc: "利用可能モデル一覧"},
@@ -1185,6 +1209,13 @@ func localeJA() *UILocale {
 			{Key: "^", Desc: "バックグラウンドタスクパネル"},
 			{Key: "Ctrl+C", Desc: "キャンセル / キュー削除"},
 		},
+
+		// --- E1b. Copy command ---
+		CopySuccess:     "クリップボードにコピーしました",
+		CopyFailed:      "コピーに失敗しました",
+		CopyNoAssistant: "コピーするアシスタントメッセージがありません",
+		CopyNoMessages:  "コピーするメッセージがありません",
+		CopyUsage:       "使い方: /copy [last|all]",
 
 		// --- E2. Fold messages (§19) ---
 		MsgTooShortToFold: "メッセージが短すぎます（%d 行を超える必要があります）",

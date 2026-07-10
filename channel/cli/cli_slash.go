@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"xbot/session"
 	"xbot/tools"
 	"xbot/version"
@@ -38,6 +39,64 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		m.rc.history = ""
 		m.exitSearch()
 
+	case "/copy":
+		// /copy — Copy message content to system clipboard.
+		//   /copy          — copy last assistant reply
+		//   /copy last     — same as above
+		//   /copy all      — copy entire conversation (user + assistant)
+		subCmd := ""
+		if len(parts) > 1 {
+			subCmd = strings.ToLower(parts[1])
+		}
+		var text string
+		switch subCmd {
+		case "", "last":
+			// Find the last non-partial assistant message.
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				msg := m.messages[i]
+				if msg.role == "assistant" && !msg.isPartial && msg.content != "" {
+					text = msg.content
+					break
+				}
+			}
+			if text == "" {
+				return m.enqueueToast(m.locale.CopyNoAssistant, IconCross)
+			}
+		case "all":
+			var lines []string
+			for _, msg := range m.messages {
+				if msg.role != "user" && msg.role != "assistant" {
+					continue
+				}
+				if msg.isPartial || msg.content == "" {
+					continue
+				}
+				prefix := "assistant"
+				if msg.role == "user" {
+					prefix = "user"
+				}
+				lines = append(lines, "["+prefix+"]\n"+msg.content)
+			}
+			if len(lines) == 0 {
+				return m.enqueueToast(m.locale.CopyNoMessages, IconCross)
+			}
+			text = strings.Join(lines, "\n\n")
+		default:
+			m.showSystemMsg(m.locale.CopyUsage, feedbackInfo)
+			return nil
+		}
+		go func() {
+			if err := clipboard.WriteAll(text); err != nil {
+				if m.channel != nil {
+					m.channel.SendToast(m.locale.CopyFailed+": "+err.Error(), IconCross)
+				}
+				return
+			}
+			if m.channel != nil {
+				m.channel.SendToast(m.locale.CopySuccess, IconCheck)
+			}
+		}()
+		return nil
 	case "/rewind":
 		m.openRewindPanel()
 
