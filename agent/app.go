@@ -12,11 +12,11 @@ import (
 	"xbot/tools"
 )
 
-// BundleManifestSchema is the schema version for xbot.json.
-const BundleManifestSchema = 1
+// AppManifestSchema is the schema version for xbot.json.
+const AppManifestSchema = 1
 
-// BundleManifest represents the xbot.json manifest inside a .xbot.zip bundle.
-type BundleManifest struct {
+// AppManifest represents the xbot.json manifest inside a .xbot.zip app.
+type AppManifest struct {
 	Schema      int             `json:"schema"`
 	ID          string          `json:"id"`
 	Name        string          `json:"name"`
@@ -25,11 +25,11 @@ type BundleManifest struct {
 	Description string          `json:"description"`
 	Homepage    string          `json:"homepage,omitempty"`
 	License     string          `json:"license,omitempty"`
-	Contents    []BundleContent `json:"contents"`
+	Contents    []AppContent `json:"contents"`
 }
 
-// BundleContent declares a single item inside the bundle.
-type BundleContent struct {
+// AppContent declares a single item inside the app.
+type AppContent struct {
 	Type        string   `json:"type"`         // skill | agent | plugin
 	Name        string   `json:"name"`
 	Source      string   `json:"source"`       // relative path inside the zip
@@ -40,43 +40,43 @@ type BundleContent struct {
 	Permissions []string `json:"permissions,omitempty"`   // plugin only
 }
 
-// PackItem specifies a local item to include when building a bundle.
-type PackItem struct {
+// AppItem specifies a local item to include when building an app.
+type AppItem struct {
 	Type string // skill | agent | plugin
 	Name string // item name (matches skill dir name or agent .md name)
 }
 
-// InstallResult records what was installed from a bundle.
-type InstallResult struct {
-	Manifest  BundleManifest
+// AppInstallResult records what was installed from an app.
+type AppInstallResult struct {
+	Manifest  AppManifest
 	Installed []string // human-readable descriptions
 }
 
-// BundlePackager handles packing and unpacking .xbot.zip files.
-type BundlePackager struct {
+// AppPackager handles packing and unpacking .xbot.zip files.
+type AppPackager struct {
 	workDir string
 }
 
-// NewBundlePackager creates a new BundlePackager.
-func NewBundlePackager(workDir string) *BundlePackager {
-	return &BundlePackager{workDir: workDir}
+// NewAppPackager creates a new AppPackager.
+func NewAppPackager(workDir string) *AppPackager {
+	return &AppPackager{workDir: workDir}
 }
 
 // Pack builds a .xbot.zip from the given items and writes it to outputPath.
 // The rm (RegistryManager) is used to locate skill/agent source files.
-func (bp *BundlePackager) Pack(rm *RegistryManager, items []PackItem, outputPath, author string) error {
-	manifest := BundleManifest{
-		Schema:      BundleManifestSchema,
+func (bp *AppPackager) Pack(rm *RegistryManager, items []AppItem, outputPath, author string) error {
+	manifest := AppManifest{
+		Schema:      AppManifestSchema,
 		ID:          filepath.Base(strings.TrimSuffix(outputPath, ".xbot.zip")),
 		Name:        filepath.Base(strings.TrimSuffix(outputPath, ".xbot.zip")),
 		Version:     "1.0.0",
 		Author:      author,
 		Description: "",
-		Contents:    []BundleContent{},
+		Contents:    []AppContent{},
 	}
 
 	// Create temp dir for staging
-	tmpDir, err := os.MkdirTemp("", "xbot-bundle-*")
+	tmpDir, err := os.MkdirTemp("", "xbot-app-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
@@ -115,27 +115,27 @@ func (bp *BundlePackager) Pack(rm *RegistryManager, items []PackItem, outputPath
 }
 
 // stageSkill copies a skill directory into the staging area.
-func (bp *BundlePackager) stageSkill(rm *RegistryManager, item PackItem, tmpDir, author string) (BundleContent, error) {
+func (bp *AppPackager) stageSkill(rm *RegistryManager, item AppItem, tmpDir, author string) (AppContent, error) {
 	skillDir := rm.findSkillDirForUser(item.Name, author)
 	if skillDir == "" {
-		return BundleContent{}, fmt.Errorf("skill %q not found", item.Name)
+		return AppContent{}, fmt.Errorf("skill %q not found", item.Name)
 	}
 
 	// Read SKILL.md for metadata
 	skillMDPath := filepath.Join(skillDir, "SKILL.md")
 	data, err := os.ReadFile(skillMDPath)
 	if err != nil {
-		return BundleContent{}, fmt.Errorf("read SKILL.md: %w", err)
+		return AppContent{}, fmt.Errorf("read SKILL.md: %w", err)
 	}
 	info := parseSkillFrontmatterV2(data, skillDir)
 
 	// Copy to staging
 	stagingPath := filepath.Join(tmpDir, "skills", item.Name)
 	if err := copyDir(skillDir, stagingPath); err != nil {
-		return BundleContent{}, fmt.Errorf("copy skill to staging: %w", err)
+		return AppContent{}, fmt.Errorf("copy skill to staging: %w", err)
 	}
 
-	return BundleContent{
+	return AppContent{
 		Type:        "skill",
 		Name:        info.Name,
 		Source:      "skills/" + item.Name + "/",
@@ -144,28 +144,28 @@ func (bp *BundlePackager) stageSkill(rm *RegistryManager, item PackItem, tmpDir,
 }
 
 // stageAgent copies an agent .md file into the staging area.
-func (bp *BundlePackager) stageAgent(rm *RegistryManager, item PackItem, tmpDir, author string) (BundleContent, error) {
+func (bp *AppPackager) stageAgent(rm *RegistryManager, item AppItem, tmpDir, author string) (AppContent, error) {
 	agentFile := rm.findAgentFile(item.Name, author)
 	if agentFile == "" {
-		return BundleContent{}, fmt.Errorf("agent %q not found", item.Name)
+		return AppContent{}, fmt.Errorf("agent %q not found", item.Name)
 	}
 
 	role, err := parseAgentFileSafe(agentFile, item.Name)
 	if err != nil {
-		return BundleContent{}, fmt.Errorf("parse agent %q: %w", item.Name, err)
+		return AppContent{}, fmt.Errorf("parse agent %q: %w", item.Name, err)
 	}
 
 	// Copy to staging
 	stagingDir := filepath.Join(tmpDir, "agents")
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
-		return BundleContent{}, fmt.Errorf("create agents staging dir: %w", err)
+		return AppContent{}, fmt.Errorf("create agents staging dir: %w", err)
 	}
 	stagingPath := filepath.Join(stagingDir, item.Name+".md")
 	if err := copyFile(agentFile, stagingPath); err != nil {
-		return BundleContent{}, fmt.Errorf("copy agent to staging: %w", err)
+		return AppContent{}, fmt.Errorf("copy agent to staging: %w", err)
 	}
 
-	content := BundleContent{
+	content := AppContent{
 		Type:        "agent",
 		Name:        role.Name,
 		Source:      "agents/" + item.Name + ".md",
@@ -182,7 +182,7 @@ func (bp *BundlePackager) stageAgent(rm *RegistryManager, item PackItem, tmpDir,
 
 // Unpack extracts a .xbot.zip to a temp directory and returns the manifest.
 // Caller is responsible for cleaning up the temp directory.
-func (bp *BundlePackager) Unpack(zipPath string) (*BundleManifest, string, error) {
+func (bp *AppPackager) Unpack(zipPath string) (*AppManifest, string, error) {
 	tmpDir, err := os.MkdirTemp("", "xbot-unpack-*")
 	if err != nil {
 		return nil, "", fmt.Errorf("create temp dir: %w", err)
@@ -197,32 +197,32 @@ func (bp *BundlePackager) Unpack(zipPath string) (*BundleManifest, string, error
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		os.RemoveAll(tmpDir)
-		return nil, "", fmt.Errorf("read xbot.json: %w (not a valid xbot bundle?)", err)
+		return nil, "", fmt.Errorf("read xbot.json: %w (not a valid xbot app?)", err)
 	}
 
-	var manifest BundleManifest
+	var manifest AppManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		os.RemoveAll(tmpDir)
 		return nil, "", fmt.Errorf("parse xbot.json: %w", err)
 	}
 
-	if manifest.Schema != BundleManifestSchema {
+	if manifest.Schema != AppManifestSchema {
 		os.RemoveAll(tmpDir)
-		return nil, "", fmt.Errorf("unsupported bundle schema %d (expected %d)", manifest.Schema, BundleManifestSchema)
+		return nil, "", fmt.Errorf("unsupported app schema %d (expected %d)", manifest.Schema, AppManifestSchema)
 	}
 
 	return &manifest, tmpDir, nil
 }
 
 // Validate checks that all declared content sources exist in the unpacked directory.
-func (bp *BundlePackager) Validate(manifest *BundleManifest, baseDir string) error {
+func (bp *AppPackager) Validate(manifest *AppManifest, baseDir string) error {
 	for _, c := range manifest.Contents {
 		fullPath := filepath.Join(baseDir, c.Source)
 		// For directories (skills), check dir exists; for files (agents), check file exists
 		source := strings.TrimRight(c.Source, "/")
 		fullPath = filepath.Join(baseDir, source)
 		if _, err := os.Stat(fullPath); err != nil {
-			return fmt.Errorf("content %q source %q not found in bundle", c.Name, c.Source)
+			return fmt.Errorf("content %q source %q not found in app", c.Name, c.Source)
 		}
 	}
 	return nil

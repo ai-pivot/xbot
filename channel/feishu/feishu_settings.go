@@ -25,7 +25,7 @@ type SettingsCardOpts struct {
 	MyAgentPage     int
 	SkillMarketPage int
 	AgentMarketPage int
-	BundleMarketPage int
+	AppMarketPage int
 	// RunnerConnectBanner, if set, shows a one-shot markdown block with the xbot-runner shell command (after create / token generate).
 	RunnerConnectBanner string
 }
@@ -1942,8 +1942,8 @@ func (f *FeishuChannel) buildMarketTabContent(ctx context.Context, senderID stri
 	if o.AgentMarketPage < 0 {
 		o.AgentMarketPage = 0
 	}
-	if o.BundleMarketPage < 0 {
-		o.BundleMarketPage = 0
+	if o.AppMarketPage < 0 {
+		o.AppMarketPage = 0
 	}
 
 	pageState := map[string]int{
@@ -1951,7 +1951,7 @@ func (f *FeishuChannel) buildMarketTabContent(ctx context.Context, senderID stri
 		"my_agent_page": o.MyAgentPage,
 		"skill_page":    o.SkillMarketPage,
 		"agent_page":    o.AgentMarketPage,
-		"bundle_page":   o.BundleMarketPage,
+		"app_page":   o.AppMarketPage,
 	}
 
 	// "我的" section
@@ -1976,7 +1976,7 @@ func (f *FeishuChannel) buildMarketTabContent(ctx context.Context, senderID stri
 	elements = append(elements, map[string]any{"tag": "hr"})
 	elements = append(elements, f.buildMarketSection("agent", "代理市场", o.AgentMarketPage, pageState)...)
 	elements = append(elements, map[string]any{"tag": "hr"})
-	elements = append(elements, f.buildMarketSection("bundle", "应用包市场", o.BundleMarketPage, pageState)...)
+	elements = append(elements, f.buildMarketSection("app", "应用市场", o.AppMarketPage, pageState)...)
 
 	log.WithField("element_count", len(elements)).Info("buildMarketTabContent completed")
 	return elements
@@ -2286,13 +2286,13 @@ func parsePageOpts(parsed map[string]string) SettingsCardOpts {
 	myAgentPage, _ := strconv.Atoi(parsed["my_agent_page"])
 	skillPage, _ := strconv.Atoi(parsed["skill_page"])
 	agentPage, _ := strconv.Atoi(parsed["agent_page"])
-	bundlePage, _ := strconv.Atoi(parsed["bundle_page"])
+	appPage, _ := strconv.Atoi(parsed["app_page"])
 	return SettingsCardOpts{
 		MySkillPage:      mySkillPage,
 		MyAgentPage:      myAgentPage,
 		SkillMarketPage:  skillPage,
 		AgentMarketPage:  agentPage,
-		BundleMarketPage: bundlePage,
+		AppMarketPage: appPage,
 	}
 }
 

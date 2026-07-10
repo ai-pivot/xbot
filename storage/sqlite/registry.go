@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-// SharedEntry represents a shared skill/agent in the registry.
+// SharedEntry represents a shared skill/agent/plugin/app in the registry.
 type SharedEntry struct {
 	ID          int64  `json:"id"`
-	Type        string `json:"type"`
+	Type        string `json:"type"` // skill | agent | plugin | app
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Author      string `json:"author"`

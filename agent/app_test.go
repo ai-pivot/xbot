@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestBundlePackager_PackAndUnpack(t *testing.T) {
+func TestAppPackager_PackAndUnpack(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Build a RegistryManager with the temp dir as workDir
@@ -47,12 +47,12 @@ You are a test agent.`
 	}
 
 	// Pack
-	zipPath := filepath.Join(t.TempDir(), "test-bundle.xbot.zip")
-	items := []PackItem{
+	zipPath := filepath.Join(t.TempDir(), "test-app.xbot.zip")
+	items := []AppItem{
 		{Type: "skill", Name: "test-skill"},
 		{Type: "agent", Name: "test-agent"},
 	}
-	bp := NewBundlePackager(tmpDir)
+	bp := NewAppPackager(tmpDir)
 	if err := bp.Pack(rm, items, zipPath, "test-author"); err != nil {
 		t.Fatalf("Pack failed: %v", err)
 	}
@@ -70,8 +70,8 @@ You are a test agent.`
 	defer os.RemoveAll(unpackDir)
 
 	// Verify manifest
-	if manifest.Schema != BundleManifestSchema {
-		t.Errorf("expected schema %d, got %d", BundleManifestSchema, manifest.Schema)
+	if manifest.Schema != AppManifestSchema {
+		t.Errorf("expected schema %d, got %d", AppManifestSchema, manifest.Schema)
 	}
 	if len(manifest.Contents) != 2 {
 		t.Fatalf("expected 2 contents, got %d", len(manifest.Contents))
@@ -109,23 +109,23 @@ You are a test agent.`
 	// Verify files exist in unpacked dir
 	skillMDPath := filepath.Join(unpackDir, "skills", "test-skill", "SKILL.md")
 	if _, err := os.Stat(skillMDPath); err != nil {
-		t.Errorf("SKILL.md not found in unpacked bundle: %v", err)
+		t.Errorf("SKILL.md not found in unpacked app: %v", err)
 	}
 	agentMDPath := filepath.Join(unpackDir, "agents", "test-agent.md")
 	if _, err := os.Stat(agentMDPath); err != nil {
-		t.Errorf("agent .md not found in unpacked bundle: %v", err)
+		t.Errorf("agent .md not found in unpacked app: %v", err)
 	}
 }
 
-func TestBundleManifest_JSONRoundTrip(t *testing.T) {
-	original := BundleManifest{
-		Schema:      BundleManifestSchema,
-		ID:          "test-bundle",
-		Name:        "Test Bundle",
+func TestAppManifest_JSONRoundTrip(t *testing.T) {
+	original := AppManifest{
+		Schema:      AppManifestSchema,
+		ID:          "test-app",
+		Name:        "Test App",
 		Version:     "1.2.3",
 		Author:      "user@test.com",
-		Description: "A test bundle",
-		Contents: []BundleContent{
+		Description: "A test app",
+		Contents: []AppContent{
 			{
 				Type:        "skill",
 				Name:        "my-skill",
@@ -147,7 +147,7 @@ func TestBundleManifest_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var decoded BundleManifest
+	var decoded AppManifest
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

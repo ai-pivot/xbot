@@ -129,7 +129,7 @@ CREATE TABLE runners (
 
 CREATE TABLE shared_registry (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    type        TEXT NOT NULL CHECK(type IN ('skill', 'agent')),
+    type        TEXT NOT NULL CHECK(type IN ('skill', 'agent', 'plugin', 'app')),
     name        TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     author      TEXT NOT NULL,

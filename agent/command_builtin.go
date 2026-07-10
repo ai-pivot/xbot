@@ -835,7 +835,7 @@ func (a *pluginCmdAdapter) Execute(ctx context.Context, ag *Agent, msg bus.Inbou
 	}, nil
 }
 
-// --- /app (bundle management) ---
+// --- /app (app management) ---
 
 type appCmd struct{}
 
@@ -878,23 +878,23 @@ func (c *appCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) 
 }
 
 func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
-	// Parse: /app export <bundle-name> --skill <s> --agent <a> [--skill <s2> ...]
+	// Parse: /app export <app-name> --skill <s> --agent <a> [--skill <s2> ...]
 	if len(args) < 2 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app export <bundle-name> --skill <name> --agent <name>`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app export <app-name> --skill <name> --agent <name>`"}, nil
 	}
 
-	bundleName := args[0]
-	var items []PackItem
+	appName := args[0]
+	var items []AppItem
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--skill":
 			if i+1 < len(args) {
-				items = append(items, PackItem{Type: "skill", Name: args[i+1]})
+				items = append(items, AppItem{Type: "skill", Name: args[i+1]})
 				i++
 			}
 		case "--agent":
 			if i+1 < len(args) {
-				items = append(items, PackItem{Type: "agent", Name: args[i+1]})
+				items = append(items, AppItem{Type: "agent", Name: args[i+1]})
 				i++
 			}
 		}
@@ -907,8 +907,8 @@ func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 
-	outputPath := filepath.Join(os.TempDir(), bundleName+".xbot.zip")
-	if err := a.registryManager.PackBundle(items, outputPath, msg.SenderID); err != nil {
+	outputPath := filepath.Join(os.TempDir(), appName+".xbot.zip")
+	if err := a.registryManager.PackApp(items, outputPath, msg.SenderID); err != nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("导出失败：%v", err)}, nil
 	}
 
@@ -916,29 +916,29 @@ func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (
 	for _, it := range items {
 		itemNames = append(itemNames, fmt.Sprintf("%s:%s", it.Type, it.Name))
 	}
-	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ Bundle 已导出到 %s\n包含：%s", outputPath, strings.Join(itemNames, ", "))}, nil
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ 应用已导出到 %s\n包含：%s", outputPath, strings.Join(itemNames, ", "))}, nil
 }
 
 func (c *appCmd) handleInstall(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
 	if len(args) < 1 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app install <file-path>` 或 `/app install bundle <id>`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app install <file-path>` 或 `/app install app <id>`"}, nil
 	}
 	if a.registryManager == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 
-	// /app install bundle <id> — install from market
-	if args[0] == "bundle" && len(args) >= 2 {
+	// /app install app <id> — install from market
+	if args[0] == "app" && len(args) >= 2 {
 		id, err := strconv.ParseInt(args[1], 10, 64)
 		if err != nil {
 			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "无效的 ID"}, nil
 		}
-		result, err := a.registryManager.InstallBundle(id, msg.SenderID)
+		result, err := a.registryManager.InstallApp(id, msg.SenderID)
 		if err != nil {
 			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("安装失败：%v", err)}, nil
 		}
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "✅ Bundle %q 安装完成\n", result.Manifest.Name)
+		fmt.Fprintf(&sb, "✅ 应用 %q 安装完成\n", result.Manifest.Name)
 		if result.Manifest.Version != "" {
 			fmt.Fprintf(&sb, "版本：%s\n", result.Manifest.Version)
 		}
@@ -951,13 +951,13 @@ func (c *appCmd) handleInstall(a *Agent, msg bus.InboundMessage, args []string) 
 
 	// /app install <file-path> — install from local file
 	zipPath := args[0]
-	result, err := a.registryManager.InstallFromFile(zipPath, msg.SenderID)
+	result, err := a.registryManager.InstallAppFromFile(zipPath, msg.SenderID)
 	if err != nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("安装失败：%v", err)}, nil
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "✅ Bundle %q 安装完成\n", result.Manifest.Name)
+	fmt.Fprintf(&sb, "✅ 应用 %q 安装完成\n", result.Manifest.Name)
 	if result.Manifest.Version != "" {
 		fmt.Fprintf(&sb, "版本：%s\n", result.Manifest.Version)
 	}
@@ -986,7 +986,7 @@ func (c *appCmd) handleBrowse(a *Agent, msg bus.InboundMessage, args []string) (
 	var sb strings.Builder
 	sb.WriteString("## 🏪 市场浏览\n\n")
 	for i, e := range entries {
-		typeLabel := map[string]string{"skill": "📦", "agent": "🤖", "bundle": "📦", "plugin": "🧩"}[e.Type]
+		typeLabel := map[string]string{"skill": "📦", "agent": "🤖", "app": "📦", "plugin": "🧩"}[e.Type]
 		if typeLabel == "" {
 			typeLabel = "📄"
 		}
@@ -1003,7 +1003,7 @@ func (c *appCmd) handleBrowse(a *Agent, msg bus.InboundMessage, args []string) (
 }
 
 func (c *appCmd) handlePublish(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
-	// /app publish bundle <name> --skill <s> --agent <a>
+	// /app publish app <name> --skill <s> --agent <a>
 	// /app publish skill <name>  (delegates to existing Publish)
 	// /app publish agent <name>  (delegates to existing Publish)
 	if len(args) < 2 {
@@ -1015,36 +1015,36 @@ func (c *appCmd) handlePublish(a *Agent, msg bus.InboundMessage, args []string) 
 	entryType := args[0]
 	name := args[1]
 	switch entryType {
-	case "bundle":
-		var items []PackItem
+	case "app":
+		var items []AppItem
 		for i := 2; i < len(args); i++ {
 			switch args[i] {
 			case "--skill":
 				if i+1 < len(args) {
-					items = append(items, PackItem{Type: "skill", Name: args[i+1]})
+					items = append(items, AppItem{Type: "skill", Name: args[i+1]})
 					i++
 				}
 			case "--agent":
 				if i+1 < len(args) {
-					items = append(items, PackItem{Type: "agent", Name: args[i+1]})
+					items = append(items, AppItem{Type: "agent", Name: args[i+1]})
 					i++
 				}
 			}
 		}
 		if len(items) == 0 {
-			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "发布 bundle 需要至少指定一个 --skill 或 --agent"}, nil
+			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "发布 app 需要至少指定一个 --skill 或 --agent"}, nil
 		}
-		if err := a.registryManager.PublishBundle(name, msg.SenderID, items); err != nil {
+		if err := a.registryManager.PublishApp(name, msg.SenderID, items); err != nil {
 			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("发布失败：%v", err)}, nil
 		}
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ Bundle %q 已发布到市场", name)}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ 应用 %q 已发布到市场", name)}, nil
 	case "skill", "agent":
 		if err := a.registryManager.Publish(entryType, name, msg.SenderID); err != nil {
 			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("发布失败：%v", err)}, nil
 		}
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已发布到市场", entryType, name)}, nil
 	default:
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "不支持的类型。支持：skill, agent, bundle"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "不支持的类型。支持：skill, agent, app"}, nil
 	}
 }
 
@@ -1077,7 +1077,7 @@ func (c *appCmd) handleMy(a *Agent, msg bus.InboundMessage, args []string) (*cha
 	var sb strings.Builder
 	sb.WriteString("## 📦 我发布的\n\n")
 	for i, e := range entries {
-		typeLabel := map[string]string{"skill": "📦", "agent": "🤖", "bundle": "📦", "plugin": "🧩"}[e.Type]
+		typeLabel := map[string]string{"skill": "📦", "agent": "🤖", "app": "📦", "plugin": "🧩"}[e.Type]
 		if typeLabel == "" {
 			typeLabel = "📄"
 		}
@@ -1097,21 +1097,21 @@ func (c *appCmd) handleMy(a *Agent, msg bus.InboundMessage, args []string) (*cha
 }
 
 func appHelp() string {
-	return "## 📦 /app — Bundle 管理\n\n" +
+	return "## 📦 /app — 应用管理\n\n" +
 		"**子命令：**\n\n" +
-		"- `/app browse [skill|agent|bundle]` — 浏览市场\n" +
+		"- `/app browse [skill|agent|app]` — 浏览市场\n" +
 		"- `/app install <file-path>` — 从 .xbot.zip 文件安装\n" +
-		"- `/app install bundle <id>` — 从市场按 ID 安装\n" +
+		"- `/app install app <id>` — 从市场按 ID 安装\n" +
 		"- `/app publish <type> <name> [--skill <s> --agent <a>]` — 发布到市场\n" +
 		"- `/app unpublish <type> <name>` — 从市场下架\n" +
 		"- `/app my` — 查看我发布的\n" +
 		"- `/app export <name> --skill <s> --agent <a>` — 打包导出\n\n" +
 		"**示例：**\n\n" +
 		"```\n" +
-		"/app browse bundle\n" +
-		"/app install /tmp/my-bundle.xbot.zip\n" +
-		"/app install bundle 5\n" +
-		"/app publish bundle my-bundle --skill debug --agent explore\n" +
-		"/app export my-bundle --skill debug --agent explore\n" +
+		"/app browse app\n" +
+		"/app install /tmp/my-app.xbot.zip\n" +
+		"/app install app 5\n" +
+		"/app publish app my-app --skill debug --agent explore\n" +
+		"/app export my-app --skill debug --agent explore\n" +
 		"```\n"
 }

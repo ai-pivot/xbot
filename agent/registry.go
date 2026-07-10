@@ -292,16 +292,16 @@ func (rm *RegistryManager) installSkill(entry *sqlite.SharedEntry, senderID stri
 	return nil
 }
 
-// PublishBundle packs local items into a .xbot.zip and publishes it to the shared registry.
-// The zip is stored in the registry cache, and a shared_registry entry with type='bundle' is created.
-func (rm *RegistryManager) PublishBundle(name, author string, items []PackItem) error {
+// PublishApp packs local items into a .xbot.zip and publishes it to the shared registry.
+// The zip is stored in the registry cache, and a shared_registry entry with type='app' is created.
+func (rm *RegistryManager) PublishApp(name, author string, items []AppItem) error {
 	// Dedup check
-	existing, err := rm.sharedStore.GetByTypeAndName("bundle", name)
+	existing, err := rm.sharedStore.GetByTypeAndName("app", name)
 	if err != nil {
 		return fmt.Errorf("dedup check: %w", err)
 	}
 	if existing != nil && existing.Author != author && existing.Sharing == "public" {
-		return fmt.Errorf("bundle %q 已被 %s 发布，不能重名分享", name, existing.Author)
+		return fmt.Errorf("app %q 已被 %s 发布，不能重名分享", name, existing.Author)
 	}
 
 	// Pack to a temp file
@@ -312,9 +312,9 @@ func (rm *RegistryManager) PublishBundle(name, author string, items []PackItem) 
 	tmpZip.Close()
 	defer os.Remove(tmpZip.Name())
 
-	bp := NewBundlePackager(rm.workDir)
+	bp := NewAppPackager(rm.workDir)
 	if err := bp.Pack(rm, items, tmpZip.Name(), author); err != nil {
-		return fmt.Errorf("pack bundle: %w", err)
+		return fmt.Errorf("pack app: %w", err)
 	}
 
 	// Read manifest from the zip to get metadata
@@ -324,7 +324,7 @@ func (rm *RegistryManager) PublishBundle(name, author string, items []PackItem) 
 	}
 
 	// Store zip in registry cache
-	cacheDir := rm.registryCacheDir("bundle", name)
+	cacheDir := rm.registryCacheDir("app", name)
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("create cache dir: %w", err)
 	}
@@ -335,7 +335,7 @@ func (rm *RegistryManager) PublishBundle(name, author string, items []PackItem) 
 
 	// Publish to DB
 	entry := &sqlite.SharedEntry{
-		Type:        "bundle",
+		Type:        "app",
 		Name:        name,
 		Description: manifest.Description,
 		Author:      author,
@@ -346,26 +346,26 @@ func (rm *RegistryManager) PublishBundle(name, author string, items []PackItem) 
 	return rm.sharedStore.Publish(entry)
 }
 
-// InstallBundle installs a bundle from the shared registry by ID.
-// Reads the cached .xbot.zip and calls InstallFromFile.
-func (rm *RegistryManager) InstallBundle(id int64, senderID string) (*InstallResult, error) {
+// InstallApp installs an app from the shared registry by ID.
+// Reads the cached .xbot.zip and calls InstallAppFromFile.
+func (rm *RegistryManager) InstallApp(id int64, senderID string) (*AppInstallResult, error) {
 	entry, err := rm.sharedStore.GetByID(id)
 	if err != nil {
-		return nil, fmt.Errorf("get bundle entry: %w", err)
+		return nil, fmt.Errorf("get app entry: %w", err)
 	}
 	if entry == nil {
-		return nil, fmt.Errorf("bundle with id %d not found", id)
+		return nil, fmt.Errorf("app with id %d not found", id)
 	}
-	if entry.Type != "bundle" {
-		return nil, fmt.Errorf("entry %d is %s, not bundle", id, entry.Type)
+	if entry.Type != "app" {
+		return nil, fmt.Errorf("entry %d is %s, not app", id, entry.Type)
 	}
 
 	// The source_path points to the cached .xbot.zip
 	if _, err := os.Stat(entry.SourcePath); err != nil {
-		return nil, fmt.Errorf("bundle cache file not found: %w", err)
+		return nil, fmt.Errorf("app cache file not found: %w", err)
 	}
 
-	return rm.InstallFromFile(entry.SourcePath, senderID)
+	return rm.InstallAppFromFile(entry.SourcePath, senderID)
 }
 
 // installAgent copies all .md files from cache dir into user's agents dir.
@@ -887,17 +887,17 @@ func copyDir(src, dst string) error {
 	})
 }
 
-// PackBundle packs local skill/agent items into a .xbot.zip file.
+// PackApp packs local skill/agent items into a .xbot.zip file.
 // Phase 1: supports skill and agent only.
-func (rm *RegistryManager) PackBundle(items []PackItem, outputPath, author string) error {
-	bp := NewBundlePackager(rm.workDir)
+func (rm *RegistryManager) PackApp(items []AppItem, outputPath, author string) error {
+	bp := NewAppPackager(rm.workDir)
 	return bp.Pack(rm, items, outputPath, author)
 }
 
-// InstallFromFile installs a .xbot.zip bundle from a local file path.
+// InstallAppFromFile installs a .xbot.zip app from a local file path.
 // Phase 1: supports skill and agent contents only.
-func (rm *RegistryManager) InstallFromFile(zipPath, senderID string) (*InstallResult, error) {
-	bp := NewBundlePackager(rm.workDir)
+func (rm *RegistryManager) InstallAppFromFile(zipPath, senderID string) (*AppInstallResult, error) {
+	bp := NewAppPackager(rm.workDir)
 	manifest, tmpDir, err := bp.Unpack(zipPath)
 	if err != nil {
 		return nil, err
@@ -908,7 +908,7 @@ func (rm *RegistryManager) InstallFromFile(zipPath, senderID string) (*InstallRe
 		return nil, err
 	}
 
-	result := &InstallResult{
+	result := &AppInstallResult{
 		Manifest:  *manifest,
 		Installed: []string{},
 	}
@@ -916,12 +916,12 @@ func (rm *RegistryManager) InstallFromFile(zipPath, senderID string) (*InstallRe
 	for _, c := range manifest.Contents {
 		switch c.Type {
 		case "skill":
-			if err := rm.installBundleSkill(c, tmpDir, senderID); err != nil {
+			if err := rm.installAppSkill(c, tmpDir, senderID); err != nil {
 				return nil, fmt.Errorf("install skill %q: %w", c.Name, err)
 			}
 			result.Installed = append(result.Installed, fmt.Sprintf("skill: %s", c.Name))
 		case "agent":
-			if err := rm.installBundleAgent(c, tmpDir, senderID); err != nil {
+			if err := rm.installAppAgent(c, tmpDir, senderID); err != nil {
 				return nil, fmt.Errorf("install agent %q: %w", c.Name, err)
 			}
 			result.Installed = append(result.Installed, fmt.Sprintf("agent: %s", c.Name))
@@ -931,15 +931,15 @@ func (rm *RegistryManager) InstallFromFile(zipPath, senderID string) (*InstallRe
 	}
 
 	log.WithFields(log.Fields{
-		"bundle":  manifest.Name,
+		"app":     manifest.Name,
 		"items":   len(result.Installed),
 		"sender":  senderID,
-	}).Info("Installed bundle from file")
+	}).Info("Installed app from file")
 	return result, nil
 }
 
-// installBundleSkill copies a skill from the unpacked bundle to the user's skill directory.
-func (rm *RegistryManager) installBundleSkill(c BundleContent, srcDir, senderID string) error {
+// installAppSkill copies a skill from the unpacked app to the user's skill directory.
+func (rm *RegistryManager) installAppSkill(c AppContent, srcDir, senderID string) error {
 	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
 	destDir := filepath.Join(rm.userSkillsDir(senderID), c.Name)
 
@@ -961,12 +961,12 @@ func (rm *RegistryManager) installBundleSkill(c BundleContent, srcDir, senderID 
 		}
 	}
 
-	rm.markInstalled(destDir, "bundle:"+c.Name, time.Now().UnixMilli())
+	rm.markInstalled(destDir, "app:"+c.Name, time.Now().UnixMilli())
 	return nil
 }
 
-// installBundleAgent copies an agent .md file from the unpacked bundle to the user's agents directory.
-func (rm *RegistryManager) installBundleAgent(c BundleContent, srcDir, senderID string) error {
+// installAppAgent copies an agent .md file from the unpacked app to the user's agents directory.
+func (rm *RegistryManager) installAppAgent(c AppContent, srcDir, senderID string) error {
 	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
 	agentsDir := rm.userAgentsDir(senderID)
 
