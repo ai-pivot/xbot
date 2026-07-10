@@ -110,6 +110,12 @@ When a SubAgent is running (`ia.running=true`), `action=send` no longer rejects 
 
 All 4 `Run()` call sites in `interactive.go` set `cfg.DrainBgNotifications = ia.wirePendingMessageDrain(key)`.
 
+## Background Notification Cancellation
+
+Agent-level bg notifications are queued by session (`map[sessionKey][]BgNotification`), not in one shared slice. `wireBgNotificationDrain` and `drainAndProcessNotifications` only take the current session's bucket, so other sessions are never scanned/re-appended during a drain.
+
+When Ctrl+C cancels a turn, `handleCancelledRun` does not start a fresh bg-notification turn. It takes same-session pending notifications and records them into the interrupted turn as synthetic assistant tool-call + tool-result pairs, then appends a `user_cancelled` synthetic tool observation. This preserves completed bg work and records the user interruption in context without waking a new turn after the cancel ack. Notifications already drained into the Run are already persisted by the normal synthetic-tool path; cancel clears only their `drainedThisRun` tracking metadata.
+
 ## Context Management
 
 - `Pipeline.Assemble()` safely deduplicates system messages (used to panic) (`middleware.go:170`)

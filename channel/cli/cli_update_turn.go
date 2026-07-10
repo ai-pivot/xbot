@@ -467,16 +467,24 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	countsChanged := m.bgTaskCount != prevBg || m.agentCount != prevAgent
 
 	// Tick pull: fetch authoritative progress snapshot from the backend.
-	// Push events (from ProgressEventHandler) do NOT carry IterationHistory —
-	// that field is only available from GetActiveProgress, which reads the
-	// agent's iterationHistories map. Without this pull, the CLI would never
-	// receive completed iteration data during a live turn.
-	// The pull is O(1) on the agent side (sync.Map read + slice copy) and
-	// applyProgressSnapshot's Seq check + restoreIterationsFromSnapshot's
-	// count check prevent redundant work.
+	//
+	// Push events carry only the delta (the single iteration that just completed),
+	// so the tick pull serves as a SAFETY NET — it recovers iterations lost to
+	// progressSlot coalescing or WS disconnects. The pull frequency is 2s (every
+	// 20th tick at 100ms), not 100ms — infrequent enough to be negligible CPU,
+	// frequent enough to recover at most 1 missed iteration (turns rarely produce
+	// >1 iteration per 2s).
+	//
+	// Watermark: we send m.progressState.lastIter so the server returns only
+	// iterations we don't already have. This keeps pull payloads proportional
+	// to the gap size, not the total turn length.
 	if m.typing && m.channel != nil && m.channel.config.GetActiveProgressFn != nil {
-		if snapshot := m.channel.config.GetActiveProgressFn(m.channelName, m.chatID); snapshot != nil {
-			m.applyProgressSnapshot(snapshot)
+		m.progressState.pullTick++
+		if m.progressState.pullTick >= 20 {
+			m.progressState.pullTick = 0
+			if snapshot := m.channel.config.GetActiveProgressFn(m.channelName, m.chatID, m.progressState.lastIter); snapshot != nil {
+				m.applyProgressSnapshot(snapshot)
+			}
 		}
 	}
 

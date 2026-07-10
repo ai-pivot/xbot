@@ -94,7 +94,7 @@ func TestGetActiveProgress_BackgroundInteractive(t *testing.T) {
 		{Phase: "running", Iteration: 3},
 	})
 
-	result := a.GetActiveProgress("agent", interactiveKey)
+	result := a.GetActiveProgress("agent", interactiveKey, 0)
 	if result == nil {
 		t.Fatal("GetActiveProgress returned nil")
 		return
@@ -111,7 +111,7 @@ func TestGetActiveProgress_BackgroundInteractive_FinishedAgent(t *testing.T) {
 	a.interactiveSubAgents.Store(key, ia)
 	a.lastProgressSnapshot.Store("agent:"+key, &protocol.ProgressEvent{Phase: "done", Iteration: 5})
 
-	result := a.GetActiveProgress("agent", key)
+	result := a.GetActiveProgress("agent", key, 0)
 	if result == nil {
 		t.Fatal("nil")
 		return
@@ -123,7 +123,7 @@ func TestGetActiveProgress_BackgroundInteractive_FinishedAgent(t *testing.T) {
 
 func TestGetActiveProgress_BackgroundInteractive_NoSnapshot(t *testing.T) {
 	a := NewTestAgent()
-	if result := a.GetActiveProgress("agent", "cli:/cwd/r:i"); result != nil {
+	if result := a.GetActiveProgress("agent", "cli:/cwd/r:i", 0); result != nil {
 		t.Errorf("expected nil, got Phase=%q", result.Phase)
 	}
 }
@@ -139,7 +139,7 @@ func TestGetActiveProgress_KeyFormatConsistency(t *testing.T) {
 		ChatID: agentProgressKey, Phase: "done", Iteration: 1,
 	})
 
-	result := a.GetActiveProgress("agent", interactiveKey)
+	result := a.GetActiveProgress("agent", interactiveKey, 0)
 	if result == nil {
 		t.Fatal("snapshot lookup failed — key format mismatch")
 		return
@@ -155,7 +155,7 @@ func TestGetActiveProgress_KeyFormatConsistency(t *testing.T) {
 
 func NewTestAgent() *Agent { return &Agent{} }
 
-func TestRecordIterationAdvanceAndAttachHistory_AttachesPreviousIteration(t *testing.T) {
+func TestAttachIterationDelta_AttachesPreviousIteration(t *testing.T) {
 	a := NewTestAgent()
 	key := "cli:/cwd"
 	prev := &protocol.ProgressEvent{
@@ -169,21 +169,21 @@ func TestRecordIterationAdvanceAndAttachHistory_AttachesPreviousIteration(t *tes
 	a.lastProgressSnapshot.Store(key, prev)
 
 	next := &protocol.ProgressEvent{ChatID: key, Phase: "thinking", Iteration: 3}
-	a.recordIterationAdvanceAndAttachHistory(key, next.Iteration, next)
+	a.attachIterationDelta(key, next.Iteration, next)
 
 	if len(next.IterationHistory) != 1 {
-		t.Fatalf("expected previous iteration attached to outgoing payload, got %d", len(next.IterationHistory))
+		t.Fatalf("expected previous iteration attached as delta, got %d", len(next.IterationHistory))
 	}
 	got := next.IterationHistory[0]
 	if got.Iteration != 2 || got.Content != "content C" || got.Reasoning != "reasoning C" {
-		t.Fatalf("wrong history snapshot attached: %+v", got)
+		t.Fatalf("wrong delta attached: %+v", got)
 	}
 	if len(got.ActiveTools) != 1 || got.ActiveTools[0].Name != "Shell" {
-		t.Fatalf("tool progress not preserved in attached history: %+v", got.ActiveTools)
+		t.Fatalf("tool progress not preserved in delta: %+v", got.ActiveTools)
 	}
 }
 
-func TestRecordIterationAdvanceAndAttachHistory_StripsNestedHistory(t *testing.T) {
+func TestAttachIterationDelta_StripsNestedHistory(t *testing.T) {
 	a := NewTestAgent()
 	key := "cli:/cwd"
 	prev := &protocol.ProgressEvent{
@@ -199,10 +199,10 @@ func TestRecordIterationAdvanceAndAttachHistory_StripsNestedHistory(t *testing.T
 	a.lastProgressSnapshot.Store(key, prev)
 
 	next := &protocol.ProgressEvent{ChatID: key, Phase: "thinking", Iteration: 3}
-	a.recordIterationAdvanceAndAttachHistory(key, next.Iteration, next)
+	a.attachIterationDelta(key, next.Iteration, next)
 
 	if len(next.IterationHistory) != 1 {
-		t.Fatalf("expected one flattened history entry, got %d", len(next.IterationHistory))
+		t.Fatalf("expected one flattened delta entry, got %d", len(next.IterationHistory))
 	}
 	if len(next.IterationHistory[0].IterationHistory) != 0 {
 		t.Fatalf("nested IterationHistory leaked into outgoing payload: %+v", next.IterationHistory[0].IterationHistory)
@@ -214,6 +214,65 @@ func TestRecordIterationAdvanceAndAttachHistory_StripsNestedHistory(t *testing.T
 	hist := *histPtr.(*[]protocol.ProgressEvent)
 	if len(hist) != 1 || len(hist[0].IterationHistory) != 0 {
 		t.Fatalf("nested IterationHistory stored internally: %+v", hist)
+	}
+}
+
+func TestAttachIterationDelta_NoDeltaWhenSameIteration(t *testing.T) {
+	a := NewTestAgent()
+	key := "cli:/cwd"
+	prev := &protocol.ProgressEvent{
+		ChatID:    key,
+		Phase:     "tool_exec",
+		Iteration: 2,
+		Content:   "content C",
+	}
+	a.lastProgressSnapshot.Store(key, prev)
+
+	// Same iteration — no advance, no delta
+	next := &protocol.ProgressEvent{ChatID: key, Phase: "thinking", Iteration: 2}
+	a.attachIterationDelta(key, next.Iteration, next)
+
+	if len(next.IterationHistory) != 0 {
+		t.Fatalf("expected no delta when iteration hasn't advanced, got %d", len(next.IterationHistory))
+	}
+}
+
+func TestGetActiveProgress_WatermarkFilter(t *testing.T) {
+	a := NewTestAgent()
+	key := "cli:/cwd"
+
+	// Store 3 iterations in history
+	a.iterationHistories.Store(key, &[]protocol.ProgressEvent{
+		{Iteration: 1, Content: "iter1"},
+		{Iteration: 2, Content: "iter2"},
+		{Iteration: 3, Content: "iter3"},
+	})
+	a.lastProgressSnapshot.Store(key, &protocol.ProgressEvent{
+		ChatID: key, Phase: "running", Iteration: 4,
+	})
+
+	// fromIter=2: should return only iteration 3
+	result := a.GetActiveProgress("cli", "/cwd", 2)
+	if result == nil {
+		t.Fatal("nil")
+	}
+	if len(result.IterationHistory) != 1 {
+		t.Fatalf("expected 1 iteration after watermark, got %d", len(result.IterationHistory))
+	}
+	if result.IterationHistory[0].Iteration != 3 {
+		t.Fatalf("expected iteration 3, got %d", result.IterationHistory[0].Iteration)
+	}
+
+	// fromIter=0: should return all 3 iterations
+	result = a.GetActiveProgress("cli", "/cwd", 0)
+	if len(result.IterationHistory) != 3 {
+		t.Fatalf("expected 3 iterations with fromIter=0, got %d", len(result.IterationHistory))
+	}
+
+	// fromIter=3: should return 0 iterations
+	result = a.GetActiveProgress("cli", "/cwd", 3)
+	if len(result.IterationHistory) != 0 {
+		t.Fatalf("expected 0 iterations with fromIter=3, got %d", len(result.IterationHistory))
 	}
 }
 

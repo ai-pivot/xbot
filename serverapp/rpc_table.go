@@ -947,8 +947,9 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		return h.Ag.IsProcessingByChannel(p.Channel, p.ChatID), nil
 	})
 	t["get_active_progress"] = rpc1(func(ctx context.Context, p struct {
-		Channel string `json:"channel"`
-		ChatID  string `json:"chat_id"`
+		Channel       string `json:"channel"`
+		ChatID        string `json:"chat_id"`
+		FromIteration int    `json:"from_iteration"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
 		if p.Channel == "" {
@@ -957,7 +958,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
 			return nil, fmt.Errorf("access denied")
 		}
-		return h.Ag.GetActiveProgress(p.Channel, p.ChatID), nil
+		return h.Ag.GetActiveProgress(p.Channel, p.ChatID, p.FromIteration), nil
 	})
 
 	t["get_todos"] = rpc1(func(ctx context.Context, p struct {

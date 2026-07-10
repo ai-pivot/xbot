@@ -272,7 +272,8 @@ func setLLMCmdForSub(s ch.Subscription) string {
 	} else if key != "" {
 		key = "****"
 	}
-	return fmt.Sprintf("/set-llm provider=%s base_url=%s api_key=%s", s.Provider, s.BaseURL, key)
+	providerVal := ch.ProviderToSelectValue(s.Provider, s.APIType)
+	return fmt.Sprintf("/set-llm provider=%s base_url=%s api_key=%s", providerVal, s.BaseURL, key)
 }
 
 // cursorToActiveLLMRow parks the cursor on the active model's row (fall back to
@@ -520,6 +521,10 @@ func isNoiseModel(model string) bool {
 
 // ─── Subscription edit / add / delete ───────────────────────────────────────
 
+// providerSelectOptions returns the three supported provider types for the
+// subscription panel dropdown. The select value encodes both provider and
+// API type: "openai" (Chat Completions), "openai_responses" (Responses API),
+// "anthropic" (Anthropic Messages API).
 // addSubscriptionSchema builds the settings schema for creating a subscription.
 // A subscription is credentials-only (Name/Provider/BaseURL/APIKey). Model-related
 // knobs (default model, max output, thinking mode) are NOT collected here —
@@ -529,7 +534,7 @@ func isNoiseModel(model string) bool {
 func addSubscriptionSchema() []ch.SettingDefinition {
 	return []ch.SettingDefinition{
 		{Key: "sub_name", Label: "Name", Description: "Display name for this subscription", Type: ch.SettingTypeText, DefaultValue: ""},
-		{Key: "sub_provider", Label: "Provider", Description: "LLM provider (openai, anthropic, deepseek, etc.)", Type: ch.SettingTypeText, DefaultValue: "openai"},
+		{Key: "sub_provider", Label: "Provider", Description: "API type: OpenAI Complete (Chat Completions), OpenAI Responses, or Anthropic", Type: ch.SettingTypeSelect, DefaultValue: "openai", Options: ch.ProviderSelectOptions()},
 		{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: ch.SettingTypeText, DefaultValue: ""},
 		{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: ch.SettingTypePassword, DefaultValue: ""},
 	}
@@ -543,8 +548,9 @@ func (m *cliModel) openAddSubscriptionPanel() {
 	schema := addSubscriptionSchema()
 	m.openSettingsPanel(schema, map[string]string{}, func(values map[string]string) {
 		name := values["sub_name"]
+		provider, apiType := ch.SelectValueToProvider(values["sub_provider"])
 		if name == "" {
-			name = values["sub_provider"]
+			name = provider
 		}
 		if name == "" {
 			name = "unnamed"
@@ -552,7 +558,8 @@ func (m *cliModel) openAddSubscriptionPanel() {
 		sub := &ch.Subscription{
 			ID:       fmt.Sprintf("sub_%d", time.Now().UnixNano()),
 			Name:     name,
-			Provider: values["sub_provider"],
+			Provider: provider,
+			APIType:  apiType,
 			BaseURL:  values["sub_base_url"],
 			APIKey:   values["sub_api_key"],
 			Active:   false,
@@ -592,13 +599,13 @@ func (m *cliModel) openEditSubscriptionPanel(subID string) {
 	}
 	schema := []ch.SettingDefinition{
 		{Key: "sub_name", Label: "Name", Description: "Display name for this subscription", Type: ch.SettingTypeText, DefaultValue: target.Name},
-		{Key: "sub_provider", Label: "Provider", Description: "LLM provider (openai, anthropic, deepseek, etc.)", Type: ch.SettingTypeText, DefaultValue: target.Provider},
+		{Key: "sub_provider", Label: "Provider", Description: "API type: OpenAI Complete (Chat Completions), OpenAI Responses, or Anthropic", Type: ch.SettingTypeSelect, DefaultValue: ch.ProviderToSelectValue(target.Provider, target.APIType), Options: ch.ProviderSelectOptions()},
 		{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: ch.SettingTypeText, DefaultValue: target.BaseURL},
 		{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: ch.SettingTypePassword, DefaultValue: target.APIKey},
 	}
 	values := map[string]string{
 		"sub_name":     target.Name,
-		"sub_provider": target.Provider,
+		"sub_provider": ch.ProviderToSelectValue(target.Provider, target.APIType),
 		"sub_base_url": target.BaseURL,
 		"sub_api_key":  target.APIKey,
 	}
@@ -612,10 +619,12 @@ func (m *cliModel) openEditSubscriptionPanel(subID string) {
 		if isMaskedAPIKey(apiKey) { // never write back a masked key
 			apiKey = target.APIKey
 		}
+		provider, apiType := ch.SelectValueToProvider(values["sub_provider"])
 		updated := &ch.Subscription{
 			ID:              curID,
 			Name:            values["sub_name"],
-			Provider:        values["sub_provider"],
+			Provider:        provider,
+			APIType:         apiType,
 			Model:           target.Model, // preserved internal fallback
 			BaseURL:         values["sub_base_url"],
 			APIKey:          apiKey,
@@ -728,6 +737,7 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 		{Key: "pm_max_context", Label: "Max Context", Description: "Max context tokens (0 = use subscription default)", Type: ch.SettingTypeNumber, DefaultValue: strconv.Itoa(maxCtx)},
 		{Key: "pm_api_type", Label: "API Type", Description: "API endpoint override (blank = use subscription default)", Type: ch.SettingTypeSelect, DefaultValue: apiType, Options: []ch.SettingOption{
 			{Label: "Default", Value: ""},
+			{Label: "Chat Completions", Value: "chat_completions"},
 			{Label: "Responses", Value: "responses"},
 		}},
 	}
@@ -800,6 +810,7 @@ func (m *cliModel) openAddModelPanel(defaultSubID string) {
 		{Key: "add_max_context", Label: "Max Context", Description: "Max context tokens (0 = use subscription default)", Type: ch.SettingTypeNumber, DefaultValue: "0"},
 		{Key: "add_api_type", Label: "API Type", Description: "API endpoint override (blank = use subscription default)", Type: ch.SettingTypeSelect, DefaultValue: "", Options: []ch.SettingOption{
 			{Label: "Default", Value: ""},
+			{Label: "Chat Completions", Value: "chat_completions"},
 			{Label: "Responses", Value: "responses"},
 		}},
 	}

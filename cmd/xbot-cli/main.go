@@ -1453,8 +1453,8 @@ func main() {
 	var refreshAgentCache func()
 	if app.client != nil {
 		backend := app.client
-		cliCfg.GetActiveProgressFn = func(channelName, chatID string) *protocol.ProgressEvent {
-			return backend.GetActiveProgress(channelName, chatID)
+		cliCfg.GetActiveProgressFn = func(channelName, chatID string, fromIter int) *protocol.ProgressEvent {
+			return backend.GetActiveProgress(channelName, chatID, fromIter)
 		}
 		cliCfg.BindChatFn = func(chatID string) error {
 			return backend.BindChat(chatID)
@@ -1813,7 +1813,7 @@ func main() {
 
 	// Initial restore: load history + active progress + todos atomically.
 	clipanic.Go("main.RestoreActiveProgress", func() {
-		progress := app.client.GetActiveProgress("cli", chatID)
+		progress := app.client.GetActiveProgress("cli", chatID, 0) // initial restore: full history
 		var todos []protocol.TodoItem
 		if progress != nil {
 			log.WithFields(log.Fields{
@@ -1844,7 +1844,7 @@ func main() {
 				}
 			}
 			clipanic.Go("main.ReconnectRestore", func() {
-				progress := app.client.GetActiveProgress("cli", chatID)
+				progress := app.client.GetActiveProgress("cli", chatID, 0) // initial restore: full history
 				history, err := app.client.GetHistory("cli", chatID)
 				if err != nil {
 					log.WithError(err).Warn("ReconnectRestore: failed to load history")

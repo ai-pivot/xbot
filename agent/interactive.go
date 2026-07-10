@@ -208,14 +208,17 @@ func progressHistoryWithoutNested(hist []protocol.ProgressEvent) []protocol.Prog
 
 // recordIterationSnapshot appends the previous snapshot to iteration history if the
 // shouldAppend predicate returns true. Uses CAS loop to avoid TOCTOU races on sync.Map.
-func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *protocol.ProgressEvent) bool) {
+// Returns the newly appended snapshot (the delta), or nil if nothing was appended.
+// The caller uses the delta to send only new iterations in push events — never the
+// full cumulative history.
+func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *protocol.ProgressEvent) bool) *protocol.ProgressEvent {
 	prevSnap, loaded := a.lastProgressSnapshot.Load(key)
 	if !loaded {
-		return
+		return nil
 	}
 	prev := progressSnapshotWithoutHistory(prevSnap.(*protocol.ProgressEvent))
 	if !shouldAppend(prev) {
-		return
+		return nil
 	}
 	for {
 		histPtr, _ := a.iterationHistories.LoadOrStore(key, &[]protocol.ProgressEvent{})
@@ -229,32 +232,35 @@ func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *prot
 		}
 		if already {
 			if a.iterationHistories.CompareAndSwap(key, histPtr, &hist) {
-				return
+				return nil
 			}
 			continue
 		}
 		updated := append(hist, *prev)
 		if a.iterationHistories.CompareAndSwap(key, histPtr, &updated) {
-			return
+			return prev
 		}
 	}
 }
 
-// recordIterationAdvanceAndAttachHistory records the previous iteration before
-// sending a newer structured progress event, then attaches the authoritative
-// completed-iteration history to the outgoing payload. This keeps TUI state
-// linear: if current advances from C to D, C is already present in
-// IterationHistory on the same event.
-func (a *Agent) recordIterationAdvanceAndAttachHistory(key string, nextIteration int, payload *protocol.ProgressEvent) {
+// attachIterationDelta records the previous iteration (if iteration advanced) and
+// attaches ONLY the newly completed iteration to the payload — not the full
+// cumulative history. The TUI appends this delta to its local iteration list.
+// If the iteration didn't advance, no delta is attached (payload.IterationHistory
+// stays nil → omitted from JSON by omitempty).
+//
+// This replaces the old recordIterationAdvanceAndAttachHistory which attached the
+// full IterationHistory on every push, causing O(N) payload growth and CPU waste
+// from redundant JSON serialization.
+func (a *Agent) attachIterationDelta(key string, nextIteration int, payload *protocol.ProgressEvent) {
 	if payload == nil {
 		return
 	}
-	a.recordIterationSnapshot(key, func(prev *protocol.ProgressEvent) bool {
+	delta := a.recordIterationSnapshot(key, func(prev *protocol.ProgressEvent) bool {
 		return nextIteration > prev.Iteration && prev.Iteration >= 0
 	})
-	if histPtr, ok := a.iterationHistories.Load(key); ok {
-		hist := *histPtr.(*[]protocol.ProgressEvent)
-		payload.IterationHistory = progressHistoryWithoutNested(hist)
+	if delta != nil {
+		payload.IterationHistory = []protocol.ProgressEvent{*delta}
 	}
 }
 
@@ -323,7 +329,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			}
 		}
 
-		a.recordIterationAdvanceAndAttachHistory(agentProgressKey, s.Iteration, cliPayload)
+		a.attachIterationDelta(agentProgressKey, s.Iteration, cliPayload)
 
 		if localCh != nil {
 			localCh.SendProgress(key, cliPayload)

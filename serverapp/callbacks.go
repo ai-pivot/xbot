@@ -310,7 +310,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	}
 	// Wire GetActiveProgress
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
-		return ag.GetActiveProgress(channel, chatID)
+		return ag.GetActiveProgress(channel, chatID, 0) // web always requests full history
 	}
 	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector) (web.HistorySnapshot, error) {
 		if ag.MultiSession() == nil {

@@ -1734,7 +1734,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
 				}
 			}
-			a.recordIterationAdvanceAndAttachHistory(progressKey, s.Iteration, payload)
+			a.attachIterationDelta(progressKey, s.Iteration, payload)
 			cliCh.SendProgress(chatID, payload)
 			a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 			a.clearStreamState(progressKey)
@@ -1835,7 +1835,7 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
 				}
 			}
-			a.recordIterationAdvanceAndAttachHistory(progressKey, s.Iteration, cliPayload)
+			a.attachIterationDelta(progressKey, s.Iteration, cliPayload)
 			if len(cliPayload.IterationHistory) > 0 {
 				payload.IterationHistory = make([]protocol.ProgressEvent, len(cliPayload.IterationHistory))
 				copy(payload.IterationHistory, cliPayload.IterationHistory)
