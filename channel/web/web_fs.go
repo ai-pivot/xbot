@@ -122,7 +122,10 @@ func resolveSafePath(rawPath string) (string, error) {
 		rawPath = "/"
 	}
 	// Reject paths containing ".." as a path component (traversal attempt).
-	for _, part := range strings.Split(rawPath, string(filepath.Separator)) {
+	// filepath.ToSlash normalizes Windows backslashes to forward slashes
+	// so the split works consistently across platforms — HTTP paths always
+	// use "/", but a caller may pass OS-native separators.
+	for _, part := range strings.Split(filepath.ToSlash(rawPath), "/") {
 		if part == ".." {
 			return "", errPathTraversal
 		}
