@@ -202,6 +202,10 @@ type FeishuChannel struct {
 	// AskUser pending state: key is "chatID:senderID" → waiting for user's answer
 	askUserMu sync.Mutex
 	askUsers  map[string]*feishuPendingAskUser
+
+	// LinkAccountFn consumes a link code for the given channel identity.
+	// Returns a human-readable result message.
+	linkAccountFn func(code, channel, channelUserID string) (string, error)
 }
 
 type feishuPendingApproval struct {
@@ -263,6 +267,11 @@ func (f *FeishuChannel) SetApprovalState(state *protocol.ApprovalState) {
 // SetSettingsCallbacks injects settings card callbacks from Agent.
 func (f *FeishuChannel) SetSettingsCallbacks(cb SettingsCallbacks) {
 	f.settingsCallbacks = cb
+}
+
+// SetLinkAccountFn sets the callback for consuming link codes from Feishu.
+func (f *FeishuChannel) SetLinkAccountFn(fn func(code, channel, channelUserID string) (string, error)) {
+	f.linkAccountFn = fn
 }
 
 // SetAdminChatID sets the admin chat ID for admin-only commands.
@@ -1111,6 +1120,21 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 	askKey, pending := f.findPendingAskUser(chatID, senderID, chatType)
 	if pending != nil && f.tryResolveAskUserByText(askKey, finalContent, senderID, senderName, chatID, chatType, msgTime, requestID, metadata) {
 		return nil
+	}
+
+	// Intercept /link <code> for cross-channel account linking.
+	// The message is consumed here — it never reaches the agent.
+	if f.linkAccountFn != nil && strings.HasPrefix(strings.TrimSpace(finalContent), "/link ") {
+		code := strings.TrimSpace(strings.TrimPrefix(finalContent, "/link "))
+		if code != "" {
+			result, err := f.linkAccountFn(code, "feishu", senderID)
+			if err != nil {
+				f.sendTextReply(replyTo, messageID, "❌ 关联失败: "+err.Error())
+			} else {
+				f.sendTextReply(replyTo, messageID, "✅ "+result)
+			}
+			return nil
+		}
 	}
 
 	f.msgBus.Inbound <- bus.InboundMessage{

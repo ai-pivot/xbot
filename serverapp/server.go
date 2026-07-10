@@ -811,6 +811,38 @@ func Run(args []string) error {
 		// 注入设置卡片回调（让飞书渠道能访问 Agent 的 LLM/Registry/Settings 功能）
 		feishuCh.SetSettingsCallbacks(buildFeishuSettingsCallbacks(cfg, ag))
 
+		// Wire cross-channel account linking for Feishu.
+		// When a Feishu user sends "/link <code>", the Feishu channel calls this
+		// function to consume the code and link their Feishu identity.
+		feishuCh.SetLinkAccountFn(func(code, channel, channelUserID string) (string, error) {
+			if ag.IdentityResolver() == nil {
+				return "", fmt.Errorf("identity resolver not available")
+			}
+			// Validate code without consuming (preview-safe)
+			targetUserID, err := ag.IdentityResolver().ValidateLinkCode(code)
+			if err != nil {
+				return "", err
+			}
+			// Resolve current Feishu user
+			currentUserID, _, _ := ag.IdentityResolver().Resolve(channel, channelUserID)
+			if currentUserID == targetUserID {
+				ag.IdentityResolver().ConsumeLinkCode(code)
+				return "已关联，无需重复操作", nil
+			}
+			// Try simple link
+			_, err = ag.IdentityResolver().LinkIdentity(targetUserID, channel, channelUserID)
+			if err == nil {
+				ag.IdentityResolver().ConsumeLinkCode(code)
+				return fmt.Sprintf("关联成功 (user_id=%d)", targetUserID), nil
+			}
+			// Merge required — auto-execute (Feishu has no two-step confirm UI)
+			ag.IdentityResolver().ConsumeLinkCode(code)
+			if mergeErr := ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
+				return "", fmt.Errorf("合并失败: %w", mergeErr)
+			}
+			return fmt.Sprintf("账号合并成功 (user_id=%d)", targetUserID), nil
+		})
+
 		// 注入飞书渠道特化 prompt 提供者
 		ag.SetChannelPromptProviders(&feishuPromptAdapter{ch: feishuCh})
 	}
