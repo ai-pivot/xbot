@@ -439,16 +439,44 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		return m.handlePluginCommand(parts)
 
 	case "/link-account":
-		// /link-account <code> — link this CLI identity to another channel's user
+		// /link-account (no args) → generate a link code for this CLI identity
+		// /link-account <code>   → link this CLI identity to the code's target user
 		if len(parts) < 2 {
-			m.showSystemMsg("用法: /link-account <code>\n\n在 Web 端「设置 → 账号关联」生成关联码，然后在此处输入。", feedbackWarning)
+			if m.channel.config.GenerateLinkCodeFn != nil {
+				code, err := m.channel.config.GenerateLinkCodeFn()
+				if err != nil {
+					m.showSystemMsg("❌ 生成关联码失败: "+err.Error(), feedbackWarning)
+					return nil
+				}
+				m.showSystemMsg(fmt.Sprintf("🔑 关联码: %s\n\n有效期 5 分钟。在 Web 端「设置 → 账号关联」或飞书端输入此码完成关联。", code), feedbackInfo)
+			} else {
+				m.showSystemMsg("❌ 当前模式不支持生成关联码（需要连接到服务器）", feedbackWarning)
+			}
 			return nil
 		}
 		code := parts[1]
-		m.sendToAgent("/link-account " + code) // passthrough to agent-level handler
+		if m.channel.config.ConsumeLinkCodeFn != nil {
+			result, err := m.channel.config.ConsumeLinkCodeFn(code)
+			if err != nil {
+				m.showSystemMsg("❌ 关联失败: "+err.Error(), feedbackWarning)
+				return nil
+			}
+			m.showSystemMsg("✅ "+result, feedbackInfo)
+		} else {
+			m.sendToAgent("/link-account " + code) // passthrough to agent-level handler
+		}
 
 	case "/unlink-account":
-		m.sendToAgent("/unlink-account") // passthrough to agent-level handler
+		if m.channel.config.ListIdentitiesFn != nil {
+			identities, err := m.channel.config.ListIdentitiesFn()
+			if err != nil {
+				m.showSystemMsg("❌ "+err.Error(), feedbackWarning)
+				return nil
+			}
+			m.showSystemMsg(fmt.Sprintf("已关联身份: %v", identities), feedbackInfo)
+		} else {
+			m.sendToAgent("/unlink-account") // passthrough to agent-level handler
+		}
 
 	default:
 		// /debug subcommands for runtime diagnostics

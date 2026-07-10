@@ -1642,6 +1642,65 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		bizID := rpcBizID(ctx)
 		return tools.NewRunnerTokenStore(db).RenameRunner(bizID, p.OldName, p.NewName)
 	})
+
+	// generate_link_code generates a cross-channel link code for the current user.
+	t["generate_link_code"] = rpc0(func(ctx context.Context) any {
+		if h.Ag.IdentityResolver() == nil {
+			return map[string]any{"error": "identity resolver not available"}
+		}
+		userID := rpcUserID(ctx)
+		if userID == 0 {
+			userID = 1 // CLI admin fallback
+		}
+		code, err := h.Ag.IdentityResolver().GenerateLinkCode(userID)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		return map[string]any{"code": code, "expires_in": 300}
+	})
+
+	// consume_link_code consumes a link code and links current identity to the target user.
+	t["consume_link_code"] = rpc1(func(ctx context.Context, p struct {
+		Code string `json:"code"`
+	}) (any, error) {
+		if h.Ag.IdentityResolver() == nil {
+			return nil, fmt.Errorf("identity resolver not available")
+		}
+		targetUserID, err := h.Ag.IdentityResolver().ConsumeLinkCode(p.Code)
+		if err != nil {
+			return nil, err
+		}
+		// Link current CLI identity to target user
+		_, err = h.Ag.IdentityResolver().LinkIdentity(targetUserID, "cli", rpcBizID(ctx))
+		if err != nil {
+			// Merge required — for CLI we auto-merge (single user, no preview needed)
+			currentUserID := rpcUserID(ctx)
+			if currentUserID == 0 {
+				currentUserID = 1
+			}
+			if mergeErr := h.Ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
+				return nil, fmt.Errorf("merge failed: %w (original: %v)", mergeErr, err)
+			}
+			return map[string]any{"action": "merged", "user_id": targetUserID}, nil
+		}
+		return map[string]any{"action": "linked", "user_id": targetUserID}, nil
+	})
+
+	// list_identities lists the current user's linked channel identities.
+	t["list_identities"] = rpc0(func(ctx context.Context) any {
+		if h.Ag.IdentityResolver() == nil {
+			return map[string]any{"identities": []any{}}
+		}
+		userID := rpcUserID(ctx)
+		if userID == 0 {
+			userID = 1
+		}
+		identities, err := h.Ag.IdentityResolver().ListIdentities(userID)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		return map[string]any{"user_id": userID, "identities": identities}
+	})
 }
 
 // ── Helpers ──

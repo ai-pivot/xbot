@@ -1402,6 +1402,50 @@ func main() {
 		IsAdminFn: func() bool {
 			return true // standalone mode: CLI user is always admin
 		},
+		GenerateLinkCodeFn: func() (string, error) {
+			if app.client == nil {
+				return "", fmt.Errorf("agent not initialized")
+			}
+			// RPC to server to generate link code for user_id=1 (CLI admin)
+			result, err := app.client.CallRPC("generate_link_code", map[string]any{})
+			if err != nil {
+				return "", err
+			}
+			var resp struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal(result, &resp); err != nil {
+				return "", err
+			}
+			return resp.Code, nil
+		},
+		ConsumeLinkCodeFn: func(code string) (string, error) {
+			if app.client == nil {
+				return "", fmt.Errorf("agent not initialized")
+			}
+			result, err := app.client.CallRPC("consume_link_code", map[string]string{"code": code})
+			if err != nil {
+				return "", err
+			}
+			var resp struct {
+				Action string `json:"action"`
+				UserID int64  `json:"user_id"`
+			}
+			if err := json.Unmarshal(result, &resp); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("关联成功 (action=%s, user_id=%d)", resp.Action, resp.UserID), nil
+		},
+		ListIdentitiesFn: func() (any, error) {
+			if app.client == nil {
+				return nil, fmt.Errorf("agent not initialized")
+			}
+			result, err := app.client.CallRPC("list_identities", map[string]any{})
+			if err != nil {
+				return nil, err
+			}
+			return string(result), nil
+		},
 		ListAllTenantsFn: func() ([]cli.AllSessionInfo, error) {
 			if app.client == nil {
 				return nil, fmt.Errorf("agent not initialized")
