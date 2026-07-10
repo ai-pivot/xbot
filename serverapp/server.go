@@ -349,11 +349,13 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			}
 
 			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
-			// Wire up RemoteSandbox callbacks to push real-time status to WebChannel.
-			// In WebChannel, senderID == chatID (see handleWS: client.userID = senderID, chatID := c.userID).
+			// Wire admin role check into SandboxRouter — admin web users bypass
+			// the DeniedSandbox restriction. Uses WebChannel's IsAdminIdentity
+			// (role-based, checks DB for web-1 or "admin" auth identity).
 			sb := tools.GetSandbox()
 			if sb != nil {
 				if router, ok := sb.(*tools.SandboxRouter); ok {
+					router.SetIsAdminFn(webCh.IsAdminIdentity)
 					if remote := router.Remote(); remote != nil {
 						remote.OnRunnerStatusChange = func(userID, runnerName string, online bool) {
 							webCh.PushRunnerStatus(userID, runnerName, online)
