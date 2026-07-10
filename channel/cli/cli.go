@@ -582,6 +582,15 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 				}).Warn("SendProgress: asyncCh full, dropping structured event from previous iteration")
 			}
 		}
+		// Merge iteration deltas: the old event may carry a delta (the
+		// iteration that just completed) that the new event doesn't have.
+		// Without this merge, replacing the old event in progressSlot
+		// silently drops the delta. With the delta-push protocol, each
+		// structured event carries 0 or 1 delta entries — losing one
+		// means that iteration is permanently missing from the TUI
+		// (the tick pull uses lastIter as watermark, and lastIter has
+		// already advanced past the lost iteration).
+		payload.IterationHistory = mergeIterationDeltas(old.IterationHistory, payload.IterationHistory)
 		c.progressSlot = payload
 	}
 	c.progressMu.Unlock()
