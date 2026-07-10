@@ -203,6 +203,7 @@ const zhCN = {
       language: '语言',
       llm: 'LLM 配置',
       account: '账号',
+      linking: '账号关联',
     },
   },
   designSystem: {
