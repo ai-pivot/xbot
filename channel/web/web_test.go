@@ -1381,11 +1381,16 @@ func TestRegression_StructuredProgressNotOverwrittenInStateless(t *testing.T) {
 	hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{ChatID: source, Phase: "thinking", Iteration: 1, IterationHistory: []protocol.ProgressEvent{delta}}})
 	hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{ChatID: source, Phase: "done", Iteration: 1}})
 	msgs := client.drainStateless()
-	if len(msgs) != 0 { t.Fatalf("expected 0 stateless messages, got %d", len(msgs)) }
-	if len(client.sendCh) != 3 { t.Fatalf("expected 3 messages in sendCh, got %d", len(client.sendCh)) }
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 stateless messages, got %d", len(msgs))
+	}
+	if len(client.sendCh) != 3 {
+		t.Fatalf("expected 3 messages in sendCh, got %d", len(client.sendCh))
+	}
 	for i := 0; i < 3; i++ {
 		msg := <-client.sendCh
-		if msg.Type != protocol.MsgTypeProgress { t.Errorf("sendCh[%d]: expected progress, got %s", i, msg.Type) }
+		if msg.Type != protocol.MsgTypeProgress {
+			t.Errorf("sendCh[%d]: expected progress, got %s", i, msg.Type)
+		}
 	}
 }
-
