@@ -19,32 +19,6 @@ const settingsCardActionPrefix = "settings_"
 
 const marketPageSize = 5
 
-// feishuProviderSelectValue converts a stored (provider, apiType) pair to the
-// select dropdown value used in Feishu form cards. Mirrors the CLI
-// providerToSelectValue logic.
-func feishuProviderSelectValue(provider, apiType string) string {
-	if provider == "anthropic" {
-		return "anthropic"
-	}
-	if apiType == "responses" {
-		return "openai_responses"
-	}
-	return "openai"
-}
-
-// feishuSplitProvider converts the select dropdown value back to (provider,
-// apiType). Mirrors the CLI selectValueToProvider logic.
-func feishuSplitProvider(selectValue string) (provider, apiType string) {
-	switch selectValue {
-	case "anthropic":
-		return "anthropic", ""
-	case "openai_responses":
-		return "openai", "responses"
-	default:
-		return "openai", ""
-	}
-}
-
 // SettingsCardOpts carries optional state for building the settings card (e.g. pagination).
 type SettingsCardOpts struct {
 	MySkillPage     int
@@ -361,7 +335,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 
 	case "settings_submit_edit_subscription":
 		subID := parsed["subscription_id"]
-		provider, apiType := feishuSplitProvider(formStr(actionData, "provider"))
+		provider, apiType := ch.SelectValueToProvider(formStr(actionData, "provider"))
 		baseURL := formStr(actionData, "base_url")
 		apiKey := formStr(actionData, "api_key")
 		name := formStr(actionData, "name")
@@ -401,7 +375,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		return f.buildAddSubscriptionCard(senderID)
 
 	case "settings_submit_subscription":
-		provider, apiType := feishuSplitProvider(formStr(actionData, "provider"))
+		provider, apiType := ch.SelectValueToProvider(formStr(actionData, "provider"))
 		baseURL := formStr(actionData, "base_url")
 		apiKey := formStr(actionData, "api_key")
 		name := formStr(actionData, "name")
@@ -1314,7 +1288,7 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 				"tag":     "plain_text",
 				"content": "选择 Provider",
 			},
-			"initial_option": feishuProviderSelectValue(currentProvider, currentAPIType),
+			"initial_option": ch.ProviderToSelectValue(currentProvider, currentAPIType),
 			"options": []map[string]any{
 				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Complete（含兼容 API）"}, "value": "openai"},
 				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Responses"}, "value": "openai_responses"},

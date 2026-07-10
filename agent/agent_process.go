@@ -84,11 +84,11 @@ func (a *Agent) injectSystemNotes(messages []llm.ChatMessage, channel, chatID st
 func (a *Agent) enqueueBgNotification(notif tools.BgNotification) {
 	sessionKey := notif.SessionKey()
 	a.bgRunPendingMu.Lock()
+	defer a.bgRunPendingMu.Unlock()
 	if a.bgRunPending == nil {
 		a.bgRunPending = make(map[string][]tools.BgNotification)
 	}
 	a.bgRunPending[sessionKey] = append(a.bgRunPending[sessionKey], notif)
-	a.bgRunPendingMu.Unlock()
 }
 
 func (a *Agent) enqueueBgNotifications(notifs []tools.BgNotification) {
@@ -96,6 +96,7 @@ func (a *Agent) enqueueBgNotifications(notifs []tools.BgNotification) {
 		return
 	}
 	a.bgRunPendingMu.Lock()
+	defer a.bgRunPendingMu.Unlock()
 	if a.bgRunPending == nil {
 		a.bgRunPending = make(map[string][]tools.BgNotification)
 	}
@@ -103,7 +104,6 @@ func (a *Agent) enqueueBgNotifications(notifs []tools.BgNotification) {
 		sessionKey := notif.SessionKey()
 		a.bgRunPending[sessionKey] = append(a.bgRunPending[sessionKey], notif)
 	}
-	a.bgRunPendingMu.Unlock()
 }
 
 func (a *Agent) takePendingBgNotifications(sessionKey string) []tools.BgNotification {

@@ -272,7 +272,7 @@ func setLLMCmdForSub(s ch.Subscription) string {
 	} else if key != "" {
 		key = "****"
 	}
-	providerVal := providerToSelectValue(s.Provider, s.APIType)
+	providerVal := ch.ProviderToSelectValue(s.Provider, s.APIType)
 	return fmt.Sprintf("/set-llm provider=%s base_url=%s api_key=%s", providerVal, s.BaseURL, key)
 }
 
@@ -525,40 +525,6 @@ func isNoiseModel(model string) bool {
 // subscription panel dropdown. The select value encodes both provider and
 // API type: "openai" (Chat Completions), "openai_responses" (Responses API),
 // "anthropic" (Anthropic Messages API).
-func providerSelectOptions() []ch.SettingOption {
-	return []ch.SettingOption{
-		{Label: "OpenAI Complete", Value: "openai"},
-		{Label: "OpenAI Responses", Value: "openai_responses"},
-		{Label: "Anthropic", Value: "anthropic"},
-	}
-}
-
-// providerToSelectValue converts a stored (provider, apiType) pair to the
-// select dropdown value. Non-anthropic providers (deepseek, zhipu, etc.) all
-// map to "openai" since they use the OpenAI-compatible API.
-func providerToSelectValue(provider, apiType string) string {
-	if provider == "anthropic" {
-		return "anthropic"
-	}
-	if apiType == "responses" {
-		return "openai_responses"
-	}
-	return "openai"
-}
-
-// selectValueToProvider converts the select dropdown value back to (provider,
-// apiType).
-func selectValueToProvider(selectValue string) (provider, apiType string) {
-	switch selectValue {
-	case "anthropic":
-		return "anthropic", ""
-	case "openai_responses":
-		return "openai", "responses"
-	default:
-		return "openai", ""
-	}
-}
-
 // addSubscriptionSchema builds the settings schema for creating a subscription.
 // A subscription is credentials-only (Name/Provider/BaseURL/APIKey). Model-related
 // knobs (default model, max output, thinking mode) are NOT collected here —
@@ -568,7 +534,7 @@ func selectValueToProvider(selectValue string) (provider, apiType string) {
 func addSubscriptionSchema() []ch.SettingDefinition {
 	return []ch.SettingDefinition{
 		{Key: "sub_name", Label: "Name", Description: "Display name for this subscription", Type: ch.SettingTypeText, DefaultValue: ""},
-		{Key: "sub_provider", Label: "Provider", Description: "API type: OpenAI Complete (Chat Completions), OpenAI Responses, or Anthropic", Type: ch.SettingTypeSelect, DefaultValue: "openai", Options: providerSelectOptions()},
+		{Key: "sub_provider", Label: "Provider", Description: "API type: OpenAI Complete (Chat Completions), OpenAI Responses, or Anthropic", Type: ch.SettingTypeSelect, DefaultValue: "openai", Options: ch.ProviderSelectOptions()},
 		{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: ch.SettingTypeText, DefaultValue: ""},
 		{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: ch.SettingTypePassword, DefaultValue: ""},
 	}
@@ -582,7 +548,7 @@ func (m *cliModel) openAddSubscriptionPanel() {
 	schema := addSubscriptionSchema()
 	m.openSettingsPanel(schema, map[string]string{}, func(values map[string]string) {
 		name := values["sub_name"]
-		provider, apiType := selectValueToProvider(values["sub_provider"])
+		provider, apiType := ch.SelectValueToProvider(values["sub_provider"])
 		if name == "" {
 			name = provider
 		}
@@ -633,13 +599,13 @@ func (m *cliModel) openEditSubscriptionPanel(subID string) {
 	}
 	schema := []ch.SettingDefinition{
 		{Key: "sub_name", Label: "Name", Description: "Display name for this subscription", Type: ch.SettingTypeText, DefaultValue: target.Name},
-		{Key: "sub_provider", Label: "Provider", Description: "API type: OpenAI Complete (Chat Completions), OpenAI Responses, or Anthropic", Type: ch.SettingTypeSelect, DefaultValue: providerToSelectValue(target.Provider, target.APIType), Options: providerSelectOptions()},
+		{Key: "sub_provider", Label: "Provider", Description: "API type: OpenAI Complete (Chat Completions), OpenAI Responses, or Anthropic", Type: ch.SettingTypeSelect, DefaultValue: ch.ProviderToSelectValue(target.Provider, target.APIType), Options: ch.ProviderSelectOptions()},
 		{Key: "sub_base_url", Label: "Base URL", Description: "API base URL (leave empty for provider default)", Type: ch.SettingTypeText, DefaultValue: target.BaseURL},
 		{Key: "sub_api_key", Label: "API Key", Description: "API key (leave empty to use global key)", Type: ch.SettingTypePassword, DefaultValue: target.APIKey},
 	}
 	values := map[string]string{
 		"sub_name":     target.Name,
-		"sub_provider": providerToSelectValue(target.Provider, target.APIType),
+		"sub_provider": ch.ProviderToSelectValue(target.Provider, target.APIType),
 		"sub_base_url": target.BaseURL,
 		"sub_api_key":  target.APIKey,
 	}
@@ -653,7 +619,7 @@ func (m *cliModel) openEditSubscriptionPanel(subID string) {
 		if isMaskedAPIKey(apiKey) { // never write back a masked key
 			apiKey = target.APIKey
 		}
-		provider, apiType := selectValueToProvider(values["sub_provider"])
+		provider, apiType := ch.SelectValueToProvider(values["sub_provider"])
 		updated := &ch.Subscription{
 			ID:              curID,
 			Name:            values["sub_name"],
