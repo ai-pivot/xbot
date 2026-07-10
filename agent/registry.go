@@ -292,6 +292,82 @@ func (rm *RegistryManager) installSkill(entry *sqlite.SharedEntry, senderID stri
 	return nil
 }
 
+// PublishBundle packs local items into a .xbot.zip and publishes it to the shared registry.
+// The zip is stored in the registry cache, and a shared_registry entry with type='bundle' is created.
+func (rm *RegistryManager) PublishBundle(name, author string, items []PackItem) error {
+	// Dedup check
+	existing, err := rm.sharedStore.GetByTypeAndName("bundle", name)
+	if err != nil {
+		return fmt.Errorf("dedup check: %w", err)
+	}
+	if existing != nil && existing.Author != author && existing.Sharing == "public" {
+		return fmt.Errorf("bundle %q 已被 %s 发布，不能重名分享", name, existing.Author)
+	}
+
+	// Pack to a temp file
+	tmpZip, err := os.CreateTemp("", "xbot-publish-*.xbot.zip")
+	if err != nil {
+		return fmt.Errorf("create temp zip: %w", err)
+	}
+	tmpZip.Close()
+	defer os.Remove(tmpZip.Name())
+
+	bp := NewBundlePackager(rm.workDir)
+	if err := bp.Pack(rm, items, tmpZip.Name(), author); err != nil {
+		return fmt.Errorf("pack bundle: %w", err)
+	}
+
+	// Read manifest from the zip to get metadata
+	manifest, _, err := bp.Unpack(tmpZip.Name())
+	if err != nil {
+		return fmt.Errorf("read packed manifest: %w", err)
+	}
+
+	// Store zip in registry cache
+	cacheDir := rm.registryCacheDir("bundle", name)
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return fmt.Errorf("create cache dir: %w", err)
+	}
+	cachePath := filepath.Join(cacheDir, name+".xbot.zip")
+	if err := copyFile(tmpZip.Name(), cachePath); err != nil {
+		return fmt.Errorf("copy zip to cache: %w", err)
+	}
+
+	// Publish to DB
+	entry := &sqlite.SharedEntry{
+		Type:        "bundle",
+		Name:        name,
+		Description: manifest.Description,
+		Author:      author,
+		SourcePath:  cachePath,
+		Sharing:     "public",
+		Version:     manifest.Version,
+	}
+	return rm.sharedStore.Publish(entry)
+}
+
+// InstallBundle installs a bundle from the shared registry by ID.
+// Reads the cached .xbot.zip and calls InstallFromFile.
+func (rm *RegistryManager) InstallBundle(id int64, senderID string) (*InstallResult, error) {
+	entry, err := rm.sharedStore.GetByID(id)
+	if err != nil {
+		return nil, fmt.Errorf("get bundle entry: %w", err)
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("bundle with id %d not found", id)
+	}
+	if entry.Type != "bundle" {
+		return nil, fmt.Errorf("entry %d is %s, not bundle", id, entry.Type)
+	}
+
+	// The source_path points to the cached .xbot.zip
+	if _, err := os.Stat(entry.SourcePath); err != nil {
+		return nil, fmt.Errorf("bundle cache file not found: %w", err)
+	}
+
+	return rm.InstallFromFile(entry.SourcePath, senderID)
+}
+
 // installAgent copies all .md files from cache dir into user's agents dir.
 func (rm *RegistryManager) installAgent(entry *sqlite.SharedEntry, senderID string) error {
 	agentsDir := rm.userAgentsDir(senderID)
