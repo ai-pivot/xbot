@@ -21,13 +21,17 @@ import (
 //   - No in-memory cache — DB is authoritative, consistent with ResolveLLM philosophy
 //   - Race-safe: uses INSERT OR IGNORE + re-SELECT to avoid orphan rows
 //   - Resolve is called at channel entry layer, not in agent loop
+//
+// initialized tracks whether IdentityResolver has been initialized with a real DB.
+// In standalone CLI mode, this is false — admin checks fall back to true.
 type IdentityResolver struct {
-	db *sql.DB
+	db          *sql.DB
+	initialized bool
 }
 
 // NewIdentityResolver creates an IdentityResolver backed by the given database.
 func NewIdentityResolver(db *sql.DB) *IdentityResolver {
-	return &IdentityResolver{db: db}
+	return &IdentityResolver{db: db, initialized: db != nil}
 }
 
 // Resolve looks up or auto-creates a canonical user for the given channel identity.
@@ -38,7 +42,7 @@ func NewIdentityResolver(db *sql.DB) *IdentityResolver {
 // will hit the UNIQUE(channel, channel_user_id) constraint and be ignored.
 // The re-SELECT returns the canonical user_id regardless of which INSERT won.
 func (r *IdentityResolver) Resolve(channel, channelUserID string) (int64, string, error) {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return 0, "admin", nil // fallback: standalone mode, treat as admin
 	}
 
@@ -98,15 +102,15 @@ func (r *IdentityResolver) getRole(userID int64) string {
 
 // IsAdmin checks if the canonical user has admin role.
 func (r *IdentityResolver) IsAdmin(userID int64) bool {
-	if r == nil || r.db == nil {
-		return true // fallback: standalone mode
+	if r == nil || !r.initialized {
+		return true // fallback: standalone mode (no DB)
 	}
 	return r.getRole(userID) == "admin"
 }
 
 // SetRole updates a user's role.
 func (r *IdentityResolver) SetRole(userID int64, role string) error {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return fmt.Errorf("identity resolver not initialized")
 	}
 	_, err := r.db.Exec(`UPDATE users SET role = ? WHERE id = ?`, role, userID)
@@ -122,7 +126,7 @@ func (r *IdentityResolver) SetRole(userID int64, role string) error {
 
 // ListIdentities returns all channel identities linked to a canonical user.
 func (r *IdentityResolver) ListIdentities(userID int64) (any, error) {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return nil, nil
 	}
 	rows, err := r.db.Query(
@@ -157,7 +161,7 @@ type IdentityEntry struct {
 
 // ListAllUsers returns all canonical users (admin only).
 func (r *IdentityResolver) ListAllUsers() (any, error) {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return nil, nil
 	}
 	rows, err := r.db.Query(
@@ -195,7 +199,7 @@ type UserInfo struct {
 // Code is 8 chars base32 (no padding), expires in 5 minutes.
 // Rate-limited: one code per user per 10 seconds (replaces previous if exists).
 func (r *IdentityResolver) GenerateLinkCode(userID int64) (string, error) {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return "", fmt.Errorf("identity resolver not initialized")
 	}
 	// Generate 5 random bytes → 8 base32 chars
@@ -231,7 +235,7 @@ func (r *IdentityResolver) GenerateLinkCode(userID int64) (string, error) {
 // The code is deleted after successful validation (single-use).
 // Returns (targetUserID, error).
 func (r *IdentityResolver) ConsumeLinkCode(code string) (int64, error) {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return 0, fmt.Errorf("identity resolver not initialized")
 	}
 	var userID int64
@@ -258,7 +262,7 @@ func (r *IdentityResolver) ConsumeLinkCode(code string) (int64, error) {
 // Used for preview (merge preview) before the actual consume.
 // Returns (targetUserID, error).
 func (r *IdentityResolver) ValidateLinkCode(code string) (int64, error) {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return 0, fmt.Errorf("identity resolver not initialized")
 	}
 	var userID int64
@@ -283,7 +287,7 @@ func (r *IdentityResolver) ValidateLinkCode(code string) (int64, error) {
 // indicating a merge is required (caller should call MergeUsers instead).
 // Returns (merged bool, error).
 func (r *IdentityResolver) LinkIdentity(targetUserID int64, channel, channelUserID string) (bool, error) {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return false, fmt.Errorf("identity resolver not initialized")
 	}
 	// Check if identity already exists
@@ -334,7 +338,7 @@ type MergePreview struct {
 
 // PreviewMerge calculates a merge preview without executing it.
 func (r *IdentityResolver) PreviewMerge(sourceUserID, targetUserID int64) (any, error) {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return nil, fmt.Errorf("identity resolver not initialized")
 	}
 	p := &MergePreview{SourceUserID: sourceUserID, TargetUserID: targetUserID}
@@ -385,7 +389,7 @@ var mergeMu sync.Map // key: "min-max" → *sync.Mutex
 // assets, resolves conflicts, then deletes the source user.
 // This is irreversible — caller should backup first.
 func (r *IdentityResolver) MergeUsers(sourceUserID, targetUserID int64) error {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return fmt.Errorf("identity resolver not initialized")
 	}
 	if sourceUserID == targetUserID {
@@ -456,7 +460,7 @@ func (r *IdentityResolver) MergeUsers(sourceUserID, targetUserID int64) error {
 // UnlinkIdentity removes a channel identity from a user.
 // The user keeps all assets — only the identity mapping is removed.
 func (r *IdentityResolver) UnlinkIdentity(userID, identityID int64) error {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return fmt.Errorf("identity resolver not initialized")
 	}
 	result, err := r.db.Exec("DELETE FROM user_identities WHERE id = ? AND user_id = ?", identityID, userID)
@@ -472,7 +476,7 @@ func (r *IdentityResolver) UnlinkIdentity(userID, identityID int64) error {
 
 // CleanupExpiredLinkCodes removes expired link codes. Called periodically.
 func (r *IdentityResolver) CleanupExpiredLinkCodes() {
-	if r == nil || r.db == nil {
+	if r == nil || !r.initialized {
 		return
 	}
 	r.db.Exec("DELETE FROM link_codes WHERE expires_at < datetime('now')")

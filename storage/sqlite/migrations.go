@@ -1666,11 +1666,15 @@ func migrateV44ToV45(conn *sql.DB) error {
 	AND sender_id NOT IN (SELECT channel_user_id FROM user_identities WHERE channel = 'feishu');`); err != nil {
 		return fmt.Errorf("migrate v45 seed feishu users: %w", err)
 	}
+	// 8b. Map existing Feishu identities — join back to user_llm_subscriptions
+	// to get the real sender_id (ou_xxx) rather than relying on display_name.
 	if _, err := conn.Exec(`
 	INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
-	SELECT u.id, 'feishu', u.display_name FROM users u
-	WHERE u.display_name LIKE 'ou_%'
-	AND u.id NOT IN (SELECT user_id FROM user_identities);`); err != nil {
+	SELECT u.id, 'feishu', uls.sender_id
+	FROM users u
+	JOIN user_llm_subscriptions uls ON uls.sender_id = u.display_name
+	WHERE uls.sender_id LIKE 'ou_%'
+	AND u.id NOT IN (SELECT user_id FROM user_identities WHERE channel = 'feishu');`); err != nil {
 		return fmt.Errorf("migrate v45 map feishu users: %w", err)
 	}
 

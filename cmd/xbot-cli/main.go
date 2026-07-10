@@ -1454,7 +1454,12 @@ func main() {
 					Action string `json:"action"`
 					UserID int64  `json:"user_id"`
 				}
-				json.Unmarshal(result2, &resp2)
+				if err := json.Unmarshal(result2, &resp2); err != nil {
+					return "", fmt.Errorf("parse merge result: %w", err)
+				}
+				if resp2.UserID == 0 {
+					return "", fmt.Errorf("merge returned invalid user_id")
+				}
 				return fmt.Sprintf("✅ 账号合并成功 (user_id=%d)", resp2.UserID), nil
 			}
 			return fmt.Sprintf("✅ 关联成功 (action=%s, user_id=%d)", resp.Action, resp.UserID), nil

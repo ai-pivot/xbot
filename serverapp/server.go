@@ -549,7 +549,11 @@ func Run(args []string) error {
 	if sharedDB != nil {
 		identityDB = sharedDB.Conn()
 	} else {
-		identityDB, _ = sql.Open("sqlite", dbPath)
+		var err error
+		identityDB, err = sql.Open("sqlite", dbPath)
+		if err != nil {
+			log.WithError(err).Warn("Failed to open identity DB, identity resolver disabled")
+		}
 	}
 	if identityDB != nil {
 		resolver := agent.NewIdentityResolver(identityDB)
@@ -849,12 +853,20 @@ func Run(args []string) error {
 				ag.IdentityResolver().ConsumeLinkCode(code)
 				return fmt.Sprintf("关联成功 (user_id=%d)", targetUserID), nil
 			}
-			// Merge required — auto-execute (Feishu has no two-step confirm UI)
+			// Merge required — log warning for audit trail, then auto-execute.
+			// Feishu has no practical two-step confirm mechanism; link code (8-char
+			// base32, 5min TTL, single-use) serves as bearer authorization.
+			log.WithFields(log.Fields{
+				"source_user_id": currentUserID,
+				"target_user_id": targetUserID,
+				"channel":        channel,
+				"channel_user":   channelUserID,
+			}).Warn("IdentityResolver: auto-merging users via Feishu /link (irreversible)")
 			ag.IdentityResolver().ConsumeLinkCode(code)
 			if mergeErr := ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
 				return "", fmt.Errorf("合并失败: %w", mergeErr)
 			}
-			return fmt.Sprintf("账号合并成功 (user_id=%d)", targetUserID), nil
+			return fmt.Sprintf("账号合并成功 (user_id=%d)。此操作不可撤销，旧账号的所有资产已迁移到目标账号。", targetUserID), nil
 		})
 
 		// 注入飞书渠道特化 prompt 提供者
