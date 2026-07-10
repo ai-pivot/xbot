@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -767,15 +769,10 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&bangCmd{}, CommandInfo{Usage: "!<command>", Description: "快捷执行命令（跳过 LLM，直接在 sandbox 中运行）"})
 
 	// Registry & settings commands
-	r.Register(&publishCmd{}, CommandInfo{Usage: "/publish skill|agent <name>", Description: "发布到市场"})
-	r.Register(&unpublishCmd{}, CommandInfo{Usage: "/unpublish skill|agent <name>", Description: "取消发布"})
-	r.Register(&browseCmd{}, CommandInfo{Usage: "/browse [skill|agent]", Description: "浏览 Skill/Agent 市场"})
-	r.Register(&installCmd{}, CommandInfo{Usage: "/install skill|agent <id>", Description: "安装市场条目"})
-	r.Register(&uninstallCmd{}, CommandInfo{Usage: "/uninstall skill|agent <name>", Description: "卸载"})
-	r.Register(&myCmd{}, CommandInfo{Usage: "/my skills|agents", Description: "查看我发布/安装的条目"})
 	r.Register(&settingsCmd{}, CommandInfo{Usage: "/settings", Description: "打开个人设置（仅私聊）"})
 	r.Register(&menuCmd{}, CommandInfo{Usage: "/menu", Description: "主菜单"})
 	r.Register(&pluginReloadAllCmd{}, CommandInfo{Usage: "/plugin reload-all", Description: "重新加载所有插件"})
+	r.Register(&appCmd{})
 
 	// Goal commands
 	r.Register(&goalClearCmd{}, CommandInfo{Usage: "/goal clear", Description: "清除当前目标"}) // 先注册（更精确的匹配优先）
@@ -836,4 +833,118 @@ func (a *pluginCmdAdapter) Execute(ctx context.Context, ag *Agent, msg bus.Inbou
 		ChatID:  msg.ChatID,
 		Content: result,
 	}, nil
+}
+
+// --- /app (bundle management) ---
+
+type appCmd struct{}
+
+func (c *appCmd) Name() string      { return "/app" }
+func (c *appCmd) Aliases() []string { return nil }
+func (c *appCmd) Match(s string) bool {
+	lower := strings.ToLower(s)
+	return lower == "/app" || strings.HasPrefix(lower, "/app ")
+}
+func (c *appCmd) Concurrent() bool { return false }
+
+func (c *appCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	content := strings.TrimSpace(msg.Content)
+	args := strings.TrimPrefix(strings.ToLower(content), "/app")
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: appHelp()}, nil
+	}
+
+	parts := strings.Fields(args)
+	subCmd := parts[0]
+	rest := parts[1:]
+
+	switch subCmd {
+	case "export":
+		return c.handleExport(a, msg, rest)
+	case "install":
+		return c.handleInstall(a, msg, rest)
+	default:
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: appHelp()}, nil
+	}
+}
+
+func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
+	// Parse: /app export <bundle-name> --skill <s> --agent <a> [--skill <s2> ...]
+	if len(args) < 2 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app export <bundle-name> --skill <name> --agent <name>`"}, nil
+	}
+
+	bundleName := args[0]
+	var items []PackItem
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--skill":
+			if i+1 < len(args) {
+				items = append(items, PackItem{Type: "skill", Name: args[i+1]})
+				i++
+			}
+		case "--agent":
+			if i+1 < len(args) {
+				items = append(items, PackItem{Type: "agent", Name: args[i+1]})
+				i++
+			}
+		}
+	}
+
+	if len(items) == 0 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 --skill 或 --agent"}, nil
+	}
+	if a.registryManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+	}
+
+	outputPath := filepath.Join(os.TempDir(), bundleName+".xbot.zip")
+	if err := a.registryManager.PackBundle(items, outputPath, msg.SenderID); err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("导出失败：%v", err)}, nil
+	}
+
+	var itemNames []string
+	for _, it := range items {
+		itemNames = append(itemNames, fmt.Sprintf("%s:%s", it.Type, it.Name))
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ Bundle 已导出到 %s\n包含：%s", outputPath, strings.Join(itemNames, ", "))}, nil
+}
+
+func (c *appCmd) handleInstall(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
+	if len(args) < 1 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app install <file-path>`"}, nil
+	}
+	zipPath := args[0]
+	if a.registryManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+	}
+
+	result, err := a.registryManager.InstallFromFile(zipPath, msg.SenderID)
+	if err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("安装失败：%v", err)}, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "✅ Bundle %q 安装完成\n", result.Manifest.Name)
+	if result.Manifest.Version != "" {
+		fmt.Fprintf(&sb, "版本：%s\n", result.Manifest.Version)
+	}
+	sb.WriteString("已安装：\n")
+	for _, item := range result.Installed {
+		fmt.Fprintf(&sb, "  - %s\n", item)
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
+}
+
+func appHelp() string {
+	return "## 📦 /app — Bundle 管理\n\n" +
+		"**子命令：**\n\n" +
+		"- `/app export <name> --skill <s> --agent <a>` — 打包导出为 .xbot.zip\n" +
+		"- `/app install <file-path>` — 从 .xbot.zip 安装\n\n" +
+		"**示例：**\n\n" +
+		"```\n" +
+		"/app export my-bundle --skill debug --agent explore\n" +
+		"/app install /tmp/my-bundle.xbot.zip\n" +
+		"```\n"
 }

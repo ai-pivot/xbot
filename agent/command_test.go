@@ -93,8 +93,8 @@ func TestCommandRegistry_Commands(t *testing.T) {
 	registerBuiltinCommands(r)
 
 	cmds := r.Commands()
-	if len(cmds) != 27 {
-		t.Errorf("Commands() returned %d commands, want 27", len(cmds))
+	if len(cmds) != 25 {
+		t.Errorf("Commands() returned %d commands, want 25", len(cmds))
 	}
 
 	// Verify all expected commands are registered

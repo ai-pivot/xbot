@@ -810,3 +810,119 @@ func copyDir(src, dst string) error {
 		return os.WriteFile(targetPath, data, fi.Mode())
 	})
 }
+
+// PackBundle packs local skill/agent items into a .xbot.zip file.
+// Phase 1: supports skill and agent only.
+func (rm *RegistryManager) PackBundle(items []PackItem, outputPath, author string) error {
+	bp := NewBundlePackager(rm.workDir)
+	return bp.Pack(rm, items, outputPath, author)
+}
+
+// InstallFromFile installs a .xbot.zip bundle from a local file path.
+// Phase 1: supports skill and agent contents only.
+func (rm *RegistryManager) InstallFromFile(zipPath, senderID string) (*InstallResult, error) {
+	bp := NewBundlePackager(rm.workDir)
+	manifest, tmpDir, err := bp.Unpack(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := bp.Validate(manifest, tmpDir); err != nil {
+		return nil, err
+	}
+
+	result := &InstallResult{
+		Manifest:  *manifest,
+		Installed: []string{},
+	}
+
+	for _, c := range manifest.Contents {
+		switch c.Type {
+		case "skill":
+			if err := rm.installBundleSkill(c, tmpDir, senderID); err != nil {
+				return nil, fmt.Errorf("install skill %q: %w", c.Name, err)
+			}
+			result.Installed = append(result.Installed, fmt.Sprintf("skill: %s", c.Name))
+		case "agent":
+			if err := rm.installBundleAgent(c, tmpDir, senderID); err != nil {
+				return nil, fmt.Errorf("install agent %q: %w", c.Name, err)
+			}
+			result.Installed = append(result.Installed, fmt.Sprintf("agent: %s", c.Name))
+		default:
+			return nil, fmt.Errorf("unsupported content type %q (Phase 1 supports skill and agent only)", c.Type)
+		}
+	}
+
+	log.WithFields(log.Fields{
+		"bundle":  manifest.Name,
+		"items":   len(result.Installed),
+		"sender":  senderID,
+	}).Info("Installed bundle from file")
+	return result, nil
+}
+
+// installBundleSkill copies a skill from the unpacked bundle to the user's skill directory.
+func (rm *RegistryManager) installBundleSkill(c BundleContent, srcDir, senderID string) error {
+	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
+	destDir := filepath.Join(rm.userSkillsDir(senderID), c.Name)
+
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		if _, err := rm.sandbox.Stat(ctx, destDir, senderID); err == nil {
+			return fmt.Errorf("skill %q already installed", c.Name)
+		}
+		if err := rm.copyDirToSandbox(ctx, srcPath, destDir, senderID); err != nil {
+			return fmt.Errorf("copy skill: %w", err)
+		}
+	} else {
+		if _, err := os.Stat(destDir); err == nil {
+			return fmt.Errorf("skill %q already installed", c.Name)
+		}
+		if err := copyDir(srcPath, destDir); err != nil {
+			return fmt.Errorf("copy skill: %w", err)
+		}
+	}
+
+	rm.markInstalled(destDir, "bundle:"+c.Name, time.Now().UnixMilli())
+	return nil
+}
+
+// installBundleAgent copies an agent .md file from the unpacked bundle to the user's agents directory.
+func (rm *RegistryManager) installBundleAgent(c BundleContent, srcDir, senderID string) error {
+	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
+	agentsDir := rm.userAgentsDir(senderID)
+
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		if err := rm.sandbox.MkdirAll(ctx, agentsDir, 0o755, senderID); err != nil {
+			return fmt.Errorf("create agents dir: %w", err)
+		}
+		destFile := filepath.Join(agentsDir, c.Name+".md")
+		if _, err := rm.sandbox.Stat(ctx, destFile, senderID); err == nil {
+			return fmt.Errorf("agent %q already installed", c.Name)
+		}
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			return fmt.Errorf("read agent file: %w", err)
+		}
+		if err := rm.sandbox.WriteFile(ctx, destFile, data, 0o644, senderID); err != nil {
+			return fmt.Errorf("write agent file: %w", err)
+		}
+	} else {
+		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+			return fmt.Errorf("create agents dir: %w", err)
+		}
+		destFile := filepath.Join(agentsDir, c.Name+".md")
+		if _, err := os.Stat(destFile); err == nil {
+			return fmt.Errorf("agent %q already installed", c.Name)
+		}
+		if err := copyFile(srcPath, destFile); err != nil {
+			return fmt.Errorf("copy agent file: %w", err)
+		}
+	}
+
+	return nil
+}
