@@ -257,6 +257,9 @@ func (rm *RegistryManager) Install(entryType string, id int64, senderID string) 
 		return rm.installSkill(entry, senderID)
 	case "agent":
 		return rm.installAgent(entry, senderID)
+	case "app":
+		_, err := rm.InstallApp(id, senderID)
+		return err
 	default:
 		return fmt.Errorf("unknown type %q", entryType)
 	}
@@ -445,6 +448,8 @@ func (rm *RegistryManager) Uninstall(entryType, name, senderID string) error {
 		return rm.uninstallSkill(name, senderID)
 	case "agent":
 		return rm.uninstallAgent(name, senderID)
+	case "app":
+		return rm.uninstallApp(name, senderID)
 	default:
 		return fmt.Errorf("unknown type %q", entryType)
 	}
@@ -497,6 +502,107 @@ func (rm *RegistryManager) uninstallAgent(name, senderID string) error {
 		}
 	}
 	log.WithFields(log.Fields{"type": "agent", "name": name, "sender": senderID}).Info("Uninstalled")
+	return nil
+}
+
+// ListInstalledSkills returns the names of skills installed for the given user.
+func (rm *RegistryManager) ListInstalledSkills(senderID string) []string {
+	dir := rm.userSkillsDir(senderID)
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		entries, err := rm.sandbox.ReadDir(ctx, dir, senderID)
+		if err != nil {
+			return nil
+		}
+		var names []string
+		for _, e := range entries {
+			if e.IsDir {
+				names = append(names, e.Name)
+			}
+		}
+		return names
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+// ListInstalledAgents returns the names of agents installed for the given user.
+func (rm *RegistryManager) ListInstalledAgents(senderID string) []string {
+	dir := rm.userAgentsDir(senderID)
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		entries, err := rm.sandbox.ReadDir(ctx, dir, senderID)
+		if err != nil {
+			return nil
+		}
+		var names []string
+		for _, e := range entries {
+			if !e.IsDir && strings.HasSuffix(e.Name, ".md") {
+				names = append(names, strings.TrimSuffix(e.Name, ".md"))
+			}
+		}
+		return names
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			names = append(names, strings.TrimSuffix(e.Name(), ".md"))
+		}
+	}
+	return names
+}
+// It reads the app's manifest from the registry cache to know what to remove.
+func (rm *RegistryManager) uninstallApp(name, senderID string) error {
+	// Look up the app entry to find the cached zip
+	entry, err := rm.sharedStore.GetByTypeAndName("app", name)
+	if err != nil {
+		return fmt.Errorf("lookup app: %w", err)
+	}
+	if entry == nil {
+		return fmt.Errorf("app %q not found in registry", name)
+	}
+
+	// Unpack the cached zip to read the manifest
+	bp := NewAppPackager(rm.workDir)
+	manifest, tmpDir, err := bp.Unpack(entry.SourcePath)
+	if err != nil {
+		return fmt.Errorf("read app manifest: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	var errs []string
+	for _, c := range manifest.Contents {
+		switch c.Type {
+		case "skill":
+			if err := rm.uninstallSkill(c.Name, senderID); err != nil {
+				errs = append(errs, fmt.Sprintf("skill %s: %v", c.Name, err))
+			}
+		case "agent":
+			if err := rm.uninstallAgent(c.Name, senderID); err != nil {
+				errs = append(errs, fmt.Sprintf("agent %s: %v", c.Name, err))
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("partial uninstall, %d errors: %s", len(errs), strings.Join(errs, "; "))
+	}
+	log.WithFields(log.Fields{"type": "app", "name": name, "sender": senderID}).Info("Uninstalled")
 	return nil
 }
 

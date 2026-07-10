@@ -105,6 +105,10 @@ type WebCallbacks struct {
 	RegistryUnpublish func(entryType, name, senderID string) error
 	// RegistryUninstall removes a user-installed entry.
 	RegistryUninstall func(entryType, name, senderID string) error
+	// RegistryPack packs local items into a .xbot.zip file.
+	RegistryPack func(name string, items []ch.PackItemSpec, outputPath, author string) error
+	// RegistryInstallFile installs a .xbot.zip from a local file path.
+	RegistryInstallFile func(zipPath, senderID string) (*ch.PackInstallResult, error)
 	// LLMList returns available model entries and current entry.
 	LLMList func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry)
 	// LLMSet switches the user's model via explicit (subID, model).

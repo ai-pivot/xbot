@@ -870,6 +870,10 @@ func (c *appCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) 
 		return c.handlePublish(a, msg, rest)
 	case "unpublish":
 		return c.handleUnpublish(a, msg, rest)
+	case "uninstall":
+		return c.handleUninstall(a, msg, rest)
+	case "list":
+		return c.handleList(a, msg, rest)
 	case "my":
 		return c.handleMy(a, msg, rest)
 	default:
@@ -1063,6 +1067,52 @@ func (c *appCmd) handleUnpublish(a *Agent, msg bus.InboundMessage, args []string
 	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已从市场下架", entryType, name)}, nil
 }
 
+func (c *appCmd) handleUninstall(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
+	if len(args) < 2 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app uninstall <type> <name>`"}, nil
+	}
+	if a.registryManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+	}
+	entryType := args[0]
+	name := args[1]
+	if err := a.registryManager.Uninstall(entryType, name, msg.SenderID); err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("卸载失败：%v", err)}, nil
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已卸载", entryType, name)}, nil
+}
+
+func (c *appCmd) handleList(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
+	if a.registryManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+	}
+	// List installed skills
+	skills := a.registryManager.ListInstalledSkills(msg.SenderID)
+	// List installed agents
+	agents := a.registryManager.ListInstalledAgents(msg.SenderID)
+
+	if len(skills) == 0 && len(agents) == 0 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "📦 暂无已安装的 skill 或 agent"}, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## 📦 已安装\n\n")
+	if len(skills) > 0 {
+		sb.WriteString("**Skills:**\n")
+		for _, s := range skills {
+			fmt.Fprintf(&sb, "- 📦 %s\n", s)
+		}
+		sb.WriteString("\n")
+	}
+	if len(agents) > 0 {
+		sb.WriteString("**Agents:**\n")
+		for _, a := range agents {
+			fmt.Fprintf(&sb, "- 🤖 %s\n", a)
+		}
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
+}
+
 func (c *appCmd) handleMy(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
 	if a.registryManager == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
@@ -1100,8 +1150,10 @@ func appHelp() string {
 	return "## 📦 /app — 应用管理\n\n" +
 		"**子命令：**\n\n" +
 		"- `/app browse [skill|agent|app]` — 浏览市场\n" +
+		"- `/app list` — 查看已安装\n" +
 		"- `/app install <file-path>` — 从 .xbot.zip 文件安装\n" +
 		"- `/app install app <id>` — 从市场按 ID 安装\n" +
+		"- `/app uninstall <type> <name>` — 卸载\n" +
 		"- `/app publish <type> <name> [--skill <s> --agent <a>]` — 发布到市场\n" +
 		"- `/app unpublish <type> <name>` — 从市场下架\n" +
 		"- `/app my` — 查看我发布的\n" +
@@ -1109,8 +1161,10 @@ func appHelp() string {
 		"**示例：**\n\n" +
 		"```\n" +
 		"/app browse app\n" +
+		"/app list\n" +
 		"/app install /tmp/my-app.xbot.zip\n" +
 		"/app install app 5\n" +
+		"/app uninstall skill debug\n" +
 		"/app publish app my-app --skill debug --agent explore\n" +
 		"/app export my-app --skill debug --agent explore\n" +
 		"```\n"

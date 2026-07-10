@@ -140,6 +140,24 @@ func registryCallbacks(ag *agent.Agent) channel.RegistryCallbacks {
 		RegistryUninstall: func(entryType, name, senderID string) error {
 			return ag.RegistryManager().Uninstall(entryType, name, senderID)
 		},
+		RegistryPack: func(name string, items []channel.PackItemSpec, outputPath, author string) error {
+			appItems := make([]agent.AppItem, len(items))
+			for i, it := range items {
+				appItems[i] = agent.AppItem{Type: it.Type, Name: it.Name}
+			}
+			return ag.RegistryManager().PackApp(appItems, outputPath, author)
+		},
+		RegistryInstallFile: func(zipPath, senderID string) (*channel.PackInstallResult, error) {
+			result, err := ag.RegistryManager().InstallAppFromFile(zipPath, senderID)
+			if err != nil {
+				return nil, err
+			}
+			return &channel.PackInstallResult{
+				Name:      result.Manifest.Name,
+				Version:   result.Manifest.Version,
+				Installed: result.Installed,
+			}, nil
+		},
 	}
 }
 

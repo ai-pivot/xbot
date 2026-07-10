@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -565,7 +568,129 @@ func (wc *WebChannel) handleMarketInstall(w http.ResponseWriter, r *http.Request
 }
 
 // ---------------------------------------------------------------------------
-// LLM Config API
+// App Pack / Install-File API
+// ---------------------------------------------------------------------------
+
+type marketPackRequest struct {
+	Name  string             `json:"name"`
+	Items []packItemRequest  `json:"items"`
+}
+
+type packItemRequest struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+type marketPackResponse struct {
+	OK     bool   `json:"ok"`
+	Path   string `json:"path,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// handleMarketPack handles POST /api/market/pack
+func (wc *WebChannel) handleMarketPack(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryPack == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+		return
+	}
+
+	var req marketPackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if req.Name == "" || len(req.Items) == 0 {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "name and items are required"})
+		return
+	}
+
+	items := make([]ch.PackItemSpec, len(req.Items))
+	for i, it := range req.Items {
+		items[i] = ch.PackItemSpec{Type: it.Type, Name: it.Name}
+	}
+
+	outputPath := filepath.Join(os.TempDir(), req.Name+".xbot.zip")
+	if err := wc.callbacks.RegistryPack(req.Name, items, outputPath, senderID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketPackResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketPackResponse{OK: true, Path: outputPath})
+}
+
+// handleMarketInstallFile handles POST /api/market/install-file
+// Accepts multipart/form-data with a "file" field containing the .xbot.zip
+func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryInstallFile == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+		return
+	}
+
+	// Parse multipart upload
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "failed to parse multipart form"})
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "no file uploaded"})
+		return
+	}
+	defer file.Close()
+
+	// Save to temp file
+	tmpFile, err := os.CreateTemp("", "xbot-install-*.xbot.zip")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to create temp file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to save uploaded file"})
+		return
+	}
+	tmpFile.Close()
+
+	result, err := wc.callbacks.RegistryInstallFile(tmpPath, senderID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"name":     result.Name,
+		"version":  result.Version,
+		"items":    result.Installed,
+	})
+}
+
 // ---------------------------------------------------------------------------
 
 type llmConfigResponse struct {
