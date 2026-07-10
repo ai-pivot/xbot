@@ -435,6 +435,136 @@ func (wc *WebChannel) handleRunnerByName(w http.ResponseWriter, r *http.Request)
 }
 
 // ---------------------------------------------------------------------------
+// Market API
+// ---------------------------------------------------------------------------
+
+type marketEntry struct {
+	ID          int64  `json:"id"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Author      string `json:"author"`
+	Version     string `json:"version,omitempty"`
+	CreatedAt   string `json:"created_at"`
+	Installed   bool   `json:"installed"`
+}
+
+type marketResponse struct {
+	OK      bool          `json:"ok"`
+	Entries []marketEntry `json:"entries,omitempty"`
+	Error   string        `json:"error,omitempty"`
+}
+
+type marketInstallRequest struct {
+	Type string `json:"type"`
+	ID   int64  `json:"id"`
+}
+
+type marketUninstallRequest struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+// handleMarket handles GET /api/market?type=agent&limit=20&offset=0
+func (wc *WebChannel) handleMarket(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryBrowse == nil {
+		writeJSON(w, http.StatusOK, marketResponse{OK: true, Entries: nil})
+		return
+	}
+
+	entryType := r.URL.Query().Get("type")
+	limit := 50
+	offset := 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if n, err := strconv.Atoi(o); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	entries, err := wc.callbacks.RegistryBrowse(entryType, limit, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "browse failed"})
+		return
+	}
+
+	// Compute installed set for the user
+	installedSet := make(map[string]bool)
+	if wc.callbacks.RegistryListMy != nil {
+		_, installed, err := wc.callbacks.RegistryListMy(senderID, entryType)
+		if err == nil {
+			for _, name := range installed {
+				installedSet[name] = true
+			}
+		}
+	}
+
+	// Build response entries
+	result := make([]marketEntry, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, marketEntry{
+			ID:          e.ID,
+			Type:        e.Type,
+			Name:        e.Name,
+			Description: e.Description,
+			Author:      e.Author,
+			Version:     e.Version,
+			CreatedAt:   time.UnixMilli(e.CreatedAt).UTC().Format(time.RFC3339),
+			Installed:   installedSet[e.Name],
+		})
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true, Entries: result})
+}
+
+// handleMarketInstall handles POST /api/market/install
+func (wc *WebChannel) handleMarketInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryInstall == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+		return
+	}
+
+	var req marketInstallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if err := wc.callbacks.RegistryInstall(req.Type, req.ID, senderID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// ---------------------------------------------------------------------------
 // LLM Config API
 // ---------------------------------------------------------------------------
 
