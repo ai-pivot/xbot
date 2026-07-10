@@ -549,7 +549,7 @@ func Run(args []string) error {
 	if sharedDB != nil {
 		identityDB = sharedDB.Conn()
 	} else {
-		identityDB, _ = sql.Open("sqlite3", dbPath)
+		identityDB, _ = sql.Open("sqlite", dbPath)
 	}
 	if identityDB != nil {
 		resolver := agent.NewIdentityResolver(identityDB)
