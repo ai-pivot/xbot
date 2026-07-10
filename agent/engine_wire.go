@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -228,6 +229,29 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(channel, chatID, senderID, messages, senderName, sandboxUserID)
+
+	// Inject canonical user identity (set by channel entry points via IdentityResolver).
+	// In standalone CLI mode, these default to userID=1, role="admin".
+	if uidStr := msg.Metadata["user_id"]; uidStr != "" {
+		if uid, err := strconv.ParseInt(uidStr, 10, 64); err == nil {
+			cfg.UserID = uid
+		}
+	} else if a.identityResolver != nil {
+		// Fallback: resolve at agent layer if entry point didn't set it
+		uid, role, _ := a.identityResolver.Resolve(channel, sandboxUserID)
+		cfg.UserID = uid
+		cfg.Role = role
+	}
+	if cfg.UserID == 0 {
+		cfg.UserID = 1 // standalone mode default
+	}
+	if cfg.Role == "" {
+		if msg.Metadata["user_role"] != "" {
+			cfg.Role = msg.Metadata["user_role"]
+		} else {
+			cfg.Role = "admin" // standalone mode default
+		}
+	}
 
 	// 从 tenant session 获取租户 ID，用于 per-tenant 工具可见性
 	cfg.TenantID = tenantSession.TenantID()

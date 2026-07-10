@@ -24,11 +24,18 @@ var rpcCtxKey = rpcCtxKeyType{}
 type RPCCtxData struct {
 	AuthSenderID string
 	BizID        string
+	UserID       int64  // canonical user ID (from IdentityResolver)
+	Role         string // user role ("admin" | "user")
 }
 
 // WithRPCCtx injects per-request identity into context.
 func WithRPCCtx(ctx context.Context, authSenderID, bizID string) context.Context {
-	return context.WithValue(ctx, rpcCtxKey, &RPCCtxData{AuthSenderID: authSenderID, BizID: bizID})
+	return context.WithValue(ctx, rpcCtxKey, &RPCCtxData{AuthSenderID: authSenderID, BizID: bizID, Role: "admin"})
+}
+
+// WithRPCCtxResolved injects per-request identity with canonical user_id + role.
+func WithRPCCtxResolved(ctx context.Context, authSenderID, bizID string, userID int64, role string) context.Context {
+	return context.WithValue(ctx, rpcCtxKey, &RPCCtxData{AuthSenderID: authSenderID, BizID: bizID, UserID: userID, Role: role})
 }
 
 func rpcAuthID(ctx context.Context) string {
@@ -41,6 +48,24 @@ func rpcAuthID(ctx context.Context) string {
 func rpcBizID(ctx context.Context) string {
 	if v, ok := ctx.Value(rpcCtxKey).(*RPCCtxData); ok {
 		return v.BizID
+	}
+	return ""
+}
+
+// rpcUserID returns the canonical user ID from context (0 if unresolved).
+// Will be used in Phase 2 asset migration.
+var _ = rpcUserID
+
+func rpcUserID(ctx context.Context) int64 {
+	if v, ok := ctx.Value(rpcCtxKey).(*RPCCtxData); ok {
+		return v.UserID
+	}
+	return 0
+}
+
+func rpcRole(ctx context.Context) string {
+	if v, ok := ctx.Value(rpcCtxKey).(*RPCCtxData); ok {
+		return v.Role
 	}
 	return ""
 }

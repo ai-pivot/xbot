@@ -232,6 +232,15 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v45: Canonical User Identity system.
+	// Creates `users` + `user_identities` + `link_codes` tables, adds `user_id INTEGER`
+	// columns to all asset tables, and backfills from existing sender_id-based data.
+	if from < 45 {
+		if err := migrateV44ToV45(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v45: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1567,4 +1576,235 @@ func columnExists(conn *sql.DB, table, column string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// migrateV44ToV45 creates the canonical user identity system:
+// - users table (id, display_name, role, created_at)
+// - user_identities table (channel identity → canonical user mapping)
+// - link_codes table (one-time codes for cross-channel linking)
+// - Adds user_id INTEGER column to all asset tables + backfills from sender_id
+//
+// Roundtable-reviewed design: one-shot migration, no dual-column coexistence.
+// NULL trap fix: __system__ subscription gets a system/__system__ identity.
+// CASCADE fix: identities are migrated BEFORE source user deletion (merge phase).
+func migrateV44ToV45(conn *sql.DB) error {
+	// 1. Create users table
+	if _, err := conn.Exec(`
+	CREATE TABLE IF NOT EXISTS users (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    display_name TEXT NOT NULL DEFAULT '',
+    role         TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'user')),
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`); err != nil {
+		return fmt.Errorf("migrate v45 create users: %w", err)
+	}
+
+	// 2. Create user_identities table
+	if _, err := conn.Exec(`
+	CREATE TABLE IF NOT EXISTS user_identities (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL,
+    channel         TEXT NOT NULL,
+    channel_user_id TEXT NOT NULL,
+    linked_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(channel, channel_user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+	);`); err != nil {
+		return fmt.Errorf("migrate v45 create user_identities: %w", err)
+	}
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id);`); err != nil {
+		return fmt.Errorf("migrate v45 create user_identities index: %w", err)
+	}
+
+	// 3. Create link_codes table
+	if _, err := conn.Exec(`
+	CREATE TABLE IF NOT EXISTS link_codes (
+    code        TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    expires_at  TIMESTAMP NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+	);`); err != nil {
+		return fmt.Errorf("migrate v45 create link_codes: %w", err)
+	}
+
+	// 4. Seed user 1 as admin (for existing cli_user/admin identities)
+	if _, err := conn.Exec(`INSERT OR IGNORE INTO users (id, display_name, role) VALUES (1, 'Admin', 'admin');`); err != nil {
+		return fmt.Errorf("migrate v45 seed admin user: %w", err)
+	}
+
+	// 5. Map CLI identities
+	if _, err := conn.Exec(`INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'cli_user');`); err != nil {
+		return fmt.Errorf("migrate v45 map cli_user: %w", err)
+	}
+	if _, err := conn.Exec(`INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'admin');`); err != nil {
+		return fmt.Errorf("migrate v45 map admin: %w", err)
+	}
+
+	// 6. Map __system__ subscription owner (NULL trap fix)
+	if _, err := conn.Exec(`INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'system', '__system__');`); err != nil {
+		return fmt.Errorf("migrate v45 map system: %w", err)
+	}
+
+	// 7. Map existing web users
+	if _, err := conn.Exec(`
+	INSERT OR IGNORE INTO users (id, display_name, role)
+	SELECT id, username, CASE WHEN id = 1 THEN 'admin' ELSE 'user' END FROM web_users;`); err != nil {
+		return fmt.Errorf("migrate v45 seed web users: %w", err)
+	}
+	if _, err := conn.Exec(`
+	INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
+	SELECT id, 'web', 'web-' || CAST(id AS TEXT) FROM web_users;`); err != nil {
+		return fmt.Errorf("migrate v45 map web users: %w", err)
+	}
+
+	// 8. Map existing Feishu identities (from user_llm_subscriptions.sender_id)
+	if _, err := conn.Exec(`
+	INSERT OR IGNORE INTO users (display_name, role)
+	SELECT DISTINCT sender_id, 'user' FROM user_llm_subscriptions
+	WHERE sender_id LIKE 'ou_%'
+	AND sender_id NOT IN (SELECT channel_user_id FROM user_identities WHERE channel = 'feishu');`); err != nil {
+		return fmt.Errorf("migrate v45 seed feishu users: %w", err)
+	}
+	if _, err := conn.Exec(`
+	INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
+	SELECT u.id, 'feishu', u.display_name FROM users u
+	WHERE u.display_name LIKE 'ou_%'
+	AND u.id NOT IN (SELECT user_id FROM user_identities);`); err != nil {
+		return fmt.Errorf("migrate v45 map feishu users: %w", err)
+	}
+
+	// 9. Migrate Feishu-Web links (existing hack in user_settings)
+	// Must run AFTER steps 7-8 so both identities exist.
+	if _, err := conn.Exec(`
+	INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
+	SELECT ui.user_id, 'feishu', us.sender_id
+	FROM user_settings us
+	JOIN user_identities ui ON ui.channel = 'web'
+    AND ui.channel_user_id = ('web-' || us.value)
+	WHERE us.channel = 'feishu' AND us.key = 'web_user_id';`); err != nil {
+		return fmt.Errorf("migrate v45 feishu-web links: %w", err)
+	}
+
+	// 10. Add user_id columns to asset tables
+	assetTables := []struct {
+		table  string
+		column string
+	}{
+		{"user_llm_subscriptions", "user_id"},
+		{"runners", "owner_user_id"},
+		{"user_settings", "user_id"},
+		{"user_default_model", "user_id"},
+		{"user_chats", "user_id"},
+		{"tenants", "owner_user_id"},
+		{"cron_jobs", "user_id"},
+		{"event_triggers", "user_id"},
+	}
+	for _, at := range assetTables {
+		exists, err := columnExists(conn, at.table, at.column)
+		if err != nil {
+			return fmt.Errorf("migrate v45 check %s.%s: %w", at.table, at.column, err)
+		}
+		if !exists {
+			if _, err := conn.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s INTEGER DEFAULT 0", at.table, at.column)); err != nil {
+				return fmt.Errorf("migrate v45 add %s.%s: %w", at.table, at.column, err)
+			}
+		}
+	}
+
+	// 11. Backfill user_id columns
+	// user_llm_subscriptions: match by sender_id → user_identities
+	if _, err := conn.Exec(`
+	UPDATE user_llm_subscriptions SET user_id = (
+    SELECT ui.user_id FROM user_identities ui
+    WHERE ui.channel_user_id = user_llm_subscriptions.sender_id
+    ORDER BY CASE ui.channel WHEN 'cli' THEN 0 WHEN 'web' THEN 1 WHEN 'feishu' THEN 2 WHEN 'system' THEN 3 ELSE 4 END
+    LIMIT 1
+	) WHERE user_id = 0;`); err != nil {
+		return fmt.Errorf("migrate v45 backfill subscriptions: %w", err)
+	}
+
+	// runners: user_id is TEXT (old), new column is owner_user_id INTEGER
+	if _, err := conn.Exec(`
+	UPDATE runners SET owner_user_id = (
+    SELECT ui.user_id FROM user_identities ui
+    WHERE ui.channel_user_id = runners.user_id
+    LIMIT 1
+	) WHERE owner_user_id = 0;`); err != nil {
+		return fmt.Errorf("migrate v45 backfill runners: %w", err)
+	}
+
+	// user_settings: match by (channel, sender_id)
+	if _, err := conn.Exec(`
+	UPDATE user_settings SET user_id = (
+    SELECT ui.user_id FROM user_identities ui
+    WHERE ui.channel = user_settings.channel
+    AND ui.channel_user_id = user_settings.sender_id
+    LIMIT 1
+	) WHERE user_id = 0;`); err != nil {
+		return fmt.Errorf("migrate v45 backfill user_settings: %w", err)
+	}
+
+	// user_default_model: match by sender_id
+	if _, err := conn.Exec(`
+	UPDATE user_default_model SET user_id = (
+    SELECT ui.user_id FROM user_identities ui
+    WHERE ui.channel_user_id = user_default_model.sender_id
+    ORDER BY CASE ui.channel WHEN 'cli' THEN 0 WHEN 'web' THEN 1 WHEN 'feishu' THEN 2 ELSE 3 END
+    LIMIT 1
+	) WHERE user_id = 0;`); err != nil {
+		return fmt.Errorf("migrate v45 backfill user_default_model: %w", err)
+	}
+
+	// user_chats: match by (channel, sender_id)
+	if _, err := conn.Exec(`
+	UPDATE user_chats SET user_id = (
+    SELECT ui.user_id FROM user_identities ui
+    WHERE ui.channel = user_chats.channel
+    AND ui.channel_user_id = user_chats.sender_id
+    LIMIT 1
+	) WHERE user_id = 0;`); err != nil {
+		return fmt.Errorf("migrate v45 backfill user_chats: %w", err)
+	}
+
+	// tenants: match by (channel, chat_id)
+	if _, err := conn.Exec(`
+	UPDATE tenants SET owner_user_id = (
+    SELECT ui.user_id FROM user_identities ui
+    WHERE ui.channel = tenants.channel
+    AND ui.channel_user_id = tenants.chat_id
+    LIMIT 1
+	) WHERE owner_user_id = 0;`); err != nil {
+		return fmt.Errorf("migrate v45 backfill tenants: %w", err)
+	}
+
+	// cron_jobs: match by sender_id
+	if _, err := conn.Exec(`
+	UPDATE cron_jobs SET user_id = (
+    SELECT ui.user_id FROM user_identities ui
+    WHERE ui.channel_user_id = cron_jobs.sender_id
+    ORDER BY CASE ui.channel WHEN 'cli' THEN 0 WHEN 'web' THEN 1 WHEN 'feishu' THEN 2 ELSE 3 END
+    LIMIT 1
+	) WHERE user_id = 0 AND sender_id != '';`); err != nil {
+		return fmt.Errorf("migrate v45 backfill cron_jobs: %w", err)
+	}
+
+	// event_triggers: match by sender_id
+	if _, err := conn.Exec(`
+	UPDATE event_triggers SET user_id = (
+    SELECT ui.user_id FROM user_identities ui
+    WHERE ui.channel_user_id = event_triggers.sender_id
+    ORDER BY CASE ui.channel WHEN 'cli' THEN 0 WHEN 'web' THEN 1 WHEN 'feishu' THEN 2 ELSE 3 END
+    LIMIT 1
+	) WHERE user_id = 0 AND sender_id != '';`); err != nil {
+		return fmt.Errorf("migrate v45 backfill event_triggers: %w", err)
+	}
+
+	// 12. Update schema version
+	if _, err := conn.Exec("UPDATE schema_version SET version = 45"); err != nil {
+		return fmt.Errorf("migrate v45 update version: %w", err)
+	}
+
+	log.Info("Database migrated to v45: canonical user identity system (users + user_identities + link_codes + asset backfill)")
+	return nil
 }

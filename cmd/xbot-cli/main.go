@@ -817,7 +817,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 		// ChannelTransport wraps RPCTable dispatch
 		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable), func() context.Context {
-			return serverapp.WithRPCCtx(context.Background(), "admin", "cli_user")
+			return serverapp.WithRPCCtxResolved(context.Background(), "admin", "cli_user", 1, "admin")
 		}, eventCh)
 
 		// Client is the unified interface — eventCh provides server→CLI events

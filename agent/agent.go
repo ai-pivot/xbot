@@ -429,6 +429,11 @@ type Agent struct {
 	// cliSenderID is the sender_id used for CLI channel DB operations.
 	cliSenderID string
 
+	// identityResolver resolves channel-specific senderID to canonical user_id.
+	// nil in standalone CLI mode (no multi-user DB). When nil, admin checks
+	// fall back to the old "admin" string comparison.
+	identityResolver *IdentityResolver
+
 	// bgTaskMgr manages background shell tasks (shared across all sessions)
 
 	// PluginManager manages the plugin system lifecycle
@@ -692,6 +697,12 @@ func (a *Agent) SettingsService() *SettingsService { return a.settingsSvc }
 
 // MultiSession returns the Agent's MultiTenantSession (for external injection of callbacks).
 func (a *Agent) MultiSession() *session.MultiTenantSession { return a.multiSession }
+
+// SetIdentityResolver injects the canonical user identity resolver.
+func (a *Agent) SetIdentityResolver(r *IdentityResolver) { a.identityResolver = r }
+
+// IdentityResolver returns the agent's identity resolver (may be nil in standalone mode).
+func (a *Agent) IdentityResolver() *IdentityResolver { return a.identityResolver }
 
 // RewindCheckpoint restores files for an existing checkpointed session. It
 // only uses stores that were already created by the normal CLI run path.

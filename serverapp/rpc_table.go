@@ -47,7 +47,7 @@ type RPCContext struct {
 
 func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
 	return func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
-		if !isAdmin(rpcAuthID(ctx)) {
+		if !isAdmin(ctx) {
 			return nil, fmt.Errorf("admin only")
 		}
 		return next(ctx, params)
@@ -57,7 +57,7 @@ func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
 // ownOrAdmin checks that the caller owns the resource or has admin privileges.
 // Empty chatID is treated as self-access (defaults to caller's bizID).
 func ownOrAdmin(ctx context.Context, chatID string) error {
-	if isAdmin(rpcAuthID(ctx)) || chatID == "" || chatID == rpcBizID(ctx) {
+	if isAdmin(ctx) || chatID == "" || chatID == rpcBizID(ctx) {
 		return nil
 	}
 	return fmt.Errorf("access denied")
@@ -238,7 +238,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		// Apply runtime effect but don't persist to user_settings DB —
 		// the source of truth is config.json.
 		if channel.IsGlobalScopedSettingKey(p.Key) {
-			if isAdmin(rpcAuthID(ctx)) {
+			if isAdmin(ctx) {
 				applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
 			}
 			return nil
@@ -247,7 +247,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		// subscription's PerModelConfigs, NOT in user_settings DB.
 		// The CLI's saveSettings() handles the write via subscriptionMgr.Update().
 		if channel.IsSubscriptionScopedSettingKey(p.Key) {
-			if isAdmin(rpcAuthID(ctx)) {
+			if isAdmin(ctx) {
 				applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
 			}
 			return nil
@@ -258,7 +258,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		if err := h.Ag.SettingsService().SetSetting(p.Namespace, bizID, p.Key, p.Value); err != nil {
 			return err
 		}
-		if isAdmin(rpcAuthID(ctx)) {
+		if isAdmin(ctx) {
 			applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
 		}
 		return nil
@@ -570,7 +570,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			return fmt.Errorf("subscription %s not found: %w", p.ID, err)
 		}
 		bizID := rpcBizID(ctx)
-		if !isAdmin(rpcAuthID(ctx)) && existing.SenderID != bizID {
+		if !isAdmin(ctx) && existing.SenderID != bizID {
 			return fmt.Errorf("subscription not found")
 		}
 		if existing.PerModelConfigs == nil {
@@ -604,7 +604,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		if !isAdmin(rpcAuthID(ctx)) && sub.SenderID != rpcBizID(ctx) {
+		if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
 			return fmt.Errorf("subscription not found")
 		}
 		if err := svc.Remove(p.ID); err != nil {
@@ -631,7 +631,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		if !isAdmin(rpcAuthID(ctx)) && sub.SenderID != rpcBizID(ctx) {
+		if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
 			return fmt.Errorf("subscription not found")
 		}
 		return svc.Rename(p.ID, p.Name)
@@ -693,7 +693,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
 			return 0, err
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID == "" {
+		if !isAdmin(ctx) && p.ChatID == "" {
 			p.ChatID = rpcBizID(ctx)
 		}
 		return h.Ag.CountInteractiveSessions(p.Channel, p.ChatID), nil
@@ -705,7 +705,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
 			return nil, err
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID == "" {
+		if !isAdmin(ctx) && p.ChatID == "" {
 			p.ChatID = rpcBizID(ctx)
 		}
 		return h.Ag.ListInteractiveSessions(p.Channel, p.ChatID), nil
@@ -762,7 +762,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			return nil, fmt.Errorf("full_key is required")
 		}
 		if owner := sessionKeyOwner(p.FullKey); owner != "" {
-			if !isAdmin(rpcAuthID(ctx)) && owner != rpcBizID(ctx) {
+			if !isAdmin(ctx) && owner != rpcBizID(ctx) {
 				return nil, fmt.Errorf("access denied")
 			}
 		}
@@ -785,7 +785,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Update last_active_at so we can restore the most recent session on restart.
@@ -820,14 +820,13 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
-		authID := rpcAuthID(ctx)
 		if p.Channel == "" {
 			p.Channel = "cli"
 		}
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(authID) && p.ChatID != bizID {
+		if !isAdmin(ctx) && p.ChatID != bizID {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
@@ -860,11 +859,10 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		NewName string `json:"new_name"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
-		authID := rpcAuthID(ctx)
 		if p.Channel == "" {
 			p.Channel = "cli"
 		}
-		if !isAdmin(authID) && p.ChatID != bizID {
+		if !isAdmin(ctx) && p.ChatID != bizID {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
@@ -921,7 +919,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID {
+		if !isAdmin(ctx) && p.ChatID != bizID {
 			return fmt.Errorf("access denied")
 		}
 		var cutoff time.Time
@@ -941,7 +939,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		// is_processing requires explicit chatID or admin.
 		// Unlike other handlers, empty chatID does NOT default to self.
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != rpcBizID(ctx) {
+		if !isAdmin(ctx) && p.ChatID != rpcBizID(ctx) {
 			return false, fmt.Errorf("access denied")
 		}
 		return h.Ag.IsProcessingByChannel(p.Channel, p.ChatID), nil
@@ -955,7 +953,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.Channel == "" {
 			p.Channel = "web"
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" {
 			return nil, fmt.Errorf("access denied")
 		}
 		return h.Ag.GetActiveProgress(p.Channel, p.ChatID, p.FromIteration), nil
@@ -972,7 +970,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" {
 			return nil, fmt.Errorf("access denied")
 		}
 		return h.Ag.GetTodos(p.Channel, p.ChatID), nil
@@ -986,7 +984,7 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 		SessionKey string `json:"session_key"`
 	}) (int, error) {
 		bizID := rpcBizID(ctx)
-		if !isAdmin(rpcAuthID(ctx)) && p.SessionKey != "" {
+		if !isAdmin(ctx) && p.SessionKey != "" {
 			if owner := sessionKeyOwner(p.SessionKey); owner != "" && owner != bizID {
 				return 0, fmt.Errorf("access denied")
 			}
@@ -1000,7 +998,7 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 		SessionKey string `json:"session_key"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
-		if !isAdmin(rpcAuthID(ctx)) && p.SessionKey != "" {
+		if !isAdmin(ctx) && p.SessionKey != "" {
 			if owner := sessionKeyOwner(p.SessionKey); owner != "" && owner != bizID {
 				return nil, fmt.Errorf("access denied")
 			}
@@ -1017,7 +1015,7 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.BgTaskManager() == nil {
 			return fmt.Errorf("background tasks not available")
 		}
-		if !isAdmin(rpcAuthID(ctx)) {
+		if !isAdmin(ctx) {
 			task, err := h.Ag.BgTaskManager().Status(p.TaskID)
 			if err != nil {
 				return fmt.Errorf("access denied: task not found")
@@ -1032,7 +1030,7 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 		SessionKey string `json:"session_key"`
 	}) (bool, error) {
 		bizID := rpcBizID(ctx)
-		if !isAdmin(rpcAuthID(ctx)) && p.SessionKey != "" {
+		if !isAdmin(ctx) && p.SessionKey != "" {
 			if owner := sessionKeyOwner(p.SessionKey); owner != "" && owner != bizID {
 				return false, fmt.Errorf("access denied")
 			}
@@ -1278,7 +1276,13 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 // HandleCLIRPC dispatches RPC requests from CLI RemoteBackend clients.
 func HandleCLIRPC(table RPCTable, method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
 	bizID := senderIDFromParams(params, senderID)
-	ctx := WithRPCCtx(context.Background(), senderID, bizID)
+	// CLI token auth: admin gets admin role, runner tokens get user role.
+	// Full identity resolution happens at WS auth (validateCLIToken) — this is a fallback.
+	role := "user"
+	if senderID == "admin" || senderID == "cli_user" {
+		role = "admin"
+	}
+	ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, 0, role)
 	return table.Dispatch(ctx, method, params)
 }
 
@@ -1344,7 +1348,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	if err != nil {
 		return err
 	}
-	if !isAdmin(rpcAuthID(ctx)) && existing.SenderID != bizID {
+	if !isAdmin(ctx) && existing.SenderID != bizID {
 		return fmt.Errorf("subscription not found")
 	}
 	// Start from existing subscription — client never has unmasked credentials,
@@ -1430,7 +1434,7 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 	if sub == nil {
 		return fmt.Errorf("subscription not found")
 	}
-	if !isAdmin(rpcAuthID(ctx)) && sub.SenderID != bizID {
+	if !isAdmin(ctx) && sub.SenderID != bizID {
 		return fmt.Errorf("subscription not found")
 	}
 	if p.ChatID != "" {
@@ -1475,7 +1479,7 @@ func (h *RPCContext) setSubscriptionModel(ctx context.Context, p struct {
 	if err != nil {
 		return err
 	}
-	if !isAdmin(rpcAuthID(ctx)) && sub.SenderID != rpcBizID(ctx) {
+	if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
 		return fmt.Errorf("subscription not found")
 	}
 	if err := svc.SetModel(p.ID, p.Model); err != nil {
@@ -1512,7 +1516,7 @@ func (h *RPCContext) listTenants(ctx context.Context) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !isAdmin(rpcAuthID(ctx)) {
+	if !isAdmin(ctx) {
 		var userTenants []sqlite.TenantInfo
 		for _, t := range tenants {
 			if t.ChatID == bizID {

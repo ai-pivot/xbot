@@ -37,6 +37,8 @@ type ToolContext struct {
 	SenderID                string                                                                     // 直接调用者 ID（SubAgent 场景下为父 Agent ID，主 Agent 场景下等于 OriginUserID）
 	OriginUserID            string                                                                     // 原始用户 ID（始终为终端用户，用于 LLM 配置、工作区路径等需要原始用户的场景）
 	SenderName              string                                                                     // 当前消息发送者姓名
+	UserID                  int64                                                                      // Canonical user ID (from IdentityResolver, 0 in standalone mode)
+	Role                    string                                                                     // User role ("admin" | "user", from IdentityResolver)
 	SendFunc                func(channel, chatID, content string, metadata ...map[string]string) error // 向 IM 渠道发送消息（不经过 Agent），返回错误
 	InjectInbound           func(channel, chatID, senderID, content string)                            // 注入入站消息，触发 Agent 完整处理循环
 	Registry                *Registry                                                                  // 工具注册表引用（用于动态注册工具）

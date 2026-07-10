@@ -540,6 +540,13 @@ func Run(args []string) error {
 		log.WithError(err).Fatal("Failed to init server")
 	}
 
+	// Initialize canonical user identity resolver.
+	// wiredDB is sharedDB (opened earlier); use its connection for identity lookups.
+	if sharedDB != nil {
+		resolver := agent.NewIdentityResolver(sharedDB.Conn())
+		ag.SetIdentityResolver(resolver)
+	}
+
 	// Set the rpcTablePtr for the channel provider factory.
 	// Plugin activation happens during InitServer, so the factory was already called
 	// with the lazy dispatch function. Now the RPCTable is available.
@@ -1162,9 +1169,15 @@ const adminSenderID = "admin"
 // Server-side startup code uses this constant when seeding DB data.
 const cliSenderID = "cli_user"
 
-// isAdmin checks if the given WS auth senderID has admin privileges.
-// Admin is a ROLE (authorization), not a business identity.
-func isAdmin(authSenderID string) bool { return authSenderID == adminSenderID }
+// isAdmin checks if the given context has admin privileges.
+// Checks canonical user role first; falls back to authSenderID == "admin"
+// for backward compat (CLI local mode where IdentityResolver may not be wired).
+func isAdmin(ctx context.Context) bool {
+	if role := rpcRole(ctx); role != "" {
+		return role == "admin"
+	}
+	return rpcAuthID(ctx) == adminSenderID
+}
 
 // sessionKeyOwner extracts the chatID (owner) from a session/full key.
 // Key format: "channel:chatID/roleName[:instance]"
@@ -1195,7 +1208,7 @@ func senderIDFromParams(params json.RawMessage, authSenderID string) string {
 	if err := json.Unmarshal(params, &p); err == nil && p.SenderID != "" {
 		return p.SenderID
 	}
-	if isAdmin(authSenderID) {
+	if authSenderID == adminSenderID {
 		return cliSenderID
 	}
 	return authSenderID
