@@ -207,6 +207,7 @@ const en: Translations = {
       llm: 'LLM Config',
       account: 'Account',
       linking: 'Account Linking',
+      users: 'User Management',
     },
   },
   designSystem: {

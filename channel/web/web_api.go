@@ -1788,6 +1788,14 @@ func (wc *WebChannel) IsAdminIdentity(senderID string) bool {
 	if senderID == "admin" {
 		return true
 	}
+	// Use IdentityResolver when available (canonical role from DB)
+	if wc.callbacks.IdentityResolver != nil {
+		userID, _, err := wc.callbacks.IdentityResolver.Resolve("web", senderID)
+		if err == nil && userID > 0 {
+			return wc.callbacks.IdentityResolver.IsAdmin(userID)
+		}
+	}
+	// Backward compat: first web user is admin
 	if !strings.HasPrefix(senderID, "web-") || wc.db == nil {
 		return false
 	}
@@ -1807,13 +1815,20 @@ func (wc *WebChannel) GetCurrentSession(senderID string) SessionSelector {
 }
 
 // isAdmin returns true if the user is an admin.
-// Admin is determined by:
-// 1. senderID == "admin" (CLI token auth via AdminToken)
-// 2. web user ID == 1 (first registered user, web cookie auth)
+// Uses IdentityResolver when available (canonical role), falls back to
+// senderID == "admin" and web user ID == 1 for backward compat.
 func (wc *WebChannel) isAdmin(ctx context.Context, senderID string) bool {
 	if senderID == "admin" {
 		return true
 	}
+	// Use IdentityResolver if available (canonical user role)
+	if wc.callbacks.IdentityResolver != nil {
+		userID, _, err := wc.callbacks.IdentityResolver.Resolve("web", senderID)
+		if err == nil && userID > 0 {
+			return wc.callbacks.IdentityResolver.IsAdmin(userID)
+		}
+	}
+	// Backward compat: first web user is admin
 	if userID := userIDFromContext(ctx); userID == 1 {
 		return true
 	}
