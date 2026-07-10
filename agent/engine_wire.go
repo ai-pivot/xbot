@@ -232,11 +232,17 @@ func (a *Agent) buildMainRunConfig(
 
 	// Inject canonical user identity (set by channel entry points via IdentityResolver).
 	// In standalone CLI mode, these default to userID=1, role="admin".
+	standaloneMode := true
 	if uidStr := msg.Metadata["user_id"]; uidStr != "" {
+		standaloneMode = false
 		if uid, err := strconv.ParseInt(uidStr, 10, 64); err == nil {
 			cfg.UserID = uid
 		}
+		if role := msg.Metadata["user_role"]; role != "" {
+			cfg.Role = role
+		}
 	} else if a.identityResolver != nil {
+		standaloneMode = false
 		// Fallback: resolve at agent layer if entry point didn't set it
 		uid, role, _ := a.identityResolver.Resolve(channel, sandboxUserID)
 		cfg.UserID = uid
@@ -246,10 +252,10 @@ func (a *Agent) buildMainRunConfig(
 		cfg.UserID = 1 // standalone mode default
 	}
 	if cfg.Role == "" {
-		if msg.Metadata["user_role"] != "" {
-			cfg.Role = msg.Metadata["user_role"]
+		if standaloneMode {
+			cfg.Role = "admin" // standalone CLI is always admin
 		} else {
-			cfg.Role = "admin" // standalone mode default
+			cfg.Role = "user" // safe default for resolved users with missing role
 		}
 	}
 

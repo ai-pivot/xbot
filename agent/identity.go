@@ -204,7 +204,8 @@ func (r *IdentityResolver) GenerateLinkCode(userID int64) (string, error) {
 		return "", fmt.Errorf("generate link code: %w", err)
 	}
 	code := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b))
-	expires := time.Now().Add(5 * time.Minute).UTC()
+	// Format expiry as SQLite datetime string for consistent comparison with datetime('now')
+	expires := time.Now().Add(5 * time.Minute).UTC().Format("2006-01-02 15:04:05")
 	// Delete any previous code for this user, then insert new one
 	tx, err := r.db.Begin()
 	if err != nil {
@@ -355,21 +356,25 @@ func (r *IdentityResolver) PreviewMerge(sourceUserID, targetUserID int64) (any, 
 		}
 	}
 	// Check runner name conflicts
-	rows, _ := r.db.Query("SELECT name FROM runners WHERE owner_user_id = ? AND name IN (SELECT name FROM runners WHERE owner_user_id = ?)", sourceUserID, targetUserID)
-	for rows.Next() {
-		var name string
-		rows.Scan(&name)
-		p.Conflicts = append(p.Conflicts, fmt.Sprintf("runner_duplicate: %s (will be renamed)", name))
+	rows, err := r.db.Query("SELECT name FROM runners WHERE owner_user_id = ? AND name IN (SELECT name FROM runners WHERE owner_user_id = ?)", sourceUserID, targetUserID)
+	if err == nil {
+		for rows.Next() {
+			var name string
+			rows.Scan(&name)
+			p.Conflicts = append(p.Conflicts, fmt.Sprintf("runner_duplicate: %s (will be renamed)", name))
+		}
+		rows.Close()
 	}
-	rows.Close()
 	// Check settings conflicts
-	rows, _ = r.db.Query("SELECT channel, key FROM user_settings WHERE user_id = ? AND (channel, key) IN (SELECT channel, key FROM user_settings WHERE user_id = ?)", sourceUserID, targetUserID)
-	for rows.Next() {
-		var ch, key string
-		rows.Scan(&ch, &key)
-		p.Conflicts = append(p.Conflicts, fmt.Sprintf("settings_duplicate: %s:%s (keeping target's)", ch, key))
+	rows, err = r.db.Query("SELECT channel, key FROM user_settings WHERE user_id = ? AND (channel, key) IN (SELECT channel, key FROM user_settings WHERE user_id = ?)", sourceUserID, targetUserID)
+	if err == nil {
+		for rows.Next() {
+			var ch, key string
+			rows.Scan(&ch, &key)
+			p.Conflicts = append(p.Conflicts, fmt.Sprintf("settings_duplicate: %s:%s (keeping target's)", ch, key))
+		}
+		rows.Close()
 	}
-	rows.Close()
 	return p, nil
 }
 

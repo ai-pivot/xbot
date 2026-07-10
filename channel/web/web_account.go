@@ -74,8 +74,9 @@ func (wc *WebChannel) handleLink(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "code is required")
 		return
 	}
-	// Consume link code → get target user
-	targetUserID, err := wc.callbacks.IdentityResolver.ConsumeLinkCode(req.Code)
+	// Validate link code WITHOUT consuming (preview-safe).
+	// Code is only consumed on actual link/merge execution.
+	targetUserID, err := wc.callbacks.IdentityResolver.ValidateLinkCode(req.Code)
 	if err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
@@ -83,13 +84,16 @@ func (wc *WebChannel) handleLink(w http.ResponseWriter, r *http.Request) {
 	// Resolve current user
 	currentUserID, _, _ := wc.callbacks.IdentityResolver.Resolve("web", senderID)
 	if currentUserID == targetUserID {
+		// Consume code (it was only validated, not consumed yet)
+		wc.callbacks.IdentityResolver.ConsumeLinkCode(req.Code)
 		writeJSON(w, http.StatusOK, map[string]any{"action": "noop", "message": "already linked to this user"})
 		return
 	}
 	// Check if this is a simple link or a merge
 	_, err = wc.callbacks.IdentityResolver.LinkIdentity(targetUserID, "web", senderID)
 	if err == nil {
-		// Simple link — identity wasn't linked before, just inserted
+		// Simple link succeeded — consume the code now
+		wc.callbacks.IdentityResolver.ConsumeLinkCode(req.Code)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"action":  "linked",
 			"user_id": targetUserID,
@@ -112,6 +116,8 @@ func (wc *WebChannel) handleLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Execute merge: currentUser → targetUser
+	// Consume code first (single-use), then merge
+	wc.callbacks.IdentityResolver.ConsumeLinkCode(req.Code)
 	if err := wc.callbacks.IdentityResolver.MergeUsers(currentUserID, targetUserID); err != nil {
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
