@@ -288,12 +288,7 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 }
 
 // cliCommands 已知命令列表（用于 Tab 补全，§8）
-var cliCommands = []string{
-	"/cancel", "/channel", "/chat", "/clear", "/commands", "/compress", "/context", "/copy", "/exit",
-	"/help", "/list-sessions", "/llm", "/models", "/new", "/palette", "/plugin", "/quit", "/rename", "/rewind",
-	"/search", "/sessions", "/set-llm", "/set-model", "/settings", "/setup", "/ss", "/su", "/tasks", "/unset-llm", "/update",
-	"/usage", "/user",
-}
+var cliCommands = ch.TUISlashCommands
 
 // --- Unified Unicode icons ---
 // 避免 emoji/ASCII/Unicode 混用，统一视觉风格。

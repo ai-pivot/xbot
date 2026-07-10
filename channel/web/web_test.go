@@ -60,12 +60,32 @@ func startTestServer(t *testing.T, wc *WebChannel) *httptest.Server {
 	mux.HandleFunc("/api/auth/register", wc.handleRegister)
 	mux.HandleFunc("/api/auth/login", wc.handleLogin)
 	mux.HandleFunc("/api/auth/logout", wc.handleLogout)
-	mux.HandleFunc("/api/history", wc.authMiddleware(wc.handleHistory))
+	mux.HandleFunc("/api/settings", wc.authMiddleware(wc.handleSettings))
+	mux.HandleFunc("/api/chats", wc.authMiddleware(wc.handleChats))
+	mux.HandleFunc("/api/session-tree", wc.authMiddleware(wc.handleSessionTree))
+	mux.HandleFunc("/api/chats/{chatID}/switch", wc.authMiddleware(wc.handleChatSwitch))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	return server
+}
+
+func loginTestAdmin(t *testing.T, serverURL string) *http.Cookie {
+	t.Helper()
+	http.Post(serverURL+"/api/auth/register", "application/json", strings.NewReader(`{"username":"admin","password":"pw"}`))
+	loginResp, err := http.Post(serverURL+"/api/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"pw"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loginResp.Body.Close()
+	for _, c := range loginResp.Cookies() {
+		if c.Name == webSessionCookieName {
+			return c
+		}
+	}
+	t.Fatal("no session cookie")
+	return nil
 }
 
 func makeWSConnection(t *testing.T, serverURL, cookie string) *websocket.Conn {
@@ -198,7 +218,7 @@ func TestAuthMiddleware(t *testing.T) {
 	server := startTestServer(t, wc)
 
 	// No cookie → 401
-	resp, _ := http.Get(server.URL + "/api/history")
+	resp, _ := http.Get(server.URL + "/api/settings")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
@@ -215,7 +235,7 @@ func TestAuthMiddleware(t *testing.T) {
 		}
 	}
 
-	req, _ := http.NewRequest("GET", server.URL+"/api/history", nil)
+	req, _ := http.NewRequest("GET", server.URL+"/api/settings", nil)
 	req.AddCookie(sessionCookie)
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -344,6 +364,312 @@ func TestWebSocketChat(t *testing.T) {
 		}
 		if !strings.HasPrefix(msg.SenderID, "web-") {
 			t.Errorf("expected senderID to start with 'web-', got '%s'", msg.SenderID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for inbound message")
+	}
+}
+
+func TestChatsDefaultListAggregatesWebAndCLIForAdmin(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.SetCallbacks(WebCallbacks{
+		SessionTree: func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error) {
+			return SessionTreeResult{Sessions: []SessionTreeNode{
+				{UserChatWithPreview: UserChatWithPreview{
+					ChatID: "web-chat", Channel: "web", Label: "Web Chat", LastActive: time.Now().Format(time.RFC3339),
+					Children: []UserChatWithPreview{{
+						ChatID: "web:web-chat/review", Channel: "agent", Label: "review", Type: "agent",
+					}},
+				}},
+				{UserChatWithPreview: UserChatWithPreview{
+					ChatID: "/repo", Channel: "cli", Label: "/repo", LastActive: time.Now().Format(time.RFC3339),
+				}},
+			}}, nil
+		},
+	})
+	server := startTestServer(t, wc)
+
+	http.Post(server.URL+"/api/auth/register", "application/json", strings.NewReader(`{"username":"admin","password":"pw"}`))
+	loginResp, err := http.Post(server.URL+"/api/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"pw"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loginResp.Body.Close()
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Cookies() {
+		if c.Name == webSessionCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no session cookie")
+	}
+
+	req, _ := http.NewRequest("GET", server.URL+"/api/chats", nil)
+	req.AddCookie(sessionCookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var out struct {
+		OK              bool                  `json:"ok"`
+		Chats           []UserChatWithPreview `json:"chats"`
+		Sessions        []SessionTreeNode     `json:"sessions"`
+		OrphanSubAgents []UserChatWithPreview `json:"orphan_subagents"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Chats) != 2 {
+		t.Fatalf("expected 2 chats, got %d: %#v", len(out.Chats), out.Chats)
+	}
+	if out.Chats[0].Channel != "web" || out.Chats[1].Channel != "cli" {
+		t.Fatalf("expected web+cli chats, got %#v", out.Chats)
+	}
+	if len(out.Chats[0].Children) != 1 || out.Chats[0].Children[0].ChatID != "web:web-chat/review" {
+		t.Fatalf("/api/chats must preserve SubAgent children, got: %#v", out.Chats[0].Children)
+	}
+	if len(out.Sessions) != 2 {
+		t.Fatalf("/api/chats must expose authoritative tree sessions, got %#v", out.Sessions)
+	}
+	if len(out.Sessions[0].Children) != 1 || out.Sessions[0].Children[0].ChatID != "web:web-chat/review" {
+		t.Fatalf("/api/chats tree sessions must preserve children, got: %#v", out.Sessions[0].Children)
+	}
+}
+
+func TestChatsRejectsAgentChannelList(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.SetCallbacks(WebCallbacks{
+		ChatList: func(senderID, currentChatID, channelName string) ([]UserChatWithPreview, error) {
+			t.Fatalf("ChatList should not be called for channel=%q", channelName)
+			return nil, nil
+		},
+	})
+	server := startTestServer(t, wc)
+	sessionCookie := loginTestAdmin(t, server.URL)
+
+	req, _ := http.NewRequest("GET", server.URL+"/api/chats?channel=agent", nil)
+	req.AddCookie(sessionCookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestChatsChannelListFiltersSubAgentRows(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.SetCallbacks(WebCallbacks{
+		ChatList: func(senderID, currentChatID, channelName string) ([]UserChatWithPreview, error) {
+			if channelName != "cli" {
+				t.Fatalf("unexpected channel %q", channelName)
+			}
+			return []UserChatWithPreview{
+				{
+					ChatID:     "/repo:Agent-main",
+					Channel:    "cli",
+					Label:      "Agent-main",
+					LastActive: time.Now().Format(time.RFC3339),
+				},
+				{
+					ChatID:     "cli:/repo:Agent-main/review:1",
+					Channel:    "cli",
+					Label:      "review",
+					LastActive: time.Now().Format(time.RFC3339),
+				},
+				{
+					ChatID:     "row-id",
+					Channel:    "web",
+					FullKey:    "agent:cli:/repo:Agent-main/review:1/fix:2",
+					Label:      "fix",
+					LastActive: time.Now().Format(time.RFC3339),
+				},
+			}, nil
+		},
+	})
+	server := startTestServer(t, wc)
+	sessionCookie := loginTestAdmin(t, server.URL)
+
+	req, _ := http.NewRequest("GET", server.URL+"/api/chats?channel=cli", nil)
+	req.AddCookie(sessionCookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var out struct {
+		OK    bool                  `json:"ok"`
+		Chats []UserChatWithPreview `json:"chats"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Chats) != 1 {
+		t.Fatalf("expected only main chat row, got %#v", out.Chats)
+	}
+	if out.Chats[0].ChatID != "/repo:Agent-main" {
+		t.Fatalf("ordinary CLI Agent-named session must remain, got %#v", out.Chats[0])
+	}
+}
+
+func TestChatsCreateSetsCurrentSession(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.SetCallbacks(WebCallbacks{
+		ChatCreate: func(senderID, label string) (string, error) {
+			return "created-chat", nil
+		},
+	})
+	server := startTestServer(t, wc)
+	sessionCookie := loginTestAdmin(t, server.URL)
+
+	req, _ := http.NewRequest("POST", server.URL+"/api/chats", strings.NewReader(`{"label":"created"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(sessionCookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if current := wc.GetCurrentSession("web-1"); current.Channel != "web" || current.ChatID != "created-chat" {
+		t.Fatalf("current session not updated: %#v", current)
+	}
+}
+
+func TestSessionTreeReturnsChildrenForAdmin(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.SetCallbacks(WebCallbacks{
+		SessionTree: func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error) {
+			if !admin {
+				t.Fatal("expected admin")
+			}
+			return SessionTreeResult{Sessions: []SessionTreeNode{{
+				UserChatWithPreview: UserChatWithPreview{
+					ChatID: "parent", Channel: "cli", Label: "parent", LastActive: time.Now().Format(time.RFC3339), Type: "main",
+					Children: []UserChatWithPreview{{
+						ChatID: "cli:parent/review:1", Channel: "agent", Label: "review: done",
+						Type: "agent", Role: "review", Instance: "1", ParentChannel: "cli", ParentChatID: "parent", Historical: true,
+					}},
+				},
+			}}}, nil
+		},
+	})
+	server := startTestServer(t, wc)
+
+	http.Post(server.URL+"/api/auth/register", "application/json", strings.NewReader(`{"username":"admin","password":"pw"}`))
+	loginResp, err := http.Post(server.URL+"/api/auth/login", "application/json", strings.NewReader(`{"username":"admin","password":"pw"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loginResp.Body.Close()
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Cookies() {
+		if c.Name == webSessionCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no session cookie")
+	}
+
+	req, _ := http.NewRequest("GET", server.URL+"/api/session-tree", nil)
+	req.AddCookie(sessionCookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var out struct {
+		OK              bool                  `json:"ok"`
+		Sessions        []SessionTreeNode     `json:"sessions"`
+		OrphanSubAgents []UserChatWithPreview `json:"orphan_subagents"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Sessions) != 1 || len(out.Sessions[0].Children) != 1 {
+		t.Fatalf("expected one parent with one child, got %#v", out.Sessions)
+	}
+	if out.Sessions[0].Children[0].ParentChatID != "parent" {
+		t.Fatalf("unexpected child parent: %#v", out.Sessions[0].Children[0])
+	}
+	if len(out.OrphanSubAgents) != 0 {
+		t.Fatalf("unexpected orphans: %#v", out.OrphanSubAgents)
+	}
+}
+
+func TestIsAdminIdentityRecognizesFirstWebUser(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	if !wc.IsAdminIdentity("web-1") {
+		t.Fatal("web-1 should be treated as admin identity")
+	}
+	if wc.IsAdminIdentity("web-2") {
+		t.Fatal("web-2 should not be treated as admin identity")
+	}
+	if wc.IsAdminIdentity("cli_user") {
+		t.Fatal("plain business sender should not be treated as web admin")
+	}
+}
+
+func TestWebSocketBrowserMessageCanTargetCLISessionForAdmin(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec(`INSERT INTO tenants (channel, chat_id) VALUES ('cli', '/repo')`); err != nil {
+		t.Fatal(err)
+	}
+	wc, msgBus := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+
+	http.Post(server.URL+"/api/auth/register", "application/json", strings.NewReader(`{"username":"admin2","password":"pw"}`))
+	loginResp, err := http.Post(server.URL+"/api/auth/login", "application/json", strings.NewReader(`{"username":"admin2","password":"pw"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loginResp.Body.Close()
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Cookies() {
+		if c.Name == webSessionCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no session cookie")
+	}
+
+	conn := makeWSConnection(t, server.URL, sessionCookie.Name+"="+sessionCookie.Value)
+	if err := conn.WriteJSON(protocol.WSClientMessage{
+		Type:    "message",
+		Channel: "cli",
+		ChatID:  "/repo",
+		Content: "hello cli",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case msg := <-msgBus.Inbound:
+		if msg.Channel != "cli" || msg.ChatID != "/repo" || msg.Content != "hello cli" {
+			t.Fatalf("unexpected inbound: %#v", msg)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for inbound message")
@@ -990,56 +1316,44 @@ func TestRPCNonBlocking(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// REGRESSION: Structured progress events must not be overwritten by
-// storeStateless. The bug: Hub.sendToClient treated ALL MsgTypeProgress as
-// stateless, so a PhaseDone event could overwrite an iteration-delta event
-// in statelessMap before writePump delivered either — permanently losing the
-// delta and the iteration it carried.
-// Fix: isStatefulMsg now returns true for structured progress events
-// (Phase!="", Iteration>0, has IterationHistory, or HistoryCompacted).
-// ─────────────────────────────────────────────────────────────────────────
+func TestShouldEagerSaveUserMessageSkipsCommands(t *testing.T) {
+	cases := []struct {
+		name    string
+		channel string
+		content string
+		want    bool
+	}{
+		{name: "web normal", channel: "web", content: "hello", want: true},
+		{name: "web empty", channel: "web", content: "", want: true},
+		{name: "cli normal", channel: "cli", content: "hello", want: false},
+		{name: "bang command", channel: "web", content: "!pwd", want: false},
+		{name: "slash new", channel: "web", content: "/new", want: false},
+		{name: "slash rewind", channel: "web", content: "/rewind", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldEagerSaveUserMessage(tc.channel, tc.content); got != tc.want {
+				t.Fatalf("shouldEagerSaveUserMessage(%q, %q) = %v, want %v", tc.channel, tc.content, got, tc.want)
+			}
+		})
+	}
+}
+
+// REGRESSION: Structured progress events must not be overwritten by storeStateless.
 
 func TestRegression_StructuredProgressIsStateful(t *testing.T) {
-	// Structured progress events (with Phase, Iteration, or IterationHistory)
-	// must be stateful — delivered via sendCh, not storeStateless.
 	tests := []struct {
 		name string
 		msg  protocol.WSMessage
-		want bool // true = stateful (sendCh), false = stateless (storeStateless)
+		want bool
 	}{
-		{
-			name: "phase=thinking, iter=0",
-			msg:  protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{Phase: "thinking", Iteration: 0}},
-			want: true,
-		},
-		{
-			name: "phase=done, iter=1",
-			msg:  protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{Phase: "done", Iteration: 1}},
-			want: true,
-		},
-		{
-			name: "iteration_history present",
-			msg:  protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{IterationHistory: []protocol.ProgressEvent{{Iteration: 0}}}},
-			want: true,
-		},
-		{
-			name: "history_compacted=true",
-			msg:  protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{HistoryCompacted: true}},
-			want: true,
-		},
-		{
-			name: "stream-only (stateless)",
-			msg:  protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{StreamContent: "streaming text"}},
-			want: false,
-		},
-		{
-			name: "MsgTypeStreamContent (stateless)",
-			msg:  protocol.WSMessage{Type: protocol.MsgTypeStreamContent, Progress: &protocol.ProgressEvent{StreamContent: "text"}},
-			want: false,
-		},
+		{name: "phase=thinking, iter=0", msg: protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{Phase: "thinking", Iteration: 0}}, want: true},
+		{name: "phase=done, iter=1", msg: protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{Phase: "done", Iteration: 1}}, want: true},
+		{name: "iteration_history present", msg: protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{IterationHistory: []protocol.ProgressEvent{{Iteration: 0}}}}, want: true},
+		{name: "history_compacted=true", msg: protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{HistoryCompacted: true}}, want: true},
+		{name: "stream-only (stateless)", msg: protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{StreamContent: "streaming text"}}, want: false},
+		{name: "MsgTypeStreamContent (stateless)", msg: protocol.WSMessage{Type: protocol.MsgTypeStreamContent, Progress: &protocol.ProgressEvent{StreamContent: "text"}}, want: false},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := isStatefulMsg(tt.msg)
@@ -1054,7 +1368,6 @@ func TestRegression_StructuredProgressNotOverwrittenInStateless(t *testing.T) {
 	hub := newHub()
 	chatID := "/test"
 	source := "cli:/test"
-
 	client := &Client{
 		sendCh:       make(chan protocol.WSMessage, 64),
 		done:         make(chan struct{}),
@@ -1063,38 +1376,14 @@ func TestRegression_StructuredProgressNotOverwrittenInStateless(t *testing.T) {
 	}
 	hub.addClient(client.id, client)
 	hub.subscribe(client.id, chatID)
-
-	// Send iter0 structured event (stateful — goes to sendCh)
-	hub.sendToClient(chatID, protocol.WSMessage{
-		Type:     protocol.MsgTypeProgress,
-		Progress: &protocol.ProgressEvent{ChatID: source, Phase: "tool_exec", Iteration: 0},
-	})
-
-	// Send iter1 structured event with delta (stateful — goes to sendCh)
+	hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{ChatID: source, Phase: "tool_exec", Iteration: 0}})
 	delta := protocol.ProgressEvent{Iteration: 0, Content: "iter0-content"}
-	hub.sendToClient(chatID, protocol.WSMessage{
-		Type: protocol.MsgTypeProgress,
-		Progress: &protocol.ProgressEvent{
-			ChatID:           source,
-			Phase:            "thinking",
-			Iteration:        1,
-			IterationHistory: []protocol.ProgressEvent{delta},
-		},
-	})
-
-	// Send PhaseDone (stateful — goes to sendCh, NOT storeStateless)
-	hub.sendToClient(chatID, protocol.WSMessage{
-		Type:     protocol.MsgTypeProgress,
-		Progress: &protocol.ProgressEvent{ChatID: source, Phase: "done", Iteration: 1},
-	})
-
-	// All three structured events must be in sendCh (not statelessMap)
+	hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{ChatID: source, Phase: "thinking", Iteration: 1, IterationHistory: []protocol.ProgressEvent{delta}}})
+	hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{ChatID: source, Phase: "done", Iteration: 1}})
 	msgs := client.drainStateless()
 	if len(msgs) != 0 {
-		t.Fatalf("expected 0 stateless messages for structured progress, got %d", len(msgs))
+		t.Fatalf("expected 0 stateless messages, got %d", len(msgs))
 	}
-
-	// All three must be in sendCh in order
 	if len(client.sendCh) != 3 {
 		t.Fatalf("expected 3 messages in sendCh, got %d", len(client.sendCh))
 	}

@@ -51,12 +51,13 @@ channel/napcat/       # NapCat HTTP API
 | `cli_palette.go` | Command palette (Ctrl+K): fuzzy-search, category tabs, external contributors (~531 lines) |
 | `feishu.go` | Feishu webhook, message send, card messages (~3154 lines) |
 | `feishu_settings.go` | Feishu settings UI (~2189 lines) |
-| `web.go` | WebSocket server, WebChannel core, read/write pumps, RPC dispatch (~1269 lines) |
-| `web_hub.go` | Hub: WS connection routing, Client struct, ring buffer for offline messages (~195 lines) |
+| `web.go` | WebSocket server, WebChannel core, read/write pumps, RPC dispatch (~1383 lines) |
+| `web_hub.go` | Hub: WS connection routing, Client struct, ring buffer for offline messages, stateless message slotting (storeStateless/drainStateless, ~345 lines) |
 | `web_eventstream.go` | EventStream: seq-stamped ring buffer for replay/dedup (~99 lines) |
 | `web_remote_cli.go` | RemoteCLIChannel: virtual CLI channel for CLI→WS→server mode (~270 lines) |
-| `web_api.go` | REST API endpoints (~1569 lines) |
+| `web_api.go` | REST API endpoints (~1901 lines) |
 | `web_auth.go` | OAuth/token auth (~670 lines) |
+| `web_fs.go` | Filesystem REST API (`/api/fs/list`, `/read`, `/search`, `/stat`); single-level `os.ReadDir`, path-traversal guard, 2MB read cap, language-from-extension map (~511 lines) |
 | `qq.go` | QQ bot API (~1736 lines) |
 | `napcat.go` | NapCat HTTP API (~821 lines) |
 | `i18n.go` | Internationalization: zh/en UI strings (~1390 lines) |

@@ -969,6 +969,9 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.Channel == "" {
 			p.Channel = "web"
 		}
+		if p.ChatID == "" {
+			p.ChatID = bizID
+		}
 		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
 			return nil, fmt.Errorf("access denied")
 		}

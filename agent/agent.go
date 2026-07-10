@@ -669,6 +669,12 @@ func (a *Agent) SetLLMFactory(f *LLMFactory) { a.llmFactory = f }
 // BgTaskManager returns the Agent's BackgroundTaskManager.
 func (a *Agent) BgTaskManager() *tools.BackgroundTaskManager { return a.bgTaskMgr }
 
+// Commands returns the Agent's CommandRegistry (for external consumers like RPC handlers).
+func (a *Agent) Commands() *CommandRegistry { return a.commands }
+
+// SetCommandRegistry sets the command registry (used in tests).
+func (a *Agent) SetCommandRegistry(r *CommandRegistry) { a.commands = r }
+
 // SetMessageSender sets the Dispatcher reference for unified messaging.
 func (a *Agent) SetMessageSender(ms bus.MessageSender) { a.messageSender = ms }
 
@@ -686,6 +692,25 @@ func (a *Agent) SettingsService() *SettingsService { return a.settingsSvc }
 
 // MultiSession returns the Agent's MultiTenantSession (for external injection of callbacks).
 func (a *Agent) MultiSession() *session.MultiTenantSession { return a.multiSession }
+
+// RewindCheckpoint restores files for an existing checkpointed session. It
+// only uses stores that were already created by the normal CLI run path.
+func (a *Agent) RewindCheckpoint(channel, chatID string, turnIdx int) (*protocol.RewindResult, error) {
+	if turnIdx < 1 {
+		return nil, nil
+	}
+	key := qualifyChatID(channel, chatID)
+	raw, ok := a.checkpointStores.Load(key)
+	if !ok {
+		return nil, nil
+	}
+	store, ok := raw.(*tools.CheckpointStore)
+	if !ok || store == nil {
+		return nil, nil
+	}
+	result, err := store.Rewind(turnIdx)
+	return &result, err
+}
 
 // SetUserModel sets the user's default model via an explicit (subID, model) pair.
 // Used by the settings card callback (feishu/web) and the set_user_model RPC.

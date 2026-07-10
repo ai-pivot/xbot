@@ -1218,7 +1218,7 @@ func TestSuHistoryLoad_TypingReconcile_AcceptProgress(t *testing.T) {
 //
 // Regression: handleSuHistoryLoad used to unconditionally replace the empty
 // streaming message's content with the last history assistant's content.
-// For Phase=="compressing", this caused "◇◇◇◇◇ 压缩中" to render between
+// For Phase=="compressing", this caused the compression indicator to render between
 // the previous assistant's header and its content after a TUI restart.
 func TestSuHistoryLoad_CompressingPhase_NoContentMerge(t *testing.T) {
 	m := newCLIModel()

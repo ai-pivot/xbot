@@ -260,3 +260,33 @@ func TestForegroundIAPreservesParentKey(t *testing.T) {
 		t.Fatalf("replacement IA should preserve groupID, got %q", ia.groupID)
 	}
 }
+
+func TestListInteractiveSessionsIncludesDirectParentMetadata(t *testing.T) {
+	a := &Agent{
+		interactiveSubAgents: sync.Map{},
+	}
+	key := "agent:cli:/repo:Agent-main/review:1/fix:2"
+	parentKey := "cli:/repo:Agent-main/review:1"
+	a.interactiveSubAgents.Store(key, &interactiveAgent{
+		roleName:   "fix",
+		instance:   "2",
+		background: true,
+		running:    true,
+		parentKey:  parentKey,
+	})
+
+	sessions := a.ListInteractiveSessions("agent", "")
+	if len(sessions) != 1 {
+		t.Fatalf("expected one nested session, got %#v", sessions)
+	}
+	got := sessions[0]
+	if got.Key != key || got.ParentKey != parentKey {
+		t.Fatalf("unexpected keys: %#v", got)
+	}
+	if got.ParentChannel != "agent" || got.ParentChatID != parentKey {
+		t.Fatalf("unexpected direct parent metadata: %#v", got)
+	}
+	if got.ChatID != parentKey {
+		t.Fatalf("expected chatID to remain key parent chat id, got %#v", got)
+	}
+}

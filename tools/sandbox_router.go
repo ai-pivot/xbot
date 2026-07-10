@@ -29,6 +29,11 @@ type SandboxRouter struct {
 	denied     *DeniedSandbox
 	tokenStore *RunnerTokenStore
 
+	// IsAdminFn, when non-nil, is called to check if a user has admin privileges.
+	// Admin users bypass the web-user DeniedSandbox restriction in SandboxForUser.
+	// Set by serverapp after construction (server has admin identity info).
+	IsAdminFn func(userID string) bool
+
 	// sessionRunners holds session-level runner bindings (sessionKey → runnerName).
 	// This is session-scoped: switching runner in one session doesn't affect others.
 	// Shared with RemoteSandbox so getRunner can read the same binding.
@@ -42,6 +47,12 @@ type SandboxRouter struct {
 	// defaultMode is used when SandboxForUser can't determine per-user routing.
 	// "docker" if docker is enabled, "remote" if remote is enabled, "none" otherwise.
 	defaultMode string
+}
+
+// SetIsAdminFn sets the admin-check callback used by SandboxForUser to bypass
+// the web-user DeniedSandbox restriction for admin users.
+func (r *SandboxRouter) SetIsAdminFn(fn func(userID string) bool) {
+	r.IsAdminFn = fn
 }
 
 // NewSandboxRouter creates a router that holds both docker and remote sandbox instances.
@@ -250,18 +261,33 @@ func (r *SandboxRouter) SandboxForUser(userID string) Sandbox {
 	}
 
 	// 3. Pure web user without remote runner — denied by default
+	//    unless the user is admin or the server has no sandbox at all.
 	if strings.HasPrefix(userID, "web-") {
-		webServerRunner := false
-		if v := os.Getenv("WEB_USER_SERVER_RUNNER"); v != "" {
-			if b, err := strconv.ParseBool(v); err == nil {
-				webServerRunner = b
+		// Admin users bypass the web-user restriction — they own the server
+		// and should have the same access as CLI users.
+		if r.IsAdminFn != nil && r.IsAdminFn(userID) {
+			// Fall through to docker/none below — admin gets host access.
+		} else {
+			webServerRunner := false
+			if v := os.Getenv("WEB_USER_SERVER_RUNNER"); v != "" {
+				if b, err := strconv.ParseBool(v); err == nil {
+					webServerRunner = b
+				}
 			}
+			if !webServerRunner {
+				// When no sandbox is configured (no docker, no remote), the server
+				// is running in local mode — CLI users get NoneSandbox. Denying web
+				// users here would be inconsistent: the server explicitly chose to
+				// run without isolation, so all users get host access.
+				// DeniedSandbox only applies when there IS a sandbox but the user
+				// doesn't have access (docker or remote configured but not for them).
+				if r.docker == nil && r.remote == nil {
+					return r.none
+				}
+				return r.denied
+			}
+			// Explicitly enabled: allow fallback to server sandbox (docker)
 		}
-		if !webServerRunner {
-			// User must have their own remote runner — return DeniedSandbox to block ALL access
-			return r.denied
-		}
-		// Explicitly enabled: allow fallback to server sandbox (docker)
 	}
 
 	if r.docker != nil {

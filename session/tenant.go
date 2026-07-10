@@ -267,6 +267,12 @@ func loadPersistedCWD(channel, chatID string) string {
 	return cwd
 }
 
+// LoadPersistedCWD returns the persisted CWD for a session without creating a
+// TenantSession. It is used by API surfaces that need to inspect idle sessions.
+func LoadPersistedCWD(channel, chatID string) string {
+	return loadPersistedCWD(channel, chatID)
+}
+
 // DeletePersistedCWD removes the persisted CWD file for a session.
 // Must be called when a session is deleted so that a future session with
 // the same chatID (e.g. the default workDir-based session) does not inherit

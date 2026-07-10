@@ -349,11 +349,13 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			}
 
 			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
-			// Wire up RemoteSandbox callbacks to push real-time status to WebChannel.
-			// In WebChannel, senderID == chatID (see handleWS: client.userID = senderID, chatID := c.userID).
+			// Wire admin role check into SandboxRouter — admin web users bypass
+			// the DeniedSandbox restriction. Uses WebChannel's IsAdminIdentity
+			// (role-based, checks DB for web-1 or "admin" auth identity).
 			sb := tools.GetSandbox()
 			if sb != nil {
 				if router, ok := sb.(*tools.SandboxRouter); ok {
+					router.SetIsAdminFn(webCh.IsAdminIdentity)
 					if remote := router.Remote(); remote != nil {
 						remote.OnRunnerStatusChange = func(userID, runnerName string, online bool) {
 							webCh.PushRunnerStatus(userID, runnerName, online)
@@ -1168,11 +1170,16 @@ func isAdmin(authSenderID string) bool { return authSenderID == adminSenderID }
 // Key format: "channel:chatID/roleName[:instance]"
 // Returns empty string if the format is invalid.
 func sessionKeyOwner(key string) string {
-	parts := strings.SplitN(key, ":", 2)
+	slash := strings.LastIndex(key, "/")
+	if slash <= 0 {
+		return ""
+	}
+	parent := key[:slash]
+	parts := strings.SplitN(parent, ":", 2)
 	if len(parts) < 2 {
 		return ""
 	}
-	return strings.SplitN(parts[1], "/", 2)[0]
+	return parts[1]
 }
 
 // senderIDFromParams extracts the business sender_id from RPC params.

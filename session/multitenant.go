@@ -332,6 +332,15 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 	return sess, nil
 }
 
+// GetSession returns a cached tenant session without creating one.
+func (m *MultiTenantSession) GetSession(channel, chatID string) (*TenantSession, bool) {
+	key := sessKey(channel, chatID)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	sess, ok := m.tenantCache[key]
+	return sess, ok
+}
+
 // ConfigureSessionMCP 根据当前用户更新会话 MCP 作用域。
 // 返回新注册的个人 MCP 工具名列表（用于立即激活），catalog 未变化时返回 nil。
 func (m *MultiTenantSession) ConfigureSessionMCP(channel, chatID, senderID, workDir string) ([]string, error) {

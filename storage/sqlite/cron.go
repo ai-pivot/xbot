@@ -130,6 +130,52 @@ func (s *CronService) ListJobsBySender(senderID string) ([]*CronJob, error) {
 	return jobs, nil
 }
 
+// ListJobsByChannelChatID lists all cron jobs for a specific channel + chat_id pair.
+// This is the tenant-scoped query used by the get_cron_tasks RPC.
+func (s *CronService) ListJobsByChannelChatID(channel, chatID string) ([]*CronJob, error) {
+	conn := s.db.Conn()
+	rows, err := conn.Query(`
+		SELECT id, message, channel, chat_id, sender_id, cron_expr, every_seconds, delay_seconds, at, created_at, next_run, last_trigger, one_shot
+		FROM cron_jobs WHERE channel = ? AND chat_id = ? ORDER BY created_at
+	`, channel, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("query cron jobs by channel/chat: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []*CronJob
+	for rows.Next() {
+		job := &CronJob{}
+		var createdAt, nextRun string
+		var lastTriggerStr *string
+		if err := rows.Scan(&job.ID, &job.Message, &job.Channel, &job.ChatID, &job.SenderID, &job.CronExpr,
+			&job.EverySeconds, &job.DelaySeconds, &job.At, &createdAt, &nextRun, &lastTriggerStr, &job.OneShot); err != nil {
+			return nil, fmt.Errorf("scan cron job row: %w", err)
+		}
+		var parseErr error
+		job.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse created_at %q for job %s: %w", createdAt, job.ID, parseErr)
+		}
+		job.NextRun, parseErr = time.Parse(time.RFC3339, nextRun)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse next_run %q for job %s: %w", nextRun, job.ID, parseErr)
+		}
+		if lastTriggerStr != nil {
+			t, err := time.Parse(time.RFC3339, *lastTriggerStr)
+			if err != nil {
+				return nil, fmt.Errorf("parse last_trigger %q for job %s: %w", *lastTriggerStr, job.ID, err)
+			}
+			job.LastTrigger = &t
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate channel/chat cron jobs: %w", err)
+	}
+	return jobs, nil
+}
+
 // ListAllJobs lists all cron jobs (for scheduler)
 func (s *CronService) ListAllJobs() ([]*CronJob, error) {
 	conn := s.db.Conn()
