@@ -221,6 +221,15 @@ func (t *ReadTool) executeLocal(ctx *ToolContext, filePath string) (*ToolResult,
 		ch <- readResult{data, err}
 	}()
 
+	// Check context BEFORE reading. This ensures a pre-cancelled context
+	// (e.g. test with cancel() before Execute) always returns an error,
+	// even if the file read would complete instantly. Without this check,
+	// the select below randomly picks between readCtx.Done() and ch when
+	// both are ready — causing a flaky test on fast CI runners.
+	if readCtx.Err() != nil {
+		return nil, fmt.Errorf("read timed out or cancelled: %w", readCtx.Err())
+	}
+
 	select {
 	case <-readCtx.Done():
 		// Context cancelled — the goroutine will leak if I/O is truly stuck

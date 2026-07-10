@@ -292,11 +292,16 @@ func (t *FileReplaceTool) executeLocal(ctx *ToolContext, params FileReplaceParam
 	}
 
 	// Read file with context-aware cancellation
+	// Check context BEFORE reading to avoid select race when both
+	// ioCtx.Done() and readCh are ready (pre-cancelled context + fast read).
 	type readResult struct {
 		content []byte
 		err     error
 	}
 	readCh := make(chan readResult, 1)
+	if ioCtx.Err() != nil {
+		return nil, fmt.Errorf("read timed out or cancelled: %w", ioCtx.Err())
+	}
 	go func() {
 		data, err := cmdbuilder.ReadFileAsUser(params.RunAs, filePath)
 		readCh <- readResult{data, err}
