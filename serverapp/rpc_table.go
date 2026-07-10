@@ -1660,30 +1660,54 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 	})
 
 	// consume_link_code consumes a link code and links current identity to the target user.
+	// Returns one of:
+	//   {"action": "linked", "user_id": N}  — simple link, identity wasn't previously bound
+	//   {"action": "merge_required", "preview": {...}} — identity is bound to another user, merge needed
+	//   {"action": "merged", "user_id": N} — merge executed (confirm=true was passed)
 	t["consume_link_code"] = rpc1(func(ctx context.Context, p struct {
-		Code string `json:"code"`
+		Code    string `json:"code"`
+		Confirm bool   `json:"confirm"`
 	}) (any, error) {
 		if h.Ag.IdentityResolver() == nil {
 			return nil, fmt.Errorf("identity resolver not available")
 		}
+		currentUserID := rpcUserID(ctx)
+		if currentUserID == 0 {
+			return nil, fmt.Errorf("cannot resolve current user identity")
+		}
+		// On preview (confirm=false), validate WITHOUT consuming the code
+		if !p.Confirm {
+			targetUserID, err := h.Ag.IdentityResolver().ValidateLinkCode(p.Code)
+			if err != nil {
+				return nil, err
+			}
+			// Try simple link first
+			_, err = h.Ag.IdentityResolver().LinkIdentity(targetUserID, "cli", rpcBizID(ctx))
+			if err == nil {
+				// Simple link succeeded — consume the code now
+				h.Ag.IdentityResolver().ConsumeLinkCode(p.Code)
+				return map[string]any{"action": "linked", "user_id": targetUserID}, nil
+			}
+			// Merge required — return preview (code NOT consumed yet)
+			preview, err := h.Ag.IdentityResolver().PreviewMerge(currentUserID, targetUserID)
+			if err != nil {
+				return nil, fmt.Errorf("merge preview failed: %w", err)
+			}
+			return map[string]any{
+				"action":  "merge_required",
+				"preview": preview,
+				"message": "Re-send with confirm=true to execute merge.",
+			}, nil
+		}
+		// Confirm=true: consume code and execute merge
 		targetUserID, err := h.Ag.IdentityResolver().ConsumeLinkCode(p.Code)
 		if err != nil {
 			return nil, err
 		}
-		// Link current CLI identity to target user
-		_, err = h.Ag.IdentityResolver().LinkIdentity(targetUserID, "cli", rpcBizID(ctx))
-		if err != nil {
-			// Merge required — for CLI we auto-merge (single user, no preview needed)
-			currentUserID := rpcUserID(ctx)
-			if currentUserID == 0 {
-				currentUserID = 1
-			}
-			if mergeErr := h.Ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
-				return nil, fmt.Errorf("merge failed: %w (original: %v)", mergeErr, err)
-			}
-			return map[string]any{"action": "merged", "user_id": targetUserID}, nil
+		if mergeErr := h.Ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
+			return nil, fmt.Errorf("merge failed: %w", mergeErr)
 		}
-		return map[string]any{"action": "linked", "user_id": targetUserID}, nil
+		return map[string]any{"action": "merged", "user_id": targetUserID}, nil
 	})
 
 	// list_identities lists the current user's linked channel identities.

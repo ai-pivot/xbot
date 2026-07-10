@@ -253,6 +253,30 @@ func (r *IdentityResolver) ConsumeLinkCode(code string) (int64, error) {
 	return userID, nil
 }
 
+// ValidateLinkCode validates a link code WITHOUT consuming it.
+// Used for preview (merge preview) before the actual consume.
+// Returns (targetUserID, error).
+func (r *IdentityResolver) ValidateLinkCode(code string) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, fmt.Errorf("identity resolver not initialized")
+	}
+	var userID int64
+	var expires string
+	err := r.db.QueryRow("SELECT user_id, expires_at FROM link_codes WHERE code = ?", code).Scan(&userID, &expires)
+	if err != nil {
+		return 0, fmt.Errorf("invalid or expired link code")
+	}
+	expiryTime, _ := time.Parse("2006-01-02 15:04:05", expires)
+	if expiryTime.IsZero() {
+		expiryTime, _ = time.Parse(time.RFC3339, expires)
+	}
+	if time.Now().After(expiryTime) {
+		r.db.Exec("DELETE FROM link_codes WHERE code = ?", code)
+		return 0, fmt.Errorf("link code has expired")
+	}
+	return userID, nil
+}
+
 // LinkIdentity links a channel identity to an existing canonical user.
 // If the identity is already linked to a different user, returns an error
 // indicating a merge is required (caller should call MergeUsers instead).

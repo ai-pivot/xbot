@@ -187,6 +187,7 @@ type IdentityResolverAPI interface {
 	ListAllUsers() (any, error)
 	GenerateLinkCode(userID int64) (string, error)
 	ConsumeLinkCode(code string) (int64, error)
+	ValidateLinkCode(code string) (int64, error)
 	LinkIdentity(targetUserID int64, channel, channelUserID string) (bool, error)
 	PreviewMerge(sourceUserID, targetUserID int64) (any, error)
 	MergeUsers(sourceUserID, targetUserID int64) error
