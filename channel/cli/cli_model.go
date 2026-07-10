@@ -622,7 +622,8 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 				history, err := dumpFn(chatID)
 				var activeProgress *protocol.ProgressEvent
 				if progressFn != nil {
-					activeProgress = progressFn(channelName, chatID)
+					// /su switch: request full history (fromIter=0)
+					activeProgress = progressFn(channelName, chatID, 0)
 				}
 				var todos []protocol.TodoItem
 				if todosFn != nil {
@@ -659,9 +660,10 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 	return func() tea.Msg {
 		history, err := loader(channelName, chatID)
 		// Also fetch active progress for seamless session switch recovery.
+		// /su switch: request full history (fromIter=0) — new session needs all iterations.
 		var activeProgress *protocol.ProgressEvent
 		if progressFn != nil {
-			activeProgress = progressFn(channelName, chatID)
+			activeProgress = progressFn(channelName, chatID, 0)
 		}
 		// Fetch server-side TODO list to overwrite local cache on first switch.
 		var todos []protocol.TodoItem
@@ -855,6 +857,7 @@ type progressState struct {
 	lastSeq        uint64
 	lastAppliedSeq uint64 // highest Seq applied via applyProgressSnapshot (structured events)
 	lastStreamSeq  uint64 // highest Seq from stream-only events (separate counter)
+	pullTick       int    // tick pull counter: increments each 100ms tick, RPC fires at 20 (2s)
 	iterStart      time.Time
 	busySessions   bool
 	unread         map[string]bool

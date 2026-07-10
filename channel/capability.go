@@ -171,6 +171,44 @@ func ProviderBaseProvider(provider string) string {
 	return strings.TrimSuffix(provider, "_coding")
 }
 
+// ProviderSelectOptions returns the three supported provider types for
+// subscription panel dropdowns. The select value encodes both provider and
+// API type: "openai" (Chat Completions), "openai_responses" (Responses API),
+// "anthropic" (Anthropic Messages API).
+func ProviderSelectOptions() []SettingOption {
+	return []SettingOption{
+		{Label: "OpenAI Complete", Value: "openai"},
+		{Label: "OpenAI Responses", Value: "openai_responses"},
+		{Label: "Anthropic", Value: "anthropic"},
+	}
+}
+
+// ProviderToSelectValue converts a stored (provider, apiType) pair to the
+// select dropdown value. Non-anthropic providers (deepseek, zhipu, etc.) all
+// map to "openai" since they use the OpenAI-compatible API.
+func ProviderToSelectValue(provider, apiType string) string {
+	if provider == "anthropic" {
+		return "anthropic"
+	}
+	if apiType == "responses" {
+		return "openai_responses"
+	}
+	return "openai"
+}
+
+// SelectValueToProvider converts the select dropdown value back to
+// (provider, apiType).
+func SelectValueToProvider(selectValue string) (provider, apiType string) {
+	switch selectValue {
+	case "anthropic":
+		return "anthropic", ""
+	case "openai_responses":
+		return "openai", "responses"
+	default:
+		return "openai", ""
+	}
+}
+
 // SettingOption defines an option for select-type settings.
 type SettingOption struct {
 	Label       string `json:"label"`

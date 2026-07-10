@@ -335,7 +335,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 
 	case "settings_submit_edit_subscription":
 		subID := parsed["subscription_id"]
-		provider := formStr(actionData, "provider")
+		provider, apiType := ch.SelectValueToProvider(formStr(actionData, "provider"))
 		baseURL := formStr(actionData, "base_url")
 		apiKey := formStr(actionData, "api_key")
 		name := formStr(actionData, "name")
@@ -349,6 +349,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			if err := f.settingsCallbacks.LLMUpdateSubscription(subID, &ch.Subscription{
 				Name:     name,
 				Provider: provider,
+				APIType:  apiType,
 				BaseURL:  baseURL,
 				APIKey:   apiKey,
 			}); err != nil {
@@ -374,7 +375,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		return f.buildAddSubscriptionCard(senderID)
 
 	case "settings_submit_subscription":
-		provider := formStr(actionData, "provider")
+		provider, apiType := ch.SelectValueToProvider(formStr(actionData, "provider"))
 		baseURL := formStr(actionData, "base_url")
 		apiKey := formStr(actionData, "api_key")
 		name := formStr(actionData, "name")
@@ -388,6 +389,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			if err := f.settingsCallbacks.LLMAddSubscription(senderID, &ch.Subscription{
 				Name:     name,
 				Provider: provider,
+				APIType:  apiType,
 				BaseURL:  baseURL,
 				APIKey:   apiKey,
 			}); err != nil {
@@ -1173,7 +1175,8 @@ func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]an
 				"content": "选择 Provider",
 			},
 			"options": []map[string]any{
-				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Complete（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Responses"}, "value": "openai_responses"},
 				{"text": map[string]any{"tag": "plain_text", "content": "Anthropic"}, "value": "anthropic"},
 			},
 		},
@@ -1245,7 +1248,7 @@ func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]an
 // buildEditSubscriptionCard builds the edit subscription form with current values.
 func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[string]any, error) {
 	// Get current subscription data
-	var currentName, currentProvider, currentBaseURL string
+	var currentName, currentProvider, currentBaseURL, currentAPIType string
 	if f.settingsCallbacks.LLMListSubscriptions != nil {
 		subs, _ := f.settingsCallbacks.LLMListSubscriptions(senderID)
 		for _, s := range subs {
@@ -1253,6 +1256,7 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 				currentName = s.Name
 				currentProvider = s.Provider
 				currentBaseURL = s.BaseURL
+				currentAPIType = s.APIType
 				break
 			}
 		}
@@ -1284,9 +1288,10 @@ func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[s
 				"tag":     "plain_text",
 				"content": "选择 Provider",
 			},
-			"initial_option": currentProvider,
+			"initial_option": ch.ProviderToSelectValue(currentProvider, currentAPIType),
 			"options": []map[string]any{
-				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Complete（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Responses"}, "value": "openai_responses"},
 				{"text": map[string]any{"tag": "plain_text", "content": "Anthropic"}, "value": "anthropic"},
 			},
 		},

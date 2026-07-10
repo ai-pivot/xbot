@@ -159,7 +159,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 
 		switch key {
 		case "provider":
-			cfg.Provider = value
+			cfg.Provider, cfg.APIType = channel.SelectValueToProvider(value)
 		case "base_url":
 			cfg.BaseURL = value
 		case "api_key":
@@ -240,6 +240,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 		// zero them out — a regression that silently broke working subscriptions.
 		if seenKeys["provider"] {
 			existing.Provider = cfg.Provider
+			existing.APIType = cfg.APIType
 		}
 		if seenKeys["base_url"] {
 			existing.BaseURL = cfg.BaseURL
@@ -276,6 +277,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 			SenderID:        msg.SenderID,
 			Name:            subName,
 			Provider:        cfg.Provider,
+			APIType:         cfg.APIType,
 			BaseURL:         cfg.BaseURL,
 			APIKey:          cfg.APIKey,
 			Model:           cfg.Model,

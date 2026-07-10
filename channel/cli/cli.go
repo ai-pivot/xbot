@@ -1190,7 +1190,9 @@ func coalesceProgress(a, b cliProgressMsg) cliProgressMsg {
 		result.TokenUsage = pb.TokenUsage
 		result.Todos = pb.Todos
 		result.HistoryCompacted = pb.HistoryCompacted
-		result.IterationHistory = pb.IterationHistory
+		// Merge iteration deltas: both events may carry different completed
+		// iterations. Concatenate and dedup by iteration number (newer wins).
+		result.IterationHistory = mergeIterationDeltas(pa.IterationHistory, pb.IterationHistory)
 		result.SubAgents = pb.SubAgents
 	}
 
@@ -1200,6 +1202,37 @@ func coalesceProgress(a, b cliProgressMsg) cliProgressMsg {
 	}
 
 	return cliProgressMsg{payload: &result}
+}
+
+// mergeIterationDeltas concatenates two iteration delta slices, deduplicating
+// by iteration number (keeping the last occurrence). In normal operation each
+// push event carries 0 or 1 iteration, so this is at most 2 entries. Used by
+// coalesceProgress when two structured events are merged in progressSlot.
+func mergeIterationDeltas(a, b []protocol.ProgressEvent) []protocol.ProgressEvent {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	// Build a merged list with dedup by iteration number.
+	seen := make(map[int]int, len(a)+len(b))
+	merged := make([]protocol.ProgressEvent, 0, len(a)+len(b))
+	for _, h := range a {
+		if _, ok := seen[h.Iteration]; !ok {
+			seen[h.Iteration] = len(merged)
+			merged = append(merged, h)
+		}
+	}
+	for _, h := range b {
+		if idx, ok := seen[h.Iteration]; ok {
+			merged[idx] = h // newer wins
+		} else {
+			seen[h.Iteration] = len(merged)
+			merged = append(merged, h)
+		}
+	}
+	return merged
 }
 
 // handleTickDrain forwards tick messages from tickCh to BubbleTea independently

@@ -253,17 +253,12 @@ type bgSessionState struct {
 	busy     atomic.Bool   // true while chatProcessLoop is processing a turn
 
 	// drainedThisRun tracks notifications consumed by DrainBgNotifications
-	// during the current Run. If the Run is cancelled (ctx.Done), these
-	// notifications were consumed from bgRunPending and must be discarded so
-	// Ctrl+C does not trigger a fresh turn from the same notification.
+	// during the current Run. If the Run is cancelled, pending notifications
+	// are recorded in the interrupted turn and this tracking is cleared so the
+	// same notification is not delivered as a fresh user message.
 	// Cleared on normal/error completion (notifications were processed).
 	drainedThisRunMu sync.Mutex
 	drainedThisRun   []tools.BgNotification
-
-	// discardBgAfterCancel is a one-shot flag: set on cancel, cleared after
-	// the first suppress (either in handleBgNotifySignal or chatWorker).
-	// This prevents Ctrl+C from permanently silencing future bg notifications.
-	discardBgAfterCancel atomic.Bool
 }
 
 const bgNotificationMetadataKey = "xbot_internal_bg_notification"
@@ -440,9 +435,9 @@ type Agent struct {
 	pluginMgr *plugin.PluginManager
 	bgTaskMgr *tools.BackgroundTaskManager
 
-	// bgRunPending buffers bg notifications that arrived during an active Run.
-	// The Run loop drains these between iterations.
-	bgRunPending   []tools.BgNotification
+	// bgRunPending buffers bg notifications by session. The Run loop drains the
+	// current session between iterations; idle sessions drain their own bucket.
+	bgRunPending   map[string][]tools.BgNotification
 	bgRunPendingMu sync.Mutex
 
 	// bgSessionStates maps chatKey → *bgSessionState for per-session notification signaling.
@@ -2097,17 +2092,6 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 			if ctx.Err() != nil {
 				return
 			}
-
-			isBgNotification := msg.Metadata != nil && msg.Metadata[bgNotificationMetadataKey] == "true"
-			if ss.discardBgAfterCancel.Load() && isBgNotification {
-				log.WithField("session", chatKey).Info("Dropped injected background notification after cancel")
-				// One-shot: clear the suppress flag so future bg notifications
-				// are processed normally.
-				ss.discardBgAfterCancel.Store(false)
-				continue
-			}
-			ss.discardBgAfterCancel.Store(false)
-
 			// 指令消息分发：根据 Concurrent() 决定执行方式
 			if cmd := a.commands.Match(msg.Content); cmd != nil {
 				log.Ctx(ctx).WithFields(log.Fields{
@@ -2182,19 +2166,7 @@ func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
 	// bg notification arrived — drain and process ONLY when chatProcessLoop is idle.
 	// When busy, notifications stay in bgRunPending for chatProcessLoop's
 	// post-turn drain to pick up (guaranteed after response is sent).
-	if ss.discardBgAfterCancel.Load() {
-		discarded := a.discardPendingBgNotifications(chatKey)
-		// One-shot: clear the suppress flag so future bg notifications
-		// (e.g. new cron fires) are processed normally.
-		ss.discardBgAfterCancel.Store(false)
-		if discarded > 0 {
-			log.WithFields(log.Fields{
-				"session": chatKey,
-				"count":   discarded,
-			}).Info("Discarded background notifications after cancel")
-		}
-		return
-	}
+
 	if !ss.busy.Load() {
 		a.drainAndProcessNotifications(chatKey)
 	}
@@ -2353,10 +2325,9 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					log.Warn("Failed to send cancel ack: ", err)
 				}
 			}
-			// Cancel means stop this turn and discard same-session bg notifications.
-			// Do not post-turn drain here: injecting a bg notification immediately
-			// after the cancel ack can make the server busy while the TUI is idle.
-			ss.discardBgAfterCancel.Store(true)
+			// Do not post-turn drain here: handleCancelledRun records same-session
+			// pending bg notifications in the interrupted turn, without starting a
+			// fresh bg-notification turn after the cancel ack.
 			ss.busy.Store(false)
 			continue
 		}
@@ -3115,9 +3086,7 @@ func (a *Agent) injectEventMessage(msg event.Message) {
 func (a *Agent) bgNotifyLoop() {
 	for notif := range a.bgTaskMgr.NotifyCh {
 		// Always buffer first
-		a.bgRunPendingMu.Lock()
-		a.bgRunPending = append(a.bgRunPending, notif)
-		a.bgRunPendingMu.Unlock()
+		a.enqueueBgNotification(notif)
 
 		sessionKey := notif.SessionKey()
 		if state, ok := a.bgSessionStates.Load(sessionKey); ok {
