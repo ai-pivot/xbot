@@ -329,7 +329,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		progress := ag.GetActiveProgress(sel.Channel, sel.ChatID)
+		progress := ag.GetActiveProgress(sel.Channel, sel.ChatID, 0)
 		if progress != nil && progress.Phase == "done" {
 			progress = nil
 		}
