@@ -49,10 +49,16 @@ func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 }
 
 // GetActiveProgress returns the latest progress snapshot for the given channel:chatID.
+// The fromIter parameter is the TUI's watermark — only iterations with
+// Iteration > fromIter are included in the returned IterationHistory. This keeps
+// pull payloads proportional to the number of missing iterations, not the total
+// turn length. Pass fromIter=0 (or -1) to get all iterations (for /su switch or
+// initial restore).
+//
 // For agent sessions, corrects Phase from the authoritative running state in
 // interactiveSubAgents when the agent is between iterations (Phase="done" but
 // still running). This unifies the busy/idle logic across all session types.
-func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
+func (a *Agent) GetActiveProgress(ch, chatID string, fromIter int) *protocol.ProgressEvent {
 	key := ch + ":" + chatID
 	v, ok := a.lastProgressSnapshot.Load(key)
 	if !ok {
@@ -101,7 +107,17 @@ func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
 		if len(hist) > 0 {
 			flat := progressHistoryWithoutNested(hist)
 			a.iterationHistories.CompareAndSwap(key, histPtr, &flat)
-			result.IterationHistory = flat
+			// Watermark filter: return only iterations newer than fromIter.
+			// This keeps pull payloads small — proportional to the gap, not the
+			// total turn length. The TUI appends these to its local list with
+			// per-iteration dedup.
+			filtered := make([]protocol.ProgressEvent, 0, len(flat))
+			for _, h := range flat {
+				if h.Iteration > fromIter {
+					filtered = append(filtered, h)
+				}
+			}
+			result.IterationHistory = filtered
 			return &result
 		}
 	}

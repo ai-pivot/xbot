@@ -332,8 +332,9 @@ type isProcessingReq struct {
 }
 
 type getActiveProgressReq struct {
-	Channel string `json:"channel"`
-	ChatID  string `json:"chat_id"`
+	Channel       string `json:"channel"`
+	ChatID        string `json:"chat_id"`
+	FromIteration int    `json:"from_iteration"`
 }
 
 type getTodosReq struct {

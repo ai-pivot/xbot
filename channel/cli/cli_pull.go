@@ -174,25 +174,28 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 	m.syncProgressTodos(snapshot)
 }
 
-// restoreIterationsFromSnapshot rebuilds local iteration history from the
-// backend snapshot's IterationHistory field. This replaces the old
-// snapshotIterationChange which tried to detect iteration changes from
-// partial push events. The backend already tracks completed iterations
-// authoritatively in recordIterationSnapshot.
+// restoreIterationsFromSnapshot appends completed iterations from the snapshot's
+// IterationHistory to the local state. The snapshot may carry:
+//   - Push delta: 0 or 1 entries (the iteration that just completed)
+//   - Pull response: only entries with Iteration > fromIter (the TUI's watermark)
+//
+// Per-iteration dedup: iterations already present locally are skipped.
+// This replaces the old count-based replace logic which assumed full cumulative
+// history in every snapshot. With the delta protocol, snapshots carry only new
+// iterations — append is the correct semantics.
 func (m *cliModel) restoreIterationsFromSnapshot(snapshot *protocol.ProgressEvent) {
 	if len(snapshot.IterationHistory) == 0 {
 		return
 	}
 
-	// Check if we already have these iterations restored.
-	// Avoid rebuilding if the count matches (iterations are append-only).
-	if len(m.progressState.iterations) >= len(snapshot.IterationHistory) {
-		return
-	}
-
-	// Rebuild from snapshot — backend is authoritative.
-	m.progressState.iterations = make([]cliIterationSnapshot, 0, len(snapshot.IterationHistory))
 	for _, ih := range snapshot.IterationHistory {
+		// Per-iteration dedup: skip if we already have this iteration.
+		already := slices.ContainsFunc(m.progressState.iterations, func(s cliIterationSnapshot) bool {
+			return s.Iteration == ih.Iteration
+		})
+		if already {
+			continue
+		}
 		snap := cliIterationSnapshot{
 			Iteration:   ih.Iteration,
 			Content:     ih.Content,
