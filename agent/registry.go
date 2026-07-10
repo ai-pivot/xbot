@@ -12,28 +12,36 @@ import (
 	"time"
 
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
-// RegistryManager manages skill/agent publishing, installation, and discovery.
+// RegistryManager manages skill/agent/plugin publishing, installation, and discovery.
 type RegistryManager struct {
 	store       *SkillStore
 	agentStore  *AgentStore
 	sharedStore *sqlite.SharedSkillRegistry
 	workDir     string
+	xbotHome    string // global xbot config dir (e.g. ~/.xbot), used for plugins dir
 	sandbox     tools.Sandbox
 }
 
 // NewRegistryManager creates a new RegistryManager.
-func NewRegistryManager(store *SkillStore, agentStore *AgentStore, sharedStore *sqlite.SharedSkillRegistry, workDir string, sandbox tools.Sandbox) *RegistryManager {
+func NewRegistryManager(store *SkillStore, agentStore *AgentStore, sharedStore *sqlite.SharedSkillRegistry, workDir, xbotHome string, sandbox tools.Sandbox) *RegistryManager {
 	return &RegistryManager{
 		store:       store,
 		agentStore:  agentStore,
 		sharedStore: sharedStore,
 		workDir:     workDir,
+		xbotHome:    xbotHome,
 		sandbox:     sandbox,
 	}
+}
+
+// pluginsDir returns the global plugins directory (~/.xbot/plugins/).
+func (rm *RegistryManager) pluginsDir() string {
+	return filepath.Join(rm.xbotHome, "plugins")
 }
 
 // useSandbox 判断是否应使用 Sandbox 访问用户文件。
@@ -295,6 +303,76 @@ func (rm *RegistryManager) installSkill(entry *sqlite.SharedEntry, senderID stri
 	return nil
 }
 
+// installAppPlugin copies a plugin directory from the unpacked app to the global plugins directory.
+func (rm *RegistryManager) installAppPlugin(c AppContent, srcDir, senderID string) error {
+	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
+	pluginsDir := rm.pluginsDir()
+
+	// Read manifest from source to get plugin ID for the target directory
+	manifest, err := plugin.LoadManifest(srcPath)
+	if err != nil {
+		return fmt.Errorf("read plugin manifest: %w", err)
+	}
+
+	destDir := filepath.Join(pluginsDir, manifest.ID)
+
+	// Check if already installed
+	if _, err := os.Stat(destDir); err == nil {
+		return fmt.Errorf("plugin %q already installed", manifest.ID)
+	}
+
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		return fmt.Errorf("create plugins dir: %w", err)
+	}
+
+	if err := copyDir(srcPath, destDir); err != nil {
+		return fmt.Errorf("copy plugin: %w", err)
+	}
+
+	log.WithFields(log.Fields{
+		"type": "plugin", "name": manifest.ID, "sender": senderID,
+		"from": srcPath, "to": destDir,
+	}).Info("Installed plugin from app")
+	return nil
+}
+
+// uninstallPlugin removes a plugin directory from the global plugins directory.
+func (rm *RegistryManager) uninstallPlugin(name, senderID string) error {
+	pluginDir := rm.findPluginDir(name)
+	if pluginDir == "" {
+		return fmt.Errorf("plugin %q is not installed", name)
+	}
+
+	if err := os.RemoveAll(pluginDir); err != nil {
+		return fmt.Errorf("remove plugin: %w", err)
+	}
+
+	log.WithFields(log.Fields{"type": "plugin", "name": name, "sender": senderID}).Info("Uninstalled")
+	return nil
+}
+
+// ListInstalledPlugins returns the names (IDs) of installed plugins.
+func (rm *RegistryManager) ListInstalledPlugins(senderID string) []string {
+	pluginsDir := rm.pluginsDir()
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		pluginDir := filepath.Join(pluginsDir, ent.Name())
+		manifest, err := plugin.LoadManifest(pluginDir)
+		if err != nil {
+			continue
+		}
+		names = append(names, manifest.ID)
+	}
+	return names
+}
+
 // PublishApp packs local items into a .xbot.zip and publishes it to the shared registry.
 // The zip is stored in the registry cache, and a shared_registry entry with type='app' is created.
 func (rm *RegistryManager) PublishApp(name, author string, items []AppItem) error {
@@ -441,13 +519,15 @@ func (rm *RegistryManager) installAgent(entry *sqlite.SharedEntry, senderID stri
 	return nil
 }
 
-// Uninstall removes a user-installed skill/agent.
+// Uninstall removes a user-installed skill/agent/plugin.
 func (rm *RegistryManager) Uninstall(entryType, name, senderID string) error {
 	switch entryType {
 	case "skill":
 		return rm.uninstallSkill(name, senderID)
 	case "agent":
 		return rm.uninstallAgent(name, senderID)
+	case "plugin":
+		return rm.uninstallPlugin(name, senderID)
 	case "app":
 		return rm.uninstallApp(name, senderID)
 	default:
@@ -566,6 +646,7 @@ func (rm *RegistryManager) ListInstalledAgents(senderID string) []string {
 	}
 	return names
 }
+
 // It reads the app's manifest from the registry cache to know what to remove.
 func (rm *RegistryManager) uninstallApp(name, senderID string) error {
 	// Look up the app entry to find the cached zip
@@ -595,6 +676,10 @@ func (rm *RegistryManager) uninstallApp(name, senderID string) error {
 		case "agent":
 			if err := rm.uninstallAgent(c.Name, senderID); err != nil {
 				errs = append(errs, fmt.Sprintf("agent %s: %v", c.Name, err))
+			}
+		case "plugin":
+			if err := rm.uninstallPlugin(c.Name, senderID); err != nil {
+				errs = append(errs, fmt.Sprintf("plugin %s: %v", c.Name, err))
 			}
 		}
 	}
@@ -669,6 +754,11 @@ func (rm *RegistryManager) ListMy(senderID string, entryType string) (published 
 		}
 	}
 
+	// Plugins: each plugin is a DIRECTORY containing plugin.json
+	if entryType == "" || entryType == "plugin" {
+		scanPluginDir(rm.pluginsDir(), &local, seen)
+	}
+
 	return published, local, nil
 }
 
@@ -705,6 +795,30 @@ func scanAgentDir(dir string, out *[]string, seen map[string]bool) {
 		}
 		name := strings.TrimSuffix(ent.Name(), ".md")
 		key := "agent:" + name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		*out = append(*out, key)
+	}
+}
+
+// scanPluginDir scans for plugin directories containing plugin.json.
+func scanPluginDir(dir string, out *[]string, seen map[string]bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		pluginDir := filepath.Join(dir, ent.Name())
+		manifest, err := plugin.LoadManifest(pluginDir)
+		if err != nil {
+			continue
+		}
+		key := "plugin:" + manifest.ID
 		if seen[key] {
 			continue
 		}
@@ -874,6 +988,34 @@ func (rm *RegistryManager) findAgentFile(name, senderID string) string {
 	return ""
 }
 
+// findPluginDir locates a plugin directory by ID or name.
+// Searches ~/.xbot/plugins/<id>/ for a plugin.json with matching ID or Name.
+func (rm *RegistryManager) findPluginDir(name string) string {
+	pluginsDir := rm.pluginsDir()
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return ""
+	}
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		pluginDir := filepath.Join(pluginsDir, ent.Name())
+		manifest, err := plugin.LoadManifest(pluginDir)
+		if err != nil {
+			continue
+		}
+		if manifest.ID == name || manifest.Name == name {
+			return pluginDir
+		}
+		// Also match directory name
+		if ent.Name() == name {
+			return pluginDir
+		}
+	}
+	return ""
+}
+
 // markInstalled records the installation source and timestamp for a skill.
 // TODO: 持久化安装信息到本地数据库，用于后续版本管理和自动更新。
 func (rm *RegistryManager) markInstalled(skillDir, installedFrom string, installedAt int64) {
@@ -1031,15 +1173,20 @@ func (rm *RegistryManager) InstallAppFromFile(zipPath, senderID string) (*AppIns
 				return nil, fmt.Errorf("install agent %q: %w", c.Name, err)
 			}
 			result.Installed = append(result.Installed, fmt.Sprintf("agent: %s", c.Name))
+		case "plugin":
+			if err := rm.installAppPlugin(c, tmpDir, senderID); err != nil {
+				return nil, fmt.Errorf("install plugin %q: %w", c.Name, err)
+			}
+			result.Installed = append(result.Installed, fmt.Sprintf("plugin: %s", c.Name))
 		default:
-			return nil, fmt.Errorf("unsupported content type %q (Phase 1 supports skill and agent only)", c.Type)
+			return nil, fmt.Errorf("unsupported content type %q (use skill, agent, or plugin)", c.Type)
 		}
 	}
 
 	log.WithFields(log.Fields{
-		"app":     manifest.Name,
-		"items":   len(result.Installed),
-		"sender":  senderID,
+		"app":    manifest.Name,
+		"items":  len(result.Installed),
+		"sender": senderID,
 	}).Info("Installed app from file")
 	return result, nil
 }

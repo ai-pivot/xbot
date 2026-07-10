@@ -1503,7 +1503,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	sharedRegistry := sqlite.NewSharedSkillRegistry(multiSession.DB())
 
 	// Initialize RegistryManager
-	a.registryManager = NewRegistryManager(a.skills, a.agents, sharedRegistry, cfg.WorkDir, cfg.Sandbox)
+	a.registryManager = NewRegistryManager(a.skills, a.agents, sharedRegistry, cfg.WorkDir, cfg.XbotHome, cfg.Sandbox)
 
 	// Initialize UserSettingsService and SettingsService
 	userSettingsSvc := sqlite.NewUserSettingsService(multiSession.DB())

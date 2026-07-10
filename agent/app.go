@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"xbot/plugin"
 	"xbot/tools"
 )
 
@@ -17,27 +18,27 @@ const AppManifestSchema = 1
 
 // AppManifest represents the xbot.json manifest inside a .xbot.zip app.
 type AppManifest struct {
-	Schema      int             `json:"schema"`
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Version     string          `json:"version"`
-	Author      string          `json:"author"`
-	Description string          `json:"description"`
-	Homepage    string          `json:"homepage,omitempty"`
-	License     string          `json:"license,omitempty"`
+	Schema      int          `json:"schema"`
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Version     string       `json:"version"`
+	Author      string       `json:"author"`
+	Description string       `json:"description"`
+	Homepage    string       `json:"homepage,omitempty"`
+	License     string       `json:"license,omitempty"`
 	Contents    []AppContent `json:"contents"`
 }
 
 // AppContent declares a single item inside the app.
 type AppContent struct {
-	Type        string   `json:"type"`         // skill | agent | plugin
+	Type        string   `json:"type"` // skill | agent | plugin
 	Name        string   `json:"name"`
-	Source      string   `json:"source"`       // relative path inside the zip
+	Source      string   `json:"source"` // relative path inside the zip
 	Description string   `json:"description,omitempty"`
-	Model       string   `json:"model,omitempty"`         // agent only
-	Tools       []string `json:"tools,omitempty"`        // agent only
-	Runtime     string   `json:"runtime,omitempty"`      // plugin only
-	Permissions []string `json:"permissions,omitempty"`   // plugin only
+	Model       string   `json:"model,omitempty"`       // agent only
+	Tools       []string `json:"tools,omitempty"`       // agent only
+	Runtime     string   `json:"runtime,omitempty"`     // plugin only
+	Permissions []string `json:"permissions,omitempty"` // plugin only
 }
 
 // AppItem specifies a local item to include when building an app.
@@ -96,8 +97,14 @@ func (bp *AppPackager) Pack(rm *RegistryManager, items []AppItem, outputPath, au
 				return err
 			}
 			manifest.Contents = append(manifest.Contents, content)
+		case "plugin":
+			content, err := bp.stagePlugin(rm, item, tmpDir, author)
+			if err != nil {
+				return err
+			}
+			manifest.Contents = append(manifest.Contents, content)
 		default:
-			return fmt.Errorf("unsupported type %q (Phase 1 supports skill and agent only)", item.Type)
+			return fmt.Errorf("unsupported type %q (use skill, agent, or plugin)", item.Type)
 		}
 	}
 
@@ -180,6 +187,40 @@ func (bp *AppPackager) stageAgent(rm *RegistryManager, item AppItem, tmpDir, aut
 	return content, nil
 }
 
+// stagePlugin copies a plugin directory into the staging area.
+func (bp *AppPackager) stagePlugin(rm *RegistryManager, item AppItem, tmpDir, author string) (AppContent, error) {
+	pluginDir := rm.findPluginDir(item.Name)
+	if pluginDir == "" {
+		return AppContent{}, fmt.Errorf("plugin %q not found", item.Name)
+	}
+
+	// Read plugin.json for metadata
+	manifest, err := plugin.LoadManifest(pluginDir)
+	if err != nil {
+		return AppContent{}, fmt.Errorf("read plugin manifest: %w", err)
+	}
+
+	// Copy to staging
+	stagingPath := filepath.Join(tmpDir, "plugins", manifest.ID)
+	if err := copyDir(pluginDir, stagingPath); err != nil {
+		return AppContent{}, fmt.Errorf("copy plugin to staging: %w", err)
+	}
+
+	content := AppContent{
+		Type:        "plugin",
+		Name:        manifest.ID,
+		Source:      "plugins/" + manifest.ID + "/",
+		Description: manifest.Description,
+	}
+	if manifest.Runtime != "" {
+		content.Runtime = string(manifest.Runtime)
+	}
+	if len(manifest.Permissions) > 0 {
+		content.Permissions = manifest.Permissions
+	}
+	return content, nil
+}
+
 // Unpack extracts a .xbot.zip to a temp directory and returns the manifest.
 // Caller is responsible for cleaning up the temp directory.
 func (bp *AppPackager) Unpack(zipPath string) (*AppManifest, string, error) {
@@ -217,10 +258,9 @@ func (bp *AppPackager) Unpack(zipPath string) (*AppManifest, string, error) {
 // Validate checks that all declared content sources exist in the unpacked directory.
 func (bp *AppPackager) Validate(manifest *AppManifest, baseDir string) error {
 	for _, c := range manifest.Contents {
-		fullPath := filepath.Join(baseDir, c.Source)
-		// For directories (skills), check dir exists; for files (agents), check file exists
+		// For directories (skills/plugins), check dir exists; for files (agents), check file exists
 		source := strings.TrimRight(c.Source, "/")
-		fullPath = filepath.Join(baseDir, source)
+		fullPath := filepath.Join(baseDir, source)
 		if _, err := os.Stat(fullPath); err != nil {
 			return fmt.Errorf("content %q source %q not found in app", c.Name, c.Source)
 		}

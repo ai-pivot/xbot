@@ -882,9 +882,9 @@ func (c *appCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) 
 }
 
 func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
-	// Parse: /app export <app-name> --skill <s> --agent <a> [--skill <s2> ...]
+	// Parse: /app export <app-name> --skill <s> --agent <a> --plugin <p> [...]
 	if len(args) < 2 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app export <app-name> --skill <name> --agent <name>`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app export <app-name> --skill <name> --agent <name> --plugin <name>`"}, nil
 	}
 
 	appName := args[0]
@@ -901,11 +901,16 @@ func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (
 				items = append(items, AppItem{Type: "agent", Name: args[i+1]})
 				i++
 			}
+		case "--plugin":
+			if i+1 < len(args) {
+				items = append(items, AppItem{Type: "plugin", Name: args[i+1]})
+				i++
+			}
 		}
 	}
 
 	if len(items) == 0 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 --skill 或 --agent"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 --skill、--agent 或 --plugin"}, nil
 	}
 	if a.registryManager == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
@@ -1033,10 +1038,15 @@ func (c *appCmd) handlePublish(a *Agent, msg bus.InboundMessage, args []string) 
 					items = append(items, AppItem{Type: "agent", Name: args[i+1]})
 					i++
 				}
+			case "--plugin":
+				if i+1 < len(args) {
+					items = append(items, AppItem{Type: "plugin", Name: args[i+1]})
+					i++
+				}
 			}
 		}
 		if len(items) == 0 {
-			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "发布 app 需要至少指定一个 --skill 或 --agent"}, nil
+			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "发布 app 需要至少指定一个 --skill、--agent 或 --plugin"}, nil
 		}
 		if err := a.registryManager.PublishApp(name, msg.SenderID, items); err != nil {
 			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("发布失败：%v", err)}, nil
@@ -1090,9 +1100,11 @@ func (c *appCmd) handleList(a *Agent, msg bus.InboundMessage, args []string) (*c
 	skills := a.registryManager.ListInstalledSkills(msg.SenderID)
 	// List installed agents
 	agents := a.registryManager.ListInstalledAgents(msg.SenderID)
+	// List installed plugins
+	plugins := a.registryManager.ListInstalledPlugins(msg.SenderID)
 
-	if len(skills) == 0 && len(agents) == 0 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "📦 暂无已安装的 skill 或 agent"}, nil
+	if len(skills) == 0 && len(agents) == 0 && len(plugins) == 0 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "📦 暂无已安装的 skill、agent 或 plugin"}, nil
 	}
 
 	var sb strings.Builder
@@ -1108,6 +1120,13 @@ func (c *appCmd) handleList(a *Agent, msg bus.InboundMessage, args []string) (*c
 		sb.WriteString("**Agents:**\n")
 		for _, a := range agents {
 			fmt.Fprintf(&sb, "- 🤖 %s\n", a)
+		}
+		sb.WriteString("\n")
+	}
+	if len(plugins) > 0 {
+		sb.WriteString("**Plugins:**\n")
+		for _, p := range plugins {
+			fmt.Fprintf(&sb, "- 🧩 %s\n", p)
 		}
 	}
 	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
@@ -1149,15 +1168,15 @@ func (c *appCmd) handleMy(a *Agent, msg bus.InboundMessage, args []string) (*cha
 func appHelp() string {
 	return "## 📦 /app — 应用管理\n\n" +
 		"**子命令：**\n\n" +
-		"- `/app browse [skill|agent|app]` — 浏览市场\n" +
+		"- `/app browse [skill|agent|plugin|app]` — 浏览市场\n" +
 		"- `/app list` — 查看已安装\n" +
 		"- `/app install <file-path>` — 从 .xbot.zip 文件安装\n" +
 		"- `/app install app <id>` — 从市场按 ID 安装\n" +
-		"- `/app uninstall <type> <name>` — 卸载\n" +
-		"- `/app publish <type> <name> [--skill <s> --agent <a>]` — 发布到市场\n" +
+		"- `/app uninstall <type> <name>` — 卸载（skill/agent/plugin/app）\n" +
+		"- `/app publish <type> <name> [--skill <s> --agent <a> --plugin <p>]` — 发布到市场\n" +
 		"- `/app unpublish <type> <name>` — 从市场下架\n" +
 		"- `/app my` — 查看我发布的\n" +
-		"- `/app export <name> --skill <s> --agent <a>` — 打包导出\n\n" +
+		"- `/app export <name> --skill <s> --agent <a> --plugin <p>` — 打包导出\n\n" +
 		"**示例：**\n\n" +
 		"```\n" +
 		"/app browse app\n" +
@@ -1165,7 +1184,8 @@ func appHelp() string {
 		"/app install /tmp/my-app.xbot.zip\n" +
 		"/app install app 5\n" +
 		"/app uninstall skill debug\n" +
-		"/app publish app my-app --skill debug --agent explore\n" +
-		"/app export my-app --skill debug --agent explore\n" +
+		"/app uninstall plugin my-plugin\n" +
+		"/app publish app my-app --skill debug --agent explore --plugin git-widget\n" +
+		"/app export my-app --skill debug --agent explore --plugin git-widget\n" +
 		"```\n"
 }
