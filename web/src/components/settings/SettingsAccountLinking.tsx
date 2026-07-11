@@ -174,22 +174,66 @@ export function SettingsAccountLinking() {
             生成关联码
           </Button>
           {generatedCode && genStatus === 'success' && (
-            <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-secondary px-3 py-2">
-              <code className="flex-1 font-mono text-base font-semibold tracking-wider text-foreground">
-                {generatedCode}
-              </code>
-              <Button
-                onClick={handleCopy}
-                variant="ghost"
-                size="sm"
-                className="h-7 w-7 p-0"
-              >
-                {copied ? (
-                  <Check className="size-4 text-green-500" />
-                ) : (
-                  <Copy className="size-4" />
-                )}
-              </Button>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-secondary px-3 py-2">
+                <code className="flex-1 font-mono text-base font-semibold tracking-wider text-foreground">
+                  {generatedCode}
+                </code>
+                <Button
+                  onClick={handleCopy}
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                >
+                  {copied ? (
+                    <Check className="size-4 text-green-500" />
+                  ) : (
+                    <Copy className="size-4" />
+                  )}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                请在需要关联的渠道执行以下命令（5 分钟内有效）：
+              </p>
+              <div className="flex flex-col gap-1.5">
+                {/* CLI command */}
+                <div className="flex items-center gap-2 rounded-md border border-border bg-bg-secondary px-2.5 py-1.5">
+                  <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-foreground">CLI</span>
+                  <code className="flex-1 font-mono text-xs text-foreground">
+                    /link-account {generatedCode}
+                  </code>
+                  <Button
+                    onClick={() => navigator.clipboard.writeText(`/link-account ${generatedCode}`)}
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0"
+                  >
+                    <Copy className="size-3" />
+                  </Button>
+                </div>
+                {/* Feishu command */}
+                <div className="flex items-center gap-2 rounded-md border border-border bg-bg-secondary px-2.5 py-1.5">
+                  <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-foreground">飞书</span>
+                  <code className="flex-1 font-mono text-xs text-foreground">
+                    /link {generatedCode}
+                  </code>
+                  <Button
+                    onClick={() => navigator.clipboard.writeText(`/link ${generatedCode}`)}
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0"
+                  >
+                    <Copy className="size-3" />
+                  </Button>
+                </div>
+                {/* Web consume hint */}
+                <div className="flex items-center gap-2 rounded-md border border-border bg-bg-secondary px-2.5 py-1.5">
+                  <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-foreground">Web</span>
+                  <code className="flex-1 font-mono text-xs text-muted-foreground">
+                    在上方「关联其他渠道」输入此码
+                  </code>
+                </div>
+              </div>
             </div>
           )}
           {genStatus === 'error' && (
