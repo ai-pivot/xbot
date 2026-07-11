@@ -405,6 +405,9 @@ type Agent struct {
 	// todoManager 管理当前会话的 TODO 列表
 	todoManager *tools.TodoManager
 
+	// goalManager 管理当前会话的 Goal 生命周期
+	goalManager *GoalManager
+
 	// channelPromptProviders channel 特化 prompt 提供者列表（由外部注入）
 	channelPromptProviders []ChannelPromptProvider
 
@@ -1210,6 +1213,11 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.todoManager = todoMgr
 	registry.RegisterCore(&tools.TodoWriteTool{Manager: todoMgr})
 	registry.RegisterCore(&tools.TodoListTool{Manager: todoMgr})
+
+	// 初始化 GoalManager 并注册工具 + PreTurnEnd hook
+	a.goalManager = NewGoalManager()
+	registry.RegisterCore(&setGoalCompleteTool{manager: a.goalManager})
+	a.hookManager.RegisterBuiltin(a.goalManager.PreTurnEndHook())
 
 	// Register AI-Native TUI & Config tools as core (always available)
 	registry.RegisterCore(&tools.TuiControlTool{})
@@ -2535,7 +2543,18 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			"channel": msg.Channel,
 			"command": cmd.Name(),
 		}).Info("Command matched")
-		return cmd.Execute(ctx, a, msg)
+		out, err := cmd.Execute(ctx, a, msg)
+		if err != nil {
+			return nil, err
+		}
+		// goal_start sentinel: /goal command set a goal and wants to
+		// fall through to Run() with the objective as the user message.
+		if out != nil && out.Metadata != nil && out.Metadata["goal_start"] != "" {
+			msg.Content = out.Metadata["goal_start"]
+			// fall through to Run
+		} else {
+			return out, nil
+		}
 	}
 
 	// 处理卡片响应（按钮点击、表单提交）
