@@ -520,10 +520,25 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	// handleAgentMessage or handleCancelAck) to prevent premature flush
 	// that would start a new turn before the current turn's reply is
 	// attached to the assistant message.
+	//
+	// LINEAR CONSISTENCY: A one-tick delay (flushDelay) is inserted between
+	// needFlushQueue being armed and the actual flush. This gives pending
+	// cliInjectedUserMsg messages (e.g. bg task notifications drained after
+	// the reply was sent) time to arrive from asyncCh and be appended to the
+	// message list BEFORE the queued user message is flushed. Without this
+	// delay, the tick can fire between handleAgentMessage and the arrival of
+	// the injected notification, causing the user message to appear before
+	// the notification in the TUI — even though the backend processed the
+	// notification first.
 	if m.needFlushQueue && !m.typing && m.replyProcessed && !m.splashState.suLoading && len(m.messageQueue) > 0 {
-		m.needFlushQueue = false
-		m.flushMessageQueue()
-		return cmds
+		if m.flushDelay > 0 {
+			m.flushDelay--
+		} else {
+			m.needFlushQueue = false
+			m.flushDelay = 0
+			m.flushMessageQueue()
+			return cmds
+		}
 	}
 
 	// Idle: placeholder rotation (every 30 ticks = ~3s)

@@ -105,6 +105,7 @@ type cliModel struct {
 	queueEditing   bool        // true = 正在编辑/查看最后一条排队消息
 	queueEditBuf   string      // 编辑中的排队消息内容
 	needFlushQueue bool        // true = handleAgentMessage 后需要刷新队列
+	flushDelay     int         // ticks to wait before flushing (lets pending injected msgs arrive)
 
 	// --- Background tasks ---
 	bgTaskCount     int                       // running background tasks (0 = no indicator)

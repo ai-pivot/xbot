@@ -602,10 +602,12 @@ func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 }
 
 // tryFlushMessageQueue arms the tick handler to drain queued messages
-// when the message queue has pending items.
+// when the message queue has pending items. Sets a one-tick delay to
+// allow pending injected messages (bg notifications) to arrive first.
 func (m *cliModel) tryFlushMessageQueue() {
 	if len(m.messageQueue) > 0 {
 		m.needFlushQueue = true
+		m.flushDelay = 1 // one tick (~100ms) for pending asyncCh messages
 	}
 }
 
