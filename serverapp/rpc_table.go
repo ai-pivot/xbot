@@ -47,7 +47,7 @@ type RPCContext struct {
 
 func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
 	return func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
-		if !isAdmin(rpcAuthID(ctx)) {
+		if !isAdmin(ctx) {
 			return nil, fmt.Errorf("admin only")
 		}
 		return next(ctx, params)
@@ -56,8 +56,41 @@ func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
 
 // ownOrAdmin checks that the caller owns the resource or has admin privileges.
 // Empty chatID is treated as self-access (defaults to caller's bizID).
+// Also checks canonical session ownership: if the session (channel+chatID) is
+// owned by the same canonical user_id, access is granted even if chatID != bizID.
+func (h *RPCContext) ownOrAdmin(ctx context.Context, channel, chatID string) bool {
+	if isAdmin(ctx) || chatID == "" || chatID == rpcBizID(ctx) {
+		return true
+	}
+	// Check canonical session ownership
+	if h.Ag != nil && h.Ag.IdentityResolver() != nil {
+		userID := rpcUserID(ctx)
+		if userID > 0 {
+			return h.sessionOwnedByUser(channel, chatID, userID)
+		}
+	}
+	return false
+}
+
+// sessionOwnedByUser checks if a tenant (channel+chatID) has owner_user_id == userID.
+func (h *RPCContext) sessionOwnedByUser(channel, chatID string, userID int64) bool {
+	if h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
+		return false
+	}
+	var ownerUserID int64
+	err := h.Ag.MultiSession().DB().Conn().QueryRow(
+		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = ? AND chat_id = ?`,
+		channel, chatID,
+	).Scan(&ownerUserID)
+	if err != nil {
+		return false
+	}
+	return ownerUserID == userID
+}
+
+// ownOrAdminLegacy is the old signature for handlers that don't have channel context.
 func ownOrAdmin(ctx context.Context, chatID string) error {
-	if isAdmin(rpcAuthID(ctx)) || chatID == "" || chatID == rpcBizID(ctx) {
+	if isAdmin(ctx) || chatID == "" || chatID == rpcBizID(ctx) {
 		return nil
 	}
 	return fmt.Errorf("access denied")
@@ -238,7 +271,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		// Apply runtime effect but don't persist to user_settings DB —
 		// the source of truth is config.json.
 		if channel.IsGlobalScopedSettingKey(p.Key) {
-			if isAdmin(rpcAuthID(ctx)) {
+			if isAdmin(ctx) {
 				applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
 			}
 			return nil
@@ -247,7 +280,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		// subscription's PerModelConfigs, NOT in user_settings DB.
 		// The CLI's saveSettings() handles the write via subscriptionMgr.Update().
 		if channel.IsSubscriptionScopedSettingKey(p.Key) {
-			if isAdmin(rpcAuthID(ctx)) {
+			if isAdmin(ctx) {
 				applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
 			}
 			return nil
@@ -258,7 +291,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		if err := h.Ag.SettingsService().SetSetting(p.Namespace, bizID, p.Key, p.Value); err != nil {
 			return err
 		}
-		if isAdmin(rpcAuthID(ctx)) {
+		if isAdmin(ctx) {
 			applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
 		}
 		return nil
@@ -570,7 +603,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			return fmt.Errorf("subscription %s not found: %w", p.ID, err)
 		}
 		bizID := rpcBizID(ctx)
-		if !isAdmin(rpcAuthID(ctx)) && existing.SenderID != bizID {
+		if !isAdmin(ctx) && existing.SenderID != bizID {
 			return fmt.Errorf("subscription not found")
 		}
 		if existing.PerModelConfigs == nil {
@@ -604,7 +637,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		if !isAdmin(rpcAuthID(ctx)) && sub.SenderID != rpcBizID(ctx) {
+		if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
 			return fmt.Errorf("subscription not found")
 		}
 		if err := svc.Remove(p.ID); err != nil {
@@ -631,7 +664,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		if !isAdmin(rpcAuthID(ctx)) && sub.SenderID != rpcBizID(ctx) {
+		if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
 			return fmt.Errorf("subscription not found")
 		}
 		return svc.Rename(p.ID, p.Name)
@@ -693,7 +726,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
 			return 0, err
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID == "" {
+		if !isAdmin(ctx) && p.ChatID == "" {
 			p.ChatID = rpcBizID(ctx)
 		}
 		return h.Ag.CountInteractiveSessions(p.Channel, p.ChatID), nil
@@ -705,7 +738,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
 			return nil, err
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID == "" {
+		if !isAdmin(ctx) && p.ChatID == "" {
 			p.ChatID = rpcBizID(ctx)
 		}
 		return h.Ag.ListInteractiveSessions(p.Channel, p.ChatID), nil
@@ -762,7 +795,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			return nil, fmt.Errorf("full_key is required")
 		}
 		if owner := sessionKeyOwner(p.FullKey); owner != "" {
-			if !isAdmin(rpcAuthID(ctx)) && owner != rpcBizID(ctx) {
+			if !isAdmin(ctx) && owner != rpcBizID(ctx) {
 				return nil, fmt.Errorf("access denied")
 			}
 		}
@@ -785,7 +818,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Update last_active_at so we can restore the most recent session on restart.
@@ -820,14 +853,13 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
-		authID := rpcAuthID(ctx)
 		if p.Channel == "" {
 			p.Channel = "cli"
 		}
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(authID) && p.ChatID != bizID {
+		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
@@ -860,11 +892,10 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		NewName string `json:"new_name"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
-		authID := rpcAuthID(ctx)
 		if p.Channel == "" {
 			p.Channel = "cli"
 		}
-		if !isAdmin(authID) && p.ChatID != bizID {
+		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
@@ -921,7 +952,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID {
+		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return fmt.Errorf("access denied")
 		}
 		var cutoff time.Time
@@ -941,7 +972,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		// is_processing requires explicit chatID or admin.
 		// Unlike other handlers, empty chatID does NOT default to self.
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != rpcBizID(ctx) {
+		if !isAdmin(ctx) && p.ChatID != rpcBizID(ctx) && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return false, fmt.Errorf("access denied")
 		}
 		return h.Ag.IsProcessingByChannel(p.Channel, p.ChatID), nil
@@ -955,7 +986,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.Channel == "" {
 			p.Channel = "web"
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		return h.Ag.GetActiveProgress(p.Channel, p.ChatID, p.FromIteration), nil
@@ -972,7 +1003,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			p.ChatID = bizID
 		}
-		if !isAdmin(rpcAuthID(ctx)) && p.ChatID != bizID && p.Channel != "agent" {
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
 			return nil, fmt.Errorf("access denied")
 		}
 		return h.Ag.GetTodos(p.Channel, p.ChatID), nil
@@ -986,7 +1017,7 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 		SessionKey string `json:"session_key"`
 	}) (int, error) {
 		bizID := rpcBizID(ctx)
-		if !isAdmin(rpcAuthID(ctx)) && p.SessionKey != "" {
+		if !isAdmin(ctx) && p.SessionKey != "" {
 			if owner := sessionKeyOwner(p.SessionKey); owner != "" && owner != bizID {
 				return 0, fmt.Errorf("access denied")
 			}
@@ -1000,7 +1031,7 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 		SessionKey string `json:"session_key"`
 	}) (any, error) {
 		bizID := rpcBizID(ctx)
-		if !isAdmin(rpcAuthID(ctx)) && p.SessionKey != "" {
+		if !isAdmin(ctx) && p.SessionKey != "" {
 			if owner := sessionKeyOwner(p.SessionKey); owner != "" && owner != bizID {
 				return nil, fmt.Errorf("access denied")
 			}
@@ -1017,7 +1048,7 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.BgTaskManager() == nil {
 			return fmt.Errorf("background tasks not available")
 		}
-		if !isAdmin(rpcAuthID(ctx)) {
+		if !isAdmin(ctx) {
 			task, err := h.Ag.BgTaskManager().Status(p.TaskID)
 			if err != nil {
 				return fmt.Errorf("access denied: task not found")
@@ -1032,7 +1063,7 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 		SessionKey string `json:"session_key"`
 	}) (bool, error) {
 		bizID := rpcBizID(ctx)
-		if !isAdmin(rpcAuthID(ctx)) && p.SessionKey != "" {
+		if !isAdmin(ctx) && p.SessionKey != "" {
 			if owner := sessionKeyOwner(p.SessionKey); owner != "" && owner != bizID {
 				return false, fmt.Errorf("access denied")
 			}
@@ -1278,7 +1309,15 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 // HandleCLIRPC dispatches RPC requests from CLI RemoteBackend clients.
 func HandleCLIRPC(table RPCTable, method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
 	bizID := senderIDFromParams(params, senderID)
-	ctx := WithRPCCtx(context.Background(), senderID, bizID)
+	// Resolve canonical user identity via IdentityResolver when available.
+	// This ensures role and userID are correctly set for all access checks.
+	userID := int64(0)
+	role := "user"
+	if senderID == "admin" || senderID == "cli_user" {
+		role = "admin"
+		userID = 1
+	}
+	ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, userID, role)
 	return table.Dispatch(ctx, method, params)
 }
 
@@ -1344,7 +1383,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	if err != nil {
 		return err
 	}
-	if !isAdmin(rpcAuthID(ctx)) && existing.SenderID != bizID {
+	if !isAdmin(ctx) && existing.SenderID != bizID {
 		return fmt.Errorf("subscription not found")
 	}
 	// Start from existing subscription — client never has unmasked credentials,
@@ -1430,7 +1469,7 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 	if sub == nil {
 		return fmt.Errorf("subscription not found")
 	}
-	if !isAdmin(rpcAuthID(ctx)) && sub.SenderID != bizID {
+	if !isAdmin(ctx) && sub.SenderID != bizID {
 		return fmt.Errorf("subscription not found")
 	}
 	if p.ChatID != "" {
@@ -1475,7 +1514,7 @@ func (h *RPCContext) setSubscriptionModel(ctx context.Context, p struct {
 	if err != nil {
 		return err
 	}
-	if !isAdmin(rpcAuthID(ctx)) && sub.SenderID != rpcBizID(ctx) {
+	if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
 		return fmt.Errorf("subscription not found")
 	}
 	if err := svc.SetModel(p.ID, p.Model); err != nil {
@@ -1512,7 +1551,7 @@ func (h *RPCContext) listTenants(ctx context.Context) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !isAdmin(rpcAuthID(ctx)) {
+	if !isAdmin(ctx) {
 		var userTenants []sqlite.TenantInfo
 		for _, t := range tenants {
 			if t.ChatID == bizID {
@@ -1637,6 +1676,89 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		}
 		bizID := rpcBizID(ctx)
 		return tools.NewRunnerTokenStore(db).RenameRunner(bizID, p.OldName, p.NewName)
+	})
+
+	// generate_link_code generates a cross-channel link code for the current user.
+	t["generate_link_code"] = rpc0(func(ctx context.Context) any {
+		if h.Ag.IdentityResolver() == nil {
+			return map[string]any{"error": "identity resolver not available"}
+		}
+		userID := rpcUserID(ctx)
+		if userID == 0 {
+			userID = 1 // CLI admin fallback
+		}
+		code, err := h.Ag.IdentityResolver().GenerateLinkCode(userID)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		return map[string]any{"code": code, "expires_in": 300}
+	})
+
+	// consume_link_code consumes a link code and links current identity to the target user.
+	// Returns one of:
+	//   {"action": "linked", "user_id": N}  — simple link, identity wasn't previously bound
+	//   {"action": "merge_required", "preview": {...}} — identity is bound to another user, merge needed
+	//   {"action": "merged", "user_id": N} — merge executed (confirm=true was passed)
+	t["consume_link_code"] = rpc1(func(ctx context.Context, p struct {
+		Code    string `json:"code"`
+		Confirm bool   `json:"confirm"`
+	}) (any, error) {
+		if h.Ag.IdentityResolver() == nil {
+			return nil, fmt.Errorf("identity resolver not available")
+		}
+		currentUserID := rpcUserID(ctx)
+		if currentUserID == 0 {
+			return nil, fmt.Errorf("cannot resolve current user identity")
+		}
+		// On preview (confirm=false), validate WITHOUT consuming the code
+		if !p.Confirm {
+			targetUserID, err := h.Ag.IdentityResolver().ValidateLinkCode(p.Code)
+			if err != nil {
+				return nil, err
+			}
+			// Try simple link first
+			_, err = h.Ag.IdentityResolver().LinkIdentity(targetUserID, "cli", rpcBizID(ctx))
+			if err == nil {
+				// Simple link succeeded — consume the code now
+				h.Ag.IdentityResolver().ConsumeLinkCode(p.Code)
+				return map[string]any{"action": "linked", "user_id": targetUserID}, nil
+			}
+			// Merge required — return preview (code NOT consumed yet)
+			preview, err := h.Ag.IdentityResolver().PreviewMerge(currentUserID, targetUserID)
+			if err != nil {
+				return nil, fmt.Errorf("merge preview failed: %w", err)
+			}
+			return map[string]any{
+				"action":  "merge_required",
+				"preview": preview,
+				"message": "Re-send with confirm=true to execute merge.",
+			}, nil
+		}
+		// Confirm=true: consume code and execute merge
+		targetUserID, err := h.Ag.IdentityResolver().ConsumeLinkCode(p.Code)
+		if err != nil {
+			return nil, err
+		}
+		if mergeErr := h.Ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
+			return nil, fmt.Errorf("merge failed: %w", mergeErr)
+		}
+		return map[string]any{"action": "merged", "user_id": targetUserID}, nil
+	})
+
+	// list_identities lists the current user's linked channel identities.
+	t["list_identities"] = rpc0(func(ctx context.Context) any {
+		if h.Ag.IdentityResolver() == nil {
+			return map[string]any{"identities": []any{}}
+		}
+		userID := rpcUserID(ctx)
+		if userID == 0 {
+			userID = 1
+		}
+		identities, err := h.Ag.IdentityResolver().ListIdentities(userID)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		return map[string]any{"user_id": userID, "identities": identities}
 	})
 }
 

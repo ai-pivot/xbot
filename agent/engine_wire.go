@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -228,6 +229,35 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(channel, chatID, senderID, messages, senderName, sandboxUserID)
+
+	// Inject canonical user identity (set by channel entry points via IdentityResolver).
+	// In standalone CLI mode, these default to userID=1, role="admin".
+	standaloneMode := true
+	if uidStr := msg.Metadata["user_id"]; uidStr != "" {
+		standaloneMode = false
+		if uid, err := strconv.ParseInt(uidStr, 10, 64); err == nil {
+			cfg.UserID = uid
+		}
+		if role := msg.Metadata["user_role"]; role != "" {
+			cfg.Role = role
+		}
+	} else if a.identityResolver != nil {
+		standaloneMode = false
+		// Fallback: resolve at agent layer if entry point didn't set it
+		uid, role, _ := a.identityResolver.Resolve(channel, sandboxUserID)
+		cfg.UserID = uid
+		cfg.Role = role
+	}
+	if cfg.UserID == 0 {
+		cfg.UserID = 1 // standalone mode default
+	}
+	if cfg.Role == "" {
+		if standaloneMode {
+			cfg.Role = "admin" // standalone CLI is always admin
+		} else {
+			cfg.Role = "user" // safe default for resolved users with missing role
+		}
+	}
 
 	// 从 tenant session 获取租户 ID，用于 per-tenant 工具可见性
 	cfg.TenantID = tenantSession.TenantID()
@@ -2029,31 +2059,32 @@ func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*Pr
 	}
 }
 
-// buildStreamCallbacks collects all channels implementing ProgressSender and
-// returns stream callbacks that push to ALL of them uniformly.
+// buildStreamCallbacks collects the ProgressSender for the ORIGINATING channel
+// and returns stream callbacks that push to it.
 //
-// Capability-based: a channel declares "I want stream push" by implementing
-// the ProgressSender interface. No type assertions to concrete types — the
-// backend treats local CLI, remote CLI, and web identically.
+// Only the originating channel is used — its SendProgress already broadcasts
+// to ALL Hub subscribers (including other channels' clients). Broadcasting to
+// multiple channels causes duplicate delivery: each channel sends to the same
+// Hub, which broadcasts to the same subscribers, so each subscriber receives
+// the event N times (where N = number of ProgressSender channels).
 //
 // RATE LIMITING: content/reasoning push throttled to ~16/sec (60ms interval)
 // via atomic CAS — matches typewriter tick (50ms) so typer always has fresh
 // content. Tool calls and token usage are low-frequency, not throttled.
 // All callbacks also write to atomic streamState for GetActiveProgress reconnect.
 func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
-	// Collect all ProgressSender channels — capability declaration, no special-casing.
-	var senders []channelpkg.ProgressSender
-	for _, name := range []string{"cli", "web"} {
-		if ch, ok := a.channelFinder(name); ok {
-			if ps, ok := ch.(channelpkg.ProgressSender); ok {
-				senders = append(senders, ps)
-			}
+	// Use ONLY the originating channel — its SendProgress broadcasts to ALL
+	// Hub subscribers (including other channels' clients via shared Hub).
+	var sender channelpkg.ProgressSender
+	if ch, ok := a.channelFinder(channel); ok {
+		if ps, ok := ch.(channelpkg.ProgressSender); ok {
+			sender = ps
 		}
 	}
 
 	progressKey := qualifyChatID(channel, chatID)
 
-	// broadcast pushes to all ProgressSender channels uniformly.
+	// broadcastProgress pushes to the originating channel only.
 	// chatID (raw) is the routing key for SendProgress's first parameter.
 	// payload.ChatID (qualified progressKey) is the session identity for
 	// the TUI's handleProgressMsg filter. These are two different semantics —
@@ -2062,8 +2093,8 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		if payload.ChatID == "" {
 			payload.ChatID = progressKey
 		}
-		for _, s := range senders {
-			s.SendProgress(chatID, payload)
+		if sender != nil {
+			sender.SendProgress(chatID, payload)
 		}
 	}
 

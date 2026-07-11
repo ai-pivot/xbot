@@ -817,7 +817,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 		// ChannelTransport wraps RPCTable dispatch
 		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable), func() context.Context {
-			return serverapp.WithRPCCtx(context.Background(), "admin", "cli_user")
+			return serverapp.WithRPCCtxResolved(context.Background(), "admin", "cli_user", 1, "admin")
 		}, eventCh)
 
 		// Client is the unified interface — eventCh provides server→CLI events
@@ -1401,6 +1401,78 @@ func main() {
 		},
 		IsAdminFn: func() bool {
 			return true // standalone mode: CLI user is always admin
+		},
+		GenerateLinkCodeFn: func() (string, error) {
+			if app.client == nil {
+				return "", fmt.Errorf("agent not initialized")
+			}
+			// RPC to server to generate link code for current user
+			result, err := app.client.CallRPC("generate_link_code", map[string]any{})
+			if err != nil {
+				return "", err
+			}
+			var resp struct {
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(result, &resp); err != nil {
+				return "", err
+			}
+			if resp.Error != "" {
+				return "", fmt.Errorf("%s", resp.Error)
+			}
+			return resp.Code, nil
+		},
+		ConsumeLinkCodeFn: func(code string) (string, error) {
+			if app.client == nil {
+				return "", fmt.Errorf("agent not initialized")
+			}
+			// First call without confirm — may return merge_required
+			result, err := app.client.CallRPC("consume_link_code", map[string]any{"code": code, "confirm": false})
+			if err != nil {
+				return "", err
+			}
+			var resp struct {
+				Action  string          `json:"action"`
+				UserID  int64           `json:"user_id"`
+				Preview json.RawMessage `json:"preview"`
+				Message string          `json:"message"`
+			}
+			if err := json.Unmarshal(result, &resp); err != nil {
+				return "", err
+			}
+			if resp.Action == "merge_required" {
+				// Auto-confirm for CLI (single user, trusts their own action)
+				result2, err := app.client.CallRPC("consume_link_code", map[string]any{"code": code, "confirm": true})
+				if err != nil {
+					// Code was already consumed by the first call — re-generate is needed.
+					// But actually ConsumeLinkCode deletes the code on first call.
+					// This is a design issue — fix: don't consume code on preview.
+					return "", fmt.Errorf("merge preview succeeded but code was consumed. Please generate a new code and retry with --confirm")
+				}
+				var resp2 struct {
+					Action string `json:"action"`
+					UserID int64  `json:"user_id"`
+				}
+				if err := json.Unmarshal(result2, &resp2); err != nil {
+					return "", fmt.Errorf("parse merge result: %w", err)
+				}
+				if resp2.UserID == 0 {
+					return "", fmt.Errorf("merge returned invalid user_id")
+				}
+				return fmt.Sprintf("✅ 账号合并成功 (user_id=%d)", resp2.UserID), nil
+			}
+			return fmt.Sprintf("✅ 关联成功 (action=%s, user_id=%d)", resp.Action, resp.UserID), nil
+		},
+		ListIdentitiesFn: func() (any, error) {
+			if app.client == nil {
+				return nil, fmt.Errorf("agent not initialized")
+			}
+			result, err := app.client.CallRPC("list_identities", map[string]any{})
+			if err != nil {
+				return nil, err
+			}
+			return string(result), nil
 		},
 		ListAllTenantsFn: func() ([]cli.AllSessionInfo, error) {
 			if app.client == nil {

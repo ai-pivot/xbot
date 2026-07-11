@@ -68,6 +68,17 @@ func (m *cliModel) finalizeStaleStreamingBeforeNewUserMessage() {
 // This is the SINGLE source of truth for tick chain initiation — no other
 // code path should emit tickCmd() on idle→typing transition.
 func (m *cliModel) startAgentTurn() {
+	// Finalize any stale streaming message from the previous turn BEFORE
+	// creating a new one. endAgentTurn preserves streamingMsgIdx for
+	// flicker-free rendering, so the old streaming assistant may still be
+	// isPartial=true. Without this call, startAgentTurn appends a new
+	// streaming assistant directly after the old one — producing two
+	// adjacent Assistant blocks that dedupConsecutiveAssistants cannot
+	// merge (different turnIDs, old has content/iterations).
+	// Callers that already called finalizeStaleStreamingBeforeNewUserMessage
+	// (sendMessage, sendToAgent) hit the early return inside (streamingMsgIdx=-1).
+	m.finalizeStaleStreamingBeforeNewUserMessage()
+
 	m.agentTurnID++
 	m.typing = true
 	m.replyProcessed = false

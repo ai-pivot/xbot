@@ -30,9 +30,11 @@ import { SettingsCollapse } from './SettingsCollapse'
 import { SettingsGeneral } from './SettingsGeneral'
 import { SettingsLLM } from './SettingsLLM'
 import { SettingsSection } from './SettingsSection'
+import { SettingsAccountLinking } from './SettingsAccountLinking'
+import { SettingsAdminUsers } from './SettingsAdminUsers'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 
-type Category = 'appearance' | 'collapse' | 'language' | 'llm' | 'account'
+type Category = 'appearance' | 'collapse' | 'language' | 'llm' | 'account' | 'linking' | 'users'
 
 interface SettingsDialogProps {
   open: boolean
@@ -94,6 +96,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     { key: 'language', labelKey: 'nav.language' },
     { key: 'llm', labelKey: 'nav.llm' },
     { key: 'account', labelKey: 'nav.account' },
+    { key: 'linking', labelKey: 'nav.linking' },
+    { key: 'users', labelKey: 'nav.users' },
   ]
 
   return (
@@ -137,6 +141,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             {active === 'account' ? (
               <SettingsAccountPanel onLoggedOut={() => navigate('/login', { replace: true })} />
             ) : null}
+            {active === 'linking' ? <SettingsAccountLinking /> : null}
+            {active === 'users' ? <SettingsAdminUsers /> : null}
           </div>
         </div>
       </SheetContent>

@@ -404,6 +404,9 @@ type CLIChannelConfig struct {
 	ListWebUsersFn         func() ([]map[string]any, error)                                                                                                                             // 列出所有 Web 用户
 	DeleteWebUserFn        func(username string) error                                                                                                                                  // 删除 Web 用户（admin only）
 	IsAdminFn              func() bool                                                                                                                                                  // 检查当前用户是否 admin
+	GenerateLinkCodeFn     func() (string, error)                                                                                                                                       // 生成跨 channel 关联码
+	ConsumeLinkCodeFn      func(code string) (string, error)                                                                                                                            // 消费关联码，返回关联结果
+	ListIdentitiesFn       func() (any, error)                                                                                                                                          // 列出当前用户已关联的身份
 	ListAllTenantsFn       func() ([]AllSessionInfo, error)                                                                                                                             // 列出后端所有 session（所有渠道，用于 /list-sessions）
 	PaletteContributor     PaletteContributor                                                                                                                                           // supplies external commands for command palette
 	SidebarWidthOverride   int                                                                                                                                                          // --sidebar-width N (0 = use setting/default)

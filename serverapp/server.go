@@ -2,6 +2,7 @@ package serverapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -540,6 +541,25 @@ func Run(args []string) error {
 		log.WithError(err).Fatal("Failed to init server")
 	}
 
+	// Initialize canonical user identity resolver.
+	// Uses the shared DB if available (OAuth enabled), otherwise opens a direct
+	// connection to the DB path — IdentityResolver should always be available
+	// in server mode regardless of OAuth config.
+	var identityDB *sql.DB
+	if sharedDB != nil {
+		identityDB = sharedDB.Conn()
+	} else {
+		var err error
+		identityDB, err = sql.Open("sqlite", dbPath)
+		if err != nil {
+			log.WithError(err).Warn("Failed to open identity DB, identity resolver disabled")
+		}
+	}
+	if identityDB != nil {
+		resolver := agent.NewIdentityResolver(identityDB)
+		ag.SetIdentityResolver(resolver)
+	}
+
 	// Set the rpcTablePtr for the channel provider factory.
 	// Plugin activation happens during InitServer, so the factory was already called
 	// with the lazy dispatch function. Now the RPCTable is available.
@@ -762,7 +782,21 @@ func Run(args []string) error {
 	// Wire RPC handler for CLI RemoteBackend clients (after disp/msgBus are available).
 	if webCh != nil {
 		webCh.SetRPCHandler(func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
-			return HandleCLIRPC(rpcTable, method, params, senderID)
+			// Resolve canonical user identity for access checks.
+			// Web users (web-N) need their admin role resolved via IdentityResolver.
+			userID := int64(0)
+			role := "user"
+			if senderID == "admin" || senderID == "cli_user" {
+				role = "admin"
+				userID = 1
+			} else if ag.IdentityResolver() != nil {
+				if uid, r, err := ag.IdentityResolver().Resolve("web", senderID); err == nil {
+					userID = uid
+					role = r
+				}
+			}
+			ctx := WithRPCCtxResolved(context.Background(), senderID, senderIDFromParams(params, senderID), userID, role)
+			return rpcTable.Dispatch(ctx, method, params)
 		})
 	}
 
@@ -794,6 +828,46 @@ func Run(args []string) error {
 
 		// 注入设置卡片回调（让飞书渠道能访问 Agent 的 LLM/Registry/Settings 功能）
 		feishuCh.SetSettingsCallbacks(buildFeishuSettingsCallbacks(cfg, ag))
+
+		// Wire cross-channel account linking for Feishu.
+		// When a Feishu user sends "/link <code>", the Feishu channel calls this
+		// function to consume the code and link their Feishu identity.
+		feishuCh.SetLinkAccountFn(func(code, channel, channelUserID string) (string, error) {
+			if ag.IdentityResolver() == nil {
+				return "", fmt.Errorf("identity resolver not available")
+			}
+			// Validate code without consuming (preview-safe)
+			targetUserID, err := ag.IdentityResolver().ValidateLinkCode(code)
+			if err != nil {
+				return "", err
+			}
+			// Resolve current Feishu user
+			currentUserID, _, _ := ag.IdentityResolver().Resolve(channel, channelUserID)
+			if currentUserID == targetUserID {
+				ag.IdentityResolver().ConsumeLinkCode(code)
+				return "已关联，无需重复操作", nil
+			}
+			// Try simple link
+			_, err = ag.IdentityResolver().LinkIdentity(targetUserID, channel, channelUserID)
+			if err == nil {
+				ag.IdentityResolver().ConsumeLinkCode(code)
+				return fmt.Sprintf("关联成功 (user_id=%d)", targetUserID), nil
+			}
+			// Merge required — log warning for audit trail, then auto-execute.
+			// Feishu has no practical two-step confirm mechanism; link code (8-char
+			// base32, 5min TTL, single-use) serves as bearer authorization.
+			log.WithFields(log.Fields{
+				"source_user_id": currentUserID,
+				"target_user_id": targetUserID,
+				"channel":        channel,
+				"channel_user":   channelUserID,
+			}).Warn("IdentityResolver: auto-merging users via Feishu /link (irreversible)")
+			ag.IdentityResolver().ConsumeLinkCode(code)
+			if mergeErr := ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
+				return "", fmt.Errorf("合并失败: %w", mergeErr)
+			}
+			return fmt.Sprintf("账号合并成功 (user_id=%d)。此操作不可撤销，旧账号的所有资产已迁移到目标账号。", targetUserID), nil
+		})
 
 		// 注入飞书渠道特化 prompt 提供者
 		ag.SetChannelPromptProviders(&feishuPromptAdapter{ch: feishuCh})
@@ -1162,9 +1236,15 @@ const adminSenderID = "admin"
 // Server-side startup code uses this constant when seeding DB data.
 const cliSenderID = "cli_user"
 
-// isAdmin checks if the given WS auth senderID has admin privileges.
-// Admin is a ROLE (authorization), not a business identity.
-func isAdmin(authSenderID string) bool { return authSenderID == adminSenderID }
+// isAdmin checks if the given context has admin privileges.
+// Checks canonical user role first; falls back to authSenderID == "admin"
+// for backward compat (CLI local mode where IdentityResolver may not be wired).
+func isAdmin(ctx context.Context) bool {
+	if role := rpcRole(ctx); role != "" {
+		return role == "admin"
+	}
+	return rpcAuthID(ctx) == adminSenderID
+}
 
 // sessionKeyOwner extracts the chatID (owner) from a session/full key.
 // Key format: "channel:chatID/roleName[:instance]"
@@ -1195,7 +1275,7 @@ func senderIDFromParams(params json.RawMessage, authSenderID string) string {
 	if err := json.Unmarshal(params, &p); err == nil && p.SenderID != "" {
 		return p.SenderID
 	}
-	if isAdmin(authSenderID) {
+	if authSenderID == adminSenderID {
 		return cliSenderID
 	}
 	return authSenderID

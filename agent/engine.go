@@ -60,6 +60,8 @@ type RunConfig struct {
 	SenderName   string
 	FeishuUserID string // 非空表示通过飞书身份登录 web（用于 runner 路由）
 	TenantID     int64  // 当前租户 ID（用于 per-tenant 工具可见性）
+	UserID       int64  // Canonical user ID (from IdentityResolver, 0 in standalone mode)
+	Role         string // User role ("admin" | "user", from IdentityResolver)
 
 	// === 工作区 & 沙箱 ===
 	WorkingDir          string   // Agent 工作目录（宿主机）
@@ -1004,6 +1006,8 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		SenderID:       cfg.SenderID,
 		OriginUserID:   cfg.OriginUserID,
 		SenderName:     cfg.SenderName,
+		UserID:         cfg.UserID,
+		Role:           cfg.Role,
 		SendFunc:       cfg.SendFunc,
 		RootSessionKey: cfg.RootSessionKey,
 

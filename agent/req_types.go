@@ -85,6 +85,9 @@ const (
 	MethodRunnerGetActive              = "runner_get_active"
 	MethodRunnerSetActive              = "runner_set_active"
 	MethodRunnerRename                 = "runner_rename"
+	MethodGenerateLinkCode             = "generate_link_code"
+	MethodConsumeLinkCode              = "consume_link_code"
+	MethodListIdentities               = "list_identities"
 )
 
 // --- Settings ---
