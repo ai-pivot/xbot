@@ -165,6 +165,7 @@ type cliModel struct {
 	completions    []string // 当前补全候选项
 	compIdx        int      // 当前选中的补全索引
 	pluginCmdNames []string // 插件注册的命令名（/xxx 格式），合并到 Tab 补全
+	commandNamesFn func() []string
 
 	// --- §8b @ 文件引用补全 ---
 	fileCompletions []string // @ 文件路径补全候选项

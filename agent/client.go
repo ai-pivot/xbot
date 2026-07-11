@@ -841,6 +841,15 @@ func (c *Client) CallRPC(method string, params any) (json.RawMessage, error) {
 	return c.transport.Call(method, payload)
 }
 
+// ListCommandNames returns visible commands registered by the backend agent.
+func (c *Client) ListCommandNames() ([]string, error) {
+	var names []string
+	if err := c.call("list_command_names", nil, &names); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
 // ---------------------------------------------------------------------------
 // Web Users (via RPC)
 // ---------------------------------------------------------------------------

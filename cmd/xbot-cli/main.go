@@ -540,6 +540,7 @@ type cliApp struct {
 	cfg       *config.Config
 	llmClient llm.LLM
 	client    *agent.Client // unified RPC client (local or remote)
+	localAg   *agent.Agent  // in-process agent, set only in local mode
 	workDir   string
 	xbotHome  string
 
@@ -553,8 +554,59 @@ type cliApp struct {
 	valuesCacheMu sync.RWMutex
 	valuesCache   map[string]string
 
+	// Async cache for command names used by Tab completion.
+	commandNamesMu    sync.RWMutex
+	commandNamesCache []string
+	commandNamesStop  context.CancelFunc
+
 	// Remote-mode background goroutine cancel
 
+}
+
+func (app *cliApp) refreshCommandNamesCache() {
+	var names []string
+	if app.localAg != nil {
+		names = app.localAg.CommandNames()
+	} else if app.client != nil {
+		var err error
+		names, err = app.client.ListCommandNames()
+		if err != nil {
+			log.WithError(err).Debug("Failed to refresh command names cache")
+			return
+		}
+	} else {
+		return
+	}
+	app.commandNamesMu.Lock()
+	app.commandNamesCache = append([]string(nil), names...)
+	app.commandNamesMu.Unlock()
+}
+
+func (app *cliApp) startCommandNamesRefresh(interval time.Duration) {
+	if app.commandNamesStop != nil {
+		app.commandNamesStop()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	app.commandNamesStop = cancel
+	go func() {
+		app.refreshCommandNamesCache()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				app.refreshCommandNamesCache()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (app *cliApp) getCommandNamesCache() []string {
+	app.commandNamesMu.RLock()
+	defer app.commandNamesMu.RUnlock()
+	return append([]string(nil), app.commandNamesCache...)
 }
 
 // isFirstRun 检测是否是首次运行（config.json 不存在或 API Key 未配置，且未完成 CLI setup）
@@ -757,6 +809,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 	}
 
 	var client *agent.Client
+	var localAg *agent.Agent
 
 	// Seed cfg.LLM from the active config subscription so createLLM uses
 	// the correct BaseURL/APIKey. Without this, cfg.LLM may contain a
@@ -806,6 +859,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		if coreErr != nil {
 			log.WithError(coreErr).Fatal("Failed to init server")
 		}
+		localAg = ag
 
 		// Register ChannelProviderFactory for gRPC channel plugins.
 		plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
@@ -852,6 +906,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		cfg:       cfg,
 		llmClient: llmClient,
 		client:    client,
+		localAg:   localAg,
 		workDir:   workDir,
 		xbotHome:  xbotHome,
 	}
@@ -859,6 +914,9 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 // Close 释放资源。
 func (app *cliApp) Close() {
+	if app.commandNamesStop != nil {
+		app.commandNamesStop()
+	}
 	if app.client != nil {
 		app.client.Stop()
 	}
@@ -1494,6 +1552,9 @@ func main() {
 			}
 			return result, nil
 		},
+		CommandNamesProvider: func() []string {
+			return app.getCommandNamesCache()
+		},
 		PaletteContributor: func() []cli.PaletteExternalCommand {
 			return app.buildPaletteExternalCommands()
 		},
@@ -1809,6 +1870,7 @@ func main() {
 	// ── Post-Start initialization (unified for all modes) ─────────────
 	// Both local and remote modes run the same initialization.
 	// Only a few items are remote-specific (reconnect, conn_state).
+	app.startCommandNamesRefresh(30 * time.Second)
 
 	// sessionStateHandler and ChatRenameFn are now handled internally by Agent.
 	// No external injection needed — Agent uses its own channelFinder + multiSession.DB().

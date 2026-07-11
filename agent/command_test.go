@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"context"
+	"strings"
 	"testing"
+
+	"xbot/bus"
 )
 
 func TestCommandRegistry_Match(t *testing.T) {
@@ -103,6 +107,42 @@ func TestCommandRegistry_Commands(t *testing.T) {
 		if !names[name] {
 			t.Errorf("Command %q not found in registry", name)
 		}
+	}
+}
+
+func TestCommandRegistry_HelpTextUsesRegisteredCommands(t *testing.T) {
+	r := NewCommandRegistry()
+	registerBuiltinCommands(r)
+	r.RegisterCommand(&pluginCmdAdapter{name: "/deploy", description: "部署当前项目"})
+
+	help := r.HelpText()
+	for _, want := range []string{
+		"/new — 开始新对话",
+		"/set-model <订阅名> <模型名> — 切换当前会话模型",
+		"/plugin reload-all — 重新加载所有插件",
+		"/deploy — 部署当前项目",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("HelpText() missing %q\n%s", want, help)
+		}
+	}
+}
+
+func TestHelpCommandRendersRegistryHelp(t *testing.T) {
+	r := NewCommandRegistry()
+	registerBuiltinCommands(r)
+	r.RegisterCommand(&pluginCmdAdapter{name: "/deploy", description: "部署当前项目"})
+
+	cmd := r.Match("/help")
+	if cmd == nil {
+		t.Fatal("Match(/help) = nil")
+	}
+	out, err := cmd.Execute(context.Background(), &Agent{commands: r}, bus.InboundMessage{Channel: "cli", ChatID: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil || !strings.Contains(out.Content, "/deploy — 部署当前项目") {
+		t.Fatalf("/help output did not include registered plugin command: %#v", out)
 	}
 }
 

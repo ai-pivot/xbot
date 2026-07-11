@@ -144,9 +144,19 @@ func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher
 	registerSessionHandlers(t, h)
 	registerTaskHandlers(t, h)
 	registerAdminHandlers(t, h)
+	registerCommandHandlers(t, h)
 	registerPluginHandlers(t, h)
 	registerRunnerHandlers(t, h)
 	return t
+}
+
+func registerCommandHandlers(t RPCTable, h *RPCContext) {
+	t["list_command_names"] = rpc0(func(ctx context.Context) any {
+		if h.Ag == nil {
+			return []string{}
+		}
+		return h.Ag.CommandNames()
+	})
 }
 
 // ── Context / settings / cwd / max-iterations / concurrency / context-tokens ──

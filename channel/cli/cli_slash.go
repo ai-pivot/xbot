@@ -21,7 +21,7 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 		command = strings.ToLower(parts[0])
 	}
 
-	// 🥚 彩蛋命令优先检测（隐藏命令不注册到 cliCommands）
+	// 🥚 彩蛋命令优先检测（隐藏命令不注册到补全列表）
 	if handled, cmd := m.handleEasterEggCommand(cmd); handled {
 		return cmd
 	}

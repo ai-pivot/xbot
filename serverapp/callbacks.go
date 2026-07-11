@@ -370,12 +370,15 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		for _, name := range channel.TUISlashCommands {
 			byName[name] = web.CommandInfo{Name: name}
 		}
+		var agentCommands []web.CommandInfo
 		if ag.Commands() != nil {
 			for _, cmd := range ag.Commands().CommandList() {
 				if cmd.Name == "" {
 					continue
 				}
-				byName[cmd.Name] = web.CommandInfo{Name: cmd.Name, Aliases: cmd.Aliases, Description: cmd.Description}
+				info := web.CommandInfo{Name: cmd.Name, Aliases: cmd.Aliases, Description: cmd.Description}
+				byName[cmd.Name] = info
+				agentCommands = append(agentCommands, info)
 			}
 		}
 		result := make([]web.CommandInfo, 0, len(byName))
@@ -385,8 +388,12 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				delete(byName, name)
 			}
 		}
-		for _, cmd := range byName {
+		for _, cmd := range agentCommands {
+			if _, ok := byName[cmd.Name]; !ok {
+				continue
+			}
 			result = append(result, cmd)
+			delete(byName, cmd.Name)
 		}
 		return result, nil
 	}

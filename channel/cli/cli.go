@@ -959,6 +959,9 @@ func (c *CLIChannel) updateBgTaskCountFn() {
 	if c.config.IsAdminFn != nil {
 		c.model.isAdminFn = c.config.IsAdminFn
 	}
+	if c.config.CommandNamesProvider != nil {
+		c.model.commandNamesFn = c.config.CommandNamesProvider
+	}
 	if c.config.PaletteContributor != nil {
 		c.model.paletteContributor = c.config.PaletteContributor
 	}

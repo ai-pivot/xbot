@@ -43,17 +43,25 @@ func (m *cliModel) handleTabComplete() {
 // Tab completion (handleTabComplete) and hint display (renderCompletionsHint).
 func (m *cliModel) getCommandCompletions(prefix string) []string {
 	var matches []string
-	for _, cmd := range cliCommands {
-		if strings.HasPrefix(cmd, prefix) {
-			matches = append(matches, cmd)
+	seen := make(map[string]struct{})
+	addMatches := func(commands []string) {
+		for _, cmd := range commands {
+			if _, ok := seen[cmd]; ok {
+				continue
+			}
+			if strings.HasPrefix(cmd, prefix) {
+				matches = append(matches, cmd)
+				seen[cmd] = struct{}{}
+			}
 		}
+	}
+
+	addMatches(cliLocalCommands)
+	if m.commandNamesFn != nil {
+		addMatches(m.commandNamesFn())
 	}
 	m.refreshPluginCmdNames()
-	for _, cmd := range m.pluginCmdNames {
-		if strings.HasPrefix(cmd, prefix) {
-			matches = append(matches, cmd)
-		}
-	}
+	addMatches(m.pluginCmdNames)
 	return matches
 }
 

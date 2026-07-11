@@ -90,34 +90,15 @@ func (c *helpCmd) Aliases() []string   { return nil }
 func (c *helpCmd) Match(s string) bool { return strings.ToLower(s) == "/help" }
 func (c *helpCmd) Concurrent() bool    { return true } // stateless
 
-func (c *helpCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+func (c *helpCmd) Execute(_ context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	content := "xbot 命令:\n/help — 显示帮助"
+	if a != nil && a.commands != nil {
+		content = a.commands.HelpText()
+	}
 	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
-		Content: "xbot 命令:\n" +
-			"/new — 开始新对话（归档记忆后重置）\n" +
-			"/version — 显示版本信息\n" +
-			"/prompt <query> — 预览完整提示词（不调用 LLM）\n" +
-			"/help — 显示帮助\n" +
-			"/set-llm provider=<p> base_url=<url> api_key=<key> [model=<m>] — 创建/更新个人 LLM 订阅\n" +
-			"/unset-llm <订阅名> — 删除指定订阅\n" +
-			"/llm — 查看当前解析到的订阅与模型\n" +
-			"/llms — 列出所有个人 LLM 订阅\n" +
-			"/models — 列出可选模型（带正常/离线/禁用状态）\n" +
-			"/set-model <订阅名> <模型名> — 切换当前会话模型\n" +
-			"/compress — 手动触发上下文压缩\n" +
-			"/context mode [phase1|none|default] — 查看/切换压缩模式\n" +
-			"/usage — 查看 token 用量统计\n" +
-			"/settings — 打开个人设置（仅私聊）\n" +
-			"/menu — 主菜单\n" +
-			"/browse [skill|agent] — 浏览 Skill/Agent 市场\n" +
-			"/install skill|agent <id> — 安装市场条目\n" +
-			"/uninstall skill|agent <name> — 卸载\n" +
-			"/publish skill|agent <name> — 发布到市场\n" +
-			"/unpublish skill|agent <name> — 取消发布\n" +
-			"/my skills|agents — 查看我发布/安装的条目\n" +
-			"/cancel — 取消当前正在处理的请求\n" +
-			"!<command> — 快捷执行命令（跳过 LLM，直接在 sandbox 中运行）",
+		Content: content,
 	}, nil
 }
 
@@ -667,32 +648,32 @@ func (c *menuCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage)
 
 // registerBuiltinCommands registers all built-in commands to the registry.
 func registerBuiltinCommands(r *CommandRegistry) {
-	r.Register(&newCmd{})
-	r.Register(&versionCmd{})
-	r.Register(&helpCmd{})
-	r.Register(&promptCmd{})
-	r.Register(&setLLMCmd{})
-	r.Register(&unsetLLMCmd{})
-	r.Register(&getLLMCmd{})
-	r.Register(&listLLMsCmd{})
-	r.Register(&compressCmd{})
-	r.Register(&usageCmd{})
-	r.Register(&contextModeCmd{}) // 先注册（更精确的匹配优先）
-	r.Register(&contextInfoCmd{}) // 后注册（更宽泛的匹配）
-	r.Register(&modelsCmd{})
-	r.Register(&setModelCmd{})
-	r.Register(&bangCmd{})
+	r.Register(&newCmd{}, CommandInfo{Usage: "/new", Description: "开始新对话（归档记忆后重置）"})
+	r.Register(&versionCmd{}, CommandInfo{Usage: "/version", Description: "显示版本信息"})
+	r.Register(&helpCmd{}, CommandInfo{Usage: "/help", Description: "显示帮助"})
+	r.Register(&promptCmd{}, CommandInfo{Usage: "/prompt <query>", Description: "预览完整提示词（不调用 LLM）"})
+	r.Register(&setLLMCmd{}, CommandInfo{Usage: "/set-llm provider=<p> base_url=<url> api_key=<key> [model=<m>]", Description: "创建/更新个人 LLM 订阅"})
+	r.Register(&unsetLLMCmd{}, CommandInfo{Usage: "/unset-llm <订阅名>", Description: "删除指定订阅"})
+	r.Register(&getLLMCmd{}, CommandInfo{Usage: "/llm", Description: "查看当前解析到的订阅与模型"})
+	r.Register(&listLLMsCmd{}, CommandInfo{Usage: "/llms", Description: "列出所有个人 LLM 订阅"})
+	r.Register(&compressCmd{}, CommandInfo{Usage: "/compress", Description: "手动触发上下文压缩"})
+	r.Register(&usageCmd{}, CommandInfo{Usage: "/usage", Description: "查看 token 用量统计"})
+	r.Register(&contextModeCmd{}, CommandInfo{Usage: "/context mode [phase1|none|default]", Description: "查看/切换压缩模式"}) // 先注册（更精确的匹配优先）
+	r.Register(&contextInfoCmd{}, CommandInfo{Usage: "/context", Description: "查看上下文统计"})                              // 后注册（更宽泛的匹配）
+	r.Register(&modelsCmd{}, CommandInfo{Usage: "/models", Description: "列出可选模型（带正常/离线/禁用状态）"})
+	r.Register(&setModelCmd{}, CommandInfo{Usage: "/set-model <订阅名> <模型名>", Description: "切换当前会话模型"})
+	r.Register(&bangCmd{}, CommandInfo{Usage: "!<command>", Description: "快捷执行命令（跳过 LLM，直接在 sandbox 中运行）"})
 
 	// Registry & settings commands
-	r.Register(&publishCmd{})
-	r.Register(&unpublishCmd{})
-	r.Register(&browseCmd{})
-	r.Register(&installCmd{})
-	r.Register(&uninstallCmd{})
-	r.Register(&myCmd{})
-	r.Register(&settingsCmd{})
-	r.Register(&menuCmd{})
-	r.Register(&pluginReloadAllCmd{})
+	r.Register(&publishCmd{}, CommandInfo{Usage: "/publish skill|agent <name>", Description: "发布到市场"})
+	r.Register(&unpublishCmd{}, CommandInfo{Usage: "/unpublish skill|agent <name>", Description: "取消发布"})
+	r.Register(&browseCmd{}, CommandInfo{Usage: "/browse [skill|agent]", Description: "浏览 Skill/Agent 市场"})
+	r.Register(&installCmd{}, CommandInfo{Usage: "/install skill|agent <id>", Description: "安装市场条目"})
+	r.Register(&uninstallCmd{}, CommandInfo{Usage: "/uninstall skill|agent <name>", Description: "卸载"})
+	r.Register(&myCmd{}, CommandInfo{Usage: "/my skills|agents", Description: "查看我发布/安装的条目"})
+	r.Register(&settingsCmd{}, CommandInfo{Usage: "/settings", Description: "打开个人设置（仅私聊）"})
+	r.Register(&menuCmd{}, CommandInfo{Usage: "/menu", Description: "主菜单"})
+	r.Register(&pluginReloadAllCmd{}, CommandInfo{Usage: "/plugin reload-all", Description: "重新加载所有插件"})
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +693,21 @@ type pluginCmdAdapter struct {
 func (a *pluginCmdAdapter) Name() string      { return a.name }
 func (a *pluginCmdAdapter) Aliases() []string { return nil }
 func (a *pluginCmdAdapter) Concurrent() bool  { return false }
+func (a *pluginCmdAdapter) CommandInfo() CommandInfo {
+	return CommandInfo{Name: a.name, Usage: a.name, Description: a.description}
+}
+
+func isPluginCommand(cmd Command) bool {
+	switch c := cmd.(type) {
+	case *pluginCmdAdapter:
+		return true
+	case *commandWithInfo:
+		_, ok := c.Command.(*pluginCmdAdapter)
+		return ok
+	default:
+		return false
+	}
+}
 
 func (a *pluginCmdAdapter) Match(content string) bool {
 	trimmed := strings.TrimSpace(content)
