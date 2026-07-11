@@ -707,69 +707,140 @@ func isMaxTokensParamError(err error) string {
 	return ""
 }
 
-// buildThinkingOptions 根据 thinkingMode 构建对应的 request options
-// 支持多种模型的 thinking mode：
-// - DeepSeek: {"thinking": {"type": "enabled"}}
-// - 智谱 GLM: {"thinking": {"type": "enabled", "clear_thinking": false}}
-// - 其他模型可扩展
-//
-// 参数格式：
-// - "enabled" -> {"thinking": {"type": "enabled"}}
-// - "disabled" -> {"thinking": {"type": "disabled"}} (不发送参数，让模型自己决定)
-// - 自定义 JSON: 直接使用，如 {"type": "enabled", "clear_thinking": false}
-func (o *OpenAILLM) buildThinkingOptions(thinkingMode string) []option.RequestOption {
-	if thinkingMode == "" {
+// buildThinkingOptions 根据 thinkingMode 和模型名构建对应的 request options。
+// model 用于检测实际后端（gpt-* → reasoning_effort，glm-* / deepseek-* → thinking）。
+func (o *OpenAILLM) buildThinkingOptions(thinkingMode, model string) []option.RequestOption {
+	if thinkingMode == "" || thinkingMode == "disabled" {
 		return nil
 	}
 
+	// Resolve named modes ("enabled" / "think" / "think-max") to
+	// provider-specific JSON parameters before parsing.
+	thinkingMode = resolveThinkingMode(thinkingMode, model, o.baseURL)
+
 	var opts []option.RequestOption
 
-	switch thinkingMode {
-	case "enabled":
-		// DeepSeek/GLM 标准格式
-		opts = append(opts, option.WithJSONSet("thinking", map[string]any{"type": "enabled"}))
-	case "disabled":
-		// 不发送任何 thinking 参数，让模型自己决定
-	default:
-		// JSON 格式的 thinking 参数
-		// Supports two formats:
-		//   1. Flat thinking object: {"type": "enabled"} → set as "thinking" param
-		//   2. Nested with extras:   {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
-		//      → "thinking" object goes to "thinking" param, other keys become top-level params
-		//   3. Arbitrary key-values: {"reasoning_effort": "high"} → each key is a top-level param
-		if len(thinkingMode) > 0 && thinkingMode[0] == '{' {
-			var customParams map[string]any
-			if err := json.Unmarshal([]byte(thinkingMode), &customParams); err == nil {
-				if thinkingObj, hasThinking := customParams["thinking"]; hasThinking {
-					// Format 2: explicit "thinking" key + optional top-level params
-					opts = append(opts, option.WithJSONSet("thinking", thinkingObj))
-					for key, value := range customParams {
-						if key == "thinking" {
-							continue
-						}
-						opts = append(opts, option.WithJSONSet(key, value))
+	// JSON 格式的 thinking 参数
+	// Supports two formats:
+	//   1. Flat thinking object: {"type": "enabled"} → set as "thinking" param
+	//   2. Nested with extras:   {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+	//      → "thinking" object goes to "thinking" param, other keys become top-level params
+	//   3. Arbitrary key-values: {"reasoning_effort": "high"} → each key is a top-level param
+	if len(thinkingMode) > 0 && thinkingMode[0] == '{' {
+		var customParams map[string]any
+		if err := json.Unmarshal([]byte(thinkingMode), &customParams); err == nil {
+			if thinkingObj, hasThinking := customParams["thinking"]; hasThinking {
+				// Format 2: explicit "thinking" key + optional top-level params
+				opts = append(opts, option.WithJSONSet("thinking", thinkingObj))
+				for key, value := range customParams {
+					if key == "thinking" {
+						continue
 					}
-				} else if _, hasType := customParams["type"]; hasType {
-					// Format 1: flat thinking object
-					opts = append(opts, option.WithJSONSet("thinking", customParams))
-				} else {
-					// Format 3: arbitrary key-values
-					for key, value := range customParams {
-						opts = append(opts, option.WithJSONSet(key, value))
-					}
+					opts = append(opts, option.WithJSONSet(key, value))
 				}
+			} else if _, hasType := customParams["type"]; hasType {
+				// Format 1: flat thinking object
+				opts = append(opts, option.WithJSONSet("thinking", customParams))
 			} else {
-				log.WithFields(log.Fields{
-					"thinking_mode": thinkingMode,
-					"error":         err.Error(),
-				}).Warn("[LLM] Failed to parse thinking mode as JSON, ignoring")
+				// Format 3: arbitrary key-values
+				for key, value := range customParams {
+					opts = append(opts, option.WithJSONSet(key, value))
+				}
 			}
 		} else {
-			log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON, ignoring")
+			log.WithFields(log.Fields{
+				"thinking_mode": thinkingMode,
+				"error":         err.Error(),
+			}).Warn("[LLM] Failed to parse thinking mode as JSON, ignoring")
 		}
+	} else {
+		log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON, ignoring")
 	}
 
 	return opts
+}
+
+// ---------------------------------------------------------------------------
+// Thinking mode resolution: named tiers → provider-specific JSON
+// ---------------------------------------------------------------------------
+
+// detectThinkingProvider classifies the API backend from model name (primary)
+// and base URL (fallback). Model prefix is the most reliable signal since
+// all Chinese providers use provider="openai" in their subscription config.
+func detectThinkingProvider(model, baseURL string) string {
+	lower := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(lower, "gpt-"):
+		return "openai" // reasoning_effort format
+	case strings.HasPrefix(lower, "glm-"):
+		return "glm" // thinking format
+	case strings.HasPrefix(lower, "deepseek"):
+		return "deepseek" // thinking format
+	}
+
+	// Fallback: base URL detection
+	lower = strings.ToLower(baseURL)
+	switch {
+	case strings.Contains(lower, "macaron.xin"):
+		return "openai"
+	case strings.Contains(lower, "deepseek"):
+		return "deepseek"
+	case strings.Contains(lower, "bigmodel.cn"):
+		return "glm"
+	case strings.Contains(lower, "openai.com"):
+		return "openai"
+	default:
+		return "default"
+	}
+}
+
+// thinkingPresets maps named thinking tiers to provider-specific JSON
+// parameters. Two tiers are defined:
+//
+//	think     — normal reasoning (medium effort for providers that support it)
+//	think-max — maximum reasoning (high effort, may use more tokens)
+//
+// For DeepSeek and GLM, both tiers send the same "thinking" parameter because
+// these providers use a binary on/off model — there are no effort levels.
+// GLM's think-max additionally sets clear_thinking:false to preserve thinking
+// output in the conversation history.
+var thinkingPresets = map[string]map[string]string{
+	"think": {
+		"default":  `{"thinking":{"type":"enabled"}}`,
+		"openai":   `{"reasoning_effort":"medium"}`,
+		"deepseek": `{"thinking":{"type":"enabled"}}`,
+		"glm":      `{"thinking":{"type":"enabled"}}`,
+	},
+	"think-max": {
+		"default":  `{"thinking":{"type":"enabled"}}`,
+		"openai":   `{"reasoning_effort":"high"}`,
+		"deepseek": `{"thinking":{"type":"enabled"}}`,
+		"glm":      `{"thinking":{"type":"enabled","clear_thinking":false}}`,
+	},
+}
+
+// resolveThinkingMode maps named thinking modes ("enabled" / "think" /
+// "think-max") to provider-specific JSON. Model name is used as the
+// primary signal for backend detection; base URL is the fallback.
+func resolveThinkingMode(thinkingMode, model, baseURL string) string {
+	switch thinkingMode {
+	case "enabled":
+		// Backward compat: "enabled" is an alias for "think"
+		thinkingMode = "think"
+	case "think", "think-max":
+		// already correct
+	default:
+		// Custom JSON or unknown — pass through
+		return thinkingMode
+	}
+
+	provider := detectThinkingProvider(model, baseURL)
+	preset := thinkingPresets[thinkingMode][provider]
+	if preset != "" {
+		return preset
+	}
+	// Fallback to default provider preset
+	return thinkingPresets[thinkingMode]["default"]
 }
 
 func shouldFallbackToStreamForNonStreamResponse(err error) bool {
@@ -818,7 +889,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 	params := o.buildParams(model, messages, tools, thinkingMode, false)
 
 	// 构建 thinking mode 相关的 request options
-	opts := o.buildThinkingOptions(thinkingMode)
+	opts := o.buildThinkingOptions(thinkingMode, model)
 	if len(opts) > 0 {
 		log.Ctx(ctx).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
 	}
@@ -950,7 +1021,7 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 	startTime := time.Now()
 
 	// 构建 thinking mode 相关的 request options
-	opts := o.buildThinkingOptions(thinkingMode)
+	opts := o.buildThinkingOptions(thinkingMode, model)
 	if len(opts) > 0 {
 		log.Ctx(ctx).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
 	}
