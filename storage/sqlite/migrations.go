@@ -1628,12 +1628,13 @@ func migrateV44ToV45(conn *sql.DB) error {
 		return fmt.Errorf("migrate v45 create link_codes: %w", err)
 	}
 
-	// 4. Seed user 1 as admin (for existing cli_user/admin identities)
+	// 4. Seed user 1 as admin (for existing cli_user/admin identities ONLY).
+	// Do NOT use this ID for web users — each web user gets their own canonical user.
 	if _, err := conn.Exec(`INSERT OR IGNORE INTO users (id, display_name, role) VALUES (1, 'Admin', 'admin');`); err != nil {
 		return fmt.Errorf("migrate v45 seed admin user: %w", err)
 	}
 
-	// 5. Map CLI identities
+	// 5. Map CLI identities to user 1 (admin)
 	if _, err := conn.Exec(`INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'cli_user');`); err != nil {
 		return fmt.Errorf("migrate v45 map cli_user: %w", err)
 	}
@@ -1646,16 +1647,34 @@ func migrateV44ToV45(conn *sql.DB) error {
 		return fmt.Errorf("migrate v45 map system: %w", err)
 	}
 
-	// 7. Map existing web users
+	// 7. Map existing web users — each gets their OWN canonical user.
+	// CAUTION: do NOT reuse web_users.id as users.id — that causes ID collision
+	// with the admin user (id=1). Instead, insert web users with auto-assigned IDs
+	// starting from 2 (since id=1 is the CLI admin).
+	//
+	// First web user (web_users.id=1) is special: it was historically the admin
+	// on web. We map it to user_id=1 (same as CLI admin) so the first web user
+	// shares the admin identity — matching the old isAdmin(userID==1) behavior.
+	//
+	// All other web users get independent canonical users.
 	if _, err := conn.Exec(`
-	INSERT OR IGNORE INTO users (id, display_name, role)
-	SELECT id, username, CASE WHEN id = 1 THEN 'admin' ELSE 'user' END FROM web_users;`); err != nil {
-		return fmt.Errorf("migrate v45 seed web users: %w", err)
+		INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
+		SELECT 1, 'web', 'web-' || CAST(id AS TEXT) FROM web_users WHERE id = 1;`); err != nil {
+		return fmt.Errorf("migrate v45 map first web user to admin: %w", err)
+	}
+	// Remaining web users: create independent canonical users
+	if _, err := conn.Exec(`
+		INSERT OR IGNORE INTO users (display_name, role)
+		SELECT username, 'user' FROM web_users WHERE id > 1;`); err != nil {
+		return fmt.Errorf("migrate v45 seed non-admin web users: %w", err)
 	}
 	if _, err := conn.Exec(`
-	INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
-	SELECT id, 'web', 'web-' || CAST(id AS TEXT) FROM web_users;`); err != nil {
-		return fmt.Errorf("migrate v45 map web users: %w", err)
+		INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
+		SELECT u.id, 'web', 'web-' || CAST(w.id AS TEXT)
+		FROM users u JOIN web_users w ON u.display_name = w.username
+		WHERE w.id > 1
+		AND 'web-' || CAST(w.id AS TEXT) NOT IN (SELECT channel_user_id FROM user_identities WHERE channel = 'web');`); err != nil {
+		return fmt.Errorf("migrate v45 map non-admin web users: %w", err)
 	}
 
 	// 8. Map existing Feishu identities (from user_llm_subscriptions.sender_id)
