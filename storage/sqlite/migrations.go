@@ -1648,33 +1648,20 @@ func migrateV44ToV45(conn *sql.DB) error {
 	}
 
 	// 7. Map existing web users — each gets their OWN canonical user.
-	// CAUTION: do NOT reuse web_users.id as users.id — that causes ID collision
-	// with the admin user (id=1). Instead, insert web users with auto-assigned IDs
-	// starting from 2 (since id=1 is the CLI admin).
-	//
-	// First web user (web_users.id=1) is special: it was historically the admin
-	// on web. We map it to user_id=1 (same as CLI admin) so the first web user
-	// shares the admin identity — matching the old isAdmin(userID==1) behavior.
-	//
-	// All other web users get independent canonical users.
-	if _, err := conn.Exec(`
-		INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
-		SELECT 1, 'web', 'web-' || CAST(id AS TEXT) FROM web_users WHERE id = 1;`); err != nil {
-		return fmt.Errorf("migrate v45 map first web user to admin: %w", err)
-	}
-	// Remaining web users: create independent canonical users
+	// ALL web users are independent from the CLI admin (user_id=1).
+	// Admin status is managed explicitly via the role management API,
+	// NOT assumed by registration order.
 	if _, err := conn.Exec(`
 		INSERT OR IGNORE INTO users (display_name, role)
-		SELECT username, 'user' FROM web_users WHERE id > 1;`); err != nil {
-		return fmt.Errorf("migrate v45 seed non-admin web users: %w", err)
+		SELECT username, 'user' FROM web_users;`); err != nil {
+		return fmt.Errorf("migrate v45 seed web users: %w", err)
 	}
 	if _, err := conn.Exec(`
 		INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
 		SELECT u.id, 'web', 'web-' || CAST(w.id AS TEXT)
 		FROM users u JOIN web_users w ON u.display_name = w.username
-		WHERE w.id > 1
-		AND 'web-' || CAST(w.id AS TEXT) NOT IN (SELECT channel_user_id FROM user_identities WHERE channel = 'web');`); err != nil {
-		return fmt.Errorf("migrate v45 map non-admin web users: %w", err)
+		WHERE 'web-' || CAST(w.id AS TEXT) NOT IN (SELECT channel_user_id FROM user_identities WHERE channel = 'web');`); err != nil {
+		return fmt.Errorf("migrate v45 map web users: %w", err)
 	}
 
 	// 8. Map existing Feishu identities (from user_llm_subscriptions.sender_id)
