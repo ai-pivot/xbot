@@ -587,6 +587,12 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 			continue
 		}
 		if out != nil {
+			// PreTurnEnd: bg notifications or hook handlers may request
+			// continuation by injecting synthetic tool results, converting
+			// this text-only response into a non-final iteration.
+			if s.maybeContinueTurn(ctx, response, i) {
+				continue
+			}
 			return out
 		}
 

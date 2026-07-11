@@ -1429,26 +1429,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	s.validateInvariantsAt(ctx, "post_persist")
 
 	// --- Background notification draining (bg tasks + bg subagents) ---
-	// Cancel-aware: skip draining if ctx is already cancelled. The cancel
-	// signal may have arrived during the LLM call above. Draining now would
-	// inject notifications into a Run that is about to return cancelled.
-	// Skipping leaves them in bgRunPending so handleCancelledRun can discard
-	// this session's pending notifications before the cancel ack reaches the UI.
-	if s.cfg.DrainBgNotifications != nil && ctx.Err() == nil {
-		pending := s.cfg.DrainBgNotifications()
-		for _, notif := range pending {
-			switch n := notif.(type) {
-			case *tools.BackgroundTask:
-				s.injectBgTaskNotification(ctx, iteration, n)
-			case *tools.SubAgentBgNotify:
-				s.injectSubAgentBgNotification(ctx, iteration, n)
-			case *tools.CronFired:
-				s.injectCronFiredNotification(ctx, iteration, n)
-			case *tools.QueuedUserMessage:
-				s.injectQueuedUserMessage(ctx, iteration, n)
-			}
-		}
-	}
+	s.drainAndInjectBgNotifications(ctx, iteration)
 
 	// Check if any tool marked as waiting for user response
 	if s.waitingUser {
@@ -1475,6 +1456,77 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	}
 
 	return nil
+}
+
+// drainAndInjectBgNotifications drains pending background notifications and
+// injects them as synthetic tool-call/result pairs into the conversation.
+// Cancel-aware: skips draining if ctx is cancelled (the cancel signal may have
+// arrived during the LLM call; leaving notifications in bgRunPending lets
+// handleCancelledRun discard them before the cancel ack reaches the UI).
+// Returns the count of injected notifications.
+func (s *runState) drainAndInjectBgNotifications(ctx context.Context, iteration int) int {
+	if s.cfg.DrainBgNotifications == nil || ctx.Err() != nil {
+		return 0
+	}
+	pending := s.cfg.DrainBgNotifications()
+	for _, notif := range pending {
+		switch n := notif.(type) {
+		case *tools.BackgroundTask:
+			s.injectBgTaskNotification(ctx, iteration, n)
+		case *tools.SubAgentBgNotify:
+			s.injectSubAgentBgNotification(ctx, iteration, n)
+		case *tools.CronFired:
+			s.injectCronFiredNotification(ctx, iteration, n)
+		case *tools.QueuedUserMessage:
+			s.injectQueuedUserMessage(ctx, iteration, n)
+		}
+	}
+	return len(pending)
+}
+
+// maybeContinueTurn is called when the LLM returns a text-only response
+// that would normally end the turn. It drains bg notifications and fires
+// the PreTurnEnd hook, giving handlers a chance to prevent turn end by
+// injecting continuation content (as synthetic tool results).
+//
+// Returns true if the turn should continue (tool results were injected).
+func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMResponse, iteration int) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+
+	// 1. Drain bg notifications that completed during the final LLM call.
+	//    recordAssistantMsg must be called first — normally handleFinalResponse
+	//    returns immediately for text-only responses, skipping recordAssistantMsg.
+	//    injectSyntheticToolPair creates its own assistant messages, but the
+	//    original LLM response text must also be in the conversation.
+	if s.drainAndInjectBgNotifications(ctx, iteration) > 0 {
+		s.recordAssistantMsg(ctx, response)
+		return true
+	}
+
+	// 2. Fire PreTurnEnd hook — plugins and future features (e.g. /goal) can
+	//    set Continue=true with a Reason to inject a synthetic tool result.
+	if s.cfg.HookManager != nil {
+		event := &hooks.PreTurnEndEvent{
+			BasePayload: hooks.BasePayload{
+				SessionID: s.cfg.ChatID, Channel: s.cfg.Channel,
+				SenderID: s.cfg.OriginUserID, ChatID: s.cfg.ChatID,
+			},
+		}
+		s.cfg.HookManager.Emit(ctx, event)
+		if event.Continue && event.Reason != "" {
+			s.recordAssistantMsg(ctx, response)
+			s.injectSyntheticToolPair(ctx, iteration,
+				"pre_turn_end", fmt.Sprintf("pre_turn_end_%d", iteration),
+				"A system notification arrived before the turn ended.",
+				event.Reason, "pre_turn_end", 0,
+			)
+			return true
+		}
+	}
+
+	return false
 }
 
 // injectSyntheticToolPair is the shared template for injecting a synthetic
