@@ -15,7 +15,6 @@ type GoalStatus string
 const (
 	GoalActive    GoalStatus = "active"
 	GoalCompleted GoalStatus = "completed"
-	GoalCleared   GoalStatus = "cleared"
 )
 
 // Goal represents a persistent objective for a session.
@@ -62,9 +61,7 @@ func (gm *GoalManager) Get(sessionKey string) *Goal {
 func (gm *GoalManager) Clear(sessionKey string) {
 	gm.mu.Lock()
 	defer gm.mu.Unlock()
-	if g, ok := gm.goals[sessionKey]; ok {
-		g.Status = GoalCleared
-	}
+	delete(gm.goals, sessionKey)
 }
 
 // Complete marks the goal as completed with a summary.

@@ -630,7 +630,18 @@ func (c *goalCmd) Name() string      { return "/goal" }
 func (c *goalCmd) Aliases() []string { return nil }
 func (c *goalCmd) Match(s string) bool {
 	lower := strings.TrimSpace(strings.ToLower(s))
-	return lower == "/goal" || (strings.HasPrefix(lower, "/goal ") && !strings.HasPrefix(lower, "/goal status") && !strings.HasPrefix(lower, "/goal clear"))
+	if lower == "/goal" {
+		return true
+	}
+	fields := strings.Fields(lower)
+	if len(fields) >= 2 && fields[0] == "/goal" {
+		sub := fields[1]
+		if sub == "status" || sub == "clear" {
+			return false // handled by goalStatusCmd / goalClearCmd
+		}
+		return true
+	}
+	return false
 }
 func (c *goalCmd) Concurrent() bool { return false } // mutates goal state + triggers Run
 
@@ -668,6 +679,9 @@ func (c *goalStatusCmd) Match(s string) bool {
 func (c *goalStatusCmd) Concurrent() bool { return true }
 
 func (c *goalStatusCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	if a.goalManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ Goal 系统未初始化"}, nil
+	}
 	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
 	g := a.goalManager.Get(sessionKey)
 	if g == nil {
@@ -678,8 +692,6 @@ func (c *goalStatusCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMe
 	switch g.Status {
 	case GoalCompleted:
 		status = "✅ 已完成"
-	case GoalCleared:
-		status = "🗑️ 已清除"
 	default:
 		status = "🔄 进行中"
 	}
@@ -703,6 +715,9 @@ func (c *goalClearCmd) Match(s string) bool {
 func (c *goalClearCmd) Concurrent() bool { return false }
 
 func (c *goalClearCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	if a.goalManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ Goal 系统未初始化"}, nil
+	}
 	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
 	a.goalManager.Clear(sessionKey)
 	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "✅ 目标已清除。后续 turn 将正常结束，不再自动继续。"}, nil

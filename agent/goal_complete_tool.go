@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"xbot/llm"
 	"xbot/tools"
@@ -48,6 +49,10 @@ func (t *setGoalCompleteTool) Execute(ctx *tools.ToolContext, input string) (*to
 	var a setGoalCompleteArgs
 	if err := json.Unmarshal([]byte(input), &a); err != nil {
 		return nil, fmt.Errorf("set_goal_complete: %w", err)
+	}
+
+	if strings.TrimSpace(a.Summary) == "" {
+		return nil, fmt.Errorf("set_goal_complete: summary must not be empty")
 	}
 
 	sessionKey := ctx.Channel + ":" + ctx.ChatID
