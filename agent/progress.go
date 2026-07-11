@@ -403,9 +403,23 @@ func isPlausibleAgentRole(name string) bool {
 	if firstRune >= 'A' && firstRune <= 'Z' {
 		return false
 	}
-	// 首字母是非 ASCII（中文等）→ 角色名
+	// 首字母是非 ASCII（中文等）→ 可能是角色名
 	if firstRune > 127 {
-		return true
+		// 限制中文角色名长度：真实角色名通常 2-6 个字（如"刑部"、"工部"、"中书省"）
+		// 超过 6 个字的中文几乎一定是工具输出文本而非角色名
+		if len(runes) > 6 {
+			return false
+		}
+		// 排除常见的非角色中文词（工具输出中的标签词）
+		nonRoleWords := map[string]bool{
+			"来源": true, "场景": true, "结果": true, "写入": true, "语义": true,
+			"触发": true, "优先级": true, "行为": true, "步骤": true,
+			"注入": true, "返回": true, "查询": true, "说明": true,
+			"注意": true, "问题": true, "原因": true, "修复": true,
+			"状态": true, "配置": true, "参数": true, "类型": true,
+			"目标": true, "关注点": true, "总结": true, "结论": true,
+		}
+		return !nonRoleWords[name]
 	}
 	// ASCII 小写开头 → 角色名（如 "explore", "crown-prince"）
 	// 但需排除含空格的句子
@@ -774,17 +788,22 @@ func renderChildrenTree(children []childAgentStatus, baseIndent string, currentD
 
 // extractSubAgentNodesFromDetail builds structured SubAgentNode trees directly
 // from SubAgentProgressDetail, without relying on text-based parsing.
-// This replaces the fragile ExtractSubAgentTree that parses progress text lines.
+//
+// STRONG TYPE: SubAgentNode children are NOT extracted from detail.Lines.
+// The old code called extractOwnAndChildProgress(flat) which used string
+// matching (isSubAgentLine/isPlausibleAgentRole) to guess which lines were
+// child SubAgents — any Chinese text with a colon was misidentified as a
+// child agent, creating phantom tree nodes from tool output.
+//
+// Children are now ONLY populated by deeper SubAgentProgressDetail callbacks
+// that bubble up through the parent callback chain (engine_wire.go:1382).
+// Each callback carries its own Path (role chain), so the tree structure is
+// determined by the callback hierarchy, not by parsing text.
 func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNode {
 	roleName := extractRoleName(detail.Path)
 
-	flat := flattenLines(detail.Lines)
-	_, children := extractOwnAndChildProgress(flat)
-
 	// Status:穿透回调只在 SubAgent 运行期间触发（完成后不再调用），
-	// 所以状态始终为 "running"。绝不能从 ownLine 推断 "done" ——
-	// ownLine 是 SubAgent 内部的 progressLines，工具完成后包含 ✅ 前缀，
-	// 会被 CLI renderSubAgentTree 跳过导致进度树消失。
+	// 所以状态始终为 "running"。
 	status := "running"
 
 	// Description:优先使用 thinking content（LLM 迭代的实际输出），
@@ -798,8 +817,7 @@ func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNod
 	}
 	if desc == "" {
 		// Fallback:从 progressLines 提取最新活动行（跳过 ✅/❌ 和 💭 占位行）。
-		// 如果所有行都是完成的工具或思考占位，desc 保持空，
-		// 让 mergeSubAgentTrees 保留上一条有意义的描述。
+		flat := flattenLines(detail.Lines)
 		ownLine := ""
 		for i := len(flat) - 1; i >= 0; i-- {
 			line := flat[i]
@@ -826,9 +844,9 @@ func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNod
 		Instance: detail.Instance,
 		Status:   status,
 		Desc:     desc,
-	}
-	if len(children) > 0 {
-		node.Children = convertChildTree(children)
+		// Children: NOT populated from text parsing.
+		// Deeper SubAgents report via their own SubAgentProgressDetail callbacks,
+		// which are merged separately by mergeSubAgentNodeList at the parent level.
 	}
 	return []SubAgentNode{node}
 }
