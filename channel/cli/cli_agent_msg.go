@@ -572,15 +572,14 @@ func (m *cliModel) handleCancelAck(msg ch.OutboundMsg, turnID uint64) {
 	if m.progressState.current != nil {
 		m.cacheTokenUsage(m.progressState.current.TokenUsage)
 	}
-	if m.pendingUserMsg == nil {
-		for i := len(m.messages) - 1; i >= 0; i-- {
-			if m.messages[i].role == "user" {
-				cp := m.messages[i]
-				m.pendingUserMsg = &cp
-				break
-			}
-		}
-	}
+	// Clear pendingUserMsg on cancel. processMessage eager-saves the user message
+	// to DB BEFORE Run() starts, so by the time cancel happens the message is
+	// already persisted. Keeping pendingUserMsg set causes a duplicate on the
+	// next history reload: the pendingUserMsg content (e.g. "/goal objective")
+	// won't match the DB-saved content (e.g. "objective" without /goal prefix
+	// because processMessage strips the command prefix before eager-save), so
+	// handleHistoryReload treats it as "not yet persisted" and appends it again.
+	m.pendingUserMsg = nil
 	if m.streamingMsgIdx >= 0 {
 		m.streamingMsgIdx = -1
 	}
