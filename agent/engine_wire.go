@@ -860,8 +860,13 @@ func (a *Agent) buildSubAgentRunConfig(
 			return a.spawnSubAgent(ctx, msg)
 		}
 	}
-	// HookManager — SubAgent inherits parent Agent's hook manager
-	cfg.HookManager = a.hookManager
+	// HookManager — SubAgent does NOT inherit the parent Agent's hook manager.
+	// Goal continuation (PreTurnEndHook) is a main-Agent-only feature.
+	// If SubAgent inherits it, the goal hook fires during SubAgent execution,
+	// injecting goal-continuation prompts into SubAgent turns — causing
+	// SubAgents to never end naturally and loop on the goal prompt.
+	// SubAgent still gets plugin hooks via PluginManager (separate system).
+	cfg.HookManager = nil
 	cfg.PluginManager = a.pluginMgr
 	cfg.SettingsSvc = a.settingsSvc
 
