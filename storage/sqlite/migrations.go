@@ -1628,12 +1628,13 @@ func migrateV44ToV45(conn *sql.DB) error {
 		return fmt.Errorf("migrate v45 create link_codes: %w", err)
 	}
 
-	// 4. Seed user 1 as admin (for existing cli_user/admin identities)
+	// 4. Seed user 1 as admin (for existing cli_user/admin identities ONLY).
+	// Do NOT use this ID for web users — each web user gets their own canonical user.
 	if _, err := conn.Exec(`INSERT OR IGNORE INTO users (id, display_name, role) VALUES (1, 'Admin', 'admin');`); err != nil {
 		return fmt.Errorf("migrate v45 seed admin user: %w", err)
 	}
 
-	// 5. Map CLI identities
+	// 5. Map CLI identities to user 1 (admin)
 	if _, err := conn.Exec(`INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'cli_user');`); err != nil {
 		return fmt.Errorf("migrate v45 map cli_user: %w", err)
 	}
@@ -1646,15 +1647,20 @@ func migrateV44ToV45(conn *sql.DB) error {
 		return fmt.Errorf("migrate v45 map system: %w", err)
 	}
 
-	// 7. Map existing web users
+	// 7. Map existing web users — each gets their OWN canonical user.
+	// ALL web users are independent from the CLI admin (user_id=1).
+	// Admin status is managed explicitly via the role management API,
+	// NOT assumed by registration order.
 	if _, err := conn.Exec(`
-	INSERT OR IGNORE INTO users (id, display_name, role)
-	SELECT id, username, CASE WHEN id = 1 THEN 'admin' ELSE 'user' END FROM web_users;`); err != nil {
+		INSERT OR IGNORE INTO users (display_name, role)
+		SELECT username, 'user' FROM web_users;`); err != nil {
 		return fmt.Errorf("migrate v45 seed web users: %w", err)
 	}
 	if _, err := conn.Exec(`
-	INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
-	SELECT id, 'web', 'web-' || CAST(id AS TEXT) FROM web_users;`); err != nil {
+		INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id)
+		SELECT u.id, 'web', 'web-' || CAST(w.id AS TEXT)
+		FROM users u JOIN web_users w ON u.display_name = w.username
+		WHERE 'web-' || CAST(w.id AS TEXT) NOT IN (SELECT channel_user_id FROM user_identities WHERE channel = 'web');`); err != nil {
 		return fmt.Errorf("migrate v45 map web users: %w", err)
 	}
 

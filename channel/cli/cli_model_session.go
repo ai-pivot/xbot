@@ -215,6 +215,7 @@ func (m *cliModel) restoreSession() {
 		m.lastContent = ""
 		m.inputReady = false
 		m.needFlushQueue = false
+		m.flushDelay = 0
 		m.messageQueue = nil
 		m.queueEditing = false
 		m.progressState.lastSeq = 0
@@ -291,6 +292,7 @@ func (m *cliModel) resetToIdleState() {
 	m.queueEditing = false
 	m.queueEditBuf = ""
 	m.needFlushQueue = false
+	m.flushDelay = 0
 
 	// --- Progress State ---
 	m.progressState.current = nil
@@ -511,6 +513,7 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		m.typing = false
 		m.replyProcessed = true
 		m.needFlushQueue = false
+		m.flushDelay = 0
 		m.turnCancelled = false
 		m.progressState.twActive = false
 		m.progressState.lastSeq = 0
