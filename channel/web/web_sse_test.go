@@ -170,7 +170,7 @@ func TestSSEReplaySortsMixedStatefulAndStatelessEvents(t *testing.T) {
 	}
 }
 
-func TestSSEReplayHandoffOrdersConcurrentLiveEvent(t *testing.T) {
+func TestSSEReplayHandoffSuppressesStaleFallback(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
 	wc.hub.sendToClient("web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "seen"})
@@ -201,9 +201,120 @@ func TestSSEReplayHandoffOrdersConcurrentLiveEvent(t *testing.T) {
 	if live.Progress == nil || live.Progress.Phase != "thinking" {
 		t.Fatalf("unexpected live progress: %#v", live.Progress)
 	}
-	snapshot := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeProgress, 3)
-	if snapshot.Progress == nil || snapshot.Progress.Phase != "tool_exec" {
-		t.Fatalf("unexpected fallback snapshot: %#v", snapshot.Progress)
+	if got := wc.getEventStream("web-1").lastSeq(); got != 2 {
+		t.Fatalf("last sequence = %d, want 2; stale fallback was published", got)
+	}
+}
+
+func TestSSEPendingAskUserReplayDoesNotDuplicate(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	content, err := json.Marshal(protocol.AskUserEvent{ChatID: chatID, RequestID: "request-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wc.hub.sendToClient(chatID, protocol.WSMessage{
+		Type:    protocol.MsgTypeAskUser,
+		ChatID:  chatID,
+		Content: string(content),
+	})
+	wc.SetCallbacks(WebCallbacks{
+		GetPendingAskUser: func(channel, gotChatID string) *protocol.ProgressEvent {
+			return &protocol.ProgressEvent{RequestID: "request-1"}
+		},
+	})
+
+	wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+
+	if got := wc.getEventStream(chatID).lastSeq(); got != 1 {
+		t.Fatalf("last sequence = %d, want 1", got)
+	}
+	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+	if len(events) != 1 || askUserRequestID(events[0]) != "request-1" {
+		t.Fatalf("replayed AskUser events = %#v", events)
+	}
+}
+
+func TestSSEFallbackIsSharedBySubscribedClients(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	clients := []*Client{
+		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "sse-1", chatID: chatID},
+		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "sse-2", chatID: chatID},
+	}
+	for _, client := range clients {
+		wc.hub.addClient(client.id, client)
+		wc.hub.subscribe(client.id, chatID)
+	}
+	wc.SetCallbacks(WebCallbacks{
+		GetActiveProgress: func(channel, gotChatID string) *protocol.ProgressEvent {
+			return &protocol.ProgressEvent{Phase: "tool_exec"}
+		},
+	})
+	sel := SessionSelector{Channel: "web", ChatID: chatID}
+
+	wc.publishSSEFallbacks(sel, 0)
+	wc.publishSSEFallbacks(sel, 0)
+	for _, client := range clients {
+		fallback := <-client.sendCh
+		if fallback.Type != protocol.MsgTypeProgress || fallback.Seq != 1 {
+			t.Fatalf("client %s fallback = %#v", client.id, fallback)
+		}
+		select {
+		case duplicate := <-client.sendCh:
+			t.Fatalf("client %s received duplicate fallback: %#v", client.id, duplicate)
+		default:
+		}
+	}
+
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "next"})
+	for _, client := range clients {
+		next := <-client.sendCh
+		if next.Type != protocol.MsgTypeText || next.Seq != 2 {
+			t.Fatalf("client %s next event = %#v", client.id, next)
+		}
+	}
+}
+
+func TestSSECatchesUpAfterSendChannelOverflow(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	progressLookup := make(chan struct{}, 1)
+	releaseLookup := make(chan struct{})
+	wc.SetCallbacks(WebCallbacks{
+		GetActiveProgress: func(channel, chatID string) *protocol.ProgressEvent {
+			progressLookup <- struct{}{}
+			<-releaseLookup
+			return nil
+		},
+	})
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+
+	resp := openSSE(t, server.URL, cookie, "web-1", "")
+	defer resp.Body.Close()
+	select {
+	case <-progressLookup:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active progress lookup did not start")
+	}
+
+	const overflow = 8
+	eventCount := webSendChBufSize + overflow
+	for i := 1; i <= eventCount; i++ {
+		wc.hub.sendToClient("web-1", protocol.WSMessage{
+			Type:    protocol.MsgTypeText,
+			Content: "event-" + strconv.Itoa(i),
+		})
+	}
+	close(releaseLookup)
+
+	reader := bufio.NewReader(resp.Body)
+	for i := 1; i <= eventCount; i++ {
+		msg := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeText, uint64(i))
+		if want := "event-" + strconv.Itoa(i); msg.Content != want {
+			t.Fatalf("event %d content = %q, want %q", i, msg.Content, want)
+		}
 	}
 }
 
