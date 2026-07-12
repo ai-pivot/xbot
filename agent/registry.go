@@ -43,9 +43,9 @@ func (rm *RegistryManager) pluginsDir() string {
 	return filepath.Join(rm.xbotHome, "plugins")
 }
 
-// installedAppsDir returns the directory for storing installed app manifests.
-func (rm *RegistryManager) installedAppsDir() string {
-	return filepath.Join(rm.xbotHome, "installed_apps")
+// appsDir returns the directory for storing installed app manifests.
+func (rm *RegistryManager) appsDir() string {
+	return filepath.Join(rm.xbotHome, "apps")
 }
 
 // useSandbox 判断是否应使用 Sandbox 访问用户文件。
@@ -192,7 +192,7 @@ func (rm *RegistryManager) uninstallPlugin(name, senderID string) error {
 
 // uninstallApp reads the saved manifest for an installed app and removes all its items.
 func (rm *RegistryManager) uninstallApp(name, senderID string) error {
-	manifestPath := filepath.Join(rm.installedAppsDir(), name+".json")
+	manifestPath := filepath.Join(rm.appsDir(), name+".json")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return fmt.Errorf("app %q is not installed (no manifest found)", name)
@@ -319,7 +319,7 @@ func (rm *RegistryManager) ListInstalledPlugins(senderID string) []string {
 
 // ListInstalledApps returns the names of installed apps.
 func (rm *RegistryManager) ListInstalledApps() []string {
-	entries, err := os.ReadDir(rm.installedAppsDir())
+	entries, err := os.ReadDir(rm.appsDir())
 	if err != nil {
 		return nil
 	}
@@ -605,11 +605,11 @@ func (rm *RegistryManager) InstallAppFromURL(url, senderID string) (*AppInstallR
 	return rm.InstallAppFromFile(tmpPath, senderID)
 }
 
-// saveAppManifest writes the app manifest to ~/.xbot/installed_apps/<name>.json.
+// saveAppManifest writes the app manifest to ~/.xbot/apps/<name>.json.
 func (rm *RegistryManager) saveAppManifest(manifest *AppManifest) error {
-	dir := rm.installedAppsDir()
+	dir := rm.appsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create installed_apps dir: %w", err)
+		return fmt.Errorf("create apps dir: %w", err)
 	}
 	path := filepath.Join(dir, manifest.Name+".json")
 	data, err := json.MarshalIndent(manifest, "", "  ")
