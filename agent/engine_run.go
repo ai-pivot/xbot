@@ -1485,28 +1485,25 @@ func (s *runState) drainAndInjectBgNotifications(ctx context.Context, iteration 
 }
 
 // maybeContinueTurn is called when the LLM returns a text-only response
-// that would normally end the turn. It drains bg notifications and fires
-// the PreTurnEnd hook, giving handlers a chance to prevent turn end by
-// injecting continuation content (as synthetic tool results).
+// that would normally end the turn. It fires the PreTurnEnd hook, giving
+// handlers a chance to prevent turn end by injecting continuation content.
 //
-// Returns true if the turn should continue (tool results were injected).
+// IMPORTANT: bg notifications are NOT drained here. They are already drained
+// in postToolProcessing (after each tool execution). Draining them again in
+// maybeContinueTurn would force the agent to process notifications as
+// synthetic tool results AFTER its final text reply — causing the agent to
+// generate a spurious second response (e.g. "ok, looks like you pasted my
+// previous reply") to a notification that should have been queued for the
+// NEXT turn, not injected into the current one.
+//
+// Returns true if the turn should continue (hook injected continuation).
 func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMResponse, iteration int) bool {
 	if ctx.Err() != nil {
 		return false
 	}
 
-	// 1. Drain bg notifications that completed during the final LLM call.
-	//    recordAssistantMsg must be called first — normally handleFinalResponse
-	//    returns immediately for text-only responses, skipping recordAssistantMsg.
-	//    injectSyntheticToolPair creates its own assistant messages, but the
-	//    original LLM response text must also be in the conversation.
-	if s.drainAndInjectBgNotifications(ctx, iteration) > 0 {
-		s.recordAssistantMsg(ctx, response)
-		return true
-	}
-
-	// 2. Fire PreTurnEnd hook — plugins and future features (e.g. /goal) can
-	//    set Continue=true with a Reason to inject a synthetic tool result.
+	// Fire PreTurnEnd hook — plugins and future features (e.g. /goal) can
+	// set Continue=true with a Reason to inject a synthetic tool result.
 	if s.cfg.HookManager != nil {
 		event := &hooks.PreTurnEndEvent{
 			BasePayload: hooks.BasePayload{
