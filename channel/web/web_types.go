@@ -111,11 +111,12 @@ type WebCallbacks struct {
 	RunnerStatusNotify func(senderID, runnerName string, online bool)
 	// SyncProgressNotify is called when runner sync progress is reported.
 	SyncProgressNotify func(senderID, phase, message string)
-	// RPCHandler handles RPC requests from CLI remote clients.
+	// RPCHandler handles RPC requests from authenticated REST and remote CLI clients.
 	// The method string identifies the operation; params is the JSON-encoded request body.
-	// senderID is the authenticated user ID (from the WS connection / runner token).
+	// identity carries the channel identity and canonical authorization fields resolved
+	// at the HTTP or WebSocket authentication boundary.
 	// Returns JSON-encoded result or an error.
-	RPCHandler func(method string, params json.RawMessage, senderID string) (json.RawMessage, error)
+	RPCHandler func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error)
 	// SessionsList returns interactive SubAgent sessions for a user (channel="web", chatID=senderID).
 	// Returns JSON-serializable session info objects.
 	SessionsList func(senderID string) []SessionInfo
@@ -140,6 +141,12 @@ type WebCallbacks struct {
 	// IdentityResolver provides canonical user identity resolution, link code
 	// generation, merge preview/execution, and admin user management.
 	IdentityResolver IdentityResolverAPI
+}
+
+type RPCIdentity struct {
+	SenderID        string
+	CanonicalUserID int64
+	CanonicalRole   string
 }
 
 // IdentityResolverAPI is the interface WebChannel uses for account linking.

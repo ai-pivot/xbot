@@ -493,7 +493,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				log.WithError(err).Debug("Invalid RPC message from CLI client")
 				continue
 			}
-			go func(id, method string, params json.RawMessage, userID string) {
+			go func(id, method string, params json.RawMessage, identity RPCIdentity) {
 				var result json.RawMessage
 				var rpcErr error
 				func() {
@@ -507,7 +507,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 							rpcErr = fmt.Errorf("internal error: %v", r)
 						}
 					}()
-					result, rpcErr = wc.callbacks.RPCHandler(method, params, userID)
+					result, rpcErr = wc.callbacks.RPCHandler(method, params, identity)
 				}()
 				rpcMsg := protocol.WSMessage{Type: protocol.MsgTypeRPCResponse, ID: id}
 				if rpcErr != nil {
@@ -521,7 +521,11 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					log.WithField("rpc_id", id).WithField("method", method).
 						Error("RPC response send timeout (10s)")
 				}
-			}(rpcReq.ID, rpcReq.Method, rpcReq.Params, c.userID)
+			}(rpcReq.ID, rpcReq.Method, rpcReq.Params, RPCIdentity{
+				SenderID:        c.userID,
+				CanonicalUserID: c.canonicalUserID,
+				CanonicalRole:   c.canonicalRole,
+			})
 			continue
 		case protocol.MsgTypeSubscribe:
 			// Subscribe to a business chatID so the Hub can route

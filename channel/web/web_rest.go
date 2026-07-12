@@ -79,7 +79,7 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	identity := wc.inboundIdentityFromRequest(r)
 	if request.ChatID != "" && request.Channel == "" {
-		request.Channel = wc.GetCurrentSession(identity.SenderID).Channel
+		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
 	sel, err := wc.dispatchUserMessage(r.Context(), identity, request)
 	if err != nil {
@@ -97,7 +97,7 @@ func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	identity := wc.inboundIdentityFromRequest(r)
 	if request.ChatID != "" && request.Channel == "" {
-		request.Channel = wc.GetCurrentSession(identity.SenderID).Channel
+		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
 	sel, err := wc.dispatchCancel(r.Context(), identity, request.Channel, request.ChatID)
 	if err != nil {
@@ -129,7 +129,7 @@ func (wc *WebChannel) handleAskUserRespond(w http.ResponseWriter, r *http.Reques
 	}
 	identity := wc.inboundIdentityFromRequest(r)
 	if request.ChatID != "" && request.Channel == "" {
-		request.Channel = wc.GetCurrentSession(identity.SenderID).Channel
+		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
 	sel, err := wc.dispatchAskUserResponse(r.Context(), identity, request.Channel, request.ChatID, protocol.AskUserResponse{
 		Answers: request.Answers, Cancelled: request.Cancelled,
@@ -171,10 +171,14 @@ func (wc *WebChannel) handleRPC(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "method is required")
 		return
 	}
+	if err := wc.authorizeRESTRPC(r, request.Method, request.Params); err != nil {
+		jsonErrorResponse(w, http.StatusForbidden, err.Error())
+		return
+	}
 	if len(request.Params) == 0 || string(request.Params) == "null" {
 		request.Params = json.RawMessage(`{}`)
 	}
-	result, err := wc.callbacks.RPCHandler(request.Method, request.Params, senderIDFromContext(r.Context()))
+	result, err := wc.callbacks.RPCHandler(request.Method, request.Params, wc.rpcIdentityFromRequest(r))
 	if err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
@@ -184,6 +188,38 @@ func (wc *WebChannel) handleRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (wc *WebChannel) rpcIdentityFromRequest(r *http.Request) RPCIdentity {
+	identity := wc.inboundIdentityFromRequest(r)
+	return RPCIdentity{
+		SenderID:        identity.SenderID,
+		CanonicalUserID: identity.CanonicalUserID,
+		CanonicalRole:   identity.CanonicalRole,
+	}
+}
+
+func (wc *WebChannel) authorizeRESTRPC(r *http.Request, method string, params json.RawMessage) error {
+	senderID := senderIDFromContext(r.Context())
+	identity := wc.inboundIdentityFromRequest(r)
+	if identity.CanonicalRole == "admin" || wc.isAdmin(r.Context(), senderID) {
+		return nil
+	}
+	switch method {
+	case "send_inbound", "plugin_reload", "plugin_reload_all", "plugin_install", "plugin_uninstall":
+		return fmt.Errorf("admin only")
+	case "plugin_widgets":
+		var request struct {
+			ChatID string `json:"chat_id"`
+		}
+		if err := json.Unmarshal(params, &request); err != nil || request.ChatID == "" {
+			return fmt.Errorf("chat_id is required")
+		}
+		if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, "cli", request.ChatID) {
+			return fmt.Errorf("access denied")
+		}
+	}
+	return nil
 }
 
 func (wc *WebChannel) handleHistoryPOST(w http.ResponseWriter, r *http.Request) {
@@ -276,10 +312,10 @@ func (wc *WebChannel) handleSettingsPOST(w http.ResponseWriter, r *http.Request)
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	senderID := senderIDFromContext(r.Context())
+	identity := wc.rpcIdentityFromRequest(r)
 	if len(body.Settings) == 0 {
 		params, _ := json.Marshal(map[string]string{"namespace": "web"})
-		result, err := wc.callbacks.RPCHandler("get_settings", params, senderID)
+		result, err := wc.callbacks.RPCHandler("get_settings", params, identity)
 		if err != nil {
 			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 			return
@@ -293,7 +329,7 @@ func (wc *WebChannel) handleSettingsPOST(w http.ResponseWriter, r *http.Request)
 			"key":       key,
 			"value":     fmt.Sprint(value),
 		})
-		if _, err := wc.callbacks.RPCHandler("set_setting", params, senderID); err != nil {
+		if _, err := wc.callbacks.RPCHandler("set_setting", params, identity); err != nil {
 			jsonErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -476,7 +512,7 @@ func (wc *WebChannel) handleSessionStatus(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	tokenUsage, err := wc.sessionTokenUsage(senderID, sel)
+	tokenUsage, err := wc.sessionTokenUsage(wc.rpcIdentityFromRequest(r), sel)
 	if err != nil {
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
@@ -504,12 +540,12 @@ func (wc *WebChannel) handleSessionStatus(w http.ResponseWriter, r *http.Request
 	})
 }
 
-func (wc *WebChannel) sessionTokenUsage(senderID string, sel SessionSelector) (map[string]any, error) {
+func (wc *WebChannel) sessionTokenUsage(identity RPCIdentity, sel SessionSelector) (map[string]any, error) {
 	promptTokens := int64(0)
 	completionTokens := int64(0)
 	if wc.callbacks.RPCHandler != nil {
 		params, _ := json.Marshal(map[string]string{"channel": sel.Channel, "chat_id": sel.ChatID})
-		result, err := wc.callbacks.RPCHandler("get_token_state", params, senderID)
+		result, err := wc.callbacks.RPCHandler("get_token_state", params, identity)
 		if err != nil {
 			return nil, err
 		}
@@ -527,7 +563,7 @@ func (wc *WebChannel) sessionTokenUsage(senderID string, sel SessionSelector) (m
 	}
 	maxTokens := 0
 	if sel.Channel == "web" && wc.callbacks.LLMGetMaxContext != nil {
-		maxTokens = wc.callbacks.LLMGetMaxContext(senderID, "", "")
+		maxTokens = wc.callbacks.LLMGetMaxContext(identity.SenderID, "", "")
 	}
 	usagePct := 0.0
 	if maxTokens > 0 && promptTokens > 0 {

@@ -781,19 +781,15 @@ func Run(args []string) error {
 
 	// Wire RPC handler for CLI RemoteBackend clients (after disp/msgBus are available).
 	if webCh != nil {
-		webCh.SetRPCHandler(func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
-			// Resolve canonical user identity for access checks.
-			// Web users (web-N) need their admin role resolved via IdentityResolver.
-			userID := int64(0)
-			role := "user"
+		webCh.SetRPCHandler(func(method string, params json.RawMessage, identity web.RPCIdentity) (json.RawMessage, error) {
+			senderID := identity.SenderID
+			userID := identity.CanonicalUserID
+			role := identity.CanonicalRole
 			if senderID == "admin" || senderID == "cli_user" {
 				role = "admin"
 				userID = 1
-			} else if ag.IdentityResolver() != nil {
-				if uid, r, err := ag.IdentityResolver().Resolve("web", senderID); err == nil {
-					userID = uid
-					role = r
-				}
+			} else if role == "" {
+				role = "user"
 			}
 			bizID := senderID
 			if role == "admin" {

@@ -24,7 +24,7 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 		return wc.GetCurrentSession(senderID), true
 	}
 	if channelName == "" {
-		channelName = "web"
+		channelName = wc.inferAPISessionChannel(senderID, chatID)
 	}
 	if chatID == "" {
 		chatID = senderID
@@ -34,6 +34,17 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 		return SessionSelector{}, false
 	}
 	return SessionSelector{Channel: channelName, ChatID: chatID}, true
+}
+
+func (wc *WebChannel) inferAPISessionChannel(senderID, chatID string) string {
+	current := wc.GetCurrentSession(senderID)
+	if chatID == "" || current.ChatID == chatID {
+		return current.Channel
+	}
+	if webChatIDLooksLikeSubAgent(chatID) {
+		return "agent"
+	}
+	return "web"
 }
 
 func (wc *WebChannel) apiSessionFromQuery(w http.ResponseWriter, r *http.Request, senderID string) (SessionSelector, bool) {

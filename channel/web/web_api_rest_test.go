@@ -16,10 +16,24 @@ import (
 	"xbot/tools"
 )
 
+type fixedIdentityResolver struct {
+	IdentityResolverAPI
+	userID int64
+	role   string
+}
+
+func (r fixedIdentityResolver) Resolve(channel, channelUserID string) (int64, string, error) {
+	return r.userID, r.role, nil
+}
+
 func authedAPIRequest(method, target string, body []byte) *http.Request {
+	return authedAPIRequestFor(method, target, body, "web-1", 1)
+}
+
+func authedAPIRequestFor(method, target string, body []byte, senderID string, userID int) *http.Request {
 	req := httptest.NewRequest(method, target, bytes.NewReader(body))
-	ctx := contextWithSenderID(contextWithUserID(req.Context(), 1), "web-1")
-	ctx = context.WithValue(ctx, webSessionKey, sessionInfo{userID: 1, username: "tester"})
+	ctx := contextWithSenderID(contextWithUserID(req.Context(), userID), senderID)
+	ctx = context.WithValue(ctx, webSessionKey, sessionInfo{userID: userID, username: "tester"})
 	return req.WithContext(ctx)
 }
 
@@ -31,9 +45,13 @@ func decodeAPIResponse(t *testing.T, rec *httptest.ResponseRecorder) (testAPIEnv
 }
 
 func setTestCurrentSession(wc *WebChannel, sel SessionSelector) {
+	setTestCurrentSessionFor(wc, "web-1", sel)
+}
+
+func setTestCurrentSessionFor(wc *WebChannel, senderID string, sel SessionSelector) {
 	wc.userCurrentSessionMu.Lock()
 	defer wc.userCurrentSessionMu.Unlock()
-	wc.userCurrentSession["web-1"] = sel
+	wc.userCurrentSession[senderID] = sel
 }
 
 func TestRESTResponseEnvelope(t *testing.T) {
@@ -108,9 +126,9 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 
 func TestRESTRPCDispatchesThroughCallback(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
-	wc.SetRPCHandler(func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
-		if method != "get_settings" || senderID != "web-1" || string(params) != `{"namespace":"web"}` {
-			t.Fatalf("unexpected RPC dispatch: method=%q sender=%q params=%s", method, senderID, params)
+	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+		if method != "get_settings" || identity.SenderID != "web-1" || string(params) != `{"namespace":"web"}` {
+			t.Fatalf("unexpected RPC dispatch: method=%q sender=%q params=%s", method, identity.SenderID, params)
 		}
 		return json.RawMessage(`{"theme":"dark"}`), nil
 	})
@@ -122,11 +140,63 @@ func TestRESTRPCDispatchesThroughCallback(t *testing.T) {
 	}
 }
 
+func TestRESTRPCRejectsNonAdminInboundAndPluginMutation(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	dispatched := false
+	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+		dispatched = true
+		return json.RawMessage(`{}`), nil
+	})
+
+	tests := []struct {
+		method string
+		params string
+	}{
+		{method: "send_inbound", params: `{"channel":"web","chat_id":"web-1","sender_id":"web-1","content":"injected"}`},
+		{method: "plugin_reload", params: `{"id":"plugin-a"}`},
+		{method: "plugin_reload_all", params: `{}`},
+		{method: "plugin_install", params: `{"source_dir":"/tmp/plugin"}`},
+		{method: "plugin_uninstall", params: `{"id":"plugin-a"}`},
+		{method: "plugin_widgets", params: `{"chat_id":"/another-users-session"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.method, func(t *testing.T) {
+			dispatched = false
+			body := []byte(`{"method":"` + test.method + `","params":` + test.params + `}`)
+			recorder := httptest.NewRecorder()
+			wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", body, "web-2", 2))
+			if recorder.Code != http.StatusForbidden || dispatched {
+				t.Fatalf("status=%d dispatched=%v body=%s", recorder.Code, dispatched, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestRESTRPCPreservesAdminDispatch(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	dispatched := false
+	wc.SetCallbacks(WebCallbacks{
+		IdentityResolver: fixedIdentityResolver{userID: 42, role: "admin"},
+		RPCHandler: func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+			dispatched = true
+			if identity.SenderID != "web-2" || identity.CanonicalUserID != 42 || identity.CanonicalRole != "admin" {
+				t.Fatalf("unexpected RPC identity: %#v", identity)
+			}
+			return json.RawMessage(`{}`), nil
+		},
+	})
+	recorder := httptest.NewRecorder()
+	wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"send_inbound","params":{}}`), "web-2", 2))
+	if recorder.Code != http.StatusOK || !dispatched {
+		t.Fatalf("admin RPC status=%d dispatched=%v body=%s", recorder.Code, dispatched, recorder.Body.String())
+	}
+}
+
 func TestRESTSessionStatusMergesTokenAndTasks(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	wc.SetCallbacks(WebCallbacks{
-		RPCHandler: func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
+		RPCHandler: func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
 			if method != "get_token_state" {
 				t.Fatalf("unexpected RPC method %q", method)
 			}
@@ -149,6 +219,56 @@ func TestRESTSessionStatusMergesTokenAndTasks(t *testing.T) {
 	}
 	if len(data["tasks"].([]any)) != 1 || len(data["background_tasks"].([]any)) != 1 {
 		t.Fatalf("status did not merge tasks: %#v", data)
+	}
+}
+
+func TestRESTSessionStatusInfersCurrentCLIChannelFromChatID(t *testing.T) {
+	db := newTestDB(t)
+	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	setTestCurrentSession(wc, SessionSelector{Channel: "cli", ChatID: "/home/user"})
+	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "cli", "/home/user", time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	wc.SetCallbacks(WebCallbacks{
+		RPCHandler: func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+			var session sessionBody
+			if err := json.Unmarshal(params, &session); err != nil {
+				t.Fatal(err)
+			}
+			if session.Channel != "cli" || session.ChatID != "/home/user" {
+				t.Fatalf("wrong session routed to token RPC: %#v", session)
+			}
+			return json.RawMessage(`{"prompt_tokens":1}`), nil
+		},
+	})
+	recorder := httptest.NewRecorder()
+	wc.handleSessionStatus(recorder, authedAPIRequest(http.MethodPost, "/api/session/status", []byte(`{"chat_id":"/home/user"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("session status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRESTHistoryInfersCurrentOwnedAgentChannelFromChatID(t *testing.T) {
+	db := newTestDB(t)
+	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	chatID := "web:web-2/review:1"
+	setTestCurrentSessionFor(wc, "web-2", SessionSelector{Channel: "agent", ChatID: chatID})
+	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "agent", chatID, time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	wc.SetCallbacks(WebCallbacks{
+		HistorySnapshot: func(senderID string, sel SessionSelector) (HistorySnapshot, error) {
+			if senderID != "web-2" || sel.Channel != "agent" || sel.ChatID != chatID {
+				t.Fatalf("wrong history selector: sender=%q selector=%#v", senderID, sel)
+			}
+			return HistorySnapshot{}, nil
+		},
+	})
+	recorder := httptest.NewRecorder()
+	request := authedAPIRequestFor(http.MethodPost, "/api/history", []byte(`{"chat_id":"`+chatID+`"}`), "web-2", 2)
+	wc.handleHistoryPOST(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("history status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
