@@ -45,7 +45,9 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 	waitingUser := cardOut.WaitingUser
 
 	if waitingUser {
-		return buildWaitingUserOutbound(ctx, msg, cardOut, tenantSession), nil
+		outbound := buildWaitingUserOutbound(ctx, msg, cardOut, tenantSession)
+		a.storePendingAskUserOutbound(msg, outbound)
+		return outbound, nil
 	}
 
 	cardUserMsg := llm.NewUserMessage(summary)

@@ -42,18 +42,24 @@ func (es *eventStream) lastSeq() uint64 {
 	return es.seq.Load()
 }
 
-// push appends a seq-stamped event to the ring buffer.
-// For state-snapshot types (progress, stream_content), only the latest event
-// of each type is kept — replaces the previous one in-place instead of growing.
+// push appends a seq-stamped event to the ring buffer. Consecutive stateless
+// snapshots share one slot. Stream fields are cumulative but arrive in
+// independent messages, so replacing a stream snapshot must merge those fields.
 func (es *eventStream) push(msg protocol.WSMessage) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	if !isStatefulMsg(msg) {
+	if !isStatefulSSEEvent(msg) {
+		key := statelessSlotKey(&msg)
 		for i := es.count - 1; i >= 0; i-- {
 			idx := (es.head + i) % eventStreamSize
-			if es.buf[idx].Type == msg.Type {
-				es.buf[idx] = msg
-				return
+			previous := es.buf[idx]
+			if isSSEStreamMergeBoundary(msg, previous) {
+				break
+			}
+			if statelessSlotKey(&previous) == key {
+				msg = mergeStatelessEvent(previous, msg)
+				es.removeAt(i)
+				break
 			}
 		}
 	}
@@ -64,6 +70,60 @@ func (es *eventStream) push(msg protocol.WSMessage) {
 	es.buf[es.tail] = msg
 	es.tail = (es.tail + 1) % eventStreamSize
 	es.count++
+}
+
+// removeAt removes a logical ring offset while preserving sequence order.
+// The caller holds es.mu.
+func (es *eventStream) removeAt(offset int) {
+	for i := offset; i < es.count-1; i++ {
+		to := (es.head + i) % eventStreamSize
+		from := (es.head + i + 1) % eventStreamSize
+		es.buf[to] = es.buf[from]
+	}
+	es.tail = (es.tail - 1 + eventStreamSize) % eventStreamSize
+	es.buf[es.tail] = protocol.WSMessage{}
+	es.count--
+}
+
+// isStatefulSSEEvent classifies messages after normalizeSSEEvent has split
+// stream-only progress into stream_content. Every remaining progress event is
+// structured and must be retained independently for reconnect replay.
+func isStatefulSSEEvent(msg protocol.WSMessage) bool {
+	return msg.Type == protocol.MsgTypeProgress || isStatefulMsg(msg)
+}
+
+func isSSEStreamMergeBoundary(current, previous protocol.WSMessage) bool {
+	if current.Type != protocol.MsgTypeStreamContent || current.Progress == nil || !isStatefulSSEEvent(previous) {
+		return false
+	}
+	if previous.Type != protocol.MsgTypeProgress || previous.Progress == nil {
+		return true
+	}
+	currentSource := current.Progress.ChatID
+	previousSource := previous.Progress.ChatID
+	return currentSource == "" || previousSource == "" || currentSource == previousSource
+}
+
+func mergeStatelessEvent(previous, current protocol.WSMessage) protocol.WSMessage {
+	if current.Type != protocol.MsgTypeStreamContent || previous.Progress == nil || current.Progress == nil {
+		return current
+	}
+
+	merged := *current.Progress
+	if len(previous.Progress.StreamContent) > len(merged.StreamContent) {
+		merged.StreamContent = previous.Progress.StreamContent
+	}
+	if len(previous.Progress.ReasoningStreamContent) > len(merged.ReasoningStreamContent) {
+		merged.ReasoningStreamContent = previous.Progress.ReasoningStreamContent
+	}
+	if len(previous.Progress.StreamingTools) > len(merged.StreamingTools) {
+		merged.StreamingTools = previous.Progress.StreamingTools
+	}
+	if previous.Progress.StreamTokens > merged.StreamTokens {
+		merged.StreamTokens = previous.Progress.StreamTokens
+	}
+	current.Progress = &merged
+	return current
 }
 
 // clear drops buffered events without resetting the monotonic sequence.

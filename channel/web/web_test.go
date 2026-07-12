@@ -58,6 +58,7 @@ func startTestServer(t *testing.T, wc *WebChannel) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wc.handleWS)
+	mux.HandleFunc("/api/sse", wc.authMiddleware(wc.handleSSE))
 	mux.HandleFunc("/api/auth/register", wc.handleRegister)
 	mux.HandleFunc("/api/auth/login", wc.handleLogin)
 	mux.HandleFunc("/api/auth/logout", wc.handleLogout)

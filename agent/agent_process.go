@@ -12,6 +12,8 @@ import (
 	"xbot/protocol"
 	"xbot/session"
 	"xbot/tools"
+
+	"github.com/google/uuid"
 )
 
 // injectSystemNotes appends runtime state notes (background tasks, interactive
@@ -470,6 +472,9 @@ func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *
 	for k, v := range out.Metadata {
 		meta[k] = v
 	}
+	if meta["request_id"] == "" {
+		meta["request_id"] = uuid.NewString()
+	}
 	// Persist iteration history to session so it survives restarts.
 	if len(out.IterationHistory) > 0 {
 		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
@@ -491,6 +496,23 @@ func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *
 	}
 }
 
+func (a *Agent) storePendingAskUserOutbound(msg bus.InboundMessage, outbound *channel.OutboundMsg) {
+	if a == nil || outbound == nil {
+		return
+	}
+	askPayload := &protocol.ProgressEvent{}
+	if outbound.Metadata != nil {
+		askPayload.RequestID = outbound.Metadata["request_id"]
+		if qJSON := outbound.Metadata["ask_questions"]; qJSON != "" {
+			var questions []protocol.AskUserQuestion
+			if json.Unmarshal([]byte(qJSON), &questions) == nil {
+				askPayload.Questions = questions
+			}
+		}
+	}
+	a.setPendingAskUser(msg.Channel, msg.ChatID, askPayload)
+}
+
 // - Empty content with optional reply: clear progress state
 // - Normal: persist assistant message, send, add reaction
 func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession, replyPolicy string) (*channel.OutboundMsg, error) {
@@ -500,20 +522,8 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// If a tool is waiting for user response, send WaitingUser outbound
 	if waitingUser {
 		outbound := buildWaitingUserOutbound(ctx, msg, out, tenantSession)
-		// Store the pending AskUser payload so WS reconnect can resend it.
-		if a != nil && outbound != nil {
-			askPayload := &protocol.ProgressEvent{}
-			if outbound.Metadata != nil {
-				askPayload.RequestID = outbound.Metadata["request_id"]
-				if qJSON := outbound.Metadata["ask_questions"]; qJSON != "" {
-					var qs []protocol.AskUserQuestion
-					if json.Unmarshal([]byte(qJSON), &qs) == nil {
-						askPayload.Questions = qs
-					}
-				}
-			}
-			a.waitingUserSessions.Store(msg.Channel+":"+msg.ChatID, askPayload)
-		}
+		// Store the pending AskUser payload so reconnect can resend it.
+		a.storePendingAskUserOutbound(msg, outbound)
 		return outbound, nil
 	}
 
