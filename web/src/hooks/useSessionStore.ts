@@ -28,6 +28,7 @@ import { setCwd } from '@/components/agent/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { groupSessions, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus } from '@/types/shared'
+import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
 const STARRED_KEY = 'xbot-starred'
 const DEFAULT_CHANNEL = 'web'
@@ -57,6 +58,8 @@ export interface SessionStore {
   error: string | null
   /** SubAgent sessions for visible parent chats. */
   subAgents: SessionInfo[]
+  /** Pending AskUser prompts keyed by "channel:chatID". Survives session switch. */
+  askUserPrompts: Map<string, AskUserPrompt>
   setCategory: (c: SessionCategory) => void
   refresh: () => Promise<void>
   toggleStar: (id: string) => void
@@ -64,6 +67,8 @@ export interface SessionStore {
   switchSession: (id: string, channel: string) => Promise<void>
   renameSession: (id: string, channel: string, label: string) => Promise<boolean>
   deleteSession: (id: string, channel: string) => Promise<boolean>
+  /** Clear the AskUser prompt for a session (after answer/cancel). */
+  clearAskUserPrompt: (channel: string, chatID: string) => void
 }
 
 /* ── localStorage starred ids ── */
@@ -674,6 +679,8 @@ export function useSessionStoreImpl(): SessionStore {
   const [category, setCategory] = useState<SessionCategory>('all')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // AskUser prompts keyed by "channel:chatID" — survives session switch.
+  const [askUserPrompts, setAskUserPrompts] = useState<Map<string, AskUserPrompt>>(new Map())
 
   // Keep the latest session list available to WS handlers without re-binding.
   const sessionsRef = useRef(sessions)
@@ -757,7 +764,7 @@ export function useSessionStoreImpl(): SessionStore {
       const carried = statusBy.get(sessionKey(node))
       const children = node.children?.map(apply)
       if (!carried) return { ...node, children }
-      if (carried.status === 'waiting_input' || carried.status === 'error') {
+      if (carried.status === 'waiting_input' || carried.status === 'error' || carried.status === 'unread') {
         return { ...node, status: carried.status, running: carried.running ?? node.running, children }
       }
       return { ...node, children }
@@ -883,13 +890,18 @@ export function useSessionStoreImpl(): SessionStore {
       const selector = { channel: useChannel, chatID: id }
       activeSessionRef.current = selector
       setActiveSession(selector)
-      setSessions((prev) => prev.map((s) => ({ ...s, isCurrent: sameSession(s, { channel: useChannel, chatID: id }) })))
+      setSessions((prev) => prev.map((s) => {
+        if (sameSession(s, selector)) {
+          // Clear unread status when switching to this session
+          return { ...s, isCurrent: true, status: s.status === 'unread' ? 'idle' : s.status }
+        }
+        return { ...s, isCurrent: false }
+      }))
     },
     [ws],
   )
 
   const renameSession = useCallback(async (id: string, channel: string, label: string): Promise<boolean> => {
-    if ((channel || DEFAULT_CHANNEL) !== DEFAULT_CHANNEL) return false
     try {
       const res = await fetch(`/api/chats/${encodeURIComponent(id)}/rename`, {
         method: 'POST',
@@ -907,7 +919,6 @@ export function useSessionStoreImpl(): SessionStore {
 
   const deleteSession = useCallback(
     async (id: string, channel: string): Promise<boolean> => {
-      if ((channel || DEFAULT_CHANNEL) !== DEFAULT_CHANNEL) return false
       try {
         const res = await fetch(`/api/chats/${encodeURIComponent(id)}`, {
           method: 'DELETE',
@@ -963,7 +974,13 @@ export function useSessionStoreImpl(): SessionStore {
           setStatus(selector, 'running')
           break
         case 'idle':
-          setStatus(selector, 'idle')
+          // If this session is not the active one, mark as unread (yellow)
+          // instead of idle (gray) so the user knows new messages arrived.
+          if (activeSessionRef.current && !sameSession(activeSessionRef.current, selector)) {
+            setStatus(selector, 'unread')
+          } else {
+            setStatus(selector, 'idle')
+          }
           break
         case 'deleted':
           setSessions((prev) => prev.filter((s) => !sameSession(s, selector)))
@@ -989,12 +1006,7 @@ export function useSessionStoreImpl(): SessionStore {
     }
   }, [])
 
-  // ask_user → waiting_input.
-  // The backend ask_user frame does NOT carry chat_id on the envelope (unlike
-  // text frames); the hub routes it only to clients subscribed to the target
-  // chatID. So resolve the target from our live subscribed chatID ref (the
-  // only chat a web client receives ask_user for), and prefer the envelope
-  // chat_id when present (forward-compat with a backend that stamps it).
+  // ask_user → waiting_input + store prompt for the session.
   useEffect(() => {
     return ws.onMessage((msg) => {
       if (msg.type !== 'ask_user') return
@@ -1002,7 +1014,31 @@ export function useSessionStoreImpl(): SessionStore {
       const fallback = activeSessionRef.current
       const chatID = explicitChatID ?? subscribedChatIDRef.current ?? fallback?.chatID
       const channel = explicitChatID || subscribedChatIDRef.current ? DEFAULT_CHANNEL : (fallback?.channel ?? DEFAULT_CHANNEL)
-      if (chatID) setStatus({ channel, chatID }, 'waiting_input')
+      if (chatID) {
+        setStatus({ channel, chatID }, 'waiting_input')
+        // Store the prompt so it survives session switch.
+        const p = msg.progress
+        const questions: AskUserQuestion[] = []
+        if (p?.questions && Array.isArray(p.questions)) {
+          for (const q of p.questions) {
+            if (!q || typeof q !== 'object') continue
+            const o = q as Record<string, unknown>
+            const question = typeof o.question === 'string' ? o.question : ''
+            if (!question) continue
+            const options = Array.isArray(o.options)
+              ? o.options.filter((x): x is string => typeof x === 'string')
+              : undefined
+            questions.push({ question, options })
+          }
+        }
+        const requestId = (p?.request_id as string | undefined) ?? msg.id ?? String(Date.now())
+        const key = `${channel}:${chatID}`
+        setAskUserPrompts((prev) => {
+          const next = new Map(prev)
+          next.set(key, { requestId, questions })
+          return next
+        })
+      }
     })
   }, [ws, setStatus])
 
@@ -1012,6 +1048,15 @@ export function useSessionStoreImpl(): SessionStore {
   }, [refresh])
 
   const sortedSessions = useMemo(() => sortSessions(sessions, starredIds), [sessions, starredIds])
+  const clearAskUserPrompt = useCallback((channel: string, chatID: string) => {
+    const key = `${channel}:${chatID}`
+    setAskUserPrompts((prev) => {
+      const next = new Map(prev)
+      next.delete(key)
+      return next
+    })
+  }, [])
+
   const groups = useMemo(() => groupSessions(sessions, category, starredIds), [sessions, category, starredIds])
   const activeSessionId = activeSession?.chatID ?? null
 
@@ -1026,6 +1071,7 @@ export function useSessionStoreImpl(): SessionStore {
     loading,
     error,
     subAgents,
+    askUserPrompts,
     setCategory,
     refresh,
     toggleStar,
@@ -1033,8 +1079,9 @@ export function useSessionStoreImpl(): SessionStore {
     switchSession,
     renameSession,
     deleteSession,
+    clearAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, loading, error, subAgents,
-    setCategory, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession])
+    askUserPrompts, setCategory, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession, clearAskUserPrompt])
 }
 
 function sameSessionList(a: SessionInfo[], b: SessionInfo[]): boolean {

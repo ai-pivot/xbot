@@ -347,6 +347,12 @@ type Agent struct {
 	// key: "channel:chatID" -> *protocol.ProgressEvent
 	lastProgressSnapshot sync.Map
 
+	// waitingUserSessions stores pending AskUser prompts per chat.
+	// Set when buildWaitingUserOutbound fires; deleted when the answer arrives.
+	// Used by GetPendingAskUser to resend ask_user on WS reconnect.
+	// key: "channel:chatID" -> *protocol.ProgressEvent (the ask_user payload)
+	waitingUserSessions sync.Map
+
 	// streamState stores live LLM streaming content per chat, updated by stream
 	// callbacks (streamContentFunc/streamReasoningFunc/streamToolCallFunc).
 	// GetActiveProgress merges these fields into the returned snapshot.
@@ -851,6 +857,55 @@ func (a *Agent) IsProcessing(senderID string) bool {
 		return true
 	})
 	return found
+}
+
+// GetPendingAskUser returns the pending AskUser prompt for a chat, or nil.
+// Used by the web channel to resend ask_user on WS reconnect so refreshing
+// the page doesn't lose the prompt.
+// Searches by chatID only (chatID is globally unique across channels).
+func (a *Agent) GetPendingAskUser(ch, chatID string) *protocol.ProgressEvent {
+	// Try exact key first (channel:chatID)
+	key := ch + ":" + chatID
+	if v, ok := a.waitingUserSessions.Load(key); ok {
+		snapshot := v.(*protocol.ProgressEvent)
+		result := *snapshot
+		return &result
+	}
+	// Fallback: search by chatID suffix (any channel)
+	var found *protocol.ProgressEvent
+	a.waitingUserSessions.Range(func(k, v any) bool {
+		if s, ok := k.(string); ok && strings.HasSuffix(s, ":"+chatID) {
+			snapshot := v.(*protocol.ProgressEvent)
+			result := *snapshot
+			found = &result
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// ClearPendingAskUser removes the pending AskUser prompt for a chat.
+// Called when the user answers or cancels.
+// Searches by chatID only (chatID is globally unique across channels).
+func (a *Agent) ClearPendingAskUser(ch, chatID string) {
+	// Try exact key first
+	key := ch + ":" + chatID
+	if _, ok := a.waitingUserSessions.Load(key); ok {
+		a.waitingUserSessions.Delete(key)
+		return
+	}
+	// Fallback: search by chatID suffix
+	var keysToDelete []string
+	a.waitingUserSessions.Range(func(k, v any) bool {
+		if s, ok := k.(string); ok && strings.HasSuffix(s, ":"+chatID) {
+			keysToDelete = append(keysToDelete, s)
+		}
+		return true
+	})
+	for _, k := range keysToDelete {
+		a.waitingUserSessions.Delete(k)
+	}
 }
 
 // SetProxyLLM injects a ProxyLLM for a user (when their active runner has local LLM).
@@ -2561,6 +2616,8 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// 移除 Assemble 追加的 user message，并精确替换最近的 AskUser tool message。
 	askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
 	if askUserAnswered {
+		// Clear pending AskUser state — the user has answered.
+		a.ClearPendingAskUser(msg.Channel, msg.ChatID)
 		// Remove last user message appended by Assemble
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 			messages = messages[:len(messages)-1]

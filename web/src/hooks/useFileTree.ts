@@ -55,8 +55,10 @@ function cloneTree(nodes: FileNode[]): FileNode[] {
   return nodes.map((n) => ({ ...n, children: n.children ? cloneTree(n.children) : undefined }))
 }
 
-export function useFileTree(): UseFileTreeResult {
+export function useFileTree(rootPath?: string | null): UseFileTreeResult {
   const { cwd } = useCwd()
+  // Use the explicit rootPath if provided, otherwise fall back to session CWD.
+  const root = rootPath ?? cwd
   const [tree, setTree] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -64,13 +66,13 @@ export function useFileTree(): UseFileTreeResult {
   const reloadTokenRef = useRef(0)
 
   const reload = useCallback(async () => {
-    if (!cwd) return
+    if (!root) return
     const token = ++reloadTokenRef.current
     setLoading(true)
     setError(null)
     try {
       invalidateFsCache()
-      const result = await buildTopLevel(cwd)
+      const result = await buildTopLevel(root)
       if (token !== reloadTokenRef.current) return // stale
       setTree(result)
     } catch (e) {
@@ -80,7 +82,7 @@ export function useFileTree(): UseFileTreeResult {
     } finally {
       if (token === reloadTokenRef.current) setLoading(false)
     }
-  }, [cwd])
+  }, [root])
 
   // Re-fetch when the CWD changes.
   useEffect(() => {

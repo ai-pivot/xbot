@@ -345,6 +345,83 @@ func (wc *WebChannel) handleFsRead(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleFsRaw serves the raw content of a file (for images, etc).
+// Unlike handleFsRead which returns JSON, this returns the raw file bytes
+// with an appropriate Content-Type based on file extension.
+func (wc *WebChannel) handleFsRaw(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	rawPath := r.URL.Query().Get("path")
+	if rawPath == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
+		return
+	}
+
+	safePath, err := resolveSafePath(rawPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	info, err := os.Stat(safePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "file not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if info.IsDir() {
+		http.Error(w, "path is a directory", http.StatusBadRequest)
+		return
+	}
+
+	// Set Content-Type based on extension
+	contentType := contentTypeFromExt(safePath)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	http.ServeFile(w, r, safePath)
+}
+
+// contentTypeFromExt returns a MIME type for common image/web file extensions.
+func contentTypeFromExt(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".svg":
+		return "image/svg+xml"
+	case ".html", ".htm":
+		return "text/html; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".js":
+		return "application/javascript"
+	case ".json":
+		return "application/json"
+	case ".pdf":
+		return "application/pdf"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

@@ -1598,7 +1598,7 @@ func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 	// For web channel: check chat ownership via user_chats table.
 	// For other channels (admin only): verify the tenant exists in DB.
 	if channel == "web" {
-		if !wc.userOwnsChat(senderID, chatID) {
+		if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
 			jsonErrorResponse(w, http.StatusForbidden, "not your chat")
 			return
 		}
@@ -1645,8 +1645,8 @@ func (wc *WebChannel) handleChatDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ownership check: user can only delete their own chats
-	if !wc.userOwnsChat(senderID, chatID) {
+	// Ownership check: admin can delete any chat; non-admin must own it
+	if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
 		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
 		return
 	}
@@ -1684,8 +1684,8 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ownership check: user can only rename their own chats
-	if !wc.userOwnsChat(senderID, chatID) {
+	// Ownership check: admin can rename any chat; non-admin must own it
+	if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
 		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
 		return
 	}

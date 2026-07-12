@@ -156,8 +156,8 @@ export function parentPath(path: string): string {
 /** Fetch an image file as a blob URL (for ImagePreview). */
 export async function fetchImageBlobUrl(path: string): Promise<string> {
   const params = new URLSearchParams({ path })
-  const res = await fetch(`/api/fs/read?${params}`)
-  if (!res.ok) throw new Error(`fs/read failed: ${res.status}`)
+  const res = await fetch(`/api/fs/raw?${params}`)
+  if (!res.ok) throw new Error(`fs/raw failed: ${res.status}`)
   const blob = await res.blob()
   return URL.createObjectURL(blob)
 }

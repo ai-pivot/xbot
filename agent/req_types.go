@@ -66,6 +66,7 @@ const (
 	MethodSetChannelConfig             = "set_channel_config"
 	MethodIsProcessing                 = "is_processing"
 	MethodGetActiveProgress            = "get_active_progress"
+	MethodGetPendingAskUser            = "get_pending_ask_user"
 	MethodGetTodos                     = "get_todos"
 	MethodCountInteractiveSessions     = "count_interactive_sessions"
 	MethodListInteractiveSessions      = "list_interactive_sessions"
@@ -338,6 +339,11 @@ type getActiveProgressReq struct {
 	Channel       string `json:"channel"`
 	ChatID        string `json:"chat_id"`
 	FromIteration int    `json:"from_iteration"`
+}
+
+type getPendingAskUserReq struct {
+	Channel string `json:"channel"`
+	ChatID  string `json:"chat_id"`
 }
 
 type getTodosReq struct {

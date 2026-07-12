@@ -245,21 +245,15 @@ func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 
 // RenameChat updates the label of a chatroom.
 func (s *ChatService) RenameChat(channel, senderID, chatID, label string) error {
-	if chatID == senderID {
-		// Default chat: insert or update in user_chats
-		conn := s.db.Conn()
-		_, err := conn.Exec(`
-			INSERT INTO user_chats (channel, sender_id, chat_id, label)
-			VALUES (?, ?, ?, ?)
-			ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
-			channel, senderID, chatID, label, label,
-		)
-		return err
-	}
-
-	_, err := s.db.Conn().Exec(
-		"UPDATE user_chats SET label = ? WHERE channel = ? AND sender_id = ? AND chat_id = ?",
-		label, channel, senderID, chatID,
+	// Upsert: try UPDATE first (any channel), then INSERT if no row exists.
+	// This handles renaming CLI/feishu sessions from the Web UI, where the
+	// caller passes channel="web" but the session lives under a different channel.
+	conn := s.db.Conn()
+	_, err := conn.Exec(`
+		INSERT INTO user_chats (channel, sender_id, chat_id, label)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
+		channel, senderID, chatID, label, label,
 	)
 	return err
 }

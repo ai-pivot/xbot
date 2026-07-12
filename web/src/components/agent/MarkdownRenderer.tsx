@@ -67,7 +67,11 @@ function CopyButton({ getText }: { getText: () => string }) {
       type="button"
       aria-label="Copy code"
       onClick={onClick}
-      className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md bg-bg-tertiary/80 text-text-secondary opacity-0 transition-opacity hover:text-text-primary group-hover/code:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+      className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md opacity-0 transition-opacity hover:text-text-primary group-hover/code:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+      style={{
+        backgroundColor: 'color-mix(in srgb, var(--md-code-bg) 80%, var(--md-code-border))',
+        color: 'var(--md-code-lang-text)',
+      }}
     >
       {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
     </button>
@@ -95,7 +99,11 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
   if (inline || (!lang && !text.includes('\n'))) {
     return (
       <code
-        className="rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-[0.85em] text-text-primary"
+        className="rounded px-1.5 py-0.5 font-mono text-[0.85em]"
+        style={{
+          backgroundColor: 'var(--md-inline-code-bg)',
+          color: 'var(--md-inline-code-text)',
+        }}
         {...props}
       >
         {children}
@@ -106,14 +114,23 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
   const html = (lang ? highlightCode(text, lang) : null) ?? highlightAuto(text)
 
   return (
-    <div className="group/code relative my-2 overflow-hidden rounded-md border border-border bg-editor-bg">
+    <div
+      className="group/code relative my-2 overflow-hidden rounded-md"
+      style={{
+        border: '1px solid var(--md-code-border)',
+        backgroundColor: 'var(--md-code-bg)',
+      }}
+    >
       {lang && (
-        <span className="absolute left-3 top-2 z-10 select-none font-mono text-[11px] uppercase text-text-muted">
+        <span
+          className="absolute left-3 top-2 z-10 select-none font-mono text-[11px] uppercase"
+          style={{ color: 'var(--md-code-lang-text)' }}
+        >
           {lang}
         </span>
       )}
       <CopyButton getText={() => text} />
-      <pre className="overflow-x-auto p-3 pt-7 text-[13px] leading-relaxed">
+      <pre className="overflow-x-auto p-3 pt-7 text-[13px] leading-relaxed whitespace-pre-wrap break-words">
         {html ? (
           <code
             className={cn('font-mono hljs', className)}
@@ -135,7 +152,13 @@ const COMPONENTS = {
   code: CodeBlock,
   // Open links in a new tab safely; render anchor styling inline.
   a: ({ node: _node, ...props }: ComponentPropsWithoutRef<'a'> & { node?: unknown }) => (
-    <a target="_blank" rel="noopener noreferrer" className="text-accent underline" {...props} />
+    <a
+      target="_blank"
+      rel="noopener noreferrer"
+      className="underline"
+      style={{ color: 'var(--md-link)' }}
+      {...props}
+    />
   ),
   // Constrain images to the message width.
   img: ({ node: _node, alt, ...props }: ComponentPropsWithoutRef<'img'> & { node?: unknown }) => (

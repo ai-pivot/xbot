@@ -179,23 +179,12 @@ export function useTabManager(): TabManager {
       taskChannel: input.type === 'background' ? input.data?.taskChannel : undefined,
       taskChatID: input.type === 'background' ? input.data?.taskChatID : undefined,
     }
-    const shouldUseWorkGroup = input.closable
-    const existingWorkPanelId =
-      shouldUseWorkGroup && rightGroupPanelIdRef.current && api.getPanel(rightGroupPanelIdRef.current)
-        ? rightGroupPanelIdRef.current
-        : null
-    if (existingWorkPanelId) {
-      const rightPanel = api.getPanel(existingWorkPanelId)
-      rightPanel?.api.setActive()
-    }
+    // File/work tabs open in the same group as Agent, as a sibling tab
+    // (not a separate right-side column).
     api.addPanel({ id: panelId, title: input.title, component: input.type, params })
     panelIdByTab.current.set(tabId, panelId)
     const panel = api.getPanel(panelId)
-    if (panel && shouldUseWorkGroup) {
-      if (!existingWorkPanelId) {
-        panel.api.moveTo({ group: panel.group, position: 'right' })
-      }
-      rightGroupPanelIdRef.current = panelId
+    if (panel) {
       panel.api.setActive()
     }
     return tabId

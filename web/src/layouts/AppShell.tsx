@@ -5,7 +5,7 @@
  *   Dockview workspace (flex-1) · RightSidebar (0–280px, animated, collapsible) ·
  *   RightActivityBar (48px)
  *
- * The left ActivityBar owns session-list toggle + theme + settings. Settings opens
+ * The left ActivityBar owns session-list toggle + settings. Settings opens
  * a SettingsDialog Sheet (Spec 7) — NOT a sidebar view. The right sidebar hosts
  * file browser / search / info / tasks panels, each switchable via its
  * own RightActivityBar (Spec 6).
@@ -28,6 +28,7 @@ import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 const MIN_LEFT_WIDTH = 200
 const MAX_LEFT_WIDTH = 460
 const LEFT_RATIO = 0.22
+const LEFT_WIDTH_KEY = 'xbot:leftSidebarWidth'
 
 export function AppShell() {
   const isMobile = useIsMobile()
@@ -35,10 +36,17 @@ export function AppShell() {
   const sessionStore = useSessionStore()
   const [activeView, setActiveView] = useState<SidebarView | null>('sessions')
   const [activePanel, setActivePanel] = useState<SidebarPanel | null>(null)
-  const [leftWidth, setLeftWidth] = useState(() => adaptiveLeftWidth())
+  const [leftWidth, setLeftWidth] = useState(() => {
+    const stored = localStorage.getItem(LEFT_WIDTH_KEY)
+    if (stored) {
+      const w = Number(stored)
+      if (!Number.isNaN(w)) return clampLeftWidth(w)
+    }
+    return adaptiveLeftWidth()
+  })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const leftDragging = useRef(false)
-  const leftUserSized = useRef(false)
+  const leftUserSized = useRef(localStorage.getItem(LEFT_WIDTH_KEY) !== null)
 
   // Persist and restore tab layout per session (Child 5 §3).
   useLayoutPersistence(tabManager, sessionStore)
@@ -72,6 +80,11 @@ export function AppShell() {
       if (!leftDragging.current) return
       leftDragging.current = false
       document.body.style.userSelect = ''
+      // Persist the user-chosen width so it survives refresh.
+      setLeftWidth((w) => {
+        localStorage.setItem(LEFT_WIDTH_KEY, String(w))
+        return w
+      })
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)

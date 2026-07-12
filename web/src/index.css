@@ -3,6 +3,8 @@
 @import "dockview/dist/styles/dockview.css";
 /* KaTeX math rendering styles (Spec 4 Markdown). */
 @import "katex/dist/katex.min.css";
+/* Pluggable markdown code highlighting themes. */
+@import "./styles/markdown-themes.css";
 
 /* dark variant driven by <html class="dark"> */
 @custom-variant dark (&:is(.dark *));
@@ -47,6 +49,22 @@
   --diff-removed: rgba(209, 36, 47, 0.16);
 
   --radius: 0.5rem;
+
+  /* ── Markdown prose variables (default: follow app semantic tokens) ── */
+  --md-text: var(--text-primary);
+  --md-heading: var(--text-primary);
+  --md-link: var(--accent);
+  --md-border: var(--border);
+  --md-blockquote-text: var(--text-secondary);
+  --md-blockquote-border: var(--accent);
+  --md-blockquote-bg: var(--bg-secondary);
+  --md-table-header-bg: var(--bg-secondary);
+  --md-table-border: var(--border);
+  --md-inline-code-bg: var(--bg-tertiary);
+  --md-inline-code-text: var(--text-primary);
+  --md-code-bg: var(--editor-bg);
+  --md-code-border: var(--border);
+  --md-code-lang-text: var(--text-muted);
 }
 
 /* shadcn semantic tokens (light) → VSCode palette */
@@ -119,6 +137,22 @@
    * dark editor surface (VSCode uses ~rgba(155,185,85,.2)/rgba(255,0,0,.2)). */
   --diff-added: rgba(74, 200, 142, 0.22);
   --diff-removed: rgba(244, 135, 113, 0.22);
+
+  /* ── Markdown prose variables (dark: follow app semantic tokens) ── */
+  --md-text: var(--text-primary);
+  --md-heading: var(--text-primary);
+  --md-link: var(--accent);
+  --md-border: var(--border);
+  --md-blockquote-text: var(--text-secondary);
+  --md-blockquote-border: var(--accent);
+  --md-blockquote-bg: var(--bg-secondary);
+  --md-table-header-bg: var(--bg-secondary);
+  --md-table-border: var(--border);
+  --md-inline-code-bg: var(--bg-tertiary);
+  --md-inline-code-text: var(--text-primary);
+  --md-code-bg: var(--editor-bg);
+  --md-code-border: var(--border);
+  --md-code-lang-text: var(--text-muted);
 }
 
 .dark {
@@ -322,9 +356,13 @@
  * Markdown body typography (Spec 4). Minimal prose styles so agent output
  * (headings, lists, tables, blockquotes) renders cleanly inside chat bubbles
  * without pulling in a full typography plugin. KISS.
+ *
+ * Uses --md-* variables so a [data-md-theme] can override the full look
+ * (prose + code) independently from the app's light/dark palette.
  * ------------------------------------------------------------------------- */
 .markdown-body {
   word-break: break-word;
+  color: var(--md-text);
 }
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
@@ -332,19 +370,24 @@
   font-weight: 600;
   line-height: 1.3;
   margin: 1em 0 0.5em;
+  color: var(--md-heading);
 }
 .markdown-body h1 { font-size: 1.4em; }
 .markdown-body h2 { font-size: 1.25em; }
 .markdown-body h3 { font-size: 1.1em; }
 .markdown-body h4 { font-size: 1em; }
 .markdown-body p { margin: 0.5em 0; }
-.markdown-body ul, .markdown-body ol { margin: 0.5em 0; padding-left: 1.5em; }
+.markdown-body ul, .markdown-body ol { margin: 0.5em 0; padding-left: 1.5em; list-style-position: outside; }
+.markdown-body ul { list-style-type: disc; }
+.markdown-body ol { list-style-type: decimal; }
 .markdown-body li { margin: 0.2em 0; }
 .markdown-body blockquote {
-  border-left: 3px solid var(--border);
+  border-left: 3px solid var(--md-blockquote-border);
   margin: 0.5em 0;
   padding: 0 0.75em;
-  color: var(--text-secondary);
+  color: var(--md-blockquote-text);
+  background: var(--md-blockquote-bg);
+  border-radius: 0 4px 4px 0;
 }
 .markdown-body table {
   border-collapse: collapse;
@@ -353,12 +396,12 @@
   overflow-x: auto;
 }
 .markdown-body th, .markdown-body td {
-  border: 1px solid var(--border);
+  border: 1px solid var(--md-table-border);
   padding: 0.35em 0.6em;
   text-align: left;
 }
-.markdown-body th { background: var(--bg-secondary); font-weight: 600; }
-.markdown-body hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
+.markdown-body th { background: var(--md-table-header-bg); font-weight: 600; }
+.markdown-body hr { border: 0; border-top: 1px solid var(--md-border); margin: 1em 0; }
 /* KaTeX display blocks stay scrollable on narrow widths. */
 .markdown-body .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.25em 0; }
 
@@ -388,12 +431,16 @@
 }
 
 /* Remove VS theme decorative borders — replaces fragile inline style approach */
+.dockview-theme-vs .dv-tabs-and-actions-container {
+  border-bottom: 1px solid var(--border) !important;
+  background-color: var(--bg-secondary) !important;
+}
+
+/* VSCode-style: tabs sit flush in the tab bar, no extra decoration */
 .dockview-theme-vs .dv-tab {
   border-top: none !important;
-  background-color: transparent !important;
-}
-.dockview-theme-vs .dv-tabs-and-actions-container {
   border-bottom: none !important;
+  background-color: transparent !important;
 }
 
 /* ── Shimmer color variable — defined for both themes ────────────────────── */

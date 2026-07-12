@@ -69,7 +69,7 @@ vi.mock('@/hooks/useTabManager', () => ({
 }))
 
 vi.mock('@/hooks/useTheme', () => ({
-  useTheme: () => ({ theme: 'dark', setTheme: vi.fn() }),
+  useTheme: () => ({ theme: 'dark', accentColor: '#3388BB', setAccentColor: vi.fn(), mdTheme: 'vscode-dark', setMdTheme: vi.fn() }),
 }))
 
 vi.mock('@/providers/WSProvider', () => ({

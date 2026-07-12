@@ -4,11 +4,15 @@
  * Lightweight prose typography for the rendered Markdown, plus token colors
  * for highlight.js output that follow the app theme via the `.dark` class.
  * Kept small on purpose — the editor already owns the dense code styling.
+ *
+ * All colors use --md-* / --syntax-* CSS variables so a [data-md-theme]
+ * attribute can override the full look (prose + code) independently from
+ * the app's light/dark palette.
  */
 .md-body {
   font-size: 14px;
   line-height: 1.7;
-  color: var(--text-primary);
+  color: var(--md-text);
 }
 .md-body > :first-child {
   margin-top: 0;
@@ -20,15 +24,16 @@
   font-weight: 600;
   line-height: 1.3;
   margin: 1.4em 0 0.6em;
+  color: var(--md-heading);
 }
 .md-body h1 {
   font-size: 1.6em;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--md-border);
   padding-bottom: 0.25em;
 }
 .md-body h2 {
   font-size: 1.35em;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--md-border);
   padding-bottom: 0.2em;
 }
 .md-body h3 {
@@ -41,20 +46,23 @@
 .md-body ol {
   margin: 0.6em 0;
   padding-left: 1.6em;
+  list-style-position: outside;
 }
+.md-body ul { list-style-type: disc; }
+.md-body ol { list-style-type: decimal; }
 .md-body li {
   margin: 0.25em 0;
 }
 .md-body blockquote {
   margin: 0.8em 0;
   padding: 0.2em 1em;
-  border-left: 3px solid var(--accent);
-  color: var(--text-secondary);
-  background: var(--bg-secondary);
+  border-left: 3px solid var(--md-blockquote-border);
+  color: var(--md-blockquote-text);
+  background: var(--md-blockquote-bg);
   border-radius: 0 4px 4px 0;
 }
 .md-body a {
-  color: var(--accent);
+  color: var(--md-link);
   text-decoration: none;
 }
 .md-body a:hover {
@@ -68,17 +76,17 @@
 }
 .md-body th,
 .md-body td {
-  border: 1px solid var(--border);
+  border: 1px solid var(--md-table-border);
   padding: 6px 12px;
   text-align: left;
 }
 .md-body th {
-  background: var(--bg-secondary);
+  background: var(--md-table-header-bg);
   font-weight: 600;
 }
 .md-body hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--md-border);
   margin: 1.2em 0;
 }
 .md-body img {
@@ -89,17 +97,20 @@
   font-family: 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
   font-size: 0.88em;
   padding: 0.15em 0.4em;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  background: var(--md-inline-code-bg);
+  color: var(--md-inline-code-text);
+  border: 1px solid var(--md-code-border);
   border-radius: 4px;
 }
 .md-body pre {
   margin: 0.8em 0;
   padding: 12px 14px;
-  background: var(--editor-bg);
-  border: 1px solid var(--border);
+  background: var(--md-code-bg);
+  border: 1px solid var(--md-code-border);
   border-radius: 6px;
   overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .md-body pre code {
   font-family: 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
@@ -110,69 +121,40 @@
   padding: 0;
 }
 
-/* highlight.js token colors — light by default, overridden in dark. */
+/* highlight.js token colors — driven by --syntax-* variables.
+ * Defaults from index.css, overridable via [data-md-theme]. */
 .hljs {
-  color: var(--text-primary);
+  color: var(--syntax-text);
 }
 .hljs-comment,
 .hljs-quote {
-  color: #6a737d;
+  color: var(--syntax-comment);
   font-style: italic;
 }
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-built_in {
-  color: #0000ff;
+  color: var(--syntax-keyword);
 }
 .hljs-string,
 .hljs-attr {
-  color: #a31515;
+  color: var(--syntax-string);
 }
 .hljs-number,
 .hljs-literal {
-  color: #098658;
+  color: var(--syntax-number);
 }
 .hljs-title,
 .hljs-title.function_,
 .hljs-function .hljs-title {
-  color: #795e26;
+  color: var(--syntax-title);
 }
 .hljs-type,
 .hljs-class .hljs-title {
-  color: #267f99;
+  color: var(--syntax-builtin);
 }
 .hljs-attribute {
-  color: #0070aa;
-}
-
-.dark .hljs-comment,
-.dark .hljs-quote {
-  color: #6a9955;
-}
-.dark .hljs-keyword,
-.dark .hljs-selector-tag,
-.dark .hljs-built_in {
-  color: #569cd6;
-}
-.dark .hljs-string,
-.dark .hljs-attr {
-  color: #ce9178;
-}
-.dark .hljs-number,
-.dark .hljs-literal {
-  color: #b5cea8;
-}
-.dark .hljs-title,
-.dark .hljs-title.function_,
-.dark .hljs-function .hljs-title {
-  color: #dcdcaa;
-}
-.dark .hljs-type,
-.dark .hljs-class .hljs-title {
-  color: #4ec9b0;
-}
-.dark .hljs-attribute {
-  color: #9cdcfe;
+  color: var(--syntax-attr);
 }
 
 /* KaTeX should inherit the text color; sizing is handled by KaTeX itself. */

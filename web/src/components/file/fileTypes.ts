@@ -22,6 +22,12 @@ export function isImageFile(fileName: string): boolean {
   return IMAGE_EXTS.has(fileExt(fileName))
 }
 
+const HTML_EXTS = new Set(['.html', '.htm'])
+
+export function isHtmlFile(fileName: string): boolean {
+  return HTML_EXTS.has(fileExt(fileName))
+}
+
 const MARKDOWN_EXTS = new Set(['.md', '.markdown'])
 
 export function isMarkdownFile(fileName: string): boolean {
@@ -92,11 +98,11 @@ export function languageOf(fileName: string): string {
  * the initial mode.
  */
 export function defaultViewMode(fileName: string): FileViewMode {
-  if (isMarkdownFile(fileName) || isImageFile(fileName)) return 'preview'
+  if (isMarkdownFile(fileName) || isImageFile(fileName) || isHtmlFile(fileName)) return 'preview'
   return 'editor'
 }
 
 /** Whether the editor↔preview toggle should be offered for this file. */
 export function canTogglePreview(fileName: string): boolean {
-  return isMarkdownFile(fileName)
+  return isMarkdownFile(fileName) || isHtmlFile(fileName)
 }

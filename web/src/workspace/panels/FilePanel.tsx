@@ -21,6 +21,7 @@ import {
   canTogglePreview,
   defaultViewMode,
   isImageFile,
+  isHtmlFile,
   languageOf,
   type FileViewMode,
 } from '@/components/file/fileTypes'
@@ -87,7 +88,16 @@ export function FilePanel({ params }: PanelProps) {
             {error}
           </div>
         ) : canToggle && mode === 'preview' ? (
-          <MarkdownPreview source={content} />
+          isHtmlFile(fileName) ? (
+            <iframe
+              src={`/api/fs/raw?path=${encodeURIComponent(filePath)}`}
+              className="h-full w-full border-0"
+              title={fileName}
+              sandbox="allow-scripts"
+            />
+          ) : (
+            <MarkdownPreview source={content} />
+          )
         ) : (
           <MonacoEditor value={content} language={language} onChange={setContent} />
         )}
