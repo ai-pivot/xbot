@@ -499,7 +499,22 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 
 	// If a tool is waiting for user response, send WaitingUser outbound
 	if waitingUser {
-		return buildWaitingUserOutbound(ctx, msg, out, tenantSession), nil
+		outbound := buildWaitingUserOutbound(ctx, msg, out, tenantSession)
+		// Store the pending AskUser payload so WS reconnect can resend it.
+		if a != nil && outbound != nil {
+			askPayload := &protocol.ProgressEvent{}
+			if outbound.Metadata != nil {
+				askPayload.RequestID = outbound.Metadata["request_id"]
+				if qJSON := outbound.Metadata["ask_questions"]; qJSON != "" {
+					var qs []protocol.AskUserQuestion
+					if json.Unmarshal([]byte(qJSON), &qs) == nil {
+						askPayload.Questions = qs
+					}
+				}
+			}
+			a.waitingUserSessions.Store(msg.Channel+":"+msg.ChatID, askPayload)
+		}
+		return outbound, nil
 	}
 
 	// Empty content without waiting for user and not optional reply

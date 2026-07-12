@@ -1,36 +1,32 @@
 /**
- * ThemeProvider — dark/light + brand accent color, CSS-variable driven.
+ * ThemeProvider — unified theme system driven by Markdown theme selection.
  *
- * Spec 1 设计系统基础:
- *   - theme 'dark' | 'light' toggles <html class="dark">
- *   - accentColor (default '#3388BB') drives --accent / --accent-hover /
- *     --accent-foreground, so every accent element updates live
- *   - both persist to localStorage
+ * The Markdown theme is the single source of truth. Each theme declares
+ * `mode: 'dark' | 'light'`, from which the legacy `.dark` class on <html>
+ * is derived for consumers that need a binary signal (Monaco, xterm, Sonner).
+ *
+ *   - mdTheme (e.g. 'dracula') → sets data-md-theme attribute on <html>
+ *   - theme ('dark' | 'light') → derived from mdTheme's mode, toggles .dark class
+ *   - accentColor → drives --accent / --accent-hover / --accent-foreground
+ *   - all three persist to localStorage
  */
 import { createContext, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { type Theme } from '@/types/shared'
 import {
   DEFAULT_ACCENT_COLOR,
-  THEME_STORAGE_KEY,
   ACCENT_STORAGE_KEY,
   type ThemeContextValue,
 } from '@/types/theme'
+import {
+  DEFAULT_MARKDOWN_THEME,
+  MARKDOWN_THEME_STORAGE_KEY,
+  modeForTheme,
+  type MarkdownThemeId,
+} from '@/types/markdown-theme'
 
 export { type ThemeContextValue }
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)
-
-/** Read the persisted or system-preferred theme on first paint. */
-function getInitialTheme(): Theme {
-  try {
-    const saved = localStorage.getItem(THEME_STORAGE_KEY)
-    if (saved === 'dark' || saved === 'light') return saved
-  } catch { /* ignore */ }
-  if (typeof window !== 'undefined' && window.matchMedia) {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-  }
-  return 'dark'
-}
 
 function getInitialAccent(): string {
   try {
@@ -38,6 +34,14 @@ function getInitialAccent(): string {
     if (saved) return saved
   } catch { /* ignore */ }
   return DEFAULT_ACCENT_COLOR
+}
+
+function getInitialMdTheme(): MarkdownThemeId {
+  try {
+    const saved = localStorage.getItem(MARKDOWN_THEME_STORAGE_KEY)
+    if (saved) return saved as MarkdownThemeId
+  } catch { /* ignore */ }
+  return DEFAULT_MARKDOWN_THEME
 }
 
 /** Darken a #RRGGBB hex by `amount` (0..1). Returns the same hex on parse error. */
@@ -82,41 +86,34 @@ function toHex(r: number, g: number, b: number): string {
 
 interface ThemeProviderProps {
   children: ReactNode
-  defaultTheme?: Theme
   defaultAccentColor?: string
-  storageKey?: string
   accentStorageKey?: string
 }
 
 export function ThemeProvider({
   children,
-  defaultTheme,
   defaultAccentColor,
-  storageKey = THEME_STORAGE_KEY,
   accentStorageKey = ACCENT_STORAGE_KEY,
 }: ThemeProviderProps) {
-  const [theme, setThemeState] = useState<Theme>(() => {
-    if (defaultTheme) return defaultTheme
+  const [mdTheme, setMdThemeState] = useState<MarkdownThemeId>(getInitialMdTheme)
+
+  // Derive theme ('dark' | 'light') from the selected Markdown theme's mode.
+  const theme: Theme = modeForTheme(mdTheme)
+
+  // Apply data-md-theme attribute + .dark class to <html>.
+  useEffect(() => {
+    const root = document.documentElement
+    root.setAttribute('data-md-theme', mdTheme)
+    root.classList.toggle('dark', theme === 'dark')
     try {
-      const saved = localStorage.getItem(storageKey)
-      if (saved === 'dark' || saved === 'light') return saved
+      localStorage.setItem(MARKDOWN_THEME_STORAGE_KEY, mdTheme)
     } catch { /* ignore */ }
-    return getInitialTheme()
-  })
+  }, [mdTheme, theme])
 
   const [accentColor, setAccentColorState] = useState<string>(() => {
     if (defaultAccentColor) return defaultAccentColor
     return getInitialAccent()
   })
-
-  // Apply theme class to <html>.
-  useEffect(() => {
-    const root = document.documentElement
-    root.classList.toggle('dark', theme === 'dark')
-    try {
-      localStorage.setItem(storageKey, theme)
-    } catch { /* ignore */ }
-  }, [theme, storageKey])
 
   // Apply accent CSS variables to <html>.
   useEffect(() => {
@@ -131,12 +128,12 @@ export function ThemeProvider({
     } catch { /* ignore */ }
   }, [accentColor, accentStorageKey])
 
-  const setTheme = useCallback((t: Theme) => setThemeState(t), [])
+  const setMdTheme = useCallback((id: MarkdownThemeId) => setMdThemeState(id), [])
   const setAccentColor = useCallback((c: string) => setAccentColorState(c), [])
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme, setTheme, accentColor, setAccentColor }),
-    [theme, setTheme, accentColor, setAccentColor],
+    () => ({ theme, accentColor, setAccentColor, mdTheme, setMdTheme }),
+    [theme, accentColor, setAccentColor, mdTheme, setMdTheme],
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

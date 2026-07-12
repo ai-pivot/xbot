@@ -14,7 +14,7 @@
 import { memo, useState, type ReactNode } from 'react'
 
 import { FoldedLine } from './FoldedLine'
-import { ToolCallBlock } from './ToolCallBlock'
+import { ToolRender } from './ToolRender'
 import { useI18n } from '@/providers/i18n'
 import type { CollapseLevel } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
@@ -58,6 +58,17 @@ function statusColor(status: string): string {
   }
 }
 
+/** Format elapsed milliseconds into a compact human-readable string. */
+function formatElapsed(ms: number): string {
+  if (!ms || ms <= 0) return ''
+  if (ms < 1000) return `${ms}ms`
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(1)}s`
+  const m = Math.floor(s / 60)
+  const rem = Math.round(s % 60)
+  return `${m}m${rem}s`
+}
+
 /** Format a single tool's title for its FoldedLine. */
 function formatToolTitle(
   tool: WebToolProgress,
@@ -69,11 +80,13 @@ function formatToolTitle(
   let suffix = ''
   if (tool.status === 'generating') suffix = t('agent.toolGenerating')
   else if (tool.status === 'running') suffix = t('agent.statusRunning')
+  const elapsed = formatElapsed(tool.elapsedMs)
   return (
     <span className="flex items-center gap-1.5">
       <span style={{ color }}>{icon}</span>
       <span className="font-mono">{name}</span>
       {suffix && <span className="text-text-muted">{suffix}</span>}
+      {elapsed && !suffix && <span className="text-text-muted tabular-nums">{elapsed}</span>}
     </span>
   )
 }
@@ -114,7 +127,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
             title={formatToolTitle(tool, t)}
             defaultOpen={false}
           >
-            <ToolCallBlock tool={tool} />
+            <ToolRender tool={tool} />
           </FoldedLine>
         ))}
       </div>
@@ -141,7 +154,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
               title={formatToolTitle(tool, t)}
               defaultOpen={false}
             >
-              <ToolCallBlock tool={tool} />
+              <ToolRender tool={tool} />
             </FoldedLine>
           ))}
         </div>

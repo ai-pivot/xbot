@@ -1002,6 +1002,20 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		return h.Ag.GetActiveProgress(p.Channel, p.ChatID, p.FromIteration), nil
 	})
 
+	t["get_pending_ask_user"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		bizID := rpcBizID(ctx)
+		if p.Channel == "" {
+			p.Channel = "web"
+		}
+		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
+			return nil, fmt.Errorf("access denied")
+		}
+		return h.Ag.GetPendingAskUser(p.Channel, p.ChatID), nil
+	})
+
 	t["get_todos"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`

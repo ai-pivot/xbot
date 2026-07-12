@@ -17,11 +17,14 @@ interface UserMessageProps {
 }
 
 export const UserMessage = memo(function UserMessage({ content, onRewind }: UserMessageProps) {
+  // Convert single newlines to double newlines so Markdown renders them as
+  // separate paragraphs (standard Markdown treats single \n as a space).
+  const mdContent = (content || ' ').replace(/\n(?!\n)/g, '\n\n')
   return (
     <div className="flex justify-end px-1">
       <div className="flex max-w-[85%] flex-col items-end gap-1">
         <div className="rounded-2xl rounded-br-sm bg-accent/15 px-3.5 py-2 text-text-primary">
-          <MarkdownRenderer content={content || ' '} />
+          <MarkdownRenderer content={mdContent} />
         </div>
         {onRewind && (
           <Button

@@ -1,22 +1,17 @@
 /**
  * ActivityBar — the leftmost 48px icon column (Spec 2 §3.2, VSCode-style).
  *
- * Icons: sessions (left sidebar), theme toggle, settings (opens SettingsDialog
- * Sheet, not a sidebar view). The file/search/diff/config panels moved to the
- * right sidebar's own RightActivityBar (Spec 6).
+ * Icons: sessions (left sidebar), settings (opens SettingsDialog Sheet).
+ * Theme switching is handled in Settings → Markdown Theme.
  *
  * Pure presentational — AppShell owns which view is active and passes setters.
  */
 import {
   MessageSquare,
   Settings,
-  Moon,
-  Sun,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { useI18n } from '@/providers/i18n'
-import { useTheme } from '@/hooks/useTheme'
-import type { Theme } from '@/types/shared'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
@@ -38,7 +33,6 @@ const VIEWS: { view: SidebarView; icon: IconComponent }[] = [
 
 export function ActivityBar({ activeView, onToggleView, onOpenSettings }: ActivityBarProps) {
   const { t } = useI18n()
-  const { theme, setTheme } = useTheme()
 
   return (
     <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between border-r bg-bg-secondary py-2">
@@ -71,22 +65,6 @@ export function ActivityBar({ activeView, onToggleView, onOpenSettings }: Activi
       </nav>
 
       <div className="flex flex-col items-center gap-1">
-        {/* Theme toggle */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              aria-label={t(`settings.${theme}`)}
-              onClick={() => setTheme(theme === 'dark' ? 'light' : ('dark' as Theme))}
-              className="flex size-9 items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              {theme === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right">{t(`settings.${theme}`)}</TooltipContent>
-        </Tooltip>
-
         {/* Settings — opens SettingsDialog Sheet (not a sidebar view). */}
         <Tooltip>
           <TooltipTrigger asChild>

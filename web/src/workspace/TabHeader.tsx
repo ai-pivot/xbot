@@ -1,14 +1,13 @@
 /**
- * TabHeader — custom VSCode-style tab header rendered entirely with inline
- * styles (no CSS class dependencies).
+ * TabHeader — VSCode-style tab header.
  *
- * Styling:
- *   - Active tab: 2px bottom accent bar in theme color, full-opacity text,
- *     background matching the content area (--bg-primary).
- *   - Inactive tab: 2px transparent bottom bar, dimmer text (opacity 0.6),
- *     transparent background.
- *   - Close button only when closable=true, on hover/focus.
- *   - No CSS rules needed in index.css — all visual properties are inline.
+ * Visual design (matching VSCode):
+ *   - Active tab: bg = content area, top 1px accent bar, full-opacity text
+ *   - Inactive tab: bg = tab bar, dimmer text, no top bar
+ *   - Hover (inactive): bg lightens, close button appears
+ *   - Close button: always visible on active tab, hover-only on inactive
+ *   - Tab separator: 1px right border between tabs
+ *   - No bottom border on tabs; the tab bar has a 1px bottom border
  */
 import type { CSSProperties, ComponentType, SVGProps } from 'react'
 import { X, Bot, FileText, SquareTerminal, ListVideo } from 'lucide-react'
@@ -45,21 +44,28 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
     display: 'flex',
     alignItems: 'center',
     gap: '6px',
-    padding: '4px 12px',
+    padding: '0 10px',
     height: '35px',
     cursor: 'pointer',
-    borderBottom: isActive ? '2px solid var(--accent)' : '2px solid var(--border)',
-    borderInlineEnd: '1px solid var(--border)',
-    backgroundColor: isActive ? 'var(--bg-primary)' : 'color-mix(in srgb, var(--accent) 8%, var(--bg-secondary))',
-    opacity: isActive ? 1 : 0.82,
-    transition: 'opacity 0.15s, border-color 0.15s, background-color 0.15s',
+    // VSCode: active tab has accent top border, inactive has transparent
+    borderTop: isActive ? '1px solid var(--accent)' : '1px solid transparent',
+    borderRight: '1px solid var(--border)',
+    // Active tab matches content area; inactive matches tab bar
+    backgroundColor: isActive
+      ? 'var(--bg-primary)'
+      : 'var(--bg-secondary)',
+    color: 'var(--text-primary)',
+    opacity: isActive ? 1 : 0.7,
+    transition: 'opacity 0.12s, background-color 0.12s',
     userSelect: 'none',
     whiteSpace: 'nowrap',
     position: 'relative',
+    maxWidth: '200px',
+    minWidth: '40px',
   }
 
   const iconStyle: CSSProperties = {
-    color: 'var(--text-primary)',
+    color: 'var(--text-secondary)',
     flexShrink: 0,
     width: '14px',
     height: '14px',
@@ -71,22 +77,25 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
     fontSize: '13px',
+    lineHeight: '35px',
   }
 
   const closeBtnStyle: CSSProperties = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    width: '16px',
-    height: '16px',
+    width: '18px',
+    height: '18px',
     flexShrink: 0,
     border: 'none',
+    borderRadius: '4px',
     background: 'transparent',
     cursor: 'pointer',
-    opacity: 0,
-    transition: 'opacity 0.15s',
+    // Active tab: always show close button. Inactive: show on hover.
+    opacity: isActive ? 0.6 : 0,
+    transition: 'opacity 0.12s, background-color 0.12s',
     color: 'var(--text-secondary)',
-    marginLeft: '4px',
+    marginLeft: '2px',
   }
 
   return (
@@ -107,13 +116,22 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
         onActivate()
       }}
       onMouseEnter={(e) => {
+        // Hover: lighten bg for inactive tabs, show close button
+        if (!isActive) {
+          e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+          e.currentTarget.style.opacity = '0.9'
+        }
         if (params.closable) {
           const btn = (e.currentTarget as HTMLElement).querySelector('[data-close-btn]')
           if (btn) (btn as HTMLElement).style.opacity = '1'
         }
       }}
       onMouseLeave={(e) => {
-        if (params.closable) {
+        if (!isActive) {
+          e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'
+          e.currentTarget.style.opacity = '0.7'
+        }
+        if (params.closable && !isActive) {
           const btn = (e.currentTarget as HTMLElement).querySelector('[data-close-btn]')
           if (btn) (btn as HTMLElement).style.opacity = '0'
         }
@@ -140,8 +158,16 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
             e.stopPropagation()
             api.close()
           }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--accent) 20%, transparent)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = 'transparent'
+          }}
           onFocus={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1' }}
-          onBlur={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0' }}
+          onBlur={(e) => {
+            if (!isActive) (e.currentTarget as HTMLElement).style.opacity = '0'
+          }}
         >
           <X size={12} />
         </button>

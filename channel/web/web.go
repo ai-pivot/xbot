@@ -108,6 +108,9 @@ type WebCallbacks struct {
 	// GetActiveProgress returns the latest progress snapshot for an active turn.
 	// Used by Web history API to restore progress state on page refresh.
 	GetActiveProgress func(channel, chatID string) *protocol.ProgressEvent
+	// GetPendingAskUser returns the pending AskUser prompt for a chat, or nil.
+	// Used by Web WS reconnect to resend ask_user so page refresh doesn't lose it.
+	GetPendingAskUser func(channel, chatID string) *protocol.ProgressEvent
 	// HistorySnapshot returns a Web-only history snapshot with runtime state.
 	HistorySnapshot func(senderID string, sel SessionSelector) (HistorySnapshot, error)
 	// RewindHistory rewinds a Web-accessible session to a selected user message.
@@ -486,6 +489,7 @@ func (wc *WebChannel) Start() error {
 	// File System API (browse, read, search, stat)
 	mux.HandleFunc("/api/fs/list", wc.authMiddleware(wc.handleFsList))
 	mux.HandleFunc("/api/fs/read", wc.authMiddleware(wc.handleFsRead))
+	mux.HandleFunc("/api/fs/raw", wc.authMiddleware(wc.handleFsRaw))
 	mux.HandleFunc("/api/fs/search", wc.authMiddleware(wc.handleFsSearch))
 	mux.HandleFunc("/api/fs/stat", wc.authMiddleware(wc.handleFsStat))
 
@@ -637,6 +641,7 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 			Type:     protocol.MsgTypeAskUser,
 			ID:       msgID,
 			TS:       time.Now().Unix(),
+			ChatID:   msg.ChatID,
 			Progress: askPayload,
 		}
 		wc.hub.sendToClient(targetClientID, askMsg)
@@ -955,6 +960,23 @@ func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
 			}
 		}
 	}
+
+	// Resend pending AskUser prompt if the session is waiting for user input.
+	// This handles page refresh: the original ask_user WS message was lost,
+	// so we resend it here to restore the AskUserPanel.
+	if wc.callbacks.GetPendingAskUser != nil {
+		if askP := wc.callbacks.GetPendingAskUser(sel.Channel, chatID); askP != nil {
+			select {
+			case client.sendCh <- protocol.WSMessage{
+				Type:     protocol.MsgTypeAskUser,
+				TS:       time.Now().Unix(),
+				ChatID:   chatID,
+				Progress: askP,
+			}:
+			default:
+			}
+		}
+	}
 }
 
 func (wc *WebChannel) writePump(c *Client) {
@@ -1216,6 +1238,24 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 			wc.hub.subscribe(c.id, subMsg.ChatID)
 			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Info("Hub: client subscribed to chatID")
+
+			// Resend pending AskUser prompt if this session is waiting for user input.
+			// This handles the case where the AskUser was triggered before the web
+			// client subscribed (e.g. CLI session triggered AskUser, web user switches
+			// to that session afterwards).
+			if wc.callbacks.GetPendingAskUser != nil {
+				if askP := wc.callbacks.GetPendingAskUser("cli", subMsg.ChatID); askP != nil {
+					select {
+					case c.sendCh <- protocol.WSMessage{
+						Type:     protocol.MsgTypeAskUser,
+						TS:       time.Now().Unix(),
+						ChatID:   subMsg.ChatID,
+						Progress: askP,
+					}:
+					default:
+					}
+				}
+			}
 		case protocol.MsgTypeTUIControlResp:
 			// Remote CLI TUI control response — route to pending request handler
 			if msg.TUIControl != nil && msg.ID != "" && wc.hub.tuiRespFn != nil {

@@ -37,6 +37,7 @@ const STATUS_COLOR: Record<SessionStatus, string> = {
   waiting_input: 'var(--status-waiting)',
   pending: 'var(--status-waiting)',
   idle: 'var(--status-idle)',
+  unread: 'var(--status-waiting)',
   error: 'var(--status-error)',
 }
 
@@ -70,8 +71,8 @@ export function SessionItem({
         }
       }}
       className={cn(
-        'group flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
-        active ? 'bg-bg-tertiary' : !session.synthetic && 'hover:bg-bg-tertiary/60',
+        'group flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-all',
+        active ? 'bg-bg-tertiary' : !session.synthetic && 'hover:bg-bg-tertiary/60 hover:shadow-md',
         session.synthetic && 'cursor-default opacity-80',
       )}
       style={isSubAgent ? { marginLeft: `${depth}rem` } : undefined}

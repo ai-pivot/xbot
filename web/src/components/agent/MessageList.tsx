@@ -13,7 +13,7 @@
  *   - the streaming row is the only one receiving liveProgress; others get null
  *   - auto-scroll to bottom while following; stops if the user scrolls up
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 
 import { MessageItem } from './MessageItem'
@@ -34,6 +34,8 @@ interface MessageListProps {
   loading: boolean
   error: string | null
   onRewind?: (message: ChatMessage) => void
+  /** Optional footer rendered after the message list (e.g. AskUserPanel). */
+  footer?: ReactNode
 }
 
 const ESTIMATE = 120
@@ -62,6 +64,7 @@ export function MessageList({
   loading,
   error,
   onRewind,
+  footer,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -94,10 +97,6 @@ export function MessageList({
     liveProgress?.iteration ?? 0,
     liveProgress?.streamContent ?? '',
     liveProgress?.reasoningStreamContent ?? '',
-    liveProgress?.activeTools.length ?? 0,
-    liveProgress?.completedTools.length ?? 0,
-    liveProgress?.streamingTools.length ?? 0,
-    liveProgress?.subAgents.length ?? 0,
     liveProgress?.iterationHistory.length ?? 0,
   ].join(':')
 
@@ -280,6 +279,7 @@ export function MessageList({
             })}
           </div>
         )}
+        {footer}
       </div>
     </div>
   )
@@ -311,7 +311,6 @@ function scheduleScrollToBottom(
   shouldRun?: () => boolean,
 ): () => void {
   let cancelled = false
-  const timers: number[] = []
   const run = () => {
     if (cancelled) return
     if (shouldRun && !shouldRun()) return
@@ -319,24 +318,10 @@ function scheduleScrollToBottom(
     scrollToBottom(el)
   }
   run()
-  let raf = requestAnimationFrame(() => {
-    run()
-    raf = requestAnimationFrame(() => {
-      run()
-      raf = requestAnimationFrame(run)
-      timers.push(raf)
-    })
-    timers.push(raf)
-  })
-  timers.push(raf)
-  for (const delay of [80, 180, 360]) {
-    timers.push(window.setTimeout(run, delay))
-  }
+  // One RAF for post-measurement settle; ResizeObserver handles the rest.
+  const raf = requestAnimationFrame(run)
   return () => {
     cancelled = true
-    for (const id of timers) {
-      cancelAnimationFrame(id)
-      clearTimeout(id)
-    }
+    cancelAnimationFrame(raf)
   }
 }

@@ -51,7 +51,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
   })
 
   return (
-    <div className="mx-auto my-3 w-full max-w-2xl rounded-lg border border-border bg-card p-4 shadow-sm">
+    <div className="mx-auto my-3 w-full max-w-2xl shrink-0 max-h-[60vh] overflow-y-auto rounded-lg border border-border bg-card p-4 shadow-sm">
       <div className="mb-3 flex items-center gap-2 text-sm font-medium text-text-primary">
         <HelpCircle className="size-4 text-accent" />
         <span>{t('agent.askUserTitle')}</span>

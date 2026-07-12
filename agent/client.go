@@ -810,6 +810,12 @@ func (c *Client) GetActiveProgress(ch, chatID string, fromIter int) *protocol.Pr
 	return r
 }
 
+func (c *Client) GetPendingAskUser(ch, chatID string) *protocol.ProgressEvent {
+	var r *protocol.ProgressEvent
+	_ = c.call(MethodGetPendingAskUser, getPendingAskUserReq{Channel: ch, ChatID: chatID}, &r)
+	return r
+}
+
 func (c *Client) GetTodos(ch, chatID string) []protocol.TodoItem {
 	var r []protocol.TodoItem
 	_ = c.call(MethodGetTodos, getTodosReq{Channel: ch, ChatID: chatID}, &r)

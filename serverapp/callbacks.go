@@ -312,6 +312,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetActiveProgress(channel, chatID, 0) // web always requests full history
 	}
+	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
+		return ag.GetPendingAskUser(channel, chatID)
+	}
 	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector) (web.HistorySnapshot, error) {
 		if ag.MultiSession() == nil {
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
@@ -774,9 +777,9 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 	// Single query with correlated subquery for preview — avoids N+1 pattern.
 	rows, err := db.Query(`
 		SELECT t.id, t.chat_id, t.last_active_at,
-		       COALESCE((SELECT uc.label FROM user_chats uc
-		        WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
-		        LIMIT 1), '') AS label,
+									COALESCE((SELECT uc.label FROM user_chats uc
+										WHERE uc.chat_id = t.chat_id AND uc.label != ''
+										ORDER BY uc.id DESC LIMIT 1), '') AS label,
 		       (SELECT sm.content FROM session_messages sm
 		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
 		        ORDER BY sm.id DESC LIMIT 1) AS preview

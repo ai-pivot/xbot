@@ -139,12 +139,12 @@ export function AgentPanel({ params }: PanelProps) {
   const progressSnapshot = progress.progressSnapshot
   const liveMessage = progress.liveMessage
   const isStreaming = progress.isStreaming
+  const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
   // Busy while streaming (live or hydrated from a resumed session).
-  const busy = isStreaming
+  const busy = isStreaming && !askUser.prompt
 
-  const askUser = useAskUser({ chatID, channel: messageChannel, ws })
   const rewindTo = useCallback(async (message: ChatMessage) => {
     if (!chatID || isSubAgent || !message.timestamp) return
     const cutoff = Date.parse(message.timestamp)
@@ -203,14 +203,16 @@ export function AgentPanel({ params }: PanelProps) {
         loading={chat.loading}
         error={chat.error}
         onRewind={isSubAgent || busy ? undefined : rewindTo}
+        footer={
+          askUser.prompt && !isSubAgent ? (
+            <AskUserPanel
+              prompt={askUser.prompt}
+              onRespond={askUser.respond}
+              onCancel={askUser.cancel}
+            />
+          ) : null
+        }
       />
-      {askUser.prompt && !isSubAgent && (
-        <AskUserPanel
-          prompt={askUser.prompt}
-          onRespond={askUser.respond}
-          onCancel={askUser.cancel}
-        />
-      )}
       {rewindResult && !isSubAgent && (
         <RewindResultBlock result={rewindResult} onDismiss={() => setRewindResult(null)} />
       )}
@@ -227,6 +229,7 @@ export function AgentPanel({ params }: PanelProps) {
       )}
       {!isSubAgent && (
         <MessageInput
+          key={`${messageChannel}:${chatID ?? ''}`}
           busy={busy}
           onSend={sendMessage}
           onCancel={chat.cancel}
@@ -236,6 +239,7 @@ export function AgentPanel({ params }: PanelProps) {
           todoState={todoState.total > 0 ? todoState : null}
           draft={draft}
           onDraftConsumed={() => setDraft(undefined)}
+          sessionKey={`${messageChannel}:${chatID ?? ''}`}
         />
       )}
     </div>

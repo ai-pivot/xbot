@@ -43,6 +43,8 @@ interface MessageInputProps {
   todoState?: TodoState | null
   draft?: string
   onDraftConsumed?: () => void
+  /** Session identifier for localStorage draft persistence. */
+  sessionKey?: string
 }
 
 interface PendingAttachment {
@@ -52,17 +54,36 @@ interface PendingAttachment {
   mime: string
 }
 
-export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, draft, onDraftConsumed }: MessageInputProps) {
+export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
-  const [value, setValue] = useState('')
+  const draftStorageKey = sessionKey ? `xbot:draft:${sessionKey}` : null
+  const [value, setValue] = useState(() => {
+    if (draft !== undefined) return draft
+    if (draftStorageKey) {
+      try {
+        const saved = localStorage.getItem(draftStorageKey)
+        if (saved) return saved
+      } catch { /* ignore */ }
+    }
+    return ''
+  })
   const [pending, setPending] = useState<PendingAttachment[]>([])
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const completion = useCompletion({ value, setValue, textareaRef, ws, cwd })
+
+  // Persist draft to localStorage so input survives refresh / session switch.
+  useEffect(() => {
+    if (!draftStorageKey) return
+    try {
+      if (value) localStorage.setItem(draftStorageKey, value)
+      else localStorage.removeItem(draftStorageKey)
+    } catch { /* ignore */ }
+  }, [value, draftStorageKey])
 
   // Auto-grow the textarea up to a max height.
   const resize = useCallback(() => {

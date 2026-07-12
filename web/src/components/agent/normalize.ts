@@ -27,7 +27,9 @@ export function normalizeWebIteration(raw: unknown): WebIteration | null {
   const tools = rawTools.map(normalizeWebTool).filter(Boolean) as WebToolProgress[]
   return {
     iteration: typeof r.iteration === 'number' ? r.iteration : 0,
-    thinking: typeof r.thinking === 'string' ? r.thinking : '',
+    // Backend sends "content" (HistoryIteration.Content), but older progress
+    // snapshots use "thinking". Accept both.
+    thinking: typeof r.thinking === 'string' ? r.thinking : typeof r.content === 'string' ? r.content : '',
     reasoning: typeof r.reasoning === 'string' ? r.reasoning : '',
     tools,
     toolCount: tools.length,

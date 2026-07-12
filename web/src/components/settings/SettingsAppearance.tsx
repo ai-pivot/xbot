@@ -1,7 +1,7 @@
 /**
- * SettingsAppearance — theme + accent color (Spec 7 §3.3).
+ * SettingsAppearance — Markdown theme + accent color (Spec 7 §3.3).
  *
- *   - Theme: dark / light radio-style toggle wired to useTheme.setTheme.
+ *   - Markdown theme: pluggable palette selector (also drives dark/light).
  *   - Accent color: preset swatches + a custom hex input wired to
  *     useTheme.setAccentColor; the live preview chip reflects --accent.
  *
@@ -16,7 +16,7 @@ import { Label } from '@/components/ui/label'
 import { useTheme } from '@/hooks/useTheme'
 import { useI18n } from '@/providers/i18n'
 import { DEFAULT_ACCENT_COLOR } from '@/types/theme'
-import type { Theme } from '@/types/shared'
+import { MARKDOWN_THEMES } from '@/types/markdown-theme'
 import { cn } from '@/lib/utils'
 
 import { SettingsSection } from './SettingsSection'
@@ -30,8 +30,6 @@ const ACCENT_PRESETS = [
   '#059669',
   '#EA580C',
 ]
-
-const THEMES: Theme[] = ['light', 'dark']
 
 /** Normalize a user-typed hex (#rgb / #rrggbb / no-hash) into '#RRGGBB' or null. */
 function normalizeHex(input: string): string | null {
@@ -47,7 +45,7 @@ function normalizeHex(input: string): string | null {
 
 export function SettingsAppearance() {
   const { t } = useI18n()
-  const { theme, setTheme, accentColor, setAccentColor } = useTheme()
+  const { accentColor, setAccentColor, mdTheme, setMdTheme } = useTheme()
 
   // Local hex input state so the field stays editable until a valid color is
   // committed; out-of-range input shows an inline error without touching theme.
@@ -62,33 +60,26 @@ export function SettingsAppearance() {
 
   return (
     <div className="flex flex-col">
-      {/* Theme — dark / light */}
-      <SettingsSection title={t('settings.theme')}>
-        <div className="flex gap-2">
-          {THEMES.map((value) => {
-            const active = theme === value
+      {/* Markdown theme — also drives app dark/light */}
+      <SettingsSection title={t('settings.mdTheme')}>
+        <p className="mb-2 text-xs text-muted-foreground">{t('settings.mdThemeDesc')}</p>
+        <div className="flex flex-wrap gap-2">
+          {MARKDOWN_THEMES.map((md) => {
+            const active = mdTheme === md.id
             return (
               <button
-                key={value}
+                key={md.id}
                 type="button"
                 aria-pressed={active}
-                onClick={() => setTheme(value)}
+                onClick={() => setMdTheme(md.id)}
                 className={cn(
-                  'flex flex-1 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                  'rounded-md border px-3 py-1.5 text-xs transition-colors',
                   active
                     ? 'border-accent bg-accent/10 text-foreground'
                     : 'border-border bg-transparent text-muted-foreground hover:bg-muted',
                 )}
               >
-                <span
-                  className={cn(
-                    'flex size-4 items-center justify-center rounded-full border',
-                    active ? 'border-accent text-accent' : 'border-border',
-                  )}
-                >
-                  {active ? <span className="size-2 rounded-full bg-accent" /> : null}
-                </span>
-                {t(`settings.${value}`)}
+                {t(md.labelKey)}
               </button>
             )
           })}
