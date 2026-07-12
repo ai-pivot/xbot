@@ -31,10 +31,9 @@ function parseArgs(tool: WebToolProgress): Record<string, unknown> | null {
 function shellCommand(tool: WebToolProgress): string {
   const args = parseArgs(tool)
   if (args?.command) return args.command as string
-  // Parse from label: "Shell: actual command"
   const label = tool.label || ''
-  const idx = label.indexOf(': ')
-  return idx >= 0 ? label.slice(idx + 2) : label
+  if (label.startsWith('Shell: ')) return label.slice(7)
+  return label
 }
 
 /** Extract the path from a FileCreate/FileReplace label: "FileCreate: <path>" */
@@ -82,7 +81,7 @@ export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
 function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary: string; detail: string }) {
   const command = shellCommand(tool)
   const output = detail || summary || ''
-  const lines = output.split('\n').filter(Boolean)
+  const lines = output.split('\n')
   const isShort = lines.length <= 5
   return (
     <div className="flex flex-col gap-1.5 py-1 text-xs">
@@ -162,7 +161,7 @@ function FileReplaceRender({ tool, summary }: { tool: WebToolProgress; summary: 
 function ReadRender({ tool, summary, detail }: { tool: WebToolProgress; summary: string; detail: string }) {
   const path = filePathFromLabel(tool)
   const content = detail || summary || ''
-  const lines = content.split('\n').filter(Boolean)
+  const lines = content.split('\n')
   return (
     <div className="flex flex-col gap-1 py-1 text-xs">
       {path && (
@@ -192,7 +191,7 @@ function GrepRender({ tool, summary, detail }: { tool: WebToolProgress; summary:
   // label format: "Grep: <pattern>" or "Grep: <pattern> in <path>"
   const labelContent = label.includes(': ') ? label.slice(label.indexOf(': ') + 2) : ''
   const output = detail || summary || ''
-  const matches = output.split('\n').filter(Boolean)
+  const matches = output.split('\n')
   return (
     <div className="flex flex-col gap-1 py-1 text-xs">
       <div className="flex items-center gap-1.5">
@@ -216,7 +215,7 @@ function GrepRender({ tool, summary, detail }: { tool: WebToolProgress; summary:
 function GlobRender({ tool, summary }: { tool: WebToolProgress; summary: string }) {
   const label = tool.label || ''
   const pattern = label.includes(': ') ? label.slice(label.indexOf(': ') + 2) : ''
-  const files = summary.split('\n').filter(Boolean)
+  const files = summary.split('\n')
   return (
     <div className="flex flex-col gap-1 py-1 text-xs">
       <div className="flex items-center gap-1.5">

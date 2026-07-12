@@ -1242,9 +1242,10 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// Resend pending AskUser prompt if this session is waiting for user input.
 			// This handles the case where the AskUser was triggered before the web
 			// client subscribed (e.g. CLI session triggered AskUser, web user switches
-			// to that session afterwards).
+			// to that session afterwards). GetPendingAskUser searches by chatID
+			// across all channels, so we pass an empty channel to trigger fallback.
 			if wc.callbacks.GetPendingAskUser != nil {
-				if askP := wc.callbacks.GetPendingAskUser("cli", subMsg.ChatID); askP != nil {
+				if askP := wc.callbacks.GetPendingAskUser("", subMsg.ChatID); askP != nil {
 					select {
 					case c.sendCh <- protocol.WSMessage{
 						Type:     protocol.MsgTypeAskUser,

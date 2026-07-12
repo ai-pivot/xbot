@@ -778,6 +778,9 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 	rows, err := db.Query(`
 		SELECT t.id, t.chat_id, t.last_active_at,
 									COALESCE((SELECT uc.label FROM user_chats uc
+										WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
+										ORDER BY uc.rowid DESC LIMIT 1),
+										(SELECT uc.label FROM user_chats uc
 										WHERE uc.chat_id = t.chat_id AND uc.label != ''
 										ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
 		       (SELECT sm.content FROM session_messages sm

@@ -386,6 +386,13 @@ func (wc *WebChannel) handleFsRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject files larger than 50MB to prevent abuse.
+	const maxRawFileSize = 50 * 1024 * 1024
+	if info.Size() > maxRawFileSize {
+		http.Error(w, "file too large (max 50MB)", http.StatusRequestEntityTooLarge)
+		return
+	}
+
 	// Set Content-Type based on extension
 	contentType := contentTypeFromExt(safePath)
 	w.Header().Set("Content-Type", contentType)
