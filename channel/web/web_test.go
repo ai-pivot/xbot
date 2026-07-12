@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -107,6 +108,45 @@ func makeWSConnection(t *testing.T, serverURL, cookie string) *websocket.Conn {
 	}
 	t.Cleanup(func() { conn.Close() })
 	return conn
+}
+
+func TestRemovedMarketEndpointsReturnNotFound(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("web app"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wc.SetStaticDir(staticDir)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", wc.handleStatic)
+
+	spaRec := httptest.NewRecorder()
+	mux.ServeHTTP(spaRec, httptest.NewRequest(http.MethodGet, "/chat", nil))
+	if spaRec.Code != http.StatusOK {
+		t.Fatalf("test setup: expected SPA fallback to return 200, got %d", spaRec.Code)
+	}
+
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/market"},
+		{http.MethodPost, "/api/market/install"},
+		{http.MethodPost, "/api/market/uninstall"},
+		{http.MethodGet, "/api/market/my"},
+		{http.MethodPost, "/api/market/publish"},
+		{http.MethodPost, "/api/market/unpublish"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

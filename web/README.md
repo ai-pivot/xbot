@@ -60,8 +60,7 @@ src/
 │       ├── SessionsTab.tsx  # Session management
 │       ├── PresetsTab.tsx   # Quick command presets
 │       ├── LLMTab.tsx       # Personal LLM configuration
-│       ├── RunnerTab.tsx    # Runner monitoring
-│       └── MarketTab.tsx    # Plugin marketplace
+│       └── RunnerTab.tsx    # Runner monitoring
 ├── styles/                  # CSS organized by feature
 │   ├── base.css             # CSS variables + reset
 │   ├── index.css            # Main stylesheet imports
@@ -86,7 +85,6 @@ src/
 │       ├── command-palette.css
 │       ├── context-menu.css
 │       ├── file-upload.css
-│       ├── market.css
 │       ├── media-player.css
 │       ├── notification-center.css
 │       ├── onboarding.css
