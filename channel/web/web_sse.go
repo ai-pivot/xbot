@@ -196,9 +196,14 @@ func (wc *WebChannel) publishSSEFallbackIfMissing(sel SessionSelector, lastSeq u
 			}
 			msg.Progress = progress
 		case protocol.MsgTypeAskUser:
-			if msg.Progress == nil || msg.Progress.RequestID != requestID {
+			// Agent.GetPendingAskUser is a sync.Map read and never emits Hub
+			// events or acquires interactive-session locks. Re-read it inside
+			// seqMu to close the answer/clear-to-publish window.
+			pending := wc.callbacks.GetPendingAskUser(sel.Channel, sel.ChatID)
+			if pending == nil || pending.RequestID != requestID {
 				return protocol.WSMessage{}, false
 			}
+			msg.Progress = pending
 		}
 		return msg, true
 	})

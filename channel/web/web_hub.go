@@ -122,14 +122,14 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 
 	h.seqMu.Lock()
 	defer h.seqMu.Unlock()
-	sequencedMsg := h.sequenceEventLocked(chatID, msg)
+	sequencedMsg := h.sequenceEventLocked(chatID, normalizeSSEEvent(msg))
 	return h.deliverToSubscribers(chatID, msg, sequencedMsg, true)
 }
 
 // sendSSEEventIf atomically checks and publishes a sequenced Web event.
 // prepare runs under seqMu so ordinary publishers cannot enter between a
-// replay check and the fallback event it guards. It must not call callbacks
-// or acquire application-state locks.
+// replay check and the fallback event it guards. It must not acquire an
+// application lock whose holder can publish another Hub event.
 func (h *Hub) sendSSEEventIf(chatID string, prepare func() (protocol.WSMessage, bool)) bool {
 	h.seqMu.Lock()
 	defer h.seqMu.Unlock()
@@ -173,7 +173,10 @@ func (h *Hub) deliverToSubscribers(chatID string, msg, sequencedMsg protocol.WSM
 		}
 		deliveryMsg := msg
 		if !c.isCLI {
-			deliveryMsg = sequencedMsg
+			deliveryMsg.Seq = sequencedMsg.Seq
+			if c.connType == clientConnTypeSSE {
+				deliveryMsg = sequencedMsg
+			}
 		}
 		if !isStatefulMsg(deliveryMsg) && c.connType != clientConnTypeSSE {
 			// Stateless messages (stream_content, etc.) are superseded
@@ -213,7 +216,7 @@ func (h *Hub) deliverToSubscribers(chatID string, msg, sequencedMsg protocol.WSM
 		}
 		bufferedMsg := msg
 		if isSSEEvent {
-			bufferedMsg = sequencedMsg
+			bufferedMsg.Seq = sequencedMsg.Seq
 		}
 		buf.push(bufferedMsg)
 		h.offMu.Unlock()
@@ -225,6 +228,13 @@ func (h *Hub) deliverToSubscribers(chatID string, msg, sequencedMsg protocol.WSM
 func (h *Hub) sequenceEventLocked(chatID string, msg protocol.WSMessage) protocol.WSMessage {
 	if msg.Seq == 0 && h.seqFn != nil {
 		return h.seqFn(chatID, msg)
+	}
+	return msg
+}
+
+func normalizeSSEEvent(msg protocol.WSMessage) protocol.WSMessage {
+	if msg.Type == protocol.MsgTypeProgress && !isStatefulMsg(msg) {
+		msg.Type = protocol.MsgTypeStreamContent
 	}
 	return msg
 }

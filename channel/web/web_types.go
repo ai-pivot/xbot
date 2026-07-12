@@ -68,6 +68,8 @@ type WebCallbacks struct {
 	GetActiveProgress func(channel, chatID string) *protocol.ProgressEvent
 	// GetPendingAskUser returns the pending AskUser prompt for a chat, or nil.
 	// Used by Web WS reconnect to resend ask_user so page refresh doesn't lose it.
+	// It must not acquire an application lock whose holder can publish a Hub
+	// event: SSE performs one final check while holding the Hub sequence lock.
 	GetPendingAskUser func(channel, chatID string) *protocol.ProgressEvent
 	// HistorySnapshot returns a Web-only history snapshot with runtime state.
 	HistorySnapshot func(senderID string, sel SessionSelector) (HistorySnapshot, error)

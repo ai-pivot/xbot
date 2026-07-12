@@ -150,6 +150,86 @@ func TestSSEInitialConnectStartsAtCurrentHighWater(t *testing.T) {
 	}
 }
 
+func TestSSEFreshHighWaterKeepsFullProgressAfterStreamPatch(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	full := &protocol.ProgressEvent{
+		Seq:              1,
+		Phase:            "tool_exec",
+		Iteration:        2,
+		ActiveTools:      []protocol.ToolProgress{{Name: "shell", Status: "running"}},
+		IterationHistory: []protocol.ProgressEvent{{Iteration: 1, Phase: "done"}},
+	}
+	wc.SendProgress(chatID, full)
+	wc.SendProgress(chatID, &protocol.ProgressEvent{StreamContent: "partial"})
+	client := &Client{
+		connType: clientConnTypeSSE,
+		sendCh:   make(chan protocol.WSMessage, 1),
+		done:     make(chan struct{}),
+		chatID:   chatID,
+		id:       "sse-full-progress",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, chatID)
+	wc.SetCallbacks(WebCallbacks{
+		GetActiveProgress: func(channel, gotChatID string) *protocol.ProgressEvent {
+			copy := *full
+			copy.StreamContent = "partial"
+			return &copy
+		},
+	})
+
+	wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 2)
+
+	msg := <-client.sendCh
+	if msg.Type != protocol.MsgTypeProgress || msg.Seq != 3 || msg.Progress == nil {
+		t.Fatalf("full progress fallback = %#v", msg)
+	}
+	if msg.Progress.Phase != "tool_exec" || msg.Progress.Iteration != 2 || len(msg.Progress.ActiveTools) != 1 || len(msg.Progress.IterationHistory) != 1 {
+		t.Fatalf("full progress fields were lost: %#v", msg.Progress)
+	}
+	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+	if len(events) != 3 || events[0].Type != protocol.MsgTypeProgress || events[1].Type != protocol.MsgTypeStreamContent {
+		t.Fatalf("normalized event stream = %#v", events)
+	}
+}
+
+func TestSSEPositiveLastEventIDReplaysStreamAndFullProgress(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	chatID := "web-1"
+	full := &protocol.ProgressEvent{
+		Seq:              1,
+		Phase:            "tool_exec",
+		Iteration:        2,
+		ActiveTools:      []protocol.ToolProgress{{Name: "shell", Status: "running"}},
+		IterationHistory: []protocol.ProgressEvent{{Iteration: 1, Phase: "done"}},
+	}
+	wc.SendProgress(chatID, full)
+	wc.SendProgress(chatID, &protocol.ProgressEvent{StreamContent: "partial"})
+	wc.SetCallbacks(WebCallbacks{
+		GetActiveProgress: func(channel, gotChatID string) *protocol.ProgressEvent {
+			copy := *full
+			copy.StreamContent = "partial"
+			return &copy
+		},
+	})
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+
+	resp := openSSE(t, server.URL, cookie, chatID, "1")
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	stream := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeStreamContent, 2)
+	if stream.Progress == nil || stream.Progress.StreamContent != "partial" {
+		t.Fatalf("stream replay = %#v", stream)
+	}
+	progress := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeProgress, 3)
+	if progress.Progress == nil || progress.Progress.Phase != "tool_exec" || len(progress.Progress.ActiveTools) != 1 || len(progress.Progress.IterationHistory) != 1 {
+		t.Fatalf("full progress replay fallback = %#v", progress.Progress)
+	}
+}
+
 func TestSSEReconnectSendsActiveProgressWhenReplayHasNone(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
@@ -275,6 +355,57 @@ func TestSSEPendingAskUserFallbackRevalidatesRequest(t *testing.T) {
 	}
 	if got := wc.getEventStream(chatID).lastSeq(); got != 0 {
 		t.Fatalf("last sequence = %d, want 0 for stale AskUser fallback", got)
+	}
+}
+
+func TestSSEPendingAskUserClearWinsBeforePublication(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	var pendingMu sync.Mutex
+	pending := &protocol.ProgressEvent{RequestID: "request-1"}
+	lookupCount := 0
+	lookedUp := make(chan struct{}, 3)
+	wc.SetCallbacks(WebCallbacks{
+		GetPendingAskUser: func(channel, gotChatID string) *protocol.ProgressEvent {
+			pendingMu.Lock()
+			lookupCount++
+			var result *protocol.ProgressEvent
+			if pending != nil {
+				copy := *pending
+				result = &copy
+			}
+			pendingMu.Unlock()
+			lookedUp <- struct{}{}
+			return result
+		},
+	})
+
+	wc.hub.seqMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+		close(done)
+	}()
+	<-lookedUp
+	<-lookedUp
+	pendingMu.Lock()
+	pending = nil
+	pendingMu.Unlock()
+	wc.hub.seqMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending AskUser publication did not finish")
+	}
+
+	pendingMu.Lock()
+	gotLookups := lookupCount
+	pendingMu.Unlock()
+	if gotLookups != 3 {
+		t.Fatalf("pending AskUser lookup count = %d, want 3", gotLookups)
+	}
+	if got := wc.getEventStream(chatID).lastSeq(); got != 0 {
+		t.Fatalf("last sequence = %d, want 0 after pending AskUser clear", got)
 	}
 }
 
@@ -650,7 +781,11 @@ func TestSSEContractEventsReceiveSequences(t *testing.T) {
 		protocol.MsgTypeSyncProgress,
 	}
 	for i, msgType := range types {
-		if !wc.hub.sendToClient("web-1", protocol.WSMessage{Type: msgType}) {
+		outbound := protocol.WSMessage{Type: msgType}
+		if msgType == protocol.MsgTypeProgress {
+			outbound.Progress = &protocol.ProgressEvent{Phase: "thinking"}
+		}
+		if !wc.hub.sendToClient("web-1", outbound) {
 			t.Fatalf("message %q was not delivered", msgType)
 		}
 		msg := <-client.sendCh
@@ -852,6 +987,33 @@ func TestHubUsesSequencedCopyWithoutChangingCLIWSMessage(t *testing.T) {
 	}
 	if cliMsg.Seq != 0 {
 		t.Fatalf("CLI WS envelope sequence changed: %d", cliMsg.Seq)
+	}
+}
+
+func TestHubNormalizesSparseProgressOnlyForSSE(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "shared-chat"
+	sseClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "sse"}
+	webSocketClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "web-ws", statelessSig: make(chan struct{}, 1)}
+	cliClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "cli-ws", isCLI: true, statelessSig: make(chan struct{}, 1)}
+	for _, client := range []*Client{sseClient, webSocketClient, cliClient} {
+		wc.hub.addClient(client.id, client)
+		wc.hub.subscribe(client.id, chatID)
+	}
+
+	wc.SendProgress(chatID, &protocol.ProgressEvent{StreamContent: "partial"})
+
+	sseMsg := <-sseClient.sendCh
+	if sseMsg.Type != protocol.MsgTypeStreamContent || sseMsg.Seq != 1 {
+		t.Fatalf("SSE sparse progress = %#v", sseMsg)
+	}
+	webMsgs := webSocketClient.drainStateless()
+	if len(webMsgs) != 1 || webMsgs[0].Type != protocol.MsgTypeProgress || webMsgs[0].Seq != 1 {
+		t.Fatalf("browser WS sparse progress = %#v", webMsgs)
+	}
+	cliMsgs := cliClient.drainStateless()
+	if len(cliMsgs) != 1 || cliMsgs[0].Type != protocol.MsgTypeProgress || cliMsgs[0].Seq != 0 {
+		t.Fatalf("CLI WS sparse progress = %#v", cliMsgs)
 	}
 }
 
