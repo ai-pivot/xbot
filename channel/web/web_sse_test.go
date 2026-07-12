@@ -309,8 +309,8 @@ func TestSSEActiveProgressFallbackStopsAtIdleEvent(t *testing.T) {
 		t.Fatal("active progress fallback did not finish")
 	}
 
-	if lookupCount != 1 {
-		t.Fatalf("active progress lookup count = %d, want 1 after terminal event", lookupCount)
+	if lookupCount != 2 {
+		t.Fatalf("active progress lookup count = %d, want 2 after terminal event", lookupCount)
 	}
 	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
 	if len(events) != 1 || events[0].Type != protocol.MsgTypeSession || events[0].Session == nil || events[0].Session.Action != "idle" {
@@ -355,11 +355,91 @@ func TestSSEActiveProgressFallbackHonorsIdleAtHighWater(t *testing.T) {
 
 	wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 1)
 
-	if lookupCount != 1 {
-		t.Fatalf("active progress lookup count = %d, want 1 at idle high-water mark", lookupCount)
+	if lookupCount != 2 {
+		t.Fatalf("active progress lookup count = %d, want 2 at idle high-water mark", lookupCount)
 	}
 	if got := wc.getEventStream(chatID).lastSeq(); got != 1 {
 		t.Fatalf("last sequence = %d, want terminal sequence 1", got)
+	}
+}
+
+func TestSSEProgressFallbackDoesNotHoldSequenceLockDuringCallback(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	var stateMu sync.Mutex
+	stateLocked := make(chan struct{})
+	emitIdle := make(chan struct{})
+	completionDone := make(chan struct{})
+	go func() {
+		stateMu.Lock()
+		close(stateLocked)
+		<-emitIdle
+		wc.SendSessionState(protocol.SessionEvent{Channel: "web", ChatID: chatID, Action: "idle"})
+		stateMu.Unlock()
+		close(completionDone)
+	}()
+	<-stateLocked
+
+	secondLookup := make(chan struct{})
+	lookupCount := 0
+	wc.SetCallbacks(WebCallbacks{
+		GetActiveProgress: func(channel, gotChatID string) *protocol.ProgressEvent {
+			lookupCount++
+			if lookupCount == 2 {
+				close(secondLookup)
+				stateMu.Lock()
+				stateMu.Unlock()
+			}
+			return &protocol.ProgressEvent{Phase: "thinking"}
+		},
+	})
+
+	publishDone := make(chan struct{})
+	go func() {
+		wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+		close(publishDone)
+	}()
+	<-secondLookup
+	close(emitIdle)
+	for name, done := range map[string]<-chan struct{}{
+		"completion": completionDone,
+		"fallback":   publishDone,
+	} {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s path deadlocked", name)
+		}
+	}
+	if got := wc.getEventStream(chatID).lastSeq(); got != 1 {
+		t.Fatalf("last sequence = %d, want idle sequence 1", got)
+	}
+}
+
+func TestSSEProgressFallbackUsesEventPublishedBeforeSnapshotStore(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	wc.SendProgress(chatID, &protocol.ProgressEvent{Seq: 2, Phase: "new"})
+	client := &Client{
+		connType: clientConnTypeSSE,
+		sendCh:   make(chan protocol.WSMessage, 1),
+		done:     make(chan struct{}),
+		chatID:   chatID,
+		id:       "sse-progress-order",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, chatID)
+	wc.SetCallbacks(WebCallbacks{
+		GetActiveProgress: func(channel, gotChatID string) *protocol.ProgressEvent {
+			return &protocol.ProgressEvent{Seq: 1, Phase: "old"}
+		},
+	})
+
+	wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 1)
+
+	msg := <-client.sendCh
+	if msg.Seq != 2 || msg.Progress == nil || msg.Progress.Seq != 2 || msg.Progress.Phase != "new" {
+		t.Fatalf("progress fallback = %#v", msg)
 	}
 }
 
@@ -669,6 +749,48 @@ func TestWebChannelStopInterruptsBlockedSSEWrite(t *testing.T) {
 	case <-stopped:
 	case <-time.After(time.Second):
 		t.Fatal("WebChannel.Stop did not interrupt blocked SSE write")
+	}
+}
+
+func TestSSEHandlerCannotRegisterAfterStop(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+	wc.Stop()
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/sse?chat_id=web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(cookie)
+	client := &http.Client{Timeout: time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("stopped SSE handler did not return: %v", err)
+	}
+	resp.Body.Close()
+
+	wc.hub.mu.RLock()
+	connections := len(wc.hub.conns)
+	wc.hub.mu.RUnlock()
+	if connections != 0 {
+		t.Fatalf("Hub connections after Stop = %d, want 0", connections)
+	}
+}
+
+func TestSSECancelledDeadlineCannotBeRearmed(t *testing.T) {
+	writer := newDeadlineBlockingResponseWriter()
+	defer writer.release()
+	client := &Client{w: writer}
+	client.sseWriteCanceled.Store(true)
+
+	armSSEWriteDeadline(client)
+
+	select {
+	case <-writer.unblock:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled SSE write was rearmed with a future deadline")
 	}
 }
 

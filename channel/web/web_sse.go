@@ -60,18 +60,6 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	streamLastSeq := wc.getEventStream(chatID).lastSeq()
-	resumeSeq := lastSeq
-	if resumeSeq == 0 {
-		// A fresh connection starts at the current high-water mark. Active
-		// progress and AskUser state are restored by the fallback callbacks;
-		// events racing with registration are recovered from eventStream.
-		resumeSeq = streamLastSeq
-	} else if resumeSeq > streamLastSeq {
-		// The server restarted and its in-memory sequence restarted from zero.
-		resumeSeq = 0
-	}
-
 	client := &Client{
 		connType:    clientConnTypeSSE,
 		w:           w,
@@ -82,11 +70,28 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		userID:      senderID,
 		chatID:      chatID,
 		id:          strings.ReplaceAll(uuid.New().String(), "-", ""),
-		lastSentSeq: resumeSeq,
+		lastSentSeq: lastSeq,
 	}
 
-	wc.hub.addClient(client.id, client)
-	wc.hub.subscribe(client.id, chatID)
+	// Sequence high-water selection and subscription are one transaction: an
+	// event is either below the fresh baseline or delivered after subscription.
+	wc.hub.seqMu.Lock()
+	streamLastSeq := wc.getEventStream(chatID).lastSeq()
+	if client.lastSentSeq == 0 {
+		client.lastSentSeq = streamLastSeq
+	} else if client.lastSentSeq > streamLastSeq {
+		// The server restarted and its in-memory sequence restarted from zero.
+		client.lastSentSeq = 0
+	}
+	registered := wc.hub.addClient(client.id, client)
+	subscribed := registered && wc.hub.subscribe(client.id, chatID)
+	wc.hub.seqMu.Unlock()
+	if !subscribed {
+		if registered {
+			wc.hub.removeClient(client.id)
+		}
+		return
+	}
 	defer func() {
 		client.closeDone()
 		wc.hub.removeClient(client.id)
@@ -103,12 +108,21 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		"client_id": client.id,
 	}).Info("SSE client connected")
 
+	stopWriteWatcher := watchSSEWriteCancellation(r.Context(), client)
+	defer stopWriteWatcher()
+	if sseContextError(r.Context(), client) != nil {
+		return
+	}
+
 	// Commit the response headers immediately even when no event is ready yet.
 	if err := flushSSEResponse(client); err != nil {
 		return
 	}
 	wc.publishSSEFallbacks(sel, client.lastSentSeq)
-	wc.sseWriteLoop(r.Context(), client)
+	if sseContextError(r.Context(), client) != nil {
+		return
+	}
+	wc.sseWriteLoopCore(r.Context(), client)
 }
 
 func (wc *WebChannel) resolveSSESession(w http.ResponseWriter, r *http.Request, senderID, chatID string) (SessionSelector, bool) {
@@ -144,22 +158,26 @@ func (wc *WebChannel) publishSSEFallbacks(sel SessionSelector, lastSeq uint64) {
 	events := wc.replaySSEEvents(sel, lastSeq)
 	if !containsSSEEvent(events, protocol.MsgTypeProgress, "") && wc.callbacks.GetActiveProgress != nil {
 		if progress := wc.callbacks.GetActiveProgress(sel.Channel, sel.ChatID); progress != nil {
-			wc.publishSSEFallbackIfMissing(sel, lastSeq, protocol.WSMessage{
-				Type:     protocol.MsgTypeProgress,
-				TS:       time.Now().Unix(),
-				Progress: progress,
-			}, "")
+			if current := wc.callbacks.GetActiveProgress(sel.Channel, sel.ChatID); current != nil {
+				wc.publishSSEFallbackIfMissing(sel, lastSeq, protocol.WSMessage{
+					Type:     protocol.MsgTypeProgress,
+					TS:       time.Now().Unix(),
+					Progress: current,
+				}, "")
+			}
 		}
 	}
 
 	if wc.callbacks.GetPendingAskUser != nil {
 		if progress := wc.callbacks.GetPendingAskUser(sel.Channel, sel.ChatID); progress != nil {
-			wc.publishSSEFallbackIfMissing(sel, lastSeq, protocol.WSMessage{
-				Type:     protocol.MsgTypeAskUser,
-				TS:       time.Now().Unix(),
-				ChatID:   sel.ChatID,
-				Progress: progress,
-			}, progress.RequestID)
+			if current := wc.callbacks.GetPendingAskUser(sel.Channel, sel.ChatID); current != nil && current.RequestID == progress.RequestID {
+				wc.publishSSEFallbackIfMissing(sel, lastSeq, protocol.WSMessage{
+					Type:     protocol.MsgTypeAskUser,
+					TS:       time.Now().Unix(),
+					ChatID:   sel.ChatID,
+					Progress: current,
+				}, current.RequestID)
+			}
 		}
 	}
 }
@@ -172,37 +190,48 @@ func (wc *WebChannel) publishSSEFallbackIfMissing(sel SessionSelector, lastSeq u
 		}
 		switch msg.Type {
 		case protocol.MsgTypeProgress:
-			if sseSessionIsIdle(wc.replaySSEEvents(sel, 0)) {
-				return protocol.WSMessage{}, false
-			}
-			progress := wc.callbacks.GetActiveProgress(sel.Channel, sel.ChatID)
-			if progress == nil {
+			progress, ok := selectSSEProgressFallback(msg.Progress, wc.replaySSEEvents(sel, 0))
+			if !ok {
 				return protocol.WSMessage{}, false
 			}
 			msg.Progress = progress
 		case protocol.MsgTypeAskUser:
-			pending := wc.callbacks.GetPendingAskUser(sel.Channel, sel.ChatID)
-			if pending == nil || pending.RequestID != requestID {
+			if msg.Progress == nil || msg.Progress.RequestID != requestID {
 				return protocol.WSMessage{}, false
 			}
-			msg.Progress = pending
 		}
 		return msg, true
 	})
 }
 
-func sseSessionIsIdle(events []protocol.WSMessage) bool {
+func selectSSEProgressFallback(snapshot *protocol.ProgressEvent, events []protocol.WSMessage) (*protocol.ProgressEvent, bool) {
+	if snapshot == nil {
+		return nil, false
+	}
 	state := ""
+	var stateSeq uint64
+	var latestProgress *protocol.WSMessage
 	for _, event := range events {
-		if event.Type != protocol.MsgTypeSession || event.Session == nil {
-			continue
+		if event.Type == protocol.MsgTypeProgress && event.Progress != nil {
+			eventCopy := event
+			latestProgress = &eventCopy
 		}
-		switch event.Session.Action {
-		case "busy", "idle":
-			state = event.Session.Action
+		if event.Type == protocol.MsgTypeSession && event.Session != nil {
+			switch event.Session.Action {
+			case "busy", "idle":
+				state = event.Session.Action
+				stateSeq = event.Seq
+			}
 		}
 	}
-	return state == "idle"
+	if state == "idle" || state == "busy" && (latestProgress == nil || latestProgress.Seq < stateSeq) {
+		return nil, false
+	}
+	if latestProgress != nil && snapshot.Seq != latestProgress.Progress.Seq {
+		progressCopy := *latestProgress.Progress
+		return &progressCopy, true
+	}
+	return snapshot, true
 }
 
 func containsSSEEvent(events []protocol.WSMessage, msgType, requestID string) bool {
@@ -231,7 +260,10 @@ func askUserRequestID(msg protocol.WSMessage) string {
 func (wc *WebChannel) sseWriteLoop(ctx context.Context, client *Client) {
 	stopWriteWatcher := watchSSEWriteCancellation(ctx, client)
 	defer stopWriteWatcher()
+	wc.sseWriteLoopCore(ctx, client)
+}
 
+func (wc *WebChannel) sseWriteLoopCore(ctx context.Context, client *Client) {
 	ticker := time.NewTicker(sseHeartbeatInterval)
 	defer ticker.Stop()
 
@@ -271,6 +303,7 @@ func watchSSEWriteCancellation(ctx context.Context, client *Client) func() {
 		case <-stopped:
 			return
 		}
+		client.sseWriteCanceled.Store(true)
 		_ = http.NewResponseController(client.w).SetWriteDeadline(time.Now())
 	}()
 	return func() {
@@ -387,9 +420,18 @@ func flushSSE(client *Client) error {
 }
 
 func armSSEWriteDeadline(client *Client) {
-	_ = http.NewResponseController(client.w).SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+	controller := http.NewResponseController(client.w)
+	_ = controller.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+	if client.sseWriteCanceled.Load() {
+		_ = controller.SetWriteDeadline(time.Now())
+	}
 }
 
 func clearSSEWriteDeadline(client *Client) {
-	_ = http.NewResponseController(client.w).SetWriteDeadline(time.Time{})
+	controller := http.NewResponseController(client.w)
+	if client.sseWriteCanceled.Load() {
+		_ = controller.SetWriteDeadline(time.Now())
+		return
+	}
+	_ = controller.SetWriteDeadline(time.Time{})
 }

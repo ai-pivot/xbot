@@ -130,7 +130,10 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		statelessSig:    make(chan struct{}, 1),
 	}
 
-	wc.hub.addClient(client.id, client)
+	if !wc.hub.addClient(client.id, client) {
+		_ = conn.Close()
+		return
+	}
 
 	// Immediately subscribe to senderID for server-pushed events (progress, stream, etc.)
 	// CLI clients skip this — they subscribe to their business chatID (absolute path)

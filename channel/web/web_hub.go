@@ -25,6 +25,7 @@ type Hub struct {
 	offMu   sync.Mutex
 	seqMu   sync.Mutex
 	seqFn   func(string, protocol.WSMessage) protocol.WSMessage
+	stopped bool
 
 	tuiRespFn func(id string, payload *protocol.TUIControlPayload) // set by RemoteCLIChannel
 }
@@ -39,10 +40,14 @@ func newHub() *Hub {
 
 // addClient registers a transport connection for lifecycle management.
 // Use subscribe() to register it for message routing.
-func (h *Hub) addClient(clientID string, c *Client) {
+func (h *Hub) addClient(clientID string, c *Client) bool {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stopped {
+		return false
+	}
 	h.conns[clientID] = c
-	h.mu.Unlock()
+	return true
 }
 
 // removeClient removes a transport connection and all its subscriptions.
@@ -61,8 +66,12 @@ func (h *Hub) removeClient(clientID string) {
 // subscribe registers a client to receive messages for a given chatID.
 // Idempotent — safe to call on every message from the client.
 // Removes any previous subscription for this client (single-chat-per-connection model).
-func (h *Hub) subscribe(clientID, chatID string) {
+func (h *Hub) subscribe(clientID, chatID string) bool {
 	h.mu.Lock()
+	if h.stopped || h.conns[clientID] == nil {
+		h.mu.Unlock()
+		return false
+	}
 	// Remove old subscription(s) for this client (single active chat per WS connection).
 	// Without this, the client accumulates subscriptions to multiple chatIDs and
 	// receives events from sessions the user has already switched away from.
@@ -100,6 +109,7 @@ func (h *Hub) subscribe(clientID, chatID string) {
 	}
 	h.subs[chatID][clientID] = true
 	h.mu.Unlock()
+	return true
 }
 
 // sendToClient sends a message to all clients subscribed to a chatID.
@@ -118,7 +128,8 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 
 // sendSSEEventIf atomically checks and publishes a sequenced Web event.
 // prepare runs under seqMu so ordinary publishers cannot enter between a
-// replay check and the fallback event it guards.
+// replay check and the fallback event it guards. It must not call callbacks
+// or acquire application-state locks.
 func (h *Hub) sendSSEEventIf(chatID string, prepare func() (protocol.WSMessage, bool)) bool {
 	h.seqMu.Lock()
 	defer h.seqMu.Unlock()
@@ -133,6 +144,10 @@ func (h *Hub) sendSSEEventIf(chatID string, prepare func() (protocol.WSMessage, 
 
 func (h *Hub) deliverToSubscribers(chatID string, msg, sequencedMsg protocol.WSMessage, isSSEEvent bool) bool {
 	h.mu.RLock()
+	if h.stopped {
+		h.mu.RUnlock()
+		return false
+	}
 	// Copy subscriber keys to a slice to avoid iterating the map while
 	// removeClient() may concurrently delete from it (data race).
 	chatIDs, ok := h.subs[chatID]
@@ -185,6 +200,11 @@ func (h *Hub) deliverToSubscribers(chatID string, msg, sequencedMsg protocol.WSM
 		}
 	}
 	if !sent {
+		h.mu.RLock()
+		if h.stopped {
+			h.mu.RUnlock()
+			return false
+		}
 		h.offMu.Lock()
 		buf, ok := h.offline[chatID]
 		if !ok {
@@ -197,6 +217,7 @@ func (h *Hub) deliverToSubscribers(chatID string, msg, sequencedMsg protocol.WSM
 		}
 		buf.push(bufferedMsg)
 		h.offMu.Unlock()
+		h.mu.RUnlock()
 	}
 	return sent
 }
@@ -261,6 +282,7 @@ func (c *Client) drainStateless() []*protocol.WSMessage {
 
 func (h *Hub) stopAll() {
 	h.mu.Lock()
+	h.stopped = true
 	for _, c := range h.conns {
 		c.closeDone()
 	}
@@ -333,22 +355,23 @@ const (
 
 // Client represents a single connected transport client.
 type Client struct {
-	connType        string
-	wsConn          *websocket.Conn
-	w               http.ResponseWriter
-	flusher         http.Flusher
-	sendCh          chan protocol.WSMessage
-	done            chan struct{}
-	closeOnce       sync.Once
-	hub             *Hub
-	userID          string
-	chatID          string
-	lastSentSeq     uint64
-	id              string                      // unique client ID (UUID), generated at connection time
-	syncCh          atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq
-	isCLI           bool                        // true if client_type=cli (runner token auth)
-	canonicalUserID int64                       // canonical user ID (from IdentityResolver)
-	canonicalRole   string                      // user role ("admin" | "user")
+	connType         string
+	wsConn           *websocket.Conn
+	w                http.ResponseWriter
+	flusher          http.Flusher
+	sendCh           chan protocol.WSMessage
+	done             chan struct{}
+	closeOnce        sync.Once
+	hub              *Hub
+	userID           string
+	chatID           string
+	lastSentSeq      uint64
+	id               string                      // unique client ID (UUID), generated at connection time
+	syncCh           atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq
+	isCLI            bool                        // true if client_type=cli (runner token auth)
+	canonicalUserID  int64                       // canonical user ID (from IdentityResolver)
+	canonicalRole    string                      // user role ("admin" | "user")
+	sseWriteCanceled atomic.Bool
 
 	// statelessSlot holds the latest stateless message per type (progress,
 	// stream_content, etc.).  Each type is kept at most once — newer values
