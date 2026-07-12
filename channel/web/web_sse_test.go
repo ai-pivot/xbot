@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	ch "xbot/channel"
 	"xbot/protocol"
+	"xbot/tools"
 )
 
 func TestWriteSSEEventFormat(t *testing.T) {
@@ -266,7 +268,7 @@ func TestSSEStreamMergeStopsAtStatefulBoundary(t *testing.T) {
 	chatID := "web-1"
 	source := "web:" + chatID
 	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: source, StreamContent: "old turn"})
-	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: source, Phase: "done", Iteration: 1})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: source, Content: "structured result"})
 	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: source, StreamTokens: 3})
 
 	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
@@ -279,6 +281,28 @@ func TestSSEStreamMergeStopsAtStatefulBoundary(t *testing.T) {
 	}
 	if latest.Progress.StreamContent != "" || latest.Progress.StreamTokens != 3 {
 		t.Fatalf("stream fields crossed stateful boundary: %#v", latest.Progress)
+	}
+}
+
+func TestSSEStreamMergeIgnoresUnrelatedStructuredProgressBoundary(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	sourceA := "agent:worker-a"
+	sourceB := "agent:worker-b"
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sourceA, StreamContent: "worker A"})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sourceB, Content: "worker B result"})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sourceA, StreamTokens: 5})
+
+	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+	if len(events) != 2 {
+		t.Fatalf("replayed events = %#v, want structured B plus merged stream A", events)
+	}
+	stream := events[1]
+	if stream.Type != protocol.MsgTypeStreamContent || stream.Progress == nil {
+		t.Fatalf("merged worker A stream = %#v", stream)
+	}
+	if stream.Progress.ChatID != sourceA || stream.Progress.StreamContent != "worker A" || stream.Progress.StreamTokens != 5 {
+		t.Fatalf("unrelated structured progress split worker A stream: %#v", stream.Progress)
 	}
 }
 
@@ -384,6 +408,67 @@ func TestSSEPendingAskUserReplayDoesNotDuplicate(t *testing.T) {
 	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
 	if len(events) != 1 || askUserRequestID(events[0]) != "request-1" {
 		t.Fatalf("replayed AskUser events = %#v", events)
+	}
+}
+
+func TestSSEDeliversRealAskUserToolMetadata(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	chatID := "web-1"
+	var pendingMu sync.RWMutex
+	var pending *protocol.ProgressEvent
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			pendingMu.RLock()
+			defer pendingMu.RUnlock()
+			if pending == nil {
+				return false
+			}
+			copy := *pending
+			copy.Questions = append([]protocol.AskUserQuestion(nil), pending.Questions...)
+			return fn(&copy)
+		},
+	})
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+	resp := openSSE(t, server.URL, cookie, chatID, "")
+	defer resp.Body.Close()
+
+	toolResult, err := (&tools.AskUserTool{}).Execute(
+		&tools.ToolContext{},
+		`{"questions":[{"question":"Continue?","options":["yes","no"]}]}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID := toolResult.Metadata["request_id"]
+	if requestID == "" {
+		t.Fatal("real AskUser metadata has no request ID")
+	}
+	var questions []protocol.AskUserQuestion
+	if err := json.Unmarshal([]byte(toolResult.Metadata["ask_questions"]), &questions); err != nil {
+		t.Fatal(err)
+	}
+	pendingMu.Lock()
+	pending = &protocol.ProgressEvent{RequestID: requestID, Questions: questions}
+	pendingMu.Unlock()
+	if _, err := wc.Send(ch.OutboundMsg{
+		Channel:     "web",
+		ChatID:      chatID,
+		WaitingUser: true,
+		Metadata:    toolResult.Metadata,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeText, 1)
+	ask := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeAskUser, 2)
+	if ask.Progress == nil || ask.Progress.RequestID != requestID {
+		t.Fatalf("AskUser SSE request ID = %#v, want %q", ask.Progress, requestID)
+	}
+	if len(ask.Progress.Questions) != 1 || ask.Progress.Questions[0].Question != "Continue?" {
+		t.Fatalf("AskUser SSE questions = %#v", ask.Progress.Questions)
 	}
 }
 

@@ -48,12 +48,12 @@ func (es *eventStream) lastSeq() uint64 {
 func (es *eventStream) push(msg protocol.WSMessage) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	if !isStatefulMsg(msg) {
+	if !isStatefulSSEEvent(msg) {
 		key := statelessSlotKey(&msg)
 		for i := es.count - 1; i >= 0; i-- {
 			idx := (es.head + i) % eventStreamSize
 			previous := es.buf[idx]
-			if msg.Type == protocol.MsgTypeStreamContent && msg.Progress != nil && isStatefulMsg(previous) {
+			if isSSEStreamMergeBoundary(msg, previous) {
 				break
 			}
 			if statelessSlotKey(&previous) == key {
@@ -70,6 +70,26 @@ func (es *eventStream) push(msg protocol.WSMessage) {
 	es.tail = (es.tail + 1) % eventStreamSize
 	es.count++
 }
+
+// isStatefulSSEEvent classifies messages after normalizeSSEEvent has split
+// stream-only progress into stream_content. Every remaining progress event is
+// structured and must be retained independently for reconnect replay.
+func isStatefulSSEEvent(msg protocol.WSMessage) bool {
+	return msg.Type == protocol.MsgTypeProgress || isStatefulMsg(msg)
+}
+
+func isSSEStreamMergeBoundary(current, previous protocol.WSMessage) bool {
+	if current.Type != protocol.MsgTypeStreamContent || current.Progress == nil || !isStatefulSSEEvent(previous) {
+		return false
+	}
+	if previous.Type != protocol.MsgTypeProgress || previous.Progress == nil {
+		return true
+	}
+	currentSource := current.Progress.ChatID
+	previousSource := previous.Progress.ChatID
+	return currentSource == "" || previousSource == "" || currentSource == previousSource
+}
+
 func mergeStatelessEvent(previous, current protocol.WSMessage) protocol.WSMessage {
 	if current.Type != protocol.MsgTypeStreamContent || previous.Progress == nil || current.Progress == nil {
 		return current

@@ -12,6 +12,8 @@ import (
 	"xbot/protocol"
 	"xbot/session"
 	"xbot/tools"
+
+	"github.com/google/uuid"
 )
 
 // injectSystemNotes appends runtime state notes (background tasks, interactive
@@ -469,6 +471,9 @@ func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *
 	meta := map[string]string{}
 	for k, v := range out.Metadata {
 		meta[k] = v
+	}
+	if meta["request_id"] == "" {
+		meta["request_id"] = uuid.NewString()
 	}
 	// Persist iteration history to session so it survives restarts.
 	if len(out.IterationHistory) > 0 {

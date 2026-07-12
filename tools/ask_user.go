@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"xbot/llm"
+
+	"github.com/google/uuid"
 )
 
 // AskUserTool allows the agent to ask the user a question and wait for their response.
@@ -66,6 +68,7 @@ func (t *AskUserTool) Execute(ctx *ToolContext, input string) (*ToolResult, erro
 	qJSON, _ := json.Marshal(args.Questions)
 	metadata := map[string]string{
 		"ask_questions": string(qJSON),
+		"request_id":    uuid.NewString(),
 	}
 
 	// For CLI, the engine sends OutboundMessage{WaitingUser:true} to the channel

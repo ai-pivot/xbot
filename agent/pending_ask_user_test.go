@@ -1,11 +1,52 @@
 package agent
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"xbot/bus"
+	"xbot/channel"
 	"xbot/protocol"
+	"xbot/tools"
 )
+
+func TestHandleRunOutputPreservesRequestIDFromRealAskUserMetadata(t *testing.T) {
+	toolResult, err := (&tools.AskUserTool{}).Execute(&tools.ToolContext{}, `{"questions":[{"question":"Continue?","options":["yes","no"]}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolRequestID := toolResult.Metadata["request_id"]
+	if toolRequestID == "" {
+		t.Fatal("AskUser tool metadata has no request ID")
+	}
+
+	a := &Agent{}
+	outbound, err := a.handleRunOutput(
+		context.Background(),
+		bus.InboundMessage{Channel: "web", ChatID: "chat-1"},
+		&RunOutput{OutboundMsg: &channel.OutboundMsg{
+			WaitingUser: toolResult.WaitingUser,
+			Metadata:    toolResult.Metadata,
+		}},
+		nil,
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID := outbound.Metadata["request_id"]
+	if requestID != toolRequestID {
+		t.Fatalf("WaitingUser outbound request ID = %q, want %q", requestID, toolRequestID)
+	}
+	pending := a.GetPendingAskUser("web", "chat-1")
+	if pending == nil || pending.RequestID != requestID {
+		t.Fatalf("pending AskUser = %#v, want request ID %q", pending, requestID)
+	}
+	if len(pending.Questions) != 1 || pending.Questions[0].Question != "Continue?" {
+		t.Fatalf("pending AskUser questions = %#v", pending.Questions)
+	}
+}
 
 func TestWithPendingAskUserBlocksConcurrentClearUntilCallbackReturns(t *testing.T) {
 	a := &Agent{}
