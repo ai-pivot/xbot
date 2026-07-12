@@ -115,3 +115,34 @@ func TestWithPendingAskUserReturnsDetachedSnapshot(t *testing.T) {
 		t.Fatalf("stored pending AskUser was mutated through snapshot: %#v", pending)
 	}
 }
+
+func TestPendingAskUserCancelPreventsReplayAndNextTurnCancellation(t *testing.T) {
+	a := &Agent{bus: bus.NewMessageBus()}
+	key := "web:chat-1"
+	a.setPendingAskUser("web", "chat-1", &protocol.ProgressEvent{RequestID: "request-1"})
+	// A stale queued cancel must also be removed when the pending prompt wins
+	// the cancellation race.
+	a.pendingCancel.Store(key, true)
+
+	if !a.acknowledgePendingAskUserCancel(bus.InboundMessage{Channel: "web", ChatID: "chat-1"}) {
+		t.Fatal("pending AskUser cancel was not consumed")
+	}
+	if a.WithPendingAskUser("web", "chat-1", func(*protocol.ProgressEvent) bool {
+		t.Fatal("cancelled AskUser remained replayable")
+		return true
+	}) {
+		t.Fatal("cancelled AskUser remained pending")
+	}
+	if _, pending := a.pendingCancel.LoadAndDelete(key); pending {
+		t.Fatal("cancelled AskUser armed pendingCancel for the next turn")
+	}
+
+	select {
+	case ack := <-a.bus.Outbound:
+		if ack.Metadata["cancelled"] != "true" {
+			t.Fatalf("cancel ack metadata = %#v", ack.Metadata)
+		}
+	default:
+		t.Fatal("pending AskUser cancel produced no acknowledgement")
+	}
+}

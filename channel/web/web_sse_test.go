@@ -346,6 +346,28 @@ func TestSSEReplaySortsMixedStatefulAndStatelessEvents(t *testing.T) {
 	}
 }
 
+func TestSSEStatelessReplacementStaysNewestWhenEventStreamIsFull(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeRunnerStatus, Content: "old"})
+	for seq := 2; seq <= eventStreamSize; seq++ {
+		wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: strconv.Itoa(seq)})
+	}
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeRunnerStatus, Content: "new"})
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "after"})
+
+	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, eventStreamSize)
+	if len(events) != 2 {
+		t.Fatalf("events after full-buffer replacement = %#v, want seq 513 and 514", events)
+	}
+	if events[0].Seq != eventStreamSize+1 || events[0].Type != protocol.MsgTypeRunnerStatus || events[0].Content != "new" {
+		t.Fatalf("replacement event = %#v", events[0])
+	}
+	if events[1].Seq != eventStreamSize+2 || events[1].Type != protocol.MsgTypeText || events[1].Content != "after" {
+		t.Fatalf("event after replacement = %#v", events[1])
+	}
+}
+
 func TestSSEReplayHandoffSuppressesStaleFallback(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)

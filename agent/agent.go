@@ -918,6 +918,10 @@ func (a *Agent) setPendingAskUser(ch, chatID string, pending *protocol.ProgressE
 // Called when the user answers or cancels.
 // Searches by chatID only (chatID is globally unique across channels).
 func (a *Agent) ClearPendingAskUser(ch, chatID string) {
+	a.clearPendingAskUser(ch, chatID)
+}
+
+func (a *Agent) clearPendingAskUser(ch, chatID string) bool {
 	a.waitingUserMu.Lock()
 	defer a.waitingUserMu.Unlock()
 
@@ -925,7 +929,7 @@ func (a *Agent) ClearPendingAskUser(ch, chatID string) {
 	key := ch + ":" + chatID
 	if _, ok := a.waitingUserSessions.Load(key); ok {
 		a.waitingUserSessions.Delete(key)
-		return
+		return true
 	}
 	// Fallback: search by chatID suffix
 	var keysToDelete []string
@@ -938,6 +942,37 @@ func (a *Agent) ClearPendingAskUser(ch, chatID string) {
 	for _, k := range keysToDelete {
 		a.waitingUserSessions.Delete(k)
 	}
+	return len(keysToDelete) > 0
+}
+
+func (a *Agent) consumePendingAskUserCancel(ch, chatID string) bool {
+	if !a.clearPendingAskUser(ch, chatID) {
+		return false
+	}
+	a.pendingCancel.Delete(ch + ":" + chatID)
+	return true
+}
+
+func (a *Agent) acknowledgePendingAskUserCancel(msg bus.InboundMessage) bool {
+	if !a.consumePendingAskUserCancel(msg.Channel, msg.ChatID) {
+		return false
+	}
+	if err := a.sendMessage(msg.Channel, msg.ChatID, "", map[string]string{
+		"cancelled": "true",
+		"no_patch":  "true",
+	}); err != nil {
+		log.WithError(err).Warn("Failed to send pending AskUser cancel ack")
+	}
+	return true
+}
+
+func (a *Agent) pendingAskUserMatches(ch, chatID, requestID string) bool {
+	if requestID == "" {
+		return false
+	}
+	return a.WithPendingAskUser(ch, chatID, func(pending *protocol.ProgressEvent) bool {
+		return pending.RequestID == requestID
+	})
 }
 
 // SetProxyLLM injects a ProxyLLM for a user (when their active runner has local LLM).
@@ -2030,7 +2065,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 				cancelKey := msg.Channel + ":" + msg.ChatID
 				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
-				if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
+				if a.acknowledgePendingAskUserCancel(msg) {
+					log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
+				} else if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
 					select {
 					case ch.(chan struct{}) <- struct{}{}:
 						log.Info("Cancel signal sent to processing goroutine")
@@ -2435,6 +2472,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		if wasCancelled && ctx.Err() == nil {
 			// 请求被用户 /cancel 取消（而非全局 ctx 关闭）
 			log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).Info("Request cancelled by user")
+			a.consumePendingAskUserCancel(msg.Channel, msg.ChatID)
 			// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
 			// Always include cancelled metadata so CLI can distinguish cancel acks
 			// from normal replies and avoid ending a subsequently-started turn.
@@ -2483,23 +2521,31 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		}
 		if response != nil {
 			if response.WaitingUser {
-				// WaitingUser response: send directly with WaitingUser flag set.
-				// Bypass sendMessage (which doesn't support WaitingUser) since it applies
-				// Patch/Edit logic incompatible with async user interaction.
-				busMsg := bus.OutboundMessage{
-					Channel:     msg.Channel,
-					ChatID:      msg.ChatID,
-					Content:     response.Content,
-					WaitingUser: true,
-					Metadata:    response.Metadata,
+				requestID := ""
+				if response.Metadata != nil {
+					requestID = response.Metadata["request_id"]
 				}
-				if busMsg.Metadata == nil {
-					busMsg.Metadata = make(map[string]string)
-				}
-				select {
-				case a.bus.Outbound <- busMsg:
-				default:
-					log.Ctx(ctx).Warn("Message bus outbound channel is full, dropping WaitingUser response")
+				if !a.pendingAskUserMatches(msg.Channel, msg.ChatID, requestID) {
+					log.Ctx(ctx).WithField("request_id", requestID).Info("Skipping cancelled WaitingUser response")
+				} else {
+					// WaitingUser response: send directly with WaitingUser flag set.
+					// Bypass sendMessage (which doesn't support WaitingUser) since it applies
+					// Patch/Edit logic incompatible with async user interaction.
+					busMsg := bus.OutboundMessage{
+						Channel:     msg.Channel,
+						ChatID:      msg.ChatID,
+						Content:     response.Content,
+						WaitingUser: true,
+						Metadata:    response.Metadata,
+					}
+					if busMsg.Metadata == nil {
+						busMsg.Metadata = make(map[string]string)
+					}
+					select {
+					case a.bus.Outbound <- busMsg:
+					default:
+						log.Ctx(ctx).Warn("Message bus outbound channel is full, dropping WaitingUser response")
+					}
 				}
 			} else if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
 				log.Ctx(ctx).WithError(err).Warn("Failed to dispatch response via sendMessage")

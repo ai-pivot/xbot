@@ -57,8 +57,9 @@ func (es *eventStream) push(msg protocol.WSMessage) {
 				break
 			}
 			if statelessSlotKey(&previous) == key {
-				es.buf[idx] = mergeStatelessEvent(previous, msg)
-				return
+				msg = mergeStatelessEvent(previous, msg)
+				es.removeAt(i)
+				break
 			}
 		}
 	}
@@ -69,6 +70,19 @@ func (es *eventStream) push(msg protocol.WSMessage) {
 	es.buf[es.tail] = msg
 	es.tail = (es.tail + 1) % eventStreamSize
 	es.count++
+}
+
+// removeAt removes a logical ring offset while preserving sequence order.
+// The caller holds es.mu.
+func (es *eventStream) removeAt(offset int) {
+	for i := offset; i < es.count-1; i++ {
+		to := (es.head + i) % eventStreamSize
+		from := (es.head + i + 1) % eventStreamSize
+		es.buf[to] = es.buf[from]
+	}
+	es.tail = (es.tail - 1 + eventStreamSize) % eventStreamSize
+	es.buf[es.tail] = protocol.WSMessage{}
+	es.count--
 }
 
 // isStatefulSSEEvent classifies messages after normalizeSSEEvent has split

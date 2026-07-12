@@ -496,6 +496,23 @@ func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *
 	}
 }
 
+func (a *Agent) storePendingAskUserOutbound(msg bus.InboundMessage, outbound *channel.OutboundMsg) {
+	if a == nil || outbound == nil {
+		return
+	}
+	askPayload := &protocol.ProgressEvent{}
+	if outbound.Metadata != nil {
+		askPayload.RequestID = outbound.Metadata["request_id"]
+		if qJSON := outbound.Metadata["ask_questions"]; qJSON != "" {
+			var questions []protocol.AskUserQuestion
+			if json.Unmarshal([]byte(qJSON), &questions) == nil {
+				askPayload.Questions = questions
+			}
+		}
+	}
+	a.setPendingAskUser(msg.Channel, msg.ChatID, askPayload)
+}
+
 // - Empty content with optional reply: clear progress state
 // - Normal: persist assistant message, send, add reaction
 func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession, replyPolicy string) (*channel.OutboundMsg, error) {
@@ -505,20 +522,8 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// If a tool is waiting for user response, send WaitingUser outbound
 	if waitingUser {
 		outbound := buildWaitingUserOutbound(ctx, msg, out, tenantSession)
-		// Store the pending AskUser payload so WS reconnect can resend it.
-		if a != nil && outbound != nil {
-			askPayload := &protocol.ProgressEvent{}
-			if outbound.Metadata != nil {
-				askPayload.RequestID = outbound.Metadata["request_id"]
-				if qJSON := outbound.Metadata["ask_questions"]; qJSON != "" {
-					var qs []protocol.AskUserQuestion
-					if json.Unmarshal([]byte(qJSON), &qs) == nil {
-						askPayload.Questions = qs
-					}
-				}
-			}
-			a.setPendingAskUser(msg.Channel, msg.ChatID, askPayload)
-		}
+		// Store the pending AskUser payload so reconnect can resend it.
+		a.storePendingAskUserOutbound(msg, outbound)
 		return outbound, nil
 	}
 
