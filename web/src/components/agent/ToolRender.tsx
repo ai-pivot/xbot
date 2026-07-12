@@ -41,8 +41,12 @@ function filePathFromLabel(tool: WebToolProgress): string {
   const args = parseArgs(tool)
   if (args?.path) return args.path as string
   const label = tool.label || ''
-  const idx = label.indexOf(': ')
-  return idx >= 0 ? label.slice(idx + 2) : label
+  // Match known tool prefixes to avoid cutting on ': ' inside the path itself.
+  const prefixes = ['FileCreate: ', 'FileReplace: ', 'Read: ', 'Grep: ', 'Glob: ']
+  for (const prefix of prefixes) {
+    if (label.startsWith(prefix)) return label.slice(prefix.length)
+  }
+  return label
 }
 
 /** Truncate text to maxLines, appending ellipsis if cut. */
