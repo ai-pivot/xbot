@@ -215,8 +215,6 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, compressTokenUsage, true)
 	}()
 
-	llmClient, model, _, _, _ := a.llmFactory.GetLLM(msg.SenderID)
-
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)
 	if err != nil {
 		return &channel.OutboundMsg{
@@ -246,7 +244,8 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		cm.SetMemoryTools(defs, exec)
 	}
 
-	result, err := cm.ManualCompress(ctx, messages, llmClient, model)
+	userCtx := UserContextFromContext(ctx)
+	result, err := cm.ManualCompress(ctx, messages, userCtx.LLMClient, userCtx.Model)
 	if err != nil {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
@@ -258,7 +257,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	// Record compress token usage to /usage stats.
 	if result.LLMCalls > 0 && a.multiSession != nil {
 		if recordErr := a.multiSession.RecordUserTokenUsage(
-			msg.SenderID, model,
+			msg.SenderID, userCtx.Model,
 			int(result.InputTokens), int(result.OutputTokens), int(result.CachedTokens),
 			0, result.LLMCalls,
 		); recordErr != nil {

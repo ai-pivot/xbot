@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,6 +79,7 @@ func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextMan
 // 包含 LLM、身份、工作区、工具执行器、循环控制、HookManager 等公共字段。
 // 返回 (RunConfig, userMaxContext) — userMaxContext 为用户在 Settings 中设置的值，0 表示未设置。
 func (a *Agent) buildBaseRunConfig(
+	ctx context.Context,
 	channel, chatID, senderID string,
 	messages []llm.ChatMessage,
 	senderName string,
@@ -87,16 +87,19 @@ func (a *Agent) buildBaseRunConfig(
 ) (RunConfig, int) {
 	sessionKey := qualifyChatID(channel, chatID)
 
-	// Resolve the per-session LLM from the authoritative DB state (tenants +
-	// user_default_model) via the single ResolveLLM path. This replaces the old
-	// RefreshSessionEntry + GetLLMForChat pair: ResolveLLM reads DB fresh and
-	// memoizes, so stale cached entries from a previous Run cannot survive, and
-	// per-session model switches are always honored (the 404 bug).
-	llmClient, model, userMaxCtx, thinkingMode, maxOutputTokens := a.llmFactory.ResolveLLM(senderID, chatID, channel)
+	// All user-related info is resolved once at processMessage entry and
+	// carried via context. No direct LLMFactory/SettingsService access here.
+	userCtx := UserContextFromContext(ctx)
 
-	// LLM 并发限流回调（per-tenant）
-	llmSemAcquire := a.llmFactory.LLMSemAcquireForUser(senderID, channel)
-	subAgentSem := a.llmFactory.SubAgentSemAcquireForUser(senderID, channel)
+	llmClient := userCtx.LLMClient
+	model := userCtx.Model
+	userMaxCtx := userCtx.MaxContextTokens
+	thinkingMode := userCtx.ThinkingMode
+	maxOutputTokens := userCtx.MaxOutputTokens
+
+	// LLM 并发限流回调（per-tenant）— resolved by middleware
+	llmSemAcquire := userCtx.LLMSemAcquire
+	subAgentSem := userCtx.SubAgentSem
 
 	return RunConfig{
 		// 必需
@@ -110,6 +113,7 @@ func (a *Agent) buildBaseRunConfig(
 		AgentID: "main",
 		Channel: channel,
 		ChatID:  chatID,
+		SubID:   userCtx.SubID,
 		SessionName: func() string {
 			_, name := cli.ParseChatID(chatID)
 			// Override with DB label if available (e.g. renamed from "Agent-xxx" to a custom name).
@@ -140,10 +144,10 @@ func (a *Agent) buildBaseRunConfig(
 		MCPConfigPath:    tools.UserMCPConfigPath(a.workDir, sandboxUserID),
 		GlobalMCPConfig:  filepath.Join(a.xbotHome, "mcp.json"),
 		DataDir:          a.workDir,
-		SandboxEnabled:   a.sandboxMode != "none",
-		PreferredSandbox: a.sandboxMode,
-		Sandbox:          resolveSandbox(a.sandbox, sandboxUserID),
-		SandboxMode:      a.sandboxMode,
+		SandboxEnabled:   userCtx.SandboxMode != "none",
+		PreferredSandbox: userCtx.SandboxMode,
+		Sandbox:          userCtx.Sandbox,
+		SandboxMode:      userCtx.SandboxMode,
 		InitialCWD:       a.workDir, // absolute-resolved at buildToolContext time
 
 		// 循环控制
@@ -152,7 +156,7 @@ func (a *Agent) buildBaseRunConfig(
 
 		// Auto worktree: read via GetEffectiveSetting — the single correct
 		// read path for user-scoped settings. Same source as /settings panel.
-		AutoWorktreeEnabled: a.settingsSvc.GetEffectiveSettingBool(channel, senderID, "auto_worktree"),
+		AutoWorktreeEnabled: userCtx.GetSettingBool("auto_worktree"),
 
 		// Session
 		SessionKey: sessionKey,
@@ -162,7 +166,7 @@ func (a *Agent) buildBaseRunConfig(
 		InjectInbound: a.injectInbound,
 
 		// 工具执行
-		ToolExecutor: a.buildToolExecutor(channel, chatID, senderID, senderName, sandboxUserID),
+		ToolExecutor: a.buildToolExecutor(ctx, channel, chatID, senderID, senderName, sandboxUserID),
 
 		// 读写分离（主 Agent 始终启用）
 		EnableReadWriteSplit: true,
@@ -182,8 +186,8 @@ func (a *Agent) buildBaseRunConfig(
 		// PluginManager — inherit from Agent
 		PluginManager: a.pluginMgr,
 
-		// SettingsSvc — inherit from Agent
-		SettingsSvc: a.settingsSvc,
+		// PermUsers — from UserContext (resolved at processMessage entry)
+		PermUsers: userCtx.PermUsers,
 
 		// TUI/Config callbacks — inherit from Agent (CLI local mode)
 		TUICtrlFn:    a.tuiCtrlFn,
@@ -195,11 +199,11 @@ func (a *Agent) buildBaseRunConfig(
 		RemoteTUICtrlFn: a.buildRemoteTUICtrlFn(channel, chatID),
 
 		// Subscription listing — from LLMFactory
-		ListLLMSubs: a.listLLMSubsFn(channel),
+		ListLLMSubs: a.listLLMSubsFn(userCtx),
 
 		// Subscription read/write — from LLMFactory (for config tool)
-		GetActiveSubFieldFn: a.getActiveSubFieldFn(channel, chatID),
-		UpdateActiveSubFn:   a.updateActiveSubFn(channel),
+		GetActiveSubFieldFn: a.getActiveSubFieldFn(userCtx, channel, chatID),
+		UpdateActiveSubFn:   a.updateActiveSubFn(userCtx, channel),
 
 		// LLM 并发限流回调（per-tenant）
 		LLMSemAcquire:             llmSemAcquire,
@@ -228,35 +232,24 @@ func (a *Agent) buildMainRunConfig(
 		sandboxUserID = feishuUserID
 	}
 
-	cfg, userMaxCtx := a.buildBaseRunConfig(channel, chatID, senderID, messages, senderName, sandboxUserID)
+	cfg, userMaxCtx := a.buildBaseRunConfig(ctx, channel, chatID, senderID, messages, senderName, sandboxUserID)
 
-	// Inject canonical user identity (set by channel entry points via IdentityResolver).
-	// In standalone CLI mode, these default to userID=1, role="admin".
-	standaloneMode := true
-	if uidStr := msg.Metadata["user_id"]; uidStr != "" {
-		standaloneMode = false
-		if uid, err := strconv.ParseInt(uidStr, 10, 64); err == nil {
-			cfg.UserID = uid
-		}
-		if role := msg.Metadata["user_role"]; role != "" {
-			cfg.Role = role
-		}
-	} else if a.identityResolver != nil {
-		standaloneMode = false
-		// Fallback: resolve at agent layer if entry point didn't set it
-		uid, role, _ := a.identityResolver.Resolve(channel, sandboxUserID)
+	// Identity is resolved at processMessage entry and carried via ctx.
+	userCtx := UserContextFromContext(ctx)
+	// Channel entry points may override via msg.Metadata (already resolved at
+	// entry layer — avoids double DB lookup).
+	if uid, role, ok := parseUserIDFromMetadata(msg.Metadata); ok {
 		cfg.UserID = uid
 		cfg.Role = role
+	} else {
+		cfg.UserID = userCtx.UserID
+		cfg.Role = userCtx.Role
 	}
 	if cfg.UserID == 0 {
 		cfg.UserID = 1 // standalone mode default
 	}
 	if cfg.Role == "" {
-		if standaloneMode {
-			cfg.Role = "admin" // standalone CLI is always admin
-		} else {
-			cfg.Role = "user" // safe default for resolved users with missing role
-		}
+		cfg.Role = "user" // safe default
 	}
 
 	// 从 tenant session 获取租户 ID，用于 per-tenant 工具可见性
@@ -409,6 +402,7 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	// SpawnAgent（主 Agent 可以创建 SubAgent）
+	// ctx already carries UserContext — SubAgent inherits it via context.
 	cfg.SpawnAgent = func(ctx context.Context, inMsg bus.InboundMessage) (*channelpkg.OutboundMsg, error) {
 		return a.spawnSubAgent(ctx, inMsg)
 	}
@@ -419,15 +413,11 @@ func (a *Agent) buildMainRunConfig(
 	// MaskStore — Observation Masking（默认开启，可通过 settings 的 enable_masking 关闭）
 	cfg.MaskStore = a.maskStore
 	streamDisabled := false
-	if a.settingsSvc != nil {
-		if vals, err := a.settingsSvc.GetSettings(channel, senderID); err == nil {
-			if vals["enable_masking"] == "false" {
-				cfg.MaskStore = nil
-			}
-			if vals["enable_stream"] == "false" {
-				streamDisabled = true
-			}
-		}
+	if userCtx.GetSetting("enable_masking") == "false" {
+		cfg.MaskStore = nil
+	}
+	if userCtx.GetSetting("enable_stream") == "false" {
+		streamDisabled = true
 	}
 
 	// Stream — default ON for all channels; wire callbacks per channel type.
@@ -450,8 +440,10 @@ func (a *Agent) buildMainRunConfig(
 
 	// InteractiveCallbacks — interactive SubAgent 支持
 	cfg.InteractiveCallbacks = &InteractiveCallbacks{
-		SpawnFn: a.SpawnInteractiveSession,
-		SendFn:  a.SendToInteractiveSession,
+		SpawnFn: func(ctx context.Context, roleName string, msg bus.InboundMessage) (*channelpkg.OutboundMsg, error) {
+			return a.SpawnInteractiveSession(ctx, roleName, msg)
+		},
+		SendFn: a.SendToInteractiveSession,
 		UnloadFn: func(ctx context.Context, roleName, instance string) error {
 			return a.UnloadInteractiveSession(ctx, roleName, channel, chatID, instance)
 		},
@@ -544,6 +536,11 @@ func (a *Agent) buildSubAgentRunConfig(
 	model string, // 可选：角色指定的模型，为空时继承主 Agent
 ) RunConfig {
 	parentAgentID := parentCtx.AgentID
+
+	// Extract UserContext from context — set by SpawnAgent callback.
+	// This is the SINGLE source of user info for SubAgent construction.
+	// No direct access to LLMFactory/SettingsService/IdentityResolver below.
+	userCtx := UserContextFromContext(ctx)
 
 	// Interactive SubAgent 默认拥有 send_message 能力（群聊/agent 间通信必需）
 	if interactive {
@@ -653,14 +650,9 @@ func (a *Agent) buildSubAgentRunConfig(
 	// Phase 5: Inject user language preference into SubAgent prompt.
 	// Only inject if not already present in the inherited system prompt
 	// (LanguageMiddleware on the main Agent already adds it via SystemParts).
-	if a.settingsSvc != nil {
-		if vals, err := a.settingsSvc.GetSettings(parentCtx.Channel, originUserID); err == nil {
-			if lang, ok := vals["language"]; ok && lang != "" {
-				// Check if language instruction is already in sysPrompt (inherited from main Agent)
-				if !strings.Contains(sysPrompt, "## Language") {
-					sysPrompt += "\n" + LanguageInstruction(lang)
-				}
-			}
+	if lang := userCtx.GetSetting("language"); lang != "" {
+		if !strings.Contains(sysPrompt, "## Language") {
+			sysPrompt += "\n" + LanguageInstruction(lang)
 		}
 	}
 
@@ -671,39 +663,11 @@ func (a *Agent) buildSubAgentRunConfig(
 
 	subAgentID := parentAgentID + "/" + roleName
 
-	// SubAgent 继承父 Agent 的 LLM 配置（使用 OriginUserID 获取原始用户的配置）
-	// 如果角色指定了模型（含 tier 名称如 vanguard/balance/swift），则通过 GetLLMForModel
-	// 智能查找对应的订阅。当 tier 未配置模型时，自动 fallback 到 GetLLM(originUserID)，
-	// 即父 agent 当前使用的模型和订阅。model 为空时同理。
-	var llmClient llm.LLM
-	var subModel string
-	var userMaxCtx int
-	var thinkingMode string
-	var maxOutputTokens int
-	var subID string
-	if model != "" {
-		llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens, _ = a.llmFactory.GetLLMForModel(originUserID, model)
-		// Resolve the subscription ID that owns this model for TUI display.
-		if sub, err := a.llmFactory.ResolveSubscriptionForModel(originUserID, subModel); err == nil && sub != nil {
-			subID = sub.ID
-		}
-	} else {
-		llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens = a.llmFactory.GetLLM(originUserID)
-		// For inherited LLM, resolve subscription from the default model.
-		if sub, err := a.llmFactory.ResolveSubscriptionForModel(originUserID, subModel); err == nil && sub != nil {
-			subID = sub.ID
-		}
-	}
+	// SubAgent LLM resolution — via UserContext, no direct LLMFactory access.
+	llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens, subID := userCtx.ResolveLLMForModelWithFallback(model)
 
 	// Stream — default ON; inherit from parent config unless explicitly disabled.
-	stream := true
-	if a.settingsSvc != nil {
-		if vals, err := a.settingsSvc.GetSettings(parentCtx.Channel, originUserID); err == nil {
-			if vals["enable_stream"] == "false" {
-				stream = false
-			}
-		}
-	}
+	stream := userCtx.GetSetting("enable_stream") != "false"
 
 	cfg := RunConfig{
 		LLMClient:       llmClient,
@@ -759,11 +723,11 @@ func (a *Agent) buildSubAgentRunConfig(
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
 		// LLM 并发限流：继承父 Agent 的 per-tenant 信号量
-		LLMSemAcquire: a.llmFactory.LLMSemAcquireForUser(originUserID, parentCtx.Channel),
+		LLMSemAcquire: userCtx.LLMSemAcquire,
 
 		// SubAgent 如果能 spawn 子 Agent，也启用并行执行
 		EnableConcurrentSubAgents: caps.SpawnAgent,
-		SubAgentSem:               a.llmFactory.SubAgentSemAcquireForUser(originUserID, parentCtx.Channel),
+		SubAgentSem:               userCtx.SubAgentSem,
 
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
 	}
@@ -868,7 +832,6 @@ func (a *Agent) buildSubAgentRunConfig(
 	// SubAgent still gets plugin hooks via PluginManager (separate system).
 	cfg.HookManager = nil
 	cfg.PluginManager = a.pluginMgr
-	cfg.SettingsSvc = a.settingsSvc
 
 	// SaveTokenState: persist token counts so GetTokenState RPC returns
 	// correct values when the TUI switches to a SubAgent session.
@@ -915,7 +878,8 @@ func (a *Agent) buildSubAgentRunConfig(
 // buildToolExecutor 构建主 Agent 的工具执行器。
 // 包含 session MCP 查找、激活检查、工具使用追踪等完整逻辑。
 // 这是主 Agent 和 Cron 使用的执行器，SubAgent 使用 defaultToolExecutor。
-func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandboxUserID string) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID, senderName, sandboxUserID string) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+	userCtx := UserContextFromContext(ctx)
 	sessionKey := qualifyChatID(channel, chatID)
 
 	// Pre-build RunConfig outside closure to avoid reallocating on every tool call.
@@ -990,15 +954,14 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 	// Inherit hook manager from Agent.
 	cfg.HookManager = a.hookManager
 	cfg.PluginManager = a.pluginMgr
-	cfg.SettingsSvc = a.settingsSvc
 
 	// TUI/Config callbacks for tool execution (needed by tui_control/config tools)
 	cfg.TUICtrlFn = a.tuiCtrlFn
 	cfg.RemoteTUICtrlFn = a.buildRemoteTUICtrlFn(channel, chatID)
 	cfg.ChatRenameFn = a.renameSession
-	cfg.ListLLMSubs = a.listLLMSubsFn(channel)
-	cfg.GetActiveSubFieldFn = a.getActiveSubFieldFn(channel, chatID)
-	cfg.UpdateActiveSubFn = a.updateActiveSubFn(channel)
+	cfg.ListLLMSubs = a.listLLMSubsFn(userCtx)
+	cfg.GetActiveSubFieldFn = a.getActiveSubFieldFn(userCtx, channel, chatID)
+	cfg.UpdateActiveSubFn = a.updateActiveSubFn(userCtx, channel)
 
 	var sessionOnce sync.Once
 
@@ -1055,11 +1018,8 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
-		if cfg.SettingsSvc != nil {
-			permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
-			if permUsers != nil {
-				toolExecCtx = tools.WithPermUsers(toolExecCtx, permUsers.DefaultUser, permUsers.PrivilegedUser)
-			}
+		if cfg.PermUsers != nil {
+			toolExecCtx = tools.WithPermUsers(toolExecCtx, cfg.PermUsers.DefaultUser, cfg.PermUsers.PrivilegedUser)
 		}
 
 		// 5. 构建 ToolContext（统一路径，只有 ctx 变化）

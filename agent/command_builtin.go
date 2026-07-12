@@ -547,9 +547,10 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 设置仅限私聊使用，请私信我发送 /settings"}, nil
 	}
 
-	if a.settingsSvc == nil {
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "SettingsService 未初始化"}, nil
 	}
+	uc := UserContextFromContext(ctx)
 
 	content := strings.TrimSpace(msg.Content)
 	args := strings.TrimPrefix(strings.ToLower(content), "/settings ")
@@ -565,7 +566,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		value := strings.Join(setParts[1:], " ")
 
 		// Fix 4: Validate key against schema if channelFinder is available
-		schema := a.settingsSvc.GetSettingsSchema(msg.Channel)
+		schema := uc.SettingsSvc.GetSettingsSchema(msg.Channel)
 		if len(schema) > 0 {
 			valid := false
 			for _, def := range schema {
@@ -586,7 +587,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 			}
 		}
 
-		err := a.settingsSvc.SetSetting(msg.Channel, msg.SenderID, key, value)
+		err := uc.SettingsSvc.SetSetting(msg.Channel, msg.SenderID, key, value)
 		if err != nil {
 			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("设置失败：%v", err)}, nil
 		}
@@ -615,7 +616,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 	}
 
 	// Fallback: 非 Feishu 渠道使用 markdown UI
-	ui, err := a.settingsSvc.GetSettingsUI(msg.Channel, msg.SenderID)
+	ui, err := uc.SettingsSvc.GetSettingsUI(msg.Channel, msg.SenderID)
 	if err != nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("获取设置失败：%v", err)}, nil
 	}

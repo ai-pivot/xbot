@@ -1646,3 +1646,14 @@ const thinkingModeChannel = channel.ThinkingModeChannel
 func (f *LLMFactory) userThinkingMode(senderID string) string {
 	return f.getGlobalSetting(senderID, "thinking_mode")
 }
+
+// ResolveSubIDForModel returns the subscription ID that owns the given model
+// for the given user. Used by UserContext to provide subID without exposing
+// the LLMSubscription type to downstream code.
+func (f *LLMFactory) ResolveSubIDForModel(senderID, model string) string {
+	sub, err := f.ResolveSubscriptionForModel(senderID, model)
+	if err != nil || sub == nil {
+		return ""
+	}
+	return sub.ID
+}

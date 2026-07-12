@@ -211,7 +211,8 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 		warning = "\n⚠️ 注意: 部分参数格式不正确，已被忽略。"
 	}
 
-	svc := a.llmFactory.GetSubscriptionSvc()
+	uc := UserContextFromContext(ctx)
+	svc := uc.SubSvc
 	if svc == nil {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
@@ -297,7 +298,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 	}
 
 	// Invalidate cached LLM client and HasCustomLLM cache
-	a.llmFactory.Invalidate(msg.SenderID)
+	uc.InvalidateLLM()
 
 	// Display the persisted state (post update/create), not the raw input,
 	// so the user sees what actually got saved.
@@ -336,7 +337,8 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 // handleGetLLM handles /llm command to show the currently resolved LLM
 // (subscription + model), via the same resolution path the agent loop uses.
 func (a *Agent) handleGetLLM(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	_, model, maxCtx, thinkingMode, maxOut := a.llmFactory.ResolveLLM(msg.SenderID, msg.ChatID, msg.Channel)
+	uc := UserContextFromContext(ctx)
+	_, model, maxCtx, thinkingMode, maxOut := uc.ResolveLLM(msg.ChatID)
 
 	if model == "" {
 		return &channel.OutboundMsg{
@@ -347,7 +349,7 @@ func (a *Agent) handleGetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 	}
 
 	// Resolve the active subscription for this session (not model-name guess).
-	sub, _, _ := a.llmFactory.ResolveActiveSubModel(msg.SenderID, msg.ChatID, msg.Channel)
+	sub, _, _ := uc.ResolveActiveSub(msg.ChatID)
 
 	var sb strings.Builder
 	if sub != nil {
@@ -380,7 +382,8 @@ func (a *Agent) handleGetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 // current user (including the system subscription). Shows name, provider,
 // base URL, model, and enabled status.
 func (a *Agent) handleListLLMs(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	svc := a.llmFactory.GetSubscriptionSvc()
+	uc := UserContextFromContext(ctx)
+	svc := uc.SubSvc
 	if svc == nil {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
@@ -430,17 +433,12 @@ func (a *Agent) handleListLLMs(ctx context.Context, msg bus.InboundMessage) (*ch
 }
 
 // activeSubModel resolves the subscription and model that the given session is
-// currently using, via the model-first ResolveActiveSubModel chain. This
-// replaces the old "default subscription" (GetDefault) lookup so that
-// per-model config (max_context / max_output_tokens) targets the (sub, model)
-// the user is actually interacting with in this session, not the user's
-// default subscription's default model. A model is identified by the
-// (subscription, model) pair, not by a "default subscription" concept.
+// currently using, via the UserContext's ResolveActiveSubModel closure.
 func (a *Agent) activeSubModel(senderID, chatID, channel string) (*sqlite.LLMSubscription, string, error) {
-	if a.llmFactory == nil {
+	if a.userSys == nil || a.userSys.llmFactory == nil {
 		return nil, "", fmt.Errorf("LLM 工厂未初始化")
 	}
-	return a.llmFactory.ResolveActiveSubModel(senderID, chatID, channel)
+	return a.userSys.llmFactory.ResolveActiveSubModel(senderID, chatID, channel)
 }
 
 // GetUserMaxContext returns the user's max_context setting (0 = use default).
@@ -469,7 +467,7 @@ func (a *Agent) SetUserMaxContext(senderID, chatID, channel string, maxContext i
 	if err != nil {
 		return err
 	}
-	svc := a.llmFactory.GetSubscriptionSvc()
+	svc := a.userSys.llmFactory.GetSubscriptionSvc()
 	existing, _ := svc.GetModel(sub.ID, model)
 	var maxOut int
 	var thinking, apiType string
@@ -481,7 +479,7 @@ func (a *Agent) SetUserMaxContext(senderID, chatID, channel string, maxContext i
 	if err := svc.UpsertModel(sub.ID, model, maxContext, maxOut, thinking, apiType); err != nil {
 		return fmt.Errorf("save per-model max_context: %w", err)
 	}
-	a.llmFactory.Invalidate(senderID)
+	a.userSys.llmFactory.Invalidate(senderID)
 	return nil
 }
 
@@ -510,7 +508,7 @@ func (a *Agent) SetUserMaxOutputTokens(senderID, chatID, channel string, maxToke
 	if err != nil {
 		return err
 	}
-	svc := a.llmFactory.GetSubscriptionSvc()
+	svc := a.userSys.llmFactory.GetSubscriptionSvc()
 	existing, _ := svc.GetModel(sub.ID, model)
 	var maxCtx int
 	var thinking, apiType string
@@ -522,7 +520,7 @@ func (a *Agent) SetUserMaxOutputTokens(senderID, chatID, channel string, maxToke
 	if err := svc.UpsertModel(sub.ID, model, maxCtx, maxTokens, thinking, apiType); err != nil {
 		return fmt.Errorf("save per-model max_output_tokens: %w", err)
 	}
-	a.llmFactory.Invalidate(senderID)
+	a.userSys.llmFactory.Invalidate(senderID)
 	return nil
 }
 
@@ -532,10 +530,10 @@ func (a *Agent) SetUserMaxOutputTokens(senderID, chatID, channel string, maxToke
 // NOT resolve subscription from model name alone (per project policy).
 // Falls back to subscription-level MaxContext when no per-model override.
 func (a *Agent) GetUserMaxContextForSubModel(senderID, subID, model string) int {
-	if a.llmFactory == nil || subID == "" || model == "" {
+	if a.userSys == nil || a.userSys.llmFactory == nil || subID == "" || model == "" {
 		return 0
 	}
-	svc := a.llmFactory.GetSubscriptionSvc()
+	svc := a.userSys.llmFactory.GetSubscriptionSvc()
 	sub, err := svc.Get(subID)
 	if err != nil || sub == nil {
 		return 0
@@ -554,10 +552,10 @@ func (a *Agent) SetUserMaxContextForSubModel(senderID, subID, model string, maxC
 	if maxContext < 1000 || maxContext > 2000000 {
 		return fmt.Errorf("max_context must be between 1000 and 2000000, got %d", maxContext)
 	}
-	if a.llmFactory == nil || subID == "" || model == "" {
+	if a.userSys == nil || a.userSys.llmFactory == nil || subID == "" || model == "" {
 		return fmt.Errorf("subID and model are required for per-model max_context")
 	}
-	svc := a.llmFactory.GetSubscriptionSvc()
+	svc := a.userSys.llmFactory.GetSubscriptionSvc()
 	existing, _ := svc.GetModel(subID, model)
 	var maxOut int
 	var thinking, apiType string
@@ -569,7 +567,7 @@ func (a *Agent) SetUserMaxContextForSubModel(senderID, subID, model string, maxC
 	if err := svc.UpsertModel(subID, model, maxContext, maxOut, thinking, apiType); err != nil {
 		return fmt.Errorf("save per-model max_context: %w", err)
 	}
-	a.llmFactory.Invalidate(senderID)
+	a.userSys.llmFactory.Invalidate(senderID)
 	return nil
 }
 
@@ -577,10 +575,10 @@ func (a *Agent) SetUserMaxContextForSubModel(senderID, subID, model string, maxC
 // max_output_tokens, bypassing session resolution. Used by channel UIs that
 // already know the explicit (subID, model) pair.
 func (a *Agent) GetUserMaxOutputTokensForSubModel(senderID, subID, model string) int {
-	if a.llmFactory == nil || subID == "" || model == "" {
+	if a.userSys == nil || a.userSys.llmFactory == nil || subID == "" || model == "" {
 		return 0
 	}
-	svc := a.llmFactory.GetSubscriptionSvc()
+	svc := a.userSys.llmFactory.GetSubscriptionSvc()
 	sub, err := svc.Get(subID)
 	if err != nil || sub == nil {
 		return 0
@@ -598,10 +596,10 @@ func (a *Agent) SetUserMaxOutputTokensForSubModel(senderID, subID, model string,
 	if maxTokens < 0 || maxTokens > 2000000 {
 		return fmt.Errorf("max_output_tokens must be between 0 and 2000000, got %d", maxTokens)
 	}
-	if a.llmFactory == nil || subID == "" || model == "" {
+	if a.userSys == nil || a.userSys.llmFactory == nil || subID == "" || model == "" {
 		return fmt.Errorf("subID and model are required for per-model max_output_tokens")
 	}
-	svc := a.llmFactory.GetSubscriptionSvc()
+	svc := a.userSys.llmFactory.GetSubscriptionSvc()
 	existing, _ := svc.GetModel(subID, model)
 	var maxCtx int
 	var thinking, apiType string
@@ -613,7 +611,7 @@ func (a *Agent) SetUserMaxOutputTokensForSubModel(senderID, subID, model string,
 	if err := svc.UpsertModel(subID, model, maxCtx, maxTokens, thinking, apiType); err != nil {
 		return fmt.Errorf("save per-model max_output_tokens: %w", err)
 	}
-	a.llmFactory.Invalidate(senderID)
+	a.userSys.llmFactory.Invalidate(senderID)
 	return nil
 }
 
@@ -621,10 +619,10 @@ func (a *Agent) SetUserMaxOutputTokensForSubModel(senderID, subID, model string,
 // ("" = auto). Thinking is a global per-user setting stored under the canonical
 // channel (see LLMFactory.thinkingModeChannel), no longer subscription-scoped.
 func (a *Agent) GetUserThinkingMode(senderID string) string {
-	if a.llmFactory == nil || a.settingsSvc == nil {
+	if a.userSys == nil || a.userSys.llmFactory == nil || a.userSys.settingsSvc == nil {
 		return ""
 	}
-	vals, err := a.settingsSvc.GetSettings(thinkingModeChannel, senderID)
+	vals, err := a.userSys.settingsSvc.GetSettings(thinkingModeChannel, senderID)
 	if err != nil || vals == nil {
 		return ""
 	}
@@ -638,16 +636,16 @@ func (a *Agent) SetUserThinkingMode(senderID string, mode string) error {
 	if mode == "auto" {
 		mode = ""
 	}
-	if a.settingsSvc == nil {
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return ErrSettingsUnavailable
 	}
-	if err := a.settingsSvc.SetSetting(thinkingModeChannel, senderID, "thinking_mode", mode); err != nil {
+	if err := a.userSys.settingsSvc.SetSetting(thinkingModeChannel, senderID, "thinking_mode", mode); err != nil {
 		return fmt.Errorf("save thinking_mode: %w", err)
 	}
-	if a.llmFactory != nil {
+	if a.userSys.llmFactory != nil {
 		// Drop cached resolved thinking for every session so the next call
 		// re-reads the new global value from user_settings.
-		a.llmFactory.InvalidateSender(senderID)
+		a.userSys.llmFactory.InvalidateSender(senderID)
 	}
 	return nil
 }
@@ -657,10 +655,10 @@ func (a *Agent) SetUserThinkingMode(senderID string, mode string) error {
 // in resolveTierModel). Uses the same canonical channel as thinking_mode so tier
 // settings are shared across all channels (CLI, Feishu, Web) per user.
 func (a *Agent) GetUserTierModel(senderID, tier string) (subID, model string) {
-	if a.llmFactory == nil || a.settingsSvc == nil {
+	if a.userSys == nil || a.userSys.llmFactory == nil || a.userSys.settingsSvc == nil {
 		return "", ""
 	}
-	vals, err := a.settingsSvc.GetSettings(thinkingModeChannel, senderID)
+	vals, err := a.userSys.settingsSvc.GetSettings(thinkingModeChannel, senderID)
 	if err != nil || vals == nil {
 		return "", ""
 	}
@@ -675,18 +673,18 @@ func (a *Agent) GetUserTierModel(senderID, tier string) (subID, model string) {
 // Value is stored as "subID|model" (or plain "model" when subID is empty).
 // Invalidates the cached LLM client for the sender.
 func (a *Agent) SetUserTierModel(senderID, tier, subID, model string) error {
-	if a.settingsSvc == nil {
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return ErrSettingsUnavailable
 	}
 	val := model
 	if subID != "" {
 		val = subID + "|" + model
 	}
-	if err := a.settingsSvc.SetSetting(thinkingModeChannel, senderID, "tier_"+tier, val); err != nil {
+	if err := a.userSys.settingsSvc.SetSetting(thinkingModeChannel, senderID, "tier_"+tier, val); err != nil {
 		return fmt.Errorf("save tier_%s: %w", tier, err)
 	}
-	if a.llmFactory != nil {
-		a.llmFactory.InvalidateSender(senderID)
+	if a.userSys.llmFactory != nil {
+		a.userSys.llmFactory.InvalidateSender(senderID)
 	}
 	return nil
 }
@@ -703,7 +701,8 @@ func maskAPIKey(key string) string {
 // by name. If the deleted subscription was the user's last-used model, clears
 // the last-used record so new sessions fall back to the system subscription.
 func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	svc := a.llmFactory.GetSubscriptionSvc()
+	uc := UserContextFromContext(ctx)
+	svc := uc.SubSvc
 	if svc == nil {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
@@ -774,7 +773,7 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 
 	// Invalidate cached LLM client and HasCustomLLM cache
-	a.llmFactory.Invalidate(msg.SenderID)
+	uc.InvalidateLLM()
 
 	return &channel.OutboundMsg{
 		Channel: msg.Channel,
@@ -793,7 +792,8 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*ch
 // /models fetch was Warn-level log only, invisible in chat, leaving the user
 // with a silently incomplete model list and no explanation.
 func (a *Agent) handleModels(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	entries, results := a.llmFactory.RefreshModelEntriesForUserWithResults(msg.SenderID)
+	uc := UserContextFromContext(ctx)
+	entries, results := uc.RefreshModels()
 	if len(entries) == 0 && !hasRefreshableSubs(results) {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
@@ -802,7 +802,7 @@ func (a *Agent) handleModels(ctx context.Context, msg bus.InboundMessage) (*chan
 		}, nil
 	}
 
-	_, currentModel, _, _, _ := a.llmFactory.ResolveLLM(msg.SenderID, msg.ChatID, msg.Channel)
+	_, currentModel, _, _, _ := uc.ResolveLLM(msg.ChatID)
 
 	var sb strings.Builder
 	sb.WriteString("可用模型列表（已刷新）:\n")
@@ -921,9 +921,8 @@ func formatRefreshSummary(results []RefreshResult) string {
 }
 
 // handleSetModel handles /set-model <model> to switch the current model across
-// subscriptions. Resolves the owning subscription and persists the user-level
-// default model.
 func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	uc := UserContextFromContext(ctx)
 	// Parse command arguments
 	trimmed := strings.TrimSpace(msg.Content)
 	// Strip the leading command token (handles both "/set-model" and any alias).
@@ -954,7 +953,7 @@ func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*ch
 	model := strings.Join(parts[1:], " ")
 
 	// Look up the subscription by name for this user.
-	subs, err := a.llmFactory.GetSubscriptionSvc().List(msg.SenderID)
+	subs, err := uc.SubSvc.List(msg.SenderID)
 	if err != nil {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel, ChatID: msg.ChatID,
@@ -971,7 +970,7 @@ func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 	if targetSub == nil {
 		// Refresh model lists and show available sub/model pairs.
-		entries, _ := a.llmFactory.RefreshModelEntriesForUserWithResults(msg.SenderID)
+		entries, _ := uc.RefreshModels()
 		var avail []string
 		for _, e := range entries {
 			if e.Status != "disabled" {
@@ -999,7 +998,7 @@ func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*ch
 		}, nil
 	}
 
-	if err := a.llmFactory.SelectModel(msg.SenderID, msg.ChatID, msg.Channel, targetSub.ID, model); err != nil {
+	if err := uc.SelectModel(msg.ChatID, targetSub.ID, model); err != nil {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel, ChatID: msg.ChatID,
 			Content: fmt.Sprintf("切换模型失败: %v", err),

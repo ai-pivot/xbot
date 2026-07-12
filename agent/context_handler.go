@@ -29,8 +29,6 @@ func formatTokenCount(n int64) string {
 
 // handleContextInfo 处理 /context info 命令：显示当前 token 数和组成
 func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
-	_, model, _, _, _ := a.llmFactory.GetLLM(msg.SenderID)
-
 	// 使用 buildPrompt 获取完整上下文（包含 system、skills、memory 等）
 	messages, err := a.buildPrompt(ctx, msg, tenantSession)
 	if err != nil {
@@ -43,7 +41,8 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 
 	// 获取工具定义并计算 token
 	sessionKey := msg.Channel + ":" + msg.ChatID
-	toolDefs := visibleToolDefs(a.tools.AsDefinitionsForSession(sessionKey, tenantSession.TenantID()), a.settingsSvc, msg.Channel, msg.SenderID)
+	userCtx := UserContextFromContext(ctx)
+	toolDefs := visibleToolDefs(a.tools.AsDefinitionsForSession(sessionKey, tenantSession.TenantID()), userCtx.PermUsers, msg.Channel)
 	toolDefsTokens := len(toolDefs) * 200 // rough estimate
 
 	// Prefer API-returned prompt_tokens (authoritative) over local estimation.
@@ -58,7 +57,7 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 		}
 	}
 	cm := a.GetContextManager()
-	stats := cm.ContextInfo(messages, model, toolDefsTokens)
+	stats := cm.ContextInfo(messages, userCtx.Model, toolDefsTokens)
 
 	// Override total with API value if available
 	tokenSource := "估算"

@@ -142,10 +142,10 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	// new value from the user_settings DB.
 	"thinking_mode": {
 		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
-			if ag == nil || ag.llmFactory == nil {
+			if ag == nil || ag.userSys.llmFactory == nil {
 				return
 			}
-			ag.llmFactory.InvalidateSender(senderID)
+			ag.userSys.llmFactory.InvalidateSender(senderID)
 		},
 	},
 }
