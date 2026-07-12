@@ -1077,7 +1077,11 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 			if err != nil {
 				return fmt.Errorf("access denied: task not found")
 			}
-			if owner := sessionKeyOwner(task.SessionKey()); owner != "" && owner != bizID {
+			owner := task.SenderID()
+			if owner == "" {
+				owner = sessionKeyOwner(task.SessionKey())
+			}
+			if owner == "" || owner != bizID {
 				return fmt.Errorf("access denied")
 			}
 		}

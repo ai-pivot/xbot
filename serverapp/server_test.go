@@ -1,6 +1,7 @@
 package serverapp
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"xbot/config"
 	llm "xbot/llm"
 	"xbot/storage/sqlite"
+	"xbot/tools"
 )
 
 func newTestConfig() *config.Config {
@@ -52,6 +54,34 @@ func TestSessionKeyOwnerUsesLastSlashForCLIAbsolutePaths(t *testing.T) {
 		if got := sessionKeyOwner(tc.key); got != tc.want {
 			t.Fatalf("sessionKeyOwner(%q) = %q, want %q", tc.key, got, tc.want)
 		}
+	}
+}
+
+func TestKillBackgroundTaskRejectsForeignRootSession(t *testing.T) {
+	manager := tools.NewBackgroundTaskManager()
+	task := manager.Start("web:web-foreign", "web-foreign", "wait", func(ctx context.Context, output func(string)) (int, error) {
+		<-ctx.Done()
+		return -1, ctx.Err()
+	})
+	t.Cleanup(func() { _ = manager.Kill(task.ID) })
+
+	ag := &agent.Agent{}
+	ag.SetBgTaskManager(manager)
+	table := BuildRPCTable(&config.Config{}, ag, nil, nil, nil)
+	params, err := json.Marshal(map[string]string{"task_id": task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithRPCCtxResolved(context.Background(), "web-2", "web-2", 2, "user")
+	if _, err := table.Dispatch(ctx, "kill_bg_task", params); err == nil || err.Error() != "access denied" {
+		t.Fatalf("kill_bg_task error = %v, want access denied", err)
+	}
+	status, err := manager.Status(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != tools.BgTaskRunning {
+		t.Fatalf("foreign task status = %s, want %s", status.Status, tools.BgTaskRunning)
 	}
 }
 

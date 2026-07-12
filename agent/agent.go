@@ -686,6 +686,9 @@ func (a *Agent) SetLLMFactory(f *LLMFactory) { a.llmFactory = f }
 // BgTaskManager returns the Agent's BackgroundTaskManager.
 func (a *Agent) BgTaskManager() *tools.BackgroundTaskManager { return a.bgTaskMgr }
 
+// SetBgTaskManager replaces the background task manager (used in tests).
+func (a *Agent) SetBgTaskManager(manager *tools.BackgroundTaskManager) { a.bgTaskMgr = manager }
+
 // Commands returns the Agent's CommandRegistry (for external consumers like RPC handlers).
 func (a *Agent) Commands() *CommandRegistry { return a.commands }
 
