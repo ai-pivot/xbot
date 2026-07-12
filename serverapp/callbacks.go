@@ -122,21 +122,6 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 // registryCallbacks builds the shared Registry callback closures.
 func registryCallbacks(ag *agent.Agent) channel.RegistryCallbacks {
 	return channel.RegistryCallbacks{
-		RegistryBrowse: func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error) {
-			return ag.RegistryManager().Browse(entryType, limit, offset)
-		},
-		RegistryInstall: func(entryType string, id int64, senderID string) error {
-			return ag.RegistryManager().Install(entryType, id, senderID)
-		},
-		RegistryListMy: func(senderID, entryType string) ([]sqlite.SharedEntry, []string, error) {
-			return ag.RegistryManager().ListMy(senderID, entryType)
-		},
-		RegistryPublish: func(entryType, name, senderID string) error {
-			return ag.RegistryManager().Publish(entryType, name, senderID)
-		},
-		RegistryUnpublish: func(entryType, name, senderID string) error {
-			return ag.RegistryManager().Unpublish(entryType, name, senderID)
-		},
 		RegistryUninstall: func(entryType, name, senderID string) error {
 			return ag.RegistryManager().Uninstall(entryType, name, senderID)
 		},
@@ -273,6 +258,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		RunnerDelete:        rc.RunnerDelete,
 		RunnerGetActive:     rc.RunnerGetActive,
 		RunnerSetActive:     rc.RunnerSetActive,
+
+
+		// Registry callbacks
+		RegistryUninstall: regc.RegistryUninstall,
 
 		// LLM callbacks (Web channel exposes only basic model/max-context via HTTP API;
 		// ThinkingMode/MaxOutputTokens/PersonalConcurrency are CLI-only via RPC.)
@@ -1872,12 +1861,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		},
 
 		// Registry
-		RegistryBrowse:    regc.RegistryBrowse,
-		RegistryInstall:   regc.RegistryInstall,
-		RegistryListMy:    regc.RegistryListMy,
-		RegistryPublish:   regc.RegistryPublish,
-		RegistryUnpublish: regc.RegistryUnpublish,
-		RegistryDelete:    regc.RegistryUninstall,
+		RegistryDelete: regc.RegistryUninstall,
 
 		// Metrics
 		MetricsGet: func() string {

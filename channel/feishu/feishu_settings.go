@@ -25,7 +25,7 @@ type SettingsCardOpts struct {
 	MyAgentPage     int
 	SkillMarketPage int
 	AgentMarketPage int
-	AppMarketPage int
+	AppMarketPage   int
 	// RunnerConnectBanner, if set, shows a one-shot markdown block with the xbot-runner shell command (after create / token generate).
 	RunnerConnectBanner string
 }
@@ -1951,7 +1951,7 @@ func (f *FeishuChannel) buildMarketTabContent(ctx context.Context, senderID stri
 		"my_agent_page": o.MyAgentPage,
 		"skill_page":    o.SkillMarketPage,
 		"agent_page":    o.AgentMarketPage,
-		"app_page":   o.AppMarketPage,
+		"app_page":      o.AppMarketPage,
 	}
 
 	// "我的" section
@@ -2288,11 +2288,11 @@ func parsePageOpts(parsed map[string]string) SettingsCardOpts {
 	agentPage, _ := strconv.Atoi(parsed["agent_page"])
 	appPage, _ := strconv.Atoi(parsed["app_page"])
 	return SettingsCardOpts{
-		MySkillPage:      mySkillPage,
-		MyAgentPage:      myAgentPage,
-		SkillMarketPage:  skillPage,
-		AgentMarketPage:  agentPage,
-		AppMarketPage: appPage,
+		MySkillPage:     mySkillPage,
+		MyAgentPage:     myAgentPage,
+		SkillMarketPage: skillPage,
+		AgentMarketPage: agentPage,
+		AppMarketPage:   appPage,
 	}
 }
 

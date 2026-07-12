@@ -2,6 +2,8 @@ package agent
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +28,7 @@ type AppManifest struct {
 	Description string       `json:"description"`
 	Homepage    string       `json:"homepage,omitempty"`
 	License     string       `json:"license,omitempty"`
+	Checksum    string       `json:"checksum,omitempty"` // SHA256 of xbot.json content (excluding checksum field)
 	Contents    []AppContent `json:"contents"`
 }
 
@@ -108,10 +111,20 @@ func (bp *AppPackager) Pack(rm *RegistryManager, items []AppItem, outputPath, au
 		}
 	}
 
-	// Write xbot.json
+	// Write xbot.json (with checksum)
+	// 1. Marshal without checksum to compute hash
+	manifest.Checksum = ""
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
+	}
+	// 2. Compute SHA256 of the JSON content (without checksum)
+	hash := sha256.Sum256(manifestData)
+	manifest.Checksum = hex.EncodeToString(hash[:])
+	// 3. Re-marshal with checksum
+	manifestData, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal manifest with checksum: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(tmpDir, "xbot.json"), manifestData, 0o644); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
@@ -250,6 +263,24 @@ func (bp *AppPackager) Unpack(zipPath string) (*AppManifest, string, error) {
 	if manifest.Schema != AppManifestSchema {
 		os.RemoveAll(tmpDir)
 		return nil, "", fmt.Errorf("unsupported app schema %d (expected %d)", manifest.Schema, AppManifestSchema)
+	}
+
+	// Verify checksum if present
+	if manifest.Checksum != "" {
+		savedChecksum := manifest.Checksum
+		manifest.Checksum = ""
+		verifyData, err := json.MarshalIndent(&manifest, "", "  ")
+		if err != nil {
+			os.RemoveAll(tmpDir)
+			return nil, "", fmt.Errorf("marshal for checksum verify: %w", err)
+		}
+		hash := sha256.Sum256(verifyData)
+		computed := hex.EncodeToString(hash[:])
+		if computed != savedChecksum {
+			os.RemoveAll(tmpDir)
+			return nil, "", fmt.Errorf("checksum mismatch: package may be corrupted (expected %s, got %s)", savedChecksum, computed)
+		}
+		manifest.Checksum = savedChecksum
 	}
 
 	return &manifest, tmpDir, nil

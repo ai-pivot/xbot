@@ -2,7 +2,6 @@ package channel
 
 import (
 	"xbot/protocol"
-	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
@@ -33,11 +32,6 @@ type PackInstallResult struct {
 
 // RegistryCallbacks groups registry management closures shared between Web and Feishu channels.
 type RegistryCallbacks struct {
-	RegistryBrowse      func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error)
-	RegistryInstall     func(entryType string, id int64, senderID string) error
-	RegistryListMy      func(senderID, entryType string) ([]sqlite.SharedEntry, []string, error)
-	RegistryPublish     func(entryType, name, senderID string) error
-	RegistryUnpublish   func(entryType, name, senderID string) error
 	RegistryUninstall   func(entryType, name, senderID string) error
 	RegistryPack        func(name string, items []PackItemSpec, outputPath, author string) error
 	RegistryInstallFile func(zipPath, senderID string) (*PackInstallResult, error)

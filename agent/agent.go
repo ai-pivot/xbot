@@ -1499,11 +1499,8 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	registry.RegisterCore(&tools.TuiControlTool{})
 	registry.RegisterCore(&tools.ConfigTool{})
 
-	// Initialize SharedSkillRegistry
-	sharedRegistry := sqlite.NewSharedSkillRegistry(multiSession.DB())
-
 	// Initialize RegistryManager
-	a.registryManager = NewRegistryManager(a.skills, a.agents, sharedRegistry, cfg.WorkDir, cfg.XbotHome, cfg.Sandbox)
+	a.registryManager = NewRegistryManager(a.skills, a.agents, cfg.WorkDir, cfg.XbotHome, cfg.Sandbox)
 
 	// Initialize UserSettingsService and SettingsService
 	userSettingsSvc := sqlite.NewUserSettingsService(multiSession.DB())

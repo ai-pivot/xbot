@@ -24,7 +24,6 @@ import (
 	ch "xbot/channel"
 	log "xbot/logger"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
 	"xbot/tools"
 
 	"github.com/google/uuid"
@@ -95,14 +94,6 @@ type WebCallbacks struct {
 	RunnerGetActive func(senderID string) (string, error)
 	// RunnerSetActive sets the active runner for the user.
 	RunnerSetActive func(senderID, name string) error
-	// RegistryBrowse lists available agents/skills in the marketplace.
-	RegistryBrowse func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error)
-	// RegistryInstall installs a shared entry for the user.
-	RegistryInstall func(entryType string, id int64, senderID string) error
-	// RegistryListMy lists the user's installed entries.
-	RegistryListMy func(senderID, entryType string) ([]sqlite.SharedEntry, []string, error)
-	// RegistryUnpublish removes a user's published entry.
-	RegistryUnpublish func(entryType, name, senderID string) error
 	// RegistryUninstall removes a user-installed entry.
 	RegistryUninstall func(entryType, name, senderID string) error
 	// RegistryPack packs local items into a .xbot.zip file.
