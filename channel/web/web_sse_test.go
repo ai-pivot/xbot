@@ -61,6 +61,21 @@ func TestWriteSSEHeartbeat(t *testing.T) {
 	}
 }
 
+func TestWriteSSECursor(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	client := &Client{w: recorder, flusher: recorder}
+
+	if err := writeSSECursor(client, 42); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.Body.String(); got != "id:42\n\n" {
+		t.Fatalf("SSE cursor = %q, want %q", got, "id:42\n\n")
+	}
+	if !recorder.Flushed {
+		t.Fatal("SSE cursor was not flushed")
+	}
+}
+
 func TestSSEReceivesHubStatefulAndStatelessEvents(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
@@ -131,6 +146,34 @@ func TestSSELastEventIDReplaysMissedEvents(t *testing.T) {
 	next := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 3)
 	if next.Content != "live" {
 		t.Fatalf("next content = %q, want live", next.Content)
+	}
+}
+
+func TestSSEFreshConnectionCursorRecoversEventsPublishedWhileDisconnected(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+
+	resp := openSSE(t, server.URL, cookie, "web-1", "")
+	cursor := readSSEFrame(t, bufio.NewReader(resp.Body))
+	if got := cursor["id"]; got != "0" {
+		t.Fatalf("fresh SSE cursor = %q, want 0", got)
+	}
+	if _, ok := cursor["event"]; ok {
+		t.Fatalf("fresh SSE cursor unexpectedly dispatched an event: %#v", cursor)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitForHubClients(t, wc, 0)
+
+	wc.hub.sendToClient("web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "while disconnected"})
+	reconnected := openSSE(t, server.URL, cookie, "web-1", cursor["id"])
+	defer reconnected.Body.Close()
+	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(reconnected.Body)), protocol.MsgTypeText, 1)
+	if msg.Content != "while disconnected" {
+		t.Fatalf("replayed content = %q, want while disconnected", msg.Content)
 	}
 }
 
@@ -1663,6 +1706,16 @@ func openSSE(t *testing.T, serverURL string, cookie *http.Cookie, chatID, lastEv
 }
 
 func readSSEEvent(t *testing.T, reader *bufio.Reader) map[string]string {
+	t.Helper()
+	for {
+		fields := readSSEFrame(t, reader)
+		if _, ok := fields["event"]; ok {
+			return fields
+		}
+	}
+}
+
+func readSSEFrame(t *testing.T, reader *bufio.Reader) map[string]string {
 	t.Helper()
 	fields := make(map[string]string, 3)
 	for {

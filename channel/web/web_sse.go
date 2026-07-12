@@ -44,6 +44,8 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	lastEventIDValues := r.Header.Values("Last-Event-ID")
+	hasLastEventID := len(lastEventIDValues) > 0
 	lastSeq, err := parseLastEventID(r.Header.Get("Last-Event-ID"))
 	if err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid Last-Event-ID")
@@ -78,7 +80,7 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// event is either below the fresh baseline or delivered after subscription.
 	wc.hub.seqMu.Lock()
 	streamLastSeq := wc.getEventStream(chatID).lastSeq()
-	if client.lastSentSeq == 0 {
+	if !hasLastEventID {
 		client.lastSentSeq = streamLastSeq
 	} else if client.lastSentSeq > streamLastSeq {
 		// The server restarted and its in-memory sequence restarted from zero.
@@ -115,8 +117,13 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Commit the response headers immediately even when no event is ready yet.
-	if err := flushSSEResponse(client); err != nil {
+	// A fresh EventSource has no reconnect cursor until it receives an id field.
+	// Publish the selected high-water mark even when no business event is ready.
+	if !hasLastEventID {
+		if err := writeSSECursor(client, client.lastSentSeq); err != nil {
+			return
+		}
+	} else if err := flushSSEResponse(client); err != nil {
 		return
 	}
 	wc.publishSSEFallbacks(sel, client.lastSentSeq)
@@ -427,6 +434,15 @@ func writeSSEHeartbeat(client *Client) error {
 	defer clearSSEWriteDeadline(client)
 	if _, err := io.WriteString(client.w, ":heartbeat\n\n"); err != nil {
 		return fmt.Errorf("write SSE heartbeat: %w", err)
+	}
+	return flushSSE(client)
+}
+
+func writeSSECursor(client *Client, seq uint64) error {
+	armSSEWriteDeadline(client)
+	defer clearSSEWriteDeadline(client)
+	if _, err := fmt.Fprintf(client.w, "id:%d\n\n", seq); err != nil {
+		return fmt.Errorf("write SSE cursor: %w", err)
 	}
 	return flushSSE(client)
 }
