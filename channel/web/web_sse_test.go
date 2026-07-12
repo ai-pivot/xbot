@@ -230,6 +230,58 @@ func TestSSEPositiveLastEventIDReplaysStreamAndFullProgress(t *testing.T) {
 	}
 }
 
+func TestSSEReconnectMergesIndependentStreamFields(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	chatID := "web-1"
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "baseline"})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{Phase: "thinking", Iteration: 1})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: "web:" + chatID, StreamContent: "answer"})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: "web:" + chatID, ReasoningStreamContent: "reasoning"})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{
+		ChatID:         "web:" + chatID,
+		StreamingTools: []protocol.ToolProgress{{Name: "Read", Status: "generating"}},
+	})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: "web:" + chatID, StreamTokens: 17})
+
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+	resp := openSSE(t, server.URL, cookie, chatID, "1")
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeProgress, 2)
+	stream := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeStreamContent, 6)
+	if stream.Progress == nil ||
+		stream.Progress.StreamContent != "answer" ||
+		stream.Progress.ReasoningStreamContent != "reasoning" ||
+		len(stream.Progress.StreamingTools) != 1 ||
+		stream.Progress.StreamingTools[0].Name != "Read" ||
+		stream.Progress.StreamTokens != 17 {
+		t.Fatalf("merged stream replay = %#v", stream.Progress)
+	}
+}
+
+func TestSSEStreamMergeStopsAtStatefulBoundary(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	source := "web:" + chatID
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: source, StreamContent: "old turn"})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: source, Phase: "done", Iteration: 1})
+	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: source, StreamTokens: 3})
+
+	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+	if len(events) != 3 {
+		t.Fatalf("replayed events = %#v, want three events across boundary", events)
+	}
+	latest := events[2]
+	if latest.Type != protocol.MsgTypeStreamContent || latest.Progress == nil {
+		t.Fatalf("latest stream event = %#v", latest)
+	}
+	if latest.Progress.StreamContent != "" || latest.Progress.StreamTokens != 3 {
+		t.Fatalf("stream fields crossed stateful boundary: %#v", latest.Progress)
+	}
+}
+
 func TestSSEReconnectSendsActiveProgressWhenReplayHasNone(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
@@ -1194,6 +1246,98 @@ func TestSSERequiresAuthenticationAndChatID(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing chat_id status = %d, want 400", resp.StatusCode)
 	}
+}
+
+func TestSSEAllowsAdminToExistingForeignWebSession(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+	adminCookie := loginTestAdmin(t, server.URL)
+	_ = loginTestWebUser(t, server.URL, "member")
+	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id) VALUES (?, ?)", "web", "web-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := openSSE(t, server.URL, adminCookie, "web-2", "")
+	defer resp.Body.Close()
+	wc.hub.sendToClient("web-2", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "admin view"})
+	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 1)
+	if msg.Content != "admin view" {
+		t.Fatalf("admin SSE content = %q, want admin view", msg.Content)
+	}
+}
+
+func TestSSEDeniesOrdinaryUserForeignAndAdminMissingWebSessions(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+	adminCookie := loginTestAdmin(t, server.URL)
+	memberCookie := loginTestWebUser(t, server.URL, "member")
+	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id) VALUES (?, ?)", "web", "web-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		cookie *http.Cookie
+		chatID string
+	}{
+		{name: "ordinary user foreign session", cookie: memberCookie, chatID: "web-1"},
+		{name: "admin missing session", cookie: adminCookie, chatID: "web-999"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, server.URL+"/api/sse?chat_id="+tc.chatID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.AddCookie(tc.cookie)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("SSE status = %d, want 403: %s", resp.StatusCode, body)
+			}
+		})
+	}
+}
+
+func loginTestWebUser(t *testing.T, serverURL, username string) *http.Cookie {
+	t.Helper()
+	registerResp, err := http.Post(
+		serverURL+"/api/auth/register",
+		"application/json",
+		strings.NewReader(`{"username":"`+username+`","password":"pw"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerResp.Body.Close()
+	if registerResp.StatusCode != http.StatusCreated {
+		t.Fatalf("register %s status = %d, want 201", username, registerResp.StatusCode)
+	}
+
+	loginResp, err := http.Post(
+		serverURL+"/api/auth/login",
+		"application/json",
+		strings.NewReader(`{"username":"`+username+`","password":"pw"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login %s status = %d", username, loginResp.StatusCode)
+	}
+	for _, cookie := range loginResp.Cookies() {
+		if cookie.Name == webSessionCookieName {
+			return cookie
+		}
+	}
+	t.Fatalf("login %s returned no session cookie", username)
+	return nil
 }
 
 func openSSE(t *testing.T, serverURL string, cookie *http.Cookie, chatID, lastEventID string) *http.Response {

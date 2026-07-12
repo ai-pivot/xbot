@@ -1726,7 +1726,10 @@ func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, sende
 		return true
 	}
 	if channelName == "web" {
-		return wc.userOwnsChat(senderID, chatID)
+		if wc.userOwnsChat(senderID, chatID) {
+			return true
+		}
+		return wc.isAdmin(ctx, senderID) && wc.db != nil && wc.tenantExists("web", chatID)
 	}
 	if wc.db == nil {
 		return false

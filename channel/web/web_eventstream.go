@@ -42,17 +42,22 @@ func (es *eventStream) lastSeq() uint64 {
 	return es.seq.Load()
 }
 
-// push appends a seq-stamped event to the ring buffer.
-// For state-snapshot types (progress, stream_content), only the latest event
-// of each type is kept — replaces the previous one in-place instead of growing.
+// push appends a seq-stamped event to the ring buffer. Consecutive stateless
+// snapshots share one slot. Stream fields are cumulative but arrive in
+// independent messages, so replacing a stream snapshot must merge those fields.
 func (es *eventStream) push(msg protocol.WSMessage) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	if !isStatefulMsg(msg) {
+		key := statelessSlotKey(&msg)
 		for i := es.count - 1; i >= 0; i-- {
 			idx := (es.head + i) % eventStreamSize
-			if es.buf[idx].Type == msg.Type {
-				es.buf[idx] = msg
+			previous := es.buf[idx]
+			if msg.Type == protocol.MsgTypeStreamContent && msg.Progress != nil && isStatefulMsg(previous) {
+				break
+			}
+			if statelessSlotKey(&previous) == key {
+				es.buf[idx] = mergeStatelessEvent(previous, msg)
 				return
 			}
 		}
@@ -64,6 +69,27 @@ func (es *eventStream) push(msg protocol.WSMessage) {
 	es.buf[es.tail] = msg
 	es.tail = (es.tail + 1) % eventStreamSize
 	es.count++
+}
+func mergeStatelessEvent(previous, current protocol.WSMessage) protocol.WSMessage {
+	if current.Type != protocol.MsgTypeStreamContent || previous.Progress == nil || current.Progress == nil {
+		return current
+	}
+
+	merged := *current.Progress
+	if len(previous.Progress.StreamContent) > len(merged.StreamContent) {
+		merged.StreamContent = previous.Progress.StreamContent
+	}
+	if len(previous.Progress.ReasoningStreamContent) > len(merged.ReasoningStreamContent) {
+		merged.ReasoningStreamContent = previous.Progress.ReasoningStreamContent
+	}
+	if len(previous.Progress.StreamingTools) > len(merged.StreamingTools) {
+		merged.StreamingTools = previous.Progress.StreamingTools
+	}
+	if previous.Progress.StreamTokens > merged.StreamTokens {
+		merged.StreamTokens = previous.Progress.StreamTokens
+	}
+	current.Progress = &merged
+	return current
 }
 
 // clear drops buffered events without resetting the monotonic sequence.
