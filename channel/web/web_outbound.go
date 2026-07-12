@@ -88,7 +88,16 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 			ChatID:   msg.ChatID,
 			Progress: askPayload,
 		}
-		wc.hub.sendToClient(targetClientID, askMsg)
+		if wc.callbacks.WithPendingAskUser != nil {
+			wc.callbacks.WithPendingAskUser(msg.Channel, msg.ChatID, func(pending *protocol.ProgressEvent) bool {
+				if pending.RequestID != askPayload.RequestID {
+					return false
+				}
+				askMsg.Progress = pending
+				wc.hub.sendToClient(targetClientID, askMsg)
+				return true
+			})
+		}
 	}
 
 	return msgID, nil

@@ -124,9 +124,7 @@ func TestPendingAskUserCancelPreventsReplayAndNextTurnCancellation(t *testing.T)
 	// the cancellation race.
 	a.pendingCancel.Store(key, true)
 
-	if !a.acknowledgePendingAskUserCancel(bus.InboundMessage{Channel: "web", ChatID: "chat-1"}) {
-		t.Fatal("pending AskUser cancel was not consumed")
-	}
+	a.interceptCancel(bus.InboundMessage{Channel: "web", ChatID: "chat-1", Content: "/cancel"})
 	if a.WithPendingAskUser("web", "chat-1", func(*protocol.ProgressEvent) bool {
 		t.Fatal("cancelled AskUser remained replayable")
 		return true
@@ -165,9 +163,15 @@ func TestQueuedAskUserAnswerCancelTargetsQueuedContinuation(t *testing.T) {
 		t.Fatalf("pending AskUser remained after answer enqueue: %#v", pending)
 	}
 	a.interceptCancel(bus.InboundMessage{Channel: "web", ChatID: "chat-1", Content: "/cancel"})
-	if _, pending := a.pendingCancel.LoadAndDelete(key); !pending {
-		t.Fatal("cancel did not target the queued AskUser continuation")
+	nextCtx, nextCancel := context.WithCancel(context.Background())
+	defer nextCancel()
+	if !a.registerActiveCancelState(key, make(chan struct{}, 1), nextCancel) {
+		t.Fatal("queued AskUser continuation did not consume pending cancel")
 	}
+	if nextCtx.Err() != context.Canceled {
+		t.Fatal("queued AskUser continuation was not cancelled before processing")
+	}
+	a.finishActiveCancelState(key, nextCtx, nextCancel)
 	select {
 	case ack := <-a.bus.Outbound:
 		t.Fatalf("queued continuation received premature cancel ack: %#v", ack)
@@ -179,6 +183,8 @@ func TestActiveAskUserAnswerCancelSignalsActiveContinuation(t *testing.T) {
 	a := &Agent{bus: bus.NewMessageBus()}
 	key := "web:chat-1"
 	cancelCh := make(chan struct{}, 1)
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
 	a.chatCancelCh.Store(key, cancelCh)
 	// Simulate the narrow handoff window where the old prompt is still visible
 	// even though its answer continuation has become active.
@@ -190,6 +196,9 @@ func TestActiveAskUserAnswerCancelSignalsActiveContinuation(t *testing.T) {
 	default:
 		t.Fatal("active AskUser continuation did not receive cancel signal")
 	}
+	if !a.finishActiveCancelState(key, reqCtx, reqCancel) {
+		t.Fatal("active teardown did not observe cancel requested before teardown")
+	}
 	if pending := a.GetPendingAskUser("web", "chat-1"); pending != nil {
 		t.Fatalf("old AskUser prompt remained after active cancel: %#v", pending)
 	}
@@ -199,6 +208,33 @@ func TestActiveAskUserAnswerCancelSignalsActiveContinuation(t *testing.T) {
 	select {
 	case ack := <-a.bus.Outbound:
 		t.Fatalf("active continuation received premature cancel ack: %#v", ack)
+	default:
+	}
+}
+
+func TestCancelAfterActiveTeardownTargetsNextQueuedContinuation(t *testing.T) {
+	a := &Agent{bus: bus.NewMessageBus()}
+	key := "web:chat-1"
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
+	a.chatCancelCh.Store(key, make(chan struct{}, 1))
+
+	if a.finishActiveCancelState(key, reqCtx, reqCancel) {
+		t.Fatal("normal active teardown reported cancellation")
+	}
+	a.interceptCancel(bus.InboundMessage{Channel: "web", ChatID: "chat-1", Content: "/cancel"})
+	nextCtx, nextCancel := context.WithCancel(context.Background())
+	defer nextCancel()
+	if !a.registerActiveCancelState(key, make(chan struct{}, 1), nextCancel) {
+		t.Fatal("cancel arriving after teardown was not preserved for the next queued continuation")
+	}
+	if nextCtx.Err() != context.Canceled {
+		t.Fatal("post-teardown cancel did not cancel the next queued continuation")
+	}
+	a.finishActiveCancelState(key, nextCtx, nextCancel)
+	select {
+	case ack := <-a.bus.Outbound:
+		t.Fatalf("post-teardown queued cancel received premature ack: %#v", ack)
 	default:
 	}
 }

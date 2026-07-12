@@ -334,7 +334,8 @@ type Agent struct {
 
 	// per-request cancel: 用于 /cancel 取消当前正在处理的请求
 	// key: "channel:chatID" -> chan struct{} (buffered, cap=1)
-	chatCancelCh sync.Map
+	cancelStateMu sync.Mutex
+	chatCancelCh  sync.Map
 
 	// pendingCancel: 当 /cancel 到达时 cancelCh 尚未注册（消息还在排队或等信号量），
 	// 先记录 pending，chatProcessLoop 注册 cancelCh 后立即消费。
@@ -945,25 +946,13 @@ func (a *Agent) clearPendingAskUser(ch, chatID string) bool {
 	return len(keysToDelete) > 0
 }
 
-func (a *Agent) consumePendingAskUserCancel(ch, chatID string) bool {
-	if !a.clearPendingAskUser(ch, chatID) {
-		return false
-	}
-	a.pendingCancel.Delete(ch + ":" + chatID)
-	return true
-}
-
-func (a *Agent) acknowledgePendingAskUserCancel(msg bus.InboundMessage) bool {
-	if !a.consumePendingAskUserCancel(msg.Channel, msg.ChatID) {
-		return false
-	}
+func (a *Agent) sendPendingAskUserCancelAck(msg bus.InboundMessage) {
 	if err := a.sendMessage(msg.Channel, msg.ChatID, "", map[string]string{
 		"cancelled": "true",
 		"no_patch":  "true",
 	}); err != nil {
 		log.WithError(err).Warn("Failed to send pending AskUser cancel ack")
 	}
-	return true
 }
 
 func (a *Agent) pendingAskUserMatches(ch, chatID, requestID string) bool {
@@ -984,26 +973,36 @@ func (a *Agent) clearPendingAskUserForEnqueuedAnswer(msg bus.InboundMessage) {
 func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	cancelKey := msg.Channel + ":" + msg.ChatID
 	log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
+	a.cancelStateMu.Lock()
 	if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
+		// Record the request synchronously. The cancel listener may not consume
+		// the channel before teardown snapshots reqCtx.
+		a.pendingCancel.Store(cancelKey, true)
+		sent := false
 		select {
 		case ch.(chan struct{}) <- struct{}{}:
+			sent = true
+		default:
+			log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
+		}
+		// A prompt may have been stored just before the active Run returned.
+		// Clear it, but never replace the active cancellation with an early ack.
+		a.clearPendingAskUser(msg.Channel, msg.ChatID)
+		a.cancelStateMu.Unlock()
+		if sent {
 			log.Info("Cancel signal sent to processing goroutine")
 			if existingID, ok := a.sessionMsgIDs.Load(qualifyChatID(msg.Channel, msg.ChatID)); ok {
 				if id, ok := existingID.(string); ok {
 					a.addReactionToMessage(msg.Channel, msg.ChatID, id, "CrossMark")
 				}
 			}
-			// The completion path sends the cancel acknowledgement only after
-			// the active Run has actually stopped.
-		default:
-			log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
 		}
-		// A prompt may have been stored just before the active Run returned.
-		// Clear it, but never replace the active cancellation with an early ack.
-		a.consumePendingAskUserCancel(msg.Channel, msg.ChatID)
 		return
 	}
-	if a.acknowledgePendingAskUserCancel(msg) {
+	if a.clearPendingAskUser(msg.Channel, msg.ChatID) {
+		a.pendingCancel.Delete(cancelKey)
+		a.cancelStateMu.Unlock()
+		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
 		return
 	}
@@ -1012,7 +1011,31 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	// this marker before processMessage starts and sends the acknowledgement
 	// only after the cancellation has completed.
 	a.pendingCancel.Store(cancelKey, true)
+	a.cancelStateMu.Unlock()
 	log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
+}
+
+func (a *Agent) registerActiveCancelState(cancelKey string, cancelCh chan struct{}, reqCancel context.CancelFunc) bool {
+	a.cancelStateMu.Lock()
+	defer a.cancelStateMu.Unlock()
+	a.chatCancelCh.Store(cancelKey, cancelCh)
+	_, pending := a.pendingCancel.LoadAndDelete(cancelKey)
+	if pending {
+		reqCancel()
+	}
+	return pending
+}
+
+func (a *Agent) finishActiveCancelState(cancelKey string, reqCtx context.Context, reqCancel context.CancelFunc) bool {
+	a.cancelStateMu.Lock()
+	defer a.cancelStateMu.Unlock()
+	if _, pending := a.pendingCancel.LoadAndDelete(cancelKey); pending {
+		reqCancel()
+	}
+	wasCancelled := reqCtx.Err() == context.Canceled
+	a.chatCancelCh.Delete(cancelKey)
+	reqCancel()
+	return wasCancelled
 }
 
 // SetProxyLLM injects a ProxyLLM for a user (when their active runner has local LLM).
@@ -2396,35 +2419,16 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		cancelCh := make(chan struct{}, 1)
 		// cancelKey 仅用 channel:chatID（不含 senderID），与 /cancel 拦截处保持一致
 		cancelKey := msg.Channel + ":" + msg.ChatID
-		a.chatCancelCh.Store(cancelKey, cancelCh)
+		reqCtx, reqCancel := context.WithCancel(ctx)
+		hadPending := a.registerActiveCancelState(cancelKey, cancelCh, reqCancel)
 
 		// Emit session busy event for instant sidebar push.
 		a.emitSessionState(protocol.SessionEvent{
 			Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
 		})
 
-		// 消费 pending cancel：如果 /cancel 在消息排队期间已到达，立即发信号。
-		// Track whether we consumed one so we can cancel the context synchronously
-		// before processMessage starts — relying solely on the goroutine below
-		// races with processMessage on the first message after restart.
-		hadPending := false
-		if _, pending := a.pendingCancel.LoadAndDelete(cancelKey); pending {
-			select {
-			case cancelCh <- struct{}{}:
-				hadPending = true
-				log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
-			default:
-			}
-		}
-
-		reqCtx, reqCancel := context.WithCancel(ctx)
-
-		// Synchronous cancel: if a pending cancel was consumed above, cancel
-		// the context NOW before processMessage starts. reqCancel is idempotent
-		// (called again in defer) and guarantees processMessage receives an
-		// already-canceled context, avoiding the LLM call entirely.
 		if hadPending {
-			reqCancel()
+			log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
 		}
 
 		// 监听 cancel 信号（处理 processMessage 运行期间到达的 cancel）。
@@ -2445,14 +2449,12 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			}
 		})
 
-		// 执行消息处理，完成后检查是否被取消
-		// 注意：必须在 reqCancel() 调用前检查，否则 reqCtx.Err() 总是返回 Canceled
+		// Execute the request, then atomically snapshot cancellation and unregister
+		// the active cancel state before another /cancel can target this chat.
 		wasCancelled := false
 		func() {
 			defer func() {
-				reqCancel()
-				a.chatCancelCh.Delete(cancelKey)
-				a.pendingCancel.Delete(cancelKey)
+				wasCancelled = a.finishActiveCancelState(cancelKey, reqCtx, reqCancel)
 
 				// Emit session idle event for instant sidebar push.
 				a.emitSessionState(protocol.SessionEvent{
@@ -2473,16 +2475,12 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			}
 
 			response, err = a.processMessage(reqCtx, msg)
-			// 在 defer 执行前检查是否被取消（processMessage 过程中用户可能 /cancel）
-			if reqCtx.Err() == context.Canceled {
-				wasCancelled = true
-			}
 		}()
 
 		if wasCancelled && ctx.Err() == nil {
 			// 请求被用户 /cancel 取消（而非全局 ctx 关闭）
 			log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).Info("Request cancelled by user")
-			a.consumePendingAskUserCancel(msg.Channel, msg.ChatID)
+			a.ClearPendingAskUser(msg.Channel, msg.ChatID)
 			// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
 			// Always include cancelled metadata so CLI can distinguish cancel acks
 			// from normal replies and avoid ending a subsequently-started turn.

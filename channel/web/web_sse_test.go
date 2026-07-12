@@ -433,6 +433,108 @@ func TestSSEPendingAskUserReplayDoesNotDuplicate(t *testing.T) {
 	}
 }
 
+func TestWSReconnectSkipsResolvedRetainedAskUser(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	wc.hub.sendToClient(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeAskUser,
+		Progress: &protocol.ProgressEvent{RequestID: "request-1"},
+	})
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			return false
+		},
+	})
+	client := &Client{sendCh: make(chan protocol.WSMessage, 4)}
+
+	runWSReplay(t, wc, client, "web-1", 0)
+	select {
+	case msg := <-client.sendCh:
+		t.Fatalf("resolved AskUser replayed over WS: %#v", msg)
+	default:
+	}
+}
+
+func TestWSReconnectRestoresOnlyMatchingPendingAskUser(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	wc.hub.sendToClient(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeAskUser,
+		Progress: &protocol.ProgressEvent{RequestID: "request-1"},
+	})
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			return fn(&protocol.ProgressEvent{
+				RequestID: "request-1",
+				Questions: []protocol.AskUserQuestion{{Question: "Continue?"}},
+			})
+		},
+	})
+	client := &Client{sendCh: make(chan protocol.WSMessage, 4)}
+
+	runWSReplay(t, wc, client, "web-1", 0)
+	select {
+	case msg := <-client.sendCh:
+		if msg.Type != protocol.MsgTypeAskUser || msg.Progress == nil || msg.Progress.RequestID != "request-1" {
+			t.Fatalf("authoritative WS AskUser = %#v", msg)
+		}
+	default:
+		t.Fatal("matching pending AskUser was not restored over WS")
+	}
+	if len(client.sendCh) != 0 {
+		t.Fatalf("WS AskUser restored more than once: %#v", <-client.sendCh)
+	}
+}
+
+func TestWebSendSkipsAskUserAfterPendingCleared(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			return false
+		},
+	})
+	if _, err := wc.Send(ch.OutboundMsg{
+		Channel:     "web",
+		ChatID:      chatID,
+		WaitingUser: true,
+		Metadata: map[string]string{
+			"request_id":    "request-1",
+			"ask_questions": `[{"question":"Continue?"}]`,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0) {
+		if event.Type == protocol.MsgTypeAskUser {
+			t.Fatalf("cleared AskUser was published live: %#v", event)
+		}
+	}
+}
+
+func runWSReplay(t *testing.T, wc *WebChannel, client *Client, senderID string, lastSeq uint64) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		wc.replayMissedEvents(client, senderID)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for client.syncCh.Load() == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	syncCh := client.syncCh.Load()
+	if syncCh == nil {
+		t.Fatal("WS replay did not install sync channel")
+	}
+	*syncCh <- lastSeq
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WS replay did not finish")
+	}
+}
+
 func TestSSEDeliversRealAskUserToolMetadata(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)

@@ -235,6 +235,7 @@ func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
 				}
 			}
 		}
+		wc.enqueuePendingAskUser(client, sel.Channel, chatID)
 		return
 	}
 
@@ -246,7 +247,10 @@ func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
 	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
 	replayedProgress := false
 	for _, evt := range events {
-		if evt.Type == "progress_structured" {
+		if evt.Type == protocol.MsgTypeAskUser {
+			continue
+		}
+		if evt.Type == protocol.MsgTypeProgress {
 			replayedProgress = true
 		}
 		select {
@@ -265,22 +269,26 @@ func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
 		}
 	}
 
-	// Resend pending AskUser prompt if the session is waiting for user input.
-	// This handles page refresh: the original ask_user WS message was lost,
-	// so we resend it here to restore the AskUserPanel.
-	if wc.callbacks.GetPendingAskUser != nil {
-		if askP := wc.callbacks.GetPendingAskUser(sel.Channel, chatID); askP != nil {
-			select {
-			case client.sendCh <- protocol.WSMessage{
-				Type:     protocol.MsgTypeAskUser,
-				TS:       time.Now().Unix(),
-				ChatID:   chatID,
-				Progress: askP,
-			}:
-			default:
-			}
-		}
+	wc.enqueuePendingAskUser(client, sel.Channel, chatID)
+}
+
+func (wc *WebChannel) enqueuePendingAskUser(client *Client, channelName, chatID string) bool {
+	if wc.callbacks.WithPendingAskUser == nil {
+		return false
 	}
+	return wc.callbacks.WithPendingAskUser(channelName, chatID, func(pending *protocol.ProgressEvent) bool {
+		select {
+		case client.sendCh <- protocol.WSMessage{
+			Type:     protocol.MsgTypeAskUser,
+			TS:       time.Now().Unix(),
+			ChatID:   chatID,
+			Progress: pending,
+		}:
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 func (wc *WebChannel) writePump(c *Client) {
@@ -547,19 +555,11 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// This handles the case where the AskUser was triggered before the web
 			// client subscribed (e.g. CLI session triggered AskUser, web user switches
 			// to that session afterwards).
-			if wc.callbacks.GetPendingAskUser != nil {
-				if askP := wc.callbacks.GetPendingAskUser("cli", subMsg.ChatID); askP != nil {
-					select {
-					case c.sendCh <- protocol.WSMessage{
-						Type:     protocol.MsgTypeAskUser,
-						TS:       time.Now().Unix(),
-						ChatID:   subMsg.ChatID,
-						Progress: askP,
-					}:
-					default:
-					}
-				}
+			pendingChannel := "cli"
+			if !c.isCLI {
+				pendingChannel = wc.GetCurrentSession(c.userID).Channel
 			}
+			wc.enqueuePendingAskUser(c, pendingChannel, subMsg.ChatID)
 		case protocol.MsgTypeTUIControlResp:
 			// Remote CLI TUI control response — route to pending request handler
 			if msg.TUIControl != nil && msg.ID != "" && wc.hub.tuiRespFn != nil {
