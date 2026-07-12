@@ -13,10 +13,10 @@ import (
 )
 
 // SendSessionState implements ch.SessionStateSender.
-// Broadcasts session events (busy/idle/etc.) to all connected web clients
-// so the sidebar can show status for all sessions.
+// WebSocket clients retain the legacy broadcast behavior; SSE clients receive
+// only events for their authorized chat subscription.
 func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
-	wc.hub.broadcastToAll(protocol.WSMessage{
+	wc.hub.broadcastSessionState(ev.ChatID, protocol.WSMessage{
 		Type:    protocol.MsgTypeSession,
 		TS:      time.Now().Unix(),
 		Session: &ev,
@@ -63,10 +63,8 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 		wc.getEventStream(targetClientID).clear()
 	}
 
-	// Stamp seq and buffer for replay
-	wsMsg = wc.stampAndBuffer(targetClientID, wsMsg)
-
-	// Send via hub (non-blocking: writes to buffered channel)
+	// The Hub stamps and buffers Web transport events before fan-out while
+	// preserving the remote CLI WebSocket envelope unchanged.
 	if !wc.hub.sendToClient(targetClientID, wsMsg) {
 		log.WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("Web client offline, message buffered")
 	}
@@ -112,11 +110,11 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 		return
 	}
 
-	wsMsg := wc.stampAndBuffer(chatID, protocol.WSMessage{
+	wsMsg := protocol.WSMessage{
 		Type:     protocol.MsgTypeProgress,
 		TS:       time.Now().Unix(),
 		Progress: payload,
-	})
+	}
 
 	if !wc.hub.sendToClient(chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
@@ -129,7 +127,7 @@ func (wc *WebChannel) SendStreamContent(chatID, content, reasoning string) {
 	if content == "" && reasoning == "" {
 		return
 	}
-	wsMsg := wc.stampAndBuffer(chatID, protocol.WSMessage{
+	wsMsg := protocol.WSMessage{
 		Type: protocol.MsgTypeStreamContent,
 		TS:   time.Now().Unix(),
 		Progress: &protocol.ProgressEvent{
@@ -137,7 +135,7 @@ func (wc *WebChannel) SendStreamContent(chatID, content, reasoning string) {
 			StreamContent:          content,
 			ReasoningStreamContent: reasoning,
 		},
-	})
+	}
 	_ = wc.hub.sendToClient(chatID, wsMsg) // stream events are ephemeral, safe to drop
 }
 

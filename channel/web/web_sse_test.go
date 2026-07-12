@@ -110,8 +110,8 @@ func TestSSEReceivesHubStatefulAndStatelessEvents(t *testing.T) {
 func TestSSELastEventIDReplaysMissedEvents(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
-	wc.stampAndBuffer("web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "seen"})
-	wc.stampAndBuffer("web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "missed"})
+	wc.hub.sendToClient("web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "seen"})
+	wc.hub.sendToClient("web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "missed"})
 	server := startTestServer(t, wc)
 	cookie := loginTestAdmin(t, server.URL)
 
@@ -121,6 +121,12 @@ func TestSSELastEventIDReplaysMissedEvents(t *testing.T) {
 	msg := assertSSEMessage(t, event, protocol.MsgTypeText, 2)
 	if msg.Content != "missed" {
 		t.Fatalf("replayed content = %q, want missed", msg.Content)
+	}
+
+	wc.hub.sendToClient("web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "live"})
+	next := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 3)
+	if next.Content != "live" {
+		t.Fatalf("next content = %q, want live", next.Content)
 	}
 }
 
@@ -139,9 +145,160 @@ func TestSSEReconnectSendsActiveProgressWhenReplayHasNone(t *testing.T) {
 	resp := openSSE(t, server.URL, cookie, "web-1", "1")
 	defer resp.Body.Close()
 	event := readSSEEvent(t, bufio.NewReader(resp.Body))
-	msg := assertSSEMessage(t, event, protocol.MsgTypeProgress, 0)
+	msg := assertSSEMessage(t, event, protocol.MsgTypeProgress, 2)
 	if msg.Progress == nil || msg.Progress.Phase != "tool_exec" {
 		t.Fatalf("unexpected active progress: %#v", msg.Progress)
+	}
+}
+
+func TestSSEReplaySortsMixedStatefulAndStatelessEvents(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeStreamContent, Content: "stream-1"})
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "stateful-2"})
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeStreamContent, Content: "stream-3"})
+
+	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+	if len(events) != 2 {
+		t.Fatalf("replay event count = %d, want 2", len(events))
+	}
+	if events[0].Seq != 2 || events[0].Content != "stateful-2" {
+		t.Fatalf("first replay event = %#v", events[0])
+	}
+	if events[1].Seq != 3 || events[1].Content != "stream-3" {
+		t.Fatalf("second replay event = %#v", events[1])
+	}
+}
+
+func TestSSEReplayHandoffOrdersConcurrentLiveEvent(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.hub.sendToClient("web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "seen"})
+	progressLookup := make(chan struct{}, 1)
+	releaseLookup := make(chan struct{})
+	wc.SetCallbacks(WebCallbacks{
+		GetActiveProgress: func(channel, chatID string) *protocol.ProgressEvent {
+			progressLookup <- struct{}{}
+			<-releaseLookup
+			return &protocol.ProgressEvent{Phase: "tool_exec"}
+		},
+	})
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+
+	resp := openSSE(t, server.URL, cookie, "web-1", "1")
+	defer resp.Body.Close()
+	select {
+	case <-progressLookup:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active progress lookup did not start")
+	}
+	wc.SendProgress("web-1", &protocol.ProgressEvent{Phase: "thinking"})
+	close(releaseLookup)
+
+	reader := bufio.NewReader(resp.Body)
+	live := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeProgress, 2)
+	if live.Progress == nil || live.Progress.Phase != "thinking" {
+		t.Fatalf("unexpected live progress: %#v", live.Progress)
+	}
+	snapshot := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeProgress, 3)
+	if snapshot.Progress == nil || snapshot.Progress.Phase != "tool_exec" {
+		t.Fatalf("unexpected fallback snapshot: %#v", snapshot.Progress)
+	}
+}
+
+func TestSSEContractEventsReceiveSequences(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	client := &Client{
+		connType: clientConnTypeSSE,
+		sendCh:   make(chan protocol.WSMessage, 16),
+		done:     make(chan struct{}),
+		id:       "sse-contract",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, "web-1")
+
+	types := []string{
+		protocol.MsgTypeText,
+		protocol.MsgTypeProgress,
+		protocol.MsgTypeStreamContent,
+		protocol.MsgTypeAskUser,
+		protocol.MsgTypeCard,
+		protocol.MsgTypeUserEcho,
+		protocol.MsgTypeInjectUser,
+		protocol.MsgTypePluginWidgets,
+		protocol.MsgTypeRunnerStatus,
+		protocol.MsgTypeSyncProgress,
+	}
+	for i, msgType := range types {
+		if !wc.hub.sendToClient("web-1", protocol.WSMessage{Type: msgType}) {
+			t.Fatalf("message %q was not delivered", msgType)
+		}
+		msg := <-client.sendCh
+		wantSeq := uint64(i + 1)
+		if msg.Seq != wantSeq {
+			t.Fatalf("message %q seq = %d, want %d", msgType, msg.Seq, wantSeq)
+		}
+	}
+
+	wc.SendSessionState(protocol.SessionEvent{Channel: "web", ChatID: "web-1", Action: "busy"})
+	msg := <-client.sendCh
+	if msg.Type != protocol.MsgTypeSession || msg.Seq != uint64(len(types)+1) {
+		t.Fatalf("session event = %#v", msg)
+	}
+}
+
+func TestSSESessionBroadcastIsIsolatedBySubscription(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	client1 := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "user-1", userID: "web-1"}
+	client2 := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "user-2", userID: "web-2"}
+	wsClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "legacy-ws"}
+	for _, client := range []*Client{client1, client2, wsClient} {
+		wc.hub.addClient(client.id, client)
+	}
+	wc.hub.subscribe(client1.id, "web-1")
+	wc.hub.subscribe(client2.id, "web-2")
+
+	wc.SendSessionState(protocol.SessionEvent{Channel: "web", ChatID: "web-1", Action: "busy"})
+	select {
+	case msg := <-client1.sendCh:
+		if msg.Type != protocol.MsgTypeSession || msg.Seq == 0 {
+			t.Fatalf("user-1 session event = %#v", msg)
+		}
+	default:
+		t.Fatal("authorized SSE client did not receive session event")
+	}
+	select {
+	case msg := <-client2.sendCh:
+		t.Fatalf("foreign SSE client received session event: %#v", msg)
+	default:
+	}
+	select {
+	case <-wsClient.sendCh:
+	default:
+		t.Fatal("legacy WS broadcast behavior changed")
+	}
+}
+
+func TestHubUsesSequencedCopyWithoutChangingCLIWSMessage(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	sseClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "sse"}
+	webSocketClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "web-ws"}
+	cliClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "cli-ws", isCLI: true}
+	for _, client := range []*Client{sseClient, webSocketClient, cliClient} {
+		wc.hub.addClient(client.id, client)
+		wc.hub.subscribe(client.id, "shared-chat")
+	}
+
+	wc.hub.sendToClient("shared-chat", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "hello"})
+	sseMsg := <-sseClient.sendCh
+	webSocketMsg := <-webSocketClient.sendCh
+	cliMsg := <-cliClient.sendCh
+	if sseMsg.Seq != 1 || webSocketMsg.Seq != sseMsg.Seq {
+		t.Fatalf("Web transport sequences differ: SSE=%d WS=%d", sseMsg.Seq, webSocketMsg.Seq)
+	}
+	if cliMsg.Seq != 0 {
+		t.Fatalf("CLI WS envelope sequence changed: %d", cliMsg.Seq)
 	}
 }
 

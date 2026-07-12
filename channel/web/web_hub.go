@@ -23,6 +23,8 @@ type Hub struct {
 	subs    map[string]map[string]bool // chatID → set of clientIDs (message routing)
 	offline map[string]*ringBuffer     // chatID → offline message buffer
 	offMu   sync.Mutex
+	seqMu   sync.Mutex
+	seqFn   func(string, protocol.WSMessage) protocol.WSMessage
 
 	tuiRespFn func(id string, payload *protocol.TUIControlPayload) // set by RemoteCLIChannel
 }
@@ -74,17 +76,18 @@ func (h *Hub) subscribe(clientID, chatID string) {
 	}
 	if h.subs[chatID] == nil {
 		h.subs[chatID] = make(map[string]bool)
-		// Flush any offline messages for this chatID
+	}
+	// SSE replays from eventStream, its ordered source of truth. The legacy
+	// offline ring remains exclusively for WebSocket clients.
+	if c := h.conns[clientID]; c != nil && c.connType != clientConnTypeSSE {
 		h.offMu.Lock()
 		if buf, ok := h.offline[chatID]; ok {
 			msgs := buf.flush()
 			for _, msg := range msgs {
-				if c, ok := h.conns[clientID]; ok {
-					select {
-					case c.sendCh <- msg:
-					default:
-						log.WithFields(log.Fields{"client_id": clientID, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.subscribe flush: sendCh full, dropping buffered message")
-					}
+				select {
+				case c.sendCh <- msg:
+				default:
+					log.WithFields(log.Fields{"client_id": clientID, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.subscribe flush: sendCh full, dropping buffered message")
 				}
 			}
 			delete(h.offline, chatID)
@@ -98,6 +101,14 @@ func (h *Hub) subscribe(clientID, chatID string) {
 // sendToClient sends a message to all clients subscribed to a chatID.
 // If no clients are subscribed, buffers the message for later delivery.
 func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
+	isSSEEvent := isSSEEventType(msg.Type)
+	sequencedMsg := msg
+	if isSSEEvent {
+		h.seqMu.Lock()
+		defer h.seqMu.Unlock()
+		sequencedMsg = h.sequenceEventLocked(chatID, msg)
+	}
+
 	h.mu.RLock()
 	// Copy subscriber keys to a slice to avoid iterating the map while
 	// removeClient() may concurrently delete from it (data race).
@@ -119,15 +130,22 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 			log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID}).Debug("Hub.sendToClient: subscriber conn nil, skipping")
 			continue
 		}
-		if !isStatefulMsg(msg) {
+		if c.connType == clientConnTypeSSE && !isSSEEvent {
+			continue
+		}
+		deliveryMsg := msg
+		if !c.isCLI {
+			deliveryMsg = sequencedMsg
+		}
+		if !isStatefulMsg(deliveryMsg) && c.connType != clientConnTypeSSE {
 			// Stateless messages (stream_content, etc.) are superseded
 			// by newer ones of the same type — store only the latest per type
 			// in the stateless slot so writePump always sends the freshest snapshot.
-			c.storeStateless(&msg)
+			c.storeStateless(&deliveryMsg)
 			sent = true
 		} else {
-			// Stateful messages (text, inject_user, structured progress, etc.)
-			// use best-effort delivery. If sendCh is full (client network slow),
+			// Stateful WebSocket messages and all SSE events use best-effort
+			// sendCh delivery. If sendCh is full (client network slow),
 			// the event is dropped from the push path — but the server's
 			// authoritative state (lastProgressSnapshot + iterationHistories) is
 			// already updated BEFORE the push. The client detects the gap via
@@ -136,10 +154,10 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 			// through direct WS write). This is the Raft model: AppendEntries
 			// (push) is best-effort, InstallSnapshot (pull) is authoritative.
 			select {
-			case c.sendCh <- msg:
+			case c.sendCh <- deliveryMsg:
 				sent = true
 			default:
-				log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.sendToClient: sendCh full, dropping stateful message (will be recovered via snapshot pull)")
+				log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.sendToClient: sendCh full, dropping message (will be recovered via snapshot pull)")
 			}
 		}
 	}
@@ -154,6 +172,19 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 		h.offMu.Unlock()
 	}
 	return sent
+}
+
+func (h *Hub) sequenceEvent(chatID string, msg protocol.WSMessage) protocol.WSMessage {
+	h.seqMu.Lock()
+	defer h.seqMu.Unlock()
+	return h.sequenceEventLocked(chatID, msg)
+}
+
+func (h *Hub) sequenceEventLocked(chatID string, msg protocol.WSMessage) protocol.WSMessage {
+	if msg.Seq == 0 && h.seqFn != nil {
+		return h.seqFn(chatID, msg)
+	}
+	return msg
 }
 
 func (c *Client) closeDone() {
@@ -217,24 +248,31 @@ func (h *Hub) stopAll() {
 	h.mu.Unlock()
 }
 
-// broadcastToAll sends a message to every connected client.
-// Used for global events like session state changes.
-func (h *Hub) broadcastToAll(msg protocol.WSMessage) {
+// broadcastSessionState preserves the existing WS broadcast while limiting SSE
+// delivery to clients subscribed to the event's authorized chat.
+func (h *Hub) broadcastSessionState(chatID string, msg protocol.WSMessage) {
+	h.seqMu.Lock()
+	defer h.seqMu.Unlock()
+	sequencedMsg := h.sequenceEventLocked(chatID, msg)
+
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.conns))
-	for _, c := range h.conns {
+	for clientID, c := range h.conns {
+		if c.connType == clientConnTypeSSE && !h.subs[chatID][clientID] {
+			continue
+		}
 		clients = append(clients, c)
 	}
 	h.mu.RUnlock()
 	for _, c := range clients {
-		if !isStatefulMsg(msg) {
-			c.storeStateless(&msg)
-		} else {
-			select {
-			case c.sendCh <- msg:
-			default:
-				log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToAll: sendCh full, skipping")
-			}
+		deliveryMsg := msg
+		if c.connType == clientConnTypeSSE {
+			deliveryMsg = sequencedMsg
+		}
+		select {
+		case c.sendCh <- deliveryMsg:
+		default:
+			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastSessionState: sendCh full, skipping")
 		}
 	}
 }
@@ -283,6 +321,8 @@ type Client struct {
 	closeOnce       sync.Once
 	hub             *Hub
 	userID          string
+	chatID          string
+	lastSentSeq     uint64
 	id              string                      // unique client ID (UUID), generated at connection time
 	syncCh          atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq
 	isCLI           bool                        // true if client_type=cli (runner token auth)
@@ -296,6 +336,25 @@ type Client struct {
 	statelessMu  sync.Mutex
 	statelessMap map[string]*protocol.WSMessage // msg type → latest message
 	statelessSig chan struct{}                  // cap-1 signal: writePump checks slot
+}
+
+func isSSEEventType(msgType string) bool {
+	switch msgType {
+	case protocol.MsgTypeText,
+		protocol.MsgTypeProgress,
+		protocol.MsgTypeStreamContent,
+		protocol.MsgTypeAskUser,
+		protocol.MsgTypeCard,
+		protocol.MsgTypeUserEcho,
+		protocol.MsgTypeInjectUser,
+		protocol.MsgTypePluginWidgets,
+		protocol.MsgTypeSession,
+		protocol.MsgTypeRunnerStatus,
+		protocol.MsgTypeSyncProgress:
+		return true
+	default:
+		return false
+	}
 }
 
 // ---------------------------------------------------------------------------

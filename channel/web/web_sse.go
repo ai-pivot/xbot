@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -60,15 +61,19 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 
 	client := &Client{
-		connType:     clientConnTypeSSE,
-		w:            w,
-		flusher:      flusher,
-		sendCh:       make(chan protocol.WSMessage, webSendChBufSize),
-		done:         make(chan struct{}),
-		hub:          wc.hub,
-		userID:       senderID,
-		id:           strings.ReplaceAll(uuid.New().String(), "-", ""),
-		statelessSig: make(chan struct{}, 1),
+		connType:    clientConnTypeSSE,
+		w:           w,
+		flusher:     flusher,
+		sendCh:      make(chan protocol.WSMessage, webSendChBufSize),
+		done:        make(chan struct{}),
+		hub:         wc.hub,
+		userID:      senderID,
+		chatID:      chatID,
+		id:          strings.ReplaceAll(uuid.New().String(), "-", ""),
+		lastSentSeq: lastSeq,
+	}
+	if streamLastSeq := wc.getEventStream(chatID).lastSeq(); lastSeq > streamLastSeq {
+		client.lastSentSeq = 0
 	}
 
 	wc.hub.addClient(client.id, client)
@@ -91,14 +96,11 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Commit the response headers immediately even when no event is ready yet.
 	flusher.Flush()
-	if lastSeq > 0 {
-		if err := wc.replaySSEEvents(client, sel, lastSeq); err != nil {
-			log.WithError(err).WithField("client_id", client.id).Debug("SSE replay stopped")
-			return
-		}
-	}
-
-	wc.sseWriteLoop(r.Context(), client)
+	// eventStream is also the initial-connect source of truth. Replaying from
+	// zero closes the gap between the history request and Hub subscription;
+	// clients already holding history deduplicate by the same sequence IDs.
+	replay := wc.replaySSEEvents(sel, client.lastSentSeq)
+	wc.sseWriteLoop(r.Context(), client, replay)
 }
 
 func (wc *WebChannel) resolveSSESession(w http.ResponseWriter, r *http.Request, senderID, chatID string) (SessionSelector, bool) {
@@ -124,62 +126,56 @@ func parseLastEventID(raw string) (uint64, error) {
 	return strconv.ParseUint(raw, 10, 64)
 }
 
-func (wc *WebChannel) replaySSEEvents(client *Client, sel SessionSelector, lastSeq uint64) error {
+func (wc *WebChannel) replaySSEEvents(sel SessionSelector, lastSeq uint64) []protocol.WSMessage {
 	events := wc.getEventStream(sel.ChatID).eventsAfter(lastSeq)
+	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
 	replayedProgress := false
 	for _, event := range events {
 		if event.Type == protocol.MsgTypeProgress {
 			replayedProgress = true
 		}
-		if err := writeSSEEvent(client, event); err != nil {
-			return err
-		}
 	}
 
 	if !replayedProgress && wc.callbacks.GetActiveProgress != nil {
 		if progress := wc.callbacks.GetActiveProgress(sel.Channel, sel.ChatID); progress != nil {
-			if err := writeSSEEvent(client, protocol.WSMessage{
+			events = append(events, wc.hub.sequenceEvent(sel.ChatID, protocol.WSMessage{
 				Type:     protocol.MsgTypeProgress,
 				TS:       time.Now().Unix(),
 				Progress: progress,
-			}); err != nil {
-				return err
-			}
+			}))
 		}
 	}
 
 	if wc.callbacks.GetPendingAskUser != nil {
 		if progress := wc.callbacks.GetPendingAskUser(sel.Channel, sel.ChatID); progress != nil {
-			if err := writeSSEEvent(client, protocol.WSMessage{
+			events = append(events, wc.hub.sequenceEvent(sel.ChatID, protocol.WSMessage{
 				Type:     protocol.MsgTypeAskUser,
 				TS:       time.Now().Unix(),
 				ChatID:   sel.ChatID,
 				Progress: progress,
-			}); err != nil {
-				return err
-			}
+			}))
 		}
 	}
-	return nil
+	return events
 }
 
-func (wc *WebChannel) sseWriteLoop(ctx context.Context, client *Client) {
+func (wc *WebChannel) sseWriteLoop(ctx context.Context, client *Client, initial []protocol.WSMessage) {
 	ticker := time.NewTicker(sseHeartbeatInterval)
 	defer ticker.Stop()
 
+	batch, closed := collectSSEBatch(client.sendCh, initial)
+	if err := writeSSEBatch(client, batch); err != nil || closed {
+		return
+	}
+
 	for {
 		select {
-		case <-client.statelessSig:
-			for _, msg := range client.drainStateless() {
-				if err := writeSSEEvent(client, *msg); err != nil {
-					return
-				}
-			}
 		case msg, ok := <-client.sendCh:
 			if !ok {
 				return
 			}
-			if err := writeSSEEvent(client, msg); err != nil {
+			batch, closed := collectSSEBatch(client.sendCh, []protocol.WSMessage{msg})
+			if err := writeSSEBatch(client, batch); err != nil || closed {
 				return
 			}
 		case <-ticker.C:
@@ -194,7 +190,39 @@ func (wc *WebChannel) sseWriteLoop(ctx context.Context, client *Client) {
 	}
 }
 
+func collectSSEBatch(ch <-chan protocol.WSMessage, initial []protocol.WSMessage) ([]protocol.WSMessage, bool) {
+	batch := append([]protocol.WSMessage(nil), initial...)
+	for drained := 0; drained < cap(ch); drained++ {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return batch, true
+			}
+			batch = append(batch, msg)
+		default:
+			return batch, false
+		}
+	}
+	return batch, false
+}
+
+func writeSSEBatch(client *Client, batch []protocol.WSMessage) error {
+	sort.SliceStable(batch, func(i, j int) bool { return batch[i].Seq < batch[j].Seq })
+	for _, msg := range batch {
+		if err := writeSSEEvent(client, msg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func writeSSEEvent(client *Client, msg protocol.WSMessage) error {
+	if msg.Seq == 0 {
+		return fmt.Errorf("SSE event %q has no sequence", msg.Type)
+	}
+	if msg.Seq <= client.lastSentSeq {
+		return nil
+	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal SSE event: %w", err)
@@ -203,6 +231,7 @@ func writeSSEEvent(client *Client, msg protocol.WSMessage) error {
 		return fmt.Errorf("write SSE event: %w", err)
 	}
 	client.flusher.Flush()
+	client.lastSentSeq = msg.Seq
 	return nil
 }
 

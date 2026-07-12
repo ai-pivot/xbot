@@ -92,7 +92,7 @@ var _ ch.SessionStateSender = (*WebChannel)(nil)
 
 // NewWebChannel 创建 Web 渠道
 func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
-	return &WebChannel{
+	wc := &WebChannel{
 		config:             cfg,
 		msgBus:             msgBus,
 		hub:                newHub(),
@@ -101,6 +101,8 @@ func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 		stopCh:             make(chan struct{}),
 		userCurrentSession: make(map[string]SessionSelector),
 	}
+	wc.hub.seqFn = wc.stampAndBuffer
+	return wc
 }
 
 // Hub returns the web channel's hub for sharing with other channels.

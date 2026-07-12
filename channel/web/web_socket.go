@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -239,6 +240,7 @@ func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
 	// restore an in-flight turn when their last_seq is already up to date.
 	es := wc.getEventStream(chatID)
 	events := es.eventsAfter(fromSeq)
+	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
 	replayedProgress := false
 	for _, evt := range events {
 		if evt.Type == "progress_structured" {
