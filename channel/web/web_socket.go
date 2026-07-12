@@ -281,6 +281,7 @@ func (wc *WebChannel) enqueuePendingAskUser(client *Client, channelName, chatID 
 		case client.sendCh <- protocol.WSMessage{
 			Type:     protocol.MsgTypeAskUser,
 			TS:       time.Now().Unix(),
+			Channel:  channelName,
 			ChatID:   chatID,
 			Progress: pending,
 		}:
@@ -289,6 +290,32 @@ func (wc *WebChannel) enqueuePendingAskUser(client *Client, channelName, chatID 
 			return false
 		}
 	})
+}
+
+func (wc *WebChannel) writeCurrentWSMessage(
+	client *Client,
+	msg protocol.WSMessage,
+	write func(protocol.WSMessage) error,
+) (bool, error) {
+	if client.isCLI || msg.Type != protocol.MsgTypeAskUser {
+		return true, write(msg)
+	}
+	if msg.Progress == nil || msg.Progress.RequestID == "" || wc.callbacks.WithPendingAskUser == nil {
+		return false, nil
+	}
+
+	var writeErr error
+	written := false
+	wc.callbacks.WithPendingAskUser(msg.Channel, msg.ChatID, func(pending *protocol.ProgressEvent) bool {
+		if pending.RequestID != msg.Progress.RequestID {
+			return false
+		}
+		msg.Progress = pending
+		writeErr = write(msg)
+		written = true
+		return true
+	})
+	return written, writeErr
 }
 
 func (wc *WebChannel) writePump(c *Client) {
@@ -318,8 +345,11 @@ func (wc *WebChannel) writePump(c *Client) {
 				c.wsConn.WriteControl(websocket.PongMessage, []byte(msg.Content), time.Now().Add(5*time.Second))
 				continue
 			}
-			c.wsConn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if err := c.wsConn.WriteJSON(msg); err != nil {
+			_, err := wc.writeCurrentWSMessage(c, msg, func(current protocol.WSMessage) error {
+				c.wsConn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+				return c.wsConn.WriteJSON(current)
+			})
+			if err != nil {
 				log.WithError(err).Debug("WS write error")
 				return
 			}

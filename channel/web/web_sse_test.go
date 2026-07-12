@@ -512,6 +512,97 @@ func TestWebSendSkipsAskUserAfterPendingCleared(t *testing.T) {
 	}
 }
 
+func TestWSWriteBoundarySkipsLiveAskUserClearedAfterEnqueue(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	var pendingMu sync.RWMutex
+	pending := &protocol.ProgressEvent{RequestID: "request-1"}
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			pendingMu.RLock()
+			defer pendingMu.RUnlock()
+			if pending == nil {
+				return false
+			}
+			copy := *pending
+			return fn(&copy)
+		},
+	})
+	client := &Client{
+		connType: clientConnTypeWS,
+		sendCh:   make(chan protocol.WSMessage, 4),
+		done:     make(chan struct{}),
+		id:       "browser-ws",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, chatID)
+	if _, err := wc.Send(ch.OutboundMsg{
+		Channel:     "web",
+		ChatID:      chatID,
+		WaitingUser: true,
+		Metadata:    map[string]string{"request_id": "request-1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-client.sendCh // ordinary text envelope
+	ask := <-client.sendCh
+	pendingMu.Lock()
+	pending = nil
+	pendingMu.Unlock()
+
+	writeCalled := false
+	written, err := wc.writeCurrentWSMessage(client, ask, func(protocol.WSMessage) error {
+		writeCalled = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written || writeCalled {
+		t.Fatal("resolved live AskUser reached the WS writer")
+	}
+}
+
+func TestWSWriteBoundarySkipsReconnectAskUserClearedAfterEnqueue(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	var pendingMu sync.RWMutex
+	pending := &protocol.ProgressEvent{RequestID: "request-1"}
+	wc.hub.sendToClient(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeAskUser,
+		Progress: pending,
+	})
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			pendingMu.RLock()
+			defer pendingMu.RUnlock()
+			if pending == nil {
+				return false
+			}
+			copy := *pending
+			return fn(&copy)
+		},
+	})
+	client := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 4)}
+	runWSReplay(t, wc, client, "web-1", 0)
+	ask := <-client.sendCh
+	pendingMu.Lock()
+	pending = nil
+	pendingMu.Unlock()
+
+	writeCalled := false
+	written, err := wc.writeCurrentWSMessage(client, ask, func(protocol.WSMessage) error {
+		writeCalled = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written || writeCalled {
+		t.Fatal("resolved reconnect AskUser reached the WS writer")
+	}
+}
+
 func runWSReplay(t *testing.T, wc *WebChannel, client *Client, senderID string, lastSeq uint64) {
 	t.Helper()
 	done := make(chan struct{})

@@ -85,6 +85,7 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 			Type:     protocol.MsgTypeAskUser,
 			ID:       msgID,
 			TS:       time.Now().Unix(),
+			Channel:  msg.Channel,
 			ChatID:   msg.ChatID,
 			Progress: askPayload,
 		}
