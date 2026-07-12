@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -127,20 +128,20 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 func TestRESTRPCDispatchesThroughCallback(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
-		if method != "get_settings" || identity.SenderID != "web-1" || string(params) != `{"namespace":"web"}` {
+		if method != "get_settings" || identity.SenderID != "web-2" || string(params) != `{"namespace":"web"}` {
 			t.Fatalf("unexpected RPC dispatch: method=%q sender=%q params=%s", method, identity.SenderID, params)
 		}
 		return json.RawMessage(`{"theme":"dark"}`), nil
 	})
 	recorder := httptest.NewRecorder()
-	wc.handleRPC(recorder, authedAPIRequest(http.MethodPost, "/api/rpc", []byte(`{"method":"get_settings","params":{"namespace":"web"}}`)))
+	wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_settings","params":{"namespace":"web"}}`), "web-2", 2))
 	envelope, data := decodeAPIResponse(t, recorder)
 	if recorder.Code != http.StatusOK || !envelope.OK || data["theme"] != "dark" {
 		t.Fatalf("unexpected RPC response: %d %#v %#v", recorder.Code, envelope, data)
 	}
 }
 
-func TestRESTRPCRejectsNonAdminInboundAndPluginMutation(t *testing.T) {
+func TestRESTRPCRejectsUnsafeNonAdminMethods(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	dispatched := false
 	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
@@ -157,6 +158,14 @@ func TestRESTRPCRejectsNonAdminInboundAndPluginMutation(t *testing.T) {
 		{method: "plugin_reload_all", params: `{}`},
 		{method: "plugin_install", params: `{"source_dir":"/tmp/plugin"}`},
 		{method: "plugin_uninstall", params: `{"id":"plugin-a"}`},
+		{method: "set_model_enabled", params: `{"sub_id":"foreign","model":"secret","enabled":false}`},
+		{method: "remove_model", params: `{"sub_id":"system","model":"shared"}`},
+		{method: "upsert_model", params: `{"sub_id":"foreign","model":"injected"}`},
+		{method: "set_subscription_enabled", params: `{"sub_id":"foreign","enabled":false}`},
+		{method: "select_model", params: `{"sub_id":"foreign","model":"secret","channel":"cli","chat_id":"/foreign"}`},
+		{method: "get_session_subscription", params: `{"channel":"cli","chat_id":"/foreign"}`},
+		{method: "get_token_state", params: `{"channel":"cli","chat_id":"/foreign"}`},
+		{method: "get_history", params: `{"channel":"agent","chat_id":"web:web-1/private:1"}`},
 		{method: "plugin_widgets", params: `{"chat_id":"/another-users-session"}`},
 	}
 	for _, test := range tests {
@@ -167,6 +176,48 @@ func TestRESTRPCRejectsNonAdminInboundAndPluginMutation(t *testing.T) {
 			wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", body, "web-2", 2))
 			if recorder.Code != http.StatusForbidden || dispatched {
 				t.Fatalf("status=%d dispatched=%v body=%s", recorder.Code, dispatched, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestRESTRPCRejectsMalformedPluginWidgetParamsAsBadRequest(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	dispatched := false
+	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+		dispatched = true
+		return json.RawMessage(`{}`), nil
+	})
+	recorder := httptest.NewRecorder()
+	wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"plugin_widgets","params":{"chat_id":123}}`), "web-2", 2))
+	envelope := decodeAPIData(t, recorder.Body, nil)
+	if recorder.Code != http.StatusBadRequest || dispatched || envelope.Error == nil || envelope.Error.Code != "bad_request" {
+		t.Fatalf("status=%d dispatched=%v envelope=%#v", recorder.Code, dispatched, envelope)
+	}
+}
+
+func TestRESTRPCClassifiesDispatchErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "authorization", err: errors.New("access denied"), wantStatus: http.StatusForbidden, wantCode: "forbidden"},
+		{name: "invalid request", err: errors.New("unknown RPC method: missing"), wantStatus: http.StatusBadRequest, wantCode: "bad_request"},
+		{name: "runtime", err: errors.New("database unavailable"), wantStatus: http.StatusInternalServerError, wantCode: "internal_error"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+			wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+				return nil, test.err
+			})
+			recorder := httptest.NewRecorder()
+			wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_settings","params":{}}`), "web-2", 2))
+			envelope := decodeAPIData(t, recorder.Body, nil)
+			if recorder.Code != test.wantStatus || envelope.Error == nil || envelope.Error.Code != test.wantCode {
+				t.Fatalf("status=%d envelope=%#v", recorder.Code, envelope)
 			}
 		})
 	}

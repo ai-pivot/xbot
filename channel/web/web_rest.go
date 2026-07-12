@@ -171,16 +171,17 @@ func (wc *WebChannel) handleRPC(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "method is required")
 		return
 	}
-	if err := wc.authorizeRESTRPC(r, request.Method, request.Params); err != nil {
-		jsonErrorResponse(w, http.StatusForbidden, err.Error())
+	identity := wc.rpcIdentityFromRequest(r)
+	if status, err := wc.authorizeRESTRPC(r, identity, request.Method, request.Params); err != nil {
+		jsonErrorResponse(w, status, err.Error())
 		return
 	}
 	if len(request.Params) == 0 || string(request.Params) == "null" {
 		request.Params = json.RawMessage(`{}`)
 	}
-	result, err := wc.callbacks.RPCHandler(request.Method, request.Params, wc.rpcIdentityFromRequest(r))
+	result, err := wc.callbacks.RPCHandler(request.Method, request.Params, identity)
 	if err != nil {
-		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
+		jsonErrorResponse(w, restRPCErrorStatus(err), err.Error())
 		return
 	}
 	if len(result) == 0 {
@@ -199,27 +200,79 @@ func (wc *WebChannel) rpcIdentityFromRequest(r *http.Request) RPCIdentity {
 	}
 }
 
-func (wc *WebChannel) authorizeRESTRPC(r *http.Request, method string, params json.RawMessage) error {
-	senderID := senderIDFromContext(r.Context())
-	identity := wc.inboundIdentityFromRequest(r)
-	if identity.CanonicalRole == "admin" || wc.isAdmin(r.Context(), senderID) {
-		return nil
+var nonAdminRESTRPCMethods = map[string]struct{}{
+	"get_context_mode":                   {},
+	"get_settings":                       {},
+	"set_setting":                        {},
+	"get_default_model":                  {},
+	"get_user_max_context":               {},
+	"set_user_max_context":               {},
+	"get_user_max_output_tokens":         {},
+	"set_user_max_output_tokens":         {},
+	"get_user_thinking_mode":             {},
+	"set_user_thinking_mode":             {},
+	"get_llm_concurrency":                {},
+	"set_llm_concurrency":                {},
+	"list_models":                        {},
+	"list_all_models":                    {},
+	"list_all_model_entries":             {},
+	"refresh_model_entries":              {},
+	"clear_proxy_llm":                    {},
+	"list_subscriptions":                 {},
+	"get_default_subscription":           {},
+	"add_subscription":                   {},
+	"get_user_token_usage":               {},
+	"get_daily_token_usage":              {},
+	"get_agent_session_dump":             {},
+	"get_agent_session_dump_by_full_key": {},
+	"get_session_messages":               {},
+	"kill_bg_task":                       {},
+	"plugin_widgets":                     {},
+}
+
+func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, method string, params json.RawMessage) (int, error) {
+	senderID := identity.SenderID
+	if identity.CanonicalRole == "admin" || (identity.CanonicalRole == "" && wc.isAdmin(r.Context(), senderID)) {
+		return 0, nil
 	}
-	switch method {
-	case "send_inbound", "plugin_reload", "plugin_reload_all", "plugin_install", "plugin_uninstall":
-		return fmt.Errorf("admin only")
-	case "plugin_widgets":
+	if _, ok := nonAdminRESTRPCMethods[method]; !ok {
+		return http.StatusForbidden, fmt.Errorf("RPC method requires admin access")
+	}
+	if method == "plugin_widgets" {
 		var request struct {
 			ChatID string `json:"chat_id"`
 		}
-		if err := json.Unmarshal(params, &request); err != nil || request.ChatID == "" {
-			return fmt.Errorf("chat_id is required")
+		if err := json.Unmarshal(params, &request); err != nil {
+			return http.StatusBadRequest, fmt.Errorf("invalid params: %w", err)
+		}
+		if request.ChatID == "" {
+			return http.StatusBadRequest, fmt.Errorf("chat_id is required")
 		}
 		if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, "cli", request.ChatID) {
-			return fmt.Errorf("access denied")
+			return http.StatusForbidden, fmt.Errorf("access denied")
 		}
 	}
-	return nil
+	return 0, nil
+}
+
+func restRPCErrorStatus(err error) int {
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"access denied", "admin only", "requires admin", "not your"} {
+		if strings.Contains(message, marker) {
+			return http.StatusForbidden
+		}
+	}
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
+		return http.StatusBadRequest
+	}
+	for _, marker := range []string{"unknown rpc method", "invalid ", " is required", " requires "} {
+		if strings.Contains(message, marker) {
+			return http.StatusBadRequest
+		}
+	}
+	return http.StatusInternalServerError
 }
 
 func (wc *WebChannel) handleHistoryPOST(w http.ResponseWriter, r *http.Request) {
