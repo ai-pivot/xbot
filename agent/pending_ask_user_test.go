@@ -95,23 +95,68 @@ func TestWithPendingAskUserBlocksConcurrentClearUntilCallbackReturns(t *testing.
 	}
 }
 
+func TestWithPendingAskUserDoesNotBlockUnrelatedSessionMutation(t *testing.T) {
+	a := &Agent{}
+	a.setPendingAskUser("web", "chat-1", &protocol.ProgressEvent{RequestID: "request-1"})
+	a.setPendingAskUser("web", "chat-2", &protocol.ProgressEvent{RequestID: "request-2"})
+
+	callbackEntered := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	withDone := make(chan struct{})
+	go func() {
+		defer close(withDone)
+		a.WithPendingAskUser("web", "chat-1", func(*protocol.ProgressEvent) bool {
+			close(callbackEntered)
+			<-releaseCallback
+			return true
+		})
+	}()
+	<-callbackEntered
+
+	mutationDone := make(chan struct{})
+	go func() {
+		a.ClearPendingAskUser("web", "chat-2")
+		a.setPendingAskUser("web", "chat-3", &protocol.ProgressEvent{RequestID: "request-3"})
+		close(mutationDone)
+	}()
+	select {
+	case <-mutationDone:
+	case <-time.After(time.Second):
+		t.Fatal("unrelated pending AskUser mutation blocked behind callback")
+	}
+	if pending := a.GetPendingAskUser("web", "chat-2"); pending != nil {
+		t.Fatalf("unrelated pending AskUser was not cleared: %#v", pending)
+	}
+	if pending := a.GetPendingAskUser("web", "chat-3"); pending == nil || pending.RequestID != "request-3" {
+		t.Fatalf("unrelated pending AskUser was not set: %#v", pending)
+	}
+
+	close(releaseCallback)
+	select {
+	case <-withDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending AskUser callback did not finish")
+	}
+}
+
 func TestWithPendingAskUserReturnsDetachedSnapshot(t *testing.T) {
 	a := &Agent{}
 	a.setPendingAskUser("cli", "chat-1", &protocol.ProgressEvent{
 		RequestID: "request-1",
-		Questions: []protocol.AskUserQuestion{{Question: "Original"}},
+		Questions: []protocol.AskUserQuestion{{Question: "Original", Options: []string{"yes"}}},
 	})
 
 	if ok := a.WithPendingAskUser("web", "chat-1", func(pending *protocol.ProgressEvent) bool {
 		pending.RequestID = "changed"
 		pending.Questions[0].Question = "Changed"
+		pending.Questions[0].Options[0] = "no"
 		return true
 	}); !ok {
 		t.Fatal("WithPendingAskUser did not find chat by channel fallback")
 	}
 
 	pending := a.GetPendingAskUser("cli", "chat-1")
-	if pending == nil || pending.RequestID != "request-1" || pending.Questions[0].Question != "Original" {
+	if pending == nil || pending.RequestID != "request-1" || pending.Questions[0].Question != "Original" || pending.Questions[0].Options[0] != "yes" {
 		t.Fatalf("stored pending AskUser was mutated through snapshot: %#v", pending)
 	}
 }

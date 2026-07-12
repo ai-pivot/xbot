@@ -70,8 +70,8 @@ type WebCallbacks struct {
 	// Used by Web WS reconnect to resend ask_user so page refresh doesn't lose it.
 	GetPendingAskUser func(channel, chatID string) *protocol.ProgressEvent
 	// WithPendingAskUser invokes fn while the matching prompt cannot be cleared.
-	// SSE uses it to linearize fallback publication and event delivery with the
-	// user's answer. fn must not mutate pending AskUser state.
+	// Web transports use it as a bounded delivery-admission gate; network writes
+	// happen after it returns. fn must not mutate pending AskUser state.
 	WithPendingAskUser func(channel, chatID string, fn func(*protocol.ProgressEvent) bool) bool
 	// HistorySnapshot returns a Web-only history snapshot with runtime state.
 	HistorySnapshot func(senderID string, sel SessionSelector) (HistorySnapshot, error)

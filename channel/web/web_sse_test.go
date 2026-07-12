@@ -646,6 +646,69 @@ func TestWSWriteBoundarySkipsReconnectAskUserClearedAfterEnqueue(t *testing.T) {
 	}
 }
 
+func TestWSWriteBoundaryDoesNotHoldPendingLockDuringNetworkWrite(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	var pendingMu sync.RWMutex
+	pending := &protocol.ProgressEvent{RequestID: "request-1"}
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, chatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			pendingMu.RLock()
+			defer pendingMu.RUnlock()
+			if pending == nil {
+				return false
+			}
+			copy := *pending
+			return fn(&copy)
+		},
+	})
+	client := &Client{connType: clientConnTypeWS}
+	msg := protocol.WSMessage{
+		Type:     protocol.MsgTypeAskUser,
+		Channel:  "web",
+		ChatID:   "chat-1",
+		Progress: &protocol.ProgressEvent{RequestID: "request-1"},
+	}
+
+	writeStarted := make(chan struct{})
+	releaseWrite := make(chan struct{})
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		written, err := wc.writeCurrentWSMessage(client, msg, func(protocol.WSMessage) error {
+			close(writeStarted)
+			<-releaseWrite
+			return nil
+		})
+		if err != nil {
+			t.Errorf("write current WS message: %v", err)
+		}
+		if !written {
+			t.Error("current AskUser was not written")
+		}
+	}()
+	<-writeStarted
+
+	clearDone := make(chan struct{})
+	go func() {
+		pendingMu.Lock()
+		pending = nil
+		pendingMu.Unlock()
+		close(clearDone)
+	}()
+	select {
+	case <-clearDone:
+	case <-time.After(time.Second):
+		t.Fatal("pending AskUser lock was held during network write")
+	}
+
+	close(releaseWrite)
+	select {
+	case <-writeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("network write did not finish")
+	}
+}
+
 func runWSReplay(t *testing.T, wc *WebChannel, client *Client, senderID string, lastSeq uint64) {
 	t.Helper()
 	done := make(chan struct{})

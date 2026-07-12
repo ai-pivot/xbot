@@ -304,18 +304,19 @@ func (wc *WebChannel) writeCurrentWSMessage(
 		return false, nil
 	}
 
-	var writeErr error
-	written := false
-	wc.callbacks.WithPendingAskUser(msg.Channel, msg.ChatID, func(pending *protocol.ProgressEvent) bool {
+	var current protocol.WSMessage
+	written := wc.callbacks.WithPendingAskUser(msg.Channel, msg.ChatID, func(pending *protocol.ProgressEvent) bool {
 		if pending.RequestID != msg.Progress.RequestID {
 			return false
 		}
 		msg.Progress = pending
-		writeErr = write(msg)
-		written = true
+		current = msg
 		return true
 	})
-	return written, writeErr
+	if !written {
+		return false, nil
+	}
+	return true, write(current)
 }
 
 func (wc *WebChannel) writePump(c *Client) {

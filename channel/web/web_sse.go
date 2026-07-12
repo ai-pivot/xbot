@@ -386,23 +386,22 @@ func (wc *WebChannel) writeCurrentSSEEvent(client *Client, msg protocol.WSMessag
 	}
 
 	requestID := askUserRequestID(msg)
-	var writeErr error
+	var currentEvent protocol.WSMessage
 	current := requestID != "" && wc.callbacks.WithPendingAskUser != nil &&
 		wc.callbacks.WithPendingAskUser(client.sessionChannel, client.chatID, func(pending *protocol.ProgressEvent) bool {
 			if pending.RequestID != requestID {
 				return false
 			}
-			writeErr = writeSSEEvent(client, msg)
+			msg.Progress = pending
+			currentEvent = msg
 			return true
 		})
-	if writeErr != nil {
-		return writeErr
+	if current {
+		return writeSSEEvent(client, currentEvent)
 	}
-	if !current {
-		// A resolved prompt must not remain at the replay cursor forever. Treat
-		// it as consumed while omitting it from the response stream.
-		client.lastSentSeq = msg.Seq
-	}
+	// A resolved prompt must not remain at the replay cursor forever. Treat
+	// it as consumed while omitting it from the response stream.
+	client.lastSentSeq = msg.Seq
 	return nil
 }
 

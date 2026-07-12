@@ -351,8 +351,7 @@ type Agent struct {
 	// waitingUserSessions stores pending AskUser prompts per chat.
 	// Set when buildWaitingUserOutbound fires; deleted when the answer arrives.
 	// Used by GetPendingAskUser to resend ask_user on WS reconnect.
-	// key: "channel:chatID" -> *protocol.ProgressEvent (the ask_user payload)
-	waitingUserMu       sync.RWMutex
+	// key: "channel:chatID" -> *pendingAskUserEntry
 	waitingUserSessions sync.Map
 
 	// streamState stores live LLM streaming content per chat, updated by stream
@@ -463,6 +462,11 @@ type Agent struct {
 	// so they survive across multiple requests and only stop when the parent Agent process exits.
 	agentCtx    context.Context
 	agentCancel context.CancelFunc
+}
+
+type pendingAskUserEntry struct {
+	mu      sync.RWMutex
+	pending *protocol.ProgressEvent
 }
 
 // SetRegistryManager sets the RegistryManager (for external injection or override).
@@ -876,43 +880,74 @@ func (a *Agent) GetPendingAskUser(ch, chatID string) *protocol.ProgressEvent {
 
 // WithPendingAskUser invokes fn with a snapshot while preventing the pending
 // prompt from being cleared. Callers can use this to make publication or
-// delivery linearizable with an AskUser answer. fn must not call methods that
-// mutate pending AskUser state.
+// delivery admission linearizable with an AskUser answer. fn must stay bounded,
+// must not perform network I/O, and must not mutate pending AskUser state.
 func (a *Agent) WithPendingAskUser(ch, chatID string, fn func(*protocol.ProgressEvent) bool) bool {
 	if fn == nil {
 		return false
 	}
-	a.waitingUserMu.RLock()
-	defer a.waitingUserMu.RUnlock()
+	for {
+		key, entry := a.loadPendingAskUserEntry(ch, chatID)
+		if entry == nil {
+			return false
+		}
 
-	snapshot := a.pendingAskUserLocked(ch, chatID)
-	if snapshot == nil {
-		return false
+		entry.mu.RLock()
+		current, ok := a.waitingUserSessions.Load(key)
+		if !ok || current != entry || entry.pending == nil {
+			entry.mu.RUnlock()
+			continue
+		}
+		snapshot := clonePendingAskUser(entry.pending)
+		result := func() bool {
+			defer entry.mu.RUnlock()
+			return fn(snapshot)
+		}()
+		return result
 	}
-	result := *snapshot
-	result.Questions = append([]protocol.AskUserQuestion(nil), snapshot.Questions...)
-	return fn(&result)
 }
 
-func (a *Agent) pendingAskUserLocked(ch, chatID string) *protocol.ProgressEvent {
-	if v, ok := a.waitingUserSessions.Load(ch + ":" + chatID); ok {
-		return v.(*protocol.ProgressEvent)
+func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskUserEntry) {
+	key := ch + ":" + chatID
+	if value, ok := a.waitingUserSessions.Load(key); ok {
+		return key, value.(*pendingAskUserEntry)
 	}
-	var found *protocol.ProgressEvent
+	var foundKey string
+	var found *pendingAskUserEntry
 	a.waitingUserSessions.Range(func(k, v any) bool {
 		if s, ok := k.(string); ok && strings.HasSuffix(s, ":"+chatID) {
-			found = v.(*protocol.ProgressEvent)
+			foundKey = s
+			found = v.(*pendingAskUserEntry)
 			return false
 		}
 		return true
 	})
-	return found
+	return foundKey, found
 }
 
 func (a *Agent) setPendingAskUser(ch, chatID string, pending *protocol.ProgressEvent) {
-	a.waitingUserMu.Lock()
-	a.waitingUserSessions.Store(ch+":"+chatID, pending)
-	a.waitingUserMu.Unlock()
+	if pending == nil {
+		a.clearPendingAskUser(ch, chatID)
+		return
+	}
+	key := ch + ":" + chatID
+	for {
+		fresh := &pendingAskUserEntry{pending: clonePendingAskUser(pending)}
+		value, loaded := a.waitingUserSessions.LoadOrStore(key, fresh)
+		if !loaded {
+			return
+		}
+		entry := value.(*pendingAskUserEntry)
+		entry.mu.Lock()
+		current, ok := a.waitingUserSessions.Load(key)
+		if !ok || current != entry {
+			entry.mu.Unlock()
+			continue
+		}
+		entry.pending = clonePendingAskUser(pending)
+		entry.mu.Unlock()
+		return
+	}
 }
 
 // ClearPendingAskUser removes the pending AskUser prompt for a chat.
@@ -923,13 +958,9 @@ func (a *Agent) ClearPendingAskUser(ch, chatID string) {
 }
 
 func (a *Agent) clearPendingAskUser(ch, chatID string) bool {
-	a.waitingUserMu.Lock()
-	defer a.waitingUserMu.Unlock()
-
 	// Try exact key first
 	key := ch + ":" + chatID
-	if _, ok := a.waitingUserSessions.Load(key); ok {
-		a.waitingUserSessions.Delete(key)
+	if a.clearPendingAskUserKey(key) {
 		return true
 	}
 	// Fallback: search by chatID suffix
@@ -940,10 +971,44 @@ func (a *Agent) clearPendingAskUser(ch, chatID string) bool {
 		}
 		return true
 	})
+	cleared := false
 	for _, k := range keysToDelete {
-		a.waitingUserSessions.Delete(k)
+		cleared = a.clearPendingAskUserKey(k) || cleared
 	}
-	return len(keysToDelete) > 0
+	return cleared
+}
+
+func (a *Agent) clearPendingAskUserKey(key string) bool {
+	for {
+		value, ok := a.waitingUserSessions.Load(key)
+		if !ok {
+			return false
+		}
+		entry := value.(*pendingAskUserEntry)
+		entry.mu.Lock()
+		current, ok := a.waitingUserSessions.Load(key)
+		if !ok || current != entry {
+			entry.mu.Unlock()
+			continue
+		}
+		cleared := entry.pending != nil
+		entry.pending = nil
+		a.waitingUserSessions.CompareAndDelete(key, entry)
+		entry.mu.Unlock()
+		return cleared
+	}
+}
+
+func clonePendingAskUser(pending *protocol.ProgressEvent) *protocol.ProgressEvent {
+	if pending == nil {
+		return nil
+	}
+	result := *pending
+	result.Questions = append([]protocol.AskUserQuestion(nil), pending.Questions...)
+	for i := range result.Questions {
+		result.Questions[i].Options = append([]string(nil), pending.Questions[i].Options...)
+	}
+	return &result
 }
 
 func (a *Agent) sendPendingAskUserCancelAck(msg bus.InboundMessage) {
