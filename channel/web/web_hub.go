@@ -233,10 +233,42 @@ func (h *Hub) sequenceEventLocked(chatID string, msg protocol.WSMessage) protoco
 }
 
 func normalizeSSEEvent(msg protocol.WSMessage) protocol.WSMessage {
-	if msg.Type == protocol.MsgTypeProgress && !isStatefulMsg(msg) {
+	if msg.Type == protocol.MsgTypeProgress && isStreamOnlyProgress(msg.Progress) {
 		msg.Type = protocol.MsgTypeStreamContent
 	}
 	return msg
+}
+
+// isStreamOnlyProgress reports whether a progress payload contains only
+// transient streaming deltas. ChatID and Seq identify the stream source and
+// are valid on both streaming and structured progress payloads.
+func isStreamOnlyProgress(p *protocol.ProgressEvent) bool {
+	if p == nil {
+		return false
+	}
+	hasStreamDelta := p.StreamContent != "" ||
+		p.ReasoningStreamContent != "" ||
+		len(p.StreamingTools) > 0 ||
+		p.StreamTokens != 0
+	if !hasStreamDelta {
+		return false
+	}
+	return p.Iteration == 0 &&
+		p.Content == "" &&
+		p.Reasoning == "" &&
+		len(p.ToolCalls) == 0 &&
+		p.ElapsedWall == 0 &&
+		p.Phase == "" &&
+		len(p.ActiveTools) == 0 &&
+		len(p.CompletedTools) == 0 &&
+		len(p.SubAgents) == 0 &&
+		len(p.Todos) == 0 &&
+		p.TokenUsage == nil &&
+		len(p.Questions) == 0 &&
+		p.RequestID == "" &&
+		len(p.IterationHistory) == 0 &&
+		!p.HistoryCompacted &&
+		p.CWD == ""
 }
 
 func (c *Client) closeDone() {
@@ -375,6 +407,7 @@ type Client struct {
 	hub              *Hub
 	userID           string
 	chatID           string
+	sessionChannel   string
 	lastSentSeq      uint64
 	id               string                      // unique client ID (UUID), generated at connection time
 	syncCh           atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq

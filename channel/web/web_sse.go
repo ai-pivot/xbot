@@ -61,16 +61,17 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	client := &Client{
-		connType:    clientConnTypeSSE,
-		w:           w,
-		flusher:     flusher,
-		sendCh:      make(chan protocol.WSMessage, webSendChBufSize),
-		done:        make(chan struct{}),
-		hub:         wc.hub,
-		userID:      senderID,
-		chatID:      chatID,
-		id:          strings.ReplaceAll(uuid.New().String(), "-", ""),
-		lastSentSeq: lastSeq,
+		connType:       clientConnTypeSSE,
+		w:              w,
+		flusher:        flusher,
+		sendCh:         make(chan protocol.WSMessage, webSendChBufSize),
+		done:           make(chan struct{}),
+		hub:            wc.hub,
+		userID:         senderID,
+		chatID:         chatID,
+		sessionChannel: sel.Channel,
+		id:             strings.ReplaceAll(uuid.New().String(), "-", ""),
+		lastSentSeq:    lastSeq,
 	}
 
 	// Sequence high-water selection and subscription are one transaction: an
@@ -168,22 +169,20 @@ func (wc *WebChannel) publishSSEFallbacks(sel SessionSelector, lastSeq uint64) {
 		}
 	}
 
-	if wc.callbacks.GetPendingAskUser != nil {
-		if progress := wc.callbacks.GetPendingAskUser(sel.Channel, sel.ChatID); progress != nil {
-			if current := wc.callbacks.GetPendingAskUser(sel.Channel, sel.ChatID); current != nil && current.RequestID == progress.RequestID {
-				wc.publishSSEFallbackIfMissing(sel, lastSeq, protocol.WSMessage{
-					Type:     protocol.MsgTypeAskUser,
-					TS:       time.Now().Unix(),
-					ChatID:   sel.ChatID,
-					Progress: current,
-				}, current.RequestID)
-			}
-		}
+	if wc.callbacks.WithPendingAskUser != nil {
+		wc.callbacks.WithPendingAskUser(sel.Channel, sel.ChatID, func(current *protocol.ProgressEvent) bool {
+			return wc.publishSSEFallbackIfMissing(sel, lastSeq, protocol.WSMessage{
+				Type:     protocol.MsgTypeAskUser,
+				TS:       time.Now().Unix(),
+				ChatID:   sel.ChatID,
+				Progress: current,
+			}, current.RequestID)
+		})
 	}
 }
 
-func (wc *WebChannel) publishSSEFallbackIfMissing(sel SessionSelector, lastSeq uint64, msg protocol.WSMessage, requestID string) {
-	wc.hub.sendSSEEventIf(sel.ChatID, func() (protocol.WSMessage, bool) {
+func (wc *WebChannel) publishSSEFallbackIfMissing(sel SessionSelector, lastSeq uint64, msg protocol.WSMessage, requestID string) bool {
+	return wc.hub.sendSSEEventIf(sel.ChatID, func() (protocol.WSMessage, bool) {
 		events := wc.replaySSEEvents(sel, lastSeq)
 		if containsSSEEvent(events, msg.Type, requestID) {
 			return protocol.WSMessage{}, false
@@ -196,14 +195,9 @@ func (wc *WebChannel) publishSSEFallbackIfMissing(sel SessionSelector, lastSeq u
 			}
 			msg.Progress = progress
 		case protocol.MsgTypeAskUser:
-			// Agent.GetPendingAskUser is a sync.Map read and never emits Hub
-			// events or acquires interactive-session locks. Re-read it inside
-			// seqMu to close the answer/clear-to-publish window.
-			pending := wc.callbacks.GetPendingAskUser(sel.Channel, sel.ChatID)
-			if pending == nil || pending.RequestID != requestID {
+			if msg.Progress == nil || msg.Progress.RequestID != requestID {
 				return protocol.WSMessage{}, false
 			}
-			msg.Progress = pending
 		}
 		return msg, true
 	})
@@ -329,7 +323,7 @@ func (wc *WebChannel) catchUpSSE(ctx context.Context, client *Client, initial []
 		if len(pending) == 0 {
 			return closed, nil
 		}
-		if err := writeSSEBatch(ctx, client, pending); err != nil {
+		if err := wc.writeSSEBatch(ctx, client, pending); err != nil {
 			return closed, err
 		}
 		if closed {
@@ -366,15 +360,41 @@ func collectSSEBatch(ch <-chan protocol.WSMessage) ([]protocol.WSMessage, bool) 
 	return batch, false
 }
 
-func writeSSEBatch(ctx context.Context, client *Client, batch []protocol.WSMessage) error {
+func (wc *WebChannel) writeSSEBatch(ctx context.Context, client *Client, batch []protocol.WSMessage) error {
 	sort.SliceStable(batch, func(i, j int) bool { return batch[i].Seq < batch[j].Seq })
 	for _, msg := range batch {
 		if err := sseContextError(ctx, client); err != nil {
 			return err
 		}
-		if err := writeSSEEvent(client, msg); err != nil {
+		if err := wc.writeCurrentSSEEvent(client, msg); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (wc *WebChannel) writeCurrentSSEEvent(client *Client, msg protocol.WSMessage) error {
+	if msg.Type != protocol.MsgTypeAskUser || msg.Seq == 0 || msg.Seq <= client.lastSentSeq {
+		return writeSSEEvent(client, msg)
+	}
+
+	requestID := askUserRequestID(msg)
+	var writeErr error
+	current := requestID != "" && wc.callbacks.WithPendingAskUser != nil &&
+		wc.callbacks.WithPendingAskUser(client.sessionChannel, client.chatID, func(pending *protocol.ProgressEvent) bool {
+			if pending.RequestID != requestID {
+				return false
+			}
+			writeErr = writeSSEEvent(client, msg)
+			return true
+		})
+	if writeErr != nil {
+		return writeErr
+	}
+	if !current {
+		// A resolved prompt must not remain at the replay cursor forever. Treat
+		// it as consumed while omitting it from the response stream.
+		client.lastSentSeq = msg.Seq
 	}
 	return nil
 }

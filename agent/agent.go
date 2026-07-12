@@ -351,6 +351,7 @@ type Agent struct {
 	// Set when buildWaitingUserOutbound fires; deleted when the answer arrives.
 	// Used by GetPendingAskUser to resend ask_user on WS reconnect.
 	// key: "channel:chatID" -> *protocol.ProgressEvent (the ask_user payload)
+	waitingUserMu       sync.RWMutex
 	waitingUserSessions sync.Map
 
 	// streamState stores live LLM streaming content per chat, updated by stream
@@ -864,20 +865,42 @@ func (a *Agent) IsProcessing(senderID string) bool {
 // the page doesn't lose the prompt.
 // Searches by chatID only (chatID is globally unique across channels).
 func (a *Agent) GetPendingAskUser(ch, chatID string) *protocol.ProgressEvent {
-	// Try exact key first (channel:chatID)
-	key := ch + ":" + chatID
-	if v, ok := a.waitingUserSessions.Load(key); ok {
-		snapshot := v.(*protocol.ProgressEvent)
-		result := *snapshot
-		return &result
+	var result *protocol.ProgressEvent
+	a.WithPendingAskUser(ch, chatID, func(pending *protocol.ProgressEvent) bool {
+		result = pending
+		return true
+	})
+	return result
+}
+
+// WithPendingAskUser invokes fn with a snapshot while preventing the pending
+// prompt from being cleared. Callers can use this to make publication or
+// delivery linearizable with an AskUser answer. fn must not call methods that
+// mutate pending AskUser state.
+func (a *Agent) WithPendingAskUser(ch, chatID string, fn func(*protocol.ProgressEvent) bool) bool {
+	if fn == nil {
+		return false
 	}
-	// Fallback: search by chatID suffix (any channel)
+	a.waitingUserMu.RLock()
+	defer a.waitingUserMu.RUnlock()
+
+	snapshot := a.pendingAskUserLocked(ch, chatID)
+	if snapshot == nil {
+		return false
+	}
+	result := *snapshot
+	result.Questions = append([]protocol.AskUserQuestion(nil), snapshot.Questions...)
+	return fn(&result)
+}
+
+func (a *Agent) pendingAskUserLocked(ch, chatID string) *protocol.ProgressEvent {
+	if v, ok := a.waitingUserSessions.Load(ch + ":" + chatID); ok {
+		return v.(*protocol.ProgressEvent)
+	}
 	var found *protocol.ProgressEvent
 	a.waitingUserSessions.Range(func(k, v any) bool {
 		if s, ok := k.(string); ok && strings.HasSuffix(s, ":"+chatID) {
-			snapshot := v.(*protocol.ProgressEvent)
-			result := *snapshot
-			found = &result
+			found = v.(*protocol.ProgressEvent)
 			return false
 		}
 		return true
@@ -885,10 +908,19 @@ func (a *Agent) GetPendingAskUser(ch, chatID string) *protocol.ProgressEvent {
 	return found
 }
 
+func (a *Agent) setPendingAskUser(ch, chatID string, pending *protocol.ProgressEvent) {
+	a.waitingUserMu.Lock()
+	a.waitingUserSessions.Store(ch+":"+chatID, pending)
+	a.waitingUserMu.Unlock()
+}
+
 // ClearPendingAskUser removes the pending AskUser prompt for a chat.
 // Called when the user answers or cancels.
 // Searches by chatID only (chatID is globally unique across channels).
 func (a *Agent) ClearPendingAskUser(ch, chatID string) {
+	a.waitingUserMu.Lock()
+	defer a.waitingUserMu.Unlock()
+
 	// Try exact key first
 	key := ch + ":" + chatID
 	if _, ok := a.waitingUserSessions.Load(key); ok {

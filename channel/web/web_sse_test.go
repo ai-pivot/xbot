@@ -319,8 +319,8 @@ func TestSSEPendingAskUserReplayDoesNotDuplicate(t *testing.T) {
 		Content: string(content),
 	})
 	wc.SetCallbacks(WebCallbacks{
-		GetPendingAskUser: func(channel, gotChatID string) *protocol.ProgressEvent {
-			return &protocol.ProgressEvent{RequestID: "request-1"}
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			return fn(&protocol.ProgressEvent{RequestID: "request-1"})
 		},
 	})
 
@@ -335,77 +335,136 @@ func TestSSEPendingAskUserReplayDoesNotDuplicate(t *testing.T) {
 	}
 }
 
-func TestSSEPendingAskUserFallbackRevalidatesRequest(t *testing.T) {
+func TestSSEPendingAskUserFallbackPublishesAtomicSnapshot(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	chatID := "web-1"
-	requestIDs := []string{"request-old", "request-new"}
-	lookup := 0
+	lookupCount := 0
 	wc.SetCallbacks(WebCallbacks{
-		GetPendingAskUser: func(channel, gotChatID string) *protocol.ProgressEvent {
-			requestID := requestIDs[lookup]
-			lookup++
-			return &protocol.ProgressEvent{RequestID: requestID}
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			lookupCount++
+			return fn(&protocol.ProgressEvent{RequestID: "request-1"})
 		},
 	})
 
 	wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 0)
 
-	if lookup != 2 {
-		t.Fatalf("pending AskUser lookup count = %d, want 2", lookup)
+	if lookupCount != 1 {
+		t.Fatalf("pending AskUser lookup count = %d, want 1", lookupCount)
 	}
-	if got := wc.getEventStream(chatID).lastSeq(); got != 0 {
-		t.Fatalf("last sequence = %d, want 0 for stale AskUser fallback", got)
+	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+	if len(events) != 1 || askUserRequestID(events[0]) != "request-1" {
+		t.Fatalf("published AskUser events = %#v", events)
 	}
 }
 
-func TestSSEPendingAskUserClearWinsBeforePublication(t *testing.T) {
+func TestSSEPendingAskUserPublicationLinearizesBeforeConcurrentClear(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	chatID := "web-1"
-	var pendingMu sync.Mutex
+	var pendingMu sync.RWMutex
 	pending := &protocol.ProgressEvent{RequestID: "request-1"}
-	lookupCount := 0
-	lookedUp := make(chan struct{}, 3)
+	withPendingEntered := make(chan struct{})
 	wc.SetCallbacks(WebCallbacks{
-		GetPendingAskUser: func(channel, gotChatID string) *protocol.ProgressEvent {
-			pendingMu.Lock()
-			lookupCount++
-			var result *protocol.ProgressEvent
-			if pending != nil {
-				copy := *pending
-				result = &copy
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			pendingMu.RLock()
+			defer pendingMu.RUnlock()
+			if pending == nil {
+				return false
 			}
-			pendingMu.Unlock()
-			lookedUp <- struct{}{}
-			return result
+			copy := *pending
+			close(withPendingEntered)
+			return fn(&copy)
 		},
 	})
 
 	wc.hub.seqMu.Lock()
-	done := make(chan struct{})
+	publishDone := make(chan struct{})
 	go func() {
 		wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 0)
-		close(done)
+		close(publishDone)
 	}()
-	<-lookedUp
-	<-lookedUp
-	pendingMu.Lock()
-	pending = nil
-	pendingMu.Unlock()
+	<-withPendingEntered
+
+	clearDone := make(chan struct{})
+	go func() {
+		pendingMu.Lock()
+		pending = nil
+		pendingMu.Unlock()
+		close(clearDone)
+	}()
+	select {
+	case <-clearDone:
+		t.Fatal("pending AskUser clear overtook an in-flight publication")
+	case <-time.After(50 * time.Millisecond):
+	}
+
 	wc.hub.seqMu.Unlock()
 	select {
-	case <-done:
+	case <-publishDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("pending AskUser publication did not finish")
 	}
-
-	pendingMu.Lock()
-	gotLookups := lookupCount
-	pendingMu.Unlock()
-	if gotLookups != 3 {
-		t.Fatalf("pending AskUser lookup count = %d, want 3", gotLookups)
+	select {
+	case <-clearDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending AskUser clear did not finish after publication")
 	}
-	if got := wc.getEventStream(chatID).lastSeq(); got != 0 {
-		t.Fatalf("last sequence = %d, want 0 after pending AskUser clear", got)
+	if got := wc.getEventStream(chatID).lastSeq(); got != 1 {
+		t.Fatalf("last sequence = %d, want 1 for publication ordered before clear", got)
+	}
+}
+
+func TestSSEReconnectSkipsResolvedRetainedAskUser(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	chatID := "web-1"
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "before"})
+	wc.hub.sendToClient(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeAskUser,
+		ChatID:   chatID,
+		Progress: &protocol.ProgressEvent{RequestID: "request-1"},
+	})
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			return false
+		},
+	})
+
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+	resp := openSSE(t, server.URL, cookie, chatID, "1")
+	defer resp.Body.Close()
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "after"})
+
+	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 3)
+	if msg.Content != "after" {
+		t.Fatalf("first reconnect event content = %q, want after", msg.Content)
+	}
+}
+
+func TestSSEReconnectReplaysMatchingPendingAskUser(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	chatID := "web-1"
+	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "before"})
+	wc.hub.sendToClient(chatID, protocol.WSMessage{
+		Type:     protocol.MsgTypeAskUser,
+		ChatID:   chatID,
+		Progress: &protocol.ProgressEvent{RequestID: "request-1"},
+	})
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			return fn(&protocol.ProgressEvent{RequestID: "request-1"})
+		},
+	})
+
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+	resp := openSSE(t, server.URL, cookie, chatID, "1")
+	defer resp.Body.Close()
+
+	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeAskUser, 2)
+	if askUserRequestID(msg) != "request-1" {
+		t.Fatalf("replayed AskUser request ID = %q, want request-1", askUserRequestID(msg))
 	}
 }
 
@@ -1014,6 +1073,74 @@ func TestHubNormalizesSparseProgressOnlyForSSE(t *testing.T) {
 	cliMsgs := cliClient.drainStateless()
 	if len(cliMsgs) != 1 || cliMsgs[0].Type != protocol.MsgTypeProgress || cliMsgs[0].Seq != 0 {
 		t.Fatalf("CLI WS sparse progress = %#v", cliMsgs)
+	}
+}
+
+func TestNormalizeSSEEventOnlyConvertsStreamOnlyProgress(t *testing.T) {
+	streamOnly := []struct {
+		name     string
+		progress *protocol.ProgressEvent
+	}{
+		{name: "content delta", progress: &protocol.ProgressEvent{StreamContent: "partial"}},
+		{name: "reasoning delta", progress: &protocol.ProgressEvent{ReasoningStreamContent: "thinking"}},
+		{name: "streaming tools", progress: &protocol.ProgressEvent{StreamingTools: []protocol.ToolProgress{{Name: "Read"}}}},
+		{name: "stream tokens", progress: &protocol.ProgressEvent{StreamTokens: 12}},
+		{
+			name: "stream identifiers are allowed",
+			progress: &protocol.ProgressEvent{
+				ChatID:        "agent:worker",
+				Seq:           7,
+				StreamContent: "partial",
+				StreamTokens:  12,
+			},
+		},
+	}
+	for _, tt := range streamOnly {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := normalizeSSEEvent(protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: tt.progress})
+			if msg.Type != protocol.MsgTypeStreamContent {
+				t.Fatalf("normalized type = %q, want %q", msg.Type, protocol.MsgTypeStreamContent)
+			}
+		})
+	}
+
+	structured := []struct {
+		name   string
+		mutate func(*protocol.ProgressEvent)
+	}{
+		{name: "iteration", mutate: func(p *protocol.ProgressEvent) { p.Iteration = 1 }},
+		{name: "content", mutate: func(p *protocol.ProgressEvent) { p.Content = "complete" }},
+		{name: "reasoning", mutate: func(p *protocol.ProgressEvent) { p.Reasoning = "complete" }},
+		{name: "tool calls", mutate: func(p *protocol.ProgressEvent) { p.ToolCalls = []protocol.ToolCallSnapshot{{ID: "tool-1"}} }},
+		{name: "elapsed wall", mutate: func(p *protocol.ProgressEvent) { p.ElapsedWall = 1 }},
+		{name: "phase", mutate: func(p *protocol.ProgressEvent) { p.Phase = "thinking" }},
+		{name: "active tools", mutate: func(p *protocol.ProgressEvent) { p.ActiveTools = []protocol.ToolProgress{{Name: "Read"}} }},
+		{name: "completed tools", mutate: func(p *protocol.ProgressEvent) { p.CompletedTools = []protocol.ToolProgress{{Name: "Read"}} }},
+		{name: "subagents", mutate: func(p *protocol.ProgressEvent) { p.SubAgents = []protocol.SubAgentInfo{{Role: "reviewer"}} }},
+		{name: "todos", mutate: func(p *protocol.ProgressEvent) { p.Todos = []protocol.TodoItem{{ID: 1}} }},
+		{name: "token usage", mutate: func(p *protocol.ProgressEvent) { p.TokenUsage = &protocol.TokenUsage{} }},
+		{name: "questions", mutate: func(p *protocol.ProgressEvent) { p.Questions = []protocol.AskUserQuestion{{Question: "Continue?"}} }},
+		{name: "request id", mutate: func(p *protocol.ProgressEvent) { p.RequestID = "request-1" }},
+		{name: "iteration history", mutate: func(p *protocol.ProgressEvent) { p.IterationHistory = []protocol.ProgressEvent{{Iteration: 1}} }},
+		{name: "history compacted", mutate: func(p *protocol.ProgressEvent) { p.HistoryCompacted = true }},
+		{name: "cwd", mutate: func(p *protocol.ProgressEvent) { p.CWD = "/workspace" }},
+	}
+	for _, tt := range structured {
+		t.Run(tt.name, func(t *testing.T) {
+			progress := &protocol.ProgressEvent{StreamContent: "partial"}
+			tt.mutate(progress)
+			msg := normalizeSSEEvent(protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: progress})
+			if msg.Type != protocol.MsgTypeProgress {
+				t.Fatalf("normalized type = %q, want %q", msg.Type, protocol.MsgTypeProgress)
+			}
+		})
+	}
+
+	for _, progress := range []*protocol.ProgressEvent{nil, {}} {
+		msg := normalizeSSEEvent(protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: progress})
+		if msg.Type != protocol.MsgTypeProgress {
+			t.Fatalf("empty progress normalized type = %q, want %q", msg.Type, protocol.MsgTypeProgress)
+		}
 	}
 }
 

@@ -512,7 +512,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 					}
 				}
 			}
-			a.waitingUserSessions.Store(msg.Channel+":"+msg.ChatID, askPayload)
+			a.setPendingAskUser(msg.Channel, msg.ChatID, askPayload)
 		}
 		return outbound, nil
 	}

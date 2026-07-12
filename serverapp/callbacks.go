@@ -315,6 +315,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetPendingAskUser(channel, chatID)
 	}
+	callbacks.WithPendingAskUser = ag.WithPendingAskUser
 	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector) (web.HistorySnapshot, error) {
 		if ag.MultiSession() == nil {
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
