@@ -146,3 +146,59 @@ func TestPendingAskUserCancelPreventsReplayAndNextTurnCancellation(t *testing.T)
 		t.Fatal("pending AskUser cancel produced no acknowledgement")
 	}
 }
+
+func TestQueuedAskUserAnswerCancelTargetsQueuedContinuation(t *testing.T) {
+	a := &Agent{bus: bus.NewMessageBus()}
+	key := "web:chat-1"
+	a.setPendingAskUser("web", "chat-1", &protocol.ProgressEvent{RequestID: "request-1"})
+	answer := bus.InboundMessage{
+		Channel:  "web",
+		ChatID:   "chat-1",
+		Content:  "yes",
+		Metadata: map[string]string{"ask_user_answered": "true"},
+	}
+	queue := make(chan bus.InboundMessage, 1)
+	queue <- answer
+	a.clearPendingAskUserForEnqueuedAnswer(answer)
+
+	if pending := a.GetPendingAskUser("web", "chat-1"); pending != nil {
+		t.Fatalf("pending AskUser remained after answer enqueue: %#v", pending)
+	}
+	a.interceptCancel(bus.InboundMessage{Channel: "web", ChatID: "chat-1", Content: "/cancel"})
+	if _, pending := a.pendingCancel.LoadAndDelete(key); !pending {
+		t.Fatal("cancel did not target the queued AskUser continuation")
+	}
+	select {
+	case ack := <-a.bus.Outbound:
+		t.Fatalf("queued continuation received premature cancel ack: %#v", ack)
+	default:
+	}
+}
+
+func TestActiveAskUserAnswerCancelSignalsActiveContinuation(t *testing.T) {
+	a := &Agent{bus: bus.NewMessageBus()}
+	key := "web:chat-1"
+	cancelCh := make(chan struct{}, 1)
+	a.chatCancelCh.Store(key, cancelCh)
+	// Simulate the narrow handoff window where the old prompt is still visible
+	// even though its answer continuation has become active.
+	a.setPendingAskUser("web", "chat-1", &protocol.ProgressEvent{RequestID: "request-1"})
+
+	a.interceptCancel(bus.InboundMessage{Channel: "web", ChatID: "chat-1", Content: "/cancel"})
+	select {
+	case <-cancelCh:
+	default:
+		t.Fatal("active AskUser continuation did not receive cancel signal")
+	}
+	if pending := a.GetPendingAskUser("web", "chat-1"); pending != nil {
+		t.Fatalf("old AskUser prompt remained after active cancel: %#v", pending)
+	}
+	if _, pending := a.pendingCancel.LoadAndDelete(key); pending {
+		t.Fatal("active AskUser cancel armed pendingCancel")
+	}
+	select {
+	case ack := <-a.bus.Outbound:
+		t.Fatalf("active continuation received premature cancel ack: %#v", ack)
+	default:
+	}
+}

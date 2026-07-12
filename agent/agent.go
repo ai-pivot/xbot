@@ -975,6 +975,46 @@ func (a *Agent) pendingAskUserMatches(ch, chatID, requestID string) bool {
 	})
 }
 
+func (a *Agent) clearPendingAskUserForEnqueuedAnswer(msg bus.InboundMessage) {
+	if msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true" {
+		a.ClearPendingAskUser(msg.Channel, msg.ChatID)
+	}
+}
+
+func (a *Agent) interceptCancel(msg bus.InboundMessage) {
+	cancelKey := msg.Channel + ":" + msg.ChatID
+	log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
+	if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
+		select {
+		case ch.(chan struct{}) <- struct{}{}:
+			log.Info("Cancel signal sent to processing goroutine")
+			if existingID, ok := a.sessionMsgIDs.Load(qualifyChatID(msg.Channel, msg.ChatID)); ok {
+				if id, ok := existingID.(string); ok {
+					a.addReactionToMessage(msg.Channel, msg.ChatID, id, "CrossMark")
+				}
+			}
+			// The completion path sends the cancel acknowledgement only after
+			// the active Run has actually stopped.
+		default:
+			log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
+		}
+		// A prompt may have been stored just before the active Run returned.
+		// Clear it, but never replace the active cancellation with an early ack.
+		a.consumePendingAskUserCancel(msg.Channel, msg.ChatID)
+		return
+	}
+	if a.acknowledgePendingAskUserCancel(msg) {
+		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
+		return
+	}
+
+	// The request is queued or waiting for a semaphore. Its worker consumes
+	// this marker before processMessage starts and sends the acknowledgement
+	// only after the cancellation has completed.
+	a.pendingCancel.Store(cancelKey, true)
+	log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
+}
+
 // SetProxyLLM injects a ProxyLLM for a user (when their active runner has local LLM).
 func (a *Agent) SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string) {
 	a.llmFactory.SetProxyLLM(senderID, proxy, model)
@@ -2063,38 +2103,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			// 同时只有一个活跃请求（chatQueue 串行化），且 bg task / cron 等
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
-				cancelKey := msg.Channel + ":" + msg.ChatID
-				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
-				if a.acknowledgePendingAskUserCancel(msg) {
-					log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
-				} else if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
-					select {
-					case ch.(chan struct{}) <- struct{}{}:
-						log.Info("Cancel signal sent to processing goroutine")
-						// 对正在输出的消息添加 ❌ 表情回复
-						if existingID, ok := a.sessionMsgIDs.Load(qualifyChatID(msg.Channel, msg.ChatID)); ok {
-							if id, ok := existingID.(string); ok {
-								a.addReactionToMessage(msg.Channel, msg.ChatID, id, "CrossMark")
-							}
-						}
-						// Do NOT send a cancel ack here. The cancel ack (with
-						// cancelled=true metadata) is sent by chatProcessLoop's
-						// wasCancelled path AFTER Run returns. Sending it here
-						// would make the TUI transition to idle while the Run
-						// is still executing — the cancel signal is asynchronous
-						// (consumed by cancelListener goroutine), so there is a
-						// window where TUI is idle but the agent is still working.
-					default:
-						// cancel 信号已发过
-						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
-					}
-				} else {
-					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending。
-					// 不发送 cancelledMeta — 那会让 TUI 提前进入 idle。
-					// 真正的 cancel ack 由 wasCancelled 路径在 Run 被取消后发送。
-					a.pendingCancel.Store(cancelKey, true)
-					log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
-				}
+				a.interceptCancel(msg)
 				continue
 			}
 
@@ -2102,6 +2111,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			q := getOrCreateQueue(key)
 			select {
 			case q <- msg:
+				a.clearPendingAskUserForEnqueuedAnswer(msg)
 			default:
 				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": key}).Warn("Chat queue full, dropping message")
 			}
