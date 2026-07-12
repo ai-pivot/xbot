@@ -309,12 +309,15 @@ func (m *cliModel) refreshCachedThinkingMode() {
 }
 
 // thinkingModeLabel renders the status-bar indicator for the current global
-// thinking mode. "" = auto (provider default), "enabled" = on, "disabled" = off.
+// thinking mode. "" = auto (provider default), "think" = normal, "think-max" = max effort,
+// "disabled" = off. "enabled" is backward compat alias for "think".
 // Compact ASCII format for clean terminal rendering.
 func (m *cliModel) thinkingModeLabel() string {
 	switch m.cachedThinkingMode {
-	case "enabled":
+	case "enabled", "think":
 		return m.styles.Accent.Render("think+")
+	case "think-max":
+		return m.styles.Accent.Render("think++")
 	case "disabled":
 		return m.styles.TextMutedSt.Render("think-")
 	default:
@@ -323,8 +326,9 @@ func (m *cliModel) thinkingModeLabel() string {
 }
 
 // toggleThinkingMode cycles the global thinking_mode user setting
-// (auto → enabled → disabled → auto), persists it, applies the runtime effect
-// (InvalidateSender via the SettingHandlerRegistry), and refreshes the cache.
+// (auto → think → think-max → disabled → auto), persists it, applies
+// the runtime effect, and refreshes the cache. "enabled" is treated as
+// "think" for backward compatibility.
 func (m *cliModel) toggleThinkingMode() {
 	if m.channel == nil || m.channel.settingsSvc == nil {
 		return
@@ -332,8 +336,10 @@ func (m *cliModel) toggleThinkingMode() {
 	next := ""
 	switch m.cachedThinkingMode {
 	case "":
-		next = "enabled"
-	case "enabled":
+		next = "think"
+	case "enabled", "think":
+		next = "think-max"
+	case "think-max":
 		next = "disabled"
 	case "disabled":
 		next = ""

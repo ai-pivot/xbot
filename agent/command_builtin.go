@@ -622,6 +622,107 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: ui}, nil
 }
 
+// --- /goal ---
+
+type goalCmd struct{}
+
+func (c *goalCmd) Name() string      { return "/goal" }
+func (c *goalCmd) Aliases() []string { return nil }
+func (c *goalCmd) Match(s string) bool {
+	lower := strings.TrimSpace(strings.ToLower(s))
+	if lower == "/goal" {
+		return true
+	}
+	fields := strings.Fields(lower)
+	if len(fields) >= 2 && fields[0] == "/goal" {
+		sub := fields[1]
+		if sub == "status" || sub == "clear" {
+			return false // handled by goalStatusCmd / goalClearCmd
+		}
+		return true
+	}
+	return false
+}
+func (c *goalCmd) Concurrent() bool { return false } // mutates goal state + triggers Run
+
+func (c *goalCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	objective := strings.TrimSpace(strings.TrimPrefix(msg.Content, "/goal"))
+	objective = strings.TrimSpace(objective)
+	if objective == "" || objective == "status" || objective == "clear" {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/goal <目标描述>`"}, nil
+	}
+
+	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
+	if a.goalManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ Goal 系统未初始化"}, nil
+	}
+	a.goalManager.Set(sessionKey, objective)
+
+	// Return sentinel — processMessage detects goal_start metadata,
+	// strips the /goal prefix, and falls through to Run().
+	return &channel.OutboundMsg{
+		Channel:  msg.Channel,
+		ChatID:   msg.ChatID,
+		Metadata: map[string]string{"goal_start": objective},
+	}, nil
+}
+
+// --- /goal status ---
+
+type goalStatusCmd struct{}
+
+func (c *goalStatusCmd) Name() string      { return "/goal status" }
+func (c *goalStatusCmd) Aliases() []string { return nil }
+func (c *goalStatusCmd) Match(s string) bool {
+	return strings.TrimSpace(strings.ToLower(s)) == "/goal status"
+}
+func (c *goalStatusCmd) Concurrent() bool { return true }
+
+func (c *goalStatusCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	if a.goalManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ Goal 系统未初始化"}, nil
+	}
+	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
+	g := a.goalManager.Get(sessionKey)
+	if g == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "📭 当前没有目标。使用 `/goal <目标描述>` 设定目标。"}, nil
+	}
+
+	var status string
+	switch g.Status {
+	case GoalCompleted:
+		status = "✅ 已完成"
+	default:
+		status = "🔄 进行中"
+	}
+
+	content := fmt.Sprintf("🎯 **目标**: %s\n📊 **状态**: %s", g.Objective, status)
+	if g.Summary != "" {
+		content += fmt.Sprintf("\n📝 **总结**: %s", g.Summary)
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: content}, nil
+}
+
+// --- /goal clear ---
+
+type goalClearCmd struct{}
+
+func (c *goalClearCmd) Name() string      { return "/goal clear" }
+func (c *goalClearCmd) Aliases() []string { return nil }
+func (c *goalClearCmd) Match(s string) bool {
+	return strings.TrimSpace(strings.ToLower(s)) == "/goal clear"
+}
+func (c *goalClearCmd) Concurrent() bool { return false }
+
+func (c *goalClearCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	if a.goalManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ Goal 系统未初始化"}, nil
+	}
+	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
+	a.goalManager.Clear(sessionKey)
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "✅ 目标已清除。后续 turn 将正常结束，不再自动继续。"}, nil
+}
+
 // --- /menu ---
 
 type menuCmd struct{}
@@ -674,6 +775,11 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&settingsCmd{}, CommandInfo{Usage: "/settings", Description: "打开个人设置（仅私聊）"})
 	r.Register(&menuCmd{}, CommandInfo{Usage: "/menu", Description: "主菜单"})
 	r.Register(&pluginReloadAllCmd{}, CommandInfo{Usage: "/plugin reload-all", Description: "重新加载所有插件"})
+
+	// Goal commands
+	r.Register(&goalClearCmd{}, CommandInfo{Usage: "/goal clear", Description: "清除当前目标"}) // 先注册（更精确的匹配优先）
+	r.Register(&goalStatusCmd{}, CommandInfo{Usage: "/goal status", Description: "查看当前目标状态"})
+	r.Register(&goalCmd{}, CommandInfo{Usage: "/goal <目标描述>", Description: "设定长期目标，Agent 自动持续工作直到完成"}) // 后注册（匹配 /goal <任意内容>）
 }
 
 // ---------------------------------------------------------------------------
