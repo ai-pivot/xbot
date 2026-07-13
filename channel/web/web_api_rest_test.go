@@ -178,6 +178,31 @@ func TestRESTChatDeleteAllowsAdminVerifiedLocalCLISession(t *testing.T) {
 			return nil
 		},
 	})
+	foreignSwitch := authedAPIRequestFor(
+		http.MethodPost,
+		"/api/chats/local/switch",
+		[]byte(`{"channel":"cli"}`),
+		"web-2",
+		2,
+	)
+	foreignSwitch.SetPathValue("chatID", "/repo/project:local-only")
+	foreignSwitchRecorder := httptest.NewRecorder()
+	wc.handleChatSwitchPOST(foreignSwitchRecorder, foreignSwitch)
+	if foreignSwitchRecorder.Code != http.StatusForbidden {
+		t.Fatalf("non-admin local CLI switch status=%d", foreignSwitchRecorder.Code)
+	}
+
+	adminSwitch := authedAPIRequest(http.MethodPost, "/api/chats/local/switch", []byte(`{"channel":"cli"}`))
+	adminSwitch.SetPathValue("chatID", "/repo/project:local-only")
+	adminSwitchRecorder := httptest.NewRecorder()
+	wc.handleChatSwitchPOST(adminSwitchRecorder, adminSwitch)
+	if adminSwitchRecorder.Code != http.StatusOK {
+		t.Fatalf("admin local CLI switch status=%d body=%s", adminSwitchRecorder.Code, adminSwitchRecorder.Body.String())
+	}
+	if got := wc.GetCurrentSession("web-1"); got != (SessionSelector{Channel: "cli", ChatID: "/repo/project:local-only"}) {
+		t.Fatalf("admin local CLI selector=%#v", got)
+	}
+
 	foreignRequest := authedAPIRequestFor(
 		http.MethodPost,
 		"/api/chats/local/delete",

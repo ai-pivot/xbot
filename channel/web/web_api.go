@@ -1289,24 +1289,9 @@ func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For web channel: check chat ownership via user_chats table.
-	// For other channels (admin only): verify the tenant exists in DB.
-	if channel == "web" {
-		if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
-			jsonErrorResponse(w, http.StatusForbidden, "not your chat")
-			return
-		}
-	} else {
-		// Verify tenant exists for the requested channel + chatID.
-		var count int
-		err := wc.db.QueryRow(
-			"SELECT COUNT(*) FROM tenants WHERE channel = ? AND chat_id = ?",
-			channel, chatID,
-		).Scan(&count)
-		if err != nil || count == 0 {
-			jsonErrorResponse(w, http.StatusNotFound, "session not found")
-			return
-		}
+	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, channel, chatID) {
+		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
+		return
 	}
 
 	wc.userCurrentSessionMu.Lock()

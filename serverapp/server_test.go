@@ -2071,6 +2071,22 @@ func TestWebChatCRUDCallbacksKeepChannelsIsolated(t *testing.T) {
 	if callbacks.LocalSessionExists == nil || !callbacks.LocalSessionExists("cli", localOnlyChatID) {
 		t.Fatal("local-only CLI session was not exposed to Web authorization")
 	}
+	if err := callbacks.ChatRename("web-1", "cli", localOnlyChatID, "renamed-local"); err != nil {
+		t.Fatalf("rename local-only CLI session: %v", err)
+	}
+	cliRows, err = listCLIChatSessions(db.Conn(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRenamed := false
+	for _, row := range cliRows {
+		if row.ChatID == localOnlyChatID && row.Label == "renamed-local" {
+			foundRenamed = true
+		}
+	}
+	if !foundRenamed {
+		t.Fatalf("renamed local-only CLI session was not relisted: %#v", cliRows)
+	}
 	if err := callbacks.ChatDelete("web-1", "cli", localOnlyChatID); err != nil {
 		t.Fatalf("delete local-only CLI session: %v", err)
 	}

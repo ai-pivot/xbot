@@ -124,11 +124,14 @@ describe('SSEConnectionImpl', () => {
     const received: WSMessage[] = []
     connection.onMessage((message) => received.push(message))
     connection.subscribe('chat-a')
+    const coldSource = MockEventSource.instances[0]
     connection.setLastSeq('chat-a', 0)
+    expect(coldSource.closed).toBe(true)
+    expect(MockEventSource.instances[1].url).toBe('/api/sse?chat_id=chat-a&channel=web&last_event_id=0')
     connection.subscribe('chat-b')
     connection.subscribe('chat-a')
 
-    const resumed = MockEventSource.instances[2]
+    const resumed = MockEventSource.instances.at(-1)!
     expect(resumed.url).toBe('/api/sse?chat_id=chat-a&channel=web&last_event_id=0')
     resumed.emit('text', { type: 'text', seq: 1, content: 'buffered while inactive' })
 

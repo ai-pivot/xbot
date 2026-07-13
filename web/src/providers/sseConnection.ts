@@ -73,10 +73,11 @@ export class SSEConnectionImpl implements WSConnection {
   setLastSeq(chatID: string, seq: number, channel = this._channel): void {
     const cacheKey = sessionCacheKey(channel, chatID)
     if (!chatID) return
+    const hadCursor = hasLastSeq(cacheKey)
     const previousSeq = getLastSeq(cacheKey)
     setLastSeq(cacheKey, seq)
     if (
-      seq > previousSeq &&
+      (!hadCursor || seq > previousSeq) &&
       this._chatID === chatID &&
       this._channel === channel &&
       this.source

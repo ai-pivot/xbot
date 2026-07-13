@@ -617,6 +617,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if webDB == nil {
 			return fmt.Errorf("database not available")
 		}
+		if channel == "cli" {
+			if _, err := cli.RenameStoredSessionByChatID(chatID, label); err != nil {
+				return fmt.Errorf("rename CLI session metadata: %w", err)
+			}
+		}
 		cs := sqlite.NewChatService(webDB)
 		return cs.RenameChat(channel, senderID, chatID, label)
 	}
