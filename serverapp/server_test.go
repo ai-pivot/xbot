@@ -1830,6 +1830,23 @@ func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, tenant := range []struct {
+		channel     string
+		chatID      string
+		ownerUserID int64
+	}{
+		{channel: "cli", chatID: "web-2", ownerUserID: 99},
+		{channel: "agent", chatID: "cli:web-2/review:1", ownerUserID: 99},
+		{channel: "cli", chatID: "owned-cli", ownerUserID: 42},
+		{channel: "agent", chatID: "cli:owned-cli/review:1", ownerUserID: 42},
+	} {
+		if _, err := ag.MultiSession().DB().Conn().Exec(
+			"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
+			tenant.channel, tenant.chatID, tenant.ownerUserID, time.Now().Format(time.RFC3339),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	table := BuildRPCTable(&config.Config{}, ag, nil, nil, nil)
 	ctx := WithRPCCtxResolved(context.Background(), "web-2", "web-2", 42, "user")
@@ -1872,6 +1889,34 @@ func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 		if _, err := table.Dispatch(ctx, method, foreignParent); err == nil {
 			t.Fatalf("%s for foreign generated parent should be denied", method)
 		}
+
+		ownedCLI, _ := json.Marshal(map[string]string{
+			"channel":  "cli",
+			"chat_id":  "owned-cli",
+			"role":     "review",
+			"instance": "1",
+		})
+		if _, err := table.Dispatch(ctx, method, ownedCLI); err != nil {
+			t.Fatalf("%s for canonical-owned CLI parent: %v", method, err)
+		}
+		collidingCLI, _ := json.Marshal(map[string]string{
+			"channel":  "cli",
+			"chat_id":  "web-2",
+			"role":     "review",
+			"instance": "1",
+		})
+		if _, err := table.Dispatch(ctx, method, collidingCLI); err == nil {
+			t.Fatalf("%s for foreign CLI self-ID collision should be denied", method)
+		}
+	}
+
+	ownedCLIChild, _ := json.Marshal(map[string]string{"full_key": "cli:owned-cli/review:1"})
+	if _, err := table.Dispatch(ctx, "get_agent_session_dump_by_full_key", ownedCLIChild); err != nil {
+		t.Fatalf("canonical-owned CLI-rooted agent dump: %v", err)
+	}
+	collidingCLIChild, _ := json.Marshal(map[string]string{"full_key": "cli:web-2/review:1"})
+	if _, err := table.Dispatch(ctx, "get_agent_session_dump_by_full_key", collidingCLIChild); err == nil {
+		t.Fatal("foreign CLI-rooted agent with colliding parent ID should be denied")
 	}
 }
 

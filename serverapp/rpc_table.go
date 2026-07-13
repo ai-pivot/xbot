@@ -59,7 +59,10 @@ func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
 // Also checks canonical session ownership: if the session (channel+chatID) is
 // owned by the same canonical user_id, access is granted even if chatID != bizID.
 func (h *RPCContext) ownOrAdmin(ctx context.Context, channel, chatID string) bool {
-	if isAdmin(ctx) || chatID == "" || chatID == rpcBizID(ctx) {
+	if isAdmin(ctx) || chatID == "" {
+		return true
+	}
+	if channel == "web" && chatID == rpcBizID(ctx) {
 		return true
 	}
 	// A newly created Web chat is recorded in user_chats before its first
@@ -67,20 +70,17 @@ func (h *RPCContext) ownOrAdmin(ctx context.Context, channel, chatID string) boo
 	if channel == "web" && h.webChatOwnedBySender(chatID, rpcAuthID(ctx)) {
 		return true
 	}
-	if channel == "agent" && h.agentSessionOwnedBySender(chatID, rpcAuthID(ctx)) {
+	if channel == "agent" && h.agentSessionOwnedBySender(chatID, rpcAuthID(ctx), rpcUserID(ctx)) {
 		return true
 	}
 	// Check canonical session ownership
-	if h.Ag != nil && h.Ag.IdentityResolver() != nil {
-		userID := rpcUserID(ctx)
-		if userID > 0 {
-			return h.sessionOwnedByUser(channel, chatID, userID)
-		}
+	if userID := rpcUserID(ctx); userID > 0 {
+		return h.sessionOwnedByUser(channel, chatID, userID)
 	}
 	return false
 }
 
-func (h *RPCContext) agentSessionOwnedBySender(chatID, senderID string) bool {
+func (h *RPCContext) agentSessionOwnedBySender(chatID, senderID string, userID int64) bool {
 	if senderID == "" || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
 		return false
 	}
@@ -101,7 +101,7 @@ func (h *RPCContext) agentSessionOwnedBySender(chatID, senderID string) bool {
 			}
 			chatID = parentChatID
 		default:
-			return parentChatID == senderID
+			return userID > 0 && h.sessionOwnedByUser(parentChannel, parentChatID, userID)
 		}
 	}
 	return false

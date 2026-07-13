@@ -236,6 +236,52 @@ func TestRESTMessageEnqueueFailureLeavesNoEchoOrHistory(t *testing.T) {
 	}
 }
 
+func TestRESTMessageCommitsIdempotencyOnlyAfterAgentAdmission(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
+	wc := NewWebChannel(WebChannelConfig{}, msgBus)
+	wc.SetOSSProvider(fixedOSSProvider{})
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	client := &Client{
+		connType: clientConnTypeSSE,
+		sendCh:   make(chan protocol.WSMessage, 1),
+		done:     make(chan struct{}),
+		id:       "admission-client",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, "web-1")
+	body := []byte(`{"id":"admission-request","content":"hello","upload_keys":["upload-key"],"file_names":["test.txt"]}`)
+
+	go func() {
+		message := <-msgBus.Inbound
+		message.DeliveryAck <- bus.ErrInboundQueueFull
+	}()
+	failed := httptest.NewRecorder()
+	wc.handleMessage(failed, authedAPIRequest(http.MethodPost, "/api/message", body))
+	if failed.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed admission status = %d: %s", failed.Code, failed.Body.String())
+	}
+	select {
+	case echo := <-client.sendCh:
+		t.Fatalf("failed admission emitted echo: %#v", echo)
+	default:
+	}
+
+	go func() {
+		message := <-msgBus.Inbound
+		message.DeliveryAck <- nil
+	}()
+	accepted := httptest.NewRecorder()
+	wc.handleMessage(accepted, authedAPIRequest(http.MethodPost, "/api/message", body))
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("accepted admission status = %d: %s", accepted.Code, accepted.Body.String())
+	}
+	echo := <-client.sendCh
+	if echo.ID != "admission-request" || echo.Type != protocol.MsgTypeUserEcho {
+		t.Fatalf("accepted admission echo = %#v", echo)
+	}
+}
+
 func TestRESTRPCDispatchesThroughCallback(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"xbot/bus"
 	"xbot/protocol"
 )
 
@@ -145,7 +146,7 @@ func writeInboundError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errEmptyMessage):
 		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, errInboundUnavailable):
+	case errors.Is(err, errInboundUnavailable), errors.Is(err, bus.ErrInboundQueueFull):
 		jsonErrorResponse(w, http.StatusServiceUnavailable, err.Error())
 	case strings.Contains(err.Error(), "access denied"):
 		jsonErrorResponse(w, http.StatusForbidden, err.Error())

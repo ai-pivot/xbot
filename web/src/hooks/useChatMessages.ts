@@ -188,14 +188,10 @@ function shouldKeepVisibleRowsOnRefresh(
 function reconcileHistoryWithLiveRows(
   history: ChatMessage[],
   current: ChatMessage[],
-  historySeq?: number,
 ): ChatMessage[] {
   const matchedHistoryRows = new Set<number>()
   const liveRows = current.filter((message) => {
     if (message.persisted !== false) return false
-    if (historySeq === undefined || message.eventSeq === undefined || message.eventSeq > historySeq) {
-      return true
-    }
     const match = history.findIndex((persisted, index) => (
       !matchedHistoryRows.has(index) && sameMessageOccurrence(persisted, message)
     ))
@@ -399,9 +395,7 @@ export function useChatMessages({
       }
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
-      const next = mutated
-        ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq)
-        : parsed
+      const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
       if (shouldKeepVisibleRowsOnRefresh(next, sameTarget, messagesRef.current)) return
       if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
       loadedMessageKeys.add(reloadKey)

@@ -247,7 +247,7 @@ describe('useChatMessages', () => {
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 
-  it('does not duplicate a replayed user echo already covered by history', async () => {
+  it('does not duplicate a replayed user echo included above the history cursor', async () => {
     const replayTimestamp = '2026-08-06T07:06:40Z'
     const history = deferred<{
       messages: { role: string; content: string; timestamp: string }[]
@@ -297,7 +297,7 @@ describe('useChatMessages', () => {
           timestamp: replayTimestamp,
         }],
         chat_id: 'replay-chat',
-        last_seq: 7,
+        last_seq: 6,
       })
       await history.promise
     })
@@ -309,6 +309,53 @@ describe('useChatMessages', () => {
     })
     expect(messagesCache.get('replay-chat')).toHaveLength(1)
     expect(ws.setLastSeq).not.toHaveBeenCalled()
+  })
+
+  it('does not duplicate an optimistic message persisted during slow history', async () => {
+    const history = deferred<{
+      messages: { role: string; content: string; timestamp: string }[]
+      chat_id: string
+      last_seq: number
+    }>()
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const data = await history.promise
+      return new Response(JSON.stringify({ ok: true, data, error: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+    const ws = {
+      rpc: vi.fn(),
+      send: vi.fn(async () => undefined),
+      setLastSeq: vi.fn(),
+      onMessage: vi.fn(() => vi.fn()),
+    } as unknown as WSConnection
+    const { result } = renderHook(() => (
+      useChatMessages({ chatID: 'optimistic-history-chat', channel: 'web', ws })
+    ))
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+
+    act(() => result.current.sendMessage('persisted while loading'))
+    const optimisticTimestamp = result.current.messages[0].timestamp
+    await act(async () => {
+      history.resolve({
+        messages: [{
+          role: 'user',
+          content: 'persisted while loading',
+          timestamp: optimisticTimestamp,
+        }],
+        chat_id: 'optimistic-history-chat',
+        last_seq: 0,
+      })
+      await history.promise
+    })
+
+    await waitFor(() => expect(result.current.messages).toHaveLength(1))
+    expect(result.current.messages[0]).toMatchObject({
+      content: 'persisted while loading',
+      persisted: true,
+    })
+    expect(messagesCache.get('optimistic-history-chat')).toHaveLength(1)
   })
 
   it('keeps a covered replay echo when history does not contain that occurrence', async () => {

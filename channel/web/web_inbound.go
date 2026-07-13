@@ -296,9 +296,24 @@ func (wc *WebChannel) enqueueInbound(ctx context.Context, message bus.InboundMes
 	if wc.msgBus == nil {
 		return errInboundUnavailable
 	}
+	var deliveryAck chan error
+	if wc.msgBus.DeliveryAcknowledgementEnabled() {
+		deliveryAck = make(chan error, 1)
+		message.DeliveryAck = deliveryAck
+	}
 	select {
 	case wc.msgBus.Inbound <- message:
-		return nil
+		if deliveryAck == nil {
+			return nil
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-wc.stopCh:
+		return errInboundUnavailable
+	}
+	select {
+	case err := <-deliveryAck:
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-wc.stopCh:
