@@ -14,16 +14,16 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { SSEConnectionImpl } from '@/providers/sseConnection'
+import { MultiSSEManager } from '@/providers/sseConnection'
 import type { WSConnection } from '@/types/ws'
 
 export const WSContext = createContext<WSConnection | undefined>(undefined)
 
 export function WSProvider({ children }: { children: ReactNode }) {
   // One connection for the provider's lifetime; never recreated on re-render.
-  const connRef = useRef<SSEConnectionImpl | null>(null)
+  const connRef = useRef<MultiSSEManager | null>(null)
   if (connRef.current === null) {
-    connRef.current = new SSEConnectionImpl()
+    connRef.current = new MultiSSEManager()
   }
   const conn = connRef.current
 
@@ -59,6 +59,8 @@ export function WSProvider({ children }: { children: ReactNode }) {
           current.chatID === null && current.channel === null ? current : { chatID: null, channel: null }
         ))
       },
+      addSubscription: (chatID: string, channel: string) => conn.addSubscription(chatID, channel),
+      removeSubscription: (id: string) => conn.removeSubscription(id),
       rpc: (method, params) => conn.rpc(method, params),
       chatID: target.chatID,
       channel: target.channel,

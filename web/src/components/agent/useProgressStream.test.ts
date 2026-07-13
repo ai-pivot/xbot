@@ -165,7 +165,7 @@ describe('useProgressStream event dispatch', () => {
     expect(complete.mock.calls.map((call) => call[0])).toEqual(['first', 'second'])
   })
 
-  it('resets visible progress when recovery reports a terminal phase', () => {
+  it('enters finalizing state when recovery reports a terminal phase', () => {
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
     )
@@ -174,6 +174,13 @@ describe('useProgressStream event dispatch', () => {
 
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
 
+    // In finalizing state: snapshot stays visible but isStreaming is false
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.isStreaming).toBe(false)
+    expect(result.current.progressSnapshot.phase).toBe('finalizing')
+
+    // When text arrives, the store resets (finalizing → idle)
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'final' })
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
   })

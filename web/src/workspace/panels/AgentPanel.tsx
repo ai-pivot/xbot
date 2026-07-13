@@ -75,7 +75,7 @@ export function AgentPanel({ params }: PanelProps) {
   const subscribeChatID = params.agentChatID ?? liveSubAgentChatID ?? chatID
   const messageChannel = params.agentChatID ? 'agent' : isSubAgent ? (params.parentChannel ?? 'web') : (activeSession?.channel ?? 'web')
   const progressChannel = params.agentChatID || liveSubAgentChatID ? 'agent' : messageChannel
-  const shouldSubscribe = params.active !== false
+  const shouldSubscribe = true // Panels always subscribe — SSE stays alive until panel closes
   const historyEnabled = params.agentChatID
     ? !!params.agentChatID
     : isSubAgent
@@ -124,7 +124,10 @@ export function AgentPanel({ params }: PanelProps) {
     chatID: progressChatID,
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
-    onAssistantComplete: isSubAgent ? undefined : (finalText, iterations, eventSeq) => {
+    onAssistantComplete: (finalText, iterations, eventSeq) => {
+      // Both main Agent and SubAgent panels append the final reply to the
+      // message list. SubAgent panels previously had onAssistantComplete=undefined,
+      // causing the final reply to never appear in the message list.
       chat.appendAssistant(finalText, iterations, eventSeq)
       void chat.reload()
     },
@@ -136,7 +139,7 @@ export function AgentPanel({ params }: PanelProps) {
       chat.clearMessages()
       void chat.reload()
     },
-    disabled: !shouldSubscribe,
+    disabled: false, // Always enabled — SSE subscription managed by useActiveSSESubscription
   })
   const progressSnapshot = progress.progressSnapshot
   const liveMessage = progress.liveMessage

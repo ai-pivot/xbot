@@ -19,6 +19,15 @@ export interface WSConnection {
   subscribe: (chatID: string, channel?: string) => void
   /** Close the active EventSource. */
   disconnect: () => void
+  /**
+   * Add a persistent SSE subscription for a chatID+channel. The subscription
+   * stays alive until `removeSubscription` is called with the returned ID or
+   * the WSConnection is disposed. Multiple subscriptions can coexist.
+   * Returns a subscription ID for later removal.
+   */
+  addSubscription: (chatID: string, channel: string) => string
+  /** Remove a persistent SSE subscription by its ID. */
+  removeSubscription: (id: string) => void
   /** Issue a REST RPC and return its unwrapped data. */
   rpc: <T = unknown>(method: string, params?: unknown) => Promise<T>
   /** The chatID currently subscribed, if any. */

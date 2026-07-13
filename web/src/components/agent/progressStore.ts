@@ -73,9 +73,20 @@ function subAgentKey(node: WebSubAgentProgress): string {
 function mergeSubAgentTrees(prev: WebSubAgentProgress[], next: WebSubAgentProgress[]): WebSubAgentProgress[] {
   if (next.length === 0) return prev
   const prevByKey = new Map(prev.map((node) => [subAgentKey(node), node]))
+  const nextKeys = new Set(next.map(subAgentKey))
   const merged: WebSubAgentProgress[] = []
+
+  // Preserve prev nodes that are no longer in next but are done/error — they
+  // should remain visible (with their final status) rather than disappearing.
+  for (const old of prev) {
+    if (!nextKeys.has(subAgentKey(old)) && (old.status === 'done' || old.status === 'error')) {
+      merged.push(old)
+    }
+  }
+
   for (const node of next) {
-    if (node.status === 'done' || node.status === 'error') continue
+    // Done/error nodes are kept — they show the final state of the SubAgent.
+    // The rendering layer (SubAgentProgressTree) applies gray/red styling.
     const old = prevByKey.get(subAgentKey(node))
     merged.push({
       ...node,
@@ -187,6 +198,7 @@ export class ProgressStore {
   private rafHandle: number | null = null
   private dirty = false
   private disposed = false
+  private finalizingTimer: ReturnType<typeof setTimeout> | null = null
 
   /** Subscribe to snapshot changes; returns an unsubscribe function. */
   subscribe = (listener: Listener): (() => void) => {
@@ -213,6 +225,11 @@ export class ProgressStore {
    */
   reset(): void {
     if (this.disposed) return
+    // Clear any pending finalizing timeout — reset means we're done waiting.
+    if (this.finalizingTimer) {
+      clearTimeout(this.finalizingTimer)
+      this.finalizingTimer = null
+    }
     this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
     // Synchronously update snapshot + cancel pending RAF — avoids a one-frame
     // window where liveMessage is still non-null after reset.
@@ -274,6 +291,32 @@ export class ProgressStore {
     todos?: TodoItem[]
     subAgents?: WebSubAgentProgress[]
   }): void {
+    // ── PhaseDone → finalizing transition ──
+    // When phase='done' arrives, enter the 'finalizing' state instead of
+    // immediately resetting. This keeps the progress snapshot visible (tools
+    // marked done, no pulse animation) while waiting for the final `text`
+    // event to arrive. A 3s timeout guards against missing text events.
+    if (opts.phase === 'done') {
+      this.mutate((draft) => {
+        // Mark all active tools as completed
+        if (draft.activeTools.length > 0) {
+          draft.completedTools = [...draft.completedTools, ...draft.activeTools]
+          draft.activeTools = []
+        }
+        draft.phase = 'finalizing'
+        draft.streaming = false
+      })
+      this.startFinalizingTimeout()
+      return
+    }
+
+    // Cancel any pending finalizing timeout — a new structured event means
+    // the agent is active again (e.g. a new turn started after PhaseDone).
+    if (this.finalizingTimer) {
+      clearTimeout(this.finalizingTimer)
+      this.finalizingTimer = null
+    }
+
     this.mutate((draft) => {
       // ── iteration snapshot ──
       // When iteration advances (N→N+1), snapshot the previous iteration.
@@ -379,11 +422,24 @@ export class ProgressStore {
 
   dispose(): void {
     this.disposed = true
+    if (this.finalizingTimer) {
+      clearTimeout(this.finalizingTimer)
+      this.finalizingTimer = null
+    }
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null
     }
     this.listeners.clear()
+  }
+
+  /** Start a 3s timeout to auto-reset if the `text` event never arrives. */
+  private startFinalizingTimeout(): void {
+    if (this.finalizingTimer) clearTimeout(this.finalizingTimer)
+    this.finalizingTimer = setTimeout(() => {
+      this.finalizingTimer = null
+      this.reset()
+    }, 3000)
   }
 
   /* ── internals ── */

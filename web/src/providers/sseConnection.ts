@@ -383,6 +383,189 @@ export class SSEConnectionImpl implements WSConnection {
   }
 }
 
+/**
+ * MultiSSEManager — manages multiple SSE connections for concurrent Agent panels.
+ *
+ * The Web UI opens multiple Agent panels simultaneously (main Agent + SubAgent
+ * tabs). Each panel needs its own SSE stream to receive live progress events.
+ * The old design used a single EventSource that was "handed off" to the active
+ * panel — switching tabs disconnected the non-active panel's stream, freezing
+ * its progress display.
+ *
+ * MultiSSEManager creates one SSEConnectionImpl per (chatID, channel) pair.
+ * All SSE connections share the same message/session/progress/connection
+ * handlers, so consumers that call `ws.onMessage()` receive events from all
+ * connections. Event routing is done via the existing `matchesChatID` 3-layer
+ * filter in useProgressStream.
+ *
+ * The "primary" connection (legacy `subscribe`/`disconnect`/`chatID`/`channel`)
+ * is kept for backward compatibility — used by useSessionStore for ask_user
+ * routing and by TerminalPanel for its own SSE lifecycle.
+ */
+export class MultiSSEManager implements WSConnection {
+  private primary: SSEConnectionImpl
+  private extra = new Map<string, SSEConnectionImpl>()
+  private disposed = false
+
+  // Track registered handlers so new connections can be subscribed to them.
+  private messageHandlers = new Set<Handler<WSMessage>>()
+  private sessionHandlers = new Set<Handler<SessionEvent>>()
+  private progressHandlers = new Set<Handler<ProgressEvent>>()
+  private connHandlers = new Set<Handler<boolean>>()
+
+  constructor() {
+    this.primary = new SSEConnectionImpl()
+  }
+
+  get connected(): boolean {
+    return this.primary.connected
+  }
+
+  get chatID(): string | null {
+    return this.primary.chatID
+  }
+
+  get channel(): string | null {
+    return this.primary.channel
+  }
+
+  /** Legacy single-subscribe — delegates to the primary connection. */
+  subscribe(chatID: string, channel = 'web'): void {
+    this.primary.subscribe(chatID, channel)
+  }
+
+  /** Legacy single-disconnect — delegates to the primary connection. */
+  disconnect(): void {
+    this.primary.disconnect()
+  }
+
+  /**
+   * Add a persistent SSE subscription for a chatID+channel.
+   * If the primary connection already targets this (chatID, channel), no extra
+   * connection is created — the primary is reused.
+   * Returns a subscription ID for later removal.
+   */
+  addSubscription(chatID: string, channel: string): string {
+    if (this.disposed) return ''
+
+    // If the primary connection is idle (no chatID), use it as the primary sub.
+    if (!this.primary.chatID && !this.primary.channel) {
+      this.primary.subscribe(chatID, channel)
+      return 'primary'
+    }
+
+    // If the primary already targets this pair, return it.
+    if (this.primary.chatID === chatID && this.primary.channel === channel) {
+      return 'primary'
+    }
+
+    // Check if an extra connection already exists for this pair.
+    const key = `${channel}:${chatID}`
+    if (this.extra.has(key)) {
+      return key
+    }
+
+    // Create a new SSE connection for this pair.
+    const conn = new SSEConnectionImpl()
+    // Subscribe the new connection to all existing handlers before connecting.
+    for (const h of this.messageHandlers) conn.onMessage(h)
+    for (const h of this.sessionHandlers) conn.onSession(h)
+    for (const h of this.progressHandlers) conn.onProgress(h)
+    for (const h of this.connHandlers) conn.onConnectionChange(h)
+    conn.subscribe(chatID, channel)
+    this.extra.set(key, conn)
+    return key
+  }
+
+  /** Remove a persistent SSE subscription by its ID. */
+  removeSubscription(id: string): void {
+    if (id === 'primary') return // Primary is never removed via this path
+    const conn = this.extra.get(id)
+    if (conn) {
+      conn.dispose()
+      this.extra.delete(id)
+    }
+  }
+
+  async send(msg: WSClientMessage): Promise<void> {
+    return this.primary.send(msg)
+  }
+
+  rpc<T = unknown>(method: string, params?: unknown): Promise<T> {
+    return this.primary.rpc(method, params)
+  }
+
+  setLastSeq(chatID: string, seq: number, channel?: string): void {
+    this.primary.setLastSeq(chatID, seq, channel)
+  }
+
+  onMessage = (handler: Handler<WSMessage>): (() => void) => {
+    this.messageHandlers.add(handler)
+    const unsubPrimary = this.primary.onMessage(handler)
+    const unsubs: (() => void)[] = [unsubPrimary]
+    for (const conn of this.extra.values()) {
+      unsubs.push(conn.onMessage(handler))
+    }
+    return () => {
+      this.messageHandlers.delete(handler)
+      unsubs.forEach((u) => u())
+    }
+  }
+
+  onSession = (handler: Handler<SessionEvent>): (() => void) => {
+    this.sessionHandlers.add(handler)
+    const unsubPrimary = this.primary.onSession(handler)
+    const unsubs: (() => void)[] = [unsubPrimary]
+    for (const conn of this.extra.values()) {
+      unsubs.push(conn.onSession(handler))
+    }
+    return () => {
+      this.sessionHandlers.delete(handler)
+      unsubs.forEach((u) => u())
+    }
+  }
+
+  onProgress = (handler: Handler<ProgressEvent>): (() => void) => {
+    this.progressHandlers.add(handler)
+    const unsubPrimary = this.primary.onProgress(handler)
+    const unsubs: (() => void)[] = [unsubPrimary]
+    for (const conn of this.extra.values()) {
+      unsubs.push(conn.onProgress(handler))
+    }
+    return () => {
+      this.progressHandlers.delete(handler)
+      unsubs.forEach((u) => u())
+    }
+  }
+
+  onConnectionChange = (handler: Handler<boolean>): (() => void) => {
+    this.connHandlers.add(handler)
+    const unsubPrimary = this.primary.onConnectionChange(handler)
+    const unsubs: (() => void)[] = [unsubPrimary]
+    for (const conn of this.extra.values()) {
+      unsubs.push(conn.onConnectionChange(handler))
+    }
+    return () => {
+      this.connHandlers.delete(handler)
+      unsubs.forEach((u) => u())
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.primary.dispose()
+    for (const conn of this.extra.values()) {
+      conn.dispose()
+    }
+    this.extra.clear()
+    this.messageHandlers.clear()
+    this.sessionHandlers.clear()
+    this.progressHandlers.clear()
+    this.connHandlers.clear()
+  }
+}
+
 function sessionBody(msg: WSClientMessage): { channel?: string; chat_id?: string } {
   return { channel: msg.channel, chat_id: msg.chat_id }
 }

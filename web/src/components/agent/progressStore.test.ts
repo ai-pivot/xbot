@@ -277,7 +277,7 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
     store.dispose()
   })
 
-  it('filters completed SubAgent nodes from live progress', () => {
+  it('preserves completed SubAgent nodes in progress tree', () => {
     const store = new ProgressStore()
     store.setStructuredTools({
       phase: 'tool_exec',
@@ -291,7 +291,9 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
       subAgents: [{ role: 'review', status: 'done' }],
     })
     flushRaf()
-    expect(store.getSnapshot().subAgents).toHaveLength(0)
+    // Done nodes are preserved (not filtered) — they show the final status
+    expect(store.getSnapshot().subAgents).toHaveLength(1)
+    expect(store.getSnapshot().subAgents[0].status).toBe('done')
     store.dispose()
   })
 

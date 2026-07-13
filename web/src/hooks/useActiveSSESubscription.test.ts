@@ -8,55 +8,87 @@ function makeWS(): WSConnection {
   return {
     subscribe: vi.fn(),
     disconnect: vi.fn(),
+    addSubscription: vi.fn().mockReturnValue('sub-1'),
+    removeSubscription: vi.fn(),
   } as unknown as WSConnection
 }
 
 describe('useActiveSSESubscription', () => {
-  it('hands ownership from a CLI main panel to a SubAgent and back once', () => {
+  it('creates a persistent subscription on mount and removes it on unmount', () => {
     const ws = makeWS()
-    const main = renderHook(
-      ({ active }) => useActiveSSESubscription({
+    const { unmount } = renderHook(() =>
+      useActiveSSESubscription({
         ws,
         chatID: '/repo:Agent-main',
-        channel: 'cli',
-        active,
+        channel: 'web',
       }),
-      { initialProps: { active: true } },
-    )
-    const subAgent = renderHook(
-      ({ active }) => useActiveSSESubscription({
-        ws,
-        chatID: 'cli:/repo:Agent-main/review:1',
-        channel: 'agent',
-        active,
-      }),
-      { initialProps: { active: false } },
     )
 
-    expect(ws.subscribe).toHaveBeenCalledTimes(1)
-    expect(ws.subscribe).toHaveBeenLastCalledWith('/repo:Agent-main', 'cli')
+    expect(ws.addSubscription).toHaveBeenCalledTimes(1)
+    expect(ws.addSubscription).toHaveBeenCalledWith('/repo:Agent-main', 'web')
+    expect(ws.removeSubscription).not.toHaveBeenCalled()
 
-    act(() => {
-      main.rerender({ active: false })
-      subAgent.rerender({ active: true })
-    })
-    expect(ws.subscribe).toHaveBeenCalledTimes(2)
-    expect(ws.subscribe).toHaveBeenLastCalledWith('cli:/repo:Agent-main/review:1', 'agent')
+    unmount()
 
-    act(() => {
-      subAgent.rerender({ active: false })
-      main.rerender({ active: true })
-    })
-    expect(ws.subscribe).toHaveBeenCalledTimes(3)
-    expect(ws.subscribe).toHaveBeenLastCalledWith('/repo:Agent-main', 'cli')
+    expect(ws.removeSubscription).toHaveBeenCalledTimes(1)
+    expect(ws.removeSubscription).toHaveBeenCalledWith('sub-1')
   })
 
-  it('disconnects when the focused Agent panel has no session', () => {
+  it('does not subscribe when chatID is null', () => {
     const ws = makeWS()
+    renderHook(() =>
+      useActiveSSESubscription({ ws, chatID: null, channel: 'web' }),
+    )
 
-    renderHook(() => useActiveSSESubscription({ ws, chatID: null, channel: 'web', active: true }))
+    expect(ws.addSubscription).not.toHaveBeenCalled()
+  })
 
-    expect(ws.disconnect).toHaveBeenCalledTimes(1)
-    expect(ws.subscribe).not.toHaveBeenCalled()
+  it('removes old subscription and creates new one when chatID changes', () => {
+    const ws = makeWS()
+    const { rerender } = renderHook(
+      ({ chatID }) => useActiveSSESubscription({ ws, chatID, channel: 'web' }),
+      { initialProps: { chatID: 'chat-1' } },
+    )
+
+    expect(ws.addSubscription).toHaveBeenCalledWith('chat-1', 'web')
+
+    rerender({ chatID: 'chat-2' })
+
+    expect(ws.removeSubscription).toHaveBeenCalledWith('sub-1')
+    expect(ws.addSubscription).toHaveBeenLastCalledWith('chat-2', 'web')
+  })
+
+  it('multiple panels can coexist — subscriptions are independent', () => {
+    const ws = makeWS()
+    const main = renderHook(() =>
+      useActiveSSESubscription({
+        ws,
+        chatID: '/repo:Agent-main',
+        channel: 'web',
+      }),
+    )
+    const subAgent = renderHook(() =>
+      useActiveSSESubscription({
+        ws,
+        chatID: 'web:/repo:Agent-main/review:1',
+        channel: 'agent',
+      }),
+    )
+
+    // Both panels have active subscriptions simultaneously
+    expect(ws.addSubscription).toHaveBeenCalledTimes(2)
+    expect(ws.addSubscription).toHaveBeenNthCalledWith(1, '/repo:Agent-main', 'web')
+    expect(ws.addSubscription).toHaveBeenNthCalledWith(2, 'web:/repo:Agent-main/review:1', 'agent')
+
+    // Neither is removed when both are alive
+    expect(ws.removeSubscription).not.toHaveBeenCalled()
+
+    // Closing one panel removes only its subscription
+    main.unmount()
+    expect(ws.removeSubscription).toHaveBeenCalledTimes(1)
+
+    // The other panel's subscription is still alive
+    subAgent.unmount()
+    expect(ws.removeSubscription).toHaveBeenCalledTimes(2)
   })
 })

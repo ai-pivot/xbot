@@ -228,7 +228,10 @@ export function useProgressStream({
   return {
     progressSnapshot: progressSnapshot ?? EMPTY_PROGRESS_SNAPSHOT,
     liveMessage,
-    isStreaming: hasVisibleProgress(progressSnapshot),
+    // isStreaming is false in the finalizing state — the agent is not actively
+    // streaming, just waiting for the final text event. The snapshot stays
+    // visible (via liveMessage) but the UI should not show a "busy" indicator.
+    isStreaming: hasVisibleProgress(progressSnapshot) && progressSnapshot.phase !== 'finalizing',
   }
 }
 
@@ -285,8 +288,13 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
       if (p.phase === 'done') {
+        // PhaseDone: enter finalizing state instead of immediate reset.
+        // The store keeps the progress snapshot visible (tools marked done,
+        // no pulse animation) while waiting for the `text` event to arrive.
+        // A 3s timeout in the store guards against missing text events.
+        // Reset finalizedRef so the text event handler can fire.
         if (finalizedRef) finalizedRef.current = false
-        store.reset()
+        store.setStructuredTools({ phase: 'done' })
         return
       }
       if (finalizedRef && p.phase !== 'done') finalizedRef.current = false
