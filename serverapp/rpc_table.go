@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"os"
+	"path/filepath"
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
@@ -265,6 +267,7 @@ func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher
 	registerCommandHandlers(t, h)
 	registerPluginHandlers(t, h)
 	registerRunnerHandlers(t, h)
+	registerAppHandlers(t, h)
 	return t
 }
 
@@ -1931,4 +1934,96 @@ func marshalBgTasks(tasks []*tools.BackgroundTask) []bgTaskJSON {
 		}
 	}
 	return result
+}
+
+// --- App RPC handlers ---
+
+func registerAppHandlers(t RPCTable, h *RPCContext) {
+
+	t["app_pack"] = rpc1(func(ctx context.Context, p struct {
+		Name  string `json:"name"`
+		Items []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"items"`
+		Author string `json:"author"`
+	}) (any, error) {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return nil, fmt.Errorf("registry manager not initialized")
+		}
+		items := make([]agent.AppItem, len(p.Items))
+		for i, it := range p.Items {
+			items[i] = agent.AppItem{Type: it.Type, Name: it.Name}
+		}
+		outputPath := filepath.Join(os.TempDir(), p.Name+".xbot.zip")
+		if err := rm.PackApp(items, outputPath, p.Author); err != nil {
+			return nil, err
+		}
+		return map[string]string{"path": outputPath}, nil
+	})
+
+	t["app_install_file"] = rpc1(func(ctx context.Context, p struct {
+		ZipPath  string `json:"zip_path"`
+		SenderID string `json:"sender_id"`
+	}) (any, error) {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return nil, fmt.Errorf("registry manager not initialized")
+		}
+		result, err := rm.InstallAppFromFile(p.ZipPath, p.SenderID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"name":      result.Manifest.Name,
+			"version":   result.Manifest.Version,
+			"installed": result.Installed,
+		}, nil
+	})
+
+	t["app_install_url"] = rpc1(func(ctx context.Context, p struct {
+		URL      string `json:"url"`
+		SenderID string `json:"sender_id"`
+	}) (any, error) {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return nil, fmt.Errorf("registry manager not initialized")
+		}
+		result, err := rm.InstallAppFromURL(p.URL, p.SenderID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"name":      result.Manifest.Name,
+			"version":   result.Manifest.Version,
+			"installed": result.Installed,
+		}, nil
+	})
+
+	t["app_uninstall"] = rpc1void(func(ctx context.Context, p struct {
+		Type     string `json:"type"`
+		Name     string `json:"name"`
+		SenderID string `json:"sender_id"`
+	}) error {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return fmt.Errorf("registry manager not initialized")
+		}
+		return rm.Uninstall(p.Type, p.Name, p.SenderID)
+	})
+
+	t["app_list"] = rpc1(func(ctx context.Context, p struct {
+		SenderID string `json:"sender_id"`
+	}) (any, error) {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return nil, fmt.Errorf("registry manager not initialized")
+		}
+		return map[string]any{
+			"skills":  rm.ListInstalledSkills(p.SenderID),
+			"agents":  rm.ListInstalledAgents(p.SenderID),
+			"plugins": rm.ListInstalledPlugins(p.SenderID),
+		}, nil
+	})
 }

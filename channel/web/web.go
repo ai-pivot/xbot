@@ -94,12 +94,6 @@ type WebCallbacks struct {
 	RunnerGetActive func(senderID string) (string, error)
 	// RunnerSetActive sets the active runner for the user.
 	RunnerSetActive func(senderID, name string) error
-	// RegistryUninstall removes a user-installed entry.
-	RegistryUninstall func(entryType, name, senderID string) error
-	// RegistryPack packs local items into a .xbot.zip file.
-	RegistryPack func(name string, items []ch.PackItemSpec, outputPath, author string) error
-	// RegistryInstallFile installs a .xbot.zip from a local file path.
-	RegistryInstallFile func(zipPath, senderID string) (*ch.PackInstallResult, error)
 	// LLMList returns available model entries and current entry.
 	LLMList func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry)
 	// LLMSet switches the user's model via explicit (subID, model).
@@ -451,6 +445,28 @@ func (wc *WebChannel) SetCallbacks(cb WebCallbacks) {
 // after the dispatcher and message bus are available.
 func (wc *WebChannel) SetRPCHandler(fn func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error)) {
 	wc.callbacks.RPCHandler = fn
+}
+
+// rpcCall invokes a server-side RPC method via the injected RPCHandler.
+// It marshals params to JSON, calls the handler, and unmarshals the result.
+func (wc *WebChannel) rpcCall(method string, params any, result any) error {
+	if wc.callbacks.RPCHandler == nil {
+		return fmt.Errorf("RPC handler not configured")
+	}
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("marshal params: %w", err)
+	}
+	resp, err := wc.callbacks.RPCHandler(method, paramsJSON, "web_admin")
+	if err != nil {
+		return err
+	}
+	if result != nil && len(resp) > 0 {
+		if err := json.Unmarshal(resp, result); err != nil {
+			return fmt.Errorf("unmarshal result: %w", err)
+		}
+	}
+	return nil
 }
 
 func (wc *WebChannel) Name() string { return "web" }

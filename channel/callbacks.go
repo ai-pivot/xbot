@@ -17,26 +17,6 @@ type RunnerCallbacks struct {
 	RunnerSetActive     func(senderID, name string) error
 }
 
-// PackItemSpec specifies a local item to include when building an app.
-type PackItemSpec struct {
-	Type string
-	Name string
-}
-
-// PackInstallResult records what was installed from an app.
-type PackInstallResult struct {
-	Name      string
-	Version   string
-	Installed []string
-}
-
-// RegistryCallbacks groups registry management closures shared between Web and Feishu channels.
-type RegistryCallbacks struct {
-	RegistryUninstall   func(entryType, name, senderID string) error
-	RegistryPack        func(name string, items []PackItemSpec, outputPath, author string) error
-	RegistryInstallFile func(zipPath, senderID string) (*PackInstallResult, error)
-}
-
 // LLMCallbacks groups LLM management closures shared between Web and Feishu channels.
 type LLMCallbacks struct {
 	LLMList func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry)

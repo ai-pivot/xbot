@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -482,8 +481,8 @@ func (wc *WebChannel) handleMarketPack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if wc.callbacks.RegistryPack == nil {
-		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
 		return
 	}
 
@@ -498,18 +497,19 @@ func (wc *WebChannel) handleMarketPack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]ch.PackItemSpec, len(req.Items))
-	for i, it := range req.Items {
-		items[i] = ch.PackItemSpec{Type: it.Type, Name: it.Name}
+	var resp struct {
+		Path string `json:"path"`
 	}
-
-	outputPath := filepath.Join(os.TempDir(), req.Name+".xbot.zip")
-	if err := wc.callbacks.RegistryPack(req.Name, items, outputPath, senderID); err != nil {
+	if err := wc.rpcCall("app_pack", map[string]any{
+		"name":   req.Name,
+		"items":  req.Items,
+		"author": senderID,
+	}, &resp); err != nil {
 		writeJSON(w, http.StatusInternalServerError, marketPackResponse{OK: false, Error: err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, marketPackResponse{OK: true, Path: outputPath})
+	writeJSON(w, http.StatusOK, marketPackResponse{OK: true, Path: resp.Path})
 }
 
 // handleMarketInstallFile handles POST /api/market/install-file
@@ -526,8 +526,8 @@ func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if wc.callbacks.RegistryInstallFile == nil {
-		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
 		return
 	}
 
@@ -559,17 +559,24 @@ func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Req
 	}
 	tmpFile.Close()
 
-	result, err := wc.callbacks.RegistryInstallFile(tmpPath, senderID)
-	if err != nil {
+	var resp struct {
+		Name      string   `json:"name"`
+		Version   string   `json:"version"`
+		Installed []string `json:"installed"`
+	}
+	if err := wc.rpcCall("app_install_file", map[string]any{
+		"zip_path":  tmpPath,
+		"sender_id": senderID,
+	}, &resp); err != nil {
 		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
-		"name":    result.Name,
-		"version": result.Version,
-		"items":   result.Installed,
+		"name":    resp.Name,
+		"version": resp.Version,
+		"items":   resp.Installed,
 	})
 }
 
@@ -793,8 +800,8 @@ func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if wc.callbacks.RegistryUninstall == nil {
-		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
 		return
 	}
 
@@ -804,7 +811,11 @@ func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if err := wc.callbacks.RegistryUninstall(req.Type, req.Name, senderID); err != nil {
+	if err := wc.rpcCall("app_uninstall", map[string]any{
+		"type":      req.Type,
+		"name":      req.Name,
+		"sender_id": senderID,
+	}, nil); err != nil {
 		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
 		return
 	}
