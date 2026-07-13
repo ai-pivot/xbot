@@ -334,4 +334,6 @@ export interface ChatMessage {
   displayOnly?: boolean
   /** True when loaded from persisted backend history, not an optimistic echo. */
   persisted?: boolean
+  /** SSE sequence for live committed rows, used to reconcile them with history. */
+  eventSeq?: number
 }

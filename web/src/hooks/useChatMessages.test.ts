@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useChatMessages } from './useChatMessages'
 import type { WSConnection } from '@/types/ws'
+import type { WSMessage } from '@/types/shared'
 import { bumpProgressGeneration, clearWebCaches, messagesCache } from '@/lib/webCache'
 
 function makeWS(responses: unknown[]): WSConnection {
@@ -187,7 +188,7 @@ describe('useChatMessages', () => {
       chat_id: string
       last_seq: number
     }>()
-    let messageHandler: ((message: { type: string; chat_id: string; content: string; ts: number }) => void) | null = null
+    let messageHandler: ((message: WSMessage) => void) | null = null
     vi.stubGlobal('fetch', vi.fn(async () => {
       const data = await history.promise
       return new Response(JSON.stringify({ ok: true, data, error: null }), {
@@ -240,6 +241,69 @@ describe('useChatMessages', () => {
       'old history',
       'new message with attachment',
     ])
+    expect(ws.setLastSeq).not.toHaveBeenCalled()
+  })
+
+  it('does not duplicate a replayed user echo already covered by history', async () => {
+    const history = deferred<{
+      messages: { role: string; content: string; timestamp: string }[]
+      chat_id: string
+      last_seq: number
+    }>()
+    let messageHandler: ((message: WSMessage) => void) | null = null
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const data = await history.promise
+      return new Response(JSON.stringify({ ok: true, data, error: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+    const ws = {
+      rpc: vi.fn(),
+      send: vi.fn(async () => undefined),
+      setLastSeq: vi.fn(),
+      onMessage: vi.fn((handler) => {
+        messageHandler = handler
+        return vi.fn()
+      }),
+    } as unknown as WSConnection
+    const { result } = renderHook(() => (
+      useChatMessages({ chatID: 'replay-chat', channel: 'web', ws })
+    ))
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      messageHandler?.({
+        type: 'user_echo',
+        chat_id: 'replay-chat',
+        content: 'message with attachment',
+        ts: 1_786_000_000,
+        seq: 7,
+      })
+    })
+    expect(result.current.messages.map((message) => message.content)).toEqual([
+      'message with attachment',
+    ])
+
+    await act(async () => {
+      history.resolve({
+        messages: [{
+          role: 'user',
+          content: 'message with attachment',
+          timestamp: '2026-07-08T00:00:00Z',
+        }],
+        chat_id: 'replay-chat',
+        last_seq: 7,
+      })
+      await history.promise
+    })
+
+    await waitFor(() => expect(result.current.messages).toHaveLength(1))
+    expect(result.current.messages[0]).toMatchObject({
+      content: 'message with attachment',
+      persisted: true,
+    })
+    expect(messagesCache.get('replay-chat')).toHaveLength(1)
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 

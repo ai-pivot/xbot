@@ -50,7 +50,7 @@ interface UseProgressStreamOptions {
   /** Channel this stream tracks. Progress events may qualify chat_id as channel:chatID. */
   channel?: string
   /** Called with the finalized assistant text when a `text` event arrives. */
-  onAssistantComplete?: (finalText: string, iterations: WebIteration[]) => void
+  onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number) => void
   /** Called when the server signals HistoryCompacted (reset + reload). */
   onHistoryCompacted?: () => void
   /** Called when the server signals a slash-command session reset (/new). */
@@ -352,7 +352,7 @@ function handleProgressMessage(
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
       const iterations = parsedIterations.length > 0 ? parsedIterations : snap.iterationHistory
-      completeRef.current?.(finalText, iterations)
+      completeRef.current?.(finalText, iterations, msg.seq)
       store.reset()
       return
     }
@@ -386,7 +386,7 @@ function handleProgressMessage(
           const text = snap.streamContent
           const iters = snap.iterationHistory
           store.reset()
-          completeRef.current?.(text, iters)
+          completeRef.current?.(text, iters, msg.seq)
         } else {
           store.reset()
         }

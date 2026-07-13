@@ -71,7 +71,7 @@ export interface UseChatMessagesResult {
   /** Upload a file; returns the server upload metadata for sending with a message. */
   upload: (file: File) => Promise<UploadResponse>
   /** Append a finalized assistant message (called by useProgressStream). */
-  appendAssistant: (content: string, iterations: WebIteration[]) => void
+  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number) => void
   /** Remove the trailing assistant message by id (for cancellation cleanup). */
   removeMessage: (id: string) => void
   /** Clear committed messages immediately, used for TUI-style /new reset. */
@@ -183,8 +183,13 @@ function shouldKeepVisibleRowsOnRefresh(
 function reconcileHistoryWithLiveRows(
   history: ChatMessage[],
   current: ChatMessage[],
+  historySeq?: number,
 ): ChatMessage[] {
-  return [...history, ...current.filter((message) => message.persisted === false)]
+  const liveRows = current.filter((message) => (
+    message.persisted === false &&
+    (historySeq === undefined || message.eventSeq === undefined || message.eventSeq > historySeq)
+  ))
+  return [...history, ...liveRows]
 }
 
 /** Parse SubAgent messages (simple role/content) into ChatMessage[]. */
@@ -371,7 +376,9 @@ export function useChatMessages({
       }
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
-      const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+      const next = mutated
+        ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq)
+        : parsed
       if (shouldKeepVisibleRowsOnRefresh(next, sameTarget, messagesRef.current)) return
       if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
       loadedMessageKeys.add(reloadKey)
@@ -438,6 +445,7 @@ export function useChatMessages({
           isPartial: false,
           turnID: 0,
           persisted: false,
+          eventSeq: msg.seq,
         }
         if (lastUserIdx >= 0) {
           const copy = [...prev]
@@ -521,7 +529,7 @@ export function useChatMessages({
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
-  const appendAssistant = useCallback((content: string, iterations: WebIteration[]) => {
+  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number) => {
     if (!content && !iterations.length) return
     messageMutationGenRef.current += 1
     const id = `asst-${Date.now()}-${echoSeq++}`
@@ -534,6 +542,7 @@ export function useChatMessages({
       isPartial: false,
       turnID: 0,
       persisted: false,
+      eventSeq,
     }
     setMessages((prev) => {
       const next = dedupMessages([...prev, newMsg])

@@ -94,10 +94,12 @@ describe('useProgressStream event dispatch', () => {
 
     emitAndFlush({
       type: 'text',
+      seq: 42,
       content: 'final answer',
       progress_history: '[{"iteration":1,"tools":[{"name":"Read","status":"done"}]}]',
     })
     expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), 42)
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
   })
@@ -172,7 +174,7 @@ describe('useProgressStream event dispatch', () => {
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
 
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array))
+    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), undefined)
   })
 
   it('handles session_reset text without appending assistant content', () => {
@@ -237,7 +239,7 @@ describe('useProgressStream event dispatch', () => {
 
     expect(complete).toHaveBeenCalledWith('', expect.arrayContaining([
       expect.objectContaining({ iteration: 1 }),
-    ]))
+    ]), undefined)
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -248,7 +250,7 @@ describe('useProgressStream event dispatch', () => {
     )
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'streamed' } })
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
-    expect(complete).toHaveBeenCalledWith('streamed', expect.any(Array))
+    expect(complete).toHaveBeenCalledWith('streamed', expect.any(Array), undefined)
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -275,7 +277,7 @@ describe('useProgressStream event dispatch', () => {
 
     expect(complete).toHaveBeenCalledWith('', expect.arrayContaining([
       expect.objectContaining({ iteration: 1 }),
-    ]))
+    ]), undefined)
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
   })

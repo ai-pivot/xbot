@@ -124,8 +124,8 @@ export function AgentPanel({ params }: PanelProps) {
     chatID: progressChatID,
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
-    onAssistantComplete: isSubAgent ? undefined : (finalText, iterations) => {
-      chat.appendAssistant(finalText, iterations)
+    onAssistantComplete: isSubAgent ? undefined : (finalText, iterations, eventSeq) => {
+      chat.appendAssistant(finalText, iterations, eventSeq)
       void chat.reload()
     },
     ws,
