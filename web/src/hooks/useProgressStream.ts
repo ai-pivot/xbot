@@ -169,7 +169,7 @@ export function useProgressStream({
     if (!initialProgress || !initialProgress.phase || initialProgress.phase === 'done') {
       if (initialProgress?.phase === 'done') {
         if (chatID) clearProgressSnapshot(chatID)
-        finalizedRef.current = true
+        finalizedRef.current = false
         if (hasVisibleProgress(store.getSnapshot())) store.reset()
       }
       return
@@ -282,7 +282,7 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
       if (p.phase === 'done') {
-        if (finalizedRef) finalizedRef.current = true
+        if (finalizedRef) finalizedRef.current = false
         store.reset()
         return
       }

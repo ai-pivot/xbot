@@ -161,6 +161,20 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.isStreaming).toBe(false)
   })
 
+  it('commits text once when phase done arrives before the final text and idle', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { phase: 'done' } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'final answer' })
+    emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array))
+  })
+
   it('handles session_reset text without appending assistant content', () => {
     const complete = vi.fn()
     const reset = vi.fn()

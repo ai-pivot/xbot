@@ -180,6 +180,13 @@ function shouldKeepVisibleRowsOnRefresh(
   return true
 }
 
+function reconcileHistoryWithLiveRows(
+  history: ChatMessage[],
+  current: ChatMessage[],
+): ChatMessage[] {
+  return [...history, ...current.filter((message) => message.persisted === false)]
+}
+
 /** Parse SubAgent messages (simple role/content) into ChatMessage[]. */
 function parseSubAgentMessages(rows: SubAgentMsg[], rawIterations?: unknown[]): ChatMessage[] {
   const iterations = Array.isArray(rawIterations)
@@ -247,6 +254,7 @@ export function useChatMessages({
   // B's after a quick switch — Spec 5 §2.1).
   const reloadGenRef = useRef(0)
   const messageMutationGenRef = useRef(0)
+  const destructiveMutationGenRef = useRef(0)
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
@@ -258,10 +266,13 @@ export function useChatMessages({
   const reload = useCallback(async () => {
     const gen = ++reloadGenRef.current
     const mutationGen = messageMutationGenRef.current
+    const destructiveMutationGen = destructiveMutationGenRef.current
     const progressGen = chatID ? getProgressGeneration(chatID) : null
     const globalSeq = ++globalReloadSeq
-    const requestIsStale = () => (
-      gen !== reloadGenRef.current || mutationGen !== messageMutationGenRef.current
+    const requestIsSuperseded = () => gen !== reloadGenRef.current
+    const requestHasMessageMutation = () => mutationGen !== messageMutationGenRef.current
+    const requestHasDestructiveMutation = () => (
+      destructiveMutationGen !== destructiveMutationGenRef.current
     )
     const reloadKey = subAgentRole || agentChatID
       ? `${channel}:${chatID ?? ''}:${subAgentRole ?? ''}:${subAgentInstance ?? ''}:${agentChatID ?? ''}`
@@ -269,7 +280,9 @@ export function useChatMessages({
     const sameTarget = lastReloadKeyRef.current === reloadKey
     const cachedRows = messagesCache.get(reloadKey)
     if (!sameTarget) {
-      setMessages(cachedRows ?? [])
+      const next = cachedRows ?? []
+      messagesRef.current = next
+      setMessages(next)
     }
     const targetHasLoaded = loadedMessageKeys.has(reloadKey)
     const hasVisibleRows = sameTarget && messagesRef.current.length > 0
@@ -286,14 +299,17 @@ export function useChatMessages({
         const dump = await ws.rpc<AgentSessionDump>('get_agent_session_dump_by_full_key', {
           full_key: agentChatID,
         })
-        if (requestIsStale()) return
+        if (requestIsSuperseded() || requestHasDestructiveMutation()) return
         const dumpMessages = Array.isArray(dump?.messages) ? dump.messages : []
         const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
           const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
-          if (!commitMessageCache(reloadKey, parsed, globalSeq)) return
+          const mutated = requestHasMessageMutation()
+          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+          if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
           loadedMessageKeys.add(reloadKey)
-          setMessages(parsed)
+          messagesRef.current = next
+          setMessages(next)
           setInitialProgress(null)
           return
         }
@@ -306,14 +322,17 @@ export function useChatMessages({
           role: subAgentRole,
           instance: subAgentInstance ?? '',
         })
-        if (requestIsStale()) return
+        if (requestIsSuperseded() || requestHasDestructiveMutation()) return
         const dumpMessages = Array.isArray(dump?.messages) ? dump.messages : []
         const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
           const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
-          if (!commitMessageCache(reloadKey, parsed, globalSeq)) return
+          const mutated = requestHasMessageMutation()
+          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+          if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
           loadedMessageKeys.add(reloadKey)
-          setMessages(parsed)
+          messagesRef.current = next
+          setMessages(next)
           setInitialProgress(null)
           return
         }
@@ -323,20 +342,22 @@ export function useChatMessages({
           role: subAgentRole,
           instance: subAgentInstance ?? '',
         })
-        if (requestIsStale()) return
+        if (requestIsSuperseded() || requestHasDestructiveMutation()) return
         const parsed = parseSubAgentMessages(Array.isArray(msgs) ? msgs : [])
-        if (shouldKeepVisibleRowsOnRefresh(parsed, sameTarget, messagesRef.current)) return
-        if (!commitMessageCache(reloadKey, parsed, globalSeq)) return
+        const mutated = requestHasMessageMutation()
+        const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+        if (shouldKeepVisibleRowsOnRefresh(next, sameTarget, messagesRef.current)) return
+        if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
         loadedMessageKeys.add(reloadKey)
-        setMessages(parsed)
+        messagesRef.current = next
+        setMessages(next)
         setInitialProgress(null)
         return
       }
       // Normal mode: load via Web history snapshot (full history + progress).
       const data = await fetchHistory(ws, chatID ? { channel, chatID } : null)
-      // Discard stale fetches after a newer reload or any local/live message
-      // mutation so an older snapshot cannot replace post-request rows.
-      if (requestIsStale()) return
+      if (requestIsSuperseded() || requestHasDestructiveMutation()) return
+      const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
       const cursorChatID = data.chat_id ?? chatID
       const progressChanged = Boolean(
@@ -345,21 +366,26 @@ export function useChatMessages({
         cursorChatID === chatID &&
         getProgressGeneration(cursorChatID) !== progressGen,
       )
-      if (data.last_seq && cursorChatID && !progressChanged) {
+      if (data.last_seq && cursorChatID && !progressChanged && !mutated) {
         ws.setLastSeq(cursorChatID, data.last_seq)
       }
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
-      if (shouldKeepVisibleRowsOnRefresh(parsed, sameTarget, messagesRef.current)) return
-      if (!commitMessageCache(reloadKey, parsed, globalSeq)) return
+      const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+      if (shouldKeepVisibleRowsOnRefresh(next, sameTarget, messagesRef.current)) return
+      if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
       loadedMessageKeys.add(reloadKey)
-      setMessages(parsed)
-      setInitialProgress(progressChanged ? null : (data.active_progress ?? null))
+      messagesRef.current = next
+      setMessages(next)
+      setInitialProgress(progressChanged || mutated ? null : (data.active_progress ?? null))
       if (data.chat_id) setResolvedChatID(data.chat_id)
     } catch (e) {
-      if (requestIsStale()) return
+      if (requestIsSuperseded() || requestHasDestructiveMutation()) return
       setError(e instanceof Error ? e.message : String(e))
-      if (!sameTarget && !cachedRows) setMessages([])
+      if (!sameTarget && !cachedRows) {
+        messagesRef.current = []
+        setMessages([])
+      }
       setInitialProgress(null)
     } finally {
       if (gen === reloadGenRef.current) setLoading(false)
@@ -416,10 +442,12 @@ export function useChatMessages({
         if (lastUserIdx >= 0) {
           const copy = [...prev]
           copy[lastUserIdx] = newMsg
+          messagesRef.current = copy
           cacheCurrentMessages(copy)
           return copy
         }
         const next = [...prev, newMsg]
+        messagesRef.current = next
         cacheCurrentMessages(next)
         return next
       })
@@ -452,6 +480,7 @@ export function useChatMessages({
         messageMutationGenRef.current += 1
         setMessages((prev) => {
           const next = [...prev, newMsg]
+          messagesRef.current = next
           cacheCurrentMessages(next)
           return next
         })
@@ -470,8 +499,10 @@ export function useChatMessages({
         if (optimisticID) {
           const failedID = optimisticID
           messageMutationGenRef.current += 1
+          destructiveMutationGenRef.current += 1
           setMessages((prev) => {
             const next = prev.filter((message) => message.id !== failedID)
+            messagesRef.current = next
             if (sendCacheKey) messagesCache.set(sendCacheKey, next)
             return next
           })
@@ -507,6 +538,7 @@ export function useChatMessages({
     }
     setMessages((prev) => {
       const next = dedupMessages([...prev, newMsg])
+      messagesRef.current = next
       cacheCurrentMessages(next)
       return next
     })
@@ -514,8 +546,10 @@ export function useChatMessages({
 
   const removeMessage = useCallback((id: string) => {
     messageMutationGenRef.current += 1
+    destructiveMutationGenRef.current += 1
     setMessages((prev) => {
       const next = prev.filter((m) => m.id !== id)
+      messagesRef.current = next
       cacheCurrentMessages(next)
       return next
     })
@@ -523,6 +557,8 @@ export function useChatMessages({
 
   const clearMessages = useCallback(() => {
     messageMutationGenRef.current += 1
+    destructiveMutationGenRef.current += 1
+    messagesRef.current = []
     setMessages([])
     const key = lastReloadKeyRef.current
     if (key) loadedMessageKeys.add(key)

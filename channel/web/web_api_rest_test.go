@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"xbot/bus"
+	ch "xbot/channel"
+	"xbot/protocol"
 	"xbot/tools"
 )
 
@@ -371,6 +373,27 @@ func TestRESTSessionStatusMergesTokenAndTasks(t *testing.T) {
 	}
 	if len(data["tasks"].([]any)) != 1 || len(data["background_tasks"].([]any)) != 1 {
 		t.Fatalf("status did not merge tasks: %#v", data)
+	}
+}
+
+func TestRESTHistoryCursorPrecedesInterleavedEvent(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	wc.SetCallbacks(WebCallbacks{
+		HistorySnapshot: func(senderID string, sel SessionSelector) (HistorySnapshot, error) {
+			wc.hub.sendToClient(sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "interleaved"})
+			return HistorySnapshot{Messages: []ch.HistoryMessage{}}, nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	wc.handleHistoryPOST(recorder, authedAPIRequest(http.MethodPost, "/api/history", []byte(`{"channel":"web","chat_id":"web-1"}`)))
+	_, data := decodeAPIResponse(t, recorder)
+	if recorder.Code != http.StatusOK || data["last_seq"] != float64(0) {
+		t.Fatalf("history status=%d data=%#v", recorder.Code, data)
+	}
+	if got := wc.getEventStream("web-1").lastSeq(); got != 1 {
+		t.Fatalf("event stream last seq=%d, want 1", got)
 	}
 }
 

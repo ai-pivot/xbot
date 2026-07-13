@@ -232,8 +232,83 @@ describe('useChatMessages', () => {
     })
     await waitFor(() => expect(result.current.loading).toBe(false))
 
-    expect(result.current.messages.map((message) => message.content)).toEqual(['new message with attachment'])
-    expect(messagesCache.get('slow-chat')?.map((message) => message.content)).toEqual(['new message with attachment'])
+    expect(result.current.messages.map((message) => message.content)).toEqual([
+      'old history',
+      'new message with attachment',
+    ])
+    expect(messagesCache.get('slow-chat')?.map((message) => message.content)).toEqual([
+      'old history',
+      'new message with attachment',
+    ])
+    expect(ws.setLastSeq).not.toHaveBeenCalled()
+  })
+
+  it('keeps visible history when a send fails during a background reload', async () => {
+    const backgroundHistory = deferred<{
+      messages: { role: string; content: string; timestamp: string }[]
+      chat_id: string
+      last_seq: number
+    }>()
+    let fetchCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCount += 1
+      const data = fetchCount === 1
+        ? {
+            messages: [{ role: 'user', content: 'visible history', timestamp: '2026-07-08T00:00:00Z' }],
+            chat_id: 'failed-send-chat',
+          }
+        : await backgroundHistory.promise
+      return new Response(JSON.stringify({ ok: true, data, error: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+    let rejectSend!: (reason: Error) => void
+    const sendPromise = new Promise<void>((_resolve, reject) => {
+      rejectSend = reject
+    })
+    const ws = {
+      rpc: vi.fn(),
+      send: vi.fn(() => sendPromise),
+      setLastSeq: vi.fn(),
+      onMessage: vi.fn(() => vi.fn()),
+    } as unknown as WSConnection
+    const { result } = renderHook(() => (
+      useChatMessages({ chatID: 'failed-send-chat', channel: 'web', ws })
+    ))
+    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual([
+      'visible history',
+    ]))
+
+    let reloadPromise!: Promise<void>
+    act(() => {
+      reloadPromise = result.current.reload()
+      result.current.sendMessage('temporary message')
+    })
+    expect(result.current.messages.map((message) => message.content)).toEqual([
+      'visible history',
+      'temporary message',
+    ])
+
+    await act(async () => {
+      rejectSend(new Error('network unavailable'))
+      await sendPromise.catch(() => undefined)
+    })
+    expect(result.current.messages.map((message) => message.content)).toEqual(['visible history'])
+
+    await act(async () => {
+      backgroundHistory.resolve({
+        messages: [{ role: 'user', content: 'stale replacement', timestamp: '2026-07-08T00:00:01Z' }],
+        chat_id: 'failed-send-chat',
+        last_seq: 77,
+      })
+      await reloadPromise
+    })
+
+    expect(result.current.messages.map((message) => message.content)).toEqual(['visible history'])
+    expect(messagesCache.get('failed-send-chat')?.map((message) => message.content)).toEqual([
+      'visible history',
+    ])
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 

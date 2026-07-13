@@ -66,8 +66,11 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Capture the replay boundary before the snapshot. Events sequenced while
+	// the snapshot is being built remain above this cursor and are replayable.
+	lastSeq := wc.getEventStream(sel.ChatID).lastSeq()
 	if wc.callbacks.HistorySnapshot == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "chat_id": sel.ChatID, "channel": sel.Channel})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel})
 		return
 	}
 	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel)
@@ -77,9 +80,7 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot.ChatID = sel.ChatID
 	snapshot.Channel = sel.Channel
-	if es := wc.getEventStream(sel.ChatID); es != nil {
-		snapshot.LastSeq = es.lastSeq()
-	}
+	snapshot.LastSeq = lastSeq
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":              true,
 		"messages":        snapshot.Messages,
