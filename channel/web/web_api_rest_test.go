@@ -282,6 +282,66 @@ func TestRESTMessageCommitsIdempotencyOnlyAfterAgentAdmission(t *testing.T) {
 	}
 }
 
+func TestRESTMessageCancellationAfterHandoffPreservesIdempotency(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
+	wc := NewWebChannel(WebChannelConfig{}, msgBus)
+	wc.SetOSSProvider(fixedOSSProvider{})
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	client := &Client{
+		connType:       clientConnTypeSSE,
+		sendCh:         make(chan protocol.WSMessage, 1),
+		done:           make(chan struct{}),
+		id:             "cancelled-request-client",
+		sessionChannel: "web",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, sessionRouteKey("web", "web-1"))
+	message := protocol.WSClientMessage{
+		ID:         "cancelled-request",
+		Type:       protocol.MsgTypeMessage,
+		Content:    "hello",
+		UploadKeys: []string{"upload-key"},
+		FileNames:  []string{"test.txt"},
+	}
+	identity := inboundIdentity{SenderID: "web-1", SenderName: "tester", WebUserID: 1}
+	ctx, cancel := context.WithCancel(context.Background())
+	type dispatchResult struct {
+		sel SessionSelector
+		err error
+	}
+	resultCh := make(chan dispatchResult, 1)
+	go func() {
+		sel, err := wc.dispatchUserMessage(ctx, identity, message)
+		resultCh <- dispatchResult{sel: sel, err: err}
+	}()
+
+	inbound := <-msgBus.Inbound
+	cancel()
+	inbound.DeliveryAck <- nil
+	result := <-resultCh
+	if result.err != nil || result.sel.ChatID != "web-1" {
+		t.Fatalf("dispatch after handoff cancellation = (%#v, %v)", result.sel, result.err)
+	}
+	if _, err := wc.dispatchUserMessage(context.Background(), identity, message); err != nil {
+		t.Fatalf("same-ID retry after cancelled response: %v", err)
+	}
+	select {
+	case duplicate := <-msgBus.Inbound:
+		t.Fatalf("same-ID retry re-enqueued: %#v", duplicate)
+	default:
+	}
+	echo := <-client.sendCh
+	if echo.ID != message.ID {
+		t.Fatalf("echo ID = %q, want %q", echo.ID, message.ID)
+	}
+	select {
+	case duplicate := <-client.sendCh:
+		t.Fatalf("same-ID retry emitted duplicate echo: %#v", duplicate)
+	default:
+	}
+}
+
 func TestRESTRPCDispatchesThroughCallback(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {

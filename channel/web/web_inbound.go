@@ -160,7 +160,7 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 	// expanded attachments only after queue admission so failed requests leave
 	// neither replay events nor phantom history.
 	if content != originalContent && len(msg.UploadKeys) > 0 {
-		wc.hub.sendToClient(sel.ChatID, protocol.WSMessage{
+		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{
 			Type:            protocol.MsgTypeUserEcho,
 			ID:              requestID,
 			Content:         content,
@@ -314,8 +314,6 @@ func (wc *WebChannel) enqueueInbound(ctx context.Context, message bus.InboundMes
 	select {
 	case err := <-deliveryAck:
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
 	case <-wc.stopCh:
 		return errInboundUnavailable
 	}

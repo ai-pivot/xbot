@@ -68,7 +68,7 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	// Capture the replay boundary before the snapshot. Events sequenced while
 	// the snapshot is being built remain above this cursor and are replayable.
-	lastSeq := wc.getEventStream(sel.ChatID).lastSeq()
+	lastSeq := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
 	if wc.callbacks.HistorySnapshot == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel})
 		return
@@ -1432,6 +1432,10 @@ func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, sende
 	if channelName == "agent" {
 		return wc.canAccessAgentSession(webUserID, senderID, chatID)
 	}
+	return wc.canAccessCanonicalSession(webUserID, senderID, channelName, chatID)
+}
+
+func (wc *WebChannel) canAccessCanonicalSession(webUserID int, senderID, channelName, chatID string) bool {
 	// For non-web channels (cli, feishu, etc.): check admin role or canonical ownership.
 	// Check IdentityResolver first (canonical role from DB)
 	if wc.callbacks.IdentityResolver != nil {
@@ -1474,10 +1478,8 @@ func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID stri
 	}
 	// Admin via IdentityResolver or legacy checks
 	if wc.callbacks.IdentityResolver != nil {
-		if uid, _, err := wc.callbacks.IdentityResolver.Resolve("web", senderID); err == nil && uid > 0 {
-			if wc.callbacks.IdentityResolver.IsAdmin(uid) {
-				return true
-			}
+		if uid, role, err := wc.callbacks.IdentityResolver.Resolve("web", senderID); err == nil && uid > 0 && role == "admin" {
+			return true
 		}
 	}
 	if senderID == "admin" || webUserID == 1 {
@@ -1492,7 +1494,7 @@ func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID stri
 			return wc.userOwnsChat(senderID, info.parentChatID)
 		}
 		if info.parentChannel != "agent" {
-			return false
+			return wc.canAccessCanonicalSession(webUserID, senderID, info.parentChannel, info.parentChatID)
 		}
 		parentExists := wc.tenantExists("agent", info.parentChatID)
 		if !parentExists {

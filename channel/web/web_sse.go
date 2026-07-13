@@ -43,6 +43,7 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	routeKey := sessionRouteKey(sel.Channel, sel.ChatID)
 
 	lastSeq, hasResumeCursor, err := sseResumeCursor(r)
 	if err != nil {
@@ -77,7 +78,7 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Sequence high-water selection and subscription are one transaction: an
 	// event is either below the fresh baseline or delivered after subscription.
 	wc.hub.seqMu.Lock()
-	streamLastSeq := wc.getEventStream(chatID).lastSeq()
+	streamLastSeq := wc.getEventStream(routeKey).lastSeq()
 	if !hasResumeCursor {
 		client.lastSentSeq = streamLastSeq
 	} else if client.lastSentSeq > streamLastSeq {
@@ -85,7 +86,7 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		client.lastSentSeq = 0
 	}
 	registered := wc.hub.addClient(client.id, client)
-	subscribed := registered && wc.hub.subscribe(client.id, chatID)
+	subscribed := registered && wc.hub.subscribe(client.id, routeKey)
 	wc.hub.seqMu.Unlock()
 	if !subscribed {
 		if registered {
@@ -173,7 +174,7 @@ func sseResumeCursor(r *http.Request) (uint64, bool, error) {
 }
 
 func (wc *WebChannel) replaySSEEvents(sel SessionSelector, lastSeq uint64) []protocol.WSMessage {
-	events := wc.getEventStream(sel.ChatID).eventsAfter(lastSeq)
+	events := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).eventsAfter(lastSeq)
 	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
 	return events
 }
@@ -205,7 +206,7 @@ func (wc *WebChannel) publishSSEFallbacks(sel SessionSelector, lastSeq uint64) {
 }
 
 func (wc *WebChannel) publishSSEFallbackIfMissing(sel SessionSelector, lastSeq uint64, msg protocol.WSMessage, requestID string) bool {
-	return wc.hub.sendSSEEventIf(sel.ChatID, func() (protocol.WSMessage, bool) {
+	return wc.hub.sendSSEEventIf(sessionRouteKey(sel.Channel, sel.ChatID), func() (protocol.WSMessage, bool) {
 		events := wc.replaySSEEvents(sel, lastSeq)
 		if containsSSEEvent(events, msg.Type, requestID) {
 			return protocol.WSMessage{}, false
@@ -340,7 +341,7 @@ func (wc *WebChannel) catchUpSSE(ctx context.Context, client *Client, initial []
 		if err := sseContextError(ctx, client); err != nil {
 			return false, err
 		}
-		pending = append(pending, wc.getEventStream(client.chatID).eventsAfter(client.lastSentSeq)...)
+		pending = append(pending, wc.getEventStream(sessionRouteKey(client.sessionChannel, client.chatID)).eventsAfter(client.lastSentSeq)...)
 		queued, closed := collectSSEBatch(client.sendCh)
 		pending = append(pending, queued...)
 		if len(pending) == 0 {

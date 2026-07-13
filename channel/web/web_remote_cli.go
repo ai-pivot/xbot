@@ -28,7 +28,7 @@ func (c *RemoteCLIChannel) SendTUIControlRequest(chatID string, action string, p
 	}()
 
 	wsMsg := ch.CliMsg.BuildTUIControlReqMsg(id, chatID, action, params)
-	if !c.hub.sendToClient(chatID, wsMsg) {
+	if !c.hub.sendToSession("cli", chatID, wsMsg) {
 		return nil, fmt.Errorf("remote CLI client offline for chat %s", chatID)
 	}
 
@@ -109,7 +109,7 @@ func stripChannelPrefix(qualifiedID string) string {
 func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
 	hubKey := stripChannelPrefix(chatID)
 	wsMsg := ch.CliMsg.BuildInjectUserMsg(chatID, content)
-	if !c.hub.sendToClient(hubKey, wsMsg) {
+	if !c.hub.sendToSession("cli", hubKey, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Remote CLI client offline, inject_user buffered")
 	}
 }
@@ -117,7 +117,7 @@ func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
 // SendProgress sends structured progress to remote CLI clients via the Hub.
 func (c *RemoteCLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent) {
 	if msg := ch.CliMsg.BuildProgressMsg(chatID, payload); msg != nil {
-		if !c.hub.sendToClient(chatID, *msg) {
+		if !c.hub.sendToSession("cli", chatID, *msg) {
 			log.WithFields(log.Fields{
 				"chat_id": chatID,
 				"phase":   payload.Phase,
@@ -129,13 +129,13 @@ func (c *RemoteCLIChannel) SendProgress(chatID string, payload *protocol.Progres
 
 // SendSessionState sends a session state change event to remote CLI clients via the Hub.
 func (c *RemoteCLIChannel) SendSessionState(ev protocol.SessionEvent) {
-	c.hub.broadcastToCLI(ch.CliMsg.BuildSessionStateMsg(ev))
+	c.hub.broadcastSessionState(ev.Channel, ev.ChatID, ch.CliMsg.BuildSessionStateMsg(ev))
 }
 
 // SendStreamContent sends streaming LLM content to remote CLI clients via the Hub.
 func (c *RemoteCLIChannel) SendStreamContent(chatID, content, reasoning string) {
 	if msg := ch.CliMsg.BuildStreamContentMsg(chatID, content, reasoning); msg != nil {
-		_ = c.hub.sendToClient(chatID, *msg) // stream events are ephemeral, safe to drop
+		_ = c.hub.sendToSession("cli", chatID, *msg) // stream events are ephemeral, safe to drop
 	}
 }
 
@@ -197,7 +197,7 @@ func (c *RemoteCLIChannel) PushPluginWidgetsPerSession(renderFn func(chatID stri
 			ChatID:  chatID, // client uses this to filter cross-session pushes
 			Content: string(b),
 		}
-		_ = c.hub.sendToClient(chatID, wsMsg) // best-effort push
+		_ = c.hub.sendToSession("cli", chatID, wsMsg) // best-effort push
 	}
 }
 
@@ -221,7 +221,7 @@ func (c *RemoteCLIChannel) Send(msg ch.OutboundMsg) (string, error) {
 	wsMsg.Content = content
 	wsMsg.ProgressHistory = msg.Metadata["progress_history"]
 
-	if !c.hub.sendToClient(targetClientID, wsMsg) {
+	if !c.hub.sendToSession("cli", targetClientID, wsMsg) {
 		log.WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("CLI WS client offline, message buffered")
 	}
 
@@ -233,7 +233,7 @@ func (c *RemoteCLIChannel) Send(msg ch.OutboundMsg) (string, error) {
 			"msg_chatid":    msg.ChatID,
 			"target_client": targetClientID,
 		}).Info("RemoteCLIChannel.Send: dispatching ask_user")
-		c.hub.sendToClient(targetClientID, *askMsg)
+		c.hub.sendToSession("cli", targetClientID, *askMsg)
 	}
 
 	return msgID, nil

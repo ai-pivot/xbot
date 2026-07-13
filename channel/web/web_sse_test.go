@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -149,6 +150,29 @@ func TestSSELastEventIDReplaysMissedEvents(t *testing.T) {
 	}
 }
 
+func TestSSEIsolatesChannelsWithTheSameChatID(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+
+	resp := openSSE(t, server.URL, cookie, "web-1", "0")
+	defer resp.Body.Close()
+	wc.hub.sendToSession("cli", "web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "foreign cli"})
+	wc.hub.sendToSession("web", "web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "web event"})
+
+	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 1)
+	if msg.Content != "web event" {
+		t.Fatalf("cross-channel SSE event leaked: %#v", msg)
+	}
+	if got := wc.getEventStream(sessionRouteKey("cli", "web-1")).lastSeq(); got != 1 {
+		t.Fatalf("CLI stream seq = %d, want 1", got)
+	}
+	if got := wc.getEventStream(sessionRouteKey("web", "web-1")).lastSeq(); got != 1 {
+		t.Fatalf("Web stream seq = %d, want 1", got)
+	}
+}
+
 func TestSSEFreshConnectionCursorRecoversEventsPublishedWhileDisconnected(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
@@ -208,14 +232,15 @@ func TestSSEFreshHighWaterKeepsFullProgressAfterStreamPatch(t *testing.T) {
 	wc.SendProgress(chatID, full)
 	wc.SendProgress(chatID, &protocol.ProgressEvent{StreamContent: "partial"})
 	client := &Client{
-		connType: clientConnTypeSSE,
-		sendCh:   make(chan protocol.WSMessage, 1),
-		done:     make(chan struct{}),
-		chatID:   chatID,
-		id:       "sse-full-progress",
+		connType:       clientConnTypeSSE,
+		sendCh:         make(chan protocol.WSMessage, 1),
+		done:           make(chan struct{}),
+		chatID:         chatID,
+		sessionChannel: "web",
+		id:             "sse-full-progress",
 	}
 	wc.hub.addClient(client.id, client)
-	wc.hub.subscribe(client.id, chatID)
+	wc.hub.subscribe(client.id, sessionRouteKey("web", chatID))
 	wc.SetCallbacks(WebCallbacks{
 		GetActiveProgress: func(channel, gotChatID string) *protocol.ProgressEvent {
 			copy := *full
@@ -1069,14 +1094,15 @@ func TestSSEProgressFallbackUsesEventPublishedBeforeSnapshotStore(t *testing.T) 
 	chatID := "web-1"
 	wc.SendProgress(chatID, &protocol.ProgressEvent{Seq: 2, Phase: "new"})
 	client := &Client{
-		connType: clientConnTypeSSE,
-		sendCh:   make(chan protocol.WSMessage, 1),
-		done:     make(chan struct{}),
-		chatID:   chatID,
-		id:       "sse-progress-order",
+		connType:       clientConnTypeSSE,
+		sendCh:         make(chan protocol.WSMessage, 1),
+		done:           make(chan struct{}),
+		chatID:         chatID,
+		sessionChannel: "web",
+		id:             "sse-progress-order",
 	}
 	wc.hub.addClient(client.id, client)
-	wc.hub.subscribe(client.id, chatID)
+	wc.hub.subscribe(client.id, sessionRouteKey("web", chatID))
 	wc.SetCallbacks(WebCallbacks{
 		GetActiveProgress: func(channel, gotChatID string) *protocol.ProgressEvent {
 			return &protocol.ProgressEvent{Seq: 1, Phase: "old"}
@@ -1095,12 +1121,12 @@ func TestSSEFallbackIsSharedBySubscribedClients(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	chatID := "web-1"
 	clients := []*Client{
-		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "sse-1", chatID: chatID},
-		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "sse-2", chatID: chatID},
+		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "sse-1", chatID: chatID, sessionChannel: "web"},
+		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "sse-2", chatID: chatID, sessionChannel: "web"},
 	}
 	for _, client := range clients {
 		wc.hub.addClient(client.id, client)
-		wc.hub.subscribe(client.id, chatID)
+		wc.hub.subscribe(client.id, sessionRouteKey("web", chatID))
 	}
 	wc.SetCallbacks(WebCallbacks{
 		GetActiveProgress: func(channel, gotChatID string) *protocol.ProgressEvent {
@@ -1669,6 +1695,57 @@ func TestSSEExplicitChannelOverridesStaleCurrentSession(t *testing.T) {
 	sel, ok := wc.resolveSSESession(recorder, request, "web-1", "/repo:Agent-main")
 	if !ok || sel.Channel != "cli" || sel.ChatID != "/repo:Agent-main" {
 		t.Fatalf("resolved selector=%#v ok=%v status=%d body=%s", sel, ok, recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSSEAllowsCanonicalOwnerForCLIAndNestedAgentSessions(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.SetCallbacks(WebCallbacks{
+		IdentityResolver: fixedIdentityResolver{userID: 42, role: "user"},
+	})
+	for _, tenant := range []struct {
+		channel string
+		chatID  string
+		owner   int64
+	}{
+		{channel: "cli", chatID: "owned-cli", owner: 42},
+		{channel: "agent", chatID: "cli:owned-cli/review:1", owner: 42},
+		{channel: "agent", chatID: "agent:cli:owned-cli/review:1/fix:2", owner: 42},
+		{channel: "cli", chatID: "foreign-cli", owner: 99},
+		{channel: "agent", chatID: "cli:foreign-cli/review:1", owner: 99},
+		{channel: "agent", chatID: "agent:cli:foreign-cli/review:1/fix:2", owner: 99},
+	} {
+		if _, err := db.Exec(
+			"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
+			tenant.channel, tenant.chatID, tenant.owner, time.Now().Format(time.RFC3339),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		channel string
+		chatID  string
+		want    bool
+	}{
+		{name: "owned CLI", channel: "cli", chatID: "owned-cli", want: true},
+		{name: "owned CLI-rooted agent", channel: "agent", chatID: "cli:owned-cli/review:1", want: true},
+		{name: "owned nested CLI-rooted agent", channel: "agent", chatID: "agent:cli:owned-cli/review:1/fix:2", want: true},
+		{name: "foreign CLI", channel: "cli", chatID: "foreign-cli"},
+		{name: "foreign CLI-rooted agent", channel: "agent", chatID: "cli:foreign-cli/review:1"},
+		{name: "foreign nested CLI-rooted agent", channel: "agent", chatID: "agent:cli:foreign-cli/review:1/fix:2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			target := "/api/sse?channel=" + url.QueryEscape(tc.channel) + "&chat_id=" + url.QueryEscape(tc.chatID)
+			request := authedAPIRequestFor(http.MethodGet, target, nil, "web-2", 2)
+			_, ok := wc.resolveSSESession(recorder, request, "web-2", tc.chatID)
+			if ok != tc.want {
+				t.Fatalf("resolveSSESession ok=%v, want %v; status=%d body=%s", ok, tc.want, recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 

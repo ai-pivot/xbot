@@ -16,7 +16,7 @@ import (
 // WebSocket clients retain the legacy broadcast behavior; SSE clients receive
 // only events for their authorized chat subscription.
 func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
-	wc.hub.broadcastSessionState(ev.ChatID, protocol.WSMessage{
+	wc.hub.broadcastSessionState(ev.Channel, ev.ChatID, protocol.WSMessage{
 		Type:    protocol.MsgTypeSession,
 		TS:      time.Now().Unix(),
 		Session: &ev,
@@ -55,17 +55,21 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 	}
 
 	targetClientID := msg.ChatID
+	channelName := msg.Channel
+	if channelName == "" {
+		channelName = "web"
+	}
 
 	// /new resets the conversation boundary. Drop buffered pre-reset events before
 	// buffering the reset message itself; otherwise reconnect replay can resurrect
 	// a stale in-flight progress event from the previous session.
 	if wsMsg.SessionReset {
-		wc.getEventStream(targetClientID).clear()
+		wc.getEventStream(sessionRouteKey(channelName, targetClientID)).clear()
 	}
 
 	// The Hub stamps and buffers Web transport events before fan-out while
 	// preserving the remote CLI WebSocket envelope unchanged.
-	if !wc.hub.sendToClient(targetClientID, wsMsg) {
+	if !wc.hub.sendToSession(channelName, targetClientID, wsMsg) {
 		log.WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("Web client offline, message buffered")
 	}
 
@@ -95,7 +99,7 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 					return false
 				}
 				askMsg.Progress = pending
-				wc.hub.sendToClient(targetClientID, askMsg)
+				wc.hub.sendToSession(channelName, targetClientID, askMsg)
 				return true
 			})
 		}
@@ -126,7 +130,7 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 		Progress: payload,
 	}
 
-	if !wc.hub.sendToClient(chatID, wsMsg) {
+	if !wc.hub.sendToSession("web", chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
 	}
 }
@@ -146,7 +150,7 @@ func (wc *WebChannel) SendStreamContent(chatID, content, reasoning string) {
 			ReasoningStreamContent: reasoning,
 		},
 	}
-	_ = wc.hub.sendToClient(chatID, wsMsg) // stream events are ephemeral, safe to drop
+	_ = wc.hub.sendToSession("web", chatID, wsMsg) // stream events are ephemeral, safe to drop
 }
 
 // PushRunnerStatus pushes a runner online/offline status change to the Web client.
@@ -159,7 +163,7 @@ func (wc *WebChannel) PushRunnerStatus(chatID, runnerName string, online bool) {
 			return string(b)
 		}(),
 	}
-	if !wc.hub.sendToClient(chatID, wsMsg) {
+	if !wc.hub.sendToSession("web", chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, runner status buffered")
 	}
 }
@@ -174,7 +178,7 @@ func (wc *WebChannel) PushSyncProgress(chatID, phase, message string) {
 			return string(b)
 		}(),
 	}
-	if !wc.hub.sendToClient(chatID, wsMsg) {
+	if !wc.hub.sendToSession("web", chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, sync progress buffered")
 	}
 }
