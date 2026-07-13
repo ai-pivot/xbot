@@ -14,7 +14,7 @@ import { RotateCcw } from 'lucide-react'
 
 import { useAskUser } from '@/hooks/useAskUser'
 import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
-import { useCollapseLevel } from '@/hooks/useCollapseLevel'
+import { useCollapseLevel, useMergeTools } from '@/hooks/useCollapseLevel'
 import { useProgressStream } from '@/hooks/useProgressStream'
 import { useTodos } from '@/hooks/useTodos'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
@@ -52,6 +52,7 @@ export function AgentPanel({ params }: PanelProps) {
   const store = ctx.sessionStore
   const rightSidebar = ctx.rightSidebar
   const { level } = useCollapseLevel()
+  const { mergeTools } = useMergeTools()
   const [draft, setDraft] = useState<string | undefined>(undefined)
   const [rewindResult, setRewindResult] = useState<RewindResult | null>(null)
   const [rewindOpen, setRewindOpen] = useState(false)
@@ -202,6 +203,7 @@ export function AgentPanel({ params }: PanelProps) {
         liveMessage={liveMessage}
         liveProgress={liveMessage ? progressSnapshot : null}
         collapseLevel={level}
+        mergeTools={mergeTools}
         loading={chat.loading}
         error={chat.error}
         onRewind={isSubAgent || busy ? undefined : rewindTo}

@@ -18,6 +18,8 @@ interface MessageItemProps {
   liveProgress?: LiveProgress | null
   /** Active collapse-level preference. */
   collapseLevel: 'all' | 'minimal' | 'none'
+  /** Whether to merge consecutive tools. Default true. */
+  mergeTools?: boolean
   onRewind?: (message: ChatMessage) => void
 }
 
@@ -25,6 +27,7 @@ export const MessageItem = memo(function MessageItem({
   message,
   liveProgress,
   collapseLevel,
+  mergeTools = true,
   onRewind,
 }: MessageItemProps) {
   if (message.role === 'user') {
@@ -35,6 +38,7 @@ export const MessageItem = memo(function MessageItem({
       message={message}
       progress={liveProgress}
       collapseLevel={collapseLevel}
+      mergeTools={mergeTools}
     />
   )
 })

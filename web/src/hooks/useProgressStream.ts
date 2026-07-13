@@ -257,8 +257,10 @@ function handleProgressMessage(
 ): void {
   switch (msg.type) {
     case 'stream_content': {
-      // New streaming content arriving → reset the finalize guard for the new turn.
-      if (finalizedRef) finalizedRef.current = false
+      // NOTE: finalizedRef is NOT reset here. It is only reset when a new turn
+      // begins (session(busy)). Resetting on stream_content causes the guard
+      // to be cleared after a text event finalizes, so a subsequent
+      // session(idle) event triggers a duplicate onAssistantComplete call.
 
       // stream_content carries content deltas in progress.stream_content /
       // progress.reasoning_stream_content (channel/web/web.go SendStreamContent).
@@ -285,11 +287,16 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
       if (p.phase === 'done') {
-        if (finalizedRef) finalizedRef.current = false
+        // phase=done resets the store; finalizedRef is NOT reset here.
+        // It will be reset when the next turn begins (session(busy) or
+        // a new structured event with active progress).
         store.reset()
         return
       }
-      if (finalizedRef && p.phase !== 'done') finalizedRef.current = false
+      // A non-done structured event indicates active work — reset the finalize
+      // guard so a subsequent text event can complete. This covers turns where
+      // progress_structured arrives before session(busy).
+      if (finalizedRef) finalizedRef.current = false
       if (p.history_compacted) {
         store.reset()
         compactedRef.current?.()

@@ -3,9 +3,11 @@
  *
  * Streaming T (reasoning): FoldedLine wrapping ReasoningBlock with streaming
  *   indicator. Falls back to lastReasoning when streamContent is empty.
+ * Streaming O (text): MarkdownRenderer with a streaming cursor indicator.
  * Streaming C (tools): FoldedToolGroup with merged streaming/active/completed
  *   tools from the snapshot.
- * Streaming O (text): MarkdownRenderer with a streaming cursor indicator.
+ *
+ * Render order: T → O → C (Spec A §2).
  */
 import { memo } from 'react'
 
@@ -22,11 +24,13 @@ import type { ProgressSnapshot } from '@/types/shared'
 interface LiveIterationProps {
   progress: ProgressSnapshot
   level: CollapseLevel
+  mergeTools?: boolean
 }
 
 export const LiveIteration = memo(function LiveIteration({
   progress,
   level,
+  mergeTools = true,
 }: LiveIterationProps) {
   const { t } = useI18n()
 
@@ -64,11 +68,6 @@ export const LiveIteration = memo(function LiveIteration({
         </FoldedLine>
       )}
 
-      {/* Streaming C */}
-      {hasTools && <FoldedToolGroup tools={allTools} level={level} />}
-
-      {hasSubAgents && <SubAgentProgressTree nodes={progress.subAgents} />}
-
       {/* Streaming O */}
       {hasStreamContent && (
         <div>
@@ -84,6 +83,11 @@ export const LiveIteration = memo(function LiveIteration({
           )}
         </div>
       )}
+
+      {hasSubAgents && <SubAgentProgressTree nodes={progress.subAgents} />}
+
+      {/* Streaming C */}
+      {hasTools && <FoldedToolGroup tools={allTools} level={level} mergeTools={mergeTools} />}
     </div>
   )
 })

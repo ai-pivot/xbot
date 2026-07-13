@@ -31,6 +31,8 @@ interface MessageListProps {
   /** Live progress snapshot handed only to the streaming row. */
   liveProgress: LiveProgress | null
   collapseLevel: 'all' | 'minimal' | 'none'
+  /** Whether to merge consecutive tools. Default true. */
+  mergeTools?: boolean
   loading: boolean
   error: string | null
   onRewind?: (message: ChatMessage) => void
@@ -61,6 +63,7 @@ export function MessageList({
   liveMessage,
   liveProgress,
   collapseLevel,
+  mergeTools = true,
   loading,
   error,
   onRewind,
@@ -272,6 +275,7 @@ export function MessageList({
                     message={row}
                     liveProgress={row.id === liveId ? liveProgress : null}
                     collapseLevel={collapseLevel}
+                    mergeTools={mergeTools}
                     onRewind={canRewindMessage(row, item.index, compactBoundaryIndex) ? onRewind : undefined}
                   />
                 </div>

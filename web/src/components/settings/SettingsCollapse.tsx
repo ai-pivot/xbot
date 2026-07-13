@@ -1,12 +1,16 @@
 /**
- * SettingsCollapse — Agent intermediate-step collapse preference (Spec 7 §3.4).
+ * SettingsCollapse — Agent intermediate-step collapse preference (Spec A §4).
  *
  * Three levels: 'all' (final output only), 'minimal' (tool name + summary,
  * details collapsed), 'none' (expand everything). Persisted by useCollapseLevel
- * to localStorage 'xbot-collapse-level' and broadcast app-wide so the Agent
- * workspace (Spec 4) can apply it live.
+ * to localStorage 'xbot-collapse-level' and broadcast app-wide via
+ * useSyncExternalStore so every component instance updates immediately.
+ *
+ * Also includes a `mergeTools` toggle (Spec A §3.1) — orthogonal to the
+ * collapse level, controls whether consecutive tool calls are merged into
+ * a compact row.
  */
-import { useCollapseLevel } from '@/hooks/useCollapseLevel'
+import { useCollapseLevel, useMergeTools } from '@/hooks/useCollapseLevel'
 import { useI18n } from '@/providers/i18n'
 import type { CollapseLevel } from '@/types/shared'
 import { cn } from '@/lib/utils'
@@ -22,6 +26,7 @@ const LEVELS: { value: CollapseLevel; labelKey: string; descKey: string }[] = [
 export function SettingsCollapse() {
   const { t } = useI18n()
   const { level: collapseLevel, setLevel: setCollapseLevel } = useCollapseLevel()
+  const { mergeTools, setMergeTools } = useMergeTools()
 
   return (
     <div className="flex flex-col">
@@ -65,6 +70,43 @@ export function SettingsCollapse() {
             )
           })}
         </div>
+      </SettingsSection>
+
+      {/* Merge Tools Toggle */}
+      <SettingsSection
+        title={t('settings.mergeTools')}
+        description={t('settings.mergeToolsDesc')}
+      >
+        <button
+          type="button"
+          aria-pressed={mergeTools}
+          onClick={() => setMergeTools(!mergeTools)}
+          className={cn(
+            'flex items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors',
+            mergeTools
+              ? 'border-accent bg-accent/10'
+              : 'border-border bg-transparent hover:bg-muted',
+          )}
+        >
+          <span
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+              mergeTools ? 'bg-accent' : 'bg-border',
+            )}
+          >
+            <span
+              className={cn(
+                'inline-block size-4 transform rounded-full bg-white transition-transform',
+                mergeTools ? 'translate-x-4' : 'translate-x-1',
+              )}
+            />
+          </span>
+          <span className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium text-foreground">
+              {mergeTools ? t('settings.mergeToolsOn') : t('settings.mergeToolsOff')}
+            </span>
+          </span>
+        </button>
       </SettingsSection>
     </div>
   )

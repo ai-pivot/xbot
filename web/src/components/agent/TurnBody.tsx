@@ -17,12 +17,14 @@ interface TurnBodyProps {
   /** Live progress for an in-flight turn; null for committed history. */
   liveProgress?: ProgressSnapshot | null
   level: CollapseLevel
+  mergeTools?: boolean
 }
 
 export const TurnBody = memo(function TurnBody({
   iterations,
   liveProgress,
   level,
+  mergeTools = true,
 }: TurnBodyProps) {
   return (
     <div className="flex flex-col gap-3">
@@ -31,9 +33,10 @@ export const TurnBody = memo(function TurnBody({
           key={iter.iteration ?? i}
           iteration={iter}
           level={level}
+          mergeTools={mergeTools}
         />
       ))}
-      {liveProgress && <LiveIteration progress={liveProgress} level={level} />}
+      {liveProgress && <LiveIteration progress={liveProgress} level={level} mergeTools={mergeTools} />}
     </div>
   )
 })

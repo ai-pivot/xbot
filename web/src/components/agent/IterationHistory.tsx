@@ -1,10 +1,10 @@
 /**
- * IterationGroup — renders a single iteration: T → C → O order (Spec 4 §3.3).
+ * IterationGroup — renders a single iteration: T → O → C order (Spec A §2).
  *
- * Replaces the old IterationHistory component. Each iteration renders:
+ * Each iteration renders:
  *   - T (reasoning): FoldedLine, always folded by default
- *   - C (tools): FoldedToolGroup (merges consecutive tools at minimal/all levels)
  *   - O (text output): MarkdownRenderer, always shown
+ *   - C (tools): FoldedToolGroup (merges consecutive tools at minimal/all levels)
  *
  * The component is used by TurnBody for committed iterations, and by
  * AssistantMessage for the "all" level summary expansion.
@@ -22,11 +22,13 @@ import type { WebIteration } from '@/types/shared'
 interface IterationGroupProps {
   iteration: WebIteration
   level: CollapseLevel
+  mergeTools?: boolean
 }
 
 export const IterationGroup = memo(function IterationGroup({
   iteration,
   level,
+  mergeTools = true,
 }: IterationGroupProps) {
   const { t } = useI18n()
 
@@ -42,17 +44,17 @@ export const IterationGroup = memo(function IterationGroup({
         </FoldedLine>
       )}
 
-      {/* C: tool calls (FoldedToolGroup handles merging) */}
-      {iteration.tools.length > 0 && (
-        <FoldedToolGroup tools={iteration.tools} level={level} />
-      )}
-
       {/* O: text output (always shown) */}
       {iteration.thinking && (
         <MarkdownRenderer
           content={iteration.thinking}
           className="text-sm text-text-primary"
         />
+      )}
+
+      {/* C: tool calls (FoldedToolGroup handles merging) */}
+      {iteration.tools.length > 0 && (
+        <FoldedToolGroup tools={iteration.tools} level={level} mergeTools={mergeTools} />
       )}
 
       {/* Fallback: if nothing in this iteration, show a subtle hint */}

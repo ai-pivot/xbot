@@ -492,3 +492,68 @@
 .fold-arrow.open {
   transform: rotate(90deg);
 }
+
+/* ── Tool status dot (Spec A §5) ──────────────────────────────────────────────
+ * Status dots replace the old emoji status icons (◑ ✓ ✗ ◒) with CSS-animated
+ * colored dots. Each status has its own animation:
+ *   generating: blue blink (args still being generated)
+ *   running:    blue pulse (tool is executing)
+ *   done:       gray static dot
+ *   error:      red static dot
+ *   pending:    transparent/very-light dot
+ *
+ * Color transitions between states are smooth via `transition: background-color`.
+ */
+
+.tool-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background-color 0.3s ease-out;
+}
+
+.tool-status-running {
+  background-color: var(--status-running);
+  animation: pulse-blue 1.5s ease-in-out infinite;
+}
+
+.tool-status-generating {
+  background-color: var(--status-running);
+  opacity: 0.5;
+  animation: blink-blue 1s ease-in-out infinite;
+}
+
+.tool-status-done {
+  background-color: var(--text-muted);
+}
+
+.tool-status-error {
+  background-color: var(--status-error);
+}
+
+.tool-status-pending {
+  background-color: transparent;
+  border: 1px solid var(--text-muted);
+}
+
+@keyframes pulse-blue {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.85);
+  }
+}
+
+@keyframes blink-blue {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
