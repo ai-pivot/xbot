@@ -26,7 +26,7 @@ export interface WSConnection {
   /** The channel of the current SSE subscription, if any. */
   channel: string | null
   /** Set the last event seq from the history snapshot for SSE deduplication. */
-  setLastSeq: (chatID: string, seq: number) => void
+  setLastSeq: (chatID: string, seq: number, channel?: string) => void
 
   /** Stream subscriptions; each returns an unsubscribe function. */
   onMessage: (handler: (msg: WSMessage) => void) => () => void

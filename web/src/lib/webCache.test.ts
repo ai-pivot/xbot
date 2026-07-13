@@ -9,6 +9,7 @@ import {
   messagesCache,
   progressSnapshotCache,
   saveSessionTreeCache,
+  sessionCacheKey,
   SESSION_TREE_CACHE_KEY,
 } from './webCache'
 import type { SessionInfo } from '@/types/shared'
@@ -46,12 +47,17 @@ describe('web caches', () => {
     expect(loadSessionTreeCache()).toEqual({ version: 1, sessions: [session], subAgents: [] })
   })
 
+  it('uses the channel as part of every session cache identity', () => {
+    expect(sessionCacheKey('web', 'shared')).not.toBe(sessionCacheKey('cli', 'shared'))
+  })
+
   it('clears local and in-memory cache layers together', () => {
     localStorage.setItem(SESSION_TREE_CACHE_KEY, '{}')
-    messagesCache.set('chat-1', [])
-    lastSeqCache.set('chat-1', 4)
-    progressSnapshotCache.set('chat-1', { phase: 'tool' })
-    bumpProgressGeneration('chat-1')
+    const cacheKey = sessionCacheKey('web', 'chat-1')
+    messagesCache.set(cacheKey, [])
+    lastSeqCache.set(cacheKey, 4)
+    progressSnapshotCache.set(cacheKey, { phase: 'tool' })
+    bumpProgressGeneration(cacheKey)
 
     clearWebCaches()
 
@@ -59,6 +65,6 @@ describe('web caches', () => {
     expect(messagesCache.size).toBe(0)
     expect(lastSeqCache.size).toBe(0)
     expect(progressSnapshotCache.size).toBe(0)
-    expect(getProgressGeneration('chat-1')).toBe(0)
+    expect(getProgressGeneration(cacheKey)).toBe(0)
   })
 })

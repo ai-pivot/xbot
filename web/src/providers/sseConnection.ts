@@ -5,6 +5,7 @@ import {
   getLastSeq,
   progressSnapshotCache,
   resetLastSeq,
+  sessionCacheKey,
   setLastSeq,
 } from '@/lib/webCache'
 import type {
@@ -65,10 +66,11 @@ export class SSEConnectionImpl implements WSConnection {
     return this._chatID ? this._channel : null
   }
 
-  setLastSeq(chatID: string, seq: number): void {
-    if (!chatID || seq <= getLastSeq(chatID)) return
-    setLastSeq(chatID, seq)
-    if (this._chatID === chatID && this.source) this.restartSource()
+  setLastSeq(chatID: string, seq: number, channel = this._channel): void {
+    const cacheKey = sessionCacheKey(channel, chatID)
+    if (!chatID || seq <= getLastSeq(cacheKey)) return
+    setLastSeq(cacheKey, seq)
+    if (this._chatID === chatID && this._channel === channel && this.source) this.restartSource()
   }
 
   async send(msg: WSClientMessage): Promise<void> {
@@ -135,10 +137,11 @@ export class SSEConnectionImpl implements WSConnection {
 
   private connect(): void {
     const chatID = this._chatID
+    const channel = this._channel
     if (this.disposed || !chatID || typeof EventSource === 'undefined') return
 
-    const params = new URLSearchParams({ chat_id: chatID, channel: this._channel })
-    const lastSeq = getLastSeq(chatID)
+    const params = new URLSearchParams({ chat_id: chatID, channel })
+    const lastSeq = getLastSeq(sessionCacheKey(channel, chatID))
     params.set('last_event_id', String(lastSeq))
 
     let source: EventSource
@@ -162,7 +165,7 @@ export class SSEConnectionImpl implements WSConnection {
       this.eventsSinceOpen = 0
       this.clearPoll()
       this.setConnected(true)
-      if (resumed) this.scheduleReplayFallback(source, chatID)
+      if (resumed) this.scheduleReplayFallback(source, channel, chatID)
     }
     source.onerror = () => {
       if (this.source !== source) return
@@ -194,11 +197,13 @@ export class SSEConnectionImpl implements WSConnection {
     msg.type = eventType
     const seq = msg.seq ?? parseSequence(event.lastEventId)
     const chatID = this._chatID
+    const channel = this._channel
+    const cacheKey = chatID ? sessionCacheKey(channel, chatID) : null
     let replayGap = false
-    if (chatID && seq > 0) {
-      let previousSeq = getLastSeq(chatID)
+    if (cacheKey && seq > 0) {
+      let previousSeq = getLastSeq(cacheKey)
       if (seq < previousSeq) {
-        resetLastSeq(chatID)
+        resetLastSeq(cacheKey)
         previousSeq = 0
       } else if (seq === previousSeq) {
         return
@@ -207,21 +212,22 @@ export class SSEConnectionImpl implements WSConnection {
         replayGap = true
       }
       msg.seq = seq
-      setLastSeq(chatID, seq)
+      setLastSeq(cacheKey, seq)
     }
     this.eventsSinceOpen += 1
     this.stateVersion += 1
-    if (chatID && isProgressLifecycleEvent(msg)) bumpProgressGeneration(chatID)
+    if (cacheKey && isProgressLifecycleEvent(msg)) bumpProgressGeneration(cacheKey)
     this.dispatch(msg)
-    if (chatID && replayGap) void this.restoreActiveProgress(chatID)
+    if (chatID && replayGap) void this.restoreActiveProgress(channel, chatID)
   }
 
   private dispatch(msg: WSMessage): void {
     if (this._chatID) {
+      const cacheKey = sessionCacheKey(this._channel, this._chatID)
       if (isTerminalProgressEvent(msg)) {
-        clearProgressSnapshot(this._chatID)
+        clearProgressSnapshot(cacheKey)
       } else if (msg.type === 'progress_structured' && msg.progress) {
-        progressSnapshotCache.set(this._chatID, msg.progress)
+        progressSnapshotCache.set(cacheKey, msg.progress)
       }
     }
     if (msg.type === 'session' && msg.session) {
@@ -256,27 +262,28 @@ export class SSEConnectionImpl implements WSConnection {
     }
   }
 
-  private scheduleReplayFallback(source: EventSource, chatID: string): void {
+  private scheduleReplayFallback(source: EventSource, channel: string, chatID: string): void {
     this.clearReplayTimer()
     this.replayTimer = setTimeout(() => {
       this.replayTimer = null
-      if (this.source !== source || this._chatID !== chatID || this.eventsSinceOpen > 0) return
-      void this.restoreActiveProgress(chatID)
+      if (this.source !== source || this._channel !== channel || this._chatID !== chatID || this.eventsSinceOpen > 0) return
+      void this.restoreActiveProgress(channel, chatID)
     }, REPLAY_GRACE_MS)
   }
 
-  private async restoreActiveProgress(chatID: string): Promise<void> {
+  private async restoreActiveProgress(channel: string, chatID: string): Promise<void> {
     const stateVersion = this.stateVersion
     try {
       const progress = await this.rpc<ProgressEvent | null>('get_active_progress', {
-        channel: this._channel,
+        channel,
         chat_id: chatID,
       })
       if (
+        this._channel !== channel ||
         this._chatID !== chatID ||
         this.stateVersion !== stateVersion
       ) return
-      bumpProgressGeneration(chatID)
+      bumpProgressGeneration(sessionCacheKey(channel, chatID))
       this.stateVersion += 1
       if (!progress || progress.phase === 'done') {
         this.dispatch({

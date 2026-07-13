@@ -15,7 +15,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProgressEvent, WSMessage } from '@/types/shared'
 import type { WSConnection } from '@/types/ws'
-import { clearWebCaches, progressSnapshotCache } from '@/lib/webCache'
+import { clearWebCaches, progressSnapshotCache, sessionCacheKey } from '@/lib/webCache'
 
 // --- stub WS connection ----------------------------------------------------
 
@@ -105,7 +105,8 @@ describe('useProgressStream event dispatch', () => {
   })
 
   it('clears terminal cache so A to B to A cannot restore completed progress', () => {
-    progressSnapshotCache.set('c1', { phase: 'tool', completed_tools: [{ name: 'Read', status: 'done' }] })
+    const cacheKey = sessionCacheKey('web', 'c1')
+    progressSnapshotCache.set(cacheKey, { phase: 'tool', completed_tools: [{ name: 'Read', status: 'done' }] })
     const complete = vi.fn()
     const { result, rerender } = renderHook(
       ({ chatID }) => useProgressStream({ chatID, onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
@@ -117,7 +118,7 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.isStreaming).toBe(true)
 
     emitAndFlush({ type: 'text', chat_id: 'c1', content: 'done' })
-    expect(progressSnapshotCache.has('c1')).toBe(false)
+    expect(progressSnapshotCache.has(cacheKey)).toBe(false)
 
     rerender({ chatID: 'c2' })
     rerender({ chatID: 'c1' })
@@ -439,5 +440,23 @@ describe('useProgressStream event dispatch', () => {
     })
     expect(result.current.isStreaming).toBe(true)
     expect(result.current.progressSnapshot.subAgents[0].role).toBe('review')
+  })
+
+  it('rejects another channel with the same raw progress chat_id', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({
+        chatID: 'shared',
+        channel: 'cli',
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: {
+        chat_id: 'web:shared',
+        sub_agents: [{ role: 'foreign', status: 'running' }],
+      } as ProgressEvent,
+    })
+    expect(result.current.isStreaming).toBe(false)
   })
 })

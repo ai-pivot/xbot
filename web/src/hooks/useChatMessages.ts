@@ -28,7 +28,8 @@ import {
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
 import { dedupMessages } from '@/components/agent/progressStore'
-import { getProgressGeneration, messagesCache } from '@/lib/webCache'
+import { getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
+import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
 import type { ChatMessage, WebIteration } from '@/types/shared'
 import type { WSMessage } from '@/types/shared'
@@ -176,6 +177,18 @@ function commitMessageCache(key: string, rows: ChatMessage[], seq = ++globalRelo
   return true
 }
 
+function messageCacheKey(
+  channel: string,
+  chatID: string | null,
+  subAgentRole?: string,
+  subAgentInstance?: string,
+  agentChatID?: string,
+): string {
+  const key = sessionCacheKey(channel, chatID ?? 'current')
+  if (!subAgentRole && !agentChatID) return key
+  return `${key}:${subAgentRole ?? ''}:${subAgentInstance ?? ''}:${agentChatID ?? ''}`
+}
+
 function shouldKeepVisibleRowsOnRefresh(
   parsed: ChatMessage[],
   sameTarget: boolean,
@@ -271,6 +284,15 @@ export function useChatMessages({
 
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
+  const activeMessageCacheKey = messageCacheKey(
+    channel,
+    chatID,
+    subAgentRole,
+    subAgentInstance,
+    agentChatID,
+  )
+  const activeMessageCacheKeyRef = useRef(activeMessageCacheKey)
+  activeMessageCacheKeyRef.current = activeMessageCacheKey
   const lastReloadKeyRef = useRef<string | null>(null)
 
   // Generation counter to discard stale async fetches when the user rapidly
@@ -283,24 +305,22 @@ export function useChatMessages({
   messagesRef.current = messages
 
   const cacheCurrentMessages = useCallback((rows: ChatMessage[]) => {
-    const key = lastReloadKeyRef.current
-    if (key) commitMessageCache(key, rows)
+    commitMessageCache(activeMessageCacheKeyRef.current, rows)
   }, [])
 
   const reload = useCallback(async () => {
     const gen = ++reloadGenRef.current
     const mutationGen = messageMutationGenRef.current
     const destructiveMutationGen = destructiveMutationGenRef.current
-    const progressGen = chatID ? getProgressGeneration(chatID) : null
+    const progressCacheKey = chatID ? sessionCacheKey(channel, chatID) : null
+    const progressGen = progressCacheKey ? getProgressGeneration(progressCacheKey) : null
     const globalSeq = ++globalReloadSeq
     const requestIsSuperseded = () => gen !== reloadGenRef.current
     const requestHasMessageMutation = () => mutationGen !== messageMutationGenRef.current
     const requestHasDestructiveMutation = () => (
       destructiveMutationGen !== destructiveMutationGenRef.current
     )
-    const reloadKey = subAgentRole || agentChatID
-      ? `${channel}:${chatID ?? ''}:${subAgentRole ?? ''}:${subAgentInstance ?? ''}:${agentChatID ?? ''}`
-      : (chatID ?? `${channel}:current`)
+    const reloadKey = activeMessageCacheKey
     const sameTarget = lastReloadKeyRef.current === reloadKey
     const cachedRows = messagesCache.get(reloadKey)
     if (!sameTarget) {
@@ -384,14 +404,17 @@ export function useChatMessages({
       const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
       const cursorChatID = data.chat_id ?? chatID
+      const cursorChannel = data.channel ?? channel
+      const cursorCacheKey = cursorChatID ? sessionCacheKey(cursorChannel, cursorChatID) : null
       const progressChanged = Boolean(
-        cursorChatID &&
+        cursorCacheKey &&
+        progressCacheKey &&
         progressGen !== null &&
-        cursorChatID === chatID &&
-        getProgressGeneration(cursorChatID) !== progressGen,
+        cursorCacheKey === progressCacheKey &&
+        getProgressGeneration(cursorCacheKey) !== progressGen,
       )
       if (data.last_seq && cursorChatID && !progressChanged && !mutated) {
-        ws.setLastSeq(cursorChatID, data.last_seq)
+        ws.setLastSeq(cursorChatID, data.last_seq, cursorChannel)
       }
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
@@ -414,7 +437,7 @@ export function useChatMessages({
     } finally {
       if (gen === reloadGenRef.current) setLoading(false)
     }
-  }, [ws, channel, chatID, subAgentRole, subAgentInstance, parentChatID, agentChatID])
+  }, [ws, channel, chatID, subAgentRole, subAgentInstance, parentChatID, agentChatID, activeMessageCacheKey])
 
   // Load history when the chatID changes (or on first enable).
   useEffect(() => {
@@ -434,7 +457,7 @@ export function useChatMessages({
     if (!liveEventsEnabled) return
     if (!chatID) return
     const off = ws.onMessage((msg: WSMessage) => {
-      if (msg.chat_id && chatIDRef.current && msg.chat_id !== chatIDRef.current) return
+      if (chatIDRef.current && !matchesChatID(msg, chatIDRef.current, channel)) return
       if (msg.type !== 'user_echo' && msg.type !== 'inject_user') return
       const content = msg.content ?? msg.original_content ?? ''
       if (!content) return
@@ -478,7 +501,7 @@ export function useChatMessages({
       })
     })
     return off
-  }, [ws, chatID, cacheCurrentMessages, liveEventsEnabled])
+  }, [ws, chatID, channel, cacheCurrentMessages, liveEventsEnabled])
 
   const sendMessage = useCallback(
     (content: string, attachments?: Attachments) => {
@@ -512,7 +535,7 @@ export function useChatMessages({
           return next
         })
       }
-      const sendCacheKey = lastReloadKeyRef.current
+      const sendCacheKey = activeMessageCacheKeyRef.current
       void ws.send({
         type: 'message',
         id: requestID,
@@ -526,13 +549,17 @@ export function useChatMessages({
       }).catch((error: unknown) => {
         if (optimisticID) {
           const failedID = optimisticID
-          messageMutationGenRef.current += 1
-          setMessages((prev) => {
-            const next = prev.filter((message) => message.id !== failedID)
-            messagesRef.current = next
-            if (sendCacheKey) messagesCache.set(sendCacheKey, next)
-            return next
-          })
+          const cached = messagesCache.get(sendCacheKey) ?? []
+          commitMessageCache(sendCacheKey, cached.filter((message) => message.id !== failedID))
+          if (activeMessageCacheKeyRef.current === sendCacheKey) {
+            messageMutationGenRef.current += 1
+            setMessages((prev) => {
+              const next = prev.filter((message) => message.id !== failedID)
+              messagesRef.current = next
+              commitMessageCache(sendCacheKey, next)
+              return next
+            })
+          }
         }
         toast.error(error instanceof Error ? error.message : 'message send failed')
       })

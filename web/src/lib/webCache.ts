@@ -6,11 +6,16 @@ import type {
 
 export const SESSION_TREE_CACHE_KEY = 'xbot_session_tree'
 
-/** Per-conversation rendered messages. Keys may include channel/subagent identity. */
+/** Stable identity for caches whose server-side source is scoped by channel + chat ID. */
+export function sessionCacheKey(channel: string | null | undefined, chatID: string): string {
+  return `${channel || 'web'}:${chatID}`
+}
+
+/** Per-conversation rendered messages, keyed by sessionCacheKey. */
 export const messagesCache = new Map<string, ChatMessage[]>()
-/** Last SSE sequence processed for each business chat ID. */
+/** Last SSE sequence processed for each channel-qualified session. */
 export const lastSeqCache = new Map<string, number>()
-/** Latest structured progress event for each business chat ID. */
+/** Latest structured progress event for each channel-qualified session. */
 export const progressSnapshotCache = new Map<string, ProgressEvent>()
 const progressGenerationCache = new Map<string, number>()
 
@@ -43,30 +48,30 @@ export function saveSessionTreeCache(sessions: SessionInfo[], subAgents: Session
   }
 }
 
-export function getLastSeq(chatID: string): number {
-  return lastSeqCache.get(chatID) ?? 0
+export function getLastSeq(cacheKey: string): number {
+  return lastSeqCache.get(cacheKey) ?? 0
 }
 
-export function setLastSeq(chatID: string, seq: number): void {
-  if (seq > getLastSeq(chatID)) lastSeqCache.set(chatID, seq)
+export function setLastSeq(cacheKey: string, seq: number): void {
+  if (seq > getLastSeq(cacheKey)) lastSeqCache.set(cacheKey, seq)
 }
 
-export function resetLastSeq(chatID: string): void {
-  lastSeqCache.delete(chatID)
+export function resetLastSeq(cacheKey: string): void {
+  lastSeqCache.delete(cacheKey)
 }
 
-export function getProgressGeneration(chatID: string): number {
-  return progressGenerationCache.get(chatID) ?? 0
+export function getProgressGeneration(cacheKey: string): number {
+  return progressGenerationCache.get(cacheKey) ?? 0
 }
 
-export function bumpProgressGeneration(chatID: string): number {
-  const next = getProgressGeneration(chatID) + 1
-  progressGenerationCache.set(chatID, next)
+export function bumpProgressGeneration(cacheKey: string): number {
+  const next = getProgressGeneration(cacheKey) + 1
+  progressGenerationCache.set(cacheKey, next)
   return next
 }
 
-export function clearProgressSnapshot(chatID: string): void {
-  progressSnapshotCache.delete(chatID)
+export function clearProgressSnapshot(cacheKey: string): void {
+  progressSnapshotCache.delete(cacheKey)
 }
 
 export function clearWebCaches(): void {

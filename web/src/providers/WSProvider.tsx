@@ -62,7 +62,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
       rpc: (method, params) => conn.rpc(method, params),
       chatID: target.chatID,
       channel: target.channel,
-      setLastSeq: (chatID: string, seq: number) => conn.setLastSeq(chatID, seq),
+      setLastSeq: (chatID: string, seq: number, channel?: string) => conn.setLastSeq(chatID, seq, channel),
       onMessage: conn.onMessage,
       onSession: conn.onSession,
       onProgress: conn.onProgress,

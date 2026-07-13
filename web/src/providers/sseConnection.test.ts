@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { postAPI } from '@/lib/api'
-import { clearWebCaches, getProgressGeneration, lastSeqCache, progressSnapshotCache } from '@/lib/webCache'
+import {
+  clearWebCaches,
+  getProgressGeneration,
+  lastSeqCache,
+  progressSnapshotCache,
+  sessionCacheKey,
+} from '@/lib/webCache'
 import { SSEConnectionImpl, SSE_EVENT_TYPES } from './sseConnection'
 import type { WSMessage } from '@/types/shared'
 
@@ -85,6 +91,34 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('isolates replay cursors and progress for matching chat IDs on different channels', () => {
+    const connection = new SSEConnectionImpl()
+    connection.subscribe('shared', 'web')
+    MockEventSource.instances[0].emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 7,
+      progress: { phase: 'web-progress' },
+    })
+
+    connection.subscribe('shared', 'cli')
+    const cliSource = MockEventSource.instances[1]
+    expect(cliSource.url).toBe('/api/sse?chat_id=shared&channel=cli&last_event_id=0')
+    cliSource.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 1,
+      progress: { phase: 'cli-progress' },
+    })
+
+    expect(lastSeqCache.get(sessionCacheKey('web', 'shared'))).toBe(7)
+    expect(lastSeqCache.get(sessionCacheKey('cli', 'shared'))).toBe(1)
+    expect(progressSnapshotCache.get(sessionCacheKey('web', 'shared'))).toMatchObject({ phase: 'web-progress' })
+    expect(progressSnapshotCache.get(sessionCacheKey('cli', 'shared'))).toMatchObject({ phase: 'cli-progress' })
+
+    connection.subscribe('shared', 'web')
+    expect(MockEventSource.instances[2].url).toBe('/api/sse?chat_id=shared&channel=web&last_event_id=7')
+    connection.dispose()
+  })
+
   it('replays from zero after switching away before the first event', () => {
     const connection = new SSEConnectionImpl()
     const received: WSMessage[] = []
@@ -163,9 +197,10 @@ describe('SSEConnectionImpl', () => {
     })
 
     expect(received.map((message) => message.seq)).toEqual([3, 4])
-    expect(lastSeqCache.get('chat-a')).toBe(4)
-    expect(progressSnapshotCache.get('chat-a')).toMatchObject({ phase: 'tool' })
-    expect(getProgressGeneration('chat-a')).toBeGreaterThan(0)
+    const cacheKey = sessionCacheKey('web', 'chat-a')
+    expect(lastSeqCache.get(cacheKey)).toBe(4)
+    expect(progressSnapshotCache.get(cacheKey)).toMatchObject({ phase: 'tool' })
+    expect(getProgressGeneration(cacheKey)).toBeGreaterThan(0)
     connection.dispose()
   })
 
@@ -179,11 +214,11 @@ describe('SSEConnectionImpl', () => {
       seq: 1,
       progress: { phase: 'tool', completed_tools: [{ name: 'Read' }] },
     })
-    expect(progressSnapshotCache.has('chat-a')).toBe(true)
+    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(true)
 
     source.emit('text', { type: 'text', seq: 2, content: 'done' })
 
-    expect(progressSnapshotCache.has('chat-a')).toBe(false)
+    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
     connection.dispose()
   })
 
@@ -313,7 +348,7 @@ describe('SSEConnectionImpl', () => {
     const connection = new SSEConnectionImpl()
     const received: WSMessage[] = []
     connection.onMessage((message) => received.push(message))
-    progressSnapshotCache.set('chat-a', { phase: 'tool' })
+    progressSnapshotCache.set(sessionCacheKey('web', 'chat-a'), { phase: 'tool' })
     connection.subscribe('chat-a')
     const source = MockEventSource.instances[0]
     source.open()
@@ -328,7 +363,7 @@ describe('SSEConnectionImpl', () => {
         progress: { phase: 'done' },
       }),
     ])
-    expect(progressSnapshotCache.has('chat-a')).toBe(false)
+    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
     connection.dispose()
   })
 
@@ -348,7 +383,7 @@ describe('SSEConnectionImpl', () => {
     connection.subscribe('chat-a')
     const source = MockEventSource.instances[0]
     source.open()
-    lastSeqCache.set('chat-a', 1)
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 1)
 
     source.emit('text', { type: 'text', seq: 4, content: 'gap event' })
     source.emit('text', { type: 'text', seq: 5, content: 'newer event' })
@@ -356,7 +391,7 @@ describe('SSEConnectionImpl', () => {
     await Promise.resolve()
 
     expect(received.map((message) => message.content)).toEqual(['gap event', 'newer event'])
-    expect(progressSnapshotCache.has('chat-a')).toBe(false)
+    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
     connection.dispose()
   })
 
@@ -376,7 +411,7 @@ describe('SSEConnectionImpl', () => {
     connection.subscribe('chat-a')
     const source = MockEventSource.instances[0]
     source.open()
-    lastSeqCache.set('chat-a', 1)
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 1)
 
     source.emit('text', { type: 'text', seq: 4, content: 'gap event' })
     connection.subscribe('chat-b')
@@ -384,8 +419,8 @@ describe('SSEConnectionImpl', () => {
     await Promise.resolve()
 
     expect(received).toHaveLength(1)
-    expect(progressSnapshotCache.has('chat-a')).toBe(false)
-    expect(progressSnapshotCache.has('chat-b')).toBe(false)
+    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
+    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-b'))).toBe(false)
     connection.dispose()
   })
 
@@ -400,7 +435,7 @@ describe('SSEConnectionImpl', () => {
     connection.subscribe('chat-a')
     const source = MockEventSource.instances[0]
     source.open()
-    lastSeqCache.set('chat-a', 1)
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 1)
 
     source.emit('text', { type: 'text', seq: 4, content: 'after gap' })
     await Promise.resolve()
@@ -423,12 +458,12 @@ describe('SSEConnectionImpl', () => {
     connection.subscribe('chat-a')
     const source = MockEventSource.instances[0]
     source.open()
-    lastSeqCache.set('chat-a', 9)
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 9)
 
     source.emit('text', { type: 'text', seq: 1, content: 'after restart' })
 
     expect(received).toHaveLength(1)
-    expect(lastSeqCache.get('chat-a')).toBe(1)
+    expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(1)
     connection.dispose()
   })
 })

@@ -42,7 +42,11 @@ import type {
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
 import type { WSMessage } from '@/types/shared'
-import { clearProgressSnapshot, progressSnapshotCache } from '@/lib/webCache'
+import {
+  clearProgressSnapshot,
+  progressSnapshotCache,
+  sessionCacheKey,
+} from '@/lib/webCache'
 
 interface UseProgressStreamOptions {
   /** Chat ID this stream tracks (events for other chats are ignored). */
@@ -101,8 +105,6 @@ export function matchesChatID(msg: WSMessage, targetChatID: string, targetChanne
   if (msg.progress?.chat_id) {
     const progressChatID = String(msg.progress.chat_id)
     if (progressChatID === targetChatID || progressChatID === `${targetChannel}:${targetChatID}`) return true
-    const sep = progressChatID.indexOf(':')
-    if (sep > 0 && progressChatID.slice(sep + 1) === targetChatID) return true
   }
   return false
 }
@@ -140,6 +142,7 @@ export function useProgressStream({
   // every chat switch (we just reset it).
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
+  const progressCacheKey = chatID ? sessionCacheKey(channel, chatID) : null
 
   const progressSnapshot = useSyncExternalStore(
     store.subscribe,
@@ -154,11 +157,11 @@ export function useProgressStream({
     if (disabled) {
       return
     }
-    const cached = chatID ? progressSnapshotCache.get(chatID) : undefined
+    const cached = progressCacheKey ? progressSnapshotCache.get(progressCacheKey) : undefined
     if (cached?.phase && cached.phase !== 'done') {
       store.replace(historyProgressToLive(cached))
     }
-  }, [store, chatID, disabled])
+  }, [store, progressCacheKey, disabled])
 
   // Hydrate from history when initialProgress changes (after reload completes).
   // Separated from the reset effect so that a chatID change does NOT hydrate
@@ -168,7 +171,7 @@ export function useProgressStream({
     if (disabled) return
     if (!initialProgress || !initialProgress.phase || initialProgress.phase === 'done') {
       if (initialProgress?.phase === 'done') {
-        if (chatID) clearProgressSnapshot(chatID)
+        if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
         finalizedRef.current = false
         if (hasVisibleProgress(store.getSnapshot())) store.reset()
       }
@@ -177,10 +180,10 @@ export function useProgressStream({
     const live = historyProgressToLive(initialProgress)
     // Only hydrate if we got something meaningful (non-empty snapshot)
     if (live.phase) {
-      if (chatID) progressSnapshotCache.set(chatID, initialProgress as ProgressEvent)
+      if (progressCacheKey) progressSnapshotCache.set(progressCacheKey, initialProgress as ProgressEvent)
       store.replace(live)
     }
-  }, [store, initialProgress, disabled, chatID])
+  }, [store, initialProgress, disabled, progressCacheKey])
 
   // Dispose on unmount.
   useEffect(() => {
@@ -199,7 +202,7 @@ export function useProgressStream({
         return
       }
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
-        clearProgressSnapshot(chatIDRef.current)
+        clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
       handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef)
     })

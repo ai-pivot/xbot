@@ -7,6 +7,7 @@ import {
   lastSeqCache,
   messagesCache,
   progressSnapshotCache,
+  sessionCacheKey,
   SESSION_TREE_CACHE_KEY,
 } from '@/lib/webCache'
 import { AuthContext, AuthProvider } from './AuthProvider'
@@ -49,9 +50,10 @@ describe('AuthProvider cache isolation', () => {
     await waitFor(() => expect(result.current?.loading).toBe(false))
 
     localStorage.setItem(SESSION_TREE_CACHE_KEY, '{"version":1,"sessions":[],"subAgents":[]}')
-    messagesCache.set('chat-a', [])
-    lastSeqCache.set('chat-a', 7)
-    progressSnapshotCache.set('chat-a', { phase: 'tool' })
+    const cacheKey = sessionCacheKey('web', 'chat-a')
+    messagesCache.set(cacheKey, [])
+    lastSeqCache.set(cacheKey, 7)
+    progressSnapshotCache.set(cacheKey, { phase: 'tool' })
 
     await act(async () => {
       await result.current?.logout()
