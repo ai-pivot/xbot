@@ -181,6 +181,62 @@ describe('useChatMessages', () => {
     second.unmount()
   })
 
+  it('does not let delayed history replace an optimistic message or its SSE echo', async () => {
+    const history = deferred<{
+      messages: { role: string; content: string; timestamp: string }[]
+      chat_id: string
+      last_seq: number
+    }>()
+    let messageHandler: ((message: { type: string; chat_id: string; content: string; ts: number }) => void) | null = null
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const data = await history.promise
+      return new Response(JSON.stringify({ ok: true, data, error: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+    const ws = {
+      rpc: vi.fn(),
+      send: vi.fn(async () => undefined),
+      setLastSeq: vi.fn(),
+      onMessage: vi.fn((handler) => {
+        messageHandler = handler
+        return vi.fn()
+      }),
+    } as unknown as WSConnection
+    const { result } = renderHook(() => useChatMessages({ chatID: 'slow-chat', channel: 'web', ws }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      result.current.sendMessage('new message')
+    })
+    expect(result.current.messages.map((message) => message.content)).toEqual(['new message'])
+
+    act(() => {
+      messageHandler?.({
+        type: 'user_echo',
+        chat_id: 'slow-chat',
+        content: 'new message with attachment',
+        ts: 1_786_000_000,
+      })
+    })
+    expect(result.current.messages.map((message) => message.content)).toEqual(['new message with attachment'])
+
+    await act(async () => {
+      history.resolve({
+        messages: [{ role: 'user', content: 'old history', timestamp: '2026-07-08T00:00:00Z' }],
+        chat_id: 'slow-chat',
+        last_seq: 99,
+      })
+      await history.promise
+    })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    expect(result.current.messages.map((message) => message.content)).toEqual(['new message with attachment'])
+    expect(messagesCache.get('slow-chat')?.map((message) => message.content)).toEqual(['new message with attachment'])
+    expect(ws.setLastSeq).not.toHaveBeenCalled()
+  })
+
   it('does not flash loading during same-session background reloads after an empty history loaded', async () => {
     const pendingSecond = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
     const ws = makeWS([

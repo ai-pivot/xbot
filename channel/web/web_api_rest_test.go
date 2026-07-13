@@ -164,10 +164,22 @@ func TestRESTRPCAllowsFrontendRecoveryMethods(t *testing.T) {
 
 func TestRESTRPCGetActiveProgressChecksAgentOwnership(t *testing.T) {
 	db := newTestDB(t)
-	for _, chatID := range []string{"web:web-2/review:1", "web:web-3/review:1"} {
+	for _, chat := range []struct {
+		senderID string
+		chatID   string
+	}{
+		{senderID: "web-2", chatID: "owned-chat"},
+		{senderID: "web-3", chatID: "foreign-chat"},
+	} {
+		if _, err := db.Exec(
+			"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
+			"web", chat.senderID, chat.chatID, chat.chatID,
+		); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := db.Exec(
 			"INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)",
-			"agent", chatID, time.Now().Format(time.RFC3339),
+			"agent", "web:"+chat.chatID+"/review:1", time.Now().Format(time.RFC3339),
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -181,13 +193,13 @@ func TestRESTRPCGetActiveProgressChecksAgentOwnership(t *testing.T) {
 	})
 
 	owned := httptest.NewRecorder()
-	wc.handleRPC(owned, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_active_progress","params":{"channel":"agent","chat_id":"web:web-2/review:1"}}`), "web-2", 2))
+	wc.handleRPC(owned, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_active_progress","params":{"channel":"agent","chat_id":"web:owned-chat/review:1"}}`), "web-2", 2))
 	if owned.Code != http.StatusOK || dispatched != 1 {
 		t.Fatalf("owned status=%d dispatched=%d body=%s", owned.Code, dispatched, owned.Body.String())
 	}
 
 	foreign := httptest.NewRecorder()
-	wc.handleRPC(foreign, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_active_progress","params":{"channel":"agent","chat_id":"web:web-3/review:1"}}`), "web-2", 2))
+	wc.handleRPC(foreign, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_active_progress","params":{"channel":"agent","chat_id":"web:foreign-chat/review:1"}}`), "web-2", 2))
 	if foreign.Code != http.StatusForbidden || dispatched != 1 {
 		t.Fatalf("foreign status=%d dispatched=%d body=%s", foreign.Code, dispatched, foreign.Body.String())
 	}

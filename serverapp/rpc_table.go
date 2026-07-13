@@ -84,24 +84,48 @@ func (h *RPCContext) agentSessionOwnedBySender(chatID, senderID string) bool {
 	if senderID == "" || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
 		return false
 	}
+	if !h.agentTenantExists(chatID) {
+		return false
+	}
+	for depth := 0; depth < 32; depth++ {
+		parentChannel, parentChatID := sessionKeyParent(chatID)
+		if parentChannel == "" || parentChatID == "" {
+			return false
+		}
+		switch parentChannel {
+		case "web":
+			return parentChatID == senderID || h.webChatOwnedBySender(parentChatID, senderID)
+		case "agent":
+			if !h.agentTenantExists(parentChatID) {
+				return false
+			}
+			chatID = parentChatID
+		default:
+			return parentChatID == senderID
+		}
+	}
+	return false
+}
+
+func (h *RPCContext) agentTenantExists(chatID string) bool {
 	var count int
 	err := h.Ag.MultiSession().DB().Conn().QueryRow(
 		`SELECT COUNT(*) FROM tenants WHERE channel = 'agent' AND chat_id = ?`, chatID,
 	).Scan(&count)
-	if err != nil || count == 0 {
-		return false
+	return err == nil && count > 0
+}
+
+func sessionKeyParent(key string) (string, string) {
+	slash := strings.LastIndex(key, "/")
+	if slash <= 0 {
+		return "", ""
 	}
-	for depth := 0; depth < 32; depth++ {
-		owner := sessionKeyOwner(chatID)
-		if owner == "" {
-			return false
-		}
-		if owner == senderID {
-			return true
-		}
-		chatID = owner
+	parent := key[:slash]
+	parts := strings.SplitN(parent, ":", 2)
+	if len(parts) != 2 {
+		return "", ""
 	}
-	return false
+	return parts[0], parts[1]
 }
 
 func (h *RPCContext) webChatOwnedBySender(chatID, senderID string) bool {
@@ -848,10 +872,8 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.FullKey == "" {
 			return nil, fmt.Errorf("full_key is required")
 		}
-		if owner := sessionKeyOwner(p.FullKey); owner != "" {
-			if !isAdmin(ctx) && owner != rpcBizID(ctx) {
-				return nil, fmt.Errorf("access denied")
-			}
+		if !isAdmin(ctx) && !h.ownOrAdmin(ctx, "agent", p.FullKey) {
+			return nil, fmt.Errorf("access denied")
 		}
 		dump, _ := h.Ag.GetAgentSessionDumpByFullKey(p.FullKey)
 		if dump == nil {

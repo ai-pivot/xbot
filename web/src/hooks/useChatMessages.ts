@@ -246,6 +246,7 @@ export function useChatMessages({
   // switches sessions (prevents session A's history from overwriting session
   // B's after a quick switch — Spec 5 §2.1).
   const reloadGenRef = useRef(0)
+  const messageMutationGenRef = useRef(0)
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
@@ -256,7 +257,11 @@ export function useChatMessages({
 
   const reload = useCallback(async () => {
     const gen = ++reloadGenRef.current
+    const mutationGen = messageMutationGenRef.current
     const globalSeq = ++globalReloadSeq
+    const requestIsStale = () => (
+      gen !== reloadGenRef.current || mutationGen !== messageMutationGenRef.current
+    )
     const reloadKey = subAgentRole || agentChatID
       ? `${channel}:${chatID ?? ''}:${subAgentRole ?? ''}:${subAgentInstance ?? ''}:${agentChatID ?? ''}`
       : (chatID ?? `${channel}:current`)
@@ -280,7 +285,7 @@ export function useChatMessages({
         const dump = await ws.rpc<AgentSessionDump>('get_agent_session_dump_by_full_key', {
           full_key: agentChatID,
         })
-        if (gen !== reloadGenRef.current) return
+        if (requestIsStale()) return
         const dumpMessages = Array.isArray(dump?.messages) ? dump.messages : []
         const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
@@ -300,7 +305,7 @@ export function useChatMessages({
           role: subAgentRole,
           instance: subAgentInstance ?? '',
         })
-        if (gen !== reloadGenRef.current) return
+        if (requestIsStale()) return
         const dumpMessages = Array.isArray(dump?.messages) ? dump.messages : []
         const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
@@ -317,7 +322,7 @@ export function useChatMessages({
           role: subAgentRole,
           instance: subAgentInstance ?? '',
         })
-        if (gen !== reloadGenRef.current) return
+        if (requestIsStale()) return
         const parsed = parseSubAgentMessages(Array.isArray(msgs) ? msgs : [])
         if (shouldKeepVisibleRowsOnRefresh(parsed, sameTarget, messagesRef.current)) return
         if (!commitMessageCache(reloadKey, parsed, globalSeq)) return
@@ -328,10 +333,9 @@ export function useChatMessages({
       }
       // Normal mode: load via Web history snapshot (full history + progress).
       const data = await fetchHistory(ws, chatID ? { channel, chatID } : null)
-      // Discard stale fetch — a newer reload() was triggered while we were
-      // waiting for this response (rapid session switch or HistoryCompacted
-      // during an in-flight reload).
-      if (gen !== reloadGenRef.current) return
+      // Discard stale fetches after a newer reload or any local/live message
+      // mutation so an older snapshot cannot replace post-request rows.
+      if (requestIsStale()) return
       // Store last_seq for SSE deduplication and reconnect replay.
       const cursorChatID = data.chat_id ?? chatID
       if (data.last_seq && cursorChatID) ws.setLastSeq(cursorChatID, data.last_seq)
@@ -344,7 +348,7 @@ export function useChatMessages({
       setInitialProgress(data.active_progress ?? null)
       if (data.chat_id) setResolvedChatID(data.chat_id)
     } catch (e) {
-      if (gen !== reloadGenRef.current) return
+      if (requestIsStale()) return
       setError(e instanceof Error ? e.message : String(e))
       if (!sameTarget && !cachedRows) setMessages([])
       setInitialProgress(null)
@@ -376,6 +380,7 @@ export function useChatMessages({
       if (msg.type !== 'user_echo' && msg.type !== 'inject_user') return
       const content = msg.content ?? msg.original_content ?? ''
       if (!content) return
+      messageMutationGenRef.current += 1
       const id = `echo-${msg.ts ?? Date.now()}-${echoSeq++}`
       const ts = msg.ts ? new Date(msg.ts * 1000).toISOString() : new Date().toISOString()
       const now = Date.now()
@@ -435,6 +440,7 @@ export function useChatMessages({
           turnID: 0,
           persisted: false,
         }
+        messageMutationGenRef.current += 1
         setMessages((prev) => {
           const next = [...prev, newMsg]
           cacheCurrentMessages(next)
@@ -454,6 +460,7 @@ export function useChatMessages({
       }).catch((error: unknown) => {
         if (optimisticID) {
           const failedID = optimisticID
+          messageMutationGenRef.current += 1
           setMessages((prev) => {
             const next = prev.filter((message) => message.id !== failedID)
             if (sendCacheKey) messagesCache.set(sendCacheKey, next)
@@ -477,6 +484,7 @@ export function useChatMessages({
 
   const appendAssistant = useCallback((content: string, iterations: WebIteration[]) => {
     if (!content && !iterations.length) return
+    messageMutationGenRef.current += 1
     const id = `asst-${Date.now()}-${echoSeq++}`
     const newMsg: ChatMessage = {
       id,
@@ -496,6 +504,7 @@ export function useChatMessages({
   }, [cacheCurrentMessages])
 
   const removeMessage = useCallback((id: string) => {
+    messageMutationGenRef.current += 1
     setMessages((prev) => {
       const next = prev.filter((m) => m.id !== id)
       cacheCurrentMessages(next)
@@ -504,6 +513,7 @@ export function useChatMessages({
   }, [cacheCurrentMessages])
 
   const clearMessages = useCallback(() => {
+    messageMutationGenRef.current += 1
     setMessages([])
     const key = lastReloadKeyRef.current
     if (key) loadedMessageKeys.add(key)

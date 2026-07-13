@@ -1796,7 +1796,7 @@ func TestSetCWDAllowsOwnedGeneratedWebChat(t *testing.T) {
 	}
 }
 
-func TestGetActiveProgressChecksEncodedWebAgentOwner(t *testing.T) {
+func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 	dir := t.TempDir()
 	ag, err := agent.New(agent.Config{
 		WorkDir:        dir,
@@ -1810,10 +1810,22 @@ func TestGetActiveProgressChecksEncodedWebAgentOwner(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ag.Close() })
 
-	for _, chatID := range []string{"web:web-2/review:1", "web:web-3/review:1"} {
+	for _, chat := range []struct {
+		senderID string
+		chatID   string
+	}{
+		{senderID: "web-2", chatID: "owned-chat"},
+		{senderID: "web-3", chatID: "foreign-chat"},
+	} {
+		if _, err := ag.MultiSession().DB().Conn().Exec(
+			"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
+			"web", chat.senderID, chat.chatID, chat.chatID,
+		); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := ag.MultiSession().DB().Conn().Exec(
 			"INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)",
-			"agent", chatID, time.Now().Format(time.RFC3339),
+			"agent", "web:"+chat.chatID+"/review:1", time.Now().Format(time.RFC3339),
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -1821,13 +1833,24 @@ func TestGetActiveProgressChecksEncodedWebAgentOwner(t *testing.T) {
 
 	table := BuildRPCTable(&config.Config{}, ag, nil, nil, nil)
 	ctx := WithRPCCtxResolved(context.Background(), "web-2", "web-2", 42, "user")
-	owned, _ := json.Marshal(map[string]string{"channel": "agent", "chat_id": "web:web-2/review:1"})
+	ownedChatID := "web:owned-chat/review:1"
+	foreignChatID := "web:foreign-chat/review:1"
+	owned, _ := json.Marshal(map[string]string{"channel": "agent", "chat_id": ownedChatID})
 	if _, err := table.Dispatch(ctx, "get_active_progress", owned); err != nil {
 		t.Fatalf("owned agent progress: %v", err)
 	}
-	foreign, _ := json.Marshal(map[string]string{"channel": "agent", "chat_id": "web:web-3/review:1"})
+	foreign, _ := json.Marshal(map[string]string{"channel": "agent", "chat_id": foreignChatID})
 	if _, err := table.Dispatch(ctx, "get_active_progress", foreign); err == nil {
 		t.Fatal("foreign agent progress should be denied")
+	}
+
+	ownedDump, _ := json.Marshal(map[string]string{"full_key": ownedChatID})
+	if _, err := table.Dispatch(ctx, "get_agent_session_dump_by_full_key", ownedDump); err != nil {
+		t.Fatalf("owned agent dump: %v", err)
+	}
+	foreignDump, _ := json.Marshal(map[string]string{"full_key": foreignChatID})
+	if _, err := table.Dispatch(ctx, "get_agent_session_dump_by_full_key", foreignDump); err == nil {
+		t.Fatal("foreign agent dump should be denied")
 	}
 }
 
