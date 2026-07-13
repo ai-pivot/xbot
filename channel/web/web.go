@@ -145,8 +145,6 @@ type WebCallbacks struct {
 	// When subID/model are empty, falls back to session resolution.
 	LLMSetMaxContext func(senderID, subID, model string, maxContext int) error
 
-	// RegistryPublish publishes a user's agent/skill to the marketplace.
-	RegistryPublish func(entryType, name, senderID string) error
 	// SandboxWriteFile writes file data to the user's sandbox at the given path.
 	// Returns (sandboxInternalPath, error). sandboxInternalPath is the path inside
 	// the sandbox (e.g., /workspace/uploads/file.txt). Returns ("", nil) if no sandbox available.

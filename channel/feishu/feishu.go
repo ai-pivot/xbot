@@ -19,7 +19,6 @@ import (
 	log "xbot/logger"
 	"xbot/prompt"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
 	"xbot/tools"
 
 	ch "xbot/channel"
@@ -92,13 +91,6 @@ type SettingsCallbacks struct {
 
 	ContextModeGet func() string
 	ContextModeSet func(mode string) error
-
-	RegistryBrowse    func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error)
-	RegistryInstall   func(entryType string, id int64, senderID string) error
-	RegistryListMy    func(senderID, entryType string) (published []sqlite.SharedEntry, installed []string, err error)
-	RegistryPublish   func(entryType, name, senderID string) error
-	RegistryUnpublish func(entryType, name, senderID string) error
-	RegistryDelete    func(entryType, name, senderID string) error
 
 	// MetricsGet 获取当前运行指标（用于设置页展示）
 	MetricsGet func() string
@@ -3537,49 +3529,5 @@ func (f *FeishuChannel) BuildMainMenuUI(ctx context.Context, senderID string) st
 	sb.WriteString("- 📤 `/publish skill|agent <name>` — 发布\n")
 	sb.WriteString("- 📥 `/install skill|agent <id>` — 安装\n")
 	sb.WriteString("- 🗑️ `/uninstall skill|agent <name>` — 卸载\n")
-	return sb.String()
-}
-
-// BuildMySkillsUI builds a Skills panel for Feishu.
-func (f *FeishuChannel) BuildMySkillsUI(ctx context.Context, skills []string, senderID string) string {
-	if len(skills) == 0 {
-		return "## 📦 我的 Skills\n\n暂无已安装的 Skills。\n使用 `/browse skills` 浏览市场。"
-	}
-
-	var sb strings.Builder
-	sb.WriteString("## 📦 我的 Skills\n\n")
-	for i, s := range skills {
-		fmt.Fprintf(&sb, "%d. %s\n", i+1, s)
-	}
-	sb.WriteString("\n使用 `/uninstall skill <name>` 卸载。")
-	return sb.String()
-}
-
-// BuildBrowseMarketUI builds a marketplace browse panel for Feishu.
-func (f *FeishuChannel) BuildBrowseMarketUI(ctx context.Context, entries any, senderID string) string {
-	var sb strings.Builder
-	sb.WriteString("## 🏪 市场浏览\n\n")
-
-	switch e := entries.(type) {
-	case []map[string]string:
-		if len(e) == 0 {
-			sb.WriteString("市场暂无公开的 Skill/Agent。")
-			return sb.String()
-		}
-		for i, entry := range e {
-			typeLabel := "📦"
-			if entry["type"] == "agent" {
-				typeLabel = "🤖"
-			}
-			fmt.Fprintf(&sb, "%d. %s **%s** — %s\n", i+1, typeLabel, entry["name"], entry["description"])
-			if entry["author"] != "" {
-				fmt.Fprintf(&sb, "   作者：%s\n", entry["author"])
-			}
-			fmt.Fprintf(&sb, "   安装：`/install %s %s`\n\n", entry["type"], entry["id"])
-		}
-	default:
-		sb.WriteString("暂无数据。")
-	}
-
 	return sb.String()
 }

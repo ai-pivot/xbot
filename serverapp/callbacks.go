@@ -1685,7 +1685,6 @@ func looksLikeWorkDir(s string) bool {
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.
 func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.SettingsCallbacks {
 	rc := runnerCallbacks(cfg)
-	regc := registryCallbacks(ag)
 	llmc := llmCallbacks(ag)
 
 	return feishu.SettingsCallbacks{
@@ -1859,9 +1858,6 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		ContextModeSet: func(mode string) error {
 			return ag.SetContextMode(mode)
 		},
-
-		// Registry
-		RegistryDelete: regc.RegistryUninstall,
 
 		// Metrics
 		MetricsGet: func() string {

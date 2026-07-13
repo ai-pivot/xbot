@@ -532,7 +532,7 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&settingsCmd{}, CommandInfo{Usage: "/settings", Description: "打开个人设置（仅私聊）"})
 	r.Register(&menuCmd{}, CommandInfo{Usage: "/menu", Description: "主菜单"})
 	r.Register(&pluginReloadAllCmd{}, CommandInfo{Usage: "/plugin reload-all", Description: "重新加载所有插件"})
-	r.Register(&appCmd{})
+	r.Register(&appCmd{}, CommandInfo{Usage: "/app", Description: "应用管理（打包、安装、卸载）"})
 
 	// Goal commands
 	r.Register(&goalClearCmd{}, CommandInfo{Usage: "/goal clear", Description: "清除当前目标"}) // 先注册（更精确的匹配优先）
