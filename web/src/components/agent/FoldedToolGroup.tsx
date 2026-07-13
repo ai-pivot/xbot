@@ -4,9 +4,15 @@
  * Tool display is controlled by two orthogonal parameters:
  *   - `level` (CollapseLevel): 'all'/'minimal' → folded rows; 'none' → expanded
  *   - `mergeTools` (boolean): when true AND level is 'all'/'minimal' AND 2+ tools,
- *     consecutive tools merge into one line "▸ C1 · C2 (N 个工具)".
+ *     consecutive tools merge into one icon-group row "▸ [icons] N 次调用".
  *     When false, each tool shows its own title row (still folded).
  *     At 'none' level mergeTools is ignored — tools always expand.
+ *
+ * Single-tool title format (Spec B §3):
+ *   [Lucide icon] [status dot] ToolName: param  elapsed
+ *
+ * Merged row format (Spec B §4):
+ *   ▸ [icon1] [icon2] [icon3] +N  N 次调用
  *
  * Tool status indicators use CSS status dot classes:
  *   generating: .tool-status-generating (blue blink)
@@ -18,10 +24,14 @@ import { memo, useState, type ReactNode } from 'react'
 
 import { FoldedLine } from './FoldedLine'
 import { ToolRender } from './ToolRender'
+import { getToolIcon } from './toolIcons'
 import { useI18n } from '@/providers/i18n'
 import type { CollapseLevel } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
 import { cn } from '@/lib/utils'
+
+/** Maximum icons to show in a merged row before collapsing to "+N". */
+const MAX_MERGED_ICONS = 5
 
 interface FoldedToolGroupProps {
   tools: WebToolProgress[]
@@ -33,6 +43,13 @@ interface FoldedToolGroupProps {
 /** Extract display name from a tool (prefers label over name). */
 function toolName(tool: WebToolProgress): string {
   return tool.label || tool.name || 'tool'
+}
+
+/** Extract a short parameter hint from the tool label (text after ": "). */
+function toolParam(tool: WebToolProgress): string {
+  const label = tool.label || ''
+  const idx = label.indexOf(': ')
+  return idx >= 0 ? label.slice(idx + 2) : ''
 }
 
 /** CSS class for a tool's status dot. */
@@ -62,28 +79,49 @@ function formatElapsed(ms: number): string {
   return `${m}m${rem}s`
 }
 
-/** Format a single tool's title for its FoldedLine. */
+/** Render a single Lucide tool icon at 16px. */
+function ToolIcon({ name, className }: { name: string; className?: string }) {
+  const Icon = getToolIcon(name)
+  return <Icon className={cn('tool-icon-single', className)} />
+}
+
+/**
+ * Format a single tool's title: [icon] [dot] name: param  elapsed
+ */
 function formatToolTitle(
   tool: WebToolProgress,
   t: (key: string, params?: Record<string, string | number>) => string,
 ): ReactNode {
-  const name = toolName(tool)
+  const name = tool.name || 'tool'
+  const label = tool.label || name
   const dotClass = statusDotClass(tool.status)
   let suffix = ''
   if (tool.status === 'generating') suffix = t('agent.toolGenerating')
   else if (tool.status === 'running') suffix = t('agent.statusRunning')
   const elapsed = formatElapsed(tool.elapsedMs)
+  // Extract param from label: "ToolName: param" → "param"
+  const param = toolParam(tool)
+  // Display name: prefer the label's prefix (before ": ") or the raw name
+  const displayName = label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
+
   return (
-    <span className="flex items-center gap-1.5">
+    <span className="flex items-center gap-1.5 min-w-0">
+      <ToolIcon name={name} />
       <span className={cn('tool-status-dot', dotClass)} aria-hidden />
-      <span className="font-mono">{name}</span>
-      {suffix && <span className="text-text-muted">{suffix}</span>}
-      {elapsed && !suffix && <span className="text-text-muted tabular-nums">{elapsed}</span>}
+      <span className="font-mono shrink-0">{displayName}</span>
+      {param && (
+        <span className="font-mono text-text-muted truncate">{param}</span>
+      )}
+      {suffix && <span className="text-text-muted shrink-0">{suffix}</span>}
+      {elapsed && !suffix && <span className="text-text-muted tabular-nums shrink-0">{elapsed}</span>}
     </span>
   )
 }
 
-/** Build the merged title: "C1 · C2 (N 个工具)" with status dots. */
+/**
+ * Build the merged title: [icon1] [icon2] ... +N  N 次调用
+ * Shows up to MAX_MERGED_ICONS icons, then "+N" for the remainder.
+ */
 function formatMergedTitle(
   tools: WebToolProgress[],
   t: (key: string, params?: Record<string, string | number>) => string,
@@ -94,14 +132,24 @@ function formatMergedTitle(
     : tools.some((t) => t.status === 'running' || t.status === 'generating')
       ? 'running'
       : 'done'
-  const names = tools.map(toolName)
-  const joined = names.join(' · ')
+
+  const visibleTools = tools.slice(0, MAX_MERGED_ICONS)
+  const remaining = tools.length - MAX_MERGED_ICONS
+
   return (
     <span className="flex items-center gap-1.5">
       <span className={cn('tool-status-dot', statusDotClass(worstStatus))} aria-hidden />
-      <span className="font-mono text-text-secondary">{joined}</span>
-      <span className="text-text-muted">
-        ({t('agent.toolGroup', { count: tools.length })})
+      <span className="tool-icon-group">
+        {visibleTools.map((tool, i) => {
+          const Icon = getToolIcon(tool.name)
+          return <Icon key={`${tool.name}-${i}`} className="tool-icon" />
+        })}
+        {remaining > 0 && (
+          <span className="text-text-muted text-[11px] shrink-0">+{remaining}</span>
+        )}
+      </span>
+      <span className="text-text-muted shrink-0">
+        {t('agent.toolGroup', { count: tools.length })}
       </span>
     </span>
   )

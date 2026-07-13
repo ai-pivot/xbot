@@ -15,6 +15,8 @@ import { FoldedToolGroup } from '@/components/agent/FoldedToolGroup'
 import { IterationGroup } from '@/components/agent/IterationHistory'
 import { ReasoningBlock } from '@/components/agent/ReasoningBlock'
 import { ToolCallBlock } from '@/components/agent/ToolCallBlock'
+import { getToolIcon } from '@/components/agent/toolIcons'
+import { Terminal, FileText, Search, Asterisk, Wrench } from 'lucide-react'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
 
 /** Helper: build a WebToolProgress with defaults. */
@@ -130,14 +132,17 @@ describe('FoldedToolGroup', () => {
       makeTool({ name: 'Read', label: 'Read' }),
       makeTool({ name: 'Grep', label: 'Grep' }),
     ]
-    renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
-    // Merged line: "Read · Grep" is one text node + "(2 tools)"
-    expect(screen.getByText('Read · Grep')).toBeInTheDocument()
-    expect(screen.getByText('(2 tools)')).toBeInTheDocument()
+    const { container } = renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
+    // Merged line now shows icons + tool count text (no "Name · Name" join)
+    // The tool-group count text should be present
+    expect(screen.getByText(/2.*tool/)).toBeInTheDocument()
+    // Icons should be rendered as SVG elements in the merged row
+    const icons = container.querySelectorAll('.tool-icon-group svg')
+    expect(icons.length).toBe(2)
 
     // Expand the merged line
     fireEvent.click(screen.getByRole('button'))
-    // Individual tool FoldedLines should now be visible (multiple "Read" and "Grep")
+    // Individual tool FoldedLines should now be visible — tool names appear in expanded rows
     expect(screen.getAllByText('Read').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Grep').length).toBeGreaterThan(0)
   })
@@ -223,9 +228,11 @@ describe('IterationGroup', () => {
       ],
       toolCount: 2,
     })
-    renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
-    // Both tool names visible in the merged line as one text node
-    expect(screen.getByText('Read · Grep')).toBeInTheDocument()
+    const { container } = renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
+    // Merged line shows tool count text + icons
+    expect(screen.getByText(/2.*tool/)).toBeInTheDocument()
+    const icons = container.querySelectorAll('.tool-icon-group svg')
+    expect(icons.length).toBe(2)
   })
 
   it('renders a hint when iteration is empty', () => {
@@ -233,5 +240,28 @@ describe('IterationGroup', () => {
     renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
     // Should render the "none" hint
     expect(screen.getByText('—')).toBeInTheDocument()
+  })
+})
+
+describe('getToolIcon', () => {
+  it('returns Terminal for Shell', () => {
+    expect(getToolIcon('Shell')).toBe(Terminal)
+  })
+
+  it('returns FileText for Read', () => {
+    expect(getToolIcon('Read')).toBe(FileText)
+  })
+
+  it('returns Search for Grep', () => {
+    expect(getToolIcon('Grep')).toBe(Search)
+  })
+
+  it('returns Asterisk for SubAgent', () => {
+    expect(getToolIcon('SubAgent')).toBe(Asterisk)
+  })
+
+  it('returns Wrench for unmapped tool names', () => {
+    expect(getToolIcon('UnknownTool')).toBe(Wrench)
+    expect(getToolIcon('')).toBe(Wrench)
   })
 })

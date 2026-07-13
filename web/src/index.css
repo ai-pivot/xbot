@@ -557,3 +557,34 @@
     opacity: 0.8;
   }
 }
+
+/* ── Tool icon styles (Spec B §7) ────────────────────────────────────────────
+ * Lucide icons for tool calls. Compact (14–16px), muted color, flex-shrink:0.
+ */
+
+.tool-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* Icon group in merged row: icons side by side with minimal gap */
+.tool-icon-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tool-icon-group .tool-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* Single-tool title row: slightly larger icon */
+.tool-icon-single {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}

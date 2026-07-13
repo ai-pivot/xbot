@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { Bot } from 'lucide-react'
+import { Asterisk } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import type { WebSubAgentProgress } from '@/types/shared'
@@ -33,7 +33,7 @@ function SubAgentNode({ node, depth }: { node: WebSubAgentProgress; depth: numbe
         className="flex min-w-0 items-center gap-1.5 text-xs"
         style={{ paddingLeft: `${depth * 14}px` }}
       >
-        <Bot
+        <Asterisk
           className={cn('size-3.5 shrink-0', running && 'animate-pulse')}
           style={{
             color: errored

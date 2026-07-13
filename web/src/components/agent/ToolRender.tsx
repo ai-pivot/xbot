@@ -10,6 +10,9 @@
  * those first and fall back to label/summary parsing.
  */
 import { memo } from 'react'
+import {
+  Terminal, FilePlus, FilePen, FileText, Search, FolderSearch,
+} from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
 import { ToolCallBlock } from './ToolCallBlock'
 
@@ -88,7 +91,7 @@ function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary
     <div className="flex flex-col gap-1.5 py-1 text-xs">
       {command && (
         <div className="flex items-start gap-2">
-          <span className="shrink-0 font-mono text-text-muted">$</span>
+          <Terminal className="tool-icon mt-0.5" />
           <code className="font-mono text-text-primary">{command}</code>
         </div>
       )}
@@ -119,7 +122,7 @@ function FileCreateRender({ tool, summary }: { tool: WebToolProgress; summary: s
     <div className="py-1 text-xs">
       {path && (
         <div className="flex items-center gap-1.5">
-          <span style={{ color: 'var(--status-running)' }}>✓</span>
+          <FilePlus className="tool-icon" />
           <code className="font-mono text-text-primary">{path}</code>
         </div>
       )}
@@ -139,7 +142,7 @@ function FileReplaceRender({ tool, summary }: { tool: WebToolProgress; summary: 
     <div className="flex flex-col gap-1.5 py-1 text-xs">
       {path && (
         <div className="flex items-center gap-1.5">
-          <span style={{ color: 'var(--accent)' }}>✎</span>
+          <FilePen className="tool-icon" />
           <code className="font-mono text-text-primary">{path}</code>
         </div>
       )}
@@ -167,7 +170,7 @@ function ReadRender({ tool, summary, detail }: { tool: WebToolProgress; summary:
     <div className="flex flex-col gap-1 py-1 text-xs">
       {path && (
         <div className="flex items-center gap-1.5">
-          <span className="text-text-muted">📖</span>
+          <FileText className="tool-icon" />
           <code className="font-mono text-text-primary">{path}</code>
           {lines.length > 0 && <span className="text-text-muted">({lines.length} lines)</span>}
         </div>
@@ -196,7 +199,7 @@ function GrepRender({ tool, summary, detail }: { tool: WebToolProgress; summary:
   return (
     <div className="flex flex-col gap-1 py-1 text-xs">
       <div className="flex items-center gap-1.5">
-        <span className="text-text-muted">🔍</span>
+        <Search className="tool-icon" />
         {labelContent && <code className="font-mono text-text-primary">{labelContent}</code>}
         {matches.length > 0 && <span className="text-text-muted">({matches.length} matches)</span>}
       </div>
@@ -220,7 +223,7 @@ function GlobRender({ tool, summary }: { tool: WebToolProgress; summary: string 
   return (
     <div className="flex flex-col gap-1 py-1 text-xs">
       <div className="flex items-center gap-1.5">
-        <span className="text-text-muted">📂</span>
+        <FolderSearch className="tool-icon" />
         {pattern && <code className="font-mono text-text-primary">{pattern}</code>}
         {files.length > 0 && <span className="text-text-muted">({files.length} files)</span>}
       </div>
