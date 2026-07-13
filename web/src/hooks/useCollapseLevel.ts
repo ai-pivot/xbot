@@ -90,6 +90,7 @@ function getSnapshotMergeTools(): boolean {
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+
 export type BlockType = 'reasoning' | 'tool' | 'text' | 'iteration'
 
 export interface UseCollapseLevelResult {

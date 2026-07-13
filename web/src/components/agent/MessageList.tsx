@@ -322,10 +322,15 @@ function scheduleScrollToBottom(
     scrollToBottom(el)
   }
   run()
-  // One RAF for post-measurement settle; ResizeObserver handles the rest.
+  // RAF for post-measurement settle, plus short timeouts for async
+  // rendering (syntax highlighting, image loading) that completes after RAF.
   const raf = requestAnimationFrame(run)
+  const t1 = window.setTimeout(run, 150)
+  const t2 = window.setTimeout(run, 400)
   return () => {
     cancelled = true
     cancelAnimationFrame(raf)
+    clearTimeout(t1)
+    clearTimeout(t2)
   }
 }

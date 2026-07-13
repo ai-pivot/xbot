@@ -24,7 +24,7 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 		return wc.GetCurrentSession(senderID), true
 	}
 	if channelName == "" {
-		channelName = wc.inferAPISessionChannel(senderID, chatID)
+		channelName = "web"
 	}
 	if chatID == "" {
 		chatID = senderID
@@ -34,17 +34,6 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 		return SessionSelector{}, false
 	}
 	return SessionSelector{Channel: channelName, ChatID: chatID}, true
-}
-
-func (wc *WebChannel) inferAPISessionChannel(senderID, chatID string) string {
-	current := wc.GetCurrentSession(senderID)
-	if chatID == "" || current.ChatID == chatID {
-		return current.Channel
-	}
-	if webChatIDLooksLikeSubAgent(chatID) {
-		return "agent"
-	}
-	return "web"
 }
 
 func (wc *WebChannel) apiSessionFromQuery(w http.ResponseWriter, r *http.Request, senderID string) (SessionSelector, bool) {
@@ -66,11 +55,8 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Capture the replay boundary before the snapshot. Events sequenced while
-	// the snapshot is being built remain above this cursor and are replayable.
-	lastSeq := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
 	if wc.callbacks.HistorySnapshot == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "chat_id": sel.ChatID, "channel": sel.Channel})
 		return
 	}
 	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel)
@@ -80,7 +66,9 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot.ChatID = sel.ChatID
 	snapshot.Channel = sel.Channel
-	snapshot.LastSeq = lastSeq
+	if es := wc.getEventStream(sel.ChatID); es != nil {
+		snapshot.LastSeq = es.lastSeq()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":              true,
 		"messages":        snapshot.Messages,
@@ -512,7 +500,6 @@ type runnerActiveResponse struct {
 
 type runnerCommandResponse struct {
 	OK      bool              `json:"ok"`
-	Token   string            `json:"token,omitempty"`
 	Command string            `json:"command,omitempty"`
 	Runner  *tools.RunnerInfo `json:"runner,omitempty"`
 	Error   string            `json:"error,omitempty"`
@@ -541,6 +528,7 @@ func (wc *WebChannel) handleRunners(w http.ResponseWriter, r *http.Request) {
 		maskedRunners := make([]tools.RunnerInfo, len(runners))
 		for i, r := range runners {
 			maskedRunners[i] = r
+			maskedRunners[i].Token = maskSensitive(r.Token)
 			maskedRunners[i].LLMAPIKey = maskSensitive(r.LLMAPIKey)
 		}
 		writeJSON(w, http.StatusOK, runnersListResponse{
@@ -568,24 +556,16 @@ func (wc *WebChannel) handleRunners(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, runnerCommandResponse{OK: false, Error: err.Error()})
 			return
 		}
-		created := &tools.RunnerInfo{
-			Name:        req.Name,
-			Mode:        req.Mode,
-			DockerImage: req.DockerImage,
-			Workspace:   req.Workspace,
-		}
-		if wc.callbacks.RunnerList != nil {
-			if runners, listErr := wc.callbacks.RunnerList(senderID); listErr == nil {
-				for _, runner := range runners {
-					if runner.Name == req.Name {
-						created = &runner
-						created.LLMAPIKey = maskSensitive(created.LLMAPIKey)
-						break
-					}
-				}
-			}
-		}
-		writeJSON(w, http.StatusOK, runnerCommandResponse{OK: true, Token: created.Token, Command: cmd, Runner: created})
+		writeJSON(w, http.StatusOK, runnerCommandResponse{
+			OK:      true,
+			Command: cmd,
+			Runner: &tools.RunnerInfo{
+				Name:        req.Name,
+				Mode:        req.Mode,
+				DockerImage: req.DockerImage,
+				Workspace:   req.Workspace,
+			},
+		})
 	}
 }
 
@@ -665,6 +645,134 @@ func (wc *WebChannel) handleRunnerByName(w http.ResponseWriter, r *http.Request)
 	}
 
 	jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+}
+
+// ---------------------------------------------------------------------------
+// Market API
+// ---------------------------------------------------------------------------
+
+type marketEntry struct {
+	ID          int64  `json:"id"`
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Author      string `json:"author"`
+	CreatedAt   string `json:"created_at"`
+	Installed   bool   `json:"installed"`
+}
+
+type marketResponse struct {
+	OK      bool          `json:"ok"`
+	Entries []marketEntry `json:"entries,omitempty"`
+	Error   string        `json:"error,omitempty"`
+}
+
+type marketInstallRequest struct {
+	Type string `json:"type"`
+	ID   int64  `json:"id"`
+}
+
+type marketUninstallRequest struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+// handleMarket handles GET /api/market?type=agent&limit=20&offset=0
+func (wc *WebChannel) handleMarket(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryBrowse == nil {
+		writeJSON(w, http.StatusOK, marketResponse{OK: true, Entries: nil})
+		return
+	}
+
+	entryType := r.URL.Query().Get("type")
+	limit := 50
+	offset := 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if n, err := strconv.Atoi(o); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	entries, err := wc.callbacks.RegistryBrowse(entryType, limit, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "browse failed"})
+		return
+	}
+
+	// Compute installed set for the user
+	installedSet := make(map[string]bool)
+	if wc.callbacks.RegistryListMy != nil {
+		_, installed, err := wc.callbacks.RegistryListMy(senderID, entryType)
+		if err == nil {
+			for _, name := range installed {
+				installedSet[name] = true
+			}
+		}
+	}
+
+	// Build response entries
+	result := make([]marketEntry, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, marketEntry{
+			ID:          e.ID,
+			Type:        e.Type,
+			Name:        e.Name,
+			Description: e.Description,
+			Author:      e.Author,
+			CreatedAt:   time.UnixMilli(e.CreatedAt).UTC().Format(time.RFC3339),
+			Installed:   installedSet[e.Name],
+		})
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true, Entries: result})
+}
+
+// handleMarketInstall handles POST /api/market/install
+func (wc *WebChannel) handleMarketInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryInstall == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+		return
+	}
+
+	var req marketInstallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if err := wc.callbacks.RegistryInstall(req.Type, req.ID, senderID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
 }
 
 // ---------------------------------------------------------------------------
@@ -873,6 +981,203 @@ func (wc *WebChannel) handleLLMModelSet(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, llmConfigResponse{OK: true})
+}
+
+// handleMarketUninstall handles POST /api/market/uninstall
+func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryUninstall == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+		return
+	}
+
+	var req marketUninstallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if err := wc.callbacks.RegistryUninstall(req.Type, req.Name, senderID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// ---------------------------------------------------------------------------
+// /api/market/my — list user's own agents/skills with publish status
+// ---------------------------------------------------------------------------
+
+type myMarketEntry struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
+	Published   bool   `json:"published"`
+}
+
+type myMarketResponse struct {
+	OK      bool            `json:"ok"`
+	Entries []myMarketEntry `json:"entries,omitempty"`
+	Error   string          `json:"error,omitempty"`
+}
+
+// handleMarketMy handles GET /api/market/my?type=skill
+func (wc *WebChannel) handleMarketMy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, myMarketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, myMarketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryListMy == nil {
+		writeJSON(w, http.StatusOK, myMarketResponse{OK: true, Entries: nil})
+		return
+	}
+
+	entryType := r.URL.Query().Get("type")
+	published, local, err := wc.callbacks.RegistryListMy(senderID, entryType)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, myMarketResponse{OK: false, Error: "list failed"})
+		return
+	}
+
+	// Build published name set for lookup (only public entries count as published)
+	publishedSet := make(map[string]string) // name -> description
+	for _, pe := range published {
+		if pe.Sharing == "public" {
+			publishedSet[pe.Name] = pe.Description
+		}
+	}
+
+	result := make([]myMarketEntry, 0)
+	for _, key := range local {
+		// key format: "skill:name" or "agent:name"
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		typ, name := parts[0], parts[1]
+
+		entry := myMarketEntry{
+			Name: name,
+			Type: typ,
+		}
+		if desc, ok := publishedSet[name]; ok {
+			entry.Published = true
+			entry.Description = desc
+		}
+		result = append(result, entry)
+	}
+
+	writeJSON(w, http.StatusOK, myMarketResponse{OK: true, Entries: result})
+}
+
+// ---------------------------------------------------------------------------
+// /api/market/publish — publish user's skill/agent to marketplace
+// ---------------------------------------------------------------------------
+
+type marketPublishRequest struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+// handleMarketPublish handles POST /api/market/publish
+func (wc *WebChannel) handleMarketPublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryPublish == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+		return
+	}
+
+	var req marketPublishRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if req.Type == "" || req.Name == "" {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "type and name are required"})
+		return
+	}
+
+	if err := wc.callbacks.RegistryPublish(req.Type, req.Name, senderID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// ---------------------------------------------------------------------------
+// /api/market/unpublish — unpublish user's skill/agent from marketplace
+// ---------------------------------------------------------------------------
+
+type marketUnpublishRequest struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+// handleMarketUnpublish handles POST /api/market/unpublish
+func (wc *WebChannel) handleMarketUnpublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
+		return
+	}
+
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+
+	if wc.callbacks.RegistryUnpublish == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "registry not configured"})
+		return
+	}
+
+	var req marketUnpublishRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if req.Type == "" || req.Name == "" {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "type and name are required"})
+		return
+	}
+
+	if err := wc.callbacks.RegistryUnpublish(req.Type, req.Name, senderID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
 }
 
 // ---------------------------------------------------------------------------
@@ -1278,6 +1583,7 @@ func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "chat_id is required")
 		return
 	}
+
 	channel := r.URL.Query().Get("channel")
 	if channel == "" {
 		channel = "web"
@@ -1289,9 +1595,24 @@ func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, channel, chatID) {
-		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
-		return
+	// For web channel: check chat ownership via user_chats table.
+	// For other channels (admin only): verify the tenant exists in DB.
+	if channel == "web" {
+		if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
+			jsonErrorResponse(w, http.StatusForbidden, "not your chat")
+			return
+		}
+	} else {
+		// Verify tenant exists for the requested channel + chatID.
+		var count int
+		err := wc.db.QueryRow(
+			"SELECT COUNT(*) FROM tenants WHERE channel = ? AND chat_id = ?",
+			channel, chatID,
+		).Scan(&count)
+		if err != nil || count == 0 {
+			jsonErrorResponse(w, http.StatusNotFound, "session not found")
+			return
+		}
 	}
 
 	wc.userCurrentSessionMu.Lock()
@@ -1318,30 +1639,26 @@ func (wc *WebChannel) handleChatDelete(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "chat_id is required")
 		return
 	}
-	channelName := strings.TrimSpace(r.URL.Query().Get("channel"))
-	if channelName == "" {
-		channelName = "web"
-	}
 
 	if wc.callbacks.ChatDelete == nil {
 		jsonErrorResponse(w, http.StatusNotImplemented, "chat deletion not available")
 		return
 	}
 
-	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, channelName, chatID) {
+	// Ownership check: admin can delete any chat; non-admin must own it
+	if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
 		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
 		return
 	}
 
-	if err := wc.callbacks.ChatDelete(senderID, channelName, chatID); err != nil {
+	if err := wc.callbacks.ChatDelete(senderID, chatID); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	wc.clearSessionTransportState(channelName, chatID)
 
 	// If deleting current chat, reset to default session
 	wc.userCurrentSessionMu.Lock()
-	if sel, ok := wc.userCurrentSession[senderID]; ok && sel.Channel == channelName && sel.ChatID == chatID {
+	if sel, ok := wc.userCurrentSession[senderID]; ok && sel.ChatID == chatID {
 		delete(wc.userCurrentSession, senderID)
 	}
 	wc.userCurrentSessionMu.Unlock()
@@ -1367,9 +1684,14 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ownership check: admin can rename any chat; non-admin must own it
+	if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
+		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
+		return
+	}
+
 	var req struct {
-		Channel string `json:"channel"`
-		Label   string `json:"label"`
+		Label string `json:"label"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
@@ -1379,21 +1701,13 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "label is required")
 		return
 	}
-	if req.Channel == "" {
-		req.Channel = "web"
-	}
-
-	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, req.Channel, chatID) {
-		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
-		return
-	}
 
 	if wc.callbacks.ChatRename == nil {
 		jsonErrorResponse(w, http.StatusNotImplemented, "chat rename not available")
 		return
 	}
 
-	if err := wc.callbacks.ChatRename(senderID, req.Channel, chatID, req.Label); err != nil {
+	if err := wc.callbacks.ChatRename(senderID, chatID, req.Label); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1403,8 +1717,7 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 
 // canAccessSession checks whether a browser-authenticated user may address a
 // session. Web UUID chats are owned through user_chats; non-web sessions are
-// admin-only unless canonical ownership is recorded. CLI metadata-only rows
-// surfaced in the session tree are also addressable by admins.
+// admin-only and must exist in tenants.
 func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, senderID, channelName, chatID string) bool {
 	if channelName == "" {
 		channelName = "web"
@@ -1413,10 +1726,7 @@ func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, sende
 		return true
 	}
 	if channelName == "web" {
-		if wc.userOwnsChat(senderID, chatID) {
-			return true
-		}
-		return wc.isAdmin(ctx, senderID) && wc.db != nil && wc.tenantExists("web", chatID)
+		return wc.userOwnsChat(senderID, chatID)
 	}
 	if wc.db == nil {
 		return false
@@ -1424,17 +1734,13 @@ func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, sende
 	if channelName == "agent" {
 		return wc.canAccessAgentSession(webUserID, senderID, chatID)
 	}
-	return wc.canAccessCanonicalSession(webUserID, senderID, channelName, chatID)
-}
-
-func (wc *WebChannel) canAccessCanonicalSession(webUserID int, senderID, channelName, chatID string) bool {
 	// For non-web channels (cli, feishu, etc.): check admin role or canonical ownership.
 	// Check IdentityResolver first (canonical role from DB)
 	if wc.callbacks.IdentityResolver != nil {
 		uid, role, err := wc.callbacks.IdentityResolver.Resolve("web", senderID)
 		if err == nil && uid > 0 {
 			if role == "admin" {
-				return wc.canonicalSessionExists(channelName, chatID)
+				return wc.tenantExists(channelName, chatID)
 			}
 			// Non-admin: check canonical session ownership
 			var ownerUserID int64
@@ -1450,16 +1756,9 @@ func (wc *WebChannel) canAccessCanonicalSession(webUserID int, senderID, channel
 	}
 	// Legacy fallback: web-1 or "admin" is admin
 	if senderID == "admin" || webUserID == 1 {
-		return wc.canonicalSessionExists(channelName, chatID)
+		return wc.tenantExists(channelName, chatID)
 	}
 	return false
-}
-
-func (wc *WebChannel) canonicalSessionExists(channelName, chatID string) bool {
-	if wc.tenantExists(channelName, chatID) {
-		return true
-	}
-	return wc.callbacks.LocalSessionExists != nil && wc.callbacks.LocalSessionExists(channelName, chatID)
 }
 
 func (wc *WebChannel) tenantExists(channelName, chatID string) bool {
@@ -1477,8 +1776,10 @@ func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID stri
 	}
 	// Admin via IdentityResolver or legacy checks
 	if wc.callbacks.IdentityResolver != nil {
-		if uid, role, err := wc.callbacks.IdentityResolver.Resolve("web", senderID); err == nil && uid > 0 && role == "admin" {
-			return true
+		if uid, _, err := wc.callbacks.IdentityResolver.Resolve("web", senderID); err == nil && uid > 0 {
+			if wc.callbacks.IdentityResolver.IsAdmin(uid) {
+				return true
+			}
 		}
 	}
 	if senderID == "admin" || webUserID == 1 {
@@ -1493,7 +1794,7 @@ func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID stri
 			return wc.userOwnsChat(senderID, info.parentChatID)
 		}
 		if info.parentChannel != "agent" {
-			return wc.canAccessCanonicalSession(webUserID, senderID, info.parentChannel, info.parentChatID)
+			return false
 		}
 		parentExists := wc.tenantExists("agent", info.parentChatID)
 		if !parentExists {

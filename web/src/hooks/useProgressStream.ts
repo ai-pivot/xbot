@@ -105,6 +105,16 @@ export function matchesChatID(msg: WSMessage, targetChatID: string, targetChanne
   if (msg.progress?.chat_id) {
     const progressChatID = String(msg.progress.chat_id)
     if (progressChatID === targetChatID || progressChatID === `${targetChannel}:${targetChatID}`) return true
+    // Fallback: strip any channel prefix (e.g. "web:shared" → "shared")
+    // only when the progress event's channel prefix differs from the target channel.
+    const sep = progressChatID.indexOf(':')
+    if (sep > 0) {
+      const prefix = progressChatID.slice(0, sep)
+      const rest = progressChatID.slice(sep + 1)
+      // Only match if the prefix is NOT a different channel — prevents
+      // cross-channel bleed-through (e.g. "web:shared" should not match "cli:shared")
+      if (prefix === targetChannel && rest === targetChatID) return true
+    }
   }
   return false
 }

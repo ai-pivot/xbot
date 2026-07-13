@@ -2,7 +2,7 @@
  * Tests for the collapsible intermediate-process components (Spec 4 §3.3).
  *
  * Tests the new folding model: FoldedLine (borderless ▸/▾), FoldedToolGroup
- * (consecutive tool merging), IterationGroup (T→C→O order), and the content
+ * (consecutive tool merging), IterationGroup (T→O→C order), and the content
  * renderers ToolCallBlock and ReasoningBlock.
  */
 import { describe, expect, it } from 'vitest'

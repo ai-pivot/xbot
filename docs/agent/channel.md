@@ -27,7 +27,7 @@ channel/              # Root package — shared core types, interfaces, infrastr
 
 channel/cli/          # CLI BubbleTea TUI (~44k lines)
 channel/feishu/       # Feishu webhook + settings UI
-channel/web/          # REST + SSE Web server, WebSocket RemoteCLIChannel, auth
+channel/web/          # WebSocket server, REST API, OAuth, RemoteCLIChannel
 channel/qq/           # QQ bot (WebSocket)
 channel/napcat/       # NapCat HTTP API
 ```
@@ -51,13 +51,8 @@ channel/napcat/       # NapCat HTTP API
 | `cli_palette.go` | Command palette (Ctrl+K): fuzzy-search, category tabs, external contributors (~531 lines) |
 | `feishu.go` | Feishu webhook, message send, card messages (~3154 lines) |
 | `feishu_settings.go` | Feishu settings UI (~2189 lines) |
-| `web.go` | WebChannel core, route registration, HTTP lifecycle, security middleware |
-| `web_socket.go` | WebSocket handler and read/write pumps; retained for remote CLI transport |
-| `web_sse.go` | Cookie-authenticated `/api/sse` transport, event replay, 15s heartbeat, SSE framing |
-| `web_types.go` | Web channel configuration, callbacks, and API response types |
-| `web_outbound.go` | WebChannel outbound message stamping and Hub delivery |
-| `web_static.go` | Frontend static-file and SPA fallback handler |
-| `web_hub.go` | Shared WS/SSE connection routing, Client struct, offline ring buffer, stateless message slotting |
+| `web.go` | WebSocket server, WebChannel core, read/write pumps, RPC dispatch (~1383 lines) |
+| `web_hub.go` | Hub: WS connection routing, Client struct, ring buffer for offline messages, stateless message slotting (storeStateless/drainStateless, ~345 lines) |
 | `web_eventstream.go` | EventStream: seq-stamped ring buffer for replay/dedup (~99 lines) |
 | `web_remote_cli.go` | RemoteCLIChannel: virtual CLI channel for CLI→WS→server mode (~270 lines) |
 | `web_api.go` | REST API endpoints (~1901 lines) |

@@ -108,6 +108,7 @@ export function SettingsCollapse() {
           </span>
         </button>
       </SettingsSection>
+
     </div>
   )
 }

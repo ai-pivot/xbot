@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -67,7 +68,9 @@ func authedGet(t *testing.T, server *httptest.Server, cookie, path string) *http
 func mustDec(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
 	defer resp.Body.Close()
-	decodeAPIData(t, resp.Body, v)
+	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -346,8 +349,8 @@ func TestFsReadBinaryFile(t *testing.T) {
 	if !result.IsBinary {
 		t.Error("should be detected as binary")
 	}
-	if result.Content == "" || result.Encoding != "base64" {
-		t.Errorf("binary file should contain base64 data, got encoding=%q content=%q", result.Encoding, result.Content)
+	if result.Content != "" {
+		t.Error("binary file should have empty content")
 	}
 }
 

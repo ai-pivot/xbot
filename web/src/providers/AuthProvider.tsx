@@ -1,11 +1,11 @@
 /**
  * AuthProvider — global authentication state + login/register/logout methods.
  *
- * Initialization: `POST /api/settings` (200 → logged in, 401 → not logged in)
+ * Initialization: `GET /api/settings` (200 → logged in, 401 → not logged in)
  * since the backend has no `/api/auth/me` endpoint. The username from a
  * successful login is persisted to localStorage so it survives reloads.
  *
- * `POST /api/auth/config` → `{ invite_only: boolean }` is fetched in parallel.
+ * `GET /api/auth/config` → `{ invite_only: boolean }` is fetched in parallel.
  *
  * Backend contracts (channel/web/web_auth.go):
  *   POST /api/auth/register  { username, password } → { ok, user_id? }
@@ -21,7 +21,6 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { postAPI } from '@/lib/api'
 import { clearWebCaches } from '@/lib/webCache'
 
 /** Current authenticated user. `username` is empty on cold reload (no /me). */
@@ -54,19 +53,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         // Fetch auth config (public, no cookie needed) + settings (checks auth) in parallel.
         const [configRes, settingsRes] = await Promise.allSettled([
-          postAPI<{ invite_only?: boolean }>('/api/auth/config'),
-          postAPI('/api/settings'),
+          fetch('/api/auth/config'),
+          fetch('/api/settings', { headers: { Accept: 'application/json' } }),
         ])
 
         if (cancelled) return
 
         // invite_only config
-        if (configRes.status === 'fulfilled') {
-          setInviteOnly(Boolean(configRes.value.invite_only))
+        if (configRes.status === 'fulfilled' && configRes.value.ok) {
+          try {
+            const data = (await configRes.value.json()) as { invite_only?: boolean }
+            setInviteOnly(Boolean(data.invite_only))
+          } catch { /* ignore parse error */ }
         }
 
         // Auth status: 200 → logged in, 401 → not logged in
-        if (settingsRes.status === 'fulfilled') {
+        if (settingsRes.status === 'fulfilled' && settingsRes.value.ok) {
           const username = localStorage.getItem(USERNAME_KEY) ?? ''
           setUser({ username })
         }
@@ -79,32 +81,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // --- login ---
   const login = useCallback(async (username: string, password: string): Promise<boolean> => {
-    try {
-      await postAPI('/api/auth/login', { username, password })
-      clearWebCaches()
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    })
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean }
+    if (res.ok && data.ok) {
       localStorage.setItem(USERNAME_KEY, username)
       setUser({ username })
       return true
-    } catch {
-      return false
     }
+    return false
   }, [])
 
   // --- register ---
   const register = useCallback(async (username: string, password: string): Promise<boolean> => {
-    try {
-      await postAPI('/api/auth/register', { username, password })
+    const res = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    })
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean }
+    if (res.ok && data.ok) {
       // Auto-login after successful registration.
-      return await login(username, password)
-    } catch {
-      return false
+      const loggedIn = await login(username, password)
+      return loggedIn
     }
+    return false
   }, [login])
 
   // --- logout ---
   const logout = useCallback(async () => {
     try {
-      await postAPI('/api/auth/logout')
+      await fetch('/api/auth/logout', { method: 'POST' })
     } finally {
       clearWebCaches()
       localStorage.removeItem(USERNAME_KEY)

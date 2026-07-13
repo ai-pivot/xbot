@@ -4,7 +4,7 @@
  * Flow on submit:
  *   1. POST /api/chats {label}       → chatID   (useSessionStore.createSession)
  *   2. WS RPC set_cwd {chat_id, dir}  → set working directory (if provided)
- *   3. active Agent panel switches its SSE target after createSession updates state
+ *   3. ws.subscribe(chatID) + switch  → handled by createSession
  * The dialog closes on success and reports via toast.
  */
 import { useEffect, useState } from 'react'

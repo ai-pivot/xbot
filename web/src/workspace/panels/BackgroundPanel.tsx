@@ -28,7 +28,7 @@ export function BackgroundPanel({ params }: PanelProps) {
   useEffect(() => {
     let cancelled = false
     const load = async () => {
-      if (!taskID || !chatID) {
+      if (!ws.connected || !taskID || !chatID) {
         if (!cancelled) setLoading(false)
         return
       }
@@ -61,7 +61,7 @@ export function BackgroundPanel({ params }: PanelProps) {
   }, [output])
 
   const kill = async () => {
-    if (!taskID) return
+    if (!taskID || !ws.connected) return
     try {
       await ws.rpc('kill_bg_task', { task_id: taskID })
     } catch (e) {

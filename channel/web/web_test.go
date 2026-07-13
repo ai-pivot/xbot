@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -58,7 +57,6 @@ func startTestServer(t *testing.T, wc *WebChannel) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wc.handleWS)
-	mux.HandleFunc("/api/sse", wc.authMiddleware(wc.handleSSE))
 	mux.HandleFunc("/api/auth/register", wc.handleRegister)
 	mux.HandleFunc("/api/auth/login", wc.handleLogin)
 	mux.HandleFunc("/api/auth/logout", wc.handleLogout)
@@ -111,45 +109,6 @@ func makeWSConnection(t *testing.T, serverURL, cookie string) *websocket.Conn {
 	return conn
 }
 
-func TestRemovedMarketEndpointsReturnNotFound(t *testing.T) {
-	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
-	staticDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("web app"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	wc.SetStaticDir(staticDir)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", wc.handleStatic)
-
-	spaRec := httptest.NewRecorder()
-	mux.ServeHTTP(spaRec, httptest.NewRequest(http.MethodGet, "/chat", nil))
-	if spaRec.Code != http.StatusOK {
-		t.Fatalf("test setup: expected SPA fallback to return 200, got %d", spaRec.Code)
-	}
-
-	tests := []struct {
-		method string
-		path   string
-	}{
-		{http.MethodGet, "/api/market"},
-		{http.MethodPost, "/api/market/install"},
-		{http.MethodPost, "/api/market/uninstall"},
-		{http.MethodGet, "/api/market/my"},
-		{http.MethodPost, "/api/market/publish"},
-		{http.MethodPost, "/api/market/unpublish"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.path, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
-			if rec.Code != http.StatusNotFound {
-				t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
-			}
-		})
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Auth tests
 // ---------------------------------------------------------------------------
@@ -167,13 +126,13 @@ func TestRegisterAndLogin(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
 	}
 
 	var regResp authResponse
-	envelope := decodeAPIData(t, resp.Body, &regResp)
-	if !envelope.OK || regResp.UserID == 0 {
+	json.NewDecoder(resp.Body).Decode(&regResp)
+	if !regResp.OK || regResp.UserID == 0 {
 		t.Fatal("registration failed")
 	}
 
@@ -316,7 +275,7 @@ func TestWebSocketAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	regResp.Body.Close()
-	if regResp.StatusCode != http.StatusOK {
+	if regResp.StatusCode != http.StatusCreated {
 		t.Fatalf("register failed: %d", regResp.StatusCode)
 	}
 
@@ -463,7 +422,9 @@ func TestChatsDefaultListAggregatesWebAndCLIForAdmin(t *testing.T) {
 		Sessions        []SessionTreeNode     `json:"sessions"`
 		OrphanSubAgents []UserChatWithPreview `json:"orphan_subagents"`
 	}
-	decodeAPIData(t, resp.Body, &out)
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
 	if len(out.Chats) != 2 {
 		t.Fatalf("expected 2 chats, got %d: %#v", len(out.Chats), out.Chats)
 	}
@@ -553,7 +514,9 @@ func TestChatsChannelListFiltersSubAgentRows(t *testing.T) {
 		OK    bool                  `json:"ok"`
 		Chats []UserChatWithPreview `json:"chats"`
 	}
-	decodeAPIData(t, resp.Body, &out)
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
 	if len(out.Chats) != 1 {
 		t.Fatalf("expected only main chat row, got %#v", out.Chats)
 	}
@@ -641,7 +604,9 @@ func TestSessionTreeReturnsChildrenForAdmin(t *testing.T) {
 		Sessions        []SessionTreeNode     `json:"sessions"`
 		OrphanSubAgents []UserChatWithPreview `json:"orphan_subagents"`
 	}
-	decodeAPIData(t, resp.Body, &out)
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
 	if len(out.Sessions) != 1 || len(out.Sessions[0].Children) != 1 {
 		t.Fatalf("expected one parent with one child, got %#v", out.Sessions)
 	}
@@ -1285,7 +1250,7 @@ func TestRPCNonBlocking(t *testing.T) {
 	server := startTestServer(t, wc)
 
 	// Custom RPCHandler: "slow_method" sleeps 300ms, "fast_method" returns immediately.
-	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+	wc.SetRPCHandler(func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
 		switch method {
 		case "slow_method":
 			time.Sleep(300 * time.Millisecond)
@@ -1348,6 +1313,29 @@ func TestRPCNonBlocking(t *testing.T) {
 	}
 	if secondResp.ID != "rpc-slow" {
 		t.Errorf("expected slow RPC response second, got ID=%s", secondResp.ID)
+	}
+}
+
+func TestShouldEagerSaveUserMessageSkipsCommands(t *testing.T) {
+	cases := []struct {
+		name    string
+		channel string
+		content string
+		want    bool
+	}{
+		{name: "web normal", channel: "web", content: "hello", want: true},
+		{name: "web empty", channel: "web", content: "", want: true},
+		{name: "cli normal", channel: "cli", content: "hello", want: false},
+		{name: "bang command", channel: "web", content: "!pwd", want: false},
+		{name: "slash new", channel: "web", content: "/new", want: false},
+		{name: "slash rewind", channel: "web", content: "/rewind", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldEagerSaveUserMessage(tc.channel, tc.content); got != tc.want {
+				t.Fatalf("shouldEagerSaveUserMessage(%q, %q) = %v, want %v", tc.channel, tc.content, got, tc.want)
+			}
+		})
 	}
 }
 

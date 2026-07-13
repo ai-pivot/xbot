@@ -27,7 +27,7 @@ vi.mock('@/components/file/MarkdownPreview', () => ({ MarkdownPreview: () => nul
 vi.mock('@/components/file/ImagePreview', () => ({ ImagePreview: () => null }))
 
 describe('FilePanel', () => {
-  it('renders HTML from POST-loaded content without a GET preview URL', () => {
+  it('renders HTML preview iframe with src pointing to raw API for HTML files', () => {
     render(<FilePanel
       params={{
         tabId: 'file-page',
@@ -41,7 +41,9 @@ describe('FilePanel', () => {
     />)
 
     const frame = screen.getByTitle('page.html')
-    expect(frame.getAttribute('srcdoc')).toBe(html)
-    expect(frame.hasAttribute('src')).toBe(false)
+    // The implementation uses src (not srcdoc) pointing to /api/fs/raw
+    expect(frame.hasAttribute('src')).toBe(true)
+    expect(frame.getAttribute('src')).toContain('/api/fs/raw')
+    expect(frame.getAttribute('src')).toContain(encodeURIComponent('/workspace/page.html'))
   })
 })

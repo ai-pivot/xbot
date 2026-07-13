@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +14,6 @@ import (
 
 	"xbot/agent"
 	"xbot/channel"
-	cli "xbot/channel/cli"
 	"xbot/channel/feishu"
 	"xbot/channel/web"
 	"xbot/config"
@@ -248,6 +246,7 @@ func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, d
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
 func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
+	regc := registryCallbacks(ag)
 	llmc := llmCallbacks(ag)
 
 	callbacks := web.WebCallbacks{
@@ -260,6 +259,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		RunnerDelete:        rc.RunnerDelete,
 		RunnerGetActive:     rc.RunnerGetActive,
 		RunnerSetActive:     rc.RunnerSetActive,
+
+		// Registry callbacks
+		RegistryBrowse:    regc.RegistryBrowse,
+		RegistryInstall:   regc.RegistryInstall,
+		RegistryListMy:    regc.RegistryListMy,
+		RegistryPublish:   regc.RegistryPublish,
+		RegistryUnpublish: regc.RegistryUnpublish,
+		RegistryUninstall: regc.RegistryUninstall,
 
 		// LLM callbacks (Web channel exposes only basic model/max-context via HTTP API;
 		// ThinkingMode/MaxOutputTokens/PersonalConcurrency are CLI-only via RPC.)
@@ -308,7 +315,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetPendingAskUser(channel, chatID)
 	}
-	callbacks.WithPendingAskUser = ag.WithPendingAskUser
 	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector) (web.HistorySnapshot, error) {
 		if ag.MultiSession() == nil {
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
@@ -589,44 +595,19 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		cs := sqlite.NewChatService(webDB)
 		return cs.CreateChat("web", senderID, label)
 	}
-	callbacks.ChatDelete = func(senderID, channel, chatID string) error {
+	callbacks.ChatDelete = func(senderID, chatID string) error {
 		if webDB == nil {
 			return fmt.Errorf("database not available")
 		}
-		removedLocal := false
-		if channel == "cli" {
-			var err error
-			removedLocal, err = cli.RemoveStoredSessionByChatID(chatID)
-			if err != nil {
-				return fmt.Errorf("remove CLI session metadata: %w", err)
-			}
-		}
 		cs := sqlite.NewChatService(webDB)
-		if err := cs.DeleteChat(channel, senderID, chatID); err != nil {
-			if !removedLocal || !errors.Is(err, sqlite.ErrChatNotFound) {
-				return err
-			}
-		}
-		ag.CleanupSessionFiles(channel, chatID)
-		tools.GlobalWorktreeRegistry.CleanupSession(channel + ":" + chatID)
-		session.DeletePersistedCWD(channel, chatID)
-		_ = ag.MultiSession().DestroySession(channel, chatID)
-		return nil
+		return cs.DeleteChat("web", senderID, chatID)
 	}
-	callbacks.ChatRename = func(senderID, channel, chatID, label string) error {
+	callbacks.ChatRename = func(senderID, chatID, label string) error {
 		if webDB == nil {
 			return fmt.Errorf("database not available")
 		}
-		if channel == "cli" {
-			if _, err := cli.RenameStoredSessionByChatID(chatID, label); err != nil {
-				return fmt.Errorf("rename CLI session metadata: %w", err)
-			}
-		}
 		cs := sqlite.NewChatService(webDB)
-		return cs.RenameChat(channel, senderID, chatID, label)
-	}
-	callbacks.LocalSessionExists = func(channel, chatID string) bool {
-		return channel == "cli" && cli.StoredSessionExists(chatID)
+		return cs.RenameChat("web", senderID, chatID, label)
 	}
 
 	// Identity resolver — wire agent's IdentityResolver to WebChannel
@@ -797,7 +778,10 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 	rows, err := db.Query(`
 		SELECT t.id, t.chat_id, t.last_active_at,
 									COALESCE((SELECT uc.label FROM user_chats uc
-					WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
+										WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
+										ORDER BY uc.rowid DESC LIMIT 1),
+										(SELECT uc.label FROM user_chats uc
+										WHERE uc.chat_id = t.chat_id AND uc.label != ''
 										ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
 		       (SELECT sm.content FROM session_messages sm
 		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')

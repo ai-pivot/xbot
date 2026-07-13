@@ -1,38 +1,45 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { postAPI } from '@/lib/api'
 import { fetchCwd, fetchSessionSubscription } from './api'
 
-vi.mock('@/lib/api', () => ({
-  postAPI: vi.fn(),
-}))
-
-const postAPIMock = vi.mocked(postAPI)
+// Mock global fetch
+const fetchMock = vi.fn()
+vi.stubGlobal('fetch', fetchMock)
 
 beforeEach(() => {
-  postAPIMock.mockReset()
+  fetchMock.mockReset()
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 describe('agent REST API', () => {
-  it('reads idle session CWD from the authoritative status endpoint', async () => {
-    postAPIMock.mockResolvedValue({ cwd: '/workspace/project' })
-
-    await expect(fetchCwd({ channel: 'cli', chatID: '/workspace:Agent-main' }))
-      .resolves.toEqual({ dir: '/workspace/project' })
-    expect(postAPIMock).toHaveBeenCalledWith('/api/session/status', {
-      channel: 'cli',
-      chat_id: '/workspace:Agent-main',
+  it('reads idle session CWD from the cwd endpoint', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ cwd: '/workspace/project' }),
     })
+
+    const result = await fetchCwd({ channel: 'cli', chatID: '/workspace:Agent-main' })
+    expect(result).toEqual({ cwd: '/workspace/project' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/api/cwd')
+    expect(url).toContain('channel=cli')
+    expect(url).toContain('chat_id=')
   })
 
   it('requests the selected session subscription', async () => {
-    postAPIMock.mockResolvedValue({ subscription_id: 'sub-a', model: 'model-a' })
-
-    await expect(fetchSessionSubscription({ channel: 'agent', chatID: 'web:web-1/review:1' }))
-      .resolves.toEqual({ subscription_id: 'sub-a', model: 'model-a' })
-    expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', {
-      method: 'get_session_subscription',
-      params: { channel: 'agent', chat_id: 'web:web-1/review:1' },
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ subscription_id: 'sub-a', model: 'model-a' }),
     })
+
+    const result = await fetchSessionSubscription({ channel: 'agent', chatID: 'web:web-1/review:1' })
+    expect(result).toEqual({ subscription_id: 'sub-a', model: 'model-a' })
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/api/session-subscription')
+    expect(url).toContain('channel=agent')
   })
 })

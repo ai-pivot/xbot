@@ -1,7 +1,6 @@
 package web
 
 import (
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -17,16 +16,6 @@ import (
 //  1. Dedup: each event carries seq, frontend ignores stale (seq <= lastSeen)
 //  2. Replay: on WS reconnect, server sends events with seq > client's last_seq
 const eventStreamSize = 512
-
-func sessionRouteKey(channel, chatID string) string {
-	if channel == "" {
-		channel = "web"
-	}
-	if channel != "agent" && webChatIDLooksLikeSubAgent(chatID) {
-		channel = "agent"
-	}
-	return channel + "\x00" + chatID
-}
 
 type eventStream struct {
 	seq   atomic.Uint64
@@ -53,24 +42,18 @@ func (es *eventStream) lastSeq() uint64 {
 	return es.seq.Load()
 }
 
-// push appends a seq-stamped event to the ring buffer. Consecutive stateless
-// snapshots share one slot. Stream fields are cumulative but arrive in
-// independent messages, so replacing a stream snapshot must merge those fields.
+// push appends a seq-stamped event to the ring buffer.
+// For state-snapshot types (progress, stream_content), only the latest event
+// of each type is kept — replaces the previous one in-place instead of growing.
 func (es *eventStream) push(msg protocol.WSMessage) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	if !isStatefulSSEEvent(msg) {
-		key := statelessSlotKey(&msg)
+	if !isStatefulMsg(msg) {
 		for i := es.count - 1; i >= 0; i-- {
 			idx := (es.head + i) % eventStreamSize
-			previous := es.buf[idx]
-			if isSSEStreamMergeBoundary(msg, previous) {
-				break
-			}
-			if statelessSlotKey(&previous) == key {
-				msg = mergeStatelessEvent(previous, msg)
-				es.removeAt(i)
-				break
+			if es.buf[idx].Type == msg.Type {
+				es.buf[idx] = msg
+				return
 			}
 		}
 	}
@@ -81,60 +64,6 @@ func (es *eventStream) push(msg protocol.WSMessage) {
 	es.buf[es.tail] = msg
 	es.tail = (es.tail + 1) % eventStreamSize
 	es.count++
-}
-
-// removeAt removes a logical ring offset while preserving sequence order.
-// The caller holds es.mu.
-func (es *eventStream) removeAt(offset int) {
-	for i := offset; i < es.count-1; i++ {
-		to := (es.head + i) % eventStreamSize
-		from := (es.head + i + 1) % eventStreamSize
-		es.buf[to] = es.buf[from]
-	}
-	es.tail = (es.tail - 1 + eventStreamSize) % eventStreamSize
-	es.buf[es.tail] = protocol.WSMessage{}
-	es.count--
-}
-
-// isStatefulSSEEvent classifies messages after normalizeSSEEvent has split
-// stream-only progress into stream_content. Every remaining progress event is
-// structured and must be retained independently for reconnect replay.
-func isStatefulSSEEvent(msg protocol.WSMessage) bool {
-	return msg.Type == protocol.MsgTypeProgress || isStatefulMsg(msg)
-}
-
-func isSSEStreamMergeBoundary(current, previous protocol.WSMessage) bool {
-	if current.Type != protocol.MsgTypeStreamContent || current.Progress == nil || !isStatefulSSEEvent(previous) {
-		return false
-	}
-	if previous.Type != protocol.MsgTypeProgress || previous.Progress == nil {
-		return true
-	}
-	currentSource := current.Progress.ChatID
-	previousSource := previous.Progress.ChatID
-	return currentSource == "" || previousSource == "" || currentSource == previousSource
-}
-
-func mergeStatelessEvent(previous, current protocol.WSMessage) protocol.WSMessage {
-	if current.Type != protocol.MsgTypeStreamContent || previous.Progress == nil || current.Progress == nil {
-		return current
-	}
-
-	merged := *current.Progress
-	if len(previous.Progress.StreamContent) > len(merged.StreamContent) {
-		merged.StreamContent = previous.Progress.StreamContent
-	}
-	if len(previous.Progress.ReasoningStreamContent) > len(merged.ReasoningStreamContent) {
-		merged.ReasoningStreamContent = previous.Progress.ReasoningStreamContent
-	}
-	if len(previous.Progress.StreamingTools) > len(merged.StreamingTools) {
-		merged.StreamingTools = previous.Progress.StreamingTools
-	}
-	if previous.Progress.StreamTokens > merged.StreamTokens {
-		merged.StreamTokens = previous.Progress.StreamTokens
-	}
-	current.Progress = &merged
-	return current
 }
 
 // clear drops buffered events without resetting the monotonic sequence.
@@ -167,9 +96,6 @@ func (es *eventStream) eventsAfter(fromSeq uint64) []protocol.WSMessage {
 
 // getEventStream returns (or creates) the eventStream for a chatID.
 func (wc *WebChannel) getEventStream(chatID string) *eventStream {
-	if !strings.ContainsRune(chatID, '\x00') {
-		chatID = sessionRouteKey("web", chatID)
-	}
 	wc.evtBufMu.Lock()
 	defer wc.evtBufMu.Unlock()
 	if wc.evtBuf == nil {
@@ -181,24 +107,4 @@ func (wc *WebChannel) getEventStream(chatID string) *eventStream {
 		wc.evtBuf[chatID] = es
 	}
 	return es
-}
-
-// clearSessionTransportState drops replay and request-dedup state after a
-// session is deleted. Lock ordering matches event publication: seqMu then
-// evtBufMu, so an in-flight publisher cannot restore an older stream entry.
-func (wc *WebChannel) clearSessionTransportState(channel, chatID string) {
-	routeKey := sessionRouteKey(channel, chatID)
-	wc.hub.seqMu.Lock()
-	wc.evtBufMu.Lock()
-	delete(wc.evtBuf, routeKey)
-	wc.evtBufMu.Unlock()
-	wc.hub.seqMu.Unlock()
-
-	wc.inboundRequestsMu.Lock()
-	for key := range wc.inboundRequests {
-		if key.channel == channel && key.chatID == chatID {
-			delete(wc.inboundRequests, key)
-		}
-	}
-	wc.inboundRequestsMu.Unlock()
 }

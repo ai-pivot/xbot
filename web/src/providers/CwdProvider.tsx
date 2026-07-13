@@ -2,7 +2,7 @@
  * CwdProvider — tracks the agent's current working directory (CWD).
  *
  * Initialization: when activeSessionId changes, fetches CWD via /api/cwd.
- * Live tracking: subscribes to `progress_structured` SSE events and reads
+ * Live tracking: subscribes to `progress_structured` WS events and reads
  * `progress.cwd` (populated by the backend on each iteration).
  * Also detects completed `Cd` tool calls as a fallback when `cwd` is absent.
  *

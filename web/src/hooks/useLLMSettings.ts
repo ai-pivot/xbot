@@ -1,5 +1,5 @@
 /**
- * useLLMSettings — load + mutate the user-level LLM config over REST RPC
+ * useLLMSettings — load + mutate the user-level LLM config over WS RPC
  * (Spec 7 §3.6).
  *
  * RPC contract (serverapp/rpc_table.go):
@@ -46,6 +46,11 @@ export function useLLMSettings() {
     setLoading(true)
     setError(null)
     try {
+      if (!conn.connected) {
+        setError('not_connected')
+        setLoading(false)
+        return
+      }
       const [models, model, maxContext, maxOutputTokens, thinkingMode] =
         await Promise.all([
           conn.rpc<string[]>('list_models'),

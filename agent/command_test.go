@@ -93,8 +93,8 @@ func TestCommandRegistry_Commands(t *testing.T) {
 	registerBuiltinCommands(r)
 
 	cmds := r.Commands()
-	if len(cmds) != 24 {
-		t.Errorf("Commands() returned %d commands, want 24", len(cmds))
+	if len(cmds) != 27 {
+		t.Errorf("Commands() returned %d commands, want 27", len(cmds))
 	}
 
 	// Verify all expected commands are registered
@@ -102,7 +102,7 @@ func TestCommandRegistry_Commands(t *testing.T) {
 	for _, cmd := range cmds {
 		names[cmd.Name()] = true
 	}
-	expected := []string{"/new", "/version", "/help", "/prompt", "/set-llm", "/unset-llm", "/llm", "/llms", "/models", "/set-model", "/compress", "/context", "!", "/publish", "/unpublish", "/browse", "/install", "/uninstall", "/my", "/settings", "/menu"}
+	expected := []string{"/new", "/version", "/help", "/prompt", "/set-llm", "/unset-llm", "/llm", "/llms", "/models", "/set-model", "/compress", "/context", "!", "/publish", "/unpublish", "/browse", "/install", "/uninstall", "/my", "/settings", "/menu", "/goal", "/goal status", "/goal clear"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("Command %q not found in registry", name)
@@ -162,22 +162,25 @@ func TestCommandConcurrency(t *testing.T) {
 		"/unpublish":    true,
 		"/install":      true,
 		"/uninstall":    true,
+		"/goal":         true,
+		"/goal clear":   true,
 	}
 
 	// Commands that are stateless/read-only should be concurrent
 	concurrent := map[string]bool{
-		"/version":  true,
-		"/help":     true,
-		"/llm":      true,
-		"/llms":     true,
-		"/models":   true,
-		"/prompt":   true,
-		"/context":  true,
-		"!":         true,
-		"/browse":   true,
-		"/my":       true,
-		"/settings": true,
-		"/menu":     true,
+		"/version":     true,
+		"/help":        true,
+		"/llm":         true,
+		"/llms":        true,
+		"/models":      true,
+		"/prompt":      true,
+		"/context":     true,
+		"!":            true,
+		"/browse":      true,
+		"/my":          true,
+		"/settings":    true,
+		"/menu":        true,
+		"/goal status": true,
 	}
 
 	for _, cmd := range r.Commands() {

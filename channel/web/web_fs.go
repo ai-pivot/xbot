@@ -2,7 +2,6 @@ package web
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -152,7 +151,6 @@ type fsListEntry struct {
 	Name    string    `json:"name"`
 	IsDir   bool      `json:"isDir"`
 	Size    int64     `json:"size"`
-	Mode    string    `json:"mode"`
 	ModTime time.Time `json:"modTime"`
 }
 
@@ -214,7 +212,6 @@ func (wc *WebChannel) handleFsList(w http.ResponseWriter, r *http.Request) {
 			Name:    e.Name(),
 			IsDir:   e.IsDir(),
 			Size:    info.Size(),
-			Mode:    info.Mode().String(),
 			ModTime: info.ModTime(),
 		})
 	}
@@ -231,7 +228,6 @@ type fsReadResponse struct {
 	Language string `json:"language"`
 	Size     int64  `json:"size"`
 	IsBinary bool   `json:"isBinary"`
-	Encoding string `json:"encoding,omitempty"`
 }
 
 // isBinaryData checks if the given bytes contain NUL bytes (binary indicator).
@@ -308,17 +304,11 @@ func (wc *WebChannel) handleFsRead(w http.ResponseWriter, r *http.Request) {
 	sniff = sniff[:n]
 
 	if isBinaryData(sniff) {
-		content, readErr := io.ReadAll(io.LimitReader(io.MultiReader(bytes.NewReader(sniff), f), maxFileReadSize))
-		if readErr != nil {
-			jsonErrorResponse(w, http.StatusInternalServerError, readErr.Error())
-			return
-		}
 		writeJSON(w, http.StatusOK, fsReadResponse{
-			Content:  base64.StdEncoding.EncodeToString(content),
+			Content:  "",
 			Language: "",
 			Size:     info.Size(),
 			IsBinary: true,
-			Encoding: "base64",
 		})
 		return
 	}
@@ -360,39 +350,46 @@ func (wc *WebChannel) handleFsRead(w http.ResponseWriter, r *http.Request) {
 // with an appropriate Content-Type based on file extension.
 func (wc *WebChannel) handleFsRaw(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	senderID := senderIDFromContext(r.Context())
 	if senderID == "" {
-		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	rawPath := r.URL.Query().Get("path")
 	if rawPath == "" {
-		jsonErrorResponse(w, http.StatusBadRequest, "path is required")
+		http.Error(w, "path is required", http.StatusBadRequest)
 		return
 	}
 
 	safePath, err := resolveSafePath(rawPath)
 	if err != nil {
-		jsonErrorResponse(w, http.StatusForbidden, err.Error())
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
 	info, err := os.Stat(safePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			jsonErrorResponse(w, http.StatusNotFound, "file not found")
+			http.Error(w, "file not found", http.StatusNotFound)
 			return
 		}
-		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if info.IsDir() {
-		jsonErrorResponse(w, http.StatusBadRequest, "path is a directory")
+		http.Error(w, "path is a directory", http.StatusBadRequest)
+		return
+	}
+
+	// Reject files larger than 50MB to prevent abuse.
+	const maxRawFileSize = 50 * 1024 * 1024
+	if info.Size() > maxRawFileSize {
+		http.Error(w, "file too large (max 50MB)", http.StatusRequestEntityTooLarge)
 		return
 	}
 

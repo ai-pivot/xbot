@@ -18,6 +18,10 @@ vi.mock('@/lib/api', () => ({
 
 const postAPIMock = vi.mocked(postAPI)
 
+// Mock global fetch for direct fetch calls (e.g. logout uses fetch directly)
+const fetchMock = vi.fn()
+vi.stubGlobal('fetch', fetchMock)
+
 function wrapper({ children }: { children: ReactNode }) {
   return <AuthProvider>{children}</AuthProvider>
 }
@@ -34,10 +38,12 @@ beforeEach(() => {
   lastSeqCache.clear()
   progressSnapshotCache.clear()
   postAPIMock.mockReset()
+  fetchMock.mockReset()
   postAPIMock.mockImplementation(async (endpoint: string) => {
     if (endpoint === '/api/auth/config') return { invite_only: false }
     return {}
   })
+  fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) })
 })
 
 afterEach(() => {

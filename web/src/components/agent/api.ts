@@ -7,7 +7,6 @@
  */
 import type { WSConnection } from '@/types/ws'
 import type { SessionSelector } from '@/types/shared'
-import { postAPI } from '@/lib/api'
 
 /** History message row (protocol.HistoryMessage). */
 export interface HistMsg {
@@ -30,11 +29,11 @@ export interface HistProgress {
   elapsed_wall?: number
   iteration_history?: unknown[]
   todos?: { id: number; text: string; done: boolean }[]
-  cwd?: string
 }
 
 /** /api/history response. */
 export interface HistoryResponse {
+  ok?: boolean
   messages?: HistMsg[]
   processing?: boolean
   active_progress?: HistProgress | null
@@ -45,59 +44,78 @@ export interface HistoryResponse {
 
 /** Upload response (channel/web/web_file.go handleCloudUpload). */
 export interface UploadResponse {
+  ok?: boolean
   upload_key?: string
   name?: string
   size?: number
   mime?: string
+  error?: string
+}
+
+function sessionQuery(session?: SessionSelector | null): string {
+  if (!session) return ''
+  const q = new URLSearchParams()
+  q.set('channel', session.channel)
+  q.set('chat_id', session.chatID)
+  return `?${q.toString()}`
+}
+
+async function getJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url, { headers: { Accept: 'application/json' } })
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string }
+  if (!res.ok) throw new Error(data?.error || `request ${res.status}`)
+  return data
+}
+
+async function sendJSON<T>(url: string, method: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string }
+  if (!res.ok) throw new Error(data?.error || `request ${res.status}`)
+  return data
 }
 
 /** Fetch conversation history through the Web-only snapshot API. */
 export async function fetchHistory(_ws: WSConnection, session?: SessionSelector | null): Promise<HistoryResponse> {
-  return postAPI<HistoryResponse>('/api/history', sessionBody(session))
+  return getJSON<HistoryResponse>(`/api/history${sessionQuery(session)}`)
 }
 
 export async function fetchCwd(session?: SessionSelector | null): Promise<{ dir?: string }> {
-  const status = await postAPI<SessionStatusResponse<unknown, unknown>>('/api/session/status', sessionBody(session))
-  return { dir: status.cwd }
+  return getJSON<{ dir?: string }>(`/api/cwd${sessionQuery(session)}`)
 }
 
 export async function setCwd(session: SessionSelector, dir: string): Promise<{ dir?: string }> {
-  await postAPI('/api/rpc', {
-    method: 'set_cwd',
-    params: { channel: session.channel, chat_id: session.chatID, dir },
+  return sendJSON<{ dir?: string }>('/api/cwd', 'PUT', {
+    channel: session.channel,
+    chat_id: session.chatID,
+    dir,
   })
-  return { dir }
 }
 
 export async function fetchCronTasks<T>(session: SessionSelector): Promise<T[]> {
-  const data = await fetchSessionStatus<T, unknown>(session)
+  const data = await getJSON<{ tasks?: T[] }>(`/api/tasks${sessionQuery(session)}`)
   return data.tasks ?? []
 }
 
 export async function fetchBackgroundTasks<T>(session: SessionSelector): Promise<T[]> {
-  const data = await fetchSessionStatus<unknown, T>(session)
-  return data.background_tasks ?? []
+  const data = await getJSON<{ tasks?: T[] }>(`/api/background-tasks${sessionQuery(session)}`)
+  return data.tasks ?? []
 }
 
 export async function fetchCommands<T>(): Promise<T[]> {
-  const commands = await postAPI<Array<string | T>>('/api/rpc', {
-    method: 'list_command_names',
-    params: {},
-  })
-  return commands.map((command) => (
-    typeof command === 'string' ? { name: command } as T : command
-  ))
+  const data = await getJSON<{ commands?: T[] }>('/api/commands')
+  return data.commands ?? []
 }
 
 export async function fetchSessionSubscription(session: SessionSelector): Promise<Record<string, string>> {
-  return postAPI<Record<string, string>>('/api/rpc', {
-    method: 'get_session_subscription',
-    params: sessionBody(session),
-  })
+  return getJSON<Record<string, string>>(`/api/session-subscription${sessionQuery(session)}`)
 }
 
 export async function rewindHistory<T>(session: SessionSelector, cutoffMS: number): Promise<T> {
-  return postAPI<T>('/api/history/rewind', {
+  return sendJSON<T>('/api/history/rewind', 'POST', {
     channel: session.channel,
     chat_id: session.chatID,
     cutoff_ms: cutoffMS,
@@ -108,25 +126,10 @@ export async function rewindHistory<T>(session: SessionSelector, cutoffMS: numbe
 export async function uploadFile(file: File): Promise<UploadResponse> {
   const form = new FormData()
   form.append('file', file)
-  const data = await postAPI<UploadResponse>('/api/files/upload', form)
-  if (!data.upload_key) throw new Error('upload response missing upload_key')
+  const res = await fetch('/api/files/upload', { method: 'POST', body: form })
+  const data = (await res.json().catch(() => ({}))) as UploadResponse
+  if (!res.ok || !data.ok || !data.upload_key) {
+    throw new Error(data?.error || `upload ${res.status}`)
+  }
   return data
-}
-
-interface SessionStatusResponse<CronTask, BackgroundTask> {
-  tasks?: CronTask[]
-  background_tasks?: BackgroundTask[]
-  token_usage?: Record<string, unknown>
-  cwd?: string
-}
-
-export function fetchSessionStatus<CronTask = unknown, BackgroundTask = unknown>(
-  session: SessionSelector,
-): Promise<SessionStatusResponse<CronTask, BackgroundTask>> {
-  return postAPI('/api/session/status', sessionBody(session))
-}
-
-function sessionBody(session?: SessionSelector | null): { channel?: string; chat_id?: string } {
-  if (!session) return {}
-  return { channel: session.channel, chat_id: session.chatID }
 }

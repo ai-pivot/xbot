@@ -1,7 +1,7 @@
 /**
  * TurnBody — renders all iterations after one User message (Spec 4 §3.3).
  *
- * Groups output by iteration. Each iteration renders T → C → O via
+ * Groups output by iteration. Each iteration renders T → O → C via
  * IterationGroup. When a live progress snapshot is present (streaming),
  * appends a LiveIteration at the end for the in-flight iteration.
  */

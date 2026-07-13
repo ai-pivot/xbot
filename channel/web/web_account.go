@@ -181,18 +181,13 @@ func (wc *WebChannel) handleUnlinkIdentity(w http.ResponseWriter, r *http.Reques
 		jsonErrorResponse(w, http.StatusNotImplemented, "identity resolver not available")
 		return
 	}
-	identityIDText := r.PathValue("id")
-	if identityIDText == "" {
-		pathParts := splitPath(r.URL.Path)
-		if len(pathParts) > 0 {
-			identityIDText = pathParts[len(pathParts)-1]
-		}
-	}
-	if identityIDText == "" {
+	// Extract identity ID from path
+	pathParts := splitPath(r.URL.Path)
+	if len(pathParts) < 1 {
 		jsonErrorResponse(w, http.StatusBadRequest, "identity ID required")
 		return
 	}
-	identityID, err := strconv.ParseInt(identityIDText, 10, 64)
+	identityID, err := strconv.ParseInt(pathParts[len(pathParts)-1], 10, 64)
 	if err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid identity ID")
 		return
