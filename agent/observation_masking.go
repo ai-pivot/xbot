@@ -373,6 +373,36 @@ func (s *ObservationMaskStore) CleanOldEntries(cutoff time.Time) int {
 	return removedCount
 }
 
+// CleanUnreferencedEntries removes mask entries whose IDs are NOT in the
+// referencedIDs set. This is the smart cleanup used by the V2 compression
+// pipeline — it ensures that mask references in compressed messages (both
+// in the compaction summary and in tail messages) remain loadable.
+func (s *ObservationMaskStore) CleanUnreferencedEntries(referencedIDs map[string]bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var kept []MaskedObservation
+	removedCount := 0
+	for _, e := range s.entries {
+		if !referencedIDs[e.ID] {
+			// Not referenced by any message — safe to clean
+			s.totalChars -= len([]rune(e.Content))
+			removedCount++
+			go s.deleteEntryFile(e.ID)
+		} else {
+			kept = append(kept, e)
+		}
+	}
+	s.entries = kept
+	if removedCount > 0 {
+		log.WithFields(log.Fields{
+			"removed":    removedCount,
+			"kept":       len(kept),
+			"referenced": len(referencedIDs),
+		}).Info("ObservationMaskStore: cleaned unreferenced entries after compression")
+	}
+	return removedCount
+}
+
 // CleanStale 清理超过指定天数的残留 mask 数据（磁盘文件）。
 // 用于定期清理。
 func (s *ObservationMaskStore) CleanStale(maxAgeDays int) {

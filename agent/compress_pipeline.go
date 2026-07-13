@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"time"
 
 	"xbot/llm"
 	log "xbot/logger"
@@ -106,13 +105,16 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 		}
 	}
 
-	// Clean offload and mask entries that were compressed away.
-	compressCutoff := time.Now()
+	// Smart cleanup: only clean mask/offload entries that are NOT referenced
+	// by any message in the compressed LLMView. This is a key improvement over
+	// the old time-based cleanup — it ensures that mask/offload references in
+	// tail messages and the compaction summary remain loadable after compression.
+	referencedIDs := extractMaskOffloadIDs(newMessages)
 	if params.OffloadStore != nil {
-		params.OffloadStore.CleanOldEntries(params.OffloadSessionKey, compressCutoff)
+		params.OffloadStore.CleanUnreferencedEntries(params.OffloadSessionKey, referencedIDs)
 	}
 	if params.MaskStore != nil {
-		params.MaskStore.CleanOldEntries(compressCutoff)
+		params.MaskStore.CleanUnreferencedEntries(referencedIDs)
 	}
 
 	return &CompressPipelineResult{

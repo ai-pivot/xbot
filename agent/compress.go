@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"xbot/bus"
@@ -11,6 +12,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/tools"
 )
 
 // CompressResult holds the compaction output.
@@ -30,7 +32,10 @@ type CompressResult struct {
 }
 
 // compactionPrompt is the structured contract for LLM-based context compaction.
-// Inspired by Claude Code's "working state" contract and Codex's cumulative history.
+// V2: PRESERVES mask/offload references (instead of stripping them) so the
+// compressed context can recall original data on demand. This is a key
+// advantage over Codex and Claude Code — their summaries lose access to
+// original tool outputs permanently.
 const compactionPrompt = `You are performing a CONTEXT COMPACTION. Create a structured working state
 that allows another LLM to continue this task without re-asking any questions.
 
@@ -77,17 +82,12 @@ What should happen next to continue from where we left off.
 ## Constraints
 - Preserve ALL file paths from active operations
 - Preserve ALL error messages verbatim
+- PRESERVE offload markers (📂 [offload:ol_xxx]) and masked markers (📂 [masked:mk_xxx])
+  in their original form — these markers allow recalling the full original data when needed.
+  Do NOT strip or remove offload IDs (ol_...) or mask IDs (mk_...) from your output.
+  If a marker's summary text is important, include BOTH the marker and its summary.
 - Be concise — focus on facts, not narrative
-- If offload markers (📂 [offload:...]) exist, preserve the summary text but strip the IDs (e.g. "ol_abc123")
-- If masked markers (📂 [masked:...]) exist, preserve the summary text but strip the IDs (e.g. "mk_def456")
-- NEVER include offload IDs (ol_...) or mask IDs (mk_...) in your output — they are ephemeral references
-- Allocate the majority of your output budget to "Recent Work" — this is the most important section
-
-## Memory Management (Optional)
-If this conversation reveals important new information worth remembering long-term:
-- Use the provided memory tools (core_memory_append, archival_memory_insert, etc.) to update memory
-- Use archival_memory_search to check for existing similar memories before inserting to avoid duplicates
-- This is OPTIONAL — if nothing important needs remembering, skip tool calls and just output the compaction summary`
+- Allocate the majority of your output budget to "Recent Work" — this is the most important section`
 
 // continuationMessage is injected after compaction to tell the LLM to resume work.
 const continuationMessage = `This conversation was compacted from a longer session. The "Recent Work" section above is the most critical context — it reflects what was happening immediately before compaction. Continue from where you left off without re-asking the user any questions.`
@@ -430,12 +430,12 @@ func mergeCompressedResult(compressed string, systemMsgs []llm.ChatMessage, tail
 
 // compactMessages performs a structured compaction of conversation history.
 //
-// Flow:
+// V2 Design — reuses the agent loop (engine.Run) instead of a custom LLM call loop:
 //  1. Find a safe cut point (last user message or plain assistant message)
 //  2. Cap tail length so only the most recent iterations are kept verbatim
 //  3. Separate system messages from the history before the cut point
 //  4. Build history text within token budget
-//  5. Multi-turn LLM call with optional memory tools
+//  5. Call engine.Run() with a compression-focused RunConfig (reuses streaming, retry, sanitization)
 //  6. Build result: [system] + [compaction summary] + [continuation] + [tail messages]
 func compactMessages(
 	ctx context.Context,
@@ -443,8 +443,6 @@ func compactMessages(
 	client llm.LLM,
 	model string,
 	maxContextTokens int,
-	memTools []llm.ToolDefinition,
-	memToolExec func(ctx context.Context, tc llm.ToolCall) (content string, err error),
 ) (*CompressResult, error) {
 	// Step 1: find tail cut point — keep the last user message and everything after it.
 	tailStart, originalUserMsg := findTailCutPoint(messages)
@@ -532,19 +530,29 @@ func compactMessages(
 		historyText.WriteString(formatCompactLine(msg))
 	}
 
-	// Compute target budget — use character count as proxy for tokens.
+	// Step 5: calculate token-budget-aware target output length.
+	// Unlike the old fixed 5000-char cap, we compute based on the available context budget:
+	// target = min(30% of original tokens, 50% of available budget after tail + overhead)
 	totalChars := 0
 	for _, msg := range messages {
 		totalChars += len([]rune(msg.Content))
 	}
 	originalTokens := totalChars / 3
-	targetRunes := int(float64(originalTokens) * 0.3 * 1.5)
-	if targetRunes < 500 {
-		targetRunes = 500
+
+	tailEstTokens := len(tail) * 200 // rough estimate
+	availableBudget := maxContextTokens - tailEstTokens - compactionOverhead
+	if availableBudget < 1000 {
+		availableBudget = 1000
 	}
-	if targetRunes > 5000 {
-		targetRunes = 5000
+	targetTokens := int(float64(originalTokens) * 0.3)
+	maxTarget := availableBudget / 2 // leave room for tail + system prompt
+	if targetTokens > maxTarget {
+		targetTokens = maxTarget
 	}
+	if targetTokens < 500 {
+		targetTokens = 500
+	}
+	targetRunes := int(float64(targetTokens) * 1.5) // tokens → chars (rough)
 
 	prompt := compactionPrompt + fmt.Sprintf(`
 
@@ -556,76 +564,45 @@ Your output MUST be at most %d characters. Be concise — facts over narrative.
 
 Output the structured working state directly.`
 
-	// Step 5: multi-turn LLM call with optional memory tools
+	// Step 6: call engine.Run() — REUSE THE AGENT LOOP.
+	// Instead of a custom client.Generate() loop, we build a minimal RunConfig
+	// and let engine.Run() handle LLM calling, retry, streaming, and sanitization.
+	// This eliminates the duplicated LLM call logic that the old compactMessages had.
 	compactionMsgs := []llm.ChatMessage{
 		llm.NewSystemMessage("You are a context compaction expert. Create a structured working state for task continuation. Stay under the specified length limit."),
 		llm.NewUserMessage(prompt),
 	}
 
-	var compressed string
-	var totalInput, totalOutput, totalCached int64
-	var llmCalls int
-	maxToolRounds := 10
-	for round := 0; round <= maxToolRounds; round++ {
-		resp, err := client.Generate(ctx, model, compactionMsgs, memTools, "")
-		if err != nil {
-			return nil, fmt.Errorf("compaction failed: %w", err)
-		}
-		llmCalls++
-		GlobalMetrics.TotalLLMCalls.Add(1)
-		if resp != nil {
-			GlobalMetrics.TotalInputTokens.Add(resp.Usage.PromptTokens)
-			GlobalMetrics.TotalOutputTokens.Add(resp.Usage.CompletionTokens)
-			totalInput += resp.Usage.PromptTokens
-			totalOutput += resp.Usage.CompletionTokens
-			totalCached += resp.Usage.CacheHitTokens
-		}
-
-		if !resp.HasToolCalls() {
-			compressed = llm.StripThinkBlocks(resp.Content)
-			break
-		}
-
-		assistantMsg := llm.ChatMessage{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent, ToolCalls: resp.ToolCalls}
-		compactionMsgs = append(compactionMsgs, assistantMsg)
-		for _, tc := range resp.ToolCalls {
-			var resultContent string
-			if memToolExec != nil {
-				resultContent, _ = memToolExec(ctx, tc)
-			} else {
-				resultContent = "Error: memory tools not available"
-			}
-			toolMsg := llm.NewToolMessage(tc.Name, tc.ID, tc.Arguments, resultContent)
-			compactionMsgs = append(compactionMsgs, toolMsg)
-		}
+	compressCfg := RunConfig{
+		LLMClient:     client,
+		Model:         model,
+		Messages:      compactionMsgs,
+		Tools:         tools.NewRegistry(), // empty — no tools for compression
+		MaxIterations: 1,                   // single LLM call, no tool execution needed
+		Stream:        false,
+		ThinkingMode:  "",
+		AgentID:       "compressor",
 	}
 
-	// Fallback: if the LLM exhausted all tool rounds without producing text,
-	// send one final call WITHOUT tools to force a text summary.
+	log.Ctx(ctx).WithFields(log.Fields{
+		"original_tokens":  originalTokens,
+		"target_runes":     targetRunes,
+		"to_compress":      len(toCompress),
+		"tail_messages":    len(tail),
+		"available_budget": availableBudget,
+	}).Info("Context compaction: calling engine.Run() for LLM compression")
+
+	output := Run(ctx, compressCfg)
+	if output.Error != nil {
+		return nil, fmt.Errorf("compaction engine.Run failed: %w", output.Error)
+	}
+
+	compressed := llm.StripThinkBlocks(output.Content)
 	if compressed == "" {
-		log.Ctx(ctx).WithField("tool_rounds", maxToolRounds).Warn("Compaction exhausted tool rounds, forcing final summary without tools")
-		forceMsgs := append(compactionMsgs, llm.ChatMessage{Role: "assistant", Content: "Memory operations complete. Now produce the compaction summary."})
-		resp, err := client.Generate(ctx, model, forceMsgs, nil, "")
-		if err != nil {
-			return nil, fmt.Errorf("compaction fallback failed: %w", err)
-		}
-		llmCalls++
-		GlobalMetrics.TotalLLMCalls.Add(1)
-		if resp != nil {
-			GlobalMetrics.TotalInputTokens.Add(resp.Usage.PromptTokens)
-			GlobalMetrics.TotalOutputTokens.Add(resp.Usage.CompletionTokens)
-			totalInput += resp.Usage.PromptTokens
-			totalOutput += resp.Usage.CompletionTokens
-			totalCached += resp.Usage.CacheHitTokens
-		}
-		compressed = llm.StripThinkBlocks(resp.Content)
+		return nil, fmt.Errorf("compaction LLM produced no output")
 	}
 
-	if compressed == "" {
-		return nil, fmt.Errorf("compaction LLM produced no output even after fallback")
-	}
-
-	// Step 6: build compacted message structure
+	// Step 7: build compacted message structure
 	if len(systemMsgs) > 1 {
 		log.Ctx(ctx).WithField("system_count", len(systemMsgs)).Error("assert: at most one system message in compact input")
 		return nil, fmt.Errorf("compact: expected at most one system message, got %d", len(systemMsgs))
@@ -644,18 +621,59 @@ Output the structured working state directly.`
 
 	newTokens := len([]rune(compressed)) * 2 / 3
 	log.Ctx(ctx).WithFields(map[string]any{
-		"original_tokens": originalTokens,
-		"new_tokens":      newTokens,
-		"tail_messages":   len(tail),
+		"original_tokens":   originalTokens,
+		"new_tokens":        newTokens,
+		"tail_messages":     len(tail),
+		"llm_prompt_tokens": output.LastPromptTokens,
+		"llm_output_tokens": output.LastCompletionTokens,
 	}).Info("Context compaction completed")
 
 	return &CompressResult{
 		LLMView:          llmView,
 		SessionView:      sessionView,
 		CompressedTokens: newTokens,
-		InputTokens:      totalInput,
-		OutputTokens:     totalOutput,
-		CachedTokens:     totalCached,
-		LLMCalls:         llmCalls,
+		InputTokens:      output.LastPromptTokens,
+		OutputTokens:     output.LastCompletionTokens,
+		LLMCalls:         1,
 	}, nil
+}
+
+// offloadIDRe matches offload IDs (ol_xxxxxxxx) in message content markers.
+var offloadIDRe = regexp.MustCompile(`offload:(ol_[a-f0-9]+)`)
+
+// maskIDRe matches mask IDs (mk_xxxxxxxx) in message content markers.
+var maskIDRe = regexp.MustCompile(`masked:(mk_[a-f0-9]+)`)
+
+// bareOffloadIDRe matches bare offload IDs in tool call JSON arguments.
+var bareOffloadIDRe = regexp.MustCompile(`"(ol_[a-f0-9]+)"`)
+
+// bareMaskIDRe matches bare mask IDs in tool call JSON arguments.
+var bareMaskIDRe = regexp.MustCompile(`"(mk_[a-f0-9]+)"`)
+
+// extractMaskOffloadIDs scans messages for mask/offload ID references.
+// Returns a set of referenced IDs that must NOT be cleaned during compression.
+// This is the key mechanism that ensures compressed views can still recall
+// original data — unlike Codex and Claude Code which permanently lose access
+// to old tool outputs after compaction.
+func extractMaskOffloadIDs(messages []llm.ChatMessage) map[string]bool {
+	ids := make(map[string]bool)
+	for _, msg := range messages {
+		// Check for full markers (📂 [offload:ol_xxx]) in content
+		for _, m := range offloadIDRe.FindAllStringSubmatch(msg.Content, -1) {
+			ids[m[1]] = true
+		}
+		for _, m := range maskIDRe.FindAllStringSubmatch(msg.Content, -1) {
+			ids[m[1]] = true
+		}
+		// Check for bare IDs in tool call arguments (e.g. {"id":"ol_xxx"})
+		for _, tc := range msg.ToolCalls {
+			for _, m := range bareOffloadIDRe.FindAllStringSubmatch(tc.Arguments, -1) {
+				ids[m[1]] = true
+			}
+			for _, m := range bareMaskIDRe.FindAllStringSubmatch(tc.Arguments, -1) {
+				ids[m[1]] = true
+			}
+		}
+	}
+	return ids
 }
