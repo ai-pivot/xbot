@@ -334,3 +334,45 @@ export interface ChatMessage {
   /** True when loaded from persisted backend history, not an optimistic echo. */
   persisted?: boolean
 }
+
+/* ---------------------------------------------------------------------------
+ * LLM Subscription & Model Management types (Spec D — LLM 配置设计).
+ *
+ * These mirror the Go protocol.Subscription / protocol.PerModelConfig /
+ * protocol.ModelEntry structs (serverapp/rpc_table.go + protocol/events.go).
+ * JSON field names match the backend serialization exactly.
+ * ------------------------------------------------------------------------- */
+
+/** Per-model override config (mirrors protocol.PerModelConfig). */
+export interface PerModelConfig {
+  max_output_tokens: number
+  max_context: number
+  api_type: string
+  enabled: boolean
+}
+
+/** LLM subscription (mirrors protocol.Subscription JSON serialization). */
+export interface Subscription {
+  id: string
+  name: string
+  provider: string
+  base_url: string
+  api_key: string
+  model: string
+  max_output_tokens: number
+  max_context: number
+  api_type: string
+  thinking_mode: string
+  per_model_configs: Record<string, PerModelConfig>
+  active: boolean
+  enabled: boolean
+  is_system: boolean
+}
+
+/** Selectable model paired with its subscription (mirrors protocol.ModelEntry). */
+export interface ModelEntry {
+  sub_id: string
+  sub_name: string
+  model: string
+  status: 'normal' | 'offline' | 'disabled'
+}

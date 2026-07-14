@@ -24,6 +24,7 @@ import { AskUserPanel } from '@/components/agent/AskUserPanel'
 import { MessageInput } from '@/components/agent/MessageInput'
 import { MessageList } from '@/components/agent/MessageList'
 import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
+import { ModelStatusBar } from '@/components/agent/ModelStatusBar'
 import {
   Dialog,
   DialogContent,
@@ -247,6 +248,12 @@ export function AgentPanel({ params }: PanelProps) {
           draft={draft}
           onDraftConsumed={() => setDraft(undefined)}
           sessionKey={`${messageChannel}:${chatID ?? ''}`}
+        />
+      )}
+      {!isSubAgent && chatID && (
+        <ModelStatusBar
+          channel={messageChannel}
+          chatID={chatID}
         />
       )}
     </div>

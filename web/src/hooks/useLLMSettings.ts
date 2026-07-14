@@ -1,46 +1,67 @@
 /**
- * useLLMSettings — load + mutate the user-level LLM config over WS RPC
- * (Spec 7 §3.6).
+ * useLLMSettings — full LLM config hook (Spec D).
  *
- * RPC contract (serverapp/rpc_table.go):
- *   list_models                  -> string[]
- *   get_default_model            -> string          (current user model)
- *   switch_model {model}         -> void            (user-level switch)
- *   get_user_max_context         -> int
- *   set_user_max_context {max_context:int}
- *   get_user_max_output_tokens   -> int
- *   set_user_max_output_tokens {max_tokens:int}
- *   get_user_thinking_mode       -> string          ("" = auto)
- *   set_user_thinking_mode {mode:string}
+ * Manages:
+ *   - Subscription CRUD (list, add, update, remove, set-default, enable/disable)
+ *   - Model management (list entries, refresh, upsert, remove, per-model config)
+ *   - User-level settings (thinking mode, max concurrency)
+ *   - Tier config (vanguard / balance / swift) via generic settings RPC
  *
- * Returns {data, loading, error, setters, saving}. Each setter returns a
- * Promise so the caller can await + toast on completion.
+ * All RPC calls go through WSConnection.rpc → POST /api/rpc.
+ * The backend resolves sender_id from auth context.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { useWSConnection } from '@/hooks/useWSConnection'
+import {
+  listSubscriptions,
+  addSubscription as apiAddSubscription,
+  updateSubscription as apiUpdateSubscription,
+  removeSubscription as apiRemoveSubscription,
+  setDefaultSubscription as apiSetDefaultSubscription,
+  setSubscriptionEnabled as apiSetSubscriptionEnabled,
+  listAllModelEntries,
+  refreshModelEntries as apiRefreshModelEntries,
+  updatePerModelConfig as apiUpdatePerModelConfig,
+  setModelEnabled as apiSetModelEnabled,
+  removeModel as apiRemoveModel,
+  upsertModel as apiUpsertModel,
+  getUserThinkingMode,
+  setUserThinkingMode as apiSetUserThinkingMode,
+  getLLMConcurrency,
+  setLLMConcurrency as apiSetLLMConcurrency,
+  getSettings,
+  setSetting,
+  isMaskedAPIKey,
+} from '@/components/agent/api'
+import type { Subscription, ModelEntry, PerModelConfig } from '@/types/shared'
 
-export interface LLMSettings {
-  models: string[]
-  model: string
-  maxContext: number
-  maxOutputTokens: number
+export interface LLMSettingsData {
+  subscriptions: Subscription[]
+  modelEntries: ModelEntry[]
   thinkingMode: string
+  llmConcurrency: number
+  tierVanguard: string
+  tierBalance: string
+  tierSwift: string
 }
 
-const empty: LLMSettings = {
-  models: [],
-  model: '',
-  maxContext: 0,
-  maxOutputTokens: 0,
+const empty: LLMSettingsData = {
+  subscriptions: [],
+  modelEntries: [],
   thinkingMode: '',
+  llmConcurrency: 0,
+  tierVanguard: '',
+  tierBalance: '',
+  tierSwift: '',
 }
 
 export function useLLMSettings() {
   const conn = useWSConnection()
-  const [data, setData] = useState<LLMSettings>(empty)
+  const [data, setData] = useState<LLMSettingsData>(empty)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -51,20 +72,21 @@ export function useLLMSettings() {
         setLoading(false)
         return
       }
-      const [models, model, maxContext, maxOutputTokens, thinkingMode] =
-        await Promise.all([
-          conn.rpc<string[]>('list_models'),
-          conn.rpc<string>('get_default_model'),
-          conn.rpc<number>('get_user_max_context'),
-          conn.rpc<number>('get_user_max_output_tokens'),
-          conn.rpc<string>('get_user_thinking_mode'),
-        ])
+      const [subs, entries, thinkingMode, concurrency, settings] = await Promise.all([
+        listSubscriptions(conn),
+        listAllModelEntries(conn),
+        getUserThinkingMode(conn),
+        getLLMConcurrency(conn),
+        getSettings(conn, 'cli'),
+      ])
       setData({
-        models: Array.isArray(models) ? models : [],
-        model: model ?? '',
-        maxContext: maxContext ?? 0,
-        maxOutputTokens: maxOutputTokens ?? 0,
+        subscriptions: Array.isArray(subs) ? subs : [],
+        modelEntries: Array.isArray(entries) ? entries : [],
         thinkingMode: thinkingMode ?? '',
+        llmConcurrency: concurrency ?? 0,
+        tierVanguard: settings['tier_vanguard'] ?? '',
+        tierBalance: settings['tier_balance'] ?? '',
+        tierSwift: settings['tier_swift'] ?? '',
       })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -77,12 +99,20 @@ export function useLLMSettings() {
     void load()
   }, [load])
 
-  const runSet = useCallback(
-    async (fn: () => Promise<unknown>, patch: Partial<LLMSettings>) => {
+  // ── Subscription CRUD ──
+
+  const addSubscription = useCallback(
+    async (sub: {
+      name: string
+      provider: string
+      base_url: string
+      api_key: string
+      model: string
+    }): Promise<boolean> => {
       setSaving(true)
       try {
-        await fn()
-        setData((d) => ({ ...d, ...patch }))
+        await apiAddSubscription(conn, sub)
+        await load()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -91,38 +121,236 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [],
+    [conn, load],
   )
 
-  const setModel = useCallback(
-    (model: string) =>
-      runSet(() => conn.rpc('switch_model', { model }), { model }),
-    [conn, runSet],
+  const updateSubscription = useCallback(
+    async (
+      id: string,
+      sub: {
+        name: string
+        provider: string
+        base_url: string
+        api_key: string
+        model: string
+      },
+    ): Promise<boolean> => {
+      setSaving(true)
+      try {
+        // If API key is masked (unchanged from server), send empty to preserve
+        const apiKeyToSend = isMaskedAPIKey(sub.api_key) ? '' : sub.api_key
+        await apiUpdateSubscription(conn, id, { ...sub, api_key: apiKeyToSend })
+        await load()
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn, load],
   )
 
-  const setMaxContext = useCallback(
-    (maxContext: number) =>
-      runSet(() => conn.rpc('set_user_max_context', { max_context: maxContext }), {
-        maxContext,
-      }),
-    [conn, runSet],
+  const removeSubscription = useCallback(
+    async (id: string): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await apiRemoveSubscription(conn, id)
+        await load()
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn, load],
   )
 
-  const setMaxOutputTokens = useCallback(
-    (maxOutputTokens: number) =>
-      runSet(
-        () => conn.rpc('set_user_max_output_tokens', { max_tokens: maxOutputTokens }),
-        { maxOutputTokens },
-      ),
-    [conn, runSet],
+  const setDefaultSubscription = useCallback(
+    async (id: string): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await apiSetDefaultSubscription(conn, id)
+        await load()
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn, load],
   )
+
+  const setSubscriptionEnabled = useCallback(
+    async (subID: string, enabled: boolean): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await apiSetSubscriptionEnabled(conn, subID, enabled)
+        await load()
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn, load],
+  )
+
+  // ── Model Management ──
+
+  const updatePerModelConfig = useCallback(
+    async (subID: string, model: string, config: PerModelConfig): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await apiUpdatePerModelConfig(conn, subID, model, config)
+        await load()
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn, load],
+  )
+
+  const setModelEnabled = useCallback(
+    async (subID: string, model: string, enabled: boolean): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await apiSetModelEnabled(conn, subID, model, enabled)
+        await load()
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn, load],
+  )
+
+  const removeModel = useCallback(
+    async (subID: string, model: string): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await apiRemoveModel(conn, subID, model)
+        await load()
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn, load],
+  )
+
+  const upsertModel = useCallback(
+    async (
+      subID: string,
+      model: string,
+      maxContext = 0,
+      maxOutput = 0,
+      apiType = '',
+    ): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await apiUpsertModel(conn, subID, model, maxContext, maxOutput, apiType)
+        await load()
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn, load],
+  )
+
+  const refreshModels = useCallback(async (): Promise<boolean> => {
+    setRefreshing(true)
+    try {
+      const entries = await apiRefreshModelEntries(conn)
+      setData((d) => ({ ...d, modelEntries: Array.isArray(entries) ? entries : [] }))
+      return true
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      return false
+    } finally {
+      setRefreshing(false)
+    }
+  }, [conn])
+
+  // ── User-Level Settings ──
 
   const setThinkingMode = useCallback(
-    (thinkingMode: string) =>
-      runSet(() => conn.rpc('set_user_thinking_mode', { mode: thinkingMode }), {
-        thinkingMode,
-      }),
-    [conn, runSet],
+    async (mode: string): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await apiSetUserThinkingMode(conn, mode)
+        setData((d) => ({ ...d, thinkingMode: mode }))
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn],
+  )
+
+  const setLLMConcurrency = useCallback(
+    async (personal: number): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await apiSetLLMConcurrency(conn, personal)
+        setData((d) => ({ ...d, llmConcurrency: personal }))
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn],
+  )
+
+  // ── Tier Config ──
+
+  const setTier = useCallback(
+    async (tier: 'vanguard' | 'balance' | 'swift', value: string): Promise<boolean> => {
+      setSaving(true)
+      try {
+        await setSetting(conn, 'cli', `tier_${tier}`, value)
+        setData((d) => ({
+          ...d,
+          tierVanguard: tier === 'vanguard' ? value : d.tierVanguard,
+          tierBalance: tier === 'balance' ? value : d.tierBalance,
+          tierSwift: tier === 'swift' ? value : d.tierSwift,
+        }))
+        return true
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return false
+      } finally {
+        setSaving(false)
+      }
+    },
+    [conn],
   )
 
   return {
@@ -130,10 +358,24 @@ export function useLLMSettings() {
     loading,
     error,
     saving,
+    refreshing,
     reload: load,
-    setModel,
-    setMaxContext,
-    setMaxOutputTokens,
+    // Subscription CRUD
+    addSubscription,
+    updateSubscription,
+    removeSubscription,
+    setDefaultSubscription,
+    setSubscriptionEnabled,
+    // Model management
+    updatePerModelConfig,
+    setModelEnabled,
+    removeModel,
+    upsertModel,
+    refreshModels,
+    // User-level settings
     setThinkingMode,
+    setLLMConcurrency,
+    // Tier config
+    setTier,
   }
 }
