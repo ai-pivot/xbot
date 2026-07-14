@@ -516,9 +516,10 @@ func splitBraceAlternatives(s string) []string {
 	return parts
 }
 
-// executeLocal 在本地执行 grep 搜索（非沙箱模式）
+// executeLocal 在本地执行 grep 搜索（非沙箱模式）。
+// 系统调用（readdir, read）是阻塞的，无法被 context 超时打断，
+// 因此将搜索放在独立 goroutine 中执行，通过 select 强制超时返回。
 func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string, ignoreCase bool, contextLines int) (*ToolResult, error) {
-	// Per-tool timeout: 60s for local codebase search
 	parentCtx := context.Background()
 	if ctx != nil && ctx.Ctx != nil {
 		parentCtx = ctx.Ctx
@@ -564,18 +565,133 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 		return nil, fmt.Errorf("path does not exist: %s", baseDir)
 	}
 
-	// Support single file path: if path points to a file, search it directly
+	// 在 goroutine 中执行搜索：系统调用（readdir, read）阻塞且无法被
+	// context 超时打断。通过 select 确保超时后函数立即返回，不等待
+	// 被阻塞的 goroutine。
+
+	// Pre-check: handle pre-cancelled context deterministically.
+	if searchCtx.Err() != nil {
+		return nil, fmt.Errorf("search interrupted or timed out: %w", searchCtx.Err())
+	}
+
+	type searchResult struct {
+		matches   []grepMatch
+		truncated bool
+		err       error
+	}
+	resultCh := make(chan searchResult, 1)
+
+	go func() {
+		m, trunc, e := t.doLocalGrep(searchCtx, baseDir, info, re, include, contextLines)
+		resultCh <- searchResult{m, trunc, e}
+	}()
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			return nil, res.err
+		}
+		matches := res.matches
+		truncated := res.truncated
+		interrupted := searchCtx.Err() != nil
+
+		if interrupted {
+			if len(matches) > 0 {
+				var sb strings.Builder
+				fmt.Fprintf(&sb, "Found %d match(es) (search interrupted — results may be incomplete):\n\n", len(matches))
+				currentFile := ""
+				for _, m := range matches {
+					if m.File != currentFile {
+						if currentFile != "" {
+							sb.WriteString("\n")
+						}
+						currentFile = m.File
+						fmt.Fprintf(&sb, "## %s\n", m.File)
+					}
+					line := m.Line
+					if len(line) > maxGrepLineLength {
+						line = line[:maxGrepLineLength] + "..."
+					}
+					fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
+				}
+				return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
+			}
+			return nil, fmt.Errorf("search interrupted or timed out")
+		}
+
+		if len(matches) == 0 {
+			return NewResultWithTips("No matches found.", "尝试换一个关键词，或检查路径/正则是否正确。"), nil
+		}
+
+		// Format output
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "Found %d match(es):\n\n", len(matches))
+
+		currentFile := ""
+		for _, m := range matches {
+			if m.File != currentFile {
+				if currentFile != "" {
+					sb.WriteString("\n")
+				}
+				currentFile = m.File
+				fmt.Fprintf(&sb, "## %s\n", m.File)
+			}
+			line := m.Line
+			if len(line) > maxGrepLineLength {
+				line = line[:maxGrepLineLength] + "..."
+			}
+			fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
+		}
+
+		if truncated {
+			fmt.Fprintf(&sb, "\n(Results truncated. Showing first %d matches.)\n", maxGrepMatches)
+		}
+
+		return NewResultWithTips(sb.String(), "使用 Read 查看具体匹配行的完整上下文。"), nil
+
+	case <-searchCtx.Done():
+		// Try to get partial results if goroutine completed
+		select {
+		case res := <-resultCh:
+			if res.err == nil && len(res.matches) > 0 {
+				var sb strings.Builder
+				fmt.Fprintf(&sb, "Found %d match(es) (search interrupted — results may be incomplete):\n\n", len(res.matches))
+				currentFile := ""
+				for _, m := range res.matches {
+					if m.File != currentFile {
+						if currentFile != "" {
+							sb.WriteString("\n")
+						}
+						currentFile = m.File
+						fmt.Fprintf(&sb, "## %s\n", m.File)
+					}
+					line := m.Line
+					if len(line) > maxGrepLineLength {
+						line = line[:maxGrepLineLength] + "..."
+					}
+					fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
+				}
+				return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
+			}
+		default:
+		}
+		return nil, fmt.Errorf("search timed out after %s. The directory may be too large or on a slow filesystem.", GrepLocalTimeout)
+	}
+}
+
+// doLocalGrep 在本地文件系统执行实际的 grep 搜索。
+func (t *GrepTool) doLocalGrep(ctx context.Context, baseDir string, info os.FileInfo, re *regexp.Regexp, include string, contextLines int) ([]grepMatch, bool, error) {
 	var matches []grepMatch
 	truncated := false
 
 	if !info.IsDir() {
 		// Single file mode
 		if info.Size() > maxGrepFileSize {
-			return nil, fmt.Errorf("file too large (>%d bytes): %s", maxGrepFileSize, baseDir)
+			return nil, false, fmt.Errorf("file too large (>%d bytes): %s", maxGrepFileSize, baseDir)
 		}
-		fileMatches, err := searchFile(searchCtx, baseDir, re, contextLines)
+		fileMatches, err := searchFile(ctx, baseDir, re, contextLines)
 		if err != nil {
-			return nil, fmt.Errorf("failed to search file: %w", err)
+			return nil, false, fmt.Errorf("failed to search file: %w", err)
 		}
 		matches = fileMatches
 	} else {
@@ -586,9 +702,9 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 		}
 
 		// Walk the directory and search files
-		err = filepath.WalkDir(baseDir, func(walkPath string, d os.DirEntry, walkErr error) error {
+		err := filepath.WalkDir(baseDir, func(walkPath string, d os.DirEntry, walkErr error) error {
 			// Check context cancellation (Ctrl+C or timeout)
-			if cerr := searchCtx.Err(); cerr != nil {
+			if cerr := ctx.Err(); cerr != nil {
 				return filepath.SkipAll
 			}
 			if walkErr != nil {
@@ -633,7 +749,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 			}
 
 			// Search file
-			fileMatches, err := searchFile(searchCtx, walkPath, re, contextLines)
+			fileMatches, err := searchFile(ctx, walkPath, re, contextLines)
 			if err != nil {
 				return nil // skip files that can't be read
 			}
@@ -648,63 +764,9 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("search failed: %w", err)
+			return nil, false, fmt.Errorf("search failed: %w", err)
 		}
 	}
 
-	// Context cancelled or timed out — distinguish from "no matches"
-	if cerr := searchCtx.Err(); cerr != nil {
-		if len(matches) > 0 {
-			// Partial results before cancellation
-			var sb strings.Builder
-			fmt.Fprintf(&sb, "Found %d match(es) (search interrupted — results may be incomplete):\n\n", len(matches))
-			currentFile := ""
-			for _, m := range matches {
-				if m.File != currentFile {
-					if currentFile != "" {
-						sb.WriteString("\n")
-					}
-					currentFile = m.File
-					fmt.Fprintf(&sb, "## %s\n", m.File)
-				}
-				line := m.Line
-				if len(line) > maxGrepLineLength {
-					line = line[:maxGrepLineLength] + "..."
-				}
-				fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
-			}
-			return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
-		}
-		return nil, fmt.Errorf("search interrupted or timed out: %w", cerr)
-	}
-
-	if len(matches) == 0 {
-		return NewResultWithTips("No matches found.", "尝试换一个关键词，或检查路径/正则是否正确。"), nil
-	}
-
-	// Format output
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Found %d match(es):\n\n", len(matches))
-
-	currentFile := ""
-	for _, m := range matches {
-		if m.File != currentFile {
-			if currentFile != "" {
-				sb.WriteString("\n")
-			}
-			currentFile = m.File
-			fmt.Fprintf(&sb, "## %s\n", m.File)
-		}
-		line := m.Line
-		if len(line) > maxGrepLineLength {
-			line = line[:maxGrepLineLength] + "..."
-		}
-		fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
-	}
-
-	if truncated {
-		fmt.Fprintf(&sb, "\n(Results truncated. Showing first %d matches.)\n", maxGrepMatches)
-	}
-
-	return NewResultWithTips(sb.String(), "使用 Read 查看具体匹配行的完整上下文。"), nil
+	return matches, truncated, nil
 }

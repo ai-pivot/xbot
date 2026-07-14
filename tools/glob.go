@@ -173,7 +173,11 @@ func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*To
 // 系统调用（readdir, stat）是阻塞的，无法被 context 超时打断，
 // 因此将搜索放在独立 goroutine 中执行，通过 select 强制超时返回。
 func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolResult, error) {
-	searchCtx, cancel := context.WithTimeout(context.Background(), GlobLocalTimeout)
+	parentCtx := context.Background()
+	if ctx != nil && ctx.Ctx != nil {
+		parentCtx = ctx.Ctx
+	}
+	searchCtx, cancel := context.WithTimeout(parentCtx, GlobLocalTimeout)
 	defer cancel()
 
 	// Determine base directory
@@ -212,6 +216,14 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 	// 在 goroutine 中执行搜索：系统调用（readdir, stat）阻塞且无法被
 	// context 超时打断。通过 select 确保超时后函数立即返回，不等待
 	// 被阻塞的 goroutine。
+
+	// Pre-check: handle pre-cancelled context deterministically.
+	// Without this, select randomly picks between resultCh and searchCtx.Done()
+	// when both are ready (goroutine completes instantly on cancelled context).
+	if searchCtx.Err() != nil {
+		return nil, fmt.Errorf("glob search interrupted or timed out: %w", searchCtx.Err())
+	}
+
 	type searchResult struct {
 		matches []string
 		err     error
@@ -268,10 +280,21 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 		return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
 
 	case <-searchCtx.Done():
-		return NewResultWithTips(
-			fmt.Sprintf("Glob search timed out after %s. The directory may be too large or on a slow filesystem.", GlobLocalTimeout),
-			"尝试缩小搜索范围或使用更具体的 pattern。",
-		), nil
+		// Try to get partial results if goroutine completed
+		select {
+		case res := <-resultCh:
+			if res.err == nil && len(res.matches) > 0 {
+				var sb strings.Builder
+				fmt.Fprintf(&sb, "Found %d matching file(s) (search interrupted — results may be incomplete):\n", len(res.matches))
+				for _, match := range res.matches {
+					sb.WriteString(match)
+					sb.WriteString("\n")
+				}
+				return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
+			}
+		default:
+		}
+		return nil, fmt.Errorf("glob search timed out after %s. The directory may be too large or on a slow filesystem.", GlobLocalTimeout)
 	}
 }
 
