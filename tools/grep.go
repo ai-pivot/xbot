@@ -651,10 +651,36 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 		return NewResultWithTips(sb.String(), "使用 Read 查看具体匹配行的完整上下文。"), nil
 
 	case <-searchCtx.Done():
-		// Try to get partial results if goroutine completed
+		// Try to get results if goroutine completed
 		select {
 		case res := <-resultCh:
 			if res.err == nil && len(res.matches) > 0 {
+				if res.completed {
+					// goroutine finished successfully before we noticed the timeout
+					matches := res.matches
+					var sb strings.Builder
+					fmt.Fprintf(&sb, "Found %d match(es):\n\n", len(matches))
+					currentFile := ""
+					for _, m := range matches {
+						if m.File != currentFile {
+							if currentFile != "" {
+								sb.WriteString("\n")
+							}
+							currentFile = m.File
+							fmt.Fprintf(&sb, "## %s\n", m.File)
+						}
+						line := m.Line
+						if len(line) > maxGrepLineLength {
+							line = line[:maxGrepLineLength] + "..."
+						}
+						fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
+					}
+					if res.truncated {
+						fmt.Fprintf(&sb, "\n(Results truncated. Showing first %d matches.)\n", maxGrepMatches)
+					}
+					return NewResultWithTips(sb.String(), "使用 Read 查看具体匹配行的完整上下文。"), nil
+				}
+				// true partial results — search was interrupted
 				var sb strings.Builder
 				fmt.Fprintf(&sb, "Found %d match(es) (search interrupted — results may be incomplete):\n\n", len(res.matches))
 				currentFile := ""

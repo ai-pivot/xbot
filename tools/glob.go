@@ -281,10 +281,30 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 		return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
 
 	case <-searchCtx.Done():
-		// Try to get partial results if goroutine completed
+		// Try to get results if goroutine completed
 		select {
 		case res := <-resultCh:
 			if res.err == nil && len(res.matches) > 0 {
+				if res.completed {
+					// goroutine finished successfully before we noticed the timeout
+					matches := res.matches
+					truncated := false
+					if len(matches) > MaxGlobResults {
+						matches = matches[:MaxGlobResults]
+						truncated = true
+					}
+					var sb strings.Builder
+					fmt.Fprintf(&sb, "Found %d matching file(s):\n", len(matches))
+					for _, match := range matches {
+						sb.WriteString(match)
+						sb.WriteString("\n")
+					}
+					if truncated {
+						fmt.Fprintf(&sb, "\n(Results truncated. Showing first %d matches.)\n", MaxGlobResults)
+					}
+					return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
+				}
+				// true partial results — search was interrupted
 				var sb strings.Builder
 				fmt.Fprintf(&sb, "Found %d matching file(s) (search interrupted — results may be incomplete):\n", len(res.matches))
 				for _, match := range res.matches {
