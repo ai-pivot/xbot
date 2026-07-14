@@ -1568,8 +1568,16 @@ func (a *Agent) SendToInteractiveSession(
 			ia.completionTokens = out.LastCompletionTokens
 
 			// Build ia.messages from the authoritative engine output.
-			// Skip system prompt (out.Messages[0]) if present.
-			if len(out.Messages) < preLen || len(out.Messages) == 0 {
+			// Preserve existing history (ia.messages before this Run) and only
+			// append new messages produced by this Run. This matches the
+			// background spawn path (line ~962-975) and prevents history loss.
+			//
+			// cfg.Messages was built as [systemPrompt] + ia.messages + [newUserMsg]
+			// so preLen = len(systemPrompt) + len(ia.messages) + 1.
+			// out.Messages is the engine's final message list after Run.
+			if len(out.Messages) < preLen {
+				// Compression happened during Run: replace entirely with
+				// the compressed list (minus system prompt).
 				start := 0
 				if len(out.Messages) > 0 && out.Messages[0].Role == "system" {
 					start = 1
@@ -1577,12 +1585,23 @@ func (a *Agent) SendToInteractiveSession(
 				ia.messages = make([]llm.ChatMessage, len(out.Messages)-start)
 				copy(ia.messages, out.Messages[start:])
 			} else {
-				start := 0
-				if len(out.Messages) > 0 && out.Messages[0].Role == "system" {
-					start = 1
+				// Normal case: preserve existing history, append only new
+				// messages from this Run (out.Messages[preLen:]).
+				//
+				// Background mode: user message was already appended to
+				// ia.messages before Run (line ~1357), so out.Messages[preLen:]
+				// contains only new assistant/tool messages.
+				//
+				// Foreground send mode: user message was NOT appended to
+				// ia.messages (it was only in cfg.Messages). We must add it
+				// here before appending engine output, otherwise the user
+				// message is lost from ia.messages.
+				if !ia.background {
+					ia.messages = append(ia.messages, llm.NewUserMessage(msg.Content))
 				}
-				ia.messages = make([]llm.ChatMessage, len(out.Messages)-start)
-				copy(ia.messages, out.Messages[start:])
+				if len(out.Messages) > preLen {
+					ia.messages = append(ia.messages, out.Messages[preLen:]...)
+				}
 			}
 
 			if out.Content != "" {
@@ -1596,7 +1615,7 @@ func (a *Agent) SendToInteractiveSession(
 				ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
 			}
 			if len(out.IterationHistory) > 0 {
-				ia.iterationHistory = out.IterationHistory
+				ia.iterationHistory = append(ia.iterationHistory, out.IterationHistory...)
 			}
 		}
 
