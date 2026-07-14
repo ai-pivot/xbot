@@ -68,19 +68,13 @@ export const LiveIteration = memo(function LiveIteration({
         </FoldedLine>
       )}
 
-      {/* Streaming O */}
+      {/* Streaming O — inline typewriter cursor via .streaming-content ::after */}
       {hasStreamContent && (
-        <div>
+        <div className={progress.streaming ? 'streaming-content' : undefined}>
           <MarkdownRenderer
             content={progress.streamContent}
             className="text-sm text-text-primary"
           />
-          {progress.streaming && (
-            <span
-              className="inline-block ml-0.5 h-4 w-1.5 animate-pulse bg-text-primary align-middle"
-              aria-hidden
-            />
-          )}
         </div>
       )}
 

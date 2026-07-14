@@ -25,7 +25,6 @@ export function WSProvider({ children }: { children: ReactNode }) {
   if (connRef.current === null) {
     connRef.current = new MultiSSEManager()
   }
-  }
   const conn = connRef.current
 
   // Re-render on connection-state flips so consumers can read live status.

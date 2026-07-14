@@ -330,7 +330,7 @@ export function useChatMessages({
       // during an in-flight reload).
       if (gen !== reloadGenRef.current) return
       // Store last_seq for WS reconnect incremental replay.
-      if (data.last_seq) ws.setLastSeq(data.last_seq)
+      if (data.last_seq) ws.setLastSeq(chatID ?? '', data.last_seq, channel)
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
       if (shouldKeepVisibleRowsOnRefresh(parsed, sameTarget, messagesRef.current)) return

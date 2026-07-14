@@ -167,6 +167,11 @@ const zhCN = {
     todoAllDone: '全部完成',
     completionHint: '↑↓ 选择，Tab 补全，Esc 关闭',
     completionNoResults: '无匹配结果',
+    navToTop: '回到最上方',
+    navPrevUser: '上一个用户消息',
+    navNextUser: '下一个用户消息',
+    navToBottom: '回到最下方',
+    newContent: '条新内容',
   },
   settings: {
     title: '设置',

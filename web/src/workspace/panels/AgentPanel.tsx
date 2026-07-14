@@ -125,11 +125,11 @@ export function AgentPanel({ params }: PanelProps) {
     chatID: progressChatID,
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
-    onAssistantComplete: (finalText, iterations, eventSeq) => {
+    onAssistantComplete: (finalText, iterations) => {
       // Both main Agent and SubAgent panels append the final reply to the
       // message list. SubAgent panels previously had onAssistantComplete=undefined,
       // causing the final reply to never appear in the message list.
-      chat.appendAssistant(finalText, iterations, eventSeq)
+      chat.appendAssistant(finalText, iterations)
       void chat.reload()
     },
     ws,

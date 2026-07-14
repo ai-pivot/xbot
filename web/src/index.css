@@ -588,3 +588,43 @@
   flex-shrink: 0;
   color: var(--text-muted);
 }
+
+/* ── SubAgent card light-sweep animation (Spec A §1) ───────────────────────
+ * A subtle accent-colored gradient sweeps across the card while a SubAgent
+ * is running. Uses CSS @keyframes (no JS animation loop) per the spec.
+ */
+@keyframes subagent-sweep {
+  0%   { background-position: -100% 0; }
+  100% { background-position: 200% 0; }
+}
+.subagent-card--running {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 8%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: subagent-sweep 1.5s ease-in-out infinite;
+}
+
+/* ── Inline typewriter cursor (Spec A §2) ─────────────────────────────────
+ * The cursor follows the last character of streaming Markdown output.
+ * Using ::after on the last child of .streaming-content ensures the cursor
+ * appears at the end of the rendered content, not on a separate line.
+ */
+@keyframes streaming-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+.streaming-content > :last-child::after {
+  content: '';
+  display: inline-block;
+  vertical-align: text-bottom;
+  height: 1.1em;
+  width: 2px;
+  margin-left: 2px;
+  background-color: var(--accent);
+  animation: streaming-cursor-blink 1s ease-in-out infinite;
+}

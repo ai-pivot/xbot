@@ -81,11 +81,11 @@ export class WSConnectionImpl implements WSConnection {
     return this._chatID
   }
 
-  setLastSeq(seq: number): void {
+  setLastSeq(_chatID: string, seq: number, _channel?: string): void {
     this._lastSeq = seq
   }
 
-  send(msg: WSClientMessage): void {
+  async send(msg: WSClientMessage): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       // Buffer message — will be flushed on reconnect (prevents silent drops).
       // Dedup: subscribe/sync are idempotent; only buffer 'message' type.
@@ -100,6 +100,30 @@ export class WSConnectionImpl implements WSConnection {
   subscribe(chatID: string): void {
     this._chatID = chatID
     this.send({ type: 'subscribe', chat_id: chatID })
+  }
+
+  get channel(): string | null {
+    return 'web'
+  }
+
+  disconnect(): void {
+    if (this.ws) {
+      this.ws.onclose = null
+      this.ws.onerror = null
+      this.ws.onmessage = null
+      this.ws.onopen = null
+      try { this.ws.close() } catch { /* ignore */ }
+      this.ws = null
+    }
+    this._connected = false
+  }
+
+  // Stubs for multi-subscription interface (WSConnectionImpl is single-connection).
+  addSubscription(_chatID: string, _channel: string): string {
+    throw new Error('WSConnectionImpl does not support multi-subscriptions')
+  }
+  removeSubscription(_id: string): void {
+    // no-op
   }
 
   rpc<T = unknown>(method: string, params?: unknown): Promise<T> {

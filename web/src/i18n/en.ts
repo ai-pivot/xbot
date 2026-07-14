@@ -170,6 +170,11 @@ const en: Translations = {
     todoAllDone: 'All done',
     completionHint: '↑↓ navigate, Tab complete, Esc dismiss',
     completionNoResults: 'No matches',
+    navToTop: 'Scroll to top',
+    navPrevUser: 'Previous user message',
+    navNextUser: 'Next user message',
+    navToBottom: 'Scroll to bottom',
+    newContent: 'new',
   },
   settings: {
     title: 'Settings',
