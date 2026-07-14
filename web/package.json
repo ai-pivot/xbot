@@ -18,7 +18,7 @@
     "@iconify/react": "^6.0.2",
     "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/vite": "^4.2.2",
-    "@tanstack/react-virtual": "^3.13.24",
+    "@tanstack/react-virtual": "^3.14.6",
     "@tiptap/extension-code-block-lowlight": "^3.20.6",
     "@tiptap/extension-placeholder": "^3.20.6",
     "@tiptap/extension-task-item": "^3.20.6",

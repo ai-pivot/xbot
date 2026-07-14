@@ -8,6 +8,7 @@
  *  - collapse level is forwarded to rows
  */
 import { act, fireEvent, render } from '@testing-library/react'
+import { Virtualizer } from '@tanstack/react-virtual'
 import { describe, expect, it } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -126,6 +127,52 @@ function contentElement(container: HTMLElement): Element {
 }
 
 describe('MessageList virtualization', () => {
+  it('does not re-adjust measured history rows while scrolling backward', () => {
+    const scrollElement = document.createElement('div')
+    const corrections: number[] = []
+    const offsetCallbacks: Array<(offset: number, isScrolling: boolean) => void> = []
+    const virtualizer = new Virtualizer<HTMLDivElement, HTMLDivElement>({
+      count: 60,
+      getScrollElement: () => scrollElement,
+      estimateSize: () => 120,
+      getItemKey: (index) => `message-${index}`,
+      initialRect: { width: 800, height: 600 },
+      initialOffset: 6_000,
+      observeElementRect: (_instance, callback) => {
+        callback({ width: 800, height: 600 })
+        return () => {}
+      },
+      observeElementOffset: (_instance, callback) => {
+        offsetCallbacks.push(callback)
+        callback(6_000, false)
+        return () => {}
+      },
+      scrollToFn: (_offset, options) => {
+        if (options.adjustments) corrections.push(options.adjustments)
+      },
+    })
+    const cleanup = virtualizer._didMount()
+    virtualizer._willUpdate()
+
+    try {
+      expect(offsetCallbacks).toHaveLength(1)
+      offsetCallbacks[0](5_400, true)
+      expect(virtualizer.scrollDirection).toBe('backward')
+
+      // First measurement keeps the visible anchor despite the large estimate delta.
+      virtualizer.resizeItem(20, 900)
+      expect(corrections).toEqual([780])
+
+      corrections.length = 0
+      // Re-measuring an already-known row during upward scrolling must not
+      // start another correction cascade.
+      for (const size of [960, 840, 1_020]) virtualizer.resizeItem(20, size)
+      expect(corrections).toEqual([])
+    } finally {
+      cleanup()
+    }
+  })
+
   it('renders 150 messages without throwing', () => {
     const messages = makeMessages(150)
     expect(() =>
