@@ -169,9 +169,10 @@ func (t *GlobTool) executeInSandbox(ctx *ToolContext, pattern, path string) (*To
 	return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
 }
 
-// executeLocal 在本地执行文件搜索（非沙箱模式）
+// executeLocal 在本地执行文件搜索（非沙箱模式）。
+// 系统调用（readdir, stat）是阻塞的，无法被 context 超时打断，
+// 因此将搜索放在独立 goroutine 中执行，通过 select 强制超时返回。
 func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolResult, error) {
-	// Per-tool timeout: 30s for local file pattern matching
 	parentCtx := context.Background()
 	if ctx != nil && ctx.Ctx != nil {
 		parentCtx = ctx.Ctx
@@ -212,21 +213,130 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 		return nil, fmt.Errorf("path is not a directory: %s", baseDir)
 	}
 
+	// 在 goroutine 中执行搜索：系统调用（readdir, stat）阻塞且无法被
+	// context 超时打断。通过 select 确保超时后函数立即返回，不等待
+	// 被阻塞的 goroutine。
+
+	// Pre-check: handle pre-cancelled context deterministically.
+	// Without this, select randomly picks between resultCh and searchCtx.Done()
+	// when both are ready (goroutine completes instantly on cancelled context).
+	if searchCtx.Err() != nil {
+		return nil, fmt.Errorf("glob search interrupted or timed out: %w", searchCtx.Err())
+	}
+
+	type searchResult struct {
+		matches   []string
+		err       error
+		completed bool // goroutine 完成时 context 是否尚未超时
+	}
+	resultCh := make(chan searchResult, 1)
+
+	go func() {
+		m, e := t.doLocalGlob(searchCtx, baseDir, pattern)
+		resultCh <- searchResult{m, e, searchCtx.Err() == nil}
+	}()
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			return nil, res.err
+		}
+		matches := res.matches
+		interrupted := !res.completed
+
+		if interrupted {
+			if len(matches) > 0 {
+				var sb strings.Builder
+				fmt.Fprintf(&sb, "Found %d matching file(s) (search interrupted — results may be incomplete):\n", len(matches))
+				for _, match := range matches {
+					sb.WriteString(match)
+					sb.WriteString("\n")
+				}
+				return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
+			}
+			return nil, fmt.Errorf("glob search interrupted or timed out")
+		}
+
+		if len(matches) == 0 {
+			return NewResultWithTips("No files matched the pattern.", "检查 glob 模式语法，或尝试更宽泛的匹配（如 **/*.go）。"), nil
+		}
+
+		// Limit results to avoid excessive output
+		truncated := false
+		if len(matches) > MaxGlobResults {
+			matches = matches[:MaxGlobResults]
+			truncated = true
+		}
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "Found %d matching file(s):\n", len(matches))
+		for _, match := range matches {
+			sb.WriteString(match)
+			sb.WriteString("\n")
+		}
+		if truncated {
+			fmt.Fprintf(&sb, "\n(Results truncated. Showing first %d matches.)\n", MaxGlobResults)
+		}
+
+		return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
+
+	case <-searchCtx.Done():
+		// Try to get results if goroutine completed
+		select {
+		case res := <-resultCh:
+			if res.err == nil && len(res.matches) > 0 {
+				if res.completed {
+					// goroutine finished successfully before we noticed the timeout
+					matches := res.matches
+					truncated := false
+					if len(matches) > MaxGlobResults {
+						matches = matches[:MaxGlobResults]
+						truncated = true
+					}
+					var sb strings.Builder
+					fmt.Fprintf(&sb, "Found %d matching file(s):\n", len(matches))
+					for _, match := range matches {
+						sb.WriteString(match)
+						sb.WriteString("\n")
+					}
+					if truncated {
+						fmt.Fprintf(&sb, "\n(Results truncated. Showing first %d matches.)\n", MaxGlobResults)
+					}
+					return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
+				}
+				// true partial results — search was interrupted
+				var sb strings.Builder
+				fmt.Fprintf(&sb, "Found %d matching file(s) (search interrupted — results may be incomplete):\n", len(res.matches))
+				for _, match := range res.matches {
+					sb.WriteString(match)
+					sb.WriteString("\n")
+				}
+				return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
+			}
+		default:
+		}
+		return nil, fmt.Errorf("glob search timed out after %s: the directory may be too large or on a slow filesystem", GlobLocalTimeout)
+	}
+}
+
+// doLocalGlob 在本地文件系统执行实际的 pattern 匹配。
+func (t *GlobTool) doLocalGlob(ctx context.Context, baseDir, pattern string) ([]string, error) {
 	var matches []string
+	seen := make(map[string]bool)
 
 	// Expand brace patterns (e.g., "*.{go,ts}" → ["*.go", "*.ts"]) before matching,
 	// since neither filepath.Glob nor matchDoublestar support brace expansion.
 	bracePatterns := expandBracePattern(pattern)
-	seen := make(map[string]bool)
 
 	for _, bp := range bracePatterns {
 		// Check context before each pattern (Ctrl+C / timeout)
-		if cerr := searchCtx.Err(); cerr != nil {
+		if cerr := ctx.Err(); cerr != nil {
 			break
 		}
 		var bpMatches []string
+		var err error
 		if strings.Contains(bp, "**") {
-			bpMatches, err = globWithDoublestar(searchCtx, baseDir, bp, MaxGlobResults-len(matches))
+			bpMatches, err = globWithDoublestar(ctx, baseDir, bp, MaxGlobResults-len(matches))
 			if err != nil {
 				return nil, fmt.Errorf("glob search failed: %w", err)
 			}
@@ -246,44 +356,7 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 	}
 
 	slices.Sort(matches)
-
-	// Context cancelled or timed out — distinguish from "no matches"
-	if cerr := searchCtx.Err(); cerr != nil {
-		if len(matches) > 0 {
-			// Partial results before cancellation
-			var sb strings.Builder
-			fmt.Fprintf(&sb, "Found %d matching file(s) (search interrupted — results may be incomplete):\n", len(matches))
-			for _, match := range matches {
-				sb.WriteString(match)
-				sb.WriteString("\n")
-			}
-			return NewResultWithTips(sb.String(), "搜索被中断或超时，结果可能不完整。"), nil
-		}
-		return nil, fmt.Errorf("glob search interrupted or timed out: %w", cerr)
-	}
-
-	if len(matches) == 0 {
-		return NewResultWithTips("No files matched the pattern.", "检查 glob 模式语法，或尝试更宽泛的匹配（如 **/*.go）。"), nil
-	}
-
-	// Limit results to avoid excessive output
-	truncated := false
-	if len(matches) > MaxGlobResults {
-		matches = matches[:MaxGlobResults]
-		truncated = true
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Found %d matching file(s):\n", len(matches))
-	for _, match := range matches {
-		sb.WriteString(match)
-		sb.WriteString("\n")
-	}
-	if truncated {
-		fmt.Fprintf(&sb, "\n(Results truncated. Showing first %d matches.)\n", MaxGlobResults)
-	}
-
-	return NewResultWithTips(sb.String(), "使用 Read 查看感兴趣的文件内容。"), nil
+	return matches, nil
 }
 
 // globWithDoublestar handles glob patterns containing ** for recursive directory matching.
