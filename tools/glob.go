@@ -225,14 +225,15 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 	}
 
 	type searchResult struct {
-		matches []string
-		err     error
+		matches   []string
+		err       error
+		completed bool // goroutine 完成时 context 是否尚未超时
 	}
 	resultCh := make(chan searchResult, 1)
 
 	go func() {
 		m, e := t.doLocalGlob(searchCtx, baseDir, pattern)
-		resultCh <- searchResult{m, e}
+		resultCh <- searchResult{m, e, searchCtx.Err() == nil}
 	}()
 
 	select {
@@ -241,7 +242,7 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 			return nil, res.err
 		}
 		matches := res.matches
-		interrupted := searchCtx.Err() != nil
+		interrupted := !res.completed
 
 		if interrupted {
 			if len(matches) > 0 {

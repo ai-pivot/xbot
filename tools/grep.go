@@ -578,12 +578,13 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 		matches   []grepMatch
 		truncated bool
 		err       error
+		completed bool // goroutine 完成时 context 是否尚未超时
 	}
 	resultCh := make(chan searchResult, 1)
 
 	go func() {
 		m, trunc, e := t.doLocalGrep(searchCtx, baseDir, info, re, include, contextLines)
-		resultCh <- searchResult{m, trunc, e}
+		resultCh <- searchResult{m, trunc, e, searchCtx.Err() == nil}
 	}()
 
 	select {
@@ -593,7 +594,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 		}
 		matches := res.matches
 		truncated := res.truncated
-		interrupted := searchCtx.Err() != nil
+		interrupted := !res.completed
 
 		if interrupted {
 			if len(matches) > 0 {
