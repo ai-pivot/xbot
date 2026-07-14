@@ -36,6 +36,10 @@ interface ModelStatusBarProps {
   tokenUsage?: { prompt: number; completion: number } | null
   thinkingMode?: string
   onOpenSettings?: () => void
+  /** If provided, skips redundant getSessionSubscription/listSubscriptions RPCs */
+  preloadedSubID?: string
+  preloadedModel?: string
+  preloadedSubs?: Subscription[]
 }
 
 function formatTokens(n: number): string {
@@ -49,33 +53,42 @@ export function ModelStatusBar({
   tokenUsage,
   thinkingMode,
   onOpenSettings,
+  preloadedSubID,
+  preloadedModel,
+  preloadedSubs,
 }: ModelStatusBarProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
-  const [currentSubID, setCurrentSubID] = useState('')
-  const [currentModel, setCurrentModel] = useState('')
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
+  const [currentSubID, setCurrentSubID] = useState(preloadedSubID ?? '')
+  const [currentModel, setCurrentModel] = useState(preloadedModel ?? '')
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>(preloadedSubs ?? [])
   const [modelEntries, setModelEntries] = useState<ModelEntry[]>([])
   const [search, setSearch] = useState('')
   const [popoverOpen, setPopoverOpen] = useState(false)
 
-  // Load current session subscription + subscription list + model entries
+  // Load model entries (always needed for popover). Session sub + list skipped if preloaded.
   const loadState = useCallback(async () => {
     if (!chatID || !ws.connected) return
     try {
-      const [sessionSub, subs, entries] = await Promise.all([
-        getSessionSubscription(ws, channel, chatID),
-        listSubscriptions(ws),
-        listAllModelEntries(ws),
-      ])
-      setCurrentSubID(sessionSub.subscription_id ?? '')
-      setCurrentModel(sessionSub.model ?? '')
-      setSubscriptions(Array.isArray(subs) ? subs : [])
-      setModelEntries(Array.isArray(entries) ? entries : [])
+      if (preloadedSubID !== undefined && preloadedSubs !== undefined) {
+        // Use preloaded data, only fetch model entries
+        const entries = await listAllModelEntries(ws)
+        setModelEntries(Array.isArray(entries) ? entries : [])
+      } else {
+        const [sessionSub, subs, entries] = await Promise.all([
+          getSessionSubscription(ws, channel, chatID),
+          listSubscriptions(ws),
+          listAllModelEntries(ws),
+        ])
+        setCurrentSubID(sessionSub.subscription_id ?? '')
+        setCurrentModel(sessionSub.model ?? '')
+        setSubscriptions(Array.isArray(subs) ? subs : [])
+        setModelEntries(Array.isArray(entries) ? entries : [])
+      }
     } catch {
       // Silent fail — status bar is non-critical
     }
-  }, [ws, channel, chatID])
+  }, [ws, channel, chatID, preloadedSubID, preloadedSubs])
 
   useEffect(() => {
     void loadState()

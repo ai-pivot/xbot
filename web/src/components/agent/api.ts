@@ -186,6 +186,9 @@ export async function updateSubscription(
     api_key: string
     model: string
     active?: boolean
+    max_output_tokens?: number
+    thinking_mode?: string
+    api_type?: string
   },
 ): Promise<void> {
   await ws.rpc('update_subscription', {
@@ -197,9 +200,9 @@ export async function updateSubscription(
       api_key: sub.api_key,
       model: sub.model,
       active: sub.active ?? false,
-      max_output_tokens: 0,
-      thinking_mode: '',
-      api_type: '',
+      max_output_tokens: sub.max_output_tokens ?? 0,
+      thinking_mode: sub.thinking_mode ?? '',
+      api_type: sub.api_type ?? '',
     },
   })
 }

@@ -86,6 +86,7 @@ const zhCN = {
     webSessions: 'Web 会话',
     newSession: '新建会话',
     newSessionDesc: '创建一个新的会话，可指定工作路径',
+    noSessionsForChannel: '该渠道暂无会话',
     nameLabel: '会话名称',
     namePlaceholder: '留空则自动生成',
     workPath: '工作路径',

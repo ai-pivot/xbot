@@ -89,6 +89,7 @@ const en: Translations = {
     webSessions: 'Web Sessions',
     newSession: 'New Session',
     newSessionDesc: 'Create a new session; optionally set its working directory',
+    noSessionsForChannel: 'No sessions for this channel',
     nameLabel: 'Session name',
     namePlaceholder: 'Leave empty to auto-generate',
     workPath: 'Work path',

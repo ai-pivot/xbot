@@ -54,19 +54,19 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
         )}
         title={canExpand ? (expanded ? t('agent.collapseTodos') : t('agent.expandTodos')) : undefined}
       >
-        {/* TODO progress fill (left, accent/20) */}
+        {/* TODO progress fill (top half, accent/20) */}
         {hasTodos && todoPct > 0 && (
           <div
-            className="absolute left-0 top-0 h-full bg-accent/20 transition-all duration-300"
+            className="absolute left-0 top-0 h-1/2 bg-accent/20 transition-all duration-300"
             style={{ width: `${todoPct}%` }}
           />
         )}
 
-        {/* Context usage fill (overlay, accent/10 or red when >80%) */}
+        {/* Context usage fill (bottom half, accent/10 or red when >80%) */}
         {contextPct > 0 && (
           <div
             className={cn(
-              'absolute left-0 top-0 h-full transition-all duration-300',
+              'absolute left-0 bottom-0 h-1/2 transition-all duration-300',
               isContextHigh ? 'bg-red-500/20' : 'bg-accent/10',
             )}
             style={{ width: `${contextPct}%` }}

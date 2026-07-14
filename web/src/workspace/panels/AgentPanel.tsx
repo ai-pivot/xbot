@@ -22,6 +22,7 @@ import { useProgressStream } from '@/hooks/useProgressStream'
 import { useTodos } from '@/hooks/useTodos'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
+import { useLLMSettings } from '@/hooks/useLLMSettings'
 import { rewindHistory } from '@/components/agent/api'
 
 import { AskUserPanel } from '@/components/agent/AskUserPanel'
@@ -152,6 +153,7 @@ export function AgentPanel({ params }: PanelProps) {
   // Session context info (model, maxContext) for ContextBar
   const sessionContext = useSessionContext(messageChannel, chatID)
   const promptTokens = progressSnapshot.tokenUsage?.promptTokens ?? 0
+  const llmSettings = useLLMSettings()
 
   // Keep sendMessageRef before rewindTo so rewindTo can call sendMessage
   // (which increments followResetToken for scroll-follow behavior)
@@ -253,6 +255,14 @@ export function AgentPanel({ params }: PanelProps) {
         <ModelStatusBar
           channel={messageChannel}
           chatID={chatID}
+          tokenUsage={progressSnapshot.tokenUsage ? {
+            prompt: progressSnapshot.tokenUsage.promptTokens,
+            completion: progressSnapshot.tokenUsage.completionTokens,
+          } : null}
+          thinkingMode={llmSettings.data.thinkingMode}
+          preloadedSubID={sessionContext.subscriptionID || undefined}
+          preloadedModel={sessionContext.model || undefined}
+          preloadedSubs={llmSettings.data.subscriptions.length > 0 ? llmSettings.data.subscriptions : undefined}
         />
       )}
     </div>

@@ -87,6 +87,7 @@ export function MessageList({
   const lastChatKeyRef = useRef<string | null | undefined>(chatKey)
   const lastRowCountRef = useRef(0)
   const lastFollowResetTokenRef = useRef(followResetToken)
+  const lastTouchYRef = useRef<number | null>(null)
 
   // React state mirrors for re-rendering UI elements (bubble, nav buttons)
   const [unreadCount, setUnreadCount] = useState(0)
@@ -149,8 +150,9 @@ export function MessageList({
     if (!el) return
     const nearBottom = isNearBottom(el)
     const nearTop = el.scrollTop <= BOTTOM_THRESHOLD
-    setAtTop(nearTop)
-    setAtBottom(nearBottom)
+    // Only setState when values actually change to avoid unnecessary re-renders
+    setAtTop((prev) => (prev === nearTop ? prev : nearTop))
+    setAtBottom((prev) => (prev === nearBottom ? prev : nearBottom))
     if (nearBottom) {
       stickToBottomRef.current = true
       if (unreadCountRef.current > 0) {
@@ -158,10 +160,16 @@ export function MessageList({
         setUnreadCount(0)
       }
     }
-    // Update visible range for nav button state
+    // Update visible range for nav button state — only when range changes
     const items = virtualizer.getVirtualItems()
     if (items.length > 0) {
-      setVisibleRange({ start: items[0].index, end: items[items.length - 1].index })
+      const newStart = items[0].index
+      const newEnd = items[items.length - 1].index
+      setVisibleRange((prev) =>
+        prev && prev.start === newStart && prev.end === newEnd
+          ? prev
+          : { start: newStart, end: newEnd },
+      )
     }
   }, [virtualizer])
 
@@ -280,10 +288,22 @@ export function MessageList({
         onScroll={onScroll}
         onWheel={onWheel}
         onTouchMove={(e) => {
-          // Only break sticky on upward touch scroll (deltaY < 0)
-          if (e.touches[0] && e.touches[0].clientY > 0) {
-            stickToBottomRef.current = false
+          // Only break sticky on upward touch scroll (finger moving down = content scrolling up = user reading up)
+          const touch = e.touches[0]
+          if (!touch) return
+          if (lastTouchYRef.current !== null) {
+            const delta = touch.clientY - lastTouchYRef.current
+            if (delta > 0) { // Finger moving down = scrolling up = user wants to read earlier content
+              stickToBottomRef.current = false
+            } else if (delta < 0 && scrollRef.current && isNearBottom(scrollRef.current)) {
+              // Finger moving up + near bottom = restore sticky
+              stickToBottomRef.current = true
+            }
           }
+          lastTouchYRef.current = touch.clientY
+        }}
+        onTouchStart={() => {
+          lastTouchYRef.current = null
         }}
         onKeyDown={onKeyDown}
         tabIndex={0}

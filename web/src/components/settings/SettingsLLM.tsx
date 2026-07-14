@@ -654,6 +654,10 @@ export function SettingsLLM({ settings }: SettingsLLMProps) {
   const [addingSub, setAddingSub] = useState(false)
   const [addingModelForSub, setAddingModelForSub] = useState<string | null>(null)
 
+  // Derive the active model from the default (active) subscription
+  const activeSub = data.subscriptions.find((s) => s.active)
+  const activeModel = activeSub?.model
+
   const toggleSub = (id: string) => {
     setExpandedSubs((prev) => {
       const next = new Set(prev)
@@ -939,7 +943,7 @@ export function SettingsLLM({ settings }: SettingsLLMProps) {
                   key={sub.id}
                   sub={sub}
                   modelEntries={data.modelEntries}
-                  activeModel={undefined}
+                  activeModel={activeModel}
                   expanded={expandedSubs.has(sub.id)}
                   editingSub={isEditingSub}
                   editingModel={editingModelEntry}

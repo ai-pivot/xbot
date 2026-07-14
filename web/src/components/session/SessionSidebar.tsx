@@ -137,6 +137,11 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
 
       {/* List */}
       <div className="min-h-0 flex-1">
+        {filteredSessions.length === 0 && store.activeChannel ? (
+          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-text-muted">
+            {t('session.noSessionsForChannel', { channel: store.activeChannel })}
+          </div>
+        ) : (
         <SessionList
           sessions={filteredSessions}
           groups={filteredGroups}
@@ -153,6 +158,7 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
           onRename={store.renameSession}
           onDelete={store.deleteSession}
         />
+        )}
       </div>
 
       <NewSessionDialog

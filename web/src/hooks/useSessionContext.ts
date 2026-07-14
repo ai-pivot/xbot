@@ -21,6 +21,8 @@ const DEFAULT_MAX_CONTEXT = 200000
 export interface SessionContextInfo {
   /** Current model name (from session subscription). */
   model: string
+  /** Current subscription ID. */
+  subscriptionID: string
   /** Current subscription name. */
   subscriptionName: string
   /** Resolved max context tokens (resolution chain applied). */
@@ -33,6 +35,7 @@ export interface SessionContextInfo {
 
 const emptyInfo: SessionContextInfo = {
   model: '',
+  subscriptionID: '',
   subscriptionName: '',
   maxContext: DEFAULT_MAX_CONTEXT,
   loading: true,
@@ -74,6 +77,7 @@ export function useSessionContext(channel: string, chatID: string | null): Sessi
 
       setInfo({
         model,
+        subscriptionID: subID,
         subscriptionName: subName,
         maxContext,
         loading: false,
@@ -82,6 +86,7 @@ export function useSessionContext(channel: string, chatID: string | null): Sessi
     } catch (e) {
       setInfo({
         model: '',
+        subscriptionID: '',
         subscriptionName: '',
         maxContext: DEFAULT_MAX_CONTEXT,
         loading: false,

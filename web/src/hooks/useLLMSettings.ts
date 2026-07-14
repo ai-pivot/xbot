@@ -133,13 +133,24 @@ export function useLLMSettings() {
         base_url: string
         api_key: string
         model: string
+        max_output_tokens?: number
+        thinking_mode?: string
+        api_type?: string
       },
     ): Promise<boolean> => {
       setSaving(true)
       try {
         // If API key is masked (unchanged from server), send empty to preserve
         const apiKeyToSend = isMaskedAPIKey(sub.api_key) ? '' : sub.api_key
-        await apiUpdateSubscription(conn, id, { ...sub, api_key: apiKeyToSend })
+        // Merge with existing subscription to preserve fields not being edited
+        const existing = data?.subscriptions.find((s) => s.id === id)
+        await apiUpdateSubscription(conn, id, {
+          ...sub,
+          api_key: apiKeyToSend,
+          max_output_tokens: sub.max_output_tokens ?? existing?.max_output_tokens ?? 0,
+          thinking_mode: sub.thinking_mode ?? existing?.thinking_mode ?? '',
+          api_type: sub.api_type ?? existing?.api_type ?? '',
+        })
         await load()
         return true
       } catch (e) {
