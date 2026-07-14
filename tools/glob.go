@@ -294,7 +294,7 @@ func (t *GlobTool) executeLocal(ctx *ToolContext, pattern, path string) (*ToolRe
 			}
 		default:
 		}
-		return nil, fmt.Errorf("glob search timed out after %s. The directory may be too large or on a slow filesystem.", GlobLocalTimeout)
+		return nil, fmt.Errorf("glob search timed out after %s: the directory may be too large or on a slow filesystem", GlobLocalTimeout)
 	}
 }
 

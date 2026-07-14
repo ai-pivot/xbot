@@ -675,7 +675,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 			}
 		default:
 		}
-		return nil, fmt.Errorf("search timed out after %s. The directory may be too large or on a slow filesystem.", GrepLocalTimeout)
+		return nil, fmt.Errorf("search timed out after %s: the directory may be too large or on a slow filesystem", GrepLocalTimeout)
 	}
 }
 
