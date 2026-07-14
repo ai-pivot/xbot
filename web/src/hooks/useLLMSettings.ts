@@ -121,7 +121,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn, load],
+    [conn, load, data],
   )
 
   const updateSubscription = useCallback(

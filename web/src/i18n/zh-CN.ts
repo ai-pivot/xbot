@@ -179,6 +179,7 @@ const zhCN = {
     todoCompleted: '已完成',
     expandTodos: '展开任务列表',
     collapseTodos: '折叠任务列表',
+    busy: 'Agent 正在处理中',
     editAndRewind: '编辑并回溯',
     editMessage: '编辑消息',
     confirmEdit: '完成',

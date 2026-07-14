@@ -138,7 +138,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
       return
     }
     if (busy && text === '/new' && pending.length === 0) {
-      toast.error('Agent is busy')
+      toast.error(t('agent.busy'))
       return
     }
     const attachments: Attachments | undefined = pending.length

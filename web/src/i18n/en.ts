@@ -182,6 +182,7 @@ const en: Translations = {
     todoCompleted: 'done',
     expandTodos: 'Expand todo list',
     collapseTodos: 'Collapse todo list',
+    busy: 'Agent is busy',
     editAndRewind: 'Edit and rewind',
     editMessage: 'Edit message',
     confirmEdit: 'Done',
