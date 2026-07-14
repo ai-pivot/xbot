@@ -272,6 +272,38 @@ describe('useChatMessages', () => {
     expect(ws.onMessage).not.toHaveBeenCalled()
   })
 
+  it('does not refetch history when only the ws wrapper identity changes', async () => {
+    const ws = makeWS([
+      { messages: [], last_seq: 11 },
+      { messages: [], last_seq: 12 },
+    ])
+    const replacement = { ...ws } as WSConnection
+    const { rerender } = renderHook(
+      ({ currentWS }: { currentWS: WSConnection }) =>
+        useChatMessages({
+          chatID: 'chat-stable-ws-wrapper',
+          channel: 'web',
+          ws: currentWS,
+          liveEventsEnabled: false,
+        }),
+      { initialProps: { currentWS: ws } },
+    )
+
+    await waitFor(() => expect(ws.setLastSeq).toHaveBeenCalledWith(
+      'chat-stable-ws-wrapper',
+      11,
+      'web',
+    ))
+
+    rerender({ currentWS: replacement })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(ws.setLastSeq).toHaveBeenCalledTimes(1)
+  })
+
   it('attaches SubAgent dump iterations to the assistant message', async () => {
     const ws = makeWS([
       {

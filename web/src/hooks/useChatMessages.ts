@@ -253,7 +253,15 @@ export function useChatMessages({
     if (key) commitMessageCache(key, rows)
   }, [])
 
+  // Hold ws in a ref — its methods delegate to a stable MultiSSEManager instance,
+  // so we don't need ws in the reload deps. Including ws would cause an infinite
+  // loop: connected changes → ws identity changes → reload changes → useEffect
+  // fires → ws.setLastSeq → restartSource → connected changes → ...
+  const wsRef = useRef(ws)
+  wsRef.current = ws
+
   const reload = useCallback(async () => {
+    const w = wsRef.current
     const gen = ++reloadGenRef.current
     const globalSeq = ++globalReloadSeq
     const reloadKey = `${channel}:${chatID ?? ''}:${subAgentRole ?? ''}:${subAgentInstance ?? ''}:${agentChatID ?? ''}`
@@ -274,7 +282,7 @@ export function useChatMessages({
     try {
       // Live SubAgent mode: TUI renders from the in-memory agent session dump.
       if (agentChatID) {
-        const dump = await ws.rpc<AgentSessionDump>('get_agent_session_dump_by_full_key', {
+        const dump = await w.rpc<AgentSessionDump>('get_agent_session_dump_by_full_key', {
           full_key: agentChatID,
         })
         if (gen !== reloadGenRef.current) return
@@ -291,7 +299,7 @@ export function useChatMessages({
       }
       // Live SubAgent mode: same runtime tuple as TUI.
       if (subAgentRole && parentChatID && !agentChatID) {
-        const dump = await ws.rpc<AgentSessionDump>('get_agent_session_dump', {
+        const dump = await w.rpc<AgentSessionDump>('get_agent_session_dump', {
           channel,
           chat_id: parentChatID,
           role: subAgentRole,
@@ -308,7 +316,7 @@ export function useChatMessages({
           setInitialProgress(null)
           return
         }
-        const msgs = await ws.rpc<SubAgentMsg[]>('get_session_messages', {
+        const msgs = await w.rpc<SubAgentMsg[]>('get_session_messages', {
           channel,
           chat_id: parentChatID,
           role: subAgentRole,
@@ -324,13 +332,13 @@ export function useChatMessages({
         return
       }
       // Normal mode: load via Web history snapshot (full history + progress).
-      const data = await fetchHistory(ws, chatID ? { channel, chatID } : null)
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null)
       // Discard stale fetch — a newer reload() was triggered while we were
       // waiting for this response (rapid session switch or HistoryCompacted
       // during an in-flight reload).
       if (gen !== reloadGenRef.current) return
       // Store last_seq for WS reconnect incremental replay.
-      if (data.last_seq) ws.setLastSeq(chatID ?? '', data.last_seq, channel)
+      if (data.last_seq) w.setLastSeq(chatID ?? '', data.last_seq, channel)
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
       if (shouldKeepVisibleRowsOnRefresh(parsed, sameTarget, messagesRef.current)) return
@@ -347,7 +355,7 @@ export function useChatMessages({
     } finally {
       if (gen === reloadGenRef.current) setLoading(false)
     }
-  }, [ws, channel, chatID, subAgentRole, subAgentInstance, parentChatID, agentChatID])
+  }, [channel, chatID, subAgentRole, subAgentInstance, parentChatID, agentChatID])
 
   // Load history when the chatID changes (or on first enable).
   useEffect(() => {

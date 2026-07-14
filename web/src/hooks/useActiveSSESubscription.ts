@@ -29,24 +29,31 @@ export function useActiveSSESubscription({
   channel,
 }: ActiveSSESubscriptionOptions): void {
   const subIDRef = useRef<string | null>(null)
+  // Hold ws in a ref — its methods (addSubscription/removeSubscription) delegate
+  // to a stable MultiSSEManager instance (useRef in WSProvider), so we don't need
+  // ws in the effect deps. Including ws would cause an infinite loop:
+  // connected changes → ws identity changes → effect re-runs → cleanup removes
+  // subscription → SSE disconnects → connected changes → ...
+  const wsRef = useRef(ws)
+  wsRef.current = ws
 
   useEffect(() => {
     // Clean up previous subscription if chatID/channel changed.
     if (subIDRef.current !== null) {
-      ws.removeSubscription(subIDRef.current)
+      wsRef.current.removeSubscription(subIDRef.current)
       subIDRef.current = null
     }
 
     if (!chatID) return
 
-    const id = ws.addSubscription(chatID, channel)
+    const id = wsRef.current.addSubscription(chatID, channel)
     subIDRef.current = id
 
     return () => {
       if (subIDRef.current !== null) {
-        ws.removeSubscription(subIDRef.current)
+        wsRef.current.removeSubscription(subIDRef.current)
         subIDRef.current = null
       }
     }
-  }, [ws, chatID, channel])
+  }, [chatID, channel])
 }

@@ -58,6 +58,29 @@ describe('useActiveSSESubscription', () => {
     expect(ws.addSubscription).toHaveBeenLastCalledWith('chat-2', 'web')
   })
 
+  it('does not resubscribe when only the ws wrapper identity changes', () => {
+    const ws = makeWS()
+    const replacement = { ...ws } as WSConnection
+    const { rerender, unmount } = renderHook(
+      ({ currentWS }: { currentWS: WSConnection }) =>
+        useActiveSSESubscription({
+          ws: currentWS,
+          chatID: 'chat-1',
+          channel: 'web',
+        }),
+      { initialProps: { currentWS: ws } },
+    )
+
+    rerender({ currentWS: replacement })
+
+    expect(ws.addSubscription).toHaveBeenCalledTimes(1)
+    expect(ws.removeSubscription).not.toHaveBeenCalled()
+
+    unmount()
+    expect(ws.removeSubscription).toHaveBeenCalledTimes(1)
+    expect(ws.removeSubscription).toHaveBeenCalledWith('sub-1')
+  })
+
   it('multiple panels can coexist — subscriptions are independent', () => {
     const ws = makeWS()
     const main = renderHook(() =>
