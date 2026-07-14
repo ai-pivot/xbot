@@ -133,8 +133,11 @@ describe('FoldedToolGroup', () => {
       makeTool({ name: 'Grep', label: 'Grep' }),
     ]
     const { container } = renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
-    // Merged line shows icons with counts: [Read icon]×1 [Grep icon]×1
-    const icons = container.querySelectorAll('.tool-icon-single')
+    // Merged row shows icons in the button (title row); AnimatedCollapse also renders
+    // icons in the hidden expanded content, so check the button specifically.
+    const button = container.querySelector('button[aria-expanded="false"]')
+    expect(button).not.toBeNull()
+    const icons = button!.querySelectorAll('.tool-icon-single')
     expect(icons.length).toBe(2)
 
     // Expand the merged line
@@ -226,8 +229,9 @@ describe('IterationGroup', () => {
       toolCount: 2,
     })
     const { container } = renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
-    // Merged line shows icons with counts
-    const icons = container.querySelectorAll('.tool-icon-single')
+    // Merged line shows icons in the button (fold-container also renders hidden icons)
+    const button = container.querySelector('button[aria-expanded="false"]')
+    const icons = button!.querySelectorAll('.tool-icon-single')
     expect(icons.length).toBe(2)
   })
 

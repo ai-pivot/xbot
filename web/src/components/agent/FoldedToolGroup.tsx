@@ -1,14 +1,16 @@
 /**
  * FoldedToolGroup — tool call display with merged groups and status colors.
  *
- * Single tool folded row:  [icon] ToolName param15chars
- *   - Icon color reflects status: gray=normal, light-red=all-failed, light-yellow=partial-fail
+ * Single tool folded row:  [icon] ToolName param25chars
+ *   - Icon + text color reflects status: gray=normal, light-red=all-failed, light-yellow=partial-fail
  *   - Click expands into a card: [icon] ToolName + input + output
  *
- * Merged row (any consecutive tools):  [icon1]×2 [icon2]×1
- *   - Icons grouped by tool name with count
+ * Merged row (any consecutive tools):  [icon] Name ×N [icon] Name ×M
+ *   - Icons with names and counts, grouped by tool name
  *   - Click expands to show each tool as an independent card
- *   - Icon color reflects aggregate status (gray=all-ok, red=all-fail, yellow=partial)
+ *   - Icon + text color reflects aggregate status
+ *
+ * All fold/unfold transitions use CSS grid animation (fold-container).
  */
 import { memo, useState, type ReactNode } from 'react'
 
@@ -18,7 +20,7 @@ import type { CollapseLevel } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
 
 /** Max param preview length in folded row. */
-const MAX_PARAM_LEN = 15
+const MAX_PARAM_LEN = 25
 
 interface FoldedToolGroupProps {
   tools: WebToolProgress[]
@@ -77,34 +79,46 @@ function statusColorVar(status: ToolStatusColor): string {
   }
 }
 
+/** Get display name from tool label. */
+function displayName(tool: WebToolProgress): string {
+  const name = tool.name || 'tool'
+  const label = tool.label || name
+  return label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
+}
+
+/** Get single tool status color. */
+function singleStatus(tool: WebToolProgress): ToolStatusColor {
+  return isFailed(tool.status) ? 'all-failed' : isRunning(tool.status) ? 'running' : 'normal'
+}
+
 /** Render a single Lucide tool icon at 16px with status color. */
 function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
   const Icon = getToolIcon(name) as React.ComponentType<{ className?: string; style?: React.CSSProperties }>
   return <Icon className="tool-icon-single shrink-0" style={{ color: statusColorVar(status) }} />
 }
 
-/** Format a single tool's folded title: [icon] name param15 */
+/** Format a single tool's folded title: [icon] name param25 */
 function formatToolTitle(tool: WebToolProgress): ReactNode {
-  const name = tool.name || 'tool'
-  const label = tool.label || name
+  const status = singleStatus(tool)
+  const color = statusColorVar(status)
   const param = toolParam(tool)
-  const displayName = label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
-  const status: ToolStatusColor = isFailed(tool.status) ? 'all-failed' : isRunning(tool.status) ? 'running' : 'normal'
+  const name = displayName(tool)
 
   return (
-    <span className="flex items-center gap-1.5 min-w-0">
-      <ToolIcon name={name} status={status} />
-      <span className="font-mono shrink-0">{displayName}</span>
+    <span className="flex items-center gap-1.5 min-w-0" style={{ color }}>
+      <ToolIcon name={tool.name || 'tool'} status={status} />
+      <span className="font-mono shrink-0">{name}</span>
       {param && (
-        <span className="font-mono text-text-muted truncate">{truncate(param, MAX_PARAM_LEN)}</span>
+        <span className="font-mono truncate" style={{ color: 'var(--text-muted)' }}>{truncate(param, MAX_PARAM_LEN)}</span>
       )}
     </span>
   )
 }
 
-/** Build merged title: [icon1]×2 [icon2]×1 */
+/** Build merged title: [icon] Name ×N [icon] Name ×M */
 function formatMergedTitle(tools: WebToolProgress[]): ReactNode {
   const status = aggregateStatus(tools)
+  const color = statusColorVar(status)
   // Group by tool name, preserving first-occurrence order
   const groups: { name: string; count: number }[] = []
   const seen = new Map<string, number>()
@@ -119,12 +133,13 @@ function formatMergedTitle(tools: WebToolProgress[]): ReactNode {
   }
 
   return (
-    <span className="flex items-center gap-1.5">
+    <span className="flex items-center gap-2" style={{ color }}>
       {groups.map((g, i) => (
         <span key={`${g.name}-${i}`} className="flex items-center gap-0.5">
           <ToolIcon name={g.name} status={status} />
+          <span className="font-mono text-xs shrink-0">{g.name}</span>
           {g.count > 1 && (
-            <span className="text-[11px] text-text-muted shrink-0">×{g.count}</span>
+            <span className="text-[11px] shrink-0" style={{ color }}>×{g.count}</span>
           )}
         </span>
       ))}
@@ -135,19 +150,30 @@ function formatMergedTitle(tools: WebToolProgress[]): ReactNode {
 /** Expanded tool card: [icon] name + input + output */
 function ToolCard({ tool }: { tool: WebToolProgress }) {
   const name = tool.name || 'tool'
-  const label = tool.label || name
-  const displayName = label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
-  const status: ToolStatusColor = isFailed(tool.status) ? 'all-failed' : isRunning(tool.status) ? 'running' : 'normal'
+  const status = singleStatus(tool)
+  const color = statusColorVar(status)
+  const dn = displayName(tool)
 
   return (
     <div className="rounded-md border border-border/50 bg-bg-tertiary/30 p-2">
       {/* Card header: icon + name */}
-      <div className="mb-1.5 flex items-center gap-1.5">
+      <div className="mb-1.5 flex items-center gap-1.5" style={{ color }}>
         <ToolIcon name={name} status={status} />
-        <span className="font-mono text-xs font-medium">{displayName}</span>
+        <span className="font-mono text-xs font-medium">{dn}</span>
       </div>
       {/* Tool input + output */}
       <ToolRender tool={tool} />
+    </div>
+  )
+}
+
+/** Animated collapsible wrapper using CSS grid transition. */
+function AnimatedCollapse({ expanded, children }: { expanded: boolean; children: ReactNode }) {
+  return (
+    <div className={`fold-container ${expanded ? 'open' : ''}`}>
+      <div className="fold-content">
+        {children}
+      </div>
     </div>
   )
 }
@@ -186,11 +212,11 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
             <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
             {formatToolTitle(tools[0])}
           </button>
-          {expanded && (
+          <AnimatedCollapse expanded={expanded}>
             <div className="ml-4 mt-1">
               <ToolCard tool={tools[0]} />
             </div>
-          )}
+          </AnimatedCollapse>
         </div>
       )
     }
@@ -205,7 +231,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
     )
   }
 
-  // Merged: any 2+ consecutive tools → [icon]×N [icon]×M
+  // Merged: any 2+ consecutive tools → [icon] Name ×N [icon] Name ×M
   return (
     <div>
       <button
@@ -217,13 +243,13 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
         <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
         {formatMergedTitle(tools)}
       </button>
-      {expanded && (
+      <AnimatedCollapse expanded={expanded}>
         <div className="ml-4 mt-1 flex flex-col gap-1.5">
           {tools.map((tool, i) => (
             <ToolCard key={`${tool.name}-${tool.label}-${i}`} tool={tool} />
           ))}
         </div>
-      )}
+      </AnimatedCollapse>
     </div>
   )
 })
@@ -242,11 +268,11 @@ const SingleToolFold = memo(function SingleToolFold({ tool }: { tool: WebToolPro
         <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
         {formatToolTitle(tool)}
       </button>
-      {expanded && (
+      <AnimatedCollapse expanded={expanded}>
         <div className="ml-4 mt-1">
           <ToolCard tool={tool} />
         </div>
-      )}
+      </AnimatedCollapse>
     </div>
   )
 })
