@@ -152,7 +152,6 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
           activeSession={store.activeSession}
           search={search}
           subAgents={store.subAgents}
-          tabManager={tabManager}
           onSelect={handleSelect}
           onToggleStar={store.toggleStar}
           onRename={store.renameSession}

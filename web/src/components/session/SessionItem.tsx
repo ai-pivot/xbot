@@ -19,7 +19,6 @@ import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import { parseAgentChatID, sessionKey } from '@/lib/session-grouping'
 import type { SessionInfo, SessionStatus } from '@/types/shared'
-import type { TabManager } from '@/hooks/useTabManager'
 
 interface SessionItemProps {
   session: SessionInfo
@@ -29,7 +28,6 @@ interface SessionItemProps {
   /** True for SubAgent items (indented, bot icon, read-only). */
   isSubAgent?: boolean
   depth?: number
-  tabManager: TabManager
   onSelect: (id: string) => void
   onToggleStar: (id: string) => void
   onRename: (session: SessionInfo) => void
@@ -52,7 +50,6 @@ export function SessionItem({
   active,
   isSubAgent,
   depth = isSubAgent ? 1 : 0,
-  tabManager,
   onSelect,
   onToggleStar,
   onRename,
@@ -62,21 +59,11 @@ export function SessionItem({
   const key = sessionKey(session)
   const title = isSubAgent ? subAgentTitle(session) : (session.label || session.chatID)
 
-  const openInTab = useCallback(() => {
-    tabManager.openTab({
-      type: 'agent',
-      title: isSubAgent ? subAgentTitle(session) : (session.label || session.chatID),
-      icon: 'bot',
-      closable: true,
-      data: {
-        subAgentRole: session.role,
-        subAgentInstance: session.instance,
-        parentChatID: session.parentChatID,
-        parentChannel: session.parentChannel,
-        agentChatID: session.fullKey || session.agentChatID,
-      },
-    })
-  }, [tabManager, session, isSubAgent])
+  const openInBrowserTab = useCallback(() => {
+    const sessionParam = `${session.channel || 'web'}:${session.chatID}`
+    const url = `${window.location.origin}/?session=${encodeURIComponent(sessionParam)}`
+    window.open(url, '_blank')
+  }, [session])
 
   const row = (
     <div
@@ -186,7 +173,7 @@ export function SessionItem({
      <ContextMenu>
        <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
        <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
-          <ContextMenuItem onClick={openInTab}>
+          <ContextMenuItem onClick={openInBrowserTab}>
             <ExternalLink className="size-4" />
             {t('session.openInTab')}
           </ContextMenuItem>
@@ -199,7 +186,7 @@ export function SessionItem({
      <ContextMenu>
        <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
        <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
-          <ContextMenuItem onClick={openInTab}>
+          <ContextMenuItem onClick={openInBrowserTab}>
           <ExternalLink className="size-4" />
           {t('session.openInTab')}
         </ContextMenuItem>

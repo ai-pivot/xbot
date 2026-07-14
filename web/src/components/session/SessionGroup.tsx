@@ -10,7 +10,6 @@ import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
-import type { TabManager } from '@/hooks/useTabManager'
 import { SessionItem } from './SessionItem'
 import { childrenForParent } from './session-tree'
 
@@ -21,7 +20,6 @@ interface SessionGroupProps {
   starredIds: string[]
   unreadIds: string[]
   activeSession: SessionSelector | null
-  tabManager: TabManager
   onSelect: (id: string, channel: string) => void
   onToggleStar: (id: string) => void
   onRename: (session: SessionInfo) => void
@@ -35,7 +33,6 @@ export function SessionGroup({
   starredIds,
   unreadIds,
   activeSession,
-  tabManager,
   onSelect,
   onToggleStar,
   onRename,
@@ -71,7 +68,6 @@ export function SessionGroup({
                 starred={starred.has(sessionKey(s))}
                 unread={unreadSet.has(sessionKey(s))}
                 active={sameSession(activeSession, s)}
-                tabManager={tabManager}
                 onSelect={(id) => onSelect(id, s.channel)}
                 onToggleStar={onToggleStar}
                 onRename={onRename}
@@ -84,8 +80,7 @@ export function SessionGroup({
                   session={sa}
                   activeSession={activeSession}
                   depth={1}
-                  tabManager={tabManager}
-                  onSelect={(id, channel) => onSelect(id, channel)}
+                    onSelect={(id, channel) => onSelect(id, channel)}
                   onRename={onRename}
                   onDelete={onDelete}
                 />
@@ -102,7 +97,6 @@ function SubAgentTreeItem({
   session,
   activeSession,
   depth,
-  tabManager,
   onSelect,
   onRename,
   onDelete,
@@ -110,7 +104,6 @@ function SubAgentTreeItem({
   session: SessionInfo
   activeSession: SessionSelector | null
   depth: number
-  tabManager: TabManager
   onSelect: (id: string, channel: string) => void
   onRename: (session: SessionInfo) => void
   onDelete: (session: SessionInfo) => void
@@ -124,7 +117,6 @@ function SubAgentTreeItem({
         active={sameSession(activeSession, session)}
         isSubAgent
         depth={depth}
-        tabManager={tabManager}
         onSelect={(id) => onSelect(id, session.channel)}
         onToggleStar={() => undefined}
         onRename={onRename}
@@ -136,7 +128,6 @@ function SubAgentTreeItem({
           session={child}
           activeSession={activeSession}
           depth={depth + 1}
-          tabManager={tabManager}
           onSelect={onSelect}
           onRename={onRename}
           onDelete={onDelete}

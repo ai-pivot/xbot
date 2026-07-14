@@ -12,7 +12,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { ActivityBar, type SidebarView } from '@/layouts/ActivityBar'
+import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
@@ -34,7 +34,6 @@ export function AppShell() {
   const isMobile = useIsMobile()
   const tabManager = useTabManager()
   const sessionStore = useSessionStore()
-  const [activeView, setActiveView] = useState<SidebarView | null>('sessions')
   const [activePanel, setActivePanel] = useState<SidebarPanel | null>(null)
   const [leftWidth, setLeftWidth] = useState(() => {
     const stored = localStorage.getItem(LEFT_WIDTH_KEY)
@@ -51,10 +50,6 @@ export function AppShell() {
 
   // Persist and restore tab layout per session (Child 5 §3).
   useLayoutPersistence(tabManager, sessionStore)
-
-  const toggleView = useCallback((view: SidebarView) => {
-    setActiveView((cur) => (cur === view ? null : view))
-  }, [])
 
   const togglePanel = useCallback((panel: SidebarPanel) => {
     setActivePanel((cur) => (cur === panel ? null : panel))
@@ -109,28 +104,24 @@ export function AppShell() {
     <div className="flex h-dvh w-full overflow-hidden bg-bg-primary text-text-primary">
       {/* Left ActivityBar */}
       <ActivityBar
-        activeView={activeView}
-        onToggleView={toggleView}
         onOpenSettings={() => setSettingsOpen(true)}
         settingsVersion={settingsVersion}
       />
 
-      {/* Left sidebar — session list */}
-      {activeView === 'sessions' && (
+      {/* Left sidebar — session list (always visible) */}
+      <div
+        className="relative h-full shrink-0"
+        style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
+      >
+        <SessionSidebar tabManager={tabManager} />
         <div
-          className="relative h-full shrink-0"
-          style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
-        >
-          <SessionSidebar tabManager={tabManager} />
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize sessions sidebar"
-            onPointerDown={onLeftResizeStart}
-            className="absolute right-0 top-0 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-app-accent/40"
-          />
-        </div>
-      )}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sessions sidebar"
+          onPointerDown={onLeftResizeStart}
+          className="absolute right-0 top-0 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-app-accent/40"
+        />
+      </div>
 
       <RightSidebarControlContext.Provider value={{ openPanel }}>
         {/* Workspace — always present (Agent tab lives here). */}

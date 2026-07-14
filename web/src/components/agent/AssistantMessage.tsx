@@ -16,7 +16,6 @@
 import { memo, useState } from 'react'
 
 import { FoldedLine } from './FoldedLine'
-import { FoldedToolGroup } from './FoldedToolGroup'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
@@ -58,13 +57,11 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // 'all' level + committed: fold all intermediate content (iterations' thinking/O),
   // show only the last TEXT output. Last TEXT = message.content, or fall back to
   // the last iteration's thinking when content is empty.
-  // If the last iteration has tools, those tools are also shown after the text.
   if (effectiveLevel === 'all' && !isStreaming) {
     const totalTools = iterations.reduce((sum, iter) => sum + iter.toolCount, 0)
     const showSummary = iterations.length > 0
     const lastIteration = iterations[iterations.length - 1]
     const lastText = finalContent || lastIteration?.thinking || ''
-    const lastIterationTools = lastIteration?.tools ?? []
 
     return (
       <div className="agent-msg-card px-1">
@@ -87,10 +84,6 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
           !showSummary && (
             <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
           )
-        )}
-        {/* Show the last iteration's tools if they exist */}
-        {lastIterationTools.length > 0 && (
-          <FoldedToolGroup tools={lastIterationTools} level="minimal" mergeTools={mergeTools} />
         )}
         {message.displayOnly && (
           <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">

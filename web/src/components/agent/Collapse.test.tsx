@@ -16,7 +16,7 @@ import { IterationGroup } from '@/components/agent/IterationHistory'
 import { ReasoningBlock } from '@/components/agent/ReasoningBlock'
 import { ToolCallBlock } from '@/components/agent/ToolCallBlock'
 import { getToolIcon } from '@/components/agent/toolIcons'
-import { Terminal, FileText, Search, Asterisk, Wrench } from 'lucide-react'
+import { Terminal, FileText, Search, Sparkles, Wrench } from 'lucide-react'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
 
 /** Helper: build a WebToolProgress with defaults. */
@@ -133,16 +133,13 @@ describe('FoldedToolGroup', () => {
       makeTool({ name: 'Grep', label: 'Grep' }),
     ]
     const { container } = renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
-    // Merged line now shows icons + tool count text (no "Name · Name" join)
-    // The tool-group count text should be present
-    expect(screen.getByText(/2.*call/)).toBeInTheDocument()
-    // Icons should be rendered as SVG elements in the merged row
-    const icons = container.querySelectorAll('.tool-icon-group svg')
+    // Merged line shows icons with counts: [Read icon]×1 [Grep icon]×1
+    const icons = container.querySelectorAll('.tool-icon-single')
     expect(icons.length).toBe(2)
 
     // Expand the merged line
     fireEvent.click(screen.getByRole('button'))
-    // Individual tool FoldedLines should now be visible — tool names appear in expanded rows
+    // Individual tool cards should now be visible — tool names appear in expanded cards
     expect(screen.getAllByText('Read').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Grep').length).toBeGreaterThan(0)
   })
@@ -155,9 +152,9 @@ describe('FoldedToolGroup', () => {
     const { container } = renderWithProviders(
       <FoldedToolGroup tools={tools} level="none" />,
     )
-    // Each tool is its own FoldedLine (two toggle buttons)
-    const buttons = container.querySelectorAll('button[aria-expanded]')
-    expect(buttons.length).toBe(2)
+    // At 'none' level, each tool renders as an independent ToolCard (no toggle button)
+    const cards = container.querySelectorAll('.tool-icon-single')
+    expect(cards.length).toBe(2)
   })
 
   it('renders single tool as independent FoldedLine regardless of level', () => {
@@ -229,9 +226,8 @@ describe('IterationGroup', () => {
       toolCount: 2,
     })
     const { container } = renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
-    // Merged line shows tool count text + icons
-    expect(screen.getByText(/2.*call/)).toBeInTheDocument()
-    const icons = container.querySelectorAll('.tool-icon-group svg')
+    // Merged line shows icons with counts
+    const icons = container.querySelectorAll('.tool-icon-single')
     expect(icons.length).toBe(2)
   })
 
@@ -256,8 +252,8 @@ describe('getToolIcon', () => {
     expect(getToolIcon('Grep')).toBe(Search)
   })
 
-  it('returns Asterisk for SubAgent', () => {
-    expect(getToolIcon('SubAgent')).toBe(Asterisk)
+  it('returns Sparkles for SubAgent', () => {
+    expect(getToolIcon('SubAgent')).toBe(Sparkles)
   })
 
   it('returns Wrench for unmapped tool names', () => {

@@ -1,37 +1,24 @@
 /**
- * FoldedToolGroup — consecutive tool calls merged into a borderless fold (Spec A §3).
+ * FoldedToolGroup — tool call display with merged groups and status colors.
  *
- * Tool display is controlled by two orthogonal parameters:
- *   - `level` (CollapseLevel): 'all'/'minimal' → folded rows; 'none' → expanded
- *   - `mergeTools` (boolean): when true AND level is 'all'/'minimal' AND 2+ tools,
- *     consecutive tools merge into one icon-group row "▸ [icons] N 次调用".
- *     When false, each tool shows its own title row (still folded).
- *     At 'none' level mergeTools is ignored — tools always expand.
+ * Single tool folded row:  [icon] ToolName param15chars
+ *   - Icon color reflects status: gray=normal, light-red=all-failed, light-yellow=partial-fail
+ *   - Click expands into a card: [icon] ToolName + input + output
  *
- * Single-tool title format (Spec B §3):
- *   [Lucide icon] [status dot] ToolName: param  elapsed
- *
- * Merged row format (Spec B §4):
- *   ▸ [icon1] [icon2] [icon3] +N  N 次调用
- *
- * Tool status indicators use CSS status dot classes:
- *   generating: .tool-status-generating (blue blink)
- *   running:    .tool-status-running (blue pulse)
- *   done:       .tool-status-done (gray static)
- *   error:      .tool-status-error (red static)
+ * Merged row (any consecutive tools):  [icon1]×2 [icon2]×1
+ *   - Icons grouped by tool name with count
+ *   - Click expands to show each tool as an independent card
+ *   - Icon color reflects aggregate status (gray=all-ok, red=all-fail, yellow=partial)
  */
 import { memo, useState, type ReactNode } from 'react'
 
-import { FoldedLine } from './FoldedLine'
 import { ToolRender } from './ToolRender'
 import { getToolIcon } from './toolIcons'
-import { useI18n } from '@/providers/i18n'
 import type { CollapseLevel } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
-import { cn } from '@/lib/utils'
 
-/** Maximum icons to show in a merged row before collapsing to "+N". */
-const MAX_MERGED_ICONS = 5
+/** Max param preview length in folded row. */
+const MAX_PARAM_LEN = 15
 
 interface FoldedToolGroupProps {
   tools: WebToolProgress[]
@@ -47,113 +34,121 @@ function toolParam(tool: WebToolProgress): string {
   return idx >= 0 ? label.slice(idx + 2) : ''
 }
 
-/** CSS class for a tool's status dot. */
-function statusDotClass(status: string): string {
+/** Truncate to N chars with ellipsis. */
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text
+  return text.slice(0, max) + '…'
+}
+
+/** Determine the tool status for color purposes. */
+type ToolStatusColor = 'normal' | 'all-failed' | 'partial-fail' | 'running'
+
+/** Check if a tool's status indicates failure. */
+function isFailed(status: string): boolean {
+  return status === 'error'
+}
+
+/** Check if a tool's status indicates it's still running. */
+function isRunning(status: string): boolean {
+  return status === 'running' || status === 'generating'
+}
+
+/** Aggregate status across multiple tools. */
+function aggregateStatus(tools: WebToolProgress[]): ToolStatusColor {
+  const anyRunning = tools.some((t) => isRunning(t.status))
+  if (anyRunning) return 'running'
+  const failedCount = tools.filter((t) => isFailed(t.status)).length
+  if (failedCount === 0) return 'normal'
+  if (failedCount === tools.length) return 'all-failed'
+  return 'partial-fail'
+}
+
+/** CSS color for a status color. */
+function statusColorVar(status: ToolStatusColor): string {
   switch (status) {
-    case 'generating':
-      return 'tool-status-generating'
+    case 'all-failed':
+      return 'var(--destructive)'
+    case 'partial-fail':
+      return '#e6a700' // light amber/yellow
     case 'running':
-      return 'tool-status-running'
-    case 'done':
-      return 'tool-status-done'
-    case 'error':
-      return 'tool-status-error'
+      return 'var(--accent)'
     default:
-      return 'tool-status-pending'
+      return 'var(--text-muted)' // gray = normal
   }
 }
 
-/** Format elapsed milliseconds into a compact human-readable string. */
-function formatElapsed(ms: number): string {
-  if (!ms || ms <= 0) return ''
-  if (ms < 1000) return `${ms}ms`
-  const s = ms / 1000
-  if (s < 60) return `${s.toFixed(1)}s`
-  const m = Math.floor(s / 60)
-  const rem = Math.round(s % 60)
-  return `${m}m${rem}s`
+/** Render a single Lucide tool icon at 16px with status color. */
+function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
+  const Icon = getToolIcon(name) as React.ComponentType<{ className?: string; style?: React.CSSProperties }>
+  return <Icon className="tool-icon-single shrink-0" style={{ color: statusColorVar(status) }} />
 }
 
-/** Render a single Lucide tool icon at 16px. */
-function ToolIcon({ name, className }: { name: string; className?: string }) {
-  const Icon = getToolIcon(name) as React.ComponentType<{ className?: string }>
-  return <Icon className={cn('tool-icon-single', className)} />
-}
-
-/**
- * Format a single tool's title: [icon] [dot] name: param  elapsed
- */
-function formatToolTitle(
-  tool: WebToolProgress,
-  t: (key: string, params?: Record<string, string | number>) => string,
-): ReactNode {
+/** Format a single tool's folded title: [icon] name param15 */
+function formatToolTitle(tool: WebToolProgress): ReactNode {
   const name = tool.name || 'tool'
   const label = tool.label || name
-  const dotClass = statusDotClass(tool.status)
-  let suffix = ''
-  if (tool.status === 'generating') suffix = t('agent.toolGenerating')
-  else if (tool.status === 'running') suffix = t('agent.statusRunning')
-  const elapsed = formatElapsed(tool.elapsedMs)
-  // Extract param from label: "ToolName: param" → "param"
   const param = toolParam(tool)
-  // Display name: prefer the label's prefix (before ": ") or the raw name
   const displayName = label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
+  const status: ToolStatusColor = isFailed(tool.status) ? 'all-failed' : isRunning(tool.status) ? 'running' : 'normal'
 
   return (
     <span className="flex items-center gap-1.5 min-w-0">
-      <ToolIcon name={name} />
-      <span className={cn('tool-status-dot', dotClass)} aria-hidden />
+      <ToolIcon name={name} status={status} />
       <span className="font-mono shrink-0">{displayName}</span>
       {param && (
-        <span className="font-mono text-text-muted truncate">{param}</span>
+        <span className="font-mono text-text-muted truncate">{truncate(param, MAX_PARAM_LEN)}</span>
       )}
-      {suffix && <span className="text-text-muted shrink-0">{suffix}</span>}
-      {elapsed && !suffix && <span className="text-text-muted tabular-nums shrink-0">{elapsed}</span>}
     </span>
   )
 }
 
-/**
- * Build the merged title: [icon1] [icon2] ... +N  N 次调用
- * Shows up to MAX_MERGED_ICONS icons, then "+N" for the remainder.
- */
-function formatMergedTitle(
-  tools: WebToolProgress[],
-  t: (key: string, params?: Record<string, string | number>) => string,
-): ReactNode {
-  // Use the worst status among all tools for the merged dot
-  const worstStatus = tools.some((tool) => tool.status === 'error')
-    ? 'error'
-    : tools.some((tool) => tool.status === 'running' || tool.status === 'generating')
-      ? 'running'
-      : 'done'
-
-  // Deduplicate tool icons by name — 3 Read calls should show 1 FileText icon
-  const seenNames = new Set<string>()
-  const uniqueIcons: ReactNode[] = []
+/** Build merged title: [icon1]×2 [icon2]×1 */
+function formatMergedTitle(tools: WebToolProgress[]): ReactNode {
+  const status = aggregateStatus(tools)
+  // Group by tool name, preserving first-occurrence order
+  const groups: { name: string; count: number }[] = []
+  const seen = new Map<string, number>()
   for (const tool of tools) {
-    if (seenNames.has(tool.name)) continue
-    seenNames.add(tool.name)
-    if (uniqueIcons.length >= MAX_MERGED_ICONS) break
-    const Icon = getToolIcon(tool.name)
-    uniqueIcons.push(<Icon key={`${tool.name}-${uniqueIcons.length}`} className="tool-icon" />)
+    const idx = seen.get(tool.name)
+    if (idx !== undefined) {
+      groups[idx].count++
+    } else {
+      seen.set(tool.name, groups.length)
+      groups.push({ name: tool.name, count: 1 })
+    }
   }
-  const remainingUnique = seenNames.size - MAX_MERGED_ICONS
-  const remaining = remainingUnique > 0 ? remainingUnique : 0
 
   return (
     <span className="flex items-center gap-1.5">
-      <span className={cn('tool-status-dot', statusDotClass(worstStatus))} aria-hidden />
-      <span className="tool-icon-group">
-        {uniqueIcons}
-        {remaining > 0 && (
-          <span className="text-text-muted text-[11px] shrink-0">+{remaining}</span>
-        )}
-      </span>
-      <span className="text-text-muted shrink-0">
-        {t('agent.toolGroup', { count: tools.length })}
-      </span>
+      {groups.map((g, i) => (
+        <span key={`${g.name}-${i}`} className="flex items-center gap-0.5">
+          <ToolIcon name={g.name} status={status} />
+          {g.count > 1 && (
+            <span className="text-[11px] text-text-muted shrink-0">×{g.count}</span>
+          )}
+        </span>
+      ))}
     </span>
+  )
+}
+
+/** Expanded tool card: [icon] name + input + output */
+function ToolCard({ tool }: { tool: WebToolProgress }) {
+  const name = tool.name || 'tool'
+  const label = tool.label || name
+  const displayName = label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
+  const status: ToolStatusColor = isFailed(tool.status) ? 'all-failed' : isRunning(tool.status) ? 'running' : 'normal'
+
+  return (
+    <div className="rounded-md border border-border/50 bg-bg-tertiary/30 p-2">
+      {/* Card header: icon + name */}
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <ToolIcon name={name} status={status} />
+        <span className="font-mono text-xs font-medium">{displayName}</span>
+      </div>
+      {/* Tool input + output */}
+      <ToolRender tool={tool} />
+    </div>
   )
 }
 
@@ -162,31 +157,55 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   level,
   mergeTools = true,
 }: FoldedToolGroupProps) {
-  const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
 
   if (!tools.length) return null
 
-  // 'none' level or single tool or mergeTools disabled: each tool is an independent FoldedLine.
-  const shouldMerge = level !== 'none' && mergeTools && tools.length > 1
-
-  if (!shouldMerge) {
+  // 'none' level: always expanded, each tool as independent card
+  if (level === 'none') {
     return (
-      <div className="flex flex-col">
+      <div className="flex flex-col gap-1.5">
         {tools.map((tool, i) => (
-          <FoldedLine
-            key={`${tool.name}-${tool.label}-${i}`}
-            title={formatToolTitle(tool, t)}
-            defaultOpen={false}
-          >
-            <ToolRender tool={tool} />
-          </FoldedLine>
+          <ToolCard key={`${tool.name}-${tool.label}-${i}`} tool={tool} />
         ))}
       </div>
     )
   }
 
-  // 'minimal'/'all' level with mergeTools=true and 2+ tools: merged into one foldable line.
+  // Single tool: folded row that expands to a card
+  if (tools.length === 1 || !mergeTools) {
+    if (tools.length === 1) {
+      return (
+        <div>
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            aria-expanded={expanded}
+            className="flex items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"
+          >
+            <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
+            {formatToolTitle(tools[0])}
+          </button>
+          {expanded && (
+            <div className="ml-4 mt-1">
+              <ToolCard tool={tools[0]} />
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    // mergeTools disabled: each tool is an independent foldable row
+    return (
+      <div className="flex flex-col">
+        {tools.map((tool, i) => (
+          <SingleToolFold key={`${tool.name}-${tool.label}-${i}`} tool={tool} />
+        ))}
+      </div>
+    )
+  }
+
+  // Merged: any 2+ consecutive tools → [icon]×N [icon]×M
   return (
     <div>
       <button
@@ -196,19 +215,36 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
         className="flex items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"
       >
         <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
-        {formatMergedTitle(tools, t)}
+        {formatMergedTitle(tools)}
       </button>
       {expanded && (
-        <div className="ml-4 flex flex-col">
+        <div className="ml-4 mt-1 flex flex-col gap-1.5">
           {tools.map((tool, i) => (
-            <FoldedLine
-              key={`${tool.name}-${tool.label}-${i}`}
-              title={formatToolTitle(tool, t)}
-              defaultOpen={false}
-            >
-              <ToolRender tool={tool} />
-            </FoldedLine>
+            <ToolCard key={`${tool.name}-${tool.label}-${i}`} tool={tool} />
           ))}
+        </div>
+      )}
+    </div>
+  )
+})
+
+/** Single tool as an independent foldable row with card expansion. */
+const SingleToolFold = memo(function SingleToolFold({ tool }: { tool: WebToolProgress }) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+        className="flex items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"
+      >
+        <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
+        {formatToolTitle(tool)}
+      </button>
+      {expanded && (
+        <div className="ml-4 mt-1">
+          <ToolCard tool={tool} />
         </div>
       )}
     </div>

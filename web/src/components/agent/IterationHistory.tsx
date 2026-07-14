@@ -4,15 +4,15 @@
  * Each iteration renders:
  *   - T (reasoning): FoldedLine, always folded by default
  *   - O (text output): MarkdownRenderer, always shown
- *   - C (tools): FoldedToolGroup (merges consecutive tools at minimal/all levels)
+ *   - C (tools): FoldedToolGroup (handles both single and merged tool display)
  *
  * The component is used by TurnBody for committed iterations, and by
  * AssistantMessage for the "all" level summary expansion.
  */
 import { memo } from 'react'
 
-import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
+import { FoldedLine } from './FoldedLine'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { useI18n } from '@/providers/i18n'
@@ -52,7 +52,7 @@ export const IterationGroup = memo(function IterationGroup({
         />
       )}
 
-      {/* C: tool calls (FoldedToolGroup handles merging) */}
+      {/* C: tool calls (FoldedToolGroup handles both single and merged display) */}
       {iteration.tools.length > 0 && (
         <FoldedToolGroup tools={iteration.tools} level={level} mergeTools={mergeTools} />
       )}

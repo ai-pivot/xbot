@@ -5,24 +5,12 @@ import '@testing-library/jest-dom'
 import { renderWithProviders } from '@/test-utils'
 import { SessionList } from './SessionList'
 import type { SessionInfo } from '@/types/shared'
-import type { TabManager } from '@/hooks/useTabManager'
 
 vi.mock('@/components/ui/scroll-area', () => ({
   ScrollArea: ({ children, className }: { children: React.ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
   ),
 }))
-
-const tabManager = {
-  tabs: [],
-  activeTabId: null,
-  openTab: vi.fn(),
-  closeTab: vi.fn(),
-  setActiveTab: vi.fn(),
-  splitRight: vi.fn(),
-  resetWorkGroup: vi.fn(),
-  bindApi: vi.fn(),
-} as unknown as TabManager
 
 function session(overrides: Partial<SessionInfo> & { chatID: string; channel: string; label: string }): SessionInfo {
   return {
@@ -76,7 +64,6 @@ describe('SessionList', () => {
         activeSession={null}
         search=""
         subAgents={[]}
-        tabManager={tabManager}
         onSelect={vi.fn()}
         onToggleStar={vi.fn()}
         onRename={vi.fn()}
@@ -118,7 +105,6 @@ describe('SessionList', () => {
         activeSession={null}
         search="code-review"
         subAgents={[]}
-        tabManager={tabManager}
         onSelect={vi.fn()}
         onToggleStar={vi.fn()}
         onRename={vi.fn()}
@@ -167,7 +153,6 @@ describe('SessionList', () => {
         activeSession={null}
         search=""
         subAgents={[]}
-        tabManager={tabManager}
         onSelect={vi.fn()}
         onToggleStar={vi.fn()}
         onRename={vi.fn()}
@@ -208,7 +193,6 @@ describe('SessionList', () => {
         activeSession={null}
         search=""
         subAgents={[]}
-        tabManager={tabManager}
         onSelect={vi.fn()}
         onToggleStar={vi.fn()}
         onRename={vi.fn()}
@@ -249,7 +233,6 @@ describe('SessionList', () => {
         activeSession={null}
         search=""
         subAgents={[]}
-        tabManager={tabManager}
         onSelect={vi.fn()}
         onToggleStar={vi.fn()}
         onRename={vi.fn()}
@@ -298,7 +281,6 @@ describe('SessionList', () => {
         activeSession={null}
         search="fix"
         subAgents={[]}
-        tabManager={tabManager}
         onSelect={vi.fn()}
         onToggleStar={vi.fn()}
         onRename={vi.fn()}

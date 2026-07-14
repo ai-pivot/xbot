@@ -11,7 +11,7 @@
  */
 import { memo, useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { AlertCircle, Asterisk, Check } from 'lucide-react'
+import { AlertCircle, Sparkles, Check } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import type { WebSubAgentProgress } from '@/types/shared'
@@ -86,13 +86,13 @@ function SubAgentCard({
         {/* Node header row */}
         <div className="flex min-w-0 items-center gap-1.5">
           {running ? (
-            <Asterisk className="size-3.5 shrink-0 animate-pulse" style={{ color: 'var(--accent)' }} />
+            <Sparkles className="size-3.5 shrink-0 animate-pulse" style={{ color: 'var(--accent)' }} />
           ) : done ? (
             <Check className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
           ) : errored ? (
             <AlertCircle className="size-3.5 shrink-0" style={{ color: 'var(--destructive)' }} />
           ) : (
-            <Asterisk className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
+            <Sparkles className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
           )}
           <span className="shrink-0 text-xs font-medium text-text-secondary">
             {node.role}{node.instance ? `:${node.instance}` : ''}
@@ -142,13 +142,13 @@ function SubAgentChild({ node }: { node: WebSubAgentProgress }) {
     >
       <div className="flex min-w-0 items-center gap-1.5">
         {running ? (
-          <Asterisk className="size-3 shrink-0 animate-pulse" style={{ color: 'var(--accent)' }} />
+          <Sparkles className="size-3 shrink-0 animate-pulse" style={{ color: 'var(--accent)' }} />
         ) : done ? (
           <Check className="size-3 shrink-0" style={{ color: 'var(--text-muted)' }} />
         ) : errored ? (
           <AlertCircle className="size-3 shrink-0" style={{ color: 'var(--destructive)' }} />
         ) : (
-          <Asterisk className="size-3 shrink-0" style={{ color: 'var(--text-muted)' }} />
+          <Sparkles className="size-3 shrink-0" style={{ color: 'var(--text-muted)' }} />
         )}
         <span className="shrink-0 text-xs font-medium text-text-secondary">
           {node.role}{node.instance ? `:${node.instance}` : ''}

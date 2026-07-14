@@ -35,24 +35,19 @@ vi.mock('@/components/ui/tooltip', () => ({
 }))
 
 describe('ActivityBar', () => {
-  it('renders sessions icon and settings icon', () => {
+  it('renders settings icon', () => {
     renderWithProviders(
       <ActivityBar
-        activeView="sessions"
-        onToggleView={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     )
 
-    expect(screen.getByLabelText('Sessions')).toBeInTheDocument()
     expect(screen.getByLabelText('Appearance')).toBeInTheDocument()
   })
 
   it('renders aggregate globe icon', () => {
     renderWithProviders(
       <ActivityBar
-        activeView="sessions"
-        onToggleView={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     )
@@ -63,8 +58,6 @@ describe('ActivityBar', () => {
   it('renders channel identity icons after fetch', async () => {
     renderWithProviders(
       <ActivityBar
-        activeView="sessions"
-        onToggleView={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     )
@@ -77,8 +70,6 @@ describe('ActivityBar', () => {
   it('renders badge with first character of channel_user_id', async () => {
     renderWithProviders(
       <ActivityBar
-        activeView="sessions"
-        onToggleView={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     )

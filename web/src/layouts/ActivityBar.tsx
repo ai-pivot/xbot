@@ -2,14 +2,15 @@
  * ActivityBar — the leftmost 48px icon column (Spec 2 §3.2, VSCode-style).
  *
  * Layout (top to bottom):
- *   Sessions icon (always)
  *   Aggregate channel icon (Globe — shows all channels)
+ *   Web channel icon (when other identities exist)
  *   Per-channel identity icons (CLI, Feishu, QQ, etc.)
  *   (flex spacer)
  *   Settings (bottom)
  *
  * Channel identity icons are fetched from GET /api/account/identities.
  * Active channel is persisted to localStorage["xbot:active-channel"].
+ * Clicking a channel icon also ensures the session sidebar is open.
  */
 import { useCallback, useEffect, useState } from 'react'
 import {
@@ -20,7 +21,6 @@ import {
   Bot,
   Server,
   Settings,
-  MessageSquare as SessionsIcon,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { useI18n } from '@/providers/i18n'
@@ -38,10 +38,6 @@ interface IdentityEntry {
 }
 
 interface ActivityBarProps {
-  /** Currently active view (null = no left sidebar open). */
-  activeView: SidebarView | null
-  /** Toggle a view's sidebar; same view again collapses it. */
-  onToggleView: (view: SidebarView) => void
   /** Open the global settings dialog (Sheet). */
   onOpenSettings: () => void
   /** Increments when settings dialog closes — triggers identity refresh. */
@@ -57,11 +53,7 @@ const CHANNEL_ICONS: Record<string, IconComponent> = {
   system: Server,
 }
 
-const VIEWS: { view: SidebarView; icon: IconComponent }[] = [
-  { view: 'sessions', icon: SessionsIcon },
-]
-
-export function ActivityBar({ activeView, onToggleView, onOpenSettings, settingsVersion = 0 }: ActivityBarProps) {
+export function ActivityBar({ onOpenSettings, settingsVersion = 0 }: ActivityBarProps) {
   const { t } = useI18n()
   const { activeChannel, setActiveChannel } = useSessionStore()
   const [identities, setIdentities] = useState<IdentityEntry[]>([])
@@ -96,36 +88,6 @@ export function ActivityBar({ activeView, onToggleView, onOpenSettings, settings
   return (
     <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between border-r bg-bg-secondary py-2">
       <nav className="flex flex-col items-center gap-1">
-        {/* Sessions view toggle */}
-        {VIEWS.map(({ view, icon: Icon }) => {
-          const active = activeView === view
-          return (
-            <Tooltip key={view}>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={labelFor(view, t)}
-                  aria-pressed={active}
-                  onClick={() => onToggleView(view)}
-                  className="group relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
-                  style={{ color: active ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-                >
-                  {/* active accent bar (left edge) */}
-                  <span
-                    className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r"
-                    style={{ backgroundColor: active ? 'var(--accent)' : 'transparent' }}
-                  />
-                  <Icon className="size-5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right">{labelFor(view, t)}</TooltipContent>
-            </Tooltip>
-          )
-        })}
-
-        {/* Divider */}
-        <div className="my-1 h-px w-6" style={{ backgroundColor: 'var(--border)' }} />
-
         {/* Aggregate channel icon (shows all channels) */}
         <Tooltip>
           <TooltipTrigger asChild>
@@ -256,11 +218,4 @@ function ChannelIcon({
       <TooltipContent side="right">{label}</TooltipContent>
     </Tooltip>
   )
-}
-
-function labelFor(view: SidebarView, t: (k: string) => string): string {
-  switch (view) {
-    case 'sessions':
-      return t('sidebar.sessions')
-  }
 }

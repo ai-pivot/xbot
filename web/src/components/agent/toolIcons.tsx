@@ -8,7 +8,7 @@
  */
 import {
   Terminal, FileText, Search, FolderSearch, FilePlus, FilePen,
-  Globe, Download, Asterisk, Wrench, GitBranch, FolderOpen,
+  Globe, Download, Sparkles, Wrench, GitBranch, FolderOpen,
   Clock, MessageSquare, Users, Settings, ListTodo, Edit, Zap,
   Layers, HelpCircle, type LucideIcon,
 } from 'lucide-react'
@@ -30,8 +30,8 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   WebFetch:     Download,
 
   // Agent related
-  SubAgent:     Asterisk,
-  CreateChat:   Asterisk,
+  SubAgent:     Sparkles,
+  CreateChat:   Sparkles,
   SendMessage:  MessageSquare,
   Worktree:     GitBranch,
   AskUser:      HelpCircle,
