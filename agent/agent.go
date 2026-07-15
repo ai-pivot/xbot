@@ -318,9 +318,10 @@ type Agent struct {
 	// Event trigger router
 	eventRouter *event.Router
 
-	// LLM factory (per-user/per-chat LLM resolution). User LLM config lives in
-	// user_llm_subscriptions; the legacy UserLLMConfigService shim was removed.
-	llmFactory *LLMFactory
+	// User system: holds llmFactory, settingsSvc, identityResolver.
+	// Accessed by ResolveUserContext (request path) and infrastructure methods.
+	// Never accessed directly by agent loop code — use UserContext from ctx.
+	userSys *userSystem
 
 	// 用户级别的信号量：设置了自己的 LLM 配置的用户使用独立信号量
 	// key: senderID, value: 用户独立的信号量（容量为1）
@@ -424,8 +425,7 @@ type Agent struct {
 	// RegistryManager for skill/agent sharing and marketplace
 	registryManager *RegistryManager
 
-	// SettingsService for per-user settings
-	settingsSvc *SettingsService
+	// SettingsService is accessed via a.userSys.settingsSvc (no direct field).
 
 	// TUI control callbacks (set by CLI channel, nil for other channels)
 	tuiCtrlFn   func(action string, params map[string]string) (map[string]string, error)
@@ -438,10 +438,12 @@ type Agent struct {
 	// cliSenderID is the sender_id used for CLI channel DB operations.
 	cliSenderID string
 
+	// singleUser enables single-user mode: all senders share one identity.
+	singleUser bool
+
 	// identityResolver resolves channel-specific senderID to canonical user_id.
-	// nil in standalone CLI mode (no multi-user DB). When nil, admin checks
-	// fall back to the old "admin" string comparison.
-	identityResolver *IdentityResolver
+	// IdentityResolver is accessed via a.userSys.identityResolver (no direct field).
+	// nil in standalone CLI mode (no multi-user DB).
 
 	// bgTaskMgr manages background shell tasks (shared across all sessions)
 
@@ -470,7 +472,12 @@ type Agent struct {
 func (a *Agent) SetRegistryManager(rm *RegistryManager) { a.registryManager = rm }
 
 // SetSettingsService sets the SettingsService (for external injection or override).
-func (a *Agent) SetSettingsService(svc *SettingsService) { a.settingsSvc = svc }
+func (a *Agent) SetSettingsService(svc *SettingsService) {
+	if a.userSys == nil {
+		a.userSys = &userSystem{}
+	}
+	a.userSys.settingsSvc = svc
+}
 
 // SetTUICallbacks sets the TUI control and config callbacks (CLI channel only).
 func (a *Agent) SetTUICallbacks(
@@ -515,15 +522,12 @@ func (a *Agent) buildRemoteTUICtrlFn(chanName, chatID string) func(action string
 	return nil
 }
 
-// listLLMSubsFn returns a subscription listing function for the given channel.
-func (a *Agent) listLLMSubsFn(channel string) func(ch, senderID string) []tools.SubscriptionInfo {
-	if a.llmFactory == nil {
+// listLLMSubsFn returns a subscription listing function backed by UserContext.
+func (a *Agent) listLLMSubsFn(uc *UserContext) func(ch, senderID string) []tools.SubscriptionInfo {
+	if uc == nil || uc.SubSvc == nil {
 		return nil
 	}
-	svc := a.llmFactory.GetSubscriptionSvc()
-	if svc == nil {
-		return nil
-	}
+	svc := uc.SubSvc
 	return func(ch, senderID string) []tools.SubscriptionInfo {
 		subs, _ := svc.List(senderID)
 		result := make([]tools.SubscriptionInfo, 0, len(subs))
@@ -541,36 +545,22 @@ func (a *Agent) listLLMSubsFn(channel string) func(ch, senderID string) []tools.
 }
 
 // getActiveSubFieldFn returns a function that reads a single field from the
-// active subscription. Used by config tool's get action for subscription-scoped keys.
-// For llm_model, uses ResolveActiveSubModel to respect per-session model switches
-// (Ctrl+N / SelectModel) instead of returning the subscription's default model.
-func (a *Agent) getActiveSubFieldFn(channel, chatID string) func(key string) (string, error) {
-	if a.llmFactory == nil {
+// active subscription, backed by UserContext.
+func (a *Agent) getActiveSubFieldFn(uc *UserContext, channel, chatID string) func(key string) (string, error) {
+	if uc == nil || uc.SubSvc == nil {
 		return nil
 	}
-	svc := a.llmFactory.GetSubscriptionSvc()
-	if svc == nil {
-		return nil
-	}
+	svc := uc.SubSvc
 	return func(key string) (string, error) {
-		// Use cliSenderID for CLI channel
 		senderID := a.cliSenderID
 		if senderID == "" {
 			senderID = "cli_user"
 		}
-		// For llm_model: resolve from per-session state (tenants table) so
-		// the returned model matches what the status bar shows. GetDefault
-		// only returns the subscription's default model, which is wrong when
-		// the user has switched models via Ctrl+N for this session.
 		if key == "llm_model" {
-			sub, model, err := a.llmFactory.ResolveActiveSubModel(senderID, chatID, channel)
-			if err == nil && sub != nil {
-				if model == "" {
-					model = sub.Model
-				}
+			_, model, _, _, _ := uc.ResolveLLM(chatID)
+			if model != "" {
 				return model, nil
 			}
-			// Fallback to GetDefault if ResolveActiveSubModel fails
 		}
 		sub, err := svc.GetDefault(senderID)
 		if err != nil {
@@ -583,16 +573,13 @@ func (a *Agent) getActiveSubFieldFn(channel, chatID string) func(key string) (st
 	}
 }
 
-// updateActiveSubFn returns a function that updates a single field in the active
-// subscription. Used by config tool's set action for subscription-scoped keys.
-func (a *Agent) updateActiveSubFn(channel string) func(key, value string) (string, error) {
-	if a.llmFactory == nil {
+// updateActiveSubFn returns a function that updates a single field in the
+// active subscription, backed by UserContext.
+func (a *Agent) updateActiveSubFn(uc *UserContext, channel string) func(key, value string) (string, error) {
+	if uc == nil || uc.SubSvc == nil {
 		return nil
 	}
-	svc := a.llmFactory.GetSubscriptionSvc()
-	if svc == nil {
-		return nil
-	}
+	svc := uc.SubSvc
 	return func(key, value string) (string, error) {
 		senderID := a.cliSenderID
 		if senderID == "" {
@@ -606,17 +593,13 @@ func (a *Agent) updateActiveSubFn(channel string) func(key, value string) (strin
 			return "", fmt.Errorf("no active subscription found")
 		}
 		oldVal := subFieldValue(sub, key)
-		// Update the relevant field
 		if err := setSubFieldValue(sub, key, value); err != nil {
 			return "", err
 		}
 		if err := svc.Update(sub); err != nil {
 			return "", fmt.Errorf("update subscription: %w", err)
 		}
-		// Update per-session model selection if model changed
-		if key == "llm_model" {
-			a.llmFactory.SelectModel(senderID, "", channel, sub.ID, value)
-		}
+		uc.InvalidateLLM()
 		return oldVal, nil
 	}
 }
@@ -675,10 +658,20 @@ func setSubFieldValue(sub *sqlite.LLMSubscription, key, value string) error {
 }
 
 // LLMFactory returns the Agent's LLMFactory (for external injection of callbacks).
-func (a *Agent) LLMFactory() *LLMFactory { return a.llmFactory }
+func (a *Agent) LLMFactory() *LLMFactory {
+	if a.userSys == nil {
+		return nil
+	}
+	return a.userSys.llmFactory
+}
 
 // SetLLMFactory sets the LLM factory (used in tests).
-func (a *Agent) SetLLMFactory(f *LLMFactory) { a.llmFactory = f }
+func (a *Agent) SetLLMFactory(f *LLMFactory) {
+	if a.userSys == nil {
+		a.userSys = &userSystem{}
+	}
+	a.userSys.llmFactory = f
+}
 
 // BgTaskManager returns the Agent's BackgroundTaskManager.
 func (a *Agent) BgTaskManager() *tools.BackgroundTaskManager { return a.bgTaskMgr }
@@ -702,16 +695,31 @@ func (a *Agent) SetAgentChannelRegistry(register func(name string, runFn bus.Run
 func (a *Agent) RegistryManager() *RegistryManager { return a.registryManager }
 
 // SettingsService returns the Agent's SettingsService (for external injection of callbacks).
-func (a *Agent) SettingsService() *SettingsService { return a.settingsSvc }
+func (a *Agent) SettingsService() *SettingsService {
+	if a.userSys == nil {
+		return nil
+	}
+	return a.userSys.settingsSvc
+}
 
 // MultiSession returns the Agent's MultiTenantSession (for external injection of callbacks).
 func (a *Agent) MultiSession() *session.MultiTenantSession { return a.multiSession }
 
 // SetIdentityResolver injects the canonical user identity resolver.
-func (a *Agent) SetIdentityResolver(r *IdentityResolver) { a.identityResolver = r }
+func (a *Agent) SetIdentityResolver(r *IdentityResolver) {
+	if a.userSys == nil {
+		a.userSys = &userSystem{}
+	}
+	a.userSys.identityResolver = r
+}
 
 // IdentityResolver returns the agent's identity resolver (may be nil in standalone mode).
-func (a *Agent) IdentityResolver() *IdentityResolver { return a.identityResolver }
+func (a *Agent) IdentityResolver() *IdentityResolver {
+	if a.userSys == nil {
+		return nil
+	}
+	return a.userSys.identityResolver
+}
 
 // RewindCheckpoint restores files for an existing checkpointed session. It
 // only uses stores that were already created by the normal CLI run path.
@@ -741,16 +749,16 @@ func (a *Agent) SetUserModel(senderID, subID, model string) error {
 		return fmt.Errorf("model is required")
 	}
 	if subID == "" {
-		sub, err := a.llmFactory.ResolveSubscriptionForModel(senderID, model)
+		sub, err := a.userSys.llmFactory.ResolveSubscriptionForModel(senderID, model)
 		if err != nil {
 			return fmt.Errorf("resolve subscription for model %q: %w", model, err)
 		}
 		subID = sub.ID
 	}
-	if err := a.llmFactory.SetUserDefaultModel(senderID, subID, model); err != nil {
+	if err := a.userSys.llmFactory.SetUserDefaultModel(senderID, subID, model); err != nil {
 		return fmt.Errorf("save default model: %w", err)
 	}
-	a.llmFactory.Invalidate(senderID)
+	a.userSys.llmFactory.Invalidate(senderID)
 	return nil
 }
 
@@ -758,8 +766,8 @@ func (a *Agent) SetUserModel(senderID, subID, model string) error {
 // Also propagates to SettingsService so it can resolve channels by name.
 func (a *Agent) SetChannelFinder(fn func(name string) (channel.Channel, bool)) {
 	a.channelFinder = fn
-	if a.settingsSvc != nil {
-		a.settingsSvc.SetChannelFinder(fn)
+	if a.userSys != nil && a.userSys.settingsSvc != nil {
+		a.userSys.settingsSvc.SetChannelFinder(fn)
 	}
 }
 
@@ -913,20 +921,23 @@ func (a *Agent) ClearPendingAskUser(ch, chatID string) {
 
 // SetProxyLLM injects a ProxyLLM for a user (when their active runner has local LLM).
 func (a *Agent) SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string) {
-	a.llmFactory.SetProxyLLM(senderID, proxy, model)
+	a.userSys.llmFactory.SetProxyLLM(senderID, proxy, model)
 }
 
 // ClearProxyLLM removes a ProxyLLM for a user.
 func (a *Agent) ClearProxyLLM(senderID string) {
-	a.llmFactory.ClearProxyLLM(senderID)
+	a.userSys.llmFactory.ClearProxyLLM(senderID)
 }
 
 // GetDefaultModel returns the default model name.
 func (a *Agent) GetDefaultModel() string {
-	return a.llmFactory.GetDefaultModel()
+	return a.userSys.llmFactory.GetDefaultModel()
 }
 func (a *Agent) GetSettingsService() *SettingsService {
-	return a.settingsSvc
+	if a.userSys == nil {
+		return nil
+	}
+	return a.userSys.settingsSvc
 }
 
 func buildToolMessageContent(result *tools.ToolResult) string {
@@ -1030,6 +1041,10 @@ type Config struct {
 
 	// CLISenderID is the sender_id used for CLI channel DB operations (default: "cli_user").
 	CLISenderID string
+
+	// SingleUser enables single-user mode: all senders are treated as one
+	// shared identity. Set from config.Agent.Experimental.SingleUser.
+	SingleUser bool
 }
 
 // initStores 初始化各类存储和注册表，返回 skillStore, agentStore, chatHistory, registry, cardBuilder。
@@ -1161,9 +1176,12 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.cronSch = cronSch
 
 	// LLM factory: per-user subscriptions are the single source for custom LLM.
-	a.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
-	a.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
-	a.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
+	if a.userSys == nil {
+		a.userSys = &userSystem{}
+	}
+	a.userSys.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
+	a.userSys.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
+	a.userSys.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
 
 	// 初始化上下文管理器
 	a.contextManagerConfig = &ContextManagerConfig{
@@ -1286,12 +1304,12 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// Initialize UserSettingsService and SettingsService
 	userSettingsSvc := sqlite.NewUserSettingsService(multiSession.DB())
-	a.settingsSvc = NewSettingsService(userSettingsSvc)
+	a.userSys.settingsSvc = NewSettingsService(userSettingsSvc)
 
 	// Initialize LLMSemaphoreManager and inject dependencies
 	llmSemMgr := llm.NewLLMSemaphoreManager()
-	a.llmFactory.SetLLMSemaphoreManager(llmSemMgr)
-	a.llmFactory.SetSettingsService(a.settingsSvc)
+	a.userSys.llmFactory.SetLLMSemaphoreManager(llmSemMgr)
+	a.userSys.llmFactory.SetSettingsService(a.userSys.settingsSvc)
 
 	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它）
 	a.initPipelines(memoryProvider)
@@ -1398,6 +1416,7 @@ func New(cfg Config) (*Agent, error) {
 		}(),
 		bgTaskMgr:   tools.NewBackgroundTaskManager(),
 		cliSenderID: cfg.CLISenderID,
+		singleUser:  cfg.SingleUser,
 	}
 
 	// 5. 初始化各类服务（修改 agent 指针）
@@ -1690,12 +1709,12 @@ func (a *Agent) SetSandbox(sb tools.Sandbox, mode string) {
 
 // GetLLMConcurrency 获取用户个人 LLM 并发上限配置。
 func (a *Agent) GetLLMConcurrency(senderID string) int {
-	return a.llmFactory.GetLLMConcurrency(senderID)
+	return a.userSys.llmFactory.GetLLMConcurrency(senderID)
 }
 
 // SetLLMConcurrency 设置用户个人 LLM 并发上限配置。
 func (a *Agent) SetLLMConcurrency(senderID string, personal int) error {
-	return a.llmFactory.SetLLMConcurrency(senderID, personal)
+	return a.userSys.llmFactory.SetLLMConcurrency(senderID, personal)
 }
 
 // SetDirectSend 注入同步发送函数（绕过 bus，用于消息更新跟踪）
@@ -2152,7 +2171,7 @@ func (a *Agent) getSemaphoreForMessage(msg bus.InboundMessage) chan struct{} {
 	}
 
 	// 私聊：检查用户是否有自定义 LLM
-	if a.llmFactory.HasCustomLLM(senderID) {
+	if a.userSys.llmFactory.HasCustomLLM(senderID) {
 		return a.getUserSemaphore(senderID)
 	}
 
@@ -2524,6 +2543,12 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// Recall/Memorize 会通过 letta.GetUserID(ctx) 获取 userID
 	ctx = letta.WithUserID(ctx, msg.SenderID)
 
+	// Resolve all user-related components ONCE at the entry point.
+	// Everything downstream reads UserContext from ctx — no direct access
+	// to LLMFactory/IdentityResolver/SettingsService anywhere in the agent loop.
+	userCtx := a.ResolveUserContext(msg.Channel, msg.ChatID, msg.SenderID)
+	ctx = WithUserContext(ctx, userCtx)
+
 	preview := msg.Content
 	if r := []rune(preview); len(r) > 80 {
 		preview = string(r[:80]) + "..."
@@ -2777,6 +2802,8 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 // buildPrompt 构建完整的 LLM 消息列表（共用逻辑：processMessage 和 handlePromptQuery 都调用）。
 // 使用 Agent 持有的 pipeline 实例，通过 MessageContext.Extra 传递动态数据。
 func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) ([]llm.ChatMessage, error) {
+	userCtx := UserContextFromContext(ctx)
+
 	history, err := tenantSession.GetMessages()
 	if err != nil {
 		log.Ctx(ctx).WithError(err).Warn("Failed to get history, using empty history")
@@ -2796,9 +2823,9 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// Peer awareness / auto worktree: register this session for collaboration.
 	// When auto_worktree is enabled, every session gets its own git worktree (no primary).
 	// When disabled, RegisterPeer provides lightweight in-memory session tracking.
-	// Uses GetEffectiveSetting — the single correct read path for user-scoped settings.
+	// UserContext already resolved settings in middleware — read from there.
 	// AutoDetectAndInit is idempotent: returns existing entry if session already registered.
-	if a.settingsSvc.GetEffectiveSettingBool(msg.Channel, msg.SenderID, "auto_worktree") {
+	if userCtx != nil && userCtx.GetSettingBool("auto_worktree") {
 		if tools.GlobalWorktreeRegistry.GetBySession(sessKey) == nil {
 			if entry, created := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
 				// Only override CWD for brand new worktrees (first creation).
@@ -2905,7 +2932,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	mc.SetExtra(ExtraKeySkillsCatalog, a.skills.GetSkillsCatalog(ctx, msg.SenderID, projectDir))
 	mc.SetExtra(ExtraKeyAgentsCatalog, a.agents.GetAgentsCatalog(ctx, msg.SenderID, projectDir))
 	mc.SetExtra(ExtraKeyMemoryProvider, tenantSession.Memory())
-	permUsers := a.settingsSvc.GetPermUsers(msg.Channel, msg.SenderID)
+	permUsers := userCtx.PermUsers
 	mc.SetExtra(ExtraKeyPermUsers, permUsers)
 	mc.Ctx = withPermControlEnabled(mc.Ctx, IsPermControlEnabled(permUsers))
 

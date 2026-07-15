@@ -23,8 +23,8 @@ func (a *Agent) WireCallbacks(
 ) {
 	a.directSend = directSend
 	a.channelFinder = channelFinder
-	if a.settingsSvc != nil {
-		a.settingsSvc.SetChannelFinder(channelFinder)
+	if a.userSys != nil && a.userSys.settingsSvc != nil {
+		a.userSys.settingsSvc.SetChannelFinder(channelFinder)
 	}
 	a.messageSender = messageSender
 	a.registerAgentChannel = registerAgentChannel
