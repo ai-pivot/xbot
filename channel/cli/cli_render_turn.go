@@ -388,9 +388,51 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 	}
 	if reasoningContent != "" {
 		hasSpinner = true
+		// Typewriter optimization: cache renderReasoningBox output. Only
+		// re-render when the raw content or width changes. On unchanged
+		// Deferred rendering: same logic as content — only re-render when
+		// typewriter catches up to the previously rendered range.
+		var renderedReasoning string
+		totalRwRunes := len([]rune(reasoningContent))
+
+		needRender := false
+		if m.rc.liveReasoningRendered == "" {
+			needRender = true
+		} else if reasoningContent == m.rc.liveReasoningKey && width == m.rc.liveReasoningWidth {
+			needRender = false
+		} else if m.progressState.rwVisible == 0 ||
+			m.progressState.rwVisible >= m.rc.liveReasoningTotal {
+			needRender = true
+		}
+
+		if needRender {
+			renderedReasoning = m.renderReasoningBox(reasoningContent, width, s)
+			m.rc.liveReasoningRendered = renderedReasoning
+			m.rc.liveReasoningKey = reasoningContent
+			m.rc.liveReasoningWidth = width
+			m.rc.liveReasoningVisN = 0
+			m.rc.liveReasoningTotal = totalRwRunes
+		} else {
+			renderedReasoning = m.rc.liveReasoningRendered
+		}
+
+		// Apply typewriter truncation for reasoning.
+		// Only apply when showing STREAMING reasoning (ReasoningStreamContent).
+		if p.ReasoningStreamContent != "" && totalRwRunes > 0 &&
+			m.progressState.rwVisible > 0 && m.progressState.rwVisible < totalRwRunes {
+			if m.rc.liveReasoningVisN == 0 {
+				m.rc.liveReasoningVisN = countANSIVisibleRunes(renderedReasoning)
+			}
+			if m.rc.liveReasoningVisN > 0 && m.rc.liveReasoningTotal > 0 {
+				targetVis := m.progressState.rwVisible * m.rc.liveReasoningVisN / m.rc.liveReasoningTotal
+				if targetVis < m.rc.liveReasoningVisN {
+					renderedReasoning = truncateANSIVisible(renderedReasoning, targetVis)
+				}
+			}
+		}
 		blocks = append(blocks, turnBlock{
 			kind: turnBlockReasoning,
-			text: m.renderReasoningBox(reasoningContent, width, s),
+			text: renderedReasoning,
 		})
 	}
 
@@ -406,9 +448,68 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		displayContent = fallbackContent
 	}
 	if displayContent != "" {
+		// Deferred glamour rendering: only re-render when the typewriter
+		// has caught up to (or beyond) the content that was last rendered.
+		//
+		// Stream arrivals change StreamContent, but if twVisible hasn't
+		// reached the end of the previously rendered content, the old
+		// glamour output still covers everything the typewriter needs to
+		// show. We just truncate the old output — zero glamour cost.
+		//
+		// This decouples glamour frequency from stream frequency:
+		//   - Fast API (20ms/chunk): glamour runs at typewriter rate (50ms),
+		//     not stream rate (20ms) — 2.5x fewer glamour calls.
+		//   - Slow API (500ms/chunk): typewriter always catches up between
+		//     chunks, so glamour runs once per chunk — same as before.
+		var renderedContent string
+		totalTwRunes := len([]rune(streamContent))
+
+		needRender := false
+		if m.rc.liveContentRendered == "" {
+			needRender = true
+		} else if displayContent == m.rc.liveContentKey && width == m.rc.liveContentWidth {
+			// Content unchanged — pure cache hit.
+			needRender = false
+		} else if m.progressState.twVisible == 0 ||
+			m.progressState.twVisible >= m.rc.liveContentTotal {
+			// twVisible=0: typewriter not active, must render to show full content.
+			// twVisible >= liveContentTotal: typewriter caught up, need new content.
+			needRender = true
+		}
+		// else: content changed but typewriter is still within the old
+		// rendered range. Old glamour output covers everything we need to
+		// show. No re-render needed — just truncate differently.
+
+		if needRender {
+			renderedContent = m.renderTurnContent(displayContent, width)
+			m.rc.liveContentRendered = renderedContent
+			m.rc.liveContentKey = displayContent
+			m.rc.liveContentWidth = width
+			m.rc.liveContentVisN = 0 // lazy: computed on first truncation
+			m.rc.liveContentTotal = totalTwRunes
+		} else {
+			renderedContent = m.rc.liveContentRendered
+		}
+
+		// Apply typewriter truncation.
+		// Proportional mapping uses liveContentTotal (the rune count of the
+		// content that was actually rendered), NOT the current StreamContent
+		// length — the glamour output corresponds to liveContentTotal.
+		if totalTwRunes > 0 && m.progressState.twVisible > 0 &&
+			m.progressState.twVisible < totalTwRunes {
+			if m.rc.liveContentVisN == 0 {
+				m.rc.liveContentVisN = countANSIVisibleRunes(renderedContent)
+			}
+			if m.rc.liveContentVisN > 0 && m.rc.liveContentTotal > 0 {
+				targetVis := m.progressState.twVisible * m.rc.liveContentVisN / m.rc.liveContentTotal
+				if targetVis < m.rc.liveContentVisN {
+					renderedContent = truncateANSIVisible(renderedContent, targetVis)
+				}
+			}
+		}
 		blocks = append(blocks, turnBlock{
 			kind: turnBlockContent,
-			text: m.renderTurnContent(displayContent, width),
+			text: renderedContent,
 		})
 	}
 
