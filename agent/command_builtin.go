@@ -506,7 +506,7 @@ func (c *menuCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage)
 			"- 📦 `/app list` — 查看已安装\n" +
 			"- 📦 `/app install <file|url>` — 安装应用\n" +
 			"- 📦 `/app export <name> -s <skill>` — 打包导出\n" +
-			"- 🗑️ `/app uninstall -s <skill> -a <agent> -p <plugin>` — 卸载\n",
+			"- 🗑️ `/app uninstall -n <app> -s <skill> -a <agent> -p <plugin>` — 卸载\n",
 	}, nil
 }
 
@@ -732,7 +732,7 @@ func (c *appCmd) handleInstall(a *Agent, msg bus.InboundMessage, args []string) 
 
 func (c *appCmd) handleUninstall(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
 	if len(args) < 2 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app uninstall -s <skill> -a <agent> -p <plugin>`\n可指定多个，空格分隔"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app uninstall -n <app-name>` 或 `/app uninstall -s <skill> -a <agent> -p <plugin>`\n`-n` 卸载整个 app 包"}, nil
 	}
 	if a.registryManager == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
@@ -745,6 +745,11 @@ func (c *appCmd) handleUninstall(a *Agent, msg bus.InboundMessage, args []string
 	var items []uninstallItem
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "-n", "--app":
+			if i+1 < len(args) {
+				items = append(items, uninstallItem{"app", args[i+1]})
+				i++
+			}
 		case "-s", "--skill":
 			if i+1 < len(args) {
 				items = append(items, uninstallItem{"skill", args[i+1]})
@@ -764,7 +769,7 @@ func (c *appCmd) handleUninstall(a *Agent, msg bus.InboundMessage, args []string
 	}
 
 	if len(items) == 0 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 -s、-a 或 -p"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 -n、-s、-a 或 -p"}, nil
 	}
 
 	var sb strings.Builder
@@ -829,7 +834,7 @@ func appHelp() string {
 		"- `/app list` — 查看已安装\n" +
 		"- `/app install [-f] <file-path>` — 从 .xbot.zip 文件安装（-f 强制覆盖）\n" +
 		"- `/app install [-f] <url>` — 从 URL 下载并安装（-f 强制覆盖）\n" +
-		"- `/app uninstall -s <skill> -a <agent> -p <plugin>` — 卸载\n" +
+		"- `/app uninstall -n <app> -s <skill> -a <agent> -p <plugin>` — 卸载（-n 卸载整个 app 包）\n" +
 		"- `/app export <name> -s <skill> -a <agent> -p <plugin>` — 打包导出\n\n" +
 		"**示例：**\n\n" +
 		"```\n" +
