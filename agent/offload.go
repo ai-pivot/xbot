@@ -331,7 +331,13 @@ func (s *OffloadStore) CleanUnreferencedEntries(sessionKey string, referencedIDs
 		if !referencedIDs[entry.ID] {
 			// Not referenced by any message — safe to clean
 			fp := s.offloadFilePath(sessionDir, entry.ID)
-			os.Remove(fp)
+			if err := os.Remove(fp); err != nil && !os.IsNotExist(err) {
+				log.WithFields(log.Fields{
+					"session":  sessionKey,
+					"entry_id": entry.ID,
+					"error":    err,
+				}).Warn("OffloadStore: failed to remove offload file")
+			}
 			removedCount++
 		} else {
 			kept = append(kept, entry)

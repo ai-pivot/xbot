@@ -190,13 +190,22 @@ func (s *ObservationMaskStore) persistEntry(entry MaskedObservation) {
 	}
 }
 
-// deleteEntryFile 删除磁盘上的 entry 文件。
-func (s *ObservationMaskStore) deleteEntryFile(id string) {
+// deleteEntryFile 删除磁盘上的 entry 文件，返回删除错误（os.IsNotExist 视为成功）。
+func (s *ObservationMaskStore) deleteEntryFile(id string) error {
 	if s.storeDir == "" {
-		return
+		return nil
 	}
 	fp := filepath.Join(s.storeDir, id+".json")
-	os.Remove(fp)
+	return os.Remove(fp)
+}
+
+// deleteEntryFileAsync 异步删除磁盘上的 entry 文件，失败时记录警告日志。
+func (s *ObservationMaskStore) deleteEntryFileAsync(id string) {
+	go func() {
+		if err := s.deleteEntryFile(id); err != nil && !os.IsNotExist(err) {
+			log.WithField("mask_id", id).Warn("ObservationMaskStore: failed to delete mask file: ", err)
+		}
+	}()
 }
 
 // generateMaskID 生成 mask ID: "mk_" + 8位随机 hex。
@@ -242,7 +251,7 @@ func (s *ObservationMaskStore) Mask(toolName, arguments, content string, message
 		s.entries = s.entries[1:]
 		evictedCount++
 		// 异步删除磁盘文件（不需要等，淘汰是低频操作）
-		go s.deleteEntryFile(evicted.ID)
+		s.deleteEntryFileAsync(evicted.ID)
 	}
 	// 重新分配 slice，释放被淘汰条目占用的底层数组内存
 	if evictedCount > 0 {
@@ -357,7 +366,7 @@ func (s *ObservationMaskStore) CleanOldEntries(cutoff time.Time) int {
 			s.totalChars -= len([]rune(e.Content))
 			removedCount++
 			// 删除磁盘文件
-			go s.deleteEntryFile(e.ID)
+			s.deleteEntryFileAsync(e.ID)
 		} else {
 			kept = append(kept, e)
 		}
@@ -387,7 +396,7 @@ func (s *ObservationMaskStore) CleanUnreferencedEntries(referencedIDs map[string
 			// Not referenced by any message — safe to clean
 			s.totalChars -= len([]rune(e.Content))
 			removedCount++
-			go s.deleteEntryFile(e.ID)
+			s.deleteEntryFileAsync(e.ID)
 		} else {
 			kept = append(kept, e)
 		}
