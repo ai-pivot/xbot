@@ -163,8 +163,9 @@ type RunConfig struct {
 	// Used by the engine to read plugin-generated tool hints after PostToolUse hooks.
 	PluginManager *plugin.PluginManager
 
-	// SettingsSvc provides access to user settings (nil = settings not available).
-	SettingsSvc *SettingsService
+	// PermUsers is the resolved permission control config (from UserContext).
+	// Used by visibleToolDefs in the engine loop to avoid direct settingsSvc access.
+	PermUsers *PermUsersConfig
 
 	// TUICtrlFn is called by tui_control tool to operate TUI (CLI channel only).
 	TUICtrlFn func(action string, params map[string]string) (map[string]string, error)
@@ -781,11 +782,8 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
-		if cfg.SettingsSvc != nil {
-			permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
-			if permUsers != nil {
-				toolExecCtx = tools.WithPermUsers(toolExecCtx, permUsers.DefaultUser, permUsers.PrivilegedUser)
-			}
+		if cfg.PermUsers != nil {
+			toolExecCtx = tools.WithPermUsers(toolExecCtx, cfg.PermUsers.DefaultUser, cfg.PermUsers.PrivilegedUser)
 		}
 		toolCtx := buildToolContext(toolExecCtx, cfg)
 
@@ -1175,10 +1173,10 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.HooksReloader = hm.ReloadConfig
 	}
 	// Config read/write: routes to correct backend.
-	// Subscription-scoped keys (llm_model, llm_provider, etc.) use subscription manager.
-	// All other keys use user_settings DB (via SettingsSvc).
-	if cfg.SettingsSvc != nil {
-		svc := cfg.SettingsSvc
+	// All user-system access goes through UserContext — no direct SettingsSvc/LLMFactory.
+	uc := UserContextFromContext(ctx)
+	if uc != nil && uc.SettingsSvc != nil {
+		svc := uc.SettingsSvc
 		tc.ConfigGet = func(key string) (string, error) {
 			// Subscription-scoped keys: read from active subscription
 			if channel.IsSubscriptionScopedSettingKey(key) {
@@ -1242,8 +1240,8 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		// SourceConfigJSON and SourceLLMConfig values come from config.json
 		// (set by configValueBySource) and must not be overwritten by stale DB data.
 		// For SourceUserDB items without a DB value, try config.json as fallback.
-		if cfg.SettingsSvc != nil {
-			vals, err := cfg.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
+		if uc != nil && uc.SettingsSvc != nil {
+			vals, err := uc.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
 				for i := range items {
 					if items[i].Source == "user_db" {
@@ -1266,9 +1264,8 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	// they connect via local TUI or remote TUI with admin token.
 	if cfg.Channel == "cli" && cfg.OriginUserID == "cli_user" {
 		tc.OriginUserIsAdmin = true
-	} else if cfg.SettingsSvc != nil {
-		permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
-		tc.OriginUserIsAdmin = permUsers != nil && cfg.OriginUserID == permUsers.PrivilegedUser
+	} else if cfg.PermUsers != nil {
+		tc.OriginUserIsAdmin = cfg.OriginUserID == cfg.PermUsers.PrivilegedUser
 	}
 	tc.IsGlobalKey = channel.IsGlobalScopedSettingKey
 

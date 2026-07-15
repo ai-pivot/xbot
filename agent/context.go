@@ -167,6 +167,8 @@ func (a *Agent) initPipelines(memoryProvider string) {
 	}
 
 	// 主 pipeline：用于普通消息和卡片响应
+	// UserContext is NOT resolved in the pipeline — it's resolved once at
+	// processMessage entry and carried via context.Context.
 	a.pipeline = NewMessagePipeline(
 		NewSystemPromptMiddleware(a.promptLoader, memoryProvider),
 		NewProjectContextMiddleware(),
@@ -175,7 +177,7 @@ func (a *Agent) initPipelines(memoryProvider string) {
 		NewPermissionControlMiddleware(),
 		NewMemoryMiddleware(),
 		NewSenderInfoMiddleware(),
-		NewLanguageMiddleware(a.settingsSvc),
+		NewLanguageMiddleware(a.userSys.settingsSvc),
 		NewUserMessageMiddleware(memoryProvider),
 	)
 

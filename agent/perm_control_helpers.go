@@ -39,15 +39,8 @@ func (t *toolDefFilter) Parameters() []llm.ToolParam {
 	return out
 }
 
-func isPermControlEnabledFor(settingsSvc *SettingsService, channel, senderID string) bool {
-	if settingsSvc == nil {
-		return false
-	}
-	return IsPermControlEnabled(settingsSvc.GetPermUsers(channel, senderID))
-}
-
-func visibleToolDefs(defs []llm.ToolDefinition, settingsSvc *SettingsService, channel, senderID string) []llm.ToolDefinition {
-	if isPermControlEnabledFor(settingsSvc, channel, senderID) {
+func visibleToolDefs(defs []llm.ToolDefinition, permUsers *PermUsersConfig, channel string) []llm.ToolDefinition {
+	if IsPermControlEnabled(permUsers) {
 		return defs
 	}
 	out := make([]llm.ToolDefinition, 0, len(defs))

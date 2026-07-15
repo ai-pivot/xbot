@@ -498,7 +498,7 @@ func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 // callLLM invokes the LLM with the current messages, handling per-tenant
 // concurrency semaphore and input-too-long errors with forced compression.
 func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) (*llm.LLMResponse, error) {
-	toolDefs := visibleToolDefs(s.cfg.Tools.AsDefinitionsForSession(s.sessionKey, s.cfg.TenantID), s.cfg.SettingsSvc, s.cfg.Channel, s.cfg.OriginUserID)
+	toolDefs := visibleToolDefs(s.cfg.Tools.AsDefinitionsForSession(s.sessionKey, s.cfg.TenantID), s.cfg.PermUsers, s.cfg.Channel)
 	s.messages = s.syncMessages(llm.SanitizeMessages(s.messages))
 
 	var releaseLLMSem func()

@@ -209,6 +209,13 @@ type ExperimentalConfig struct {
 	// AutoWorktree enables automatic git worktree creation when multiple agents
 	// work on the same repo. Default: false (opt-in experimental).
 	AutoWorktree bool `json:"auto_worktree,omitempty"`
+
+	// SingleUser treats all users as a single shared identity. When enabled,
+	// every senderID is mapped to a fixed canonical user — all subscriptions,
+	// settings, sessions, and workspaces are shared. This is useful for personal
+	// deployments where multi-user isolation is unnecessary.
+	// Default: false.
+	SingleUser bool `json:"single_user,omitempty"`
 }
 
 // PluginConfig configures the plugin system.
