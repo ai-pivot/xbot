@@ -840,10 +840,9 @@ func appHelp() string {
 		"```\n" +
 		"/app list\n" +
 		"/app install /tmp/my-app.xbot.zip\n" +
-		"/app install https://example.com/my-app.xbot.zip\n" +
-		"/app uninstall skill debug\n" +
-		"/app uninstall plugin my-plugin\n" +
-		"/app uninstall app my-app\n" +
+		"/app install -f https://example.com/my-app.xbot.zip\n" +
+		"/app uninstall -n my-app\n" +
+		"/app uninstall -s debug -a explore\n" +
 		"/app export my-app -s debug -a explore -p git-widget\n" +
 		"```\n"
 }
