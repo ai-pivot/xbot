@@ -490,7 +490,7 @@ func (c *Client) SetUserModel(senderID, subID, model string) error {
 }
 
 // SelectModel sets the per-session (subscription, model) for a chat.
-// Model-first replacement for SwitchModel when the subscription is known.
+// Persists to the tenants table via the select_model RPC.
 func (c *Client) SelectModel(senderID, channelName, subID, model, chatID string) error {
 	return c.call(MethodSelectModel, struct {
 		SenderID string `json:"sender_id"`

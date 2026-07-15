@@ -2401,9 +2401,8 @@ func (s *backendLLMSubscriber) SwitchSubscription(senderID string, sub *channel.
 }
 
 // SelectModel switches to a specific (subscription, model) pair, used by the
-// model picker when the row carries an owning SubID. Unlike SwitchModel (which
-// resolves the owning subscription server-side by model name), this pins the
-// exact subscription the user picked — necessary now that the picker lists the
+// model picker when the row carries an owning SubID. This pins the exact
+// subscription the user picked — necessary now that the picker lists the
 // same model name once per subscription that serves it.
 func (s *backendLLMSubscriber) SelectModel(senderID, channelName, subID, model, chatID string) error {
 	if senderID == "" {

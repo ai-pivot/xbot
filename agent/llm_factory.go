@@ -346,25 +346,6 @@ func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubsc
 	return nil
 }
 
-// SwitchModel switches the active model without changing subscription.
-// Per-session switch (with chatID): no-op — persistence is handled by SelectModel.
-// User-level switch (no chatID): persists the model change to the default
-// subscription in DB so new sessions and GetLLM pick it up.
-func (f *LLMFactory) SwitchModel(senderID, model string, chatID ...string) {
-	effectiveChatID := ""
-	if len(chatID) > 0 {
-		effectiveChatID = chatID[0]
-	}
-	if effectiveChatID != "" {
-		return
-	}
-	if f.subscriptionSvc != nil && senderID != "" {
-		if sub, err := f.subscriptionSvc.GetDefault(senderID); err == nil && sub != nil && sub.Model != model && sub.ID != "" {
-			_ = f.subscriptionSvc.SetModel(sub.ID, model)
-		}
-	}
-}
-
 // SetChatLLM is a no-op: per-session (subscription, model) lives in the tenants
 // table, not in an in-memory cache.
 func (f *LLMFactory) SetChatLLM(senderID, chatID, subID, model string) error {

@@ -441,9 +441,9 @@ func TestResolveSubContext_UsesSubscriptionModels(t *testing.T) {
 	}
 }
 
-// TestSwitchModel_CopiesSubIDAndSub verifies that resolveSubContextFor reads
+// TestResolveSubContextFor_ReadsFromSubscriptionModels verifies that resolveSubContextFor reads
 // from subscription_models (v35+) and falls back to PerModelConfigs (backward compat).
-func TestSwitchModel_CopiesSubIDAndSub(t *testing.T) {
+func TestResolveSubContextFor_ReadsFromSubscriptionModels(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XBOT_HOME", dir)
 	db, err := sqlite.Open(config.DBFilePath())
@@ -479,71 +479,4 @@ func TestSwitchModel_CopiesSubIDAndSub(t *testing.T) {
 	}
 }
 
-// TestSwitchModel_PerSessionDoesNotContaminateSubscription verifies that
-// SwitchModel with a chatID (per-session model switch) does NOT modify the
-// subscription's default model. This prevents cross-session contamination:
-// without this guard, switching model in session A changes the subscription's
-// Model, so session B (sharing the same subscription) also sees the new model.
-func TestSwitchModel_PerSessionDoesNotContaminateSubscription(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XBOT_HOME", dir)
-	db, err := sqlite.Open(config.DBFilePath())
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
 
-	subSvc := sqlite.NewLLMSubscriptionService(db)
-	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
-	f.SetSubscriptionSvc(subSvc)
-
-	// Add a subscription with default model "model-a"
-	sub := &sqlite.LLMSubscription{
-		SenderID: "cli_user", IsDefault: true,
-		Provider: "openai", BaseURL: "https://api.test/v1", APIKey: "sk-test",
-		Model: "model-a",
-	}
-	if err := subSvc.Add(sub); err != nil {
-		t.Fatalf("Add subscription: %v", err)
-	}
-
-	// Set it as default and user-level entry
-	subSvc.SetDefault(sub.ID)
-	f.SwitchSubscription("cli_user", sub, "")
-
-	// User switches model to "model-b" in session A (per-session, with chatID)
-	chatA := "/home/proj:Agent-A"
-	f.SwitchModel("cli_user", "model-b", chatA)
-
-	// Verify per-chat entry for session A has "model-b"
-	// With entries removed, per-session model lives in tenants table.
-	// SwitchModel with chatID is a no-op (SelectModel handles it), so
-	// the subscription model should NOT change.
-	if subAfter, _ := subSvc.Get(sub.ID); subAfter == nil || subAfter.Model != "model-a" {
-		t.Errorf("subscription model = %q, want model-a (per-session switch should NOT contaminate subscription)", subAfter.Model)
-	}
-
-	// CRITICAL: The subscription's default model must NOT have changed.
-	// If it did, session B (sharing the same subscription) would see "model-b".
-	subAfter, err := subSvc.GetDefault("cli_user")
-	if err != nil {
-		t.Fatalf("GetDefault after switch: %v", err)
-	}
-	if subAfter.Model != "model-a" {
-		t.Errorf("subscription model contaminated: got %q, want %q (per-session switch must not modify subscription)",
-			subAfter.Model, "model-a")
-	}
-
-	// User-level switch (WITHOUT chatID) SHOULD update the subscription model.
-	// This is the user explicitly changing the default model.
-	f.SwitchModel("cli_user", "model-c")
-
-	subAfterUser, err := subSvc.GetDefault("cli_user")
-	if err != nil {
-		t.Fatalf("GetDefault after user-level switch: %v", err)
-	}
-	if subAfterUser.Model != "model-c" {
-		t.Errorf("subscription model not updated by user-level switch: got %q, want %q",
-			subAfterUser.Model, "model-c")
-	}
-}

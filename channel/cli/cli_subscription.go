@@ -21,8 +21,8 @@ import (
 // SelectModel pins that exact subscription (the same model name may be served
 // by several subscriptions; SelectModel disambiguates). When subID is empty
 // (no owning subscription, e.g. a bare system-default entry from the
-// subscriptionSvc==nil path), it falls back to SwitchModel, which resolves the
-// owner server-side by model name.
+// subscriptionSvc==nil path), no RPC is sent — the model name is cached
+// locally and re-resolved from the backend on next GetSessionSubscription.
 func (m *cliModel) applyModelSwitch(nextModel, subID string) {
 	if nextModel == "" {
 		return
