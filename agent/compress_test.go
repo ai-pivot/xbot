@@ -164,7 +164,7 @@ func TestCompactMessages_PreservesOriginalUserMsg(t *testing.T) {
 		},
 	}
 
-	result, err := compactMessages(context.Background(), messages, mockClient, "test-model", 100000, nil, nil)
+	result, err := compactMessages(context.Background(), messages, mockClient, "test-model", 100000)
 	if err != nil {
 		t.Fatalf("compactMessages failed: %v", err)
 	}

@@ -42,7 +42,7 @@ func (m *phase1Manager) ShouldCompress(messages []llm.ChatMessage, model string,
 	return shouldCompact(msgTokens+toolTokens, m.config.MaxContextTokens, m.config.CompressionThreshold)
 }
 
-// Compress executes structured compaction via a single LLM call.
+// Compress executes structured compaction via the agent loop (engine.Run).
 func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
 	originalTokens := len(messages) * 200 // rough estimate
 
@@ -51,7 +51,7 @@ func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage
 		"max_tokens":      m.config.MaxContextTokens,
 	}).Info("Context compaction: starting")
 
-	result, err := compactMessages(ctx, messages, client, model, m.config.MaxContextTokens, m.memTools, m.memToolExec)
+	result, err := compactMessages(ctx, messages, client, model, m.config.MaxContextTokens)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +80,7 @@ func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage
 
 // ManualCompress handles /compress command.
 func (m *phase1Manager) ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
-	return compactMessages(ctx, messages, client, model, m.config.MaxContextTokens, m.memTools, m.memToolExec)
+	return compactMessages(ctx, messages, client, model, m.config.MaxContextTokens)
 }
 
 func (m *phase1Manager) ContextInfo(messages []llm.ChatMessage, model string, toolTokens int) *ContextStats {

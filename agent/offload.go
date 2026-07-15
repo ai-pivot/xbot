@@ -316,6 +316,49 @@ func (s *OffloadStore) CleanOldEntries(sessionKey string, cutoff time.Time) int 
 	return removedCount
 }
 
+// CleanUnreferencedEntries removes offload entries whose IDs are NOT in the
+// referencedIDs set. This is the smart cleanup used by the V2 compression
+// pipeline — it ensures that offload references in compressed messages (both
+// in the compaction summary and in tail messages) remain loadable.
+func (s *OffloadStore) CleanUnreferencedEntries(sessionKey string, referencedIDs map[string]bool) int {
+	idx := s.getOrCreateIndex(sessionKey)
+	sessionDir := s.getSessionDir(sessionKey)
+
+	idx.mu.Lock()
+	var kept []OffloadedResult
+	removedCount := 0
+	for _, entry := range idx.entries {
+		if !referencedIDs[entry.ID] {
+			// Not referenced by any message — safe to clean
+			fp := s.offloadFilePath(sessionDir, entry.ID)
+			if err := os.Remove(fp); err != nil && !os.IsNotExist(err) {
+				log.WithFields(log.Fields{
+					"session":  sessionKey,
+					"entry_id": entry.ID,
+					"error":    err,
+				}).Warn("OffloadStore: failed to remove offload file")
+			}
+			removedCount++
+		} else {
+			kept = append(kept, entry)
+		}
+	}
+	idx.entries = kept
+	idx.mu.Unlock()
+
+	// Persist updated index
+	if removedCount > 0 {
+		s.persistIndex(sessionDir, idx)
+		log.WithFields(log.Fields{
+			"session":    sessionKey,
+			"removed":    removedCount,
+			"kept":       len(kept),
+			"referenced": len(referencedIDs),
+		}).Info("OffloadStore: cleaned unreferenced entries after compression")
+	}
+	return removedCount
+}
+
 // CleanStale 清理超过 CleanupAgeDays 的残留 offload 数据。
 func (s *OffloadStore) CleanStale() {
 	cutoff := time.Now().AddDate(0, 0, -s.config.CleanupAgeDays)
