@@ -78,7 +78,7 @@ cron.json
 *.service
 /xbot-runner
 /xbot
-xbot-cli
+/xbot-cli
 docker-compose.yml
 agents/explore.md
 
