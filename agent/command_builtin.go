@@ -506,7 +506,7 @@ func (c *menuCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage)
 			"- 📦 `/app list` — 查看已安装\n" +
 			"- 📦 `/app install <file|url>` — 安装应用\n" +
 			"- 📦 `/app export <name> -s <skill>` — 打包导出\n" +
-			"- 🗑️ `/app uninstall <type> <name>` — 卸载\n",
+			"- 🗑️ `/app uninstall -s <skill> -a <agent> -p <plugin>` — 卸载\n",
 	}, nil
 }
 
@@ -732,17 +732,55 @@ func (c *appCmd) handleInstall(a *Agent, msg bus.InboundMessage, args []string) 
 
 func (c *appCmd) handleUninstall(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
 	if len(args) < 2 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app uninstall <type> <name>`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app uninstall -s <skill> -a <agent> -p <plugin>`\n可指定多个，空格分隔"}, nil
 	}
 	if a.registryManager == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
-	entryType := args[0]
-	name := args[1]
-	if err := a.registryManager.Uninstall(entryType, name, msg.SenderID); err != nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("卸载失败：%v", err)}, nil
+
+	type uninstallItem struct {
+		entryType string
+		name      string
 	}
-	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已卸载", entryType, name)}, nil
+	var items []uninstallItem
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-s", "--skill":
+			if i+1 < len(args) {
+				items = append(items, uninstallItem{"skill", args[i+1]})
+				i++
+			}
+		case "-a", "--agent":
+			if i+1 < len(args) {
+				items = append(items, uninstallItem{"agent", args[i+1]})
+				i++
+			}
+		case "-p", "--plugin":
+			if i+1 < len(args) {
+				items = append(items, uninstallItem{"plugin", args[i+1]})
+				i++
+			}
+		}
+	}
+
+	if len(items) == 0 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 -s、-a 或 -p"}, nil
+	}
+
+	var sb strings.Builder
+	var hasError bool
+	for _, item := range items {
+		if err := a.registryManager.Uninstall(item.entryType, item.name, msg.SenderID); err != nil {
+			fmt.Fprintf(&sb, "❌ %s %q: %v\n", item.entryType, item.name, err)
+			hasError = true
+		} else {
+			fmt.Fprintf(&sb, "✅ %s %q 已卸载\n", item.entryType, item.name)
+		}
+	}
+	if hasError {
+		sb.WriteString("\n⚠️ 部分组件卸载失败")
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
 }
 
 func (c *appCmd) handleList(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
@@ -791,7 +829,7 @@ func appHelp() string {
 		"- `/app list` — 查看已安装\n" +
 		"- `/app install [-f] <file-path>` — 从 .xbot.zip 文件安装（-f 强制覆盖）\n" +
 		"- `/app install [-f] <url>` — 从 URL 下载并安装（-f 强制覆盖）\n" +
-		"- `/app uninstall <type> <name>` — 卸载（skill/agent/plugin/app）\n" +
+		"- `/app uninstall -s <skill> -a <agent> -p <plugin>` — 卸载\n" +
 		"- `/app export <name> -s <skill> -a <agent> -p <plugin>` — 打包导出\n\n" +
 		"**示例：**\n\n" +
 		"```\n" +
