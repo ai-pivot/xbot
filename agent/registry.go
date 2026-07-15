@@ -515,7 +515,7 @@ func (rm *RegistryManager) PackApp(items []AppItem, outputPath, author string) e
 }
 
 // InstallAppFromFile installs a .xbot.zip app from a local file path.
-func (rm *RegistryManager) InstallAppFromFile(zipPath, senderID string) (*AppInstallResult, error) {
+func (rm *RegistryManager) InstallAppFromFile(zipPath, senderID string, force bool) (*AppInstallResult, error) {
 	bp := NewAppPackager(rm.workDir)
 	manifest, tmpDir, err := bp.Unpack(zipPath)
 	if err != nil {
@@ -530,25 +530,41 @@ func (rm *RegistryManager) InstallAppFromFile(zipPath, senderID string) (*AppIns
 	result := &AppInstallResult{
 		Manifest:  *manifest,
 		Installed: []string{},
+		Skipped:   []string{},
 	}
 
 	for _, c := range manifest.Contents {
 		switch c.Type {
 		case "skill":
-			if err := rm.installAppSkill(c, tmpDir, senderID); err != nil {
+			skipped, err := rm.installAppSkill(c, tmpDir, senderID, force)
+			if err != nil {
 				return nil, fmt.Errorf("install skill %q: %w", c.Name, err)
 			}
-			result.Installed = append(result.Installed, fmt.Sprintf("skill: %s", c.Name))
+			if skipped {
+				result.Skipped = append(result.Skipped, fmt.Sprintf("skill: %s", c.Name))
+			} else {
+				result.Installed = append(result.Installed, fmt.Sprintf("skill: %s", c.Name))
+			}
 		case "agent":
-			if err := rm.installAppAgent(c, tmpDir, senderID); err != nil {
+			skipped, err := rm.installAppAgent(c, tmpDir, senderID, force)
+			if err != nil {
 				return nil, fmt.Errorf("install agent %q: %w", c.Name, err)
 			}
-			result.Installed = append(result.Installed, fmt.Sprintf("agent: %s", c.Name))
+			if skipped {
+				result.Skipped = append(result.Skipped, fmt.Sprintf("agent: %s", c.Name))
+			} else {
+				result.Installed = append(result.Installed, fmt.Sprintf("agent: %s", c.Name))
+			}
 		case "plugin":
-			if err := rm.installAppPlugin(c, tmpDir, senderID); err != nil {
+			skipped, err := rm.installAppPlugin(c, tmpDir, senderID, force)
+			if err != nil {
 				return nil, fmt.Errorf("install plugin %q: %w", c.Name, err)
 			}
-			result.Installed = append(result.Installed, fmt.Sprintf("plugin: %s", c.Name))
+			if skipped {
+				result.Skipped = append(result.Skipped, fmt.Sprintf("plugin: %s", c.Name))
+			} else {
+				result.Installed = append(result.Installed, fmt.Sprintf("plugin: %s", c.Name))
+			}
 		default:
 			return nil, fmt.Errorf("unsupported content type %q (use skill, agent, or plugin)", c.Type)
 		}
@@ -568,7 +584,7 @@ func (rm *RegistryManager) InstallAppFromFile(zipPath, senderID string) (*AppIns
 }
 
 // InstallAppFromURL downloads a .xbot.zip from a URL and installs it.
-func (rm *RegistryManager) InstallAppFromURL(url, senderID string) (*AppInstallResult, error) {
+func (rm *RegistryManager) InstallAppFromURL(url, senderID string, force bool) (*AppInstallResult, error) {
 	// Download to temp file
 	tmpFile, err := os.CreateTemp("", "xbot-install-*.xbot.zip")
 	if err != nil {
@@ -602,7 +618,7 @@ func (rm *RegistryManager) InstallAppFromURL(url, senderID string) (*AppInstallR
 	}
 	tmpFile.Close()
 
-	return rm.InstallAppFromFile(tmpPath, senderID)
+	return rm.InstallAppFromFile(tmpPath, senderID, force)
 }
 
 // saveAppManifest writes the app manifest to ~/.xbot/apps/<name>.json.
@@ -620,7 +636,9 @@ func (rm *RegistryManager) saveAppManifest(manifest *AppManifest) error {
 }
 
 // installAppSkill copies a skill from the unpacked app to the user's skill directory.
-func (rm *RegistryManager) installAppSkill(c AppContent, srcDir, senderID string) error {
+// installAppSkill copies a skill directory from the unpacked app to the user's skills directory.
+// Returns skipped=true if the skill already exists and force=false.
+func (rm *RegistryManager) installAppSkill(c AppContent, srcDir, senderID string, force bool) (bool, error) {
 	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
 	destDir := filepath.Join(rm.userSkillsDir(senderID), c.Name)
 
@@ -628,24 +646,35 @@ func (rm *RegistryManager) installAppSkill(c AppContent, srcDir, senderID string
 		ctx, cancel := rm.sandboxCtx()
 		defer cancel()
 		if _, err := rm.sandbox.Stat(ctx, destDir, senderID); err == nil {
-			return fmt.Errorf("skill %q already installed", c.Name)
+			if !force {
+				return true, nil
+			}
+			if err := rm.sandbox.RemoveAll(ctx, destDir, senderID); err != nil {
+				return false, fmt.Errorf("remove old skill: %w", err)
+			}
 		}
 		if err := rm.copyDirToSandbox(ctx, srcPath, destDir, senderID); err != nil {
-			return fmt.Errorf("copy skill: %w", err)
+			return false, fmt.Errorf("copy skill: %w", err)
 		}
 	} else {
 		if _, err := os.Stat(destDir); err == nil {
-			return fmt.Errorf("skill %q already installed", c.Name)
+			if !force {
+				return true, nil
+			}
+			if err := os.RemoveAll(destDir); err != nil {
+				return false, fmt.Errorf("remove old skill: %w", err)
+			}
 		}
 		if err := copyDir(srcPath, destDir); err != nil {
-			return fmt.Errorf("copy skill: %w", err)
+			return false, fmt.Errorf("copy skill: %w", err)
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // installAppAgent copies an agent .md file from the unpacked app to the user's agents directory.
-func (rm *RegistryManager) installAppAgent(c AppContent, srcDir, senderID string) error {
+// Returns skipped=true if the agent already exists and force=false.
+func (rm *RegistryManager) installAppAgent(c AppContent, srcDir, senderID string, force bool) (bool, error) {
 	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
 	agentsDir := rm.userAgentsDir(senderID)
 
@@ -653,61 +682,71 @@ func (rm *RegistryManager) installAppAgent(c AppContent, srcDir, senderID string
 		ctx, cancel := rm.sandboxCtx()
 		defer cancel()
 		if err := rm.sandbox.MkdirAll(ctx, agentsDir, 0o755, senderID); err != nil {
-			return fmt.Errorf("create agents dir: %w", err)
+			return false, fmt.Errorf("create agents dir: %w", err)
 		}
 		destFile := filepath.Join(agentsDir, c.Name+".md")
 		if _, err := rm.sandbox.Stat(ctx, destFile, senderID); err == nil {
-			return fmt.Errorf("agent %q already installed", c.Name)
+			if !force {
+				return true, nil
+			}
 		}
 		data, err := os.ReadFile(srcPath)
 		if err != nil {
-			return fmt.Errorf("read agent file: %w", err)
+			return false, fmt.Errorf("read agent file: %w", err)
 		}
 		if err := rm.sandbox.WriteFile(ctx, destFile, data, 0o644, senderID); err != nil {
-			return fmt.Errorf("write agent file: %w", err)
+			return false, fmt.Errorf("write agent file: %w", err)
 		}
 	} else {
 		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
-			return fmt.Errorf("create agents dir: %w", err)
+			return false, fmt.Errorf("create agents dir: %w", err)
 		}
 		destFile := filepath.Join(agentsDir, c.Name+".md")
 		if _, err := os.Stat(destFile); err == nil {
-			return fmt.Errorf("agent %q already installed", c.Name)
+			if !force {
+				return true, nil
+			}
 		}
 		if err := copyFile(srcPath, destFile); err != nil {
-			return fmt.Errorf("copy agent file: %w", err)
+			return false, fmt.Errorf("copy agent file: %w", err)
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // installAppPlugin copies a plugin directory from the unpacked app to the global plugins directory.
-func (rm *RegistryManager) installAppPlugin(c AppContent, srcDir, senderID string) error {
+// Returns skipped=true if the plugin already exists and force=false.
+func (rm *RegistryManager) installAppPlugin(c AppContent, srcDir, senderID string, force bool) (bool, error) {
 	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
 	pluginsDir := rm.pluginsDir()
 
 	manifest, err := plugin.LoadManifest(srcPath)
 	if err != nil {
-		return fmt.Errorf("read plugin manifest: %w", err)
+		return false, fmt.Errorf("read plugin manifest: %w", err)
 	}
 
 	destDir := filepath.Join(pluginsDir, manifest.ID)
 
 	if _, err := os.Stat(destDir); err == nil {
-		return fmt.Errorf("plugin %q already installed", manifest.ID)
+		if !force {
+			return true, nil
+		}
+		if err := os.RemoveAll(destDir); err != nil {
+			return false, fmt.Errorf("remove old plugin: %w", err)
+		}
 	}
 
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
-		return fmt.Errorf("create plugins dir: %w", err)
+		return false, fmt.Errorf("create plugins dir: %w", err)
 	}
 
 	if err := copyDir(srcPath, destDir); err != nil {
-		return fmt.Errorf("copy plugin: %w", err)
+		return false, fmt.Errorf("copy plugin: %w", err)
 	}
 
 	log.WithFields(log.Fields{
 		"type": "plugin", "name": manifest.ID, "sender": senderID,
 		"from": srcPath, "to": destDir,
 	}).Info("Installed plugin from app")
-	return nil
+	return false, nil
 }

@@ -1966,12 +1966,13 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 	t["app_install_file"] = rpc1(func(ctx context.Context, p struct {
 		ZipPath  string `json:"zip_path"`
 		SenderID string `json:"sender_id"`
+		Force    bool   `json:"force"`
 	}) (any, error) {
 		rm := h.Ag.RegistryManager()
 		if rm == nil {
 			return nil, fmt.Errorf("registry manager not initialized")
 		}
-		result, err := rm.InstallAppFromFile(p.ZipPath, p.SenderID)
+		result, err := rm.InstallAppFromFile(p.ZipPath, p.SenderID, p.Force)
 		if err != nil {
 			return nil, err
 		}
@@ -1979,18 +1980,20 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 			"name":      result.Manifest.Name,
 			"version":   result.Manifest.Version,
 			"installed": result.Installed,
+			"skipped":   result.Skipped,
 		}, nil
 	})
 
 	t["app_install_url"] = rpc1(func(ctx context.Context, p struct {
 		URL      string `json:"url"`
 		SenderID string `json:"sender_id"`
+		Force    bool   `json:"force"`
 	}) (any, error) {
 		rm := h.Ag.RegistryManager()
 		if rm == nil {
 			return nil, fmt.Errorf("registry manager not initialized")
 		}
-		result, err := rm.InstallAppFromURL(p.URL, p.SenderID)
+		result, err := rm.InstallAppFromURL(p.URL, p.SenderID, p.Force)
 		if err != nil {
 			return nil, err
 		}
@@ -1998,6 +2001,7 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 			"name":      result.Manifest.Name,
 			"version":   result.Manifest.Version,
 			"installed": result.Installed,
+			"skipped":   result.Skipped,
 		}, nil
 	})
 

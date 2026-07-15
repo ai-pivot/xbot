@@ -412,17 +412,20 @@ type appPackResp struct {
 type appInstallFileReq struct {
 	ZipPath  string `json:"zip_path"`
 	SenderID string `json:"sender_id"`
+	Force    bool   `json:"force"`
 }
 
 type appInstallURLReq struct {
 	URL      string `json:"url"`
 	SenderID string `json:"sender_id"`
+	Force    bool   `json:"force"`
 }
 
 type appInstallResp struct {
 	Name      string   `json:"name"`
 	Version   string   `json:"version"`
 	Installed []string `json:"installed"`
+	Skipped   []string `json:"skipped"`
 }
 
 type appUninstallReq struct {

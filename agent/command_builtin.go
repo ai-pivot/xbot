@@ -505,7 +505,7 @@ func (c *menuCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage)
 			"- ⚙️ `/settings` — 个人设置\n" +
 			"- 📦 `/app list` — 查看已安装\n" +
 			"- 📦 `/app install <file|url>` — 安装应用\n" +
-			"- 📦 `/app export <name> --skill <s>` — 打包导出\n" +
+			"- 📦 `/app export <name> -s <skill>` — 打包导出\n" +
 			"- 🗑️ `/app uninstall <type> <name>` — 卸载\n",
 	}, nil
 }
@@ -634,26 +634,26 @@ func (c *appCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) 
 }
 
 func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
-	// Parse: /app export <app-name> --skill <s> --agent <a> --plugin <p> [...]
+	// Parse: /app export <app-name> -s <skill> -a <agent> -p <plugin> [...]
 	if len(args) < 2 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app export <app-name> --skill <name> --agent <name> --plugin <name>`"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app export <app-name> -s <skill> -a <agent> -p <plugin>`"}, nil
 	}
 
 	appName := args[0]
 	var items []AppItem
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
-		case "--skill":
+		case "-s", "--skill":
 			if i+1 < len(args) {
 				items = append(items, AppItem{Type: "skill", Name: args[i+1]})
 				i++
 			}
-		case "--agent":
+		case "-a", "--agent":
 			if i+1 < len(args) {
 				items = append(items, AppItem{Type: "agent", Name: args[i+1]})
 				i++
 			}
-		case "--plugin":
+		case "-p", "--plugin":
 			if i+1 < len(args) {
 				items = append(items, AppItem{Type: "plugin", Name: args[i+1]})
 				i++
@@ -662,7 +662,7 @@ func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (
 	}
 
 	if len(items) == 0 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 --skill、--agent 或 --plugin"}, nil
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 -s、-a 或 -p"}, nil
 	}
 	if a.registryManager == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
@@ -681,23 +681,30 @@ func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (
 }
 
 func (c *appCmd) handleInstall(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
-	if len(args) < 1 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app install <file-path>` 或 `/app install <url>`"}, nil
+	force := false
+	var positional []string
+	for _, arg := range args {
+		if arg == "-f" || arg == "--force" {
+			force = true
+		} else {
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) < 1 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app install [-f] <file-path|url>`\n`-f` 强制覆盖同名组件"}, nil
 	}
 	if a.registryManager == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 
-	target := args[0]
+	target := positional[0]
 	var result *AppInstallResult
 	var err error
 
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-		// /app install <url> — download and install
-		result, err = a.registryManager.InstallAppFromURL(target, msg.SenderID)
+		result, err = a.registryManager.InstallAppFromURL(target, msg.SenderID, force)
 	} else {
-		// /app install <file-path> — install from local file
-		result, err = a.registryManager.InstallAppFromFile(target, msg.SenderID)
+		result, err = a.registryManager.InstallAppFromFile(target, msg.SenderID, force)
 	}
 	if err != nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("安装失败：%v", err)}, nil
@@ -708,9 +715,17 @@ func (c *appCmd) handleInstall(a *Agent, msg bus.InboundMessage, args []string) 
 	if result.Manifest.Version != "" {
 		fmt.Fprintf(&sb, "版本：%s\n", result.Manifest.Version)
 	}
-	sb.WriteString("已安装：\n")
-	for _, item := range result.Installed {
-		fmt.Fprintf(&sb, "  - %s\n", item)
+	if len(result.Installed) > 0 {
+		sb.WriteString("已安装：\n")
+		for _, item := range result.Installed {
+			fmt.Fprintf(&sb, "  - %s\n", item)
+		}
+	}
+	if len(result.Skipped) > 0 {
+		sb.WriteString("跳过（已存在，用 -f 强制覆盖）：\n")
+		for _, item := range result.Skipped {
+			fmt.Fprintf(&sb, "  - %s\n", item)
+		}
 	}
 	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
 }
@@ -774,10 +789,10 @@ func appHelp() string {
 	return "## 📦 /app — 应用管理\n\n" +
 		"**子命令：**\n\n" +
 		"- `/app list` — 查看已安装\n" +
-		"- `/app install <file-path>` — 从 .xbot.zip 文件安装\n" +
-		"- `/app install <url>` — 从 URL 下载并安装\n" +
+		"- `/app install [-f] <file-path>` — 从 .xbot.zip 文件安装（-f 强制覆盖）\n" +
+		"- `/app install [-f] <url>` — 从 URL 下载并安装（-f 强制覆盖）\n" +
 		"- `/app uninstall <type> <name>` — 卸载（skill/agent/plugin/app）\n" +
-		"- `/app export <name> --skill <s> --agent <a> --plugin <p>` — 打包导出\n\n" +
+		"- `/app export <name> -s <skill> -a <agent> -p <plugin>` — 打包导出\n\n" +
 		"**示例：**\n\n" +
 		"```\n" +
 		"/app list\n" +
@@ -786,6 +801,6 @@ func appHelp() string {
 		"/app uninstall skill debug\n" +
 		"/app uninstall plugin my-plugin\n" +
 		"/app uninstall app my-app\n" +
-		"/app export my-app --skill debug --agent explore --plugin git-widget\n" +
+		"/app export my-app -s debug -a explore -p git-widget\n" +
 		"```\n"
 }

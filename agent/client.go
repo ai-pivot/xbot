@@ -974,26 +974,28 @@ func (c *Client) AppPack(name string, items []AppItem, author string) (string, e
 }
 
 // AppInstallFile installs a .xbot.zip from a local file path.
-func (c *Client) AppInstallFile(zipPath, senderID string) (*AppInstallResult, error) {
+func (c *Client) AppInstallFile(zipPath, senderID string, force bool) (*AppInstallResult, error) {
 	var r appInstallResp
-	if err := c.call(MethodAppInstallFile, appInstallFileReq{ZipPath: zipPath, SenderID: senderID}, &r); err != nil {
+	if err := c.call(MethodAppInstallFile, appInstallFileReq{ZipPath: zipPath, SenderID: senderID, Force: force}, &r); err != nil {
 		return nil, err
 	}
 	return &AppInstallResult{
 		Manifest:  AppManifest{Name: r.Name, Version: r.Version},
 		Installed: r.Installed,
+		Skipped:   r.Skipped,
 	}, nil
 }
 
 // AppInstallURL downloads a .xbot.zip from a URL and installs it.
-func (c *Client) AppInstallURL(url, senderID string) (*AppInstallResult, error) {
+func (c *Client) AppInstallURL(url, senderID string, force bool) (*AppInstallResult, error) {
 	var r appInstallResp
-	if err := c.call(MethodAppInstallURL, appInstallURLReq{URL: url, SenderID: senderID}, &r); err != nil {
+	if err := c.call(MethodAppInstallURL, appInstallURLReq{URL: url, SenderID: senderID, Force: force}, &r); err != nil {
 		return nil, err
 	}
 	return &AppInstallResult{
 		Manifest:  AppManifest{Name: r.Name, Version: r.Version},
 		Installed: r.Installed,
+		Skipped:   r.Skipped,
 	}, nil
 }
 

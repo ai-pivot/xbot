@@ -54,6 +54,7 @@ type AppItem struct {
 type AppInstallResult struct {
 	Manifest  AppManifest
 	Installed []string // human-readable descriptions
+	Skipped   []string // components skipped because they already exist
 }
 
 // AppPackager handles packing and unpacking .xbot.zip files.

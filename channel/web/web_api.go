@@ -563,10 +563,12 @@ func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Req
 		Name      string   `json:"name"`
 		Version   string   `json:"version"`
 		Installed []string `json:"installed"`
+		Skipped   []string `json:"skipped"`
 	}
 	if err := wc.rpcCall("app_install_file", map[string]any{
 		"zip_path":  tmpPath,
 		"sender_id": senderID,
+		"force":     r.URL.Query().Get("force") == "true",
 	}, &resp); err != nil {
 		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
 		return
@@ -577,6 +579,7 @@ func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Req
 		"name":    resp.Name,
 		"version": resp.Version,
 		"items":   resp.Installed,
+		"skipped": resp.Skipped,
 	})
 }
 
