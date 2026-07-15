@@ -478,5 +478,3 @@ func TestResolveSubContextFor_ReadsFromSubscriptionModels(t *testing.T) {
 		t.Errorf("resolveSubContextFor(unknown) = %d, want 0", mc)
 	}
 }
-
-
