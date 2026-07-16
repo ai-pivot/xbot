@@ -1468,10 +1468,8 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		}
 		if out.Content != "" {
 			oneshotIA.messages = append(oneshotIA.messages, llm.NewAssistantMessage(out.Content))
-		} else {
-			oneshotIA.messages = append(oneshotIA.messages, llm.NewAssistantMessage("(empty response)"))
 		}
-		if out.ReasoningContent != "" && len(oneshotIA.messages) > 0 {
+		if out.Content != "" && out.ReasoningContent != "" && len(oneshotIA.messages) > 0 {
 			oneshotIA.messages[len(oneshotIA.messages)-1].ReasoningContent = out.ReasoningContent
 		}
 		if len(out.IterationHistory) > 0 {
@@ -1493,7 +1491,8 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 				assistantMsg.Detail = string(jsonBytes)
 			}
 		}
-		if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
+		historyID, err := agentTenantSession.AppendMessage(assistantMsg)
+		if err != nil {
 			a.cancelChildSessions(oneshotKey)
 			persistErrText := fmt.Sprintf("append oneshot agent assistant message: %v", err)
 			oneshotIA.mu.Lock()
@@ -1505,6 +1504,11 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 			oneshotIA.mu.Unlock()
 			return nil, fmt.Errorf("append oneshot agent assistant message: %w", err)
 		}
+		oneshotIA.mu.Lock()
+		if len(oneshotIA.messages) > 0 && oneshotIA.messages[len(oneshotIA.messages)-1].Role == "assistant" {
+			oneshotIA.messages[len(oneshotIA.messages)-1].HistoryID = historyID
+		}
+		oneshotIA.mu.Unlock()
 	}
 	// Cascade-cancel any bg sessions spawned during this one-shot's Run(),
 	// then destroy the one-shot session immediately. Persisted agent tenant

@@ -17,6 +17,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
+	"xbot/session"
 	"xbot/tools"
 )
 
@@ -487,6 +488,38 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 	return key
 }
 
+func appendInteractiveInterruption(sess *session.TenantSession, partial string) ([]llm.ChatMessage, error) {
+	if sess == nil {
+		return nil, fmt.Errorf("interactive interruption has no tenant session")
+	}
+	appended := make([]llm.ChatMessage, 0, 3)
+	if partial != "" {
+		msg := llm.NewAssistantMessage(partial)
+		historyID, err := sess.AppendMessage(msg)
+		if err != nil {
+			return appended, err
+		}
+		msg.HistoryID = historyID
+		appended = append(appended, msg)
+	}
+	toolID := fmt.Sprintf("interactive_interrupt_%d", time.Now().UnixNano())
+	assistant := llm.ChatMessage{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: toolID, Name: "user_cancelled", Arguments: `{}`}}}
+	historyID, err := sess.AppendMessage(assistant)
+	if err != nil {
+		return appended, err
+	}
+	assistant.HistoryID = historyID
+	appended = append(appended, assistant)
+	toolMsg := llm.NewToolMessage("user_cancelled", toolID, `{}`, "interrupted by parent agent")
+	historyID, err = sess.AppendMessage(toolMsg)
+	if err != nil {
+		return appended, err
+	}
+	toolMsg.HistoryID = historyID
+	appended = append(appended, toolMsg)
+	return appended, nil
+}
+
 // wireSubAgentProgress 为 SubAgent 注入进度上报回调。
 // 设置 cfg.ProgressNotifier 让子 Agent 报告进度到父 Agent 的 TUI，
 // 同时注入穿透回调到 subCtx 让更深层 SubAgent 也能递归穿透。
@@ -856,20 +889,16 @@ func (a *Agent) SpawnInteractiveSession(
 				placeholder.cancelCurrent = nil
 				placeholder.interrupted = false // reset for next send
 
-				// Add an interrupt marker to ia.messages so the TUI session view
-				// can display the interruption. Without this, the session jumps
-				// from old iterations directly to new ones with no visual break.
-				if wasInterrupted && out.Content != "" {
-					// Append partial assistant reply (if any) so it's not lost.
-					if len(placeholder.messages) == 0 || placeholder.messages[len(placeholder.messages)-1].Content != out.Content {
-						placeholder.messages = append(placeholder.messages, llm.NewAssistantMessage(out.Content))
-					}
-				}
 				if wasInterrupted {
-					placeholder.messages = append(placeholder.messages, llm.ChatMessage{
-						Role:    "system",
-						Content: "⏸ [interrupted by parent agent]",
-					})
+					appended, appendErr := appendInteractiveInterruption(agentTenantSession, out.Content)
+					if appendErr != nil {
+						placeholder.lastError = fmt.Sprintf("append interruption history: %v", appendErr)
+						if persisted, loadErr := agentTenantSession.GetMessages(); loadErr == nil {
+							placeholder.messages = persisted
+						}
+					} else {
+						placeholder.messages = append(placeholder.messages, appended...)
+					}
 				}
 				placeholder.mu.Unlock()
 
@@ -985,11 +1014,9 @@ func (a *Agent) SpawnInteractiveSession(
 				if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Content != out.Content || newMsgs[len(newMsgs)-1].Role != "assistant" {
 					newMsgs = append(newMsgs, llm.NewAssistantMessage(out.Content))
 				}
-			} else if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Role != "assistant" {
-				newMsgs = append(newMsgs, llm.NewAssistantMessage("(empty response)"))
 			}
 			// Carry ReasoningContent to the in-memory message for subsequent turns
-			if out.ReasoningContent != "" && len(newMsgs) > 0 {
+			if out.Content != "" && out.ReasoningContent != "" && len(newMsgs) > 0 {
 				newMsgs[len(newMsgs)-1].ReasoningContent = out.ReasoningContent
 			}
 			// Persist before publishing the final reply to in-memory session state.
@@ -1001,12 +1028,16 @@ func (a *Agent) SpawnInteractiveSession(
 						assistantMsg.Detail = string(jsonBytes)
 					}
 				}
-				if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
+				historyID, err := agentTenantSession.AppendMessage(assistantMsg)
+				if err != nil {
 					placeholder.lastError = fmt.Sprintf("append bg interactive agent assistant message: %v", err)
 					if persisted, loadErr := agentTenantSession.GetMessages(); loadErr == nil {
 						placeholder.messages = persisted
 					}
 					return
+				}
+				if len(newMsgs) > 0 && newMsgs[len(newMsgs)-1].Role == "assistant" && newMsgs[len(newMsgs)-1].Content == out.Content {
+					newMsgs[len(newMsgs)-1].HistoryID = historyID
 				}
 			}
 			placeholder.messages = newMsgs
@@ -1132,11 +1163,9 @@ func (a *Agent) SpawnInteractiveSession(
 	// the assistant's final reply.
 	if out.Content != "" {
 		ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
-	} else {
-		ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
 	}
 	// Carry ReasoningContent to the in-memory message for subsequent turns
-	if out.ReasoningContent != "" && len(ia.messages) > 0 {
+	if out.Content != "" && out.ReasoningContent != "" && len(ia.messages) > 0 {
 		ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
 	}
 	a.interactiveSubAgents.Store(key, ia)
@@ -1153,13 +1182,17 @@ func (a *Agent) SpawnInteractiveSession(
 				assistantMsg.Detail = string(jsonBytes)
 			}
 		}
-		if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
+		historyID, err := agentTenantSession.AppendMessage(assistantMsg)
+		if err != nil {
 			if len(ia.messages) > 0 && ia.messages[len(ia.messages)-1].Role == "assistant" {
 				ia.messages = ia.messages[:len(ia.messages)-1]
 			}
 			ia.lastError = fmt.Sprintf("append interactive agent assistant message: %v", err)
 			a.interactiveSubAgents.Store(key, ia)
 			return nil, fmt.Errorf("append interactive agent assistant message: %w", err)
+		}
+		if len(ia.messages) > 0 && ia.messages[len(ia.messages)-1].Role == "assistant" {
+			ia.messages[len(ia.messages)-1].HistoryID = historyID
 		}
 	}
 
@@ -1362,7 +1395,7 @@ func (a *Agent) SendToInteractiveSession(
 
 	// --- Pre-Run state reset for background mode ---
 	if ia.background {
-		ia.messages = append(ia.messages, llm.NewUserMessage(msg.Content))
+		ia.messages = append(ia.messages, newMessages[len(newMessages)-1])
 		ia.iterationHistory = nil
 		agentProgressKey := "agent:" + key
 		a.lastProgressSnapshot.Delete(agentProgressKey)
@@ -1467,15 +1500,15 @@ func (a *Agent) SendToInteractiveSession(
 		if wasCancelled {
 			if wasInterrupted {
 				ia.mu.Lock()
-				if out.Content != "" {
-					if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Content != out.Content {
-						ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+				appended, appendErr := appendInteractiveInterruption(cfg.Session, out.Content)
+				if appendErr != nil {
+					ia.lastError = fmt.Sprintf("append interruption history: %v", appendErr)
+					if persisted, loadErr := cfg.Session.GetMessages(); loadErr == nil {
+						ia.messages = persisted
 					}
+				} else {
+					ia.messages = append(ia.messages, appended...)
 				}
-				ia.messages = append(ia.messages, llm.ChatMessage{
-					Role:    "system",
-					Content: "⏸ [interrupted by parent agent]",
-				})
 				ia.mu.Unlock()
 
 				a.sendSubAgentPhaseDone(key)
@@ -1569,6 +1602,7 @@ func (a *Agent) SendToInteractiveSession(
 		// --- Write back results ---
 		ia.mu.Lock()
 		defer ia.mu.Unlock()
+		var persistedAssistant *llm.ChatMessage
 		if out.Error == nil && cfg.Session != nil && out.Content != "" {
 			assistantMsg := llm.NewAssistantMessage(out.Content)
 			assistantMsg.ReasoningContent = out.ReasoningContent
@@ -1577,13 +1611,16 @@ func (a *Agent) SendToInteractiveSession(
 					assistantMsg.Detail = string(jsonBytes)
 				}
 			}
-			if err := cfg.Session.AddMessage(assistantMsg); err != nil {
+			historyID, err := cfg.Session.AppendMessage(assistantMsg)
+			if err != nil {
 				ia.lastError = fmt.Sprintf("append async agent assistant message: %v", err)
 				if persisted, loadErr := cfg.Session.GetMessages(); loadErr == nil {
 					ia.messages = persisted
 				}
 				return
 			}
+			assistantMsg.HistoryID = historyID
+			persistedAssistant = &assistantMsg
 		}
 
 		if out.Error != nil {
@@ -1625,7 +1662,7 @@ func (a *Agent) SendToInteractiveSession(
 				// here before appending engine output, otherwise the user
 				// message is lost from ia.messages.
 				if !ia.background {
-					ia.messages = append(ia.messages, llm.NewUserMessage(msg.Content))
+					ia.messages = append(ia.messages, cfg.Messages[len(cfg.Messages)-1])
 				}
 				if len(out.Messages) > preLen {
 					ia.messages = append(ia.messages, out.Messages[preLen:]...)
@@ -1634,12 +1671,14 @@ func (a *Agent) SendToInteractiveSession(
 
 			if out.Content != "" {
 				if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Content != out.Content || ia.messages[len(ia.messages)-1].Role != "assistant" {
-					ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+					if persistedAssistant != nil {
+						ia.messages = append(ia.messages, *persistedAssistant)
+					} else {
+						ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+					}
 				}
-			} else if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Role != "assistant" {
-				ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
 			}
-			if out.ReasoningContent != "" && len(ia.messages) > 0 {
+			if out.Content != "" && out.ReasoningContent != "" && len(ia.messages) > 0 {
 				ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
 			}
 			// For bg mode, iteration history was already incrementally updated via

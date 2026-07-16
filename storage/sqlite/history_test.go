@@ -241,6 +241,31 @@ func TestAppendAskAnswerConcurrentLateAnswerRejected(t *testing.T) {
 	}
 }
 
+func TestAppendAskQuestionConcurrentDuplicateRejected(t *testing.T) {
+	_, svc, tenantID := newHistoryTestService(t)
+	_, _ = svc.AppendMessage(tenantID, llm.ChatMessage{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "ask", Name: "AskUser", Arguments: `{}`}}})
+	_, _ = svc.AppendMessage(tenantID, llm.NewToolMessage("AskUser", "ask", `{}`, "waiting"))
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func(i int) {
+			_, err := svc.AppendAskQuestion(tenantID, map[string]string{"request_id": fmt.Sprint(i)})
+			errs <- err
+		}(i)
+	}
+	successes := 0
+	for i := 0; i < 2; i++ {
+		if <-errs == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful questions=%d want 1", successes)
+	}
+	if _, err := svc.Replay(tenantID); err != nil {
+		t.Fatalf("concurrent question corrupted replay: %v", err)
+	}
+}
+
 func TestMigrationV46KeepsExistingRowsAsBaseline(t *testing.T) {
 	path := t.TempDir() + "/v45.db"
 	conn, err := sql.Open("sqlite", path)

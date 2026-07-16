@@ -75,9 +75,6 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 	}
 
 	newMessages := llm.SanitizeMessages(result.LLMView)
-	if params.SyncMessages != nil {
-		newMessages = params.SyncMessages(newMessages)
-	}
 
 	// Use the locally-estimated token count of the compressed LLMView.
 	// This represents the actual size of the new context — what the NEXT LLM call
@@ -97,12 +94,15 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 				persistView = append(persistView, msg)
 			}
 		}
-		if ok, persistErr := params.Persistence.RewriteAfterCompress(persistView, len(persistView)); !ok {
+		if ok, persistErr := params.Persistence.RewriteAfterCompress(persistView, len(newMessages)); !ok {
 			if persistErr == nil {
 				persistErr = fmt.Errorf("compression history append failed")
 			}
 			return nil, persistErr
 		}
+	}
+	if params.SyncMessages != nil {
+		newMessages = params.SyncMessages(newMessages)
 	}
 
 	// Smart cleanup: only clean mask/offload entries that are NOT referenced

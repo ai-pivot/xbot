@@ -85,15 +85,53 @@ func TestApplyCompressDoesNotResetTrackerWhenHistoryAppendFails(t *testing.T) {
 	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error) {
 		return sampleCompressResult(), nil
 	}}
+	syncCalled := false
 	result, err := ApplyCompress(context.Background(), CompressPipelineParams{
 		CM: cm, Messages: []llm.ChatMessage{llm.NewUserMessage("raw")},
 		LLMClient: &mockLLM{}, Model: "test", TokenTracker: tracker, Persistence: bridge,
+		SyncMessages: func(messages []llm.ChatMessage) []llm.ChatMessage { syncCalled = true; return messages },
 	})
 	if err == nil || result != nil {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	if tracker.PromptTokens() != 321 || tracker.CompletionTokens() != 45 {
 		t.Fatalf("tracker changed after failed append: prompt=%d completion=%d", tracker.PromptTokens(), tracker.CompletionTokens())
+	}
+	if syncCalled {
+		t.Fatal("ContextEditor sync ran before failed history append")
+	}
+}
+
+func TestCompressionWatermarkDoesNotDuplicateSnapshotTail(t *testing.T) {
+	_, sess := newAgentHistorySession(t)
+	userID, err := sess.AppendMessage(llm.NewUserMessage("raw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := []llm.ChatMessage{{Role: "system", Content: "system"}, {HistoryID: userID, Role: "user", Content: "raw"}}
+	bridge := NewPersistenceBridge(sess, len(messages))
+	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error) {
+		return &CompressResult{LLMView: []llm.ChatMessage{{Role: "system", Content: "system"}, {Role: "user", Content: "summary"}}, CompressedTokens: 10}, nil
+	}}
+	compressed, err := ApplyCompress(context.Background(), CompressPipelineParams{
+		CM: cm, Messages: messages, LLMClient: &mockLLM{}, Model: "test", Persistence: bridge,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed.NewMessages = append(compressed.NewMessages,
+		llm.ChatMessage{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "call", Name: "Shell", Arguments: `{}`}}},
+		llm.NewToolMessage("Shell", "call", `{}`, "done"),
+	)
+	if err := bridge.IncrementalPersist(compressed.NewMessages); err != nil {
+		t.Fatal(err)
+	}
+	active, err := sess.GetMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 3 || active[0].Content != "summary" || active[1].Role != "assistant" || active[2].Role != "tool" {
+		t.Fatalf("duplicate snapshot tail after tool iteration: %+v", active)
 	}
 }
 
@@ -213,5 +251,28 @@ func TestGetPendingAskUserRestoresFromHistory(t *testing.T) {
 	pending := agent.GetPendingAskUser("test", "chat")
 	if pending == nil || pending.RequestID != "req-1" || len(pending.Questions) != 1 || pending.Questions[0].Question != "Continue?" {
 		t.Fatalf("restored pending=%+v", pending)
+	}
+}
+
+func TestInteractiveInterruptionIsPersistedWithoutSystemMessage(t *testing.T) {
+	_, sess := newAgentHistorySession(t)
+	appended, err := appendInteractiveInterruption(sess, "partial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(appended) != 3 {
+		t.Fatalf("appended=%+v", appended)
+	}
+	for _, msg := range appended {
+		if msg.HistoryID == 0 || msg.Role == "system" {
+			t.Fatalf("invalid interruption message=%+v", msg)
+		}
+	}
+	replayed, err := sess.GetMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replayed) != 3 || replayed[2].ToolName != "user_cancelled" {
+		t.Fatalf("replayed interruption=%+v", replayed)
 	}
 }

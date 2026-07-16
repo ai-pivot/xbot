@@ -132,6 +132,9 @@ func (s *SessionService) AppendControl(tenantID int64, recordType HistoryRecordT
 	if !isControlRecordType(recordType) {
 		return 0, fmt.Errorf("unknown history record type %q", recordType)
 	}
+	if recordType == HistoryRecordAskQuestion || recordType == HistoryRecordAskAnswer || recordType == HistoryRecordMask {
+		return 0, fmt.Errorf("history record type %q requires its atomic append method", recordType)
+	}
 	conn, err := s.conn()
 	if err != nil {
 		return 0, err
@@ -225,9 +228,43 @@ func (s *SessionService) AppendAskQuestion(tenantID int64, metadata map[string]s
 	if toolHistoryID == 0 {
 		return 0, fmt.Errorf("append AskUser question: matching active tool result not found")
 	}
-	return s.AppendControl(tenantID, HistoryRecordAskQuestion, toolHistoryID, AskQuestionRecord{
-		Metadata: metadata, ToolHistoryID: toolHistoryID,
-	})
+	payload, err := json.Marshal(AskQuestionRecord{Metadata: metadata, ToolHistoryID: toolHistoryID})
+	if err != nil {
+		return 0, fmt.Errorf("marshal AskUser question: %w", err)
+	}
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+	result, err := conn.Exec(`
+		INSERT INTO session_messages
+		(tenant_id, role, content, display_only, record_type, target_history_id, record_data, created_at)
+		SELECT ?, 'control', '', 1, 'ask_question', ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM session_messages WHERE tenant_id = ? AND id = ?)
+		AND NOT EXISTS (
+			SELECT 1 FROM session_messages q
+			WHERE q.tenant_id = ? AND q.record_type = 'ask_question'
+			AND NOT EXISTS (
+				SELECT 1 FROM session_messages a
+				WHERE a.tenant_id = q.tenant_id AND a.record_type = 'ask_answer' AND a.target_history_id = q.id
+			)
+		)
+	`, tenantID, toolHistoryID, string(payload), time.Now().Format(time.RFC3339Nano), tenantID, toolHistoryID, tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("append AskUser question: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if rows != 1 {
+		return 0, fmt.Errorf("AskUser question is no longer valid or another question is pending")
+	}
+	historyID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("read AskUser question history id: %w", err)
+	}
+	return historyID, nil
 }
 
 func (s *SessionService) AppendMasks(tenantID int64, mutations []MaskMutation) error {
@@ -324,7 +361,16 @@ func (s *SessionService) AppendAskAnswer(tenantID int64, answer string) (int64, 
 			SELECT 1 FROM session_messages
 			WHERE tenant_id = ? AND record_type = 'ask_answer' AND target_history_id = ?
 		)
-	`, tenantID, replay.PendingAskUser.HistoryID, string(payload), time.Now().Format(time.RFC3339Nano), tenantID, replay.PendingAskUser.HistoryID)
+		AND EXISTS (
+			SELECT 1 FROM session_messages q
+			WHERE q.tenant_id = ? AND q.id = ? AND q.record_type = 'ask_question'
+		)
+		AND EXISTS (
+			SELECT 1 FROM session_messages tool
+			WHERE tool.tenant_id = ? AND tool.id = ?
+		)
+	`, tenantID, replay.PendingAskUser.HistoryID, string(payload), time.Now().Format(time.RFC3339Nano),
+		tenantID, replay.PendingAskUser.HistoryID, tenantID, replay.PendingAskUser.HistoryID, tenantID, toolHistoryID)
 	if err != nil {
 		return 0, fmt.Errorf("append AskUser answer: %w", err)
 	}
