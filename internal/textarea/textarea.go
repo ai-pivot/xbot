@@ -18,9 +18,9 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"golang.design/x/clipboard"
 	rw "github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
+	"golang.design/x/clipboard"
 )
 
 const (
