@@ -158,6 +158,38 @@ func (h *RPCContext) webChatOwnedBySender(chatID, senderID string) bool {
 	return err == nil && count > 0
 }
 
+func (h *RPCContext) ownHistoryOrAdmin(ctx context.Context, channel, chatID string) bool {
+	if h.ownOrAdmin(ctx, channel, chatID) {
+		return true
+	}
+	if channel == "agent" {
+		parentChannel, parentChatID, ok := parentSessionKey(chatID)
+		if !ok {
+			return false
+		}
+		// For agent sessions, allow access when the parent chatID matches the
+		// caller's bizID. This supports CLI-rooted agent sessions (e.g.
+		// "cli:root-chat/reviewer") where the parent CLI chatID equals bizID.
+		if parentChatID == rpcBizID(ctx) {
+			return true
+		}
+		return h.ownHistoryOrAdmin(ctx, parentChannel, parentChatID)
+	}
+	return false
+}
+
+func parentSessionKey(key string) (string, string, bool) {
+	slash := strings.LastIndex(key, "/")
+	if slash <= 0 {
+		return "", "", false
+	}
+	parts := strings.SplitN(key[:slash], ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
 // sessionOwnedByUser checks if a tenant (channel+chatID) has owner_user_id == userID.
 func (h *RPCContext) sessionOwnedByUser(channel, chatID string, userID int64) bool {
 	if h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
@@ -980,11 +1012,16 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
-		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
-		if err != nil {
-			return nil, err
+		bizID := rpcBizID(ctx)
+		if p.Channel == "" {
+			p.Channel = "web"
 		}
-		p.Channel, p.ChatID = channelName, chatID
+		if p.ChatID == "" {
+			p.ChatID = bizID
+		}
+		if !isAdmin(ctx) && !h.ownHistoryOrAdmin(ctx, p.Channel, p.ChatID) {
+			return nil, fmt.Errorf("access denied")
+		}
 		// Update last_active_at so we can restore the most recent session on restart.
 		if db := h.Ag.MultiSession().DB(); db != nil {
 			if _, err := sqlite.NewTenantService(db).GetOrCreateTenantID(p.Channel, p.ChatID); err != nil {
@@ -1000,11 +1037,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			if err != nil {
 				return nil, err
 			}
-			msgs, err := sess.GetMessages()
+			records, err := sess.GetFullHistory()
 			if err != nil {
 				return nil, err
 			}
-			return channel.ConvertMessagesToHistory(msgs), nil
+			return channel.ConvertHistoryRecords(records), nil
 		}()
 		if err != nil {
 			return nil, err
@@ -1110,6 +1147,28 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			cutoff = time.Unix(p.Cutoff, 0)
 		}
 		return h.Ag.MultiSession().TrimHistory(p.Channel, p.ChatID, cutoff)
+	})
+	t["rewind_history"] = rpc1(func(ctx context.Context, p struct {
+		Channel   string `json:"channel"`
+		ChatID    string `json:"chat_id"`
+		HistoryID int64  `json:"history_id"`
+		CutoffMS  int64  `json:"cutoff_ms"`
+	}) (any, error) {
+		bizID := rpcBizID(ctx)
+		if p.Channel == "" {
+			p.Channel = "web"
+		}
+		if p.ChatID == "" {
+			p.ChatID = bizID
+		}
+		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
+			return nil, fmt.Errorf("access denied")
+		}
+		var cutoff time.Time
+		if p.CutoffMS > 0 {
+			cutoff = time.UnixMilli(p.CutoffMS)
+		}
+		return h.Ag.RewindHistory(p.Channel, p.ChatID, p.HistoryID, cutoff)
 	})
 
 	// ── Status ──

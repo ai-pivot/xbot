@@ -1618,6 +1618,9 @@ func main() {
 		cliCfg.TrimHistoryFn = func(channelName, chatID string, cutoff time.Time) error {
 			return backend.TrimHistory(channelName, chatID, cutoff)
 		}
+		cliCfg.RewindHistoryFn = func(channelName, chatID string, historyID int64, cutoff time.Time) (protocol.HistoryRewindResult, error) {
+			return backend.RewindHistory(channelName, chatID, historyID, cutoff)
+		}
 		cliCfg.SetCWDFn = func(channelName, chatID, dir string) error {
 			if err := backend.SetCWD(channelName, chatID, dir); err != nil {
 				return err

@@ -732,6 +732,16 @@ func (c *Client) TrimHistory(ch, chatID string, cutoff time.Time) error {
 	return c.call(MethodTrimHistory, trimHistoryReq{Channel: ch, ChatID: chatID, Cutoff: cutoff.Unix()}, nil)
 }
 
+func (c *Client) RewindHistory(ch, chatID string, historyID int64, cutoff time.Time) (protocol.HistoryRewindResult, error) {
+	var result protocol.HistoryRewindResult
+	var cutoffMS int64
+	if !cutoff.IsZero() {
+		cutoffMS = cutoff.UnixMilli()
+	}
+	err := c.call(MethodRewindHistory, rewindHistoryReq{Channel: ch, ChatID: chatID, HistoryID: historyID, CutoffMS: cutoffMS}, &result)
+	return result, err
+}
+
 // ---------------------------------------------------------------------------
 // Interactive SubAgent sessions (via RPC)
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"xbot/llm"
 )
@@ -23,6 +24,89 @@ func newHistoryTestService(t *testing.T) (*DB, *SessionService, int64) {
 		t.Fatal(err)
 	}
 	return db, NewSessionService(db), tenantID
+}
+
+func TestFullHistoryCompressionMetadataAndCrossBoundaryRewind(t *testing.T) {
+	_, svc, tenantID := newHistoryTestService(t)
+	userID, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "user", Content: "original", Timestamp: time.Unix(100, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answerID, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "assistant", Content: "answer", Timestamp: time.Unix(101, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressID, err := svc.AppendContextSnapshot(tenantID, HistoryRecordCompress, []llm.ChatMessage{{Role: "user", Content: "[Compacted context]\nsummary"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendMessage(tenantID, llm.NewUserMessage("later")); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := svc.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 4 || records[0].CompactedBy != compressID || records[1].CompactedBy != compressID {
+		t.Fatalf("compression annotations=%+v", records)
+	}
+	rng := records[2].Compression
+	if rng == nil || rng.StartHistoryID != userID || rng.EndHistoryID != answerID || len(rng.SourceHistoryIDs) != 2 {
+		t.Fatalf("compression range=%+v", rng)
+	}
+
+	target, turnIdx, err := svc.RewindToHistoryID(tenantID, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Content != "original" || turnIdx != 1 {
+		t.Fatalf("target=%+v turn=%d", target, turnIdx)
+	}
+	remaining, err := svc.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("cross-boundary rewind left records: %+v", remaining)
+	}
+	replay, err := svc.Replay(tenantID)
+	if err != nil || len(replay.Messages) != 0 || replay.PendingAskUser != nil {
+		t.Fatalf("replay after rewind=%+v err=%v", replay, err)
+	}
+}
+
+func TestResolveRewindTimestampRequiresUniqueUserAndInvalidTargetIsFailClosed(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	stamp := time.Unix(200, 0)
+	if _, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "user", Content: "one", Timestamp: stamp}); err != nil {
+		t.Fatal(err)
+	}
+	assistantID, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "assistant", Content: "answer", Timestamp: stamp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "user", Content: "two", Timestamp: stamp}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ResolveRewindTimestamp(tenantID, stamp); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected timestamp ambiguity, got %v", err)
+	}
+	before, _ := svc.GetFullHistory(tenantID)
+	if _, _, err := svc.RewindToHistoryID(tenantID, assistantID); err == nil || !strings.Contains(err.Error(), "not a rewindable user") {
+		t.Fatalf("expected invalid target error, got %v", err)
+	}
+	after, _ := svc.GetFullHistory(tenantID)
+	if len(after) != len(before) {
+		t.Fatalf("invalid target modified history: before=%d after=%d", len(before), len(after))
+	}
+	otherTenant, err := NewTenantService(db).GetOrCreateTenantID("test", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.RewindToHistoryID(otherTenant, before[0].HistoryID); err == nil {
+		t.Fatal("cross-tenant history_id unexpectedly rewound")
+	}
 }
 
 func TestHistoryAppendIDsAreStableAndMonotonicUnderConcurrency(t *testing.T) {

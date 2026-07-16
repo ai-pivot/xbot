@@ -907,3 +907,32 @@ func (m *MultiTenantSession) TrimHistory(channel, chatID string, cutoff time.Tim
 	}
 	return nil
 }
+
+// RewindHistory truncates a session at a stable user history node. A zero
+// historyID is accepted only for legacy timestamp callers and must resolve to
+// exactly one user message in that second.
+func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int64, cutoff time.Time) (llm.ChatMessage, int, error) {
+	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
+	if err != nil {
+		return llm.ChatMessage{}, 0, fmt.Errorf("get tenant: %w", err)
+	}
+	if historyID == 0 {
+		historyID, err = m.sessionSvc.ResolveRewindTimestamp(tenantID, cutoff)
+		if err != nil {
+			return llm.ChatMessage{}, 0, err
+		}
+	}
+	target, turnIdx, err := m.sessionSvc.RewindToHistoryID(tenantID, historyID)
+	if err != nil {
+		return llm.ChatMessage{}, 0, err
+	}
+	lastCtx, err := m.sessionSvc.GetLastUserMessageContextTokens(tenantID)
+	if err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to get context tokens after rewind, using 0")
+		lastCtx = 0
+	}
+	if err := m.memorySvc.SetTokenState(context.Background(), tenantID, lastCtx, 0); err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to restore token state after rewind")
+	}
+	return target, turnIdx, nil
+}

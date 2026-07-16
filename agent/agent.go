@@ -757,6 +757,42 @@ func (a *Agent) RewindCheckpoint(channel, chatID string, turnIdx int) (*protocol
 	return &result, err
 }
 
+// RewindHistory commits the DB truncate first, then best-effort restores files.
+// A checkpoint error is returned in-band because history has already rewound.
+func (a *Agent) RewindHistory(channel, chatID string, historyID int64, cutoff time.Time) (protocol.HistoryRewindResult, error) {
+	if a.multiSession == nil {
+		return protocol.HistoryRewindResult{}, fmt.Errorf("multi-session not available")
+	}
+	if a.IsProcessingByChannel(channel, chatID) {
+		return protocol.HistoryRewindResult{}, fmt.Errorf("cannot rewind while session is processing")
+	}
+	target, turnIdx, err := a.multiSession.RewindHistory(channel, chatID, historyID, cutoff)
+	if err != nil {
+		return protocol.HistoryRewindResult{}, err
+	}
+	a.ClearPendingAskUser(channel, chatID)
+	result := protocol.HistoryRewindResult{
+		TargetHistoryID: target.HistoryID,
+		Draft:           target.Content,
+		HistoryRewound:  true,
+		FilesRewound:    true,
+	}
+	checkpoint, checkpointErr := a.RewindCheckpoint(channel, chatID, turnIdx)
+	result.Checkpoint = checkpoint
+	result.FilesRewound, result.CheckpointError = checkpointOutcome(checkpoint, checkpointErr)
+	return result, nil
+}
+
+func checkpointOutcome(checkpoint *protocol.RewindResult, err error) (bool, string) {
+	if err != nil {
+		return false, err.Error()
+	}
+	if checkpoint != nil && len(checkpoint.Errors) > 0 {
+		return false, fmt.Sprintf("checkpoint reported %d file errors", len(checkpoint.Errors))
+	}
+	return true, ""
+}
+
 // SetUserModel sets the user's default model via an explicit (subID, model) pair.
 // Used by the settings card callback (feishu/web) and the set_user_model RPC.
 // When subID is empty, falls back to ResolveSubscriptionForModel (legacy UIs

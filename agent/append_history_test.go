@@ -9,6 +9,7 @@ import (
 
 	"xbot/bus"
 	"xbot/llm"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -58,6 +59,17 @@ func TestPersistenceBridgeCompressionAppendsAndReplays(t *testing.T) {
 	}
 	if len(records) != 3 || records[0].Message.Content != "raw user" || records[1].Message.Content != "raw answer" || records[2].Type != sqlite.HistoryRecordCompress {
 		t.Fatalf("full history=%+v", records)
+	}
+}
+
+func TestCheckpointOutcomeReportsEmbeddedFileErrors(t *testing.T) {
+	ok, message := checkpointOutcome(&protocol.RewindResult{Errors: []string{"restore failed"}}, nil)
+	if ok || message == "" {
+		t.Fatalf("embedded checkpoint errors were not surfaced: ok=%v message=%q", ok, message)
+	}
+	ok, message = checkpointOutcome(nil, errors.New("checkpoint unavailable"))
+	if ok || message != "checkpoint unavailable" {
+		t.Fatalf("checkpoint error=%v message=%q", ok, message)
 	}
 }
 

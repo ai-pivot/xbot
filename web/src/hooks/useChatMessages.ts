@@ -129,16 +129,23 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
     }
 
     normalized.push({
-      id: m.seq != null ? `seq-${m.seq}` : `hist-${i}`,
-      role: m.role,
+      id: m.history_id ? `hist-${m.history_id}` : `hist-${i}`,
+      historyID: m.history_id,
+      role: m.role === 'control' ? 'system' : m.role,
       content,
       iterations,
       timestamp: m.timestamp ?? '',
       isPartial: false,
       turnID: 0,
-      displayOnly: false,
+      displayOnly: m.display_only ?? false,
       persisted: true,
-      eventSeq: m.seq,
+      recordType: m.record_type,
+      compactedBy: m.compacted_by,
+      compression: m.compression ? {
+        startHistoryID: m.compression.start_history_id,
+        endHistoryID: m.compression.end_history_id,
+        sourceHistoryIDs: m.compression.source_history_ids,
+      } : undefined,
     })
   }
 

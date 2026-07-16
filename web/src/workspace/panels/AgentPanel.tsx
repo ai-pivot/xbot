@@ -32,6 +32,12 @@ import { MessageInput } from '@/components/agent/MessageInput'
 import { MessageList } from '@/components/agent/MessageList'
 import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
 import { ModelSelector } from '@/components/agent/ModelSelector'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { useDockviewContext } from '@/workspace/types'
 import type { PanelProps } from '@/workspace/panels/types'
 import type { ChatMessage } from '@/types/shared'
@@ -39,6 +45,9 @@ import { useI18n } from '@/providers/i18n'
 
 interface RewindHistoryResponse {
   draft?: string
+  history_rewound?: boolean
+  files_rewound?: boolean
+  checkpoint_error?: string
   rewind_result?: {
     restored?: string[]
     created_del?: string[]
@@ -209,46 +218,56 @@ export function AgentPanel({ params }: PanelProps) {
     sendMessageRef.current(content, attachments)
   }, [])
 
-  // Rewind via inline edit: rewind to the message's timestamp, then send
-  // the edited content as a new message.
-  const rewindTo = useCallback(async (editedContent: string, originalMessage: ChatMessage) => {
-    if (!chatID || isSubAgent || !originalMessage.timestamp) return
-    const cutoff = Date.parse(originalMessage.timestamp)
-    if (!Number.isFinite(cutoff) || cutoff <= 0) return
+  const rewindTo = useCallback(async (message: ChatMessage) => {
+    if (!chatID || isSubAgent || (!message.historyID && !message.timestamp)) return
+    const cutoff = Date.parse(message.timestamp)
+    const legacyCutoff = Number.isFinite(cutoff) && cutoff > 0 ? cutoff : undefined
     try {
-      await rewindHistory<RewindHistoryResponse>({ channel: messageChannel, chatID }, cutoff)
-      // Exit edit mode
-      setEditingMessageId(null)
-      // Rewind is destructive: clear the visible/cache rows before reload so
-      // an empty truncated history is not mistaken for a background refresh.
-      chat.clearMessages()
-      // Reload FIRST to fetch the truncated history from the server.
-      // This must happen BEFORE sendMessage — otherwise sendMessage increments
-      // messageMutationGenRef, the subsequent reload captures the incremented
-      // value, requestHasMessageMutation() returns false, and the optimistic
-      // message is silently wiped by the fresh history.
+      const result = await rewindHistory<RewindHistoryResponse>({ channel: messageChannel, chatID }, message.historyID, legacyCutoff)
       await chat.reload()
-      // Send the edited content as a new message (sendMessage increments
-      // followResetToken so the viewport scrolls to bottom for the response)
-      sendMessage(editedContent)
-      toast.success(t('agent.rewindComplete'))
+      setDraft(result?.draft ?? message.content)
+      if (result?.history_rewound === false) {
+        toast.error('Rewind did not change history')
+        return
+      }
+      const rw = result?.rewind_result
+      setRewindResult(rw ?? null)
+      const checkpointFailed = result?.files_rewound === false || !!result?.checkpoint_error
+      if (checkpointFailed) {
+        toast.warning('History rewound; files were not fully restored', {
+          description: result?.checkpoint_error ?? 'File checkpoint restore reported errors',
+        })
+        return
+      }
+      if (rw) {
+        const restored = rw.restored?.length ?? 0
+        const deleted = rw.created_del?.length ?? 0
+        const skipped = rw.skipped?.length ?? 0
+        const errors = rw.errors?.length ?? 0
+        const details = [`restored ${restored}`, `deleted ${deleted}`, `skipped ${skipped}`]
+        if (errors > 0) details.push(`errors ${errors}`)
+        toast(errors > 0 ? 'Rewind completed with errors' : 'Rewind complete', {
+          description: details.join(' · '),
+        })
+      } else {
+        toast.success('Rewind complete')
+      }
     } catch (e) {
-      // Keep edit mode active when the rewind request fails.
-      toast.error(e instanceof Error ? e.message : t('agent.rewindFailed'))
+      toast.error(e instanceof Error ? e.message : 'Rewind failed')
     }
-  }, [chatID, isSubAgent, messageChannel, chat, t, sendMessage])
+  }, [chat, messageChannel, chatID, isSubAgent, ws])
 
   const rewindLatest = useCallback(() => {
     if (busy) return
     const candidates = rewindCandidates(chat.messages)
     if (candidates.length === 0) {
-      toast.error(t('agent.noUserMessageToRewind'))
+      toast.error('No user message to rewind')
       return
     }
     // Enter edit mode for the latest rewindable user message
     const latest = candidates[candidates.length - 1]
     setEditingMessageId(latest.id)
-  }, [busy, chat.messages, t])
+  }, [busy, chat.messages])
 
   const handleStartEdit = useCallback((messageId: string) => {
     setEditingMessageId(messageId)
@@ -329,6 +348,6 @@ export function AgentPanel({ params }: PanelProps) {
 }
 
 function rewindCandidates(messages: ChatMessage[]): ChatMessage[] {
-  const boundary = latestCompactBoundaryIndex(messages)
-  return messages.filter((m, i) => i > boundary && m.role === 'user' && !!m.timestamp && m.persisted === true)
+  return messages.filter((m) => m.role === 'user' && !m.displayOnly && m.recordType !== 'compress' &&
+    (!!m.historyID || !!m.timestamp) && m.persisted === true)
 }

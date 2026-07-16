@@ -74,6 +74,10 @@ func (s *TenantSession) GetFullHistory() ([]sqlite.HistoryRecord, error) {
 	return s.sessionSvc.GetFullHistory(s.tenantID)
 }
 
+func (s *TenantSession) RewindToHistoryID(historyID int64) (llm.ChatMessage, int, error) {
+	return s.sessionSvc.RewindToHistoryID(s.tenantID, historyID)
+}
+
 // ReplaceToolMessage updates the most recent matching tool-role message.
 // Empty toolName/toolCallID act as wildcards (match any).
 func (s *TenantSession) ReplaceToolMessage(toolName, toolCallID, content string) error {

@@ -369,6 +369,14 @@ export type ChatMessageRole = 'user' | 'assistant' | 'system'
  */
 export interface ChatMessage {
   id: string
+  historyID?: number
+  recordType?: string
+  compactedBy?: number
+  compression?: {
+    startHistoryID?: number
+    endHistoryID?: number
+    sourceHistoryIDs?: number[]
+  }
   role: ChatMessageRole
   content: string
   iterations: WebIteration[]

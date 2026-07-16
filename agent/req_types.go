@@ -60,6 +60,7 @@ const (
 	MethodGetTokenState                = "get_token_state"
 	MethodGetContextUsage              = "get_context_usage"
 	MethodTrimHistory                  = "trim_history"
+	MethodRewindHistory                = "rewind_history"
 	MethodResetTokenState              = "reset_token_state"
 	MethodGetChannelConfig             = "get_channel_config"
 	MethodSetChannelConfig             = "set_channel_config"
@@ -318,6 +319,13 @@ type trimHistoryReq struct {
 	Channel string `json:"channel"`
 	ChatID  string `json:"chat_id"`
 	Cutoff  int64  `json:"cutoff"` // unix timestamp
+}
+
+type rewindHistoryReq struct {
+	Channel   string `json:"channel"`
+	ChatID    string `json:"chat_id"`
+	HistoryID int64  `json:"history_id,omitempty"`
+	CutoffMS  int64  `json:"cutoff_ms,omitempty"`
 }
 
 // --- Channel Config ---

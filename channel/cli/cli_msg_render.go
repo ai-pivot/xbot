@@ -11,6 +11,9 @@ import (
 )
 
 func (m *cliModel) renderMessage(msg *cliMessage) string {
+	if msg.hidden {
+		return ""
+	}
 	// §20 使用缓存样式
 	s := &m.styles
 	var sb strings.Builder

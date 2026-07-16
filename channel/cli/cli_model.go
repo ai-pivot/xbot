@@ -306,10 +306,15 @@ type queuedMsg struct {
 }
 
 type cliMessage struct {
-	role      string
-	content   string
-	timestamp time.Time
-	isPartial bool
+	historyID   int64
+	recordType  string
+	compactedBy int64
+	displayOnly bool
+	hidden      bool
+	role        string
+	content     string
+	timestamp   time.Time
+	isPartial   bool
 	// --- turn identification for deterministic rendering ---
 	turnID uint64 // agentTurnID when this message was created (0 = not agent-generated)
 	// --- thinking/reasoning content (displayed in a collapsible box) ---

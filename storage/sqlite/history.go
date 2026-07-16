@@ -29,6 +29,14 @@ type HistoryRecord struct {
 	Message         llm.ChatMessage
 	Data            json.RawMessage
 	CreatedAt       time.Time
+	CompactedBy     int64
+	Compression     *CompressionRange
+}
+
+type CompressionRange struct {
+	StartHistoryID   int64
+	EndHistoryID     int64
+	SourceHistoryIDs []int64
 }
 
 type ContextSnapshot struct {
@@ -550,7 +558,142 @@ func (s *SessionService) getFullHistoryLocked(tenantID int64) ([]HistoryRecord, 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate full session history: %w", err)
 	}
+	decorateCompressionRanges(records)
 	return records, nil
+}
+
+func decorateCompressionRanges(records []HistoryRecord) {
+	active := make([]int64, 0, len(records))
+	byID := make(map[int64]int, len(records))
+	for i := range records {
+		record := &records[i]
+		byID[record.HistoryID] = i
+		switch record.Type {
+		case HistoryRecordMessage:
+			if !record.Message.DisplayOnly {
+				active = append(active, record.HistoryID)
+			}
+		case HistoryRecordCompress, HistoryRecordPrune:
+			var snapshot ContextSnapshot
+			if err := json.Unmarshal(record.Data, &snapshot); err != nil || len(snapshot.HistoryIDs) != len(snapshot.Messages) {
+				continue
+			}
+			kept := make(map[int64]struct{}, len(snapshot.HistoryIDs))
+			next := make([]int64, 0, len(snapshot.HistoryIDs))
+			for _, id := range snapshot.HistoryIDs {
+				if id == 0 {
+					id = record.HistoryID
+				}
+				kept[id] = struct{}{}
+				next = append(next, id)
+			}
+			if record.Type == HistoryRecordCompress {
+				source := make([]int64, 0, len(active))
+				for _, id := range active {
+					if _, ok := kept[id]; ok {
+						continue
+					}
+					source = append(source, id)
+					if idx, ok := byID[id]; ok && records[idx].CompactedBy == 0 {
+						records[idx].CompactedBy = record.HistoryID
+					}
+				}
+				if len(source) > 0 {
+					record.Compression = &CompressionRange{
+						StartHistoryID: source[0], EndHistoryID: source[len(source)-1], SourceHistoryIDs: source,
+					}
+				}
+			}
+			active = next
+		}
+	}
+}
+
+// RewindToHistoryID validates a user node and atomically truncates that node
+// plus every later record for the same tenant. The selected content is returned
+// for the caller's existing edit/resend flow.
+func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatMessage, int, error) {
+	if historyID <= 0 {
+		return llm.ChatMessage{}, 0, fmt.Errorf("history_id is required")
+	}
+	s.db.historyMu.Lock()
+	defer s.db.historyMu.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return llm.ChatMessage{}, 0, err
+	}
+	var role, recordType, content, createdAt string
+	var displayOnly int
+	if err := conn.QueryRow(`
+		SELECT role, record_type, content, created_at, display_only
+		FROM session_messages WHERE tenant_id = ? AND id = ?
+	`, tenantID, historyID).Scan(&role, &recordType, &content, &createdAt, &displayOnly); err != nil {
+		if err == sql.ErrNoRows {
+			return llm.ChatMessage{}, 0, fmt.Errorf("rewind target history_id %d not found", historyID)
+		}
+		return llm.ChatMessage{}, 0, fmt.Errorf("load rewind target: %w", err)
+	}
+	if displayOnly != 0 || role != "user" || HistoryRecordType(recordType) != HistoryRecordMessage {
+		return llm.ChatMessage{}, 0, fmt.Errorf("history_id %d is not a rewindable user message", historyID)
+	}
+	var turnIdx int
+	if err := conn.QueryRow(`
+		SELECT COUNT(*) FROM session_messages
+		WHERE tenant_id = ? AND id <= ? AND record_type = 'message' AND role = 'user' AND display_only = 0
+	`, tenantID, historyID).Scan(&turnIdx); err != nil {
+		return llm.ChatMessage{}, 0, fmt.Errorf("resolve rewind turn: %w", err)
+	}
+	result, err := conn.Exec(`DELETE FROM session_messages WHERE tenant_id = ? AND id >= ?`, tenantID, historyID)
+	if err != nil {
+		return llm.ChatMessage{}, 0, fmt.Errorf("truncate history at history_id %d: %w", historyID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows == 0 {
+		return llm.ChatMessage{}, 0, fmt.Errorf("truncate history at history_id %d changed no records", historyID)
+	}
+	return llm.ChatMessage{HistoryID: historyID, Role: role, Content: content, Timestamp: internal.ParseTimestamp(createdAt)}, turnIdx, nil
+}
+
+// ResolveRewindTimestamp keeps old timestamp clients compatible only when the
+// selected second identifies exactly one user history node.
+func (s *SessionService) ResolveRewindTimestamp(tenantID int64, cutoff time.Time) (int64, error) {
+	if cutoff.IsZero() {
+		return 0, fmt.Errorf("history_id is required")
+	}
+	s.db.historyMu.Lock()
+	defer s.db.historyMu.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+	rows, err := conn.Query(`
+		SELECT id FROM session_messages
+		WHERE tenant_id = ? AND record_type = 'message' AND role = 'user' AND display_only = 0
+		  AND unixepoch(created_at) = ?
+		ORDER BY id
+	`, tenantID, cutoff.Unix())
+	if err != nil {
+		return 0, fmt.Errorf("resolve rewind timestamp: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, fmt.Errorf("rewind timestamp does not match a user message")
+	}
+	if len(ids) != 1 {
+		return 0, fmt.Errorf("rewind timestamp is ambiguous: %d user messages match", len(ids))
+	}
+	return ids[0], nil
 }
 
 func (s *SessionService) Replay(tenantID int64) (*ReplayResult, error) {

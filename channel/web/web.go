@@ -115,7 +115,7 @@ type WebCallbacks struct {
 	// HistorySnapshot returns a Web-only history snapshot with runtime state.
 	HistorySnapshot func(senderID string, sel SessionSelector) (HistorySnapshot, error)
 	// RewindHistory rewinds a Web-accessible session to a selected user message.
-	RewindHistory func(senderID string, sel SessionSelector, cutoff time.Time) (RewindHistoryResult, error)
+	RewindHistory func(senderID string, sel SessionSelector, historyID int64, cutoff time.Time) (RewindHistoryResult, error)
 	// GetCWD returns the current directory for a Web-accessible session.
 	GetCWD func(senderID string, sel SessionSelector) (string, error)
 	// SetCWD sets the current directory for a Web-accessible session.
@@ -281,8 +281,7 @@ type HistorySnapshot struct {
 
 // RewindHistoryResult is the Web-only /api/history/rewind response payload.
 type RewindHistoryResult struct {
-	Draft        string                 `json:"draft"`
-	RewindResult *protocol.RewindResult `json:"rewind_result,omitempty"`
+	protocol.HistoryRewindResult
 }
 
 // CommandInfo is a JSON-friendly slash-command descriptor for Web completion.

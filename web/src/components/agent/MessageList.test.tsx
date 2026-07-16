@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
-import { canRewindMessage, isCompactMarker, latestCompactBoundaryIndex, MessageList } from '@/components/agent/MessageList'
+import { canRewindMessage, CompressionBlock, isCompactMarker, latestCompactBoundaryIndex, MessageList } from '@/components/agent/MessageList'
 import { EMPTY_LIVE_PROGRESS } from '@/types/agent'
 import type { ChatMessage } from '@/types/agent'
 import { I18nProvider } from '@/providers/i18n'
@@ -525,7 +525,7 @@ describe('MessageList virtualization', () => {
     expect(isCompactMarker({ role: 'user', content: 'prefix [Compacted context]' })).toBe(false)
   })
 
-  it('allows rewind only for persisted user messages after the latest compact boundary', () => {
+  it('keeps compacted persisted user messages rewindable', () => {
     const messages: ChatMessage[] = [
       { id: 'u-old', role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0, persisted: true },
       { id: 'compact', role: 'user', content: '[Compacted context]\nsummary', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0, persisted: true },
@@ -533,7 +533,24 @@ describe('MessageList virtualization', () => {
     ]
     const boundary = latestCompactBoundaryIndex(messages)
 
-    expect(messages.map((m, i) => canRewindMessage(m, i, boundary))).toEqual([false, false, true])
+    expect(messages.map((m, i) => canRewindMessage(m, i, boundary))).toEqual([true, false, true])
+  })
+
+  it('folds compacted source messages into an expandable block from one response', async () => {
+    const messages: ChatMessage[] = [
+      { id: 'hist-1', historyID: 1, recordType: 'message', compactedBy: 3, role: 'user', content: 'original question', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'hist-2', historyID: 2, recordType: 'message', compactedBy: 3, role: 'assistant', content: 'original answer', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'hist-3', historyID: 3, recordType: 'compress', role: 'system', content: '[Compacted context]\nsummary', iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: true },
+    ]
+    const { getByText } = renderMessageList(
+      <CompressionBlock marker={messages[2]} messages={messages.slice(0, 2)} collapseLevel="all" />,
+    )
+    const summary = getByText('Compacted context · 2 messages')
+    const details = summary.closest('details')
+    expect(details).not.toHaveAttribute('open')
+    fireEvent.click(summary)
+    expect(details).toHaveAttribute('open')
+    expect(getByText('original question')).toBeInTheDocument()
   })
 
   it('does not show rewind for optimistic user messages', () => {

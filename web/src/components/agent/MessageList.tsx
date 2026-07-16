@@ -99,51 +99,34 @@ export function MessageList({
   const { t } = useI18n()
 
   // Combined row list: committed messages + optional live streaming row.
-  //
-  // ALWAYS remove intermediate assistant messages after the last user message.
-  // ConvertMessagesToHistory can split one turn into multiple assistant
-  // messages (when a Content assistant appears between ToolCalls). Without
-  // this, both assistants render the same tools — once from DB iterations
-  // and once from the progress snapshot — causing duplicates.
-  // Only the LAST assistant after the last user message is kept; all earlier
-  // ones are absorbed (their tools are in the snapshot or in the last
-  // assistant's iterations).
-  const rows = useMemo<ChatMessage[]>(() => {
-    // Remove intermediate assistant messages after the last user message.
-    // Only apply when the last message is an assistant (active turn) —
-    // if the last message is a user message, ALL previous assistants are
-    // from completed turns and must be preserved.
-    const last = messages[messages.length - 1]
-    const deduped = [...messages]
-    if (last && last.role === 'assistant') {
-      for (let i = deduped.length - 2; i >= 0; i--) {
-        if (deduped[i].role === 'user') break
-        if (deduped[i].role === 'assistant') deduped.splice(i, 1)
+  // Dedup: if liveMessage content matches the last committed assistant message,
+  // skip adding liveMessage (prevents one-frame overlap during finalize).
+  const { visibleMessages, compressionSources } = useMemo(() => {
+    const sources = new Map<number, ChatMessage[]>()
+    const visible: ChatMessage[] = []
+    for (const message of messages) {
+      if (message.compactedBy) {
+        const group = sources.get(message.compactedBy) ?? []
+        group.push(message)
+        sources.set(message.compactedBy, group)
+        continue
       }
+      if (message.recordType && message.recordType !== 'message' && message.recordType !== 'compress') continue
+      visible.push(message)
     }
+    return { visibleMessages: visible, compressionSources: sources }
+  }, [messages])
 
-    if (!liveMessage) return deduped
-    const lastDeduped = deduped[deduped.length - 1]
-    if (lastDeduped && lastDeduped.role === 'assistant' &&
-        lastDeduped.eventSeq != null && liveMessage.eventSeq != null &&
-        lastDeduped.eventSeq === liveMessage.eventSeq) {
-      return deduped
+  const rows = useMemo<ChatMessage[]>(() => {
+    if (!liveMessage) return visibleMessages
+    const last = visibleMessages[visibleMessages.length - 1]
+    if (last && last.role === 'assistant' && last.content && liveMessage.content &&
+        last.content === liveMessage.content) {
+      return visibleMessages
     }
-    // Active turn: last persisted assistant is the in-flight streaming slot.
-    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial) {
-      return deduped
-    }
-    return [...deduped, liveMessage]
-  }, [messages, liveMessage])
-  // liveId points to the row that receives liveProgress. When the last
-  // history assistant is the active turn, it IS the streaming slot.
-  const liveId = liveMessage
-    ? (messages.length > 0 &&
-       messages[messages.length - 1].role === 'assistant' &&
-       liveMessage.isPartial
-        ? messages[messages.length - 1].id
-        : liveMessage.id)
-    : null
+    return [...visibleMessages, liveMessage]
+  }, [visibleMessages, liveMessage])
+  const liveId = liveMessage?.id ?? null
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
@@ -486,16 +469,81 @@ function NavButton({
 
 export function canRewindMessage(
   row: ChatMessage,
-  index: number,
-  compactBoundaryIndex: number,
+  _index: number,
+  _compactBoundaryIndex: number,
 ): boolean {
-  return row.role === 'user' &&
+  return row.role === 'user' && !row.displayOnly && row.recordType !== 'compress' &&
     !!row.timestamp &&
     row.persisted === true &&
-    index > compactBoundaryIndex &&
     !isCompactMarker(row)
 }
 
 function isAtBottom(el: HTMLDivElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= EDGE_EPSILON
+}
+
+export function CompressionBlock({
+  marker,
+  messages,
+  collapseLevel,
+  onRewind,
+}: {
+  marker: ChatMessage
+  messages: ChatMessage[]
+  collapseLevel: 'all' | 'minimal' | 'none'
+  onRewind?: (message: ChatMessage) => void
+}) {
+  return (
+    <details className="border-l-2 border-border pl-3 text-sm text-text-secondary">
+      <summary className="cursor-pointer py-2 font-medium text-text-secondary">
+        Compacted context · {messages.length} messages
+      </summary>
+      <div className="space-y-3 pb-2">
+        {messages.map((message) => (
+          <MessageItem
+            key={message.id}
+            message={message}
+            liveProgress={null}
+            collapseLevel={collapseLevel}
+            onRewind={canRewindMessage(message, 0, -1) ? onRewind : undefined}
+          />
+        ))}
+      </div>
+      {messages.length === 0 && <div className="pb-2 text-text-muted">{marker.content}</div>}
+    </details>
+  )
+}
+
+function scrollToBottom(el: HTMLDivElement): void {
+  el.scrollTop = el.scrollHeight
+}
+
+function isNearBottom(el: HTMLDivElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD
+}
+
+function scheduleScrollToBottom(
+  el: HTMLDivElement,
+  scrollVirtualizer?: () => void,
+  shouldRun?: () => boolean,
+): () => void {
+  let cancelled = false
+  const run = () => {
+    if (cancelled) return
+    if (shouldRun && !shouldRun()) return
+    scrollVirtualizer?.()
+    scrollToBottom(el)
+  }
+  run()
+  // RAF for post-measurement settle, plus short timeouts for async
+  // rendering (syntax highlighting, image loading) that completes after RAF.
+  const raf = requestAnimationFrame(run)
+  const t1 = window.setTimeout(run, 150)
+  const t2 = window.setTimeout(run, 400)
+  return () => {
+    cancelled = true
+    cancelAnimationFrame(raf)
+    clearTimeout(t1)
+    clearTimeout(t2)
+  }
 }

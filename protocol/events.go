@@ -118,10 +118,25 @@ type HistoryIteration struct {
 
 // HistoryMessage represents a message in session history.
 type HistoryMessage struct {
-	Role       string             `json:"role"`
-	Content    string             `json:"content"`
-	Timestamp  time.Time          `json:"timestamp"`
-	Iterations []HistoryIteration `json:"iterations,omitempty"`
+	HistoryID       int64               `json:"history_id,omitempty"`
+	Role            string              `json:"role"`
+	Content         string              `json:"content"`
+	Timestamp       time.Time           `json:"timestamp"`
+	Iterations      []HistoryIteration  `json:"iterations,omitempty"`
+	RecordType      string              `json:"record_type,omitempty"`
+	TargetHistoryID int64               `json:"target_history_id,omitempty"`
+	CompactedBy     int64               `json:"compacted_by,omitempty"`
+	Compression     *HistoryCompression `json:"compression,omitempty"`
+	DisplayOnly     bool                `json:"display_only,omitempty"`
+}
+
+// HistoryCompression describes the original DB nodes replaced by one
+// append-only compression record. SourceHistoryIDs remain in the same history
+// response so clients can expand them or rewind to an original user turn.
+type HistoryCompression struct {
+	StartHistoryID   int64   `json:"start_history_id,omitempty"`
+	EndHistoryID     int64   `json:"end_history_id,omitempty"`
+	SourceHistoryIDs []int64 `json:"source_history_ids,omitempty"`
 }
 
 // Subscription represents an LLM subscription for display/selection.

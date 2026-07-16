@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -216,15 +217,15 @@ func TestSessionTreeAdminFlagHonorsSingleUserMode(t *testing.T) {
 					if admin != tc.wantAdmin {
 						t.Fatalf("admin = %v, want %v", admin, tc.wantAdmin)
 					}
-					return SessionTreeResult{}, nil
-				},
-			})
+						return SessionTreeResult{}, nil
+					},
+				})
 
-			recorder := httptest.NewRecorder()
-			request := authedAPIRequestFor(http.MethodGet, "/api/session-tree", nil, "web-2", 2)
-			wc.handleSessionTree(recorder, request)
+				recorder := httptest.NewRecorder()
+				request := authedAPIRequestFor(http.MethodGet, "/api/session-tree", nil, "web-2", 2)
+				wc.handleSessionTree(recorder, request)
 
-			if recorder.Code != http.StatusOK {
+				if recorder.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
 			}
 		})
@@ -293,6 +294,38 @@ func TestRESTChatCRUDPassesChannelToCallbacks(t *testing.T) {
 	}
 	if _, ok := wc.inboundRequests[requestKey]; ok {
 		t.Fatal("deleted CLI request-dedup state was retained")
+	}
+}
+
+func TestHistoryRewindPrefersHistoryIDAndReturnsPartialFileStatus(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "chat-a"})
+	wc.SetCallbacks(WebCallbacks{RewindHistory: func(_ string, _ SessionSelector, historyID int64, cutoff time.Time) (RewindHistoryResult, error) {
+		if historyID != 42 || !cutoff.IsZero() {
+			t.Fatalf("historyID=%d cutoff=%v", historyID, cutoff)
+		}
+		return RewindHistoryResult{HistoryRewindResult: protocol.HistoryRewindResult{
+			TargetHistoryID: 42, Draft: "redo", HistoryRewound: true, FilesRewound: false, CheckpointError: "file failed",
+		}}, nil
+	}})
+	rec := httptest.NewRecorder()
+	wc.handleHistoryRewind(rec, authedAPIRequest(http.MethodPost, "/api/history/rewind", []byte(`{"history_id":42}`)))
+	_, out := decodeAPIResponse(t, rec)
+	if rec.Code != http.StatusOK || out["history_rewound"] != true || out["files_rewound"] != false || out["checkpoint_error"] != "file failed" {
+		t.Fatalf("unexpected partial rewind response: %d %#v", rec.Code, out)
+	}
+}
+
+func TestHistoryRewindReportsTimestampAmbiguity(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "chat-a"})
+	wc.SetCallbacks(WebCallbacks{RewindHistory: func(_ string, _ SessionSelector, _ int64, _ time.Time) (RewindHistoryResult, error) {
+		return RewindHistoryResult{}, fmt.Errorf("rewind timestamp is ambiguous")
+	}})
+	rec := httptest.NewRecorder()
+	wc.handleHistoryRewind(rec, authedAPIRequest(http.MethodPost, "/api/history/rewind", []byte(`{"cutoff_ms":1700000000000}`)))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "ambiguous") {
+		t.Fatalf("unexpected ambiguity response: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -869,6 +902,20 @@ func TestRESTSessionStatusMergesTokenAndTasks(t *testing.T) {
 		},
 		BackgroundTasks: func(senderID string, sel SessionSelector) (any, error) {
 			return []map[string]any{{"id": "bg-1"}}, nil
+		},
+		CommandList: func(senderID string) ([]CommandInfo, error) {
+			return []CommandInfo{{Name: "help", Description: "show help"}}, nil
+		},
+		RewindHistory: func(senderID string, sel SessionSelector, historyID int64, cutoff time.Time) (RewindHistoryResult, error) {
+			if cutoff.UnixMilli() != 1700000000000 {
+				t.Fatalf("unexpected cutoff %v", cutoff)
+			}
+			return RewindHistoryResult{HistoryRewindResult: protocol.HistoryRewindResult{
+				Draft: "redo", HistoryRewound: true, FilesRewound: true,
+				Checkpoint: &protocol.RewindResult{
+					Restored: []string{"a"},
+				},
+			}}, nil
 		},
 	})
 	recorder := httptest.NewRecorder()

@@ -67,16 +67,19 @@ func (m *cliModel) scheduleSessionsRefresh() {
 	}
 }
 
-// msgIdentity is the unified dedup key for history messages.
-// Uses role + timestamp because persisted DB messages are uniquely
-// identified by their (role, timestamp) pair — timestamp has nanosecond
-// precision and is set at persist time. turnID is intentionally excluded:
-// protocol.HistoryMessage (the DB representation) has no turnID field, so
-// including it would make the same logical message dedup differently
-// depending on whether it came from DB history or an in-memory turn.
+// msgIdentity uses the stable DB node when available and retains the legacy
+// role+timestamp fallback for optimistic/in-memory messages.
 type msgIdentity struct {
+	historyID int64
 	role      string
 	timestamp time.Time
+}
+
+func cliMessageIdentity(msg cliMessage) msgIdentity {
+	if msg.historyID != 0 {
+		return msgIdentity{historyID: msg.historyID}
+	}
+	return msgIdentity{role: msg.role, timestamp: msg.timestamp}
 }
 
 // toCLIMessage converts a protocol.HistoryMessage into a cliMessage
@@ -84,11 +87,16 @@ type msgIdentity struct {
 // handleHistoryLoad, and handleHistoryReload to avoid copy-paste drift.
 func toCLIMessage(hm protocol.HistoryMessage) cliMessage {
 	cm := cliMessage{
-		role:      hm.Role,
-		content:   hm.Content,
-		timestamp: hm.Timestamp,
-		isPartial: false,
-		dirty:     true,
+		historyID:   hm.HistoryID,
+		recordType:  hm.RecordType,
+		compactedBy: hm.CompactedBy,
+		displayOnly: hm.DisplayOnly,
+		hidden:      hm.CompactedBy != 0 || (hm.DisplayOnly && hm.Role == "user") || (hm.RecordType != "" && hm.RecordType != "message" && hm.RecordType != "compress"),
+		role:        hm.Role,
+		content:     hm.Content,
+		timestamp:   hm.Timestamp,
+		isPartial:   false,
+		dirty:       true,
 	}
 	if len(hm.Iterations) > 0 {
 		cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
@@ -100,17 +108,14 @@ func toCLIMessage(hm protocol.HistoryMessage) cliMessage {
 }
 
 // dedupAppend appends incoming messages to existing, skipping any whose
-// msgIdentity (role + timestamp) already appears in existing. Returns the
-// resulting slice. Unifies the previously divergent dedup strategies in
-// handleSuHistoryLoad (role+"|"+timestamp) and handleHistoryLoad
-// (role+":"+turnID+":"+content) onto a single identity key.
+// identity already appears in existing.
 func dedupAppend(existing []cliMessage, incoming []cliMessage) []cliMessage {
 	seen := make(map[msgIdentity]bool, len(existing))
 	for _, m := range existing {
-		seen[msgIdentity{m.role, m.timestamp}] = true
+		seen[cliMessageIdentity(m)] = true
 	}
 	for _, cm := range incoming {
-		id := msgIdentity{cm.role, cm.timestamp}
+		id := cliMessageIdentity(cm)
 		if !seen[id] {
 			existing = append(existing, cm)
 			seen[id] = true

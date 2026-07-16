@@ -8,6 +8,7 @@ import (
 
 	"xbot/llm"
 	"xbot/protocol"
+	"xbot/storage/sqlite"
 )
 
 // Subscription represents a LLM subscription for display/selection.
@@ -193,6 +194,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	// tool_summary messages with zero timestamps, causing dedup to drop all
 	// but the first.
 	var lastAssistantTS time.Time
+	var lastAssistantID int64
 	// syntheticIdx provides monotonically-increasing nanosecond offsets to
 	// guarantee unique timestamps for consecutive flushPending() calls when
 	// no real assistant timestamp is available (e.g. all turns interrupted).
@@ -209,6 +211,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				syntheticIdx++
 			}
 			history = append(history, HistoryMessage{
+				HistoryID:  lastAssistantID,
 				Role:       "assistant",
 				Content:    "",
 				Timestamp:  ts,
@@ -234,6 +237,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			continue
 		case "assistant":
 			lastAssistantTS = m.Timestamp
+			lastAssistantID = m.HistoryID
 			if m.Detail != "" {
 				// Detail has authoritative iteration history. Discard pending iters
 				// from intermediate assistant messages — they lack elapsed/label data.
@@ -274,6 +278,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
 						if m.Content != "" && !isInterrupted {
 							history = append(history, HistoryMessage{
+								HistoryID:  m.HistoryID,
 								Role:       "assistant",
 								Content:    m.Content,
 								Timestamp:  m.Timestamp,
@@ -283,6 +288,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 							// Detail has iterations but no displayable content
 							// (intermediate assistant, cancelled turn, or [interrupted] marker).
 							history = append(history, HistoryMessage{
+								HistoryID:  m.HistoryID,
 								Role:       "assistant",
 								Content:    "",
 								Timestamp:  m.Timestamp,
@@ -291,6 +297,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						}
 					} else if m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]") {
 						history = append(history, HistoryMessage{
+							HistoryID: m.HistoryID,
 							Role:      "assistant",
 							Content:   m.Content,
 							Timestamp: m.Timestamp,
@@ -328,10 +335,12 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				// We need to combine them into one HistoryMessage for unified rendering.
 				if len(history) > 0 && history[len(history)-1].Role == "assistant" &&
 					history[len(history)-1].Content == "" && len(history[len(history)-1].Iterations) > 0 {
+					history[len(history)-1].HistoryID = m.HistoryID
 					history[len(history)-1].Content = m.Content
 					history[len(history)-1].Timestamp = m.Timestamp
 				} else {
 					hm := HistoryMessage{
+						HistoryID: m.HistoryID,
 						Role:      "assistant",
 						Content:   m.Content,
 						Timestamp: m.Timestamp,
@@ -355,8 +364,10 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			// so it should use its own synthetic timestamp if that turn
 			// is also interrupted (no assistant reply).
 			lastAssistantTS = time.Time{}
+			lastAssistantID = 0
 			if m.Content != "" {
 				history = append(history, HistoryMessage{
+					HistoryID: m.HistoryID,
 					Role:      m.Role,
 					Content:   m.Content,
 					Timestamp: m.Timestamp,
@@ -365,5 +376,69 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 		}
 	}
 	flushPending()
+	return history
+}
+
+// ConvertHistoryRecords exposes the append-only DB history while preserving the
+// existing assistant/tool presentation shape. Control records remain in the
+// response; clients normally render only compression controls.
+func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
+	var history []HistoryMessage
+	var segment []llm.ChatMessage
+	compactedBy := make(map[int64]int64)
+	for _, record := range records {
+		if record.CompactedBy != 0 {
+			compactedBy[record.HistoryID] = record.CompactedBy
+		}
+	}
+	flush := func() {
+		if len(segment) == 0 {
+			return
+		}
+		converted := ConvertMessagesToHistory(segment)
+		displayOnlyByID := make(map[int64]bool, len(segment))
+		for _, message := range segment {
+			displayOnlyByID[message.HistoryID] = message.DisplayOnly
+		}
+		for i := range converted {
+			converted[i].RecordType = string(sqlite.HistoryRecordMessage)
+			converted[i].CompactedBy = compactedBy[converted[i].HistoryID]
+			converted[i].DisplayOnly = displayOnlyByID[converted[i].HistoryID]
+		}
+		history = append(history, converted...)
+		segment = nil
+	}
+	for _, record := range records {
+		if record.Type == sqlite.HistoryRecordMessage {
+			segment = append(segment, record.Message)
+			continue
+		}
+		flush()
+		control := HistoryMessage{
+			HistoryID: record.HistoryID, Role: "control", Timestamp: record.CreatedAt, RecordType: string(record.Type), TargetHistoryID: record.TargetHistoryID,
+		}
+		if record.Type == sqlite.HistoryRecordCompress {
+			control.Role = "system"
+			control.Content = "[Compacted context]"
+			var snapshot sqlite.ContextSnapshot
+			if err := json.Unmarshal(record.Data, &snapshot); err == nil {
+				for _, msg := range snapshot.Messages {
+					if strings.HasPrefix(strings.TrimSpace(msg.Content), "[Compacted context]") {
+						control.Content = msg.Content
+						break
+					}
+				}
+			}
+			if record.Compression != nil {
+				control.Compression = &protocol.HistoryCompression{
+					StartHistoryID:   record.Compression.StartHistoryID,
+					EndHistoryID:     record.Compression.EndHistoryID,
+					SourceHistoryIDs: append([]int64(nil), record.Compression.SourceHistoryIDs...),
+				}
+			}
+		}
+		history = append(history, control)
+	}
+	flush()
 	return history
 }

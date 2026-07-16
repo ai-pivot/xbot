@@ -190,21 +190,7 @@ func (c *CLIChannel) Start() error {
 	if c.config.HistoryLoader != nil {
 		if history, err := c.config.HistoryLoader(); err == nil && len(history) > 0 {
 			for _, hm := range history {
-				cm := cliMessage{
-					role:      hm.Role,
-					content:   hm.Content,
-					timestamp: hm.Timestamp,
-					isPartial: false,
-					dirty:     true,
-				}
-				// 映射迭代快照
-				if len(hm.Iterations) > 0 {
-					cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-					for i, hi := range hm.Iterations {
-						cm.iterations[i] = cliIterationSnapshot(hi)
-					}
-				}
-				c.model.messages = append(c.model.messages, cm)
+				c.model.messages = append(c.model.messages, toCLIMessage(hm))
 			}
 			log.WithField("count", len(history)).Info("Restored session history")
 		} else if err != nil {

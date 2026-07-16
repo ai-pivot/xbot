@@ -13,14 +13,19 @@ import { postAPI } from '@/lib/api'
 
 /** History message row (protocol.HistoryMessage). */
 export interface HistMsg {
-  role: 'user' | 'assistant'
+  history_id?: number
+  role: 'user' | 'assistant' | 'system' | 'control'
   content: string
   timestamp?: string
   iterations?: unknown[]
-  /** SSE sequence number (present when the message was delivered via SSE
-   *  before being persisted to DB). Used as a stable dedup key — no string
-   *  matching needed. */
-  seq?: number
+  record_type?: string
+  compacted_by?: number
+  display_only?: boolean
+  compression?: {
+    start_history_id?: number
+    end_history_id?: number
+    source_history_ids?: number[]
+  }
 }
 
 /** Raw active-progress snapshot (protocol.ProgressEvent). */
@@ -105,10 +110,11 @@ export async function fetchSessionSubscription(session: SessionSelector): Promis
   })
 }
 
-export async function rewindHistory<T>(session: SessionSelector, cutoffMS: number): Promise<T> {
-  return postAPI<T>('/api/history/rewind', {
+export async function rewindHistory<T>(session: SessionSelector, historyID?: number, cutoffMS?: number): Promise<T> {
+  return sendJSON<T>('/api/history/rewind', 'POST', {
     channel: session.channel,
     chat_id: session.chatID,
+    history_id: historyID,
     cutoff_ms: cutoffMS,
   })
 }

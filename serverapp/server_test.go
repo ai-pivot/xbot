@@ -87,6 +87,20 @@ func TestKillBackgroundTaskRejectsForeignRootSession(t *testing.T) {
 	}
 }
 
+func TestOwnHistoryOrAdminResolvesNestedAgentParent(t *testing.T) {
+	ctx := WithRPCCtxResolved(context.Background(), "auth", "root-chat", 1, "user")
+	h := &RPCContext{}
+	if !h.ownHistoryOrAdmin(ctx, "agent", "cli:root-chat/reviewer") {
+		t.Fatal("direct owned agent key rejected")
+	}
+	if !h.ownHistoryOrAdmin(ctx, "agent", "agent:cli:root-chat/reviewer/fixer") {
+		t.Fatal("nested owned agent key rejected")
+	}
+	if h.ownHistoryOrAdmin(ctx, "agent", "agent:cli:foreign-chat/reviewer/fixer") {
+		t.Fatal("foreign nested agent key accepted")
+	}
+}
+
 func TestIsInteractiveSubAgentTenant(t *testing.T) {
 	cases := []struct {
 		name    string

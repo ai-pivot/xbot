@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 	"xbot/channel"
@@ -39,6 +41,83 @@ func TestHistoryCompactedClearsPendingUserMsg(t *testing.T) {
 	if model.pendingUserMsg != nil {
 		t.Fatal("pendingUserMsg should be nil after HistoryCompacted — " +
 			"keeping it causes duplicate user messages when reload completes")
+	}
+}
+
+func TestRewindPanelIncludesCompactedUserHistoryID(t *testing.T) {
+	model := initTestModel()
+	model.messages = []cliMessage{
+		{historyID: 11, recordType: "message", compactedBy: 20, hidden: true, role: "user", content: "old", timestamp: time.Unix(1, 0)},
+		{historyID: 20, recordType: "compress", role: "system", content: "[Compacted context]", timestamp: time.Unix(2, 0)},
+		{historyID: 21, recordType: "message", role: "user", content: "new", timestamp: time.Unix(3, 0)},
+	}
+	model.openRewindPanel()
+	if len(model.rewindItems) != 2 || model.rewindItems[0].HistoryID != 11 || model.rewindItems[1].HistoryID != 21 {
+		t.Fatalf("rewind items=%+v", model.rewindItems)
+	}
+	if rendered := model.renderMessage(&model.messages[0]); rendered != "" {
+		t.Fatalf("compacted source rendered in TUI: %q", rendered)
+	}
+}
+
+func TestRewindFailureLeavesTranscriptAndDraftUnchanged(t *testing.T) {
+	model := initTestModel()
+	model.channelName, model.chatID = "cli", "chat"
+	model.messages = []cliMessage{{historyID: 11, recordType: "message", role: "user", content: "keep", timestamp: time.Unix(1, 0)}}
+	model.textarea.SetValue("existing draft")
+	model.rewindItems = []rewindItem{{HistoryID: 11, MsgIndex: 0, Content: "keep", Time: time.Unix(1, 0)}}
+	model.rewindMode = true
+	model.channel = &CLIChannel{config: &CLIChannelConfig{RewindHistoryFn: func(string, string, int64, time.Time) (protocol.HistoryRewindResult, error) {
+		return protocol.HistoryRewindResult{}, errors.New("db failed")
+	}}}
+	model.applyRewind()
+	if model.messages[0].historyID != 11 || model.messages[0].content != "keep" || model.textarea.Value() != "existing draft" {
+		t.Fatalf("failed rewind mutated transcript/draft: messages=%+v draft=%q", model.messages, model.textarea.Value())
+	}
+}
+
+func TestHistoryIDRewindBeforeCompressionRestoresVisibleSourceWithoutResettingTokens(t *testing.T) {
+	model := initTestModel()
+	model.channelName, model.chatID = "cli", "chat"
+	model.messages = []cliMessage{
+		{historyID: 10, recordType: "message", compactedBy: 30, hidden: true, role: "user", content: "earlier", timestamp: time.Unix(1, 0)},
+		{historyID: 20, recordType: "message", role: "user", content: "edit me", timestamp: time.Unix(2, 0)},
+		{historyID: 30, recordType: "compress", role: "system", content: "[Compacted context]", timestamp: time.Unix(3, 0)},
+	}
+	model.rewindItems = []rewindItem{{HistoryID: 20, MsgIndex: 1, Content: "edit me", Time: time.Unix(2, 0)}}
+	model.rewindMode = true
+	resetCalls := 0
+	model.resetTokenStateFn = func() { resetCalls++ }
+	model.channel = &CLIChannel{config: &CLIChannelConfig{RewindHistoryFn: func(string, string, int64, time.Time) (protocol.HistoryRewindResult, error) {
+		return protocol.HistoryRewindResult{HistoryRewound: true, FilesRewound: true}, nil
+	}}}
+	model.applyRewind()
+	if len(model.messages) != 1 || model.messages[0].hidden || model.messages[0].compactedBy != 0 {
+		t.Fatalf("rewind did not restore visible source: %+v", model.messages)
+	}
+	if resetCalls != 0 {
+		t.Fatalf("history_id RPC already restored tokens, legacy reset called %d times", resetCalls)
+	}
+	if model.textarea.Value() != "edit me" {
+		t.Fatalf("draft=%q", model.textarea.Value())
+	}
+}
+
+func TestHiddenCompressionSourcesDoNotCreateViewportBlankLines(t *testing.T) {
+	ts := time.Now()
+	base := initTestModel()
+	base.messages = []cliMessage{{role: "user", content: "visible", timestamp: ts, dirty: true}}
+	base.fullRebuild()
+	want := strings.Join(base.rc.histLines, "\n")
+
+	model := initTestModel()
+	model.messages = []cliMessage{{role: "user", content: "visible", timestamp: ts, dirty: true}}
+	for i := 0; i < 40; i++ {
+		model.messages = append(model.messages, cliMessage{role: "user", content: "hidden", hidden: true, dirty: true})
+	}
+	model.fullRebuild()
+	if got := strings.Join(model.rc.histLines, "\n"); got != want {
+		t.Fatalf("hidden sources changed viewport output: got %d lines, want %d", len(model.rc.histLines), len(base.rc.histLines))
 	}
 }
 
