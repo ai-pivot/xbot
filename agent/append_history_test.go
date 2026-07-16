@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
+	"xbot/bus"
 	"xbot/llm"
 	"xbot/session"
 	"xbot/storage/sqlite"
@@ -132,6 +134,46 @@ func TestCompressionWatermarkDoesNotDuplicateSnapshotTail(t *testing.T) {
 	}
 	if len(active) != 3 || active[0].Content != "summary" || active[1].Role != "assistant" || active[2].Role != "tool" {
 		t.Fatalf("duplicate snapshot tail after tool iteration: %+v", active)
+	}
+}
+
+func TestContextWindowExceededStopsWhenCompressionAppendFails(t *testing.T) {
+	mt, sess := newAgentHistorySession(t)
+	if err := mt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error) {
+		return sampleCompressResult(), nil
+	}}
+	messages := []llm.ChatMessage{{Role: "system", Content: "system"}, {Role: "user", Content: "one"}, {Role: "assistant", Content: "two"}, {Role: "user", Content: "three"}}
+	state := &runState{
+		cfg:      RunConfig{ContextManager: cm, LLMClient: &mockLLM{}, Model: "test", Session: sess},
+		messages: messages, persistence: NewPersistenceBridge(sess, len(messages)), tokenTracker: NewTokenTracker(100, 0),
+	}
+	out, retry := state.handleFinalResponse(context.Background(), &llm.LLMResponse{FinishReason: llm.FinishReasonContextWindowExceeded})
+	if retry || out == nil || out.Error == nil {
+		t.Fatalf("retry=%v out=%+v", retry, out)
+	}
+}
+
+func TestAggressiveTruncateAppendFailureKeepsEditorOnOldContext(t *testing.T) {
+	mt, sess := newAgentHistorySession(t)
+	if err := mt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	messages := []llm.ChatMessage{{Role: "system", Content: "system"}}
+	for i := 0; i < 10; i++ {
+		messages = append(messages, llm.ChatMessage{HistoryID: int64(i + 1), Role: "user", Content: fmt.Sprintf("m%d", i)})
+	}
+	editor := NewContextEditor(NewContextEditStore(10))
+	editor.SetMessages(messages)
+	state := &runState{cfg: RunConfig{Session: sess, ContextEditor: editor}, messages: messages,
+		persistence: NewPersistenceBridge(sess, len(messages)), tokenTracker: NewTokenTracker(100, 0)}
+	if state.aggressiveTruncate(context.Background()) {
+		t.Fatal("truncate succeeded after append failure")
+	}
+	if len(state.messages) != len(messages) || len(editor.messages) != len(messages) || editor.messages[1].Content != "m0" {
+		t.Fatalf("context changed after failed prune: state=%d editor=%+v", len(state.messages), editor.messages)
 	}
 }
 
@@ -274,5 +316,32 @@ func TestInteractiveInterruptionIsPersistedWithoutSystemMessage(t *testing.T) {
 	}
 	if len(replayed) != 3 || replayed[2].ToolName != "user_cancelled" {
 		t.Fatalf("replayed interruption=%+v", replayed)
+	}
+}
+
+func TestEagerSavedUserAppearsOnceAndKeepsHistoryID(t *testing.T) {
+	history := []llm.ChatMessage{
+		{HistoryID: 1, Role: "user", Content: "old"},
+		{HistoryID: 2, Role: "assistant", Content: "answer"},
+		{HistoryID: 3, Role: "user", Content: "current"},
+	}
+	msg := bus.InboundMessage{Content: "current", Metadata: map[string]string{"user_msg_eager_saved": "true"}}
+	base, historyID, err := detachEagerSavedUser(history, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(base) != 2 || historyID != 3 {
+		t.Fatalf("base=%+v historyID=%d", base, historyID)
+	}
+	assembled := append(append([]llm.ChatMessage(nil), base...), llm.ChatMessage{Role: "user", Content: "current with middleware"})
+	bindEagerSavedUser(assembled, historyID)
+	userCount := 0
+	for _, item := range assembled {
+		if item.Role == "user" && item.HistoryID == 3 {
+			userCount++
+		}
+	}
+	if userCount != 1 || assembled[len(assembled)-1].HistoryID != 3 {
+		t.Fatalf("assembled=%+v", assembled)
 	}
 }

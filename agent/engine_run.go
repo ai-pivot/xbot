@@ -755,14 +755,16 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 				if s.cfg.ContextManagerConfig != nil {
 					maxTokens = s.cfg.ContextManagerConfig.MaxContextTokens
 				}
-				s.runCompression(ctx, cm, int(totalTokens), maxTokens)
-				if len(s.messages) > 0 {
-					log.Ctx(ctx).WithFields(log.Fields{
-						"new_msg_count": len(s.messages),
-						"retry":         s.compressRetryCount,
-					}).Info("Compression completed after context_window_exceeded, retrying")
-					return nil, true // retry loop iteration
+				if err := s.runCompression(ctx, cm, int(totalTokens), maxTokens); err != nil {
+					out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
+					out.Error = fmt.Errorf("persist forced context compression: %w", err)
+					return out, false
 				}
+				log.Ctx(ctx).WithFields(log.Fields{
+					"new_msg_count": len(s.messages),
+					"retry":         s.compressRetryCount,
+				}).Info("Compression completed after context_window_exceeded, retrying")
+				return nil, true // retry loop iteration
 			}
 
 			// Phase 2: Aggressive truncation — keep system messages + last N messages
@@ -904,11 +906,11 @@ func stripRenameHint(content string) string {
 }
 
 // maybeCompress checks if context compression or observation masking is needed.
-func (s *runState) maybeCompress(ctx context.Context) {
+func (s *runState) maybeCompress(ctx context.Context) error {
 	s.compressAttempts++
 	cm := s.cfg.ContextManager
 	if cm == nil || len(s.messages) <= 3 {
-		return
+		return nil
 	}
 
 	maxTokens := 0
@@ -920,7 +922,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 			"last_prompt_tokens": s.tokenTracker.PromptTokens(),
 			"msg_count":          len(s.messages),
 		}).Info("maybeCompress skipped: maxTokens=0")
-		return
+		return nil
 	}
 
 	// Reserve headroom for max_output_tokens: the API budget is shared
@@ -943,7 +945,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	if tokenSource == "no_data" {
 		// No API token data means we do not know the actual context pressure.
 		// Do not compact or mask based on local guesses.
-		return
+		return nil
 	}
 
 	compressThreshold := 0.9
@@ -973,17 +975,18 @@ func (s *runState) maybeCompress(ctx context.Context) {
 		if cm.Mode() == ContextModeNone {
 			log.Ctx(ctx).Debug("maybeCompress: auto-compression skipped (mode=none)")
 		} else {
-			s.runCompression(ctx, cm, int(totalTokens), maxTokens)
+			return s.runCompression(ctx, cm, int(totalTokens), maxTokens)
 		}
-		return
+		return nil
 	}
 
 	// Observation masking (lightweight, no LLM call).
 	s.maybeMaskObservations(ctx, totalTokens, maxTokens)
+	return nil
 }
 
 // runCompression performs the actual context compression.
-func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalTokens, maxTokens int) {
+func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalTokens, maxTokens int) error {
 	if s.structuredProgress != nil {
 		s.structuredProgress.Phase = PhaseCompressing
 	}
@@ -1038,7 +1041,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		if s.structuredProgress != nil {
 			s.structuredProgress.Phase = PhaseThinking
 		}
-		return
+		return nil
 	}
 	if s.cfg.MemoryToolDefs != nil && s.cfg.MemoryToolExec != nil {
 		sessionCM.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
@@ -1062,7 +1065,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		if s.structuredProgress != nil {
 			s.structuredProgress.Phase = PhaseThinking
 		}
-		return
+		return compressErr
 	}
 	s.messages = pipelineResult.NewMessages
 	s.lastCompressIter = s.compressAttempts
@@ -1179,6 +1182,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			s.notifyProgress("")
 		}
 	}
+	return nil
 }
 
 // aggressiveTruncate performs emergency context truncation when all compression
@@ -1222,8 +1226,6 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 	newMessages = append(newMessages, tailMsgs...)
 
 	oldCount := len(msgs)
-	newMessages = s.syncMessages(newMessages)
-
 	// Persist first so an append failure cannot leave memory ahead of the DB.
 	if s.persistence != nil {
 		if err := s.persistence.AppendPrune(newMessages, len(newMessages)); err != nil {
@@ -1231,6 +1233,7 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 			return false
 		}
 	}
+	newMessages = s.syncMessages(newMessages)
 	s.messages = newMessages
 
 	// Reset token tracker so the next iteration gets fresh data from the API
@@ -1446,7 +1449,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 
 	// --- Incremental session persistence ---
 	if err := s.persistence.IncrementalPersist(s.messages); err != nil {
-		out := s.buildOutput(nil)
+		out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
 		out.Error = fmt.Errorf("append session history: %w", err)
 		return out
 	}
@@ -1455,7 +1458,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	// --- Background notification draining (bg tasks + bg subagents) ---
 	s.drainAndInjectBgNotifications(ctx, iteration)
 	if s.persistenceErr != nil {
-		out := s.buildOutput(nil)
+		out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
 		out.Error = fmt.Errorf("append session history: %w", s.persistenceErr)
 		return out
 	}

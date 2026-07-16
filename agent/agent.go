@@ -2979,12 +2979,38 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 // buildPrompt 构建完整的 LLM 消息列表（共用逻辑：processMessage 和 handlePromptQuery 都调用）。
 // 使用 Agent 持有的 pipeline 实例，通过 MessageContext.Extra 传递动态数据。
+func detachEagerSavedUser(history []llm.ChatMessage, msg bus.InboundMessage) ([]llm.ChatMessage, int64, error) {
+	if msg.Metadata == nil || msg.Metadata["user_msg_eager_saved"] != "true" {
+		return history, 0, nil
+	}
+	if len(history) == 0 || history[len(history)-1].Role != "user" || history[len(history)-1].Content != msg.Content {
+		return nil, 0, fmt.Errorf("eager-saved user message is missing from session history")
+	}
+	return history[:len(history)-1], history[len(history)-1].HistoryID, nil
+}
+
+func bindEagerSavedUser(messages []llm.ChatMessage, historyID int64) {
+	if historyID == 0 {
+		return
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			messages[i].HistoryID = historyID
+			return
+		}
+	}
+}
+
 func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) ([]llm.ChatMessage, error) {
 	userCtx := UserContextFromContext(ctx)
 
 	history, err := tenantSession.GetMessages()
 	if err != nil {
 		return nil, fmt.Errorf("replay session history: %w", err)
+	}
+	history, eagerHistoryID, err := detachEagerSavedUser(history, msg)
+	if err != nil {
+		return nil, err
 	}
 
 	// Auto worktree detection: if multiple sessions share the same git repo,
@@ -3130,7 +3156,9 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 	mc.SetExtra(ExtraKeySessionName, sessionName)
 
-	return a.pipeline.Run(mc), nil
+	assembled := a.pipeline.Run(mc)
+	bindEagerSavedUser(assembled, eagerHistoryID)
+	return assembled, nil
 }
 
 // summarizeRetryError 将 LLM 错误简化为用户友好的描述。

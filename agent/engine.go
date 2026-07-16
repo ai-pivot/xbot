@@ -554,7 +554,11 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		}
 
 		s.beginIteration(i)
-		s.maybeCompress(ctx)
+		if err := s.maybeCompress(ctx); err != nil {
+			out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
+			out.Error = fmt.Errorf("persist context compression: %w", err)
+			return out
+		}
 		s.notifyThinking(i)
 
 		if out := s.assertSystemMessages(ctx); out != nil {
