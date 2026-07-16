@@ -325,7 +325,7 @@ func zipDir(srcDir, outputPath string) error {
 			return err
 		}
 
-		w, err := w.Create(relPath)
+		writer, err := w.Create(relPath)
 		if err != nil {
 			return err
 		}
@@ -336,7 +336,7 @@ func zipDir(srcDir, outputPath string) error {
 		}
 		defer f.Close()
 
-		_, err = io.Copy(w, f)
+		_, err = io.Copy(writer, f)
 		return err
 	})
 }

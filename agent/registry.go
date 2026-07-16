@@ -221,12 +221,11 @@ func (rm *RegistryManager) uninstallApp(name, senderID string) error {
 		}
 	}
 
-	// Remove the manifest file regardless of item errors
-	_ = os.Remove(manifestPath)
-
+	// Only remove the manifest if all items uninstalled successfully
 	if len(errs) > 0 {
 		return fmt.Errorf("partial uninstall, %d errors: %s", len(errs), strings.Join(errs, "; "))
 	}
+	_ = os.Remove(manifestPath)
 	log.WithFields(log.Fields{"type": "app", "name": name, "sender": senderID}).Info("Uninstalled")
 	return nil
 }
@@ -593,7 +592,8 @@ func (rm *RegistryManager) InstallAppFromURL(url, senderID string, force bool) (
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
 
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
 		tmpFile.Close()
 		return nil, fmt.Errorf("download from %s: %w", url, err)
@@ -612,9 +612,14 @@ func (rm *RegistryManager) InstallAppFromURL(url, senderID string, force bool) (
 	}
 
 	limited := io.LimitReader(resp.Body, 100*1024*1024+1)
-	if _, err := io.Copy(tmpFile, limited); err != nil {
+	written, err := io.Copy(tmpFile, limited)
+	if err != nil {
 		tmpFile.Close()
 		return nil, fmt.Errorf("download write: %w", err)
+	}
+	if written > 100*1024*1024 {
+		tmpFile.Close()
+		return nil, fmt.Errorf("file too large: exceeds 100MB limit")
 	}
 	tmpFile.Close()
 
