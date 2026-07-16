@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/atotto/clipboard"
+	"golang.design/x/clipboard"
 	"xbot/session"
 	"xbot/tools"
 	"xbot/version"
@@ -86,12 +86,13 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 			return nil
 		}
 		go func() {
-			if err := clipboard.WriteAll(text); err != nil {
+			if err := clipboard.Init(); err != nil {
 				if m.channel != nil {
 					m.channel.SendToast(m.locale.CopyFailed+": "+err.Error(), IconCross)
 				}
 				return
 			}
+			clipboard.Write(clipboard.FmtText, []byte(text))
 			if m.channel != nil {
 				m.channel.SendToast(m.locale.CopySuccess, IconCheck)
 			}

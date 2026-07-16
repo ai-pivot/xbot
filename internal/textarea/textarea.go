@@ -18,9 +18,9 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/atotto/clipboard"
 	rw "github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
+	"golang.design/x/clipboard"
 )
 
 const (
@@ -928,11 +928,10 @@ func (m Model) Cursor() *tea.Cursor {
 // mergeLineAbove merges the current line the cursor is on with the line above.
 // Paste is a command for pasting from the clipboard into the text input.
 func Paste() tea.Msg {
-	str, err := clipboard.ReadAll()
-	if err != nil {
+	if err := clipboard.Init(); err != nil {
 		return pasteErrMsg{err}
 	}
-	return pasteMsg(str)
+	return pasteMsg(string(clipboard.Read(clipboard.FmtText)))
 }
 
 // wrap performs CJK-aware line wrapping on a logical line of runes.
