@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -947,6 +948,21 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 		}
 		return true
 	})
+	if found == nil && a.multiSession != nil {
+		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
+			if replay, err := sess.Replay(); err == nil && replay.PendingAskUser != nil {
+				event := &protocol.ProgressEvent{}
+				metadata := replay.PendingAskUser.Metadata
+				event.RequestID = metadata["request_id"]
+				if raw := metadata["ask_questions"]; raw != "" {
+					_ = json.Unmarshal([]byte(raw), &event.Questions)
+				}
+				entry := &pendingAskUserEntry{pending: event}
+				a.waitingUserSessions.Store(foundKey, entry)
+				found = entry
+			}
+		}
+	}
 	return foundKey, found
 }
 
@@ -1446,45 +1462,6 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	editStore := NewContextEditStore(100)
 	contextEditor := NewContextEditor(editStore)
 	a.contextEditor = contextEditor
-	// Wire up persistence callback for context edits (best-effort sync to DB).
-	// IMPORTANT: PersistFn is called while ContextEditor.mu is held (write lock).
-	// Do NOT acquire ContextEditor.mu inside PersistFn — deadlock!
-	sessionSvc := sqlite.NewSessionService(multiSession.DB())
-	contextEditor.PersistFn = func(editedIndices []int) {
-		tenantID := contextEditor.tenantID
-		if tenantID == 0 {
-			return
-		}
-		// messages is safe to read here — caller (applyEdit/deleteTurn) holds the write lock
-		msgs := contextEditor.messages
-		if msgs == nil {
-			return
-		}
-		// Build index mapping: msgs index → NonDisplayOnly DB index.
-		// System messages and display-only messages are excluded from the DB index.
-		nonDisplayIdx := 0
-		msgToDBIdx := make(map[int]int, len(msgs))
-		for i, msg := range msgs {
-			if msg.Role == "system" || msg.DisplayOnly {
-				continue
-			}
-			msgToDBIdx[i] = nonDisplayIdx
-			nonDisplayIdx++
-		}
-		for _, idx := range editedIndices {
-			dbIdx, ok := msgToDBIdx[idx]
-			if !ok {
-				continue // system or display-only message, not in DB
-			}
-			if err := sessionSvc.UpdateMessageContentNonDisplayOnly(tenantID, dbIdx, msgs[idx].Content); err != nil {
-				log.WithError(err).WithFields(log.Fields{
-					"tenant_id": tenantID,
-					"index":     dbIdx,
-					"raw_idx":   idx,
-				}).Warn("Failed to persist context edit to database")
-			}
-		}
-	}
 	registry.RegisterCore(&tools.ContextEditTool{Handler: contextEditor})
 
 	// 初始化并注册 TODO 管理工具
@@ -2792,9 +2769,6 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 	// Set tenant-scoped stores for this request.
 	tenantID := tenantSession.TenantID()
-	if a.contextEditor != nil {
-		a.contextEditor.SetTenantID(tenantID)
-	}
 	if a.maskStore != nil {
 		a.maskStore.SetTenantID(tenantID)
 	}
@@ -2866,7 +2840,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// 移除 Assemble 追加的 user message，并精确替换最近的 AskUser tool message。
 	askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
 	if askUserAnswered {
-		// Clear pending AskUser state — the user has answered.
+		// Append the answer before mutating prompt or pending state.
+		if _, err := tenantSession.AppendAskAnswer(msg.Content); err != nil {
+			return nil, fmt.Errorf("append AskUser answer: %w", err)
+		}
 		a.ClearPendingAskUser(msg.Channel, msg.ChatID)
 		// Remove last user message appended by Assemble
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
@@ -2888,10 +2865,6 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		if !foundAskUserTool {
 			log.Ctx(ctx).Warn("AskUser answer received but no matching AskUser tool message found in prompt history")
 		}
-		// Also update the stale tool result in session so future buildPrompt reads correct content.
-		if err := tenantSession.ReplaceToolMessage("AskUser", "", msg.Content); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to replace AskUser tool result in session")
-		}
 	}
 
 	// 运行 Agent 循环（统一 Run）
@@ -2902,13 +2875,12 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		if !msg.Time.IsZero() {
 			userMsg.Timestamp = msg.Time
 		}
-		if err := tenantSession.AddMessage(userMsg); err != nil {
-			log.Ctx(ctx).WithError(err).WithFields(log.Fields{
-				"channel": msg.Channel,
-				"chat_id": msg.ChatID,
-				"sender":  msg.SenderID,
-				"content": msg.Content,
-			}).Warn("Failed to eager-save user message")
+		historyID, err := tenantSession.AppendMessage(userMsg)
+		if err != nil {
+			return nil, fmt.Errorf("eager-save user message: %w", err)
+		}
+		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+			messages[len(messages)-1].HistoryID = historyID
 		}
 	}
 
@@ -3012,8 +2984,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	history, err := tenantSession.GetMessages()
 	if err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to get history, using empty history")
-		history = nil
+		return nil, fmt.Errorf("replay session history: %w", err)
 	}
 
 	// Auto worktree detection: if multiple sessions share the same git repo,

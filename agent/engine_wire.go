@@ -1373,12 +1373,18 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	}
 	cfg.Session = agentTenantSession
 	if err := agentTenantSession.Clear(); err != nil {
-		log.Warn("Failed to clear agent tenant session: ", err)
+		a.interactiveSubAgents.Delete(oneshotKey)
+		return nil, fmt.Errorf("clear oneshot agent tenant session: %w", err)
 	}
 
 	// Eager-save user message so get_history returns it during Run().
-	if err := agentTenantSession.AddMessage(llm.NewUserMessage(task)); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to eager-save oneshot agent user message")
+	historyID, err := agentTenantSession.AppendMessage(llm.NewUserMessage(task))
+	if err != nil {
+		a.interactiveSubAgents.Delete(oneshotKey)
+		return nil, fmt.Errorf("append oneshot agent user message: %w", err)
+	}
+	if len(cfg.Messages) > 1 && cfg.Messages[1].Role == "user" {
+		cfg.Messages[1].HistoryID = historyID
 	}
 
 	// Wire CLI progress + stream callbacks so Ctrl+T shows real-time progress.
@@ -1488,7 +1494,16 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 			}
 		}
 		if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save one-shot agent assistant message with detail")
+			a.cancelChildSessions(oneshotKey)
+			persistErrText := fmt.Sprintf("append oneshot agent assistant message: %v", err)
+			oneshotIA.mu.Lock()
+			oneshotIA.running = false
+			oneshotIA.lastError = persistErrText
+			if len(oneshotIA.messages) > 0 && oneshotIA.messages[len(oneshotIA.messages)-1].Role == "assistant" {
+				oneshotIA.messages = oneshotIA.messages[:len(oneshotIA.messages)-1]
+			}
+			oneshotIA.mu.Unlock()
+			return nil, fmt.Errorf("append oneshot agent assistant message: %w", err)
 		}
 	}
 	// Cascade-cancel any bg sessions spawned during this one-shot's Run(),

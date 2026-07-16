@@ -653,15 +653,21 @@ func (a *Agent) SpawnInteractiveSession(
 	// This can happen after server restart (DB retains old tenant data) or
 	// if destroyInteractiveSession's DeleteTenant failed silently.
 	if err := agentTenantSession.Clear(); err != nil {
-		log.Warn("Failed to clear agent tenant session: ", err)
+		a.destroyInteractiveSession(key)
+		return nil, fmt.Errorf("clear interactive agent tenant session: %w", err)
 	}
 
 	// Eager-save user message so get_history returns it during Run().
 	// Without this, the CLI shows "已加载 0 条历史消息" and the DB has no
 	// user message turn boundary. Run()'s incremental persistence skips
 	// messages[0:lastPersistedCount] which includes this user message.
-	if err := agentTenantSession.AddMessage(llm.NewUserMessage(msg.Content)); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to eager-save interactive agent user message")
+	historyID, err := agentTenantSession.AppendMessage(llm.NewUserMessage(msg.Content))
+	if err != nil {
+		a.destroyInteractiveSession(key)
+		return nil, fmt.Errorf("append interactive agent user message: %w", err)
+	}
+	if len(cfg.Messages) > 1 && cfg.Messages[1].Role == "user" {
+		cfg.Messages[1].HistoryID = historyID
 	}
 
 	// Wire CLI progress + stream callbacks for ALL sessions (foreground and background).
@@ -986,18 +992,7 @@ func (a *Agent) SpawnInteractiveSession(
 			if out.ReasoningContent != "" && len(newMsgs) > 0 {
 				newMsgs[len(newMsgs)-1].ReasoningContent = out.ReasoningContent
 			}
-			placeholder.messages = newMsgs
-			if len(cfg.Messages) > 0 {
-				placeholder.systemPrompt = cfg.Messages[0]
-			}
-			placeholder.cfg = &cfg
-			placeholder.cfg.Messages = nil
-
-			// Persist final assistant message with iteration history as Detail,
-			// same as the foreground path and the main agent does in
-			// handleInboundMessage. The incremental persistence in
-			// postToolProcessing saves assistant messages WITHOUT Detail —
-			// this adds the one with full iteration history.
+			// Persist before publishing the final reply to in-memory session state.
 			if agentTenantSession != nil && out.Content != "" {
 				assistantMsg := llm.NewAssistantMessage(out.Content)
 				assistantMsg.ReasoningContent = out.ReasoningContent
@@ -1007,11 +1002,19 @@ func (a *Agent) SpawnInteractiveSession(
 					}
 				}
 				if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
-					log.WithFields(log.Fields{
-						"role": roleName, "instance": instance,
-					}).WithError(err).Warn("Failed to save bg interactive agent assistant message with detail")
+					placeholder.lastError = fmt.Sprintf("append bg interactive agent assistant message: %v", err)
+					if persisted, loadErr := agentTenantSession.GetMessages(); loadErr == nil {
+						placeholder.messages = persisted
+					}
+					return
 				}
 			}
+			placeholder.messages = newMsgs
+			if len(cfg.Messages) > 0 {
+				placeholder.systemPrompt = cfg.Messages[0]
+			}
+			placeholder.cfg = &cfg
+			placeholder.cfg.Messages = nil
 
 			// Emit subagent_stopped so sidebar updates immediately (busy→idle).
 			// Must be called while placeholder.mu is still held (deferred unlock)
@@ -1151,7 +1154,12 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 		}
 		if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save interactive agent assistant message with detail")
+			if len(ia.messages) > 0 && ia.messages[len(ia.messages)-1].Role == "assistant" {
+				ia.messages = ia.messages[:len(ia.messages)-1]
+			}
+			ia.lastError = fmt.Sprintf("append interactive agent assistant message: %v", err)
+			a.interactiveSubAgents.Store(key, ia)
+			return nil, fmt.Errorf("append interactive agent assistant message: %w", err)
 		}
 	}
 
@@ -1260,9 +1268,12 @@ func (a *Agent) SendToInteractiveSession(
 
 	// Eager-save user message so get_history returns it during Run().
 	if cfg.Session != nil {
-		if err := cfg.Session.AddMessage(llm.NewUserMessage(msg.Content)); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to eager-save interactive agent user message (send)")
+		historyID, err := cfg.Session.AppendMessage(llm.NewUserMessage(msg.Content))
+		if err != nil {
+			ia.mu.Unlock()
+			return nil, fmt.Errorf("append interactive agent user message: %w", err)
 		}
+		newMessages[len(newMessages)-1].HistoryID = historyID
 	}
 
 	ia.mu.Unlock()
@@ -1558,6 +1569,22 @@ func (a *Agent) SendToInteractiveSession(
 		// --- Write back results ---
 		ia.mu.Lock()
 		defer ia.mu.Unlock()
+		if out.Error == nil && cfg.Session != nil && out.Content != "" {
+			assistantMsg := llm.NewAssistantMessage(out.Content)
+			assistantMsg.ReasoningContent = out.ReasoningContent
+			if len(out.IterationHistory) > 0 {
+				if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+					assistantMsg.Detail = string(jsonBytes)
+				}
+			}
+			if err := cfg.Session.AddMessage(assistantMsg); err != nil {
+				ia.lastError = fmt.Sprintf("append async agent assistant message: %v", err)
+				if persisted, loadErr := cfg.Session.GetMessages(); loadErr == nil {
+					ia.messages = persisted
+				}
+				return
+			}
+		}
 
 		if out.Error != nil {
 			ia.lastError = out.Error.Error()
@@ -1628,19 +1655,6 @@ func (a *Agent) SendToInteractiveSession(
 			}
 		}
 
-		// Persist final assistant message with iteration history as Detail.
-		if cfg.Session != nil && out.Content != "" {
-			assistantMsg := llm.NewAssistantMessage(out.Content)
-			assistantMsg.ReasoningContent = out.ReasoningContent
-			if len(out.IterationHistory) > 0 {
-				if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
-					assistantMsg.Detail = string(jsonBytes)
-				}
-			}
-			if err := cfg.Session.AddMessage(assistantMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save async send agent assistant message with detail")
-			}
-		}
 	}()
 
 	return &channelpkg.OutboundMsg{

@@ -2,9 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 
 	"xbot/llm"
-	log "xbot/logger"
 )
 
 // CompressPipelineParams holds the inputs for a compression pipeline execution.
@@ -55,7 +55,8 @@ type CompressPipelineResult struct {
 //  6. Cleans OffloadStore and MaskStore entries
 //
 // Returns the pipeline result or the compression error.
-// Persistence failures are logged but do not cause an error return.
+// Persistence is fail-closed: the caller must not install the compressed
+// in-memory view unless its control record was appended successfully.
 func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*CompressPipelineResult, error) {
 	var result *CompressResult
 	var err error
@@ -84,10 +85,6 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 	// the compressed context size (that was the root cause of the "117k → 259k" bug).
 	newTokenCount := int64(result.CompressedTokens)
 
-	if params.TokenTracker != nil {
-		params.TokenTracker.ResetAfterCompress()
-	}
-
 	if params.Persistence != nil {
 		// Persist LLMView (not SessionView) to preserve complete tool call/result
 		// structure. SessionView folds tool messages into flat text summaries,
@@ -100,8 +97,11 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 				persistView = append(persistView, msg)
 			}
 		}
-		if ok, _ := params.Persistence.RewriteAfterCompress(persistView, len(persistView)); !ok {
-			log.Ctx(ctx).Warn("Compression persistence failed, session may be inconsistent")
+		if ok, persistErr := params.Persistence.RewriteAfterCompress(persistView, len(persistView)); !ok {
+			if persistErr == nil {
+				persistErr = fmt.Errorf("compression history append failed")
+			}
+			return nil, persistErr
 		}
 	}
 
@@ -109,6 +109,9 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 	// by any message in the compressed LLMView. This is a key improvement over
 	// the old time-based cleanup — it ensures that mask/offload references in
 	// tail messages and the compaction summary remain loadable after compression.
+	if params.TokenTracker != nil {
+		params.TokenTracker.ResetAfterCompress()
+	}
 	referencedIDs := extractMaskOffloadIDs(newMessages)
 	if params.OffloadStore != nil {
 		params.OffloadStore.CleanUnreferencedEntries(params.OffloadSessionKey, referencedIDs)

@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/session"
+	"xbot/storage/sqlite"
 )
 
 // dynamicContextRe matches <dynamic-context>...</dynamic-context> blocks for stripping
@@ -39,8 +41,8 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 	if b.session == nil || len(messages) <= b.lastPersistedCount {
 		return nil
 	}
-	persistOk := true
-	for _, msg := range messages[b.lastPersistedCount:] {
+	for idx := b.lastPersistedCount; idx < len(messages); idx++ {
+		msg := messages[idx]
 		if msg.Role == "system" {
 			continue
 		}
@@ -51,20 +53,19 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 		if strings.Contains(persistMsg.Content, "<dynamic-context>") {
 			persistMsg.Content = dynamicContextRe.ReplaceAllString(persistMsg.Content, "")
 		}
-		if err := b.session.AddMessage(persistMsg); err != nil {
+		historyID, err := b.session.AppendMessage(persistMsg)
+		if err != nil {
 			log.WithError(err).Error("Failed to persist message to session")
-			persistOk = false
-			break
+			return fmt.Errorf("persist message %d: %w", idx, err)
 		}
+		messages[idx].HistoryID = historyID
 	}
-	if persistOk {
-		b.lastPersistedCount = len(messages)
-	}
+	b.lastPersistedCount = len(messages)
 	return nil
 }
 
-// RewriteAfterCompress clears the session and re-adds all compressed messages.
-// Used after context compression when the entire session must be rewritten.
+// RewriteAfterCompress appends a compression control record containing the new
+// active context. Original history rows are never rewritten or deleted.
 // Strips <system-reminder> and <dynamic-context> blocks before writing to prevent
 // transient injection artifacts from being persisted.
 // Updates lastPersistedCount to totalMsgCount on success.
@@ -73,11 +74,7 @@ func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, 
 	if b.session == nil {
 		return true, nil
 	}
-	if err := b.session.Clear(); err != nil {
-		log.WithError(err).Warn("Failed to clear session for compression, skipping persistence")
-		return false, err
-	}
-	allOk := true
+	clean := make([]llm.ChatMessage, 0, len(sessionView))
 	for _, msg := range sessionView {
 		if err := assertNoSystemPersist(msg); err != nil {
 			continue
@@ -90,17 +87,26 @@ func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, 
 		if strings.Contains(persistMsg.Content, "<dynamic-context>") {
 			persistMsg.Content = dynamicContextRe.ReplaceAllString(persistMsg.Content, "")
 		}
-		if err := b.session.AddMessage(persistMsg); err != nil {
-			log.WithError(err).Error("Partial write during compression, session may be corrupted")
-			allOk = false
-			break
-		}
+		clean = append(clean, persistMsg)
 	}
-	if allOk {
-		b.lastPersistedCount = totalMsgCount
-		return true, nil
+	if _, err := b.session.AppendContextSnapshot(sqlite.HistoryRecordCompress, clean); err != nil {
+		log.WithError(err).Error("Failed to append compression history record")
+		return false, err
 	}
-	return false, nil
+	b.lastPersistedCount = totalMsgCount
+	return true, nil
+}
+
+// AppendPrune records an aggressive context truncation without deleting history.
+func (b *PersistenceBridge) AppendPrune(sessionView []llm.ChatMessage, totalMsgCount int) error {
+	if b.session == nil {
+		return nil
+	}
+	if _, err := b.session.AppendContextSnapshot(sqlite.HistoryRecordPrune, sessionView); err != nil {
+		return fmt.Errorf("append prune history: %w", err)
+	}
+	b.lastPersistedCount = totalMsgCount
+	return nil
 }
 
 // MarkAllPersisted updates the watermark to the given count without writing anything.

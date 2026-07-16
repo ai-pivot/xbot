@@ -62,6 +62,7 @@ type runState struct {
 	waitingUser        bool
 	waitingQuestion    string
 	waitingMetadata    map[string]string
+	persistenceErr     error
 	lastContent        string
 	compressRetryCount int
 	compressAttempts   int
@@ -122,7 +123,7 @@ func newRunState(cfg RunConfig) *runState {
 	autoNotify := cfg.ProgressNotifier != nil || cfg.ProgressEventHandler != nil
 	batchProgressByIteration := cfg.Channel == "web"
 
-	return &runState{
+	state := &runState{
 		cfg:                      cfg,
 		maxIter:                  maxIter,
 		sessionKey:               sessionKey,
@@ -135,6 +136,10 @@ func newRunState(cfg RunConfig) *runState {
 		persistence:              NewPersistenceBridge(cfg.Session, len(messages)),
 		tokenTracker:             NewTokenTracker(cfg.LastPromptTokens, cfg.LastCompletionTokens),
 	}
+	if cfg.ContextEditor != nil {
+		cfg.ContextEditor.BindSession(cfg.Session)
+	}
+	return state
 }
 
 // initProgress sets up structured progress tracking and the progress finalizer.
@@ -1217,18 +1222,20 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 	newMessages = append(newMessages, tailMsgs...)
 
 	oldCount := len(msgs)
-	s.messages = s.syncMessages(newMessages)
+	newMessages = s.syncMessages(newMessages)
+
+	// Persist first so an append failure cannot leave memory ahead of the DB.
+	if s.persistence != nil {
+		if err := s.persistence.AppendPrune(newMessages, len(newMessages)); err != nil {
+			log.Ctx(ctx).WithError(err).Error("Aggressive truncation history append failed")
+			return false
+		}
+	}
+	s.messages = newMessages
 
 	// Reset token tracker so the next iteration gets fresh data from the API
 	if s.tokenTracker != nil {
 		s.tokenTracker.ResetAfterCompress()
-	}
-
-	// Persist the truncated history
-	if s.persistence != nil {
-		s.persistence.RewriteAfterCompress(
-			newMessages, len(newMessages),
-		)
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{
@@ -1438,11 +1445,20 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	}
 
 	// --- Incremental session persistence ---
-	s.persistence.IncrementalPersist(s.messages)
+	if err := s.persistence.IncrementalPersist(s.messages); err != nil {
+		out := s.buildOutput(nil)
+		out.Error = fmt.Errorf("append session history: %w", err)
+		return out
+	}
 	s.validateInvariantsAt(ctx, "post_persist")
 
 	// --- Background notification draining (bg tasks + bg subagents) ---
 	s.drainAndInjectBgNotifications(ctx, iteration)
+	if s.persistenceErr != nil {
+		out := s.buildOutput(nil)
+		out.Error = fmt.Errorf("append session history: %w", s.persistenceErr)
+		return out
+	}
 
 	// Check if any tool marked as waiting for user response
 	if s.waitingUser {
@@ -1572,11 +1588,21 @@ func (s *runState) injectSyntheticToolPair(
 	s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
 
 	if s.cfg.Session != nil {
-		if err := s.cfg.Session.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).Warn("Failed to persist synthetic assistant message: ", err)
+		assistantHistoryID, err := s.cfg.Session.AppendMessage(assistantMsg)
+		if err != nil {
+			s.persistenceErr = fmt.Errorf("persist synthetic assistant message: %w", err)
+			return
 		}
-		if err := s.cfg.Session.AddMessage(toolMsg); err != nil {
-			log.Ctx(ctx).Warn("Failed to persist synthetic tool message: ", err)
+		if len(s.messages) >= 2 {
+			s.messages[len(s.messages)-2].HistoryID = assistantHistoryID
+		}
+		toolHistoryID, err := s.cfg.Session.AppendMessage(toolMsg)
+		if err != nil {
+			s.persistenceErr = fmt.Errorf("persist synthetic tool message: %w", err)
+			return
+		}
+		if len(s.messages) >= 1 {
+			s.messages[len(s.messages)-1].HistoryID = toolHistoryID
 		}
 		s.persistence.MarkAllPersisted(len(s.messages))
 	}

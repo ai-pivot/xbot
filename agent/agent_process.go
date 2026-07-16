@@ -347,7 +347,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 			continue
 		}
 		if err := tenantSession.AddMessage(em); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save engine message on cancel")
+			return nil, fmt.Errorf("append cancelled engine message: %w", err)
 		}
 	}
 	if len(out.EngineMessages) > 0 {
@@ -407,16 +407,17 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		}
 		iterHistory[idx].Tools = append(iterHistory[idx].Tools, snapshot)
 	}
-	persistCancelTool := func(assistantMsg, toolMsg llm.ChatMessage, snapshot IterationToolSnapshot) {
+	persistCancelTool := func(assistantMsg, toolMsg llm.ChatMessage, snapshot IterationToolSnapshot) error {
 		if tenantSession != nil {
 			if err := tenantSession.AddMessage(assistantMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save cancel synthetic assistant message")
+				return err
 			}
 			if err := tenantSession.AddMessage(toolMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save cancel synthetic tool message")
+				return err
 			}
 		}
 		appendCancelToolSnapshot(snapshot)
+		return nil
 	}
 
 	for i, notif := range pendingNotifications {
@@ -424,10 +425,14 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		if !ok {
 			continue
 		}
-		persistCancelTool(assistantMsg, toolMsg, snapshot)
+		if err := persistCancelTool(assistantMsg, toolMsg, snapshot); err != nil {
+			return nil, fmt.Errorf("append cancelled notification: %w", err)
+		}
 	}
 	cancelAssistantMsg, cancelToolMsg, cancelSnapshot := userCancelledSyntheticTool()
-	persistCancelTool(cancelAssistantMsg, cancelToolMsg, cancelSnapshot)
+	if err := persistCancelTool(cancelAssistantMsg, cancelToolMsg, cancelSnapshot); err != nil {
+		return nil, fmt.Errorf("append cancellation marker: %w", err)
+	}
 
 	if len(iterHistory) > 0 {
 		if jsonBytes, err := json.Marshal(iterHistory); err == nil {
@@ -442,7 +447,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		}
 		if tenantSession != nil {
 			if err := tenantSession.AddMessage(cancelMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save cancelled iteration history")
+				return nil, fmt.Errorf("append cancelled iteration history: %w", err)
 			}
 		}
 	}
@@ -521,6 +526,9 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 
 	// If a tool is waiting for user response, send WaitingUser outbound
 	if waitingUser {
+		if _, err := tenantSession.AppendAskQuestion(out.Metadata); err != nil {
+			return nil, fmt.Errorf("append AskUser question: %w", err)
+		}
 		outbound := buildWaitingUserOutbound(ctx, msg, out, tenantSession)
 		// Store the pending AskUser payload so reconnect can resend it.
 		a.storePendingAskUserOutbound(msg, outbound)
@@ -562,7 +570,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		}
 	}
 	if err := tenantSession.AddMessage(assistantMsg); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to save assistant message")
+		return nil, fmt.Errorf("append assistant message: %w", err)
 	}
 
 	// Send via sendMessage (reuses session message tracking)

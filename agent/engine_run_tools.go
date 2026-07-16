@@ -10,6 +10,7 @@ import (
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/storage/sqlite"
 
 	"xbot/tools"
 )
@@ -439,44 +440,31 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 			"token_ratio":  fmt.Sprintf("%.2f", float64(totalTokens)/float64(maxTokens)),
 		}).Info("Observation masking applied")
 	}
+	// Append mask controls before installing the in-memory view. Original tool
+	// results remain immutable message rows and replay applies only placeholders.
+	if s.cfg.Session != nil {
+		mutations := make([]sqlite.MaskMutation, 0, len(maskedEntries))
+		for _, entry := range maskedEntries {
+			if entry.MessageIndex < 0 || entry.MessageIndex >= len(s.messages) || s.messages[entry.MessageIndex].HistoryID == 0 {
+				log.Ctx(ctx).WithField("raw_idx", entry.MessageIndex).Warn("Mask skipped because target has no persisted history_id")
+				return
+			}
+			occurrence := 0
+			for i := 0; i < entry.MessageIndex; i++ {
+				if s.messages[i].HistoryID == s.messages[entry.MessageIndex].HistoryID {
+					occurrence++
+				}
+			}
+			mutations = append(mutations, sqlite.MaskMutation{TargetHistoryID: s.messages[entry.MessageIndex].HistoryID, TargetOccurrence: occurrence, Content: entry.Content})
+		}
+		if err := s.cfg.Session.AppendMasks(mutations); err != nil {
+			log.Ctx(ctx).WithError(err).Error("Failed to append mask history; keeping original context")
+			return
+		}
+	}
 	s.messages = s.syncMessages(masked)
 	GlobalMetrics.MaskingEvents.Add(1)
 	GlobalMetrics.MaskedItems.Add(int64(count))
-
-	// Persist masked content to session so the next Run() loads masked messages.
-	// CRITICAL: s.messages indices include system messages and display-only messages,
-	// but the session DB NonDisplayOnly indices skip both. Calculate a mapping so
-	// masked content lands on the correct DB rows.
-	if s.cfg.Session != nil {
-		// Build a mapping from s.messages index → NonDisplayOnly DB index.
-		// System messages and display-only messages are excluded from the DB index.
-		nonDisplayIdx := 0
-		msgToDBIdx := make(map[int]int, len(s.messages))
-		for i, msg := range s.messages {
-			if msg.Role == "system" || msg.DisplayOnly {
-				continue // not counted in NonDisplayOnly index
-			}
-			msgToDBIdx[i] = nonDisplayIdx
-			nonDisplayIdx++
-		}
-		persistedMasked := 0
-		for _, entry := range maskedEntries {
-			dbIdx, ok := msgToDBIdx[entry.MessageIndex]
-			if !ok {
-				continue // system or display-only message, not in DB
-			}
-			if s.persistence.IsPersisted(entry.MessageIndex) {
-				if err := s.cfg.Session.UpdateMessageContentNonDisplayOnly(dbIdx, entry.Content); err != nil {
-					log.Ctx(ctx).WithError(err).WithField("idx", dbIdx).WithField("raw_idx", entry.MessageIndex).Warn("Failed to persist masked message to session")
-				} else {
-					persistedMasked++
-				}
-			}
-		}
-		if persistedMasked > 0 {
-			log.Ctx(ctx).WithField("persisted_masked", persistedMasked).Info("Persisted masked messages to session")
-		}
-	}
 
 	if s.autoNotify {
 		s.progressLines = append(s.progressLines, fmt.Sprintf("> 🎭 上下文较大 (%d tokens)，已遮蔽 %d 条旧工具结果", totalTokens, count))

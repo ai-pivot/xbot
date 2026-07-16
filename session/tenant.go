@@ -36,6 +36,39 @@ func (s *TenantSession) AddMessage(msg llm.ChatMessage) error {
 	return s.sessionSvc.AddMessage(s.tenantID, msg)
 }
 
+// AppendMessage appends a message and returns its stable history ID.
+func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AppendMessage(s.tenantID, msg)
+}
+
+func (s *TenantSession) AppendControl(recordType sqlite.HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
+	return s.sessionSvc.AppendControl(s.tenantID, recordType, targetHistoryID, data)
+}
+
+func (s *TenantSession) AppendContextSnapshot(recordType sqlite.HistoryRecordType, messages []llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AppendContextSnapshot(s.tenantID, recordType, messages)
+}
+
+func (s *TenantSession) AppendAskQuestion(metadata map[string]string) (int64, error) {
+	return s.sessionSvc.AppendAskQuestion(s.tenantID, metadata)
+}
+
+func (s *TenantSession) AppendAskAnswer(answer string) (int64, error) {
+	return s.sessionSvc.AppendAskAnswer(s.tenantID, answer)
+}
+
+func (s *TenantSession) AppendMasks(mutations []sqlite.MaskMutation) error {
+	return s.sessionSvc.AppendMasks(s.tenantID, mutations)
+}
+
+func (s *TenantSession) Replay() (*sqlite.ReplayResult, error) {
+	return s.sessionSvc.Replay(s.tenantID)
+}
+
+func (s *TenantSession) GetFullHistory() ([]sqlite.HistoryRecord, error) {
+	return s.sessionSvc.GetFullHistory(s.tenantID)
+}
+
 // ReplaceToolMessage updates the most recent matching tool-role message.
 // Empty toolName/toolCallID act as wildcards (match any).
 func (s *TenantSession) ReplaceToolMessage(toolName, toolCallID, content string) error {
