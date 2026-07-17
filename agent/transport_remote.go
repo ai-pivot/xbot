@@ -125,7 +125,7 @@ func (t *RemoteTransport) Call(method string, payload json.RawMessage) (json.Raw
 	t.rpcMu.Lock()
 	t.pending[id] = ch
 	t.rpcMu.Unlock()
-	req := protocol.WSClientMessage{Type: protocol.MsgTypeRPC, ID: id, Method: method, Params: payload}
+	req := protocol.WSClientMessage{Type: protocol.MsgTypeRPC, ID: id, Method: method, Params: payload, RequestID: log.NewRequestID()}
 	// Set write deadline to avoid blocking indefinitely on dead connections.
 	t.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := t.conn.WriteJSON(req); err != nil {

@@ -1952,12 +1952,13 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.multiSession.StartCleanupRoutine()
 
-	a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
+	a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message, requestID string) {
 		sessionKey := channel + ":" + chatID
 		a.bgTaskMgr.SendCronFired(&tools.CronFired{
-			Key:     sessionKey,
-			Sid:     senderID,
-			Message: message,
+			Key:       sessionKey,
+			Sid:       senderID,
+			Message:   message,
+			RequestID: requestID,
 		})
 	})
 	a.cronSch.StartDelayed(3 * time.Second)
@@ -3190,7 +3191,16 @@ func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 	a.injectInboundWithMetadata(channel, chatID, senderID, content, nil)
 }
 
+// injectInboundWithMetadata injects a message with metadata into the inbound queue.
+// If metadata contains a "request_id" key, it is used as the InboundMessage's
+// RequestID for log tracing; otherwise a new one is generated.
 func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content string, metadata map[string]string) {
+	reqID := log.NewRequestID()
+	if metadata != nil {
+		if id := metadata["request_id"]; id != "" {
+			reqID = id
+		}
+	}
 	msg := bus.InboundMessage{
 		Channel:   channel,
 		SenderID:  senderID,
@@ -3198,7 +3208,7 @@ func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content str
 		Content:   content,
 		Metadata:  metadata,
 		Time:      time.Now(),
-		RequestID: log.NewRequestID(),
+		RequestID: reqID,
 	}
 	select {
 	case a.bus.Inbound <- msg:
@@ -3266,6 +3276,17 @@ func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content strin
 	a.injectInboundWithMetadata(channelName, chatID, senderID, content, map[string]string{
 		bgNotificationMetadataKey: "true",
 	})
+}
+
+// injectBgUserMessageWithMetadata is like injectBgUserMessage but accepts
+// additional metadata (e.g. request_id for log tracing from cron triggers).
+func (a *Agent) injectBgUserMessageWithMetadata(channelName, chatID, senderID, content string, metadata map[string]string) {
+	a.injectCLIUserMessage(channelName, chatID, content)
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata[bgNotificationMetadataKey] = "true"
+	a.injectInboundWithMetadata(channelName, chatID, senderID, content, metadata)
 }
 
 // buildBgNotificationRunConfig is no longer needed — idle bg notifications

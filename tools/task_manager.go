@@ -562,9 +562,10 @@ func (n *SubAgentBgNotify) SenderID() string { return n.Sid }
 // This unifies cron and bg task injection: both respect the busy/idle split
 // (busy → tool message, idle → user message with immediate TUI display).
 type CronFired struct {
-	Key     string // channel:chatID for routing
-	Sid     string // original user ID that created the cron job
-	Message string // cron job message (the prompt to execute)
+	Key       string // channel:chatID for routing
+	Sid       string // original user ID that created the cron job
+	Message   string // cron job message (the prompt to execute)
+	RequestID string // tracing ID generated when the job fires
 }
 
 // SessionKey implements BgNotification.

@@ -255,6 +255,7 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	// Format all notifications into content strings, collect senderID
 	var contents []string
 	senderID := ""
+	cronReqID := ""
 	for _, notif := range mine {
 		var content string
 		switch n := notif.(type) {
@@ -286,6 +287,9 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 			if senderID == "" {
 				senderID = n.SenderID()
 			}
+			if cronReqID == "" {
+				cronReqID = n.RequestID
+			}
 		case *tools.AsyncMessageNotification:
 			content = n.Content
 			if senderID == "" {
@@ -312,7 +316,13 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 		"notif_count": len(contents),
 	}).Info("Bg notifications: injecting as batched user message")
 
-	a.injectBgUserMessage(channelName, chatID, senderID, combined)
+	md := map[string]string{
+		bgNotificationMetadataKey: "true",
+	}
+	if cronReqID != "" {
+		md["request_id"] = cronReqID
+	}
+	a.injectBgUserMessageWithMetadata(channelName, chatID, senderID, combined, md)
 }
 
 // handleCancelledRun persists un-saved engine messages and iteration history

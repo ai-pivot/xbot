@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	log "xbot/logger"
 	"xbot/protocol"
 )
 
@@ -33,6 +34,8 @@ func (t *ChannelTransport) Call(method string, payload json.RawMessage) (json.Ra
 	if t.ctxFn != nil {
 		ctx = t.ctxFn()
 	}
+	// Inject a per-call requestID so RPC handler logs are traceable.
+	ctx = log.WithRequestID(ctx, log.NewRequestID())
 	return t.dispatch(ctx, method, payload)
 }
 

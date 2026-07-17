@@ -1250,7 +1250,7 @@ func TestRPCNonBlocking(t *testing.T) {
 	server := startTestServer(t, wc)
 
 	// Custom RPCHandler: "slow_method" sleeps 300ms, "fast_method" returns immediately.
-	wc.SetRPCHandler(func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
+	wc.SetRPCHandler(func(method string, params json.RawMessage, senderID string, requestID string) (json.RawMessage, error) {
 		switch method {
 		case "slow_method":
 			time.Sleep(300 * time.Millisecond)

@@ -162,7 +162,7 @@ func (m *Manager) Emit(ctx context.Context, event Event) (*Decision, error) {
 
 	// Cap at 10 handlers.
 	if len(handlers) > 10 {
-		log.Warnf("hooks: event %s matched %d handlers, truncating to 10", eventName, len(handlers))
+		log.Ctx(ctx).Warnf("hooks: event %s matched %d handlers, truncating to 10", eventName, len(handlers))
 		handlers = handlers[:10]
 	}
 
@@ -199,7 +199,7 @@ func (m *Manager) executeHandler(ctx context.Context, h hookEntry, event Event, 
 			case h.def != nil:
 				name = string(h.def.Type) + ":" + h.def.Command
 			}
-			log.Errorf("hooks: handler %q panicked: %v — skipping", name, r)
+			log.Ctx(ctx).Errorf("hooks: handler %q panicked: %v — skipping", name, r)
 			decision = nil // treat as skipped (Defer)
 		}
 	}()
@@ -208,7 +208,7 @@ func (m *Manager) executeHandler(ctx context.Context, h hookEntry, event Event, 
 	if h.builtin != nil {
 		result, err := h.builtin.Fn(ctx, event)
 		if err != nil {
-			log.Errorf("hooks: builtin %q error: %v", h.builtin.Name, err)
+			log.Ctx(ctx).Errorf("hooks: builtin %q error: %v", h.builtin.Name, err)
 			return nil
 		}
 		return resultToDecision(result)
@@ -218,7 +218,7 @@ func (m *Manager) executeHandler(ctx context.Context, h hookEntry, event Event, 
 
 	// Command handler — check enabled flag.
 	if def.Type == "command" && !commandEnabled {
-		log.Debug("hooks: skipping command handler (EnableCommandHooks=false)")
+		log.Ctx(ctx).Debug("hooks: skipping command handler (EnableCommandHooks=false)")
 		return nil
 	}
 
@@ -227,18 +227,18 @@ func (m *Manager) executeHandler(ctx context.Context, h hookEntry, event Event, 
 		go func(d *HookDef) {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Errorf("hooks: async %s handler panicked: %v", d.Type, r)
+					log.Ctx(ctx).Errorf("hooks: async %s handler panicked: %v", d.Type, r)
 				}
 			}()
 			asyncCtx := context.WithoutCancel(ctx)
 			exec := m.getExecutor(d.Type)
 			if exec == nil {
-				log.Errorf("hooks: no executor for type %q", d.Type)
+				log.Ctx(ctx).Errorf("hooks: no executor for type %q", d.Type)
 				return
 			}
 			_, err := exec.Execute(asyncCtx, d, event)
 			if err != nil {
-				log.Errorf("hooks: async %s handler error: %v", d.Type, err)
+				log.Ctx(ctx).Errorf("hooks: async %s handler error: %v", d.Type, err)
 			}
 		}(def)
 		return nil
@@ -247,12 +247,12 @@ func (m *Manager) executeHandler(ctx context.Context, h hookEntry, event Event, 
 	// Sync handler.
 	exec := m.getExecutor(def.Type)
 	if exec == nil {
-		log.Errorf("hooks: no executor for type %q", def.Type)
+		log.Ctx(ctx).Errorf("hooks: no executor for type %q", def.Type)
 		return nil
 	}
 	result, err := exec.Execute(ctx, def, event)
 	if err != nil {
-		log.Errorf("hooks: %s handler error: %v", def.Type, err)
+		log.Ctx(ctx).Errorf("hooks: %s handler error: %v", def.Type, err)
 		return nil
 	}
 	return resultToDecision(result)

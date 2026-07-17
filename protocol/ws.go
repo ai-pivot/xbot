@@ -125,5 +125,6 @@ type WSClientMessage struct {
 	ID         string             `json:"id,omitempty"`
 	Method     string             `json:"method,omitempty"`
 	Params     json.RawMessage    `json:"params,omitempty"`
+	RequestID  string             `json:"request_id,omitempty"` // tracing: propagated to RPC handler context
 	TUIControl *TUIControlPayload `json:"tui_control,omitempty"`
 }

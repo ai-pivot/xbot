@@ -152,8 +152,9 @@ type WebCallbacks struct {
 	// RPCHandler handles RPC requests from CLI remote clients.
 	// The method string identifies the operation; params is the JSON-encoded request body.
 	// senderID is the authenticated user ID (from the WS connection / runner token).
+	// requestID is a per-call tracing ID propagated from the client for log correlation.
 	// Returns JSON-encoded result or an error.
-	RPCHandler func(method string, params json.RawMessage, senderID string) (json.RawMessage, error)
+	RPCHandler func(method string, params json.RawMessage, senderID string, requestID string) (json.RawMessage, error)
 	// SessionsList returns interactive SubAgent sessions for a user (channel="web", chatID=senderID).
 	// Returns JSON-serializable session info objects.
 	SessionsList func(senderID string) []SessionInfo
@@ -428,7 +429,7 @@ func (wc *WebChannel) SetCallbacks(cb WebCallbacks) {
 
 // SetRPCHandler sets or replaces the RPC handler. Used to wire the handler
 // after the dispatcher and message bus are available.
-func (wc *WebChannel) SetRPCHandler(fn func(method string, params json.RawMessage, senderID string) (json.RawMessage, error)) {
+func (wc *WebChannel) SetRPCHandler(fn func(method string, params json.RawMessage, senderID string, requestID string) (json.RawMessage, error)) {
 	wc.callbacks.RPCHandler = fn
 }
 
@@ -1166,15 +1167,16 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				continue
 			}
 			var rpcReq struct {
-				ID     string          `json:"id"`
-				Method string          `json:"method"`
-				Params json.RawMessage `json:"params"`
+				ID        string          `json:"id"`
+				Method    string          `json:"method"`
+				Params    json.RawMessage `json:"params"`
+				RequestID string          `json:"request_id"`
 			}
 			if err := json.Unmarshal(raw, &rpcReq); err != nil {
 				log.WithError(err).Debug("Invalid RPC message from CLI client")
 				continue
 			}
-			go func(id, method string, params json.RawMessage, userID string) {
+			go func(id, method string, params json.RawMessage, userID, requestID string) {
 				var result json.RawMessage
 				var rpcErr error
 				func() {
@@ -1182,13 +1184,14 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 						if r := recover(); r != nil {
 							log.WithField("method", method).
 								WithField("rpc_id", id).
+								WithField("request_id", requestID).
 								WithField("stack", string(debug.Stack())).
 								WithError(fmt.Errorf("%v", r)).
 								Error("RPC handler panic")
 							rpcErr = fmt.Errorf("internal error: %v", r)
 						}
 					}()
-					result, rpcErr = wc.callbacks.RPCHandler(method, params, userID)
+					result, rpcErr = wc.callbacks.RPCHandler(method, params, userID, requestID)
 				}()
 				rpcMsg := protocol.WSMessage{Type: protocol.MsgTypeRPCResponse, ID: id}
 				if rpcErr != nil {
@@ -1202,7 +1205,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					log.WithField("rpc_id", id).WithField("method", method).
 						Error("RPC response send timeout (10s)")
 				}
-			}(rpcReq.ID, rpcReq.Method, rpcReq.Params, c.userID)
+			}(rpcReq.ID, rpcReq.Method, rpcReq.Params, c.userID, rpcReq.RequestID)
 			continue
 		case protocol.MsgTypeSubscribe:
 			// Subscribe to a business chatID so the Hub can route

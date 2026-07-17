@@ -781,7 +781,7 @@ func Run(args []string) error {
 
 	// Wire RPC handler for CLI RemoteBackend clients (after disp/msgBus are available).
 	if webCh != nil {
-		webCh.SetRPCHandler(func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
+		webCh.SetRPCHandler(func(method string, params json.RawMessage, senderID string, requestID string) (json.RawMessage, error) {
 			// Resolve canonical user identity for access checks.
 			// Web users (web-N) need their admin role resolved via IdentityResolver.
 			userID := int64(0)
@@ -796,6 +796,11 @@ func Run(args []string) error {
 				}
 			}
 			ctx := WithRPCCtxResolved(context.Background(), senderID, senderIDFromParams(params, senderID), userID, role)
+			// Propagate requestID for log tracing.
+			if requestID == "" {
+				requestID = log.NewRequestID()
+			}
+			ctx = log.WithRequestID(ctx, requestID)
 			return rpcTable.Dispatch(ctx, method, params)
 		})
 	}

@@ -355,7 +355,7 @@ func handleCheckpointPre(ctx context.Context, cs *CheckpointState, e *PreToolUse
 
 	filePath := extractFilePath(e.ToolInput_)
 	if filePath == "" {
-		log.WithField("tool", toolName).Warn("checkpoint hook: empty file path from input")
+		log.Ctx(ctx).WithField("tool", toolName).Warn("checkpoint hook: empty file path from input")
 		return
 	}
 
@@ -430,9 +430,9 @@ func handleCheckpointPost(ctx context.Context, cs *CheckpointState, e *PostToolU
 
 	// Tool succeeded — write snapshot to store.
 	if writeErr := cs.Store().Write(snap); writeErr != nil {
-		log.WithError(writeErr).Warn("checkpoint hook: failed to write snapshot")
+		log.Ctx(ctx).WithError(writeErr).Warn("checkpoint hook: failed to write snapshot")
 	} else {
-		log.WithFields(log.Fields{"turn": snap.TurnIdx, "tool": toolName, "file": snap.FilePath, "existed": snap.Existed}).Debug("checkpoint hook: snapshot saved")
+		log.Ctx(ctx).WithFields(log.Fields{"turn": snap.TurnIdx, "tool": toolName, "file": snap.FilePath, "existed": snap.Existed}).Debug("checkpoint hook: snapshot saved")
 	}
 }
 

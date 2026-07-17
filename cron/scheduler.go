@@ -12,12 +12,12 @@ import (
 
 // InjectFunc is the function type for injecting messages into the agent.
 // Deprecated: use NotifyCronFunc for the unified bg notification pipeline.
-type InjectFunc func(channel, chatID, senderID, content string)
+type InjectFunc func(channel, chatID, senderID, content, requestID string)
 
 // NotifyCronFunc pushes a cron fired notification into the background notification
 // pipeline (BgTaskManager.NotifyCh). When set, cron triggers reuse the same
 // busy/idle routing as bg task completions.
-type NotifyCronFunc func(channel, chatID, senderID, message string)
+type NotifyCronFunc func(channel, chatID, senderID, message, requestID string)
 
 // Scheduler manages the cron job scheduling loop.
 // Cron jobs are fired via NotifyCronFunc through the bg notification pipeline,
@@ -235,16 +235,19 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 			continue
 		}
 
+		reqID := log.NewRequestID()
+
 		log.WithFields(log.Fields{
-			"job_id":  job.ID,
-			"channel": job.Channel,
-			"chat_id": job.ChatID,
+			"job_id":     job.ID,
+			"channel":    job.Channel,
+			"chat_id":    job.ChatID,
+			"request_id": reqID,
 		}).Info("Cron job fired")
 
 		if notifyCronFn != nil {
-			notifyCronFn(job.Channel, job.ChatID, job.SenderID, job.Message)
+			notifyCronFn(job.Channel, job.ChatID, job.SenderID, job.Message, reqID)
 		} else {
-			injectFunc(job.Channel, job.ChatID, job.SenderID, job.Message)
+			injectFunc(job.Channel, job.ChatID, job.SenderID, job.Message, reqID)
 		}
 
 		// Record trigger time for deduplication

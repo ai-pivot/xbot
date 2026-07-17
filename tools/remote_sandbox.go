@@ -220,7 +220,7 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if reg.UserID == "" {
-		log.Warn("Runner registration missing user_id")
+		log.Ctx(r.Context()).Warn("Runner registration missing user_id")
 		rs.sendRegisterError(conn, "INVALID", "missing user_id")
 		return
 	}

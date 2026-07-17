@@ -97,7 +97,7 @@ func TestEverySecondsNoDrift(t *testing.T) {
 
 	var firedCount int
 	s := NewScheduler(cronSvc)
-	s.SetInjectFunc(func(channel, chatID, senderID, content string) {
+	s.SetInjectFunc(func(channel, chatID, senderID, content, requestID string) {
 		firedCount++
 	})
 
@@ -194,7 +194,7 @@ func TestDelaySecondsFiresOnFirstTickAfterRestart(t *testing.T) {
 
 	var firedMessages []string
 	s := NewScheduler(cronSvc)
-	s.SetInjectFunc(func(channel, chatID, senderID, content string) {
+	s.SetInjectFunc(func(channel, chatID, senderID, content, requestID string) {
 		firedMessages = append(firedMessages, content)
 	})
 

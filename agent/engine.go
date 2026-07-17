@@ -929,6 +929,11 @@ func (a *spawnAgentAdapter) buildMsg(parentCtx *tools.ToolContext, task, roleNam
 		metadata["parent_cwd"] = parentCWD
 	}
 
+	// Inherit parent's requestID so SubAgent logs are traceable back to the
+	// originating user request. Without this, processMessage generates a
+	// brand-new ID and the parent-child association is lost.
+	parentReqID := log.RequestID(parentCtx.Ctx)
+
 	return bus.InboundMessage{
 		From: bus.NewIMAddress(a.channel, a.senderID),
 
@@ -946,6 +951,7 @@ func (a *spawnAgentAdapter) buildMsg(parentCtx *tools.ToolContext, task, roleNam
 		AllowedTools:  allowedTools,
 		Capabilities:  caps.ToMap(),
 		Metadata:      metadata,
+		RequestID:     parentReqID,
 	}
 }
 
