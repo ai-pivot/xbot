@@ -1614,7 +1614,15 @@ func (a *Agent) SendToInteractiveSession(
 			if out.ReasoningContent != "" && len(ia.messages) > 0 {
 				ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
 			}
-			if len(out.IterationHistory) > 0 {
+			// For bg mode, iteration history was already incrementally updated via
+			// OnIterationSnapshot during Run() (line ~1321). out.IterationHistory
+			// contains the same snapshots from snapshotCompletedIteration — appending
+			// would duplicate every iteration, causing the TUI to render previous
+			// iteration content twice (visible as stale content at the bottom of the
+			// reasoning progress view).
+			// For foreground mode, OnIterationSnapshot is NOT set (only bg mode sets
+			// it), so we must append out.IterationHistory to preserve cross-turn iterations.
+			if !ia.background && len(out.IterationHistory) > 0 {
 				ia.iterationHistory = append(ia.iterationHistory, out.IterationHistory...)
 			}
 		}
