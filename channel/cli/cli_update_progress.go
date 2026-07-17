@@ -24,7 +24,7 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 
 	// Session filter
 	if msg.payload.ChatID == "" {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTUI).WithFields(log.Fields{
 			"phase":     msg.payload.Phase,
 			"iteration": msg.payload.Iteration,
 		}).Error("handleProgressMsg: received progress with empty ChatID")

@@ -420,7 +420,7 @@ func (s *runState) assertSystemMessages(ctx context.Context) *RunOutput {
 		}
 	}
 	if systemCount != 1 {
-		log.Ctx(ctx).WithField("system_count", systemCount).Error("assert: LLM messages must have exactly one system message")
+		log.Req(ctx, log.CatAgent).WithField("system_count", systemCount).Error("assert: LLM messages must have exactly one system message")
 		return s.buildOutput(&channel.OutboundMsg{
 			Channel: s.cfg.Channel,
 			ChatID:  s.cfg.ChatID,
@@ -556,7 +556,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 // handleInputTooLong forces context compression when input exceeds model limits,
 // then retries the LLM call.
 func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx context.Context, toolDefs []llm.ToolDefinition) (*llm.LLMResponse, error) {
-	log.Ctx(ctx).WithError(fmt.Errorf("input too long")).Warn("Input too long for LLM, forcing context compression and retrying")
+	log.Req(ctx, log.CatAgent).WithError(fmt.Errorf("input too long")).Warn("Input too long for LLM, forcing context compression and retrying")
 	if s.autoNotify {
 		s.progressLines = append(s.progressLines, "> ⚠️ 输入超限，正在强制压缩上下文...")
 		s.notifyProgress("")
@@ -582,7 +582,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		SyncMessages:      s.syncMessages,
 	})
 	if compressErr != nil {
-		log.Ctx(ctx).WithError(compressErr).Warn("Forced context compression after input-too-long failed")
+		log.Req(ctx, log.CatAgent).WithError(compressErr).Warn("Forced context compression after input-too-long failed")
 		return nil, compressErr
 	}
 	s.messages = pipelineResult.NewMessages
@@ -671,7 +671,7 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 		partialContent = s.lastContent
 	}
 	if partialContent != "" {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 			"agent_id":  s.cfg.AgentID,
 			"iteration": iteration + 1,
 		}).Warnf("LLM failed, returning partial result: %v", err)
@@ -712,7 +712,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 		// context_window_exceeded: force compress and retry
 		if response.FinishReason == llm.FinishReasonContextWindowExceeded {
 			const maxCompressRetries = 3
-			log.Ctx(ctx).WithFields(log.Fields{
+			log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 				"msg_count":          len(s.messages),
 				"last_prompt_tokens": s.tokenTracker.PromptTokens(),
 				"finish_reason":      response.FinishReason,
@@ -739,7 +739,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 				}
 				s.runCompression(ctx, cm, int(totalTokens), maxTokens)
 				if len(s.messages) > 0 {
-					log.Ctx(ctx).WithFields(log.Fields{
+					log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 						"new_msg_count": len(s.messages),
 						"retry":         s.compressRetryCount,
 					}).Info("Compression completed after context_window_exceeded, retrying")
@@ -749,7 +749,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 
 			// Phase 2: Aggressive truncation — keep system messages + last N messages
 			if truncated := s.aggressiveTruncate(ctx); truncated {
-				log.Ctx(ctx).WithFields(log.Fields{
+				log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 					"new_msg_count": len(s.messages),
 				}).Warn("Applied aggressive truncation after compression retries exhausted, retrying")
 				return nil, true // retry loop iteration
@@ -773,7 +773,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 		}
 		// content_filter: model output was filtered by safety system
 		if response.FinishReason == llm.FinishReasonContentFilter {
-			log.Ctx(ctx).WithFields(log.Fields{
+			log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 				"finish_reason": response.FinishReason,
 				"content_len":   len(cleanContent),
 			}).Warn("Model response filtered by content filter")
@@ -898,7 +898,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 		maxTokens = s.cfg.ContextManagerConfig.MaxContextTokens
 	}
 	if maxTokens <= 0 {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 			"last_prompt_tokens": s.tokenTracker.PromptTokens(),
 			"msg_count":          len(s.messages),
 		}).Info("maybeCompress skipped: maxTokens=0")
@@ -934,7 +934,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	}
 	needCompress := len(s.messages) > 3 && shouldCompact(int(totalTokens), promptBudget, compressThreshold) && (s.lastCompressIter == 0 || s.compressAttempts-s.lastCompressIter >= 5)
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"total_tokens":       totalTokens,
 		"max_context":        maxTokens,
 		"max_output_tokens":  maxOutputTokens,
@@ -953,7 +953,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 		// compression even when the ContextManager is a noopManager, which returns
 		// "auto compression is disabled (mode=none)" error.
 		if cm.Mode() == ContextModeNone {
-			log.Ctx(ctx).Debug("maybeCompress: auto-compression skipped (mode=none)")
+			log.Req(ctx, log.CatAgent).Debug("maybeCompress: auto-compression skipped (mode=none)")
 		} else {
 			s.runCompression(ctx, cm, int(totalTokens), maxTokens)
 		}
@@ -974,7 +974,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		s.notifyProgress("")
 	}
 
-	log.Ctx(ctx).Info("Auto context compaction triggered")
+	log.Req(ctx, log.CatAgent).Info("Auto context compaction triggered")
 
 	// Emit PreCompact event (notification, non-blocking)
 	if s.cfg.HookManager != nil {
@@ -1016,7 +1016,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		sessionCM = newPhase1Manager(s.cfg.ContextManagerConfig)
 	}
 	if sessionCM == nil {
-		log.Ctx(ctx).Warn("No ContextManager available for compression")
+		log.Req(ctx, log.CatAgent).Warn("No ContextManager available for compression")
 		if s.structuredProgress != nil {
 			s.structuredProgress.Phase = PhaseThinking
 		}
@@ -1040,7 +1040,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		SyncMessages:      s.syncMessages,
 	})
 	if compressErr != nil {
-		log.Ctx(ctx).WithError(compressErr).Warn("Auto context compaction failed")
+		log.Req(ctx, log.CatAgent).WithError(compressErr).Warn("Auto context compaction failed")
 		if s.structuredProgress != nil {
 			s.structuredProgress.Phase = PhaseThinking
 		}
@@ -1098,7 +1098,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		s.structuredProgress.HistoryCompacted = false
 	}
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"new_tokens": pipelineResult.NewTokenCount,
 	}).Info("Auto context compaction completed")
 
@@ -1109,7 +1109,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	if oldTokenCount > 0 {
 		reductionRate := 1.0 - float64(pipelineResult.NewTokenCount)/float64(oldTokenCount)
 		if reductionRate < 0.10 {
-			log.Ctx(ctx).WithFields(log.Fields{
+			log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 				"old_tokens": oldTokenCount,
 				"new_tokens": pipelineResult.NewTokenCount,
 				"reduction":  fmt.Sprintf("%.1f%%", reductionRate*100),
@@ -1139,7 +1139,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	}
 	postCompressLimit := float64(promptBudget) * compressThreshold
 	if pipelineResult.NewTokenCount > int64(postCompressLimit) && len(s.messages) > 10 {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 			"new_tokens":      pipelineResult.NewTokenCount,
 			"prompt_budget":   promptBudget,
 			"threshold_limit": int64(postCompressLimit),
@@ -1218,7 +1218,7 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 		)
 	}
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"old_msg_count": oldCount,
 		"new_msg_count": len(s.messages),
 		"kept_tail":     keepTailMessages,
@@ -1300,7 +1300,7 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 				content = offloaded.Summary
 				GlobalMetrics.OffloadEvents.Add(1)
 				GlobalMetrics.OffloadedItems.Add(1)
-				log.Ctx(ctx).WithFields(log.Fields{
+				log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 					"tool":         tc.Name,
 					"offload_id":   offloaded.ID,
 					"tokens_saved": offloaded.TokenSize,
@@ -1340,7 +1340,7 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 	if s.cfg.OffloadStore != nil {
 		staleIDs := s.cfg.OffloadStore.InvalidateStaleReads(ctx, s.offloadSessionKey, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID)
 		if len(staleIDs) > 0 {
-			log.Ctx(ctx).WithFields(log.Fields{
+			log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 				"stale_count": len(staleIDs),
 				"stale_ids":   staleIDs,
 			}).Info("Stale offloads detected and invalidated")
@@ -1433,7 +1433,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 
 	// Check if any tool marked as waiting for user response
 	if s.waitingUser {
-		log.Ctx(ctx).Info("Tool is waiting for user response, ending loop without additional reply")
+		log.Req(ctx, log.CatAgent).Info("Tool is waiting for user response, ending loop without additional reply")
 		outMsg := &channel.OutboundMsg{
 			Channel:     s.cfg.Channel,
 			ChatID:      s.cfg.ChatID,
@@ -1560,10 +1560,10 @@ func (s *runState) injectSyntheticToolPair(
 
 	if s.cfg.Session != nil {
 		if err := s.cfg.Session.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).Warn("Failed to persist synthetic assistant message: ", err)
+			log.Req(ctx, log.CatAgent).Warn("Failed to persist synthetic assistant message: ", err)
 		}
 		if err := s.cfg.Session.AddMessage(toolMsg); err != nil {
-			log.Ctx(ctx).Warn("Failed to persist synthetic tool message: ", err)
+			log.Req(ctx, log.CatAgent).Warn("Failed to persist synthetic tool message: ", err)
 		}
 		s.persistence.MarkAllPersisted(len(s.messages))
 	}
@@ -1594,7 +1594,7 @@ func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, 
 		"A background task has completed. Let me check the result.",
 		content, fmt.Sprintf("bg:%s", bgTask.ID), elapsed,
 	)
-	log.Ctx(ctx).WithField("task_id", bgTask.ID).Info("Injected bg task completion into Run loop")
+	log.Req(ctx, log.CatAgent).WithField("task_id", bgTask.ID).Info("Injected bg task completion into Run loop")
 }
 
 // injectSubAgentBgNotification injects a bg subagent notification as a synthetic tool call/result pair.
@@ -1602,7 +1602,7 @@ func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, 
 // Only completed notifications are injected (as tool messages) and shown in the TUI progress block.
 func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration int, n *tools.SubAgentBgNotify) {
 	if n.Type == tools.SubAgentBgNotifyProgress {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 			"role":     n.Role,
 			"instance": n.Instance,
 		}).Debug("Dropping bg subagent progress notification in Run loop")
@@ -1616,7 +1616,7 @@ func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration i
 		fmt.Sprintf("Background subagent %s has a %s update.", n.Role, n.Type),
 		content, fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance), 0,
 	)
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"role":     n.Role,
 		"instance": n.Instance,
 		"type":     n.Type,
@@ -1633,7 +1633,7 @@ func (s *runState) injectCronFiredNotification(ctx context.Context, iteration in
 		"A scheduled cron job has fired. Let me process it.",
 		content, "cron", 0,
 	)
-	log.Ctx(ctx).WithField("session_key", c.SessionKey()).Info("Injected cron fired notification into Run loop")
+	log.Req(ctx, log.CatAgent).WithField("session_key", c.SessionKey()).Info("Injected cron fired notification into Run loop")
 }
 
 // injectQueuedUserMessage injects a user message that was delivered while the SubAgent
@@ -1652,7 +1652,7 @@ func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m
 		content, "delivered_message", 0,
 	)
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"content_len": len(m.Content),
 		"iteration":   iteration,
 	}).Info("Injected queued user message into SubAgent Run loop")

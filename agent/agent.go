@@ -41,7 +41,7 @@ var ErrLLMGenerate = errors.New("LLM generate failed")
 // Returns error if a system message is detected — callers should skip the message and log.
 func assertNoSystemPersist(m llm.ChatMessage) error {
 	if m.Role == "system" {
-		log.WithField("message", m).Error("ASSERT: must not persist system message to session")
+		log.Glob(log.CatAgent).WithField("message", m).Error("ASSERT: must not persist system message to session")
 		return fmt.Errorf("must not persist system message to session")
 	}
 	return nil
@@ -223,7 +223,7 @@ func (a *Agent) IndexGlobalTools() {
 	}
 
 	if len(toolEntries) == 0 {
-		log.Info("No tools to index")
+		log.Glob(log.CatStartup).Info("No tools to index")
 		return
 	}
 
@@ -232,7 +232,7 @@ func (a *Agent) IndexGlobalTools() {
 		return
 	}
 
-	log.WithField("count", len(toolEntries)).Infof("Indexed %d global tools (registry + tool groups + MCP)", len(toolEntries))
+	log.Glob(log.CatStartup).WithField("count", len(toolEntries)).Infof("Indexed %d global tools (registry + tool groups + MCP)", len(toolEntries))
 }
 
 // bgSessionState tracks per-session state for bg notification delivery.
@@ -494,31 +494,31 @@ func (a *Agent) SetTUICallbacks(
 // or nil if no RemoteCLIChannel is registered.
 func (a *Agent) buildRemoteTUICtrlFn(chanName, chatID string) func(action string, params map[string]string) (map[string]string, error) {
 	if a.channelFinder == nil {
-		log.WithField("chan", chanName).Debug("buildRemoteTUICtrlFn: channelFinder is nil")
+		log.Glob(log.CatAgent).WithField("chan", chanName).Debug("buildRemoteTUICtrlFn: channelFinder is nil")
 		return nil
 	}
 	if chanName != "cli" {
-		log.WithField("chan", chanName).Debug("buildRemoteTUICtrlFn: channel is not cli")
+		log.Glob(log.CatAgent).WithField("chan", chanName).Debug("buildRemoteTUICtrlFn: channel is not cli")
 		return nil
 	}
 	ch, ok := a.channelFinder("cli")
 	if !ok {
-		log.Debug("buildRemoteTUICtrlFn: channelFinder('cli') returned not found")
+		log.Glob(log.CatAgent).Debug("buildRemoteTUICtrlFn: channelFinder('cli') returned not found")
 		return nil
 	}
 	if rc, ok := ch.(*web.RemoteCLIChannel); ok {
-		log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: remote TUI control enabled")
+		log.Glob(log.CatAgent).WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: remote TUI control enabled")
 		return func(action string, params map[string]string) (map[string]string, error) {
 			return rc.SendTUIControlRequest(chatID, action, params)
 		}
 	}
 	if cch, ok := ch.(*channel.ChannelCliChannel); ok {
-		log.WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: local CLI TUI control enabled")
+		log.Glob(log.CatAgent).WithField("chat_id", chatID).Debug("buildRemoteTUICtrlFn: local CLI TUI control enabled")
 		return func(action string, params map[string]string) (map[string]string, error) {
 			return cch.SendTUIControlRequest(chatID, action, params)
 		}
 	}
-	log.WithField("type", fmt.Sprintf("%T", ch)).Debug("buildRemoteTUICtrlFn: channel is not RemoteCLIChannel or ChannelCliChannel")
+	log.Glob(log.CatAgent).WithField("type", fmt.Sprintf("%T", ch)).Debug("buildRemoteTUICtrlFn: channel is not RemoteCLIChannel or ChannelCliChannel")
 	return nil
 }
 
@@ -812,7 +812,7 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 	// Get old name
 	row = conn.QueryRow(`SELECT label FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?`, ch, senderID, chatID)
 	if err := row.Scan(&oldName); err != nil {
-		log.Warn("Failed to scan old name: ", err)
+		log.Glob(log.CatAgent).Warn("Failed to scan old name: ", err)
 	}
 	if oldName == "" {
 		_, oldName = cli.ParseChatID(chatID)
@@ -1089,7 +1089,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 
 	// Clean up expired waiting cards from previous runs (TTL: 24h)
 	if n := cardBuilder.CleanupExpiredWaitingCards(24 * time.Hour); n > 0 {
-		log.WithField("count", n).Info("Cleaned up expired waiting cards")
+		log.Glob(log.CatStartup).WithField("count", n).Info("Cleaned up expired waiting cards")
 	}
 
 	return skillStore, agentStore, chatHistory, registry, cardBuilder
@@ -1143,7 +1143,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 			registry.RegisterCore(tool)
 		}
 		registry.RegisterCore(&tools.SearchToolsTool{})
-		log.Info("Letta memory tools registered (core)")
+		log.Glob(log.CatStartup).Info("Letta memory tools registered (core)")
 	}
 
 	// Flat 模式：注册 flat memory tools（memory_read/write/list）
@@ -1151,10 +1151,10 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		for _, tool := range tools.FlatMemoryTools() {
 			registry.RegisterCore(tool)
 		}
-		log.Info("Flat memory tools registered (core)")
+		log.Glob(log.CatStartup).Info("Flat memory tools registered (core)")
 	}
 
-	log.Info("Knowledge tools removed — project knowledge is managed via AGENTS.md + docs/agent/")
+	log.Glob(log.CatStartup).Info("Knowledge tools removed — project knowledge is managed via AGENTS.md + docs/agent/")
 
 	// 初始化指令注册表
 	a.commands = NewCommandRegistry()
@@ -1559,13 +1559,13 @@ func New(cfg Config) (*Agent, error) {
 					return cwd
 				}
 				zones := plugin.RenderSessionWidgets(wr, getCWD, chatID)
-				log.Debugf("[widget-push] chatID=%s cwd=%s infoBar=%q footer=%q", chatID, getCWD(chatID), zones["infoBar"], zones["footer"])
+				log.Glob(log.CatStartup).Debugf("[widget-push] chatID=%s cwd=%s infoBar=%q footer=%q", chatID, getCWD(chatID), zones["infoBar"], zones["footer"])
 				return zones
 			})
 		})
-		log.Infof("Plugin system initialized: %d active plugins", agent.pluginMgr.ActiveCount())
+		log.Glob(log.CatStartup).Infof("Plugin system initialized: %d active plugins", agent.pluginMgr.ActiveCount())
 	} else {
-		log.Debug("Plugin system disabled in config")
+		log.Glob(log.CatStartup).Debug("Plugin system disabled in config")
 	}
 
 	// 6. 启动 bg task 通知路由 goroutine
@@ -1871,17 +1871,17 @@ func qualifyChatID(channel, chatID string) string {
 // CLIChannel (local), RemoteCLIChannel (websocket), ChannelCliChannel (in-process server).
 func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
 	if a.channelFinder == nil {
-		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channelFinder is nil, skipping")
+		log.Glob(log.CatAgent).WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channelFinder is nil, skipping")
 		return
 	}
 	ch, ok := a.channelFinder(channelName)
 	if !ok {
-		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Warn("injectCLIUserMessage: channel not found via channelFinder")
+		log.Glob(log.CatAgent).WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Warn("injectCLIUserMessage: channel not found via channelFinder")
 		return
 	}
 	injector, ok := ch.(channel.UserMessageInjector)
 	if !ok {
-		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channel does not implement UserMessageInjector")
+		log.Glob(log.CatAgent).WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channel does not implement UserMessageInjector")
 		return
 	}
 	injector.InjectUserMessage(qualifyChatID(channelName, chatID), content)
@@ -1914,7 +1914,7 @@ func (a *Agent) ensureCheckpointStore(ctx context.Context, sessionKey, channel, 
 	baseDir := filepath.Join(a.xbotHome, "checkpoints", sessionKey)
 	store, err := tools.NewCheckpointStore(baseDir)
 	if err != nil {
-		log.Ctx(ctx).WithError(err).WithField("session", sessionKey).Warn("Failed to create checkpoint store for session")
+		log.Req(ctx, log.CatAgent).WithError(err).WithField("session", sessionKey).Warn("Failed to create checkpoint store for session")
 		return
 	}
 
@@ -1922,7 +1922,7 @@ func (a *Agent) ensureCheckpointStore(ctx context.Context, sessionKey, channel, 
 	a.checkpointState.SetStore(store)
 	a.wireCheckpointStateToCLI()
 
-	log.Ctx(ctx).WithField("session", sessionKey).Debug("Created checkpoint store for session")
+	log.Req(ctx, log.CatAgent).WithField("session", sessionKey).Debug("Created checkpoint store for session")
 }
 
 // wireCheckpointStateToCLI passes the shared CheckpointState to the CLI channel
@@ -1946,7 +1946,7 @@ func (a *Agent) wireCheckpointStateToCLI() {
 // 全局并发数由 AGENT_MAX_CONCURRENCY 控制（默认 3），避免 LLM 并发过高。
 // 用户设置了自己的 LLM 配置后，该用户的请求使用独立的信号量，不再占用全局资源。
 func (a *Agent) Run(ctx context.Context) error {
-	log.WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"max_concurrency": a.getMaxConcurrency(),
 	}).Info("Agent loop started")
 
@@ -2008,14 +2008,14 @@ func (a *Agent) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info("Agent loop stopping, draining chat workers...")
+			log.Req(ctx, log.CatAgent).Info("Agent loop stopping, draining chat workers...")
 			mu.Lock()
 			for _, q := range chatQueues {
 				close(q)
 			}
 			mu.Unlock()
 			wg.Wait()
-			log.Info("Agent loop stopped")
+			log.Req(ctx, log.CatAgent).Info("Agent loop stopped")
 			return ctx.Err()
 		case msg := <-a.bus.Inbound:
 
@@ -2025,11 +2025,11 @@ func (a *Agent) Run(ctx context.Context) error {
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 				cancelKey := msg.Channel + ":" + msg.ChatID
-				log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
+				log.Req(ctx, log.CatAgent).WithField("cancel_key", cancelKey).Info("Received /cancel request")
 				if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
 					select {
 					case ch.(chan struct{}) <- struct{}{}:
-						log.Info("Cancel signal sent to processing goroutine")
+						log.Req(ctx, log.CatAgent).Info("Cancel signal sent to processing goroutine")
 						// 对正在输出的消息添加 ❌ 表情回复
 						if existingID, ok := a.sessionMsgIDs.Load(qualifyChatID(msg.Channel, msg.ChatID)); ok {
 							if id, ok := existingID.(string); ok {
@@ -2045,14 +2045,14 @@ func (a *Agent) Run(ctx context.Context) error {
 						// window where TUI is idle but the agent is still working.
 					default:
 						// cancel 信号已发过
-						log.WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
+						log.Req(ctx, log.CatAgent).WithField("cancel_key", cancelKey).Warn("Cancel signal already sent (buffer full)")
 					}
 				} else {
 					// cancelCh 尚未注册（消息还在排队或等信号量），记录 pending。
 					// 不发送 cancelledMeta — 那会让 TUI 提前进入 idle。
 					// 真正的 cancel ack 由 wasCancelled 路径在 Run 被取消后发送。
 					a.pendingCancel.Store(cancelKey, true)
-					log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
+					log.Req(ctx, log.CatAgent).WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
 				}
 				continue
 			}
@@ -2062,7 +2062,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			select {
 			case q <- msg:
 			default:
-				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": key}).Warn("Chat queue full, dropping message")
+				log.Req(ctx, log.CatAgent).WithFields(log.Fields{"request_id": msg.RequestID, "chat": key}).Warn("Chat queue full, dropping message")
 			}
 		}
 	}
@@ -2221,7 +2221,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 			}
 			// 指令消息分发：根据 Concurrent() 决定执行方式
 			if cmd := a.commands.Match(msg.Content); cmd != nil {
-				log.Ctx(ctx).WithFields(log.Fields{
+				log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 					"channel":     msg.Channel,
 					"command":     cmd.Name(),
 					"concurrent":  cmd.Concurrent(),
@@ -2239,7 +2239,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 
 						response, err := c.Execute(ctx, a, m)
 						if err != nil {
-							log.WithFields(log.Fields{"request_id": m.RequestID, "chat": chatKey}).WithError(err).Error("Error processing command")
+							log.Req(ctx, log.CatAgent).WithFields(log.Fields{"request_id": m.RequestID, "chat": chatKey}).WithError(err).Error("Error processing command")
 							content := formatErrorForUser(err)
 							if sendErr := a.sendMessage(m.Channel, m.ChatID, content); sendErr != nil {
 								a.bus.Outbound <- bus.OutboundMessage{
@@ -2361,7 +2361,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			select {
 			case cancelCh <- struct{}{}:
 				hadPending = true
-				log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
+				log.Req(ctx, log.CatAgent).WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
 			default:
 			}
 		}
@@ -2416,7 +2416,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// 沙箱正在 export+import 时，拒绝该用户所有请求
 			sbUID := sandboxUserID(msg)
 			if sb := tools.GetSandbox(); sb.IsExporting(sbUID) {
-				log.WithFields(log.Fields{"request_id": msg.RequestID, "sender": msg.SenderID, "sandbox_user": sbUID}).Info("Request rejected: sandbox export in progress")
+				log.Req(ctx, log.CatAgent).WithFields(log.Fields{"request_id": msg.RequestID, "sender": msg.SenderID, "sandbox_user": sbUID}).Info("Request rejected: sandbox export in progress")
 				a.sendMessage(msg.Channel, msg.ChatID, "⏳ 沙箱正在持久化中，请稍后再试...")
 				return
 			}
@@ -2430,7 +2430,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 
 		if wasCancelled && ctx.Err() == nil {
 			// 请求被用户 /cancel 取消（而非全局 ctx 关闭）
-			log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).Info("Request cancelled by user")
+			log.Req(ctx, log.CatAgent).WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).Info("Request cancelled by user")
 			// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
 			// Always include cancelled metadata so CLI can distinguish cancel acks
 			// from normal replies and avoid ending a subsequently-started turn.
@@ -2443,13 +2443,13 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					response.Metadata["cancelled"] = "true"
 				}
 				if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
-					log.Warn("Failed to send response: ", err)
+					log.Req(ctx, log.CatAgent).Warn("Failed to send response: ", err)
 				}
 			} else {
 				// No response generated yet (cancelled mid-tool-call) — send empty
 				// message to signal turn end so CLI can clean up typing/progress state.
 				if err := a.sendMessage(msg.Channel, msg.ChatID, "", cancelMeta); err != nil {
-					log.Warn("Failed to send cancel ack: ", err)
+					log.Req(ctx, log.CatAgent).Warn("Failed to send cancel ack: ", err)
 				}
 			}
 			// Do not post-turn drain here: handleCancelledRun records same-session
@@ -2460,11 +2460,11 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		}
 
 		if err != nil {
-			log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).WithError(err).Error("Error processing message")
+			log.Req(ctx, log.CatAgent).WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).WithError(err).Error("Error processing message")
 			// 走 sendMessage 与正常回复同一路径：可 Patch 已发出的进度条为错误内容，避免错误静默不达用户
 			content := formatErrorForUser(err)
 			if sendErr := a.sendMessage(msg.Channel, msg.ChatID, content); sendErr != nil {
-				log.Ctx(ctx).WithError(sendErr).Warn("Failed to send error via sendMessage, fallback to bus")
+				log.Req(ctx, log.CatAgent).WithError(sendErr).Warn("Failed to send error via sendMessage, fallback to bus")
 				a.bus.Outbound <- bus.OutboundMessage{
 					Channel: msg.Channel,
 					ChatID:  msg.ChatID,
@@ -2495,10 +2495,10 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				select {
 				case a.bus.Outbound <- busMsg:
 				default:
-					log.Ctx(ctx).Warn("Message bus outbound channel is full, dropping WaitingUser response")
+					log.Req(ctx, log.CatAgent).Warn("Message bus outbound channel is full, dropping WaitingUser response")
 				}
 			} else if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to dispatch response via sendMessage")
+				log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to dispatch response via sendMessage")
 			}
 		}
 
@@ -2514,7 +2514,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					if err := a.sandbox.CloseForUser(lastSenderID); err != nil {
 						log.WithError(err).Warnf("Idle sandbox cleanup failed for user %s", lastSenderID)
 					} else {
-						log.Infof("Idle sandbox cleaned up for user %s (timeout: %s)", lastSenderID, a.sandboxIdleTimeout)
+						log.Req(ctx, log.CatAgent).Infof("Idle sandbox cleaned up for user %s (timeout: %s)", lastSenderID, a.sandboxIdleTimeout)
 					}
 				})
 			}
@@ -2554,7 +2554,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	if r := []rune(preview); len(r) > 80 {
 		preview = string(r[:80]) + "..."
 	}
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"channel": msg.Channel,
 		"sender":  msg.SenderID,
 	}).Infof("Processing: %s", preview)
@@ -2598,7 +2598,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		// Wire plugin tools for this tenant if not already done
 		if !a.pluginMgr.IsTenantWired(tenantID) {
 			if err := plugin.WirePluginToolsForTenant(a.pluginMgr, a.tools, tenantID); err != nil {
-				log.Ctx(ctx).WithError(err).WithField("tenant_id", tenantID).Warn("Failed to wire plugin tools for tenant")
+				log.Req(ctx, log.CatAgent).WithError(err).WithField("tenant_id", tenantID).Warn("Failed to wire plugin tools for tenant")
 			} else {
 				a.pluginMgr.MarkTenantWired(tenantID)
 			}
@@ -2612,7 +2612,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 	// 缓存消息到聊天历史（用于 ChatHistory 工具查询）
 	a.chatHistory.Add(msg.Channel, msg.ChatID, msg.SenderID, msg.Content)
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"channel": msg.Channel,
 		"chat_id": msg.ChatID,
 		"sender":  msg.SenderID,
@@ -2620,7 +2620,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 	// 指令匹配：通过 CommandRegistry 统一分发
 	if cmd := a.commands.Match(msg.Content); cmd != nil {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 			"channel": msg.Channel,
 			"command": cmd.Name(),
 		}).Info("Command matched")
@@ -2681,11 +2681,11 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			break
 		}
 		if !foundAskUserTool {
-			log.Ctx(ctx).Warn("AskUser answer received but no matching AskUser tool message found in prompt history")
+			log.Req(ctx, log.CatAgent).Warn("AskUser answer received but no matching AskUser tool message found in prompt history")
 		}
 		// Also update the stale tool result in session so future buildPrompt reads correct content.
 		if err := tenantSession.ReplaceToolMessage("AskUser", "", msg.Content); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to replace AskUser tool result in session")
+			log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to replace AskUser tool result in session")
 		}
 	}
 
@@ -2698,7 +2698,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			userMsg.Timestamp = msg.Time
 		}
 		if err := tenantSession.AddMessage(userMsg); err != nil {
-			log.Ctx(ctx).WithError(err).WithFields(log.Fields{
+			log.Req(ctx, log.CatAgent).WithError(err).WithFields(log.Fields{
 				"channel": msg.Channel,
 				"chat_id": msg.ChatID,
 				"sender":  msg.SenderID,
@@ -2771,7 +2771,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// can take several seconds. Without this check, cancel during first-message
 	// setup would silently wait until Run's first iteration to take effect.
 	if ctx.Err() != nil {
-		log.Ctx(ctx).Info("processMessage: ctx cancelled during setup, skipping Run")
+		log.Req(ctx, log.CatAgent).Info("processMessage: ctx cancelled during setup, skipping Run")
 		return &channel.OutboundMsg{
 			Channel:  msg.Channel,
 			ChatID:   msg.ChatID,
@@ -2807,7 +2807,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	history, err := tenantSession.GetMessages()
 	if err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to get history, using empty history")
+		log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to get history, using empty history")
 		history = nil
 	}
 
@@ -2850,10 +2850,10 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 	newTools, err := a.multiSession.ConfigureSessionMCP(msg.Channel, msg.ChatID, msg.SenderID, a.workDir)
 	if err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to configure session MCP scope")
+		log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to configure session MCP scope")
 	}
 	if len(newTools) > 0 {
-		log.Ctx(ctx).WithField("tools", len(newTools)).Info("New personal MCP tools configured")
+		log.Req(ctx, log.CatAgent).WithField("tools", len(newTools)).Info("New personal MCP tools configured")
 	}
 
 	promptWorkDir := a.workDir
@@ -2880,7 +2880,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 			} else {
 				// CWD points to a DIFFERENT worktree than what's registered.
 				// This is a stale state leak — reset to workspace root.
-				log.WithFields(log.Fields{
+				log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 					"session":    sessKey,
 					"cwd":        cwd,
 					"registered": wtEntry.WorktreeDir,
@@ -2891,7 +2891,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		} else {
 			// No worktree registered for this session, but CWD is in a worktree.
 			// This is a stale state leak from a previous session — reset.
-			log.WithFields(log.Fields{
+			log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 				"session": sessKey,
 				"cwd":     cwd,
 			}).Warn("Session has worktree CWD but no registry entry, resetting to workspace root")
@@ -2916,7 +2916,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	mc.CWD = cwd
 	mc.XbotHome = a.xbotHome
 	if mc.CWD == "" {
-		log.WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 			"channel":      msg.Channel,
 			"chat_id":      msg.ChatID,
 			"fallback_dir": promptWorkDir,
@@ -2994,19 +2994,19 @@ func summarizeRetryError(err error) string {
 // This is useful for dynamically adding tools after agent creation.
 func (a *Agent) RegisterTool(tool tools.Tool) {
 	a.tools.Register(tool)
-	log.WithField("tool", tool.Name()).Info("Tool registered")
+	log.Glob(log.CatStartup).WithField("tool", tool.Name()).Info("Tool registered")
 }
 
 func (a *Agent) RegisterCoreTool(tool tools.Tool) {
 	a.tools.RegisterCore(tool)
-	log.WithField("tool", tool.Name()).Info("Tool registered")
+	log.Glob(log.CatStartup).WithField("tool", tool.Name()).Info("Tool registered")
 }
 
 // RegisterToolForChannel registers a channel-scoped tool.
 // The tool is only visible in sessions of the specified channel.
 func (a *Agent) RegisterToolForChannel(channel string, tool tools.Tool) {
 	a.tools.RegisterForChannel(channel, tool)
-	log.WithField("tool", tool.Name()).WithField("channel", channel).Info("Channel tool registered")
+	log.Glob(log.CatStartup).WithField("tool", tool.Name()).WithField("channel", channel).Info("Channel tool registered")
 }
 
 // Tools returns the agent's tool registry.
@@ -3151,7 +3151,7 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 			}
 		}
 
-		log.WithField("send_channel", msg.Channel).
+		log.Glob(log.CatAgent).WithField("send_channel", msg.Channel).
 			WithField("send_chat_id", msg.ChatID).
 			WithField("orig_channel", chName).
 			WithField("orig_chat_id", chatID).
@@ -3213,7 +3213,7 @@ func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content str
 	select {
 	case a.bus.Inbound <- msg:
 	case <-a.agentCtx.Done():
-		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).Warn("injectInbound: agent context done, dropping message")
+		log.Glob(log.CatAgent).WithFields(log.Fields{"channel": channel, "chat_id": chatID}).Warn("injectInbound: agent context done, dropping message")
 	}
 }
 

@@ -1978,7 +1978,7 @@ func (wc *WebChannel) handleChannels(w http.ResponseWriter, r *http.Request) {
 				channels = append(channels, ChannelInfo{Channel: channelName, Label: label})
 			}
 			if err := rows.Err(); err != nil {
-				log.WithError(err).Warn("Failed to iterate channels")
+				log.Glob(log.CatRPC).WithError(err).Warn("Failed to iterate channels")
 			}
 		}
 	}

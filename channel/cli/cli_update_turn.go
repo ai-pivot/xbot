@@ -204,7 +204,7 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	// suLoading guard: during session switch in remote mode, discard injected messages.
 	// They belong to the previous session's context; the RPC will handle state.
 	if m.splashState.suLoading {
-		log.WithFields(log.Fields{"msg_chat_id": msg.chatID}).Debug("handleInjectedUserMsg: suLoading, discarding (session switch in progress)")
+		log.Glob(log.CatTUI).WithFields(log.Fields{"msg_chat_id": msg.chatID}).Debug("handleInjectedUserMsg: suLoading, discarding (session switch in progress)")
 		return nil
 	}
 	// Filter by session: if chatID is set, only apply to matching session.
@@ -212,7 +212,7 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	if msg.chatID != "" {
 		currentKey := qualifyChatID(m.channelName, m.chatID)
 		if msg.chatID != currentKey {
-			log.WithFields(log.Fields{"msg_chat_id": msg.chatID, "current_key": currentKey}).Debug("handleInjectedUserMsg: session filter mismatch, discarding")
+			log.Glob(log.CatTUI).WithFields(log.Fields{"msg_chat_id": msg.chatID, "current_key": currentKey}).Debug("handleInjectedUserMsg: session filter mismatch, discarding")
 			return nil
 		}
 	}
@@ -251,7 +251,7 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 	}
 
 	if shouldQueue {
-		log.Debug("handleInjectedUserMsg: queuing — current turn reply not yet received")
+		log.Glob(log.CatTUI).Debug("handleInjectedUserMsg: queuing — current turn reply not yet received")
 		m.messageQueue = append(m.messageQueue, queuedMsg{content: msg.content, chatID: m.chatID})
 		if m.bgTaskCountFn != nil {
 			m.bgTaskCount = m.bgTaskCountFn()

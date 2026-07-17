@@ -170,7 +170,7 @@ func (mc *MessageContext) Assemble() []llm.ChatMessage {
 	}
 	if systemCount != 1 {
 		// R-02 修复：panic 改为安全降级，移除多余的 system 消息，只保留第一条
-		log.WithField("system_count", systemCount).Error("assert: Assemble should produce exactly one system message (history may contain system)")
+		log.Glob(log.CatAgent).WithField("system_count", systemCount).Error("assert: Assemble should produce exactly one system message (history may contain system)")
 		// 安全降级：移除多余的 system 消息，只保留第一条
 		filtered := make([]llm.ChatMessage, 0, len(messages))
 		seen := false

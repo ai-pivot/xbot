@@ -63,7 +63,7 @@ func (s *Scheduler) Start() {
 		s.running = true
 		s.mu.Unlock()
 		go s.runLoop()
-		log.Info("Cron scheduler started")
+		log.Glob(log.CatCron).Info("Cron scheduler started")
 	})
 }
 
@@ -77,14 +77,14 @@ func (s *Scheduler) StartDelayed(delay time.Duration) {
 
 		go func() {
 			// Wait for the delay, but allow Stop() to interrupt
-			log.WithField("delay", delay).Info("Cron scheduler waiting before start")
+			log.Glob(log.CatCron).WithField("delay", delay).Info("Cron scheduler waiting before start")
 			select {
 			case <-time.After(delay):
 			case <-s.stopCh:
 				s.mu.Lock()
 				s.running = false
 				s.mu.Unlock()
-				log.Info("Cron scheduler stopped during delay")
+				log.Glob(log.CatCron).Info("Cron scheduler stopped during delay")
 				return
 			}
 
@@ -92,7 +92,7 @@ func (s *Scheduler) StartDelayed(delay time.Duration) {
 			s.cleanupExpiredJobs()
 
 			go s.runLoop()
-			log.Info("Cron scheduler started after delay")
+			log.Glob(log.CatCron).Info("Cron scheduler started after delay")
 		}()
 	})
 }
@@ -102,7 +102,7 @@ func (s *Scheduler) cleanupExpiredJobs() {
 	now := time.Now()
 	jobs, err := s.cronSvc.ListAllJobs()
 	if err != nil {
-		log.WithError(err).Error("Failed to list cron jobs during cleanup")
+		log.Glob(log.CatCron).WithError(err).Error("Failed to list cron jobs during cleanup")
 		return
 	}
 
@@ -114,7 +114,7 @@ func (s *Scheduler) cleanupExpiredJobs() {
 				// creation"). If expired during downtime, keep them so checkAndFire
 				// triggers immediately on the first tick — the user expected them to
 				// fire eventually, not be silently dropped.
-				log.WithFields(log.Fields{
+				log.Glob(log.CatCron).WithFields(log.Fields{
 					"job_id":   job.ID,
 					"next_run": job.NextRun,
 				}).Info("Preserving expired delay_seconds one-shot job for immediate fire")
@@ -123,9 +123,9 @@ func (s *Scheduler) cleanupExpiredJobs() {
 			// At-based one-shot jobs: the scheduled moment has passed.
 			// Remove them (matching traditional cron catch-up semantics).
 			if err := s.cronSvc.RemoveJob(job.ID); err != nil {
-				log.WithError(err).WithField("job_id", job.ID).Warn("Failed to remove expired one-shot job")
+				log.Glob(log.CatCron).WithError(err).WithField("job_id", job.ID).Warn("Failed to remove expired one-shot job")
 			} else {
-				log.WithFields(log.Fields{
+				log.Glob(log.CatCron).WithFields(log.Fields{
 					"job_id":   job.ID,
 					"next_run": job.NextRun,
 				}).Info("Removed expired one-shot cron job on startup")
@@ -143,7 +143,7 @@ func (s *Scheduler) cleanupExpiredJobs() {
 				// Cron expression: calculate next run from now
 				nextRun, err = nextCronTime(job.CronExpr, now)
 				if err != nil {
-					log.WithError(err).WithField("job_id", job.ID).Warn("Failed to calculate next cron time, removing job")
+					log.Glob(log.CatCron).WithError(err).WithField("job_id", job.ID).Warn("Failed to calculate next cron time, removing job")
 					s.cronSvc.RemoveJob(job.ID)
 					cleaned++
 					continue
@@ -153,9 +153,9 @@ func (s *Scheduler) cleanupExpiredJobs() {
 			}
 
 			if err := s.cronSvc.UpdateNextRun(job.ID, nextRun); err != nil {
-				log.WithError(err).WithField("job_id", job.ID).Warn("Failed to update expired recurring job")
+				log.Glob(log.CatCron).WithError(err).WithField("job_id", job.ID).Warn("Failed to update expired recurring job")
 			} else {
-				log.WithFields(log.Fields{
+				log.Glob(log.CatCron).WithFields(log.Fields{
 					"job_id":   job.ID,
 					"old_next": job.NextRun,
 					"new_next": nextRun,
@@ -166,7 +166,7 @@ func (s *Scheduler) cleanupExpiredJobs() {
 	}
 
 	if cleaned > 0 {
-		log.WithField("count", cleaned).Info("Cleaned up expired cron jobs on startup")
+		log.Glob(log.CatCron).WithField("count", cleaned).Info("Cleaned up expired cron jobs on startup")
 	}
 }
 
@@ -193,7 +193,7 @@ func (s *Scheduler) runLoop() {
 	for {
 		select {
 		case <-s.stopCh:
-			log.Info("Cron scheduler stopped")
+			log.Glob(log.CatCron).Info("Cron scheduler stopped")
 			return
 		case now := <-ticker.C:
 			s.checkAndFire(now)
@@ -214,7 +214,7 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 
 	jobs, err := s.cronSvc.ListAllJobs()
 	if err != nil {
-		log.WithError(err).Error("Failed to list cron jobs")
+		log.Glob(log.CatCron).WithError(err).Error("Failed to list cron jobs")
 		return
 	}
 
@@ -228,7 +228,7 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 		}
 
 		if job.LastTrigger != nil && now.Sub(*job.LastTrigger) < time.Second {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatCron).WithFields(log.Fields{
 				"job_id":       job.ID,
 				"last_trigger": job.LastTrigger,
 			}).Warn("Cron job triggered too recently, skipping")
@@ -237,7 +237,7 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 
 		reqID := log.NewRequestID()
 
-		log.WithFields(log.Fields{
+		log.Glob(log.CatCron).WithFields(log.Fields{
 			"job_id":     job.ID,
 			"channel":    job.Channel,
 			"chat_id":    job.ChatID,
@@ -252,14 +252,14 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 
 		// Record trigger time for deduplication
 		if err := s.cronSvc.UpdateLastTrigger(job.ID, now); err != nil {
-			log.WithError(err).WithField("job_id", job.ID).Warn("Failed to update last trigger time")
+			log.Glob(log.CatCron).WithError(err).WithField("job_id", job.ID).Warn("Failed to update last trigger time")
 		}
 
 		// Handle job after firing
 		if job.OneShot {
 			// Remove one-shot jobs after firing
 			if err := s.cronSvc.RemoveJob(job.ID); err != nil {
-				log.WithError(err).WithField("job_id", job.ID).Error("Failed to remove one-shot job")
+				log.Glob(log.CatCron).WithError(err).WithField("job_id", job.ID).Error("Failed to remove one-shot job")
 			}
 		} else if job.EverySeconds > 0 {
 			// Update next run for interval jobs.
@@ -273,17 +273,17 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 				nextRun = nextRun.Add(interval)
 			}
 			if err := s.cronSvc.UpdateNextRun(job.ID, nextRun); err != nil {
-				log.WithError(err).WithField("job_id", job.ID).Error("Failed to update interval job")
+				log.Glob(log.CatCron).WithError(err).WithField("job_id", job.ID).Error("Failed to update interval job")
 			}
 		} else if job.CronExpr != "" {
 			// Calculate next run for cron expression jobs
 			next, err := nextCronTime(job.CronExpr, now)
 			if err != nil {
-				log.WithError(err).WithField("job_id", job.ID).Error("Failed to calculate next cron time, removing job")
+				log.Glob(log.CatCron).WithError(err).WithField("job_id", job.ID).Error("Failed to calculate next cron time, removing job")
 				s.cronSvc.RemoveJob(job.ID)
 			} else {
 				if err := s.cronSvc.UpdateNextRun(job.ID, next); err != nil {
-					log.WithError(err).WithField("job_id", job.ID).Error("Failed to update cron job")
+					log.Glob(log.CatCron).WithError(err).WithField("job_id", job.ID).Error("Failed to update cron job")
 				}
 			}
 		}

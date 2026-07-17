@@ -54,7 +54,7 @@ func (c *ChannelCliChannel) sendMsgBestEffort(msg protocol.WSMessage) {
 	select {
 	case c.eventCh <- msg:
 	default:
-		log.WithFields(log.Fields{"type": msg.Type, "chat_id": msg.ChatID}).Warn("ChannelCliChannel: eventCh full, dropping message")
+		log.Glob(log.CatChannel).WithFields(log.Fields{"type": msg.Type, "chat_id": msg.ChatID}).Warn("ChannelCliChannel: eventCh full, dropping message")
 	}
 }
 

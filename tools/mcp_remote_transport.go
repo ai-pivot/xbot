@@ -75,7 +75,7 @@ func (t *RemoteStdioTransport) Connect(ctx context.Context) (mcp.Connection, err
 		streamID: t.StreamID,
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx, log.CatTool).WithFields(log.Fields{
 		"user_id":     t.UserID,
 		"stream_id":   t.StreamID,
 		"server_name": t.ServerName,
@@ -228,7 +228,7 @@ func (rs *RemoteSandbox) handleStdioPush(resp *RunnerMessage) bool {
 		stream.pw.Close()
 		stream.pwMu.Unlock()
 		close(stream.exitCh)
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTool).WithFields(log.Fields{
 			"stream_id": exit.StreamID,
 			"exit_code": exit.ExitCode,
 		}).Debug("Remote stdio process exited")

@@ -15,7 +15,7 @@ import (
 // Runs inside BubbleTea Update() — no goroutines, no RPC, no locks.
 func (m *cliModel) handleSessionStateMsg(msg cliSessionStateMsg) {
 	ev := msg.event
-	log.WithFields(log.Fields{
+	log.Glob(log.CatTUI).WithFields(log.Fields{
 		"action":  ev.Action,
 		"chat_id": ev.ChatID,
 		"channel": ev.Channel,
@@ -502,7 +502,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 		return
 	}
 	if msg.err != nil {
-		log.WithError(msg.err).Warn("Failed to reload history after compression")
+		log.Glob(log.CatTUI).WithError(msg.err).Warn("Failed to reload history after compression")
 		m.splashState.compReloading = false
 		return
 	}
@@ -600,7 +600,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 			m.rc.valid = false
 		}
 		m.updateViewportContent()
-		log.WithField("count", len(m.messages)).Info("History reloaded after compression with full rebuild")
+		log.Glob(log.CatTUI).WithField("count", len(m.messages)).Info("History reloaded after compression with full rebuild")
 		return
 	}
 	prevMsgCount := len(m.messages)
@@ -610,7 +610,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// cache, but cachedHistoryLines still contains deleted messages' lines.
 	if allMatched && m.rc.valid && len(m.messages) == prevMsgCount {
 		m.viewport.GotoBottom()
-		log.WithField("count", len(m.messages)).Debug("History reloaded (all cached, skipped rebuild)")
+		log.Glob(log.CatTUI).WithField("count", len(m.messages)).Debug("History reloaded (all cached, skipped rebuild)")
 		return
 	}
 	// Some messages are new/dirty or count changed — need rebuild, but only
@@ -618,7 +618,7 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	m.rc.valid = false
 	m.updateViewportContent()
 	m.viewport.GotoBottom()
-	log.WithField("count", len(m.messages)).Info("History reloaded after compression")
+	log.Glob(log.CatTUI).WithField("count", len(m.messages)).Info("History reloaded after compression")
 
 	// NOTE: do NOT call refreshTokenStateAfterReload() here.
 	// The HistoryCompacted handler in handleProgressMsg already calls
@@ -651,6 +651,6 @@ func (m *cliModel) handleHistoryLoad(msg cliHistoryLoadMsg) {
 				m.viewport.GotoBottom()
 			}
 		}
-		log.WithFields(log.Fields{"total": len(msg.history), "added": added}).Info("Applied history load in Update loop")
+		log.Glob(log.CatTUI).WithFields(log.Fields{"total": len(msg.history), "added": added}).Info("Applied history load in Update loop")
 	}
 }

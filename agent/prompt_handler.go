@@ -110,7 +110,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 	}
 
 	if mem != nil && len(snapshot) > 0 {
-		log.Ctx(ctx).WithField("tenant", tenantSession.String()).Infof("/new: archiving %d unconsolidated messages", len(snapshot))
+		log.Req(ctx, log.CatAgent).WithField("tenant", tenantSession.String()).Infof("/new: archiving %d unconsolidated messages", len(snapshot))
 		result, _ := mem.Memorize(ctx, memory.MemorizeInput{
 			Messages:         snapshot,
 			LastConsolidated: 0,
@@ -131,10 +131,10 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 	}
 
 	if err := tenantSession.Clear(); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to clear tenant session")
+		log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to clear tenant session")
 	}
 	if err := tenantSession.SetLastConsolidated(0); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to reset last consolidated")
+		log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to reset last consolidated")
 	}
 
 	// 清除记忆整理状态，取消正在进行的整理任务（多路径协调）
@@ -154,7 +154,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 	// and the CLI progress bar would show the old session's usage.
 	if memSvc := tenantSession.MemoryService(); memSvc != nil {
 		if err := memSvc.SetTokenState(ctx, tenantSession.TenantID(), 0, 0); err != nil {
-			log.Ctx(ctx).WithError(err).WithField("tenant_id", tenantSession.TenantID()).Warn("Failed to clear token state on /new")
+			log.Req(ctx, log.CatAgent).WithError(err).WithField("tenant_id", tenantSession.TenantID()).Warn("Failed to clear token state on /new")
 		}
 	}
 

@@ -69,7 +69,7 @@ func NewAuditLogger(path string) (*AuditLogger, error) {
 	rw, err := newRotateWriterWithSuffix(dir, "audit", ".jsonl")
 	if err != nil {
 		// Fall back to single file
-		log.WithField("path", dir).Warn("Failed to create audit rotate writer, falling back to single file: ", err)
+		log.Glob(log.CatPlugin).WithField("path", dir).Warn("Failed to create audit rotate writer, falling back to single file: ", err)
 		f, ferr := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if ferr != nil {
 			return nil, ferr

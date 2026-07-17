@@ -173,7 +173,7 @@ func (s *NoneSandbox) execKeepAlive(ctx context.Context, cmd *exec.Cmd, timeout 
 	capture := func(dst *bytes.Buffer, r io.Reader) {
 		defer wg.Done()
 		if _, err := io.Copy(dst, r); err != nil {
-			log.WithError(err).Debug("sandbox: stdout/stderr capture incomplete")
+			log.Req(ctx, log.CatTool).WithError(err).Debug("sandbox: stdout/stderr capture incomplete")
 		}
 	}
 	go capture(&stdoutBuf, stdoutPipe)
@@ -392,7 +392,7 @@ func (s *NoneSandbox) DownloadFile(ctx context.Context, url, outputPath, userID 
 		return fmt.Errorf("downloaded file exceeds maximum size (%d bytes)", maxNoneDownloadSize)
 	}
 
-	log.WithFields(log.Fields{"url": url, "output_path": outputPath, "size": written}).Info("File downloaded (none sandbox)")
+	log.Req(ctx, log.CatTool).WithFields(log.Fields{"url": url, "output_path": outputPath, "size": written}).Info("File downloaded (none sandbox)")
 	return nil
 }
 

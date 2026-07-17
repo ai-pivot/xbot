@@ -58,7 +58,7 @@ func (t *TuiControlTool) Execute(ctx *ToolContext, raw string) (*ToolResult, err
 		return nil, fmt.Errorf("tui_control: invalid params: %w", err)
 	}
 
-	log.WithField("action", params.Action).Debug("tui_control called")
+	log.Req(ctx.Ctx, log.CatTool).WithField("action", params.Action).Debug("tui_control called")
 
 	switch params.Action {
 	case "switch_session":

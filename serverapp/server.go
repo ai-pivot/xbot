@@ -82,7 +82,7 @@ func injectProxyLLM(userID string, ag *agent.Agent) {
 					model = ag.GetDefaultModel()
 				}
 				ag.SetProxyLLM(userID, proxy, model)
-				log.Infof("ProxyLLM injected for user=%s runner=%s provider=%s", userID, activeName, llm.Provider)
+				log.Glob(log.CatStartup).Infof("ProxyLLM injected for user=%s runner=%s provider=%s", userID, activeName, llm.Provider)
 			} else {
 				ag.ClearProxyLLM(userID)
 			}
@@ -345,7 +345,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 					log.WithError(err).Error("Failed to create Qiniu OSS provider")
 				} else {
 					webCh.SetOSSProvider(ossProvider)
-					log.Info("OSS provider configured: qiniu")
+					log.Glob(log.CatStartup).Info("OSS provider configured: qiniu")
 				}
 			}
 
@@ -375,7 +375,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			}
 			disp.Register(webCh)
 		} else {
-			log.Warn("Web channel enabled but no database available, skipping")
+			log.Glob(log.CatStartup).Warn("Web channel enabled but no database available, skipping")
 		}
 	}
 
@@ -592,7 +592,7 @@ func Run(args []string) error {
 		if defSub, errDef := subSvc.GetDefault(cliSenderID); errDef != nil {
 			log.WithError(errDef).Error("GetDefault failed")
 		} else if defSub == nil {
-			log.Warn("GetDefault returned nil — no default or system subscription in DB")
+			log.Glob(log.CatStartup).Warn("GetDefault returned nil — no default or system subscription in DB")
 		} else {
 			log.WithFields(log.Fields{
 				"id": defSub.ID, "name": defSub.Name, "model": defSub.Model,
@@ -671,7 +671,7 @@ func Run(args []string) error {
 			if sandboxFromConfig != "" {
 				cfg.Sandbox.Mode = sandboxFromConfig
 			}
-			log.Info("Agent runtime settings synced from DB")
+			log.Glob(log.CatStartup).Info("Agent runtime settings synced from DB")
 		}
 	}
 
@@ -721,7 +721,7 @@ func Run(args []string) error {
 		ag.RegisterToolForChannel("feishu", &feishu_mcp.DownloadFileTool{MCP: feishuMCP})
 		ag.RegisterToolForChannel("feishu", &feishu_mcp.SendFileTool{MCP: feishuMCP})
 
-		log.Info("OAuth and Feishu MCP tools registered")
+		log.Glob(log.CatStartup).Info("OAuth and Feishu MCP tools registered")
 	}
 
 	// 注册 DownloadFile 工具（支持 Web/OSS 和飞书两种来源）
@@ -907,8 +907,8 @@ func Run(args []string) error {
 
 	channels := disp.EnabledChannels()
 	if len(channels) == 0 {
-		log.Warn("No channels enabled. Set FEISHU_ENABLED=true and configure FEISHU_APP_ID/FEISHU_APP_SECRET.")
-		log.Info("Starting in agent-only mode (no IM channels)")
+		log.Glob(log.CatStartup).Warn("No channels enabled. Set FEISHU_ENABLED=true and configure FEISHU_APP_ID/FEISHU_APP_SECRET.")
+		log.Glob(log.CatStartup).Info("Starting in agent-only mode (no IM channels)")
 	} else {
 		log.WithField("channels", channels).Info("Channels enabled")
 	}
@@ -954,7 +954,7 @@ func Run(args []string) error {
 
 	// Agent loop already started by InitServer.
 
-	log.Info("xbot started successfully")
+	log.Glob(log.CatStartup).Info("xbot started successfully")
 	fmt.Println("🤖 xbot is running. Press Ctrl+C to stop.")
 
 	// 启动后发送上线通知
@@ -1014,7 +1014,7 @@ func Run(args []string) error {
 	}
 
 	disp.Stop()
-	log.Info("xbot stopped")
+	log.Glob(log.CatStartup).Info("xbot stopped")
 	return nil
 }
 
@@ -1111,7 +1111,7 @@ func sendStartupNotify(disp *channel.Dispatcher, cfg *config.Config) {
 		log.WithError(err).Warn("Failed to send startup notification, retrying...")
 		time.Sleep(2 * time.Second)
 	}
-	log.Error("Failed to send startup notification after 3 attempts")
+	log.Glob(log.CatStartup).Error("Failed to send startup notification after 3 attempts")
 }
 
 // feishuPromptAdapter 将 FeishuChannel 桥接为 agent.ChannelPromptProvider 接口。

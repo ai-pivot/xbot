@@ -103,7 +103,7 @@ func NewSandboxRouter(sandboxCfg config.SandboxConfig, workDir string) *SandboxR
 		r.defaultMode = "none"
 	}
 
-	log.Infof("SandboxRouter initialized: default=%s, docker=%v, remote=%v",
+	log.Glob(log.CatTool).Infof("SandboxRouter initialized: default=%s, docker=%v, remote=%v",
 		r.defaultMode, r.docker != nil, r.remote != nil)
 
 	return r
@@ -123,7 +123,7 @@ func (r *SandboxRouter) EnsureRemote() bool {
 	}
 	rs, err := NewRemoteSandbox(r.remoteCfg, r.remoteSyncCfg)
 	if err != nil {
-		log.WithError(err).Error("Failed to start remote sandbox, falling back")
+		log.Glob(log.CatTool).WithError(err).Error("Failed to start remote sandbox, falling back")
 		return false
 	}
 	// Transfer token store if already set
@@ -136,7 +136,7 @@ func (r *SandboxRouter) EnsureRemote() bool {
 	if r.defaultMode == "none" {
 		r.defaultMode = "remote"
 	}
-	log.Info("Remote sandbox started dynamically")
+	log.Glob(log.CatTool).Info("Remote sandbox started dynamically")
 	return true
 }
 

@@ -299,7 +299,7 @@ func (f *FeishuChannel) Start() error {
 
 	// 初始化机器人自身 open_id（用于群聊 @ 识别）
 	if err := f.refreshBotOpenID(context.Background()); err != nil {
-		log.WithError(err).Warn("Feishu: failed to initialize bot open_id from bot/v3/info")
+		log.Glob(log.CatChannel).WithError(err).Warn("Feishu: failed to initialize bot open_id from bot/v3/info")
 	}
 
 	if f.approvalState != nil {
@@ -321,7 +321,7 @@ func (f *FeishuChannel) Start() error {
 		larkws.WithLogLevel(larkcore.LogLevelInfo),
 	)
 
-	log.Info("Feishu bot starting with WebSocket long connection...")
+	log.Glob(log.CatChannel).Info("Feishu bot starting with WebSocket long connection...")
 
 	// wsClient.Start() 会阻塞
 	err := f.wsClient.Start(context.Background())
@@ -338,7 +338,7 @@ func (f *FeishuChannel) Stop() {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	log.Info("Feishu bot stopped")
+	log.Glob(log.CatChannel).Info("Feishu bot stopped")
 }
 
 // getUserName 通过 Contact API 获取用户姓名，带内存缓存
@@ -371,11 +371,11 @@ func (f *FeishuChannel) getUserName(openID string) string {
 		Build()
 	resp, err := f.client.Contact.User.Get(context.Background(), req)
 	if err != nil {
-		log.WithError(err).WithField("open_id", openID).Warn("Feishu: failed to get user info")
+		log.Glob(log.CatChannel).WithError(err).WithField("open_id", openID).Warn("Feishu: failed to get user info")
 		return ""
 	}
 	if !resp.Success() {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"open_id": openID,
 			"code":    resp.Code,
 			"msg":     resp.Msg,
@@ -407,7 +407,7 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 		emojiType := msg.Metadata["add_reaction"]
 		if targetMsgID != "" {
 			if err := f.addReaction(targetMsgID, emojiType); err != nil {
-				log.WithError(err).WithField("message_id", targetMsgID).Warn("Feishu: failed to add reaction")
+				log.Glob(log.CatChannel).WithError(err).WithField("message_id", targetMsgID).Warn("Feishu: failed to add reaction")
 			}
 		}
 		return "", nil
@@ -445,7 +445,7 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 		// 尝试 patch 进度消息为卡片内容（同类型消息可直接替换）
 		if updateMsgID != "" {
 			if err := f.patchMessage(updateMsgID, []byte(cardJSON)); err != nil {
-				log.WithError(err).WithField("message_id", updateMsgID).Warn("Feishu: card patch failed (likely cross-type), creating new message")
+				log.Glob(log.CatChannel).WithError(err).WithField("message_id", updateMsgID).Warn("Feishu: card patch failed (likely cross-type), creating new message")
 			} else {
 				msgID = updateMsgID
 			}
@@ -463,7 +463,7 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 			// 卡片创建为新消息后，删除旧的进度消息避免刷屏
 			if updateMsgID != "" {
 				if delErr := f.deleteMessage(updateMsgID); delErr != nil {
-					log.WithError(delErr).WithField("message_id", updateMsgID).Warn("Feishu: failed to delete progress message after card send")
+					log.Glob(log.CatChannel).WithError(delErr).WithField("message_id", updateMsgID).Warn("Feishu: failed to delete progress message after card send")
 				}
 			}
 		}
@@ -479,7 +479,7 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	}
 
 	originalLen := len(msg.Content)
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_id":     msg.ChatID,
 		"content_len": originalLen,
 	}).Debug("Feishu: sending message")
@@ -494,7 +494,7 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	}
 
 	if len(content) != originalLen {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"original_len": originalLen,
 			"final_len":    len(content),
 		}).Debug("Feishu: content length changed after processing")
@@ -517,7 +517,7 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	}
 	if updateMsgID != "" {
 		if err := f.patchMessage(updateMsgID, cardJSON); err != nil {
-			log.WithError(err).WithField("message_id", updateMsgID).Warn("Feishu: patch failed, falling back to create")
+			log.Glob(log.CatChannel).WithError(err).WithField("message_id", updateMsgID).Warn("Feishu: patch failed, falling back to create")
 		} else {
 			return updateMsgID, nil
 		}
@@ -546,7 +546,7 @@ func (f *FeishuChannel) sendReplyMessage(chatID, parentID string, cardJSON []byt
 			Build()).
 		Build()
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_id":   chatID,
 		"parent_id": parentID,
 		"card_len":  len(cardJSON),
@@ -565,7 +565,7 @@ func (f *FeishuChannel) sendReplyMessage(chatID, parentID string, cardJSON []byt
 		msgID = *resp.Data.MessageId
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_id":    chatID,
 		"parent_id":  parentID,
 		"message_id": msgID,
@@ -580,7 +580,7 @@ func (f *FeishuChannel) sendNormalMessage(chatID string, cardJSON []byte) (strin
 		receiveIDType = "open_id"
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_id":  chatID,
 		"card_len": len(cardJSON),
 	}).Debug("Feishu: sending normal message")
@@ -607,7 +607,7 @@ func (f *FeishuChannel) sendNormalMessage(chatID string, cardJSON []byte) (strin
 		msgID = *resp.Data.MessageId
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_id":    chatID,
 		"message_id": msgID,
 	}).Debug("Feishu message sent")
@@ -631,7 +631,7 @@ func (f *FeishuChannel) patchMessage(messageID string, cardJSON []byte) error {
 		return fmt.Errorf("feishu patch API error: code=%d, msg=%s detail: %s", resp.Code, resp.Msg, resp.ErrorResp())
 	}
 
-	log.WithField("message_id", messageID).Debug("Feishu message patched")
+	log.Glob(log.CatChannel).WithField("message_id", messageID).Debug("Feishu message patched")
 	return nil
 }
 
@@ -649,7 +649,7 @@ func (f *FeishuChannel) deleteMessage(messageID string) error {
 		return fmt.Errorf("feishu delete API error: code=%d, msg=%s detail: %s", resp.Code, resp.Msg, resp.ErrorResp())
 	}
 
-	log.WithField("message_id", messageID).Debug("Feishu message deleted")
+	log.Glob(log.CatChannel).WithField("message_id", messageID).Debug("Feishu message deleted")
 	return nil
 }
 
@@ -670,7 +670,7 @@ func (f *FeishuChannel) addReaction(messageID, emojiType string) error {
 		return fmt.Errorf("add reaction API error: code=%d, msg=%s", resp.Code, resp.Msg)
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"message_id": messageID,
 		"emoji":      emojiType,
 	}).Debug("Feishu reaction added")
@@ -719,11 +719,11 @@ func (f *FeishuChannel) extractAndSendLocalFiles(chatID, content string) string 
 
 		// 上传并发送文件
 		if err := f.sendFile(chatID, linkPath); err != nil {
-			log.WithError(err).WithField("path", linkPath).Warn("Failed to send local file")
+			log.Glob(log.CatChannel).WithError(err).WithField("path", linkPath).Warn("Failed to send local file")
 			return match
 		}
 
-		log.WithField("path", linkPath).Debug("Sent local file from markdown link")
+		log.Glob(log.CatChannel).WithField("path", linkPath).Debug("Sent local file from markdown link")
 
 		// 替换链接为纯文本提示
 		return prefix + "📎 " + subs[1]
@@ -761,7 +761,7 @@ func (f *FeishuChannel) sendFile(chatID, filePath string) error {
 		return fmt.Errorf("feishu API error: code=%d, msg=%s", resp.Code, resp.Msg)
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_id":  chatID,
 		"file_key": fileKey,
 	}).Debug("Feishu file sent")
@@ -848,7 +848,8 @@ func (f *FeishuChannel) detectFileType(filePath string) string {
 func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 	// 在渠道收到消息的第一时间生成 requestID
 	requestID := log.NewRequestID()
-	l := log.WithField("request_id", requestID)
+	ctx = log.WithRequestID(ctx, requestID)
+	l := log.Req(ctx, log.CatChannel)
 
 	f.mu.Lock()
 	if !f.running.Load() {
@@ -1188,7 +1189,7 @@ func (f *FeishuChannel) refreshBotOpenID(ctx context.Context) error {
 	f.mu.Unlock()
 	f.botName.Store(strings.TrimSpace(resp.Bot.Name))
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"bot_open_id": resp.Bot.OpenID,
 		"bot_name":    resp.Bot.Name,
 	}).Info("Feishu: bot info initialized from bot/v3/info")
@@ -1298,13 +1299,13 @@ func (f *FeishuChannel) onCardAction(ctx context.Context, event *callback.CardAc
 			senderID = event.Event.Operator.OpenID
 		}
 		if !f.isAllowed(senderID) {
-			log.WithField("sender_id", senderID).Warn("Card action denied: sender not in AllowFrom whitelist")
+			log.Glob(log.CatChannel).WithField("sender_id", senderID).Warn("Card action denied: sender not in AllowFrom whitelist")
 			return &callback.CardActionTriggerResponse{}, nil
 		}
 	}
 
 	if event.Event == nil || event.Event.Action == nil {
-		log.Warn("Card action event is missing data")
+		log.Glob(log.CatChannel).Warn("Card action event is missing data")
 		return &callback.CardActionTriggerResponse{}, nil
 	}
 
@@ -1398,14 +1399,14 @@ func (f *FeishuChannel) onCardAction(ctx context.Context, event *callback.CardAc
 // Returns the updated card directly in the callback response for instant UI refresh.
 func (f *FeishuChannel) handleSettingsCardAction(ctx context.Context, actionData map[string]any, chatID, senderID, messageID string) (*callback.CardActionTriggerResponse, error) {
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_id":   chatID,
 		"sender_id": senderID,
 	}).Info("Settings card action received")
 
 	updatedCard, err := f.HandleSettingsAction(ctx, actionData, senderID, chatID, messageID)
 	if err != nil {
-		log.WithError(err).WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithError(err).WithFields(log.Fields{
 			"chat_id":   chatID,
 			"sender_id": senderID,
 		}).Warn("Settings card action failed")
@@ -1418,7 +1419,7 @@ func (f *FeishuChannel) handleSettingsCardAction(ctx context.Context, actionData
 	}
 
 	cardJSON, _ := json.Marshal(updatedCard)
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_id":   chatID,
 		"card_size": len(cardJSON),
 		"card_json": string(cardJSON),
@@ -1471,7 +1472,7 @@ func (h *FeishuApprovalHandler) RequestApproval(ctx context.Context, req tools.A
 func (f *FeishuChannel) requestApproval(ctx context.Context, req tools.ApprovalRequest) (tools.ApprovalResult, error) {
 	chatID, senderID := ctxkeys.ApprovalTargetFromContext(ctx)
 	if chatID == "" || senderID == "" {
-		log.WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs}).Warn("Feishu approval missing target context")
+		log.Glob(log.CatChannel).WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs}).Warn("Feishu approval missing target context")
 		return tools.ApprovalResult{Approved: false}, fmt.Errorf("feishu approval requires chat and sender in context")
 	}
 
@@ -1489,18 +1490,18 @@ func (f *FeishuChannel) requestApproval(ctx context.Context, req tools.ApprovalR
 	card := f.buildApprovalCard(pending)
 	cardJSON, err := json.Marshal(card)
 	if err != nil {
-		log.WithError(err).WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs}).Error("Feishu approval card marshal failed")
+		log.Glob(log.CatChannel).WithError(err).WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs}).Error("Feishu approval card marshal failed")
 		return tools.ApprovalResult{Approved: false}, fmt.Errorf("marshal approval card: %w", err)
 	}
 
-	log.WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs}).Info("Sending Feishu approval card")
+	log.Glob(log.CatChannel).WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs}).Info("Sending Feishu approval card")
 	messageID, err := f.sendNormalMessage(chatID, cardJSON)
 	if err != nil {
-		log.WithError(err).WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs, "card": string(cardJSON)}).Error("Feishu approval card send failed")
+		log.Glob(log.CatChannel).WithError(err).WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs, "card": string(cardJSON)}).Error("Feishu approval card send failed")
 		return tools.ApprovalResult{Approved: false}, fmt.Errorf("send approval card: %w", err)
 	}
 	pending.MessageID = messageID
-	log.WithFields(log.Fields{"message_id": messageID, "chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs}).Info("Feishu approval card sent")
+	log.Glob(log.CatChannel).WithFields(log.Fields{"message_id": messageID, "chat_id": chatID, "sender_id": senderID, "tool": req.ToolName, "run_as": req.RunAs}).Info("Feishu approval card sent")
 
 	f.approvalsMu.Lock()
 	f.approvals[pending.ApproveAction] = pending
@@ -1510,13 +1511,13 @@ func (f *FeishuChannel) requestApproval(ctx context.Context, req tools.ApprovalR
 
 	select {
 	case result := <-pending.ResultCh:
-		log.WithFields(log.Fields{"message_id": pending.MessageID, "tool": req.ToolName, "run_as": req.RunAs, "approved": result.Approved}).Info("Feishu approval resolved")
+		log.Glob(log.CatChannel).WithFields(log.Fields{"message_id": pending.MessageID, "tool": req.ToolName, "run_as": req.RunAs, "approved": result.Approved}).Info("Feishu approval resolved")
 		return result, nil
 	case <-ctx.Done():
 		result := tools.ApprovalResult{Approved: false, DenyReason: "approval request timed out"}
 		f.finishPendingApproval(pending, result)
 		f.closeApprovalCardOnTimeout(pending)
-		log.WithFields(log.Fields{"message_id": pending.MessageID, "tool": req.ToolName, "run_as": req.RunAs}).Warn("Feishu approval timed out")
+		log.Glob(log.CatChannel).WithFields(log.Fields{"message_id": pending.MessageID, "tool": req.ToolName, "run_as": req.RunAs}).Warn("Feishu approval timed out")
 		return tools.ApprovalResult{Approved: false}, fmt.Errorf("approval request timed out")
 	}
 }
@@ -1717,14 +1718,14 @@ func (f *FeishuChannel) closeApprovalCardOnTimeout(p *feishuPendingApproval) {
 	}
 	cardJSON, err := json.Marshal(f.buildApprovalResultCard(p, tools.ApprovalResult{Approved: false, DenyReason: "approval request timed out"}))
 	if err != nil {
-		log.WithError(err).WithField("message_id", p.MessageID).Warn("Feishu: failed to marshal timeout approval card")
+		log.Glob(log.CatChannel).WithError(err).WithField("message_id", p.MessageID).Warn("Feishu: failed to marshal timeout approval card")
 		return
 	}
 	if err := f.patchMessage(p.MessageID, cardJSON); err != nil {
-		log.WithError(err).WithField("message_id", p.MessageID).Warn("Feishu: failed to patch timed-out approval card")
+		log.Glob(log.CatChannel).WithError(err).WithField("message_id", p.MessageID).Warn("Feishu: failed to patch timed-out approval card")
 		return
 	}
-	log.WithField("message_id", p.MessageID).Info("Feishu approval card closed after timeout")
+	log.Glob(log.CatChannel).WithField("message_id", p.MessageID).Info("Feishu approval card closed after timeout")
 }
 
 func (f *FeishuChannel) buildApprovalResultCard(p *feishuPendingApproval, result tools.ApprovalResult) map[string]any {
@@ -1789,12 +1790,12 @@ func (f *FeishuChannel) sendAskUserCard(msg ch.OutboundMsg) (string, error) {
 	// Reply API has limited support for schema 2.0 cards with form/input elements
 	// (returns 200621 "unknown property: elements" or 300123 "no submit button").
 	msgID := ""
-	log.WithField("card_json", string(cardJSON)).Debug("Feishu: AskUser card JSON")
+	log.Glob(log.CatChannel).WithField("card_json", string(cardJSON)).Debug("Feishu: AskUser card JSON")
 	msgID, err = f.sendNormalMessage(msg.ChatID, cardJSON)
 	if err != nil {
 		// Fallback: retry with a simplified card (no form/input elements).
 		// Some Feishu API versions reject form/input components in interactive cards.
-		log.WithError(err).Warn("Feishu: AskUser card send failed, retrying with simplified card")
+		log.Glob(log.CatChannel).WithError(err).Warn("Feishu: AskUser card send failed, retrying with simplified card")
 		simpleCard := f.buildSimpleAskUserCard(questions)
 		simpleJSON, marshalErr := json.Marshal(simpleCard)
 		if marshalErr != nil {
@@ -1824,7 +1825,7 @@ func (f *FeishuChannel) sendAskUserCard(msg ch.OutboundMsg) (string, error) {
 	}
 	f.askUserMu.Unlock()
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"message_id": msgID,
 		"chat_id":    msg.ChatID,
 		"sender_id":  senderID,
@@ -2114,7 +2115,7 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 			existingKeys = append(existingKeys, k)
 		}
 		f.askUserMu.Unlock()
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"chat_id":       chatID,
 			"sender_id":     senderID,
 			"ask_key":       askKey,
@@ -2130,7 +2131,7 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 		delete(f.askUsers, askKey)
 		f.askUserMu.Unlock()
 
-		log.WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID}).Info("AskUser cancelled via card")
+		log.Glob(log.CatChannel).WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID}).Info("AskUser cancelled via card")
 		f.msgBus.Inbound <- bus.InboundMessage{
 			Channel:   "feishu",
 			SenderID:  senderID,
@@ -2151,7 +2152,7 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 		delete(f.askUsers, askKey)
 		f.askUserMu.Unlock()
 
-		log.WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID}).Info("AskUser rejected via card")
+		log.Glob(log.CatChannel).WithFields(log.Fields{"chat_id": chatID, "sender_id": senderID}).Info("AskUser rejected via card")
 		content := fmt.Sprintf("Q: %s\nA: Rejected", pending.Questions[0].Question)
 		f.msgBus.Inbound <- bus.InboundMessage{
 			Channel:    "feishu",
@@ -2233,7 +2234,7 @@ func (f *FeishuChannel) handleAskUserCardAction(actionData map[string]any, actio
 func (f *FeishuChannel) recordAskUserAnswer(askKey string, pending *feishuPendingAskUser, questionIdx int, answer, chatID, senderID string) (*callback.CardActionTriggerResponse, bool) {
 	pending.Answers[questionIdx] = answer
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_id":   chatID,
 		"sender_id": senderID,
 		"question":  questionIdx,
@@ -2428,7 +2429,7 @@ func (f *FeishuChannel) handleCardBuilderAction(cardID string, actionData map[st
 
 	case "select_static", "multi_select_static":
 		if len(action.FormValue) > 0 {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatChannel).WithFields(log.Fields{
 				"card_id": cardID,
 				"tag":     actionName,
 				"name":    action.Name,
@@ -2436,7 +2437,7 @@ func (f *FeishuChannel) handleCardBuilderAction(cardID string, actionData map[st
 			return f.buildKeepCardResponse(cardID), nil
 		}
 		if !f.isExpectedInteraction(expectedInteractions, actionName) {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatChannel).WithFields(log.Fields{
 				"card_id": cardID,
 				"tag":     actionName,
 				"name":    action.Name,
@@ -2473,7 +2474,7 @@ func (f *FeishuChannel) handleCardBuilderAction(cardID string, actionData map[st
 
 	case "overflow", "checker", "select_img":
 		if len(action.FormValue) > 0 {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatChannel).WithFields(log.Fields{
 				"card_id": cardID,
 				"tag":     actionName,
 				"name":    action.Name,
@@ -2481,7 +2482,7 @@ func (f *FeishuChannel) handleCardBuilderAction(cardID string, actionData map[st
 			return f.buildKeepCardResponse(cardID), nil
 		}
 		if !f.isExpectedInteraction(expectedInteractions, actionName) {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatChannel).WithFields(log.Fields{
 				"card_id": cardID,
 				"tag":     actionName,
 				"name":    action.Name,
@@ -2507,7 +2508,7 @@ func (f *FeishuChannel) handleCardBuilderAction(cardID string, actionData map[st
 
 	default:
 		// Unknown interaction type
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"card_id": cardID,
 			"tag":     actionName,
 			"name":    action.Name,
@@ -2515,7 +2516,7 @@ func (f *FeishuChannel) handleCardBuilderAction(cardID string, actionData map[st
 		return f.buildKeepCardResponse(cardID), nil
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"card_id":     cardID,
 		"action_name": actionName,
 		"chat_id":     chatID,
@@ -2585,7 +2586,7 @@ func (f *FeishuChannel) handleGenericCardAction(actionData map[string]any, actio
 
 	// Ignore in-form intermediate interactions (only form_submit or button-in-form should trigger)
 	if actionName != "form_submit" && actionName != "button" && len(action.FormValue) > 0 {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"tag":  actionName,
 			"name": action.Name,
 		}).Debug("Ignoring in-form interaction for generic card (will be collected on form submit)")
@@ -2600,7 +2601,7 @@ func (f *FeishuChannel) handleGenericCardAction(actionData map[string]any, actio
 		responseData[k] = toStringValue(v)
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"action_name": actionName,
 		"chat_id":     chatID,
 		"sender_id":   senderID,
@@ -3078,18 +3079,18 @@ func (f *FeishuChannel) replaceLocalImages(content string) string {
 
 		// 检查文件是否存在
 		if _, err := os.Stat(imgPath); err != nil {
-			log.WithField("path", imgPath).Debug("Local image not found, keeping original markdown")
+			log.Glob(log.CatChannel).WithField("path", imgPath).Debug("Local image not found, keeping original markdown")
 			return match
 		}
 
 		// 上传图片
 		imageKey, err := f.uploadImage(imgPath)
 		if err != nil {
-			log.WithError(err).WithField("path", imgPath).Warn("Failed to upload local image, keeping original markdown")
+			log.Glob(log.CatChannel).WithError(err).WithField("path", imgPath).Warn("Failed to upload local image, keeping original markdown")
 			return match
 		}
 
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"path":      imgPath,
 			"image_key": imageKey,
 		}).Debug("Replaced local image with image_key")
@@ -3141,11 +3142,11 @@ func (f *FeishuChannel) getHistoryMsgById(currentMsgEV *larkim.P2MessageReceiveV
 
 	resp, err := f.client.Im.Message.Get(context.Background(), req)
 	if err != nil {
-		log.WithError(err).WithField("parent_id", *currentMsg.ParentId).Warn("Failed to get parent message")
+		log.Glob(log.CatChannel).WithError(err).WithField("parent_id", *currentMsg.ParentId).Warn("Failed to get parent message")
 		return nil
 	}
 	if !resp.Success() {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"parent_id": *currentMsg.ParentId,
 			"code":      resp.Code,
 			"msg":       resp.Msg,
@@ -3153,7 +3154,7 @@ func (f *FeishuChannel) getHistoryMsgById(currentMsgEV *larkim.P2MessageReceiveV
 		return nil
 	}
 	if resp.Data == nil || len(resp.Data.Items) == 0 {
-		log.WithField("parent_id", *currentMsg.ParentId).Warn("Parent message not found in response")
+		log.Glob(log.CatChannel).WithField("parent_id", *currentMsg.ParentId).Warn("Parent message not found in response")
 		return nil
 	}
 	return resp.Data.Items[0]
@@ -3233,7 +3234,7 @@ func (f *FeishuChannel) sendTextReply(chatID, parentID, text string) {
 	}
 
 	if err != nil {
-		log.WithError(err).WithField("chat_id", chatID).Warn("Feishu: failed to send text reply")
+		log.Glob(log.CatChannel).WithError(err).WithField("chat_id", chatID).Warn("Feishu: failed to send text reply")
 	}
 }
 

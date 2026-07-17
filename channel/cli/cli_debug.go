@@ -305,7 +305,7 @@ func startAutoInput(sequence string, asyncCh chan<- tea.Msg, stopCh <-chan struc
 	}
 
 	clipanic.Go("ch.startAutoInput", func() {
-		log.WithField("sequence", sequence).Info("Auto-input: waiting for splash to finish")
+		log.Glob(log.CatTUI).WithField("sequence", sequence).Info("Auto-input: waiting for splash to finish")
 		// Wait for splash to finish and UI to stabilize
 		select {
 		case <-stopCh:
@@ -317,7 +317,7 @@ func startAutoInput(sequence string, asyncCh chan<- tea.Msg, stopCh <-chan struc
 			if p.sleep > 0 {
 				select {
 				case <-stopCh:
-					log.Info("Auto-input: aborted during sleep")
+					log.Glob(log.CatTUI).Info("Auto-input: aborted during sleep")
 					return
 				case <-time.After(p.sleep):
 				}
@@ -326,10 +326,10 @@ func startAutoInput(sequence string, asyncCh chan<- tea.Msg, stopCh <-chan struc
 			for _, key := range p.keys {
 				select {
 				case <-stopCh:
-					log.Info("Auto-input: aborted")
+					log.Glob(log.CatTUI).Info("Auto-input: aborted")
 					return
 				case asyncCh <- key:
-					log.WithField("key", fmt.Sprintf("%+v", key)).Debug("Auto-input: sent key")
+					log.Glob(log.CatTUI).WithField("key", fmt.Sprintf("%+v", key)).Debug("Auto-input: sent key")
 				}
 				// Small delay between chars for realistic typing
 				time.Sleep(50 * time.Millisecond)
@@ -337,7 +337,7 @@ func startAutoInput(sequence string, asyncCh chan<- tea.Msg, stopCh <-chan struc
 			// Delay between items for UI to process
 			time.Sleep(300 * time.Millisecond)
 		}
-		log.Info("Auto-input: sequence complete")
+		log.Glob(log.CatTUI).Info("Auto-input: sequence complete")
 	})
 }
 

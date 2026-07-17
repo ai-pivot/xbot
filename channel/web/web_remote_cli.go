@@ -110,7 +110,7 @@ func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
 	hubKey := stripChannelPrefix(chatID)
 	wsMsg := ch.CliMsg.BuildInjectUserMsg(chatID, content)
 	if !c.hub.sendToClient(hubKey, wsMsg) {
-		log.WithField("chat_id", chatID).Debug("Remote CLI client offline, inject_user buffered")
+		log.Glob(log.CatChannel).WithField("chat_id", chatID).Debug("Remote CLI client offline, inject_user buffered")
 	}
 }
 
@@ -118,7 +118,7 @@ func (c *RemoteCLIChannel) InjectUserMessage(chatID, content string) {
 func (c *RemoteCLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent) {
 	if msg := ch.CliMsg.BuildProgressMsg(chatID, payload); msg != nil {
 		if !c.hub.sendToClient(chatID, *msg) {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatChannel).WithFields(log.Fields{
 				"chat_id": chatID,
 				"phase":   payload.Phase,
 				"iter":    payload.Iteration,
@@ -222,13 +222,13 @@ func (c *RemoteCLIChannel) Send(msg ch.OutboundMsg) (string, error) {
 	wsMsg.ProgressHistory = msg.Metadata["progress_history"]
 
 	if !c.hub.sendToClient(targetClientID, wsMsg) {
-		log.WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("CLI WS client offline, message buffered")
+		log.Glob(log.CatChannel).WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("CLI WS client offline, message buffered")
 	}
 
 	// AskUser: reuse shared builder
 	if askMsg := ch.CliMsg.BuildAskUserMsg(msg); askMsg != nil {
 		askMsg.ID = msgID
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"msg_channel":   msg.Channel,
 			"msg_chatid":    msg.ChatID,
 			"target_client": targetClientID,

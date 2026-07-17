@@ -160,7 +160,7 @@ type chatHistoryParams struct {
 }
 
 func (t *ChatHistoryTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
-	log.WithField("ctx", fmt.Sprintf("%+v", ctx)).Debug("ChatHistory tool called")
+	log.Req(ctx.Ctx, log.CatTool).WithField("ctx", fmt.Sprintf("%+v", ctx)).Debug("ChatHistory tool called")
 
 	params, err := parseToolArgs[chatHistoryParams](input)
 	if err != nil {
@@ -179,7 +179,7 @@ func (t *ChatHistoryTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 	channel := ctx.Channel
 	chatID := ctx.ChatID
 
-	log.WithFields(log.Fields{
+	log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 		"channel": channel,
 		"chat_id": chatID,
 		"limit":   limit,

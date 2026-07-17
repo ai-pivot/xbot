@@ -117,7 +117,7 @@ func (t *EventTriggerTool) addTrigger(ctx *ToolContext, p eventTriggerParams) (*
 	}
 
 	if err := t.router.RegisterTrigger(trigger); err != nil {
-		log.WithError(err).Error("Failed to save event trigger")
+		log.Req(ctx.Ctx, log.CatTool).WithError(err).Error("Failed to save event trigger")
 		return nil, fmt.Errorf("failed to save trigger: %w", err)
 	}
 
@@ -144,7 +144,7 @@ func (t *EventTriggerTool) addTrigger(ctx *ToolContext, p eventTriggerParams) (*
 func (t *EventTriggerTool) listTriggers(senderID string) (*ToolResult, error) {
 	triggers, err := t.router.ListTriggers(senderID)
 	if err != nil {
-		log.WithError(err).Error("Failed to list event triggers")
+		log.Glob(log.CatTool).WithError(err).Error("Failed to list event triggers")
 		return nil, fmt.Errorf("failed to list triggers: %w", err)
 	}
 

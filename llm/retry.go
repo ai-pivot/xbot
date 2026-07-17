@@ -229,7 +229,7 @@ func (r *RetryLLM) retryOptions(ctx context.Context, label string) []retry.Optio
 		// context.Canceled 由 isRetryableError 处理（返回 false → 不重试）
 		retry.RetryIf(isRetryableError),
 		retry.OnRetry(func(n uint, err error) {
-			log.Ctx(ctx).WithFields(log.Fields{
+			log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 				"attempt": n + 1,
 				"max":     r.config.Attempts,
 				"error":   err.Error(),
@@ -243,7 +243,7 @@ func (r *RetryLLM) retryOptions(ctx context.Context, label string) []retry.Optio
 			// 429 额外指数退避：避免短时间内重复触发速率限制
 			if isRateLimitError(err) {
 				extraDelay := time.Duration(2<<min(n, 4)) * time.Second // 2s, 4s, 8s, 16s, 32s
-				log.Ctx(ctx).WithField("delay", extraDelay).Warn("[LLM] Rate limited, backing off")
+				log.Req(ctx, log.CatLLM).WithField("delay", extraDelay).Warn("[LLM] Rate limited, backing off")
 				select {
 				case <-time.After(extraDelay):
 				case <-ctx.Done():

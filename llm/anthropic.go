@@ -384,7 +384,7 @@ func (a *AnthropicLLM) Generate(ctx context.Context, model string, messages []Ch
 	if model == "" {
 		model = a.GetDefaultModel()
 	}
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 		"provider":    "anthropic",
 		"model":       model,
 		"stream":      false,
@@ -473,7 +473,7 @@ func (a *AnthropicLLM) Generate(ctx context.Context, model string, messages []Ch
 	if apiResp.Usage.CacheCreationInputTokens > 0 {
 		logFields["cache_creation_tokens"] = apiResp.Usage.CacheCreationInputTokens
 	}
-	log.Ctx(ctx).WithFields(logFields).Debug("[LLM] Non-stream response")
+	log.Req(ctx, log.CatLLM).WithFields(logFields).Debug("[LLM] Non-stream response")
 	return out, nil
 }
 func mapStopReason(s string) FinishReason {
@@ -494,7 +494,7 @@ func (a *AnthropicLLM) GenerateStream(ctx context.Context, model string, message
 	if model == "" {
 		model = a.GetDefaultModel()
 	}
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 		"provider":    "anthropic",
 		"model":       model,
 		"stream":      true,

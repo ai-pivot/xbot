@@ -71,7 +71,7 @@ func (r *WidgetRegistry) NotifyUpdated() {
 	fn := r.onUpdated
 	dur := r.debounceDur
 	r.mu.RUnlock()
-	log.Debugf("[NotifyUpdated] fn=%v debounce=%v", fn != nil, dur)
+	log.Glob(log.CatPlugin).Debugf("[NotifyUpdated] fn=%v debounce=%v", fn != nil, dur)
 	r.notifyUpdated()
 }
 
@@ -159,14 +159,14 @@ func (r *WidgetRegistry) notifyUpdated() {
 	fn := r.onUpdated
 	dur := r.debounceDur
 	r.mu.RUnlock()
-	log.Debugf("[notifyUpdated] fn=%v debounce=%v", fn != nil, dur)
+	log.Glob(log.CatPlugin).Debugf("[notifyUpdated] fn=%v debounce=%v", fn != nil, dur)
 	if fn == nil {
 		return
 	}
 
 	if dur <= 0 {
 		// No debounce — fire immediately
-		log.Debugf("[notifyUpdated] firing immediately")
+		log.Glob(log.CatPlugin).Debugf("[notifyUpdated] firing immediately")
 		fn()
 		return
 	}
@@ -177,7 +177,7 @@ func (r *WidgetRegistry) notifyUpdated() {
 		r.debounceTimer.Stop()
 	}
 	r.debounceTimer = time.AfterFunc(dur, func() {
-		log.Debugf("[notifyUpdated] debounce fired after %v", dur)
+		log.Glob(log.CatPlugin).Debugf("[notifyUpdated] debounce fired after %v", dur)
 		fn()
 	})
 	r.debounceMu.Unlock()
@@ -216,7 +216,7 @@ func (r *WidgetRegistry) Register(pluginID, widgetID, zone string, provider UIWi
 		return r.byZone[zone][i].priority < r.byZone[zone][j].priority
 	})
 	r.mu.Unlock()
-	log.WithField("plugin", pluginID).WithField("widget", widgetID).
+	log.Glob(log.CatPlugin).WithField("plugin", pluginID).WithField("widget", widgetID).
 		WithField("zone", zone).Debug("Widget registered")
 	return nil
 }
@@ -238,7 +238,7 @@ func (r *WidgetRegistry) Unregister(pluginID, widgetID string) {
 		}
 	}
 	r.mu.Unlock()
-	log.WithField("plugin", pluginID).WithField("widget", widgetID).Debug("Widget unregistered")
+	log.Glob(log.CatPlugin).WithField("plugin", pluginID).WithField("widget", widgetID).Debug("Widget unregistered")
 }
 
 func (r *WidgetRegistry) UnregisterAll(pluginID string) {

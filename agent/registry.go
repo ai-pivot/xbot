@@ -285,7 +285,7 @@ func (rm *RegistryManager) installSkill(entry *sqlite.SharedEntry, senderID stri
 
 	rm.markInstalled(destDir, fmt.Sprintf("registry:%d", entry.ID), time.Now().UnixMilli())
 
-	log.WithFields(log.Fields{
+	log.Usr(nil, log.CatAgent, senderID).WithFields(log.Fields{
 		"type": "skill", "name": entry.Name, "sender": senderID,
 		"from": entry.SourcePath, "to": destDir,
 	}).Info("Installed skill from registry")
@@ -355,7 +355,7 @@ func (rm *RegistryManager) installAgent(entry *sqlite.SharedEntry, senderID stri
 		}
 	}
 
-	log.WithFields(log.Fields{
+	log.Usr(nil, log.CatAgent, senderID).WithFields(log.Fields{
 		"type": "agent", "name": entry.Name, "sender": senderID,
 		"from": entry.SourcePath, "to": agentsDir, "files": installed,
 	}).Info("Installed agent from registry")
@@ -394,7 +394,7 @@ func (rm *RegistryManager) uninstallSkill(name, senderID string) error {
 			return fmt.Errorf("remove skill: %w", err)
 		}
 	}
-	log.WithFields(log.Fields{"type": "skill", "name": name, "sender": senderID}).Info("Uninstalled")
+	log.Usr(nil, log.CatAgent, senderID).WithFields(log.Fields{"type": "skill", "name": name, "sender": senderID}).Info("Uninstalled")
 	return nil
 }
 
@@ -420,7 +420,7 @@ func (rm *RegistryManager) uninstallAgent(name, senderID string) error {
 			return fmt.Errorf("remove agent: %w", err)
 		}
 	}
-	log.WithFields(log.Fields{"type": "agent", "name": name, "sender": senderID}).Info("Uninstalled")
+	log.Usr(nil, log.CatAgent, senderID).WithFields(log.Fields{"type": "agent", "name": name, "sender": senderID}).Info("Uninstalled")
 	return nil
 }
 

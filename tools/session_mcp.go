@@ -130,7 +130,7 @@ func (sm *SessionMCPManager) ensureInitAsync() {
 		}
 		if err := sm.loadAndConnect(context.Background()); err != nil {
 			if err != errNotInitialized {
-				log.WithError(err).WithField("session", sm.sessionKey).Warn("Failed to load MCP servers for catalog")
+				log.Glob(log.CatTool).WithError(err).WithField("session", sm.sessionKey).Warn("Failed to load MCP servers for catalog")
 			}
 			// Reset to idle so the next access retries (config may be created later).
 			// Safe because only the goroutine that won CAS(0→1) can CAS back to 0,
@@ -219,7 +219,7 @@ func (sm *SessionMCPManager) UnloadInactiveServers() time.Time {
 			sm.closeConnection(conn)
 			delete(sm.connections, name)
 			delete(sm.lastActive, name)
-			log.WithFields(log.Fields{
+			log.Glob(log.CatTool).WithFields(log.Fields{
 				"session": sm.sessionKey,
 				"server":  name,
 			}).Info("Unloaded inactive MCP server")
@@ -243,7 +243,7 @@ func (sm *SessionMCPManager) Close() {
 
 	for name, conn := range sm.connections {
 		sm.closeConnection(conn)
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTool).WithFields(log.Fields{
 			"session": sm.sessionKey,
 			"server":  name,
 		}).Debug("Closed MCP connection")
@@ -267,7 +267,7 @@ func (sm *SessionMCPManager) Invalidate() {
 	sm.initOnce = 0
 	sm.initDone = make(chan struct{})
 
-	log.WithField("session", sm.sessionKey).Info("Session MCP invalidated, will reload on next use")
+	log.Glob(log.CatTool).WithField("session", sm.sessionKey).Info("Session MCP invalidated, will reload on next use")
 }
 
 // loadAndConnect 加载配置并连接所有启用的 MCP Server（跳过已连接的服务器）
@@ -293,7 +293,7 @@ func (sm *SessionMCPManager) loadAndConnect(ctx context.Context) error {
 		}
 
 		if err := sm.connectServer(ctx, name, serverCfg); err != nil {
-			log.WithError(err).WithFields(log.Fields{
+			log.Req(ctx, log.CatTool).WithError(err).WithFields(log.Fields{
 				"session": sm.sessionKey,
 				"server":  name,
 			}).Warn("MCP server connection failed")
@@ -360,7 +360,7 @@ func (sm *SessionMCPManager) connectServer(ctx context.Context, name string, cfg
 		toolNames[i] = t.Name
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx, log.CatTool).WithFields(log.Fields{
 		"session": sm.sessionKey,
 		"server":  name,
 		"tools":   toolNames,
@@ -374,7 +374,7 @@ func (sm *SessionMCPManager) closeConnection(conn *mcpConnection) {
 	if conn != nil && conn.session != nil {
 		if err := conn.session.Close(); err != nil {
 			if !IsProcessExitError(err) {
-				log.WithError(err).Debug("Error closing MCP session")
+				log.Glob(log.CatTool).WithError(err).Debug("Error closing MCP session")
 			}
 		}
 	}
@@ -388,14 +388,14 @@ func (sm *SessionMCPManager) loadConfig() (*MCPConfig, error) {
 		if data, err := os.ReadFile(sm.globalConfigPath); err == nil {
 			var cfg MCPConfig
 			if err := json.Unmarshal(data, &cfg); err != nil {
-				log.Errorf("Failed to parse global MCP configuration JSON: path=%s, error=%v", sm.globalConfigPath, err)
+				log.Glob(log.CatTool).Errorf("Failed to parse global MCP configuration JSON: path=%s, error=%v", sm.globalConfigPath, err)
 			} else {
 				for name, server := range cfg.MCPServers {
 					merged.MCPServers[name] = server
 				}
 			}
 		} else if !os.IsNotExist(err) {
-			log.WithError(err).WithField("path", sm.globalConfigPath).Warn("Failed to read global MCP config")
+			log.Glob(log.CatTool).WithError(err).WithField("path", sm.globalConfigPath).Warn("Failed to read global MCP config")
 		}
 	}
 
@@ -509,7 +509,7 @@ func (t *SessionMCPRemoteTool) Execute(ctx *ToolContext, input string) (*ToolRes
 		Arguments: args,
 	})
 	if err != nil {
-		log.WithError(err).WithFields(log.Fields{
+		log.Req(ctx.Ctx, log.CatTool).WithError(err).WithFields(log.Fields{
 			"server": t.serverName,
 			"tool":   t.tool.Name,
 		}).Warn("MCP tool call failed")
@@ -519,7 +519,7 @@ func (t *SessionMCPRemoteTool) Execute(ctx *ToolContext, input string) (*ToolRes
 	content := formatMCPResult(result)
 
 	if result.IsError {
-		log.WithFields(log.Fields{
+		log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 			"server": t.serverName,
 			"tool":   t.tool.Name,
 		}).Warnf("MCP tool returned error: %s", content)

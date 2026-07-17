@@ -166,7 +166,7 @@ func (s *ObservationMaskStore) loadFromDiskLocked() {
 	})
 
 	if len(s.entries) > 0 {
-		log.WithField("count", len(s.entries)).Info("ObservationMaskStore: loaded entries from disk")
+		log.Glob(log.CatAgent).WithField("count", len(s.entries)).Info("ObservationMaskStore: loaded entries from disk")
 	}
 }
 
@@ -364,7 +364,7 @@ func (s *ObservationMaskStore) CleanOldEntries(cutoff time.Time) int {
 	}
 	s.entries = kept
 	if removedCount > 0 {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatAgent).WithFields(log.Fields{
 			"removed": removedCount,
 			"kept":    len(kept),
 			"cutoff":  cutoff.Format(time.RFC3339),
@@ -432,7 +432,7 @@ func (s *ObservationMaskStore) CleanStale(maxAgeDays int) {
 		}
 	}
 	if removed > 0 {
-		log.WithField("removed", removed).Info("ObservationMaskStore: cleaned stale entries from disk")
+		log.Glob(log.CatAgent).WithField("removed", removed).Info("ObservationMaskStore: cleaned stale entries from disk")
 	}
 }
 
@@ -592,7 +592,7 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 		n := 0
 		for _, cand := range candidates {
 			if cand.groupIdx == lastGroupIdx {
-				log.WithFields(map[string]any{
+				log.Glob(log.CatAgent).WithFields(map[string]any{
 					"last_group":   lastGroupIdx,
 					"total_groups": len(groups),
 					"keep_groups":  keepGroups,
@@ -656,7 +656,7 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 		}
 	}
 
-	log.WithFields(map[string]any{
+	log.Glob(log.CatAgent).WithFields(map[string]any{
 		"masked_count":  maskedTotal,
 		"kept_groups":   keepGroups,
 		"total_groups":  len(groups),

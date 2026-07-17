@@ -67,7 +67,7 @@ func (c *NonInteractiveChannel) Send(msg ch.OutboundMsg) (string, error) {
 	select {
 	case c.msgCh <- msg:
 	default:
-		log.WithField("channel", "non-interactive").Warn("Message dropped: buffer full")
+		log.Glob(log.CatTUI).WithField("channel", "non-interactive").Warn("Message dropped: buffer full")
 	}
 	return "", nil
 }

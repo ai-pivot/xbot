@@ -157,7 +157,7 @@ func (t *CronTool) addJob(ctx *ToolContext, p cronParams) (*ToolResult, error) {
 
 	// Save to database
 	if err := t.cronSvc.AddJob(job); err != nil {
-		log.WithError(err).Error("Failed to save cron job")
+		log.Req(ctx.Ctx, log.CatCron).WithError(err).Error("Failed to save cron job")
 		return nil, fmt.Errorf("failed to save cron job: %w", err)
 	}
 
@@ -169,7 +169,7 @@ func (t *CronTool) addJob(ctx *ToolContext, p cronParams) (*ToolResult, error) {
 func (t *CronTool) listJobs(senderID string) (*ToolResult, error) {
 	jobs, err := t.cronSvc.ListJobsBySender(senderID)
 	if err != nil {
-		log.WithError(err).Error("Failed to list cron jobs")
+		log.Glob(log.CatCron).WithError(err).Error("Failed to list cron jobs")
 		return nil, fmt.Errorf("failed to list cron jobs: %w", err)
 	}
 
@@ -200,7 +200,7 @@ func (t *CronTool) removeJob(jobID string, senderID string) (*ToolResult, error)
 	// Verify job exists and belongs to sender
 	job, err := t.cronSvc.GetJob(jobID)
 	if err != nil {
-		log.WithError(err).Error("Failed to get cron job")
+		log.Glob(log.CatCron).WithError(err).Error("Failed to get cron job")
 		return nil, fmt.Errorf("failed to get cron job: %w", err)
 	}
 	if job == nil {
@@ -211,7 +211,7 @@ func (t *CronTool) removeJob(jobID string, senderID string) (*ToolResult, error)
 	}
 
 	if err := t.cronSvc.RemoveJob(jobID); err != nil {
-		log.WithError(err).Error("Failed to remove cron job")
+		log.Glob(log.CatCron).WithError(err).Error("Failed to remove cron job")
 		return nil, fmt.Errorf("failed to remove cron job: %w", err)
 	}
 	return NewResult(fmt.Sprintf("Job removed: %s", jobID)), nil

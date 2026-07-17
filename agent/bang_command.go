@@ -49,7 +49,7 @@ func sandboxUserID(msg bus.InboundMessage) string {
 // and returns the result directly, bypassing LLM.
 func (a *Agent) handleBangCommand(ctx context.Context, msg bus.InboundMessage, command string) (*channel.OutboundMsg, error) {
 	sbUID := sandboxUserID(msg)
-	log.WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"channel":      msg.Channel,
 		"sender":       msg.SenderID,
 		"sandbox_user": sbUID,

@@ -144,7 +144,7 @@ func (s *RunnerTokenStore) Get(userID string) *RunnerTokenEntry {
 func (s *RunnerTokenStore) Revoke(userID string) {
 	_, err := s.db.Exec("DELETE FROM runner_tokens WHERE user_id = ?", userID)
 	if err != nil {
-		log.WithError(err).Error("Failed to revoke runner token")
+		log.Glob(log.CatTool).WithError(err).Error("Failed to revoke runner token")
 	}
 }
 
@@ -269,7 +269,7 @@ func (s *RunnerTokenStore) ListRunners(userID string) ([]RunnerInfo, error) {
 	for rows.Next() {
 		var r RunnerInfo
 		if err := rows.Scan(&r.Name, &r.Token, &r.Mode, &r.DockerImage, &r.Workspace, &r.CreatedAt, &r.LLMProvider, &r.LLMAPIKey, &r.LLMModel, &r.LLMBaseURL); err != nil {
-			log.WithError(err).Warn("Failed to scan runner row, skipping")
+			log.Glob(log.CatTool).WithError(err).Warn("Failed to scan runner row, skipping")
 			continue
 		}
 		runners = append(runners, r)

@@ -773,13 +773,13 @@ func (l *pluginLogger) emit(level, msg string, fields []Field) {
 	fieldsMap := l.buildLogrusFields(fields)
 	switch level {
 	case "DEBUG":
-		log.WithFields(fieldsMap).Debug(msg)
+		log.Glob(log.CatPlugin).WithFields(fieldsMap).Debug(msg)
 	case "INFO":
-		log.WithFields(fieldsMap).Info(msg)
+		log.Glob(log.CatPlugin).WithFields(fieldsMap).Info(msg)
 	case "WARN":
-		log.WithFields(fieldsMap).Warn(msg)
+		log.Glob(log.CatPlugin).WithFields(fieldsMap).Warn(msg)
 	case "ERROR":
-		log.WithFields(fieldsMap).Error(msg)
+		log.Glob(log.CatPlugin).WithFields(fieldsMap).Error(msg)
 	}
 }
 

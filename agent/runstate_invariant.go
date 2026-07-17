@@ -36,6 +36,6 @@ func (s *runState) ValidateInvariants() error {
 // Intended as a non-intrusive check at key transition points.
 func (s *runState) validateInvariantsAt(ctx context.Context, point string) {
 	if err := s.ValidateInvariants(); err != nil {
-		log.Ctx(ctx).WithField("invariant_check", point).WithError(err).Debug("runState invariant violation")
+		log.Req(ctx, log.CatAgent).WithField("invariant_check", point).WithError(err).Debug("runState invariant violation")
 	}
 }

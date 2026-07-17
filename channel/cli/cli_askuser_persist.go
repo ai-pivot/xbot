@@ -52,21 +52,21 @@ func (m *cliModel) savePendingAskUser(chatID string, metadata map[string]string)
 
 	dir := pendingAskUserDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		log.WithError(err).Warn("Failed to create pending_askuser dir")
+		log.Glob(log.CatTUI).WithError(err).Warn("Failed to create pending_askuser dir")
 		return
 	}
 
 	path := pendingAskUserPath(m.channelName, chatID)
 	data, err := json.Marshal(pu)
 	if err != nil {
-		log.WithError(err).WithField("chat_id", chatID).Warn("Failed to marshal pending ask_user")
+		log.Glob(log.CatTUI).WithError(err).WithField("chat_id", chatID).Warn("Failed to marshal pending ask_user")
 		return
 	}
 	if err := os.WriteFile(path, data, 0600); err != nil {
-		log.WithError(err).WithField("chat_id", chatID).Warn("Failed to write pending ask_user")
+		log.Glob(log.CatTUI).WithError(err).WithField("chat_id", chatID).Warn("Failed to write pending ask_user")
 		return
 	}
-	log.WithField("chat_id", chatID).Info("Saved pending ask_user to disk")
+	log.Glob(log.CatTUI).WithField("chat_id", chatID).Info("Saved pending ask_user to disk")
 }
 
 // loadPendingAskUser loads a pending AskUser question from disk.
@@ -76,13 +76,13 @@ func (m *cliModel) loadPendingAskUser(chatID string) *PendingAskUser {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.WithError(err).WithField("chat_id", chatID).Warn("Failed to read pending ask_user")
+			log.Glob(log.CatTUI).WithError(err).WithField("chat_id", chatID).Warn("Failed to read pending ask_user")
 		}
 		return nil
 	}
 	var pu PendingAskUser
 	if err := json.Unmarshal(data, &pu); err != nil {
-		log.WithError(err).WithField("chat_id", chatID).Warn("Failed to unmarshal pending ask_user, removing corrupt file")
+		log.Glob(log.CatTUI).WithError(err).WithField("chat_id", chatID).Warn("Failed to unmarshal pending ask_user, removing corrupt file")
 		os.Remove(path)
 		return nil
 	}
@@ -93,10 +93,10 @@ func (m *cliModel) loadPendingAskUser(chatID string) *PendingAskUser {
 func (m *cliModel) deletePendingAskUser(chatID string) {
 	path := pendingAskUserPath(m.channelName, chatID)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		log.WithError(err).WithField("chat_id", chatID).Warn("Failed to delete pending ask_user")
+		log.Glob(log.CatTUI).WithError(err).WithField("chat_id", chatID).Warn("Failed to delete pending ask_user")
 		return
 	}
-	log.WithField("chat_id", chatID).Info("Deleted pending ask_user from disk")
+	log.Glob(log.CatTUI).WithField("chat_id", chatID).Info("Deleted pending ask_user from disk")
 }
 
 // nowUnix returns current unix timestamp.

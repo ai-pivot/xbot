@@ -66,7 +66,7 @@ func SanitizeMessages(messages []ChatMessage) []ChatMessage {
 	n := 0
 	for _, msg := range messages {
 		if msg.Role == "assistant" && msg.Content == "" && len(msg.ToolCalls) == 0 {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatLLM).WithFields(log.Fields{
 				"display_only": msg.DisplayOnly,
 				"detail_len":   len(msg.Detail),
 			}).Warn("[SanitizeMessages] Stripping invalid assistant message (content and tool_calls both empty)")
@@ -88,13 +88,13 @@ func SanitizeMessages(messages []ChatMessage) []ChatMessage {
 		for j := range messages[i].ToolCalls {
 			args := messages[i].ToolCalls[j].Arguments
 			if args == "" {
-				log.WithFields(log.Fields{
+				log.Glob(log.CatLLM).WithFields(log.Fields{
 					"tool_name": messages[i].ToolCalls[j].Name,
 					"tool_id":   messages[i].ToolCalls[j].ID,
 				}).Warn("[SanitizeMessages] Fixing tool_call with empty arguments, set to {}")
 				messages[i].ToolCalls[j].Arguments = "{}"
 			} else if !json.Valid([]byte(args)) {
-				log.WithFields(log.Fields{
+				log.Glob(log.CatLLM).WithFields(log.Fields{
 					"tool_name": messages[i].ToolCalls[j].Name,
 					"tool_id":   messages[i].ToolCalls[j].ID,
 					"args_len":  len(args),
@@ -116,7 +116,7 @@ func sanitizeToolPairOrder(messages []ChatMessage) []ChatMessage {
 	for i := 0; i < len(messages); i++ {
 		msg := messages[i]
 		if msg.Role == "tool" {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatLLM).WithFields(log.Fields{
 				"tool_name":    msg.ToolName,
 				"tool_call_id": msg.ToolCallID,
 				"msg_index":    i,
@@ -136,7 +136,7 @@ func sanitizeToolPairOrder(messages []ChatMessage) []ChatMessage {
 		validTools := make([]ChatMessage, 0, j-i-1)
 		for _, toolMsg := range messages[i+1 : j] {
 			if toolMsg.ToolCallID == "" || !toolCallIDInCalls(msg.ToolCalls, toolMsg.ToolCallID) || toolIDSeenInMessages(validTools, toolMsg.ToolCallID) {
-				log.WithFields(log.Fields{
+				log.Glob(log.CatLLM).WithFields(log.Fields{
 					"tool_name":    toolMsg.ToolName,
 					"tool_call_id": toolMsg.ToolCallID,
 					"assistant_i":  i,
@@ -152,7 +152,7 @@ func sanitizeToolPairOrder(messages []ChatMessage) []ChatMessage {
 				validCalls = append(validCalls, tc)
 				continue
 			}
-			log.WithFields(log.Fields{
+			log.Glob(log.CatLLM).WithFields(log.Fields{
 				"tool_name": tc.Name,
 				"tool_id":   tc.ID,
 				"msg_index": i,

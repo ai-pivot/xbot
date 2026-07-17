@@ -261,12 +261,12 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 			int(result.InputTokens), int(result.OutputTokens), int(result.CachedTokens),
 			0, result.LLMCalls,
 		); recordErr != nil {
-			log.Ctx(ctx).WithError(recordErr).Warn("Failed to record compress token usage")
+			log.Req(ctx, log.CatAgent).WithError(recordErr).Warn("Failed to record compress token usage")
 		}
 	}
 
 	if err := tenantSession.Clear(); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to clear session for compression")
+		log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to clear session for compression")
 		newTokenCount := len(result.LLMView) * 200
 		compressTokenUsage = &protocol.TokenUsage{PromptTokens: int64(newTokenCount)}
 		return &channel.OutboundMsg{
@@ -281,7 +281,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 			continue
 		}
 		if err := tenantSession.AddMessage(msg); err != nil {
-			log.Ctx(ctx).WithError(err).Error("Partial write during compression, session may be corrupted")
+			log.Req(ctx, log.CatAgent).WithError(err).Error("Partial write during compression, session may be corrupted")
 			allOk = false
 			break
 		}
@@ -298,13 +298,13 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	// trigger re-compression. Without this, GetLastContextTokens() returns the
 	// pre-compress high value, and maybeCompress triggers again on the next message.
 	if saveErr := tenantSession.SaveContextTokens(newTokenCount); saveErr != nil {
-		log.Ctx(ctx).WithError(saveErr).Warn("Failed to save context tokens after manual compress")
+		log.Req(ctx, log.CatAgent).WithError(saveErr).Warn("Failed to save context tokens after manual compress")
 	}
 	// Also update the token_state table (fallback used by GetTokenState when
 	// context_tokens is unavailable).
 	if memSvc := tenantSession.MemoryService(); memSvc != nil {
 		if saveErr := memSvc.SetTokenState(ctx, tenantSession.TenantID(), newTokenCount, 0); saveErr != nil {
-			log.Ctx(ctx).WithError(saveErr).Warn("Failed to save token state after manual compress")
+			log.Req(ctx, log.CatAgent).WithError(saveErr).Warn("Failed to save token state after manual compress")
 		}
 	}
 
@@ -452,7 +452,7 @@ func compactMessages(
 	// Step 2: cap tail length.
 	newTailStart := capTailLength(messages, tailStart, maxContextTokens)
 	if newTailStart != tailStart {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 			"old_tail_start": tailStart,
 			"new_tail_start": newTailStart,
 			"tail_capped":    (len(messages) - tailStart) - (len(messages) - newTailStart),
@@ -602,7 +602,7 @@ Output the structured working state directly.`
 	// Fallback: if the LLM exhausted all tool rounds without producing text,
 	// send one final call WITHOUT tools to force a text summary.
 	if compressed == "" {
-		log.Ctx(ctx).WithField("tool_rounds", maxToolRounds).Warn("Compaction exhausted tool rounds, forcing final summary without tools")
+		log.Req(ctx, log.CatAgent).WithField("tool_rounds", maxToolRounds).Warn("Compaction exhausted tool rounds, forcing final summary without tools")
 		forceMsgs := append(compactionMsgs, llm.ChatMessage{Role: "assistant", Content: "Memory operations complete. Now produce the compaction summary."})
 		resp, err := client.Generate(ctx, model, forceMsgs, nil, "")
 		if err != nil {
@@ -626,13 +626,13 @@ Output the structured working state directly.`
 
 	// Step 6: build compacted message structure
 	if len(systemMsgs) > 1 {
-		log.Ctx(ctx).WithField("system_count", len(systemMsgs)).Error("assert: at most one system message in compact input")
+		log.Req(ctx, log.CatAgent).WithField("system_count", len(systemMsgs)).Error("assert: at most one system message in compact input")
 		return nil, fmt.Errorf("compact: expected at most one system message, got %d", len(systemMsgs))
 	}
 
 	needInjectUserMsg := originalUserMsg != nil && tailStart > originalTailStart
 	if needInjectUserMsg {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 			"original_tail": originalTailStart,
 			"capped_tail":   tailStart,
 			"user_msg_idx":  originalTailStart,
@@ -642,7 +642,7 @@ Output the structured working state directly.`
 	llmView, sessionView := mergeCompressedResult(compressed, systemMsgs, tail, originalUserMsg, originalTailStart, tailStart)
 
 	newTokens := len([]rune(compressed)) * 2 / 3
-	log.Ctx(ctx).WithFields(map[string]any{
+	log.Req(ctx, log.CatAgent).WithFields(map[string]any{
 		"original_tokens": originalTokens,
 		"new_tokens":      newTokens,
 		"tail_messages":   len(tail),

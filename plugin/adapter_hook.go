@@ -54,7 +54,7 @@ func (b *PluginHookBridge) Register(pluginID string, event HookEvent, matcher st
 		handler:  handler,
 		global:   isGlobal,
 	})
-	log.WithField("plugin", pluginID).WithField("event", string(event)).
+	log.Glob(log.CatPlugin).WithField("plugin", pluginID).WithField("event", string(event)).
 		Debug("Plugin hook registered")
 }
 
@@ -117,7 +117,7 @@ func (b *PluginHookBridge) Dispatch(ctx context.Context, payload *HookPayload) *
 
 		result, err := entry.handler(ctx, payload)
 		if err != nil {
-			log.WithField("plugin", entry.pluginID).WithField("event", string(payload.Event)).
+			log.Glob(log.CatPlugin).WithField("plugin", entry.pluginID).WithField("event", string(payload.Event)).
 				Warn("Plugin hook handler error: ", err)
 			continue
 		}

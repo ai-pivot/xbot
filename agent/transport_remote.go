@@ -398,7 +398,7 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 	}
 	u.RawQuery = q.Encode()
 	wsURL := u.String()
-	log.WithField("url", wsURL).Info("Connecting to remote xbot server...")
+	log.Req(ctx, log.CatTransport).WithField("url", wsURL).Info("Connecting to remote xbot server...")
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
@@ -439,7 +439,7 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "reconnecting"))
 		old.Close()
 	}
-	log.Info("Connected to remote xbot server")
+	log.Req(ctx, log.CatTransport).Info("Connected to remote xbot server")
 	t.setConnState("connected")
 
 	return nil
@@ -638,7 +638,7 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 					return
 				default:
 				}
-				log.WithField("delay", delay).Info("Reconnecting to server...")
+				log.Req(ctx, log.CatTransport).WithField("delay", delay).Info("Reconnecting to server...")
 				timer := time.NewTimer(delay)
 				select {
 				case <-t.done:
@@ -664,7 +664,7 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 					delay = time.Second
 					continue
 				}
-				log.Info("Reconnected to server")
+				log.Req(ctx, log.CatTransport).Info("Reconnected to server")
 				consecutiveFailures = 0
 				// Start readPump BEFORE emitting ReconnectEvent, so the new
 				// reader is ready to receive RPC responses (BindChat etc.).

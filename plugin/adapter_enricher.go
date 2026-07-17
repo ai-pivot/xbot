@@ -46,7 +46,7 @@ func (r *EnricherRegistry) Register(pluginID, name string, enricher ContextEnric
 	sort.Slice(r.enrichers, func(i, j int) bool {
 		return r.enrichers[i].priority < r.enrichers[j].priority
 	})
-	log.WithField("plugin", pluginID).WithField("name", name).
+	log.Glob(log.CatPlugin).WithField("plugin", pluginID).WithField("name", name).
 		Debug("Context enricher registered")
 }
 
@@ -62,7 +62,7 @@ func (r *EnricherRegistry) RunAll(ctx context.Context) string {
 	for _, entry := range enrichers {
 		content, err := entry.enricher(ctx)
 		if err != nil {
-			log.WithField("plugin", entry.pluginID).WithField("enricher", entry.name).
+			log.Glob(log.CatPlugin).WithField("plugin", entry.pluginID).WithField("enricher", entry.name).
 				Warn("Context enricher error: ", err)
 			continue
 		}

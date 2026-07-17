@@ -310,7 +310,7 @@ func (t *FileReplaceTool) executeLocal(ctx *ToolContext, params FileReplaceParam
 	var content []byte
 	select {
 	case <-ioCtx.Done():
-		log.WithFields(log.Fields{
+		log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 			"file":    filePath,
 			"timeout": EditLocalTimeout,
 		}).Warn("File read timed out, goroutine may leak if I/O is stuck")

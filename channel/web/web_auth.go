@@ -106,7 +106,7 @@ func CreateWebUser(db *sql.DB, username string) (string, string, error) {
 	}
 
 	id, _ := result.LastInsertId()
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"user_id":  id,
 		"username": username,
 	}).Info("Web user created by admin")
@@ -132,7 +132,7 @@ func ListWebUsers(db *sql.DB) ([]WebUserInfo, error) {
 	for rows.Next() {
 		var u WebUserInfo
 		if err := rows.Scan(&u.ID, &u.Username, &u.CreatedAt); err != nil {
-			log.WithError(err).Warn("web_users row scan failed")
+			log.Glob(log.CatChannel).WithError(err).Warn("web_users row scan failed")
 			continue
 		}
 		users = append(users, u)
@@ -153,7 +153,7 @@ func DeleteWebUser(db *sql.DB, username string) error {
 	if n == 0 {
 		return fmt.Errorf("user %q not found", username)
 	}
-	log.WithField("username", username).Info("Web user deleted by admin")
+	log.Glob(log.CatChannel).WithField("username", username).Info("Web user deleted by admin")
 	return nil
 }
 
@@ -279,7 +279,7 @@ func (wc *WebChannel) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-detect Feishu identity: look up linked feishu user ID
 	feishuUID := FeishuGetLinkedUserID(wc.db, id)
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"username":    req.Username,
 		"user_id":     id,
 		"feishu_user": feishuUID,
@@ -454,7 +454,7 @@ func FeishuLinkUser(db *sql.DB, feishuUserID, username, password string) (string
 		`INSERT OR REPLACE INTO user_settings (channel, sender_id, key, value, updated_at) VALUES ('feishu', ?, 'web_user_id', ?, ?)`,
 		feishuUserID, strconv.FormatInt(id, 10), now,
 	); err != nil {
-		log.WithError(err).Error("Failed to store feishu-web link")
+		log.Glob(log.CatChannel).WithError(err).Error("Failed to store feishu-web link")
 		return "", fmt.Errorf("failed to store account link: %w", err)
 	}
 

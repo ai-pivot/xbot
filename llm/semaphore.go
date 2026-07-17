@@ -60,7 +60,7 @@ func (s *tenantSem) release() {
 	s.mu.Lock()
 	if s.count <= 0 {
 		s.mu.Unlock()
-		log.Warn("semaphore underflow")
+		log.Glob(log.CatLLM).Warn("semaphore underflow")
 		return
 	}
 	s.count--

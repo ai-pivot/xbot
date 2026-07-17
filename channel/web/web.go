@@ -543,7 +543,7 @@ func (wc *WebChannel) Start() error {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"host": wc.config.Host,
 		"port": wc.config.Port,
 	}).Info("Web channel starting...")
@@ -561,7 +561,7 @@ func (wc *WebChannel) Start() error {
 
 // Stop 停止 Web 渠道
 func (wc *WebChannel) Stop() {
-	log.Info("Web channel stopping...")
+	log.Glob(log.CatChannel).Info("Web channel stopping...")
 	close(wc.stopCh)
 
 	wc.hub.stopAll()
@@ -575,7 +575,7 @@ func (wc *WebChannel) Stop() {
 	}
 
 	wc.wg.Wait()
-	log.Info("Web channel stopped")
+	log.Glob(log.CatChannel).Info("Web channel stopped")
 }
 
 // ---------------------------------------------------------------------------
@@ -623,7 +623,7 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 
 	// Send via hub (non-blocking: writes to buffered channel)
 	if !wc.hub.sendToClient(targetClientID, wsMsg) {
-		log.WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("Web client offline, message buffered")
+		log.Glob(log.CatChannel).WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("Web client offline, message buffered")
 	}
 
 	// AskUser: agent needs user input
@@ -674,7 +674,7 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 	})
 
 	if !wc.hub.sendToClient(chatID, wsMsg) {
-		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
+		log.Glob(log.CatChannel).WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
 	}
 }
 
@@ -707,7 +707,7 @@ func (wc *WebChannel) PushRunnerStatus(chatID, runnerName string, online bool) {
 		}(),
 	}
 	if !wc.hub.sendToClient(chatID, wsMsg) {
-		log.WithField("chat_id", chatID).Debug("Web client offline, runner status buffered")
+		log.Glob(log.CatChannel).WithField("chat_id", chatID).Debug("Web client offline, runner status buffered")
 	}
 }
 
@@ -722,7 +722,7 @@ func (wc *WebChannel) PushSyncProgress(chatID, phase, message string) {
 		}(),
 	}
 	if !wc.hub.sendToClient(chatID, wsMsg) {
-		log.WithField("chat_id", chatID).Debug("Web client offline, sync progress buffered")
+		log.Glob(log.CatChannel).WithField("chat_id", chatID).Debug("Web client offline, sync progress buffered")
 	}
 }
 
@@ -775,7 +775,7 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		var err error
 		senderID, err = wc.validateCLIToken(token)
 		if err != nil {
-			log.WithError(err).Warn("CLI token auth failed")
+			log.Glob(log.CatTransport).WithError(err).Warn("CLI token auth failed")
 			jsonErrorResponse(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
@@ -813,7 +813,7 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Upgrade to WebSocket
 	conn, err := wc.wsUpgrader().Upgrade(w, r, nil)
 	if err != nil {
-		log.WithError(err).Warn("WebSocket upgrade failed")
+		log.Glob(log.CatTransport).WithError(err).Warn("WebSocket upgrade failed")
 		return
 	}
 
@@ -842,7 +842,7 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		wc.hub.subscribe(client.id, chatID)
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"sender_id": senderID,
 		"client_id": client.id,
 		"username":  username,
@@ -949,7 +949,7 @@ func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
 		select {
 		case client.sendCh <- evt:
 		default:
-			log.Debug("Client sendCh full during replay, stopping")
+			log.Glob(log.CatChannel).Debug("Client sendCh full during replay, stopping")
 			return
 		}
 	}
@@ -993,7 +993,7 @@ func (wc *WebChannel) writePump(c *Client) {
 			for _, msg := range c.drainStateless() {
 				c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 				if err := c.conn.WriteJSON(*msg); err != nil {
-					log.WithError(err).Debug("WS write error (stateless)")
+					log.Glob(log.CatTransport).WithError(err).Debug("WS write error (stateless)")
 					return
 				}
 			}
@@ -1009,7 +1009,7 @@ func (wc *WebChannel) writePump(c *Client) {
 			}
 			c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if err := c.conn.WriteJSON(msg); err != nil {
-				log.WithError(err).Debug("WS write error")
+				log.Glob(log.CatTransport).WithError(err).Debug("WS write error")
 				return
 			}
 		case <-ticker.C:
@@ -1032,7 +1032,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 		wc.hub.removeClient(c.id)
 		// Note: do NOT removeRoutes here — multiple clients may share the same
 		// senderID. Routes are idempotent and re-registered on each message.
-		log.WithField("sender_id", c.userID).Info("Web client disconnected")
+		log.Glob(log.CatTransport).WithField("sender_id", c.userID).Info("Web client disconnected")
 	}()
 
 	c.conn.SetReadLimit(10 << 20) // 10MB max message (agent replies with code blocks can be large)
@@ -1073,14 +1073,14 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			if websocket.IsUnexpectedCloseError(err,
 				websocket.CloseGoingAway,
 				websocket.CloseNormalClosure) {
-				log.WithError(err).Debug("WS read error")
+				log.Glob(log.CatTransport).WithError(err).Debug("WS read error")
 			}
 			return
 		}
 
 		var msg protocol.WSClientMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
-			log.WithError(err).Debug("WS invalid message")
+			log.Glob(log.CatTransport).WithError(err).Debug("WS invalid message")
 			continue
 		}
 
@@ -1124,7 +1124,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					webUserID = si.userID
 				}
 				if !c.isCLI && !wc.canAccessSession(context.Background(), webUserID, c.userID, msgChannel, msgChatID) {
-					log.WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client cancel denied")
+					log.Glob(log.CatChannel).WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client cancel denied")
 					continue
 				}
 			}
@@ -1173,18 +1173,18 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				RequestID string          `json:"request_id"`
 			}
 			if err := json.Unmarshal(raw, &rpcReq); err != nil {
-				log.WithError(err).Debug("Invalid RPC message from CLI client")
+				log.Glob(log.CatRPC).WithError(err).Debug("Invalid RPC message from CLI client")
 				continue
 			}
 			go func(id, method string, params json.RawMessage, userID, requestID string) {
+				ctx := log.WithRequestID(context.Background(), requestID)
 				var result json.RawMessage
 				var rpcErr error
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							log.WithField("method", method).
+							log.Req(ctx, log.CatRPC).WithField("method", method).
 								WithField("rpc_id", id).
-								WithField("request_id", requestID).
 								WithField("stack", string(debug.Stack())).
 								WithError(fmt.Errorf("%v", r)).
 								Error("RPC handler panic")
@@ -1202,7 +1202,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				select {
 				case c.sendCh <- rpcMsg:
 				case <-time.After(10 * time.Second):
-					log.WithField("rpc_id", id).WithField("method", method).
+					log.Req(ctx, log.CatRPC).WithField("rpc_id", id).WithField("method", method).
 						Error("RPC response send timeout (10s)")
 				}
 			}(rpcReq.ID, rpcReq.Method, rpcReq.Params, c.userID, rpcReq.RequestID)
@@ -1234,13 +1234,13 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 						channelName = "agent"
 					}
 					if !wc.canAccessSession(context.Background(), webUserID, c.userID, channelName, subMsg.ChatID) {
-						log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID, "user_id": c.userID}).Warn("Hub: web client tried to subscribe to foreign chatID, denied")
+						log.Glob(log.CatChannel).WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID, "user_id": c.userID}).Warn("Hub: web client tried to subscribe to foreign chatID, denied")
 						continue
 					}
 				}
 			}
 			wc.hub.subscribe(c.id, subMsg.ChatID)
-			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Info("Hub: client subscribed to chatID")
+			log.Glob(log.CatChannel).WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Info("Hub: client subscribed to chatID")
 
 			// Resend pending AskUser prompt if this session is waiting for user input.
 			// This handles the case where the AskUser was triggered before the web
@@ -1290,7 +1290,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					// Get signed download URL (private OSS requires signed URLs with TTL)
 					downloadURL, err := wc.ossProvider.GetDownloadURL(key)
 					if err != nil {
-						log.WithError(err).WithField("key", key).Warn("Failed to get download URL for OSS file")
+						log.Glob(log.CatChannel).WithError(err).WithField("key", key).Warn("Failed to get download URL for OSS file")
 						content += fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载链接失败)", displayName)
 						continue
 					}
@@ -1330,7 +1330,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					webUserID = si.userID
 				}
 				if !c.isCLI && !wc.canAccessSession(context.Background(), webUserID, c.userID, msgChannel, msgChatID) {
-					log.WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client message denied")
+					log.Glob(log.CatChannel).WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client message denied")
 					continue
 				}
 			}
@@ -1373,7 +1373,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			trimmed := strings.TrimSpace(content)
 			if shouldEagerSaveUserMessage(msgChannel, trimmed) {
 				if err := eagerSaveUserMsg(wc.db, msgChannel, msgChatID, content); err != nil {
-					log.WithError(err).Warn("Failed to eager-save user message")
+					log.Glob(log.CatChannel).WithError(err).Warn("Failed to eager-save user message")
 				}
 				metadata["user_msg_eager_saved"] = "true"
 			}
@@ -1394,7 +1394,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 		case protocol.MsgTypeAskUserResponse:
 			var resp protocol.AskUserResponse
 			if err := json.Unmarshal(raw, &resp); err != nil {
-				log.WithError(err).Debug("WS invalid ask_user_response")
+				log.Glob(log.CatTransport).WithError(err).Debug("WS invalid ask_user_response")
 				continue
 			}
 			// Resolve business channel/chatID (same as message/cancel handlers)
@@ -1410,7 +1410,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					webUserID = si.userID
 				}
 				if !c.isCLI && !wc.canAccessSession(context.Background(), webUserID, c.userID, respChannel, respChatID) {
-					log.WithFields(log.Fields{"channel": respChannel, "chat_id": respChatID, "user_id": c.userID}).Warn("Web client ask_user_response denied")
+					log.Glob(log.CatChannel).WithFields(log.Fields{"channel": respChannel, "chat_id": respChatID, "user_id": c.userID}).Warn("Web client ask_user_response denied")
 					continue
 				}
 			}
@@ -1448,7 +1448,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				}
 			}
 		default:
-			log.WithField("type", msg.Type).Debug("WS unknown message type")
+			log.Glob(log.CatTransport).WithField("type", msg.Type).Debug("WS unknown message type")
 		}
 	}
 

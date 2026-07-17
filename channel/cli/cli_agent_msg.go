@@ -27,7 +27,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 	// because time.Now() ≠ DB timestamp, producing duplicate messages in
 	// m.messages that survive fullRebuild (symptom: entire chat block repeated).
 	if m.splashState.suLoading {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTUI).WithFields(log.Fields{
 			"msg_chatid":   msg.ChatID,
 			"waiting_user": msg.WaitingUser,
 		}).Debug("handleAgentMessage: suLoading, discarding (session switch in progress)")
@@ -37,7 +37,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 	// Filter by session: only process outbound for the currently viewed session.
 	if msg.Channel != "" && msg.ChatID != "" {
 		if msg.Channel != m.channelName || msg.ChatID != m.chatID {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatTUI).WithFields(log.Fields{
 				"msg_channel":    msg.Channel,
 				"msg_chatid":     msg.ChatID,
 				"my_channelName": m.channelName,
@@ -50,7 +50,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		// ChatID empty: this is a defensive warning. Messages without proper
 		// session identity risk cross-session contamination. Log at error level
 		// to make it visible.
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTUI).WithFields(log.Fields{
 			"msg_channel":    msg.Channel,
 			"msg_chatid":     msg.ChatID,
 			"my_channelName": m.channelName,
@@ -102,7 +102,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 			m.messages[existingIdx].isPartial = false
 			m.messages[existingIdx].dirty = true
 		} else {
-			log.WithField("turnID", turnID).Warn("handleAgentMessage: streaming message not found to finalize")
+			log.Glob(log.CatTUI).WithField("turnID", turnID).Warn("handleAgentMessage: streaming message not found to finalize")
 		}
 		m.streamingMsgIdx = -1
 		m.progressState.current = nil

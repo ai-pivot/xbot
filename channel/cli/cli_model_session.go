@@ -577,7 +577,7 @@ func (m *cliModel) checkAndRestorePendingAskUser() tea.Cmd {
 	// Parse questions from saved metadata.
 	var qs []askQItem
 	if err := json.Unmarshal([]byte(pu.Questions), &qs); err != nil || len(qs) == 0 {
-		log.WithError(err).WithField("chat_id", m.chatID).Warn("Failed to parse pending ask_user questions, removing corrupt file")
+		log.Glob(log.CatTUI).WithError(err).WithField("chat_id", m.chatID).Warn("Failed to parse pending ask_user questions, removing corrupt file")
 		m.deletePendingAskUser(m.chatID)
 		return nil
 	}
@@ -588,7 +588,7 @@ func (m *cliModel) checkAndRestorePendingAskUser() tea.Cmd {
 
 	requestID := pu.RequestID // capture for callbacks
 
-	log.WithField("chat_id", m.chatID).Info("Restoring pending AskUser panel from disk")
+	log.Glob(log.CatTUI).WithField("chat_id", m.chatID).Info("Restoring pending AskUser panel from disk")
 	m.askUserSession = m.chatID // bind AskUser to current session
 	m.openAskUserPanel(items, m.pendingAskUserOnAnswer(requestID), m.pendingAskUserOnCancel(requestID))
 	return nil
@@ -719,14 +719,14 @@ func (m *cliModel) reloadMessagesFromSession(forceFullRebuild bool) {
 					timer.Stop()
 					sent = true
 				case <-timer.C:
-					log.WithField("attempt", attempt+1).Warn("reloadMessagesFromSession: asyncCh full, retrying...")
+					log.Glob(log.CatTUI).WithField("attempt", attempt+1).Warn("reloadMessagesFromSession: asyncCh full, retrying...")
 				case <-m.channel.stopCh:
 					timer.Stop()
 					return
 				}
 			}
 			if !sent {
-				log.Error("reloadMessagesFromSession: asyncCh full after 3 retries (15s), reload permanently dropped")
+				log.Glob(log.CatTUI).Error("reloadMessagesFromSession: asyncCh full after 3 retries (15s), reload permanently dropped")
 			}
 		}
 	})

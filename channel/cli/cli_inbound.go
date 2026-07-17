@@ -81,7 +81,7 @@ func (m *cliModel) sendInbound(msg ch.InboundMsg) bool {
 	// sendInboundFn is nil — same as send failure. Mark disconnected so callers
 	// (sendToAgent, sendMessage, handleSlashCommand) that check connState before
 	// startAgentTurn() don't launch an empty turn with no message actually sent.
-	log.Warn("sendInbound: sendInboundFn is nil")
+	log.Glob(log.CatTUI).Warn("sendInbound: sendInboundFn is nil")
 	if m.channel != nil {
 		m.channel.SetConnState("disconnected")
 	}

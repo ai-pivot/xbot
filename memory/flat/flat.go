@@ -113,7 +113,7 @@ func (m *FlatMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 		return memory.MemorizeResult{NewLastConsolidated: lastConsolidated, OK: true}, nil
 	}
 
-	log.WithField("tenant_id", m.tenantID).Infof("Memory consolidation (archive_all): %d messages", len(messages))
+	log.Glob(log.CatDB).WithField("tenant_id", m.tenantID).Infof("Memory consolidation (archive_all): %d messages", len(messages))
 
 	// Format old messages as text
 	var lines []string
@@ -171,18 +171,18 @@ func (m *FlatMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 		llm.NewUserMessage(prompt),
 	}, saveMemoryTool, "")
 	if err != nil {
-		log.WithError(err).Error("Memory consolidation LLM call failed")
+		log.Glob(log.CatDB).WithError(err).Error("Memory consolidation LLM call failed")
 		return memory.MemorizeResult{NewLastConsolidated: lastConsolidated, OK: false}, nil
 	}
 
 	if !resp.HasToolCalls() {
-		log.Warn("Memory consolidation: LLM did not call save_memory, skipping")
+		log.Glob(log.CatDB).Warn("Memory consolidation: LLM did not call save_memory, skipping")
 		return memory.MemorizeResult{NewLastConsolidated: lastConsolidated, OK: false}, nil
 	}
 
 	var args saveMemoryArgs
 	if err := json.Unmarshal([]byte(resp.ToolCalls[0].Arguments), &args); err != nil {
-		log.WithError(err).Error("Memory consolidation: failed to parse save_memory arguments")
+		log.Glob(log.CatDB).WithError(err).Error("Memory consolidation: failed to parse save_memory arguments")
 		return memory.MemorizeResult{NewLastConsolidated: lastConsolidated, OK: false}, nil
 	}
 
@@ -191,11 +191,11 @@ func (m *FlatMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 		historyPath := filepath.Join(m.baseDir, historyFileName)
 		f, err := os.OpenFile(historyPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
-			log.WithError(err).Error("Failed to open HISTORY.md for append")
+			log.Glob(log.CatDB).WithError(err).Error("Failed to open HISTORY.md for append")
 		} else {
 			defer f.Close()
 			if _, err := fmt.Fprintf(f, "%s\n", args.HistoryEntry); err != nil {
-				log.WithError(err).Error("Failed to write HISTORY.md entry")
+				log.Glob(log.CatDB).WithError(err).Error("Failed to write HISTORY.md entry")
 			}
 		}
 	}
@@ -205,14 +205,14 @@ func (m *FlatMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 		memoryPath := filepath.Join(m.baseDir, memoryFileName)
 		tmpPath := memoryPath + ".tmp"
 		if err := os.WriteFile(tmpPath, []byte(args.MemoryUpdate), 0o644); err != nil {
-			log.WithError(err).Error("Failed to write MEMORY.md temp file")
+			log.Glob(log.CatDB).WithError(err).Error("Failed to write MEMORY.md temp file")
 		} else if err := os.Rename(tmpPath, memoryPath); err != nil {
-			log.WithError(err).Error("Failed to rename MEMORY.md temp file")
+			log.Glob(log.CatDB).WithError(err).Error("Failed to rename MEMORY.md temp file")
 			os.Remove(tmpPath) // cleanup temp file
 		}
 	}
 
-	log.WithField("tenant_id", m.tenantID).Infof("Memory consolidation done: lastConsolidated=%d", len(messages))
+	log.Glob(log.CatDB).WithField("tenant_id", m.tenantID).Infof("Memory consolidation done: lastConsolidated=%d", len(messages))
 	return memory.MemorizeResult{NewLastConsolidated: len(messages), OK: true}, nil
 }
 
@@ -227,7 +227,7 @@ func (m *FlatMemory) IndexTools(_ context.Context, tools []memory.ToolIndexEntry
 	defer m.toolIndexMu.Unlock()
 	m.toolIndex = make([]memory.ToolIndexEntry, len(tools))
 	copy(m.toolIndex, tools)
-	log.WithField("tenant_id", m.tenantID).Infof("Indexed %d tools (flat mode)", len(tools))
+	log.Glob(log.CatDB).WithField("tenant_id", m.tenantID).Infof("Indexed %d tools (flat mode)", len(tools))
 	return nil
 }
 

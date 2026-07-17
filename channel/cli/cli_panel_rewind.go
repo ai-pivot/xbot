@@ -220,17 +220,17 @@ func (m *cliModel) applyRewind() {
 		// session switches unlike the static trimHistoryFn which was captured
 		// at TUI startup with the initial chatID.
 		if err := m.channel.config.TrimHistoryFn(m.channelName, m.chatID, cutoff); err != nil {
-			log.WithError(err).Warn("Failed to trim session history after rewind")
+			log.Glob(log.CatTUI).WithError(err).Warn("Failed to trim session history after rewind")
 		}
 	} else if m.trimHistoryFn != nil {
-		log.WithFields(log.Fields{"cutIdx": cutIdx, "cutoff": cutoff, "totalMsgs": len(m.messages)}).Info("Rewind: truncating DB messages (legacy callback)")
+		log.Glob(log.CatTUI).WithFields(log.Fields{"cutIdx": cutIdx, "cutoff": cutoff, "totalMsgs": len(m.messages)}).Info("Rewind: truncating DB messages (legacy callback)")
 		if err := m.trimHistoryFn(cutoff); err != nil {
-			log.WithError(err).Warn("Failed to trim session history after rewind")
+			log.Glob(log.CatTUI).WithError(err).Warn("Failed to trim session history after rewind")
 		}
 	} else if cutoff.IsZero() {
-		log.Warn("Rewind: cutoff timestamp is zero, DB messages will NOT be truncated")
+		log.Glob(log.CatTUI).Warn("Rewind: cutoff timestamp is zero, DB messages will NOT be truncated")
 	} else {
-		log.Warn("Rewind: trimHistoryFn is nil, DB messages will NOT be truncated")
+		log.Glob(log.CatTUI).Warn("Rewind: trimHistoryFn is nil, DB messages will NOT be truncated")
 	}
 
 	// Reset cached token counts so maybeCompress doesn't use stale values

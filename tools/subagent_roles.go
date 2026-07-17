@@ -58,7 +58,7 @@ var agentsDir string
 // Actual loading happens on-demand in each GetSubAgentRole call.
 func InitAgentRoles(dir string) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		log.WithField("dir", dir).Info("Agents directory not found, no predefined roles")
+		log.Glob(log.CatTool).WithField("dir", dir).Info("Agents directory not found, no predefined roles")
 		return nil
 	}
 	agentsDir = dir
@@ -67,7 +67,7 @@ func InitAgentRoles(dir string) error {
 	if err != nil {
 		return fmt.Errorf("validate agent roles in %s: %w", dir, err)
 	}
-	log.WithField("count", len(roles)).Info("Agent roles directory configured")
+	log.Glob(log.CatTool).WithField("count", len(roles)).Info("Agent roles directory configured")
 	return nil
 }
 
@@ -81,7 +81,7 @@ func GetSubAgentRole(name string, userAgentDirs ...string) (*SubAgentRole, bool)
 		}
 		roles, err := LoadAgentRoles(dir)
 		if err != nil {
-			log.WithField("dir", dir).WithError(err).Warn("Failed to load user agent roles, skipping directory")
+			log.Glob(log.CatTool).WithField("dir", dir).WithError(err).Warn("Failed to load user agent roles, skipping directory")
 			continue
 		}
 		for i := range roles {
@@ -98,7 +98,7 @@ func GetSubAgentRole(name string, userAgentDirs ...string) (*SubAgentRole, bool)
 	}
 	roles, err := LoadAgentRoles(agentsDir)
 	if err != nil {
-		log.WithError(err).Warn("Failed to load agent roles")
+		log.Glob(log.CatTool).WithError(err).Warn("Failed to load agent roles")
 		return getEmbeddedAgentRole(name)
 	}
 	for i := range roles {
@@ -139,7 +139,7 @@ func GetSubAgentRoleSandbox(ctx context.Context, name string, sb Sandbox, userID
 			roles, err = LoadAgentRoles(dir)
 		}
 		if err != nil {
-			log.WithField("dir", dir).WithError(err).Warn("Failed to load user agent roles, skipping directory")
+			log.Req(ctx, log.CatTool).WithField("dir", dir).WithError(err).Warn("Failed to load user agent roles, skipping directory")
 			continue
 		}
 		for i := range roles {
@@ -156,7 +156,7 @@ func GetSubAgentRoleSandbox(ctx context.Context, name string, sb Sandbox, userID
 	}
 	roles, err := LoadAgentRoles(agentsDir)
 	if err != nil {
-		log.WithError(err).Warn("Failed to load agent roles")
+		log.Req(ctx, log.CatTool).WithError(err).Warn("Failed to load agent roles")
 		return getEmbeddedAgentRole(name)
 	}
 	for i := range roles {

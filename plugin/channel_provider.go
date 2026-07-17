@@ -57,7 +57,7 @@ func CreateChannelProvider(decl *ChannelProviderDecl, process *StdioPluginProces
 // 在 PluginManager.ActivateAll() 之后调用。
 func WireChannelProviders(pm *PluginManager) {
 	if globalChannelProviderRegistrar == nil {
-		log.Debug("ChannelProviderRegistrar not set, skipping channel provider wiring")
+		log.Glob(log.CatPlugin).Debug("ChannelProviderRegistrar not set, skipping channel provider wiring")
 		return
 	}
 
@@ -84,12 +84,12 @@ func WireChannelProviders(pm *PluginManager) {
 				channelName = n.Name()
 			}
 			if err := globalChannelProviderRegistrar(p); err != nil {
-				log.WithField("plugin", entry.Manifest.ID).
+				log.Glob(log.CatPlugin).WithField("plugin", entry.Manifest.ID).
 					WithField("channel", channelName).
 					WithError(err).Warn("Failed to register channel provider")
 				continue
 			}
-			log.WithField("plugin", entry.Manifest.ID).
+			log.Glob(log.CatPlugin).WithField("plugin", entry.Manifest.ID).
 				WithField("channel", channelName).
 				Info("Channel provider registered via plugin")
 		}

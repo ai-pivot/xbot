@@ -136,7 +136,7 @@ func (t *DownloadFileTool) downloadFromURLViaSandbox(ctx *ToolContext, fileURL, 
 		return nil, fmt.Errorf("sandbox download: %w", err)
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 		"url":         fileURL,
 		"output_path": outputPath,
 		"user_id":     userID,
@@ -180,7 +180,7 @@ func (t *DownloadFileTool) downloadFromURLDirect(ctx *ToolContext, fileURL, outp
 		return nil, fmt.Errorf("write file: %w", err)
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 		"url":         fileURL,
 		"output_path": outputPath,
 		"size":        len(data),
@@ -262,7 +262,7 @@ func (t *DownloadFileTool) downloadFeishu(ctx *ToolContext, messageID, fileKey, 
 		}
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 		"message_id":  messageID,
 		"file_key":    fileKey,
 		"output_path": outputPath,

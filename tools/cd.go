@@ -472,7 +472,7 @@ func (t *CdTool) executeLocal(ctx *ToolContext, dir string) (*ToolResult, error)
 		ctx.SetCurrentDir(target)
 	}
 
-	log.WithField("dir", target).Debug("Working directory changed")
+	log.Req(ctx.Ctx, log.CatTool).WithField("dir", target).Debug("Working directory changed")
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Changed directory to %s\n\n", target)
@@ -546,7 +546,7 @@ func (t *CdTool) executeWithSandboxAPI(ctx *ToolContext, dir string) (*ToolResul
 		ctx.SetCurrentDir(target)
 	}
 
-	log.WithField("dir", target).Debug("Working directory changed (Sandbox API)")
+	log.Req(ctx.Ctx, log.CatTool).WithField("dir", target).Debug("Working directory changed (Sandbox API)")
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Changed directory to %s\n\n", target)

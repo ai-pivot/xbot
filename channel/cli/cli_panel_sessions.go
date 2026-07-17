@@ -461,7 +461,7 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 	if m.activeSubID != "" && m.cachedModelName != "" {
 		if m.llmSubscriber != nil {
 			if err := m.llmSubscriber.SelectModel(m.senderID, "cli", m.activeSubID, m.cachedModelName, chatID); err != nil {
-				log.WithError(err).Warn("showSessionCreateDialog: SelectModel failed for new session")
+				log.Glob(log.CatTUI).WithError(err).Warn("showSessionCreateDialog: SelectModel failed for new session")
 			}
 		}
 		// Also save to local JSON as cache (don't skip in remote mode — local
@@ -508,7 +508,7 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 		if err := m.channel.config.SessionsDeleteFn("cli", entry.ID); err != nil {
 			errMsg := err.Error()
 			if !strings.Contains(errMsg, "not found") {
-				log.WithError(err).WithField("chatID", entry.ID).Warn("Backend session delete failed")
+				log.Glob(log.CatTUI).WithError(err).WithField("chatID", entry.ID).Warn("Backend session delete failed")
 				m.showTempStatus(fmt.Sprintf("Delete failed: %v", err))
 				return nil
 			}
@@ -519,7 +519,7 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 	ds, err := LoadDirSessions(m.workDir)
 	if err == nil {
 		if err := ds.removeSessionByChatID(entry.ID); err != nil {
-			log.WithError(err).WithField("chatID", entry.ID).Warn("Local session remove failed")
+			log.Glob(log.CatTUI).WithError(err).WithField("chatID", entry.ID).Warn("Local session remove failed")
 		}
 	}
 	// 3. Clean up worktree / peer registration for this session.

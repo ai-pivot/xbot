@@ -75,7 +75,7 @@ func getQiniuZone(region string) *storage.Zone {
 	case "cn-east-2":
 		return &storage.ZoneHuadong
 	default:
-		log.WithField("region", region).Warn("Unknown Qiniu region, falling back to z0")
+		log.Glob(log.CatChannel).WithField("region", region).Warn("Unknown Qiniu region, falling back to z0")
 		return &storage.ZoneHuadong
 	}
 }
@@ -139,7 +139,7 @@ func (p *QiniuProvider) Upload(key string, data []byte) error {
 		return fmt.Errorf("qiniu upload failed: %w", err)
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"key":  key,
 		"hash": ret.Hash,
 	}).Debug("File uploaded to Qiniu")
@@ -149,7 +149,7 @@ func (p *QiniuProvider) Upload(key string, data []byte) error {
 func (p *QiniuProvider) GetDownloadURL(key string) (string, error) {
 	deadline := time.Now().Add(time.Hour).Unix()
 	signedURL := storage.MakePrivateURL(p.mac, p.domain, key, deadline)
-	log.WithField("key", key).Debug("Generated Qiniu download URL")
+	log.Glob(log.CatChannel).WithField("key", key).Debug("Generated Qiniu download URL")
 	return signedURL, nil
 }
 func (p *QiniuProvider) Domain() string { return p.domain }

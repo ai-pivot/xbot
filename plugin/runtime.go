@@ -206,7 +206,7 @@ func (g *stdioPlugin) Deactivate(ctx PluginContext) error {
 	}
 	req := &PluginRequest{Method: "deactivate"}
 	if _, err := g.process.Call(context.Background(), req); err != nil {
-		log.WithField("plugin", g.manifest.ID).Warn("Deactivate call failed: ", err)
+		log.Glob(log.CatPlugin).WithField("plugin", g.manifest.ID).Warn("Deactivate call failed: ", err)
 	}
 	g.process.Stop()
 	g.process = nil
@@ -475,7 +475,7 @@ func (p *StdioPluginProcess) readLoop() {
 
 			p.mu.Lock()
 			if p.running {
-				log.WithField("plugin", "stdio").Warn("Plugin stdout closed: ", err)
+				log.Glob(log.CatPlugin).WithField("plugin", "stdio").Warn("Plugin stdout closed: ", err)
 			}
 			p.mu.Unlock()
 			return
@@ -488,7 +488,7 @@ func (p *StdioPluginProcess) readLoop() {
 			Error  string `json:"error"`
 		}
 		if jsonErr := json.Unmarshal(line, &peek); jsonErr != nil {
-			log.WithField("plugin", "stdio").Warn("Failed to parse plugin stdout line: ", jsonErr)
+			log.Glob(log.CatPlugin).WithField("plugin", "stdio").Warn("Failed to parse plugin stdout line: ", jsonErr)
 			continue
 		}
 
@@ -496,7 +496,7 @@ func (p *StdioPluginProcess) readLoop() {
 			// Inbound message from plugin (e.g., "channel_inbound")
 			var inbound PluginInbound
 			if err := json.Unmarshal(line, &inbound); err != nil {
-				log.WithField("plugin", "stdio").Warn("Failed to parse inbound: ", err)
+				log.Glob(log.CatPlugin).WithField("plugin", "stdio").Warn("Failed to parse inbound: ", err)
 				continue
 			}
 			p.muxMu.Lock()

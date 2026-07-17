@@ -85,7 +85,7 @@ func loadMigrationRecord(storage StorageAccessor) migrationRecord {
 	}
 	var rec migrationRecord
 	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
-		log.WithField("key", migrationKey).Warn("Failed to parse migration record, starting fresh: ", err)
+		log.Glob(log.CatPlugin).WithField("key", migrationKey).Warn("Failed to parse migration record, starting fresh: ", err)
 		return migrationRecord{Applied: []string{}}
 	}
 	return rec
@@ -250,7 +250,7 @@ func RunMigrations(ctx context.Context, pluginID string, currentVersion string, 
 			return fmt.Errorf("migration %s: FromVersion must be <= ToVersion", id)
 		}
 
-		log.WithField("plugin", pluginID).
+		log.Glob(log.CatPlugin).WithField("plugin", pluginID).
 			WithField("migration", id).
 			Info("Running plugin migration")
 
@@ -261,12 +261,12 @@ func RunMigrations(ctx context.Context, pluginID string, currentVersion string, 
 		}
 
 		if err := m.Migrate(ctx, storage); err != nil {
-			log.WithField("plugin", pluginID).
+			log.Glob(log.CatPlugin).WithField("plugin", pluginID).
 				WithField("migration", id).
 				WithField("error", err).
 				Error("Migration failed, rolling back")
 			if rollbackErr := restoreStorage(storage, backup); rollbackErr != nil {
-				log.WithField("plugin", pluginID).
+				log.Glob(log.CatPlugin).WithField("plugin", pluginID).
 					WithField("migration", id).
 					WithField("error", rollbackErr).
 					Error("Rollback failed — storage may be inconsistent")
@@ -279,7 +279,7 @@ func RunMigrations(ctx context.Context, pluginID string, currentVersion string, 
 		rec.Applied = append(rec.Applied, id)
 		if err := saveMigrationRecord(storage, rec); err != nil {
 			// Migration succeeded but we can't record it. Attempt rollback.
-			log.WithField("plugin", pluginID).
+			log.Glob(log.CatPlugin).WithField("plugin", pluginID).
 				WithField("migration", id).
 				WithField("error", err).
 				Error("Failed to save migration record, rolling back")
@@ -299,7 +299,7 @@ func RunMigrations(ctx context.Context, pluginID string, currentVersion string, 
 	}
 
 	if executed > 0 {
-		log.WithField("plugin", pluginID).
+		log.Glob(log.CatPlugin).WithField("plugin", pluginID).
 			WithField("count", executed).
 			Info("Plugin migrations completed")
 	}

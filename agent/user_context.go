@@ -128,13 +128,13 @@ func (uc *UserContext) ResolveLLMForModel(model string) (client llm.LLM, resolve
 		return uc.LLMClient, uc.Model, uc.MaxContextTokens, uc.ThinkingMode, uc.MaxOutputTokens, uc.SubID
 	}
 	if uc.factory == nil {
-		log.WithFields(log.Fields{"model": model, "sender": uc.SenderID}).Warn("UserContext.factory is nil, falling back to main model for SubAgent")
+		log.Usr(nil, log.CatAuth, uc.SenderID).WithFields(log.Fields{"model": model, "sender": uc.SenderID}).Warn("UserContext.factory is nil, falling back to main model for SubAgent")
 		return uc.LLMClient, uc.Model, uc.MaxContextTokens, uc.ThinkingMode, uc.MaxOutputTokens, uc.SubID
 	}
 	var ok bool
 	client, resolvedModel, maxCtx, thinkingMode, maxOut, ok = uc.factory.getLLMForModel(uc.SenderID, model)
 	if !ok {
-		log.WithFields(log.Fields{"model": model, "sender": uc.SenderID}).Warn("model not found for SubAgent, falling back to main model")
+		log.Usr(nil, log.CatAuth, uc.SenderID).WithFields(log.Fields{"model": model, "sender": uc.SenderID}).Warn("model not found for SubAgent, falling back to main model")
 	}
 	subID = uc.factory.resolveSubIDForModel(uc.SenderID, resolvedModel)
 	return client, resolvedModel, maxCtx, thinkingMode, maxOut, subID

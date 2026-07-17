@@ -74,7 +74,7 @@ func (t *CoreMemoryAppendTool) Execute(ctx *ToolContext, input string) (*ToolRes
 		return nil, fmt.Errorf("update block: %w", err)
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 		"block":    args.Block,
 		"appended": len(args.Content),
 	}).Debug("Core memory appended")
@@ -226,7 +226,7 @@ func (t *RethinkTool) Execute(ctx *ToolContext, input string) (*ToolResult, erro
 		}
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 		"block":     args.Block,
 		"reasoning": Truncate(args.Reasoning, 100),
 	}).Info("Core memory block rewritten via rethink")
@@ -336,7 +336,7 @@ func (t *ArchivalMemorySearchTool) Execute(ctx *ToolContext, input string) (*Too
 	// Vector similarity search via chromem-go
 	entries, err := archivalSvc.Search(ctx.Ctx, tenantID, args.Query, args.Limit)
 	if err != nil {
-		log.WithError(err).Warn("Archival vector search failed")
+		log.Req(ctx.Ctx, log.CatTool).WithError(err).Warn("Archival vector search failed")
 	}
 
 	if len(entries) > 0 {
@@ -430,7 +430,7 @@ func (t *RecallMemorySearchTool) Execute(ctx *ToolContext, input string) (*ToolR
 
 	entries, err := recallFn(ctx.TenantID, startTime, endTime, args.Limit)
 	if err != nil {
-		log.WithError(err).Warn("Recall memory search failed")
+		log.Req(ctx.Ctx, log.CatTool).WithError(err).Warn("Recall memory search failed")
 		return NewResult(fmt.Sprintf("Search failed: %v", err)), nil
 	}
 

@@ -70,7 +70,7 @@ func (wp *wasmPlugin) Activate(ctx PluginContext) error {
 	// 4. Call _start or activate export
 	// 5. Parse tool/hook/enricher registrations from WASM memory
 
-	log.WithField("plugin", wp.manifest.ID).
+	log.Glob(log.CatPlugin).WithField("plugin", wp.manifest.ID).
 		Warn("WASM runtime not yet implemented; plugin will be a no-op")
 	return nil
 }

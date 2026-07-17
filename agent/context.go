@@ -96,7 +96,7 @@ func (pl *PromptLoader) loadFromFile() error {
 	defer pl.mu.Unlock()
 	pl.tmpl = tmpl
 	pl.lastMod = info.ModTime()
-	log.WithField("path", pl.filePath).Info("System prompt loaded from file")
+	log.Glob(log.CatAgent).WithField("path", pl.filePath).Info("System prompt loaded from file")
 	return nil
 }
 
@@ -116,7 +116,7 @@ func (pl *PromptLoader) reload() {
 		if err := pl.loadFromFile(); err != nil {
 			log.WithError(err).Warn("Failed to reload prompt file, keeping current template")
 		} else {
-			log.Info("System prompt reloaded (file changed)")
+			log.Glob(log.CatAgent).Info("System prompt reloaded (file changed)")
 		}
 	}
 }

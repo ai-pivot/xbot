@@ -108,12 +108,12 @@ func (pm *PluginManager) ImportConfig(data []byte) error {
 	// Restore config for existing plugins (best-effort)
 	for _, pce := range export.Plugins {
 		if !existing[pce.ID] {
-			log.WithField("plugin", pce.ID).Warn("Import config: plugin not found locally, skipping")
+			log.Glob(log.CatPlugin).WithField("plugin", pce.ID).Warn("Import config: plugin not found locally, skipping")
 			continue
 		}
 		if pce.Config != nil {
 			if err := pm.configStore.Save(pce.ID, pce.Config); err != nil {
-				log.WithField("plugin", pce.ID).Warn("Import config: failed to save config: ", err)
+				log.Glob(log.CatPlugin).WithField("plugin", pce.ID).Warn("Import config: failed to save config: ", err)
 			}
 		}
 	}
@@ -127,7 +127,7 @@ func (pm *PluginManager) ImportConfig(data []byte) error {
 		pm.mu.Unlock()
 	}
 
-	log.WithField("plugins", len(export.Plugins)).
+	log.Glob(log.CatPlugin).WithField("plugins", len(export.Plugins)).
 		WithField("disabled", len(export.Disabled)).
 		Info("Plugin config imported")
 

@@ -98,7 +98,7 @@ func (n *PluginEventNotifier) Notify(event PluginEvent) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.WithField("plugin", event.PluginID).
+					log.Glob(log.CatPlugin).WithField("plugin", event.PluginID).
 						WithField("event_type", string(event.Type)).
 						Warn("Plugin lifecycle callback panicked: ", r)
 				}

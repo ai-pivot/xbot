@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +14,7 @@ import (
 	"github.com/go-shiori/go-readability"
 	"github.com/tiktoken-go/tokenizer"
 	"xbot/llm"
+	log "xbot/logger"
 )
 
 // FetchTool 网页获取工具
@@ -28,7 +28,7 @@ func NewFetchTool() *FetchTool {
 	// 创建 tokenizer（复用）
 	enc, err := tokenizer.Get(tokenizer.Cl100kBase)
 	if err != nil {
-		slog.Warn("Failed to initialize tokenizer, token counting will use rough estimation", "error", err)
+		log.Glob(log.CatTool).WithError(err).Warn("Failed to initialize tokenizer, token counting will use rough estimation")
 	}
 
 	return &FetchTool{

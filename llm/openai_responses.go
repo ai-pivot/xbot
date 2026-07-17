@@ -269,11 +269,11 @@ func buildResponsesReasoning(thinkingMode string) openai.ReasoningParam {
 				}
 				return rp
 			}
-			log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Failed to parse thinking mode as JSON for Responses API, ignoring")
+			log.Glob(log.CatLLM).WithField("thinking_mode", thinkingMode).Warn("[LLM] Failed to parse thinking mode as JSON for Responses API, ignoring")
 			return openai.ReasoningParam{}
 		}
 		// Non-JSON unknown value
-		log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON for Responses API, ignoring")
+		log.Glob(log.CatLLM).WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON for Responses API, ignoring")
 		return openai.ReasoningParam{}
 	}
 }
@@ -287,7 +287,7 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 		model = o.GetDefaultModel()
 	}
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 		"provider":      "openai-responses",
 		"model":         model,
 		"stream":        false,
@@ -311,7 +311,7 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 	reasoning := buildResponsesReasoning(thinkingMode)
 	if reasoning.Effort != "" || reasoning.Summary != "" {
 		params.Reasoning = reasoning
-		log.Ctx(ctx).Debugf("[LLM] Responses API reasoning config: effort=%s, summary=%s", reasoning.Effort, reasoning.Summary)
+		log.Req(ctx, log.CatLLM).Debugf("[LLM] Responses API reasoning config: effort=%s, summary=%s", reasoning.Effort, reasoning.Summary)
 	}
 
 	// Build tools
@@ -325,7 +325,7 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 
 	resp, err := o.client.Responses.New(ctx, params)
 	if err != nil {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 			"provider": "openai-responses",
 			"duration": time.Since(startTime).String(),
 			"error":    err.Error(),
@@ -393,9 +393,9 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 	}
 	if isNearEmptyResponse(result) {
 		addNearEmptyResponseDebugFields(fields, messages, model, tools, thinkingMode)
-		log.Ctx(ctx).WithFields(fields).Warn("[LLM] Responses API request completed with near-empty response")
+		log.Req(ctx, log.CatLLM).WithFields(fields).Warn("[LLM] Responses API request completed with near-empty response")
 	} else {
-		log.Ctx(ctx).WithFields(fields).Debug("[LLM] Responses API request completed")
+		log.Req(ctx, log.CatLLM).WithFields(fields).Debug("[LLM] Responses API request completed")
 	}
 
 	return result, nil
@@ -432,7 +432,7 @@ func (o *OpenAILLM) generateStreamResponses(ctx context.Context, model string, m
 		model = o.GetDefaultModel()
 	}
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 		"provider":      "openai-responses",
 		"model":         model,
 		"stream":        true,
@@ -469,7 +469,7 @@ func (o *OpenAILLM) generateStreamResponses(ctx context.Context, model string, m
 
 	stream := o.client.Responses.NewStreaming(ctx, params)
 	if err := stream.Err(); err != nil {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 			"provider": "openai-responses",
 			"model":    model,
 			"base_url": o.baseURL,
@@ -509,7 +509,7 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 	}
 	defer close(streamDone)
 
-	l := log.Ctx(ctx)
+	l := log.Req(ctx, log.CatLLM)
 	eventCount := 0
 	var firstEventTime time.Time
 	var lastUsage *TokenUsage

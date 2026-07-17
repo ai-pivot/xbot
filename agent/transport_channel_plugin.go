@@ -325,7 +325,7 @@ func (t *ChannelPluginTransport) SendProgress(chatID string, payload *protocol.P
 		Progress: payload,
 	}
 	if err := t.PushEvent(msg); err != nil {
-		log.WithField("channel", t.name).WithError(err).Warn("Failed to push progress event")
+		log.Glob(log.CatTransport).WithField("channel", t.name).WithError(err).Warn("Failed to push progress event")
 	}
 }
 
@@ -341,7 +341,7 @@ func (t *ChannelPluginTransport) SendStreamContent(chatID, content, reasoning st
 		}
 	}
 	if err := t.PushEvent(msg); err != nil {
-		log.WithField("channel", t.name).WithError(err).Warn("Failed to push stream content")
+		log.Glob(log.CatTransport).WithField("channel", t.name).WithError(err).Warn("Failed to push stream content")
 	}
 }
 
@@ -355,7 +355,7 @@ func (t *ChannelPluginTransport) SendSessionState(ev protocol.SessionEvent) {
 		Session: &ev,
 	}
 	if err := t.PushEvent(msg); err != nil {
-		log.WithField("channel", t.name).WithError(err).Warn("Failed to push session state")
+		log.Glob(log.CatTransport).WithField("channel", t.name).WithError(err).Warn("Failed to push session state")
 	}
 }
 
@@ -370,7 +370,7 @@ func (t *ChannelPluginTransport) InjectUserMessage(chatID, content string) {
 		Content: content,
 	}
 	if err := t.PushEvent(msg); err != nil {
-		log.WithField("channel", t.name).WithError(err).Warn("Failed to inject user message")
+		log.Glob(log.CatTransport).WithField("channel", t.name).WithError(err).Warn("Failed to inject user message")
 	}
 }
 
@@ -412,7 +412,7 @@ func (t *ChannelPluginTransport) readLoop(ctx context.Context) {
 			if ctx.Err() != nil {
 				return // normal shutdown
 			}
-			log.WithField("channel", t.name).WithError(err).Info("Plugin stdout closed")
+			log.Req(ctx, log.CatTransport).WithField("channel", t.name).WithError(err).Info("Plugin stdout closed")
 			// Fail any pending call from xbot→plugin.
 			t.pendingMu.Lock()
 			for id, ch := range t.pending {
@@ -441,7 +441,7 @@ func (t *ChannelPluginTransport) handleIncoming(raw json.RawMessage) {
 		Error  string          `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &peek); err != nil {
-		log.WithField("channel", t.name).WithError(err).Warn("Failed to parse plugin message")
+		log.Glob(log.CatTransport).WithField("channel", t.name).WithError(err).Warn("Failed to parse plugin message")
 		return
 	}
 
@@ -480,7 +480,7 @@ func (t *ChannelPluginTransport) handleChannelTools(raw json.RawMessage) {
 		Tools []plugin.ChannelToolDecl `json:"tools"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
-		log.WithField("channel", t.name).WithError(err).Warn("Failed to parse channel_tools message")
+		log.Glob(log.CatTransport).WithField("channel", t.name).WithError(err).Warn("Failed to parse channel_tools message")
 		return
 	}
 
@@ -491,7 +491,7 @@ func (t *ChannelPluginTransport) handleChannelTools(raw json.RawMessage) {
 		t.registry.RegisterForChannel(t.name, bridge)
 	}
 
-	log.WithField("channel", t.name).WithField("count", len(msg.Tools)).Info("Channel tools registered")
+	log.Glob(log.CatTransport).WithField("channel", t.name).WithField("count", len(msg.Tools)).Info("Channel tools registered")
 }
 
 // handleChannelPrompt processes a "channel_prompt" declaration from the channel
@@ -503,7 +503,7 @@ func (t *ChannelPluginTransport) handleChannelPrompt(raw json.RawMessage) {
 		SystemParts map[string]string `json:"system_parts"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
-		log.WithField("channel", t.name).WithError(err).Warn("Failed to parse channel_prompt message")
+		log.Glob(log.CatTransport).WithField("channel", t.name).WithError(err).Warn("Failed to parse channel_prompt message")
 		return
 	}
 
@@ -515,7 +515,7 @@ func (t *ChannelPluginTransport) handleChannelPrompt(raw json.RawMessage) {
 		t.onChannelPrompt(t.channelPromptProvider)
 	}
 
-	log.WithField("channel", t.name).WithField("parts", len(msg.SystemParts)).Info("Channel prompt registered")
+	log.Glob(log.CatTransport).WithField("channel", t.name).WithField("parts", len(msg.SystemParts)).Info("Channel prompt registered")
 }
 
 // ChannelPromptProvider returns the ChannelPromptProvider for this transport.
@@ -576,7 +576,7 @@ func (t *ChannelPluginTransport) writeRPCResponse(id string, result json.RawMess
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 	if err := t.process.stdinWrite(resp); err != nil {
-		log.WithField("channel", t.name).WithError(err).Warn("Failed to write RPC response")
+		log.Glob(log.CatTransport).WithField("channel", t.name).WithError(err).Warn("Failed to write RPC response")
 	}
 }
 
@@ -591,7 +591,7 @@ func (t *ChannelPluginTransport) eventPushLoop() {
 				return
 			}
 			if err := t.PushEvent(msg); err != nil {
-				log.WithField("channel", t.name).WithError(err).Warn("Failed to push event")
+				log.Glob(log.CatTransport).WithField("channel", t.name).WithError(err).Warn("Failed to push event")
 			}
 		}
 	}

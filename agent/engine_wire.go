@@ -314,7 +314,7 @@ func (a *Agent) buildMainRunConfig(
 		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
 				if err := a.sendMessage(channel, chatID, lines[0]); err != nil {
-					log.Warn("Failed to send progress: ", err)
+					log.Req(ctx, log.CatAgent).Warn("Failed to send progress: ", err)
 				}
 			}
 		}
@@ -1044,14 +1044,14 @@ func (a *Agent) buildOAuthHandler(channel, chatID, senderID, sessionKey string) 
 
 		// 已触发过则跳过，避免重复 OAuth 状态
 		if _, sent := a.sessionFinalSent.Load(sessionKey); sent {
-			log.Ctx(ctx).WithFields(log.Fields{
+			log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 				"tool":   tc.Name,
 				"reason": "sessionFinalSent already set, skipping duplicate oauth_authorize",
 			}).Info("Skip duplicate OAuth auto-trigger")
 			return "OAuth authorization already in progress.", true
 		}
 
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 			"tool": tc.Name,
 		}).Info("OAuth token needed, auto-triggering oauth_authorize tool")
 
@@ -1074,7 +1074,7 @@ func (a *Agent) buildOAuthHandler(channel, chatID, senderID, sessionKey string) 
 			return oauthResult.Summary, true
 		}
 
-		log.Ctx(ctx).WithError(oauthErr).Error("Failed to execute oauth_authorize tool")
+		log.Req(ctx, log.CatAgent).WithError(oauthErr).Error("Failed to execute oauth_authorize tool")
 		return "OAuth authorization required. Please configure OAUTH_ENABLE=true and OAUTH_BASE_URL in your environment.", true
 	}
 }
@@ -1177,7 +1177,7 @@ func (a *Agent) buildSubAgentMemory(
 ) (*ToolContextExtras, memory.MemoryProvider) {
 	// 1. 获取父 Agent 的 tenantID（用于推导 SubAgent 的 tenantID）
 	if parentExtras.TenantID == 0 {
-		log.Ctx(ctx).WithField("parent", parentAgentID).Warn("SubAgent memory: parent tenantID is 0, skipping memory setup")
+		log.Req(ctx, log.CatAgent).WithField("parent", parentAgentID).Warn("SubAgent memory: parent tenantID is 0, skipping memory setup")
 		return nil, nil
 	}
 
@@ -1194,7 +1194,7 @@ func (a *Agent) buildSubAgentMemory(
 	//    human: 以 parentAgentID 为 senderID 隔离
 	subSenderID := subAgentHumanBlockSenderID(parentAgentID)
 	if err := coreSvc.InitBlocks(subTenantID, subSenderID); err != nil {
-		log.Ctx(ctx).WithError(err).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithError(err).WithFields(log.Fields{
 			"tenant_id":     subTenantID,
 			"parent_agent":  parentAgentID,
 			"role":          roleName,
@@ -1218,7 +1218,7 @@ func (a *Agent) buildSubAgentMemory(
 		InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
 	}
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"sub_tenant_id": subTenantID,
 		"parent_agent":  parentAgentID,
 		"role":          roleName,
@@ -1264,7 +1264,7 @@ func (a *Agent) consolidateSubAgentMemory(
 	memCtx := letta.WithUserID(ctx, subSenderID)
 
 	if result, err := mem.Memorize(memCtx, memInput); err != nil {
-		log.Ctx(ctx).WithError(err).WithFields(log.Fields{
+		log.Req(ctx, log.CatAgent).WithError(err).WithFields(log.Fields{
 			"role":      roleName,
 			"tenant_id": extras.TenantID,
 		}).Warn("SubAgent memory consolidation failed")
@@ -1290,7 +1290,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	cc := CallChainFromContext(ctx)
 	if roleName != "" {
 		if err := cc.CanSpawn(roleName, a.maxSubAgentDepth); err != nil {
-			log.Ctx(ctx).WithFields(log.Fields{
+			log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 				"parent": parentAgentID,
 				"role":   roleName,
 				"chain":  cc.Chain,
@@ -1308,7 +1308,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	originChannel, originChatID, originSender := resolveOriginIDs(msg)
 	parentCtx := a.buildParentToolContext(ctx, originChannel, originChatID, originSender, msg)
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"parent": parentAgentID,
 		"role":   roleName,
 		"task":   tools.Truncate(task, 80),
@@ -1376,7 +1376,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 				}
 				prefixed := "📋 subagent: [" + rn + "] " + last + "\n"
 				if err := a.sendMessage(originChannel, originChatID, prefixed); err != nil {
-					log.Warn("Failed to send prefixed output: ", err)
+					log.Req(ctx, log.CatAgent).Warn("Failed to send prefixed output: ", err)
 				}
 			}
 		}
@@ -1408,12 +1408,12 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	}
 	cfg.Session = agentTenantSession
 	if err := agentTenantSession.Clear(); err != nil {
-		log.Warn("Failed to clear agent tenant session: ", err)
+		log.Req(ctx, log.CatAgent).Warn("Failed to clear agent tenant session: ", err)
 	}
 
 	// Eager-save user message so get_history returns it during Run().
 	if err := agentTenantSession.AddMessage(llm.NewUserMessage(task)); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to eager-save oneshot agent user message")
+		log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to eager-save oneshot agent user message")
 	}
 
 	// Wire CLI progress + stream callbacks so Ctrl+T shows real-time progress.
@@ -1462,7 +1462,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		ParentID: originChatID,
 	})
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"role":     roleName,
 		"instance": oneshotInstance,
 		"out_nil":  out == nil,
@@ -1504,9 +1504,9 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		if len(out.IterationHistory) > 0 {
 			oneshotIA.iterationHistory = out.IterationHistory
 		}
-		log.Ctx(ctx).WithField("iteration_count", len(oneshotIA.iterationHistory)).Info("oneshot subagent completed")
+		log.Req(ctx, log.CatAgent).WithField("iteration_count", len(oneshotIA.iterationHistory)).Info("oneshot subagent completed")
 	} else {
-		log.Ctx(ctx).Warn("oneshot subagent returned nil output")
+		log.Req(ctx, log.CatAgent).Warn("oneshot subagent returned nil output")
 		oneshotIA.mu.Unlock()
 		a.destroyInteractiveSession(oneshotKey)
 		return &channelpkg.OutboundMsg{}, nil
@@ -1521,7 +1521,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 			}
 		}
 		if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save one-shot agent assistant message with detail")
+			log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to save one-shot agent assistant message with detail")
 		}
 	}
 	// Cascade-cancel any bg sessions spawned during this one-shot's Run(),
@@ -1530,7 +1530,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	a.cancelChildSessions(oneshotKey)
 	a.destroyInteractiveSession(oneshotKey)
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"parent":    parentAgentID,
 		"role":      roleName,
 		"tools":     out.ToolsUsed,
@@ -1650,15 +1650,15 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 				// RemoteCLIChannel, ChannelCliChannel, or any other ProgressSender
 				remoteCLICh = rc
 			} else {
-				log.WithField("type", fmt.Sprintf("%T", ch)).Warn("buildCLIProgressEventHandler: channelFinder('cli') returned unexpected type")
+				log.Glob(log.CatAgent).WithField("type", fmt.Sprintf("%T", ch)).Warn("buildCLIProgressEventHandler: channelFinder('cli') returned unexpected type")
 			}
 		} else {
-			log.Warn("buildCLIProgressEventHandler: channelFinder('cli') returned not found")
+			log.Glob(log.CatAgent).Warn("buildCLIProgressEventHandler: channelFinder('cli') returned not found")
 		}
 	} else {
-		log.Warn("buildCLIProgressEventHandler: channelFinder is nil")
+		log.Glob(log.CatAgent).Warn("buildCLIProgressEventHandler: channelFinder is nil")
 	}
-	log.WithFields(log.Fields{
+	log.Glob(log.CatAgent).WithFields(log.Fields{
 		"hasCliCh":       cliCh != nil,
 		"hasRemoteCLICh": remoteCLICh != nil,
 		"progressKey":    qualifyChatID(channel, chatID),
@@ -1838,13 +1838,13 @@ func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*Progr
 			remoteCLICh.SendProgress(chatID, payload)
 			a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(cliPayload))
 			a.clearStreamState(progressKey)
-			log.WithFields(log.Fields{
+			log.Glob(log.CatAgent).WithFields(log.Fields{
 				"key":       progressKey,
 				"phase":     cliPayload.Phase,
 				"iteration": cliPayload.Iteration,
 				"active":    len(cliPayload.ActiveTools),
 				"completed": len(cliPayload.CompletedTools),
-			}).Info("remote CLI: stored progress snapshot")
+			}).Debug("remote CLI: stored progress snapshot")
 		}
 	}
 }
@@ -1861,7 +1861,7 @@ func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*Progr
 	}
 	wc, ok := ch.(*web.WebChannel)
 	if !ok {
-		log.WithField("channel", channel).Warn("Web channel found but type assertion failed, skipping ProgressEventHandler")
+		log.Glob(log.CatAgent).WithField("channel", channel).Warn("Web channel found but type assertion failed, skipping ProgressEventHandler")
 		return nil
 	}
 	progressKey := qualifyChatID(channel, chatID)

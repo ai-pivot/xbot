@@ -76,7 +76,7 @@ func (c *CLIChannel) SupportsStreamRender() bool {
 
 // Start 启动 CLI 渠道（阻塞运行）
 func (c *CLIChannel) Start() error {
-	log.Info("CLI channel starting...")
+	log.Glob(log.CatChannel).Info("CLI channel starting...")
 
 	// Capture the real stdout for bubbletea, then redirect os.Stdout and
 	// os.Stderr to /dev/null so that background goroutines (logger cleanup,
@@ -206,9 +206,9 @@ func (c *CLIChannel) Start() error {
 				}
 				c.model.messages = append(c.model.messages, cm)
 			}
-			log.WithField("count", len(history)).Info("Restored session history")
+			log.Glob(log.CatTUI).WithField("count", len(history)).Info("Restored session history")
 		} else if err != nil {
-			log.WithError(err).Warn("Failed to load session history")
+			log.Glob(log.CatTUI).WithError(err).Warn("Failed to load session history")
 		}
 	}
 
@@ -222,7 +222,7 @@ func (c *CLIChannel) Start() error {
 				CompletionTokens: ct,
 				TotalTokens:      pt + ct,
 			}
-			log.WithField("prompt_tokens", pt).Info("Restored token state")
+			log.Glob(log.CatTUI).WithField("prompt_tokens", pt).Info("Restored token state")
 		}
 	}
 	// Resolve max context tokens immediately (not lazily on first progress event)
@@ -320,9 +320,9 @@ func (c *CLIChannel) Start() error {
 				c.program.Send(msg)
 			})
 			if err != nil {
-				log.WithError(err).Warn("Failed to start debug socket")
+				log.Glob(log.CatTUI).WithError(err).Warn("Failed to start debug socket")
 			} else {
-				log.WithField("socket", sockPath).Info("Debug socket listening")
+				log.Glob(log.CatTUI).WithField("socket", sockPath).Info("Debug socket listening")
 			}
 		}
 		// --debug-input: auto-inject key sequence after startup
@@ -339,9 +339,9 @@ func (c *CLIChannel) Start() error {
 			// and write to cli-panic.log. Not perfect but better than nothing.
 			stack := debug.Stack()
 			clipanic.ReportWithStack("CLIChannel.Start.program.Run", "BubbleTea panic (stack captured post-Run)", err, stack)
-			log.WithError(err).Error("CLI channel exited with panic (see cli-panic.log)")
+			log.Glob(log.CatChannel).WithError(err).Error("CLI channel exited with panic (see cli-panic.log)")
 		} else {
-			log.WithError(err).Error("CLI channel exited with error")
+			log.Glob(log.CatChannel).WithError(err).Error("CLI channel exited with error")
 		}
 		if debugSock != nil {
 			debugSock.Stop()
@@ -352,7 +352,7 @@ func (c *CLIChannel) Start() error {
 	if debugSock != nil {
 		debugSock.Stop()
 	}
-	log.Info("CLI channel stopped")
+	log.Glob(log.CatChannel).Info("CLI channel stopped")
 	return nil
 }
 
@@ -432,7 +432,7 @@ func (c *CLIChannel) applyPending() {
 
 // Stop 停止 CLI 渠道
 func (c *CLIChannel) Stop() {
-	log.Info("CLI channel stopping...")
+	log.Glob(log.CatChannel).Info("CLI channel stopping...")
 	// Disconnect runner bridge if active
 	c.programMu.Lock()
 	if c.model != nil && c.model.runnerBridge != nil {
@@ -446,7 +446,7 @@ func (c *CLIChannel) Stop() {
 	}
 	c.programMu.Unlock()
 	c.wg.Wait()
-	log.Info("CLI channel stopped")
+	log.Glob(log.CatChannel).Info("CLI channel stopped")
 }
 
 // Send 发送消息到 CLI（实现 ch.Channel 接口）
@@ -454,11 +454,11 @@ func (c *CLIChannel) Send(msg ch.OutboundMsg) (string, error) {
 	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
 
 	// 发送到消息通道，由 handleOutbound 处理
-	log.WithField("msg_id", msgID).WithField("content_len", len(msg.Content)).Debug("CLIChannel.Send: queuing")
+	log.Glob(log.CatChannel).WithField("msg_id", msgID).WithField("content_len", len(msg.Content)).Debug("CLIChannel.Send: queuing")
 	select {
 	case c.msgChan <- msg:
 	default:
-		log.Warn("CLI message channel full, dropping message")
+		log.Glob(log.CatChannel).Warn("CLI message channel full, dropping message")
 	}
 
 	return msgID, nil
@@ -576,7 +576,7 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			select {
 			case c.asyncCh <- cliProgressMsg{payload: &oldCopy}:
 			default:
-				log.WithFields(log.Fields{
+				log.Glob(log.CatTUI).WithFields(log.Fields{
 					"old_iter": old.Iteration,
 					"new_iter": payload.Iteration,
 				}).Warn("SendProgress: asyncCh full, dropping structured event from previous iteration")
@@ -672,7 +672,7 @@ func (c *CLIChannel) SetConnState(state string) {
 		c.model.connState = state
 	}
 	c.programMu.Unlock()
-	log.WithField("state", state).Info("SetConnState: written directly to model")
+	log.Glob(log.CatTransport).WithField("state", state).Info("SetConnState: written directly to model")
 }
 
 // SendToast shows a toast notification in the CLI (non-blocking).
@@ -835,7 +835,7 @@ func (c *CLIChannel) RestoreSession(history []ch.HistoryMessage, activeProgress 
 		todos:          todos,
 	}:
 	default:
-		log.Warn("RestoreSession: asyncCh full, dropping restore")
+		log.Glob(log.CatTUI).Warn("RestoreSession: asyncCh full, dropping restore")
 	}
 }
 
@@ -908,7 +908,7 @@ func (c *CLIChannel) InjectUserMessage(chatID, content string) {
 		select {
 		case c.asyncCh <- cliInjectedUserMsg{content: content, chatID: chatID}:
 		default:
-			log.WithField("chat_id", chatID).Warn("CLIChannel.InjectUserMessage: asyncCh full, dropping injected user message")
+			log.Glob(log.CatChannel).WithField("chat_id", chatID).Warn("CLIChannel.InjectUserMessage: asyncCh full, dropping injected user message")
 		}
 	}
 }
@@ -1048,7 +1048,7 @@ func (c *CLIChannel) handleProgressDrain() {
 				// blank before the next progress event arrives.
 				// Log a warning so this backpressure condition is visible
 				// in logs for debugging ordering/dropped-event issues.
-				log.WithFields(log.Fields{
+				log.Glob(log.CatTUI).WithFields(log.Fields{
 					"phase":     payload.Phase,
 					"iteration": payload.Iteration,
 					"has_tools": len(payload.ActiveTools) + len(payload.CompletedTools),

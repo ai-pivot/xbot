@@ -108,7 +108,7 @@ func (m *ProjectContextMiddleware) Process(mc *MessageContext) error {
 		if globalContent != "" {
 			mc.SystemParts["04_global_context"] = formatGlobalContext(globalContent, globalFile)
 
-			log.WithFields(log.Fields{
+			log.Glob(log.CatAgent).WithFields(log.Fields{
 				"dir":   mc.XbotHome,
 				"file":  globalFile,
 				"chars": len(globalContent),
@@ -132,7 +132,7 @@ func (m *ProjectContextMiddleware) Process(mc *MessageContext) error {
 
 	mc.SystemParts["05_project_context"] = formatProjectContext(content, filePath)
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatAgent).WithFields(log.Fields{
 		"dir":       dir,
 		"file":      filePath,
 		"chars":     len(content),

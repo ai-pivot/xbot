@@ -3,13 +3,13 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	log "xbot/logger"
 	"xbot/protocol"
 
 	"github.com/joho/godotenv"
@@ -17,7 +17,7 @@ import (
 
 func init() {
 	if err := godotenv.Load(".env"); err != nil {
-		slog.Debug("failed to load .env file, using environment variables only", "error", err)
+		log.Glob(log.CatConfig).WithError(err).Debug("failed to load .env file, using environment variables only")
 	}
 }
 
@@ -340,7 +340,7 @@ func XbotHome() string {
 		}
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		slog.Warn("failed to create xbot home directory", "path", dir, "error", err)
+		log.Glob(log.CatConfig).WithField("path", dir).WithError(err).Warn("failed to create xbot home directory")
 	}
 	return dir
 }
@@ -613,7 +613,7 @@ func LoadFromFile(path string) *Config {
 	data = normalizeConfigTypes(data)
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		slog.Warn("failed to parse config file, ignoring", "path", path, "error", err)
+		log.Glob(log.CatConfig).WithField("path", path).WithError(err).Warn("failed to parse config file, ignoring")
 		return nil
 	}
 	return &cfg

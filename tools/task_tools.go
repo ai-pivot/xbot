@@ -83,7 +83,7 @@ func (t *TaskKillTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 		return NewErrorResult(fmt.Sprintf("Failed to kill task %s: %s", params.TaskID, err.Error())), nil
 	}
 
-	log.WithField("task_id", params.TaskID).Info("Background task killed by user")
+	log.Req(toolCtx.Ctx, log.CatTool).WithField("task_id", params.TaskID).Info("Background task killed by user")
 	return NewResult(fmt.Sprintf("Task %s killed successfully.", params.TaskID)), nil
 }
 

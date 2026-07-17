@@ -81,7 +81,7 @@ func (s *CheckpointStore) ReadAll() ([]FileSnapshot, error) {
 		}
 		var snap FileSnapshot
 		if err := json.Unmarshal(line, &snap); err != nil {
-			log.WithError(err).Warn("checkpoint store: skipping malformed line")
+			log.Glob(log.CatTool).WithError(err).Warn("checkpoint store: skipping malformed line")
 			continue
 		}
 		snapshots = append(snapshots, snap)
@@ -94,7 +94,7 @@ func (s *CheckpointStore) ReadAll() ([]FileSnapshot, error) {
 func (s *CheckpointStore) Rewind(turnIdx int) (RewindResult, error) {
 	snapshots, err := s.ReadAll()
 	if err != nil {
-		log.WithError(err).Warn("checkpoint rewind: failed to read snapshots")
+		log.Glob(log.CatTool).WithError(err).Warn("checkpoint rewind: failed to read snapshots")
 		return RewindResult{Errors: []string{fmt.Sprintf("read checkpoints: %v", err)}}, nil
 	}
 
@@ -106,11 +106,11 @@ func (s *CheckpointStore) Rewind(turnIdx int) (RewindResult, error) {
 		}
 	}
 	if len(affected) == 0 {
-		log.WithField("turnIdx", turnIdx).Debug("checkpoint rewind: no snapshots found at or after turn")
+		log.Glob(log.CatTool).WithField("turnIdx", turnIdx).Debug("checkpoint rewind: no snapshots found at or after turn")
 		return RewindResult{}, nil
 	}
 
-	log.WithFields(log.Fields{"turnIdx": turnIdx, "snapshots": len(affected), "total": len(snapshots)}).Debug("checkpoint rewind: starting")
+	log.Glob(log.CatTool).WithFields(log.Fields{"turnIdx": turnIdx, "snapshots": len(affected), "total": len(snapshots)}).Debug("checkpoint rewind: starting")
 
 	// Group by file path, keep the earliest snapshot per file (pre-turn state)
 	earliestPerFile := make(map[string]FileSnapshot)
@@ -162,7 +162,7 @@ func (s *CheckpointStore) truncateTo(cutoff int) {
 
 	snapshots, err := s.readAllInternal()
 	if err != nil {
-		log.WithError(err).Warn("checkpoint truncate: failed to read")
+		log.Glob(log.CatTool).WithError(err).Warn("checkpoint truncate: failed to read")
 		return
 	}
 
@@ -173,7 +173,7 @@ func (s *CheckpointStore) truncateTo(cutoff int) {
 	// Rewrite with only pre-cutoff snapshots
 	f, err := os.Create(filepath.Join(s.baseDir, "changes.jsonl"))
 	if err != nil {
-		log.WithError(err).Warn("checkpoint truncate: failed to recreate file")
+		log.Glob(log.CatTool).WithError(err).Warn("checkpoint truncate: failed to recreate file")
 		return
 	}
 

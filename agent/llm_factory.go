@@ -203,7 +203,7 @@ func (f *LLMFactory) GetLLM(senderID string) (llm.LLM, string, int, string, int)
 		sub, err := f.subscriptionSvc.GetDefault(senderID)
 		if err == nil && sub != nil && sub.BaseURL != "" && sub.APIKey != "" {
 			if strings.HasSuffix(sub.APIKey, "****") && len(sub.APIKey) <= 20 {
-				log.WithFields(log.Fields{
+				log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{
 					"sender_id": senderID, "sub_id": sub.ID,
 					"base_url": sub.BaseURL, "provider": sub.Provider,
 				}).Error("[LLMFactory] GetLLM: subscription has masked API key")
@@ -510,7 +510,7 @@ func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
 		for _, m := range models {
 			if m != "" {
 				if err := f.subscriptionSvc.EnsureModel(subID, m); err != nil {
-					log.WithFields(log.Fields{"sub_id": subID, "model": m, "error": err}).Warn("[LLMFactory] OnModelsLoaded: EnsureModel failed")
+					log.Glob(log.CatLLM).WithFields(log.Fields{"sub_id": subID, "model": m, "error": err}).Warn("[LLMFactory] OnModelsLoaded: EnsureModel failed")
 				}
 			}
 		}
@@ -811,7 +811,7 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 	// Priority 1: Balance tier config.
 	if tierSubID, tierModel, _ := f.resolveTierModel(senderID, "balance"); tierSubID != "" && tierModel != "" {
 		if err := f.SelectModel(senderID, chatID, channel, tierSubID, tierModel); err == nil {
-			log.WithFields(log.Fields{
+			log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{
 				"chatID": chatID, "subID": tierSubID, "model": tierModel,
 				"source": "balance_tier",
 			}).Info("ensureSessionModel: auto-bound session to Balance tier model")
@@ -826,7 +826,7 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 	if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil &&
 		udm.SubscriptionID != "" && udm.Model != "" {
 		if err := f.SelectModel(senderID, chatID, channel, udm.SubscriptionID, udm.Model); err == nil {
-			log.WithFields(log.Fields{
+			log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{
 				"chatID": chatID, "subID": udm.SubscriptionID, "model": udm.Model,
 				"source": "last_used_model",
 			}).Info("ensureSessionModel: auto-bound session to last-used model")
@@ -1162,7 +1162,7 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 		case sub.BaseURL == "" || sub.APIKey == "":
 			r.Status = "skipped"
 			r.Error = "missing base_url or api_key"
-			log.WithFields(log.Fields{"sub": sub.Name, "has_baseurl": sub.BaseURL != "", "has_apikey": sub.APIKey != ""}).Debug("[LLM] RefreshModelEntries: skipping sub (missing base_url or api_key)")
+			log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"sub": sub.Name, "has_baseurl": sub.BaseURL != "", "has_apikey": sub.APIKey != ""}).Debug("[LLM] RefreshModelEntries: skipping sub (missing base_url or api_key)")
 		default:
 			// placeholder; filled in by the goroutine below.
 			r.Status = "pending"
@@ -1202,7 +1202,7 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 			if err := loader.LoadModelsFromAPI(ctx); err != nil {
 				r.Status = "fail"
 				r.Error = truncateErrMsg(err.Error())
-				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != "", "err": err.Error()}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
+				log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != "", "err": err.Error()}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
 				return
 			}
 			// Re-read to count subscription_models rows (OnModelsLoaded upserts them).
@@ -1244,14 +1244,14 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 			if err == nil && sub != nil && sub.Enabled {
 				client := f.createClientFromSub(sub, resolvedModel)
 				if client != nil {
-					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-subid"}).Info("[LLM] GetLLMForModel: exact match via subID")
+					log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-subid"}).Info("[LLM] GetLLMForModel: exact match via subID")
 					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 				}
 			}
 		}
 		// subID provided but subscription not found/unavailable — log and
 		// fall through to model-name lookup as a safety net.
-		log.WithFields(log.Fields{"subID": subID, "model": resolvedModel}).Warn("[LLM] GetLLMForModel: subID not found, falling back to model-name lookup")
+		log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"subID": subID, "model": resolvedModel}).Warn("[LLM] GetLLMForModel: subID not found, falling back to model-name lookup")
 	}
 
 	modelMap := f.buildModelSubscriptionMap(senderID)
@@ -1262,7 +1262,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 			if fromTier {
 				source = "tier-exact"
 			}
-			log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": source}).Info("[LLM] GetLLMForModel: exact match")
+			log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": source}).Info("[LLM] GetLLMForModel: exact match")
 			return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 		}
 	}
@@ -1278,7 +1278,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 			sub := configSubToLLMSubscription(cs)
 			client := f.createClientFromSub(sub, resolvedModel)
 			if client != nil {
-				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "config-exact"}).Info("[LLM] GetLLMForModel: config sub exact match")
+				log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "config-exact"}).Info("[LLM] GetLLMForModel: config sub exact match")
 				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 			}
 		}
@@ -1310,7 +1310,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 				updatedModels, _ := f.subscriptionSvc.GetModels(sub.ID)
 				for _, sm := range updatedModels {
 					if sm.Model == resolvedModel {
-						log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "api-load"}).Info("[LLM] GetLLMForModel: found after API load")
+						log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "api-load"}).Info("[LLM] GetLLMForModel: found after API load")
 						return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 					}
 				}
@@ -1334,7 +1334,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 			sub := configSubToLLMSubscription(cs)
 			client := f.createClientFromSub(sub, resolvedModel)
 			if client != nil {
-				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "tier-fallback-config"}).Info("[LLM] GetLLMForModel: using config subscription with resolved model")
+				log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "tier-fallback-config"}).Info("[LLM] GetLLMForModel: using config subscription with resolved model")
 				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 			}
 		}
@@ -1348,7 +1348,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 				}
 				client := f.createClientFromSub(sub, resolvedModel)
 				if client != nil {
-					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-fallback-sub"}).Info("[LLM] GetLLMForModel: using subscription with resolved model")
+					log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-fallback-sub"}).Info("[LLM] GetLLMForModel: using subscription with resolved model")
 					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 				}
 			}
@@ -1357,7 +1357,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 
 	// Last resort: use parent LLM but keep the resolved model name so the
 	// TUI status bar shows what was requested, not the fallback model.
-	log.WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: not found, using parent LLM with resolved model name")
+	log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: not found, using parent LLM with resolved model name")
 	client, _, maxCtx, tm, maxOut := f.GetLLM(senderID)
 	return client, resolvedModel, maxCtx, tm, maxOut, false
 }
@@ -1573,7 +1573,7 @@ func (f *LLMFactory) LLMSemAcquireForUser(senderID, channel string) func(context
 				cap = llm.DefaultLLMConcurrency
 			}
 		}
-		log.WithFields(log.Fields{
+		log.Usr(nil, log.CatLLM, senderID).WithFields(log.Fields{
 			"sender":  senderID,
 			"channel": channel,
 			"llmKey":  llmKey,

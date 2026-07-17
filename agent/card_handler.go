@@ -13,7 +13,7 @@ import (
 // handleCardResponse 处理卡片响应（按钮点击、表单提交）
 func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
 	cardID := msg.Metadata["card_id"]
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatAgent).WithFields(log.Fields{
 		"channel": msg.Channel,
 		"chat_id": msg.ChatID,
 		"card_id": cardID,
@@ -53,16 +53,16 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 		cardUserMsg.Timestamp = msg.Time
 	}
 	if err := tenantSession.AddMessage(cardUserMsg); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to save user message")
+		log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to save user message")
 	}
 	assistantMsg := llm.NewAssistantMessage(finalContent)
 	assistantMsg.ReasoningContent = cardOut.ReasoningContent
 	if err := tenantSession.AddMessage(assistantMsg); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to save assistant message")
+		log.Req(ctx, log.CatAgent).WithError(err).Warn("Failed to save assistant message")
 	}
 
 	if err := a.sendMessage(msg.Channel, msg.ChatID, finalContent); err != nil {
-		log.Ctx(ctx).WithError(err).Error("Failed to send card response via sendMessage")
+		log.Req(ctx, log.CatAgent).WithError(err).Error("Failed to send card response via sendMessage")
 		return &channel.OutboundMsg{
 			Channel:  msg.Channel,
 			ChatID:   msg.ChatID,

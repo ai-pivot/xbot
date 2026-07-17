@@ -235,7 +235,7 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 
 	go p.refreshLoop(bgCtx, interval)
 
-	log.Info(fmt.Sprintf("Script plugin %s started (interval=%s)", p.manifest.ID, interval))
+	log.Glob(log.CatPlugin).Info(fmt.Sprintf("Script plugin %s started (interval=%s)", p.manifest.ID, interval))
 	return nil
 }
 

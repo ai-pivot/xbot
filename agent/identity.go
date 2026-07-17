@@ -117,7 +117,7 @@ func (r *IdentityResolver) SetRole(userID int64, role string) error {
 	if err != nil {
 		return fmt.Errorf("set role: %w", err)
 	}
-	log.WithFields(log.Fields{
+	log.Glob(log.CatAuth).WithFields(log.Fields{
 		"user_id": userID,
 		"role":    role,
 	}).Info("IdentityResolver: user role updated")
@@ -224,7 +224,7 @@ func (r *IdentityResolver) GenerateLinkCode(userID int64) (string, error) {
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("commit link code: %w", err)
 	}
-	log.WithFields(log.Fields{
+	log.Glob(log.CatAuth).WithFields(log.Fields{
 		"user_id": userID,
 		"code":    code,
 	}).Info("IdentityResolver: link code generated")
@@ -311,7 +311,7 @@ func (r *IdentityResolver) LinkIdentity(targetUserID int64, channel, channelUser
 	if err != nil {
 		return false, fmt.Errorf("link identity: %w", err)
 	}
-	log.WithFields(log.Fields{
+	log.Glob(log.CatAuth).WithFields(log.Fields{
 		"target_user_id":  targetUserID,
 		"channel":         channel,
 		"channel_user_id": channelUserID,
@@ -450,7 +450,7 @@ func (r *IdentityResolver) MergeUsers(sourceUserID, targetUserID int64) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("merge commit: %w", err)
 	}
-	log.WithFields(log.Fields{
+	log.Glob(log.CatAuth).WithFields(log.Fields{
 		"source_user_id": sourceUserID,
 		"target_user_id": targetUserID,
 	}).Info("IdentityResolver: users merged")

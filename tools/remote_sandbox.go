@@ -146,9 +146,9 @@ func NewRemoteSandbox(cfg RemoteSandboxConfig, syncCfg RemoteSandboxSyncConfig) 
 	}
 
 	go func() {
-		log.Infof("RemoteSandbox WebSocket server listening on %s", cfg.Addr)
+		log.Glob(log.CatTool).Infof("RemoteSandbox WebSocket server listening on %s", cfg.Addr)
 		if err := rs.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.WithError(err).Error("RemoteSandbox server error")
+			log.Glob(log.CatTool).WithError(err).Error("RemoteSandbox server error")
 		}
 	}()
 
@@ -168,7 +168,7 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 
 	conn, err := rs.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.WithError(err).Error("WebSocket upgrade failed")
+		log.Glob(log.CatTool).WithError(err).Error("WebSocket upgrade failed")
 		return
 	}
 
@@ -189,29 +189,29 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 	// Read registration message
 	_, raw, err := conn.ReadMessage()
 	if err != nil {
-		log.WithError(err).Error("Failed to read registration message")
+		log.Glob(log.CatTool).WithError(err).Error("Failed to read registration message")
 		return
 	}
 
 	var msg RunnerMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
-		log.WithError(err).Error("Invalid registration message")
+		log.Glob(log.CatTool).WithError(err).Error("Invalid registration message")
 		return
 	}
 	if msg.Type != "register" {
-		log.WithField("type", msg.Type).Error("Expected register message")
+		log.Glob(log.CatTool).WithField("type", msg.Type).Error("Expected register message")
 		return
 	}
 
 	var reg RegisterRequest
 	if err := json.Unmarshal(msg.Body, &reg); err != nil {
-		log.WithError(err).Error("Invalid registration body")
+		log.Glob(log.CatTool).WithError(err).Error("Invalid registration body")
 		return
 	}
 	authenticated := (rs.tokenStore != nil && rs.tokenStore.Validate(reg.AuthToken, reg.UserID)) ||
 		(rs.authToken != "" && subtle.ConstantTimeCompare([]byte(reg.AuthToken), []byte(rs.authToken)) == 1)
 	if !authenticated {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTool).WithFields(log.Fields{
 			"user_id":    reg.UserID,
 			"has_store":  rs.tokenStore != nil,
 			"has_global": rs.authToken != "",
@@ -226,7 +226,7 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 	}
 	// S6: Bind token to userID — the URL path determines identity, not the claim.
 	if reg.UserID != pathUserID {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTool).WithFields(log.Fields{
 			"path_user_id": pathUserID,
 			"claimed_id":   reg.UserID,
 		}).Warn("Runner userID mismatch (potential impersonation)")
@@ -275,7 +275,7 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 	actual, loaded := rs.connections.LoadOrStore(reg.UserID, newEntry)
 	entry, ok := actual.(*userRunnersEntry)
 	if !ok {
-		log.WithField("user_id", reg.UserID).Error("invalid runner connection type")
+		log.Glob(log.CatTool).WithField("user_id", reg.UserID).Error("invalid runner connection type")
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","body":{"code":"internal_error","message":"invalid connection state"}}`))
 		conn.Close()
 		return
@@ -318,19 +318,19 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 	// Send registration acknowledgment
 	okBody, err := json.Marshal(map[string]string{"status": "ok"})
 	if err != nil {
-		log.WithError(err).Error("Failed to marshal register_ok body")
+		log.Glob(log.CatTool).WithError(err).Error("Failed to marshal register_ok body")
 		conn.Close()
 		return
 	}
 	okMsg, err := json.Marshal(RunnerMessage{Type: "register_ok", Body: okBody})
 	if err != nil {
-		log.WithError(err).Error("Failed to marshal register_ok message")
+		log.Glob(log.CatTool).WithError(err).Error("Failed to marshal register_ok message")
 		conn.Close()
 		return
 	}
 	conn.WriteMessage(websocket.TextMessage, okMsg)
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatTool).WithFields(log.Fields{
 		"user_id":     reg.UserID,
 		"runner_name": runnerName,
 		"workspace":   reg.Workspace,
@@ -343,7 +343,7 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 			Model:    reg.LLMModel,
 			// APIKey and BaseURL are not needed here — runner holds them locally
 		})
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTool).WithFields(log.Fields{
 			"user_id":      reg.UserID,
 			"runner_name":  runnerName,
 			"llm_provider": reg.LLMProvider,
@@ -366,7 +366,7 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
-			log.WithError(err).WithFields(log.Fields{
+			log.Glob(log.CatTool).WithError(err).WithFields(log.Fields{
 				"user_id":     reg.UserID,
 				"runner_name": runnerName,
 			}).Debug("Runner disconnected")
@@ -386,7 +386,7 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 				select {
 				case ch <- &resp:
 				default:
-					log.WithField("request_id", resp.ID).Warn("Runner: pending channel full, response dropped")
+					log.Glob(log.CatTool).WithField("request_id", resp.ID).Warn("Runner: pending channel full, response dropped")
 				}
 				delete(rs.pending, resp.ID)
 			}
@@ -574,7 +574,7 @@ func (rs *RemoteSandbox) writePump(rc *runnerConnection, pingPeriod, writeWait t
 			}
 		case <-ticker.C:
 			if err := rc.wsConn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
-				log.WithError(err).WithField("user_id", rc.userID).Debug("Ping to runner failed")
+				log.Glob(log.CatTool).WithError(err).WithField("user_id", rc.userID).Debug("Ping to runner failed")
 				return
 			}
 		}
@@ -585,13 +585,13 @@ func (rs *RemoteSandbox) writePump(rc *runnerConnection, pingPeriod, writeWait t
 func (rs *RemoteSandbox) sendRegisterError(conn *websocket.Conn, code, message string) {
 	errBody, err := json.Marshal(ErrorResponse{Code: code, Message: message})
 	if err != nil {
-		log.WithError(err).Error("Failed to marshal error response")
+		log.Glob(log.CatTool).WithError(err).Error("Failed to marshal error response")
 		conn.Close()
 		return
 	}
 	errMsg, err := json.Marshal(RunnerMessage{Type: "error", Body: errBody})
 	if err != nil {
-		log.WithError(err).Error("Failed to marshal error message")
+		log.Glob(log.CatTool).WithError(err).Error("Failed to marshal error message")
 		conn.Close()
 		return
 	}
@@ -771,7 +771,7 @@ func (rs *RemoteSandbox) LLMModels(ctx context.Context, userID string) ([]string
 // Runs in a background goroutine; errors are logged but not fatal.
 func (rs *RemoteSandbox) syncToRunner(userID, workspace string) {
 	if workspace == "" {
-		log.WithField("user_id", userID).Warn("syncToRunner: workspace is empty, skipping sync")
+		log.Glob(log.CatTool).WithField("user_id", userID).Warn("syncToRunner: workspace is empty, skipping sync")
 		return
 	}
 
@@ -782,7 +782,7 @@ func (rs *RemoteSandbox) syncToRunner(userID, workspace string) {
 	ctx, cancel := context.WithTimeout(context.Background(), RemoteSandboxSyncTimeout)
 	defer cancel()
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatTool).WithFields(log.Fields{
 		"user_id":           userID,
 		"workspace":         workspace,
 		"global_skill_dirs": rs.globalSkillDirs,
@@ -818,7 +818,7 @@ func (rs *RemoteSandbox) syncToRunner(userID, workspace string) {
 		rs.syncEmbeddedAgentToRunner(ctx, userID, workspace, name, dstAgentsDir)
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatTool).WithFields(log.Fields{
 		"user_id":   userID,
 		"workspace": workspace,
 	}).Info("Runner sync completed")
@@ -856,7 +856,7 @@ func (rs *RemoteSandbox) EnsureSynced(ctx context.Context, userID string) {
 			}
 			rs.syncMu.Unlock()
 		}
-		log.WithField("user_id", userID).Warn("EnsureSynced: timed out waiting for in-progress sync")
+		log.Req(ctx, log.CatTool).WithField("user_id", userID).Warn("EnsureSynced: timed out waiting for in-progress sync")
 		return
 	}
 	rs.syncMu.Unlock()
@@ -864,11 +864,11 @@ func (rs *RemoteSandbox) EnsureSynced(ctx context.Context, userID string) {
 	// Get runner workspace
 	rc, err := rs.getRunner(userID)
 	if err != nil {
-		log.WithError(err).WithField("user_id", userID).Debug("EnsureSynced: no runner connected, skipping sync")
+		log.Req(ctx, log.CatTool).WithError(err).WithField("user_id", userID).Debug("EnsureSynced: no runner connected, skipping sync")
 		return
 	}
 
-	log.WithField("user_id", userID).Info("EnsureSynced: triggering on-demand sync")
+	log.Req(ctx, log.CatTool).WithField("user_id", userID).Info("EnsureSynced: triggering on-demand sync")
 	go rs.syncToRunner(userID, rc.workspace)
 }
 
@@ -880,7 +880,7 @@ func (rs *RemoteSandbox) syncDirToRunner(ctx context.Context, userID, workspace,
 		if os.IsNotExist(err) {
 			return
 		}
-		log.WithError(err).WithField("dir", srcDir).Warn("syncToRunner: failed to read source dir")
+		log.Req(ctx, log.CatTool).WithError(err).WithField("dir", srcDir).Warn("syncToRunner: failed to read source dir")
 		return
 	}
 
@@ -905,7 +905,7 @@ func (rs *RemoteSandbox) syncAgentsToRunner(ctx context.Context, userID, workspa
 		if os.IsNotExist(err) {
 			return
 		}
-		log.WithError(err).WithField("dir", srcDir).Warn("syncToRunner: failed to read agents dir")
+		log.Req(ctx, log.CatTool).WithError(err).WithField("dir", srcDir).Warn("syncToRunner: failed to read agents dir")
 		return
 	}
 
@@ -922,13 +922,13 @@ func (rs *RemoteSandbox) syncAgentsToRunner(ctx context.Context, userID, workspa
 // syncTreeToRunner recursively syncs a directory from the server to the runner.
 func (rs *RemoteSandbox) syncTreeToRunner(ctx context.Context, userID, srcDir, dstDir string) {
 	if err := rs.MkdirAll(ctx, dstDir, 0o755, userID); err != nil {
-		log.WithError(err).WithFields(log.Fields{"src": srcDir, "dst": dstDir}).Warn("syncTree: mkdir failed")
+		log.Req(ctx, log.CatTool).WithError(err).WithFields(log.Fields{"src": srcDir, "dst": dstDir}).Warn("syncTree: mkdir failed")
 		return
 	}
 
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
-		log.WithError(err).WithField("dir", srcDir).Warn("syncTree: read failed")
+		log.Req(ctx, log.CatTool).WithError(err).WithField("dir", srcDir).Warn("syncTree: read failed")
 		return
 	}
 
@@ -947,11 +947,11 @@ func (rs *RemoteSandbox) syncTreeToRunner(ctx context.Context, userID, srcDir, d
 func (rs *RemoteSandbox) syncFileToRunner(ctx context.Context, userID, srcPath, dstPath string) {
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
-		log.WithError(err).WithField("file", srcPath).Warn("syncFile: read failed")
+		log.Req(ctx, log.CatTool).WithError(err).WithField("file", srcPath).Warn("syncFile: read failed")
 		return
 	}
 	if err := rs.WriteFile(ctx, dstPath, data, 0o644, userID); err != nil {
-		log.WithError(err).WithFields(log.Fields{"src": srcPath, "dst": dstPath}).Warn("syncFile: write failed")
+		log.Req(ctx, log.CatTool).WithError(err).WithFields(log.Fields{"src": srcPath, "dst": dstPath}).Warn("syncFile: write failed")
 	}
 }
 
@@ -976,7 +976,7 @@ func (rs *RemoteSandbox) syncEmbeddedSkillToRunner(ctx context.Context, userID, 
 		dstPath := filepath.Join(dstDir, rel)
 		if d.IsDir() {
 			if err := rs.MkdirAll(ctx, dstPath, 0o755, userID); err != nil {
-				log.WithError(err).Warn("syncEmbeddedSkill: mkdir failed")
+				log.Req(ctx, log.CatTool).WithError(err).Warn("syncEmbeddedSkill: mkdir failed")
 			}
 			return nil
 		}
@@ -985,12 +985,12 @@ func (rs *RemoteSandbox) syncEmbeddedSkillToRunner(ctx context.Context, userID, 
 			return nil
 		}
 		if err := rs.WriteFile(ctx, dstPath, data, 0o644, userID); err != nil {
-			log.WithError(err).Warn("syncEmbeddedSkill: write failed")
+			log.Req(ctx, log.CatTool).WithError(err).Warn("syncEmbeddedSkill: write failed")
 		}
 		return nil
 	})
 	if err != nil {
-		log.WithError(err).Warn("syncEmbeddedSkill: walk failed")
+		log.Req(ctx, log.CatTool).WithError(err).Warn("syncEmbeddedSkill: walk failed")
 	}
 }
 
@@ -1007,10 +1007,10 @@ func (rs *RemoteSandbox) syncEmbeddedAgentToRunner(ctx context.Context, userID, 
 		return
 	}
 	if err := rs.MkdirAll(ctx, dstAgentsDir, 0o755, userID); err != nil {
-		log.WithError(err).Warn("syncEmbeddedAgent: mkdir failed")
+		log.Req(ctx, log.CatTool).WithError(err).Warn("syncEmbeddedAgent: mkdir failed")
 		return
 	}
 	if err := rs.WriteFile(ctx, dstPath, data, 0o644, userID); err != nil {
-		log.WithError(err).Warn("syncEmbeddedAgent: write failed")
+		log.Req(ctx, log.CatTool).WithError(err).Warn("syncEmbeddedAgent: write failed")
 	}
 }

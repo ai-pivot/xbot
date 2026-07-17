@@ -342,7 +342,7 @@ func DiscoverPlugins(dirs []string) []*PluginManifest {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if !os.IsNotExist(err) {
-				log.WithField("dir", dir).Warn("Failed to scan plugin directory")
+				log.Glob(log.CatPlugin).WithField("dir", dir).Warn("Failed to scan plugin directory")
 			}
 			continue
 		}
@@ -354,7 +354,7 @@ func DiscoverPlugins(dirs []string) []*PluginManifest {
 			pluginDir := filepath.Join(dir, entry.Name())
 			manifest, err := LoadManifest(pluginDir)
 			if err != nil {
-				log.WithField("dir", pluginDir).Warn("Skipping invalid plugin: ", err)
+				log.Glob(log.CatPlugin).WithField("dir", pluginDir).Warn("Skipping invalid plugin: ", err)
 				continue
 			}
 			manifests = append(manifests, manifest)

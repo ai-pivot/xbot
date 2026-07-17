@@ -92,7 +92,7 @@ func (m *FeishuMCP) GetClient(ctx context.Context, channel, chatID string) (*Cli
 	if tenantDomain == "" && m.larkClient != nil {
 		domain, err := m.fetchTenantDomain(ctx)
 		if err != nil {
-			log.WithError(err).Warn("Failed to fetch tenant domain")
+			log.Req(ctx, log.CatTool).WithError(err).Warn("Failed to fetch tenant domain")
 		} else if domain != "" {
 			tenantDomain = domain
 			// 更新 Token 中的域名
@@ -101,9 +101,9 @@ func (m *FeishuMCP) GetClient(ctx context.Context, channel, chatID string) (*Cli
 			}
 			token.Raw["tenant_domain"] = domain
 			if err := m.oauth.SetToken("feishu", channel, chatID, token); err != nil {
-				log.WithError(err).Warn("Failed to update token with tenant domain")
+				log.Req(ctx, log.CatTool).WithError(err).Warn("Failed to update token with tenant domain")
 			} else {
-				log.WithField("domain", domain).Info("Tenant domain fetched and cached")
+				log.Req(ctx, log.CatTool).WithField("domain", domain).Info("Tenant domain fetched and cached")
 			}
 		}
 	}

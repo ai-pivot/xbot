@@ -85,16 +85,16 @@ func (r *Router) dispatchOne(t *Trigger, evt Event) DispatchResult {
 
 	now := time.Now()
 	if err := r.store.RecordFire(t.ID, now); err != nil {
-		log.WithError(err).WithField("trigger_id", t.ID).Warn("EventRouter: failed to record fire")
+		log.Glob(log.CatStartup).WithError(err).WithField("trigger_id", t.ID).Warn("EventRouter: failed to record fire")
 	}
 
 	if t.OneShot {
 		if err := r.store.UpdateEnabled(t.ID, false); err != nil {
-			log.WithError(err).WithField("trigger_id", t.ID).Warn("EventRouter: failed to disable one-shot trigger")
+			log.Glob(log.CatStartup).WithError(err).WithField("trigger_id", t.ID).Warn("EventRouter: failed to disable one-shot trigger")
 		}
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatStartup).WithFields(log.Fields{
 		"trigger_id": t.ID,
 		"channel":    t.Channel,
 		"chat_id":    t.ChatID,
@@ -110,13 +110,13 @@ func (r *Router) Dispatch(evt Event) []DispatchResult {
 	r.mu.RUnlock()
 
 	if injectFn == nil {
-		log.Warn("EventRouter: injectFunc not set, dropping event")
+		log.Glob(log.CatStartup).Warn("EventRouter: injectFunc not set, dropping event")
 		return nil
 	}
 
 	triggers, err := r.store.ListByEventType(evt.Type)
 	if err != nil {
-		log.WithError(err).Error("EventRouter: failed to list triggers")
+		log.Glob(log.CatStartup).WithError(err).Error("EventRouter: failed to list triggers")
 		return nil
 	}
 
@@ -129,7 +129,7 @@ func (r *Router) Dispatch(evt Event) []DispatchResult {
 
 		result := r.dispatchOne(t, evt)
 		if !result.OK {
-			log.WithField("trigger_id", t.ID).Warn("EventRouter: signature mismatch")
+			log.Glob(log.CatStartup).WithField("trigger_id", t.ID).Warn("EventRouter: signature mismatch")
 		}
 		results = append(results, result)
 	}

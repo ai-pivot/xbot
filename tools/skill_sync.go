@@ -201,7 +201,7 @@ func syncFile(src, dst string) {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		log.WithError(err).Warnf("skill sync: mkdir %s", filepath.Dir(dst))
+		log.Glob(log.CatTool).WithError(err).Warnf("skill sync: mkdir %s", filepath.Dir(dst))
 		return
 	}
 
@@ -213,13 +213,13 @@ func syncFile(src, dst string) {
 
 	dstF, err := os.Create(dst)
 	if err != nil {
-		log.WithError(err).Warnf("skill sync: create %s", dst)
+		log.Glob(log.CatTool).WithError(err).Warnf("skill sync: create %s", dst)
 		return
 	}
 	defer dstF.Close()
 
 	if _, err := io.Copy(dstF, srcF); err != nil {
-		log.WithError(err).Warnf("skill sync: copy %s → %s", src, dst)
+		log.Glob(log.CatTool).WithError(err).Warnf("skill sync: copy %s → %s", src, dst)
 		return
 	}
 

@@ -247,7 +247,7 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 
 	parts := strings.SplitN(sessionKey, ":", 2)
 	if len(parts) != 2 {
-		log.WithField("session_key", sessionKey).Warn("drainAndProcessNotifications: invalid session key")
+		log.Glob(log.CatRequest).WithField("session_key", sessionKey).Warn("drainAndProcessNotifications: invalid session key")
 		return
 	}
 	channelName, chatID := parts[0], parts[1]
@@ -310,7 +310,7 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	// Merge into a single message
 	combined := strings.Join(contents, "\n\n---\n\n")
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatRequest).WithFields(log.Fields{
 		"channel":     channelName,
 		"chat_id":     chatID,
 		"notif_count": len(contents),
@@ -343,7 +343,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		ss.drainedThisRunMu.Unlock()
 	}
 	if len(pendingNotifications)+drainedThisRun > 0 {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatRequest).WithFields(log.Fields{
 			"pending": len(pendingNotifications),
 			"drained": drainedThisRun,
 		}).Info("Recording background notifications in cancelled turn")
@@ -355,11 +355,11 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 			continue
 		}
 		if err := tenantSession.AddMessage(em); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save engine message on cancel")
+			log.Req(ctx, log.CatRequest).WithError(err).Warn("Failed to save engine message on cancel")
 		}
 	}
 	if len(out.EngineMessages) > 0 {
-		log.Ctx(ctx).Infof("Cancelled: persisted %d un-persisted engine messages", len(out.EngineMessages))
+		log.Req(ctx, log.CatRequest).Infof("Cancelled: persisted %d un-persisted engine messages", len(out.EngineMessages))
 	}
 	// Save iteration history as an assistant message with detail,
 	// so web UI can restore it on page refresh without showing "loading".
@@ -418,10 +418,10 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	persistCancelTool := func(assistantMsg, toolMsg llm.ChatMessage, snapshot IterationToolSnapshot) {
 		if tenantSession != nil {
 			if err := tenantSession.AddMessage(assistantMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save cancel synthetic assistant message")
+				log.Req(ctx, log.CatRequest).WithError(err).Warn("Failed to save cancel synthetic assistant message")
 			}
 			if err := tenantSession.AddMessage(toolMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save cancel synthetic tool message")
+				log.Req(ctx, log.CatRequest).WithError(err).Warn("Failed to save cancel synthetic tool message")
 			}
 		}
 		appendCancelToolSnapshot(snapshot)
@@ -450,7 +450,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		}
 		if tenantSession != nil {
 			if err := tenantSession.AddMessage(cancelMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save cancelled iteration history")
+				log.Req(ctx, log.CatRequest).WithError(err).Warn("Failed to save cancelled iteration history")
 			}
 		}
 	}
@@ -475,7 +475,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 // buildWaitingUserOutbound constructs the WaitingUser OutboundMsg from a RunOutput.
 // Shared by handleRunOutput (main message path) and card_handler.go (card action path).
 func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession) *channel.OutboundMsg {
-	log.Ctx(ctx).Info("Tool is waiting for user response, sending WaitingUser outbound")
+	log.Req(ctx, log.CatRequest).Info("Tool is waiting for user response, sending WaitingUser outbound")
 	meta := map[string]string{}
 	for k, v := range out.Metadata {
 		meta[k] = v
@@ -487,7 +487,7 @@ func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *
 			histMsg.DisplayOnly = true
 			histMsg.Detail = string(jsonBytes)
 			if err := tenantSession.AddMessage(histMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save waitingUser iteration history")
+				log.Req(ctx, log.CatRequest).WithError(err).Warn("Failed to save waitingUser iteration history")
 			}
 			meta["progress_history"] = string(jsonBytes)
 		}
@@ -529,15 +529,15 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 
 	// Empty content without waiting for user and not optional reply
 	if finalContent == "" && replyPolicy != bus.ReplyPolicyOptional {
-		log.Ctx(ctx).Warn("Run produced empty content without waiting for user input")
+		log.Req(ctx, log.CatRequest).Warn("Run produced empty content without waiting for user input")
 		if err := a.sendMessage(msg.Channel, msg.ChatID, "⚠️ 处理完成，但未生成回复内容。请尝试重新描述您的需求。"); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to send empty content notification")
+			log.Req(ctx, log.CatRequest).WithError(err).Warn("Failed to send empty content notification")
 		}
 		return nil, nil
 	}
 
 	if finalContent == "" && replyPolicy == bus.ReplyPolicyOptional {
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatRequest).WithFields(log.Fields{
 			"channel":      msg.Channel,
 			"chat_id":      msg.ChatID,
 			"reply_policy": replyPolicy,
@@ -562,7 +562,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		}
 	}
 	if err := tenantSession.AddMessage(assistantMsg); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to save assistant message")
+		log.Req(ctx, log.CatRequest).WithError(err).Warn("Failed to save assistant message")
 	}
 
 	// Send via sendMessage (reuses session message tracking)
@@ -571,7 +571,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		sendMeta["progress_history"] = assistantMsg.Detail
 	}
 	if err := a.sendMessage(msg.Channel, msg.ChatID, finalContent, sendMeta); err != nil {
-		log.Ctx(ctx).WithError(err).Error("Failed to send final response via sendMessage")
+		log.Req(ctx, log.CatRequest).WithError(err).Error("Failed to send final response via sendMessage")
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
 			ChatID:  msg.ChatID,

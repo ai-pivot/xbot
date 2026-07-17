@@ -100,7 +100,7 @@ func (c *remotePluginCache) refreshStatus() {
 	}
 	raw, err := c.callRPC("plugin_status", nil)
 	if err != nil {
-		log.WithError(err).Debug("RemotePlugin: plugin_status RPC failed")
+		log.Glob(log.CatTUI).WithError(err).Debug("RemotePlugin: plugin_status RPC failed")
 		return
 	}
 	var result struct {
@@ -109,7 +109,7 @@ func (c *remotePluginCache) refreshStatus() {
 		Total   int                 `json:"total"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		log.WithError(err).Debug("RemotePlugin: unmarshal plugin_status failed")
+		log.Glob(log.CatTUI).WithError(err).Debug("RemotePlugin: unmarshal plugin_status failed")
 		return
 	}
 	c.mu.Lock()
@@ -126,7 +126,7 @@ func (c *remotePluginCache) refreshWidgets() {
 	}
 	raw, err := c.callRPC("plugin_widgets", map[string]string{"chat_id": c.chatID})
 	if err != nil {
-		log.WithError(err).Warn("RemotePlugin: plugin_widgets RPC failed")
+		log.Glob(log.CatTUI).WithError(err).Warn("RemotePlugin: plugin_widgets RPC failed")
 		return
 	}
 	var result struct {
@@ -135,7 +135,7 @@ func (c *remotePluginCache) refreshWidgets() {
 		Count int                 `json:"count"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		log.WithError(err).Warn("RemotePlugin: unmarshal plugin_widgets failed")
+		log.Glob(log.CatTUI).WithError(err).Warn("RemotePlugin: unmarshal plugin_widgets failed")
 		return
 	}
 	c.mu.Lock()

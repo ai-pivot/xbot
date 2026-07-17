@@ -110,7 +110,7 @@ func (m *cliModel) trimToolSummaryPayload(msg *cliMessage) {
 // orders of magnitude cheaper than O(N × glamour_render) in fullRebuild.
 func (m *cliModel) rerenderCachedMessage(msgIdx int) {
 	if msgIdx < 0 || msgIdx >= len(m.messages) {
-		log.Debug("rerenderCachedMessage: msgIdx out of bounds, skipping",
+		log.Glob(log.CatTUI).Debug("rerenderCachedMessage: msgIdx out of bounds, skipping",
 			"msgIdx", msgIdx, "lenMessages", len(m.messages))
 		return
 	}
@@ -118,7 +118,7 @@ func (m *cliModel) rerenderCachedMessage(msgIdx int) {
 	// endAgentTurn cached it), just call appendNewMessagesToCache which
 	// renders from rc.msgCount onwards — picks up this message naturally.
 	if msgIdx >= m.rc.msgCount {
-		log.Debug("rerenderCachedMessage: message not yet cached, using appendNewMessagesToCache",
+		log.Glob(log.CatTUI).Debug("rerenderCachedMessage: message not yet cached, using appendNewMessagesToCache",
 			"msgIdx", msgIdx, "msgCount", m.rc.msgCount)
 		m.appendNewMessagesToCache()
 		return
@@ -135,7 +135,7 @@ func (m *cliModel) rerenderCachedMessage(msgIdx int) {
 	if msgIdx <= len(m.msgLineOffsets) {
 		m.msgLineOffsets = m.msgLineOffsets[:msgIdx]
 	} else {
-		log.Warn("rerenderCachedMessage: msgLineOffsets invariant broken, falling back to fullRebuild",
+		log.Glob(log.CatTUI).Warn("rerenderCachedMessage: msgLineOffsets invariant broken, falling back to fullRebuild",
 			"msgIdx", msgIdx, "lenMsgLineOffsets", len(m.msgLineOffsets), "msgCount", m.rc.msgCount)
 		m.rc.valid = false
 		return

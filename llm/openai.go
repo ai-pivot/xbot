@@ -87,9 +87,9 @@ func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 		cfg.MaxTokens = defaultMaxTokens
 	}
 
-	log.WithField("base_url", cfg.BaseURL).Debug("[LLM] NewOpenAILLM called")
+	log.Glob(log.CatLLM).WithField("base_url", cfg.BaseURL).Debug("[LLM] NewOpenAILLM called")
 	if cfg.BaseURL == "" && cfg.APIKey == "" {
-		log.Debug("[LLM] No BaseURL/APIKey configured — skipping model list fetch")
+		log.Glob(log.CatLLM).Debug("[LLM] No BaseURL/APIKey configured — skipping model list fetch")
 	}
 
 	o := &OpenAILLM{
@@ -200,7 +200,7 @@ func (o *OpenAILLM) EnsureModelsLoaded() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := o.LoadModelsFromAPI(ctx); err != nil {
-		log.WithError(err).Debug("[LLM] EnsureModelsLoaded: failed to load models")
+		log.Glob(log.CatLLM).WithError(err).Debug("[LLM] EnsureModelsLoaded: failed to load models")
 	}
 	// Mark loaded so triggerModelLoad won't fire again.
 	o.mu.Lock()
@@ -224,7 +224,7 @@ func (o *OpenAILLM) triggerModelLoad() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := o.LoadModelsFromAPI(ctx); err != nil {
-			log.WithError(err).Warn("[LLM] Failed to load models from OpenAI API")
+			log.Glob(log.CatLLM).WithError(err).Warn("[LLM] Failed to load models from OpenAI API")
 			if onError != nil {
 				onError(err)
 			}
@@ -254,7 +254,7 @@ func (o *OpenAILLM) MaxTokens() int {
 
 // LoadModelsFromAPI 从 OpenAI API 加载可用模型列表
 func (o *OpenAILLM) LoadModelsFromAPI(ctx context.Context) error {
-	log.Debug("[LLM] Loading models from OpenAI API")
+	log.Glob(log.CatLLM).Debug("[LLM] Loading models from OpenAI API")
 
 	// Use ListAutoPaging to fetch ALL models across pages.
 	// OpenAI may return >100 models; a single List() call only returns the first page.
@@ -281,7 +281,7 @@ func (o *OpenAILLM) LoadModelsFromAPI(ctx context.Context) error {
 	defaultModel := o.defaultModel
 	o.mu.Unlock()
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatLLM).WithFields(log.Fields{
 		"model_count":   modelCount,
 		"default_model": defaultModel,
 	}).Info("[LLM] Models loaded from OpenAI API")
@@ -748,13 +748,13 @@ func (o *OpenAILLM) buildThinkingOptions(thinkingMode, model string) []option.Re
 				}
 			}
 		} else {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatLLM).WithFields(log.Fields{
 				"thinking_mode": thinkingMode,
 				"error":         err.Error(),
 			}).Warn("[LLM] Failed to parse thinking mode as JSON, ignoring")
 		}
 	} else {
-		log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON, ignoring")
+		log.Glob(log.CatLLM).WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON, ignoring")
 	}
 
 	return opts
@@ -875,7 +875,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 		model = o.GetDefaultModel()
 	}
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 		"provider":      "openai",
 		"model":         model,
 		"stream":        false,
@@ -891,7 +891,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 	// 构建 thinking mode 相关的 request options
 	opts := o.buildThinkingOptions(thinkingMode, model)
 	if len(opts) > 0 {
-		log.Ctx(ctx).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
+		log.Req(ctx, log.CatLLM).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
 	}
 
 	completion, err := o.client.Chat.Completions.New(ctx, params, opts...)
@@ -900,10 +900,10 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 		if verdict := isMaxTokensParamError(err); verdict != "" {
 			if verdict == "use_new" {
 				o.maxTokensUpgrade.Store(model, true)
-				log.Ctx(ctx).WithField("model", model).Info("[LLM] Model requires max_completion_tokens, retrying")
+				log.Req(ctx, log.CatLLM).WithField("model", model).Info("[LLM] Model requires max_completion_tokens, retrying")
 			} else {
 				o.maxTokensUpgrade.Delete(model)
-				log.Ctx(ctx).WithField("model", model).Info("[LLM] Model requires legacy max_tokens, retrying")
+				log.Req(ctx, log.CatLLM).WithField("model", model).Info("[LLM] Model requires legacy max_tokens, retrying")
 			}
 			params = o.buildParams(model, messages, tools, thinkingMode, false)
 			completion, err = o.client.Chat.Completions.New(ctx, params, opts...)
@@ -911,7 +911,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 	}
 	if err != nil {
 		if shouldFallbackToStreamForNonStreamResponse(err) {
-			log.Ctx(ctx).WithError(err).WithField("model", model).Warn("[LLM] Non-stream request returned SSE; falling back to stream collection")
+			log.Req(ctx, log.CatLLM).WithError(err).WithField("model", model).Warn("[LLM] Non-stream request returned SSE; falling back to stream collection")
 			return o.generateViaStreamFallback(ctx, model, messages, tools, thinkingMode)
 		}
 		return nil, fmt.Errorf("openai chat completion: %w", err)
@@ -954,7 +954,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 		if len(choice.Message.ToolCalls) > 0 {
 			resp.ToolCalls = make([]ToolCall, 0, len(choice.Message.ToolCalls))
 			for _, tc := range choice.Message.ToolCalls {
-				log.Ctx(ctx).WithFields(log.Fields{
+				log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 					"provider":  "openai",
 					"tool_id":   tc.ID,
 					"tool_name": tc.Function.Name,
@@ -988,9 +988,9 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 	}
 	if isNearEmptyResponse(resp) {
 		addNearEmptyResponseDebugFields(fields, messages, model, tools, thinkingMode)
-		log.Ctx(ctx).WithFields(fields).Warn("[LLM] Request completed with near-empty response")
+		log.Req(ctx, log.CatLLM).WithFields(fields).Warn("[LLM] Request completed with near-empty response")
 	} else {
-		log.Ctx(ctx).WithFields(fields).Debug("[LLM] Request completed")
+		log.Req(ctx, log.CatLLM).WithFields(fields).Debug("[LLM] Request completed")
 	}
 
 	return resp, nil
@@ -1008,7 +1008,7 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 		model = o.GetDefaultModel()
 	}
 
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatLLM).WithFields(log.Fields{
 		"provider":      "openai",
 		"model":         model,
 		"stream":        true,
@@ -1023,7 +1023,7 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 	// 构建 thinking mode 相关的 request options
 	opts := o.buildThinkingOptions(thinkingMode, model)
 	if len(opts) > 0 {
-		log.Ctx(ctx).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
+		log.Req(ctx, log.CatLLM).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
 	}
 
 	stream, err := o.newStreamingWithRetry(ctx, model, messages, tools, thinkingMode, opts)
@@ -1047,10 +1047,10 @@ func (o *OpenAILLM) newStreamingWithRetry(ctx context.Context, model string, mes
 		if verdict := isMaxTokensParamError(err); verdict != "" {
 			if verdict == "use_new" {
 				o.maxTokensUpgrade.Store(model, true)
-				log.Ctx(ctx).WithField("model", model).Info("[LLM] Stream: model requires max_completion_tokens, retrying")
+				log.Req(ctx, log.CatLLM).WithField("model", model).Info("[LLM] Stream: model requires max_completion_tokens, retrying")
 			} else {
 				o.maxTokensUpgrade.Delete(model)
-				log.Ctx(ctx).WithField("model", model).Info("[LLM] Stream: model requires legacy max_tokens, retrying")
+				log.Req(ctx, log.CatLLM).WithField("model", model).Info("[LLM] Stream: model requires legacy max_tokens, retrying")
 			}
 			stream.Close()
 			params = o.buildParams(model, messages, tools, thinkingMode, true)
@@ -1090,7 +1090,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		}()
 	}
 
-	l := log.Ctx(ctx)
+	l := log.Req(ctx, log.CatLLM)
 	chunkCount := 0
 	var firstChunkTime time.Time
 	var lastUsage *TokenUsage

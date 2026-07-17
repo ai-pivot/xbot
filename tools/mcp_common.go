@@ -134,7 +134,7 @@ func BuildStdioEnv(cfg MCPServerConfig, configPath string) []string {
 	if binDir := resolveXbotBinDir(configPath); binDir != "" {
 		pathParts = append(pathParts, binDir)
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
-		log.WithField("bin_dir", binDir).Debug("Added .xbot/bin to MCP server PATH")
+		log.Glob(log.CatTool).WithField("bin_dir", binDir).Debug("Added .xbot/bin to MCP server PATH")
 	}
 	if len(pathParts) > 0 {
 		envList = append(envList, fmt.Sprintf("PATH=%s", strings.Join(pathParts, ":")))
@@ -270,7 +270,7 @@ func getLoginShellEnv() []string {
 	cmd.Stderr = nil // discard stderr (shell startup noise)
 
 	if err := cmd.Run(); err != nil {
-		log.WithError(err).Warn("Failed to capture login shell env for MCP, using safe defaults")
+		log.Glob(log.CatTool).WithError(err).Warn("Failed to capture login shell env for MCP, using safe defaults")
 		return nil
 	}
 
@@ -444,11 +444,11 @@ func drainStderr(serverName string, r io.Reader) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) != "" {
-			log.WithField("mcp_server", serverName).Warn(line)
+			log.Glob(log.CatTool).WithField("mcp_server", serverName).Warn(line)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		log.WithError(err).WithField("mcp_server", serverName).Debug("stderr reader closed")
+		log.Glob(log.CatTool).WithError(err).WithField("mcp_server", serverName).Debug("stderr reader closed")
 	}
 }
 

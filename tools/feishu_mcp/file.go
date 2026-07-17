@@ -437,7 +437,7 @@ func (t *SendFileTool) Execute(ctx *tools.ToolContext, input string) (*tools.Too
 		if !resp.Success() {
 			return nil, fmt.Errorf("feishu API error: code=%d, msg=%s", resp.Code, resp.Msg)
 		}
-		log.WithFields(log.Fields{"chat_id": chatID, "image_key": imageKey}).Info("Image sent via direct API")
+		log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{"chat_id": chatID, "image_key": imageKey}).Info("Image sent via direct API")
 
 	default: // file
 		fileKey, err := t.uploadFile(client, data, fileName)
@@ -460,7 +460,7 @@ func (t *SendFileTool) Execute(ctx *tools.ToolContext, input string) (*tools.Too
 		if !resp.Success() {
 			return nil, fmt.Errorf("feishu API error: code=%d, msg=%s", resp.Code, resp.Msg)
 		}
-		log.WithFields(log.Fields{"chat_id": chatID, "file_key": fileKey}).Info("File sent via direct API")
+		log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{"chat_id": chatID, "file_key": fileKey}).Info("File sent via direct API")
 	}
 
 	return tools.NewResult(fmt.Sprintf("File sent: %s (type: %s, size: %d bytes)", fileName, args.Type, len(data))), nil

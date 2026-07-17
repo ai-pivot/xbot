@@ -82,7 +82,7 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 	if !m.typing && snapshot.Phase != "" && snapshot.Phase != "done" &&
 		!m.splashState.suLoading && !m.splashState.compReloading &&
 		m.panelState.mode != "askuser" {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTUI).WithFields(log.Fields{
 			"phase":     snapshot.Phase,
 			"iteration": snapshot.Iteration,
 		}).Info("applyProgressSnapshot: auto-start turn")

@@ -188,7 +188,7 @@ func (q *QQChannel) Start() error {
 	}
 
 	q.running.Store(true)
-	log.Info("QQ bot starting...")
+	log.Glob(log.CatChannel).Info("QQ bot starting...")
 
 	attempt := 0
 	for q.running.Load() {
@@ -202,12 +202,12 @@ func (q *QQChannel) Start() error {
 		}
 
 		if err != nil {
-			log.WithError(err).Warn("QQ: WebSocket session ended")
+			log.Glob(log.CatTransport).WithError(err).Warn("QQ: WebSocket session ended")
 		}
 
 		// Quick disconnect detection
 		if q.IsQuickDisconnectLoop() {
-			log.Warn("QQ: rapid disconnect loop detected, waiting 60s")
+			log.Glob(log.CatTransport).Warn("QQ: rapid disconnect loop detected, waiting 60s")
 			if !q.SleepOrStop(60 * time.Second) {
 				return nil
 			}
@@ -220,7 +220,7 @@ func (q *QQChannel) Start() error {
 			delay = reconnectDelays[len(reconnectDelays)-1]
 		}
 
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"attempt": attempt + 1,
 			"delay":   delay,
 		}).Info("QQ: reconnecting...")
@@ -243,7 +243,7 @@ func (q *QQChannel) Stop() {
 		close(q.StopCh)
 	}
 	q.CloseConn()
-	log.Info("QQ bot stopped")
+	log.Glob(log.CatChannel).Info("QQ bot stopped")
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +296,7 @@ func (q *QQChannel) getToken() (string, error) {
 	q.accessToken = result.AccessToken
 	q.tokenExpireAt = time.Now().Add(time.Duration(expSec) * time.Second)
 
-	log.WithField("expires_in", expSec).Info("QQ: access token refreshed")
+	log.Glob(log.CatChannel).WithField("expires_in", expSec).Info("QQ: access token refreshed")
 	return q.accessToken, nil
 }
 
@@ -344,7 +344,7 @@ func (q *QQChannel) getGatewayURL() (string, error) {
 		return "", fmt.Errorf("qq: empty gateway URL in response: %s", string(data))
 	}
 
-	log.WithField("url", result.URL).Debug("QQ: gateway URL obtained")
+	log.Glob(log.CatChannel).WithField("url", result.URL).Debug("QQ: gateway URL obtained")
 	return result.URL, nil
 }
 
@@ -380,7 +380,7 @@ func (q *QQChannel) connectAndRun() error {
 	// Step 2: Identify or Resume
 	if q.sessionID != "" && q.lastSeq.Load() > 0 {
 		if err := q.sendResume(); err != nil {
-			log.WithError(err).Warn("QQ: resume failed, will re-identify")
+			log.Glob(log.CatTransport).WithError(err).Warn("QQ: resume failed, will re-identify")
 			q.sessionID = ""
 			q.lastSeq.Store(0)
 			if err := q.sendIdentify(); err != nil {
@@ -413,7 +413,7 @@ func (q *QQChannel) connectAndRun() error {
 			if isFatalWSError(err) {
 				return err
 			}
-			log.WithError(err).Warn("QQ: message handling error")
+			log.Glob(log.CatChannel).WithError(err).Warn("QQ: message handling error")
 		}
 	}
 
@@ -528,7 +528,7 @@ func (q *QQChannel) waitForHello() error {
 	}
 
 	q.heartbeatInterval = time.Duration(hello.HeartbeatInterval) * time.Millisecond
-	log.WithField("heartbeat_interval_ms", hello.HeartbeatInterval).Info("QQ: received Hello")
+	log.Glob(log.CatTransport).WithField("heartbeat_interval_ms", hello.HeartbeatInterval).Info("QQ: received Hello")
 	return nil
 }
 
@@ -550,7 +550,7 @@ func (q *QQChannel) sendIdentify() error {
 		},
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"intents":      il.name,
 		"intents_bits": il.value,
 	}).Info("QQ: sending Identify")
@@ -588,7 +588,7 @@ func (q *QQChannel) sendIdentify() error {
 		if msg.S != nil {
 			q.lastSeq.Store(*msg.S)
 		}
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"session_id": q.sessionID,
 			"intents":    il.name,
 		}).Info("QQ: session established")
@@ -596,7 +596,7 @@ func (q *QQChannel) sendIdentify() error {
 	}
 
 	if msg.Op == qqOpInvalidSession {
-		log.WithField("intents", il.name).Warn("QQ: invalid session for intent level, trying lower")
+		log.Glob(log.CatTransport).WithField("intents", il.name).Warn("QQ: invalid session for intent level, trying lower")
 		if q.intentLevel+1 < len(intentLevels) {
 			q.intentLevel++
 		}
@@ -604,7 +604,7 @@ func (q *QQChannel) sendIdentify() error {
 	}
 
 	// Unexpected response
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"op": msg.Op,
 		"t":  msg.T,
 	}).Warn("QQ: unexpected response to Identify")
@@ -627,7 +627,7 @@ func (q *QQChannel) sendResume() error {
 		},
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"session_id": q.sessionID,
 		"seq":        q.lastSeq.Load(),
 	}).Info("QQ: sending Resume")
@@ -653,24 +653,24 @@ func (q *QQChannel) handleMessage(data []byte) error {
 
 	case qqOpHeartbeatACK:
 		q.heartbeatACK.Store(true)
-		log.Debug("QQ: heartbeat ACK received")
+		log.Glob(log.CatTransport).Debug("QQ: heartbeat ACK received")
 
 	case qqOpReconnect:
-		log.Warn("QQ: server requested reconnect")
+		log.Glob(log.CatTransport).Warn("QQ: server requested reconnect")
 		return &fatalWSError{msg: "server requested reconnect (op:7)"}
 
 	case qqOpInvalidSession:
-		log.Warn("QQ: invalid session")
+		log.Glob(log.CatTransport).Warn("QQ: invalid session")
 		q.sessionID = ""
 		q.lastSeq.Store(0)
 		return &fatalWSError{msg: "invalid session (op:9)"}
 
 	case qqOpHello:
 		// Unexpected second hello, ignore
-		log.Debug("QQ: unexpected Hello, ignoring")
+		log.Glob(log.CatTransport).Debug("QQ: unexpected Hello, ignoring")
 
 	default:
-		log.WithField("op", msg.Op).Debug("QQ: unknown op code")
+		log.Glob(log.CatChannel).WithField("op", msg.Op).Debug("QQ: unknown op code")
 	}
 
 	return nil
@@ -684,11 +684,11 @@ func (q *QQChannel) handleDispatch(eventType string, data json.RawMessage) error
 		var ready qqReadyData
 		if err := json.Unmarshal(data, &ready); err == nil && ready.SessionID != "" {
 			q.sessionID = ready.SessionID
-			log.WithField("session_id", q.sessionID).Info("QQ: session ready (via dispatch)")
+			log.Glob(log.CatTransport).WithField("session_id", q.sessionID).Info("QQ: session ready (via dispatch)")
 		}
 
 	case "RESUMED":
-		log.Info("QQ: session resumed successfully")
+		log.Glob(log.CatTransport).Info("QQ: session resumed successfully")
 
 	case "C2C_MESSAGE_CREATE":
 		return q.handleC2CMessage(data)
@@ -700,7 +700,7 @@ func (q *QQChannel) handleDispatch(eventType string, data json.RawMessage) error
 		return q.handleGuildMessage(data)
 
 	default:
-		log.WithField("event", eventType).Debug("QQ: unhandled event type")
+		log.Glob(log.CatChannel).WithField("event", eventType).Debug("QQ: unhandled event type")
 	}
 
 	return nil
@@ -721,7 +721,7 @@ func (q *QQChannel) handleC2CMessage(data json.RawMessage) error {
 	messageID := msg.ID
 	content := strings.TrimSpace(msg.Content)
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"message_id":       messageID,
 		"sender_id":        senderID,
 		"content_len":      len(content),
@@ -729,12 +729,12 @@ func (q *QQChannel) handleC2CMessage(data json.RawMessage) error {
 	}).Info("QQ: C2C message received")
 
 	if q.IsDuplicate(messageID) {
-		log.WithField("message_id", messageID).Debug("QQ: duplicate message, skipping")
+		log.Glob(log.CatChannel).WithField("message_id", messageID).Debug("QQ: duplicate message, skipping")
 		return nil
 	}
 
 	if !q.IsAllowed(q.config.AllowFrom, senderID) {
-		log.WithField("sender", senderID).Warn("QQ: access denied")
+		log.Glob(log.CatChannel).WithField("sender", senderID).Warn("QQ: access denied")
 		return nil
 	}
 
@@ -785,7 +785,7 @@ func (q *QQChannel) handleGroupMessage(data json.RawMessage) error {
 	groupID := msg.GroupOpenID
 	content := strings.TrimSpace(msg.Content)
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"message_id":       messageID,
 		"sender_id":        senderID,
 		"group_id":         groupID,
@@ -794,12 +794,12 @@ func (q *QQChannel) handleGroupMessage(data json.RawMessage) error {
 	}).Info("QQ: group message received")
 
 	if q.IsDuplicate(messageID) {
-		log.WithField("message_id", messageID).Debug("QQ: duplicate message, skipping")
+		log.Glob(log.CatChannel).WithField("message_id", messageID).Debug("QQ: duplicate message, skipping")
 		return nil
 	}
 
 	if !q.IsAllowed(q.config.AllowFrom, senderID) {
-		log.WithField("sender", senderID).Warn("QQ: access denied")
+		log.Glob(log.CatChannel).WithField("sender", senderID).Warn("QQ: access denied")
 		return nil
 	}
 
@@ -855,7 +855,7 @@ func (q *QQChannel) handleGuildMessage(data json.RawMessage) error {
 	guildID := msg.GuildID
 	content := strings.TrimSpace(msg.Content)
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"message_id":       messageID,
 		"sender_id":        senderID,
 		"sender_name":      senderName,
@@ -866,12 +866,12 @@ func (q *QQChannel) handleGuildMessage(data json.RawMessage) error {
 	}).Info("QQ: guild message received")
 
 	if q.IsDuplicate(messageID) {
-		log.WithField("message_id", messageID).Debug("QQ: duplicate message, skipping")
+		log.Glob(log.CatChannel).WithField("message_id", messageID).Debug("QQ: duplicate message, skipping")
 		return nil
 	}
 
 	if !q.IsAllowed(q.config.AllowFrom, senderID) {
-		log.WithField("sender", senderID).Warn("QQ: access denied")
+		log.Glob(log.CatChannel).WithField("sender", senderID).Warn("QQ: access denied")
 		return nil
 	}
 
@@ -1013,7 +1013,7 @@ func (q *QQChannel) sendC2CMessage(openID, content string, metadata map[string]s
 	body := q.buildMarkdownBody(content, msgID, seq)
 	id, err := q.doSendRequest(url, body, "c2c", openID)
 	if err != nil && q.isMarkdownUnsupported(err) {
-		log.Debug("QQ: markdown not supported for c2c, falling back to plain text")
+		log.Glob(log.CatChannel).Debug("QQ: markdown not supported for c2c, falling back to plain text")
 		q.markdownDisabled.Store(true)
 		body = q.buildTextBody(content, msgID, q.nextMsgSeq(msgID))
 		return q.doSendRequest(url, body, "c2c", openID)
@@ -1036,7 +1036,7 @@ func (q *QQChannel) sendGroupMessage(groupOpenID, content string, metadata map[s
 	body := q.buildMarkdownBody(content, msgID, seq)
 	id, err := q.doSendRequest(url, body, "group", groupOpenID)
 	if err != nil && q.isMarkdownUnsupported(err) {
-		log.Debug("QQ: markdown not supported for group, falling back to plain text")
+		log.Glob(log.CatChannel).Debug("QQ: markdown not supported for group, falling back to plain text")
 		q.markdownDisabled.Store(true)
 		body = q.buildTextBody(content, msgID, q.nextMsgSeq(msgID))
 		return q.doSendRequest(url, body, "group", groupOpenID)
@@ -1065,7 +1065,7 @@ func (q *QQChannel) sendGuildMessage(channelID, content string, metadata map[str
 
 // sendAutoDetect 自动检测消息类型并发送
 func (q *QQChannel) sendAutoDetect(chatID, content string, metadata map[string]string) (string, error) {
-	log.WithField("chat_id", chatID).Warn("QQ: unknown chat type, attempting auto-detect")
+	log.Glob(log.CatChannel).WithField("chat_id", chatID).Warn("QQ: unknown chat type, attempting auto-detect")
 
 	const maxAttempts = 3
 
@@ -1079,19 +1079,19 @@ func (q *QQChannel) sendAutoDetect(chatID, content string, metadata map[string]s
 			if err == nil {
 				return id, nil
 			}
-			log.WithError(err).Debug("QQ: cached group send failed, trying other types")
+			log.Glob(log.CatChannel).WithError(err).Debug("QQ: cached group send failed, trying other types")
 		case "guild":
 			id, err = q.sendGuildMessage(chatID, content, metadata)
 			if err == nil {
 				return id, nil
 			}
-			log.WithError(err).Debug("QQ: cached guild send failed, trying other types")
+			log.Glob(log.CatChannel).WithError(err).Debug("QQ: cached guild send failed, trying other types")
 		case "c2c":
 			id, err = q.sendC2CMessage(chatID, content, metadata)
 			if err == nil {
 				return id, nil
 			}
-			log.WithError(err).Debug("QQ: cached c2c send failed, trying other types")
+			log.Glob(log.CatChannel).WithError(err).Debug("QQ: cached c2c send failed, trying other types")
 		}
 		_ = id
 	}
@@ -1111,7 +1111,7 @@ func (q *QQChannel) sendAutoDetect(chatID, content string, metadata map[string]s
 		if attempts >= maxAttempts {
 			break
 		}
-		log.WithError(err).Debug("QQ: auto-detect send attempt failed")
+		log.Glob(log.CatChannel).WithError(err).Debug("QQ: auto-detect send attempt failed")
 		_ = id
 	}
 
@@ -1161,7 +1161,7 @@ func (q *QQChannel) uploadFileToQQ(targetID, chatType string, fileType int, file
 	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"url":       apiURL,
 		"chat_type": chatType,
 		"file_type": fileType,
@@ -1188,7 +1188,7 @@ func (q *QQChannel) uploadFileToQQ(targetID, chatType string, fileType int, file
 		return nil, fmt.Errorf("qq: parse upload response: %w (body: %s)", err, string(respData))
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"file_uuid": result.FileUUID,
 		"ttl":       result.TTL,
 	}).Debug("QQ: file uploaded")
@@ -1251,14 +1251,14 @@ func (q *QQChannel) extractAndSendLocalImages(targetID, chatType, content string
 
 		// Check file exists
 		if _, err := os.Stat(imgPath); err != nil {
-			log.WithField("path", imgPath).Debug("QQ: local image not found, keeping original markdown")
+			log.Glob(log.CatChannel).WithField("path", imgPath).Debug("QQ: local image not found, keeping original markdown")
 			return match
 		}
 
 		// Read and base64 encode
 		fileData, err := os.ReadFile(imgPath)
 		if err != nil {
-			log.WithError(err).WithField("path", imgPath).Warn("QQ: failed to read local image")
+			log.Glob(log.CatChannel).WithError(err).WithField("path", imgPath).Warn("QQ: failed to read local image")
 			return match
 		}
 		b64Data := base64.StdEncoding.EncodeToString(fileData)
@@ -1266,17 +1266,17 @@ func (q *QQChannel) extractAndSendLocalImages(targetID, chatType, content string
 		// Upload to QQ
 		uploadResp, err := q.uploadFileToQQ(targetID, chatType, qqFileTypeImage, b64Data)
 		if err != nil {
-			log.WithError(err).WithField("path", imgPath).Warn("QQ: failed to upload image")
+			log.Glob(log.CatChannel).WithError(err).WithField("path", imgPath).Warn("QQ: failed to upload image")
 			return match
 		}
 
 		// Send as media message
 		if _, err := q.sendMediaMessage(targetID, chatType, uploadResp.FileInfo, metadata); err != nil {
-			log.WithError(err).WithField("path", imgPath).Warn("QQ: failed to send image message")
+			log.Glob(log.CatChannel).WithError(err).WithField("path", imgPath).Warn("QQ: failed to send image message")
 			return match
 		}
 
-		log.WithField("path", imgPath).Debug("QQ: sent local image")
+		log.Glob(log.CatChannel).WithField("path", imgPath).Debug("QQ: sent local image")
 
 		// Replace with text indicator
 		if altText != "" {
@@ -1320,7 +1320,7 @@ func (q *QQChannel) extractAndSendLocalFiles(targetID, chatType, content string,
 		// Read and base64 encode
 		fileData, err := os.ReadFile(linkPath)
 		if err != nil {
-			log.WithError(err).WithField("path", linkPath).Warn("QQ: failed to read local file")
+			log.Glob(log.CatChannel).WithError(err).WithField("path", linkPath).Warn("QQ: failed to read local file")
 			return match
 		}
 		b64Data := base64.StdEncoding.EncodeToString(fileData)
@@ -1337,17 +1337,17 @@ func (q *QQChannel) extractAndSendLocalFiles(targetID, chatType, content string,
 		// Upload to QQ
 		uploadResp, err := q.uploadFileToQQ(targetID, chatType, fileType, b64Data)
 		if err != nil {
-			log.WithError(err).WithField("path", linkPath).Warn("QQ: failed to upload file")
+			log.Glob(log.CatChannel).WithError(err).WithField("path", linkPath).Warn("QQ: failed to upload file")
 			return match
 		}
 
 		// Send as media message
 		if _, err := q.sendMediaMessage(targetID, chatType, uploadResp.FileInfo, metadata); err != nil {
-			log.WithError(err).WithField("path", linkPath).Warn("QQ: failed to send file message")
+			log.Glob(log.CatChannel).WithError(err).WithField("path", linkPath).Warn("QQ: failed to send file message")
 			return match
 		}
 
-		log.WithField("path", linkPath).Debug("QQ: sent local file")
+		log.Glob(log.CatChannel).WithField("path", linkPath).Debug("QQ: sent local file")
 
 		return prefix + "📎 " + subs[1]
 	})
@@ -1372,7 +1372,7 @@ func (q *QQChannel) doSendRequest(url string, body map[string]any, chatType, tar
 	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"url":       url,
 		"chat_type": chatType,
 		"target":    target,
@@ -1400,11 +1400,11 @@ func (q *QQChannel) doSendRequest(url string, body map[string]any, chatType, tar
 	}
 	if err := json.Unmarshal(respData, &result); err != nil {
 		// Non-fatal: message was sent but we can't parse the ID
-		log.WithError(err).Debug("QQ: could not parse send response for message ID")
+		log.Glob(log.CatChannel).WithError(err).Debug("QQ: could not parse send response for message ID")
 		return "", nil
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"chat_type":  chatType,
 		"target":     target,
 		"message_id": result.ID,
@@ -1430,7 +1430,7 @@ func (q *QQChannel) startHeartbeat() {
 			select {
 			case <-ticker.C:
 				if !q.heartbeatACK.Load() {
-					log.Warn("QQ: missed heartbeat ACK, connection may be dead")
+					log.Glob(log.CatTransport).Warn("QQ: missed heartbeat ACK, connection may be dead")
 					// Close connection to trigger reconnect
 					q.CloseConn()
 					return
@@ -1447,10 +1447,10 @@ func (q *QQChannel) startHeartbeat() {
 					"d":  d,
 				}
 				if err := q.WsSend(payload); err != nil {
-					log.WithError(err).Warn("QQ: failed to send heartbeat")
+					log.Glob(log.CatTransport).WithError(err).Warn("QQ: failed to send heartbeat")
 					return
 				}
-				log.Debug("QQ: heartbeat sent")
+				log.Glob(log.CatTransport).Debug("QQ: heartbeat sent")
 
 			case <-q.heartbeatStop:
 				return
@@ -1660,7 +1660,7 @@ func (q *QQChannel) parseTimestamp(ts string) time.Time {
 		}
 	}
 
-	log.WithField("timestamp", ts).Debug("QQ: could not parse timestamp, using now")
+	log.Glob(log.CatChannel).WithField("timestamp", ts).Debug("QQ: could not parse timestamp, using now")
 	return time.Now()
 }
 

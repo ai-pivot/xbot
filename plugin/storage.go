@@ -36,7 +36,7 @@ func NewFileStorage(pluginDir string) (StorageAccessor, error) {
 	// Load existing data
 	if data, err := os.ReadFile(fs.path); err == nil {
 		if err := json.Unmarshal(data, &fs.data); err != nil {
-			log.WithField("path", fs.path).Warn("Failed to parse storage, starting fresh: ", err)
+			log.Glob(log.CatPlugin).WithField("path", fs.path).Warn("Failed to parse storage, starting fresh: ", err)
 		}
 	}
 

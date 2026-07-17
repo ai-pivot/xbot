@@ -27,7 +27,7 @@ const singleUserSenderID = "cli_user"
 // to switch between multi-user and single-user modes.
 func (a *Agent) ResolveUserContext(channel, chatID, senderID string) *UserContext {
 	if a.userSys == nil || a.userSys.llmFactory == nil {
-		log.Warn("ResolveUserContext: userSys or llmFactory is nil, returning nil")
+		log.Usr(nil, log.CatAuth, senderID).Warn("ResolveUserContext: userSys or llmFactory is nil, returning nil")
 		return nil
 	}
 
@@ -135,7 +135,7 @@ func (a *Agent) ResolveUserContext(channel, chatID, senderID string) *UserContex
 		factory:          factoryRef,
 	}
 
-	log.WithFields(log.Fields{
+	log.Usr(nil, log.CatAuth, senderID).WithFields(log.Fields{
 		"channel":     channel,
 		"sender_id":   senderID,
 		"user_id":     userID,

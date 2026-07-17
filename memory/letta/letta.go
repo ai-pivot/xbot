@@ -59,7 +59,7 @@ func New(tenantID int64, coreSvc *sqlite.CoreMemoryService, archivalSvc *vectord
 	// Ensure default blocks exist (global, userID="")
 	// Per-user blocks are created on-demand when Recall/Memorize is called with userID in context
 	if err := coreSvc.InitBlocks(tenantID, ""); err != nil {
-		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to init core memory blocks")
+		log.Glob(log.CatDB).WithError(err).WithField("tenant_id", tenantID).Warn("Failed to init core memory blocks")
 	}
 	return &LettaMemory{
 		tenantID:     tenantID,
@@ -103,7 +103,7 @@ func (m *LettaMemory) Recall(ctx context.Context, _ string) (string, error) {
 	if m.archivalSvc != nil {
 		count, err := m.archivalSvc.Count(m.tenantID)
 		if err != nil {
-			log.WithError(err).Warn("Failed to count archival memory")
+			log.Glob(log.CatDB).WithError(err).Warn("Failed to count archival memory")
 		}
 		fmt.Fprintf(&sb, "[Archival Memory: %d entries | Use archival_memory_search to retrieve]\n", count)
 	}
@@ -126,7 +126,7 @@ func (m *LettaMemory) Memorize(ctx context.Context, input memory.MemorizeInput) 
 	}
 
 	oldMessages := messages
-	log.WithField("tenant_id", m.tenantID).Infof("Letta memory consolidation (archive_all): %d messages", len(messages))
+	log.Glob(log.CatDB).WithField("tenant_id", m.tenantID).Infof("Letta memory consolidation (archive_all): %d messages", len(messages))
 
 	// Deduplication: search for similar existing memories before archiving
 	// Similarity thresholds:
@@ -165,7 +165,7 @@ func (m *LettaMemory) Memorize(ctx context.Context, input memory.MemorizeInput) 
 		if query != "" {
 			results, err := m.archivalSvc.Search(ctx, m.tenantID, query, dedupSearchLimit)
 			if err != nil {
-				log.WithError(err).Warn("Failed to search for similar memories during deduplication")
+				log.Glob(log.CatDB).WithError(err).Warn("Failed to search for similar memories during deduplication")
 			} else {
 				for _, r := range results {
 					// Only include memories with similarity > conflict threshold
@@ -178,7 +178,7 @@ func (m *LettaMemory) Memorize(ctx context.Context, input memory.MemorizeInput) 
 					}
 				}
 				if len(existingMemories) > 0 {
-					log.WithField("tenant_id", m.tenantID).Infof("Found %d similar memories for deduplication", len(existingMemories))
+					log.Glob(log.CatDB).WithField("tenant_id", m.tenantID).Infof("Found %d similar memories for deduplication", len(existingMemories))
 				}
 			}
 		}
@@ -221,7 +221,7 @@ func (m *LettaMemory) Memorize(ctx context.Context, input memory.MemorizeInput) 
 	// Read current core memory blocks
 	blocks, err := m.coreSvc.GetAllBlocks(m.tenantID, userID)
 	if err != nil {
-		log.WithError(err).Error("Failed to read core memory for consolidation")
+		log.Glob(log.CatDB).WithError(err).Error("Failed to read core memory for consolidation")
 		return memory.MemorizeResult{NewLastConsolidated: lastConsolidated, OK: false}, nil
 	}
 
@@ -277,18 +277,18 @@ Review the conversation below and call the consolidate_memory tool to update the
 		llm.NewUserMessage(prompt),
 	}, consolidateMemoryTool, "")
 	if err != nil {
-		log.WithError(err).Error("Letta memory consolidation LLM call failed")
+		log.Glob(log.CatDB).WithError(err).Error("Letta memory consolidation LLM call failed")
 		return memory.MemorizeResult{NewLastConsolidated: lastConsolidated, OK: false}, nil
 	}
 
 	if !resp.HasToolCalls() {
-		log.Warn("Letta memory consolidation: LLM did not call consolidate_memory, skipping")
+		log.Glob(log.CatDB).Warn("Letta memory consolidation: LLM did not call consolidate_memory, skipping")
 		return memory.MemorizeResult{NewLastConsolidated: lastConsolidated, OK: false}, nil
 	}
 
 	var args consolidateMemoryArgs
 	if err := json.Unmarshal([]byte(resp.ToolCalls[0].Arguments), &args); err != nil {
-		log.WithError(err).Error("Letta memory consolidation: failed to parse arguments")
+		log.Glob(log.CatDB).WithError(err).Error("Letta memory consolidation: failed to parse arguments")
 		return memory.MemorizeResult{NewLastConsolidated: lastConsolidated, OK: false}, nil
 	}
 
@@ -305,14 +305,14 @@ Review the conversation below and call the consolidate_memory tool to update the
 		}
 		oldContent := blocks[blockName]
 		if newContent != "" {
-			log.WithFields(log.Fields{
+			log.Glob(log.CatDB).WithFields(log.Fields{
 				"tenant_id": m.tenantID,
 				"block":     blockName,
 				"old_len":   len(oldContent),
 				"new_len":   len(newContent),
 			}).Info("Updating core memory block")
 			if err := m.coreSvc.SetBlock(m.tenantID, blockName, newContent, userID); err != nil {
-				log.WithError(err).WithField("block", blockName).Error("Failed to update core memory block")
+				log.Glob(log.CatDB).WithError(err).WithField("block", blockName).Error("Failed to update core memory block")
 			}
 		}
 	}
@@ -326,7 +326,7 @@ Review the conversation below and call the consolidate_memory tool to update the
 		}
 		if m.archivalSvc != nil {
 			if _, err := m.archivalSvc.Insert(ctx, m.tenantID, entry, archivalTS); err != nil {
-				log.WithError(err).Error("Failed to insert archival entry during consolidation")
+				log.Glob(log.CatDB).WithError(err).Error("Failed to insert archival entry during consolidation")
 			}
 		}
 	}
@@ -335,9 +335,9 @@ Review the conversation below and call the consolidate_memory tool to update the
 	if len(args.EntriesToDelete) > 0 && m.archivalSvc != nil {
 		for _, entryID := range args.EntriesToDelete {
 			if err := m.archivalSvc.Delete(ctx, m.tenantID, entryID); err != nil {
-				log.WithError(err).WithField("entry_id", entryID).Warn("Failed to delete duplicate memory during consolidation")
+				log.Glob(log.CatDB).WithError(err).WithField("entry_id", entryID).Warn("Failed to delete duplicate memory during consolidation")
 			} else {
-				log.WithField("tenant_id", m.tenantID).Infof("Deleted duplicate memory: %s", entryID)
+				log.Glob(log.CatDB).WithField("tenant_id", m.tenantID).Infof("Deleted duplicate memory: %s", entryID)
 			}
 		}
 	}
@@ -345,11 +345,11 @@ Review the conversation below and call the consolidate_memory tool to update the
 	// Append history entry
 	if args.HistoryEntry != "" {
 		if err := m.memorySvc.AppendHistory(ctx, m.tenantID, args.HistoryEntry); err != nil {
-			log.WithError(err).Error("Failed to append history entry")
+			log.Glob(log.CatDB).WithError(err).Error("Failed to append history entry")
 		}
 	}
 
-	log.WithField("tenant_id", m.tenantID).Infof("Letta memory consolidation done: lastConsolidated=%d", len(oldMessages))
+	log.Glob(log.CatDB).WithField("tenant_id", m.tenantID).Infof("Letta memory consolidation done: lastConsolidated=%d", len(oldMessages))
 	return memory.MemorizeResult{NewLastConsolidated: len(oldMessages), OK: true}, nil
 }
 

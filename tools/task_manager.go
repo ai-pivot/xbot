@@ -178,7 +178,7 @@ func (m *BackgroundTaskManager) Start(
 		}
 		task.mu.Unlock()
 
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTool).WithFields(log.Fields{
 			"task_id":   id,
 			"status":    task.Status,
 			"exit_code": exitCode,
@@ -197,7 +197,7 @@ func (m *BackgroundTaskManager) Start(
 		select {
 		case m.NotifyCh <- task:
 		default:
-			log.WithField("task_id", id).Warn("Background task notify channel full, dropping notification")
+			log.Glob(log.CatTool).WithField("task_id", id).Warn("Background task notify channel full, dropping notification")
 		}
 	}()
 
@@ -339,7 +339,7 @@ func (m *BackgroundTaskManager) Adopt(
 		}
 		task.mu.Unlock()
 
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTool).WithFields(log.Fields{
 			"task_id":   id,
 			"status":    task.Status,
 			"exit_code": task.ExitCode,
@@ -358,7 +358,7 @@ func (m *BackgroundTaskManager) Adopt(
 		select {
 		case m.NotifyCh <- task:
 		default:
-			log.WithField("task_id", id).Warn("Background task notify channel full, dropping notification")
+			log.Glob(log.CatTool).WithField("task_id", id).Warn("Background task notify channel full, dropping notification")
 		}
 	}()
 
@@ -634,7 +634,7 @@ func (m *BackgroundTaskManager) SendAsyncMessage(n *AsyncMessageNotification) {
 	select {
 	case m.NotifyCh <- n:
 	default:
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTool).WithFields(log.Fields{
 			"source": n.Source,
 			"key":    n.Key,
 		}).Warn("Async message notify channel full, dropping notification")
@@ -653,7 +653,7 @@ func (m *BackgroundTaskManager) SendSubAgentNotify(n *SubAgentBgNotify) {
 	select {
 	case m.NotifyCh <- n:
 	default:
-		log.WithFields(log.Fields{
+		log.Glob(log.CatTool).WithFields(log.Fields{
 			"role":     n.Role,
 			"instance": n.Instance,
 			"type":     n.Type,
@@ -673,7 +673,7 @@ func (m *BackgroundTaskManager) SendCronFired(c *CronFired) {
 	select {
 	case m.NotifyCh <- c:
 	default:
-		log.WithField("key", c.Key).Warn("Cron fired notify channel full, dropping notification")
+		log.Glob(log.CatCron).WithField("key", c.Key).Warn("Cron fired notify channel full, dropping notification")
 	}
 }
 

@@ -32,19 +32,19 @@ func (d *Dispatcher) Register(ch Channel) {
 	d.mu.Lock()
 	d.channels[ch.Name()] = ch
 	d.mu.Unlock()
-	log.WithField("channel", ch.Name()).Info("Channel registered")
+	log.Glob(log.CatChannel).WithField("channel", ch.Name()).Info("Channel registered")
 }
 
 // Run 启动出站消息分发循环
 func (d *Dispatcher) Run() {
-	log.Info("Outbound dispatcher started")
+	log.Glob(log.CatChannel).Info("Outbound dispatcher started")
 	for {
 		select {
 		case <-d.done:
 			return
 		case msg, ok := <-d.bus.Outbound:
 			if !ok {
-				log.Info("Outbound channel closed, dispatcher exiting")
+				log.Glob(log.CatChannel).Info("Outbound channel closed, dispatcher exiting")
 				return
 			}
 			outMsg := OutboundMsg{
@@ -62,20 +62,20 @@ func (d *Dispatcher) Run() {
 			ch, ok := d.channels[outMsg.Channel]
 			d.mu.RUnlock()
 			if !ok {
-				log.WithField("channel", outMsg.Channel).Warn("Unknown channel, dropping message")
+				log.Glob(log.CatChannel).WithField("channel", outMsg.Channel).Warn("Unknown channel, dropping message")
 				continue
 			}
 			if _, err := func() (ret string, err error) {
 				defer func() {
 					if r := recover(); r != nil {
 						clipanic.Report("channel.Dispatcher.Send", outMsg, r)
-						log.WithField("channel", outMsg.Channel).Errorf("Channel.Send panic: %v", r)
+						log.Glob(log.CatChannel).WithField("channel", outMsg.Channel).Errorf("Channel.Send panic: %v", r)
 						err = fmt.Errorf("channel %s panic: %v", outMsg.Channel, r)
 					}
 				}()
 				return ch.Send(outMsg)
 			}(); err != nil {
-				log.WithError(err).WithField("channel", outMsg.Channel).Error("Failed to send message")
+				log.Glob(log.CatChannel).WithError(err).WithField("channel", outMsg.Channel).Error("Failed to send message")
 			}
 		}
 	}
@@ -102,9 +102,9 @@ func (d *Dispatcher) Unregister(name string) {
 	d.mu.Unlock()
 	if ok {
 		ch.Stop()
-		log.WithField("channel", name).Info("Channel unregistered and stopped")
+		log.Glob(log.CatChannel).WithField("channel", name).Info("Channel unregistered and stopped")
 	} else {
-		log.WithField("channel", name).Warn("Channel not found for unregister")
+		log.Glob(log.CatChannel).WithField("channel", name).Warn("Channel not found for unregister")
 	}
 }
 

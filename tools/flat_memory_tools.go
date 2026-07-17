@@ -50,7 +50,7 @@ func (t *MemoryWriteTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 		return nil, fmt.Errorf("write memory file: %w", err)
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 		"path": params.Path,
 		"size": len(params.Content),
 	}).Info("Memory file written")

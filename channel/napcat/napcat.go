@@ -95,7 +95,7 @@ func (n *NapCatChannel) Start() error {
 	}
 
 	n.running.Store(true)
-	log.WithField("ws_url", n.config.WSUrl).Info("NapCat bot starting...")
+	log.Glob(log.CatChannel).WithField("ws_url", n.config.WSUrl).Info("NapCat bot starting...")
 
 	attempt := 0
 	for n.running.Load() {
@@ -114,12 +114,12 @@ func (n *NapCatChannel) Start() error {
 		}
 
 		if err != nil {
-			log.WithError(err).Warn("NapCat: WebSocket session ended")
+			log.Glob(log.CatTransport).WithError(err).Warn("NapCat: WebSocket session ended")
 		}
 
 		// Quick disconnect detection
 		if n.IsQuickDisconnectLoop() {
-			log.Warn("NapCat: rapid disconnect loop detected, waiting 60s")
+			log.Glob(log.CatTransport).Warn("NapCat: rapid disconnect loop detected, waiting 60s")
 			if !n.SleepOrStop(60 * time.Second) {
 				return nil
 			}
@@ -132,7 +132,7 @@ func (n *NapCatChannel) Start() error {
 			delay = napcatReconnectDelays[len(napcatReconnectDelays)-1]
 		}
 
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"attempt": attempt + 1,
 			"delay":   delay,
 		}).Info("NapCat: reconnecting...")
@@ -154,7 +154,7 @@ func (n *NapCatChannel) Stop() {
 		}
 		n.CloseConn()
 		n.clearPending()
-		log.Info("NapCat bot stopped")
+		log.Glob(log.CatChannel).Info("NapCat bot stopped")
 	})
 }
 
@@ -181,7 +181,7 @@ func (n *NapCatChannel) connectAndRun() error {
 	defer n.CloseConn()
 
 	connectTime := time.Now()
-	log.WithField("ws_url", n.config.WSUrl).Info("NapCat: WebSocket connected")
+	log.Glob(log.CatTransport).WithField("ws_url", n.config.WSUrl).Info("NapCat: WebSocket connected")
 
 	// Read messages
 	for n.running.Load() {
@@ -195,7 +195,7 @@ func (n *NapCatChannel) connectAndRun() error {
 		}
 
 		if err := n.handleEvent(data); err != nil {
-			log.WithError(err).Warn("NapCat: event handling error")
+			log.Glob(log.CatChannel).WithError(err).Warn("NapCat: event handling error")
 		}
 	}
 
@@ -324,16 +324,16 @@ func (n *NapCatChannel) handleEvent(data []byte) error {
 	case "meta_event":
 		return n.handleMetaEvent(&event)
 	case "notice":
-		log.WithField("sub_type", event.SubType).Debug("NapCat: notice event (ignored)")
+		log.Glob(log.CatChannel).WithField("sub_type", event.SubType).Debug("NapCat: notice event (ignored)")
 	case "request":
-		log.WithField("sub_type", event.SubType).Debug("NapCat: request event (ignored)")
+		log.Glob(log.CatChannel).WithField("sub_type", event.SubType).Debug("NapCat: request event (ignored)")
 	default:
 		// 可能是纯 API 响应（status 字段存在但无 post_type）
 		if len(event.Status) > 0 {
 			// 无 echo 的 API 响应，忽略
 			return nil
 		}
-		log.WithField("post_type", event.PostType).Debug("NapCat: unknown event type")
+		log.Glob(log.CatChannel).WithField("post_type", event.PostType).Debug("NapCat: unknown event type")
 	}
 
 	return nil
@@ -361,11 +361,11 @@ func (n *NapCatChannel) handleAPIResponse(echo string, data []byte) {
 func (n *NapCatChannel) handleMetaEvent(event *obEvent) error {
 	switch event.MetaEventType {
 	case "heartbeat":
-		log.Debug("NapCat: heartbeat received")
+		log.Glob(log.CatTransport).Debug("NapCat: heartbeat received")
 	case "lifecycle":
-		log.WithField("sub_type", event.SubType).Info("NapCat: lifecycle event")
+		log.Glob(log.CatChannel).WithField("sub_type", event.SubType).Info("NapCat: lifecycle event")
 	default:
-		log.WithField("meta_event_type", event.MetaEventType).Debug("NapCat: unknown meta event")
+		log.Glob(log.CatChannel).WithField("meta_event_type", event.MetaEventType).Debug("NapCat: unknown meta event")
 	}
 	return nil
 }
@@ -378,7 +378,7 @@ func (n *NapCatChannel) handleMetaEvent(event *obEvent) error {
 func (n *NapCatChannel) handleMessage(event *obEvent) error {
 	messageID := fmt.Sprintf("%d", event.MessageID)
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"message_id":   messageID,
 		"message_type": event.MessageType,
 		"user_id":      event.UserID,
@@ -388,14 +388,14 @@ func (n *NapCatChannel) handleMessage(event *obEvent) error {
 
 	// 去重
 	if n.IsDuplicate(messageID) {
-		log.WithField("message_id", messageID).Debug("NapCat: duplicate message, skipping")
+		log.Glob(log.CatChannel).WithField("message_id", messageID).Debug("NapCat: duplicate message, skipping")
 		return nil
 	}
 
 	// 白名单检查
 	senderID := fmt.Sprintf("%d", event.UserID)
 	if !n.IsAllowed(n.config.AllowFrom, senderID) {
-		log.WithField("sender", senderID).Info("NapCat: access denied")
+		log.Glob(log.CatChannel).WithField("sender", senderID).Info("NapCat: access denied")
 		return nil
 	}
 
@@ -404,7 +404,7 @@ func (n *NapCatChannel) handleMessage(event *obEvent) error {
 
 	// 群消息必须 @bot 才处理，私聊消息直接处理
 	if event.MessageType == "group" && !mentionedBot {
-		log.WithField("group_id", event.GroupID).Debug("NapCat: group message without @bot, skipping")
+		log.Glob(log.CatChannel).WithField("group_id", event.GroupID).Debug("NapCat: group message without @bot, skipping")
 		return nil
 	}
 
@@ -489,7 +489,7 @@ func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) 
 		if err2 := json.Unmarshal(raw, &s); err2 == nil {
 			return s, nil, false
 		}
-		log.WithError(err).Debug("NapCat: failed to parse message segments")
+		log.Glob(log.CatChannel).WithError(err).Debug("NapCat: failed to parse message segments")
 		return "", nil, false
 	}
 
@@ -574,7 +574,7 @@ func (n *NapCatChannel) parseMessageSegments(raw json.RawMessage, selfID int64) 
 			}
 
 		default:
-			log.WithField("type", seg.Type).Debug("NapCat: unknown message segment type")
+			log.Glob(log.CatChannel).WithField("type", seg.Type).Debug("NapCat: unknown message segment type")
 		}
 	}
 
@@ -627,7 +627,7 @@ func (n *NapCatChannel) Send(msg ch.OutboundMsg) (string, error) {
 
 	default:
 		// 无法确定聊天类型，默认尝试私聊
-		log.WithField("chat_id", msg.ChatID).Warn("NapCat: unknown chat type, defaulting to private")
+		log.Glob(log.CatChannel).WithField("chat_id", msg.ChatID).Warn("NapCat: unknown chat type, defaulting to private")
 		id, err := strconv.ParseInt(msg.ChatID, 10, 64)
 		if err != nil {
 			return "", fmt.Errorf("napcat: invalid chat_id %q: %w", msg.ChatID, err)

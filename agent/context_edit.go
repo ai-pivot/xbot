@@ -121,7 +121,7 @@ func (e *ContextEditor) HandleRequest(action string, params map[string]any) (str
 	}
 
 	// Audit log for context edits
-	log.WithFields(log.Fields{
+	log.Glob(log.CatAgent).WithFields(log.Fields{
 		"action": action,
 		"params": params,
 	}).Info("Context edit request")
@@ -269,7 +269,7 @@ func (e *ContextEditor) applyEdit(messages []llm.ChatMessage, action string, par
 		e.Store.Record(result)
 	}
 
-	log.WithFields(map[string]any{
+	log.Glob(log.CatAgent).WithFields(map[string]any{
 		"action":      req.Action,
 		"message_idx": req.MessageIdx,
 		"role":        msg.Role,
@@ -464,7 +464,7 @@ func (e *ContextEditor) deleteTurn(messages []llm.ChatMessage, params map[string
 		})
 	}
 
-	log.WithFields(map[string]any{
+	log.Glob(log.CatAgent).WithFields(map[string]any{
 		"action":     "delete_turn",
 		"turn_idx":   idx,
 		"msg_count":  deletedMsgCount,

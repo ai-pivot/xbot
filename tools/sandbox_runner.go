@@ -119,7 +119,7 @@ func reinitSandbox(sandboxCfg config.SandboxConfig, workDir string) {
 	if sandboxCfg.RemoteMode != "" {
 		// Dual-mode: create SandboxRouter with both docker and remote
 		globalSandbox = NewSandboxRouter(sandboxCfg, workDir)
-		log.Infof("Sandbox initialized: %s (router)", globalSandbox.Name())
+		log.Glob(log.CatTool).Infof("Sandbox initialized: %s (router)", globalSandbox.Name())
 	} else {
 		// Legacy single-mode
 		if sandboxCfg.Mode == "docker" {
@@ -127,7 +127,7 @@ func reinitSandbox(sandboxCfg config.SandboxConfig, workDir string) {
 			pruneDockerResources()
 		}
 		globalSandbox = NewSandbox(sandboxCfg, workDir, nil)
-		log.Infof("Sandbox initialized: %s", globalSandbox.Name())
+		log.Glob(log.CatTool).Infof("Sandbox initialized: %s", globalSandbox.Name())
 	}
 }
 
@@ -135,7 +135,7 @@ func reinitSandbox(sandboxCfg config.SandboxConfig, workDir string) {
 func GetSandbox() Sandbox {
 	sandboxInitOnce.Do(func() {
 		// Fallback: 如果 InitSandbox 未被调用（例如测试场景），使用 NoneSandbox
-		log.Warn("GetSandbox called before InitSandbox, falling back to NoneSandbox")
+		log.Glob(log.CatTool).Warn("GetSandbox called before InitSandbox, falling back to NoneSandbox")
 		globalSandboxMu.Lock()
 		globalSandbox = &NoneSandbox{}
 		globalSandboxMu.Unlock()
@@ -191,7 +191,7 @@ func cleanupStaleTmpFiles() {
 		// 只清理超过 10 分钟的文件（避免误删正在使用的）
 		if time.Since(info.ModTime()) > 10*time.Minute {
 			if err := os.Remove(f); err == nil {
-				log.Infof("Cleaned up stale tmp file: %s (%.1f MB)", f, float64(info.Size())/(1024*1024))
+				log.Glob(log.CatTool).Infof("Cleaned up stale tmp file: %s (%.1f MB)", f, float64(info.Size())/(1024*1024))
 			}
 		}
 	}
@@ -203,7 +203,7 @@ func cleanupStaleTmpFiles() {
 func pruneDockerResources() {
 	// 清理悬空镜像（<none>:<none>），这些是异常退出时未被 rmi 的旧镜像
 	if out, err := dockerExec(DockerCmdTimeout, "image", "prune", "-f"); err == nil {
-		log.Debugf("Docker image prune: %s", strings.TrimSpace(string(out)))
+		log.Glob(log.CatTool).Debugf("Docker image prune: %s", strings.TrimSpace(string(out)))
 	}
 	// 二次清理：确保所有悬空镜像都被删除
 	// docker image prune 可能因镜像被容器引用而遗漏，再执行一次 builder prune

@@ -102,7 +102,7 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 			}
 		}
 		if ok, _ := params.Persistence.RewriteAfterCompress(persistView, len(persistView)); !ok {
-			log.Ctx(ctx).Warn("Compression persistence failed, session may be inconsistent")
+			log.Req(ctx, log.CatAgent).Warn("Compression persistence failed, session may be inconsistent")
 		}
 	}
 

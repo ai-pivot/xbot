@@ -148,7 +148,7 @@ func NewContextManager(cfg *ContextManagerConfig) ContextManager {
 	case ContextModePhase1, "":
 		return newPhase1Manager(cfg)
 	default:
-		log.WithField("mode", mode).Warnf("Unknown context mode %q, falling back to Phase 1", mode)
+		log.Glob(log.CatAgent).WithField("mode", mode).Warnf("Unknown context mode %q, falling back to Phase 1", mode)
 		return newPhase1Manager(cfg)
 	}
 }
@@ -163,7 +163,7 @@ func resolveContextMode(cfg Config) ContextMode {
 		if IsValidContextMode(m) {
 			return m
 		}
-		log.WithField("mode", cfg.ContextMode).Warn("Invalid AGENT_CONTEXT_MODE, ignoring")
+		log.Glob(log.CatAgent).WithField("mode", cfg.ContextMode).Warn("Invalid AGENT_CONTEXT_MODE, ignoring")
 	}
 	if !cfg.EnableAutoCompress {
 		return ContextModeNone

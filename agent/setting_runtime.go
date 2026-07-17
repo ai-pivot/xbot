@@ -156,7 +156,7 @@ func ApplyRuntimeSetting(cfg *config.Config, ag *Agent, senderID, key, value str
 	handler, ok := SettingHandlerRegistry[key]
 	if !ok {
 		if !channel.IsKnownNonRuntimeKey(key) {
-			log.WithField("key", key).WithField("value", value).
+			log.Usr(nil, log.CatConfig, senderID).WithField("key", key).WithField("value", value).
 				Warn("ApplyRuntimeSetting: unhandled setting key, ignoring")
 		}
 		return
@@ -175,7 +175,7 @@ func ApplyRuntimeSettings(cfg *config.Config, ag *Agent, senderID string, values
 		handler, ok := SettingHandlerRegistry[k]
 		if !ok {
 			if !channel.IsKnownNonRuntimeKey(k) {
-				log.WithField("key", k).WithField("value", v).
+				log.Usr(nil, log.CatConfig, senderID).WithField("key", k).WithField("value", v).
 					Warn("ApplyRuntimeSettings: unhandled setting key, ignoring")
 			}
 			continue

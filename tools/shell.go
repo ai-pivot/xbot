@@ -84,7 +84,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 	if params.Timeout > 0 {
 		timeout = time.Duration(params.Timeout) * time.Second
 		if timeout > MaxShellTimeout {
-			log.WithFields(log.Fields{
+			log.Req(toolCtx.Ctx, log.CatTool).WithFields(log.Fields{
 				"requested": timeout,
 				"max":       MaxShellTimeout,
 			}).Warn("Shell timeout exceeds maximum, capping")
@@ -139,7 +139,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 	shellCmd := params.Command
 
 	// 审计日志：记录每次 shell 执行
-	log.WithFields(log.Fields{
+	log.Req(toolCtx.Ctx, log.CatTool).WithFields(log.Fields{
 		"command":    params.Command,
 		"timeout":    timeout,
 		"background": params.Background,
@@ -298,7 +298,7 @@ func (t *ShellTool) executeForeground(
 					ongoingFn = result.OngoingOutput
 				}
 				task = toolCtx.BgTaskManager.Adopt(sessionKey, senderID, command, result.Process, partialOutput, result.ExitCodeCh, ongoingFn)
-				log.WithFields(log.Fields{
+				log.Req(toolCtx.Ctx, log.CatTool).WithFields(log.Fields{
 					"command": command,
 					"timeout": timeout,
 					"task_id": task.ID,
@@ -316,7 +316,7 @@ func (t *ShellTool) executeForeground(
 						return sandboxExecAsync(ctx, sandbox, spec, outputBuf)
 					},
 				)
-				log.WithFields(log.Fields{
+				log.Req(toolCtx.Ctx, log.CatTool).WithFields(log.Fields{
 					"command": command,
 					"timeout": timeout,
 					"task_id": task.ID,
@@ -339,7 +339,7 @@ func (t *ShellTool) executeForeground(
 		if output != "" {
 			timeoutErr = fmt.Sprintf("[TIMEOUT after %s] Partial output:\n%s", timeout, output)
 		}
-		log.WithFields(log.Fields{
+		log.Req(toolCtx.Ctx, log.CatTool).WithFields(log.Fields{
 			"command": command,
 			"timeout": timeout,
 			"output":  output,
@@ -357,7 +357,7 @@ func (t *ShellTool) executeForeground(
 			errMsg = fmt.Sprintf("[EXIT %d] %s (no output)", result.ExitCode, command)
 		}
 
-		log.WithFields(log.Fields{
+		log.Req(toolCtx.Ctx, log.CatTool).WithFields(log.Fields{
 			"command":  command,
 			"exitCode": result.ExitCode,
 			"stderr":   result.Stderr,

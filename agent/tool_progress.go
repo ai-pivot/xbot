@@ -39,7 +39,7 @@ func formatToolProgress(name string, args string) string {
 	}
 
 	if !parsed {
-		log.WithField("tool", name).WithField("raw_args", truncate(args, 200)).Debug("formatToolProgress: failed to parse tool args as JSON")
+		log.Glob(log.CatTool).WithField("tool", name).WithField("raw_args", truncate(args, 200)).Debug("formatToolProgress: failed to parse tool args as JSON")
 	}
 
 	// Letta memory tools

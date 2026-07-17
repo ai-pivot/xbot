@@ -58,7 +58,7 @@ func (ws *WebhookServer) Start() error {
 		WriteTimeout: 15 * time.Second,
 	}
 
-	log.WithField("addr", addr).Info("Webhook server starting")
+	log.Glob(log.CatStartup).WithField("addr", addr).Info("Webhook server starting")
 	if err := ws.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("webhook server: %w", err)
 	}
@@ -149,13 +149,13 @@ func (ws *WebhookServer) handleHook(w http.ResponseWriter, r *http.Request) {
 
 	result, err := ws.router.DispatchByID(triggerID, evt)
 	if err != nil {
-		log.WithError(err).WithField("trigger_id", triggerID).Warn("Webhook dispatch failed")
+		log.Glob(log.CatStartup).WithError(err).WithField("trigger_id", triggerID).Warn("Webhook dispatch failed")
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
 		return
 	}
 
 	if !result.OK {
-		log.WithField("trigger_id", triggerID).WithField("reason", result.Error).Warn("Webhook rejected")
+		log.Glob(log.CatStartup).WithField("trigger_id", triggerID).WithField("reason", result.Error).Warn("Webhook rejected")
 		status := http.StatusForbidden
 		if result.Error == "trigger disabled" {
 			status = http.StatusConflict

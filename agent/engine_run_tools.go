@@ -65,7 +65,7 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 	if r := []rune(argPreview); len(r) > 200 {
 		argPreview = string(r[:200]) + "..."
 	}
-	log.Ctx(ctx).WithFields(log.Fields{
+	log.Req(ctx, log.CatTool).WithFields(log.Fields{
 		"tool":      tc.Name,
 		"id":        tc.ID,
 		"iteration": entry.iteration,
@@ -195,7 +195,7 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 
 	if execErr != nil {
 		GlobalMetrics.TotalToolErrors.Add(1)
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatTool).WithFields(log.Fields{
 			"tool":    tc.Name,
 			"elapsed": elapsed.Round(time.Millisecond),
 		}).WithError(execErr).Debug("Tool failed (hook also logged)")
@@ -222,7 +222,7 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 		if r := []rune(resultPreview); len(r) > 200 {
 			resultPreview = string(r[:200]) + "..."
 		}
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatTool).WithFields(log.Fields{
 			"tool":    tc.Name,
 			"elapsed": elapsed.Round(time.Millisecond),
 		}).Debugf("Tool done: %s", resultPreview)
@@ -429,7 +429,7 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 		if len(maskedEntries) > 0 {
 			firstMasked = maskedEntries[0].MessageIndex
 		}
-		log.Ctx(ctx).WithFields(log.Fields{
+		log.Req(ctx, log.CatTool).WithFields(log.Fields{
 			"keep_groups":  keepGroups,
 			"total_groups": len(groups),
 			"masked_count": count,
@@ -466,14 +466,14 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 			}
 			if s.persistence.IsPersisted(entry.MessageIndex) {
 				if err := s.cfg.Session.UpdateMessageContentNonDisplayOnly(dbIdx, entry.Content); err != nil {
-					log.Ctx(ctx).WithError(err).WithField("idx", dbIdx).WithField("raw_idx", entry.MessageIndex).Warn("Failed to persist masked message to session")
+					log.Req(ctx, log.CatTool).WithError(err).WithField("idx", dbIdx).WithField("raw_idx", entry.MessageIndex).Warn("Failed to persist masked message to session")
 				} else {
 					persistedMasked++
 				}
 			}
 		}
 		if persistedMasked > 0 {
-			log.Ctx(ctx).WithField("persisted_masked", persistedMasked).Info("Persisted masked messages to session")
+			log.Req(ctx, log.CatTool).WithField("persisted_masked", persistedMasked).Info("Persisted masked messages to session")
 		}
 	}
 
@@ -481,7 +481,7 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 		s.progressLines = append(s.progressLines, fmt.Sprintf("> 🎭 上下文较大 (%d tokens)，已遮蔽 %d 条旧工具结果", totalTokens, count))
 		s.notifyProgress("")
 	}
-	log.Ctx(ctx).WithField("masked_count", count).Info("Observation masking triggered")
+	log.Req(ctx, log.CatTool).WithField("masked_count", count).Info("Observation masking triggered")
 }
 
 // setWaitingUser sets the waiting user state from a tool result.

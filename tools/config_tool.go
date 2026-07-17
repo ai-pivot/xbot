@@ -85,7 +85,7 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		return nil, fmt.Errorf("config: invalid params: %w", err)
 	}
 
-	log.WithFields(log.Fields{"action": params.Action, "key": params.Key}).Debug("config tool called")
+	log.Req(ctx.Ctx, log.CatConfig).WithFields(log.Fields{"action": params.Action, "key": params.Key}).Debug("config tool called")
 
 	switch params.Action {
 	case "list":
@@ -155,7 +155,7 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 		// Without this, changes like max_context_tokens don't reflect in the TUI until restart.
 		if ctx.TUIControl != nil {
 			if _, tuiErr := ctx.TUIControl("reload_settings", map[string]string{"key": params.Key}); tuiErr != nil {
-				log.WithError(tuiErr).WithField("key", params.Key).Debug("config: TUI reload_settings notification failed (non-fatal)")
+				log.Req(ctx.Ctx, log.CatConfig).WithError(tuiErr).WithField("key", params.Key).Debug("config: TUI reload_settings notification failed (non-fatal)")
 			}
 		}
 		return NewResult(fmt.Sprintf("Updated %s from %s to %s", params.Key, prev, params.Value)), nil
@@ -256,7 +256,7 @@ func (t *ConfigTool) runnerAction(ctx *ToolContext, sub, name, newName, mode, do
 				if router.Remote() != nil {
 					ws, _ := router.Remote().GetConnectionInfo(ctx.OriginUserID, name)
 					if ws == "" {
-						log.WithField("runner", name).Debug("Runner connected but workspace not reported yet, keeping current CWD")
+						log.Req(ctx.Ctx, log.CatConfig).WithField("runner", name).Debug("Runner connected but workspace not reported yet, keeping current CWD")
 					} else if ctx.SetCurrentDir != nil {
 						ctx.SetCurrentDir(ws)
 						ctx.CurrentDir = ws

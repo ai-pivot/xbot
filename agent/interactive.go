@@ -175,7 +175,7 @@ func (a *Agent) cleanupExpiredSessions() {
 			if !ok {
 				return true
 			}
-			log.WithFields(log.Fields{
+			log.Glob(log.CatSubAgent).WithFields(log.Fields{
 				"key":       key,
 				"role":      ia.roleName,
 				"idle_time": now.Sub(lastUsed).String(),
@@ -480,7 +480,7 @@ func (a *Agent) destroyInteractiveSession(key string) {
 	// Destroy tenant session (cache + DB with CASCADE to messages)
 	if a.multiSession != nil {
 		if err := a.multiSession.DestroySession("agent", key); err != nil {
-			log.Warn("Failed to destroy agent session: ", err)
+			log.Glob(log.CatSubAgent).Warn("Failed to destroy agent session: ", err)
 		}
 	}
 }
@@ -660,7 +660,7 @@ func (a *Agent) SpawnInteractiveSession(
 	// This can happen after server restart (DB retains old tenant data) or
 	// if destroyInteractiveSession's DeleteTenant failed silently.
 	if err := agentTenantSession.Clear(); err != nil {
-		log.Warn("Failed to clear agent tenant session: ", err)
+		log.Req(ctx, log.CatSubAgent).Warn("Failed to clear agent tenant session: ", err)
 	}
 
 	// Eager-save user message so get_history returns it during Run().
@@ -668,7 +668,7 @@ func (a *Agent) SpawnInteractiveSession(
 	// user message turn boundary. Run()'s incremental persistence skips
 	// messages[0:lastPersistedCount] which includes this user message.
 	if err := agentTenantSession.AddMessage(llm.NewUserMessage(msg.Content)); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to eager-save interactive agent user message")
+		log.Req(ctx, log.CatSubAgent).WithError(err).Warn("Failed to eager-save interactive agent user message")
 	}
 
 	// Wire CLI progress + stream callbacks for ALL sessions (foreground and background).
@@ -769,7 +769,7 @@ func (a *Agent) SpawnInteractiveSession(
 			defer func() {
 				if r := recover(); r != nil {
 					clipanic.Report("agent.interactive.RunBackgroundSession", fmt.Sprintf("%s:%s", roleName, instance), r)
-					log.WithFields(log.Fields{
+					log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 						"role":     roleName,
 						"instance": instance,
 						"panic":    r,
@@ -901,7 +901,7 @@ func (a *Agent) SpawnInteractiveSession(
 							Sid:      originSender,
 						})
 					}
-					log.WithFields(log.Fields{
+					log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 						"role":     roleName,
 						"instance": instance,
 						"key":      key,
@@ -929,7 +929,7 @@ func (a *Agent) SpawnInteractiveSession(
 				}
 				a.cancelChildSessions(key)
 				a.destroyInteractiveSession(key)
-				log.WithFields(log.Fields{
+				log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 					"role":     roleName,
 					"instance": instance,
 					"key":      key,
@@ -1012,7 +1012,7 @@ func (a *Agent) SpawnInteractiveSession(
 					}
 				}
 				if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
-					log.WithFields(log.Fields{
+					log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 						"role": roleName, "instance": instance,
 					}).WithError(err).Warn("Failed to save bg interactive agent assistant message with detail")
 				}
@@ -1038,7 +1038,7 @@ func (a *Agent) SpawnInteractiveSession(
 			// path (L883 cancelChildSessions + L884 destroyInteractiveSession).
 		}()
 
-		log.WithFields(log.Fields{
+		log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 			"role":       roleName,
 			"instance":   instance,
 			"background": true,
@@ -1155,11 +1155,11 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 		}
 		if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save interactive agent assistant message with detail")
+			log.Req(ctx, log.CatSubAgent).WithError(err).Warn("Failed to save interactive agent assistant message with detail")
 		}
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 		"role":     roleName,
 		"messages": len(ia.messages),
 	}).Info("Interactive session spawned")
@@ -1265,7 +1265,7 @@ func (a *Agent) SendToInteractiveSession(
 	// Eager-save user message so get_history returns it during Run().
 	if cfg.Session != nil {
 		if err := cfg.Session.AddMessage(llm.NewUserMessage(msg.Content)); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to eager-save interactive agent user message (send)")
+			log.Req(ctx, log.CatSubAgent).WithError(err).Warn("Failed to eager-save interactive agent user message (send)")
 		}
 	}
 
@@ -1491,7 +1491,7 @@ func (a *Agent) SendToInteractiveSession(
 						Sid:      originSender,
 					})
 				}
-				log.WithFields(log.Fields{
+				log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 					"role":     roleName,
 					"instance": instance,
 				}).Info("Async send interrupted, session preserved for future send")
@@ -1505,7 +1505,7 @@ func (a *Agent) SendToInteractiveSession(
 				})
 				return
 			}
-			log.WithFields(log.Fields{
+			log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 				"role":     roleName,
 				"instance": instance,
 			}).Info("Async send cancelled (unload/shutdown)")
@@ -1629,7 +1629,7 @@ func (a *Agent) SendToInteractiveSession(
 				}
 			}
 			if err := cfg.Session.AddMessage(assistantMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save async send agent assistant message with detail")
+				log.Req(ctx, log.CatSubAgent).WithError(err).Warn("Failed to save async send agent assistant message with detail")
 			}
 		}
 	}()
@@ -1671,7 +1671,7 @@ func (a *Agent) InterruptInteractiveSession(
 	// The goroutine will see runCtx.Err() != nil and know it was interrupted.
 	ia.running = false
 	ia.interrupted = true
-	log.WithFields(log.Fields{
+	log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 		"role":     roleName,
 		"instance": instance,
 	}).Info("Interactive session interrupted")
@@ -1871,7 +1871,7 @@ func (a *Agent) cancelChildSessions(parentKey string) {
 		// Recurse: cancel grandchildren before they become orphaned
 		a.cancelChildSessions(c.key)
 		a.destroyInteractiveSession(c.key)
-		log.WithFields(log.Fields{
+		log.Glob(log.CatSubAgent).WithFields(log.Fields{
 			"parent": c.parentKey,
 			"child":  c.key,
 		}).Info("Cascade cancelled child interactive session")
@@ -1939,7 +1939,7 @@ func (a *Agent) UnloadInteractiveSession(
 		ParentID: chatID,
 	})
 
-	log.WithField("role", roleName).Info("Interactive session unloaded")
+	log.Req(ctx, log.CatSubAgent).WithField("role", roleName).Info("Interactive session unloaded")
 	return nil
 }
 
@@ -2027,7 +2027,7 @@ func (a *Agent) CleanupInteractiveSessions(ctx context.Context, channel, chatID 
 		_ = a.UnloadInteractiveSession(ctx, role, channel, chatID, instance)
 	}
 	if len(keysToClean) > 0 {
-		log.WithFields(log.Fields{
+		log.Req(ctx, log.CatSubAgent).WithFields(log.Fields{
 			"session": qualifyChatID(channel, chatID),
 			"roles":   keysToClean,
 		}).Info("Cleaned up all interactive sessions")

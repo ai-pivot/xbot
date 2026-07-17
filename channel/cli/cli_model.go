@@ -973,7 +973,7 @@ func (m *cliModel) wirePluginEventBus(program *tea.Program) {
 	// Helper that logs subscription failures instead of silently dropping them.
 	sub := func(topic string, handler plugin.PluginEventHandler) {
 		if err := bus.Subscribe(topic, handler); err != nil {
-			log.WithError(err).WithField("topic", topic).Warn("plugin event subscription failed")
+			log.Glob(log.CatTUI).WithError(err).WithField("topic", topic).Warn("plugin event subscription failed")
 		}
 	}
 

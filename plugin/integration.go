@@ -229,7 +229,7 @@ func wirePluginToolsInternal(pm *PluginManager, registry *tools.Registry, tenant
 	}
 
 	if registered > 0 {
-		log.Infof("plugin: registered %d tools from %d active plugins", registered, pm.ActiveCount())
+		log.Glob(log.CatPlugin).Infof("plugin: registered %d tools from %d active plugins", registered, pm.ActiveCount())
 	}
 	return nil
 }
@@ -327,7 +327,7 @@ func WirePluginCommands(pm *PluginManager, registerFn CommandRegisterFn) {
 	}
 
 	if registered > 0 {
-		log.Infof("plugin: registered %d commands from %d active plugins", registered, pm.ActiveCount())
+		log.Glob(log.CatPlugin).Infof("plugin: registered %d commands from %d active plugins", registered, pm.ActiveCount())
 	}
 }
 
@@ -358,12 +358,12 @@ func WirePluginCrons(pm *PluginManager, cronSvc *sqlite.CronService) {
 		// Remove stale plugin jobs (idempotent: delete before re-add)
 		allJobs, err := cronSvc.ListAllJobs()
 		if err != nil {
-			log.WithError(err).Warn("plugin: failed to list existing cron jobs during re-wire")
+			log.Glob(log.CatPlugin).WithError(err).Warn("plugin: failed to list existing cron jobs during re-wire")
 		}
 		for _, job := range allJobs {
 			if strings.HasPrefix(job.ID, "plugin:"+pluginID+":") {
 				if err := cronSvc.RemoveJob(job.ID); err != nil {
-					log.WithError(err).WithField("job_id", job.ID).Warn("plugin: failed to remove stale cron job")
+					log.Glob(log.CatPlugin).WithError(err).WithField("job_id", job.ID).Warn("plugin: failed to remove stale cron job")
 				} else {
 					removed++
 				}
@@ -373,7 +373,7 @@ func WirePluginCrons(pm *PluginManager, cronSvc *sqlite.CronService) {
 		// Process cancellation requests
 		for jobID := range entry.Context.GetCronCancellations() {
 			if err := cronSvc.RemoveJob(jobID); err != nil {
-				log.WithError(err).WithField("job_id", jobID).Warn("plugin: failed to cancel cron job")
+				log.Glob(log.CatPlugin).WithError(err).WithField("job_id", jobID).Warn("plugin: failed to cancel cron job")
 			} else {
 				removed++
 			}
@@ -395,13 +395,13 @@ func WirePluginCrons(pm *PluginManager, cronSvc *sqlite.CronService) {
 			job.OneShot = job.At != "" || job.DelaySeconds > 0
 			nextRun, err := cron.CalculateNextRun(job, now)
 			if err != nil {
-				log.WithError(err).WithField("plugin", pluginID).Warn("plugin: failed to calculate next run for cron")
+				log.Glob(log.CatPlugin).WithError(err).WithField("plugin", pluginID).Warn("plugin: failed to calculate next run for cron")
 				continue
 			}
 			job.NextRun = nextRun
 
 			if err := cronSvc.AddJob(job); err != nil {
-				log.WithError(err).WithField("job_id", job.ID).Warn("plugin: failed to add cron job")
+				log.Glob(log.CatPlugin).WithError(err).WithField("job_id", job.ID).Warn("plugin: failed to add cron job")
 				continue
 			}
 			added++
@@ -409,7 +409,7 @@ func WirePluginCrons(pm *PluginManager, cronSvc *sqlite.CronService) {
 	}
 
 	if added > 0 || removed > 0 {
-		log.Infof("plugin: cron wiring complete: %d added, %d removed", added, removed)
+		log.Glob(log.CatPlugin).Infof("plugin: cron wiring complete: %d added, %d removed", added, removed)
 	}
 }
 
@@ -430,7 +430,7 @@ func WirePluginThemes(pm *PluginManager, themeLoader func(id string, data []byte
 		}
 		for id, data := range entry.Context.GetThemes() {
 			if err := themeLoader(id, data); err != nil {
-				log.WithError(err).WithFields(log.Fields{
+				log.Glob(log.CatPlugin).WithError(err).WithFields(log.Fields{
 					"plugin": entry.Manifest.ID,
 					"theme":  id,
 				}).Warn("plugin: failed to load theme")
@@ -441,6 +441,6 @@ func WirePluginThemes(pm *PluginManager, themeLoader func(id string, data []byte
 	}
 
 	if loaded > 0 {
-		log.Infof("plugin: loaded %d themes from active plugins", loaded)
+		log.Glob(log.CatPlugin).Infof("plugin: loaded %d themes from active plugins", loaded)
 	}
 }

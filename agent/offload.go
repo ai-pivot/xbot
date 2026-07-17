@@ -306,7 +306,7 @@ func (s *OffloadStore) CleanOldEntries(sessionKey string, cutoff time.Time) int 
 	// 持久化更新后的索引
 	if removedCount > 0 {
 		s.persistIndex(sessionDir, idx)
-		log.WithFields(log.Fields{
+		log.Glob(log.CatAgent).WithFields(log.Fields{
 			"session": sessionKey,
 			"removed": removedCount,
 			"kept":    len(kept),
@@ -342,7 +342,7 @@ func (s *OffloadStore) CleanStale() {
 			if err := os.RemoveAll(dir); err != nil {
 				log.WithError(err).WithField("dir", dir).Debug("OffloadStore: failed to remove stale directory")
 			} else {
-				log.WithField("dir", dir).Info("OffloadStore: cleaned stale session directory")
+				log.Glob(log.CatAgent).WithField("dir", dir).Info("OffloadStore: cleaned stale session directory")
 			}
 		}
 	}

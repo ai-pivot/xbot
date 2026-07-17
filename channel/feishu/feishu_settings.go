@@ -42,7 +42,7 @@ func (f *FeishuChannel) BuildSettingsCard(ctx context.Context, senderID, chatID,
 		tab = "general"
 	}
 
-	log.WithField("tab", tab).Info("BuildSettingsCard start")
+	log.Glob(log.CatChannel).WithField("tab", tab).Info("BuildSettingsCard start")
 
 	elements := buildTabButtons(tab)
 	elements = append(elements, map[string]any{"tag": "hr"})
@@ -92,7 +92,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 	}
 
 	action := parsed["action"]
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"action":    action,
 		"sender_id": senderID,
 	}).Info("HandleSettingsAction routing")
@@ -410,7 +410,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		}
 		if f.settingsCallbacks.RegistryInstall != nil {
 			if err := f.settingsCallbacks.RegistryInstall(entryType, entryID, senderID); err != nil {
-				log.WithError(err).Warnf("HandleSettingsAction: failed to install %s/%d", entryType, entryID)
+				log.Glob(log.CatChannel).WithError(err).Warnf("HandleSettingsAction: failed to install %s/%d", entryType, entryID)
 			}
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "market", parsePageOpts(parsed))
@@ -423,7 +423,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		}
 		if f.settingsCallbacks.RegistryPublish != nil {
 			if err := f.settingsCallbacks.RegistryPublish(entryType, name, senderID); err != nil {
-				log.WithError(err).Warnf("HandleSettingsAction: failed to publish %s/%s", entryType, name)
+				log.Glob(log.CatChannel).WithError(err).Warnf("HandleSettingsAction: failed to publish %s/%s", entryType, name)
 			}
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "market", parsePageOpts(parsed))
@@ -436,7 +436,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		}
 		if f.settingsCallbacks.RegistryUnpublish != nil {
 			if err := f.settingsCallbacks.RegistryUnpublish(entryType, name, senderID); err != nil {
-				log.WithError(err).Warnf("HandleSettingsAction: failed to unpublish %s/%s", entryType, name)
+				log.Glob(log.CatChannel).WithError(err).Warnf("HandleSettingsAction: failed to unpublish %s/%s", entryType, name)
 			}
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "market", parsePageOpts(parsed))
@@ -449,7 +449,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		}
 		if f.settingsCallbacks.RegistryDelete != nil {
 			if err := f.settingsCallbacks.RegistryDelete(entryType, name, senderID); err != nil {
-				log.WithError(err).Warnf("HandleSettingsAction: failed to delete %s/%s", entryType, name)
+				log.Glob(log.CatChannel).WithError(err).Warnf("HandleSettingsAction: failed to delete %s/%s", entryType, name)
 			}
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "market", parsePageOpts(parsed))
@@ -2025,7 +2025,7 @@ func (f *FeishuChannel) buildMarketTabContent(ctx context.Context, senderID stri
 
 	// Marketplace section
 	if f.settingsCallbacks.RegistryBrowse == nil {
-		log.Info("buildMarketTabContent: RegistryBrowse callback not set")
+		log.Glob(log.CatChannel).Info("buildMarketTabContent: RegistryBrowse callback not set")
 		elements = append(elements, map[string]any{
 			"tag":     "markdown",
 			"content": "_市场功能未启用_",
@@ -2037,7 +2037,7 @@ func (f *FeishuChannel) buildMarketTabContent(ctx context.Context, senderID stri
 	elements = append(elements, map[string]any{"tag": "hr"})
 	elements = append(elements, f.buildMarketSection("agent", "代理市场", o.AgentMarketPage, pageState)...)
 
-	log.WithField("element_count", len(elements)).Info("buildMarketTabContent completed")
+	log.Glob(log.CatChannel).WithField("element_count", len(elements)).Info("buildMarketTabContent completed")
 	return elements
 }
 
@@ -2051,7 +2051,7 @@ func (f *FeishuChannel) buildMyItemsSection(senderID, entryType, label string, p
 
 	published, local, err := f.settingsCallbacks.RegistryListMy(senderID, entryType)
 	if err != nil {
-		log.WithError(err).Warnf("buildMyItemsSection: ListMy failed for %s", entryType)
+		log.Glob(log.CatChannel).WithError(err).Warnf("buildMyItemsSection: ListMy failed for %s", entryType)
 	}
 
 	publishedNames := make(map[string]bool)
@@ -2186,7 +2186,7 @@ func (f *FeishuChannel) buildMarketSection(entryType, title string, page int, pa
 	offset := page * marketPageSize
 	entries, err := f.settingsCallbacks.RegistryBrowse(entryType, marketPageSize+1, offset)
 	if err != nil {
-		log.WithError(err).Warnf("buildMarketSection: Browse failed for %s", entryType)
+		log.Glob(log.CatChannel).WithError(err).Warnf("buildMarketSection: Browse failed for %s", entryType)
 	}
 
 	if len(entries) == 0 && page == 0 {

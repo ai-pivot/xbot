@@ -71,13 +71,13 @@ func (t *SearchToolsTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 			// Search global tools first (tenant 0), filter by current channel
 			globalResults, err := lm.SearchToolsForTenant(ctx.Ctx, 0, args.Query, args.TopK, ctx.Channel)
 			if err != nil {
-				log.WithError(err).Warn("Global tool index search failed")
+				log.Req(ctx.Ctx, log.CatTool).WithError(err).Warn("Global tool index search failed")
 			}
 
 			// Then search personal tools (user's tenant), filter by current channel
 			personalResults, err := lm.SearchToolsForTenant(ctx.Ctx, lm.TenantID(), args.Query, args.TopK, ctx.Channel)
 			if err != nil {
-				log.WithError(err).Warn("Personal tool index search failed")
+				log.Req(ctx.Ctx, log.CatTool).WithError(err).Warn("Personal tool index search failed")
 			}
 
 			// Merge results, prefer personal over global for same tools
@@ -90,7 +90,7 @@ func (t *SearchToolsTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 			// Generic ToolIndexer (flat mode)
 			results, err := indexer.SearchTools(ctx.Ctx, args.Query, args.TopK)
 			if err != nil {
-				log.WithError(err).Warn("Tool index search failed, using fallback")
+				log.Req(ctx.Ctx, log.CatTool).WithError(err).Warn("Tool index search failed, using fallback")
 			} else if len(results) > 0 {
 				return t.formatResults(results, args.Query)
 			}
@@ -152,7 +152,7 @@ func (t *SearchToolsTool) executeFallback(ctx *ToolContext, query string, topK i
 	// 使用渠道过滤的工具组
 	toolGroups := ctx.Registry.GetToolGroupsForChannel(ctx.Channel)
 
-	log.WithFields(log.Fields{
+	log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 		"session":    sessionKey,
 		"mcpCount":   len(mcpCatalog),
 		"groupCount": len(toolGroups),

@@ -54,7 +54,7 @@ func (wc *WebChannel) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isBlockedMIME(detectedMIME) {
-		log.WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithFields(log.Fields{
 			"filename":  header.Filename,
 			"mime_type": detectedMIME,
 		}).Warn("Blocked file upload with dangerous MIME type")
@@ -69,7 +69,7 @@ func (wc *WebChannel) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Web uploads MUST go to cloud OSS - local storage is never allowed for security
 	if wc.ossProvider == nil || wc.ossProvider.Name() == "local" {
-		log.Error("Web file upload rejected: no cloud OSS provider configured (local storage is forbidden for web uploads)")
+		log.Glob(log.CatChannel).Error("Web file upload rejected: no cloud OSS provider configured (local storage is forbidden for web uploads)")
 		jsonErrorResponse(w, http.StatusServiceUnavailable, "file storage not configured")
 		return
 	}
@@ -87,7 +87,7 @@ func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, 
 	key := fmt.Sprintf("uploads/%s/%s%s", userID, uuid.New().String(), ext)
 
 	if err := wc.ossProvider.Upload(key, data); err != nil {
-		log.WithError(err).WithFields(log.Fields{
+		log.Glob(log.CatChannel).WithError(err).WithFields(log.Fields{
 			"key":      key,
 			"filename": filename,
 		}).Error("Failed to upload file to cloud OSS")
@@ -95,7 +95,7 @@ func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	log.WithFields(log.Fields{
+	log.Glob(log.CatChannel).WithFields(log.Fields{
 		"key":      key,
 		"filename": filename,
 		"size":     len(data),

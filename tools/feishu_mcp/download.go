@@ -141,7 +141,7 @@ func (t *DownloadFileTool) Execute(ctx *tools.ToolContext, input string) (*tools
 		}
 	}
 
-	log.WithFields(log.Fields{
+	log.Req(ctx.Ctx, log.CatTool).WithFields(log.Fields{
 		"message_id":  args.MessageID,
 		"file_key":    args.FileKey,
 		"output_path": outputPath,
