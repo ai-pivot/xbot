@@ -100,10 +100,14 @@ func (m *cliModel) advanceWriterCJK(visible *int, target int, content string, sk
 	nextIsCJK := *visible < len(runes) && isCJK(runes[*visible])
 
 	// Gap-based acceleration — smooth catch-up without visible jumps.
-	// Max advance per 50ms tick is capped to avoid teleporting when
-	// network coalesces multiple stream updates into one big gap.
+	// For large gaps, advance proportionally so catch-up time stays
+	// roughly constant (~500ms) regardless of how far behind we are.
+	// Old fixed cap of 20 meant gap=500 took 1.25s to catch up, making
+	// the typewriter look stuck when stream content arrives in bursts.
 	advance := 1
 	switch {
+	case gap > 200:
+		advance = gap / 5 // 200→40, 500→100, 1000→200 — catches up in ~8-10 ticks
 	case gap > 80:
 		advance = 20
 	case gap > 40:
