@@ -954,7 +954,11 @@ func shouldSkipWebCLISessionDir(dir string) bool {
 	if dir == "" {
 		return true
 	}
-	return strings.Contains(dir, "/tmp/Test")
+	// Skip Go test temp directories across platforms:
+	//   Linux:   /tmp/Test<Name>/001
+	//   macOS:   /var/folders/.../T/Test<Name>/001
+	// Both contain a path segment starting with "Test" inside the system temp.
+	return strings.Contains(dir, "/T/Test") || strings.Contains(dir, "/tmp/Test")
 }
 
 func displayLabelForCLILocalSession(sess cliDirSessionFile, dir string) string {

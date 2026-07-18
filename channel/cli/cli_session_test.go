@@ -209,6 +209,7 @@ func TestParseChatID_WindowsRoundTrip(t *testing.T) {
 }
 
 func TestSaveSessionLLMState_SkipBackendFields(t *testing.T) {
+	t.Setenv("XBOT_HOME", t.TempDir())
 	workDir := t.TempDir()
 	chatID := workDir + ":test-session"
 	// Create session directory
@@ -244,6 +245,7 @@ func TestSaveSessionLLMState_SkipBackendFields(t *testing.T) {
 
 func TestSaveSessionLLMState_DefaultBehavior(t *testing.T) {
 	// Without skipBackendFields, should save all fields (backward compatible)
+	t.Setenv("XBOT_HOME", t.TempDir())
 	workDir := t.TempDir()
 	chatID := workDir + ":test-backcompat"
 	ds, _ := LoadDirSessions(workDir)
