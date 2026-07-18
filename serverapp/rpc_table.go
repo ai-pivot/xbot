@@ -1428,7 +1428,16 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 
 // HandleCLIRPC dispatches RPC requests from CLI RemoteBackend clients.
 func HandleCLIRPC(table RPCTable, method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
-	bizID := senderIDFromParams(params, senderID)
+	bizID := senderIDFromParams(params)
+	if bizID == "" {
+		// CLI path: admin is a role, not a business identity. All CLI
+		// subscriptions/settings live under cliSenderID.
+		if senderID == adminSenderID || senderID == cliSenderID {
+			bizID = cliSenderID
+		} else {
+			bizID = senderID
+		}
+	}
 	// Resolve canonical user identity via IdentityResolver when available.
 	// This ensures role and userID are correctly set for all access checks.
 	userID := int64(0)
