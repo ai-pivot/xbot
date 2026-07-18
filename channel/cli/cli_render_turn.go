@@ -388,9 +388,21 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 	}
 	if reasoningContent != "" {
 		hasSpinner = true
+		// Cache renderReasoningBox output. Skip re-render when the raw
+		// content and width haven't changed (typewriter ticks with no
+		// new stream data).
+		var renderedReasoning string
+		if reasoningContent == m.rc.liveReasoningKey && width == m.rc.liveReasoningWidth && m.rc.liveReasoningRendered != "" {
+			renderedReasoning = m.rc.liveReasoningRendered
+		} else {
+			renderedReasoning = m.renderReasoningBox(reasoningContent, width, s)
+			m.rc.liveReasoningRendered = renderedReasoning
+			m.rc.liveReasoningKey = reasoningContent
+			m.rc.liveReasoningWidth = width
+		}
 		blocks = append(blocks, turnBlock{
 			kind: turnBlockReasoning,
-			text: m.renderReasoningBox(reasoningContent, width, s),
+			text: renderedReasoning,
 		})
 	}
 
@@ -406,9 +418,28 @@ func (m *cliModel) liveIterationBlocks(p *protocol.ProgressEvent, width int, fal
 		displayContent = fallbackContent
 	}
 	if displayContent != "" {
+		// Cache glamour.Render() output. Skip re-render when the raw
+		// content and width haven't changed. Between stream arrivals
+		// (200ms gap), there are ~6 calls to updateStreamingOnly (4
+		// typewriter ticks + 2 main ticks) that all render the SAME
+		// content. With the cache, only the first runs glamour.
+		//
+		// twVisible is NOT used for display truncation — the typewriter
+		// effect comes from StreamContent growing as the LLM generates
+		// tokens. twVisible only controls whether the 50ms tick chain
+		// continues (for spinner animation).
+		var renderedContent string
+		if displayContent == m.rc.liveContentKey && width == m.rc.liveContentWidth && m.rc.liveContentRendered != "" {
+			renderedContent = m.rc.liveContentRendered
+		} else {
+			renderedContent = m.renderTurnContent(displayContent, width)
+			m.rc.liveContentRendered = renderedContent
+			m.rc.liveContentKey = displayContent
+			m.rc.liveContentWidth = width
+		}
 		blocks = append(blocks, turnBlock{
 			kind: turnBlockContent,
-			text: m.renderTurnContent(displayContent, width),
+			text: renderedContent,
 		})
 	}
 

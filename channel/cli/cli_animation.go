@@ -99,17 +99,17 @@ func (m *cliModel) advanceWriterCJK(visible *int, target int, content string, sk
 	runes := []rune(content)
 	nextIsCJK := *visible < len(runes) && isCJK(runes[*visible])
 
-	// Gap-based acceleration — smooth catch-up without visible jumps.
-	// Max advance per 50ms tick is capped to avoid teleporting when
-	// network coalesces multiple stream updates into one big gap.
-	advance := 1
-	switch {
-	case gap > 80:
-		advance = 20
-	case gap > 40:
-		advance = 10
-	case gap > 20:
-		advance = 3
+	// Exponential catch-up: advance 1/3 of remaining gap per tick.
+	// This gives natural deceleration — fast start (quickly show new
+	// content), slow finish (smooth transition to per-rune typing).
+	// Converges in ~log1.5(gap) ticks regardless of gap size:
+	//   gap=10  → ~6 ticks (300ms)
+	//   gap=100 → ~12 ticks (600ms)
+	//   gap=500 → ~15 ticks (750ms)
+	// Old fixed-cap (20/tick) took 25+ ticks for gap=500 (1.25s).
+	advance := gap / 3
+	if advance < 1 {
+		advance = 1
 	}
 
 	// CJK penalty: if next rune is CJK and we're at normal speed, skip every other tick

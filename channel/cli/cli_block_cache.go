@@ -61,6 +61,20 @@ type renderCache struct {
 	streamPrefixCompW   int    // streamCompletedWidth when prefix was built
 	streamPrefixHeaderW int    // streamHeaderWidth when prefix was built
 	streamPrefixHasSep  bool   // whether separator was included
+
+	// Glamour render cache — avoids re-running glamour.Render() on ticks
+	// where StreamContent hasn't changed since the last stream arrival.
+	// Between stream arrivals, ~6 ticks (typewriter + main) all render the
+	// SAME content. The cache skips glamour for 5 of 6, using a simple
+	// string comparison (content == key).
+	liveContentRendered string // cached glamour output for stream content
+	liveContentKey      string // raw StreamContent that was rendered (cache key)
+	liveContentWidth    int    // width at which content was rendered
+
+	// Same caching for reasoning content.
+	liveReasoningRendered string // cached renderReasoningBox output
+	liveReasoningKey      string // raw reasoning content that was rendered
+	liveReasoningWidth    int    // width at which reasoning was rendered
 }
 
 // resetAll clears all render caches. Called on resize, session switch, etc.
@@ -98,6 +112,12 @@ func (rc *renderCache) resetAll() {
 	rc.streamPrefixCompW = 0
 	rc.streamPrefixHeaderW = 0
 	rc.streamPrefixHasSep = false
+	rc.liveContentRendered = ""
+	rc.liveContentKey = ""
+	rc.liveContentWidth = 0
+	rc.liveReasoningRendered = ""
+	rc.liveReasoningKey = ""
+	rc.liveReasoningWidth = 0
 }
 
 // invalidateProgress resets all progress-related caches (called on iteration change).
@@ -107,6 +127,12 @@ func (rc *renderCache) invalidateProgress() {
 	rc.streamCompletedCount = 0
 	// Force prefix rebuild on next tick.
 	rc.streamPrefixLen = 0
+	// New iteration = new content. Invalidate glamour cache so the next
+	// render runs glamour fresh for the new iteration's content.
+	rc.liveContentRendered = ""
+	rc.liveContentKey = ""
+	rc.liveReasoningRendered = ""
+	rc.liveReasoningKey = ""
 }
 
 // bumpHistGen increments the histLines generation counter.
