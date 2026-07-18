@@ -404,8 +404,10 @@ type Agent struct {
 	// maskStore manages observation masking storage
 	maskStore *ObservationMaskStore
 
-	// cleanupStopCh signals the periodic cleanup goroutine to stop
-	cleanupStopCh chan struct{}
+	// lifecycleStopCh and lifecycleWG own the Agent's long-lived goroutines.
+	lifecycleStopCh chan struct{}
+	lifecycleWG     sync.WaitGroup
+	closeOnce       sync.Once
 
 	// contextEditor 管理上下文编辑（Context Editing 工具）
 	contextEditor *ContextEditor
@@ -1411,8 +1413,11 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// Start periodic cleanup for offload and mask data.
 	// Runs immediately at startup, then every 6 hours.
-	a.cleanupStopCh = make(chan struct{})
-	go a.periodicCleanup()
+	a.lifecycleWG.Add(1)
+	go func() {
+		defer a.lifecycleWG.Done()
+		a.periodicCleanup()
+	}()
 
 	// 注册 offload_recall 工具（需要 OffloadStore 依赖注入）
 	if a.offloadStore != nil {
@@ -1603,9 +1608,10 @@ func New(cfg Config) (*Agent, error) {
 			}
 			return mgr
 		}(),
-		bgTaskMgr:   tools.NewBackgroundTaskManager(),
-		cliSenderID: cfg.CLISenderID,
-		singleUser:  cfg.SingleUser,
+		bgTaskMgr:       tools.NewBackgroundTaskManager(),
+		cliSenderID:     cfg.CLISenderID,
+		singleUser:      cfg.SingleUser,
+		lifecycleStopCh: make(chan struct{}),
 	}
 
 	// 5. 初始化各类服务（修改 agent 指针）
@@ -1758,7 +1764,11 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	// 6. 启动 bg task 通知路由 goroutine
-	go agent.bgNotifyLoop()
+	agent.lifecycleWG.Add(1)
+	go func() {
+		defer agent.lifecycleWG.Done()
+		agent.bgNotifyLoop()
+	}()
 
 	// 7. Inject all registered tools into the local runner's tool set.
 	// This bridges the gap until tools are migrated to runner/tools/.
@@ -1974,34 +1984,30 @@ func (a *Agent) getUserSemaphore(senderID string) chan struct{} {
 
 // Close 关闭 Agent 及其所有资源
 func (a *Agent) Close() error {
-	// Cancel agent-level context to stop background subagents
-	if a.agentCancel != nil {
-		a.agentCancel()
-	}
-	// Stop periodic cleanup goroutine
-	if a.cleanupStopCh != nil {
-		close(a.cleanupStopCh)
-		a.cleanupStopCh = nil
-	}
-	// Deactivate all plugins before shutting down subsystems
-	if a.pluginMgr != nil {
-		a.pluginMgr.DeactivateAll(context.Background())
-	}
-	// 先停止 cron 调度器，避免在数据库关闭后仍尝试访问
-	if a.cronSch != nil {
-		a.cronSch.Stop()
-	}
-	// Close NotifyCh to unblock bgNotifyLoop goroutine
-	if a.bgTaskMgr != nil && a.bgTaskMgr.NotifyCh != nil {
-		close(a.bgTaskMgr.NotifyCh)
-		a.bgTaskMgr.NotifyCh = nil
-	}
-	// 再关闭数据库连接
-	if a.multiSession != nil {
-		if err := a.multiSession.Close(); err != nil {
-			log.WithError(err).Warn("MultiTenantSession close error")
+	a.closeOnce.Do(func() {
+		// Cancel agent-level context to stop background subagents.
+		if a.agentCancel != nil {
+			a.agentCancel()
 		}
-	}
+		// Stop producers before stopping the notification consumer.
+		if a.pluginMgr != nil {
+			a.pluginMgr.DeactivateAll(context.Background())
+		}
+		if a.cronSch != nil {
+			a.cronSch.Stop()
+		}
+		if a.lifecycleStopCh != nil {
+			close(a.lifecycleStopCh)
+		}
+		a.lifecycleWG.Wait()
+
+		// Close the database only after Agent-owned background work has exited.
+		if a.multiSession != nil {
+			if err := a.multiSession.Close(); err != nil {
+				log.WithError(err).Warn("MultiTenantSession close error")
+			}
+		}
+	})
 	return nil
 }
 
@@ -3383,23 +3389,31 @@ func (a *Agent) injectEventMessage(msg event.Message) {
 // reply on asyncCh to race with. Without this fallback, cron triggers and other bg
 // notifications would silently accumulate in bgRunPending until the first user message.
 func (a *Agent) bgNotifyLoop() {
-	for notif := range a.bgTaskMgr.NotifyCh {
-		// Always buffer first
-		a.enqueueBgNotification(notif)
-
-		sessionKey := notif.SessionKey()
-		if state, ok := a.bgSessionStates.Load(sessionKey); ok {
-			// Active chatWorker exists — signal it to drain at a safe point
-			ss := state.(*bgSessionState)
-			select {
-			case ss.notifyCh <- struct{}{}:
-			default:
-				// Already signaled — notification will be drained with others
+	for {
+		select {
+		case <-a.lifecycleStopCh:
+			return
+		case notif, ok := <-a.bgTaskMgr.NotifyCh:
+			if !ok {
+				return
 			}
-		} else {
-			// No active chatWorker (e.g. after restart). No Run() is in progress
-			// for this session, so processing directly is race-free.
-			a.drainAndProcessNotifications(sessionKey)
+			// Always buffer first
+			a.enqueueBgNotification(notif)
+
+			sessionKey := notif.SessionKey()
+			if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+				// Active chatWorker exists — signal it to drain at a safe point
+				ss := state.(*bgSessionState)
+				select {
+				case ss.notifyCh <- struct{}{}:
+				default:
+					// Already signaled — notification will be drained with others
+				}
+			} else {
+				// No active chatWorker (e.g. after restart). No Run() is in progress
+				// for this session, so processing directly is race-free.
+				a.drainAndProcessNotifications(sessionKey)
+			}
 		}
 	}
 }
@@ -3576,7 +3590,7 @@ func (a *Agent) periodicCleanup() {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-a.cleanupStopCh:
+		case <-a.lifecycleStopCh:
 			return
 		case <-ticker.C:
 			a.doCleanup()
