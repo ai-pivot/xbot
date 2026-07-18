@@ -454,13 +454,13 @@ export class ProgressStore {
     this.listeners.clear()
   }
 
-  /** Start a 3s timeout to auto-reset if the `text` event never arrives. */
+  /** Start a 1.5s timeout to auto-reset if the `text` event never arrives. */
   private startFinalizingTimeout(): void {
     if (this.finalizingTimer) clearTimeout(this.finalizingTimer)
     this.finalizingTimer = setTimeout(() => {
       this.finalizingTimer = null
       this.reset()
-    }, 3000)
+    }, 1500)
   }
 
   /* ── internals ── */

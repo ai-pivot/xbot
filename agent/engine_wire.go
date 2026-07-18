@@ -380,6 +380,26 @@ func (a *Agent) buildMainRunConfig(
 				}
 			}
 		}
+
+		// Fan-out: also send progress events to all OTHER ProgressSender
+		// channels so subscribers on non-originating channels (e.g. CLI TUI
+		// viewing a web session via /su, or web UI watching a CLI session)
+		// receive structured progress in real time.
+		//
+		// Performance: fanoutSenders is collected once at build time. Each
+		// SendProgress call does a subscriber map lookup — if no subscribers,
+		// it returns immediately (zero overhead). Mid-subscription works
+		// because SendProgress checks subscribers at call time, not build time.
+		if cfg.ProgressEventHandler != nil {
+			fanout := a.buildFanoutProgressHandler(chatID, channel)
+			if fanout != nil {
+				primary := cfg.ProgressEventHandler
+				cfg.ProgressEventHandler = func(ev *ProgressEvent) {
+					primary(ev)
+					fanout(ev)
+				}
+			}
+		}
 	}
 
 	// 注入 ContextManager
@@ -2129,6 +2149,103 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		})
 	}
 	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc
+}
+
+// buildFanoutProgressHandler builds a handler that forwards progress events
+// to all ProgressSender channels EXCEPT the originating one. This lets
+// subscribers on non-originating channels (e.g. CLI TUI watching a web session
+// via /su, or web UI watching a CLI session) receive structured progress.
+//
+// Performance: senders are collected once at build time. Each SendProgress
+// call does a subscriber map lookup — if no subscribers, it returns
+// immediately. Mid-subscription works because SendProgress checks
+// subscribers at call time, not build time.
+//
+// Returns nil if there are no other ProgressSender channels (zero overhead).
+func (a *Agent) buildFanoutProgressHandler(chatID, originatingChannel string) func(*ProgressEvent) {
+	if a.channelFinder == nil {
+		return nil
+	}
+	type senderEntry struct {
+		ps    channelpkg.ProgressSender
+		rawID string // raw chatID for SendProgress routing
+	}
+	var senders []senderEntry
+	// Check known ProgressSender channels: "web" and "cli".
+	// Plugin channels are also ProgressSenders but are handled by the
+	// primary handler when they're the originating channel.
+	for _, name := range []string{"web", "cli"} {
+		if name == originatingChannel {
+			continue
+		}
+		ch, ok := a.channelFinder(name)
+		if !ok {
+			continue
+		}
+		ps, ok := ch.(channelpkg.ProgressSender)
+		if !ok {
+			continue
+		}
+		senders = append(senders, senderEntry{ps: ps, rawID: chatID})
+	}
+	if len(senders) == 0 {
+		return nil
+	}
+	progressKey := qualifyChatID(originatingChannel, chatID)
+	return func(event *ProgressEvent) {
+		if event == nil || event.Structured == nil {
+			return
+		}
+		s := event.Structured
+		// Construct payload once, send to all fan-out channels.
+		payload := &protocol.ProgressEvent{
+			ChatID:           progressKey,
+			Phase:            string(s.Phase),
+			Seq:              s.Seq,
+			Iteration:        s.Iteration,
+			Content:          s.Content,
+			Reasoning:        s.ReasoningContent,
+			HistoryCompacted: s.HistoryCompacted,
+			CWD:              s.CWD,
+		}
+		for _, t := range s.ActiveTools {
+			payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
+				Name: t.Name, Label: t.Label, Status: string(t.Status),
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
+				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
+			})
+		}
+		for _, t := range s.CompletedTools {
+			payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
+				Name: t.Name, Label: t.Label, Status: string(t.Status),
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
+				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
+			})
+		}
+		if cliSubAgents := resolveSubAgents(event); len(cliSubAgents) > 0 {
+			payload.SubAgents = cliSubAgents
+		}
+		if len(s.Todos) > 0 {
+			payload.Todos = make([]protocol.TodoItem, len(s.Todos))
+			for i, td := range s.Todos {
+				payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+			}
+		}
+		if s.TokenUsage != nil {
+			payload.TokenUsage = &protocol.TokenUsage{
+				PromptTokens:     s.TokenUsage.PromptTokens,
+				CompletionTokens: s.TokenUsage.CompletionTokens,
+				TotalTokens:      s.TokenUsage.TotalTokens,
+				CacheHitTokens:   s.TokenUsage.CacheHitTokens,
+				MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
+			}
+		}
+		// Send to each fan-out channel. SendProgress does a subscriber
+		// lookup — if no subscribers, it returns immediately (zero cost).
+		for _, snd := range senders {
+			snd.ps.SendProgress(snd.rawID, payload)
+		}
+	}
 }
 
 // interactiveSessionsToStatuses converts InteractiveSessionInfo slice to

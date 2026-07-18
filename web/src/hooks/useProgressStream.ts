@@ -178,6 +178,13 @@ export function useProgressStream({
       }
       return
     }
+    // Don't re-hydrate after finalization — the turn is over, and the
+    // server's active_progress may be stale (not yet cleaned up). Only
+    // hydrate if we haven't started receiving live events for this turn
+    // (finalizedRef is false AND store is empty = fresh load/reconnect).
+    if (finalizedRef.current) return
+    const currentSnap = store.getSnapshot()
+    if (hasVisibleProgress(currentSnap)) return // already have live data
     const live = historyProgressToLive(initialProgress)
     // Only hydrate if we got something meaningful (non-empty snapshot)
     if (live.phase) {
