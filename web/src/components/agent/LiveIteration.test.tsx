@@ -19,6 +19,7 @@ function makeSnapshot(overrides: Partial<ProgressSnapshot> = {}): ProgressSnapsh
     phase: 'thinking',
     iteration: 1,
     streamContent: '',
+    content: '',
     reasoningStreamContent: '',
     streaming: true,
     activeTools: [],

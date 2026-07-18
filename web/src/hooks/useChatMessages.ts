@@ -129,7 +129,7 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
     }
 
     normalized.push({
-      id: `hist-${i}`,
+      id: m.seq != null ? `seq-${m.seq}` : `hist-${i}`,
       role: m.role,
       content,
       iterations,
@@ -138,6 +138,7 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       turnID: 0,
       displayOnly: false,
       persisted: true,
+      eventSeq: m.seq,
     })
   }
 
@@ -198,30 +199,27 @@ function shouldKeepVisibleRowsOnRefresh(
   return true
 }
 
+// reconcileHistoryWithLiveRows merges server history with live (unpersisted)
+// rows. Live rows that have a matching eventSeq in history are dropped — the
+// history version is authoritative. No string matching used.
 function reconcileHistoryWithLiveRows(
   history: ChatMessage[],
   current: ChatMessage[],
 ): ChatMessage[] {
-  const matchedHistoryRows = new Set<number>()
+  // Build a set of eventSeqs present in history (only for persisted messages
+  // that came from the server with a seq).
+  const historySeqs = new Set<number>()
+  for (const h of history) {
+    if (h.eventSeq != null) historySeqs.add(h.eventSeq)
+  }
   const liveRows = current.filter((message) => {
     if (message.persisted !== false) return false
-    const match = history.findIndex((persisted, index) => (
-      !matchedHistoryRows.has(index) && sameMessageOccurrence(persisted, message)
-    ))
-    if (match < 0) return true
-    matchedHistoryRows.add(match)
-    return false
+    // If this live row has an eventSeq that's already in history, drop it —
+    // the history version is authoritative (may have updated iterations).
+    if (message.eventSeq != null && historySeqs.has(message.eventSeq)) return false
+    return true
   })
   return [...history, ...liveRows]
-}
-
-function sameMessageOccurrence(persisted: ChatMessage, live: ChatMessage): boolean {
-  if (persisted.role !== live.role || persisted.content !== live.content) return false
-  const persistedAt = Date.parse(persisted.timestamp)
-  const liveAt = Date.parse(live.timestamp)
-  return Number.isFinite(persistedAt) &&
-    Number.isFinite(liveAt) &&
-    Math.abs(persistedAt - liveAt) <= 5_000
 }
 
 /** Parse SubAgent messages (simple role/content) into ChatMessage[]. */

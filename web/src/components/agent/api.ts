@@ -17,6 +17,10 @@ export interface HistMsg {
   content: string
   timestamp?: string
   iterations?: unknown[]
+  /** SSE sequence number (present when the message was delivered via SSE
+   *  before being persisted to DB). Used as a stable dedup key — no string
+   *  matching needed. */
+  seq?: number
 }
 
 /** Raw active-progress snapshot (protocol.ProgressEvent). */

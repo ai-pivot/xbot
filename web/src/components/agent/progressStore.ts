@@ -152,42 +152,47 @@ export function dedupTools(tools: WebToolProgress[]): WebToolProgress[] {
 }
 
 /**
- * Dedup messages by (turnID, role): only the last occurrence is kept.
- * For turnID=0 messages, only dedup live-append messages (id starts with 'asst-')
- * by (role, content) — prevents duplicate committed messages from multiple
- * onAssistantComplete calls. History messages (DB id) are never deduped.
+ * Dedup messages by stable identity — no string matching.
+ *
+ * Strategy:
+ * 1. Messages with turnID > 0: dedup by turnID:role (one message per turn per role).
+ * 2. Messages with eventSeq: dedup by eventSeq (SSE sequence is globally unique).
+ * 3. Messages with neither (history messages): never deduped — they have unique DB IDs.
  */
-export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string }>(
+export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number }>(
   messages: T[],
 ): T[] {
-  const seen = new Map<string, number>()
+  const turnSeen = new Map<string, number>()
+  const seqSeen = new Set<number>()
   const result: T[] = []
   for (let i = 0; i < messages.length; i++) {
     // Dedup by turnID:role for tracked turns
     if (messages[i].turnID > 0) {
       const key = `${messages[i].turnID}:${messages[i].role}`
-      const existing = seen.get(key)
+      const existing = turnSeen.get(key)
       if (existing !== undefined) {
         result[existing] = messages[i]
       } else {
-        seen.set(key, result.length)
+        turnSeen.set(key, result.length)
         result.push(messages[i])
       }
       continue
     }
-    // For turnID=0 assistant messages, only dedup live-append messages (id starts with 'asst-').
-    // History messages (DB numeric id) are never deduped — they have unique ids.
-    const content = messages[i].content ?? ''
-    const id = messages[i].id ?? ''
-    if (content && messages[i].role === 'assistant' && id.startsWith('asst-')) {
-      const contentKey = `${messages[i].role}:${content}`
-      const existingIdx = seen.get(contentKey)
-      if (existingIdx !== undefined) {
-        result[existingIdx] = messages[i]
+    // Dedup by eventSeq for live messages that have one
+    const seqVal = messages[i].eventSeq
+    if (seqVal != null) {
+      const seq = seqVal
+      if (seqSeen.has(seq)) {
+        // Replace existing with the newer version (may have updated content/iterations)
+        const existingIdx = result.findIndex((m) => m.eventSeq === seq)
+        if (existingIdx >= 0) {
+          result[existingIdx] = messages[i]
+        }
         continue
       }
-      seen.set(contentKey, result.length)
+      seqSeen.add(seq)
     }
+    // History messages (no turnID, no eventSeq) are never deduped — unique IDs.
     result.push(messages[i])
   }
   return result

@@ -98,13 +98,15 @@ export function MessageList({
   const { t } = useI18n()
 
   // Combined row list: committed messages + optional live streaming row.
-  // Dedup: if liveMessage content matches the last committed assistant message,
+  // Dedup: if the last committed message has the same eventSeq as liveMessage,
   // skip adding liveMessage (prevents one-frame overlap during finalize).
+  // Uses eventSeq (SSE sequence) — no string matching.
   const rows = useMemo<ChatMessage[]>(() => {
     if (!liveMessage) return messages
     const last = messages[messages.length - 1]
-    if (last && last.role === 'assistant' && last.content && liveMessage.content &&
-        last.content === liveMessage.content) {
+    if (last && last.role === 'assistant' &&
+        last.eventSeq != null && liveMessage.eventSeq != null &&
+        last.eventSeq === liveMessage.eventSeq) {
       return messages
     }
     return [...messages, liveMessage]
