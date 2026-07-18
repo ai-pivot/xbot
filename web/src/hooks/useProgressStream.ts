@@ -227,7 +227,7 @@ export function useProgressStream({
     return {
       id: `live-${chatID ?? 'unknown'}`,
       role: 'assistant',
-      content: snap.streamContent || '',
+      content: snap.streamContent || snap.content || '',
       iterations: snap.iterationHistory,
       timestamp: new Date().toISOString(),
       isPartial: true,
@@ -253,6 +253,7 @@ function hasVisibleProgress(snap: ProgressSnapshot): boolean {
   return Boolean(
     snap.streaming ||
       snap.streamContent ||
+      snap.content ||
       snap.reasoningStreamContent ||
       snap.activeTools.length ||
       snap.completedTools.length ||
@@ -330,6 +331,7 @@ function handleProgressMessage(
       const iteration = typeof p.iteration === 'number' ? p.iteration : undefined
       const phase = typeof p.phase === 'string' ? p.phase : undefined
       const reasoning = typeof p.reasoning === 'string' ? p.reasoning : undefined
+      const content = typeof p.content === 'string' ? p.content : undefined
 
       // Iteration history (live, from the structured event)
       let iterHistory: WebIteration[] | undefined
@@ -367,6 +369,7 @@ function handleProgressMessage(
       store.setStructuredTools({
         phase,
         iteration,
+        content,
         activeTools: active.length ? active : undefined,
         completedTools: completed.length ? completed : undefined,
         reasoning,

@@ -24,6 +24,7 @@ export interface HistProgress {
   phase?: string
   iteration?: number
   thinking?: string
+  content?: string
   active_tools?: unknown[]
   completed_tools?: unknown[]
   sub_agents?: unknown[]

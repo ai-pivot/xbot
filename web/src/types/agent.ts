@@ -109,6 +109,7 @@ export const EMPTY_LIVE_PROGRESS: LiveProgress = {
   phase: '',
   iteration: 0,
   streamContent: '',
+  content: '',
   reasoningStreamContent: '',
   streaming: false,
   activeTools: [],

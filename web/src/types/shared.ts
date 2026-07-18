@@ -275,6 +275,10 @@ export interface WebToolProgress {
   detail: string
   args: string
   toolHints: string
+  /** Iteration number this tool belongs to (from server). Used to filter
+   * cross-iteration tool pollution — completedTools should only contain
+   * tools from the CURRENT iteration, not all iterations. */
+  iteration?: number
 }
 
 /** Iteration snapshot — one completed iteration's reasoning + tools. */
@@ -301,6 +305,10 @@ export interface ProgressSnapshot {
   iteration: number
   streamContent: string
   reasoningStreamContent: string
+  /** Structured content from progress_structured events — fallback for
+   * text output when streamContent is empty (server may send text via
+   * structured events instead of stream_content). */
+  content: string
   streaming: boolean
   activeTools: WebToolProgress[]
   completedTools: WebToolProgress[]
@@ -329,6 +337,7 @@ export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
   iteration: 0,
   streamContent: '',
   reasoningStreamContent: '',
+  content: '',
   streaming: false,
   activeTools: [],
   completedTools: [],

@@ -128,6 +128,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     phase: p.phase,
     iteration: typeof p.iteration === 'number' ? p.iteration : 0,
     streamContent: p.stream_content ?? '',
+    content: p.content ?? '',
     reasoningStreamContent: '',
     streaming: true,
     activeTools: active,

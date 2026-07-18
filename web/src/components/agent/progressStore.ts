@@ -64,6 +64,7 @@ export function normalizeWebTool(raw: unknown): WebToolProgress | null {
     detail: typeof r.detail === 'string' ? r.detail : '',
     args: typeof r.args === 'string' ? r.args : '',
     toolHints: typeof r.tool_hints === 'string' ? r.tool_hints : '',
+    iteration: typeof r.iteration === 'number' ? r.iteration : undefined,
   }
 }
 
@@ -286,6 +287,7 @@ export class ProgressStore {
   setStructuredTools(opts: {
     phase?: string
     iteration?: number
+    content?: string
     activeTools?: WebToolProgress[]
     completedTools?: WebToolProgress[]
     reasoning?: string
@@ -330,7 +332,7 @@ export class ProgressStore {
         if (hadPreviousIteration) {
           const snap: WebIteration = {
             iteration: draft.lastIter,
-            thinking: draft.streamContent,
+            thinking: draft.streamContent || draft.content,
             reasoning: draft.lastReasoning || draft.reasoningStreamContent,
             tools: dedupTools(draft.completedTools),
             toolCount: draft.completedTools.length,
@@ -345,6 +347,7 @@ export class ProgressStore {
         if (hadPreviousIteration) {
           draft.streamContent = ''
           draft.reasoningStreamContent = ''
+          draft.content = ''
           draft.streamingTools = []
           draft.activeTools = []
           draft.completedTools = []
@@ -358,9 +361,25 @@ export class ProgressStore {
       // are only modified by stream_content events. streamingTools is filtered
       // below to remove stale generating tools that have transitioned to active.
 
+      // ── store structured content as fallback for streamContent ──
+      // Server may send text via structured events (Content field) instead of
+      // stream_content. Store it so LiveIteration can use it when streamContent
+      // is empty — prevents text from disappearing mid-iteration.
+      if (opts.content !== undefined) draft.content = opts.content
+
       // ── replace structured fields ──
+      // Filter completedTools by current iteration to prevent cross-iteration
+      // tool pollution. Server sends ALL completed tools across all iterations;
+      // we only want the current iteration's tools (previous iterations are
+      // already in iterationHistory).
+      const currentIter = opts.iteration ?? draft.iteration
       if (opts.activeTools) draft.activeTools = dedupTools(opts.activeTools)
-      if (opts.completedTools) draft.completedTools = dedupTools(opts.completedTools)
+      if (opts.completedTools) {
+        const filtered = currentIter > 0
+          ? opts.completedTools.filter((t) => t.iteration === undefined || t.iteration === currentIter)
+          : opts.completedTools
+        draft.completedTools = dedupTools(filtered)
+      }
       if (opts.iteration !== undefined) draft.iteration = opts.iteration
 
       // ── filter stale generating tools ──
@@ -481,6 +500,7 @@ export class ProgressStore {
       phase: this.current.phase,
       iteration: this.current.iteration,
       streamContent: this.current.streamContent,
+      content: this.current.content,
       reasoningStreamContent: this.current.reasoningStreamContent,
       streaming: this.current.streaming,
       activeTools: this.current.activeTools,

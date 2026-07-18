@@ -39,7 +39,10 @@ export const LiveIteration = memo(function LiveIteration({
   // Reasoning: prefer streaming value, fall back to structured (mirrors TUI)
   const reasoningContent = progress.reasoningStreamContent || progress.lastReasoning || ''
   const hasReasoning = Boolean(reasoningContent)
-  const hasStreamContent = Boolean(progress.streamContent)
+  // Text output: prefer streaming (real-time), fall back to structured content
+  // (snapshot from server — may arrive without preceding stream_content events)
+  const textContent = progress.streamContent || progress.content || ''
+  const hasStreamContent = Boolean(textContent)
   const hasSubAgents = progress.subAgents.length > 0
 
   // Merge all tool groups, using the shared dedupTools (generating skips dedup)
@@ -79,7 +82,7 @@ export const LiveIteration = memo(function LiveIteration({
       {hasStreamContent && (
         <div className={progress.streaming ? 'streaming-content' : undefined}>
           <MarkdownRenderer
-            content={progress.streamContent}
+            content={textContent}
             className="text-sm text-text-primary"
           />
         </div>
