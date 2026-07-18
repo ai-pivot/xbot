@@ -157,9 +157,26 @@ func (wc *WebChannel) handleIdentities(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Also return all channels that have sessions in the DB — this
+	// dynamically discovers plugin channels (github, gitlab, etc.) without
+	// hardcoding. Frontend uses this to show channel icons in ActivityBar.
+	var channels []string
+	if wc.db != nil {
+		rows, err := wc.db.Query(`SELECT DISTINCT channel FROM tenants WHERE chat_id != '_shared' ORDER BY channel`)
+		if err == nil {
+			for rows.Next() {
+				var ch string
+				if rows.Scan(&ch) == nil {
+					channels = append(channels, ch)
+				}
+			}
+			rows.Close()
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id":    userID,
 		"identities": identities,
+		"channels":   channels,
 	})
 }
 

@@ -53,9 +53,6 @@ func rpcBizID(ctx context.Context) string {
 }
 
 // rpcUserID returns the canonical user ID from context (0 if unresolved).
-// Will be used in Phase 2 asset migration.
-var _ = rpcUserID
-
 func rpcUserID(ctx context.Context) int64 {
 	if v, ok := ctx.Value(rpcCtxKey).(*RPCCtxData); ok {
 		return v.UserID

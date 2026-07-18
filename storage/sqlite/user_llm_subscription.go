@@ -204,6 +204,42 @@ func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, erro
 	return subs, nil
 }
 
+// ListByUserID returns all subscriptions for a canonical user (by user_id),
+// plus the shared system subscription. This is the canonical-user-scoped
+// query — all identities linked to the same user see the same subscriptions.
+func (s *LLMSubscriptionService) ListByUserID(userID int64) ([]*LLMSubscription, error) {
+	conn := s.db.Conn()
+	rows, err := conn.Query(`
+			SELECT `+userLLMSubscriptionSelectCols+`
+				FROM user_llm_subscriptions
+				WHERE user_id = ? OR is_system = 1
+				ORDER BY is_system DESC, created_at ASC
+			`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list subscriptions by user_id: %w", err)
+	}
+	defer rows.Close()
+
+	var subs []*LLMSubscription
+	for rows.Next() {
+		sub := &LLMSubscription{}
+		encryptedAPIKey, err := scanSubscription(rows, sub)
+		if err != nil {
+			return nil, fmt.Errorf("scan subscription: %w", err)
+		}
+		decryptAPIKey(sub, encryptedAPIKey)
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for _, sub := range subs {
+		s.loadPerModelConfigs(sub)
+	}
+	return subs, nil
+}
+
 // markDefaultsFor is a no-op. IsDefault/Active projection has been retired —
 // subscriptions no longer have a "default" concept. The user_default_model
 // table is repurposed as "last used model" storage, not a default marker.
@@ -242,6 +278,30 @@ func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, 
 		return nil, fmt.Errorf("get default subscription: %w", err)
 	}
 	// IsDefault is always false — no "default subscription" concept.
+	return sub, nil
+}
+
+// GetDefaultByUserID returns the user's last-used subscription, resolving
+// by canonical user_id instead of sender_id. Falls back to system subscription.
+func (s *LLMSubscriptionService) GetDefaultByUserID(userID int64) (*LLMSubscription, error) {
+	udm, err := s.GetUserDefaultModelByUserID(userID)
+	if err != nil {
+		return nil, fmt.Errorf("get default subscription by user_id: %w", err)
+	}
+	if udm == nil {
+		sys, err := s.GetSystemSubscription()
+		if err != nil {
+			return nil, fmt.Errorf("get default subscription (system fallback): %w", err)
+		}
+		if sys != nil {
+			sys.IsDefault = true
+		}
+		return sys, nil
+	}
+	sub, err := s.Get(udm.SubscriptionID)
+	if err != nil {
+		return nil, fmt.Errorf("get default subscription: %w", err)
+	}
 	return sub, nil
 }
 
@@ -739,6 +799,17 @@ func (s *LLMSubscriptionService) SetSubscriptionEnabled(subID string, enabled bo
 	return nil
 }
 
+// SetSubscriptionUserID sets the user_id for a subscription. Called after Add
+// to ensure ListByUserID can find the subscription.
+func (s *LLMSubscriptionService) SetSubscriptionUserID(subID string, userID int64) error {
+	conn := s.db.Conn()
+	_, err := conn.Exec(`UPDATE user_llm_subscriptions SET user_id = ? WHERE id = ?`, userID, subID)
+	if err != nil {
+		return fmt.Errorf("set subscription user_id: %w", err)
+	}
+	return nil
+}
+
 // SetModelEnabled toggles a model's enabled flag (v38). Disabling a model removes
 // it from the selectable catalog without deleting its per-model config.
 func (s *LLMSubscriptionService) SetModelEnabled(subID, model string, enabled bool) error {
@@ -797,6 +868,28 @@ func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefa
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user default model: %w", err)
+	}
+	m.UpdatedAt = parseSQLiteTime(updatedAt)
+	return m, nil
+}
+
+// GetUserDefaultModelByUserID returns the most recently updated default model
+// for a canonical user. After MergeUsers, all rows share the same user_id;
+// we pick the latest updated_at to handle edge cases.
+func (s *LLMSubscriptionService) GetUserDefaultModelByUserID(userID int64) (*UserDefaultModel, error) {
+	conn := s.db.Conn()
+	m := &UserDefaultModel{}
+	var updatedAt string
+	err := conn.QueryRow(`
+		SELECT sender_id, subscription_id, model, updated_at
+		FROM user_default_model WHERE user_id = ?
+		ORDER BY updated_at DESC LIMIT 1
+	`, userID).Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user default model by user_id: %w", err)
 	}
 	m.UpdatedAt = parseSQLiteTime(updatedAt)
 	return m, nil

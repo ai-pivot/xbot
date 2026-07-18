@@ -798,17 +798,15 @@ func Run(args []string) error {
 			} else if role == "" {
 				role = "user"
 			}
-			// Resolve bizID via canonical user: all identities linked to the
-			// same canonical user must share the same business senderID so
-			// they see the same subscriptions, settings, and tier config.
-			// Priority: explicit params sender_id > ResolvePrimarySenderID > auth senderID.
+			// bizID is the sender-level identity (for per-session operations).
+			// userID is the canonical user identity (for subscription/settings queries).
+			// RPC handlers choose which to use: subscription/settings use rpcUserID(ctx),
+			// per-session operations use rpcBizID(ctx).
 			bizID := senderID
 			if explicit := senderIDFromParams(params); explicit != "" {
 				bizID = explicit
-			} else if userID > 0 && ag.IdentityResolver() != nil {
-				if primary := ag.IdentityResolver().ResolvePrimarySenderID(userID); primary != "" {
-					bizID = primary
-				}
+			} else if senderID == "admin" {
+				bizID = cliSenderID
 			}
 			ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, userID, role)
 			return rpcTable.Dispatch(ctx, method, params)
@@ -1278,8 +1276,8 @@ func sessionKeyOwner(key string) string {
 }
 
 // senderIDFromParams extracts an explicit sender_id from RPC params if present.
-// Returns empty string when not specified — callers should fall back to
-// ResolvePrimarySenderID for canonical user resolution.
+// Returns empty string when not specified — callers should use rpcBizID(ctx)
+// or rpcUserID(ctx) for canonical user resolution.
 func senderIDFromParams(params json.RawMessage) string {
 	var p struct {
 		SenderID string `json:"sender_id"`

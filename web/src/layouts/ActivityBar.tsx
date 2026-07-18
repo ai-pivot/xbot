@@ -21,6 +21,8 @@ import {
   Bot,
   Server,
   Settings,
+  LayoutGrid,
+  Plug,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { useI18n } from '@/providers/i18n'
@@ -38,6 +40,11 @@ interface IdentityEntry {
   channel_user_id: string
 }
 
+interface IdentitiesResponse {
+  identities?: IdentityEntry[]
+  channels?: string[]
+}
+
 interface ActivityBarProps {
   /** Open the global settings dialog (Sheet). */
   onOpenSettings: () => void
@@ -52,17 +59,21 @@ const CHANNEL_ICONS: Record<string, IconComponent> = {
   qq: MessageSquare,
   napcat: Bot,
   system: Server,
+  github: Plug,
+  gitlab: Plug,
 }
 
 export function ActivityBar({ onOpenSettings, settingsVersion = 0 }: ActivityBarProps) {
   const { t } = useI18n()
   const { activeChannel, setActiveChannel } = useSessionStore()
   const [identities, setIdentities] = useState<IdentityEntry[]>([])
+  const [discoveredChannels, setDiscoveredChannels] = useState<string[]>([])
 
   const fetchIdentities = useCallback(async () => {
     try {
-      const data = await postAPI<{ identities?: IdentityEntry[] }>('/api/account/identities/list')
+      const data = await postAPI<IdentitiesResponse>('/api/account/identities/list')
       setIdentities(data.identities || [])
+      setDiscoveredChannels(data.channels || [])
     } catch {
       // Degraded: show only aggregate + web
     }
@@ -77,17 +88,26 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0 }: ActivityBar
     if (settingsVersion > 0) fetchIdentities()
   }, [settingsVersion, fetchIdentities])
 
-  // Deduplicate by channel: a canonical user may have linked multiple
-  // identities on the same channel (e.g. two CLI machines). Show one icon
-  // per channel, keeping the most recently linked identity.
+  // Build the set of channels to show: linked identities + channels
+  // discovered from the DB (includes plugin channels like github/gitlab
+  // that have sessions but no linked identity).
   const channelIdentities = useMemo(() => {
-    const byChannel = new Map<string, IdentityEntry>()
-    for (const id of identities) {
-      if (id.channel === 'web') continue // web is handled separately
-      byChannel.set(id.channel, id) // last wins (sorted by linked_at ASC)
+    const byChannel = new Map<string, IdentityEntry | null>()
+    // First add discovered channels (from DB — includes plugin channels)
+    for (const ch of discoveredChannels) {
+      if (ch === 'web' || ch === 'agent') continue
+      byChannel.set(ch, null) // null means "no linked identity, but sessions exist"
     }
-    return Array.from(byChannel.values())
-  }, [identities])
+    // Then overlay linked identities (these take precedence — they have badges)
+    for (const id of identities) {
+      if (id.channel === 'web' || id.channel === 'agent') continue
+      byChannel.set(id.channel, id)
+    }
+    return Array.from(byChannel.entries()).map(([channel, identity]) => ({
+      channel,
+      identity,
+    }))
+  }, [identities, discoveredChannels])
 
   // Determine if we should merge aggregate and web icon (only web identity, no linked)
   const mergeAggregate = channelIdentities.length === 0
@@ -111,7 +131,7 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0 }: ActivityBar
                 className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r"
                 style={{ backgroundColor: activeChannel === null ? 'var(--accent)' : 'transparent' }}
               />
-              <Globe className="size-5" />
+              <LayoutGrid className="size-5" />
             </button>
           </TooltipTrigger>
           <TooltipContent side="right">{t('channel.all')}</TooltipContent>
@@ -128,21 +148,21 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0 }: ActivityBar
           />
         )}
 
-        {/* Per-channel identity icons */}
-        {channelIdentities.map((id) => {
-          const Icon = CHANNEL_ICONS[id.channel] || Globe
-          const badge = id.channel_user_id?.charAt(0) || ''
-          const label = t(`channel.${id.channel}`) || id.channel
-          const isActive = activeChannel === id.channel
+        {/* Per-channel identity icons (includes plugin channels from DB) */}
+        {channelIdentities.map(({ channel, identity }) => {
+          const Icon = CHANNEL_ICONS[channel] || Globe
+          const badge = identity?.channel_user_id?.charAt(0) || ''
+          const label = t(`channel.${channel}`) || channel
+          const isActive = activeChannel === channel
           return (
             <ChannelIcon
-              key={`${id.channel}-${id.id}`}
-              channel={id.channel}
+              key={channel}
+              channel={channel}
               icon={Icon}
               badge={badge}
               label={label}
               active={isActive}
-              onClick={() => setActiveChannel(id.channel)}
+              onClick={() => setActiveChannel(channel)}
             />
           )
         })}

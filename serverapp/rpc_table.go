@@ -333,14 +333,11 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		Namespace string `json:"namespace"`
 		SenderID  string `json:"sender_id"`
 	}) (any, error) {
-		bizID := rpcBizID(ctx)
-		if err := migrateCLIUserSettingsFromGlobalIfNeeded(h.Cfg, h.Ag, p.Namespace, bizID); err != nil {
-			return nil, err
-		}
+		userID := rpcUserID(ctx)
 		if h.Ag.SettingsService() == nil {
 			return nil, errSettingsUnavailable
 		}
-		result, err := h.Ag.SettingsService().GetSettings(p.Namespace, bizID)
+		result, err := h.Ag.SettingsService().GetByUserID(p.Namespace, userID)
 		if err != nil {
 			return nil, err
 		}
@@ -359,7 +356,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 			// Derive from current subscription's per-model config.
 			// Falls back to config.Agent.MaxContextTokens if no subscription.
 			if h.Ag.LLMFactory() != nil {
-				if mc := h.Ag.LLMFactory().GetEffectiveMaxContext(bizID, ""); mc > 0 {
+				if mc := h.Ag.LLMFactory().GetEffectiveMaxContext(rpcBizID(ctx), ""); mc > 0 {
 					result["max_context_tokens"] = fmt.Sprintf("%d", mc)
 				} else {
 					result["max_context_tokens"] = fmt.Sprintf("%d", h.Cfg.Agent.MaxContextTokens)
@@ -389,16 +386,12 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		Value     string `json:"value"`
 	}) error {
 		bizID := rpcBizID(ctx)
-		if err := migrateCLIUserSettingsFromGlobalIfNeeded(h.Cfg, h.Ag, p.Namespace, bizID); err != nil {
-			return err
-		}
+		userID := rpcUserID(ctx)
 		switch p.Key {
 		case "llm_provider", "llm_api_key", "llm_model", "llm_base_url":
 			return nil
 		}
 		// Global-scoped keys (sandbox_mode) are server-level config, not per-user.
-		// Apply runtime effect but don't persist to user_settings DB —
-		// the source of truth is config.json.
 		if channel.IsGlobalScopedSettingKey(p.Key) {
 			if isAdmin(ctx) {
 				applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
@@ -407,7 +400,6 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		}
 		// Subscription-scoped keys (max_context_tokens) are stored in the
 		// subscription's PerModelConfigs, NOT in user_settings DB.
-		// The CLI's saveSettings() handles the write via subscriptionMgr.Update().
 		if channel.IsSubscriptionScopedSettingKey(p.Key) {
 			if isAdmin(ctx) {
 				applyRuntimeSetting(h.Cfg, h.Ag, bizID, p.Key, p.Value)
@@ -417,7 +409,9 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.SettingsService() == nil {
 			return errSettingsUnavailable
 		}
-		if err := h.Ag.SettingsService().SetSetting(p.Namespace, bizID, p.Key, p.Value); err != nil {
+		// Write by canonical user_id — all identities linked to the same user
+		// share the same settings.
+		if err := h.Ag.SettingsService().SetByUserID(p.Namespace, userID, p.Key, p.Value); err != nil {
 			return err
 		}
 		if isAdmin(ctx) {
@@ -595,7 +589,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		entries := h.Ag.LLMFactory().ListAllModelEntriesForUser(rpcBizID(ctx))
+		entries := h.Ag.LLMFactory().ListAllModelEntriesForUserID(rpcUserID(ctx))
 		log.WithField("count", len(entries)).Debug("RPC list_all_model_entries")
 		return entries, nil
 	})
@@ -714,6 +708,11 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		dbSub.SenderID = rpcBizID(ctx)
 		if err := svc.Add(dbSub); err != nil {
 			return err
+		}
+		// Write user_id so ListByUserID can find this subscription.
+		// Add() doesn't write user_id (legacy schema), so we patch it here.
+		if uid := rpcUserID(ctx); uid > 0 {
+			svc.SetSubscriptionUserID(dbSub.ID, uid)
 		}
 		return nil
 	})
@@ -1453,12 +1452,12 @@ func HandleCLIRPC(table RPCTable, method string, params json.RawMessage, senderI
 // ── Complex subscription handlers (extracted for readability) ──
 
 func (h *RPCContext) listSubscriptions(ctx context.Context) ([]channel.Subscription, error) {
-	bizID := rpcBizID(ctx)
+	userID := rpcUserID(ctx)
 	svc, err := h.requireSubscriptionSvc()
 	if err != nil {
 		return []channel.Subscription{}, nil
 	}
-	subs, err := svc.List(bizID)
+	subs, err := svc.ListByUserID(userID)
 	if err != nil {
 		return nil, err
 	}

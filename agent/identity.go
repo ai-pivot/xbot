@@ -108,44 +108,6 @@ func (r *IdentityResolver) IsAdmin(userID int64) bool {
 	return r.getRole(userID) == "admin"
 }
 
-// ResolvePrimarySenderID returns the canonical senderID for a user — the
-// single business identity used for all DB queries (subscriptions, settings,
-// tier config, etc.).
-//
-// All channel identities linked to the same canonical user MUST resolve to the
-// same primary senderID. This is the architectural contract: subscriptions are
-// effectively bound to the canonical user through this primary senderID.
-//
-// Resolution priority:
-//  1. "cli" channel identity (e.g. "cli_user") — CLI is the primary management
-//     surface; admin subscriptions, settings, and tier config live here.
-//  2. First linked identity by linked_at (oldest = most established).
-//  3. Empty string if the user has no linked identities.
-func (r *IdentityResolver) ResolvePrimarySenderID(userID int64) string {
-	if r == nil || !r.initialized || userID == 0 {
-		return ""
-	}
-	// Try CLI channel first — it's the canonical management identity.
-	var cliID string
-	err := r.db.QueryRow(
-		`SELECT channel_user_id FROM user_identities WHERE user_id = ? AND channel = 'cli' LIMIT 1`,
-		userID,
-	).Scan(&cliID)
-	if err == nil && cliID != "" {
-		return cliID
-	}
-	// Fall back to the oldest linked identity (any channel).
-	var channelUserID string
-	err = r.db.QueryRow(
-		`SELECT channel_user_id FROM user_identities WHERE user_id = ? ORDER BY linked_at LIMIT 1`,
-		userID,
-	).Scan(&channelUserID)
-	if err == nil {
-		return channelUserID
-	}
-	return ""
-}
-
 // SetRole updates a user's role.
 func (r *IdentityResolver) SetRole(userID int64, role string) error {
 	if r == nil || !r.initialized {
