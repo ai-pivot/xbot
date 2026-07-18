@@ -27,6 +27,8 @@ import (
 	"xbot/oauth"
 	"xbot/oauth/providers"
 	"xbot/plugin"
+
+	lark "github.com/larksuite/oapi-sdk-go/v3"
 	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -452,7 +454,7 @@ func Run(args []string) error {
 		log.WithError(err).Fatal("Failed to migrate data to SQLite")
 	}
 
-	oauthServer, oauthManager, feishuProvider, sharedDB, err := setupOAuth(cfg, dbPath)
+	oauthServer, oauthManager, _, sharedDB, err := setupOAuth(cfg, dbPath)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to setup OAuth")
 	}
@@ -675,7 +677,15 @@ func Run(args []string) error {
 		}
 	}
 
-	// 注册 OAuth 和 Feishu MCP 工具（如果启用）
+	// 初始化 Feishu MCP（无论 OAuth 是否启用，飞书消息相关工具需要它）
+	feishuMCP := feishu_mcp.NewFeishuMCP(oauthManager, cfg.Feishu.AppID, cfg.Feishu.AppSecret)
+	feishuMCP.SetLarkClient(lark.NewClient(cfg.Feishu.AppID, cfg.Feishu.AppSecret,
+		lark.WithOpenBaseUrl("https://open.feishu.cn")))
+
+	// 消息工具（不需要 OAuth，直接用 Lark client 发消息/文件）
+	ag.RegisterToolForChannel("feishu", &feishu_mcp.SendFileTool{MCP: feishuMCP})
+
+	// 注册 OAuth 和 Feishu MCP 文档工具（如果 OAuth 启用）
 	if cfg.OAuth.Enable && oauthManager != nil {
 		// 注册 OAuth 工具
 		oauthTool := &tools.OAuthTool{
@@ -683,10 +693,6 @@ func Run(args []string) error {
 			BaseURL: cfg.OAuth.BaseURL,
 		}
 		ag.RegisterCoreTool(oauthTool)
-		feishuMCP := feishu_mcp.NewFeishuMCP(oauthManager, cfg.Feishu.AppID, cfg.Feishu.AppSecret)
-		if feishuProvider != nil {
-			feishuMCP.SetLarkClient(feishuProvider.GetLarkClient())
-		}
 		ag.RegisterToolForChannel("feishu", &feishu_mcp.ListAllBitablesTool{MCP: feishuMCP})
 		ag.RegisterToolForChannel("feishu", &feishu_mcp.BitableFieldsTool{MCP: feishuMCP})
 		ag.RegisterToolForChannel("feishu", &feishu_mcp.BitableRecordTool{MCP: feishuMCP})
@@ -721,7 +727,7 @@ func Run(args []string) error {
 		ag.RegisterToolForChannel("feishu", &feishu_mcp.DownloadFileTool{MCP: feishuMCP})
 		ag.RegisterToolForChannel("feishu", &feishu_mcp.SendFileTool{MCP: feishuMCP})
 
-		log.Info("OAuth and Feishu MCP tools registered")
+		log.Info("OAuth and Feishu MCP document tools registered")
 	}
 
 	// 注册 DownloadFile 工具（支持 Web/OSS 和飞书两种来源）
