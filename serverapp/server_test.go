@@ -1422,65 +1422,6 @@ func TestHandleCLIRPCUpdateSubscription_PreservesCredentials(t *testing.T) {
 	}
 }
 
-func newTestBackendWithSettings(t *testing.T) (*agent.Agent, *sqlite.UserSettingsService) {
-	t.Helper()
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "settings.db"))
-	if err != nil {
-		t.Fatalf("sqlite.Open() error = %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	store := sqlite.NewUserSettingsService(db)
-	agentSvc := agent.NewSettingsService(store)
-	ag := &agent.Agent{}
-	ag.SetSettingsService(agentSvc)
-	return ag, store
-}
-
-func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SeedsOnlyWhenEmpty(t *testing.T) {
-	cfg := newTestConfig()
-	ag, store := newTestBackendWithSettings(t)
-	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, ag, "cli", "cli_user"); err != nil {
-		t.Fatalf("migrateCLIUserSettingsFromGlobalIfNeeded() error = %v", err)
-	}
-	seeded, err := store.Get("cli", "cli_user")
-	if err != nil {
-		t.Fatalf("store.Get() error = %v", err)
-	}
-	if len(seeded) == 0 {
-		t.Fatal("expected seeded settings, got none")
-	}
-	if seeded["context_mode"] != "manual" {
-		t.Fatalf("context_mode = %q, want manual", seeded["context_mode"])
-	}
-	if seeded["theme"] != "midnight" {
-		t.Fatalf("theme = %q, want midnight", seeded["theme"])
-	}
-	if seeded["enable_auto_compress"] != "false" {
-		t.Fatalf("enable_auto_compress = %q, want false", seeded["enable_auto_compress"])
-	}
-	if _, ok := seeded["llm_model"]; ok {
-		t.Fatalf("llm_model should not be seeded into user settings: %#v", seeded)
-	}
-}
-
-func TestMigrateCLIUserSettingsFromGlobalIfNeeded_SkipsWhenUserAlreadyHasSettings(t *testing.T) {
-	cfg := newTestConfig()
-	ag, store := newTestBackendWithSettings(t)
-	if err := store.Set("cli", "cli_user", "theme", "mono"); err != nil {
-		t.Fatalf("store.Set() error = %v", err)
-	}
-	if err := migrateCLIUserSettingsFromGlobalIfNeeded(cfg, ag, "cli", "cli_user"); err != nil {
-		t.Fatalf("migrateCLIUserSettingsFromGlobalIfNeeded() error = %v", err)
-	}
-	vals, err := store.Get("cli", "cli_user")
-	if err != nil {
-		t.Fatalf("store.Get() error = %v", err)
-	}
-	if len(vals) != 1 || vals["theme"] != "mono" {
-		t.Fatalf("expected existing settings to remain untouched, got %#v", vals)
-	}
-}
-
 func TestApplyRuntimeSetting_UpdatesConfig(t *testing.T) {
 	cfg := newTestConfig()
 	var ag *agent.Agent // nil is fine — we only test cfg mutation

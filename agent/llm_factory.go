@@ -1281,6 +1281,25 @@ func (f *LLMFactory) RefreshModelEntriesForUser(senderID string) []protocol.Mode
 	return entries
 }
 
+// RefreshModelEntriesForUserID refreshes models for a canonical user_id.
+func (f *LLMFactory) RefreshModelEntriesForUserID(userID int64) []protocol.ModelEntry {
+	entries, _ := f.RefreshModelEntriesForUserIDWithResults(userID)
+	return entries
+}
+
+// RefreshModelEntriesForUserIDWithResults is the canonical-user variant.
+func (f *LLMFactory) RefreshModelEntriesForUserIDWithResults(userID int64) ([]protocol.ModelEntry, []RefreshResult) {
+	if f.subscriptionSvc == nil {
+		return f.ListAllModelEntriesForUserID(userID), nil
+	}
+	subs, err := f.subscriptionSvc.ListByUserID(userID)
+	if err != nil {
+		return f.ListAllModelEntriesForUserID(userID), nil
+	}
+	results := f.refreshModelEntriesCore(subs)
+	return f.ListAllModelEntriesForUserID(userID), results
+}
+
 // RefreshModelEntriesForUserWithResults is the extended variant that also
 // returns per-subscription refresh outcomes. Used by /models so the user can
 // see which subscriptions refreshed successfully and which failed (and why),
@@ -1299,7 +1318,14 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 	if err != nil {
 		return f.ListAllModelEntriesForUser(senderID), nil
 	}
+	results := f.refreshModelEntriesCore(subs)
+	return f.ListAllModelEntriesForUser(senderID), results
+}
 
+// refreshModelEntriesCore is the shared refresh logic for both senderID and
+// userID variants. It fetches /models for each enabled subscription, upserts
+// results into subscription_models via OnModelsLoaded, and returns per-sub results.
+func (f *LLMFactory) refreshModelEntriesCore(subs []*sqlite.LLMSubscription) []RefreshResult {
 	// Collect results keyed by sub ID so the summary is stable regardless of
 	// goroutine completion order. Preserves subscription list order.
 	results := make([]RefreshResult, 0, len(subs))
@@ -1314,7 +1340,6 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 			r.Error = "missing base_url or api_key"
 			log.WithFields(log.Fields{"sub": sub.Name, "has_baseurl": sub.BaseURL != "", "has_apikey": sub.APIKey != ""}).Debug("[LLM] RefreshModelEntries: skipping sub (missing base_url or api_key)")
 		default:
-			// placeholder; filled in by the goroutine below.
 			r.Status = "pending"
 		}
 		results = append(results, r)
@@ -1334,7 +1359,6 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			r := resultByID[s.ID]
-			// /models fetch only needs credentials — model name is irrelevant.
 			client := f.createClientFromSub(s, "")
 			if client == nil {
 				r.Status = "noclient"
@@ -1344,7 +1368,6 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 			loader, ok := client.(llm.ModelLoader)
 			if !ok {
 				r.Status = "noloader"
-				// Anthropic etc. don't expose /models; not an error, just unsupported.
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -1355,7 +1378,6 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != "", "err": err.Error()}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
 				return
 			}
-			// Re-read to count subscription_models rows (OnModelsLoaded upserts them).
 			r.Status = "ok"
 			if models, gerr := f.subscriptionSvc.GetModels(s.ID); gerr == nil {
 				r.ModelCount = len(models)
@@ -1363,7 +1385,7 @@ func (f *LLMFactory) RefreshModelEntriesForUserWithResults(senderID string) ([]p
 		}(sub)
 	}
 	wg.Wait()
-	return f.ListAllModelEntriesForUser(senderID), results
+	return results
 }
 
 // truncateErrMsg shortens an error message for user-facing display. Long SDK

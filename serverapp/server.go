@@ -803,9 +803,7 @@ func Run(args []string) error {
 			// RPC handlers choose which to use: subscription/settings use rpcUserID(ctx),
 			// per-session operations use rpcBizID(ctx).
 			bizID := senderID
-			if explicit := senderIDFromParams(params); explicit != "" {
-				bizID = explicit
-			} else if senderID == "admin" {
+			if senderID == "admin" {
 				bizID = cliSenderID
 			}
 			ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, userID, role)
@@ -1152,44 +1150,6 @@ func buildRunnerConnectCmd(cfg *config.Config, entry *tools.RunnerTokenEntry) st
 	return cmd
 }
 
-func userScopedSettingsFromGlobalCLI(cfg *config.Config) map[string]string {
-	vals := map[string]string{
-		"context_mode":       cfg.Agent.ContextMode,
-		"max_iterations":     fmt.Sprintf("%d", cfg.Agent.MaxIterations),
-		"max_concurrency":    fmt.Sprintf("%d", cfg.Agent.MaxConcurrency),
-		"max_context_tokens": fmt.Sprintf("%d", cfg.Agent.MaxContextTokens),
-		"theme":              "midnight",
-	}
-	if cfg.Agent.EnableAutoCompress != nil {
-		vals["enable_auto_compress"] = fmt.Sprintf("%t", *cfg.Agent.EnableAutoCompress)
-	} else {
-		vals["enable_auto_compress"] = "true"
-	}
-	return vals
-}
-
-func migrateCLIUserSettingsFromGlobalIfNeeded(cfg *config.Config, ag *agent.Agent, namespace, senderID string) error {
-	if senderID == "" || ag.SettingsService() == nil {
-		return nil
-	}
-	existing, err := ag.SettingsService().GetSettings(namespace, senderID)
-	if err != nil {
-		return err
-	}
-	if len(existing) > 0 {
-		return nil
-	}
-	for k, v := range userScopedSettingsFromGlobalCLI(cfg) {
-		if strings.TrimSpace(v) == "" {
-			continue
-		}
-		if err := ag.SettingsService().SetSetting(namespace, senderID, k, v); err != nil {
-			return fmt.Errorf("seed user setting %s: %w", k, err)
-		}
-	}
-	return nil
-}
-
 // saveServerConfig persists only the config sections the server actually modifies.
 // It reads the current disk config first, overwrites ONLY the fields the server owns,
 // then writes back — all other sections are preserved untouched.
@@ -1273,19 +1233,6 @@ func sessionKeyOwner(key string) string {
 		return ""
 	}
 	return parts[1]
-}
-
-// senderIDFromParams extracts an explicit sender_id from RPC params if present.
-// Returns empty string when not specified — callers should use rpcBizID(ctx)
-// or rpcUserID(ctx) for canonical user resolution.
-func senderIDFromParams(params json.RawMessage) string {
-	var p struct {
-		SenderID string `json:"sender_id"`
-	}
-	if err := json.Unmarshal(params, &p); err == nil {
-		return p.SenderID
-	}
-	return ""
 }
 
 // migrateConfigSubscriptions seeds config.json subscriptions into the DB for a given user.

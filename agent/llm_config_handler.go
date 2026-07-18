@@ -629,6 +629,18 @@ func (a *Agent) GetUserThinkingMode(senderID string) string {
 	return vals["thinking_mode"]
 }
 
+// GetUserThinkingModeForUserID returns thinking_mode for a canonical user.
+func (a *Agent) GetUserThinkingModeForUserID(userID int64) string {
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
+		return ""
+	}
+	vals, err := a.userSys.settingsSvc.GetByUserID(thinkingModeChannel, userID)
+	if err != nil || vals == nil {
+		return ""
+	}
+	return vals["thinking_mode"]
+}
+
 // SetUserThinkingMode updates the global thinking_mode user setting (canonical
 // channel) and invalidates the cached LLM client. It no longer touches
 // subscription rows — thinking is global, not per-subscription.
@@ -643,9 +655,21 @@ func (a *Agent) SetUserThinkingMode(senderID string, mode string) error {
 		return fmt.Errorf("save thinking_mode: %w", err)
 	}
 	if a.userSys.llmFactory != nil {
-		// Drop cached resolved thinking for every session so the next call
-		// re-reads the new global value from user_settings.
 		a.userSys.llmFactory.InvalidateSender(senderID)
+	}
+	return nil
+}
+
+// SetUserThinkingModeForUserID sets thinking_mode for a canonical user.
+func (a *Agent) SetUserThinkingModeForUserID(userID int64, mode string) error {
+	if mode == "auto" {
+		mode = ""
+	}
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
+		return ErrSettingsUnavailable
+	}
+	if err := a.userSys.settingsSvc.SetByUserID(thinkingModeChannel, userID, "thinking_mode", mode); err != nil {
+		return fmt.Errorf("save thinking_mode: %w", err)
 	}
 	return nil
 }

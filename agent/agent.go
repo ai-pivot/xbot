@@ -1916,6 +1916,37 @@ func (a *Agent) SetLLMConcurrency(senderID string, personal int) error {
 	return a.userSys.llmFactory.SetLLMConcurrency(senderID, personal)
 }
 
+// GetLLMConcurrencyForUserID returns concurrency for a canonical user.
+func (a *Agent) GetLLMConcurrencyForUserID(userID int64) int {
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
+		return 3 // llm.DefaultLLMConcurrencyPersonal
+	}
+	vals, err := a.userSys.settingsSvc.GetByUserID("feishu", userID)
+	if err != nil || vals == nil {
+		return 3
+	}
+	return parseConcurrencyOrDefault(vals["llm_max_concurrent_personal"])
+}
+
+// SetLLMConcurrencyForUserID sets concurrency for a canonical user.
+func (a *Agent) SetLLMConcurrencyForUserID(userID int64, personal int) error {
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
+		return ErrSettingsUnavailable
+	}
+	return a.userSys.settingsSvc.SetByUserID("feishu", userID, "llm_max_concurrent_personal", fmt.Sprintf("%d", personal))
+}
+
+func parseConcurrencyOrDefault(s string) int {
+	if s == "" {
+		return 3
+	}
+	var v int
+	if _, err := fmt.Sscanf(s, "%d", &v); err != nil || v <= 0 {
+		return 3
+	}
+	return v
+}
+
 // SetDirectSend 注入同步发送函数（绕过 bus，用于消息更新跟踪）
 func (a *Agent) SetDirectSend(fn func(channel.OutboundMsg) (string, error)) {
 	a.directSend = fn

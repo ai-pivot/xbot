@@ -549,17 +549,17 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	}) error {
 		return h.Ag.SetUserMaxOutputTokens(rpcBizID(ctx), "", "", p.MaxTokens)
 	})
-	t["get_user_thinking_mode"] = rpc0(func(ctx context.Context) string { return h.Ag.GetUserThinkingMode(rpcBizID(ctx)) })
+	t["get_user_thinking_mode"] = rpc0(func(ctx context.Context) string { return h.Ag.GetUserThinkingModeForUserID(rpcUserID(ctx)) })
 	t["set_user_thinking_mode"] = rpc1void(func(ctx context.Context, p struct {
 		Mode string `json:"mode"`
 	}) error {
-		return h.Ag.SetUserThinkingMode(rpcBizID(ctx), p.Mode)
+		return h.Ag.SetUserThinkingModeForUserID(rpcUserID(ctx), p.Mode)
 	})
-	t["get_llm_concurrency"] = rpc0(func(ctx context.Context) int { return h.Ag.GetLLMConcurrency(rpcBizID(ctx)) })
+	t["get_llm_concurrency"] = rpc0(func(ctx context.Context) int { return h.Ag.GetLLMConcurrencyForUserID(rpcUserID(ctx)) })
 	t["set_llm_concurrency"] = rpc1void(func(ctx context.Context, p struct {
 		Personal int `json:"personal"`
 	}) error {
-		return h.Ag.SetLLMConcurrency(rpcBizID(ctx), p.Personal)
+		return h.Ag.SetLLMConcurrencyForUserID(rpcUserID(ctx), p.Personal)
 	})
 	t["set_default_thinking_mode"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Mode string `json:"mode"`
@@ -581,7 +581,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		models := h.Ag.LLMFactory().ListAllModelsForUser(rpcBizID(ctx))
+		models := h.Ag.LLMFactory().ListAllModelsForUserID(rpcUserID(ctx))
 		log.WithField("count", len(models)).Debug("RPC list_all_models")
 		return models, nil
 	})
@@ -597,7 +597,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		entries := h.Ag.LLMFactory().RefreshModelEntriesForUser(rpcBizID(ctx))
+		entries := h.Ag.LLMFactory().RefreshModelEntriesForUserID(rpcUserID(ctx))
 		log.WithField("count", len(entries)).Info("RPC refresh_model_entries")
 		return entries, nil
 	})
@@ -1427,15 +1427,11 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 
 // HandleCLIRPC dispatches RPC requests from CLI RemoteBackend clients.
 func HandleCLIRPC(table RPCTable, method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
-	bizID := senderIDFromParams(params)
-	if bizID == "" {
-		// CLI path: admin is a role, not a business identity. All CLI
-		// subscriptions/settings live under cliSenderID.
-		if senderID == adminSenderID || senderID == cliSenderID {
-			bizID = cliSenderID
-		} else {
-			bizID = senderID
-		}
+	// CLI path: admin is a role, not a business identity. All CLI
+	// subscriptions/settings live under cliSenderID.
+	bizID := senderID
+	if senderID == adminSenderID || senderID == cliSenderID {
+		bizID = cliSenderID
 	}
 	// Resolve canonical user identity via IdentityResolver when available.
 	// This ensures role and userID are correctly set for all access checks.
