@@ -393,9 +393,19 @@ export class ProgressStore {
         draft.streamingTools = opts.streamingTools
       }
 
-      // ── iterationHistory: update if provided (from history hydration) ──
-      if (opts.iterationHistory) {
-        draft.iterationHistory = opts.iterationHistory
+      // ── iterationHistory: Delta Push protocol — server sends only newly
+      // completed iterations (0-1 entries). Must append with dedup by
+      // iteration number, NOT replace. Replacing loses all prior iterations.
+      if (opts.iterationHistory && opts.iterationHistory.length > 0) {
+        const existing = new Set(draft.iterationHistory.map((i) => i.iteration))
+        const appended = [...draft.iterationHistory]
+        for (const iter of opts.iterationHistory) {
+          if (!existing.has(iter.iteration)) {
+            appended.push(iter)
+            existing.add(iter.iteration)
+          }
+        }
+        draft.iterationHistory = appended
       }
 
       // ── todos: carry-forward when not present (mirrors TUI cli_update_progress).

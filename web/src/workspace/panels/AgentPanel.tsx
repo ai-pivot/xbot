@@ -103,6 +103,10 @@ export function AgentPanel({ params }: PanelProps) {
   })
   const reloadChat = chat.reload
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
+  // Track whether onAssistantComplete already triggered a reload for the
+  // current turn. Prevents the SubAgent session event handler from firing
+  // a redundant concurrent reload that causes message list jitter.
+  const reloadForTurnRef = useRef(false)
 
   useEffect(() => {
     const wasSubscribed = wasSubscribedRef.current
@@ -118,6 +122,9 @@ export function AgentPanel({ params }: PanelProps) {
       if ((params.subAgentInstance ?? '') && ev.instance !== params.subAgentInstance) return
       const parentID = ev.parent_id || ev.chat_id
       if (!params.agentChatID && params.parentChatID && parentID && parentID !== params.parentChatID) return
+      // Skip if onAssistantComplete already triggered a reload for this turn.
+      // Double reload causes message list jitter and duplicate assistant messages.
+      if (reloadForTurnRef.current) return
       void reloadChat()
     })
   }, [isSubAgent, params.agentChatID, params.parentChatID, params.subAgentInstance, params.subAgentRole, reloadChat, ws])
@@ -131,7 +138,10 @@ export function AgentPanel({ params }: PanelProps) {
       // message list. SubAgent panels previously had onAssistantComplete=undefined,
       // causing the final reply to never appear in the message list.
       chat.appendAssistant(finalText, iterations)
-      void chat.reload()
+      reloadForTurnRef.current = true
+      void chat.reload().finally(() => {
+        reloadForTurnRef.current = false
+      })
       void sessionContext.refresh()
     },
     ws,

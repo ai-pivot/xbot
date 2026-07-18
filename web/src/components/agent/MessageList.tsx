@@ -217,16 +217,21 @@ export function MessageList({
     }
   }, [cancelPendingFollow, scheduleFollow])
 
-  // ── Chat switch: force scroll to bottom ────────────────────────────────────
+  // ── Chat switch or new messages: follow bottom when sticky ────────────────
   useLayoutEffect(() => {
     const el = scrollRef.current
     const chatChanged = lastChatKeyRef.current !== chatKey
     const initialLoad = !chatChanged && lastRowCountRef.current === 0 && rows.length > 0
     const followReset = lastFollowResetTokenRef.current !== followResetToken
+    const newMessagesAdded = !chatChanged && !initialLoad && !followReset && rows.length > lastRowCountRef.current
     lastChatKeyRef.current = chatKey
     lastRowCountRef.current = rows.length
     lastFollowResetTokenRef.current = followResetToken
-    if (!el || rows.length === 0 || (!chatChanged && !initialLoad && !followReset)) return
+    if (!el || rows.length === 0 || (!chatChanged && !initialLoad && !followReset && !newMessagesAdded)) return
+    // If new messages were added (e.g. by background reload after assistant
+    // completion), only follow if already sticky — don't yank the user down
+    // if they scrolled up.
+    if (newMessagesAdded && !stickToBottomRef.current) return
     resumeFollowing()
     scheduleFollow()
   }, [chatKey, followResetToken, rows.length, resumeFollowing, scheduleFollow])
