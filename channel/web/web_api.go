@@ -66,8 +66,11 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Capture the replay boundary before the snapshot. Events sequenced while
+	// the snapshot is being built remain above this cursor and are replayable.
+	lastSeq := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
 	if wc.callbacks.HistorySnapshot == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "chat_id": sel.ChatID, "channel": sel.Channel})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel})
 		return
 	}
 	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel)
@@ -77,9 +80,7 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot.ChatID = sel.ChatID
 	snapshot.Channel = sel.Channel
-	if es := wc.getEventStream(sel.ChatID); es != nil {
-		snapshot.LastSeq = es.lastSeq()
-	}
+	snapshot.LastSeq = lastSeq
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":              true,
 		"messages":        snapshot.Messages,
@@ -1277,7 +1278,6 @@ func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "chat_id is required")
 		return
 	}
-
 	channel := r.URL.Query().Get("channel")
 	if channel == "" {
 		channel = "web"
@@ -1289,24 +1289,9 @@ func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For web channel: check chat ownership via user_chats table.
-	// For other channels (admin only): verify the tenant exists in DB.
-	if channel == "web" {
-		if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
-			jsonErrorResponse(w, http.StatusForbidden, "not your chat")
-			return
-		}
-	} else {
-		// Verify tenant exists for the requested channel + chatID.
-		var count int
-		err := wc.db.QueryRow(
-			"SELECT COUNT(*) FROM tenants WHERE channel = ? AND chat_id = ?",
-			channel, chatID,
-		).Scan(&count)
-		if err != nil || count == 0 {
-			jsonErrorResponse(w, http.StatusNotFound, "session not found")
-			return
-		}
+	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, channel, chatID) {
+		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
+		return
 	}
 
 	wc.userCurrentSessionMu.Lock()
@@ -1333,26 +1318,30 @@ func (wc *WebChannel) handleChatDelete(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "chat_id is required")
 		return
 	}
+	channelName := strings.TrimSpace(r.URL.Query().Get("channel"))
+	if channelName == "" {
+		channelName = "web"
+	}
 
 	if wc.callbacks.ChatDelete == nil {
 		jsonErrorResponse(w, http.StatusNotImplemented, "chat deletion not available")
 		return
 	}
 
-	// Ownership check: admin can delete any chat; non-admin must own it
-	if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
+	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, channelName, chatID) {
 		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
 		return
 	}
 
-	if err := wc.callbacks.ChatDelete(senderID, chatID); err != nil {
+	if err := wc.callbacks.ChatDelete(senderID, channelName, chatID); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	wc.clearSessionTransportState(channelName, chatID)
 
 	// If deleting current chat, reset to default session
 	wc.userCurrentSessionMu.Lock()
-	if sel, ok := wc.userCurrentSession[senderID]; ok && sel.ChatID == chatID {
+	if sel, ok := wc.userCurrentSession[senderID]; ok && sel.Channel == channelName && sel.ChatID == chatID {
 		delete(wc.userCurrentSession, senderID)
 	}
 	wc.userCurrentSessionMu.Unlock()
@@ -1378,14 +1367,9 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ownership check: admin can rename any chat; non-admin must own it
-	if !wc.isAdmin(r.Context(), senderID) && !wc.userOwnsChat(senderID, chatID) {
-		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
-		return
-	}
-
 	var req struct {
-		Label string `json:"label"`
+		Channel string `json:"channel"`
+		Label   string `json:"label"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
@@ -1395,13 +1379,21 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "label is required")
 		return
 	}
+	if req.Channel == "" {
+		req.Channel = "web"
+	}
+
+	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, req.Channel, chatID) {
+		jsonErrorResponse(w, http.StatusForbidden, "not your chat")
+		return
+	}
 
 	if wc.callbacks.ChatRename == nil {
 		jsonErrorResponse(w, http.StatusNotImplemented, "chat rename not available")
 		return
 	}
 
-	if err := wc.callbacks.ChatRename(senderID, chatID, req.Label); err != nil {
+	if err := wc.callbacks.ChatRename(senderID, req.Channel, chatID, req.Label); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1411,7 +1403,8 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 
 // canAccessSession checks whether a browser-authenticated user may address a
 // session. Web UUID chats are owned through user_chats; non-web sessions are
-// admin-only and must exist in tenants.
+// admin-only unless canonical ownership is recorded. CLI metadata-only rows
+// surfaced in the session tree are also addressable by admins.
 func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, senderID, channelName, chatID string) bool {
 	if channelName == "" {
 		channelName = "web"
@@ -1431,13 +1424,17 @@ func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, sende
 	if channelName == "agent" {
 		return wc.canAccessAgentSession(webUserID, senderID, chatID)
 	}
+	return wc.canAccessCanonicalSession(webUserID, senderID, channelName, chatID)
+}
+
+func (wc *WebChannel) canAccessCanonicalSession(webUserID int, senderID, channelName, chatID string) bool {
 	// For non-web channels (cli, feishu, etc.): check admin role or canonical ownership.
 	// Check IdentityResolver first (canonical role from DB)
 	if wc.callbacks.IdentityResolver != nil {
 		uid, role, err := wc.callbacks.IdentityResolver.Resolve("web", senderID)
 		if err == nil && uid > 0 {
 			if role == "admin" {
-				return wc.tenantExists(channelName, chatID)
+				return wc.canonicalSessionExists(channelName, chatID)
 			}
 			// Non-admin: check canonical session ownership
 			var ownerUserID int64
@@ -1453,9 +1450,16 @@ func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, sende
 	}
 	// Legacy fallback: web-1 or "admin" is admin
 	if senderID == "admin" || webUserID == 1 {
-		return wc.tenantExists(channelName, chatID)
+		return wc.canonicalSessionExists(channelName, chatID)
 	}
 	return false
+}
+
+func (wc *WebChannel) canonicalSessionExists(channelName, chatID string) bool {
+	if wc.tenantExists(channelName, chatID) {
+		return true
+	}
+	return wc.callbacks.LocalSessionExists != nil && wc.callbacks.LocalSessionExists(channelName, chatID)
 }
 
 func (wc *WebChannel) tenantExists(channelName, chatID string) bool {
@@ -1473,10 +1477,8 @@ func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID stri
 	}
 	// Admin via IdentityResolver or legacy checks
 	if wc.callbacks.IdentityResolver != nil {
-		if uid, _, err := wc.callbacks.IdentityResolver.Resolve("web", senderID); err == nil && uid > 0 {
-			if wc.callbacks.IdentityResolver.IsAdmin(uid) {
-				return true
-			}
+		if uid, role, err := wc.callbacks.IdentityResolver.Resolve("web", senderID); err == nil && uid > 0 && role == "admin" {
+			return true
 		}
 	}
 	if senderID == "admin" || webUserID == 1 {
@@ -1491,7 +1493,7 @@ func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID stri
 			return wc.userOwnsChat(senderID, info.parentChatID)
 		}
 		if info.parentChannel != "agent" {
-			return false
+			return wc.canAccessCanonicalSession(webUserID, senderID, info.parentChannel, info.parentChatID)
 		}
 		parentExists := wc.tenantExists("agent", info.parentChatID)
 		if !parentExists {

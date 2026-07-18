@@ -29,6 +29,7 @@ import { toast } from 'sonner'
 import { fetchCwd, fetchHistory } from '@/components/agent/api'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useWSConnection } from '@/hooks/useWSConnection'
+import { postAPI } from '@/lib/api'
 import type { TabManager } from '@/hooks/useTabManager'
 import type { TerminalSession, TerminalStatus } from '@/types/terminal'
 
@@ -121,15 +122,8 @@ class TerminalStore {
   async createTerminal(chatID: string, cwd: string): Promise<string | null> {
     let tid: string
     try {
-      const res = await fetch('/api/terminal/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatID, cwd }),
-      })
-      const data = (await res.json().catch(() => ({}))) as CreateResponse
-      if (!res.ok || !data.tid) {
-        throw new Error(data.error || `create ${res.status}`)
-      }
+      const data = await postAPI<CreateResponse>('/api/terminal/create', { chatID, cwd })
+      if (!data.tid) throw new Error('create response missing tid')
       tid = data.tid
     } catch {
       return null
@@ -190,7 +184,7 @@ class TerminalStore {
   /** DELETE /api/terminal/{tid} (best-effort; terminal may already be gone). */
   async deleteBackend(tid: string): Promise<void> {
     try {
-      await fetch(`/api/terminal/${encodeURIComponent(tid)}`, { method: 'DELETE' })
+      await postAPI(`/api/terminal/${encodeURIComponent(tid)}/delete`)
     } catch {
       /* ignore — backend idle-reaps orphaned terminals */
     }
@@ -203,11 +197,10 @@ class TerminalStore {
    */
   async restoreFromBackend(chatID: string): Promise<void> {
     try {
-      const res = await fetch(`/api/terminal/list?chatID=${encodeURIComponent(chatID)}`)
-      const data = (await res.json()) as {
+      const data = await postAPI<{
         terminals?: Array<{ tid: string; cwd: string; createdAt: string }>
-      }
-      if (!res.ok || !data.terminals) return
+      }>('/api/terminal/list', { chat_id: chatID })
+      if (!data.terminals) return
 
       const backendTids = new Set(data.terminals.map((t) => t.tid))
 

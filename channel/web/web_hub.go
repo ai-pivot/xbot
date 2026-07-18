@@ -115,15 +115,30 @@ func (h *Hub) subscribe(clientID, chatID string) bool {
 // sendToClient sends a message to all clients subscribed to a chatID.
 // If no clients are subscribed, buffers the message for later delivery.
 func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
-	isSSEEvent := isSSEEventType(msg.Type)
-	if !isSSEEvent {
+	if !isSSEEventType(msg.Type) {
 		return h.deliverToSubscribers(chatID, msg, msg, false)
 	}
+	return h.sendToSession("web", chatID, msg)
+}
 
+// sendToSession isolates SSE routing and replay by channel+chatID while
+// preserving raw chatID routing for legacy and remote CLI WebSocket clients.
+func (h *Hub) sendToSession(channel, chatID string, msg protocol.WSMessage) bool {
+	if !isSSEEventType(msg.Type) {
+		return h.sendToClient(chatID, msg)
+	}
+
+	routeKey := sessionRouteKey(channel, chatID)
 	h.seqMu.Lock()
 	defer h.seqMu.Unlock()
-	sequencedMsg := h.sequenceEventLocked(chatID, normalizeSSEEvent(msg))
-	return h.deliverToSubscribers(chatID, msg, sequencedMsg, true)
+	sequencedMsg := h.sequenceEventLocked(routeKey, normalizeSSEEvent(msg))
+	sseSent := h.deliverToSubscribersFiltered(routeKey, msg, sequencedMsg, true, func(c *Client) bool {
+		return c.connType == clientConnTypeSSE
+	}, false)
+	wsSent := h.deliverToSubscribersFiltered(chatID, msg, sequencedMsg, true, func(c *Client) bool {
+		return c.connType != clientConnTypeSSE || c.sessionChannel == ""
+	}, true)
+	return sseSent || wsSent
 }
 
 // sendSSEEventIf atomically checks and publishes a sequenced Web event.
@@ -143,6 +158,16 @@ func (h *Hub) sendSSEEventIf(chatID string, prepare func() (protocol.WSMessage, 
 }
 
 func (h *Hub) deliverToSubscribers(chatID string, msg, sequencedMsg protocol.WSMessage, isSSEEvent bool) bool {
+	return h.deliverToSubscribersFiltered(chatID, msg, sequencedMsg, isSSEEvent, nil, true)
+}
+
+func (h *Hub) deliverToSubscribersFiltered(
+	chatID string,
+	msg, sequencedMsg protocol.WSMessage,
+	isSSEEvent bool,
+	accept func(*Client) bool,
+	bufferIfUnsent bool,
+) bool {
 	h.mu.RLock()
 	if h.stopped {
 		h.mu.RUnlock()
@@ -166,6 +191,9 @@ func (h *Hub) deliverToSubscribers(chatID string, msg, sequencedMsg protocol.WSM
 		h.mu.RUnlock()
 		if c == nil {
 			log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID}).Debug("Hub.sendToClient: subscriber conn nil, skipping")
+			continue
+		}
+		if accept != nil && !accept(c) {
 			continue
 		}
 		if c.connType == clientConnTypeSSE && !isSSEEvent {
@@ -202,7 +230,7 @@ func (h *Hub) deliverToSubscribers(chatID string, msg, sequencedMsg protocol.WSM
 			}
 		}
 	}
-	if !sent {
+	if !sent && bufferIfUnsent {
 		h.mu.RLock()
 		if h.stopped {
 			h.mu.RUnlock()
@@ -335,16 +363,19 @@ func (h *Hub) stopAll() {
 
 // broadcastSessionState preserves the existing WS broadcast while limiting SSE
 // delivery to clients subscribed to the event's authorized chat.
-func (h *Hub) broadcastSessionState(chatID string, msg protocol.WSMessage) {
+func (h *Hub) broadcastSessionState(channel, chatID string, msg protocol.WSMessage) {
 	h.seqMu.Lock()
 	defer h.seqMu.Unlock()
-	sequencedMsg := h.sequenceEventLocked(chatID, msg)
+	routeKey := sessionRouteKey(channel, chatID)
+	sequencedMsg := h.sequenceEventLocked(routeKey, msg)
 
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.conns))
 	for clientID, c := range h.conns {
-		if c.connType == clientConnTypeSSE && !h.subs[chatID][clientID] {
-			continue
+		if c.connType == clientConnTypeSSE && !h.subs[routeKey][clientID] {
+			if c.sessionChannel != "" || !h.subs[chatID][clientID] {
+				continue
+			}
 		}
 		clients = append(clients, c)
 	}

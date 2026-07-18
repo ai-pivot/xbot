@@ -63,7 +63,7 @@ export function SessionInfo({ tabManager }: SessionInfoProps) {
   const [cwdBusy, setCwdBusy] = useState(false)
 
   const refresh = useCallback(async () => {
-    if (!ws.connected || !focusedSession || !workspaceSession) return
+    if (!focusedSession || !workspaceSession) return
     try {
       const [cwdResult, sub, settings, dump] = await Promise.all([
         fetchCwd(workspaceSession).catch((): { dir?: string } => ({})),

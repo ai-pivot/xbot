@@ -15,6 +15,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProgressEvent, WSMessage } from '@/types/shared'
 import type { WSConnection } from '@/types/ws'
+import { clearWebCaches, progressSnapshotCache, sessionCacheKey } from '@/lib/webCache'
 
 // --- stub WS connection ----------------------------------------------------
 
@@ -49,6 +50,7 @@ let currentWS: FakeWS
 let rafCbs: Array<() => void>
 
 beforeEach(() => {
+  clearWebCaches()
   currentWS = makeFakeWS()
   rafCbs = []
   vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
@@ -92,12 +94,102 @@ describe('useProgressStream event dispatch', () => {
 
     emitAndFlush({
       type: 'text',
+      seq: 42,
       content: 'final answer',
       progress_history: '[{"iteration":1,"tools":[{"name":"Read","status":"done"}]}]',
     })
     expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), 42)
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
+  })
+
+  it('clears terminal cache so A to B to A cannot restore completed progress', () => {
+    const cacheKey = sessionCacheKey('web', 'c1')
+    progressSnapshotCache.set(cacheKey, { phase: 'tool', completed_tools: [{ name: 'Read', status: 'done' }] })
+    const complete = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ chatID }) => useProgressStream({ chatID, onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+      { initialProps: { chatID: 'c1' } },
+    )
+    act(() => {
+      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+    })
+    expect(result.current.isStreaming).toBe(true)
+
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'done' })
+    expect(progressSnapshotCache.has(cacheKey)).toBe(false)
+
+    rerender({ chatID: 'c2' })
+    rerender({ chatID: 'c1' })
+    act(() => {
+      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+    })
+    expect(result.current.liveMessage).toBeNull()
+    expect(result.current.isStreaming).toBe(false)
+  })
+
+  it('clears the previous session progress before returning from a transition', () => {
+    const { result, rerender } = renderHook(
+      ({ chatID }) => useProgressStream({ chatID, ws: currentWS as unknown as WSConnection }),
+      { initialProps: { chatID: 'c1' } },
+    )
+    emitAndFlush({ type: 'stream_content', chat_id: 'c1', progress: { stream_content: 'session A' } })
+    expect(result.current.liveMessage?.content).toBe('session A')
+
+    rerender({ chatID: 'c2' })
+
+    expect(result.current.liveMessage).toBeNull()
+    expect(result.current.isStreaming).toBe(false)
+  })
+
+  it('resets finalization when a later turn begins with structured tool progress', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'first' })
+    emitAndFlush({
+      type: 'progress_structured',
+      chat_id: 'c1',
+      progress: {
+        phase: 'tool',
+        iteration: 1,
+        completed_tools: [{ name: 'Read', status: 'done' }],
+      },
+    })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'second' })
+
+    expect(complete).toHaveBeenCalledTimes(2)
+    expect(complete.mock.calls.map((call) => call[0])).toEqual(['first', 'second'])
+  })
+
+  it('resets visible progress when recovery reports a terminal phase', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'stale' } })
+    expect(result.current.isStreaming).toBe(true)
+
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+
+    expect(result.current.liveMessage).toBeNull()
+    expect(result.current.isStreaming).toBe(false)
+  })
+
+  it('commits text once when phase done arrives before the final text and idle', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { phase: 'done' } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'final answer' })
+    emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), undefined)
   })
 
   it('handles session_reset text without appending assistant content', () => {
@@ -162,7 +254,7 @@ describe('useProgressStream event dispatch', () => {
 
     expect(complete).toHaveBeenCalledWith('', expect.arrayContaining([
       expect.objectContaining({ iteration: 1 }),
-    ]))
+    ]), undefined)
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -173,7 +265,7 @@ describe('useProgressStream event dispatch', () => {
     )
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'streamed' } })
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
-    expect(complete).toHaveBeenCalledWith('streamed', expect.any(Array))
+    expect(complete).toHaveBeenCalledWith('streamed', expect.any(Array), undefined)
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -200,7 +292,7 @@ describe('useProgressStream event dispatch', () => {
 
     expect(complete).toHaveBeenCalledWith('', expect.arrayContaining([
       expect.objectContaining({ iteration: 1 }),
-    ]))
+    ]), undefined)
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
   })
@@ -362,5 +454,23 @@ describe('useProgressStream event dispatch', () => {
     })
     expect(result.current.isStreaming).toBe(true)
     expect(result.current.progressSnapshot.subAgents[0].role).toBe('review')
+  })
+
+  it('rejects another channel with the same raw progress chat_id', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({
+        chatID: 'shared',
+        channel: 'cli',
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: {
+        chat_id: 'web:shared',
+        sub_agents: [{ role: 'foreign', status: 'running' }],
+      } as ProgressEvent,
+    })
+    expect(result.current.isStreaming).toBe(false)
   })
 })

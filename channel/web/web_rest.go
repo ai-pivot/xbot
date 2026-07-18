@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"xbot/bus"
 	"xbot/protocol"
 )
 
@@ -145,7 +146,7 @@ func writeInboundError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errEmptyMessage):
 		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, errInboundUnavailable):
+	case errors.Is(err, errInboundUnavailable), errors.Is(err, bus.ErrInboundQueueFull):
 		jsonErrorResponse(w, http.StatusServiceUnavailable, err.Error())
 	case strings.Contains(err.Error(), "access denied"):
 		jsonErrorResponse(w, http.StatusForbidden, err.Error())
@@ -202,7 +203,9 @@ func (wc *WebChannel) rpcIdentityFromRequest(r *http.Request) RPCIdentity {
 
 var nonAdminRESTRPCMethods = map[string]struct{}{
 	"get_context_mode":                   {},
+	"set_cwd":                            {},
 	"get_settings":                       {},
+	"list_command_names":                 {},
 	"set_setting":                        {},
 	"get_default_model":                  {},
 	"get_user_max_context":               {},
@@ -220,12 +223,14 @@ var nonAdminRESTRPCMethods = map[string]struct{}{
 	"clear_proxy_llm":                    {},
 	"list_subscriptions":                 {},
 	"get_default_subscription":           {},
+	"get_session_subscription":           {},
 	"add_subscription":                   {},
 	"get_user_token_usage":               {},
 	"get_daily_token_usage":              {},
 	"get_agent_session_dump":             {},
 	"get_agent_session_dump_by_full_key": {},
 	"get_session_messages":               {},
+	"get_active_progress":                {},
 	"kill_bg_task":                       {},
 	"plugin_widgets":                     {},
 }
@@ -249,6 +254,36 @@ func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, me
 			return http.StatusBadRequest, fmt.Errorf("chat_id is required")
 		}
 		if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, "cli", request.ChatID) {
+			return http.StatusForbidden, fmt.Errorf("access denied")
+		}
+	}
+	if method == "get_session_subscription" {
+		var request sessionBody
+		if err := json.Unmarshal(params, &request); err != nil {
+			return http.StatusBadRequest, fmt.Errorf("invalid params: %w", err)
+		}
+		if request.ChatID == "" {
+			return http.StatusBadRequest, fmt.Errorf("chat_id is required")
+		}
+		if request.Channel == "" {
+			request.Channel = "cli"
+		}
+		if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, request.Channel, request.ChatID) {
+			return http.StatusForbidden, fmt.Errorf("access denied")
+		}
+	}
+	if method == "get_active_progress" {
+		var request sessionBody
+		if err := json.Unmarshal(params, &request); err != nil {
+			return http.StatusBadRequest, fmt.Errorf("invalid params: %w", err)
+		}
+		if request.ChatID == "" {
+			return http.StatusBadRequest, fmt.Errorf("chat_id is required")
+		}
+		if request.Channel == "" {
+			request.Channel = "web"
+		}
+		if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, request.Channel, request.ChatID) {
 			return http.StatusForbidden, fmt.Errorf("access denied")
 		}
 	}
@@ -503,7 +538,18 @@ func (wc *WebChannel) handleChatSwitchPOST(w http.ResponseWriter, r *http.Reques
 }
 
 func (wc *WebChannel) handleChatDeletePOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleChatDelete(w, legacyRequest(r, http.MethodDelete, nil, nil))
+	var body struct {
+		Channel string `json:"channel,omitempty"`
+	}
+	if err := decodeJSONBody(r, &body, true); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	query := make(url.Values)
+	if body.Channel != "" {
+		query.Set("channel", body.Channel)
+	}
+	wc.handleChatDelete(w, legacyRequest(r, http.MethodDelete, query, nil))
 }
 
 func (wc *WebChannel) handleSessionTreePOST(w http.ResponseWriter, r *http.Request) {
@@ -586,10 +632,19 @@ func (wc *WebChannel) handleSessionStatus(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	cwd := ""
+	if wc.callbacks.GetCWD != nil {
+		cwd, err = wc.callbacks.GetCWD(senderID, sel)
+		if err != nil {
+			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token_usage":      tokenUsage,
 		"tasks":            tasks,
 		"background_tasks": backgroundTasks,
+		"cwd":              cwd,
 	})
 }
 

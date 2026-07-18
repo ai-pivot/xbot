@@ -2,10 +2,10 @@
  * useFileSystem — thin API wrappers for the backend FS endpoints (Spec §2.2).
  *
  * Four operations backed by REST:
- *   listDir(path, showHidden)  → GET /api/fs/list
- *   readFile(path)             → GET /api/fs/read
- *   searchFiles(query, path)   → GET /api/fs/search
- *   statFile(path)             → GET /api/fs/stat
+ *   listDir(path, showHidden)  → POST /api/fs/list
+ *   readFile(path)             → POST /api/fs/read
+ *   searchFiles(query, path)   → POST /api/fs/search
+ *   statFile(path)             → parent listing lookup
  *
  * Directory listings are cached for 30s (CACHE_TTL) keyed by `path|showHidden`
  * so expanding/collapsing the tree doesn't hammer the server.
@@ -13,6 +13,8 @@
  * All functions are plain async (no React state) — callers compose them into
  * hooks/components as needed. Errors are thrown, not silently swallowed.
  */
+
+import { postAPI, postRawAPI } from '@/lib/api'
 
 /* ── Types ──────────────────────────────────────────────────────────────── */
 
@@ -85,15 +87,10 @@ export async function listDir(
     return cached.entries
   }
 
-  const params = new URLSearchParams({
+  const data = await postAPI<FsListResult>('/api/fs/list', {
     path,
-    showHidden: String(showHidden),
-  })
-  const res = await fetch(`/api/fs/list?${params}`, { signal })
-  if (!res.ok) {
-    throw new Error(`fs/list failed: ${res.status} ${res.statusText}`)
-  }
-  const data = (await res.json()) as FsListResult
+    show_hidden: showHidden,
+  }, { signal })
   const entries = data.entries || []
   // Sort: directories first, then alphabetical.
   entries.sort((a, b) => {
@@ -105,12 +102,7 @@ export async function listDir(
 }
 
 export async function readFile(path: string, signal?: AbortSignal): Promise<FsReadResult> {
-  const params = new URLSearchParams({ path })
-  const res = await fetch(`/api/fs/read?${params}`, { signal })
-  if (!res.ok) {
-    throw new Error(`fs/read failed: ${res.status} ${res.statusText}`)
-  }
-  return (await res.json()) as FsReadResult
+  return postAPI<FsReadResult>('/api/fs/read', { path }, { signal })
 }
 
 export async function searchFiles(
@@ -119,22 +111,21 @@ export async function searchFiles(
   limit = 50,
   signal?: AbortSignal,
 ): Promise<FsSearchEntry[]> {
-  const params = new URLSearchParams({ q: query, path, limit: String(limit) })
-  const res = await fetch(`/api/fs/search?${params}`, { signal })
-  if (!res.ok) {
-    throw new Error(`fs/search failed: ${res.status} ${res.statusText}`)
-  }
-  const data = (await res.json()) as FsSearchResult
+  const data = await postAPI<FsSearchResult>('/api/fs/search', {
+    query,
+    path,
+    limit,
+  }, { signal })
   return data.results || []
 }
 
 export async function statFile(path: string, signal?: AbortSignal): Promise<FsStatResult> {
-  const params = new URLSearchParams({ path })
-  const res = await fetch(`/api/fs/stat?${params}`, { signal })
-  if (!res.ok) {
-    throw new Error(`fs/stat failed: ${res.status} ${res.statusText}`)
-  }
-  return (await res.json()) as FsStatResult
+  const clean = path.replace(/\/+$/, '') || '/'
+  if (clean === '/') return { name: '/', isDir: true, size: 0, modTime: '', mode: 'drwxr-xr-x' }
+  const name = clean.slice(clean.lastIndexOf('/') + 1)
+  const entry = (await listDir(parentPath(clean), true, signal)).find((item) => item.name === name)
+  if (!entry) throw new Error(`path not found: ${path}`)
+  return { ...entry, mode: '' }
 }
 
 /* ── Utility ────────────────────────────────────────────────────────────────── */
@@ -155,9 +146,7 @@ export function parentPath(path: string): string {
 
 /** Fetch an image file as a blob URL (for ImagePreview). */
 export async function fetchImageBlobUrl(path: string): Promise<string> {
-  const params = new URLSearchParams({ path })
-  const res = await fetch(`/api/fs/raw?${params}`)
-  if (!res.ok) throw new Error(`fs/raw failed: ${res.status}`)
+  const res = await postRawAPI('/api/fs/read', { path, raw: true })
   const blob = await res.blob()
   return URL.createObjectURL(blob)
 }

@@ -96,12 +96,12 @@ export interface SessionSelector {
 }
 
 /* ---------------------------------------------------------------------------
- * WebSocket message envelopes (mirrors Go protocol/ws.go).
+ * Realtime event envelopes shared by SSE and the Go transport protocol.
  * Added in Spec 2 (布局壳 + Dockview); these are pure data shapes shared by
  * the WS connection layer (useWSConnection) and consumers.
  * ------------------------------------------------------------------------- */
 
-/** Server → Client message types (see protocol/ws.go MsgType*). */
+/** Server → Web SSE event types. */
 export type WSMessageType =
   | 'text'
   | 'progress_structured'
@@ -110,13 +110,14 @@ export type WSMessageType =
   | 'ask_user'
   | 'session'
   | 'user_echo'
+  | 'inject_user'
   | 'card'
   | 'plugin_widgets'
   | 'runner_status'
   | 'sync_progress'
   | '__pong__'
 
-/** Client → Server message types (see protocol/ws.go MsgType*). */
+/** Client operations mapped to REST endpoints by the connection adapter. */
 export type WSClientMessageType =
   | 'message'
   | 'cancel'
@@ -333,4 +334,8 @@ export interface ChatMessage {
   displayOnly?: boolean
   /** True when loaded from persisted backend history, not an optimistic echo. */
   persisted?: boolean
+  /** SSE sequence for live committed rows, used to reconcile them with history. */
+  eventSeq?: number
+  /** Stable logical-send ID used to correlate optimistic rows with echoes. */
+  requestID?: string
 }

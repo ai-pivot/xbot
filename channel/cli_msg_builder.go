@@ -38,16 +38,23 @@ func (cliMessageBuilder) BuildAskUserMsg(msg OutboundMsg) *protocol.WSMessage {
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
 	}
+	progress := &protocol.ProgressEvent{}
 	if msg.Metadata != nil {
 		askEv.RequestID = msg.Metadata["request_id"]
 		askEv.Questions = msg.Metadata["ask_questions"]
+		progress.RequestID = askEv.RequestID
+		if askEv.Questions != "" {
+			_ = json.Unmarshal([]byte(askEv.Questions), &progress.Questions)
+		}
 	}
 	data, _ := json.Marshal(askEv)
 	return &protocol.WSMessage{
-		Type:    protocol.MsgTypeAskUser,
-		TS:      time.Now().Unix(),
-		ChatID:  msg.ChatID,
-		Content: string(data),
+		Type:     protocol.MsgTypeAskUser,
+		TS:       time.Now().Unix(),
+		Channel:  msg.Channel,
+		ChatID:   msg.ChatID,
+		Content:  string(data),
+		Progress: progress,
 	}
 }
 

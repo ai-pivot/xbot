@@ -6,21 +6,18 @@ import type { WSConnection } from '@/types/ws'
 
 describe('useTasks', () => {
   it('drops stale task responses after switching sessions', async () => {
-    let resolveOldCron!: (value: unknown[]) => void
-    let resolveOldBg!: (value: unknown[]) => void
-    const oldCron = new Promise<unknown[]>((resolve) => { resolveOldCron = resolve })
-    const oldBg = new Promise<unknown[]>((resolve) => { resolveOldBg = resolve })
+    let resolveOld!: (value: { tasks: unknown[]; background_tasks: unknown[] }) => void
+    const oldStatus = new Promise<{ tasks: unknown[]; background_tasks: unknown[] }>((resolve) => { resolveOld = resolve })
     const rpc = vi.fn()
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      const isOld = url.includes('chat_id=a')
-      const isCron = url.startsWith('/api/tasks')
-      const value = isOld
-        ? await (isCron ? oldCron : oldBg)
-        : isCron
-          ? [{ id: 'new-cron', message: 'new', channel: 'web', chatID: 'b' }]
-          : [{ id: 'new-bg', command: 'new', status: 'running' }]
-      return new Response(JSON.stringify({ ok: true, tasks: value }), {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { chat_id?: string }
+      const data = body.chat_id === 'a'
+        ? await oldStatus
+        : {
+            tasks: [{ id: 'new-cron', message: 'new', channel: 'web', chatID: 'b' }],
+            background_tasks: [{ id: 'new-bg', command: 'new', status: 'running' }],
+          }
+      return new Response(JSON.stringify({ ok: true, data, error: null }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -33,14 +30,19 @@ describe('useTasks', () => {
       { initialProps: { chatID: 'a' } },
     )
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/tasks?channel=web&chat_id=a', expect.anything()))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/session/status', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ channel: 'web', chat_id: 'a' }),
+    })))
     rerender({ chatID: 'b' })
     await waitFor(() => expect(result.current.cronTasks.map((t) => t.id)).toEqual(['new-cron']))
     expect(result.current.bgTasks.map((t) => t.id)).toEqual(['new-bg'])
 
     await act(async () => {
-      resolveOldCron([{ id: 'old-cron', message: 'old', channel: 'web', chatID: 'a' }])
-      resolveOldBg([{ id: 'old-bg', command: 'old', status: 'running' }])
+      resolveOld({
+        tasks: [{ id: 'old-cron', message: 'old', channel: 'web', chatID: 'a' }],
+        background_tasks: [{ id: 'old-bg', command: 'old', status: 'running' }],
+      })
       await Promise.resolve()
     })
 

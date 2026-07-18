@@ -12,6 +12,7 @@ import { Shield, ShieldCheck, Loader2, AlertCircle } from 'lucide-react'
 
 import { SettingsSection } from './SettingsSection'
 import { Button } from '@/components/ui/button'
+import { postAPI } from '@/lib/api'
 
 interface User {
   id: number
@@ -30,12 +31,7 @@ export function SettingsAdminUsers() {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/api/admin/users')
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || data.message || 'Failed to load users')
-      }
-      const data = await res.json()
+      const data = await postAPI<{ users?: User[] }>('/api/admin/users/list')
       setUsers(data.users || [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed')
@@ -52,15 +48,7 @@ export function SettingsAdminUsers() {
     setUpdatingId(user.id)
     const newRole = user.role === 'admin' ? 'user' : 'admin'
     try {
-      const res = await fetch(`/api/admin/users/${user.id}/role`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: newRole }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || data.message || 'Failed')
-      }
+      await postAPI(`/api/admin/users/${user.id}/set-role`, { role: newRole })
       setUsers((prev) =>
         prev.map((u) => (u.id === user.id ? { ...u, role: newRole } : u)),
       )

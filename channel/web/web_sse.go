@@ -43,12 +43,11 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	routeKey := sessionRouteKey(sel.Channel, sel.ChatID)
 
-	lastEventIDValues := r.Header.Values("Last-Event-ID")
-	hasLastEventID := len(lastEventIDValues) > 0
-	lastSeq, err := parseLastEventID(r.Header.Get("Last-Event-ID"))
+	lastSeq, hasResumeCursor, err := sseResumeCursor(r)
 	if err != nil {
-		jsonErrorResponse(w, http.StatusBadRequest, "invalid Last-Event-ID")
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid SSE resume cursor")
 		return
 	}
 	flusher, ok := w.(http.Flusher)
@@ -79,15 +78,15 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Sequence high-water selection and subscription are one transaction: an
 	// event is either below the fresh baseline or delivered after subscription.
 	wc.hub.seqMu.Lock()
-	streamLastSeq := wc.getEventStream(chatID).lastSeq()
-	if !hasLastEventID {
+	streamLastSeq := wc.getEventStream(routeKey).lastSeq()
+	if !hasResumeCursor {
 		client.lastSentSeq = streamLastSeq
 	} else if client.lastSentSeq > streamLastSeq {
 		// The server restarted and its in-memory sequence restarted from zero.
 		client.lastSentSeq = 0
 	}
 	registered := wc.hub.addClient(client.id, client)
-	subscribed := registered && wc.hub.subscribe(client.id, chatID)
+	subscribed := registered && wc.hub.subscribe(client.id, routeKey)
 	wc.hub.seqMu.Unlock()
 	if !subscribed {
 		if registered {
@@ -119,7 +118,7 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// A fresh EventSource has no reconnect cursor until it receives an id field.
 	// Publish the selected high-water mark even when no business event is ready.
-	if !hasLastEventID {
+	if !hasResumeCursor {
 		if err := writeSSECursor(client, client.lastSentSeq); err != nil {
 			return
 		}
@@ -134,7 +133,13 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 func (wc *WebChannel) resolveSSESession(w http.ResponseWriter, r *http.Request, senderID, chatID string) (SessionSelector, bool) {
-	sel := wc.GetCurrentSession(senderID)
+	channelName := strings.TrimSpace(r.URL.Query().Get("channel"))
+	var sel SessionSelector
+	if channelName != "" {
+		sel = SessionSelector{Channel: channelName, ChatID: chatID}
+	} else {
+		sel = wc.GetCurrentSession(senderID)
+	}
 	if sel.ChatID != chatID {
 		sel = SessionSelector{Channel: "web", ChatID: chatID}
 		if webChatIDLooksLikeSubAgent(chatID) {
@@ -156,8 +161,20 @@ func parseLastEventID(raw string) (uint64, error) {
 	return strconv.ParseUint(raw, 10, 64)
 }
 
+func sseResumeCursor(r *http.Request) (uint64, bool, error) {
+	if len(r.Header.Values("Last-Event-ID")) > 0 {
+		seq, err := parseLastEventID(r.Header.Get("Last-Event-ID"))
+		return seq, true, err
+	}
+	if _, ok := r.URL.Query()["last_event_id"]; ok {
+		seq, err := parseLastEventID(r.URL.Query().Get("last_event_id"))
+		return seq, true, err
+	}
+	return 0, false, nil
+}
+
 func (wc *WebChannel) replaySSEEvents(sel SessionSelector, lastSeq uint64) []protocol.WSMessage {
-	events := wc.getEventStream(sel.ChatID).eventsAfter(lastSeq)
+	events := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).eventsAfter(lastSeq)
 	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
 	return events
 }
@@ -189,7 +206,7 @@ func (wc *WebChannel) publishSSEFallbacks(sel SessionSelector, lastSeq uint64) {
 }
 
 func (wc *WebChannel) publishSSEFallbackIfMissing(sel SessionSelector, lastSeq uint64, msg protocol.WSMessage, requestID string) bool {
-	return wc.hub.sendSSEEventIf(sel.ChatID, func() (protocol.WSMessage, bool) {
+	return wc.hub.sendSSEEventIf(sessionRouteKey(sel.Channel, sel.ChatID), func() (protocol.WSMessage, bool) {
 		events := wc.replaySSEEvents(sel, lastSeq)
 		if containsSSEEvent(events, msg.Type, requestID) {
 			return protocol.WSMessage{}, false
@@ -324,7 +341,7 @@ func (wc *WebChannel) catchUpSSE(ctx context.Context, client *Client, initial []
 		if err := sseContextError(ctx, client); err != nil {
 			return false, err
 		}
-		pending = append(pending, wc.getEventStream(client.chatID).eventsAfter(client.lastSentSeq)...)
+		pending = append(pending, wc.getEventStream(sessionRouteKey(client.sessionChannel, client.chatID)).eventsAfter(client.lastSentSeq)...)
 		queued, closed := collectSSEBatch(client.sendCh)
 		pending = append(pending, queued...)
 		if len(pending) == 0 {

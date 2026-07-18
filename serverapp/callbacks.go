@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"xbot/agent"
 	"xbot/channel"
+	cli "xbot/channel/cli"
 	"xbot/channel/feishu"
 	"xbot/channel/web"
 	"xbot/config"
@@ -587,19 +589,44 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		cs := sqlite.NewChatService(webDB)
 		return cs.CreateChat("web", senderID, label)
 	}
-	callbacks.ChatDelete = func(senderID, chatID string) error {
+	callbacks.ChatDelete = func(senderID, channel, chatID string) error {
 		if webDB == nil {
 			return fmt.Errorf("database not available")
 		}
+		removedLocal := false
+		if channel == "cli" {
+			var err error
+			removedLocal, err = cli.RemoveStoredSessionByChatID(chatID)
+			if err != nil {
+				return fmt.Errorf("remove CLI session metadata: %w", err)
+			}
+		}
 		cs := sqlite.NewChatService(webDB)
-		return cs.DeleteChat("web", senderID, chatID)
+		if err := cs.DeleteChat(channel, senderID, chatID); err != nil {
+			if !removedLocal || !errors.Is(err, sqlite.ErrChatNotFound) {
+				return err
+			}
+		}
+		ag.CleanupSessionFiles(channel, chatID)
+		tools.GlobalWorktreeRegistry.CleanupSession(channel + ":" + chatID)
+		session.DeletePersistedCWD(channel, chatID)
+		_ = ag.MultiSession().DestroySession(channel, chatID)
+		return nil
 	}
-	callbacks.ChatRename = func(senderID, chatID, label string) error {
+	callbacks.ChatRename = func(senderID, channel, chatID, label string) error {
 		if webDB == nil {
 			return fmt.Errorf("database not available")
 		}
+		if channel == "cli" {
+			if _, err := cli.RenameStoredSessionByChatID(chatID, label); err != nil {
+				return fmt.Errorf("rename CLI session metadata: %w", err)
+			}
+		}
 		cs := sqlite.NewChatService(webDB)
-		return cs.RenameChat("web", senderID, chatID, label)
+		return cs.RenameChat(channel, senderID, chatID, label)
+	}
+	callbacks.LocalSessionExists = func(channel, chatID string) bool {
+		return channel == "cli" && cli.StoredSessionExists(chatID)
 	}
 
 	// Identity resolver — wire agent's IdentityResolver to WebChannel

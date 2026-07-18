@@ -4,7 +4,7 @@
  * Refreshes every 30 seconds and on session switch.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchBackgroundTasks, fetchCronTasks } from '@/components/agent/api'
+import { fetchSessionStatus } from '@/components/agent/api'
 import type { WSConnection } from '@/types/ws'
 import type { SessionSelector } from '@/types/shared'
 
@@ -61,7 +61,7 @@ export function useTasks(ws: WSConnection, session: SessionSelector | null): Tas
 
   const refresh = useCallback(async () => {
     const current = sessionRef.current
-    if (!current || !ws.connected) return
+    if (!current) return
     const seq = ++refreshSeqRef.current
     const sessionKey = `${current.channel}:${current.chatID}`
     const firstLoadForSession = lastSessionKeyRef.current !== sessionKey || !hasLoadedRef.current
@@ -74,14 +74,11 @@ export function useTasks(ws: WSConnection, session: SessionSelector | null): Tas
     setLoading(firstLoadForSession)
     setError(null)
     try {
-      const [cron, bg] = await Promise.all([
-        fetchCronTasks<CronTask>(current).catch(() => []),
-        fetchBackgroundTasks<unknown>(current).catch(() => []),
-      ])
+      const status = await fetchSessionStatus<CronTask, unknown>(current)
       const latest = sessionRef.current
       if (seq !== refreshSeqRef.current || !latest || `${latest.channel}:${latest.chatID}` !== sessionKey) return
-      setCronTasks(cron ?? [])
-      setBgTasks((bg ?? []).map(normalizeBgTask).filter(isRunningBgTask))
+      setCronTasks(status.tasks ?? [])
+      setBgTasks((status.background_tasks ?? []).map(normalizeBgTask).filter(isRunningBgTask))
       hasLoadedRef.current = true
     } catch (e) {
       if (seq !== refreshSeqRef.current) return
@@ -92,7 +89,7 @@ export function useTasks(ws: WSConnection, session: SessionSelector | null): Tas
   }, [ws])
 
   const killBgTask = useCallback(async (taskID: string) => {
-    if (!taskID || !ws.connected) return
+    if (!taskID) return
     await ws.rpc('kill_bg_task', { task_id: taskID })
     await refresh()
   }, [refresh, ws])

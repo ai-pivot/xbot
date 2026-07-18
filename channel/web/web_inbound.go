@@ -22,6 +22,22 @@ var (
 	errEmptyMessage       = errors.New("content or upload_keys is required")
 )
 
+const inboundRequestRetention = 10 * time.Minute
+
+type inboundRequestState struct {
+	done        chan struct{}
+	sel         SessionSelector
+	err         error
+	completedAt time.Time
+}
+
+type inboundRequestKey struct {
+	senderID  string
+	channel   string
+	chatID    string
+	requestID string
+}
+
 type inboundIdentity struct {
 	SenderID           string
 	SenderName         string
@@ -76,6 +92,22 @@ func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundI
 	if err != nil {
 		return SessionSelector{}, err
 	}
+	msg.ID = strings.TrimSpace(msg.ID)
+	if msg.ID == "" {
+		return wc.dispatchResolvedUserMessage(ctx, identity, sel, msg)
+	}
+	key := inboundRequestKey{
+		senderID:  identity.SenderID,
+		channel:   sel.Channel,
+		chatID:    sel.ChatID,
+		requestID: msg.ID,
+	}
+	return wc.dispatchUserMessageOnce(ctx, key, func() (SessionSelector, error) {
+		return wc.dispatchResolvedUserMessage(ctx, identity, sel, msg)
+	})
+}
+
+func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity inboundIdentity, sel SessionSelector, msg protocol.WSClientMessage) (SessionSelector, error) {
 
 	originalContent := msg.Content
 	content := wc.expandUploadKeys(msg)
@@ -103,36 +135,73 @@ func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundI
 		}
 	}
 
-	if content != originalContent && len(msg.UploadKeys) > 0 {
-		wc.hub.sendToClient(sel.ChatID, protocol.WSMessage{
-			Type:            protocol.MsgTypeUserEcho,
-			Content:         content,
-			OriginalContent: originalContent,
-			TS:              time.Now().Unix(),
-		})
+	requestID := msg.ID
+	if requestID == "" {
+		requestID = strings.ReplaceAll(uuid.New().String(), "-", "")
 	}
-
-	trimmed := strings.TrimSpace(content)
-	if wc.db != nil && shouldEagerSaveUserMessage(sel.Channel, trimmed) {
-		if err := eagerSaveUserMsg(wc.db, sel.Channel, sel.ChatID, content); err != nil {
-			log.WithError(err).Warn("Failed to eager-save user message")
-		} else {
-			metadata["user_msg_eager_saved"] = "true"
-		}
-	}
-
-	err = wc.enqueueInbound(ctx, bus.InboundMessage{
+	receivedAt := time.Now()
+	err := wc.enqueueInbound(ctx, bus.InboundMessage{
 		Channel:    sel.Channel,
 		SenderID:   msgSenderID,
 		SenderName: msgSenderName,
 		ChatID:     sel.ChatID,
 		ChatType:   msgChatType,
 		Content:    content,
-		Time:       time.Now(),
-		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
+		Time:       receivedAt,
+		RequestID:  requestID,
 		From:       bus.NewIMAddress(sel.Channel, msgSenderID),
 		Metadata:   metadata,
 	})
+	if err != nil {
+		return sel, err
+	}
+
+	// The agent persists accepted user messages before running the turn. Echo
+	// expanded attachments only after queue admission so failed requests leave
+	// neither replay events nor phantom history.
+	if content != originalContent && len(msg.UploadKeys) > 0 {
+		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{
+			Type:            protocol.MsgTypeUserEcho,
+			ID:              requestID,
+			Content:         content,
+			OriginalContent: originalContent,
+			TS:              receivedAt.Unix(),
+		})
+	}
+	return sel, nil
+}
+
+func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRequestKey, fn func() (SessionSelector, error)) (SessionSelector, error) {
+	now := time.Now()
+	wc.inboundRequestsMu.Lock()
+	for existingKey, state := range wc.inboundRequests {
+		if !state.completedAt.IsZero() && now.Sub(state.completedAt) > inboundRequestRetention {
+			delete(wc.inboundRequests, existingKey)
+		}
+	}
+	if state, ok := wc.inboundRequests[key]; ok {
+		wc.inboundRequestsMu.Unlock()
+		select {
+		case <-state.done:
+			return state.sel, state.err
+		case <-ctx.Done():
+			return SessionSelector{}, ctx.Err()
+		}
+	}
+	state := &inboundRequestState{done: make(chan struct{})}
+	wc.inboundRequests[key] = state
+	wc.inboundRequestsMu.Unlock()
+
+	sel, err := fn()
+	wc.inboundRequestsMu.Lock()
+	state.sel = sel
+	state.err = err
+	state.completedAt = time.Now()
+	if err != nil {
+		delete(wc.inboundRequests, key)
+	}
+	close(state.done)
+	wc.inboundRequestsMu.Unlock()
 	return sel, err
 }
 
@@ -227,11 +296,24 @@ func (wc *WebChannel) enqueueInbound(ctx context.Context, message bus.InboundMes
 	if wc.msgBus == nil {
 		return errInboundUnavailable
 	}
+	var deliveryAck chan error
+	if wc.msgBus.DeliveryAcknowledgementEnabled() {
+		deliveryAck = make(chan error, 1)
+		message.DeliveryAck = deliveryAck
+	}
 	select {
 	case wc.msgBus.Inbound <- message:
-		return nil
+		if deliveryAck == nil {
+			return nil
+		}
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-wc.stopCh:
+		return errInboundUnavailable
+	}
+	select {
+	case err := <-deliveryAck:
+		return err
 	case <-wc.stopCh:
 		return errInboundUnavailable
 	}

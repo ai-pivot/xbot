@@ -27,7 +27,7 @@ function makeWSWithCommands(commands: unknown[]): WSConnection {
 }
 
 function stubCommands(commands: unknown[]): void {
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true, commands }), {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true, data: commands, error: null }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   })))

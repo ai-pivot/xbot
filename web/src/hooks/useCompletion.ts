@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchCommands } from '@/components/agent/api'
 import type { WSConnection } from '@/types/ws'
+import { postAPI } from '@/lib/api'
 
 export interface CompletionCandidate {
   /** Display label (e.g. "/cancel" or "README.md"). */
@@ -134,7 +135,6 @@ export function useCompletion({
 
   // Fetch command list once (cached for the session).
   useEffect(() => {
-    if (!ws.connected) return
     let cancelled = false
     fetchCommands<CommandInfo>()
       .then((cmds) => {
@@ -350,9 +350,6 @@ function joinPath(base: string, sub: string): string {
 
 /** Fetch directory listing from the REST API. */
 async function fetchFsList(path: string): Promise<FsEntry[]> {
-  const url = `/api/fs/list?path=${encodeURIComponent(path)}`
-  const res = await fetch(url)
-  if (!res.ok) return []
-  const data = (await res.json().catch(() => ({}))) as { entries?: FsEntry[] }
+  const data = await postAPI<{ entries?: FsEntry[] }>('/api/fs/list', { path })
   return data.entries ?? []
 }

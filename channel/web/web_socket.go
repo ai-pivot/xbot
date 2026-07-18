@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -622,12 +621,6 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 	}
 
 }
-func shouldEagerSaveUserMessage(channel, trimmedContent string) bool {
-	if channel == "cli" {
-		return false
-	}
-	return trimmedContent == "" || (trimmedContent[0] != '!' && trimmedContent[0] != '/')
-}
 
 // isImageExt returns true if the file extension is a common image format.
 func isImageExt(ext string) bool {
@@ -636,51 +629,6 @@ func isImageExt(ext string) bool {
 		return true
 	}
 	return false
-}
-
-// eagerSaveUserMsg persists a user message to session_messages immediately
-// so that a page-refresh can recover it while the backend is still processing.
-func eagerSaveUserMsg(db *sql.DB, channel, chatID, content string) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Ensure tenant exists before saving (first message from a new client).
-	now := time.Now().Format(time.RFC3339)
-	_, err = tx.Exec(`INSERT OR IGNORE INTO tenants (channel, chat_id, created_at, last_active_at) VALUES (?, ?, ?, ?)`,
-		channel, chatID, now, now)
-	if err != nil {
-		return err
-	}
-
-	var tenantID int64
-	if err := tx.QueryRow(
-		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", channel, chatID,
-	).Scan(&tenantID); err != nil {
-		return err
-	}
-	// Dedup by checking if the very last message for this tenant is an identical
-	// user message saved within the last 2 seconds (handles page-refresh double-submit).
-	// We do NOT dedup by content alone — users may send the same text legitimately.
-	// IMPORTANT: wrap both sides in datetime() for correct comparison.
-	// created_at stores RFC3339 with timezone (e.g. '2026-05-24T14:00:00+08:00'),
-	// while datetime(?, '-2 seconds') returns UTC without timezone (e.g. '2026-05-24 05:59:58').
-	// Raw string comparison of 'T' > ' ' makes the check always TRUE, breaking the 2s window
-	// and deduping ALL duplicate-content messages regardless of time gap.
-	_, err = tx.Exec(`INSERT INTO session_messages (tenant_id, role, content, created_at)
-	SELECT ?, 'user', ?, ?
-	WHERE NOT EXISTS (
-	SELECT 1 FROM session_messages
-	WHERE tenant_id = ? AND role = 'user' AND content = ?
-	  AND datetime(created_at) > datetime(?, '-2 seconds')
-	LIMIT 1
-	)`, tenantID, content, now, tenantID, content, now)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 // ---------------------------------------------------------------------------

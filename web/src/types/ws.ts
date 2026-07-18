@@ -1,9 +1,7 @@
 /**
- * WSConnection — the connection surface exposed by useWSConnection (Spec 2).
+ * WSConnection — compatibility-named REST + SSE surface exposed by the provider.
  *
- * Mirrors the shared contract in the main design spec §6.3. Lives in a separate
- * type module so both the hook and the provider can import it without pulling
- * React (kept KISS — no barrel re-exports).
+ * The name remains stable for existing consumers; no browser WebSocket backs it.
  */
 import type {
   ProgressEvent,
@@ -13,18 +11,22 @@ import type {
 } from './shared'
 
 export interface WSConnection {
-  /** True when the WebSocket is open and authenticated. */
+  /** True while the active session's SSE stream is open. */
   connected: boolean
-  /** Send a client → server message. No-ops when disconnected. */
-  send: (msg: WSClientMessage) => void
-  /** Subscribe the connection to a business chatID (server routes events). */
-  subscribe: (chatID: string) => void
-  /** Issue an RPC; resolves with the server result or rejects on error/timeout. */
+  /** Map a client operation to its REST endpoint. */
+  send: (msg: WSClientMessage) => Promise<void>
+  /** Open one EventSource for a business chatID, closing the previous stream. */
+  subscribe: (chatID: string, channel?: string) => void
+  /** Close the active EventSource. */
+  disconnect: () => void
+  /** Issue a REST RPC and return its unwrapped data. */
   rpc: <T = unknown>(method: string, params?: unknown) => Promise<T>
   /** The chatID currently subscribed, if any. */
   chatID: string | null
-  /** Set the last event seq (from history API) for incremental WS reconnect replay. */
-  setLastSeq: (seq: number) => void
+  /** The channel of the current SSE subscription, if any. */
+  channel: string | null
+  /** Set the last event seq from the history snapshot for SSE deduplication. */
+  setLastSeq: (chatID: string, seq: number, channel?: string) => void
 
   /** Stream subscriptions; each returns an unsubscribe function. */
   onMessage: (handler: (msg: WSMessage) => void) => () => void

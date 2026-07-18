@@ -33,7 +33,7 @@ interface UseFileContentOptions {
   cwd: string | null
 }
 
-export function useFileContent({ filePath, ws, cwd }: UseFileContentOptions): UseFileContentResult {
+export function useFileContent({ filePath, cwd }: UseFileContentOptions): UseFileContentResult {
   const [content, setContent] = useState('')
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -97,7 +97,7 @@ export function useFileContent({ filePath, ws, cwd }: UseFileContentOptions): Us
     return () => {
       cancelled = true
     }
-  }, [filePath, ws, ws.connected, cwd])
+  }, [filePath, cwd])
 
   const setContentFn = useCallback((next: string) => setContent(next), [])
 

@@ -15,8 +15,8 @@ src/
 │   ├── MediaPlayerContext.tsx # Shared media player state (mutex)
 │   └── NotificationContext.tsx # Desktop notification provider
 ├── hooks/
-│   ├── useWebSocket.ts      # WebSocket with exponential backoff + jitter
-│   ├── useChatMessageHandler.ts  # WS message → state mutations
+│   ├── useWSConnection.ts   # Compatibility hook for the REST + SSE provider
+│   ├── useChatMessages.ts   # History/message memory cache + state mutations
 │   ├── useKeyboardShortcuts.ts   # Global keyboard shortcuts
 │   ├── useNetworkStatus.ts  # Network status monitoring
 │   ├── useNotification.ts   # Desktop notification permissions
@@ -120,11 +120,11 @@ Language switching works end-to-end: AppearanceTab language dropdown → `I18nPr
 ### Virtual Scrolling
 Chat messages use `@tanstack/react-virtual` for efficient rendering of large histories. Messages are grouped into "turns" (user/assistant pairs) via `groupMessagesIntoTurns()`.
 
-### WebSocket
-Single WebSocket connection managed by `useWebSocket` hook with:
-- Exponential backoff + jitter reconnection
-- Sequence-based message deduplication
-- Intentional close detection (no reconnect on explicit close)
+### REST + SSE
+Client operations use the shared `postAPI` JSON envelope adapter. The active
+session owns one native `EventSource`, with browser reconnect/Last-Event-ID,
+sequence deduplication, active-progress recovery, and 5-second status polling.
+The PTY terminal keeps its dedicated binary WebSocket transport.
 
 ### CSS Architecture
 Styles organized by feature under `src/styles/`. Custom properties (`--xbot-*`) drive theming. Two built-in themes: dark (default) and light, plus custom theme editor. Toggle via `data-theme` attribute on `<html>`.
@@ -132,7 +132,7 @@ Styles organized by feature under `src/styles/`. Custom properties (`--xbot-*`) 
 ### State Management
 - **React Context** for global state (Toast, MediaPlayer mutex, Notifications)
 - **localStorage** for persistence (bookmarks, theme preferences, onboarding state)
-- **Custom hooks** for encapsulated stateful logic (WebSocket, keyboard, navigation)
+- **Custom hooks** for encapsulated stateful logic (SSE, keyboard, navigation)
 
 ### Security
 - DOMPurify on all user HTML (Mermaid diagrams, markdown)

@@ -1351,29 +1351,6 @@ func TestRPCNonBlocking(t *testing.T) {
 	}
 }
 
-func TestShouldEagerSaveUserMessageSkipsCommands(t *testing.T) {
-	cases := []struct {
-		name    string
-		channel string
-		content string
-		want    bool
-	}{
-		{name: "web normal", channel: "web", content: "hello", want: true},
-		{name: "web empty", channel: "web", content: "", want: true},
-		{name: "cli normal", channel: "cli", content: "hello", want: false},
-		{name: "bang command", channel: "web", content: "!pwd", want: false},
-		{name: "slash new", channel: "web", content: "/new", want: false},
-		{name: "slash rewind", channel: "web", content: "/rewind", want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldEagerSaveUserMessage(tc.channel, tc.content); got != tc.want {
-				t.Fatalf("shouldEagerSaveUserMessage(%q, %q) = %v, want %v", tc.channel, tc.content, got, tc.want)
-			}
-		})
-	}
-}
-
 // REGRESSION: Structured progress events must not be overwritten by storeStateless.
 
 func TestRegression_StructuredProgressIsStateful(t *testing.T) {

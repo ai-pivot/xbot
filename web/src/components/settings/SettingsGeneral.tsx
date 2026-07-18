@@ -15,7 +15,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Button } from '@/components/ui/button'
+import { Trash2 } from 'lucide-react'
 import { useI18n } from '@/providers/i18n'
+import { clearWebCaches } from '@/lib/webCache'
 import type { Locale } from '@/types/shared'
 
 import { SettingsSection } from './SettingsSection'
@@ -27,6 +30,10 @@ const LOCALES: { value: Locale; label: string }[] = [
 
 export function SettingsGeneral() {
   const { t, locale, setLocale } = useI18n()
+  const clearCache = () => {
+    clearWebCaches()
+    window.location.reload()
+  }
 
   return (
     <div className="flex flex-col">
@@ -43,6 +50,12 @@ export function SettingsGeneral() {
             ))}
           </SelectContent>
         </Select>
+      </SettingsSection>
+      <SettingsSection title={t('settings.cache')}>
+        <Button type="button" variant="destructive" size="sm" className="w-fit" onClick={clearCache}>
+          <Trash2 data-icon="inline-start" />
+          {t('settings.clearCache')}
+        </Button>
       </SettingsSection>
     </div>
   )

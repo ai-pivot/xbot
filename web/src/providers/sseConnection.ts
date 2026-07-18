@@ -1,0 +1,420 @@
+import { postAPI } from '@/lib/api'
+import {
+  bumpProgressGeneration,
+  clearProgressSnapshot,
+  getLastSeq,
+  hasLastSeq,
+  progressSnapshotCache,
+  resetLastSeq,
+  sessionCacheKey,
+  setLastSeq,
+} from '@/lib/webCache'
+import type {
+  ProgressEvent,
+  SessionEvent,
+  WSClientMessage,
+  WSMessage,
+} from '@/types/shared'
+import type { WSConnection } from '@/types/ws'
+
+const STATUS_POLL_MS = 5_000
+const REPLAY_GRACE_MS = 1_000
+const SEND_RETRY_DELAYS_MS = [1_000, 2_000]
+
+export const SSE_EVENT_TYPES = [
+  'text',
+  'progress_structured',
+  'stream_content',
+  'ask_user',
+  'card',
+  'user_echo',
+  'inject_user',
+  'plugin_widgets',
+  'session',
+  'runner_status',
+  'sync_progress',
+] as const
+
+type Handler<T> = (payload: T) => void
+
+/** One native EventSource for the active chat plus REST for client-to-server calls. */
+export class SSEConnectionImpl implements WSConnection {
+  private source: EventSource | null = null
+  private _connected = false
+  private _chatID: string | null = null
+  private _channel = 'web'
+  private disposed = false
+  private reconnecting = false
+  private eventsSinceOpen = 0
+  private pollTimer: ReturnType<typeof setInterval> | null = null
+  private pollRequestToken: object | null = null
+  private replayTimer: ReturnType<typeof setTimeout> | null = null
+  private sessionVersion = 0
+  private progressVersion = 0
+  private recoveryRequestVersion = 0
+
+  private messageHandlers = new Set<Handler<WSMessage>>()
+  private sessionHandlers = new Set<Handler<SessionEvent>>()
+  private progressHandlers = new Set<Handler<ProgressEvent>>()
+  private connHandlers = new Set<Handler<boolean>>()
+
+  get connected(): boolean {
+    return this._connected
+  }
+
+  get chatID(): string | null {
+    return this._chatID
+  }
+
+  get channel(): string | null {
+    return this._chatID ? this._channel : null
+  }
+
+  setLastSeq(chatID: string, seq: number, channel = this._channel): void {
+    const cacheKey = sessionCacheKey(channel, chatID)
+    if (!chatID) return
+    const hadCursor = hasLastSeq(cacheKey)
+    const previousSeq = getLastSeq(cacheKey)
+    setLastSeq(cacheKey, seq)
+    if (
+      (!hadCursor || seq > previousSeq) &&
+      this._chatID === chatID &&
+      this._channel === channel &&
+      this.source
+    ) this.restartSource()
+  }
+
+  async send(msg: WSClientMessage): Promise<void> {
+    switch (msg.type) {
+      case 'message':
+        await this.sendMessageWithRetry(msg)
+        return
+      case 'cancel':
+        await postAPI('/api/cancel', sessionBody(msg))
+        return
+      case 'ask_user_response':
+        await postAPI('/api/ask_user/respond', {
+          ...sessionBody(msg),
+          answers: msg.answers,
+          cancelled: msg.cancelled,
+        })
+        return
+      default:
+        throw new Error(`unsupported REST message type: ${msg.type}`)
+    }
+  }
+
+  subscribe(chatID: string, channel = 'web'): void {
+    if (this.disposed) return
+    if (this._chatID === chatID && this._channel === channel && this.source) return
+    this.disconnect()
+    this._chatID = chatID
+    this._channel = channel
+    this.connect()
+  }
+
+  disconnect(): void {
+    this.sessionVersion += 1
+    this.clearPoll()
+    this.clearReplayTimer()
+    if (this.source) {
+      this.source.close()
+      this.source = null
+    }
+    this.reconnecting = false
+    this.eventsSinceOpen = 0
+    this._chatID = null
+    this._channel = 'web'
+    this.setConnected(false)
+  }
+
+  rpc<T = unknown>(method: string, params?: unknown): Promise<T> {
+    return postAPI<T>('/api/rpc', { method, params: params ?? {} })
+  }
+
+  onMessage = (handler: Handler<WSMessage>) => this.subscribeHandler(this.messageHandlers, handler)
+  onSession = (handler: Handler<SessionEvent>) => this.subscribeHandler(this.sessionHandlers, handler)
+  onProgress = (handler: Handler<ProgressEvent>) => this.subscribeHandler(this.progressHandlers, handler)
+  onConnectionChange = (handler: Handler<boolean>) => this.subscribeHandler(this.connHandlers, handler)
+
+  dispose(): void {
+    this.disposed = true
+    this.disconnect()
+    this.messageHandlers.clear()
+    this.sessionHandlers.clear()
+    this.progressHandlers.clear()
+    this.connHandlers.clear()
+  }
+
+  private connect(): void {
+    const chatID = this._chatID
+    const channel = this._channel
+    if (this.disposed || !chatID || typeof EventSource === 'undefined') return
+
+    const params = new URLSearchParams({ chat_id: chatID, channel })
+    const cacheKey = sessionCacheKey(channel, chatID)
+    const lastSeq = getLastSeq(cacheKey)
+    if (hasLastSeq(cacheKey)) {
+      params.set('last_event_id', String(lastSeq))
+    }
+
+    let source: EventSource
+    try {
+      source = new EventSource(`/api/sse?${params.toString()}`)
+    } catch {
+      this.startPolling()
+      return
+    }
+    this.source = source
+    for (const eventType of SSE_EVENT_TYPES) {
+      source.addEventListener(eventType, (event) => {
+        if (this.source !== source) return
+        this.handleEvent(eventType, event as MessageEvent<string>)
+      })
+    }
+    source.onopen = () => {
+      if (this.source !== source) return
+      const resumed = this.reconnecting
+      this.reconnecting = false
+      this.eventsSinceOpen = 0
+      this.clearPoll()
+      this.setConnected(true)
+      if (resumed) this.scheduleReplayFallback(source, channel, chatID)
+    }
+    source.onerror = () => {
+      if (this.source !== source) return
+      this.reconnecting = true
+      this.setConnected(false)
+      this.startPolling()
+    }
+  }
+
+  private restartSource(): void {
+    this.sessionVersion += 1
+    this.clearPoll()
+    this.clearReplayTimer()
+    this.source?.close()
+    this.source = null
+    this.reconnecting = false
+    this.eventsSinceOpen = 0
+    this.setConnected(false)
+    this.connect()
+  }
+
+  private handleEvent(eventType: string, event: MessageEvent<string>): void {
+    let msg: WSMessage
+    try {
+      msg = JSON.parse(event.data) as WSMessage
+    } catch {
+      return
+    }
+    msg.type = eventType
+    const seq = msg.seq ?? parseSequence(event.lastEventId)
+    const chatID = this._chatID
+    const channel = this._channel
+    const cacheKey = chatID ? sessionCacheKey(channel, chatID) : null
+    let replayGap = false
+    if (cacheKey && seq > 0) {
+      let previousSeq = getLastSeq(cacheKey)
+      if (seq < previousSeq) {
+        resetLastSeq(cacheKey)
+        previousSeq = 0
+      } else if (seq === previousSeq) {
+        return
+      }
+      if (seq > previousSeq + 1) {
+        replayGap = true
+      }
+      msg.seq = seq
+      setLastSeq(cacheKey, seq)
+    }
+    this.eventsSinceOpen += 1
+    if (cacheKey && isProgressLifecycleEvent(msg)) {
+      this.progressVersion += 1
+      bumpProgressGeneration(cacheKey)
+    }
+    this.dispatch(msg)
+    if (chatID && replayGap) void this.restoreActiveProgress(channel, chatID)
+  }
+
+  private dispatch(msg: WSMessage): void {
+    if (this._chatID) {
+      const cacheKey = sessionCacheKey(this._channel, this._chatID)
+      if (isTerminalProgressEvent(msg)) {
+        clearProgressSnapshot(cacheKey)
+      } else if (msg.type === 'progress_structured' && msg.progress) {
+        progressSnapshotCache.set(cacheKey, msg.progress)
+      }
+    }
+    if (msg.type === 'session' && msg.session) {
+      this.sessionHandlers.forEach((handler) => handler(msg.session!))
+    }
+    if ((msg.type === 'progress_structured' || msg.type === 'stream_content' || msg.type === 'sync_progress') && msg.progress) {
+      this.progressHandlers.forEach((handler) => handler(msg.progress!))
+    }
+    this.messageHandlers.forEach((handler) => handler(msg))
+  }
+
+  private async sendMessageWithRetry(msg: WSClientMessage): Promise<void> {
+    const requestID = msg.id || newMessageRequestID()
+    const body = {
+      id: requestID,
+      content: msg.content ?? '',
+      file_ids: msg.file_ids,
+      file_names: msg.file_names,
+      file_sizes: msg.file_sizes,
+      upload_keys: msg.upload_keys,
+      file_mimes: msg.file_mimes,
+      ...sessionBody(msg),
+    }
+    for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        await postAPI('/api/message', body)
+        return
+      } catch (error) {
+        if (attempt === SEND_RETRY_DELAYS_MS.length) throw error
+        await delay(SEND_RETRY_DELAYS_MS[attempt])
+      }
+    }
+  }
+
+  private scheduleReplayFallback(source: EventSource, channel: string, chatID: string): void {
+    this.clearReplayTimer()
+    this.replayTimer = setTimeout(() => {
+      this.replayTimer = null
+      if (this.source !== source || this._channel !== channel || this._chatID !== chatID || this.eventsSinceOpen > 0) return
+      void this.restoreActiveProgress(channel, chatID)
+    }, REPLAY_GRACE_MS)
+  }
+
+  private async restoreActiveProgress(channel: string, chatID: string): Promise<void> {
+    const sessionVersion = this.sessionVersion
+    const progressVersion = this.progressVersion
+    const recoveryRequestVersion = ++this.recoveryRequestVersion
+    try {
+      const progress = await this.rpc<ProgressEvent | null>('get_active_progress', {
+        channel,
+        chat_id: chatID,
+      })
+      if (
+        this._channel !== channel ||
+        this._chatID !== chatID ||
+        this.sessionVersion !== sessionVersion ||
+        this.progressVersion !== progressVersion ||
+        this.recoveryRequestVersion !== recoveryRequestVersion
+      ) return
+      bumpProgressGeneration(sessionCacheKey(channel, chatID))
+      this.progressVersion += 1
+      if (!progress || progress.phase === 'done') {
+        this.dispatch({
+          type: 'progress_structured',
+          chat_id: chatID,
+          progress: { phase: 'done' },
+        })
+        return
+      }
+      this.dispatch({
+        type: 'progress_structured',
+        chat_id: chatID,
+        progress,
+      })
+    } catch {
+      // The next native SSE reconnect or status poll gets another recovery chance.
+    }
+  }
+
+  private startPolling(): void {
+    if (this.pollTimer || !this._chatID) return
+    this.pollTimer = setInterval(() => {
+      void this.pollSessionStatus()
+    }, STATUS_POLL_MS)
+  }
+
+  private async pollSessionStatus(): Promise<void> {
+    if (this.pollRequestToken || !this._chatID) return
+    const token = {}
+    const chatID = this._chatID
+    const channel = this._channel
+    const source = this.source
+    this.pollRequestToken = token
+    try {
+      await postAPI('/api/session/status', { channel, chat_id: chatID })
+      if (
+        this._chatID !== chatID ||
+        this._channel !== channel ||
+        this._connected ||
+        this.source !== source
+      ) return
+      if (!source || source.readyState === 2) {
+        source?.close()
+        this.source = null
+        this.connect()
+      }
+    } catch {
+      // Continue polling until the native EventSource reconnects.
+    } finally {
+      if (this.pollRequestToken === token) this.pollRequestToken = null
+    }
+  }
+
+  private clearPoll(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer)
+      this.pollTimer = null
+    }
+    this.pollRequestToken = null
+  }
+
+  private clearReplayTimer(): void {
+    if (!this.replayTimer) return
+    clearTimeout(this.replayTimer)
+    this.replayTimer = null
+  }
+
+  private setConnected(value: boolean): void {
+    if (this._connected === value) return
+    this._connected = value
+    this.connHandlers.forEach((handler) => handler(value))
+  }
+
+  private subscribeHandler<T>(handlers: Set<Handler<T>>, handler: Handler<T>): () => void {
+    handlers.add(handler)
+    return () => handlers.delete(handler)
+  }
+}
+
+function sessionBody(msg: WSClientMessage): { channel?: string; chat_id?: string } {
+  return { channel: msg.channel, chat_id: msg.chat_id }
+}
+
+function parseSequence(raw: string): number {
+  const value = Number.parseInt(raw, 10)
+  return Number.isFinite(value) ? value : 0
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function newMessageRequestID(): string {
+  const id = globalThis.crypto?.randomUUID?.()
+  return id ? id.replaceAll('-', '') : `web-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function isProgressLifecycleEvent(msg: WSMessage): boolean {
+  if (
+    msg.type === 'stream_content' ||
+    msg.type === 'progress_structured' ||
+    msg.type === 'sync_progress' ||
+    msg.type === 'text'
+  ) return true
+  if (msg.type !== 'session') return false
+  return ['busy', 'idle', 'deleted', 'HistoryCompacted'].includes(msg.session?.action ?? '')
+}
+
+function isTerminalProgressEvent(msg: WSMessage): boolean {
+  if (msg.type === 'text') return true
+  if (msg.progress?.phase === 'done') return true
+  if (msg.type !== 'session') return false
+  return ['busy', 'idle', 'deleted', 'HistoryCompacted'].includes(msg.session?.action ?? '')
+}

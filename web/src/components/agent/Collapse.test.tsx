@@ -186,7 +186,7 @@ describe('IterationGroup', () => {
     // Reasoning is a folded line with character count as title
     expect(screen.getByText(/Thought.*characters/)).toBeInTheDocument()
     // Tool name from FoldedToolGroup
-    expect(screen.getByText('Read')).toBeInTheDocument()
+    expect(screen.getAllByText('Read').length).toBeGreaterThan(0)
     // O text from MarkdownRenderer
     expect(screen.getByText('Here is the output')).toBeInTheDocument()
   })

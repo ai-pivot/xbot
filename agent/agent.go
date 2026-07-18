@@ -2144,6 +2144,8 @@ func (a *Agent) wireCheckpointStateToCLI() {
 // 全局并发数由 AGENT_MAX_CONCURRENCY 控制（默认 3），避免 LLM 并发过高。
 // 用户设置了自己的 LLM 配置后，该用户的请求使用独立的信号量，不再占用全局资源。
 func (a *Agent) Run(ctx context.Context) error {
+	a.bus.EnableDeliveryAcknowledgement()
+	defer a.bus.DisableDeliveryAcknowledgement()
 	log.WithFields(log.Fields{
 		"max_concurrency": a.getMaxConcurrency(),
 	}).Info("Agent loop started")
@@ -2222,6 +2224,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 				a.interceptCancel(msg)
+				acknowledgeInboundDelivery(msg, nil)
 				continue
 			}
 
@@ -2230,10 +2233,22 @@ func (a *Agent) Run(ctx context.Context) error {
 			select {
 			case q <- msg:
 				a.clearPendingAskUserForEnqueuedAnswer(msg)
+				acknowledgeInboundDelivery(msg, nil)
 			default:
+				acknowledgeInboundDelivery(msg, bus.ErrInboundQueueFull)
 				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": key}).Warn("Chat queue full, dropping message")
 			}
 		}
+	}
+}
+
+func acknowledgeInboundDelivery(msg bus.InboundMessage, err error) {
+	if msg.DeliveryAck == nil {
+		return
+	}
+	select {
+	case msg.DeliveryAck <- err:
+	default:
 	}
 }
 

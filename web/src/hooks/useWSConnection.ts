@@ -1,10 +1,8 @@
 /**
- * useWSConnection — React hook returning the app's WSConnection.
+ * useWSConnection — compatibility import for the app's REST + SSE connection.
  *
- * Spec 2 §3.4 names this hook; the implementation lives in
- * `@/providers/WSProvider` (which owns the connection instance + context).
- * This thin re-export keeps the documented import path stable
- * (`@/hooks/useWSConnection`) while avoiding a second source of truth.
+ * The compatibility name avoids a broad UI-only rename while the provider now
+ * owns an EventSource and sends every client operation through REST POST.
  */
 export { useWSConnection } from '@/providers/WSProvider'
 export type { WSConnection } from '@/types/ws'

@@ -16,6 +16,7 @@ import { SettingsSection } from './SettingsSection'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { postAPI } from '@/lib/api'
 
 interface IdentityEntry {
   id: number
@@ -44,9 +45,7 @@ export function SettingsAccountLinking() {
   const fetchIdentities = useCallback(async () => {
     setIdentitiesLoading(true)
     try {
-      const res = await fetch('/api/account/identities')
-      if (!res.ok) return
-      const data = await res.json()
+      const data = await postAPI<{ identities?: IdentityEntry[] }>('/api/account/identities/list')
       setIdentities(data.identities || [])
     } catch {
       // ignore
@@ -63,12 +62,7 @@ export function SettingsAccountLinking() {
     setGenStatus('loading')
     setGeneratedCode('')
     try {
-      const res = await fetch('/api/account/link-code', { method: 'POST' })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || data.message || 'Failed')
-      }
-      const data = await res.json()
+      const data = await postAPI<{ code: string }>('/api/account/link-code')
       setGeneratedCode(data.code)
       setGenStatus('success')
       setCopied(false)
@@ -90,26 +84,16 @@ export function SettingsAccountLinking() {
     setLinkStatus('loading')
     setLinkMessage('')
     try {
-      const res = await fetch('/api/account/link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: inputCode.trim(), confirm: false }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        throw new Error(data.error || data.message || 'Failed')
-      }
+      const data = await postAPI<{ action?: string; user_id?: number; message?: string }>(
+        '/api/account/link',
+        { code: inputCode.trim(), confirm: false },
+      )
       if (data.action === 'merge_required') {
         // Auto-confirm merge
-        const res2 = await fetch('/api/account/link', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: inputCode.trim(), confirm: true }),
+        const data2 = await postAPI<{ user_id?: number }>('/api/account/link', {
+          code: inputCode.trim(),
+          confirm: true,
         })
-        const data2 = await res2.json()
-        if (!res2.ok) {
-          throw new Error(data2.error || data2.message || 'Merge failed')
-        }
         setLinkStatus('success')
         setLinkMessage(`账号合并成功 (user_id: ${data2.user_id})`)
         fetchIdentities()
@@ -135,8 +119,8 @@ export function SettingsAccountLinking() {
 
   const handleUnlink = async (identityId: number) => {
     try {
-      await fetch(`/api/account/identities/${identityId}`, { method: 'DELETE' })
-      fetchIdentities()
+      await postAPI(`/api/account/identities/${identityId}/delete`)
+      void fetchIdentities()
     } catch {
       // ignore
     }

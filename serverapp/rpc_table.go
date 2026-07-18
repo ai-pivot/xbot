@@ -54,22 +54,106 @@ func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
 	}
 }
 
-// ownOrAdmin checks that the caller owns the resource or has admin privileges.
-// Empty chatID is treated as self-access (defaults to caller's bizID).
+// ownOrAdmin checks that the caller owns the complete channel+chatID resource
+// or has admin privileges. Callers must resolve empty defaults before checking.
 // Also checks canonical session ownership: if the session (channel+chatID) is
 // owned by the same canonical user_id, access is granted even if chatID != bizID.
 func (h *RPCContext) ownOrAdmin(ctx context.Context, channel, chatID string) bool {
-	if isAdmin(ctx) || chatID == "" || chatID == rpcBizID(ctx) {
+	if isAdmin(ctx) {
+		return true
+	}
+	if channel == "" || chatID == "" {
+		return false
+	}
+	if channel == "web" && chatID == rpcBizID(ctx) {
+		return true
+	}
+	// A newly created Web chat is recorded in user_chats before its first
+	// message or CWD update creates the corresponding tenant row.
+	if channel == "web" && h.webChatOwnedBySender(chatID, rpcAuthID(ctx)) {
+		return true
+	}
+	if channel == "agent" && h.agentSessionOwnedBySender(chatID, rpcAuthID(ctx), rpcUserID(ctx)) {
 		return true
 	}
 	// Check canonical session ownership
-	if h.Ag != nil && h.Ag.IdentityResolver() != nil {
-		userID := rpcUserID(ctx)
-		if userID > 0 {
-			return h.sessionOwnedByUser(channel, chatID, userID)
+	if userID := rpcUserID(ctx); userID > 0 {
+		return h.sessionOwnedByUser(channel, chatID, userID)
+	}
+	return false
+}
+
+func (h *RPCContext) resolveOwnedSession(ctx context.Context, channel, chatID, defaultChannel string) (string, string, error) {
+	if channel == "" {
+		channel = defaultChannel
+	}
+	if chatID == "" {
+		chatID = rpcBizID(ctx)
+	}
+	if !h.ownOrAdmin(ctx, channel, chatID) {
+		return "", "", fmt.Errorf("access denied")
+	}
+	return channel, chatID, nil
+}
+
+func (h *RPCContext) agentSessionOwnedBySender(chatID, senderID string, userID int64) bool {
+	if senderID == "" || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
+		return false
+	}
+	if !h.agentTenantExists(chatID) {
+		return false
+	}
+	for depth := 0; depth < 32; depth++ {
+		parentChannel, parentChatID := sessionKeyParent(chatID)
+		if parentChannel == "" || parentChatID == "" {
+			return false
+		}
+		switch parentChannel {
+		case "web":
+			return parentChatID == senderID || h.webChatOwnedBySender(parentChatID, senderID)
+		case "agent":
+			if !h.agentTenantExists(parentChatID) {
+				return false
+			}
+			chatID = parentChatID
+		default:
+			return userID > 0 && h.sessionOwnedByUser(parentChannel, parentChatID, userID)
 		}
 	}
 	return false
+}
+
+func (h *RPCContext) agentTenantExists(chatID string) bool {
+	var count int
+	err := h.Ag.MultiSession().DB().Conn().QueryRow(
+		`SELECT COUNT(*) FROM tenants WHERE channel = 'agent' AND chat_id = ?`, chatID,
+	).Scan(&count)
+	return err == nil && count > 0
+}
+
+func sessionKeyParent(key string) (string, string) {
+	slash := strings.LastIndex(key, "/")
+	if slash <= 0 {
+		return "", ""
+	}
+	parent := key[:slash]
+	parts := strings.SplitN(parent, ":", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
+func (h *RPCContext) webChatOwnedBySender(chatID, senderID string) bool {
+	if senderID == "" || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
+		return false
+	}
+	var count int
+	err := h.Ag.MultiSession().DB().Conn().QueryRow(
+		`SELECT COUNT(*) FROM user_chats WHERE channel = 'web' AND sender_id = ? AND chat_id = ?`,
+		senderID, chatID,
+	).Scan(&count)
+	return err == nil && count > 0
 }
 
 // sessionOwnedByUser checks if a tenant (channel+chatID) has owner_user_id == userID.
@@ -86,14 +170,6 @@ func (h *RPCContext) sessionOwnedByUser(channel, chatID string, userID int64) bo
 		return false
 	}
 	return ownerUserID == userID
-}
-
-// ownOrAdminLegacy is the old signature for handlers that don't have channel context.
-func ownOrAdmin(ctx context.Context, chatID string) error {
-	if isAdmin(ctx) || chatID == "" || chatID == rpcBizID(ctx) {
-		return nil
-	}
-	return fmt.Errorf("access denied")
 }
 
 func (h *RPCContext) requireLLMFactory() error {
@@ -119,17 +195,6 @@ func (h *RPCContext) requireMultiSession() error {
 		return fmt.Errorf("multi-session not available")
 	}
 	return nil
-}
-
-// resolveChatID checks ownership and defaults empty chatID to the caller's bizID.
-func resolveChatID(ctx context.Context, chatID string) (string, error) {
-	if err := ownOrAdmin(ctx, chatID); err != nil {
-		return "", err
-	}
-	if chatID == "" {
-		return rpcBizID(ctx), nil
-	}
-	return chatID, nil
 }
 
 // BuildRPCTable constructs the complete RPC dispatch table.
@@ -204,11 +269,12 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		ChatID  string `json:"chat_id"`
 		Dir     string `json:"dir"`
 	}) error {
-		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
 			return err
 		}
 		// SetCWD internally refreshes plugin workDir with correct tenantID
-		return h.Ag.SetCWD(p.Channel, p.ChatID, p.Dir)
+		return h.Ag.SetCWD(channelName, chatID, p.Dir)
 	})
 	t["get_settings"] = rpc1(func(ctx context.Context, p struct {
 		Namespace string `json:"namespace"`
@@ -693,11 +759,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if err := h.requireMultiSession(); err != nil {
 			return err
 		}
-		chatID, err := resolveChatID(ctx, p.ChatID)
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
 			return err
 		}
-		return h.Ag.MultiSession().ClearMemory(context.Background(), p.Channel, chatID, p.TargetType, rpcBizID(ctx))
+		return h.Ag.MultiSession().ClearMemory(context.Background(), channelName, chatID, p.TargetType, rpcBizID(ctx))
 	})
 	t["get_memory_stats"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
@@ -706,11 +772,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if err := h.requireMultiSession(); err != nil {
 			return nil, err
 		}
-		chatID, err := resolveChatID(ctx, p.ChatID)
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
 			return nil, err
 		}
-		return h.Ag.MultiSession().GetMemoryStats(context.Background(), p.Channel, chatID, rpcBizID(ctx)), nil
+		return h.Ag.MultiSession().GetMemoryStats(context.Background(), channelName, chatID, rpcBizID(ctx)), nil
 	})
 	t["get_user_token_usage"] = rpc0err(func(ctx context.Context) (any, error) {
 		if err := h.requireMultiSession(); err != nil {
@@ -733,11 +799,14 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 	}) (int, error) {
-		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
-			return 0, err
-		}
 		if !isAdmin(ctx) && p.ChatID == "" {
 			p.ChatID = rpcBizID(ctx)
+		}
+		if p.Channel == "" {
+			p.Channel = "web"
+		}
+		if !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
+			return 0, fmt.Errorf("access denied")
 		}
 		return h.Ag.CountInteractiveSessions(p.Channel, p.ChatID), nil
 	})
@@ -745,11 +814,14 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
-		if err := ownOrAdmin(ctx, p.ChatID); err != nil {
-			return nil, err
-		}
 		if !isAdmin(ctx) && p.ChatID == "" {
 			p.ChatID = rpcBizID(ctx)
+		}
+		if p.Channel == "" {
+			p.Channel = "web"
+		}
+		if !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
+			return nil, fmt.Errorf("access denied")
 		}
 		return h.Ag.ListInteractiveSessions(p.Channel, p.ChatID), nil
 	})
@@ -760,11 +832,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		Instance  string `json:"instance"`
 		TailCount int    `json:"tail_count"`
 	}) (string, error) {
-		chatID, err := resolveChatID(ctx, p.ChatID)
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
 			return "", err
 		}
-		return h.Ag.InspectInteractiveSession(context.Background(), p.Role, p.Channel, chatID, p.Instance, p.TailCount)
+		return h.Ag.InspectInteractiveSession(context.Background(), p.Role, channelName, chatID, p.Instance, p.TailCount)
 	})
 	t["get_session_messages"] = rpc1(func(ctx context.Context, p struct {
 		Channel  string `json:"channel"`
@@ -772,11 +844,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		Role     string `json:"role"`
 		Instance string `json:"instance"`
 	}) (any, error) {
-		chatID, err := resolveChatID(ctx, p.ChatID)
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
 			return nil, err
 		}
-		msgs, _ := h.Ag.GetSessionMessages(p.Channel, chatID, p.Role, p.Instance)
+		msgs, _ := h.Ag.GetSessionMessages(channelName, chatID, p.Role, p.Instance)
 		if msgs == nil {
 			msgs = []agent.SessionMessage{}
 		}
@@ -788,11 +860,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		Role     string `json:"role"`
 		Instance string `json:"instance"`
 	}) (any, error) {
-		chatID, err := resolveChatID(ctx, p.ChatID)
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
 			return nil, err
 		}
-		dump, _ := h.Ag.GetAgentSessionDump(p.Channel, chatID, p.Role, p.Instance)
+		dump, _ := h.Ag.GetAgentSessionDump(channelName, chatID, p.Role, p.Instance)
 		if dump == nil {
 			dump = &agent.AgentSessionDump{}
 		}
@@ -804,10 +876,8 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if p.FullKey == "" {
 			return nil, fmt.Errorf("full_key is required")
 		}
-		if owner := sessionKeyOwner(p.FullKey); owner != "" {
-			if !isAdmin(ctx) && owner != rpcBizID(ctx) {
-				return nil, fmt.Errorf("access denied")
-			}
+		if !isAdmin(ctx) && !h.ownOrAdmin(ctx, "agent", p.FullKey) {
+			return nil, fmt.Errorf("access denied")
 		}
 		dump, _ := h.Ag.GetAgentSessionDumpByFullKey(p.FullKey)
 		if dump == nil {
@@ -821,16 +891,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
-		bizID := rpcBizID(ctx)
-		if p.Channel == "" {
-			p.Channel = "web"
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
 		}
-		if p.ChatID == "" {
-			p.ChatID = bizID
-		}
-		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
-			return nil, fmt.Errorf("access denied")
-		}
+		p.Channel, p.ChatID = channelName, chatID
 		// Update last_active_at so we can restore the most recent session on restart.
 		if db := h.Ag.MultiSession().DB(); db != nil {
 			if _, err := sqlite.NewTenantService(db).GetOrCreateTenantID(p.Channel, p.ChatID); err != nil {
@@ -862,16 +927,12 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "cli")
+		if err != nil {
+			return nil, err
+		}
+		p.Channel, p.ChatID = channelName, chatID
 		bizID := rpcBizID(ctx)
-		if p.Channel == "" {
-			p.Channel = "cli"
-		}
-		if p.ChatID == "" {
-			p.ChatID = bizID
-		}
-		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
-			return nil, fmt.Errorf("access denied")
-		}
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
 		// because ChatRenameFn writes labels with cliSenderID, not the WS auth identity.
 		senderID := bizID
@@ -901,13 +962,12 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		ChatID  string `json:"chat_id"`
 		NewName string `json:"new_name"`
 	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "cli")
+		if err != nil {
+			return nil, err
+		}
+		p.Channel, p.ChatID = channelName, chatID
 		bizID := rpcBizID(ctx)
-		if p.Channel == "" {
-			p.Channel = "cli"
-		}
-		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
-			return nil, fmt.Errorf("access denied")
-		}
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
 		// consistent with ChatRenameFn which writes labels with cliSenderID.
 		senderID := bizID
@@ -925,13 +985,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
-		bizID := rpcBizID(ctx)
-		if p.Channel == "" {
-			p.Channel = "cli"
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "cli")
+		if err != nil {
+			return nil, err
 		}
-		if p.ChatID == "" {
-			p.ChatID = bizID
-		}
+		p.Channel, p.ChatID = channelName, chatID
 		ms := h.Ag.MultiSession()
 		if ms == nil {
 			return map[string]int64{"prompt_tokens": 0, "completion_tokens": 0}, nil
@@ -955,16 +1013,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		ChatID  string `json:"chat_id"`
 		Cutoff  int64  `json:"cutoff"`
 	}) error {
-		bizID := rpcBizID(ctx)
-		if p.Channel == "" {
-			p.Channel = "web"
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return err
 		}
-		if p.ChatID == "" {
-			p.ChatID = bizID
-		}
-		if !isAdmin(ctx) && p.ChatID != bizID && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
-			return fmt.Errorf("access denied")
-		}
+		p.Channel, p.ChatID = channelName, chatID
 		var cutoff time.Time
 		if p.Cutoff > 0 {
 			cutoff = time.Unix(p.Cutoff, 0)
@@ -982,7 +1035,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		// is_processing requires explicit chatID or admin.
 		// Unlike other handlers, empty chatID does NOT default to self.
-		if !isAdmin(ctx) && p.ChatID != rpcBizID(ctx) && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
+		if !isAdmin(ctx) && (p.ChatID == "" || !h.ownOrAdmin(ctx, p.Channel, p.ChatID)) {
 			return false, fmt.Errorf("access denied")
 		}
 		return h.Ag.IsProcessingByChannel(p.Channel, p.ChatID), nil
@@ -992,45 +1045,33 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		ChatID        string `json:"chat_id"`
 		FromIteration int    `json:"from_iteration"`
 	}) (any, error) {
-		bizID := rpcBizID(ctx)
-		if p.Channel == "" {
-			p.Channel = "web"
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
 		}
-		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
-			return nil, fmt.Errorf("access denied")
-		}
-		return h.Ag.GetActiveProgress(p.Channel, p.ChatID, p.FromIteration), nil
+		return h.Ag.GetActiveProgress(channelName, chatID, p.FromIteration), nil
 	})
 
 	t["get_pending_ask_user"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
-		bizID := rpcBizID(ctx)
-		if p.Channel == "" {
-			p.Channel = "web"
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
 		}
-		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
-			return nil, fmt.Errorf("access denied")
-		}
-		return h.Ag.GetPendingAskUser(p.Channel, p.ChatID), nil
+		return h.Ag.GetPendingAskUser(channelName, chatID), nil
 	})
 
 	t["get_todos"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
-		bizID := rpcBizID(ctx)
-		if p.Channel == "" {
-			p.Channel = "web"
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
 		}
-		if p.ChatID == "" {
-			p.ChatID = bizID
-		}
-		if !isAdmin(ctx) && p.ChatID != bizID && p.Channel != "agent" && !h.ownOrAdmin(ctx, p.Channel, p.ChatID) {
-			return nil, fmt.Errorf("access denied")
-		}
-		return h.Ag.GetTodos(p.Channel, p.ChatID), nil
+		return h.Ag.GetTodos(channelName, chatID), nil
 	})
 }
 

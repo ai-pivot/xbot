@@ -10,10 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"xbot/bus"
+	ch "xbot/channel"
+	"xbot/protocol"
 	"xbot/tools"
 )
 
@@ -22,6 +25,15 @@ type fixedIdentityResolver struct {
 	userID int64
 	role   string
 }
+
+type fixedOSSProvider struct{}
+
+func (fixedOSSProvider) Upload(string, []byte) error { return nil }
+func (fixedOSSProvider) GetDownloadURL(string) (string, error) {
+	return "https://files.example/test.txt", nil
+}
+func (fixedOSSProvider) Name() string   { return "fixed" }
+func (fixedOSSProvider) Domain() string { return "https://files.example" }
 
 func (r fixedIdentityResolver) Resolve(channel, channelUserID string) (int64, string, error) {
 	return r.userID, r.role, nil
@@ -88,6 +100,133 @@ func TestRESTResponseEnvelope(t *testing.T) {
 	}
 }
 
+func TestRESTChatCRUDPassesChannelToCallbacks(t *testing.T) {
+	db := newTestDB(t)
+	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	cliStream := wc.getEventStream(sessionRouteKey("cli", "shared"))
+	webStream := wc.getEventStream(sessionRouteKey("web", "shared"))
+	cliStream.nextSeq()
+	webStream.nextSeq()
+	requestKey := inboundRequestKey{senderID: "web-1", channel: "cli", chatID: "shared", requestID: "request-1"}
+	wc.inboundRequests[requestKey] = &inboundRequestState{}
+	if _, err := db.Exec(
+		"INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)",
+		"cli", "shared", time.Now().Format(time.RFC3339),
+	); err != nil {
+		t.Fatal(err)
+	}
+	var renamed, deleted SessionSelector
+	wc.SetCallbacks(WebCallbacks{
+		ChatRename: func(senderID, channel, chatID, label string) error {
+			if senderID != "web-1" || label != "renamed" {
+				t.Fatalf("rename callback args = (%q, %q)", senderID, label)
+			}
+			renamed = SessionSelector{Channel: channel, ChatID: chatID}
+			return nil
+		},
+		ChatDelete: func(senderID, channel, chatID string) error {
+			if senderID != "web-1" {
+				t.Fatalf("delete sender = %q", senderID)
+			}
+			deleted = SessionSelector{Channel: channel, ChatID: chatID}
+			return nil
+		},
+	})
+
+	rename := authedAPIRequest(http.MethodPost, "/api/chats/shared/rename", []byte(`{"channel":"cli","label":"renamed"}`))
+	rename.SetPathValue("chatID", "shared")
+	renameRecorder := httptest.NewRecorder()
+	wc.handleChatRename(renameRecorder, rename)
+	if renameRecorder.Code != http.StatusOK {
+		t.Fatalf("rename status = %d: %s", renameRecorder.Code, renameRecorder.Body.String())
+	}
+	if renamed != (SessionSelector{Channel: "cli", ChatID: "shared"}) {
+		t.Fatalf("rename selector = %#v", renamed)
+	}
+
+	deleteRequest := authedAPIRequest(http.MethodPost, "/api/chats/shared/delete", []byte(`{"channel":"cli"}`))
+	deleteRequest.SetPathValue("chatID", "shared")
+	deleteRecorder := httptest.NewRecorder()
+	wc.handleChatDeletePOST(deleteRecorder, deleteRequest)
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("delete status = %d: %s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+	if deleted != (SessionSelector{Channel: "cli", ChatID: "shared"}) {
+		t.Fatalf("delete selector = %#v", deleted)
+	}
+	if fresh := wc.getEventStream(sessionRouteKey("cli", "shared")); fresh == cliStream || fresh.lastSeq() != 0 {
+		t.Fatalf("deleted CLI replay stream was retained: same=%v seq=%d", fresh == cliStream, fresh.lastSeq())
+	}
+	if wc.getEventStream(sessionRouteKey("web", "shared")) != webStream || webStream.lastSeq() != 1 {
+		t.Fatal("deleting CLI session changed same-ID Web replay state")
+	}
+	if _, ok := wc.inboundRequests[requestKey]; ok {
+		t.Fatal("deleted CLI request-dedup state was retained")
+	}
+}
+
+func TestRESTChatDeleteAllowsAdminVerifiedLocalCLISession(t *testing.T) {
+	db := newTestDB(t)
+	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	deleted := false
+	wc.SetCallbacks(WebCallbacks{
+		LocalSessionExists: func(channel, chatID string) bool {
+			return channel == "cli" && chatID == "/repo/project:local-only"
+		},
+		ChatDelete: func(senderID, channel, chatID string) error {
+			deleted = senderID == "web-1" && channel == "cli" && chatID == "/repo/project:local-only"
+			return nil
+		},
+	})
+	foreignSwitch := authedAPIRequestFor(
+		http.MethodPost,
+		"/api/chats/local/switch",
+		[]byte(`{"channel":"cli"}`),
+		"web-2",
+		2,
+	)
+	foreignSwitch.SetPathValue("chatID", "/repo/project:local-only")
+	foreignSwitchRecorder := httptest.NewRecorder()
+	wc.handleChatSwitchPOST(foreignSwitchRecorder, foreignSwitch)
+	if foreignSwitchRecorder.Code != http.StatusForbidden {
+		t.Fatalf("non-admin local CLI switch status=%d", foreignSwitchRecorder.Code)
+	}
+
+	adminSwitch := authedAPIRequest(http.MethodPost, "/api/chats/local/switch", []byte(`{"channel":"cli"}`))
+	adminSwitch.SetPathValue("chatID", "/repo/project:local-only")
+	adminSwitchRecorder := httptest.NewRecorder()
+	wc.handleChatSwitchPOST(adminSwitchRecorder, adminSwitch)
+	if adminSwitchRecorder.Code != http.StatusOK {
+		t.Fatalf("admin local CLI switch status=%d body=%s", adminSwitchRecorder.Code, adminSwitchRecorder.Body.String())
+	}
+	if got := wc.GetCurrentSession("web-1"); got != (SessionSelector{Channel: "cli", ChatID: "/repo/project:local-only"}) {
+		t.Fatalf("admin local CLI selector=%#v", got)
+	}
+
+	foreignRequest := authedAPIRequestFor(
+		http.MethodPost,
+		"/api/chats/local/delete",
+		[]byte(`{"channel":"cli"}`),
+		"web-2",
+		2,
+	)
+	foreignRequest.SetPathValue("chatID", "/repo/project:local-only")
+	foreignRecorder := httptest.NewRecorder()
+	wc.handleChatDeletePOST(foreignRecorder, foreignRequest)
+	if foreignRecorder.Code != http.StatusForbidden || deleted {
+		t.Fatalf("non-admin local CLI delete status=%d deleted=%v", foreignRecorder.Code, deleted)
+	}
+
+	request := authedAPIRequest(http.MethodPost, "/api/chats/local/delete", []byte(`{"channel":"cli"}`))
+	request.SetPathValue("chatID", "/repo/project:local-only")
+	recorder := httptest.NewRecorder()
+	wc.handleChatDeletePOST(recorder, request)
+
+	if recorder.Code != http.StatusOK || !deleted {
+		t.Fatalf("local CLI delete status=%d deleted=%v body=%s", recorder.Code, deleted, recorder.Body.String())
+	}
+}
+
 func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
@@ -125,6 +264,211 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	}
 }
 
+func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	msgBus := bus.NewMessageBus()
+	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
+	wc.SetOSSProvider(fixedOSSProvider{})
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	client := &Client{
+		connType: clientConnTypeSSE,
+		sendCh:   make(chan protocol.WSMessage, 4),
+		done:     make(chan struct{}),
+		id:       "retry-client",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, "web-1")
+
+	for _, tc := range []struct {
+		name      string
+		requestID string
+		content   string
+	}{
+		{name: "message", requestID: "request-message", content: "hello"},
+		{name: "command", requestID: "request-command", content: "/new"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"id":          tc.requestID,
+				"content":     tc.content,
+				"upload_keys": []string{"upload-key"},
+				"file_names":  []string{"test.txt"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				recorder := httptest.NewRecorder()
+				wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", body))
+				if recorder.Code != http.StatusOK {
+					t.Fatalf("attempt %d status = %d: %s", attempt+1, recorder.Code, recorder.Body.String())
+				}
+			}
+
+			inbound := <-msgBus.Inbound
+			if inbound.RequestID != tc.requestID || !strings.Contains(inbound.Content, "<file") {
+				t.Fatalf("inbound = %#v", inbound)
+			}
+			select {
+			case duplicate := <-msgBus.Inbound:
+				t.Fatalf("duplicate inbound: %#v", duplicate)
+			default:
+			}
+			echo := <-client.sendCh
+			if echo.Type != protocol.MsgTypeUserEcho || echo.ID != tc.requestID || echo.OriginalContent != tc.content {
+				t.Fatalf("echo = %#v", echo)
+			}
+			select {
+			case duplicate := <-client.sendCh:
+				t.Fatalf("duplicate echo: %#v", duplicate)
+			default:
+			}
+		})
+	}
+}
+
+func TestRESTMessageEnqueueFailureLeavesNoEchoOrHistory(t *testing.T) {
+	db := newTestDB(t)
+	wc := NewWebChannel(WebChannelConfig{DB: db}, nil)
+	wc.SetOSSProvider(fixedOSSProvider{})
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	client := &Client{
+		connType: clientConnTypeSSE,
+		sendCh:   make(chan protocol.WSMessage, 1),
+		done:     make(chan struct{}),
+		id:       "failed-client",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, "web-1")
+	body := []byte(`{"id":"failed-request","content":"/new","upload_keys":["upload-key"],"file_names":["test.txt"]}`)
+
+	for attempt := 0; attempt < 2; attempt++ {
+		recorder := httptest.NewRecorder()
+		wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", body))
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("attempt %d status = %d: %s", attempt+1, recorder.Code, recorder.Body.String())
+		}
+	}
+	select {
+	case echo := <-client.sendCh:
+		t.Fatalf("unexpected echo after failed enqueue: %#v", echo)
+	default:
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM session_messages").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("session_messages count = %d, want 0", count)
+	}
+}
+
+func TestRESTMessageCommitsIdempotencyOnlyAfterAgentAdmission(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
+	wc := NewWebChannel(WebChannelConfig{}, msgBus)
+	wc.SetOSSProvider(fixedOSSProvider{})
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	client := &Client{
+		connType: clientConnTypeSSE,
+		sendCh:   make(chan protocol.WSMessage, 1),
+		done:     make(chan struct{}),
+		id:       "admission-client",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, "web-1")
+	body := []byte(`{"id":"admission-request","content":"hello","upload_keys":["upload-key"],"file_names":["test.txt"]}`)
+
+	go func() {
+		message := <-msgBus.Inbound
+		message.DeliveryAck <- bus.ErrInboundQueueFull
+	}()
+	failed := httptest.NewRecorder()
+	wc.handleMessage(failed, authedAPIRequest(http.MethodPost, "/api/message", body))
+	if failed.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed admission status = %d: %s", failed.Code, failed.Body.String())
+	}
+	select {
+	case echo := <-client.sendCh:
+		t.Fatalf("failed admission emitted echo: %#v", echo)
+	default:
+	}
+
+	go func() {
+		message := <-msgBus.Inbound
+		message.DeliveryAck <- nil
+	}()
+	accepted := httptest.NewRecorder()
+	wc.handleMessage(accepted, authedAPIRequest(http.MethodPost, "/api/message", body))
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("accepted admission status = %d: %s", accepted.Code, accepted.Body.String())
+	}
+	echo := <-client.sendCh
+	if echo.ID != "admission-request" || echo.Type != protocol.MsgTypeUserEcho {
+		t.Fatalf("accepted admission echo = %#v", echo)
+	}
+}
+
+func TestRESTMessageCancellationAfterHandoffPreservesIdempotency(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
+	wc := NewWebChannel(WebChannelConfig{}, msgBus)
+	wc.SetOSSProvider(fixedOSSProvider{})
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	client := &Client{
+		connType:       clientConnTypeSSE,
+		sendCh:         make(chan protocol.WSMessage, 1),
+		done:           make(chan struct{}),
+		id:             "cancelled-request-client",
+		sessionChannel: "web",
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, sessionRouteKey("web", "web-1"))
+	message := protocol.WSClientMessage{
+		ID:         "cancelled-request",
+		Type:       protocol.MsgTypeMessage,
+		Content:    "hello",
+		UploadKeys: []string{"upload-key"},
+		FileNames:  []string{"test.txt"},
+	}
+	identity := inboundIdentity{SenderID: "web-1", SenderName: "tester", WebUserID: 1}
+	ctx, cancel := context.WithCancel(context.Background())
+	type dispatchResult struct {
+		sel SessionSelector
+		err error
+	}
+	resultCh := make(chan dispatchResult, 1)
+	go func() {
+		sel, err := wc.dispatchUserMessage(ctx, identity, message)
+		resultCh <- dispatchResult{sel: sel, err: err}
+	}()
+
+	inbound := <-msgBus.Inbound
+	cancel()
+	inbound.DeliveryAck <- nil
+	result := <-resultCh
+	if result.err != nil || result.sel.ChatID != "web-1" {
+		t.Fatalf("dispatch after handoff cancellation = (%#v, %v)", result.sel, result.err)
+	}
+	if _, err := wc.dispatchUserMessage(context.Background(), identity, message); err != nil {
+		t.Fatalf("same-ID retry after cancelled response: %v", err)
+	}
+	select {
+	case duplicate := <-msgBus.Inbound:
+		t.Fatalf("same-ID retry re-enqueued: %#v", duplicate)
+	default:
+	}
+	echo := <-client.sendCh
+	if echo.ID != message.ID {
+		t.Fatalf("echo ID = %q, want %q", echo.ID, message.ID)
+	}
+	select {
+	case duplicate := <-client.sendCh:
+		t.Fatalf("same-ID retry emitted duplicate echo: %#v", duplicate)
+	default:
+	}
+}
+
 func TestRESTRPCDispatchesThroughCallback(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
@@ -138,6 +482,70 @@ func TestRESTRPCDispatchesThroughCallback(t *testing.T) {
 	envelope, data := decodeAPIResponse(t, recorder)
 	if recorder.Code != http.StatusOK || !envelope.OK || data["theme"] != "dark" {
 		t.Fatalf("unexpected RPC response: %d %#v %#v", recorder.Code, envelope, data)
+	}
+}
+
+func TestRESTRPCAllowsFrontendRecoveryMethods(t *testing.T) {
+	methods := []string{"list_command_names", "set_cwd"}
+	for _, wantMethod := range methods {
+		t.Run(wantMethod, func(t *testing.T) {
+			wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+			wc.SetRPCHandler(func(method string, _ json.RawMessage, _ RPCIdentity) (json.RawMessage, error) {
+				if method != wantMethod {
+					t.Fatalf("method = %q, want %q", method, wantMethod)
+				}
+				return json.RawMessage(`{}`), nil
+			})
+			body := []byte(`{"method":"` + wantMethod + `","params":{}}`)
+			recorder := httptest.NewRecorder()
+			wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", body, "web-2", 2))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestRESTRPCGetActiveProgressChecksAgentOwnership(t *testing.T) {
+	db := newTestDB(t)
+	for _, chat := range []struct {
+		senderID string
+		chatID   string
+	}{
+		{senderID: "web-2", chatID: "owned-chat"},
+		{senderID: "web-3", chatID: "foreign-chat"},
+	} {
+		if _, err := db.Exec(
+			"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
+			"web", chat.senderID, chat.chatID, chat.chatID,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(
+			"INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)",
+			"agent", "web:"+chat.chatID+"/review:1", time.Now().Format(time.RFC3339),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dispatched := 0
+	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+		dispatched++
+		return json.RawMessage(`{"phase":"tool"}`), nil
+	})
+
+	owned := httptest.NewRecorder()
+	wc.handleRPC(owned, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_active_progress","params":{"channel":"agent","chat_id":"web:owned-chat/review:1"}}`), "web-2", 2))
+	if owned.Code != http.StatusOK || dispatched != 1 {
+		t.Fatalf("owned status=%d dispatched=%d body=%s", owned.Code, dispatched, owned.Body.String())
+	}
+
+	foreign := httptest.NewRecorder()
+	wc.handleRPC(foreign, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_active_progress","params":{"channel":"agent","chat_id":"web:foreign-chat/review:1"}}`), "web-2", 2))
+	if foreign.Code != http.StatusForbidden || dispatched != 1 {
+		t.Fatalf("foreign status=%d dispatched=%d body=%s", foreign.Code, dispatched, foreign.Body.String())
 	}
 }
 
@@ -163,7 +571,6 @@ func TestRESTRPCRejectsUnsafeNonAdminMethods(t *testing.T) {
 		{method: "upsert_model", params: `{"sub_id":"foreign","model":"injected"}`},
 		{method: "set_subscription_enabled", params: `{"sub_id":"foreign","enabled":false}`},
 		{method: "select_model", params: `{"sub_id":"foreign","model":"secret","channel":"cli","chat_id":"/foreign"}`},
-		{method: "get_session_subscription", params: `{"channel":"cli","chat_id":"/foreign"}`},
 		{method: "get_token_state", params: `{"channel":"cli","chat_id":"/foreign"}`},
 		{method: "get_history", params: `{"channel":"agent","chat_id":"web:web-1/private:1"}`},
 		{method: "plugin_widgets", params: `{"chat_id":"/another-users-session"}`},
@@ -178,6 +585,44 @@ func TestRESTRPCRejectsUnsafeNonAdminMethods(t *testing.T) {
 				t.Fatalf("status=%d dispatched=%v body=%s", recorder.Code, dispatched, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestRESTRPCGetSessionSubscriptionChecksOwnership(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec(
+		"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
+		"cli", "/owned", 42, time.Now().Format(time.RFC3339),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
+		"cli", "/foreign", 7, time.Now().Format(time.RFC3339),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatched := 0
+	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	wc.SetCallbacks(WebCallbacks{
+		IdentityResolver: fixedIdentityResolver{userID: 42, role: "user"},
+		RPCHandler: func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+			dispatched++
+			return json.RawMessage(`{"subscription_id":"sub-a","model":"model-a"}`), nil
+		},
+	})
+
+	owned := httptest.NewRecorder()
+	wc.handleRPC(owned, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_session_subscription","params":{"channel":"cli","chat_id":"/owned"}}`), "web-2", 2))
+	if owned.Code != http.StatusOK || dispatched != 1 {
+		t.Fatalf("owned status=%d dispatched=%d body=%s", owned.Code, dispatched, owned.Body.String())
+	}
+
+	foreign := httptest.NewRecorder()
+	wc.handleRPC(foreign, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_session_subscription","params":{"channel":"cli","chat_id":"/foreign"}}`), "web-2", 2))
+	if foreign.Code != http.StatusForbidden || dispatched != 1 {
+		t.Fatalf("foreign status=%d dispatched=%d body=%s", foreign.Code, dispatched, foreign.Body.String())
 	}
 }
 
@@ -270,6 +715,52 @@ func TestRESTSessionStatusMergesTokenAndTasks(t *testing.T) {
 	}
 	if len(data["tasks"].([]any)) != 1 || len(data["background_tasks"].([]any)) != 1 {
 		t.Fatalf("status did not merge tasks: %#v", data)
+	}
+}
+
+func TestRESTHistoryCursorPrecedesInterleavedEvent(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	wc.SetCallbacks(WebCallbacks{
+		HistorySnapshot: func(senderID string, sel SessionSelector) (HistorySnapshot, error) {
+			wc.hub.sendToClient(sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "interleaved"})
+			return HistorySnapshot{Messages: []ch.HistoryMessage{}}, nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	wc.handleHistoryPOST(recorder, authedAPIRequest(http.MethodPost, "/api/history", []byte(`{"channel":"web","chat_id":"web-1"}`)))
+	_, data := decodeAPIResponse(t, recorder)
+	if recorder.Code != http.StatusOK || data["last_seq"] != float64(0) {
+		t.Fatalf("history status=%d data=%#v", recorder.Code, data)
+	}
+	if got := wc.getEventStream("web-1").lastSeq(); got != 1 {
+		t.Fatalf("event stream last seq=%d, want 1", got)
+	}
+}
+
+func TestRESTSessionStatusReturnsIdleOwnedSessionCWD(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec(
+		"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
+		"web", "web-2", "owned-chat", "Owned",
+	); err != nil {
+		t.Fatal(err)
+	}
+	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	wc.SetCallbacks(WebCallbacks{
+		GetCWD: func(senderID string, sel SessionSelector) (string, error) {
+			if senderID != "web-2" || sel.Channel != "web" || sel.ChatID != "owned-chat" {
+				t.Fatalf("unexpected CWD selector: sender=%q selector=%#v", senderID, sel)
+			}
+			return "/workspace/idle", nil
+		},
+	})
+	recorder := httptest.NewRecorder()
+	wc.handleSessionStatus(recorder, authedAPIRequestFor(http.MethodPost, "/api/session/status", []byte(`{"channel":"web","chat_id":"owned-chat"}`), "web-2", 2))
+	_, data := decodeAPIResponse(t, recorder)
+	if recorder.Code != http.StatusOK || data["cwd"] != "/workspace/idle" {
+		t.Fatalf("status=%d data=%#v", recorder.Code, data)
 	}
 }
 

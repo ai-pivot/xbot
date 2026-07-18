@@ -73,6 +73,10 @@ type WebChannel struct {
 	evtBuf   map[string]*eventStream
 	evtBufMu sync.Mutex
 
+	// Accepted browser message IDs, used to make REST retries idempotent.
+	inboundRequests   map[inboundRequestKey]*inboundRequestState
+	inboundRequestsMu sync.Mutex
+
 	// Per-user current session (multi-chatroom + cross-channel support).
 	// Key: senderID, Value: SessionSelector (channel + chatID).
 	// Defaults to {Channel:"web", ChatID:senderID} if not set.
@@ -99,6 +103,7 @@ func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 		sessions:           make(map[string]sessionInfo),
 		db:                 cfg.DB,
 		stopCh:             make(chan struct{}),
+		inboundRequests:    make(map[inboundRequestKey]*inboundRequestState),
 		userCurrentSession: make(map[string]SessionSelector),
 	}
 	wc.hub.seqFn = wc.stampAndBuffer

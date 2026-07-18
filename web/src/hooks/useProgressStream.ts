@@ -1,5 +1,5 @@
 /**
- * useProgressStream — subscribes a ProgressStore to the WS event stream for one
+ * useProgressStream — subscribes a ProgressStore to the SSE event stream for one
  * chatID and exposes the live progress + streaming-preview message (Spec 3/4).
  *
  * Event mapping (see protocol/ws.go, channel/web/web.go):
@@ -22,7 +22,7 @@
  * `liveMessage` is derived from the same store snapshot (memoized), so it only
  * changes when the snapshot changes — i.e. at most once per frame.
  */
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useSyncExternalStore } from 'react'
 
 import { ProgressStore, normalizeWebSubAgents, normalizeWebTools } from '@/components/agent/progressStore'
@@ -34,6 +34,7 @@ import {
 import type { WSConnection } from '@/types/ws'
 import type {
   ProgressSnapshot,
+  ProgressEvent,
   WebIteration,
   ChatMessage,
   TodoItem,
@@ -41,6 +42,11 @@ import type {
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
 import type { WSMessage } from '@/types/shared'
+import {
+  clearProgressSnapshot,
+  progressSnapshotCache,
+  sessionCacheKey,
+} from '@/lib/webCache'
 
 interface UseProgressStreamOptions {
   /** Chat ID this stream tracks (events for other chats are ignored). */
@@ -48,7 +54,7 @@ interface UseProgressStreamOptions {
   /** Channel this stream tracks. Progress events may qualify chat_id as channel:chatID. */
   channel?: string
   /** Called with the finalized assistant text when a `text` event arrives. */
-  onAssistantComplete?: (finalText: string, iterations: WebIteration[]) => void
+  onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number) => void
   /** Called when the server signals HistoryCompacted (reset + reload). */
   onHistoryCompacted?: () => void
   /** Called when the server signals a slash-command session reset (/new). */
@@ -60,7 +66,7 @@ interface UseProgressStreamOptions {
    * Spec 4 §3.8.
    */
   initialProgress?: HistProgress | null
-  /** The WS connection (injected from DockviewContext for isolated roots). */
+  /** The realtime connection (injected from DockviewContext for isolated roots). */
   ws: WSConnection
   /** Disable subscriptions for read-only panes such as SubAgent history tabs. */
   disabled?: boolean
@@ -99,8 +105,6 @@ export function matchesChatID(msg: WSMessage, targetChatID: string, targetChanne
   if (msg.progress?.chat_id) {
     const progressChatID = String(msg.progress.chat_id)
     if (progressChatID === targetChatID || progressChatID === `${targetChannel}:${targetChatID}`) return true
-    const sep = progressChatID.indexOf(':')
-    if (sep > 0 && progressChatID.slice(sep + 1) === targetChatID) return true
   }
   return false
 }
@@ -138,6 +142,7 @@ export function useProgressStream({
   // every chat switch (we just reset it).
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
+  const progressCacheKey = chatID ? sessionCacheKey(channel, chatID) : null
 
   const progressSnapshot = useSyncExternalStore(
     store.subscribe,
@@ -145,16 +150,18 @@ export function useProgressStream({
     store.getSnapshot,
   )
 
-  // Reset the store immediately when chatID changes — before history loads.
-  // This prevents stale progress from the previous session from leaking into
-  // the new one (Spec 5 §2.1).
-  useEffect(() => {
+  // Switch immediately to this chat's in-memory snapshot while history refreshes.
+  useLayoutEffect(() => {
+    finalizedRef.current = false
+    store.reset()
     if (disabled) {
-      store.reset()
       return
     }
-    store.reset()
-  }, [store, chatID, disabled])
+    const cached = progressCacheKey ? progressSnapshotCache.get(progressCacheKey) : undefined
+    if (cached?.phase && cached.phase !== 'done') {
+      store.replace(historyProgressToLive(cached))
+    }
+  }, [store, progressCacheKey, disabled])
 
   // Hydrate from history when initialProgress changes (after reload completes).
   // Separated from the reset effect so that a chatID change does NOT hydrate
@@ -162,13 +169,21 @@ export function useProgressStream({
   // session's data triggers hydration (Spec 5 §2.7).
   useEffect(() => {
     if (disabled) return
-    if (!initialProgress || !initialProgress.phase || initialProgress.phase === 'done') return
+    if (!initialProgress || !initialProgress.phase || initialProgress.phase === 'done') {
+      if (initialProgress?.phase === 'done') {
+        if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
+        finalizedRef.current = false
+        if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      }
+      return
+    }
     const live = historyProgressToLive(initialProgress)
     // Only hydrate if we got something meaningful (non-empty snapshot)
     if (live.phase) {
+      if (progressCacheKey) progressSnapshotCache.set(progressCacheKey, initialProgress as ProgressEvent)
       store.replace(live)
     }
-  }, [store, initialProgress, disabled])
+  }, [store, initialProgress, disabled, progressCacheKey])
 
   // Dispose on unmount.
   useEffect(() => {
@@ -178,13 +193,16 @@ export function useProgressStream({
     }
   }, [store])
 
-  // Subscribe to WS messages.
+  // Subscribe to SSE messages.
   useEffect(() => {
     if (disabled) return
     const offMessage = ws.onMessage((msg: WSMessage) => {
       // 3-layer chatID filtering.
       if (chatIDRef.current && !matchesChatID(msg, chatIDRef.current, channel)) {
         return
+      }
+      if (chatIDRef.current && isTerminalProgressMessage(msg)) {
+        clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
       handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef)
     })
@@ -262,9 +280,16 @@ function handleProgressMessage(
       return
     }
 
-    case 'progress_structured': {
+    case 'progress_structured':
+    case 'sync_progress': {
       const p = msg.progress
       if (!p) return
+      if (p.phase === 'done') {
+        if (finalizedRef) finalizedRef.current = false
+        store.reset()
+        return
+      }
+      if (finalizedRef && p.phase !== 'done') finalizedRef.current = false
       if (p.history_compacted) {
         store.reset()
         compactedRef.current?.()
@@ -330,13 +355,19 @@ function handleProgressMessage(
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
       const iterations = parsedIterations.length > 0 ? parsedIterations : snap.iterationHistory
-      completeRef.current?.(finalText, iterations)
+      completeRef.current?.(finalText, iterations, msg.seq)
       store.reset()
       return
     }
 
     case 'session': {
       const action = msg.session?.action
+
+      if (action === 'busy') {
+        if (finalizedRef) finalizedRef.current = false
+        store.reset()
+        return
+      }
 
       // HistoryCompacted: reset store and trigger reload
       if (action === 'HistoryCompacted') {
@@ -348,14 +379,19 @@ function handleProgressMessage(
       // On idle, if we had accumulated stream content without a closing text,
       // finalize defensively. Skip if already finalized (text event arrived first).
       if (action === 'idle') {
-        if (finalizedRef?.current) return  // already finalized by text event
+        if (finalizedRef?.current) {
+          store.reset()
+          return
+        }
         const snap = store.getSnapshot()
         if (hasVisibleProgress(snap)) {
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
           store.reset()
-          completeRef.current?.(text, iters)
+          completeRef.current?.(text, iters, msg.seq)
+        } else {
+          store.reset()
         }
       }
       return
@@ -364,4 +400,11 @@ function handleProgressMessage(
     default:
       return
   }
+}
+
+function isTerminalProgressMessage(msg: WSMessage): boolean {
+  if (msg.type === 'text') return true
+  if (msg.progress?.phase === 'done') return true
+  if (msg.type !== 'session') return false
+  return ['busy', 'idle', 'deleted', 'HistoryCompacted'].includes(msg.session?.action ?? '')
 }

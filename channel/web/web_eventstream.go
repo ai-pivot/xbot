@@ -1,6 +1,7 @@
 package web
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -16,6 +17,16 @@ import (
 //  1. Dedup: each event carries seq, frontend ignores stale (seq <= lastSeen)
 //  2. Replay: on WS reconnect, server sends events with seq > client's last_seq
 const eventStreamSize = 512
+
+func sessionRouteKey(channel, chatID string) string {
+	if channel == "" {
+		channel = "web"
+	}
+	if channel != "agent" && webChatIDLooksLikeSubAgent(chatID) {
+		channel = "agent"
+	}
+	return channel + "\x00" + chatID
+}
 
 type eventStream struct {
 	seq   atomic.Uint64
@@ -156,6 +167,9 @@ func (es *eventStream) eventsAfter(fromSeq uint64) []protocol.WSMessage {
 
 // getEventStream returns (or creates) the eventStream for a chatID.
 func (wc *WebChannel) getEventStream(chatID string) *eventStream {
+	if !strings.ContainsRune(chatID, '\x00') {
+		chatID = sessionRouteKey("web", chatID)
+	}
 	wc.evtBufMu.Lock()
 	defer wc.evtBufMu.Unlock()
 	if wc.evtBuf == nil {
@@ -167,4 +181,24 @@ func (wc *WebChannel) getEventStream(chatID string) *eventStream {
 		wc.evtBuf[chatID] = es
 	}
 	return es
+}
+
+// clearSessionTransportState drops replay and request-dedup state after a
+// session is deleted. Lock ordering matches event publication: seqMu then
+// evtBufMu, so an in-flight publisher cannot restore an older stream entry.
+func (wc *WebChannel) clearSessionTransportState(channel, chatID string) {
+	routeKey := sessionRouteKey(channel, chatID)
+	wc.hub.seqMu.Lock()
+	wc.evtBufMu.Lock()
+	delete(wc.evtBuf, routeKey)
+	wc.evtBufMu.Unlock()
+	wc.hub.seqMu.Unlock()
+
+	wc.inboundRequestsMu.Lock()
+	for key := range wc.inboundRequests {
+		if key.channel == channel && key.chatID == chatID {
+			delete(wc.inboundRequests, key)
+		}
+	}
+	wc.inboundRequestsMu.Unlock()
 }

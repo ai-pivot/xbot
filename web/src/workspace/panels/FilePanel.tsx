@@ -90,7 +90,7 @@ export function FilePanel({ params }: PanelProps) {
         ) : canToggle && mode === 'preview' ? (
           isHtmlFile(fileName) ? (
             <iframe
-              src={`/api/fs/raw?path=${encodeURIComponent(filePath)}`}
+              srcDoc={content}
               className="h-full w-full border-0"
               title={fileName}
               sandbox="allow-scripts"

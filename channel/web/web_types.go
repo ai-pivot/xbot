@@ -134,9 +134,11 @@ type WebCallbacks struct {
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
 	ChatCreate func(senderID, label string) (string, error)
 	// ChatDelete deletes a chatroom (except the default one).
-	ChatDelete func(senderID, chatID string) error
+	ChatDelete func(senderID, channel, chatID string) error
 	// ChatRename renames a chatroom.
-	ChatRename func(senderID, chatID, label string) error
+	ChatRename func(senderID, channel, chatID, label string) error
+	// LocalSessionExists checks non-DB session metadata surfaced in the tree.
+	LocalSessionExists func(channel, chatID string) bool
 
 	// IdentityResolver provides canonical user identity resolution, link code
 	// generation, merge preview/execution, and admin user management.
