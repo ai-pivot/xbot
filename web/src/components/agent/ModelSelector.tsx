@@ -4,7 +4,6 @@ import { toast } from 'sonner'
 
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { selectModel } from '@/components/agent/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useI18n } from '@/providers/i18n'
@@ -95,8 +94,8 @@ export function ModelSelector({
           <ChevronDown className="size-3 shrink-0 text-text-muted" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 p-0" align="end" sideOffset={6}>
-        <div className="border-b border-border p-2">
+      <PopoverContent className="w-80 max-h-[60vh] p-0 flex flex-col" align="end" sideOffset={6} collisionPadding={8}>
+        <div className="border-b border-border p-2 shrink-0">
           <div className="relative">
             <Search className="absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -107,7 +106,7 @@ export function ModelSelector({
             />
           </div>
         </div>
-        <ScrollArea className="max-h-64">
+        <div className="overflow-y-auto overflow-x-hidden min-h-0">
           {groups.map((group) => (
             <div key={group.subID}>
               <div className="bg-bg-secondary px-2 py-1 text-[10px] font-medium text-muted-foreground">
@@ -134,8 +133,8 @@ export function ModelSelector({
           {groups.length === 0 ? (
             <div className="px-3 py-4 text-center text-xs text-muted-foreground">{t('agent.none')}</div>
           ) : null}
-        </ScrollArea>
-        <div className="border-t border-border p-3">
+        </div>
+        <div className="border-t border-border p-3 shrink-0">
           <ThinkingModeControl
             value={thinkingMode}
             disabled={disabled}

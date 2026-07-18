@@ -19,7 +19,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { useI18n } from '@/providers/i18n'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import {
@@ -150,10 +149,10 @@ export function ModelStatusBar({
             )}
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-80 p-0" align="start">
-          <div className="flex flex-col">
+        <PopoverContent className="w-80 max-h-[60vh] p-0 flex flex-col" align="start" collisionPadding={8}>
+          <div className="flex flex-col min-h-0">
             {/* Search */}
-            <div className="border-b border-border p-2">
+            <div className="border-b border-border p-2 shrink-0">
               <div className="relative">
                 <Search className="absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -165,7 +164,7 @@ export function ModelStatusBar({
               </div>
             </div>
             {/* Model list grouped by subscription */}
-            <ScrollArea className="max-h-72">
+            <div className="overflow-y-auto overflow-x-hidden min-h-0">
               {Object.entries(grouped).map(([subID, entries]) => {
                 const subName = entries[0]?.sub_name ?? subID
                 return (
@@ -208,10 +207,10 @@ export function ModelStatusBar({
                   {t('agent.none')}
                 </div>
               )}
-            </ScrollArea>
+            </div>
             {/* Footer: manage subscriptions */}
             {onOpenSettings && (
-              <div className="border-t border-border p-2">
+              <div className="border-t border-border p-2 shrink-0">
                 <Button
                   variant="ghost"
                   size="sm"
