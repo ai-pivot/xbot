@@ -467,6 +467,18 @@ func (m *BackgroundTaskManager) ListAllForSession(sessionKey string) []*Backgrou
 	return tasks
 }
 
+// ListAll returns all tasks across all sessions.
+func (m *BackgroundTaskManager) ListAll() []*BackgroundTask {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	tasks := make([]*BackgroundTask, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		tasks = append(tasks, t)
+	}
+	return tasks
+}
+
 // RemoveCompletedTasks removes all non-running tasks for a session.
 // Called when the bg tasks panel closes to prevent stale completed tasks from
 // accumulating indefinitely. Running tasks are preserved.

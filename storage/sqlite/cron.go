@@ -130,6 +130,38 @@ func (s *CronService) ListJobsBySender(senderID string) ([]*CronJob, error) {
 	return jobs, nil
 }
 
+// ListJobsByUserID lists all cron jobs for a canonical user (by user_id).
+func (s *CronService) ListJobsByUserID(userID int64) ([]*CronJob, error) {
+	conn := s.db.Conn()
+	rows, err := conn.Query(`
+		SELECT id, message, channel, chat_id, sender_id, cron_expr, every_seconds, delay_seconds, at, created_at, next_run, last_trigger, one_shot
+		FROM cron_jobs WHERE user_id = ? ORDER BY created_at
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query cron jobs by user_id: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []*CronJob
+	for rows.Next() {
+		job := &CronJob{}
+		var createdAt, nextRun string
+		var lastTriggerStr *string
+		if err := rows.Scan(&job.ID, &job.Message, &job.Channel, &job.ChatID, &job.SenderID, &job.CronExpr,
+			&job.EverySeconds, &job.DelaySeconds, &job.At, &createdAt, &nextRun, &lastTriggerStr, &job.OneShot); err != nil {
+			return nil, fmt.Errorf("scan cron job row: %w", err)
+		}
+		job.CreatedAt = parseSQLiteTime(createdAt)
+		job.NextRun = parseSQLiteTime(nextRun)
+		if lastTriggerStr != nil {
+			t := parseSQLiteTime(*lastTriggerStr)
+			job.LastTrigger = &t
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
 // ListJobsByChannelChatID lists all cron jobs for a specific channel + chat_id pair.
 // This is the tenant-scoped query used by the get_cron_tasks RPC.
 func (s *CronService) ListJobsByChannelChatID(channel, chatID string) ([]*CronJob, error) {

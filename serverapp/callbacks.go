@@ -351,12 +351,25 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if ag.BgTaskManager() == nil {
 			return []webBgTaskJSON{}, nil
 		}
-		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
+		// List ALL bg tasks across all sessions — tasks are in-memory and
+		// not user-scoped. Admin sees everything; this is the same behavior
+		// as the TUI which shows tasks for the current session + all bg tasks.
+		return marshalWebBgTasks(ag.BgTaskManager().ListAll()), nil
 	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
 		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
 			return []any{}, nil
 		}
+		// Query by canonical user_id so all identities linked to the same
+		// user see the same cron jobs, regardless of which session they're
+		// viewing.
+		if ag.IdentityResolver() != nil {
+			uid, _, err := ag.IdentityResolver().Resolve("web", senderID)
+			if err == nil && uid > 0 {
+				return sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByUserID(uid)
+			}
+		}
+		// Fallback: query by session (legacy behavior for standalone mode)
 		if _, err := sqlite.NewTenantService(ag.MultiSession().DB()).GetOrCreateTenantID(sel.Channel, sel.ChatID); err != nil {
 			return nil, fmt.Errorf("resolve tenant: %w", err)
 		}
