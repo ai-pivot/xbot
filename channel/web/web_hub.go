@@ -361,8 +361,11 @@ func (h *Hub) stopAll() {
 	h.mu.Unlock()
 }
 
-// broadcastSessionState preserves the existing WS broadcast while limiting SSE
-// delivery to clients subscribed to the event's authorized chat.
+// broadcastSessionState preserves the existing WS broadcast while delivering
+// session state events to ALL connected clients. Session state events (busy/idle/
+// renamed/deleted) affect the global session sidebar — they are NOT per-session
+// stream events. Filtering by SSE subscription would prevent the sidebar from
+// receiving busy/idle for sessions the user hasn't opened.
 func (h *Hub) broadcastSessionState(channel, chatID string, msg protocol.WSMessage) {
 	h.seqMu.Lock()
 	defer h.seqMu.Unlock()
@@ -371,12 +374,7 @@ func (h *Hub) broadcastSessionState(channel, chatID string, msg protocol.WSMessa
 
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.conns))
-	for clientID, c := range h.conns {
-		if c.connType == clientConnTypeSSE && !h.subs[routeKey][clientID] {
-			if c.sessionChannel != "" || !h.subs[chatID][clientID] {
-				continue
-			}
-		}
+	for _, c := range h.conns {
 		clients = append(clients, c)
 	}
 	h.mu.RUnlock()

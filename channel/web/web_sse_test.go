@@ -1386,7 +1386,11 @@ func TestSSEContractEventsReceiveSequences(t *testing.T) {
 	}
 }
 
-func TestSSESessionBroadcastIsIsolatedBySubscription(t *testing.T) {
+func TestSSESessionBroadcastReachesAllClients(t *testing.T) {
+	// Session state events (busy/idle/renamed/deleted) affect the global
+	// session sidebar — they must reach ALL connected clients, not just
+	// those subscribed to the event's session. This is the fix for the
+	// sidebar not showing busy state until manual refresh.
 	wc, _ := newTestWebChannel(t, nil)
 	client1 := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "user-1", userID: "web-1"}
 	client2 := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "user-2", userID: "web-2"}
@@ -1395,10 +1399,12 @@ func TestSSESessionBroadcastIsIsolatedBySubscription(t *testing.T) {
 	for _, client := range []*Client{client1, client2, wsClient, cliClient} {
 		wc.hub.addClient(client.id, client)
 	}
+	// Only client1 subscribes to "web-1" — client2 does NOT.
 	wc.hub.subscribe(client1.id, "web-1")
-	wc.hub.subscribe(client2.id, "web-2")
 
 	wc.SendSessionState(protocol.SessionEvent{Channel: "web", ChatID: "web-1", Action: "busy"})
+
+	// client1 (subscribed) must receive the event
 	var sseMsg protocol.WSMessage
 	select {
 	case sseMsg = <-client1.sendCh:
@@ -1406,28 +1412,34 @@ func TestSSESessionBroadcastIsIsolatedBySubscription(t *testing.T) {
 			t.Fatalf("user-1 session event = %#v", sseMsg)
 		}
 	default:
-		t.Fatal("authorized SSE client did not receive session event")
+		t.Fatal("subscribed SSE client did not receive session event")
 	}
+	// client2 (NOT subscribed) must ALSO receive the event — this is the fix
 	select {
 	case msg := <-client2.sendCh:
-		t.Fatalf("foreign SSE client received session event: %#v", msg)
+		if msg.Type != protocol.MsgTypeSession {
+			t.Fatalf("user-2 session event type = %#v", msg)
+		}
 	default:
+		t.Fatal("unsubscribed SSE client did not receive session event (sidebar won't update)")
 	}
+	// WS clients must also receive it
 	select {
 	case msg := <-wsClient.sendCh:
 		if msg.Seq != sseMsg.Seq {
 			t.Fatalf("browser WS session seq = %d, SSE seq = %d", msg.Seq, sseMsg.Seq)
 		}
 	default:
-		t.Fatal("browser WS broadcast behavior changed")
+		t.Fatal("browser WS client did not receive session event")
 	}
+	// CLI clients receive unsequenced messages
 	select {
 	case msg := <-cliClient.sendCh:
 		if msg.Seq != 0 {
 			t.Fatalf("CLI WS session seq = %d, want 0", msg.Seq)
 		}
 	default:
-		t.Fatal("CLI WS broadcast behavior changed")
+		t.Fatal("CLI WS client did not receive session event")
 	}
 }
 
