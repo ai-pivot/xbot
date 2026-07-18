@@ -467,7 +467,13 @@ func (m *cliModel) updateStreamingOnly() {
 	var liveLines []string
 	liveMaxW := 0
 	if m.progressState.current != nil && m.typing {
-		liveBlocks := m.liveIterationBlocks(m.progressState.current, contentWidth, msg.content)
+		// Pass "" as fallbackContent — content should come only from
+		// progressState.current (StreamContent/Content), not from msg.content.
+		// msg.content is "" for main sessions (never set during streaming),
+		// but for agent sessions after /su switch it holds stale history
+		// content merged by handleSuHistoryLoad, which would be rendered as
+		// a duplicate below the live reasoning.
+		liveBlocks := m.liveIterationBlocks(m.progressState.current, contentWidth, "")
 		liveContent := renderTurnBlocks(liveBlocks)
 		liveContent = strings.TrimRight(liveContent, "\n")
 		if liveContent != "" {
