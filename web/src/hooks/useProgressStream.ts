@@ -80,6 +80,8 @@ export interface UseProgressStreamResult {
   liveMessage: ChatMessage | null
   /** True while there is accumulated streaming content. */
   isStreaming: boolean
+  /** Reset the progress store (clear live message + iterations). */
+  resetProgress: () => void
 }
 
 /**
@@ -240,6 +242,10 @@ export function useProgressStream({
     // streaming, just waiting for the final text event. The snapshot stays
     // visible (via liveMessage) but the UI should not show a "busy" indicator.
     isStreaming: hasVisibleProgress(progressSnapshot) && progressSnapshot.phase !== 'finalizing',
+    resetProgress: () => {
+      finalizedRef.current = true
+      store.reset()
+    },
   }
 }
 
