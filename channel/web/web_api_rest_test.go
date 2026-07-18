@@ -637,6 +637,46 @@ func TestRESTRPCAllowsFrontendRecoveryMethods(t *testing.T) {
 	}
 }
 
+func TestRESTRPCAllowsModelManagementMethodsForNonAdmin(t *testing.T) {
+	// These methods were previously rejected for non-admin users, causing
+	// model configuration to be broken in the web UI. They are now allowed.
+	methods := []struct {
+		method string
+		params string
+	}{
+		{method: "select_model", params: `{"sub_id":"sub-1","model":"gpt-4","channel":"web","chat_id":"web-2"}`},
+		{method: "set_model_enabled", params: `{"sub_id":"sub-1","model":"gpt-4","enabled":true}`},
+		{method: "remove_model", params: `{"sub_id":"sub-1","model":"gpt-4"}`},
+		{method: "upsert_model", params: `{"sub_id":"sub-1","model":"gpt-4","max_context":0,"max_output":0,"api_type":""}`},
+		{method: "set_subscription_enabled", params: `{"sub_id":"sub-1","enabled":true}`},
+		{method: "update_subscription", params: `{"id":"sub-1","sub":{"name":"test","provider":"openai","base_url":"","api_key":"","model":""}}`},
+		{method: "remove_subscription", params: `{"id":"sub-1"}`},
+		{method: "rename_subscription", params: `{"id":"sub-1","name":"test"}`},
+		{method: "set_default_subscription", params: `{"id":"sub-1"}`},
+		{method: "update_per_model_config", params: `{"id":"sub-1","model":"gpt-4","config":{"max_output_tokens":0,"max_context":0,"api_type":"","enabled":true}}`},
+		{method: "set_default_model", params: `{"sub_id":"sub-1","model":"gpt-4"}`},
+	}
+	for _, tt := range methods {
+		t.Run(tt.method, func(t *testing.T) {
+			wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+			dispatched := false
+			wc.SetRPCHandler(func(method string, _ json.RawMessage, _ RPCIdentity) (json.RawMessage, error) {
+				if method != tt.method {
+					t.Fatalf("method = %q, want %q", method, tt.method)
+				}
+				dispatched = true
+				return json.RawMessage(`{}`), nil
+			})
+			body := []byte(`{"method":"` + tt.method + `","params":` + tt.params + `}`)
+			recorder := httptest.NewRecorder()
+			wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", body, "web-2", 2))
+			if recorder.Code != http.StatusOK || !dispatched {
+				t.Fatalf("status=%d dispatched=%v body=%s", recorder.Code, dispatched, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestRESTRPCGetActiveProgressChecksAgentOwnership(t *testing.T) {
 	db := newTestDB(t)
 	for _, chat := range []struct {
@@ -697,11 +737,6 @@ func TestRESTRPCRejectsUnsafeNonAdminMethods(t *testing.T) {
 		{method: "plugin_reload_all", params: `{}`},
 		{method: "plugin_install", params: `{"source_dir":"/tmp/plugin"}`},
 		{method: "plugin_uninstall", params: `{"id":"plugin-a"}`},
-		{method: "set_model_enabled", params: `{"sub_id":"foreign","model":"secret","enabled":false}`},
-		{method: "remove_model", params: `{"sub_id":"system","model":"shared"}`},
-		{method: "upsert_model", params: `{"sub_id":"foreign","model":"injected"}`},
-		{method: "set_subscription_enabled", params: `{"sub_id":"foreign","enabled":false}`},
-		{method: "select_model", params: `{"sub_id":"foreign","model":"secret","channel":"cli","chat_id":"/foreign"}`},
 		{method: "get_token_state", params: `{"channel":"cli","chat_id":"/foreign"}`},
 		{method: "get_history", params: `{"channel":"agent","chat_id":"web:web-1/private:1"}`},
 		{method: "plugin_widgets", params: `{"chat_id":"/another-users-session"}`},

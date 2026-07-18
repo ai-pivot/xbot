@@ -556,23 +556,68 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			})
 			applyWebRunningStatus(ag, &mains[len(mains)-1])
 		}
+
 		if admin {
-			cliCurrent := ""
-			if current.Channel == "cli" {
-				cliCurrent = current.ChatID
-			}
-			cliChats, err := listCLIChatSessions(webDB.Conn(), cliCurrent)
+			// Admin: dynamically discover ALL channels from the tenants
+			// table — no hardcoding. This includes feishu, qq, napcat, and
+			// any plugin-registered channels.
+			channels, err := listDistinctChannels(webDB.Conn())
 			if err != nil {
 				return web.SessionTreeResult{}, err
 			}
-			applyWebRunningStatuses(ag, cliChats)
-			mains = append(mains, cliChats...)
-			webTenants, err := listTenantsByChannel(webDB.Conn(), "web", webCurrent)
-			if err != nil {
-				return web.SessionTreeResult{}, err
+			for _, ch := range channels {
+				if ch == "web" {
+					// web sessions already added via ListUserChats above;
+					// still call listTenantsByChannel to pick up any tenant
+					// rows not in user_chats (e.g. sessions created outside
+					// the web UI).
+					webTenants, err := listTenantsByChannel(webDB.Conn(), "web", webCurrent)
+					if err != nil {
+						return web.SessionTreeResult{}, err
+					}
+					applyWebRunningStatuses(ag, webTenants)
+					mains = appendMissingSessionRows(mains, webTenants)
+					continue
+				}
+				if ch == "cli" {
+					// CLI sessions need special handling: merge local store
+					// sessions with DB tenant rows.
+					cliCurrent := ""
+					if current.Channel == "cli" {
+						cliCurrent = current.ChatID
+					}
+					cliChats, err := listCLIChatSessions(webDB.Conn(), cliCurrent)
+					if err != nil {
+						return web.SessionTreeResult{}, err
+					}
+					applyWebRunningStatuses(ag, cliChats)
+					mains = appendMissingSessionRows(mains, cliChats)
+					continue
+				}
+				// All other channels (feishu, qq, napcat, plugin channels):
+				// list tenants directly.
+				chCurrent := ""
+				if current.Channel == ch {
+					chCurrent = current.ChatID
+				}
+				tenants, err := listTenantsByChannel(webDB.Conn(), ch, chCurrent)
+				if err != nil {
+					log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
+					continue
+				}
+				applyWebRunningStatuses(ag, tenants)
+				mains = appendMissingSessionRows(mains, tenants)
 			}
-			applyWebRunningStatuses(ag, webTenants)
-			mains = appendMissingSessionRows(mains, webTenants)
+		} else {
+			// Non-admin: list the user's own sessions on non-web channels
+			// (e.g. feishu sessions where sender_id matches).
+			senderTenants, err := listTenantsForSender(webDB.Conn(), senderID, webCurrent)
+			if err != nil {
+				log.WithError(err).Warn("Failed to list tenants for sender")
+			} else {
+				applyWebRunningStatuses(ag, senderTenants)
+				mains = appendMissingSessionRows(mains, senderTenants)
+			}
 		}
 
 		subagents, err := callbacks.SubAgentList(senderID, admin)
@@ -857,6 +902,77 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 		return nil, fmt.Errorf("iterate tenants: %w", err)
 	}
 	return result, nil
+}
+
+// listDistinctChannels returns all distinct channel values from the tenants
+// table, excluding the internal "_shared" chat. Used to dynamically discover
+// all channels (including plugin channels) without hardcoding.
+func listDistinctChannels(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT channel FROM tenants WHERE chat_id != '_shared' ORDER BY channel`)
+	if err != nil {
+		return nil, fmt.Errorf("list distinct channels: %w", err)
+	}
+	defer rows.Close()
+	var channels []string
+	for rows.Next() {
+		var ch string
+		if err := rows.Scan(&ch); err != nil {
+			return nil, fmt.Errorf("scan channel: %w", err)
+		}
+		channels = append(channels, ch)
+	}
+	return channels, rows.Err()
+}
+
+// listTenantsForSender lists all tenants for a given sender_id across all
+// non-web channels. Used by non-admin users to see their own sessions on
+// channels they have interacted with (e.g. feishu, qq).
+// Joins with user_chats to filter by sender_id since tenants table does
+// not have a sender_id column.
+func listTenantsForSender(db *sql.DB, senderID, currentChatID string) ([]web.UserChatWithPreview, error) {
+	rows, err := db.Query(`
+		SELECT DISTINCT t.id, t.chat_id, t.channel, t.last_active_at,
+		       COALESCE((SELECT uc2.label FROM user_chats uc2
+			         WHERE uc2.channel = t.channel AND uc2.chat_id = t.chat_id AND uc2.label != ''
+			         ORDER BY uc2.rowid DESC LIMIT 1), '') AS label,
+		       (SELECT sm.content FROM session_messages sm
+		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
+		        ORDER BY sm.id DESC LIMIT 1) AS preview
+		FROM tenants t
+		INNER JOIN user_chats uc ON t.channel = uc.channel AND t.chat_id = uc.chat_id
+		WHERE uc.sender_id = ? AND t.channel != 'web' AND t.chat_id != '_shared'
+		ORDER BY t.last_active_at DESC`, senderID)
+	if err != nil {
+		return nil, fmt.Errorf("list tenants for sender: %w", err)
+	}
+	defer rows.Close()
+	var result []web.UserChatWithPreview
+	for rows.Next() {
+		var tenantID int64
+		var chatID, channel, lastActiveStr, label string
+		var preview sql.NullString
+		if err := rows.Scan(&tenantID, &chatID, &channel, &lastActiveStr, &label, &preview); err != nil {
+			log.WithError(err).Warn("Failed to scan tenant row in listTenantsForSender")
+			continue
+		}
+		if isInteractiveSubAgentTenant(channel, chatID) {
+			continue
+		}
+		previewStr := preview.String
+		if runes := []rune(previewStr); len(runes) > 80 {
+			previewStr = string(runes[:80])
+		}
+		lastActive := parseTenantTime(lastActiveStr)
+		result = append(result, web.UserChatWithPreview{
+			ChatID:     chatID,
+			Channel:    channel,
+			Label:      displayLabelForTenant(channel, chatID, label),
+			LastActive: lastActive.Format(time.RFC3339),
+			Preview:    previewStr,
+			IsCurrent:  chatID == currentChatID,
+		})
+	}
+	return result, rows.Err()
 }
 
 type cliDirSessionsFile struct {

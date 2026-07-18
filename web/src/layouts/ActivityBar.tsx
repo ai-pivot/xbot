@@ -12,7 +12,7 @@
  * Active channel is persisted to localStorage["xbot:active-channel"].
  * Clicking a channel icon also ensures the session sidebar is open.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Globe,
   Terminal,
@@ -77,9 +77,17 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0 }: ActivityBar
     if (settingsVersion > 0) fetchIdentities()
   }, [settingsVersion, fetchIdentities])
 
-  // Deduplicate: same channel may have multiple identities. Each identity
-  // gets its own icon with its own badge.
-  const channelIdentities = identities.filter((id) => id.channel !== 'web')
+  // Deduplicate by channel: a canonical user may have linked multiple
+  // identities on the same channel (e.g. two CLI machines). Show one icon
+  // per channel, keeping the most recently linked identity.
+  const channelIdentities = useMemo(() => {
+    const byChannel = new Map<string, IdentityEntry>()
+    for (const id of identities) {
+      if (id.channel === 'web') continue // web is handled separately
+      byChannel.set(id.channel, id) // last wins (sorted by linked_at ASC)
+    }
+    return Array.from(byChannel.values())
+  }, [identities])
 
   // Determine if we should merge aggregate and web icon (only web identity, no linked)
   const mergeAggregate = channelIdentities.length === 0

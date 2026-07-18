@@ -2443,3 +2443,118 @@ func TestSetDefaultSubscription_PerSessionSwitch_DoesNotAffectOtherSessions(t *t
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Regression tests for issue #246: webui bugs
+// ---------------------------------------------------------------------------
+
+func TestListDistinctChannelsReturnsAllChannels(t *testing.T) {
+	db := newTenantPreviewDB(t)
+	// Insert tenants on various channels including a plugin channel
+	for _, tc := range []struct {
+		channel, chatID, lastActive string
+	}{
+		{"web", "web-1", "2026-07-18T10:00:00Z"},
+		{"cli", "/repo:Agent-main", "2026-07-18T11:00:00Z"},
+		{"feishu", "feishu-chat-1", "2026-07-18T12:00:00Z"},
+		{"qq", "qq-group-1", "2026-07-18T13:00:00Z"},
+		{"my_plugin", "plugin-session-1", "2026-07-18T14:00:00Z"},
+	} {
+		insertTenant(t, db, tc.channel, tc.chatID, tc.lastActive, "", "")
+	}
+
+	channels, err := listDistinctChannels(db)
+	if err != nil {
+		t.Fatalf("listDistinctChannels: %v", err)
+	}
+	want := []string{"cli", "feishu", "my_plugin", "qq", "web"}
+	if len(channels) != len(want) {
+		t.Fatalf("got %d channels %v, want %d %v", len(channels), channels, len(want), want)
+	}
+	for i, ch := range channels {
+		if ch != want[i] {
+			t.Fatalf("channels[%d] = %q, want %q (full: %v)", i, ch, want[i], channels)
+		}
+	}
+}
+
+func TestListDistinctChannelsExcludesSharedChat(t *testing.T) {
+	db := newTenantPreviewDB(t)
+	insertTenant(t, db, "web", "_shared", "2026-07-18T10:00:00Z", "", "")
+	insertTenant(t, db, "web", "web-1", "2026-07-18T11:00:00Z", "", "")
+
+	channels, err := listDistinctChannels(db)
+	if err != nil {
+		t.Fatalf("listDistinctChannels: %v", err)
+	}
+	// _shared should not contribute a separate channel; "web" should appear once
+	if len(channels) != 1 || channels[0] != "web" {
+		t.Fatalf("got channels %v, want [web]", channels)
+	}
+}
+
+func TestListTenantsForSenderReturnsNonWebSessions(t *testing.T) {
+	db := newTenantPreviewDB(t)
+	// Insert a feishu session owned by "web-1" via user_chats
+	if _, err := db.Exec(`INSERT INTO tenants(channel, chat_id, last_active_at) VALUES (?, ?, ?)`,
+		"feishu", "feishu-chat-1", "2026-07-18T12:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_chats(channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)`,
+		"feishu", "web-1", "feishu-chat-1", "Feishu Chat"); err != nil {
+		t.Fatal(err)
+	}
+	// Insert a web session (should be excluded)
+	if _, err := db.Exec(`INSERT INTO tenants(channel, chat_id, last_active_at) VALUES (?, ?, ?)`,
+		"web", "web-1", "2026-07-18T10:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_chats(channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)`,
+		"web", "web-1", "web-1", "Web Chat"); err != nil {
+		t.Fatal(err)
+	}
+	// Insert a feishu session owned by a different user (should be excluded)
+	if _, err := db.Exec(`INSERT INTO tenants(channel, chat_id, last_active_at) VALUES (?, ?, ?)`,
+		"feishu", "feishu-chat-other", "2026-07-18T13:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_chats(channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)`,
+		"feishu", "web-2", "feishu-chat-other", "Other Chat"); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := listTenantsForSender(db, "web-1", "")
+	if err != nil {
+		t.Fatalf("listTenantsForSender: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d: %#v", len(rows), rows)
+	}
+	if rows[0].Channel != "feishu" || rows[0].ChatID != "feishu-chat-1" {
+		t.Fatalf("unexpected row: %#v", rows[0])
+	}
+	if rows[0].Label != "Feishu Chat" {
+		t.Fatalf("unexpected label: %q", rows[0].Label)
+	}
+}
+
+func TestListTenantsForSenderExcludesSubAgentTenants(t *testing.T) {
+	db := newTenantPreviewDB(t)
+	// Insert an interactive sub-agent tenant (should be filtered out)
+	if _, err := db.Exec(`INSERT INTO tenants(channel, chat_id, last_active_at) VALUES (?, ?, ?)`,
+		"agent", "web:web-1/review:1", "2026-07-18T12:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_chats(channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)`,
+		"agent", "web-1", "web:web-1/review:1", "SubAgent"); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := listTenantsForSender(db, "web-1", "")
+	if err != nil {
+		t.Fatalf("listTenantsForSender: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected 0 rows (sub-agent filtered), got %d: %#v", len(rows), rows)
+	}
+}
