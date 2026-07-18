@@ -748,7 +748,7 @@ func executeWithHooks(
 // Used for SubAgent and other scenarios that don't need session MCP / activation checks.
 func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 	return func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
-		tool, ok := cfg.Tools.GetForTenant(tc.Name, cfg.TenantID)
+		tool, ok := cfg.Tools.GetForSession(tc.Name, cfg.TenantID, cfg.SessionKey)
 		if !ok {
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}
