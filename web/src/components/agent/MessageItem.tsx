@@ -5,6 +5,8 @@
  * memoized with a stable props surface so the virtualizer can keep an item
  * mounted across scroll without re-rendering it. `liveProgress` is passed only
  * for the single streaming item; all others get a stable null.
+ *
+ * Spec C: UserMessage now carries inline-edit state (editingMessageId).
  */
 import { memo } from 'react'
 
@@ -20,7 +22,16 @@ interface MessageItemProps {
   collapseLevel: 'all' | 'minimal' | 'none'
   /** Whether to merge consecutive tools. Default true. */
   mergeTools?: boolean
-  onRewind?: (message: ChatMessage) => void
+  /** Rewind callback — now receives the edited content string. */
+  onRewind?: (editedContent: string) => void
+  /** Whether this specific message is currently being edited. */
+  isEditing?: boolean
+  /** Callback to start editing this message. */
+  onStartEdit?: () => void
+  /** Callback to end editing this message. */
+  onEndEdit?: () => void
+  /** Whether editing is disabled (another message is being edited). */
+  editDisabled?: boolean
 }
 
 export const MessageItem = memo(function MessageItem({
@@ -29,9 +40,22 @@ export const MessageItem = memo(function MessageItem({
   collapseLevel,
   mergeTools = true,
   onRewind,
+  isEditing = false,
+  onStartEdit,
+  onEndEdit,
+  editDisabled = false,
 }: MessageItemProps) {
   if (message.role === 'user') {
-    return <UserMessage content={message.content} onRewind={onRewind ? () => onRewind(message) : undefined} />
+    return (
+      <UserMessage
+        content={message.content}
+        onRewind={onRewind}
+        isEditing={isEditing}
+        onStartEdit={onStartEdit}
+        onEndEdit={onEndEdit}
+        editDisabled={editDisabled}
+      />
+    )
   }
   return (
     <AssistantMessage

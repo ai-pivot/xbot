@@ -138,5 +138,6 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     lastReasoning: '',
     todos: (p.todos ?? []) as TodoItem[],
     subAgents: normalizeWebSubAgents(p.sub_agents),
+    tokenUsage: null,
   }
 }

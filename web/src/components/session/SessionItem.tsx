@@ -7,7 +7,8 @@
  * SubAgent mode (Child 5): when isSubAgent is true, the item is indented,
  * shows a Bot icon instead of the status dot, and hides the star/time.
  */
-import { Star, Pencil, Trash2, Bot, GitBranch } from 'lucide-react'
+import { useCallback } from 'react'
+import { Star, Pencil, Trash2, Bot, GitBranch, Loader2, ExternalLink } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -18,14 +19,17 @@ import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import { parseAgentChatID, sessionKey } from '@/lib/session-grouping'
 import type { SessionInfo, SessionStatus } from '@/types/shared'
+import type { TabManager } from '@/hooks/useTabManager'
 
 interface SessionItemProps {
   session: SessionInfo
   starred: boolean
+  unread: boolean
   active: boolean
   /** True for SubAgent items (indented, bot icon, read-only). */
   isSubAgent?: boolean
   depth?: number
+  tabManager: TabManager
   onSelect: (id: string) => void
   onToggleStar: (id: string) => void
   onRename: (session: SessionInfo) => void
@@ -44,9 +48,11 @@ const STATUS_COLOR: Record<SessionStatus, string> = {
 export function SessionItem({
   session,
   starred,
+  unread,
   active,
   isSubAgent,
   depth = isSubAgent ? 1 : 0,
+  tabManager,
   onSelect,
   onToggleStar,
   onRename,
@@ -55,6 +61,22 @@ export function SessionItem({
   const { t } = useI18n()
   const key = sessionKey(session)
   const title = isSubAgent ? subAgentTitle(session) : (session.label || session.chatID)
+
+  const openInTab = useCallback(() => {
+    tabManager.openTab({
+      type: 'agent',
+      title: isSubAgent ? subAgentTitle(session) : (session.label || session.chatID),
+      icon: 'bot',
+      closable: true,
+      data: {
+        subAgentRole: session.role,
+        subAgentInstance: session.instance,
+        parentChatID: session.parentChatID,
+        parentChannel: session.parentChannel,
+        agentChatID: session.fullKey || session.agentChatID,
+      },
+    })
+  }, [tabManager, session, isSubAgent])
 
   const row = (
     <div
@@ -75,7 +97,10 @@ export function SessionItem({
         active ? 'bg-bg-tertiary' : !session.synthetic && 'hover:bg-bg-tertiary/60 hover:shadow-md',
         session.synthetic && 'cursor-default opacity-80',
       )}
-      style={isSubAgent ? { marginLeft: `${depth}rem` } : undefined}
+      style={{
+        ...(isSubAgent ? { marginLeft: `${depth}rem` } : {}),
+        ...(unread && !isSubAgent ? { borderLeft: '2px solid var(--accent)' } : {}),
+      }}
     >
       {isSubAgent ? (
         /* SubAgent: Bot icon (colored by running state) */
@@ -85,8 +110,17 @@ export function SessionItem({
         />
       ) : session.synthetic ? (
         <GitBranch className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
+      ) : session.status === 'running' ? (
+        /* Running: spinning Loader2 icon */
+        <Loader2 className="size-3.5 shrink-0 animate-spin" style={{ color: 'var(--status-running)' }} />
+      ) : session.status === 'waiting_input' ? (
+        /* Waiting for input: slow spinning Loader2 icon */
+        <Loader2
+          className="size-3.5 shrink-0 animate-spin"
+          style={{ color: 'var(--status-waiting)', animationDuration: '2s' }}
+        />
       ) : (
-        /* Main session: status dot */
+        /* Other statuses: static colored dot */
         <span
           className="size-2 shrink-0 rounded-full"
           style={{ backgroundColor: STATUS_COLOR[session.status] }}
@@ -115,11 +149,13 @@ export function SessionItem({
 
       {/* Title */}
       <span
-        className="flex-1 truncate text-xs font-medium"
+        className={cn('flex-1 truncate text-xs', unread && !isSubAgent ? 'font-semibold' : 'font-medium')}
         style={{
           color: isSubAgent || session.synthetic
             ? 'var(--text-secondary)'
-            : 'var(--text-primary)',
+            : unread
+              ? 'var(--accent)'
+              : 'var(--text-primary)',
         }}
         title={title}
       >
@@ -144,15 +180,29 @@ export function SessionItem({
     </div>
   )
 
-  // SubAgent items: no context menu (read-only, no rename/delete)
+  // SubAgent items: context menu with only "open in tab"
   if (isSubAgent || session.synthetic) {
-    return row
+    return (
+     <ContextMenu>
+       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+       <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
+          <ContextMenuItem onClick={openInTab}>
+            <ExternalLink className="size-4" />
+            {t('session.openInTab')}
+          </ContextMenuItem>
+       </ContextMenuContent>
+     </ContextMenu>
+  )
   }
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
-      <ContextMenuContent>
+     <ContextMenu>
+       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+       <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
+          <ContextMenuItem onClick={openInTab}>
+          <ExternalLink className="size-4" />
+          {t('session.openInTab')}
+        </ContextMenuItem>
         <ContextMenuItem onClick={() => onToggleStar(key)}>
           <Star
             className="size-4"

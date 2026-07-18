@@ -38,6 +38,7 @@ import type {
   WebIteration,
   ChatMessage,
   TodoItem,
+  TokenUsageInfo,
 } from '@/types/shared'
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
@@ -338,6 +339,17 @@ function handleProgressMessage(
         ? normalizeWebSubAgents(p.sub_agents as unknown[])
         : undefined
 
+      // Token usage (from protocol.TokenUsage, carried forward when absent)
+      let tokenUsage: TokenUsageInfo | undefined
+      const rawTU = p.token_usage as Record<string, unknown> | undefined
+      if (rawTU && typeof rawTU === 'object') {
+        tokenUsage = {
+          promptTokens: typeof rawTU.prompt_tokens === 'number' ? rawTU.prompt_tokens : 0,
+          completionTokens: typeof rawTU.completion_tokens === 'number' ? rawTU.completion_tokens : 0,
+          totalTokens: typeof rawTU.total_tokens === 'number' ? rawTU.total_tokens : 0,
+        }
+      }
+
       // Apply structured event with carry-forward (stream-only fields preserved)
       store.setStructuredTools({
         phase,
@@ -348,6 +360,7 @@ function handleProgressMessage(
         iterationHistory: iterHistory,
         todos,
         subAgents,
+        tokenUsage,
       })
       return
     }

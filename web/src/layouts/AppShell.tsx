@@ -45,6 +45,7 @@ export function AppShell() {
     return adaptiveLeftWidth()
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsVersion, setSettingsVersion] = useState(0)
   const leftDragging = useRef(false)
   const leftUserSized = useRef(localStorage.getItem(LEFT_WIDTH_KEY) !== null)
 
@@ -111,6 +112,7 @@ export function AppShell() {
         activeView={activeView}
         onToggleView={toggleView}
         onOpenSettings={() => setSettingsOpen(true)}
+        settingsVersion={settingsVersion}
       />
 
       {/* Left sidebar — session list */}
@@ -147,7 +149,13 @@ export function AppShell() {
       <RightActivityBar activePanel={activePanel} onTogglePanel={togglePanel} />
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open)
+          if (!open) setSettingsVersion((v) => v + 1)
+        }}
+      />
     </div>
   )
 }

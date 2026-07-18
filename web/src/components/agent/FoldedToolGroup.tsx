@@ -40,11 +40,6 @@ interface FoldedToolGroupProps {
   mergeTools?: boolean
 }
 
-/** Extract display name from a tool (prefers label over name). */
-function toolName(tool: WebToolProgress): string {
-  return tool.label || tool.name || 'tool'
-}
-
 /** Extract a short parameter hint from the tool label (text after ": "). */
 function toolParam(tool: WebToolProgress): string {
   const label = tool.label || ''
@@ -81,7 +76,7 @@ function formatElapsed(ms: number): string {
 
 /** Render a single Lucide tool icon at 16px. */
 function ToolIcon({ name, className }: { name: string; className?: string }) {
-  const Icon = getToolIcon(name)
+  const Icon = getToolIcon(name) as React.ComponentType<{ className?: string }>
   return <Icon className={cn('tool-icon-single', className)} />
 }
 

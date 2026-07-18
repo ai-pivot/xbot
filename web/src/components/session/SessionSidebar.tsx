@@ -5,20 +5,20 @@
  * Wires useSessionStore to the search box, category switcher, the list, and
  * the new-session dialog. Pure presentational composition on top of the store.
  */
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useI18n } from '@/providers/i18n'
 import { useSessionStore } from '@/hooks/useSessionStore'
-import { isSubAgentSession, parseAgentChatID, sameSession } from '@/lib/session-grouping'
+import { groupSessions, isSubAgentSession, parseAgentChatID, sameSession, sortSessions } from '@/lib/session-grouping'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
 import type { TabManager } from '@/hooks/useTabManager'
 import { SessionSearch } from './SessionSearch'
 import { SessionList } from './SessionList'
 import { NewSessionDialog } from './NewSessionDialog'
 
-const CATEGORIES = ['all', 'time', 'status'] as const
+const CATEGORIES = ['time', 'status', 'path'] as const
 
 interface SessionSidebarProps {
   /** Tab manager for opening SubAgent conversation tabs (Child 5). */
@@ -30,6 +30,26 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
   const store = useSessionStore()
   const [search, setSearch] = useState('')
   const [newOpen, setNewOpen] = useState(false)
+
+  // Channel-filtered sessions
+  const filteredSessions = useMemo(() => {
+    if (!store.activeChannel) return store.sessions
+    return store.sessions.filter((s) =>
+      s.channel === store.activeChannel ||
+      s.parentChannel === store.activeChannel ||
+      (s.children || []).some((c) => c.parentChannel === store.activeChannel)
+    )
+  }, [store.sessions, store.activeChannel])
+
+  // Re-derive groups and sortedSessions for filtered sessions
+  const filteredGroups = useMemo(
+    () => groupSessions(filteredSessions, store.category, store.starredIds),
+    [filteredSessions, store.category, store.starredIds],
+  )
+  const filteredSorted = useMemo(
+    () => sortSessions(filteredSessions, store.starredIds),
+    [filteredSessions, store.starredIds],
+  )
 
   // Unified select handler: SubAgent clicks open a new Agent tab; main session
   // clicks switch the active chatroom as before.
@@ -67,7 +87,9 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
         style={{ borderBottom: '1px solid var(--border)' }}
       >
         <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
-          {t('sidebar.sessions')}
+          {store.activeChannel
+            ? `${t(`channel.${store.activeChannel}`)} · ${t('sidebar.sessions')}`
+            : t('sidebar.sessions')}
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -115,20 +137,28 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
 
       {/* List */}
       <div className="min-h-0 flex-1">
+        {filteredSessions.length === 0 && store.activeChannel ? (
+          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-text-muted">
+            {t('session.noSessionsForChannel', { channel: store.activeChannel })}
+          </div>
+        ) : (
         <SessionList
-          sessions={store.sessions}
-          groups={store.groups}
-          sortedSessions={store.sortedSessions}
+          sessions={filteredSessions}
+          groups={filteredGroups}
+          sortedSessions={filteredSorted}
           category={store.category}
           starredIds={store.starredIds}
+          unreadIds={store.unreadIds}
           activeSession={store.activeSession}
           search={search}
           subAgents={store.subAgents}
+          tabManager={tabManager}
           onSelect={handleSelect}
           onToggleStar={store.toggleStar}
           onRename={store.renameSession}
           onDelete={store.deleteSession}
         />
+        )}
       </div>
 
       <NewSessionDialog
@@ -178,11 +208,11 @@ function labelForCategory(
   t: (k: string) => string,
 ): string {
   switch (c) {
-    case 'all':
-      return t('session.all')
     case 'time':
       return t('session.byTime')
     case 'status':
       return t('session.byStatus')
+    case 'path':
+      return t('session.byPath')
   }
 }

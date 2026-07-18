@@ -53,14 +53,14 @@ describe('sortSessions', () => {
 })
 
 describe('groupSessions', () => {
-  it("'all' returns a single group with everything sorted", () => {
+  it("'time' returns a single group when all sessions are in the same time bucket", () => {
     const sessions = [
       mk({ chatID: 'a', lastActive: '2026-06-26T08:00:00Z' }),
       mk({ chatID: 'b', lastActive: '2026-06-26T09:00:00Z' }),
     ]
-    const groups = groupSessions(sessions, 'all', [sessionKey(sessions[0])])
+    const groups = groupSessions(sessions, 'time', [sessionKey(sessions[0])])
+    // Both sessions are in the 'earlier' bucket since the dates are in the past
     expect(groups).toHaveLength(1)
-    expect(groups[0].key).toBe('all')
     expect(groups[0].sessions.map((s) => s.chatID)).toEqual(['a', 'b'])
   })
 
@@ -111,7 +111,7 @@ describe('groupSessions', () => {
       mk({ chatID: 'cli:parent/review:1', channel: 'agent' }),
     ]
     expect(sessions.slice(1).every(isSubAgentSession)).toBe(true)
-    expect(groupSessions(sessions, 'all', [])[0].sessions.map((s) => s.chatID)).toEqual(['parent'])
+    expect(groupSessions(sessions, 'time', [])[0].sessions.map((s) => s.chatID)).toEqual(['parent'])
   })
 
   it('treats historical agent tenant rows as SubAgent sessions', () => {
@@ -170,5 +170,50 @@ describe('groupSessions', () => {
       instance: '',
     })
     expect(parseAgentChatID('/vePFS-Mindverse/user/intern/yihang:Agent-warm-stone')).toBeNull()
+  })
+})
+
+describe('path grouping', () => {
+  it('groups CLI sessions by workDir basename', () => {
+    const sessions = [
+      mk({ chatID: '/home/user/project1:session-a', channel: 'cli' }),
+      mk({ chatID: '/home/user/project1:session-b', channel: 'cli' }),
+      mk({ chatID: '/home/user/project2:session-c', channel: 'cli' }),
+    ]
+    const groups = groupSessions(sessions, 'path', [])
+    expect(groups).toHaveLength(2)
+    const project1Group = groups.find((g) => g.key === 'project1')
+    const project2Group = groups.find((g) => g.key === 'project2')
+    expect(project1Group).toBeDefined()
+    expect(project1Group!.sessions).toHaveLength(2)
+    expect(project2Group).toBeDefined()
+    expect(project2Group!.sessions).toHaveLength(1)
+  })
+
+  it('groups web sessions into __web__ bucket', () => {
+    const sessions = [
+      mk({ chatID: 'web-session-1', channel: 'web' }),
+      mk({ chatID: 'web-session-2', channel: 'web' }),
+    ]
+    const groups = groupSessions(sessions, 'path', [])
+    expect(groups).toHaveLength(1)
+    expect(groups[0].key).toBe('__web__')
+  })
+
+  it('subAgent sessions inherit parent path group', () => {
+    const parent = mk({ chatID: '/home/user/project1:session-a', channel: 'cli' })
+    const child = mk({
+      chatID: 'cli:/home/user/project1:session-a/review:1',
+      channel: 'agent',
+      type: 'agent',
+      parentChannel: 'cli',
+      parentChatID: '/home/user/project1:session-a',
+    })
+    const groups = groupSessions([parent, child], 'path', [])
+    // SubAgents are filtered out of main groups
+    expect(groups).toHaveLength(1)
+    expect(groups[0].key).toBe('project1')
+    expect(groups[0].sessions).toHaveLength(1)
+    expect(groups[0].sessions[0].chatID).toBe('/home/user/project1:session-a')
   })
 })

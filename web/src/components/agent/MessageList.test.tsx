@@ -352,3 +352,80 @@ describe('MessageList virtualization', () => {
     expect(canRewindMessage(messages[0], 0, -1)).toBe(false)
   })
 })
+
+describe('MessageList navigation buttons (Spec A §4)', () => {
+  it('renders navigation button group', () => {
+    const messages = makeMessages(20)
+    const { container } = renderWithProviders(
+      <MessageList
+        messages={messages}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    // Should have 4 nav buttons
+    const navButtons = container.querySelectorAll('button[title]')
+    expect(navButtons.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('disables nav buttons when no messages', () => {
+    const { container } = renderWithProviders(
+      <MessageList
+        messages={[]}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    const buttons = container.querySelectorAll('button[disabled]')
+    // At least scroll-to-top and scroll-to-bottom should be disabled
+    expect(buttons.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('renders nav buttons with correct titles', () => {
+    const messages = makeMessages(20)
+    const { container } = renderWithProviders(
+      <MessageList
+        messages={messages}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    const titles = Array.from(container.querySelectorAll('button[title]')).map(
+      (b) => b.getAttribute('title'),
+    )
+    // Should contain scroll-to-top, prev-user, next-user, scroll-to-bottom titles
+    expect(titles.some((t) => t?.includes('最上方') || t?.includes('top'))).toBe(true)
+    expect(titles.some((t) => t?.includes('最下方') || t?.includes('bottom'))).toBe(true)
+  })
+})
+
+describe('MessageList unread bubble (Spec A §3)', () => {
+  it('does not show unread bubble when at bottom', () => {
+    const messages = makeMessages(10)
+    const { container } = renderWithProviders(
+      <MessageList
+        chatKey="web:chat-1"
+        messages={messages}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    // At bottom — no unread bubble
+    const bubble = container.querySelector('button[class*="rounded-full"]')
+    // The bubble should not be visible initially (we're at bottom)
+    // Note: in jsdom we can't really scroll, but the initial state should be sticky=true, unread=0
+    expect(bubble).toBeNull()
+  })
+})

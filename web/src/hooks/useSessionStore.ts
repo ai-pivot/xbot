@@ -32,6 +32,9 @@ import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, Sessi
 import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
 const STARRED_KEY = 'xbot-starred'
+const CATEGORY_KEY = 'xbot:session-category'
+const UNREAD_KEY = 'xbot:session-unread'
+const ACTIVE_CHANNEL_KEY = 'xbot:active-channel'
 const DEFAULT_CHANNEL = 'web'
 const TRANSIENT_SUBAGENT_TTL_MS = 10 * 60 * 1000
 
@@ -55,6 +58,10 @@ export interface SessionStore {
   activeSession: SessionSelector | null
   starredIds: string[]
   category: SessionCategory
+  /** Set of session keys with unread replies. */
+  unreadIds: string[]
+  /** Currently selected channel filter (null = show all). */
+  activeChannel: string | null
   loading: boolean
   error: string | null
   /** SubAgent sessions for visible parent chats. */
@@ -62,6 +69,8 @@ export interface SessionStore {
   /** Pending AskUser prompts keyed by "channel:chatID". Survives session switch. */
   askUserPrompts: Map<string, AskUserPrompt>
   setCategory: (c: SessionCategory) => void
+  setActiveChannel: (channel: string | null) => void
+  markRead: (key: string) => void
   refresh: () => Promise<void>
   toggleStar: (id: string) => void
   createSession: (label?: string, workPath?: string) => Promise<string | null>
@@ -88,6 +97,68 @@ function loadStarred(): string[] {
 function persistStarred(ids: string[]): void {
   try {
     localStorage.setItem(STARRED_KEY, JSON.stringify(ids))
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ── localStorage category persistence ── */
+
+function loadCategory(): SessionCategory {
+  try {
+    const raw = localStorage.getItem(CATEGORY_KEY)
+    if (raw === 'time' || raw === 'status' || raw === 'path') return raw
+  } catch {
+    /* ignore */
+  }
+  return 'time'
+}
+
+function persistCategory(c: SessionCategory): void {
+  try {
+    localStorage.setItem(CATEGORY_KEY, c)
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ── localStorage unread set persistence ── */
+
+function loadUnread(): string[] {
+  try {
+    const raw = localStorage.getItem(UNREAD_KEY)
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null
+    if (Array.isArray(parsed)) return parsed.filter((x): x is string => typeof x === 'string')
+  } catch {
+    /* ignore */
+  }
+  return []
+}
+
+function persistUnread(ids: string[]): void {
+  try {
+    localStorage.setItem(UNREAD_KEY, JSON.stringify(ids))
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ── localStorage active channel persistence ── */
+
+function loadActiveChannel(): string | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_CHANNEL_KEY)
+    if (raw === null || typeof raw === 'string') return raw
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+
+function persistActiveChannel(channel: string | null): void {
+  try {
+    if (channel === null) localStorage.removeItem(ACTIVE_CHANNEL_KEY)
+    else localStorage.setItem(ACTIVE_CHANNEL_KEY, channel)
   } catch {
     /* ignore */
   }
@@ -673,7 +744,9 @@ export function useSessionStoreImpl(): SessionStore {
     return active ? { channel: active.channel, chatID: active.chatID } : null
   })
   const [starredIds, setStarredIds] = useState<string[]>(loadStarred)
-  const [category, setCategory] = useState<SessionCategory>('all')
+  const [category, setCategoryState] = useState<SessionCategory>(loadCategory)
+  const [unreadIds, setUnreadIds] = useState<string[]>(loadUnread)
+  const [activeChannel, setActiveChannelState] = useState<string | null>(loadActiveChannel)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // AskUser prompts keyed by "channel:chatID" — survives session switch.
@@ -764,6 +837,34 @@ export function useSessionStoreImpl(): SessionStore {
     })
   }, [])
 
+  const setCategory = useCallback((c: SessionCategory) => {
+    persistCategory(c)
+    setCategoryState(c)
+  }, [])
+
+  const setActiveChannel = useCallback((channel: string | null) => {
+    persistActiveChannel(channel)
+    setActiveChannelState(channel)
+  }, [])
+
+  const markRead = useCallback((key: string) => {
+    setUnreadIds((prev) => {
+      if (!prev.includes(key)) return prev
+      const next = prev.filter((x) => x !== key)
+      persistUnread(next)
+      return next
+    })
+  }, [])
+
+  const addUnread = useCallback((key: string) => {
+    setUnreadIds((prev) => {
+      if (prev.includes(key)) return prev
+      const next = [...prev, key]
+      persistUnread(next)
+      return next
+    })
+  }, [])
+
   const setStatus = useCallback((selector: SessionSelector, status: SessionStatus) => {
     setSessions((prev) => updateSessionTree(prev, selector, (s) => ({ ...s, status })))
   }, [])
@@ -846,12 +947,13 @@ export function useSessionStoreImpl(): SessionStore {
       const selector = { channel: useChannel, chatID: id }
       activeSessionRef.current = selector
       setActiveSession(selector)
+      markRead(sessionKey(selector))
       const nextSessions = markCurrentSession(sessionsRef.current, selector)
       sessionsRef.current = nextSessions
       saveSessionTreeCache(nextSessions, flattenTreeAgents(nextSessions))
       setSessions(nextSessions)
     },
-    [],
+    [markRead],
   )
 
   const renameSession = useCallback(async (id: string, channel: string, label: string): Promise<boolean> => {
@@ -917,10 +1019,11 @@ export function useSessionStoreImpl(): SessionStore {
           setStatus(selector, 'running')
           break
         case 'idle':
-          // If this session is not the active one, mark as unread (yellow)
-          // instead of idle (gray) so the user knows new messages arrived.
+          // If this session is not the active one, mark as unread + add to
+          // unreadSet so the sidebar shows the highlight bar.
           if (activeSessionRef.current && !sameSession(activeSessionRef.current, selector)) {
             setStatus(selector, 'unread')
+            addUnread(sessionKey(selector))
           } else {
             setStatus(selector, 'idle')
           }
@@ -942,7 +1045,7 @@ export function useSessionStoreImpl(): SessionStore {
       }
       void refresh()
     })
-  }, [ws, setStatus, applySubAgentLifecycle, refresh])
+  }, [ws, setStatus, applySubAgentLifecycle, refresh, addUnread])
 
   useEffect(() => {
     return () => {
@@ -1014,11 +1117,15 @@ export function useSessionStoreImpl(): SessionStore {
     activeSession,
     starredIds,
     category,
+    unreadIds,
+    activeChannel,
     loading,
     error,
     subAgents,
     askUserPrompts,
     setCategory,
+    setActiveChannel,
+    markRead,
     refresh,
     toggleStar,
     createSession,
@@ -1026,8 +1133,8 @@ export function useSessionStoreImpl(): SessionStore {
     renameSession,
     deleteSession,
     clearAskUserPrompt,
-  }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, loading, error, subAgents,
-    askUserPrompts, setCategory, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession, clearAskUserPrompt])
+  }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
+    askUserPrompts, setCategory, setActiveChannel, markRead, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession, clearAskUserPrompt])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {

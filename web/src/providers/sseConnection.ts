@@ -381,6 +381,16 @@ export class SSEConnectionImpl implements WSConnection {
     handlers.add(handler)
     return () => handlers.delete(handler)
   }
+
+  // Stubs for WSConnection interface methods implemented by MultiSSEManager wrapper.
+  // SSEConnectionImpl itself manages a single connection; multi-subscription
+  // logic lives in MultiSSEManager.
+  addSubscription(_chatID: string, _channel: string): string {
+    throw new Error('Use MultiSSEManager.addSubscription for multi-connection support')
+  }
+  removeSubscription(_id: string): void {
+    throw new Error('Use MultiSSEManager.removeSubscription for multi-connection support')
+  }
 }
 
 /**

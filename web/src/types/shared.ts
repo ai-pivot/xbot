@@ -9,7 +9,7 @@ export type Theme = 'dark' | 'light'
 export type Locale = 'zh-CN' | 'en'
 export type TabType = 'agent' | 'file' | 'terminal' | 'background'
 export type SessionStatus = 'running' | 'waiting_input' | 'pending' | 'idle' | 'unread' | 'error'
-export type SessionCategory = 'all' | 'time' | 'status'
+export type SessionCategory = 'time' | 'status' | 'path'
 
 /**
  * How Agent intermediate steps (tool calls / reasoning) are shown.
@@ -296,6 +296,15 @@ export interface ProgressSnapshot {
   todos: TodoItem[]
   /** Structured SubAgent progress tree, carried forward while active. */
   subAgents: WebSubAgentProgress[]
+  /** Token usage from the last LLM API response (mirrors protocol.TokenUsage). */
+  tokenUsage: TokenUsageInfo | null
+}
+
+/** Token usage info (mirrors protocol.TokenUsage). */
+export interface TokenUsageInfo {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
 }
 
 /** Empty snapshot — the idle state. */
@@ -313,6 +322,7 @@ export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
   lastReasoning: '',
   todos: [],
   subAgents: [],
+  tokenUsage: null,
 }
 
 /** Chat message role. */
@@ -338,4 +348,46 @@ export interface ChatMessage {
   eventSeq?: number
   /** Stable logical-send ID used to correlate optimistic rows with echoes. */
   requestID?: string
+}
+
+/* ---------------------------------------------------------------------------
+ * LLM Subscription & Model Management types (Spec D — LLM 配置设计).
+ *
+ * These mirror the Go protocol.Subscription / protocol.PerModelConfig /
+ * protocol.ModelEntry structs (serverapp/rpc_table.go + protocol/events.go).
+ * JSON field names match the backend serialization exactly.
+ * ------------------------------------------------------------------------- */
+
+/** Per-model override config (mirrors protocol.PerModelConfig). */
+export interface PerModelConfig {
+  max_output_tokens: number
+  max_context: number
+  api_type: string
+  enabled: boolean
+}
+
+/** LLM subscription (mirrors protocol.Subscription JSON serialization). */
+export interface Subscription {
+  id: string
+  name: string
+  provider: string
+  base_url: string
+  api_key: string
+  model: string
+  max_output_tokens: number
+  max_context: number
+  api_type: string
+  thinking_mode: string
+  per_model_configs: Record<string, PerModelConfig>
+  active: boolean
+  enabled: boolean
+  is_system: boolean
+}
+
+/** Selectable model paired with its subscription (mirrors protocol.ModelEntry). */
+export interface ModelEntry {
+  sub_id: string
+  sub_name: string
+  model: string
+  status: 'normal' | 'offline' | 'disabled'
 }

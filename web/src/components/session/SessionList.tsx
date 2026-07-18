@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/providers/i18n'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
+import type { TabManager } from '@/hooks/useTabManager'
 import { SessionGroup } from './SessionGroup'
 import { SessionItem } from './SessionItem'
 import { SessionEmptyState } from './SessionEmptyState'
@@ -44,10 +45,12 @@ interface SessionListProps {
   sortedSessions: SessionInfo[]
   category: SessionCategory
   starredIds: string[]
+  unreadIds: string[]
   activeSession: SessionSelector | null
   search: string
   /** Deprecated compatibility prop. The canonical source is sessions[].children. */
   subAgents: SessionInfo[]
+  tabManager: TabManager
   onSelect: (id: string, channel: string) => void
   onToggleStar: (id: string) => void
   onRename: (id: string, channel: string, label: string) => Promise<boolean>
@@ -62,8 +65,10 @@ export function SessionList({
   sortedSessions,
   category,
   starredIds,
+  unreadIds,
   activeSession,
   search,
+  tabManager,
   onSelect,
   onToggleStar,
   onRename,
@@ -146,7 +151,9 @@ export function SessionList({
                 <SessionItem
                   session={s}
                   starred={starredIds.includes(sessionKey(s))}
+                  unread={unreadIds.includes(sessionKey(s))}
                   active={sameSession(activeSession, s)}
+                  tabManager={tabManager}
                   onSelect={() => selectChannel(s)}
                   onToggleStar={onToggleStar}
                   onRename={openRename}
@@ -160,6 +167,7 @@ export function SessionList({
                     depth={1}
                     searching={searching}
                     matchesQuery={matchesQuery}
+                    tabManager={tabManager}
                     onSelect={onSelect}
                     onRename={openRename}
                     onDelete={openDelete}
@@ -177,7 +185,9 @@ export function SessionList({
                 category={category}
                 sessions={g.sessions}
                 starredIds={starredIds}
+                unreadIds={unreadIds}
                 activeSession={activeSession}
+                tabManager={tabManager}
                 onSelect={onSelect}
                 onToggleStar={onToggleStar}
                 onRename={openRename}
@@ -247,6 +257,7 @@ function SubAgentSearchItem({
   depth,
   searching,
   matchesQuery,
+  tabManager,
   onSelect,
   onRename,
   onDelete,
@@ -256,6 +267,7 @@ function SubAgentSearchItem({
   depth: number
   searching: boolean
   matchesQuery: (s: SessionInfo) => boolean
+  tabManager: TabManager
   onSelect: (id: string, channel: string) => void
   onRename: (session: SessionInfo) => void
   onDelete: (session: SessionInfo) => void
@@ -268,9 +280,11 @@ function SubAgentSearchItem({
       <SessionItem
         session={session}
         starred={false}
+        unread={false}
         active={sameSession(activeSession, session)}
         isSubAgent
         depth={depth}
+        tabManager={tabManager}
         onSelect={(id) => onSelect(id, session.channel)}
         onToggleStar={() => undefined}
         onRename={onRename}
@@ -284,6 +298,7 @@ function SubAgentSearchItem({
           depth={depth + 1}
           searching={searching}
           matchesQuery={matchesQuery}
+          tabManager={tabManager}
           onSelect={onSelect}
           onRename={onRename}
           onDelete={onDelete}

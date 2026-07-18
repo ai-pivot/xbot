@@ -1,10 +1,16 @@
 /**
- * MessageInput — the Agent panel composer (Spec 4 §3.7).
+ * MessageInput — the Agent panel composer (Spec C §1.1).
+ *
+ * Redesigned with a VSCode-style compact layout:
+ *   - ContextBar above the input (fuses TODO progress + context usage)
+ *   - Single rounded container holding: attachment chips, textarea, inline buttons
+ *   - Textarea defaults to two rows height, auto-grows to max 200px
+ *   - Attach button (left) + Send/Cancel button (right) inside the container
  *
  * Multi-line textarea (Ctrl/Cmd+Enter to send), a file-attach button (uploads
  * via POST /api/files/upload and stashes the returned key to attach to the next
  * message), and a cancel button shown while the agent is busy (sends a WS
- * `cancel`). Pending uploads show a small chip list.
+ * `cancel`). Pending uploads show as chips inside the container.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2, Paperclip, Send, Square, X } from 'lucide-react'
@@ -16,7 +22,7 @@ import { useCwd } from '@/providers/CwdProvider'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import type { Attachments } from '@/hooks/useChatMessages'
 import { cn } from '@/lib/utils'
-import { TodoPullOut } from './TodoPullOut'
+import { ContextBar } from './ContextBar'
 import { CompletionPopup } from './CompletionPopup'
 import { useCompletion } from '@/hooks/useCompletion'
 import type { TodoState } from '@/hooks/useTodos'
@@ -39,8 +45,14 @@ interface MessageInputProps {
     size?: number
     mime?: string
   }>
-  /** TODO state from the progress snapshot; null hides the pull-out panel. */
+  /** TODO state from the progress snapshot; null hides the ContextBar TODO section. */
   todoState?: TodoState | null
+  /** Current model name (from session subscription). */
+  model?: string
+  /** Max context tokens (from resolution chain). */
+  maxContext?: number
+  /** Current prompt tokens (from SSE tokenUsage). */
+  promptTokens?: number
   draft?: string
   onDraftConsumed?: () => void
   /** Session identifier for localStorage draft persistence. */
@@ -54,7 +66,7 @@ interface PendingAttachment {
   mime: string
 }
 
-export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
+export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, model = '', maxContext = 0, promptTokens = 0, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
@@ -71,6 +83,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
   })
   const [pending, setPending] = useState<PendingAttachment[]>([])
   const [uploading, setUploading] = useState(false)
+  const [focused, setFocused] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -125,7 +138,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
       return
     }
     if (busy && text === '/new' && pending.length === 0) {
-      toast.error('Agent is busy')
+      toast.error(t('agent.busy'))
       return
     }
     const attachments: Attachments | undefined = pending.length
@@ -180,96 +193,129 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
 
   return (
     <div className="border-t border-border bg-bg-primary px-3 py-2.5">
-      {todoState && <TodoPullOut todoState={todoState} />}
-      {pending.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {pending.map((p, i) => (
-            <span
-              key={`${p.uploadKey}-${i}`}
-              className="inline-flex items-center gap-1 rounded-md bg-bg-tertiary px-2 py-1 text-xs text-text-secondary"
-            >
-              <Paperclip className="size-3" />
-              <span className="max-w-[20ch] truncate">{p.name}</span>
-              <button
-                type="button"
-                aria-label="remove"
-                onClick={() => setPending((prev) => prev.filter((_, idx) => idx !== i))}
-                className="text-text-muted hover:text-text-primary"
-              >
-                <X className="size-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+      <ContextBar
+        todoState={todoState ?? null}
+        model={model}
+        maxContext={maxContext}
+        promptTokens={promptTokens}
+      />
 
-      <div className="relative flex items-end gap-2">
-        <CompletionPopup
-          candidates={completion.candidates}
-          selectedIndex={completion.selectedIndex}
-          visible={completion.visible}
-          triggerType={completion.triggerType}
-          onSelect={completion.completeCandidate}
-        />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={t('agent.attach')}
-          disabled={uploading}
-          onClick={() => fileRef.current?.click()}
-        >
-          {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
-        </Button>
-        <input
-          ref={fileRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            onPickFiles(e.target.files)
-            e.target.value = ''
-          }}
-        />
-
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value)
-            resize()
-          }}
-          onKeyDown={onKeyDown}
-          rows={1}
-          placeholder={t('agent.inputPlaceholder')}
-          className={cn(
-            'max-h-[200px] flex-1 resize-none rounded-lg border border-border bg-bg-secondary px-3 py-2',
-            'text-sm text-text-primary placeholder:text-text-muted',
-            'focus-visible:border-accent focus-visible:outline-none',
-          )}
-        />
-
-        {busy ? (
-          <Button
-            type="button"
-            variant="destructive"
-            size="icon-sm"
-            aria-label={t('common.cancel')}
-            onClick={onCancel}
-          >
-            <Square className="size-4" />
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            size="icon-sm"
-            aria-label={t('agent.send')}
-            disabled={!canSend}
-            onClick={submit}
-          >
-            <Send className="size-4" />
-          </Button>
+      {/* Input container — single rounded box with chips, textarea, and inline buttons */}
+      <div
+        className={cn(
+          'rounded-xl border bg-bg-secondary px-3 py-2 transition-all',
+          focused
+            ? 'border-accent ring-1 ring-accent/30'
+            : 'border-border',
         )}
+      >
+        {/* Attachment chips (inside container, above textarea) */}
+        {pending.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {pending.map((p, i) => (
+              <span
+                key={`${p.uploadKey}-${i}`}
+                className="inline-flex items-center gap-1 rounded-md bg-bg-tertiary px-2 py-1 text-xs text-text-secondary"
+              >
+                <Paperclip className="size-3" />
+                <span className="max-w-[20ch] truncate">{p.name}</span>
+                <button
+                  type="button"
+                  aria-label="remove"
+                  onClick={() => setPending((prev) => prev.filter((_, idx) => idx !== i))}
+                  className="text-text-muted hover:text-text-primary"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Textarea */}
+        <div className="relative">
+          <CompletionPopup
+            candidates={completion.candidates}
+            selectedIndex={completion.selectedIndex}
+            visible={completion.visible}
+            triggerType={completion.triggerType}
+            onSelect={completion.completeCandidate}
+          />
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => {
+              setValue(e.target.value)
+              resize()
+            }}
+            onKeyDown={onKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            rows={2}
+            placeholder={t('agent.inputPlaceholder')}
+            className={cn(
+              'max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-0 py-1',
+              'text-sm text-text-primary placeholder:text-text-muted',
+              'focus:outline-none',
+            )}
+          />
+        </div>
+
+        {/* Bottom row: attach button (left) + send/cancel button (right) */}
+        <div className="mt-2 flex items-center justify-between">
+          <div className="flex items-center gap-1">
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                onPickFiles(e.target.files)
+                e.target.value = ''
+              }}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t('agent.attach')}
+              disabled={uploading}
+              onClick={() => fileRef.current?.click()}
+              className={cn('size-7 rounded-md', uploading && 'opacity-40')}
+            >
+              {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-1">
+            {busy ? (
+              <Button
+                type="button"
+                variant="destructive"
+                size="icon-sm"
+                aria-label={t('common.cancel')}
+                onClick={onCancel}
+                className="size-7 rounded-md"
+              >
+                <Square className="size-4" />
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="icon-sm"
+                aria-label={t('agent.send')}
+                disabled={!canSend}
+                onClick={submit}
+                className={cn(
+                  'size-7 rounded-md bg-accent text-accent-foreground',
+                  !canSend && 'opacity-40',
+                )}
+              >
+                <Send className="size-4" />
+              </Button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )

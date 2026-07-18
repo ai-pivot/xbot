@@ -7,7 +7,7 @@ import { MessageItem } from './MessageItem'
 import type { ChatMessage } from '@/types/agent'
 
 describe('MessageItem', () => {
-  it('renders rewind action below user messages', () => {
+  it('renders edit action below user messages and calls onStartEdit', () => {
     const message: ChatMessage = {
       id: 'u1',
       role: 'user',
@@ -18,6 +18,7 @@ describe('MessageItem', () => {
       turnID: 0,
     }
     const onRewind = vi.fn()
+    const onStartEdit = vi.fn()
 
     renderWithProviders(
       <MessageItem
@@ -25,11 +26,16 @@ describe('MessageItem', () => {
         liveProgress={null}
         collapseLevel="all"
         onRewind={onRewind}
+        onStartEdit={onStartEdit}
       />,
     )
 
-    fireEvent.click(screen.getByLabelText('rewind'))
-    expect(onRewind).toHaveBeenCalledWith(message)
+    // Find the pencil button by its SVG icon
+    const buttons = screen.getAllByRole('button')
+    const editBtn = buttons.find((b) => b.querySelector('svg.lucide-pencil'))
+    expect(editBtn).toBeDefined()
+    fireEvent.click(editBtn!)
+    expect(onStartEdit).toHaveBeenCalledTimes(1)
   })
 
   it('renders empty LLM responses as a visible warning', () => {

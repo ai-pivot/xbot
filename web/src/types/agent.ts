@@ -119,6 +119,7 @@ export const EMPTY_LIVE_PROGRESS: LiveProgress = {
   lastReasoning: '',
   todos: [],
   subAgents: [],
+  tokenUsage: null,
 }
 
 /** Status badge kind for a tool, derived from its status string. */

@@ -30,6 +30,7 @@ import {
   type WebIteration,
   type TodoItem,
   type WebSubAgentProgress,
+  type TokenUsageInfo,
 } from '@/types/shared'
 import type { ProgressEvent } from '@/types/shared'
 
@@ -290,6 +291,7 @@ export class ProgressStore {
     streamingTools?: WebToolProgress[]
     todos?: TodoItem[]
     subAgents?: WebSubAgentProgress[]
+    tokenUsage?: TokenUsageInfo | null
   }): void {
     // ── PhaseDone → finalizing transition ──
     // When phase='done' arrives, enter the 'finalizing' state instead of
@@ -403,6 +405,13 @@ export class ProgressStore {
       if (opts.subAgents !== undefined) {
         draft.subAgents = mergeSubAgentTrees(draft.subAgents, opts.subAgents)
       }
+
+      // ── tokenUsage: carry-forward when not present (mirrors TUI behavior).
+      //  Only update when a non-null tokenUsage is provided; null means "no data"
+      //  in this event, preserving the previous value.
+      if (opts.tokenUsage !== undefined && opts.tokenUsage !== null) {
+        draft.tokenUsage = opts.tokenUsage
+      }
     })
   }
 
@@ -470,6 +479,7 @@ export class ProgressStore {
       lastReasoning: this.current.lastReasoning,
       todos: this.current.todos,
       subAgents: this.current.subAgents,
+      tokenUsage: this.current.tokenUsage,
     }
     this.listeners.forEach((l) => l())
   }
