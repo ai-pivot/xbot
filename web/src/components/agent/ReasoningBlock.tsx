@@ -9,6 +9,7 @@
 import { memo } from 'react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { SweepText } from './SweepText'
 import { useI18n } from '@/providers/i18n'
 
 interface ReasoningBlockProps {
@@ -28,16 +29,11 @@ export const ReasoningBlock = memo(function ReasoningBlock({
     <div className="py-1">
       <MarkdownRenderer content={content} className="text-xs text-text-secondary" />
       {streaming && (
-        <span
-          className="mt-1 inline-flex items-center gap-1 text-[11px] text-text-muted"
-          aria-label={t('agent.reasoningStreaming')}
-        >
-          <span
-            className="size-1.5 rounded-full animate-pulse"
-            style={{ backgroundColor: 'var(--status-running)' }}
-          />
-          <span>{t('agent.reasoningStreaming')}</span>
-        </span>
+        <SweepText
+          text={t('agent.reasoningStreaming')}
+          color="var(--text-muted)"
+          className="mt-1 text-[11px]"
+        />
       )}
     </div>
   )

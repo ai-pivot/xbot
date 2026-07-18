@@ -19,6 +19,7 @@ import { FoldedLine } from './FoldedLine'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
+import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
 import type { WebIteration } from '@/types/shared'
@@ -45,7 +46,13 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // 'all' (complete fold) is only for completed messages.
   const effectiveLevel: CollapseLevel = isStreaming ? 'minimal' : collapseLevel
   const liveProgress = isStreaming ? progress : null
-  const showThinkingIndicator = isStreaming && !progress?.streamContent
+  const hasReasoning = Boolean(progress?.reasoningStreamContent || progress?.lastReasoning)
+  const hasToolInProgress = progress
+    ? progress.streamingTools.some((tool) => isToolInProgress(tool.status)) ||
+      progress.activeTools.some((tool) => isToolInProgress(tool.status)) ||
+      progress.completedTools.some((tool) => isToolInProgress(tool.status))
+    : false
+  const showThinkingIndicator = isStreaming && !progress?.streamContent && !hasReasoning && !hasToolInProgress
   const emptyResponse = isEmptyResponseContent(message.content)
   const finalContent = !emptyResponse && shouldRenderFinalContent(message.content, iterations)
     ? message.content

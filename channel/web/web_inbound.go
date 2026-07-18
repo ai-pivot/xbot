@@ -69,6 +69,10 @@ func (wc *WebChannel) inboundIdentityFromRequest(r *http.Request) inboundIdentit
 		}
 		identity.CanonicalUserID, identity.CanonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, identity.SenderID)
 	}
+	// In single-user mode, all users share one identity and are treated as admin.
+	if wc.singleUser {
+		identity.CanonicalRole = "admin"
+	}
 	return identity
 }
 

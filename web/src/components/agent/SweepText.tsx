@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { memo, type CSSProperties } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -10,15 +10,26 @@ interface SweepTextProps {
 
 type SweepStyle = CSSProperties & { '--sweep-color': string }
 
-/** One-node, CSS-driven text sweep shared by live Agent status surfaces. */
-export function SweepText({ text, color = 'var(--text-primary)', className }: SweepTextProps) {
+/** Character-delayed opacity sweep shared by live Agent status surfaces. */
+export const SweepText = memo(function SweepText({ text, color = 'var(--text-primary)', className }: SweepTextProps) {
+  const chars = Array.from(text)
+
   return (
     <span
       className={cn('sweep-text', className)}
       style={{ '--sweep-color': color } as SweepStyle}
       aria-label={text}
     >
-      {text}
+      {chars.map((char, index) => (
+        <span
+          key={`${index}-${char}`}
+          className="sweep-text-char"
+          style={{ animationDelay: `${index * 0.15}s` }}
+          aria-hidden="true"
+        >
+          {char === ' ' ? '\u00A0' : char}
+        </span>
+      ))}
     </span>
   )
-}
+})

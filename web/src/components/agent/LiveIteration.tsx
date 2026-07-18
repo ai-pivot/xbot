@@ -16,8 +16,10 @@ import { FoldedToolGroup } from './FoldedToolGroup'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
+import { SweepText } from './SweepText'
 import { useI18n } from '@/providers/i18n'
 import { dedupTools } from './progressStore'
+import { isToolInProgress } from './statusVisual'
 import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
 
@@ -37,14 +39,8 @@ export const LiveIteration = memo(function LiveIteration({
   // Reasoning: prefer streaming value, fall back to structured (mirrors TUI)
   const reasoningContent = progress.reasoningStreamContent || progress.lastReasoning || ''
   const hasReasoning = Boolean(reasoningContent)
-  const hasTools =
-    progress.streamingTools.length > 0 ||
-    progress.activeTools.length > 0 ||
-    progress.completedTools.length > 0
   const hasStreamContent = Boolean(progress.streamContent)
   const hasSubAgents = progress.subAgents.length > 0
-
-  if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents) return null
 
   // Merge all tool groups, using the shared dedupTools (generating skips dedup)
   const allTools = dedupTools([
@@ -52,18 +48,29 @@ export const LiveIteration = memo(function LiveIteration({
     ...progress.activeTools,
     ...progress.completedTools,
   ])
+  const hasTools = allTools.length > 0
+  const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
+  const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress
+
+  if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents) return null
 
   return (
     <div className="flex flex-col gap-1">
       {/* Streaming T — show character count */}
       {hasReasoning && (
         <FoldedLine
-          title={t('agent.thinkingChars', { count: reasoningContent.length })}
+          title={reasoningInProgress ? (
+            <SweepText
+              text={t('agent.thinkingChars', { count: reasoningContent.length })}
+              color="var(--text-muted)"
+              className="text-xs"
+            />
+          ) : t('agent.thinkingChars', { count: reasoningContent.length })}
           defaultOpen={false}
         >
           <ReasoningBlock
             content={reasoningContent}
-            streaming={progress.streaming && !hasStreamContent}
+            streaming={false}
           />
         </FoldedLine>
       )}

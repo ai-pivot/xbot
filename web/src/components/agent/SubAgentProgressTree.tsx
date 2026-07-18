@@ -3,7 +3,7 @@
  *
  * Replaces the old static tree list with animated inline cards:
  *   - 2px accent left bar (running=accent, done=accent/30%, error=destructive)
- *   - Status icons (Asterisk+pulse, Check, AlertCircle)
+ *   - Status icons (Sparkles, Check, AlertCircle)
  *   - Light-sweep CSS animation while running
  *   - Framer Motion AnimatePresence for node mount/unmount
  *   - Children indented with dashed connection lines
@@ -87,7 +87,7 @@ function SubAgentCard({
         {/* Node header row */}
         <div className="flex min-w-0 items-center gap-1.5">
           {running ? (
-            <Sparkles className="size-3.5 shrink-0 animate-pulse" style={{ color: 'var(--accent)' }} />
+            <Sparkles className="size-3.5 shrink-0" style={{ color: 'var(--accent)' }} />
           ) : done ? (
             <Check className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
           ) : errored ? (
@@ -148,7 +148,7 @@ function SubAgentChild({ node }: { node: WebSubAgentProgress }) {
     >
       <div className="flex min-w-0 items-center gap-1.5">
         {running ? (
-          <Sparkles className="size-3 shrink-0 animate-pulse" style={{ color: 'var(--accent)' }} />
+          <Sparkles className="size-3 shrink-0" style={{ color: 'var(--accent)' }} />
         ) : done ? (
           <Check className="size-3 shrink-0" style={{ color: 'var(--text-muted)' }} />
         ) : errored ? (

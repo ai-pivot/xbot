@@ -1,6 +1,6 @@
 /**
- * ShimmerThinking — bold borderless "正在思考" text with a character-by-character
- * shimmer sweep effect (each character lights up in sequence, loop).
+ * ShimmerThinking — bold borderless "正在思考" text using the shared
+ * CSS-driven status sweep.
  */
 import { memo } from 'react'
 
@@ -12,7 +12,7 @@ export const ShimmerThinking = memo(function ShimmerThinking() {
   const text = t('agent.reasoningStreaming') // "思考中…" / "thinking…"
 
   return (
-    <div className="mt-2">
+    <div className="mt-1">
       <SweepText text={text} className="text-sm font-bold" />
     </div>
   )

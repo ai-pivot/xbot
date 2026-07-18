@@ -1255,6 +1255,9 @@ func (wc *WebChannel) canAccessAgentSession(webUserID int, senderID, chatID stri
 // It is used by the server RPC bridge, where only the senderID survives after
 // WebSocket auth and the original HTTP request context is no longer available.
 func (wc *WebChannel) IsAdminIdentity(senderID string) bool {
+	if wc.singleUser {
+		return true
+	}
 	if senderID == "admin" {
 		return true
 	}
@@ -1287,7 +1290,11 @@ func (wc *WebChannel) GetCurrentSession(senderID string) SessionSelector {
 // isAdmin returns true if the user is an admin.
 // Uses IdentityResolver when available (canonical role), falls back to
 // senderID == "admin" and web user ID == 1 for backward compat.
+// In single-user mode, all users are admin (no identity isolation).
 func (wc *WebChannel) isAdmin(ctx context.Context, senderID string) bool {
+	if wc.singleUser {
+		return true
+	}
 	if senderID == "admin" {
 		return true
 	}

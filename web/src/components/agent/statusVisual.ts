@@ -16,6 +16,11 @@ export interface ToolStatusVisual {
   color: string
 }
 
+/** Whether a tool is still preparing or executing. */
+export function isToolInProgress(status: string | undefined): boolean {
+  return status === 'pending' || status === 'generating' || status === 'running'
+}
+
 /** Visual mapping for a tool status kind, using CSS variables for theming. */
 export function toolStatusVisual(status: string | undefined): ToolStatusVisual {
   switch (toolStatusKind(status)) {

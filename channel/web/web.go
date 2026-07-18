@@ -73,6 +73,7 @@ type WebChannelConfig struct {
 	AdminToken string  // global admin token for privileged auth
 	InviteOnly bool    // 禁止自主注册，新账号只能由 admin 创建
 	PublicURL  string  // 对外访问地址，用于生成 Runner 连接命令
+	SingleUser bool    // 单用户模式：所有用户共享同一身份，视为 admin
 }
 
 // WebCallbacks holds callback functions for Web channel API endpoints.
@@ -374,6 +375,10 @@ type WebChannel struct {
 	// Defaults to {Channel:"web", ChatID:senderID} if not set.
 	userCurrentSession   map[string]SessionSelector
 	userCurrentSessionMu sync.RWMutex
+
+	// singleUser mirrors config.Experimental.SingleUser — when true, all
+	// web users are treated as admin (no identity isolation).
+	singleUser bool
 }
 
 type sessionInfo struct {
@@ -414,6 +419,7 @@ func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 		stopCh:             make(chan struct{}),
 		inboundRequests:    make(map[inboundRequestKey]*inboundRequestState),
 		userCurrentSession: make(map[string]SessionSelector),
+		singleUser:         cfg.SingleUser,
 	}
 	wc.hub.seqFn = wc.stampAndBuffer
 	return wc

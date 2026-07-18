@@ -27,6 +27,7 @@ describe('SubAgentProgressTree', () => {
     ]
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
     expect(container.querySelector('.sweep-text')).not.toBeNull()
+    expect(container.querySelector('.animate-pulse')).toBeNull()
     // Should show role:instance text
     expect(container.textContent).toContain('explore:search-1')
     expect(container.textContent).toContain('searching codebase')
@@ -37,9 +38,7 @@ describe('SubAgentProgressTree', () => {
       { role: 'dev-node', instance: 'fix-1', status: 'done', desc: 'completed task' },
     ]
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
-    // Should NOT have the running class
-    const runningCard = container.querySelector('.subagent-card--running')
-    expect(runningCard).toBeNull()
+    expect(container.querySelector('.sweep-text')).toBeNull()
     // Should show the role and desc
     expect(container.textContent).toContain('dev-node:fix-1')
     expect(container.textContent).toContain('completed task')
@@ -50,6 +49,7 @@ describe('SubAgentProgressTree', () => {
       { role: 'reviewer', instance: 'cr-1', status: 'error', desc: 'failed' },
     ]
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
+    expect(container.querySelector('.sweep-text')).toBeNull()
     expect(container.textContent).toContain('reviewer:cr-1')
     expect(container.textContent).toContain('failed')
   })
@@ -75,6 +75,8 @@ describe('SubAgentProgressTree', () => {
     // Children area should have dashed border
     const dashedBorders = container.querySelectorAll('.border-dashed')
     expect(dashedBorders.length).toBeGreaterThan(0)
+    expect(container.querySelectorAll('.sweep-text')).toHaveLength(2)
+    expect(container.querySelector('.animate-pulse')).toBeNull()
   })
 
   it('renders multiple top-level nodes', () => {

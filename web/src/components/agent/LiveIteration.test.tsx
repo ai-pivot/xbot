@@ -67,6 +67,43 @@ describe('LiveIteration — typewriter cursor', () => {
     expect(streamingDiv).toBeNull()
   })
 
+  it('sweeps the in-progress thought character count without a second reasoning sweep', () => {
+    const snapshot = makeSnapshot({
+      reasoningStreamContent: 'thinking about something',
+      streaming: true,
+      phase: 'thinking',
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
+    const sweep = container.querySelector<HTMLElement>('.sweep-text')
+
+    expect(sweep).not.toBeNull()
+    expect(sweep).toHaveTextContent(String(snapshot.reasoningStreamContent.length))
+    expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
+  })
+
+  it.each(['pending', 'generating', 'running'] as const)(
+    'hides the reasoning sweep while a %s tool is in progress',
+    (status) => {
+      const snapshot = makeSnapshot({
+        reasoningStreamContent: 'thinking about something',
+        streamingTools: [{
+          name: 'Read',
+          label: 'Read',
+          status,
+          elapsedMs: 0,
+          summary: '',
+          detail: '',
+          args: '',
+          toolHints: '',
+        }],
+      })
+      const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
+
+      expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
+      expect(container.querySelector('.sweep-text')).toHaveTextContent('Read')
+    },
+  )
+
   it('renders SubAgent tree when subAgents present', () => {
     const snapshot = makeSnapshot({
       streamContent: '',

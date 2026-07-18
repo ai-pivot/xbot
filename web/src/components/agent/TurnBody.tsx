@@ -67,7 +67,7 @@ export const TurnBody = memo(function TurnBody({
   // Fast path: if mergeTools is off, use the original per-iteration rendering.
   if (!mergeTools) {
     return (
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
         {iterations.map((iter, i) => (
           <IterationGroup
             key={iter.iteration ?? i}
@@ -85,7 +85,7 @@ export const TurnBody = memo(function TurnBody({
   const blocks = flattenIterations(iterations)
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-1">
       {blocks.map((block, i) => {
         if (block.kind === 'reasoning') {
           return (

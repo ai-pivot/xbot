@@ -18,6 +18,7 @@ import { AnimatedCollapse } from '@/components/ui/animated-collapse'
 import { ToolRender } from './ToolRender'
 import { getToolIcon } from './toolIcons'
 import { SweepText } from './SweepText'
+import { isToolInProgress } from './statusVisual'
 import type { CollapseLevel } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
 
@@ -52,14 +53,9 @@ function isFailed(status: string): boolean {
   return status === 'error'
 }
 
-/** Check if a tool's status indicates it's still running. */
-function isRunning(status: string): boolean {
-  return status === 'running' || status === 'generating'
-}
-
 /** Aggregate status across multiple tools. */
 function aggregateStatus(tools: WebToolProgress[]): ToolStatusColor {
-  const anyRunning = tools.some((t) => isRunning(t.status))
+  const anyRunning = tools.some((t) => isToolInProgress(t.status))
   if (anyRunning) return 'running'
   const failedCount = tools.filter((t) => isFailed(t.status)).length
   if (failedCount === 0) return 'normal'
@@ -88,9 +84,19 @@ function displayName(tool: WebToolProgress): string {
   return label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
 }
 
+/** SubAgent progress is rendered by SubAgentProgressTree as its own card. */
+function isSubAgentToolName(name: string): boolean {
+  const normalized = name.trim().toLowerCase().replaceAll('_', '')
+  return normalized === 'subagent'
+}
+
+function isSubAgentTool(tool: WebToolProgress): boolean {
+  return isSubAgentToolName(tool.name)
+}
+
 /** Get single tool status color. */
 function singleStatus(tool: WebToolProgress): ToolStatusColor {
-  return isFailed(tool.status) ? 'all-failed' : isRunning(tool.status) ? 'running' : 'normal'
+  return isFailed(tool.status) ? 'all-failed' : isToolInProgress(tool.status) ? 'running' : 'normal'
 }
 
 /** Render a single Lucide tool icon at 16px with status color. */
@@ -100,7 +106,7 @@ function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
 }
 
 /** Format a single tool's folded title: [icon] name param25 */
-function formatToolTitle(tool: WebToolProgress): ReactNode {
+function formatToolTitle(tool: WebToolProgress, sweepRunning = true): ReactNode {
   const status = singleStatus(tool)
   const color = statusColorVar(status)
   const param = toolParam(tool)
@@ -109,7 +115,7 @@ function formatToolTitle(tool: WebToolProgress): ReactNode {
   return (
     <span className="flex items-center gap-1.5 min-w-0" style={{ color }}>
       <ToolIcon name={tool.name || 'tool'} status={status} />
-      {status === 'running' ? (
+      {status === 'running' && sweepRunning && !isSubAgentTool(tool) ? (
         <SweepText text={name} color={color} className="shrink-0 font-mono" />
       ) : (
         <span className="shrink-0 font-mono">{name}</span>
@@ -122,7 +128,7 @@ function formatToolTitle(tool: WebToolProgress): ReactNode {
 }
 
 /** Build merged title: [icon] Name ×N [icon] Name ×M */
-function formatMergedTitle(tools: WebToolProgress[]): ReactNode {
+function formatMergedTitle(tools: WebToolProgress[], sweepRunning = true): ReactNode {
   const status = aggregateStatus(tools)
   const color = statusColorVar(status)
   // Group by tool name, preserving first-occurrence order
@@ -138,25 +144,38 @@ function formatMergedTitle(tools: WebToolProgress[]): ReactNode {
     }
   }
 
+  const animatedText = groups
+    .filter((group) => !isSubAgentToolName(group.name))
+    .map((group) => `${group.name}${group.count > 1 ? ` ×${group.count}` : ''}`)
+    .join('  ')
+  const staticText = groups
+    .filter((group) => isSubAgentToolName(group.name))
+    .map((group) => `${group.name}${group.count > 1 ? ` ×${group.count}` : ''}`)
+    .join('  ')
+
   return (
     <span className="flex items-center gap-2" style={{ color }}>
-      {groups.map((g, i) => (
+      {status === 'running' && sweepRunning && animatedText ? (
+        <>
+          <span className="flex items-center gap-0.5">
+            {groups.map((group, index) => (
+              <ToolIcon key={`${group.name}-${index}`} name={group.name} status={status} />
+            ))}
+          </span>
+          <SweepText
+            text={animatedText}
+            color={color}
+            className="shrink-0 font-mono text-xs"
+          />
+          {staticText && <span className="shrink-0 font-mono text-xs">{staticText}</span>}
+        </>
+      ) : groups.map((g, i) => (
         <span key={`${g.name}-${i}`} className="flex items-center gap-0.5">
           <ToolIcon name={g.name} status={status} />
-          {status === 'running' ? (
-            <SweepText
-              text={`${g.name}${g.count > 1 ? ` ×${g.count}` : ''}`}
-              color={color}
-              className="shrink-0 font-mono text-xs"
-            />
-          ) : (
-            <>
-              <span className="shrink-0 font-mono text-xs">{g.name}</span>
-              {g.count > 1 ? (
-                <span className="shrink-0 text-[11px]" style={{ color }}>×{g.count}</span>
-              ) : null}
-            </>
-          )}
+          <span className="shrink-0 font-mono text-xs">{g.name}</span>
+          {g.count > 1 ? (
+            <span className="shrink-0 text-[11px]" style={{ color }}>×{g.count}</span>
+          ) : null}
         </span>
       ))}
     </span>
@@ -175,7 +194,15 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
       {/* Card header: icon + name */}
       <div className="mb-1.5 flex items-center gap-1.5" style={{ color }}>
         <ToolIcon name={name} status={status} />
-        <span className="font-mono text-xs font-medium">{dn}</span>
+        {status === 'running' && !isSubAgentTool(tool) ? (
+          <SweepText
+            text={dn}
+            color={color}
+            className="font-mono text-xs font-medium"
+          />
+        ) : (
+          <span className="font-mono text-xs font-medium">{dn}</span>
+        )}
       </div>
       {/* Tool input + output */}
       <ToolRender tool={tool} />
@@ -215,7 +242,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
             className="flex items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"
           >
             <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
-            {formatToolTitle(tools[0])}
+            {formatToolTitle(tools[0], !expanded)}
           </button>
           <AnimatedCollapse open={expanded} lazy>
             <div className="ml-4 mt-1">
@@ -246,7 +273,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
         className="flex items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"
       >
         <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
-        {formatMergedTitle(tools)}
+        {formatMergedTitle(tools, !expanded)}
       </button>
       <AnimatedCollapse open={expanded} lazy>
         <div className="ml-4 mt-1 flex flex-col gap-1.5">
@@ -271,7 +298,7 @@ const SingleToolFold = memo(function SingleToolFold({ tool }: { tool: WebToolPro
         className="flex items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"
       >
         <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
-        {formatToolTitle(tool)}
+        {formatToolTitle(tool, !expanded)}
       </button>
       <AnimatedCollapse open={expanded} lazy>
         <div className="ml-4 mt-1">

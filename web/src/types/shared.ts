@@ -245,7 +245,7 @@ export interface SessionEvent {
  * ------------------------------------------------------------------------- */
 
 /** Tool call progress status. */
-export type ToolStatus = 'generating' | 'running' | 'done' | 'error'
+export type ToolStatus = 'pending' | 'generating' | 'running' | 'done' | 'error'
 
 /** TODO item — mirrors Go protocol.TodoItem (json: id, text, done). */
 export interface TodoItem {

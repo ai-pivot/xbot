@@ -123,10 +123,18 @@ describe('ReasoningBlock', () => {
     expect(screen.getAllByText(/Because the sky is blue/).length).toBeGreaterThan(0)
   })
 
-  it('shows streaming indicator when streaming=true', () => {
-    renderWithProviders(<ReasoningBlock content="thinking..." streaming />)
-    // Both the content and the streaming indicator contain "thinking"
+  it('shows a muted sweep without an extra pulse while streaming', () => {
+    const { container } = renderWithProviders(<ReasoningBlock content="thinking..." streaming />)
     expect(screen.getAllByText(/thinking/i).length).toBeGreaterThan(0)
+    const sweep = container.querySelector<HTMLElement>('.sweep-text')
+    expect(sweep).not.toBeNull()
+    expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--text-muted)')
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+  })
+
+  it('does not sweep completed reasoning', () => {
+    const { container } = renderWithProviders(<ReasoningBlock content="finished thought" />)
+    expect(container.querySelector('.sweep-text')).toBeNull()
   })
 })
 
@@ -163,6 +171,93 @@ describe('FoldedToolGroup', () => {
     const cards = container.querySelectorAll('.tool-icon-single')
     expect(cards.length).toBe(2)
   })
+
+  it.each(['pending', 'running', 'generating'] as const)(
+    'uses an accent sweep in a folded %s tool title',
+    (status) => {
+      const { container } = renderWithProviders(
+        <FoldedToolGroup tools={[makeTool({ status })]} level="minimal" />,
+      )
+      const title = container.querySelector('button[aria-expanded="false"]')
+      const sweep = title?.querySelector<HTMLElement>('.sweep-text')
+      expect(sweep).not.toBeNull()
+      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--accent)')
+    },
+  )
+
+  it.each(['done', 'error'] as const)(
+    'keeps a folded %s tool title static',
+    (status) => {
+      const { container } = renderWithProviders(
+        <FoldedToolGroup tools={[makeTool({ status })]} level="minimal" />,
+      )
+      const title = container.querySelector('button[aria-expanded="false"]')
+      expect(title?.querySelector('.sweep-text')).toBeNull()
+    },
+  )
+
+  it.each(['pending', 'running', 'generating'] as const)(
+    'uses an accent sweep in an expanded %s tool card',
+    (status) => {
+      const { container } = renderWithProviders(
+        <FoldedToolGroup
+          tools={[makeTool({ name: 'Read', label: 'Read: file.go', status })]}
+          level="none"
+        />,
+      )
+      const sweep = container.querySelector<HTMLElement>('.sweep-text')
+      expect(sweep).not.toBeNull()
+      expect(sweep).toHaveTextContent('Read')
+      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--accent)')
+    },
+  )
+
+  it('keeps the SubAgent tool static because its progress card owns the sweep', () => {
+    const { container } = renderWithProviders(
+      <FoldedToolGroup
+        tools={[makeTool({ name: 'SubAgent', label: 'SubAgent: review', status: 'running' })]}
+        level="minimal"
+      />,
+    )
+
+    expect(container.querySelector('.sweep-text')).toBeNull()
+    fireEvent.click(screen.getByRole('button'))
+    expect(container.querySelector('.sweep-text')).toBeNull()
+  })
+
+  it('uses one sweep for a merged running-tool title', () => {
+    const { container } = renderWithProviders(
+      <FoldedToolGroup
+        tools={[
+          makeTool({ name: 'Read', label: 'Read', status: 'running' }),
+          makeTool({ name: 'Grep', label: 'Grep', status: 'running' }),
+        ]}
+        level="minimal"
+      />,
+    )
+
+    const title = container.querySelector('button[aria-expanded="false"]')
+    expect(title?.querySelectorAll('.sweep-text')).toHaveLength(1)
+  })
+
+  it('does not animate both the title and card for one expanded running tool', () => {
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={[makeTool({ status: 'running' })]} level="minimal" />,
+    )
+
+    fireEvent.click(screen.getByRole('button'))
+    expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
+  })
+
+  it.each(['done', 'error'] as const)(
+    'keeps an expanded %s tool card title static',
+    (status) => {
+      const { container } = renderWithProviders(
+        <FoldedToolGroup tools={[makeTool({ status })]} level="none" />,
+      )
+      expect(container.querySelector('.sweep-text')).toBeNull()
+    },
+  )
 
   it('renders single tool as independent FoldedLine regardless of level', () => {
     const tools = [makeTool({ name: 'Read', label: 'Read' })]

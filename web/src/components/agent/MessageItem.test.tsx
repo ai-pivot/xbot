@@ -5,6 +5,7 @@ import '@testing-library/jest-dom'
 import { renderWithProviders } from '@/test-utils'
 import { MessageItem } from './MessageItem'
 import type { ChatMessage } from '@/types/agent'
+import { EMPTY_LIVE_PROGRESS } from '@/types/agent'
 
 describe('MessageItem', () => {
   it('renders edit action below user messages and calls onStartEdit', () => {
@@ -59,4 +60,41 @@ describe('MessageItem', () => {
     expect(screen.queryByText('(no text output)')).not.toBeInTheDocument()
     expect(screen.queryByText('(empty response)')).not.toBeInTheDocument()
   })
+
+  it.each(['pending', 'generating', 'running'] as const)(
+    'does not show the generic thinking indicator while a tool is %s',
+    (status) => {
+      const { container } = renderWithProviders(
+        <MessageItem
+          message={{
+            id: 'live-tool',
+            role: 'assistant',
+            content: '',
+            iterations: [],
+            timestamp: '',
+            isPartial: true,
+            turnID: 0,
+          }}
+          liveProgress={{
+            ...EMPTY_LIVE_PROGRESS,
+            streaming: true,
+            activeTools: [{
+              name: 'Shell',
+              label: 'Shell',
+              status,
+              elapsedMs: 0,
+              summary: '',
+              detail: '',
+              args: '',
+              toolHints: '',
+            }],
+          }}
+          collapseLevel="minimal"
+        />,
+      )
+
+      expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
+      expect(container.querySelector('.sweep-text')).toHaveTextContent('Shell')
+    },
+  )
 })
