@@ -421,10 +421,6 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 	if a.channelFinder == nil {
 		return
 	}
-	ch, ok := a.channelFinder("cli")
-	if !ok {
-		return
-	}
 	agentProgressKey := "agent:" + key
 
 	// Build PhaseDone payload from the last known progress snapshot.
@@ -440,10 +436,19 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 		}
 	}
 
-	if localCh, ok := ch.(*cli.CLIChannel); ok {
-		localCh.SendProgress(key, payload)
-	} else if remoteCh, ok := ch.(channelpkg.ProgressSender); ok {
-		remoteCh.SendProgress(key, payload)
+	// Send to both CLI and Web channels so both TUI and Web UI properly
+	// finalize the SubAgent turn. Without the Web channel, the Web progress
+	// store stays in its last state forever (liveMessage never clears).
+	for _, name := range []string{"cli", "web"} {
+		ch, ok := a.channelFinder(name)
+		if !ok {
+			continue
+		}
+		if localCh, ok := ch.(*cli.CLIChannel); ok {
+			localCh.SendProgress(key, payload)
+		} else if remoteCh, ok := ch.(channelpkg.ProgressSender); ok {
+			remoteCh.SendProgress(key, payload)
+		}
 	}
 }
 
