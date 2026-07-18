@@ -190,7 +190,6 @@ func (r *Registry) getRunnerTool(runnerID, name string) (Tool, bool) {
 }
 
 // GetForSession 统一工具查找：runner → channel → tenant → global。
-// 替代 GetForTenant，增加 runner 和 channel 维度优先查找。
 func (r *Registry) GetForSession(name string, tenantID int64, sessionKey string) (Tool, bool) {
 	// 1. Runner-scoped tools (highest priority — session's bound runner)
 	if runnerID := r.getSessionRunner(sessionKey); runnerID != "" {
@@ -205,27 +204,7 @@ func (r *Registry) GetForSession(name string, tenantID int64, sessionKey string)
 			return tool, true
 		}
 	}
-	// 3. Tenant → global (existing logic)
-	return r.GetForTenant(name, tenantID)
-}
-
-// Unregister 注销工具
-func (r *Registry) Unregister(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.globalTools, name)
-}
-
-// Get 获取工具（先查全局，再查租户）
-func (r *Registry) Get(name string) (Tool, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tool, ok := r.globalTools[name]
-	return tool, ok
-}
-
-// GetForTenant 获取工具（先查租户，再查全局）
-func (r *Registry) GetForTenant(name string, tenantID int64) (Tool, bool) {
+	// 3. Tenant-scoped tools
 	if tenantID != 0 {
 		r.tenantToolsMu.RLock()
 		if tenantTools, ok := r.tenantTools[tenantID]; ok {
@@ -236,7 +215,23 @@ func (r *Registry) GetForTenant(name string, tenantID int64) (Tool, bool) {
 		}
 		r.tenantToolsMu.RUnlock()
 	}
+	// 4. Global tools
 	return r.Get(name)
+}
+
+// Get looks up a tool by name from the global tool registry.
+func (r *Registry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tool, ok := r.globalTools[name]
+	return tool, ok
+}
+
+// Unregister 注销工具
+func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.globalTools, name)
 }
 
 // List 列出所有工具（按名称排序，保证顺序稳定以优化 KV-cache）
