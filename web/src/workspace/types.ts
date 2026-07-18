@@ -16,6 +16,7 @@ import type { CwdContextValue } from '@/providers/CwdProvider'
 import type { AuthContextValue } from '@/providers/AuthProvider'
 import type { SessionStore } from '@/hooks/useSessionStore'
 import type { RightSidebarControl } from '@/components/sidebar/RightSidebarControl'
+import type { TabManager } from '@/hooks/useTabManager'
 
 export interface DockviewContextValue {
   theme: ThemeContextValue
@@ -25,6 +26,7 @@ export interface DockviewContextValue {
   auth: AuthContextValue
   sessionStore: SessionStore
   rightSidebar: RightSidebarControl
+  openTab?: TabManager['openTab']
 }
 
 export const DockviewContext = createContext<DockviewContextValue | null>(null)

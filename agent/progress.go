@@ -129,11 +129,12 @@ type TokenUsageSnapshot struct {
 // SubAgentProgressDetail 携带层级信息的 SubAgent 进度回调参数。
 // 用于递归 SubAgent 场景，让深层子 Agent 的进度能穿透到最顶层。
 type SubAgentProgressDetail struct {
-	Path     []string // 调用链: ["工部", "ministry-works/audit"]
-	Lines    []string // 进度内容（所有行，已清理换行）
-	Depth    int      // 嵌套深度（0 = 直接子 Agent）
-	Instance string   // 子 Agent 实例 ID（用于区分同 role 的不同实例）
-	Content  string   // 当前迭代的 assistant content（用于进度树描述）
+	Path       []string // 调用链: ["工部", "ministry-works/audit"]
+	Lines      []string // 进度内容（所有行，已清理换行）
+	Depth      int      // 嵌套深度（0 = 直接子 Agent）
+	Instance   string   // 子 Agent 实例 ID（用于区分同 role 的不同实例）
+	SessionKey string   // 完整 Agent 会话 key，用于只读定位
+	Content    string   // 当前迭代的 assistant content（用于进度树描述）
 }
 
 // --- 辅助函数 ---
@@ -608,11 +609,12 @@ func ExtractSubAgentTree(lines []string) []SubAgentNode {
 
 // SubAgentNode 可序列化的子 Agent 状态节点（供 channel 层使用）。
 type SubAgentNode struct {
-	Role     string         `json:"role"`
-	Instance string         `json:"instance,omitempty"`
-	Status   string         `json:"status"` // "running" | "done" | "error" | "pending"
-	Desc     string         `json:"desc,omitempty"`
-	Children []SubAgentNode `json:"children,omitempty"`
+	Role       string         `json:"role"`
+	Instance   string         `json:"instance,omitempty"`
+	SessionKey string         `json:"session_key,omitempty"`
+	Status     string         `json:"status"` // "running" | "done" | "error" | "pending"
+	Desc       string         `json:"desc,omitempty"`
+	Children   []SubAgentNode `json:"children,omitempty"`
 }
 
 // convertChildTree 将内部 childAgentStatus 转换为可序列化的 SubAgentNode。
@@ -840,10 +842,11 @@ func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNod
 	}
 
 	node := SubAgentNode{
-		Role:     roleName,
-		Instance: detail.Instance,
-		Status:   status,
-		Desc:     desc,
+		Role:       roleName,
+		Instance:   detail.Instance,
+		SessionKey: detail.SessionKey,
+		Status:     status,
+		Desc:       desc,
 		// Children: NOT populated from text parsing.
 		// Deeper SubAgents report via their own SubAgentProgressDetail callbacks,
 		// which are merged separately by mergeSubAgentNodeList at the parent level.

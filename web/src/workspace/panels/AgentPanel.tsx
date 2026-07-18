@@ -197,14 +197,21 @@ export function AgentPanel({ params }: PanelProps) {
       await rewindHistory<RewindHistoryResponse>({ channel: messageChannel, chatID }, cutoff)
       // Exit edit mode
       setEditingMessageId(null)
+      // Rewind is destructive: clear the visible/cache rows before reload so
+      // an empty truncated history is not mistaken for a background refresh.
+      chat.clearMessages()
+      // Reload FIRST to fetch the truncated history from the server.
+      // This must happen BEFORE sendMessage — otherwise sendMessage increments
+      // messageMutationGenRef, the subsequent reload captures the incremented
+      // value, requestHasMessageMutation() returns false, and the optimistic
+      // message is silently wiped by the fresh history.
+      await chat.reload()
       // Send the edited content as a new message (sendMessage increments
       // followResetToken so the viewport scrolls to bottom for the response)
       sendMessage(editedContent)
-      // Reload to reflect the rewound history
-      void chat.reload()
       toast.success(t('agent.rewindComplete'))
     } catch (e) {
-      // Keep edit mode active on error so user can retry or cancel
+      // Keep edit mode active when the rewind request fails.
       toast.error(e instanceof Error ? e.message : t('agent.rewindFailed'))
     }
   }, [chatID, isSubAgent, messageChannel, chat, t, sendMessage])

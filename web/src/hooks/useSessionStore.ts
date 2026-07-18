@@ -630,15 +630,16 @@ function mergeRawSubAgentRows(base: RawChat[], extra: RawChat[]): RawChat[] {
 }
 
 function subAgentFromEvent(ev: SessionEvent, running: boolean, now = new Date().toISOString()): SessionInfo | null {
-  const parsed = ev.chat_id ? parseAgentChatID(ev.chat_id) : null
-  const role = ev.role || parsed?.role
+  const fullSessionKey = ev.session_key || ev.chat_id || ''
+  const parsed = parseAgentChatID(fullSessionKey)
+  const role = parsed?.role || ev.role
   if (!role) return null
-  const instance = ev.instance ?? parsed?.instance ?? ''
+  const instance = parsed?.instance ?? ev.instance ?? ''
   const parentChannel = parsed?.parentChannel || ev.channel || DEFAULT_CHANNEL
-  const parentChatID = ev.parent_id || parsed?.parentChatID || ev.chat_id
+  const parentChatID = parsed?.parentChatID || ev.parent_id || ev.chat_id
   if (!parentChatID) return null
-  const fullKey = parsed && ev.chat_id
-    ? ev.chat_id
+  const fullKey = parsed && fullSessionKey
+    ? fullSessionKey
     : `${parentChannel}:${parentChatID}/${role}${instance ? `:${instance}` : ''}`
   return {
     chatID: fullKey,
@@ -686,9 +687,15 @@ function updateSessionTree(
   return changed ? next : nodes
 }
 
-function subAgentLifecycleMatcher(role: string | undefined, instance: string | undefined, parentID: string | undefined) {
+function subAgentLifecycleMatcher(
+  role: string | undefined,
+  instance: string | undefined,
+  parentID: string | undefined,
+  fullKey?: string,
+) {
   return (s: SessionInfo) => {
     if (s.channel !== 'agent') return false
+    if (fullKey) return s.chatID === fullKey || s.fullKey === fullKey || s.agentChatID === fullKey
     if (role && s.role !== role) return false
     if ((instance ?? '') && (s.instance ?? '') !== instance) return false
     if (parentID && s.parentChatID !== parentID && s.chatID !== parentID && s.fullKey !== parentID && s.agentChatID !== parentID) return false
@@ -696,8 +703,8 @@ function subAgentLifecycleMatcher(role: string | undefined, instance: string | u
   }
 }
 
-function markSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, instance: string | undefined, parentID: string | undefined, running: boolean): SessionInfo[] {
-  const matches = subAgentLifecycleMatcher(role, instance, parentID)
+function markSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, instance: string | undefined, parentID: string | undefined, running: boolean, fullKey?: string): SessionInfo[] {
+  const matches = subAgentLifecycleMatcher(role, instance, parentID, fullKey)
   return updateSessionTree(
     nodes,
     { channel: 'agent', chatID: '' },
@@ -712,8 +719,8 @@ function markSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, i
   )
 }
 
-function removeSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, instance: string | undefined, parentID: string | undefined): SessionInfo[] {
-  const matches = subAgentLifecycleMatcher(role, instance, parentID)
+function removeSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, instance: string | undefined, parentID: string | undefined, fullKey?: string): SessionInfo[] {
+  const matches = subAgentLifecycleMatcher(role, instance, parentID, fullKey)
   let changed = false
   const visit = (items: SessionInfo[]): SessionInfo[] => {
     const next: SessionInfo[] = []
@@ -915,8 +922,8 @@ export function useSessionStoreImpl(): SessionStore {
     }
     const merged = mergeTransientSubAgents(sessionsRef.current, transientSubAgentsRef.current, Date.now(), false)
     const mainSessions = running
-      ? markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, true)
-      : removeSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id)
+      ? markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, true, ev.session_key)
+      : removeSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, ev.session_key)
     const agents = flattenTreeAgents(mainSessions)
     sessionsRef.current = mainSessions
     setSessions((prev) => (sameSessionList(prev, mainSessions) ? prev : mainSessions))

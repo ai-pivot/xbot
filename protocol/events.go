@@ -38,11 +38,12 @@ type ToolProgress struct {
 
 // SubAgentInfo represents a sub-agent's structured progress status.
 type SubAgentInfo struct {
-	Role     string         `json:"role"`
-	Instance string         `json:"instance,omitempty"`
-	Status   string         `json:"status"`
-	Desc     string         `json:"desc,omitempty"`
-	Children []SubAgentInfo `json:"children,omitempty"`
+	Role       string         `json:"role"`
+	Instance   string         `json:"instance,omitempty"`
+	SessionKey string         `json:"session_key,omitempty"`
+	Status     string         `json:"status"`
+	Desc       string         `json:"desc,omitempty"`
+	Children   []SubAgentInfo `json:"children,omitempty"`
 }
 
 // TokenUsage represents a token usage snapshot.
@@ -253,13 +254,14 @@ func (AskUserEvent) EventVersion() int { return 1 }
 // Action values: "busy", "idle", "created", "deleted", "renamed",
 // "subagent_started", "subagent_stopped".
 type SessionEvent struct {
-	Channel  string `json:"channel"`
-	ChatID   string `json:"chat_id"`
-	Action   string `json:"action"`
-	Label    string `json:"label,omitempty"`
-	Role     string `json:"role,omitempty"`
-	Instance string `json:"instance,omitempty"`
-	ParentID string `json:"parent_id,omitempty"`
+	Channel    string `json:"channel"`
+	ChatID     string `json:"chat_id"`
+	Action     string `json:"action"`
+	Label      string `json:"label,omitempty"`
+	Role       string `json:"role,omitempty"`
+	Instance   string `json:"instance,omitempty"`
+	SessionKey string `json:"session_key,omitempty"`
+	ParentID   string `json:"parent_id,omitempty"`
 }
 
 func (SessionEvent) EventType() string { return "session" }

@@ -9,9 +9,9 @@ import {
   SESSION_TREE_CACHE_KEY,
   sessionCacheKey,
 } from '@/lib/webCache'
-import type { WSMessage } from '@/types/shared'
+import type { SessionInfo, WSMessage } from '@/types/shared'
 
-let sessionHandler: ((event: { channel?: string; chat_id?: string; action?: string; role?: string; instance?: string; parent_id?: string }) => void) | null = null
+let sessionHandler: ((event: { channel?: string; chat_id?: string; session_key?: string; action?: string; role?: string; instance?: string; parent_id?: string }) => void) | null = null
 let messageHandler: ((event: WSMessage) => void) | null = null
 
 vi.mock('@/hooks/useWSConnection', () => ({
@@ -1382,11 +1382,12 @@ describe('normalizeSessionTree', () => {
                 last_active: '2026-07-08T00:00:00Z',
                 children: includeChild ? [
                   {
-                    chat_id: 'cli:/repo:Agent-main/review',
+                    chat_id: 'cli:/repo:Agent-main/review:runtime-1',
                     channel: 'agent',
                     type: 'agent',
                     label: 'review',
                     role: 'review',
+                    instance: 'runtime-1',
                     parent_channel: 'cli',
                     parent_chat_id: '/repo:Agent-main',
                     running: true,
@@ -1414,24 +1415,26 @@ describe('normalizeSessionTree', () => {
         action: 'subagent_started',
         channel: 'cli',
         chat_id: '/repo:Agent-main',
-        role: 'review',
+        session_key: 'cli:/repo:Agent-main/review:runtime-1',
+        role: 'stale-role',
+        instance: 'stale-instance',
       })
     })
-    expect(result.current.subAgents.map((s) => s.chatID)).toEqual(['cli:/repo:Agent-main/review'])
-    expect(result.current.sessions[0].children?.map((s) => s.chatID)).toEqual(['cli:/repo:Agent-main/review'])
-    const transient = result.current.subAgents.find((s) => s.chatID === 'cli:/repo:Agent-main/review')
+    expect(result.current.subAgents.map((s) => s.chatID)).toEqual(['cli:/repo:Agent-main/review:runtime-1'])
+    expect(result.current.sessions[0].children?.map((s) => s.chatID)).toEqual(['cli:/repo:Agent-main/review:runtime-1'])
+    const transient = result.current.subAgents.find((s) => s.chatID === 'cli:/repo:Agent-main/review:runtime-1')
     expect(transient?.running).toBe(true)
-    expect(transient?.label).toBe('review')
+    expect(transient?.label).toBe('review/runtime-1')
 
     includeChild = true
     await act(async () => {
       await result.current.refresh()
     })
 
-    expect(result.current.subAgents.map((s) => s.chatID)).toEqual(['cli:/repo:Agent-main/review'])
-    const started = result.current.subAgents.find((s) => s.chatID === 'cli:/repo:Agent-main/review')
+    expect(result.current.subAgents.map((s) => s.chatID)).toEqual(['cli:/repo:Agent-main/review:runtime-1'])
+    const started = result.current.subAgents.find((s) => s.chatID === 'cli:/repo:Agent-main/review:runtime-1')
     expect(started?.running).toBe(true)
-    expect(started?.label).toBe('review')
+    expect(started?.label).toBe('review/runtime-1')
   })
 
   it('keeps short-lived SubAgent rows when delayed canonical refresh has not persisted them yet', async () => {
@@ -1558,6 +1561,63 @@ describe('normalizeSessionTree', () => {
 
     expect(result.current.subAgents).toEqual([])
     expect(result.current.sessions[0].children ?? []).toEqual([])
+  })
+
+  it('uses session_key to stop only the matching SubAgent', async () => {
+    const child = (parentChatID: string): SessionInfo => ({
+      chatID: `cli:${parentChatID}/review:1`,
+      channel: 'agent',
+      label: 'review/1',
+      lastActive: '2026-07-08T00:00:01Z',
+      preview: '',
+      status: 'running',
+      isCurrent: false,
+      type: 'agent',
+      role: 'review',
+      instance: '1',
+      parentChannel: 'cli',
+      parentChatID,
+      fullKey: `cli:${parentChatID}/review:1`,
+      agentChatID: `cli:${parentChatID}/review:1`,
+      running: true,
+      children: [],
+    })
+    const childA = child('/repo-a:Agent-main')
+    const childB = child('/repo-b:Agent-main')
+    const parent = (chatID: string, agent: SessionInfo): SessionInfo => ({
+      chatID,
+      channel: 'cli',
+      label: chatID,
+      lastActive: '2026-07-08T00:00:00Z',
+      preview: '',
+      status: 'idle',
+      isCurrent: false,
+      type: 'main',
+      children: [agent],
+    })
+    localStorage.setItem('xbot_session_tree', JSON.stringify({
+      version: 1,
+      sessions: [parent('/repo-a:Agent-main', childA), parent('/repo-b:Agent-main', childB)],
+      subAgents: [childA, childB],
+    }))
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)))
+
+    const { result, unmount } = renderHook(() => useSessionStoreImpl())
+    expect(result.current.subAgents).toHaveLength(2)
+
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_stopped',
+        channel: 'cli',
+        chat_id: '/repo-a:Agent-main',
+        session_key: childA.chatID,
+        role: 'review',
+        instance: '1',
+      })
+    })
+
+    expect(result.current.subAgents.map((agent) => agent.chatID)).toEqual([childB.chatID])
+    unmount()
   })
 
   it('renders the cached session tree before the background refresh resolves', () => {

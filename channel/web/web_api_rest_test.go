@@ -198,6 +198,39 @@ func TestProductionSessionTreeAcceptsAuthenticatedPOST(t *testing.T) {
 	}
 }
 
+func TestSessionTreeAdminFlagHonorsSingleUserMode(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		singleUser bool
+		wantAdmin  bool
+	}{
+		{name: "single user", singleUser: true, wantAdmin: true},
+		{name: "multi user", singleUser: false, wantAdmin: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newTestDB(t)
+			wc, _ := newTestWebChannel(t, db)
+			wc.singleUser = tc.singleUser
+			wc.SetCallbacks(WebCallbacks{
+				SessionTree: func(_ string, _ SessionSelector, admin bool) (SessionTreeResult, error) {
+					if admin != tc.wantAdmin {
+						t.Fatalf("admin = %v, want %v", admin, tc.wantAdmin)
+					}
+					return SessionTreeResult{}, nil
+				},
+			})
+
+			recorder := httptest.NewRecorder()
+			request := authedAPIRequestFor(http.MethodGet, "/api/session-tree", nil, "web-2", 2)
+			wc.handleSessionTree(recorder, request)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+		})
+	}
+}
+
 func TestRESTChatCRUDPassesChannelToCallbacks(t *testing.T) {
 	db := newTestDB(t)
 	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())

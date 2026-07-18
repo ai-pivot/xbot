@@ -83,10 +83,12 @@ export const UserMessage = memo(function UserMessage({
 
   const handleConfirm = () => {
     const edited = editValue.trim()
-    if (!edited || edited === content) {
+    if (!edited) {
       onEndEdit?.()
       return
     }
+    // Rewind even when content is unchanged — the user confirmed the rewind
+    // action by clicking Check, not Cancel (X).
     onRewind?.(edited)
   }
 

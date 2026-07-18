@@ -106,8 +106,9 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
       auth: authValue,
       sessionStore: sessionStoreValue,
       rightSidebar: rightSidebarValue ?? { openPanel: () => undefined },
+      openTab: tabManager.openTab,
     }),
-    [themeValue, i18nValue, wsValue, cwdValue, authValue, sessionStoreValue, rightSidebarValue],
+    [themeValue, i18nValue, wsValue, cwdValue, authValue, sessionStoreValue, rightSidebarValue, tabManager.openTab],
   )
 
   // Keep ctxRef in sync so isolated panel roots read the latest values.

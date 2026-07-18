@@ -501,7 +501,7 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 // 设置 cfg.ProgressNotifier 让子 Agent 报告进度到父 Agent 的 TUI，
 // 同时注入穿透回调到 subCtx 让更深层 SubAgent 也能递归穿透。
 // Background 模式不启用（bg subagent 进度不应穿透到父 agent TUI）。
-func wireSubAgentProgress(ctx context.Context, subCtx context.Context, cfg *RunConfig, cc *CallChain, roleName, instance string, background bool) context.Context {
+func wireSubAgentProgress(ctx context.Context, subCtx context.Context, cfg *RunConfig, cc *CallChain, roleName, instance, sessionKey string, background bool) context.Context {
 	if background {
 		return subCtx
 	}
@@ -511,11 +511,12 @@ func wireSubAgentProgress(ctx context.Context, subCtx context.Context, cfg *RunC
 		cfg.ProgressNotifier = func(lines []string, thinking string) {
 			if len(lines) > 0 {
 				cb(SubAgentProgressDetail{
-					Path:     myPath,
-					Lines:    lines,
-					Depth:    myDepth,
-					Instance: instance,
-					Content:  thinking,
+					Path:       myPath,
+					Lines:      lines,
+					Depth:      myDepth,
+					Instance:   instance,
+					SessionKey: sessionKey,
+					Content:    thinking,
 				})
 			}
 		}
@@ -572,12 +573,13 @@ func (a *Agent) SpawnInteractiveSession(
 
 	// Emit subagent_started event for instant sidebar push.
 	a.emitSessionState(protocol.SessionEvent{
-		Channel:  originChannel,
-		ChatID:   originChatID,
-		Action:   "subagent_started",
-		Role:     roleName,
-		Instance: instance,
-		ParentID: originChatID,
+		Channel:    originChannel,
+		ChatID:     originChatID,
+		Action:     "subagent_started",
+		Role:       roleName,
+		Instance:   instance,
+		SessionKey: key,
+		ParentID:   originChatID,
 	})
 
 	// --- 阶段 2：锁外构建 config（不需要锁） ---
@@ -611,12 +613,13 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 		}
 		a.emitSessionState(protocol.SessionEvent{
-			Channel:  chanPart,
-			ChatID:   chatIDPart,
-			Action:   "subagent_stopped",
-			Role:     rolePart,
-			Instance: instPart,
-			ParentID: chatIDPart,
+			Channel:    chanPart,
+			ChatID:     chatIDPart,
+			Action:     "subagent_stopped",
+			Role:       rolePart,
+			Instance:   instPart,
+			SessionKey: key,
+			ParentID:   chatIDPart,
 		}) // 清理占位符
 		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
 	}
@@ -688,7 +691,7 @@ func (a *Agent) SpawnInteractiveSession(
 	}
 
 	// SubAgent 进度上报：注入 ProgressNotifier 和穿透回调
-	subCtx = wireSubAgentProgress(ctx, subCtx, &cfg, cc, roleName, instance, background)
+	subCtx = wireSubAgentProgress(ctx, subCtx, &cfg, cc, roleName, instance, key, background)
 
 	// --- 阶段 3：执行 Run ---
 	preLen := len(cfg.Messages)
@@ -798,12 +801,13 @@ func (a *Agent) SpawnInteractiveSession(
 					}
 					// Emit subagent_stopped so sidebar updates immediately
 					a.emitSessionState(protocol.SessionEvent{
-						Channel:  originChannel,
-						ChatID:   originChatID,
-						Action:   "subagent_stopped",
-						Role:     roleName,
-						Instance: instance,
-						ParentID: originChatID,
+						Channel:    originChannel,
+						ChatID:     originChatID,
+						Action:     "subagent_stopped",
+						Role:       roleName,
+						Instance:   instance,
+						SessionKey: key,
+						ParentID:   originChatID,
 					})
 				}
 			}()
@@ -908,12 +912,13 @@ func (a *Agent) SpawnInteractiveSession(
 					}).Info("Background interactive session interrupted, session preserved for future send")
 					// Emit subagent_stopped so sidebar updates immediately (busy→idle)
 					a.emitSessionState(protocol.SessionEvent{
-						Channel:  originChannel,
-						ChatID:   originChatID,
-						Action:   "subagent_stopped",
-						Role:     roleName,
-						Instance: instance,
-						ParentID: originChatID,
+						Channel:    originChannel,
+						ChatID:     originChatID,
+						Action:     "subagent_stopped",
+						Role:       roleName,
+						Instance:   instance,
+						SessionKey: key,
+						ParentID:   originChatID,
 					})
 					return
 				}
@@ -1022,12 +1027,13 @@ func (a *Agent) SpawnInteractiveSession(
 			// Must be called while placeholder.mu is still held (deferred unlock)
 			// to guarantee the state transition is visible to concurrent readers.
 			a.emitSessionState(protocol.SessionEvent{
-				Channel:  originChannel,
-				ChatID:   originChatID,
-				Action:   "subagent_stopped",
-				Role:     roleName,
-				Instance: instance,
-				ParentID: originChatID,
+				Channel:    originChannel,
+				ChatID:     originChatID,
+				Action:     "subagent_stopped",
+				Role:       roleName,
+				Instance:   instance,
+				SessionKey: key,
+				ParentID:   originChatID,
 			})
 
 			// Note: cancelChildSessions is NOT called here because this bg session
@@ -1290,11 +1296,12 @@ func (a *Agent) SendToInteractiveSession(
 			cfg.ProgressNotifier = func(lines []string, thinking string) {
 				if len(lines) > 0 {
 					cb(SubAgentProgressDetail{
-						Path:     myPath,
-						Lines:    lines,
-						Depth:    myDepth,
-						Instance: inst,
-						Content:  thinking,
+						Path:       myPath,
+						Lines:      lines,
+						Depth:      myDepth,
+						Instance:   inst,
+						SessionKey: key,
+						Content:    thinking,
 					})
 				}
 			}
@@ -1391,12 +1398,13 @@ func (a *Agent) SendToInteractiveSession(
 	// Emit subagent_started so sidebar spinner updates from idle→busy.
 	if !wasRunning {
 		a.emitSessionState(protocol.SessionEvent{
-			Channel:  originChannel,
-			ChatID:   originChatID,
-			Action:   "subagent_started",
-			Role:     roleName,
-			Instance: instance,
-			ParentID: originChatID,
+			Channel:    originChannel,
+			ChatID:     originChatID,
+			Action:     "subagent_started",
+			Role:       roleName,
+			Instance:   instance,
+			SessionKey: key,
+			ParentID:   originChatID,
 		})
 	}
 
@@ -1424,12 +1432,13 @@ func (a *Agent) SendToInteractiveSession(
 					})
 				}
 				a.emitSessionState(protocol.SessionEvent{
-					Channel:  originChannel,
-					ChatID:   originChatID,
-					Action:   "subagent_stopped",
-					Role:     roleName,
-					Instance: instance,
-					ParentID: originChatID,
+					Channel:    originChannel,
+					ChatID:     originChatID,
+					Action:     "subagent_stopped",
+					Role:       roleName,
+					Instance:   instance,
+					SessionKey: key,
+					ParentID:   originChatID,
 				})
 			}
 		}()
@@ -1496,12 +1505,13 @@ func (a *Agent) SendToInteractiveSession(
 					"instance": instance,
 				}).Info("Async send interrupted, session preserved for future send")
 				a.emitSessionState(protocol.SessionEvent{
-					Channel:  originChannel,
-					ChatID:   originChatID,
-					Action:   "subagent_stopped",
-					Role:     roleName,
-					Instance: instance,
-					ParentID: originChatID,
+					Channel:    originChannel,
+					ChatID:     originChatID,
+					Action:     "subagent_stopped",
+					Role:       roleName,
+					Instance:   instance,
+					SessionKey: key,
+					ParentID:   originChatID,
 				})
 				return
 			}
@@ -1540,12 +1550,13 @@ func (a *Agent) SendToInteractiveSession(
 
 		// Emit subagent_stopped so sidebar updates immediately (busy→idle).
 		a.emitSessionState(protocol.SessionEvent{
-			Channel:  originChannel,
-			ChatID:   originChatID,
-			Action:   "subagent_stopped",
-			Role:     roleName,
-			Instance: instance,
-			ParentID: originChatID,
+			Channel:    originChannel,
+			ChatID:     originChatID,
+			Action:     "subagent_stopped",
+			Role:       roleName,
+			Instance:   instance,
+			SessionKey: key,
+			ParentID:   originChatID,
 		})
 
 		// Cascade: cancel and remove all child sessions spawned by this Run.
@@ -1939,12 +1950,13 @@ func (a *Agent) UnloadInteractiveSession(
 	// but the explicit unload path was missing it, causing sidebar to
 	// only refresh on the 30s safety-net poll.
 	a.emitSessionState(protocol.SessionEvent{
-		Channel:  channel,
-		ChatID:   chatID,
-		Action:   "subagent_stopped",
-		Role:     roleName,
-		Instance: instance,
-		ParentID: chatID,
+		Channel:    channel,
+		ChatID:     chatID,
+		Action:     "subagent_stopped",
+		Role:       roleName,
+		Instance:   instance,
+		SessionKey: key,
+		ParentID:   chatID,
 	})
 
 	log.WithField("role", roleName).Info("Interactive session unloaded")

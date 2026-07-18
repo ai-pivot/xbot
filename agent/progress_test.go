@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"xbot/protocol"
 )
 
 // ==================== flattenLines ====================
@@ -830,6 +832,38 @@ func TestFormatSubAgentProgress(t *testing.T) {
 				t.Errorf("formatSubAgentProgress() =\n  got: %q\n  want: %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSubAgentSessionKeyConversion(t *testing.T) {
+	const parentKey = "cli:chat-1/reviewer:review-1"
+	const childKey = "cli:chat-1/fixer:fix-1"
+	detail := SubAgentProgressDetail{
+		Path:       []string{"main/reviewer"},
+		Instance:   "review-1",
+		SessionKey: parentKey,
+	}
+	nodes := extractSubAgentNodesFromDetail(detail)
+	if len(nodes) != 1 || nodes[0].SessionKey != parentKey {
+		t.Fatalf("extracted nodes = %#v, want session key %q", nodes, parentKey)
+	}
+	nodes[0].Children = []SubAgentNode{{
+		Role:       "fixer",
+		Instance:   "fix-1",
+		SessionKey: childKey,
+		Status:     "running",
+	}}
+
+	for name, converted := range map[string][]protocol.SubAgentInfo{
+		"cli": convertCLISubAgentTree(nodes),
+		"web": convertWsSubAgentTree(nodes),
+	} {
+		if len(converted) != 1 || converted[0].SessionKey != parentKey {
+			t.Fatalf("%s conversion = %#v, want parent key %q", name, converted, parentKey)
+		}
+		if len(converted[0].Children) != 1 || converted[0].Children[0].SessionKey != childKey {
+			t.Fatalf("%s nested conversion = %#v, want child key %q", name, converted, childKey)
+		}
 	}
 }
 

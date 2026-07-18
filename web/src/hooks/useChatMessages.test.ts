@@ -782,6 +782,52 @@ describe('useChatMessages', () => {
     expect(result.current.loading).toBe(false)
   })
 
+  it('accepts an empty history after an explicit destructive clear', async () => {
+    const ws = makeWS([
+      { messages: [{ role: 'user', content: 'first', timestamp: '2026-07-08T00:00:00Z' }] },
+      { messages: [] },
+    ])
+
+    const { result } = renderHook(() =>
+      useChatMessages({ chatID: 'rewind-first', channel: 'web', ws }),
+    )
+
+    await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['first']))
+
+    await act(async () => {
+      result.current.clearMessages()
+      await result.current.reload()
+    })
+
+    expect(result.current.messages).toEqual([])
+  })
+
+  it('keeps only the prefix returned after an explicit rewind reload', async () => {
+    const ws = makeWS([
+      {
+        messages: [
+          { role: 'user', content: 'prefix', timestamp: '2026-07-08T00:00:00Z' },
+          { role: 'user', content: 'rewind target', timestamp: '2026-07-08T00:00:01Z' },
+          { role: 'assistant', content: 'later reply', timestamp: '2026-07-08T00:00:02Z' },
+        ],
+      },
+      { messages: [{ role: 'user', content: 'prefix', timestamp: '2026-07-08T00:00:00Z' }] },
+    ])
+
+    const { result } = renderHook(() =>
+      useChatMessages({ chatID: 'rewind-prefix', channel: 'web', ws }),
+    )
+
+    await waitFor(() => expect(result.current.messages).toHaveLength(3))
+
+    await act(async () => {
+      result.current.clearMessages()
+      await result.current.reload()
+    })
+
+    expect(result.current.messages.map((m) => m.content)).toEqual(['prefix'])
+  })
+
   it('does not show the previous session while a newly selected session loads', async () => {
     const pendingSecond = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
     const ws = makeWS([

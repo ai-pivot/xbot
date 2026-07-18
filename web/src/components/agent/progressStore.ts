@@ -91,6 +91,7 @@ function mergeSubAgentTrees(prev: WebSubAgentProgress[], next: WebSubAgentProgre
     const old = prevByKey.get(subAgentKey(node))
     merged.push({
       ...node,
+      sessionKey: node.sessionKey || old?.sessionKey,
       desc: node.desc || old?.desc,
       children: mergeSubAgentTrees(old?.children ?? [], node.children ?? []),
     })
@@ -115,6 +116,7 @@ export function normalizeWebSubAgent(raw: unknown): WebSubAgentProgress | null {
   return {
     role,
     instance: typeof r.instance === 'string' ? r.instance : undefined,
+    sessionKey: typeof r.session_key === 'string' ? r.session_key : undefined,
     status: typeof r.status === 'string' ? r.status : '',
     desc: typeof r.desc === 'string' ? r.desc : undefined,
     children,

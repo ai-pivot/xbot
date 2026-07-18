@@ -1307,6 +1307,8 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	// 构建 parentCtx（从 InboundMessage 恢复）
 	originChannel, originChatID, originSender := resolveOriginIDs(msg)
 	parentCtx := a.buildParentToolContext(ctx, originChannel, originChatID, originSender, msg)
+	oneshotInstance := fmt.Sprintf("oneshot-%s-%d", roleName, time.Now().UnixNano())
+	oneshotKey := interactiveKey(originChannel, originChatID, roleName, oneshotInstance)
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"parent": parentAgentID,
@@ -1355,11 +1357,12 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		cfg.ProgressNotifier = func(lines []string, thinking string) {
 			if len(lines) > 0 {
 				parentCB(SubAgentProgressDetail{
-					Path:     myPath,
-					Lines:    lines,
-					Depth:    myDepth,
-					Instance: instance,
-					Content:  thinking,
+					Path:       myPath,
+					Lines:      lines,
+					Depth:      myDepth,
+					Instance:   oneshotInstance,
+					SessionKey: oneshotKey,
+					Content:    thinking,
 				})
 			}
 		}
@@ -1388,8 +1391,6 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 
 	// Register one-shot subagent in interactiveSubAgents so it's visible
 	// in the Ctrl+T panel. Kept after completion for history viewing; TTL cleans it up.
-	oneshotInstance := fmt.Sprintf("oneshot-%s-%d", roleName, time.Now().UnixNano())
-	oneshotKey := interactiveKey(originChannel, originChatID, roleName, oneshotInstance)
 	oneshotIA := &interactiveAgent{
 		roleName:   roleName,
 		instance:   oneshotInstance,
@@ -1442,24 +1443,26 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 
 	// Emit subagent_started event for instant sidebar push.
 	a.emitSessionState(protocol.SessionEvent{
-		Channel:  originChannel,
-		ChatID:   originChatID,
-		Action:   "subagent_started",
-		Role:     roleName,
-		Instance: oneshotInstance,
-		ParentID: originChatID,
+		Channel:    originChannel,
+		ChatID:     originChatID,
+		Action:     "subagent_started",
+		Role:       roleName,
+		Instance:   oneshotInstance,
+		SessionKey: oneshotKey,
+		ParentID:   originChatID,
 	})
 
 	out := Run(subCtx, cfg)
 
 	// Emit subagent_stopped event for instant sidebar update.
 	a.emitSessionState(protocol.SessionEvent{
-		Channel:  originChannel,
-		ChatID:   originChatID,
-		Action:   "subagent_stopped",
-		Role:     roleName,
-		Instance: oneshotInstance,
-		ParentID: originChatID,
+		Channel:    originChannel,
+		ChatID:     originChatID,
+		Action:     "subagent_stopped",
+		Role:       roleName,
+		Instance:   oneshotInstance,
+		SessionKey: oneshotKey,
+		ParentID:   originChatID,
 	})
 
 	log.Ctx(ctx).WithFields(log.Fields{
@@ -1576,11 +1579,12 @@ func convertWsSubAgentTree(nodes []SubAgentNode) []protocol.SubAgentInfo {
 	result := make([]protocol.SubAgentInfo, len(nodes))
 	for i, n := range nodes {
 		result[i] = protocol.SubAgentInfo{
-			Role:     n.Role,
-			Instance: n.Instance,
-			Status:   n.Status,
-			Desc:     n.Desc,
-			Children: convertWsSubAgentTree(n.Children),
+			Role:       n.Role,
+			Instance:   n.Instance,
+			SessionKey: n.SessionKey,
+			Status:     n.Status,
+			Desc:       n.Desc,
+			Children:   convertWsSubAgentTree(n.Children),
 		}
 	}
 	return result
@@ -1627,11 +1631,12 @@ func convertCLISubAgentTree(nodes []SubAgentNode) []protocol.SubAgentInfo {
 	result := make([]protocol.SubAgentInfo, len(nodes))
 	for i, n := range nodes {
 		result[i] = protocol.SubAgentInfo{
-			Role:     n.Role,
-			Instance: n.Instance,
-			Status:   n.Status,
-			Desc:     n.Desc,
-			Children: convertCLISubAgentTree(n.Children),
+			Role:       n.Role,
+			Instance:   n.Instance,
+			SessionKey: n.SessionKey,
+			Status:     n.Status,
+			Desc:       n.Desc,
+			Children:   convertCLISubAgentTree(n.Children),
 		}
 	}
 	return result

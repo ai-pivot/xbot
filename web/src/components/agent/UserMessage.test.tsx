@@ -126,7 +126,7 @@ describe('UserMessage — inline edit mode (Spec C §2)', () => {
     expect(onRewind).toHaveBeenCalledWith('Edited text')
   })
 
-  it('calls onEndEdit without onRewind when content unchanged', () => {
+  it('calls onRewind with original content when confirm is clicked without changes', () => {
     const onRewind = vi.fn()
     const onEndEdit = vi.fn()
 
@@ -144,8 +144,9 @@ describe('UserMessage — inline edit mode (Spec C §2)', () => {
     const checkBtn = buttons.find((b) => b.querySelector('svg.lucide-check'))!
     fireEvent.click(checkBtn)
 
-    expect(onRewind).not.toHaveBeenCalled()
-    expect(onEndEdit).toHaveBeenCalledTimes(1)
+    // Rewind should be called even when content is unchanged — the user
+    // confirmed the rewind action by clicking Check, not Cancel (X).
+    expect(onRewind).toHaveBeenCalledWith('Same text')
   })
 
   it('calls onEndEdit and restores original when cancel is clicked', () => {

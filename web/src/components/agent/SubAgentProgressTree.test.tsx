@@ -8,12 +8,13 @@
  *  - Children render with indentation
  *  - Empty nodes returns null
  */
-import { render } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { SubAgentProgressTree } from '@/components/agent/SubAgentProgressTree'
 import type { WebSubAgentProgress } from '@/types/shared'
+import { DockviewContext, type DockviewContextValue } from '@/workspace/types'
 
 describe('SubAgentProgressTree', () => {
   it('returns null for empty nodes', () => {
@@ -98,5 +99,67 @@ describe('SubAgentProgressTree', () => {
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
     expect(container.textContent).toContain('dev-node')
     expect(container.textContent).not.toContain('dev-node:')
+  })
+
+  it('opens top-level and nested SubAgent tabs from their full session keys', () => {
+    const openTab = vi.fn()
+    const nodes: WebSubAgentProgress[] = [{
+      role: 'orchestrator',
+      instance: '1',
+      status: 'running',
+      sessionKey: 'cli:/repo:Agent-main/orchestrator:1',
+      children: [{
+        role: 'review',
+        instance: '2',
+        status: 'running',
+        sessionKey: 'cli:/repo:Agent-main/orchestrator:1/review:2',
+      }],
+    }]
+
+    render(
+      <DockviewContext.Provider value={{ openTab } as unknown as DockviewContextValue}>
+        <SubAgentProgressTree nodes={nodes} />
+      </DockviewContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open SubAgent orchestrator/1' }))
+    expect(openTab).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: 'agent',
+      title: 'orchestrator/1',
+      data: {
+        subAgentRole: 'orchestrator',
+        subAgentInstance: '1',
+        parentChatID: '/repo:Agent-main',
+        parentChannel: 'cli',
+        agentChatID: 'cli:/repo:Agent-main/orchestrator:1',
+      },
+    }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open SubAgent review/2' }))
+    expect(openTab).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: 'agent',
+      title: 'review/2',
+      data: {
+        subAgentRole: 'review',
+        subAgentInstance: '2',
+        parentChatID: '/repo:Agent-main/orchestrator:1',
+        parentChannel: 'cli',
+        agentChatID: 'cli:/repo:Agent-main/orchestrator:1/review:2',
+      },
+    }))
+  })
+
+  it('keeps legacy nodes without session keys read-only', () => {
+    const openTab = vi.fn()
+    render(
+      <DockviewContext.Provider value={{ openTab } as unknown as DockviewContextValue}>
+        <SubAgentProgressTree nodes={[{ role: 'review', status: 'running' }]} />
+      </DockviewContext.Provider>,
+    )
+
+    const node = screen.getByRole('button', { name: 'review' })
+    expect(node).toBeDisabled()
+    fireEvent.click(node)
+    expect(openTab).not.toHaveBeenCalled()
   })
 })

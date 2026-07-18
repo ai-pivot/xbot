@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"xbot/bus"
@@ -15,12 +16,52 @@ func TestInteractiveKey(t *testing.T) {
 		{"", "", "test", "", ":/test"},
 		{"feishu", "oc_xxx", "brainstorm", "1", "feishu:oc_xxx/brainstorm:1"},
 		{"feishu", "oc_xxx", "brainstorm", "architect", "feishu:oc_xxx/brainstorm:architect"},
+		{"cli", "chat-1", "reviewer", "oneshot-reviewer-123", "cli:chat-1/reviewer:oneshot-reviewer-123"},
 	}
 	for _, tt := range tests {
 		got := interactiveKey(tt.channel, tt.chatID, tt.roleName, tt.instance)
 		if got != tt.want {
 			t.Errorf("interactiveKey(%q, %q, %q, %q) = %q, want %q", tt.channel, tt.chatID, tt.roleName, tt.instance, got, tt.want)
 		}
+	}
+}
+
+func TestWireSubAgentProgressCarriesSessionKey(t *testing.T) {
+	const sessionKey = "cli:chat-1/reviewer:review-1"
+
+	var got []SubAgentProgressDetail
+	ctx := WithSubAgentProgress(context.Background(), func(detail SubAgentProgressDetail) {
+		got = append(got, detail)
+	})
+	cfg := &RunConfig{}
+	subCtx := wireSubAgentProgress(
+		ctx,
+		context.Background(),
+		cfg,
+		&CallChain{Chain: []string{"main"}},
+		"reviewer",
+		"review-1",
+		sessionKey,
+		false,
+	)
+
+	cfg.ProgressNotifier([]string{"working"}, "checking")
+	if len(got) != 1 || got[0].SessionKey != sessionKey {
+		t.Fatalf("direct progress session key = %#v, want %q", got, sessionKey)
+	}
+
+	nestedCB, ok := SubAgentProgressFromContext(subCtx)
+	if !ok {
+		t.Fatal("nested progress callback not installed")
+	}
+	const nestedKey = "cli:chat-1/fixer:fix-1"
+	nestedCB(SubAgentProgressDetail{
+		Path:       []string{"main/reviewer", "main/reviewer/fixer"},
+		Instance:   "fix-1",
+		SessionKey: nestedKey,
+	})
+	if len(got) != 2 || got[1].SessionKey != nestedKey {
+		t.Fatalf("nested progress session key = %#v, want %q", got, nestedKey)
 	}
 }
 

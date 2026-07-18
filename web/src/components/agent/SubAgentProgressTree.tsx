@@ -9,12 +9,14 @@
  *   - Children indented with dashed connection lines
  *   - done/error nodes collapse to single-line summary after 1s delay
  */
-import { memo, useEffect, useState } from 'react'
+import { memo, useCallback, useContext, useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, Sparkles, Check } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { parseAgentChatID } from '@/lib/session-grouping'
 import type { WebSubAgentProgress } from '@/types/shared'
+import { DockviewContext } from '@/workspace/types'
 import { AnimatedCollapse } from '@/components/ui/animated-collapse'
 import { SweepText } from './SweepText'
 
@@ -25,6 +27,28 @@ interface SubAgentProgressTreeProps {
 export const SubAgentProgressTree = memo(function SubAgentProgressTree({
   nodes,
 }: SubAgentProgressTreeProps) {
+  const dockview = useContext(DockviewContext)
+  const openTab = dockview?.openTab
+  const openSubAgent = useCallback((node: WebSubAgentProgress) => {
+    const sessionKey = node.sessionKey
+    if (!sessionKey) return
+    const parsed = parseAgentChatID(sessionKey)
+    if (!parsed) return
+    openTab?.({
+      type: 'agent',
+      title: parsed.instance ? `${parsed.role}/${parsed.instance}` : parsed.role,
+      icon: 'bot',
+      closable: true,
+      data: {
+        subAgentRole: parsed.role,
+        subAgentInstance: parsed.instance,
+        parentChatID: parsed.parentChatID,
+        parentChannel: parsed.parentChannel,
+        agentChatID: sessionKey,
+      },
+    })
+  }, [openTab])
+
   if (nodes.length === 0) return null
   return (
     <div className="flex flex-col gap-1.5">
@@ -33,6 +57,7 @@ export const SubAgentProgressTree = memo(function SubAgentProgressTree({
           <SubAgentCard
             key={`${node.role}:${node.instance ?? ''}:${i}`}
             node={node}
+            onOpen={openTab ? openSubAgent : undefined}
           />
         ))}
       </AnimatePresence>
@@ -42,8 +67,10 @@ export const SubAgentProgressTree = memo(function SubAgentProgressTree({
 
 function SubAgentCard({
   node,
+  onOpen,
 }: {
   node: WebSubAgentProgress
+  onOpen?: (node: WebSubAgentProgress) => void
 }) {
   const running = node.status === 'running' || node.status === 'active' || node.status === 'pending'
   const done = node.status === 'done' || node.status === 'completed'
@@ -85,7 +112,13 @@ function SubAgentCard({
 
       <div className="py-1.5 pl-2.5 pr-2">
         {/* Node header row */}
-        <div className="flex min-w-0 items-center gap-1.5">
+        <button
+          type="button"
+          disabled={!node.sessionKey || !onOpen}
+          aria-label={node.sessionKey && onOpen ? `Open SubAgent ${node.role}${node.instance ? `/${node.instance}` : ''}` : undefined}
+          className="flex w-full min-w-0 items-center gap-1.5 text-left enabled:cursor-pointer disabled:cursor-default"
+          onClick={() => onOpen?.(node)}
+        >
           {running ? (
             <Sparkles className="size-3.5 shrink-0" style={{ color: 'var(--accent)' }} />
           ) : done ? (
@@ -111,7 +144,7 @@ function SubAgentCard({
               {node.desc}
             </span>
           )}
-        </div>
+        </button>
 
         {/* Children — hidden when collapsed */}
         {hasChildren && (
@@ -121,6 +154,7 @@ function SubAgentCard({
                 <SubAgentChild
                   key={`${child.role}:${child.instance ?? ''}:${i}`}
                   node={child}
+                  onOpen={onOpen}
                 />
               ))}
             </AnimatePresence>
@@ -132,7 +166,7 @@ function SubAgentCard({
 }
 
 /** Child node — rendered inside the parent card with dashed connection line. */
-function SubAgentChild({ node }: { node: WebSubAgentProgress }) {
+function SubAgentChild({ node, onOpen }: { node: WebSubAgentProgress; onOpen?: (node: WebSubAgentProgress) => void }) {
   const running = node.status === 'running' || node.status === 'active' || node.status === 'pending'
   const done = node.status === 'done' || node.status === 'completed'
   const errored = node.status === 'error' || node.status === 'failed'
@@ -146,7 +180,13 @@ function SubAgentChild({ node }: { node: WebSubAgentProgress }) {
       transition={{ duration: 0.2 }}
       className="relative"
     >
-      <div className="flex min-w-0 items-center gap-1.5">
+      <button
+        type="button"
+        disabled={!node.sessionKey || !onOpen}
+        aria-label={node.sessionKey && onOpen ? `Open SubAgent ${node.role}${node.instance ? `/${node.instance}` : ''}` : undefined}
+        className="flex w-full min-w-0 items-center gap-1.5 text-left enabled:cursor-pointer disabled:cursor-default"
+        onClick={() => onOpen?.(node)}
+      >
         {running ? (
           <Sparkles className="size-3 shrink-0" style={{ color: 'var(--accent)' }} />
         ) : done ? (
@@ -172,13 +212,14 @@ function SubAgentChild({ node }: { node: WebSubAgentProgress }) {
             {node.desc}
           </span>
         )}
-      </div>
+      </button>
       {hasChildren && (
         <AnimatedCollapse open className="mt-0.5 ml-3 border-l border-dashed" contentClassName="flex flex-col gap-1 pl-3">
           {(node.children ?? []).map((child, i) => (
             <SubAgentChild
               key={`${child.role}:${child.instance ?? ''}:${i}`}
               node={child}
+              onOpen={onOpen}
             />
           ))}
         </AnimatedCollapse>

@@ -228,6 +228,7 @@ export interface ProgressEvent {
 export interface SessionEvent {
   channel?: string
   chat_id?: string
+  session_key?: string
   action?: string
   label?: string
   role?: string
@@ -258,6 +259,7 @@ export interface TodoItem {
 export interface WebSubAgentProgress {
   role: string
   instance?: string
+  sessionKey?: string
   status: string
   desc?: string
   children?: WebSubAgentProgress[]

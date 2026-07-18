@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { ProgressStore, dedupMessages } from './progressStore'
+import { ProgressStore, dedupMessages, normalizeWebSubAgent } from './progressStore'
 import type { WebToolProgress } from '@/types/shared'
 
 // Helper: create a tool with defaults
@@ -110,6 +110,24 @@ describe('ProgressStore basic', () => {
     store.appendStreamContent('z')
     flushRaf()
     expect(calls).not.toHaveBeenCalled()
+  })
+})
+
+describe('normalizeWebSubAgent', () => {
+  it('normalizes session_key recursively', () => {
+    expect(normalizeWebSubAgent({
+      role: 'orchestrator',
+      status: 'running',
+      session_key: 'cli:main/orchestrator:1',
+      children: [{
+        role: 'review',
+        status: 'running',
+        session_key: 'cli:main/orchestrator:1/review:2',
+      }],
+    })).toMatchObject({
+      sessionKey: 'cli:main/orchestrator:1',
+      children: [{ sessionKey: 'cli:main/orchestrator:1/review:2' }],
+    })
   })
 })
 
