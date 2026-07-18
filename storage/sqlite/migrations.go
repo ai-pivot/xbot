@@ -241,6 +241,17 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v46: Re-backfill user_id for rows added after v45 migration.
+	// The v45 migration backfills user_id from sender_id → user_identities.
+	// However, subscriptions/settings added AFTER v45 (via old code that
+	// doesn't write user_id) will have user_id=0. This migration re-runs
+	// the same backfill to catch any rows that were missed.
+	if from < 46 {
+		if err := migrateV45ToV46(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v46: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1816,5 +1827,52 @@ func migrateV44ToV45(conn *sql.DB) error {
 	}
 
 	log.Info("Database migrated to v45: canonical user identity system (users + user_identities + link_codes + asset backfill)")
+	return nil
+}
+
+// migrateV45ToV46 re-backfills user_id for rows added after v45 migration.
+// The old code (before the canonical-user fix) didn't write user_id when
+// adding subscriptions/settings, so rows added after v45 have user_id=0.
+// This migration re-runs the same sender_id → user_identities JOIN to catch
+// any rows that were missed.
+func migrateV45ToV46(conn *sql.DB) error {
+	// user_llm_subscriptions: re-backfill user_id=0 rows
+	if _, err := conn.Exec(`
+	UPDATE user_llm_subscriptions SET user_id = (
+	SELECT ui.user_id FROM user_identities ui
+	WHERE ui.channel_user_id = user_llm_subscriptions.sender_id
+	ORDER BY CASE ui.channel WHEN 'cli' THEN 0 WHEN 'web' THEN 1 WHEN 'feishu' THEN 2 WHEN 'system' THEN 3 ELSE 4 END
+	LIMIT 1
+	) WHERE user_id = 0;`); err != nil {
+		return fmt.Errorf("migrate v46 backfill subscriptions: %w", err)
+	}
+
+	// user_settings: re-backfill user_id=0 rows
+	if _, err := conn.Exec(`
+	UPDATE user_settings SET user_id = (
+	SELECT ui.user_id FROM user_identities ui
+	WHERE ui.channel_user_id = user_settings.sender_id
+	ORDER BY CASE ui.channel WHEN 'cli' THEN 0 WHEN 'web' THEN 1 WHEN 'feishu' THEN 2 WHEN 'system' THEN 3 ELSE 4 END
+	LIMIT 1
+	) WHERE user_id = 0;`); err != nil {
+		return fmt.Errorf("migrate v46 backfill user_settings: %w", err)
+	}
+
+	// user_default_model: re-backfill user_id=0 rows
+	if _, err := conn.Exec(`
+	UPDATE user_default_model SET user_id = (
+	SELECT ui.user_id FROM user_identities ui
+	WHERE ui.channel_user_id = user_default_model.sender_id
+	ORDER BY CASE ui.channel WHEN 'cli' THEN 0 WHEN 'web' THEN 1 WHEN 'feishu' THEN 2 WHEN 'system' THEN 3 ELSE 4 END
+	LIMIT 1
+	) WHERE user_id = 0;`); err != nil {
+		return fmt.Errorf("migrate v46 backfill user_default_model: %w", err)
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 46"); err != nil {
+		return fmt.Errorf("migrate v46 update version: %w", err)
+	}
+
+	log.Info("Database migrated to v46: re-backfill user_id for rows added after v45")
 	return nil
 }
