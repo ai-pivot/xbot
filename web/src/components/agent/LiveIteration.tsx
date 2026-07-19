@@ -60,11 +60,20 @@ export const LiveIteration = memo(function LiveIteration({
   const displayText = textContent
   const displayReasoning = reasoningContent
 
-  // Merge all tool groups, using the shared dedupTools (generating skips dedup)
+  // Merge all tool groups, using the shared dedupTools (generating skips dedup).
+  // Filter completedTools to only include the CURRENT iteration's tools —
+  // tools from completed iterations are in iterationHistory (rendered by
+  // TurnBody). Without this filter, when iterationHistory is empty and we
+  // fall back to message.iterations, the completed iteration's tools appear
+  // in both TurnBody and LiveIteration.
+  const currentIter = progress.iteration
+  const currentCompleted = progress.completedTools.filter(
+    (t) => !t.iteration || t.iteration >= currentIter,
+  )
   const allTools = dedupTools([
     ...progress.streamingTools,
     ...progress.activeTools,
-    ...progress.completedTools,
+    ...currentCompleted,
   ])
   const hasTools = allTools.length > 0
   const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))

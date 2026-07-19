@@ -36,21 +36,23 @@ interface AssistantMessageProps {
 
 function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = true }: AssistantMessageProps) {
   const { t } = useI18n()
-  // Source iterations: when liveProgress is present (streaming), the snapshot
-  // is authoritative — use progress.iterationHistory exclusively so
-  // completed-iteration tools don't overlap with LiveIteration's
-  // current-iteration tools. Without this, DB-persisted iterations (from
-  // incremental persistence) and the live snapshot both render the same
-  // turn's tools, causing duplicates after refresh.
-  const iterations = progress
-    ? (progress.iterationHistory ?? [])
+  // Determine if we have a LIVE (non-done) progress snapshot.
+  // Phase="done" means the turn is over — treat as no progress so the
+  // committed message.iterations from DB are used exclusively.
+  const hasLiveProgress = progress != null && progress.phase !== 'done'
+  // Source iterations: when liveProgress is present AND its iterationHistory
+  // is populated, the snapshot is authoritative (no overlap with LiveIteration).
+  // When iterationHistory is empty (between iterations, before promotion), fall
+  // back to message.iterations so completed iterations don't vanish.
+  const iterations = hasLiveProgress && (progress.iterationHistory.length > 0)
+    ? progress.iterationHistory
     : (message.iterations ?? [])
 
-  const isStreaming = message.isPartial || Boolean(progress)
+  const isStreaming = message.isPartial || hasLiveProgress
   // During streaming, always use 'minimal' level (detailed fold).
   // 'all' (complete fold) is only for completed messages.
   const effectiveLevel: CollapseLevel = isStreaming ? 'minimal' : collapseLevel
-  const liveProgress = isStreaming ? progress : null
+  const liveProgress = hasLiveProgress ? progress : null
   const hasReasoning = Boolean(progress?.reasoningStreamContent || progress?.lastReasoning)
   const hasToolInProgress = progress
     ? progress.streamingTools.some((tool) => isToolInProgress(tool.status)) ||

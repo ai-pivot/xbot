@@ -225,6 +225,9 @@ export function useProgressStream({
   const liveMessage = useMemo<ChatMessage | null>(() => {
     const snap = progressSnapshot
     if (!hasVisibleProgress(snap)) return null
+    // Phase="done" means the turn is over. Don't create a liveMessage —
+    // the committed history row should render without a stale live overlay.
+    if (snap.phase === 'done') return null
     return {
       id: `live-${chatID ?? 'unknown'}`,
       role: 'assistant',
