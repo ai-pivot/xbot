@@ -632,6 +632,24 @@
   animation: streaming-cursor-blink 1s ease-in-out infinite;
 }
 
+/* ── Typewriter fade-in effect ──────────────────────────────────────────────
+ * While the typewriter is revealing text, the trailing edge fades from
+ * semi-transparent to full opacity. This creates a smooth "text materializing"
+ * effect that the TUI can't do (TUI is character-by-character only).
+ *
+ * The mask fades the last ~1.5em of content to 35% opacity while typing,
+ * then snaps to full opacity when typing completes.
+ */
+.typewriter-fade {
+  mask-image: linear-gradient(180deg, black 0%, black calc(100% - 1.5em), rgba(0, 0, 0, 0.35) 100%);
+  -webkit-mask-image: linear-gradient(180deg, black 0%, black calc(100% - 1.5em), rgba(0, 0, 0, 0.35) 100%);
+  transition: mask-image 0.2s ease-out, -webkit-mask-image 0.2s ease-out;
+}
+.typewriter-done {
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sweep-text-char,
   .streaming-content > :last-child::after,

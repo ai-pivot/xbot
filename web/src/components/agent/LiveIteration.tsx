@@ -18,6 +18,7 @@ import { ReasoningBlock } from './ReasoningBlock'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
 import { SweepText } from './SweepText'
 import { useI18n } from '@/providers/i18n'
+import { useTypewriter } from '@/hooks/useTypewriter'
 import { dedupTools } from './progressStore'
 import { isToolInProgress } from './statusVisual'
 import type { CollapseLevel } from '@/types/agent'
@@ -44,6 +45,13 @@ export const LiveIteration = memo(function LiveIteration({
   const textContent = progress.streamContent || progress.content || ''
   const hasStreamContent = Boolean(textContent)
   const hasSubAgents = progress.subAgents.length > 0
+
+  // Typewriter: gradually reveal text using TUI's exponential catch-up algorithm.
+  // Only active during streaming (not for final committed text).
+  const { visibleText, isTyping } = useTypewriter(
+    progress.streaming ? textContent : ''
+  )
+  const displayText = progress.streaming ? visibleText : textContent
 
   // Merge all tool groups, using the shared dedupTools (generating skips dedup)
   const allTools = dedupTools([
@@ -78,11 +86,17 @@ export const LiveIteration = memo(function LiveIteration({
         </FoldedLine>
       )}
 
-      {/* Streaming O — inline typewriter cursor via .streaming-content ::after */}
+      {/* Streaming O — typewriter reveal + fade-in effect */}
       {hasStreamContent && (
-        <div className={progress.streaming ? 'streaming-content' : undefined}>
+        <div
+          className={
+            progress.streaming
+              ? `streaming-content ${isTyping ? 'typewriter-fade' : 'typewriter-done'}`
+              : undefined
+          }
+        >
           <MarkdownRenderer
-            content={textContent}
+            content={displayText}
             className="text-sm text-text-primary"
           />
         </div>
