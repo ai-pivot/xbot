@@ -96,14 +96,6 @@ export function MobileAppShell() {
             <Button type="button" variant="ghost" size="icon-sm" aria-label={t('sidebar.sessions')} onClick={() => setDrawerOpen(true)}>
               <Menu />
             </Button>
-            {/* Channel selector — same as ActivityBar for mobile */}
-            <ChannelSelector
-              activeChannel={sessionStore.activeChannel}
-              onSelect={(ch) => {
-                sessionStore.setActiveChannel(ch)
-                setDrawerOpen(true)
-              }}
-            />
             <div className="min-w-0 flex-1 truncate text-sm font-medium">{title}</div>
             <Button type="button" variant="ghost" size="icon-sm" aria-label={t('session.newSession')} onClick={() => void createSession()}>
               <Plus />
@@ -159,38 +151,6 @@ export function MobileAppShell() {
         </div>
       </RightSidebarControlContext.Provider>
     </DockviewContext.Provider>
-  )
-}
-
-/** Compact channel selector for mobile header. */
-function ChannelSelector({
-  activeChannel,
-  onSelect,
-}: {
-  activeChannel: string | null
-  onSelect: (channel: string | null) => void
-}) {
-  const { t } = useI18n()
-  const label = activeChannel
-    ? t(`channel.${activeChannel}`) || activeChannel
-    : t('channel.all')
-  return (
-    <button
-      type="button"
-      className="shrink-0 rounded-md px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary"
-      onClick={() => {
-        // Toggle: if a channel is active, go to all; if all, cycle to first available
-        if (activeChannel) {
-          onSelect(null)
-        } else {
-          // Open the drawer to let user pick a channel
-          onSelect(null)
-        }
-      }}
-      title={label}
-    >
-      {label}
-    </button>
   )
 }
 

@@ -12,6 +12,7 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import type { TodoState } from '@/hooks/useTodos'
 import { formatTokenCount } from '@/hooks/useSessionContext'
@@ -96,19 +97,42 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
             {model || '—'}
           </span>
           {maxContext > 0 && (
-            <span className="text-[10px] font-mono tabular-nums text-muted-foreground">
-              {formatTokenCount(promptTokens)}/{formatTokenCount(maxContext)}
-            </span>
-          )}
-          {maxContext > 0 && (
-            <span
-              className={cn(
-                'text-[10px] font-mono tabular-nums',
-                isContextHigh ? 'text-red-500' : 'text-muted-foreground',
-              )}
-            >
-              {contextPct}%
-            </span>
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="flex items-center gap-1 rounded text-[10px] font-mono tabular-nums text-muted-foreground transition-colors hover:text-text-primary"
+                  title={`${promptTokens.toLocaleString()} / ${maxContext.toLocaleString()} tokens (${contextPct}%)`}
+                >
+                  <span>{formatTokenCount(promptTokens)}/{formatTokenCount(maxContext)}</span>
+                  <span
+                    className={cn(
+                      isContextHigh ? 'text-red-500' : 'text-muted-foreground',
+                    )}
+                  >
+                    {contextPct}%
+                  </span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" sideOffset={4} className="w-56 p-3">
+                <div className="flex flex-col gap-1 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">{t('agent.promptTokens')}</span>
+                    <span className="font-mono tabular-nums text-text-primary">{promptTokens.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-muted">{t('agent.maxContext')}</span>
+                    <span className="font-mono tabular-nums text-text-primary">{maxContext.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-border pt-1">
+                    <span className="text-text-muted">{t('agent.usagePercent')}</span>
+                    <span className={cn('font-mono tabular-nums', isContextHigh ? 'text-red-500' : 'text-text-primary')}>
+                      {contextPct}%
+                    </span>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
           )}
         </div>
       </button>

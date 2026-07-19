@@ -6,8 +6,10 @@
  * the new-session dialog. Pure presentational composition on top of the store.
  */
 import { useCallback, useMemo, useState } from 'react'
-import { Loader2, Plus } from 'lucide-react'
+import { ChevronDown, Globe, Loader2, Plus, Terminal, MessageCircle, MessageSquare, Bot, Server } from 'lucide-react'
+import type { ComponentType, SVGProps } from 'react'
 import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useI18n } from '@/providers/i18n'
 import { useSessionStore } from '@/hooks/useSessionStore'
@@ -17,6 +19,17 @@ import type { TabManager } from '@/hooks/useTabManager'
 import { SessionSearch } from './SessionSearch'
 import { SessionList } from './SessionList'
 import { NewSessionDialog } from './NewSessionDialog'
+
+type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
+
+const CHANNEL_ICONS: Record<string, IconComponent> = {
+  web: Globe,
+  cli: Terminal,
+  feishu: MessageCircle,
+  qq: MessageSquare,
+  napcat: Bot,
+  system: Server,
+}
 
 const CATEGORIES = ['time', 'status', 'path'] as const
 
@@ -30,6 +43,7 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
   const store = useSessionStore()
   const [search, setSearch] = useState('')
   const [newOpen, setNewOpen] = useState(false)
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false)
 
   // Channel-filtered sessions
   const filteredSessions = useMemo(() => {
@@ -81,16 +95,59 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
 
   return (
     <div className="flex h-full w-full flex-col bg-bg-secondary">
-      {/* Header: title + new-session button */}
+      {/* Header: channel filter + new-session button */}
       <header
         className="flex h-9 shrink-0 items-center justify-between px-2"
         style={{ borderBottom: '1px solid var(--border)' }}
       >
-        <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
-          {store.activeChannel
-            ? `${t(`channel.${store.activeChannel}`)} · ${t('sidebar.sessions')}`
-            : t('sidebar.sessions')}
-        </span>
+        <div className="flex items-center gap-1">
+          <Popover open={channelPickerOpen} onOpenChange={setChannelPickerOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-text-secondary transition-colors hover:bg-bg-tertiary"
+              >
+                {store.activeChannel
+                  ? t(`channel.${store.activeChannel}`) || store.activeChannel
+                  : t('channel.all')}
+                <ChevronDown className="size-3" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" sideOffset={4} className="w-48 p-1">
+              <button
+                type="button"
+                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/10 ${!store.activeChannel ? 'font-medium text-accent' : 'text-text-secondary'}`}
+                onClick={() => { store.setActiveChannel(null); setChannelPickerOpen(false) }}
+              >
+                <Globe className="size-3.5 shrink-0" />
+                {t('channel.all')}
+              </button>
+              {(() => {
+                // Derive available channels from sessions list
+                const channels = new Set<string>()
+                for (const s of store.sessions) {
+                  if (s.channel && s.channel !== 'web' && s.channel !== 'agent') channels.add(s.channel)
+                  if (s.parentChannel && s.parentChannel !== 'web' && s.parentChannel !== 'agent') channels.add(s.parentChannel)
+                }
+                return Array.from(channels).sort()
+              })()
+                .map((ch: string) => {
+                  const Icon = CHANNEL_ICONS[ch] || Globe
+                  return (
+                    <button
+                      key={ch}
+                      type="button"
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/10 ${store.activeChannel === ch ? 'font-medium text-accent' : 'text-text-secondary'}`}
+                      onClick={() => { store.setActiveChannel(ch); setChannelPickerOpen(false) }}
+                    >
+                      <Icon className="size-3.5 shrink-0" />
+                      {t(`channel.${ch}`) || ch}
+                    </button>
+                  )
+                })}
+            </PopoverContent>
+          </Popover>
+        </div>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

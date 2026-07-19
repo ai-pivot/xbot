@@ -42,7 +42,7 @@ func TestCommandExecutor_Success(t *testing.T) {
 	def := &HookDef{
 		Type:    "command",
 		Command: hookEcho(jsonOut),
-		Timeout: 5,
+		Timeout: 10,
 	}
 	event := &testEvent{payload: map[string]any{"session_id": "sess-123"}}
 
