@@ -88,6 +88,7 @@ export function MessageList({
   const lastRowCountRef = useRef(0)
   const lastFollowResetTokenRef = useRef(followResetToken)
   const lastTouchYRef = useRef<number | null>(null)
+  const pointerScrollingRef = useRef(false)
 
   // React state mirrors for re-rendering UI elements (bubble, nav buttons)
   const [hasNewContent, setHasNewContent] = useState(false)
@@ -166,8 +167,10 @@ export function MessageList({
     // Only setState when values actually change to avoid unnecessary re-renders
     setAtTop((prev) => (prev === atStart ? prev : atStart))
     setAtBottom((prev) => (prev === atEnd ? prev : atEnd))
+    // A scroll event alone does not prove user intent: content/virtualizer
+    // resizing can emit scroll while the old scrollTop temporarily trails the
+    // new scrollHeight. Only explicit input handlers pause follow mode.
     if (atEnd) resumeFollowing()
-    else pauseFollowing()
     // Update visible range for nav button state — only when range changes
     const items = virtualizer.getVirtualItems()
     if (items.length > 0) {
@@ -179,7 +182,7 @@ export function MessageList({
           : { start: newStart, end: newEnd },
       )
     }
-  }, [pauseFollowing, resumeFollowing, virtualizer])
+  }, [resumeFollowing, virtualizer])
 
   // ── User scroll detection ─────────────────────────────────────────────────
   const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
@@ -278,6 +281,18 @@ export function MessageList({
         ref={scrollRef}
         onScroll={onScroll}
         onWheel={onWheel}
+        onPointerDown={(e) => {
+          if (e.pointerType === 'mouse') pointerScrollingRef.current = true
+        }}
+        onPointerMove={(e) => {
+          if (pointerScrollingRef.current && e.pointerType === 'mouse') pauseFollowing()
+        }}
+        onPointerUp={() => {
+          pointerScrollingRef.current = false
+        }}
+        onPointerCancel={() => {
+          pointerScrollingRef.current = false
+        }}
         onTouchMove={(e) => {
           // Only break sticky on upward touch scroll (finger moving down = content scrolling up = user reading up)
           const touch = e.touches[0]

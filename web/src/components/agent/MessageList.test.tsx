@@ -265,7 +265,7 @@ describe('MessageList virtualization', () => {
     expect(scroller.scrollTop).toBe(scroller.scrollHeight)
   })
 
-  it('pauses following as soon as the viewport leaves the bottom', async () => {
+  it('keeps following when content growth temporarily moves the viewport off bottom', async () => {
     const { container, rerender } = renderMessageList(
       <MessageList
         chatKey="web:chat-1"
@@ -282,10 +282,11 @@ describe('MessageList virtualization', () => {
     await flushAnimationFrames()
     expect(scroller.scrollTop).toBe(scroller.scrollHeight)
 
-    // Ten pixels from the real bottom is inside the old 48px threshold, but the
-    // strict follow contract treats it as intentional history reading.
-    const tenPixelsFromBottom = scroller.scrollHeight - scroller.clientHeight - 10
-    scroller.scrollTop = tenPixelsFromBottom
+    // Content grows before ResizeObserver runs. The browser may emit scroll
+    // while scrollTop still points at the old bottom; this is layout movement,
+    // not user intent, so sticky mode must remain enabled.
+    const oldBottom = scroller.scrollHeight - scroller.clientHeight - 10
+    scroller.scrollTop = oldBottom
     fireEvent.scroll(scroller)
     rerender(
       <MessageList
@@ -301,7 +302,7 @@ describe('MessageList virtualization', () => {
     act(() => RO.trigger(contentElement(container)))
     await flushAnimationFrames()
 
-    expect(scroller.scrollTop).toBe(tenPixelsFromBottom)
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight)
   })
 
   it('coalesces repeated content resizes into one bottom write per frame', async () => {
@@ -330,6 +331,42 @@ describe('MessageList virtualization', () => {
 
     await flushAnimationFrames(1)
     expect(tracked.writes).toEqual([scroller.scrollHeight])
+  })
+
+  it('pauses following when the user explicitly wheels upward', async () => {
+    const { container, rerender } = renderMessageList(
+      <MessageList
+        chatKey="web:chat-1"
+        messages={makeMessages(20)}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement
+    await flushAnimationFrames()
+    const tracked = trackScrollTop(scroller, scroller.scrollHeight - scroller.clientHeight)
+
+    fireEvent.wheel(scroller, { deltaY: -10 })
+    tracked.setSilently(scroller.scrollHeight - scroller.clientHeight - 10)
+    fireEvent.scroll(scroller)
+    rerender(
+      <MessageList
+        chatKey="web:chat-1"
+        messages={makeMessages(21)}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    act(() => RO.trigger(contentElement(container)))
+    await flushAnimationFrames()
+
+    expect(tracked.value).toBe(scroller.scrollHeight - scroller.clientHeight - 10)
   })
 
   it('cancels a queued follow scroll when the user scrolls up', async () => {
