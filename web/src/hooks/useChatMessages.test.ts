@@ -277,6 +277,7 @@ describe('useChatMessages', () => {
         content: 'new message with attachment',
         original_content: 'new message',
         ts: 1_786_000_000,
+        seq: 100,
       })
     })
     expect(result.current.messages.map((message) => message.content)).toEqual(['new message with attachment'])
@@ -352,7 +353,7 @@ describe('useChatMessages', () => {
           timestamp: replayTimestamp,
         }],
         chat_id: 'replay-chat',
-        last_seq: 6,
+        last_seq: 7,
       })
       await history.promise
     })
@@ -454,7 +455,7 @@ describe('useChatMessages', () => {
       history.resolve({
         messages: [],
         chat_id: 'missing-echo-chat',
-        last_seq: 7,
+        last_seq: 6,
       })
       await history.promise
     })

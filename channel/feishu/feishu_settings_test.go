@@ -29,49 +29,6 @@ func getCardElements(card map[string]any) ([]map[string]any, bool) {
 	return elements, ok
 }
 
-func collectInteractiveRecursive(elements []map[string]any, buttons *[]string, selects *[]string) {
-	for _, elem := range elements {
-		switch elem["tag"] {
-		case "button":
-			if value, ok := elem["value"].(map[string]string); ok {
-				if ad := value["action_data"]; ad != "" {
-					*buttons = append(*buttons, ad)
-				}
-			}
-		case "select_static":
-			if selects != nil {
-				if value, ok := elem["value"].(map[string]string); ok {
-					if ad := value["action_data"]; ad != "" {
-						*selects = append(*selects, ad)
-					}
-				}
-			}
-		case "column_set":
-			if columns, ok := elem["columns"].([]map[string]any); ok {
-				collectInteractiveRecursive(columns, buttons, selects)
-			}
-		case "column", "interactive_container":
-			if children, ok := elem["elements"].([]map[string]any); ok {
-				collectInteractiveRecursive(children, buttons, selects)
-			}
-		case "form":
-			if children, ok := elem["elements"].([]map[string]any); ok {
-				collectInteractiveRecursive(children, buttons, selects)
-			}
-		}
-	}
-}
-
-func collectSelectsFromCard(card map[string]any) []string {
-	var buttons, selects []string
-	elements, ok := getCardElements(card)
-	if !ok {
-		return nil
-	}
-	collectInteractiveRecursive(elements, &buttons, &selects)
-	return selects
-}
-
 func cardContainsTag(card map[string]any, tag string) bool {
 	elements, ok := getCardElements(card)
 	if !ok {
@@ -1038,60 +995,13 @@ func TestBuildSettingsCard_NilCallbacks(t *testing.T) {
 	}
 }
 
-// --- Concurrency settings ---
+// --- Concurrency settings (removed: legacy llm_max_concurrent_personal) ---
 
-func TestHandleSettingsAction_SetConcurrency(t *testing.T) {
-	f := newTestFeishuChannel()
-	var gotPersonal int
-	var gotSenderID string
-	f.SetSettingsCallbacks(SettingsCallbacks{
-		LLMSetPersonalConcurrency: func(senderID string, personal int) error {
-			gotSenderID = senderID
-			gotPersonal = personal
-			return nil
-		},
-	})
-
-	card, err := f.HandleSettingsAction(context.Background(), map[string]any{
-		"action_data":     `{"action":"settings_set_concurrency"}`,
-		"selected_option": "5",
-	}, "user1", "chat1", "msg1")
-	if err != nil {
-		t.Fatalf("error: %v", err)
-	}
-	if card == nil {
-		t.Fatal("expected non-nil card")
-		return
-	}
-	if gotSenderID != "user1" {
-		t.Errorf("expected senderID=user1, got %q", gotSenderID)
-	}
-	if gotPersonal != 5 {
-		t.Errorf("expected personal=5, got %d", gotPersonal)
-	}
-}
-
-func TestHandleSettingsAction_SetConcurrency_Error(t *testing.T) {
-	f := newTestFeishuChannel()
-	f.SetSettingsCallbacks(SettingsCallbacks{})
-
-	// Missing conc and selected_option
-	_, err := f.HandleSettingsAction(context.Background(), map[string]any{
-		"action_data": `{"action":"settings_set_concurrency"}`,
-	}, "user1", "chat1", "msg1")
-	if err == nil {
-		t.Error("expected error for missing conc value")
-	}
-}
-
-func TestBuildSettingsCard_ModelTab_WithConcurrency(t *testing.T) {
+func TestBuildSettingsCard_ModelTab_NoConcurrencySection(t *testing.T) {
 	f := newTestFeishuChannel()
 	f.SetSettingsCallbacks(SettingsCallbacks{
 		LLMList: func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry) {
 			return []protocol.ModelEntry{{SubID: "sub1", Model: "gpt-4"}, {SubID: "sub1", Model: "gpt-4o"}}, protocol.ModelEntry{SubID: "sub1", Model: "gpt-4"}
-		},
-		LLMGetPersonalConcurrency: func(senderID string) int {
-			return 5
 		},
 	})
 
@@ -1101,23 +1011,10 @@ func TestBuildSettingsCard_ModelTab_WithConcurrency(t *testing.T) {
 	}
 
 	s := cardJSON(card)
-	if !strings.Contains(s, "个人 LLM 并发限制") {
-		t.Error("model tab should contain personal concurrency section header")
+	if strings.Contains(s, "个人 LLM 并发限制") {
+		t.Error("model tab should NOT contain personal concurrency section header (removed)")
 	}
-	if !strings.Contains(s, "并发上限") {
-		t.Error("model tab should contain concurrency label")
-	}
-
-	// Verify concurrency select dropdown is present
-	selects := collectSelectsFromCard(card)
-	hasConc := false
-	for _, ad := range selects {
-		if strings.Contains(ad, "settings_set_concurrency") {
-			hasConc = true
-			break
-		}
-	}
-	if !hasConc {
-		t.Error("model tab should have concurrency select dropdown")
+	if strings.Contains(s, "并发上限") {
+		t.Error("model tab should NOT contain concurrency label (removed)")
 	}
 }

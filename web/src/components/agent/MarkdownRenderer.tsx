@@ -240,28 +240,49 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 }: MarkdownRendererProps) {
   const debouncedContent = useDebouncedValue(content, 150, !streaming)
   const rootRef = useRef<HTMLDivElement>(null)
+  // Cache of full text per Text node. Keyed by node identity — valid only
+  // within a single ParsedMarkdown render (React reuses nodes when content
+  // is unchanged, replaces them when content changes). We rebuild this cache
+  // whenever debouncedContent changes, and use it to restore text.data on
+  // typewriter ticks (where content is the same but text.data was clipped).
   const sourceRef = useRef(new Map<Text, string>())
   const sourceContentRef = useRef<string | null>(null)
 
   useLayoutEffect(() => {
     const root = rootRef.current
     if (!root || visibleChars === undefined) return
-    // On a new parsed source, discard node identities from the previous
-    // markdown tree. On typewriter ticks, restore each node from the source
-    // captured on the previous full render before clipping it again.
-    if (sourceContentRef.current !== debouncedContent) {
-      sourceRef.current.clear()
+
+    const contentChanged = sourceContentRef.current !== debouncedContent
+
+    if (contentChanged) {
+      // New content → React rendered fresh DOM. Capture full text from DOM
+      // (React just set it, so text.data is the full value). No restore needed.
       sourceContentRef.current = debouncedContent
+      sourceRef.current = new Map()
+    } else {
+      // Typewriter tick (same content) → text.data was clipped by previous
+      // tick. Restore full text from sourceRef before re-clipping.
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const text = node as Text
+        const saved = sourceRef.current.get(text)
+        if (saved !== undefined) {
+          text.data = saved
+        }
+      }
     }
+
+    // Capture full text for all current Text nodes (new or restored).
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-    const nodes: Text[] = []
     let node: Node | null
     while ((node = walker.nextNode())) {
       const text = node as Text
-      if (!sourceRef.current.has(text)) sourceRef.current.set(text, text.data)
-      text.data = sourceRef.current.get(text) ?? text.data
-      nodes.push(text)
+      if (!sourceRef.current.has(text)) {
+        sourceRef.current.set(text, text.data)
+      }
     }
+
     clipTextNodes(root, visibleChars)
   }, [visibleChars, debouncedContent])
 

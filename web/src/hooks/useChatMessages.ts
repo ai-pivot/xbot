@@ -200,24 +200,23 @@ function shouldKeepVisibleRowsOnRefresh(
 }
 
 // reconcileHistoryWithLiveRows merges server history with live (unpersisted)
-// rows. Live rows that have a matching eventSeq in history are dropped — the
-// history version is authoritative. No string matching used.
+// rows. A live row is kept only if its eventSeq is ABOVE the history
+// watermark (last_seq) — meaning it was delivered via SSE after the history
+// snapshot was taken, so it's not yet in history. Rows at or below the
+// watermark are already covered by history. Rows without an eventSeq
+// (optimistic user messages from sendMessage) are always dropped — the
+// server persists them before/during the turn.
 function reconcileHistoryWithLiveRows(
   history: ChatMessage[],
   current: ChatMessage[],
+  historyWatermark: number,
 ): ChatMessage[] {
-  // Build a set of eventSeqs present in history (only for persisted messages
-  // that came from the server with a seq).
-  const historySeqs = new Set<number>()
-  for (const h of history) {
-    if (h.eventSeq != null) historySeqs.add(h.eventSeq)
-  }
   const liveRows = current.filter((message) => {
     if (message.persisted !== false) return false
-    // If this live row has an eventSeq that's already in history, drop it —
-    // the history version is authoritative (may have updated iterations).
-    if (message.eventSeq != null && historySeqs.has(message.eventSeq)) return false
-    return true
+    // Optimistic messages (no eventSeq) are always superseded by history.
+    if (message.eventSeq == null) return false
+    // Keep only rows delivered via SSE after the history snapshot.
+    return message.eventSeq > historyWatermark
   })
   return [...history, ...liveRows]
 }
@@ -355,7 +354,7 @@ export function useChatMessages({
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
           const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
           const mutated = requestHasMessageMutation()
-          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
           if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
           loadedMessageKeys.add(reloadKey)
           messagesRef.current = next
@@ -378,7 +377,7 @@ export function useChatMessages({
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
           const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
           const mutated = requestHasMessageMutation()
-          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
           if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
           loadedMessageKeys.add(reloadKey)
           messagesRef.current = next
@@ -395,7 +394,7 @@ export function useChatMessages({
         if (requestIsSuperseded() || requestHasDestructiveMutation()) return
         const parsed = parseSubAgentMessages(Array.isArray(msgs) ? msgs : [])
         const mutated = requestHasMessageMutation()
-        const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+        const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
         if (shouldKeepVisibleRowsOnRefresh(next, sameTarget, messagesRef.current)) return
         if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
         loadedMessageKeys.add(reloadKey)
@@ -424,7 +423,7 @@ export function useChatMessages({
       }
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
-      const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+      const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0) : parsed
       if (shouldKeepVisibleRowsOnRefresh(next, sameTarget, messagesRef.current)) return
       if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
       loadedMessageKeys.add(reloadKey)

@@ -191,12 +191,6 @@ func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 		LLMSetThinkingMode: func(senderID string, mode string) error {
 			return ag.SetUserThinkingMode(senderID, mode)
 		},
-		LLMGetPersonalConcurrency: func(senderID string) int {
-			return ag.GetLLMConcurrency(senderID)
-		},
-		LLMSetPersonalConcurrency: func(senderID string, personal int) error {
-			return ag.SetLLMConcurrency(senderID, personal)
-		},
 	}
 }
 
@@ -1689,16 +1683,14 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 
 	return feishu.SettingsCallbacks{
 		// LLM basic callbacks
-		LLMList:                   llmc.LLMList,
-		LLMSet:                    llmc.LLMSet,
-		LLMGetMaxContext:          llmc.LLMGetMaxContext,
-		LLMSetMaxContext:          llmc.LLMSetMaxContext,
-		LLMGetMaxOutputTokens:     llmc.LLMGetMaxOutputTokens,
-		LLMSetMaxOutputTokens:     llmc.LLMSetMaxOutputTokens,
-		LLMGetThinkingMode:        llmc.LLMGetThinkingMode,
-		LLMSetThinkingMode:        llmc.LLMSetThinkingMode,
-		LLMGetPersonalConcurrency: llmc.LLMGetPersonalConcurrency,
-		LLMSetPersonalConcurrency: llmc.LLMSetPersonalConcurrency,
+		LLMList:               llmc.LLMList,
+		LLMSet:                llmc.LLMSet,
+		LLMGetMaxContext:      llmc.LLMGetMaxContext,
+		LLMSetMaxContext:      llmc.LLMSetMaxContext,
+		LLMGetMaxOutputTokens: llmc.LLMGetMaxOutputTokens,
+		LLMSetMaxOutputTokens: llmc.LLMSetMaxOutputTokens,
+		LLMGetThinkingMode:    llmc.LLMGetThinkingMode,
+		LLMSetThinkingMode:    llmc.LLMSetThinkingMode,
 
 		// LLM config (Feishu-specific — uses channel.Subscription directly)
 		LLMGetConfig: func(senderID string) (provider, baseURL, model string, ok bool) {
