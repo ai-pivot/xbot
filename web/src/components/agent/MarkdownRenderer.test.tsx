@@ -72,6 +72,20 @@ describe('MarkdownRenderer', () => {
     expect(container.querySelector('del')).not.toBeNull()
   })
 
+  it('clips already-rendered markdown on typewriter ticks without replacing the tree', () => {
+    const { container, rerender } = render(
+      <MarkdownRenderer content={'Hello **world**'} streaming visibleChars={5} />,
+    )
+    const paragraph = container.querySelector('p')
+    expect(container.textContent).toBe('Hello')
+
+    rerender(<MarkdownRenderer content={'Hello **world**'} streaming visibleChars={11} />)
+
+    expect(container.querySelector('p')).toBe(paragraph)
+    expect(container.textContent).toBe('Hello world')
+    expect(container.querySelector('strong')).toHaveTextContent('world')
+  })
+
   it('memoizes: re-render with same content keeps the same DOM text', () => {
     const { container, rerender } = render(<MarkdownRenderer content={'hello'} />)
     const before = container.innerHTML

@@ -54,8 +54,11 @@ export const LiveIteration = memo(function LiveIteration({
   const isLive = progress.streaming
   const tw = useTypewriter(isLive ? textContent : '')
   const rw = useTypewriter(isLive ? reasoningContent : '')
-  const displayText = isLive ? tw.visibleText : textContent
-  const displayReasoning = isLive ? rw.visibleText : reasoningContent
+  // MarkdownRenderer receives the complete source text. It parses only when
+  // this source changes; the typewriter changes visibleChars and clips the
+  // already-rendered text nodes instead of reparsing Markdown on every tick.
+  const displayText = textContent
+  const displayReasoning = reasoningContent
 
   // Merge all tool groups, using the shared dedupTools (generating skips dedup)
   const allTools = dedupTools([
@@ -86,6 +89,7 @@ export const LiveIteration = memo(function LiveIteration({
           <div className={rw.isTyping ? 'typewriter-fade' : 'typewriter-done'}>
             <ReasoningBlock
               content={displayReasoning}
+              visibleChars={isLive ? rw.visibleChars : undefined}
               streaming={false}
             />
           </div>
@@ -105,6 +109,7 @@ export const LiveIteration = memo(function LiveIteration({
             content={displayText}
             className="text-sm text-text-primary"
             streaming={isLive}
+            visibleChars={isLive ? tw.visibleChars : undefined}
           />
         </div>
       )}

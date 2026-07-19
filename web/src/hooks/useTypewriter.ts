@@ -7,10 +7,10 @@
  *   - CJK awareness: CJK runes advance at half speed (skip every other tick)
  *   - Converges in ~log1.5(gap) ticks regardless of gap size
  *
- * Web enhancements:
- *   - Returns visibleText (substring of full text up to visible runes)
+ * Web adaptation:
+ *   - Returns only visibleChars; the rendered Markdown DOM is clipped in place
  *   - Returns isTyping (true when visible < target)
- *   - When isTyping, the container should apply a fade-in CSS class
+ *   - The typewriter never reparses Markdown on timer ticks
  *
  * Synchronisation: a 50ms setInterval drives ALL catch-up — no
  * useLayoutEffect advance. The previous useLayoutEffect that advanced gap/3
@@ -34,15 +34,15 @@ function isCJK(r: number): boolean {
 const TICK_MS = 50
 
 export interface TypewriterState {
-  /** The portion of text currently visible (rune-aware substring). */
-  visibleText: string
+  /** Number of visible Unicode code points. The renderer clips its existing DOM to this count. */
+  visibleChars: number
   /** True when the typewriter hasn't caught up to the full text. */
   isTyping: boolean
 }
 
 export function useTypewriter(fullText: string): TypewriterState {
-  const [state, setState] = useState<{ visibleText: string; isTyping: boolean }>({
-    visibleText: '',
+  const [state, setState] = useState<{ visibleChars: number; isTyping: boolean }>({
+    visibleChars: 0,
     isTyping: false,
   })
   const visibleRef = useRef(0)
@@ -77,14 +77,14 @@ export function useTypewriter(fullText: string): TypewriterState {
     if (!fullText) {
       if (visibleRef.current !== 0) {
         visibleRef.current = 0
-        setState({ visibleText: '', isTyping: false })
+        setState({ visibleChars: 0, isTyping: false })
       }
       return
     }
     const runes = Array.from(fullText)
     if (runes.length < visibleRef.current) {
       visibleRef.current = 0
-      setState({ visibleText: '', isTyping: false })
+      setState({ visibleText: '', visibleChars: 0, isTyping: false })
     }
   }, [fullText])
 
@@ -101,14 +101,14 @@ export function useTypewriter(fullText: string): TypewriterState {
       const visible = visibleRef.current
       const gap = runes.length - visible
       if (gap <= 0) {
-        setState((prev) => prev.isTyping ? { visibleText: text, isTyping: false } : prev)
+        setState((prev) => prev.isTyping ? { visibleChars: runes.length, isTyping: false } : prev)
         return
       }
       const newVisible = advanceVisible(runes, visible)
       if (newVisible !== visible) {
         visibleRef.current = newVisible
         setState({
-          visibleText: runes.slice(0, newVisible).join(''),
+          visibleChars: newVisible,
           isTyping: newVisible < runes.length,
         })
       }

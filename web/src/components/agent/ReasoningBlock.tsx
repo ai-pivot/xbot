@@ -14,6 +14,8 @@ import { useI18n } from '@/providers/i18n'
 
 interface ReasoningBlockProps {
   content: string
+  /** Number of source characters to reveal without reparsing Markdown. */
+  visibleChars?: number
   /** True while the reasoning is still being streamed (shows indicator). */
   streaming?: boolean
 }
@@ -27,7 +29,12 @@ export const ReasoningBlock = memo(function ReasoningBlock({
 
   return (
     <div className="py-1">
-      <MarkdownRenderer content={content} className="text-xs text-text-secondary" />
+      <MarkdownRenderer
+        content={content}
+        className="text-xs text-text-secondary"
+        streaming={visibleChars !== undefined}
+        visibleChars={visibleChars}
+      />
       {streaming && (
         <SweepText
           text={t('agent.reasoningStreaming')}
