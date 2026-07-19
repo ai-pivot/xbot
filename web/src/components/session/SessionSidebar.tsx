@@ -6,7 +6,7 @@
  * the new-session dialog. Pure presentational composition on top of the store.
  */
 import { useCallback, useMemo, useState } from 'react'
-import { ChevronDown, Globe, Loader2, Plus, Terminal, MessageCircle, MessageSquare, Bot, Server } from 'lucide-react'
+import { ChevronDown, Globe, LayoutGrid, Loader2, Plus, Terminal, MessageCircle, MessageSquare, Bot, Server } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -30,6 +30,9 @@ const CHANNEL_ICONS: Record<string, IconComponent> = {
   napcat: Bot,
   system: Server,
 }
+
+/** All channels that should appear in the picker, in display order. */
+const ALL_CHANNEL_ORDER = ['web', 'cli', 'feishu', 'qq', 'napcat']
 
 const CATEGORIES = ['time', 'status', 'path'] as const
 
@@ -119,17 +122,23 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
                 className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/10 ${!store.activeChannel ? 'font-medium text-accent' : 'text-text-secondary'}`}
                 onClick={() => { store.setActiveChannel(null); setChannelPickerOpen(false) }}
               >
-                <Globe className="size-3.5 shrink-0" />
+                <LayoutGrid className="size-3.5 shrink-0" />
                 {t('channel.all')}
               </button>
               {(() => {
-                // Derive available channels from sessions list
+                // Derive available channels from sessions list (including web).
+                // 'agent' is internal — never shown as a filterable channel.
                 const channels = new Set<string>()
                 for (const s of store.sessions) {
-                  if (s.channel && s.channel !== 'web' && s.channel !== 'agent') channels.add(s.channel)
-                  if (s.parentChannel && s.parentChannel !== 'web' && s.parentChannel !== 'agent') channels.add(s.parentChannel)
+                  if (s.channel && s.channel !== 'agent') channels.add(s.channel)
+                  if (s.parentChannel && s.parentChannel !== 'agent') channels.add(s.parentChannel)
                 }
-                return Array.from(channels).sort()
+                // Sort by predefined order, unknown channels at the end
+                return Array.from(channels).sort((a, b) => {
+                  const ia = ALL_CHANNEL_ORDER.indexOf(a)
+                  const ib = ALL_CHANNEL_ORDER.indexOf(b)
+                  return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib)
+                })
               })()
                 .map((ch: string) => {
                   const Icon = CHANNEL_ICONS[ch] || Globe
