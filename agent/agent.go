@@ -438,6 +438,11 @@ type Agent struct {
 	// channelFinder looks up a channel instance by name (injected from main.go).
 	channelFinder func(name string) (channel.Channel, bool)
 
+	// channelRange iterates over all registered channels (injected from main.go).
+	// Used for broadcasting to ALL channels (including plugin channels) without
+	// hardcoding channel names. nil in standalone mode.
+	channelRange func(fn func(string, channel.Channel) bool)
+
 	// cliSenderID is the sender_id used for CLI channel DB operations.
 	cliSenderID string
 
@@ -782,9 +787,27 @@ func (a *Agent) SetChannelFinder(fn func(name string) (channel.Channel, bool)) {
 	}
 }
 
-// emitSessionState pushes a session state event to CLI and Web channels.
-// Uses channelFinder to locate channels and type-asserts to SessionStateSender.
+// SetChannelRange sets the channel range callback for broadcasting to all
+// registered channels (including plugin channels). Injected from main.go
+// via Dispatcher.RangeChannels.
+func (a *Agent) SetChannelRange(fn func(func(string, channel.Channel) bool)) {
+	a.channelRange = fn
+}
+
+// emitSessionState pushes a session state event to ALL registered channels
+// that implement SessionStateSender — including plugin channels.
+// Uses channelRange to iterate; falls back to cli+web for standalone mode.
 func (a *Agent) emitSessionState(ev protocol.SessionEvent) {
+	if a.channelRange != nil {
+		a.channelRange(func(name string, ch channel.Channel) bool {
+			if sender, ok := ch.(channel.SessionStateSender); ok {
+				sender.SendSessionState(ev)
+			}
+			return true
+		})
+		return
+	}
+	// Fallback: standalone mode without channelRange
 	if a.channelFinder == nil {
 		return
 	}

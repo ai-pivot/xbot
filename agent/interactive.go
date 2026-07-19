@@ -418,9 +418,6 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 // Used when a background subagent is interrupted, since the normal Run() exit path
 // doesn't send PhaseDone on cancellation.
 func (a *Agent) sendSubAgentPhaseDone(key string) {
-	if a.channelFinder == nil {
-		return
-	}
 	agentProgressKey := "agent:" + key
 
 	// Build PhaseDone payload from the last known progress snapshot.
@@ -436,9 +433,22 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 		}
 	}
 
-	// Send to both CLI and Web channels so both TUI and Web UI properly
-	// finalize the SubAgent turn. Without the Web channel, the Web progress
-	// store stays in its last state forever (liveMessage never clears).
+	// Broadcast PhaseDone to ALL registered channels that implement
+	// ProgressSender — including plugin channels. Uses channelRange to
+	// iterate; falls back to channelFinder for standalone mode.
+	if a.channelRange != nil {
+		a.channelRange(func(name string, ch channelpkg.Channel) bool {
+			if ps, ok := ch.(channelpkg.ProgressSender); ok {
+				ps.SendProgress(key, payload)
+			}
+			return true
+		})
+		return
+	}
+	// Fallback: standalone mode without channelRange
+	if a.channelFinder == nil {
+		return
+	}
 	for _, name := range []string{"cli", "web"} {
 		ch, ok := a.channelFinder(name)
 		if !ok {

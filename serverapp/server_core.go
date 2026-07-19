@@ -155,6 +155,9 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		},
 		func(name string) { disp.Unregister(name) }, // unregisterAgentChannel
 	)
+	// Inject channel range so agent can broadcast to ALL channels
+	// (including plugin channels) without hardcoding names.
+	ag.SetChannelRange(disp.RangeChannels)
 
 	// 7. Start agent loop.
 	ctx, cancel := context.WithCancel(context.Background())
