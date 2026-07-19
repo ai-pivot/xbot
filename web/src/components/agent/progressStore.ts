@@ -72,32 +72,65 @@ function subAgentKey(node: WebSubAgentProgress): string {
   return `${node.role}:${node.instance ?? ''}`
 }
 
+// mergeSubAgentTrees — unified with TUI's cli_update_subagent.go mergeSubAgentTrees.
+// Agents present in both trees are updated with new data (status, desc, children).
+// Agents only in prev but NOT in next are dropped — the server stopped reporting
+// them, meaning they completed. Keeping them causes zombie nodes that persist
+// forever (the "explore card that never disappears" bug).
+//
+// Key rule: Role + ":" + Instance. Same-role different-instance agents are distinct.
 function mergeSubAgentTrees(prev: WebSubAgentProgress[], next: WebSubAgentProgress[]): WebSubAgentProgress[] {
-  if (next.length === 0) return prev
-  const prevByKey = new Map(prev.map((node) => [subAgentKey(node), node]))
-  const nextKeys = new Set(next.map(subAgentKey))
-  const merged: WebSubAgentProgress[] = []
+  if (prev.length === 0) return next
+  if (next.length === 0) return [] // server stopped reporting all agents — they completed
 
-  // Preserve prev nodes that are no longer in next but are done/error — they
-  // should remain visible (with their final status) rather than disappearing.
-  for (const old of prev) {
-    if (!nextKeys.has(subAgentKey(old)) && (old.status === 'done' || old.status === 'error')) {
-      merged.push(old)
+  const newByKey = new Map(next.map((node) => [subAgentKey(node), node]))
+  const result: WebSubAgentProgress[] = []
+
+  // Start with all prev entries, updating those that have new data.
+  // Entries NOT in new are skipped — the server stopped reporting them,
+  // meaning they completed. No zombie preservation (unlike old web code).
+  for (const p of prev) {
+    const key = subAgentKey(p)
+    const n = newByKey.get(key)
+    if (n) {
+      // Agent exists in both — merge: use new data but preserve previous
+      // Desc when new is empty.
+      const merged: WebSubAgentProgress = {
+        ...n,
+        desc: n.desc || p.desc,
+        sessionKey: n.sessionKey || p.sessionKey,
+        children: mergeSubAgentTrees(p.children ?? [], n.children ?? []),
+      }
+      // When parent is still active but its children list is empty in
+      // the new update, preserve previous children as done.
+      if ((n.children?.length ?? 0) === 0 && (p.children?.length ?? 0) > 0) {
+        merged.children = markAllDone(p.children!)
+      }
+      result.push(merged)
+      newByKey.delete(key)
     }
+    // else: agent only in prev — server stopped reporting it → skip (completed)
   }
 
-  for (const node of next) {
-    // Done/error nodes are kept — they show the final state of the SubAgent.
-    // The rendering layer (SubAgentProgressTree) applies gray/red styling.
-    const old = prevByKey.get(subAgentKey(node))
-    merged.push({
-      ...node,
-      sessionKey: node.sessionKey || old?.sessionKey,
-      desc: node.desc || old?.desc,
-      children: mergeSubAgentTrees(old?.children ?? [], node.children ?? []),
-    })
+  // Add agents only in new
+  for (const node of newByKey.values()) {
+    result.push(node)
   }
-  return merged
+
+  return result
+}
+
+function markAllDone(agents: WebSubAgentProgress[]): WebSubAgentProgress[] {
+  return agents.map((a) => markDoneIfRunning(a))
+}
+
+function markDoneIfRunning(sa: WebSubAgentProgress): WebSubAgentProgress {
+  const status = (sa.status === 'running' || sa.status === 'pending') ? 'done' : sa.status
+  return {
+    ...sa,
+    status,
+    children: (sa.children ?? []).map(markDoneIfRunning),
+  }
 }
 
 /** Normalize an array of raw tool objects, filtering nulls. */
