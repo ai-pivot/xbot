@@ -614,14 +614,20 @@
 
 /* ── Inline typewriter cursor (Spec A §2) ─────────────────────────────────
  * The cursor follows the last character of streaming Markdown output.
- * Using ::after on the last child of .streaming-content ensures the cursor
- * appears at the end of the rendered content, not on a separate line.
+ *
+ * Selector: .streaming-content .markdown-body > :last-child::after
+ *   — .markdown-body is the MarkdownRenderer root (a <div>)
+ *   — > :last-child targets the last block element inside it (usually <p>)
+ *   — ::after on a <p> places the cursor at the END of the inline text,
+ *     NOT on a new line (which happened with the old selector that targeted
+ *     .markdown-body itself — ::after on a block-level div goes after all
+ *     its block children, creating a phantom empty line).
  */
 @keyframes streaming-cursor-blink {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0; }
 }
-.streaming-content > :last-child::after {
+.streaming-content .markdown-body > :last-child::after {
   content: '';
   display: inline-block;
   vertical-align: text-bottom;

@@ -47,9 +47,11 @@ export const LiveIteration = memo(function LiveIteration({
   const hasSubAgents = progress.subAgents.length > 0
 
   // Typewriter: gradually reveal text using TUI's exponential catch-up algorithm.
-  // Pass textContent directly — the hook handles empty/reset internally.
-  // Only pass empty string when NOT streaming (committed text = instant render).
-  const isLive = progress.streaming || progress.phase === 'thinking' || progress.phase === 'tool'
+  // `streaming` is the authoritative flag: set true by stream_content events,
+  // set false by phase='done' / reset. Phase checks (thinking/tool) were a
+  // fallback that caused streaming-content class to persist after the turn
+  // ended (streaming=false but phase still 'thinking' from the last event).
+  const isLive = progress.streaming
   const tw = useTypewriter(isLive ? textContent : '')
   const rw = useTypewriter(isLive ? reasoningContent : '')
   const displayText = isLive ? tw.visibleText : textContent
@@ -102,6 +104,7 @@ export const LiveIteration = memo(function LiveIteration({
           <MarkdownRenderer
             content={displayText}
             className="text-sm text-text-primary"
+            streaming={isLive}
           />
         </div>
       )}

@@ -29,20 +29,27 @@ import { cn } from '@/lib/utils'
 interface MarkdownRendererProps {
   content: string
   className?: string
+  /**
+   * When true, skip the 150ms debounce and render content immediately.
+   * Used during typewriter streaming — the typewriter hook already throttles
+   * to 50ms (20fps), so debounce adds latency without reducing parse count.
+   */
+  streaming?: boolean
 }
 
 /**
- * Debounce a value by `delay` ms. During streaming, content arrives at ~60fps;
- * debouncing to ~150ms reduces Markdown parse frequency from 60fps → ~6fps.
- * The 150ms delay is imperceptible to users.
+ * Debounce a value by `delay` ms. During non-streaming renders, this reduces
+ * Markdown parse frequency. During streaming (typewriter), `streaming` prop
+ * bypasses the debounce so each 50ms tick renders immediately.
  */
-function useDebouncedValue<T>(value: T, delay: number): T {
+function useDebouncedValue<T>(value: T, delay: number, enabled: boolean): T {
   const [debounced, setDebounced] = useState(value)
   useEffect(() => {
+    if (!enabled) return // bypass: use raw value
     const timer = setTimeout(() => setDebounced(value), delay)
     return () => clearTimeout(timer)
-  }, [value, delay])
-  return debounced
+  }, [value, delay, enabled])
+  return enabled ? debounced : value
 }
 
 /**
@@ -172,8 +179,9 @@ const REHYPE_PLUGINS: PluggableList = [[rehypeKatex, { throwOnError: false }]]
 export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   className,
+  streaming = false,
 }: MarkdownRendererProps) {
-  const debouncedContent = useDebouncedValue(content, 150)
+  const debouncedContent = useDebouncedValue(content, 150, !streaming)
   return (
     <div className={cn('markdown-body text-sm leading-relaxed', className)}>
       <Markdown

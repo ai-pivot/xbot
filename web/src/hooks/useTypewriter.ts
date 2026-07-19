@@ -12,9 +12,10 @@
  *   - Returns isTyping (true when visible < target)
  *   - When isTyping, the container should apply a fade-in CSS class
  *
- * Synchronisation: when fullText changes (new stream chunk), useLayoutEffect
- * advances visibleText BEFORE paint so content and tools render in the same
- * frame. The interval then handles subsequent catch-up within the same chunk.
+ * Synchronisation: a 50ms setInterval drives ALL catch-up — no
+ * useLayoutEffect advance. The previous useLayoutEffect that advanced gap/3
+ * on every SSE chunk caused "sawtooth" jumps (big jump on chunk, then slow
+ * catch-up). The 50ms interval alone produces smooth, continuous motion.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
@@ -69,35 +70,29 @@ export function useTypewriter(fullText: string): TypewriterState {
     return Math.min(visible + advance, runes.length)
   }
 
-  // On fullText change: synchronously advance BEFORE paint so content
-  // and tools render in the same frame. Without this, tools (driven by
-  // useSyncExternalStore) render immediately while content waits 50ms
-  // for the next interval tick — causing "content jumps in after tools".
+  // ── Reset on empty / shrink (new turn) ──
+  // Synchronous reset so the next render shows empty content immediately,
+  // without waiting for the 50ms interval tick.
   useLayoutEffect(() => {
     if (!fullText) {
-      if (visibleRef.current > 0) {
+      if (visibleRef.current !== 0) {
         visibleRef.current = 0
         setState({ visibleText: '', isTyping: false })
       }
       return
     }
     const runes = Array.from(fullText)
-    // Reset if text shrank (new turn)
     if (runes.length < visibleRef.current) {
-      visibleRef.current = runes.length
-    }
-    const gap = runes.length - visibleRef.current
-    if (gap > 0) {
-      const newVisible = advanceVisible(runes, visibleRef.current)
-      visibleRef.current = newVisible
-      setState({
-        visibleText: runes.slice(0, newVisible).join(''),
-        isTyping: newVisible < runes.length,
-      })
+      visibleRef.current = 0
+      setState({ visibleText: '', isTyping: false })
     }
   }, [fullText])
 
-  // Single interval for subsequent catch-up — created once.
+  // Single interval for ALL catch-up — created once.
+  // No useLayoutEffect advance: that caused "sawtooth" jumps where each
+  // SSE chunk ate gap/3 instantly, then the interval slowly caught up.
+  // The 50ms interval delay is imperceptible (< human perception threshold
+  // of ~100ms) and produces smooth, continuous typewriter motion.
   useEffect(() => {
     const tick = () => {
       const text = fullTextRef.current
