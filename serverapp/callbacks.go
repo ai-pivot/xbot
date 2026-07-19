@@ -330,9 +330,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if progress != nil && progress.Phase == "done" {
 			progress = nil
 		}
-		history := channel.ConvertMessagesToHistory(msgs)
 		return web.HistorySnapshot{
-			Messages:       history,
+			Messages:       channel.ConvertMessagesToHistory(msgs),
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,
