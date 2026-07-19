@@ -188,6 +188,10 @@ type Config struct {
 	EventWebhook  EventWebhookConfig   `json:"event_webhook"`
 	OSS           OSSConfig            `json:"oss"`
 	TavilyAPIKey  string               `json:"tavily_api_key"`
+	// DisableWebSearch disables the built-in WebSearch tool. Set to true when
+	// using an external search skill (e.g. the "search" skill) to avoid
+	// duplicate tool definitions and wasted context tokens.
+	DisableWebSearch bool             `json:"disable_web_search,omitempty"`
 	Subscriptions []SubscriptionConfig `json:"subscriptions,omitempty"`
 	CLI           CLIConfig            `json:"cli,omitempty"`
 	Plugins       PluginConfig         `json:"plugins,omitempty"`

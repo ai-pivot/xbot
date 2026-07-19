@@ -734,7 +734,9 @@ func Run(args []string) error {
 	// 注册 DownloadFile 工具（支持 Web/OSS 和飞书两种来源）
 	ag.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
 	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
-	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
+	if !cfg.DisableWebSearch {
+		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
+	}
 
 	// 初始化事件触发系统（Event Trigger System）
 	triggerSvc := sqlite.NewTriggerService(ag.MultiSession().DB())

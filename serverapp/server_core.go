@@ -125,7 +125,9 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// 4. Register core tools.
 	ag.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
 	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
-	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
+	if !cfg.DisableWebSearch {
+		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
+	}
 
 	ag.IndexGlobalTools()
 
