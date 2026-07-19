@@ -3,8 +3,6 @@ package channel
 import (
 	"strings"
 	"testing"
-
-	"xbot/llm"
 )
 
 func TestFormatToolLabel_Short(t *testing.T) {
@@ -100,45 +98,5 @@ func TestFormatToolLabel_SubAgentLongTask(t *testing.T) {
 	// Should not panic and should contain truncation
 	if len([]rune(got)) > 60 {
 		t.Errorf("result too long: %q (%d runes)", got, len([]rune(got)))
-	}
-}
-
-func TestConvertMessagesToHistoryBeforeActiveTurnExcludesInFlightTools(t *testing.T) {
-	msgs := []llm.ChatMessage{
-		{Role: "user", Content: "completed turn"},
-		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "old", Name: "Read", Arguments: `{}`}}},
-		{Role: "tool", ToolCallID: "old", Content: "done"},
-		{Role: "assistant", Content: "completed reply"},
-		{Role: "user", Content: "active turn"},
-		{Role: "assistant", ToolCalls: []llm.ToolCall{
-			{ID: "skill", Name: "Skill", Arguments: `{}`},
-			{ID: "shell-1", Name: "Shell", Arguments: `{}`},
-			{ID: "shell-2", Name: "Shell", Arguments: `{}`},
-		}},
-		{Role: "tool", ToolCallID: "skill", Content: "done"},
-		{Role: "tool", ToolCallID: "shell-1", Content: "done"},
-		{Role: "tool", ToolCallID: "shell-2", Content: "done"},
-	}
-
-	fullHistory := ConvertMessagesToHistory(msgs, false)
-	if len(fullHistory) != 4 {
-		t.Fatalf("expected ordinary history to retain interrupted active turn, got %d: %+v", len(fullHistory), fullHistory)
-	}
-
-	history := ConvertMessagesToHistory(msgs, true)
-	if len(history) != 3 {
-		t.Fatalf("expected completed turn plus active user only, got %d: %+v", len(history), history)
-	}
-	if history[2].Role != "user" || history[2].Content != "active turn" {
-		t.Fatalf("expected active user boundary to remain, got %+v", history[2])
-	}
-	for _, msg := range history {
-		for _, iter := range msg.Iterations {
-			for _, tool := range iter.Tools {
-				if tool.Name == "Skill" || tool.Name == "Shell" {
-					t.Fatalf("active-turn tool %q leaked into history: %+v", tool.Name, history)
-				}
-			}
-		}
 	}
 }

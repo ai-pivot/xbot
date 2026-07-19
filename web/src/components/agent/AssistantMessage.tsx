@@ -36,12 +36,17 @@ interface AssistantMessageProps {
 
 function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = true }: AssistantMessageProps) {
   const { t } = useI18n()
-  // Source iterations: prefer committed message.iterations, fall back to live progress.
-  const iterations = message.iterations?.length > 0
-    ? message.iterations
-    : progress?.iterationHistory ?? []
+  // Source iterations: when liveProgress is present (streaming), the snapshot
+  // is authoritative — use progress.iterationHistory so completed-iteration
+  // tools don't overlap with LiveIteration's current-iteration tools. Without
+  // this, DB-persisted iterations (from incremental persistence) and the live
+  // snapshot both render the same turn's tools, causing duplicates after refresh.
+  const liveIters = progress?.iterationHistory
+  const iterations = liveIters && liveIters.length > 0
+    ? liveIters
+    : message.iterations ?? []
 
-  const isStreaming = message.isPartial
+  const isStreaming = message.isPartial || Boolean(progress)
   // During streaming, always use 'minimal' level (detailed fold).
   // 'all' (complete fold) is only for completed messages.
   const effectiveLevel: CollapseLevel = isStreaming ? 'minimal' : collapseLevel

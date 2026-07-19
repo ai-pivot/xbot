@@ -99,9 +99,12 @@ export function MessageList({
   const { t } = useI18n()
 
   // Combined row list: committed messages + optional live streaming row.
-  // Dedup: if the last committed message has the same eventSeq as liveMessage,
-  // skip adding liveMessage (prevents one-frame overlap during finalize).
-  // Uses eventSeq (SSE sequence) — no string matching.
+  // When the last committed message is an assistant from the active turn
+  // (persisted via incremental persistence), attach liveProgress to it
+  // instead of appending a separate liveMessage row. This mirrors CLI's
+  // acceptProgress: the history assistant IS the streaming slot.
+  // The eventSeq guard handles the finalize transition (live → committed
+  // with matching SSE seq) where the row is already committed.
   const rows = useMemo<ChatMessage[]>(() => {
     if (!liveMessage) return messages
     const last = messages[messages.length - 1]
@@ -110,9 +113,21 @@ export function MessageList({
         last.eventSeq === liveMessage.eventSeq) {
       return messages
     }
+    // Active turn: last persisted assistant is the in-flight streaming slot.
+    if (last && last.role === 'assistant' && liveMessage.isPartial) {
+      return messages
+    }
     return [...messages, liveMessage]
   }, [messages, liveMessage])
-  const liveId = liveMessage?.id ?? null
+  // liveId points to the row that receives liveProgress. When the last
+  // history assistant is the active turn, it IS the streaming slot.
+  const liveId = liveMessage
+    ? (messages.length > 0 &&
+       messages[messages.length - 1].role === 'assistant' &&
+       liveMessage.isPartial
+        ? messages[messages.length - 1].id
+        : liveMessage.id)
+    : null
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 

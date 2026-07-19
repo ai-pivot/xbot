@@ -330,7 +330,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if progress != nil && progress.Phase == "done" {
 			progress = nil
 		}
-		history := channel.ConvertMessagesToHistory(msgs, progress != nil)
+		history := channel.ConvertMessagesToHistory(msgs)
 		return web.HistorySnapshot{
 			Messages:       history,
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
@@ -755,7 +755,7 @@ func rewindWebHistory(ag *agent.Agent, channelName, chatID string, cutoff time.T
 	if err != nil {
 		return web.RewindHistoryResult{}, err
 	}
-	history := channel.ConvertMessagesToHistory(msgs, false)
+	history := channel.ConvertMessagesToHistory(msgs)
 	compactCutoff := -1
 	selectedEligibleOrdinal := 0
 	draft := ""
