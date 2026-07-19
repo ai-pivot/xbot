@@ -61,14 +61,19 @@ export const LiveIteration = memo(function LiveIteration({
   const displayReasoning = reasoningContent
 
   // Merge all tool groups, using the shared dedupTools (generating skips dedup).
-  // Filter completedTools to only include the CURRENT iteration's tools —
-  // tools from completed iterations are in iterationHistory (rendered by
-  // TurnBody). Without this filter, when iterationHistory is empty and we
-  // fall back to message.iterations, the completed iteration's tools appear
-  // in both TurnBody and LiveIteration.
-  const currentIter = progress.iteration
+  // Filter completedTools to exclude tools from COMPLETED iterations — those
+  // are already rendered by TurnBody via iterationHistory. Only keep tools
+  // from the current (in-flight) iteration.
+  //
+  // We determine "completed" by comparing against the max iteration in
+  // iterationHistory. Tools with iteration <= maxCompletedIter are already
+  // rendered; tools with iteration > maxCompletedIter (or no iteration field
+  // when iterationHistory is empty) are current.
+  const maxCompletedIter = progress.iterationHistory.length > 0
+    ? Math.max(...progress.iterationHistory.map((i) => i.iteration))
+    : -1
   const currentCompleted = progress.completedTools.filter(
-    (t) => !t.iteration || t.iteration >= currentIter,
+    (t) => !t.iteration || t.iteration > maxCompletedIter,
   )
   const allTools = dedupTools([
     ...progress.streamingTools,

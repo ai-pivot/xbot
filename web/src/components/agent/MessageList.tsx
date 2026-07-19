@@ -115,7 +115,20 @@ export function MessageList({
     }
     // Active turn: last persisted assistant is the in-flight streaming slot.
     if (last && last.role === 'assistant' && liveMessage.isPartial) {
-      return messages
+      // Remove intermediate assistant messages after the last user message.
+      // ConvertMessagesToHistory can split one turn into multiple assistant
+      // messages (when a Content assistant appears between ToolCalls). Only
+      // the LAST assistant receives liveProgress; earlier ones would render
+      // DB iterations that overlap with the snapshot's iterationHistory /
+      // completedTools, causing duplicate tool rendering.
+      // The snapshot is the single source of truth for the active turn —
+      // intermediate DB assistants are absorbed into it.
+      const filtered = [...messages]
+      for (let i = filtered.length - 2; i >= 0; i--) {
+        if (filtered[i].role === 'user') break
+        if (filtered[i].role === 'assistant') filtered.splice(i, 1)
+      }
+      return filtered
     }
     return [...messages, liveMessage]
   }, [messages, liveMessage])
