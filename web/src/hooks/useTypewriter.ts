@@ -11,7 +11,6 @@
  *   - Returns visibleText (substring of full text up to visible runes)
  *   - Returns isTyping (true when visible < target)
  *   - When isTyping, the container should apply a fade-in CSS class
- *     that fades the trailing edge from semi-transparent to full opacity
  */
 import { useEffect, useRef, useState } from 'react'
 
@@ -45,23 +44,27 @@ export function useTypewriter(fullText: string): TypewriterState {
   const skipFlipRef = useRef(false)
   const fullTextRef = useRef('')
 
-  // Track the full text in a ref so the tick closure always sees the latest
+  // Track the full text in a ref so the tick closure always sees the latest.
+  // The interval is created ONCE (empty deps) — not re-created on every
+  // text change. This prevents the 50ms gap where tools render but text
+  // hasn't caught up yet (the "content appears after tools" bug).
   fullTextRef.current = fullText
 
-  // Tick: advance visible runes using TUI exponential catch-up
+  // Reset when text shrinks (new turn / iteration reset)
   useEffect(() => {
-    if (!fullText) {
-      visibleRef.current = 0
-      setState({ visibleText: '', isTyping: false })
-      return
-    }
-
-    // If new text is shorter than what we've shown, reset
     const runes = Array.from(fullText)
     if (runes.length < visibleRef.current) {
       visibleRef.current = runes.length
+      setState({ visibleText: fullText, isTyping: false })
     }
+    if (!fullText) {
+      visibleRef.current = 0
+      setState({ visibleText: '', isTyping: false })
+    }
+  }, [fullText])
 
+  // Single interval — created once, reads latest text via ref.
+  useEffect(() => {
     const tick = () => {
       const text = fullTextRef.current
       if (!text) return
@@ -71,7 +74,9 @@ export function useTypewriter(fullText: string): TypewriterState {
       const gap = target - visible
 
       if (gap <= 0) {
-        setState({ visibleText: text, isTyping: false })
+        if (state.isTyping) {
+          setState({ visibleText: text, isTyping: false })
+        }
         return
       }
 
@@ -79,7 +84,7 @@ export function useTypewriter(fullText: string): TypewriterState {
       const nextIsCJK = visible < runes.length && isCJK(runes[visible].codePointAt(0) ?? 0)
 
       // Exponential catch-up: advance 1/3 of remaining gap per tick
-      let advance = Math.max(1, Math.floor(gap / 3))
+      const advance = Math.max(1, Math.floor(gap / 3))
 
       // CJK penalty: if next rune is CJK and we're at slow speed, skip
       // every other tick (effectively half speed for CJK)
@@ -95,7 +100,7 @@ export function useTypewriter(fullText: string): TypewriterState {
 
     const interval = setInterval(tick, TICK_MS)
     return () => clearInterval(interval)
-  }, [fullText])
+  }, []) // empty deps — interval lives for the component's lifetime
 
   return state
 }

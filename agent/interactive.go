@@ -13,7 +13,6 @@ import (
 
 	"xbot/bus"
 	channelpkg "xbot/channel"
-	"xbot/channel/cli"
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
@@ -264,122 +263,96 @@ func (a *Agent) attachIterationDelta(key string, nextIteration int, payload *pro
 	}
 }
 
-// wireSubAgentCLIProgress sets up ProgressEventHandler and stream callbacks on cfg
-// so the SubAgent's progress is pushed to CLI (both local and remote) with its own
-// ChatID. This enables Ctrl+T session switching to show real-time progress for both
-// interactive and one-shot SubAgents.
-func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig) {
-	if a.channelFinder == nil {
-		return
-	}
-	ch, ok := a.channelFinder("cli")
-	if !ok {
-		return
-	}
-	sender, ok := ch.(channelpkg.ProgressSender)
-	if !ok {
+// wireSubAgentProgress sets up ProgressEventHandler and stream callbacks on cfg
+// for interactive and one-shot SubAgents. Sends progress events to ALL
+// registered channels that implement ProgressSender — including CLI, Web,
+// and plugin channels.
+func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
+	if a.channelRange == nil {
 		return
 	}
 
-	// Keep localCh/remoteCh for structured progress (different payload format).
-	// Stream callbacks use unified sender.
-	var localCh *cli.CLIChannel
-	var remoteCh channelpkg.ProgressSender
-	if cc, ok := ch.(*cli.CLIChannel); ok {
-		localCh = cc
-	} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
-		remoteCh = rc
+	// Collect all ProgressSender channels once at wire time.
+	// SendProgress does a subscriber lookup at call time — zero cost when
+	// no clients are subscribed to this session.
+	type senderEntry struct {
+		ps    channelpkg.ProgressSender
+		rawID string
+	}
+	var senders []senderEntry
+	a.channelRange(func(name string, ch channelpkg.Channel) bool {
+		if ps, ok := ch.(channelpkg.ProgressSender); ok {
+			senders = append(senders, senderEntry{ps: ps, rawID: key})
+		}
+		return true
+	})
+	if len(senders) == 0 {
+		return
 	}
 
 	agentProgressKey := "agent:" + key
-	cfg.ProgressEventHandler = func(event *ProgressEvent) {
-		if event == nil || event.Structured == nil {
-			return
-		}
-		s := event.Structured
 
-		cliPayload := &protocol.ProgressEvent{
-			ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
-			Iteration: s.Iteration, Content: s.Content,
-			Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
+	// broadcast sends payload to all collected ProgressSender channels.
+	broadcast := func(payload *protocol.ProgressEvent) {
+		for _, snd := range senders {
+			snd.ps.SendProgress(snd.rawID, payload)
+		}
+	}
+
+	// buildPayload constructs a unified progress event from structured data.
+	buildPayload := func(s *StructuredProgress) *protocol.ProgressEvent {
+		payload := &protocol.ProgressEvent{
+			ChatID:           agentProgressKey,
+			Seq:              s.Seq,
+			Phase:            string(s.Phase),
+			Iteration:        s.Iteration,
+			Content:          s.Content,
+			Reasoning:        s.ReasoningContent,
+			HistoryCompacted: s.HistoryCompacted,
+			CWD:              s.CWD,
 		}
 		for _, t := range s.ActiveTools {
-			cliPayload.ActiveTools = append(cliPayload.ActiveTools, protocol.ToolProgress{
+			payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
-				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, ToolHints: t.ToolHints,
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
+				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 			})
 		}
 		for _, t := range s.CompletedTools {
-			cliPayload.CompletedTools = append(cliPayload.CompletedTools, protocol.ToolProgress{
+			payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
-				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, ToolHints: t.ToolHints,
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
+				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 			})
 		}
 		if len(s.Todos) > 0 {
-			cliPayload.Todos = make([]protocol.TodoItem, len(s.Todos))
+			payload.Todos = make([]protocol.TodoItem, len(s.Todos))
 			for i, td := range s.Todos {
-				cliPayload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+				payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
 			}
 		}
 		if s.TokenUsage != nil {
-			cliPayload.TokenUsage = &protocol.TokenUsage{
+			payload.TokenUsage = &protocol.TokenUsage{
 				PromptTokens: s.TokenUsage.PromptTokens, CompletionTokens: s.TokenUsage.CompletionTokens,
 				TotalTokens: s.TokenUsage.TotalTokens, CacheHitTokens: s.TokenUsage.CacheHitTokens,
 				MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
 			}
 		}
-
-		a.attachIterationDelta(agentProgressKey, s.Iteration, cliPayload)
-
-		if localCh != nil {
-			localCh.SendProgress(key, cliPayload)
-		} else if remoteCh != nil {
-			wsPayload := &protocol.ProgressEvent{
-				ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
-				Iteration: s.Iteration, Content: s.Content,
-				Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
-			}
-			for _, t := range s.ActiveTools {
-				wsPayload.ActiveTools = append(wsPayload.ActiveTools, protocol.ToolProgress{
-					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-				})
-			}
-			for _, t := range s.CompletedTools {
-				wsPayload.CompletedTools = append(wsPayload.CompletedTools, protocol.ToolProgress{
-					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-				})
-			}
-			if len(s.Todos) > 0 {
-				wsPayload.Todos = make([]protocol.TodoItem, len(s.Todos))
-				for i, td := range s.Todos {
-					wsPayload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
-				}
-			}
-			if s.TokenUsage != nil {
-				wsPayload.TokenUsage = &protocol.TokenUsage{
-					PromptTokens: s.TokenUsage.PromptTokens, CompletionTokens: s.TokenUsage.CompletionTokens,
-					TotalTokens: s.TokenUsage.TotalTokens, CacheHitTokens: s.TokenUsage.CacheHitTokens,
-					MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
-				}
-			}
-			if len(cliPayload.IterationHistory) > 0 {
-				wsPayload.IterationHistory = make([]protocol.ProgressEvent, len(cliPayload.IterationHistory))
-				copy(wsPayload.IterationHistory, cliPayload.IterationHistory)
-			}
-			// Route progress to the agent session's hub key (interactiveKey format)
-			// so the remote CLI client subscribed to this agent session receives it.
-			remoteCh.SendProgress(key, wsPayload)
-		}
-
-		a.lastProgressSnapshot.Store(agentProgressKey, progressSnapshotWithoutHistory(cliPayload))
+		return payload
 	}
 
-	// Wire stream callbacks — unified SendProgress path with qualified ChatID.
-	// No SendStreamContent: all stream events go through SendProgress with
-	// payload.ChatID = agentProgressKey (qualified). This ensures consistent
-	// ChatID semantics across all ProgressSender implementations.
+	cfg.ProgressEventHandler = func(event *ProgressEvent) {
+		if event == nil || event.Structured == nil {
+			return
+		}
+		s := event.Structured
+		payload := buildPayload(s)
+		a.attachIterationDelta(agentProgressKey, s.Iteration, payload)
+		broadcast(payload)
+		a.lastProgressSnapshot.Store(agentProgressKey, progressSnapshotWithoutHistory(payload))
+	}
+
+	// Wire stream callbacks
 	cfg.Stream = true
 	var subAgentProgressSeq atomic.Uint64
 	cfg.ProgressSeq = &subAgentProgressSeq
@@ -387,7 +360,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.StreamContent = content
 		})
-		sender.SendProgress(key, &protocol.ProgressEvent{
+		broadcast(&protocol.ProgressEvent{
 			ChatID:        agentProgressKey,
 			StreamContent: content,
 		})
@@ -396,7 +369,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
 			s.ReasoningStreamContent = content
 		})
-		sender.SendProgress(key, &protocol.ProgressEvent{
+		broadcast(&protocol.ProgressEvent{
 			ChatID:                 agentProgressKey,
 			ReasoningStreamContent: content,
 		})
@@ -409,7 +382,7 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 			s.StreamTokens = usage.CompletionTokens
 		})
 		seq := subAgentProgressSeq.Add(1)
-		sender.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamTokens: usage.CompletionTokens})
+		broadcast(&protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamTokens: usage.CompletionTokens})
 	}
 }
 
@@ -676,7 +649,7 @@ func (a *Agent) SpawnInteractiveSession(
 	// Wire CLI progress + stream callbacks for ALL sessions (foreground and background).
 	// ChatID-based filtering in handleProgressMsg ensures events route to the correct session view.
 	// Without this, background sessions have no live progress when viewed via Ctrl+T panel.
-	a.wireSubAgentCLIProgress(key, originChatID, &cfg)
+	a.wireSubAgentProgress(key, originChatID, &cfg)
 
 	// SubAgent 进度上报：优先使用父 Agent 注入的回调（避免并发 SubAgent 互相覆盖 patch），
 	// 否则 fallback 到直接发送消息（非并行场景）。

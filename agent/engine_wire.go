@@ -1388,7 +1388,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		}
 	} else if originChannel != "" && originChatID != "" && originChannel != "cli" {
 		// 非 CLI 渠道（飞书、Web 等）：发送 text-based progress 到聊天窗口。
-		// CLI 模式下由 wireSubAgentCLIProgress 的 StructuredProgress 处理，
+		// CLI 模式下由 wireSubAgentProgress 的 StructuredProgress 处理，
 		// 不需要 sendMessage（否则会把工具行渲染成主 session 的 assistant 消息）。
 		rn := roleName
 		cfg.ProgressNotifier = func(lines []string, _ string) {
@@ -1405,7 +1405,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		}
 	} else if originChannel == "cli" {
 		// CLI 渠道 + 无父 callback：设置 dummy notifier 使 autoNotify=true，
-		// 这样 wireSubAgentCLIProgress 设置的 ProgressEventHandler 才会被调用。
+		// 这样 wireSubAgentProgress 设置的 ProgressEventHandler 才会被调用。
 		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	}
 
@@ -1438,7 +1438,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	}
 
 	// Wire CLI progress + stream callbacks so Ctrl+T shows real-time progress.
-	a.wireSubAgentCLIProgress(oneshotKey, originChatID, &cfg)
+	a.wireSubAgentProgress(oneshotKey, originChatID, &cfg)
 
 	// Wire incremental snapshot callback so iteration history is available
 	// during Run() for panel preview and inspect — not only after completion.

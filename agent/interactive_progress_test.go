@@ -60,12 +60,12 @@ func TestAutoNotify_DerivedFromBothHandlers(t *testing.T) {
 
 // TestBackgroundMode_AutoNotifyViaEventHandler verifies the actual bug scenario:
 // background interactive SubAgent has no ProgressNotifier but does have
-// ProgressEventHandler (set by wireSubAgentCLIProgress). autoNotify must be true.
+// ProgressEventHandler (set by wireSubAgentProgress). autoNotify must be true.
 func TestBackgroundMode_AutoNotifyViaEventHandler(t *testing.T) {
 	cfg := RunConfig{
 		// Background mode: ProgressNotifier is nil
 		ProgressNotifier: nil,
-		// wireSubAgentCLIProgress sets this for background mode
+		// wireSubAgentProgress sets this for background mode
 		ProgressEventHandler: func(event *ProgressEvent) {},
 	}
 	autoNotify := cfg.ProgressNotifier != nil || cfg.ProgressEventHandler != nil
