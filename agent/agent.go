@@ -796,30 +796,16 @@ func (a *Agent) SetChannelRange(fn func(func(string, channel.Channel) bool)) {
 
 // emitSessionState pushes a session state event to ALL registered channels
 // that implement SessionStateSender — including plugin channels.
-// Uses channelRange to iterate; falls back to cli+web for standalone mode.
 func (a *Agent) emitSessionState(ev protocol.SessionEvent) {
-	if a.channelRange != nil {
-		a.channelRange(func(name string, ch channel.Channel) bool {
-			if sender, ok := ch.(channel.SessionStateSender); ok {
-				sender.SendSessionState(ev)
-			}
-			return true
-		})
+	if a.channelRange == nil {
 		return
 	}
-	// Fallback: standalone mode without channelRange
-	if a.channelFinder == nil {
-		return
-	}
-	for _, name := range []string{"cli", "web"} {
-		ch, ok := a.channelFinder(name)
-		if !ok {
-			continue
-		}
+	a.channelRange(func(name string, ch channel.Channel) bool {
 		if sender, ok := ch.(channel.SessionStateSender); ok {
 			sender.SendSessionState(ev)
 		}
-	}
+		return true
+	})
 }
 
 // renameSession renames a chat session in DB and pushes the state change.

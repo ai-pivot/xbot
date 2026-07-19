@@ -238,10 +238,7 @@ export function useProgressStream({
   return {
     progressSnapshot: progressSnapshot ?? EMPTY_PROGRESS_SNAPSHOT,
     liveMessage,
-    // isStreaming is false in the finalizing state — the agent is not actively
-    // streaming, just waiting for the final text event. The snapshot stays
-    // visible (via liveMessage) but the UI should not show a "busy" indicator.
-    isStreaming: hasVisibleProgress(progressSnapshot) && progressSnapshot.phase !== 'finalizing',
+    isStreaming: hasVisibleProgress(progressSnapshot),
     resetProgress: () => {
       finalizedRef.current = true
       store.reset()
@@ -305,13 +302,8 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
       if (p.phase === 'done') {
-        // PhaseDone: enter finalizing state instead of immediate reset.
-        // The store keeps the progress snapshot visible (tools marked done,
-        // no pulse animation) while waiting for the `text` event to arrive.
-        // A 3s timeout in the store guards against missing text events.
-        // finalizedRef is NOT reset here (Spec A fix: prevents duplicate
-        // onAssistantComplete calls). It will be reset when the next turn
-        // begins (session(busy) or a new structured event with active progress).
+        // PhaseDone: reset immediately. The backend guarantees a `text` event
+        // follows with the final assistant reply. No finalizing state needed.
         store.setStructuredTools({ phase: 'done' })
         return
       }

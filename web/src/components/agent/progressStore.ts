@@ -207,7 +207,6 @@ export class ProgressStore {
   private rafHandle: number | null = null
   private dirty = false
   private disposed = false
-  private finalizingTimer: ReturnType<typeof setTimeout> | null = null
 
   /** Subscribe to snapshot changes; returns an unsubscribe function. */
   subscribe = (listener: Listener): (() => void) => {
@@ -234,11 +233,6 @@ export class ProgressStore {
    */
   reset(): void {
     if (this.disposed) return
-    // Clear any pending finalizing timeout — reset means we're done waiting.
-    if (this.finalizingTimer) {
-      clearTimeout(this.finalizingTimer)
-      this.finalizingTimer = null
-    }
     this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
     // Synchronously update snapshot + cancel pending RAF — avoids a one-frame
     // window where liveMessage is still non-null after reset.
@@ -302,30 +296,14 @@ export class ProgressStore {
     subAgents?: WebSubAgentProgress[]
     tokenUsage?: TokenUsageInfo | null
   }): void {
-    // ── PhaseDone → finalizing transition ──
-    // When phase='done' arrives, enter the 'finalizing' state instead of
-    // immediately resetting. This keeps the progress snapshot visible (tools
-    // marked done, no pulse animation) while waiting for the final `text`
-    // event to arrive. A 3s timeout guards against missing text events.
+    // ── PhaseDone → immediate reset ──
+    // The backend guarantees that a `text` event (final assistant reply)
+    // arrives after PhaseDone. The progress store should clear immediately
+    // on PhaseDone — the final text is handled by onAssistantComplete.
+    // No finalizing state, no timeout hack.
     if (opts.phase === 'done') {
-      this.mutate((draft) => {
-        // Mark all active tools as completed
-        if (draft.activeTools.length > 0) {
-          draft.completedTools = [...draft.completedTools, ...draft.activeTools]
-          draft.activeTools = []
-        }
-        draft.phase = 'finalizing'
-        draft.streaming = false
-      })
-      this.startFinalizingTimeout()
+      this.reset()
       return
-    }
-
-    // Cancel any pending finalizing timeout — a new structured event means
-    // the agent is active again (e.g. a new turn started after PhaseDone).
-    if (this.finalizingTimer) {
-      clearTimeout(this.finalizingTimer)
-      this.finalizingTimer = null
     }
 
     this.mutate((draft) => {
@@ -467,24 +445,11 @@ export class ProgressStore {
 
   dispose(): void {
     this.disposed = true
-    if (this.finalizingTimer) {
-      clearTimeout(this.finalizingTimer)
-      this.finalizingTimer = null
-    }
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null
     }
     this.listeners.clear()
-  }
-
-  /** Start a 1.5s timeout to auto-reset if the `text` event never arrives. */
-  private startFinalizingTimeout(): void {
-    if (this.finalizingTimer) clearTimeout(this.finalizingTimer)
-    this.finalizingTimer = setTimeout(() => {
-      this.finalizingTimer = null
-      this.reset()
-    }, 1500)
   }
 
   /* ── internals ── */

@@ -434,32 +434,16 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 	}
 
 	// Broadcast PhaseDone to ALL registered channels that implement
-	// ProgressSender — including plugin channels. Uses channelRange to
-	// iterate; falls back to channelFinder for standalone mode.
-	if a.channelRange != nil {
-		a.channelRange(func(name string, ch channelpkg.Channel) bool {
-			if ps, ok := ch.(channelpkg.ProgressSender); ok {
-				ps.SendProgress(key, payload)
-			}
-			return true
-		})
+	// ProgressSender — including plugin channels.
+	if a.channelRange == nil {
 		return
 	}
-	// Fallback: standalone mode without channelRange
-	if a.channelFinder == nil {
-		return
-	}
-	for _, name := range []string{"cli", "web"} {
-		ch, ok := a.channelFinder(name)
-		if !ok {
-			continue
+	a.channelRange(func(name string, ch channelpkg.Channel) bool {
+		if ps, ok := ch.(channelpkg.ProgressSender); ok {
+			ps.SendProgress(key, payload)
 		}
-		if localCh, ok := ch.(*cli.CLIChannel); ok {
-			localCh.SendProgress(key, payload)
-		} else if remoteCh, ok := ch.(channelpkg.ProgressSender); ok {
-			remoteCh.SendProgress(key, payload)
-		}
-	}
+		return true
+	})
 }
 
 // destroyInteractiveSession removes all resources for an interactive SubAgent session:
