@@ -174,6 +174,36 @@ const COMPONENTS = {
 const REMARK_PLUGINS: PluggableList = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS: PluggableList = [[rehypeKatex, { throwOnError: false }]]
 
+/**
+ * remark-math follows Markdown math syntax ($ / $$), while models commonly
+ * emit TeX delimiters (\\( / \\[). Normalize only outside fenced and inline
+ * code so both notations reach the same authoritative remark-math parser.
+ */
+function normalizeMathDelimiters(markdown: string): string {
+  const lines = markdown.split('\n')
+  let fence = ''
+  return lines.map((line) => {
+    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/)
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0]
+      if (!fence) fence = marker
+      else if (fence === marker) fence = ''
+      return line
+    }
+    if (fence) return line
+
+    const parts = line.split(/(`+[^`]*`+)/g)
+    return parts.map((part, index) => {
+      if (index % 2 === 1) return part
+      return part
+        .replace(/\\\[/g, () => '$$')
+        .replace(/\\\]/g, () => '$$')
+        .replace(/\\\(/g, () => '$')
+        .replace(/\\\)/g, () => '$')
+    }).join('')
+  }).join('\n')
+}
+
 function clipTextNodes(root: HTMLElement, visibleChars: number): void {
   let remaining = Math.max(0, visibleChars)
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
@@ -197,7 +227,7 @@ function clipTextNodes(root: HTMLElement, visibleChars: number): void {
 const ParsedMarkdown = memo(function ParsedMarkdown({ content }: { content: string }) {
   return (
     <Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={COMPONENTS}>
-      {content}
+      {normalizeMathDelimiters(content)}
     </Markdown>
   )
 })

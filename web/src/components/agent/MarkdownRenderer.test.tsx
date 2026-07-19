@@ -58,6 +58,22 @@ describe('MarkdownRenderer', () => {
     expect(container.querySelector('.katex-display')).not.toBeNull()
   })
 
+  it('renders LaTeX-style inline and display delimiters', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'Inline \\(x^2\\) here.\n\n\\[\nE=mc^2\n\\]'} />,
+    )
+    expect(container.querySelectorAll('.katex').length).toBeGreaterThan(0)
+    expect(container.querySelector('.katex-display')).not.toBeNull()
+  })
+
+  it('does not convert LaTeX delimiters inside fenced code', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'```tex\n\\[not math\\]\n```'} />,
+    )
+    expect(container.querySelector('.katex')).toBeNull()
+    expect(container.querySelector('code')).toHaveTextContent('\\[not math\\]')
+  })
+
   it('renders links with safe target/rel', () => {
     const { container } = render(
       <MarkdownRenderer content={'[xbot](https://example.com)'} />,
