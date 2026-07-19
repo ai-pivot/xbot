@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"xbot/protocol"
 )
 
 // ==================== flattenLines ====================
@@ -854,16 +852,12 @@ func TestSubAgentSessionKeyConversion(t *testing.T) {
 		Status:     "running",
 	}}
 
-	for name, converted := range map[string][]protocol.SubAgentInfo{
-		"cli": convertCLISubAgentTree(nodes),
-		"web": convertWsSubAgentTree(nodes),
-	} {
-		if len(converted) != 1 || converted[0].SessionKey != parentKey {
-			t.Fatalf("%s conversion = %#v, want parent key %q", name, converted, parentKey)
-		}
-		if len(converted[0].Children) != 1 || converted[0].Children[0].SessionKey != childKey {
-			t.Fatalf("%s nested conversion = %#v, want child key %q", name, converted, childKey)
-		}
+	converted := convertCLISubAgentTree(nodes)
+	if len(converted) != 1 || converted[0].SessionKey != parentKey {
+		t.Fatalf("conversion = %#v, want parent key %q", converted, parentKey)
+	}
+	if len(converted[0].Children) != 1 || converted[0].Children[0].SessionKey != childKey {
+		t.Fatalf("nested conversion = %#v, want child key %q", converted, childKey)
 	}
 }
 

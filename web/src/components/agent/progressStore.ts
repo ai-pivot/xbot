@@ -13,8 +13,9 @@
  *    are preserved from the current state; structured fields (phase, iteration,
  *    activeTools, completedTools) are replaced.
  *
- * 3. **iteration snapshot** — when iteration changes (N→N+1), the previous
- *    iteration's reasoning/thinking/tools are snapshotted into iterationHistory.
+ * 3. **semantic snapshot + log** — ProgressEvent.Seq is the monotonic log ID.
+ *    IterationHistory is accepted only from the backend; the client never
+ *    synthesizes completed iterations while advancing the current snapshot.
  *
  * 4. **tool dedup** — generating-status tools are never deduped (each call shows
  *    independently). running/done/error tools are deduped by name+label.
@@ -317,6 +318,7 @@ export class ProgressStore {
    * Structured fields (phase, iteration, activeTools, completedTools) are replaced.
    */
   setStructuredTools(opts: {
+    eventSeq?: number
     phase?: string
     iteration?: number
     content?: string
@@ -339,27 +341,25 @@ export class ProgressStore {
       return
     }
 
+    // ProgressEvent.Seq is the semantic log ID assigned before channel fan-out.
+    // Replayed/duplicate events at or below the installed snapshot watermark
+    // are no-ops. Transport envelope seq remains independent.
+    if (opts.eventSeq !== undefined && opts.eventSeq <= this.current.eventSeq) return
+
     this.mutate((draft) => {
-      // ── iteration snapshot ──
-      // When iteration advances (N→N+1), snapshot the previous iteration.
-      // lastIter starts at -1; first advance sets it without snapshotting.
+      if (opts.eventSeq !== undefined) draft.eventSeq = opts.eventSeq
+      // ── semantic log watermark ──
+      // IterationHistory from the backend is the only authoritative completed-
+      // iteration log for every channel. The client must never synthesize a
+      // second log entry while advancing the current snapshot: after reconnect,
+      // the installed snapshot and replayed delta can overlap, and local
+      // snapshotting would render the same tool group twice.
       if (opts.iteration !== undefined && opts.iteration > draft.lastIter) {
         const hadPreviousIteration = draft.lastIter >= 0
-        if (hadPreviousIteration) {
-          const snap: WebIteration = {
-            iteration: draft.lastIter,
-            thinking: draft.streamContent || draft.content,
-            reasoning: draft.lastReasoning || draft.reasoningStreamContent,
-            tools: dedupTools(draft.completedTools),
-            toolCount: draft.completedTools.length,
-          }
-          draft.iterationHistory = [...draft.iterationHistory, snap]
-        }
         draft.lastIter = opts.iteration
         // Clear stream/structured fields from the previous iteration so the
-        // new iteration starts clean. Only clear when there was an actual
-        // previous iteration (lastIter was >= 0 before the update).
-        // Mirrors TUI: iteration switch = sameIter=false → no carry-forward.
+        // new iteration starts clean. The completed iteration itself arrives
+        // through opts.iterationHistory with its backend iteration watermark.
         if (hadPreviousIteration) {
           draft.streamContent = ''
           draft.reasoningStreamContent = ''
@@ -500,6 +500,7 @@ export class ProgressStore {
     if (this.disposed || !this.dirty) return
     this.dirty = false
     this.snapshot = {
+      eventSeq: this.current.eventSeq,
       phase: this.current.phase,
       iteration: this.current.iteration,
       streamContent: this.current.streamContent,

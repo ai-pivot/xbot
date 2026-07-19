@@ -2,9 +2,10 @@ package channel
 
 import "xbot/protocol"
 
-// ProgressSender is implemented by channels that can send progress events
-// to remote or in-process clients (RemoteCLIChannel, ChannelCliChannel).
-// Used by agent's buildCLIProgressEventHandler for type assertion.
+// ProgressSender is implemented by channels that transport the shared
+// protocol.ProgressEvent to remote or in-process clients. The agent's single
+// progress producer broadcasts the same immutable snapshot/log event to each
+// registered ProgressSender.
 type ProgressSender interface {
 	SendProgress(chatID string, payload *protocol.ProgressEvent)
 	SendStreamContent(chatID, content, reasoning string)

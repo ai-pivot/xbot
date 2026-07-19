@@ -165,7 +165,7 @@ describe('useProgressStream event dispatch', () => {
     expect(complete.mock.calls.map((call) => call[0])).toEqual(['first', 'second'])
   })
 
-  it('enters finalizing state when recovery reports a terminal phase', () => {
+  it('clears live progress when recovery reports a terminal phase', () => {
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
     )
@@ -174,12 +174,10 @@ describe('useProgressStream event dispatch', () => {
 
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
 
-    // In finalizing state: snapshot stays visible but isStreaming is false
-    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
-    expect(result.current.progressSnapshot.phase).toBe('finalizing')
+    expect(result.current.progressSnapshot.phase).toBe('')
 
-    // When text arrives, the store resets (finalizing → idle)
     emitAndFlush({ type: 'text', chat_id: 'c1', content: 'final' })
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
@@ -369,6 +367,45 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.progressSnapshot.iterationHistory[0].tools[0].name).toBe('Grep')
     expect(result.current.progressSnapshot.subAgents[0].role).toBe('review')
     expect(result.current.progressSnapshot.subAgents[0].children?.[0].role).toBe('fix')
+  })
+
+  it('installs a busy snapshot watermark and ignores replayed semantic logs', () => {
+    const skillIteration = {
+      iteration: 1,
+      completed_tools: [
+        { name: 'Skill', label: 'debug', status: 'done' },
+        { name: 'Read', label: 'progressStore.ts', status: 'done' },
+      ],
+    }
+    const { result } = renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        initialProgress: {
+          seq: 20,
+          phase: 'thinking',
+          iteration: 2,
+          iteration_history: [skillIteration],
+        },
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+    act(() => {
+      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+    })
+
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: {
+        seq: 20,
+        phase: 'thinking',
+        iteration: 2,
+        iteration_history: [skillIteration],
+      } as ProgressEvent,
+    })
+
+    expect(result.current.progressSnapshot.eventSeq).toBe(20)
+    expect(result.current.progressSnapshot.iterationHistory).toHaveLength(1)
+    expect(result.current.progressSnapshot.iterationHistory[0].tools).toHaveLength(2)
   })
 
   it('does not hydrate when initialProgress phase is done', () => {

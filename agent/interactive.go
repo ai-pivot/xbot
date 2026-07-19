@@ -185,13 +185,30 @@ func (a *Agent) cleanupExpiredSessions() {
 	})
 }
 
-func progressSnapshotWithoutHistory(src *protocol.ProgressEvent) *protocol.ProgressEvent {
+func cloneProgressEvent(src *protocol.ProgressEvent) *protocol.ProgressEvent {
 	if src == nil {
 		return nil
 	}
 	clone := *src
-	clone.IterationHistory = nil
+	clone.ActiveTools = append([]protocol.ToolProgress(nil), src.ActiveTools...)
+	clone.CompletedTools = append([]protocol.ToolProgress(nil), src.CompletedTools...)
+	clone.StreamingTools = append([]protocol.ToolProgress(nil), src.StreamingTools...)
+	clone.SubAgents = append([]protocol.SubAgentInfo(nil), src.SubAgents...)
+	clone.Todos = append([]protocol.TodoItem(nil), src.Todos...)
+	clone.IterationHistory = progressHistoryWithoutNested(src.IterationHistory)
+	if src.TokenUsage != nil {
+		tokens := *src.TokenUsage
+		clone.TokenUsage = &tokens
+	}
 	return &clone
+}
+
+func progressSnapshotWithoutHistory(src *protocol.ProgressEvent) *protocol.ProgressEvent {
+	clone := cloneProgressEvent(src)
+	if clone != nil {
+		clone.IterationHistory = nil
+	}
+	return clone
 }
 
 func progressHistoryWithoutNested(hist []protocol.ProgressEvent) []protocol.ProgressEvent {

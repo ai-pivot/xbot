@@ -185,7 +185,7 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
     store.dispose()
   })
 
-  it('iteration snapshot: iteration change snapshots previous iteration and clears stream fields', () => {
+  it('iteration advance consumes only backend log entries and clears stream fields', () => {
     const store = new ProgressStore()
     // First iteration
     store.setStructuredTools({ phase: 'thinking', iteration: 1 })
@@ -198,8 +198,18 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
     })
     flushRaf()
 
-    // Second iteration — should snapshot iteration 1 and clear stream fields
-    store.setStructuredTools({ phase: 'thinking', iteration: 2 })
+    // Second iteration carries the authoritative completed-iteration log delta.
+    store.setStructuredTools({
+      phase: 'thinking',
+      iteration: 2,
+      iterationHistory: [{
+        iteration: 1,
+        thinking: '',
+        reasoning: 'iter1 reasoning',
+        tools: [tool({ name: 'Read', status: 'done', summary: 'ok' })],
+        toolCount: 1,
+      }],
+    })
     flushRaf()
 
     const snap = store.getSnapshot()
@@ -218,12 +228,48 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
     store.dispose()
   })
 
-  it('iteration snapshot: no snapshot on first iteration (lastIter=-1)', () => {
+  it('does not synthesize a semantic log entry when only iteration advances', () => {
     const store = new ProgressStore()
     store.setStructuredTools({ phase: 'thinking', iteration: 1 })
     flushRaf()
     expect(store.getSnapshot().iterationHistory).toHaveLength(0)
     expect(store.getSnapshot().lastIter).toBe(1)
+    store.dispose()
+  })
+
+  it('does not duplicate installed snapshot log when the same backend delta is replayed', () => {
+    const store = new ProgressStore()
+    const skillIteration = {
+      iteration: 1,
+      thinking: '',
+      reasoning: '',
+      tools: [
+        tool({ name: 'Skill', label: 'debug', status: 'done' }),
+        tool({ name: 'Read', label: 'progressStore.ts', status: 'done' }),
+        tool({ name: 'Grep', label: 'iterationHistory', status: 'done' }),
+      ],
+      toolCount: 3,
+    }
+    store.replace({
+      phase: 'thinking',
+      iteration: 2,
+      eventSeq: 10,
+      lastIter: 2,
+      iterationHistory: [skillIteration],
+    })
+    flushRaf()
+
+    // Busy reconnect can replay the delta already included in the installed
+    // active-progress snapshot. Iteration is the semantic log watermark.
+    store.setStructuredTools({
+      eventSeq: 10,
+      phase: 'thinking',
+      iteration: 2,
+      iterationHistory: [skillIteration],
+    })
+    flushRaf()
+
+    expect(store.getSnapshot().iterationHistory).toEqual([skillIteration])
     store.dispose()
   })
 
@@ -249,7 +295,7 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
     store.dispose()
   })
 
-  it('carries subAgents forward in the same iteration and ignores empty frames', () => {
+  it('carries subAgents forward when structured frames omit the field', () => {
     const store = new ProgressStore()
     store.setStructuredTools({
       phase: 'tool_exec',
@@ -263,9 +309,6 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
     flushRaf()
     expect(store.getSnapshot().subAgents).toHaveLength(1)
 
-    store.setStructuredTools({ phase: 'thinking', iteration: 1, subAgents: [] })
-    flushRaf()
-    expect(store.getSnapshot().subAgents).toHaveLength(1)
     store.dispose()
   })
 
@@ -406,14 +449,13 @@ describe('dedupMessages', () => {
     expect(result).toHaveLength(4) // all kept — DB ids don't start with 'asst-'
   })
 
-  it('dedupes live-append messages (asst- prefix) with same role+content', () => {
+  it('does not infer identity from generated ids or repeated content', () => {
     const msgs = [
       { turnID: 0, role: 'assistant', id: 'asst-100-0', content: 'hello' },
-      { turnID: 0, role: 'assistant', id: 'asst-101-1', content: 'hello' }, // dup
-      { turnID: 0, role: 'assistant', id: 'asst-102-2', content: 'world' }, // different content
+      { turnID: 0, role: 'assistant', id: 'asst-101-1', content: 'hello' },
+      { turnID: 0, role: 'assistant', id: 'asst-102-2', content: 'world' },
     ]
     const result = dedupMessages(msgs)
-    expect(result).toHaveLength(2) // 'hello' deduped to 1, 'world' kept
-    expect(result.filter((m) => m.content === 'hello')).toHaveLength(1)
+    expect(result).toEqual(msgs)
   })
 })

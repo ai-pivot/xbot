@@ -106,6 +106,7 @@ export type LiveProgress = ProgressSnapshot
 
 /** Empty snapshot — the idle state (Spec 3 alias). */
 export const EMPTY_LIVE_PROGRESS: LiveProgress = {
+  eventSeq: 0,
   phase: '',
   iteration: 0,
   streamContent: '',

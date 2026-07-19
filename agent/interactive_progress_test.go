@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	channelpkg "xbot/channel"
 	"xbot/llm"
 	"xbot/protocol"
 )
@@ -15,6 +16,61 @@ import (
 // This is the core fix: before, only ProgressNotifier gated autoNotify,
 // so background SubAgents with only ProgressEventHandler had autoNotify=false
 // and all progress events were silently dropped.
+type recordingProgressChannel struct {
+	name   string
+	events []*protocol.ProgressEvent
+}
+
+func (c *recordingProgressChannel) Name() string { return c.name }
+func (c *recordingProgressChannel) Start() error { return nil }
+func (c *recordingProgressChannel) Stop()        {}
+func (c *recordingProgressChannel) Send(channelpkg.OutboundMsg) (string, error) {
+	return "", nil
+}
+func (c *recordingProgressChannel) SendProgress(_ string, event *protocol.ProgressEvent) {
+	c.events = append(c.events, event)
+}
+func (c *recordingProgressChannel) SendStreamContent(_, _, _ string) {}
+
+func TestBuildProgressEventHandler_BroadcastsOneSemanticLogToAllChannels(t *testing.T) {
+	a := NewTestAgent()
+	cliChannel := &recordingProgressChannel{name: "cli"}
+	webChannel := &recordingProgressChannel{name: "web"}
+	pluginChannel := &recordingProgressChannel{name: "plugin-test"}
+	channels := []channelpkg.Channel{cliChannel, webChannel, pluginChannel}
+	a.channelRange = func(fn func(name string, ch channelpkg.Channel) bool) {
+		for _, ch := range channels {
+			if !fn(ch.Name(), ch) {
+				return
+			}
+		}
+	}
+
+	handler := a.buildProgressEventHandler("chat-1", "web")
+	if handler == nil {
+		t.Fatal("buildProgressEventHandler returned nil")
+	}
+	handler(&ProgressEvent{Structured: &StructuredProgress{
+		Seq: 1, Phase: PhaseToolExec, Iteration: 1,
+		CompletedTools: []ToolProgress{{Name: "Skill", Label: "debug", Status: ToolDone, Iteration: 1}},
+	}})
+	handler(&ProgressEvent{Structured: &StructuredProgress{
+		Seq: 2, Phase: PhaseThinking, Iteration: 2,
+	}})
+
+	for _, ch := range []*recordingProgressChannel{cliChannel, webChannel, pluginChannel} {
+		if len(ch.events) != 2 {
+			t.Fatalf("%s received %d events, want 2", ch.name, len(ch.events))
+		}
+		if ch.events[0] == cliChannel.events[0] && ch != cliChannel {
+			t.Fatalf("%s received a shared mutable event pointer", ch.name)
+		}
+		if len(ch.events[1].IterationHistory) != 1 || ch.events[1].IterationHistory[0].Iteration != 1 {
+			t.Fatalf("%s delta = %#v, want iteration 1 exactly once", ch.name, ch.events[1].IterationHistory)
+		}
+	}
+}
+
 func TestAutoNotify_DerivedFromBothHandlers(t *testing.T) {
 	tests := []struct {
 		name                 string

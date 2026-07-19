@@ -186,10 +186,11 @@ export function useProgressStream({
     // (finalizedRef is false AND store is empty = fresh load/reconnect).
     if (finalizedRef.current) return
     const currentSnap = store.getSnapshot()
-    if (hasVisibleProgress(currentSnap)) return // already have live data
     const live = historyProgressToLive(initialProgress)
-    // Only hydrate if we got something meaningful (non-empty snapshot)
-    if (live.phase) {
+    // Install a newer authoritative snapshot even when a cache snapshot is
+    // already visible. Seq is the semantic watermark; older/equal snapshots
+    // cannot overwrite live state.
+    if (live.phase && live.eventSeq >= currentSnap.eventSeq) {
       if (progressCacheKey) progressSnapshotCache.set(progressCacheKey, initialProgress as ProgressEvent)
       store.replace(live)
     }
@@ -304,7 +305,10 @@ function handleProgressMessage(
       if (p.phase === 'done') {
         // PhaseDone: reset immediately. The backend guarantees a `text` event
         // follows with the final assistant reply. No finalizing state needed.
-        store.setStructuredTools({ phase: 'done' })
+        store.setStructuredTools({
+          eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
+          phase: 'done',
+        })
         return
       }
       // A non-done structured event indicates active work — reset the finalize
@@ -359,6 +363,7 @@ function handleProgressMessage(
 
       // Apply structured event with carry-forward (stream-only fields preserved)
       store.setStructuredTools({
+        eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
         phase,
         iteration,
         content,

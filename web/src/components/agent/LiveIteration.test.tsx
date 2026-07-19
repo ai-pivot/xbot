@@ -16,6 +16,7 @@ import type { ProgressSnapshot } from '@/types/shared'
 
 function makeSnapshot(overrides: Partial<ProgressSnapshot> = {}): ProgressSnapshot {
   return {
+    eventSeq: 0,
     phase: 'thinking',
     iteration: 1,
     streamContent: '',

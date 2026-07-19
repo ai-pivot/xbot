@@ -343,9 +343,9 @@ type Agent struct {
 	// key: "channel:chatID" -> bool
 	pendingCancel sync.Map
 
-	// lastProgressSnapshot stores the latest CLIProgressPayload per active chat,
-	// updated by ProgressEventHandler during processing. Used by GetActiveProgress
-	// RPC to restore progress state on mid-session reconnect.
+	// lastProgressSnapshot stores the latest channel-agnostic progress snapshot
+	// per active chat, updated before broadcasting structured progress. Used by
+	// GetActiveProgress to restore any channel after a mid-session reconnect.
 	// key: "channel:chatID" -> *protocol.ProgressEvent
 	lastProgressSnapshot sync.Map
 
@@ -3233,8 +3233,8 @@ func (a *Agent) ResolveTool(sessionKey string, tenantID int64, name string) (too
 }
 
 // emitBuiltinProgress sends a progress event for builtin commands (/compress, /new)
-// that bypass engine.Run. It uses the same CLI channel path as buildCLIProgressEventHandler
-// so the snapshot is stored for mid-session reconnect.
+// that bypass engine.Run. It follows the same channel-agnostic fan-out and
+// snapshot contract as buildProgressEventHandler.
 func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) {
 	progressKey := qualifyChatID(chName, chatID)
 
@@ -3250,15 +3250,15 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 		Iteration: 0,
 	}
 
-	// Send via CLI channel
-	if a.channelFinder != nil {
-		if ch, ok := a.channelFinder("cli"); ok {
-			if cc, ok := ch.(*cli.CLIChannel); ok {
-				cc.SendProgress(chatID, payload)
-			} else if rc, ok := ch.(channel.ProgressSender); ok {
-				rc.SendProgress(chatID, payload)
+	// Builtin commands use the same channel-agnostic fan-out contract as
+	// engine progress. Channels are transports only.
+	if a.channelRange != nil {
+		a.channelRange(func(_ string, ch channel.Channel) bool {
+			if sender, ok := ch.(channel.ProgressSender); ok {
+				sender.SendProgress(chatID, payload)
 			}
-		}
+			return true
+		})
 	}
 
 	// Store snapshot for mid-session reconnect
@@ -3288,14 +3288,13 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 		HistoryCompacted: historyCompacted,
 	}
 
-	if a.channelFinder != nil {
-		if ch, ok := a.channelFinder("cli"); ok {
-			if cc, ok := ch.(*cli.CLIChannel); ok {
-				cc.SendProgress(chatID, payload)
-			} else if rc, ok := ch.(channel.ProgressSender); ok {
-				rc.SendProgress(chatID, payload)
+	if a.channelRange != nil {
+		a.channelRange(func(_ string, ch channel.Channel) bool {
+			if sender, ok := ch.(channel.ProgressSender); ok {
+				sender.SendProgress(chatID, payload)
 			}
-		}
+			return true
+		})
 	}
 
 	a.lastProgressSnapshot.Delete(progressKey)

@@ -125,6 +125,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     .map(normalizeWebIteration)
     .filter(Boolean) as WebIteration[]
   return {
+    eventSeq: typeof p.seq === 'number' ? p.seq : 0,
     phase: p.phase,
     iteration: typeof p.iteration === 'number' ? p.iteration : 0,
     streamContent: p.stream_content ?? '',

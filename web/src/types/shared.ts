@@ -301,6 +301,8 @@ export interface WebIteration {
  * `completedTools`) are replaced by progress_structured events.
  */
 export interface ProgressSnapshot {
+  /** Monotonic semantic progress-log ID from protocol.ProgressEvent.Seq. */
+  eventSeq: number
   phase: string
   iteration: number
   streamContent: string
@@ -333,6 +335,7 @@ export interface TokenUsageInfo {
 
 /** Empty snapshot — the idle state. */
 export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
+  eventSeq: 0,
   phase: '',
   iteration: 0,
   streamContent: '',

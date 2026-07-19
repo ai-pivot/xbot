@@ -25,6 +25,8 @@ export interface HistMsg {
 
 /** Raw active-progress snapshot (protocol.ProgressEvent). */
 export interface HistProgress {
+  /** Semantic progress-log watermark (protocol.ProgressEvent.Seq). */
+  seq?: number
   phase?: string
   iteration?: number
   thinking?: string

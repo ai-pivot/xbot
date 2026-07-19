@@ -1,5 +1,22 @@
 # channel/ — Channel Adapters
 
+## Progress snapshot + semantic log
+
+Structured progress has one channel-agnostic production path. The agent
+converts each engine event to one `protocol.ProgressEvent`, assigns its
+monotonic semantic `Seq`, derives the completed-iteration delta once, stores the
+current snapshot without cumulative history, then broadcasts an isolated clone of that semantic event
+to every registered `channel.ProgressSender` (CLI, Web, and plugin channels).
+Channels are transports only; they must not derive iteration history or use
+channel-specific progress reducers.
+
+Reconnect consumers install the active snapshot and use `ProgressEvent.Seq` as
+the semantic watermark. Events with `seq <= snapshot.seq` are replayed or stale
+and are ignored. `IterationHistory` is the authoritative completed-iteration
+log, keyed by iteration; clients never synthesize an iteration when the current
+iteration advances. SSE/WS envelope sequence numbers remain transport replay
+IDs and are independent from the semantic progress watermark.
+
 ## Package Structure (Refactored)
 
 The `channel` package has been split into a shared root package plus implementation sub-packages:
