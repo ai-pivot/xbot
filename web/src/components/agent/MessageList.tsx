@@ -99,38 +99,41 @@ export function MessageList({
   const { t } = useI18n()
 
   // Combined row list: committed messages + optional live streaming row.
-  // When the last committed message is an assistant from the active turn
-  // (persisted via incremental persistence), attach liveProgress to it
-  // instead of appending a separate liveMessage row. This mirrors CLI's
-  // acceptProgress: the history assistant IS the streaming slot.
-  // The eventSeq guard handles the finalize transition (live → committed
-  // with matching SSE seq) where the row is already committed.
+  //
+  // ALWAYS remove intermediate assistant messages after the last user message.
+  // ConvertMessagesToHistory can split one turn into multiple assistant
+  // messages (when a Content assistant appears between ToolCalls). Without
+  // this, both assistants render the same tools — once from DB iterations
+  // and once from the progress snapshot — causing duplicates.
+  // Only the LAST assistant after the last user message is kept; all earlier
+  // ones are absorbed (their tools are in the snapshot or in the last
+  // assistant's iterations).
   const rows = useMemo<ChatMessage[]>(() => {
-    if (!liveMessage) return messages
+    // Remove intermediate assistant messages after the last user message.
+    // Only apply when the last message is an assistant (active turn) —
+    // if the last message is a user message, ALL previous assistants are
+    // from completed turns and must be preserved.
     const last = messages[messages.length - 1]
-    if (last && last.role === 'assistant' &&
-        last.eventSeq != null && liveMessage.eventSeq != null &&
-        last.eventSeq === liveMessage.eventSeq) {
-      return messages
+    const deduped = [...messages]
+    if (last && last.role === 'assistant') {
+      for (let i = deduped.length - 2; i >= 0; i--) {
+        if (deduped[i].role === 'user') break
+        if (deduped[i].role === 'assistant') deduped.splice(i, 1)
+      }
+    }
+
+    if (!liveMessage) return deduped
+    const lastDeduped = deduped[deduped.length - 1]
+    if (lastDeduped && lastDeduped.role === 'assistant' &&
+        lastDeduped.eventSeq != null && liveMessage.eventSeq != null &&
+        lastDeduped.eventSeq === liveMessage.eventSeq) {
+      return deduped
     }
     // Active turn: last persisted assistant is the in-flight streaming slot.
-    if (last && last.role === 'assistant' && liveMessage.isPartial) {
-      // Remove intermediate assistant messages after the last user message.
-      // ConvertMessagesToHistory can split one turn into multiple assistant
-      // messages (when a Content assistant appears between ToolCalls). Only
-      // the LAST assistant receives liveProgress; earlier ones would render
-      // DB iterations that overlap with the snapshot's iterationHistory /
-      // completedTools, causing duplicate tool rendering.
-      // The snapshot is the single source of truth for the active turn —
-      // intermediate DB assistants are absorbed into it.
-      const filtered = [...messages]
-      for (let i = filtered.length - 2; i >= 0; i--) {
-        if (filtered[i].role === 'user') break
-        if (filtered[i].role === 'assistant') filtered.splice(i, 1)
-      }
-      return filtered
+    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial) {
+      return deduped
     }
-    return [...messages, liveMessage]
+    return [...deduped, liveMessage]
   }, [messages, liveMessage])
   // liveId points to the row that receives liveProgress. When the last
   // history assistant is the active turn, it IS the streaming slot.
