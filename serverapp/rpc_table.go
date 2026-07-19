@@ -559,7 +559,17 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	t["set_llm_concurrency"] = rpc1void(func(ctx context.Context, p struct {
 		Personal int `json:"personal"`
 	}) error {
-		return h.Ag.SetLLMConcurrencyForUserID(rpcUserID(ctx), p.Personal)
+		if err := h.Ag.SetLLMConcurrencyForUserID(rpcUserID(ctx), p.Personal); err != nil {
+			return err
+		}
+		// Rebuild the global semaphore immediately. SetMaxConcurrency is a
+		// global operation (not per-user), so no senderID is needed.
+		if isAdmin(ctx) {
+			h.Cfg.Agent.MaxConcurrency = p.Personal
+			h.Ag.SetMaxConcurrency(p.Personal)
+			_ = saveServerConfig(h.Cfg)
+		}
+		return nil
 	})
 	t["set_default_thinking_mode"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Mode string `json:"mode"`

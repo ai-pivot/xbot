@@ -108,11 +108,6 @@ type SettingsCallbacks struct {
 	// SandboxIsExporting 检查用户是否正在进行 export+import
 	SandboxIsExporting func(senderID string) bool
 
-	// LLMGetPersonalConcurrency 获取用户个人 LLM 并发上限
-	LLMGetPersonalConcurrency func(senderID string) int
-	// LLMSetPersonalConcurrency 设置用户个人 LLM 并发上限
-	LLMSetPersonalConcurrency func(senderID string, personal int) error
-
 	// Model tier get/set (per-user config, stored in user_settings DB)
 	// LLMGetModelTier returns the current (subID, model) mapping for a tier
 	// ("vanguard"/"balance"/"swift") for the given user. subID may be empty

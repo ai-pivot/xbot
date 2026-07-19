@@ -132,9 +132,6 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		case "model_select_form":
 			selectName = "model_select"
 			delegateAction = "settings_set_model"
-		case "concurrency_form":
-			selectName = "conc_select"
-			delegateAction = "settings_set_concurrency"
 		case "thinking_mode_form":
 			selectName = "thinking_mode_select"
 			delegateAction = "settings_set_thinking_mode"
@@ -239,30 +236,6 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			}
 		}
 		return f.BuildModelsCard(ctx, senderID)
-
-	case "settings_set_concurrency":
-		concStr := parsed["conc"]
-		if concStr == "" {
-			if opt, ok := actionData["selected_option"].(string); ok {
-				concStr = opt
-			}
-		}
-		if concStr == "" {
-			return nil, fmt.Errorf("missing conc")
-		}
-		conc, err := strconv.Atoi(concStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid conc: %v", err)
-		}
-		if conc < 1 || conc > 20 {
-			return nil, fmt.Errorf("concurrency must be between 1 and 20, got %d", conc)
-		}
-		if f.settingsCallbacks.LLMSetPersonalConcurrency != nil {
-			if err := f.settingsCallbacks.LLMSetPersonalConcurrency(senderID, conc); err != nil {
-				return nil, fmt.Errorf("设置并发数失败: %v", err)
-			}
-		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
 
 	case "settings_set_thinking_mode":
 		mode := parsed["mode"]
@@ -1071,45 +1044,6 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 
 		elements = append(elements, map[string]any{"tag": "hr"})
 	}
-
-	// --- LLM concurrency (personal) ---
-	personalConc := 3 // default
-	if f.settingsCallbacks.LLMGetPersonalConcurrency != nil {
-		personalConc = f.settingsCallbacks.LLMGetPersonalConcurrency(senderID)
-	}
-
-	concOptions := []map[string]any{
-		{"text": map[string]any{"tag": "plain_text", "content": "1"}, "value": "1"},
-		{"text": map[string]any{"tag": "plain_text", "content": "2"}, "value": "2"},
-		{"text": map[string]any{"tag": "plain_text", "content": "3"}, "value": "3"},
-		{"text": map[string]any{"tag": "plain_text", "content": "5"}, "value": "5"},
-		{"text": map[string]any{"tag": "plain_text", "content": "8"}, "value": "8"},
-		{"text": map[string]any{"tag": "plain_text", "content": "10"}, "value": "10"},
-		{"text": map[string]any{"tag": "plain_text", "content": "不限"}, "value": "0"},
-	}
-
-	elements = append(elements, map[string]any{"tag": "hr"})
-	elements = append(elements, map[string]any{
-		"tag":     "markdown",
-		"content": "**个人 LLM 并发限制**",
-	})
-	elements = append(elements, buildSelectFormRow(
-		"并发上限",
-		fmt.Sprintf("%d", personalConc),
-		"concurrency_form",
-		map[string]any{
-			"tag":            "select_static",
-			"name":           "conc_select",
-			"placeholder":    map[string]any{"tag": "plain_text", "content": "选择并发数..."},
-			"initial_option": fmt.Sprintf("%d", personalConc),
-			"options":        concOptions,
-			"value": map[string]string{
-				"action_data": mustMapToJSON(map[string]string{
-					"action": "settings_set_concurrency",
-				}),
-			},
-		},
-	)...)
 
 	// --- Thinking mode (global user preference) ---
 	currentThinkingMode := ""

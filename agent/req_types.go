@@ -26,8 +26,6 @@ const (
 	MethodGetUserMaxOutputTokens       = "get_user_max_output_tokens"
 	MethodSetUserThinkingMode          = "set_user_thinking_mode"
 	MethodGetUserThinkingMode          = "get_user_thinking_mode"
-	MethodSetLLMConcurrency            = "set_llm_concurrency"
-	MethodGetLLMConcurrency            = "get_llm_concurrency"
 	MethodClearProxyLLM                = "clear_proxy_llm"
 	MethodSetDefaultThinkingMode       = "set_default_thinking_mode"
 	MethodGetDefaultModel              = "get_default_model"
@@ -154,11 +152,6 @@ type setUserThinkingModeReq struct {
 	Mode     string `json:"mode"`
 }
 
-type setLLMConcurrencyReq struct {
-	SenderID string `json:"sender_id"`
-	Personal int    `json:"personal"`
-}
-
 type setDefaultThinkingModeReq struct {
 	Mode string `json:"mode"`
 }
@@ -191,10 +184,6 @@ type getUserMaxOutputTokensReq struct {
 }
 
 type getUserThinkingModeReq struct {
-	SenderID string `json:"sender_id"`
-}
-
-type getLLMConcurrencyReq struct {
 	SenderID string `json:"sender_id"`
 }
 

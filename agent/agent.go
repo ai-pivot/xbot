@@ -1915,45 +1915,35 @@ func (a *Agent) SetSandbox(sb tools.Sandbox, mode string) {
 	}
 }
 
-// GetLLMConcurrency 获取用户个人 LLM 并发上限配置。
-func (a *Agent) GetLLMConcurrency(senderID string) int {
-	return a.userSys.llmFactory.GetLLMConcurrency(senderID)
-}
-
-// SetLLMConcurrency 设置用户个人 LLM 并发上限配置。
-func (a *Agent) SetLLMConcurrency(senderID string, personal int) error {
-	return a.userSys.llmFactory.SetLLMConcurrency(senderID, personal)
-}
-
-// GetLLMConcurrencyForUserID returns concurrency for a canonical user.
+// GetLLMConcurrencyForUserID returns the max_concurrency for a canonical user.
+// This reads the same "max_concurrency" key (channel "cli") that the CLI uses,
+// so the web UI and CLI always show the same value.
 func (a *Agent) GetLLMConcurrencyForUserID(userID int64) int {
 	if a.userSys == nil || a.userSys.settingsSvc == nil {
-		return 3 // llm.DefaultLLMConcurrencyPersonal
+		return a.getMaxConcurrency()
 	}
-	vals, err := a.userSys.settingsSvc.GetByUserID("feishu", userID)
+	vals, err := a.userSys.settingsSvc.GetByUserID("cli", userID)
 	if err != nil || vals == nil {
-		return 3
+		return a.getMaxConcurrency()
 	}
-	return parseConcurrencyOrDefault(vals["llm_max_concurrent_personal"])
+	s := vals["max_concurrency"]
+	if s == "" {
+		return a.getMaxConcurrency()
+	}
+	var v int
+	if _, err := fmt.Sscanf(s, "%d", &v); err != nil || v <= 0 {
+		return a.getMaxConcurrency()
+	}
+	return v
 }
 
-// SetLLMConcurrencyForUserID sets concurrency for a canonical user.
+// SetLLMConcurrencyForUserID sets max_concurrency for a canonical user.
+// Writes to the same "max_concurrency" key (channel "cli") as the CLI.
 func (a *Agent) SetLLMConcurrencyForUserID(userID int64, personal int) error {
 	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return ErrSettingsUnavailable
 	}
-	return a.userSys.settingsSvc.SetByUserID("feishu", userID, "llm_max_concurrent_personal", fmt.Sprintf("%d", personal))
-}
-
-func parseConcurrencyOrDefault(s string) int {
-	if s == "" {
-		return 3
-	}
-	var v int
-	if _, err := fmt.Sscanf(s, "%d", &v); err != nil || v <= 0 {
-		return 3
-	}
-	return v
+	return a.userSys.settingsSvc.SetByUserID("cli", userID, "max_concurrency", fmt.Sprintf("%d", personal))
 }
 
 // SetDirectSend 注入同步发送函数（绕过 bus，用于消息更新跟踪）

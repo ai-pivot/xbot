@@ -37,12 +37,10 @@ type LLMCallbacks struct {
 	// model tab) can write per-model config directly. When subID/model are
 	// empty (legacy/web callers without a model selector), the implementation
 	// falls back to session resolution.
-	LLMGetMaxContext          func(senderID, subID, model string) int
-	LLMSetMaxContext          func(senderID, subID, model string, maxContext int) error
-	LLMGetMaxOutputTokens     func(senderID, subID, model string) int
-	LLMSetMaxOutputTokens     func(senderID, subID, model string, maxTokens int) error
-	LLMGetThinkingMode        func(senderID string) string
-	LLMSetThinkingMode        func(senderID string, mode string) error
-	LLMGetPersonalConcurrency func(senderID string) int
-	LLMSetPersonalConcurrency func(senderID string, personal int) error
+	LLMGetMaxContext      func(senderID, subID, model string) int
+	LLMSetMaxContext      func(senderID, subID, model string, maxContext int) error
+	LLMGetMaxOutputTokens func(senderID, subID, model string) int
+	LLMSetMaxOutputTokens func(senderID, subID, model string, maxTokens int) error
+	LLMGetThinkingMode    func(senderID string) string
+	LLMSetThinkingMode    func(senderID string, mode string) error
 }

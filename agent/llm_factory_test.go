@@ -142,9 +142,6 @@ func TestSettingKeyConstants_MatchDB(t *testing.T) {
 	if settingSubAgentMaxConcurrency != "subagent_max_concurrency" {
 		t.Errorf("settingSubAgentMaxConcurrency = %q, want %q", settingSubAgentMaxConcurrency, "subagent_max_concurrency")
 	}
-	if settingLLMMaxConcurrentPersonal != "llm_max_concurrent_personal" {
-		t.Errorf("settingLLMMaxConcurrentPersonal = %q, want %q", settingLLMMaxConcurrentPersonal, "llm_max_concurrent_personal")
-	}
 }
 
 func TestGetLLMForModel_EmptyTarget(t *testing.T) {

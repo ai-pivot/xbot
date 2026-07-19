@@ -11,10 +11,6 @@ import (
 // for the global (shared) LLM.
 const DefaultLLMConcurrency = 5
 
-// DefaultLLMConcurrencyPersonal is the default max concurrent LLM calls per tenant
-// for personal (user-provided) LLM.
-const DefaultLLMConcurrencyPersonal = 3
-
 // tenantSem is a counting semaphore that supports dynamic capacity changes
 // without replacing the underlying channel, avoiding goroutine leaks.
 type tenantSem struct {

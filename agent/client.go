@@ -475,16 +475,6 @@ func (c *Client) SetUserThinkingMode(senderID string, mode string) error {
 	return c.call(MethodSetUserThinkingMode, setUserThinkingModeReq{SenderID: senderID, Mode: mode}, nil)
 }
 
-func (c *Client) GetLLMConcurrency(senderID string) int {
-	var r int
-	_ = c.call(MethodGetLLMConcurrency, getLLMConcurrencyReq{SenderID: senderID}, &r)
-	return r
-}
-
-func (c *Client) SetLLMConcurrency(senderID string, personal int) error {
-	return c.call(MethodSetLLMConcurrency, setLLMConcurrencyReq{SenderID: senderID, Personal: personal}, nil)
-}
-
 func (c *Client) SetUserModel(senderID, subID, model string) error {
 	return c.call(MethodSetUserModel, setUserModelReq{SenderID: senderID, SubID: subID, Model: model}, nil)
 }
