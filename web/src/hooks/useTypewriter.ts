@@ -84,7 +84,7 @@ export function useTypewriter(fullText: string): TypewriterState {
     const runes = Array.from(fullText)
     if (runes.length < visibleRef.current) {
       visibleRef.current = 0
-      setState({ visibleText: '', visibleChars: 0, isTyping: false })
+      setState({ visibleChars: 0, isTyping: false })
     }
   }, [fullText])
 

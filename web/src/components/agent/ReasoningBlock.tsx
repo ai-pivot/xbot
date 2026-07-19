@@ -22,6 +22,7 @@ interface ReasoningBlockProps {
 
 export const ReasoningBlock = memo(function ReasoningBlock({
   content,
+  visibleChars,
   streaming = false,
 }: ReasoningBlockProps) {
   const { t } = useI18n()
