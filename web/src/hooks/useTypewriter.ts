@@ -11,8 +11,12 @@
  *   - Returns visibleText (substring of full text up to visible runes)
  *   - Returns isTyping (true when visible < target)
  *   - When isTyping, the container should apply a fade-in CSS class
+ *
+ * Synchronisation: when fullText changes (new stream chunk), useLayoutEffect
+ * advances visibleText BEFORE paint so content and tools render in the same
+ * frame. The interval then handles subsequent catch-up within the same chunk.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 /** CJK range check — matches TUI isCJK (cli_animation.go:53). */
 function isCJK(r: number): boolean {
@@ -44,63 +48,79 @@ export function useTypewriter(fullText: string): TypewriterState {
   const skipFlipRef = useRef(false)
   const fullTextRef = useRef('')
 
-  // Track the full text in a ref so the tick closure always sees the latest.
-  // The interval is created ONCE (empty deps) — not re-created on every
-  // text change. This prevents the 50ms gap where tools render but text
-  // hasn't caught up yet (the "content appears after tools" bug).
   fullTextRef.current = fullText
 
-  // Reset when text shrinks (new turn / iteration reset)
-  useEffect(() => {
+  // Advance visible runes by the TUI exponential catch-up formula.
+  // Returns the new visible count.
+  const advanceVisible = (runes: string[], visible: number): number => {
+    const gap = runes.length - visible
+    if (gap <= 0) return visible
+
+    const nextIsCJK = visible < runes.length && isCJK(runes[visible].codePointAt(0) ?? 0)
+    const advance = Math.max(1, Math.floor(gap / 3))
+
+    // CJK penalty: if next rune is CJK and we're at slow speed, skip
+    // every other tick (effectively half speed for CJK)
+    if (nextIsCJK && advance <= 3 && gap <= 20) {
+      skipFlipRef.current = !skipFlipRef.current
+      if (skipFlipRef.current) return visible // skip this advance
+    }
+
+    return Math.min(visible + advance, runes.length)
+  }
+
+  // On fullText change: synchronously advance BEFORE paint so content
+  // and tools render in the same frame. Without this, tools (driven by
+  // useSyncExternalStore) render immediately while content waits 50ms
+  // for the next interval tick — causing "content jumps in after tools".
+  useLayoutEffect(() => {
+    if (!fullText) {
+      if (visibleRef.current > 0) {
+        visibleRef.current = 0
+        setState({ visibleText: '', isTyping: false })
+      }
+      return
+    }
     const runes = Array.from(fullText)
+    // Reset if text shrank (new turn)
     if (runes.length < visibleRef.current) {
       visibleRef.current = runes.length
-      setState({ visibleText: fullText, isTyping: false })
     }
-    if (!fullText) {
-      visibleRef.current = 0
-      setState({ visibleText: '', isTyping: false })
+    const gap = runes.length - visibleRef.current
+    if (gap > 0) {
+      const newVisible = advanceVisible(runes, visibleRef.current)
+      visibleRef.current = newVisible
+      setState({
+        visibleText: runes.slice(0, newVisible).join(''),
+        isTyping: newVisible < runes.length,
+      })
     }
   }, [fullText])
 
-  // Single interval — created once, reads latest text via ref.
+  // Single interval for subsequent catch-up — created once.
   useEffect(() => {
     const tick = () => {
       const text = fullTextRef.current
       if (!text) return
       const runes = Array.from(text)
-      const target = runes.length
       const visible = visibleRef.current
-      const gap = target - visible
-
+      const gap = runes.length - visible
       if (gap <= 0) {
-        if (state.isTyping) {
-          setState({ visibleText: text, isTyping: false })
-        }
+        setState((prev) => prev.isTyping ? { visibleText: text, isTyping: false } : prev)
         return
       }
-
-      // Check if next rune is CJK
-      const nextIsCJK = visible < runes.length && isCJK(runes[visible].codePointAt(0) ?? 0)
-
-      // Exponential catch-up: advance 1/3 of remaining gap per tick
-      const advance = Math.max(1, Math.floor(gap / 3))
-
-      // CJK penalty: if next rune is CJK and we're at slow speed, skip
-      // every other tick (effectively half speed for CJK)
-      if (nextIsCJK && advance <= 3 && gap <= 20) {
-        skipFlipRef.current = !skipFlipRef.current
-        if (skipFlipRef.current) return // skip this tick
+      const newVisible = advanceVisible(runes, visible)
+      if (newVisible !== visible) {
+        visibleRef.current = newVisible
+        setState({
+          visibleText: runes.slice(0, newVisible).join(''),
+          isTyping: newVisible < runes.length,
+        })
       }
-
-      const newVisible = Math.min(visible + advance, target)
-      visibleRef.current = newVisible
-      setState({ visibleText: runes.slice(0, newVisible).join(''), isTyping: newVisible < target })
     }
-
     const interval = setInterval(tick, TICK_MS)
     return () => clearInterval(interval)
-  }, []) // empty deps — interval lives for the component's lifetime
+  }, [])
 
   return state
 }

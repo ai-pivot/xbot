@@ -47,11 +47,13 @@ export const LiveIteration = memo(function LiveIteration({
   const hasSubAgents = progress.subAgents.length > 0
 
   // Typewriter: gradually reveal text using TUI's exponential catch-up algorithm.
-  // Only active during streaming (not for final committed text).
-  const { visibleText, isTyping } = useTypewriter(
-    progress.streaming ? textContent : ''
-  )
-  const displayText = progress.streaming ? visibleText : textContent
+  // Pass textContent directly — the hook handles empty/reset internally.
+  // Only pass empty string when NOT streaming (committed text = instant render).
+  const isLive = progress.streaming || progress.phase === 'thinking' || progress.phase === 'tool'
+  const tw = useTypewriter(isLive ? textContent : '')
+  const rw = useTypewriter(isLive ? reasoningContent : '')
+  const displayText = isLive ? tw.visibleText : textContent
+  const displayReasoning = isLive ? rw.visibleText : reasoningContent
 
   // Merge all tool groups, using the shared dedupTools (generating skips dedup)
   const allTools = dedupTools([
@@ -67,7 +69,7 @@ export const LiveIteration = memo(function LiveIteration({
 
   return (
     <div className="flex flex-col gap-1">
-      {/* Streaming T — show character count */}
+      {/* Streaming T — typewriter reveal + character count */}
       {hasReasoning && (
         <FoldedLine
           title={reasoningInProgress ? (
@@ -79,10 +81,12 @@ export const LiveIteration = memo(function LiveIteration({
           ) : t('agent.thinkingChars', { count: reasoningContent.length })}
           defaultOpen={false}
         >
-          <ReasoningBlock
-            content={reasoningContent}
-            streaming={false}
-          />
+          <div className={rw.isTyping ? 'typewriter-fade' : 'typewriter-done'}>
+            <ReasoningBlock
+              content={displayReasoning}
+              streaming={false}
+            />
+          </div>
         </FoldedLine>
       )}
 
@@ -90,8 +94,8 @@ export const LiveIteration = memo(function LiveIteration({
       {hasStreamContent && (
         <div
           className={
-            progress.streaming
-              ? `streaming-content ${isTyping ? 'typewriter-fade' : 'typewriter-done'}`
+            isLive
+              ? `streaming-content ${tw.isTyping ? 'typewriter-fade' : 'typewriter-done'}`
               : undefined
           }
         >
