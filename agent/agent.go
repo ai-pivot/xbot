@@ -3255,7 +3255,7 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 	if a.channelRange != nil {
 		a.channelRange(func(_ string, ch channel.Channel) bool {
 			if sender, ok := ch.(channel.ProgressSender); ok {
-				sender.SendProgress(chatID, payload)
+				sender.SendProgress(chatID, cloneProgressEvent(payload))
 			}
 			return true
 		})

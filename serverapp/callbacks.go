@@ -352,9 +352,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if ag.BgTaskManager() == nil {
 			return []webBgTaskJSON{}, nil
 		}
-		// List ALL bg tasks across all sessions — tasks are in-memory and
-		// not user-scoped. Admin sees everything; this is the same behavior
-		// as the TUI which shows tasks for the current session + all bg tasks.
+		// Non-admin users only see their own session's tasks.
+		// Admin sees all sessions (same as TUI).
+		if ag.IdentityResolver() != nil {
+			uid, role, err := ag.IdentityResolver().Resolve("web", senderID)
+			if err == nil && uid > 0 && role != "admin" {
+				return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
+			}
+		}
 		return marshalWebBgTasks(ag.BgTaskManager().ListAll()), nil
 	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {

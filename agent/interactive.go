@@ -309,10 +309,11 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 
 	agentProgressKey := "agent:" + key
 
-	// broadcast sends payload to all collected ProgressSender channels.
+	// broadcast sends a clone of payload to each ProgressSender channel.
+	// Each channel gets an independent clone to prevent cross-channel mutation.
 	broadcast := func(payload *protocol.ProgressEvent) {
 		for _, snd := range senders {
-			snd.ps.SendProgress(snd.rawID, payload)
+			snd.ps.SendProgress(snd.rawID, cloneProgressEvent(payload))
 		}
 	}
 
