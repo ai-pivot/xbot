@@ -49,11 +49,16 @@ export const SubAgentProgressTree = memo(function SubAgentProgressTree({
     })
   }, [openTab])
 
-  if (nodes.length === 0) return null
+  // Only render RUNNING SubAgents. Completed SubAgents are already shown as
+  // tool calls in FoldedToolGroup (e.g. "subagent[explore] ✓"). Rendering them
+  // again here causes duplicate display — the "explore" card that persists
+  // after completion.
+  const runningNodes = nodes.filter((n) => n.status === 'running' || n.status === 'pending')
+  if (runningNodes.length === 0) return null
   return (
     <div className="flex flex-col gap-1.5">
       <AnimatePresence initial={true}>
-        {nodes.map((node, i) => (
+        {runningNodes.map((node, i) => (
           <SubAgentCard
             key={`${node.role}:${node.instance ?? ''}:${i}`}
             node={node}
