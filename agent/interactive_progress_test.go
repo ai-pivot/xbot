@@ -150,7 +150,7 @@ func TestGetActiveProgress_BackgroundInteractive(t *testing.T) {
 		{Phase: "running", Iteration: 3},
 	})
 
-	result := a.GetActiveProgress("agent", interactiveKey, 0)
+	result := a.GetActiveProgress("agent", interactiveKey, protocol.FetchAll())
 	if result == nil {
 		t.Fatal("GetActiveProgress returned nil")
 		return
@@ -167,7 +167,7 @@ func TestGetActiveProgress_BackgroundInteractive_FinishedAgent(t *testing.T) {
 	a.interactiveSubAgents.Store(key, ia)
 	a.lastProgressSnapshot.Store("agent:"+key, &protocol.ProgressEvent{Phase: "done", Iteration: 5})
 
-	result := a.GetActiveProgress("agent", key, 0)
+	result := a.GetActiveProgress("agent", key, protocol.FetchAll())
 	if result == nil {
 		t.Fatal("nil")
 		return
@@ -179,7 +179,7 @@ func TestGetActiveProgress_BackgroundInteractive_FinishedAgent(t *testing.T) {
 
 func TestGetActiveProgress_BackgroundInteractive_NoSnapshot(t *testing.T) {
 	a := NewTestAgent()
-	if result := a.GetActiveProgress("agent", "cli:/cwd/r:i", 0); result != nil {
+	if result := a.GetActiveProgress("agent", "cli:/cwd/r:i", protocol.FetchAll()); result != nil {
 		t.Errorf("expected nil, got Phase=%q", result.Phase)
 	}
 }
@@ -195,7 +195,7 @@ func TestGetActiveProgress_KeyFormatConsistency(t *testing.T) {
 		ChatID: agentProgressKey, Phase: "done", Iteration: 1,
 	})
 
-	result := a.GetActiveProgress("agent", interactiveKey, 0)
+	result := a.GetActiveProgress("agent", interactiveKey, protocol.FetchAll())
 	if result == nil {
 		t.Fatal("snapshot lookup failed — key format mismatch")
 		return
@@ -308,7 +308,7 @@ func TestGetActiveProgress_WatermarkFilter(t *testing.T) {
 	})
 
 	// fromIter=2: should return only iteration 3
-	result := a.GetActiveProgress("cli", "/cwd", 2)
+	result := a.GetActiveProgress("cli", "/cwd", protocol.FetchSinceWatermark(2))
 	if result == nil {
 		t.Fatal("nil")
 	}
@@ -320,13 +320,13 @@ func TestGetActiveProgress_WatermarkFilter(t *testing.T) {
 	}
 
 	// fromIter=0: should return all 3 iterations
-	result = a.GetActiveProgress("cli", "/cwd", 0)
+	result = a.GetActiveProgress("cli", "/cwd", protocol.FetchAll())
 	if len(result.IterationHistory) != 3 {
 		t.Fatalf("expected 3 iterations with fromIter=0, got %d", len(result.IterationHistory))
 	}
 
 	// fromIter=3: should return 0 iterations
-	result = a.GetActiveProgress("cli", "/cwd", 3)
+	result = a.GetActiveProgress("cli", "/cwd", protocol.FetchSinceWatermark(3))
 	if len(result.IterationHistory) != 0 {
 		t.Fatalf("expected 0 iterations with fromIter=3, got %d", len(result.IterationHistory))
 	}

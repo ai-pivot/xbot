@@ -11,9 +11,10 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"xbot/protocol"
 
 	"xbot/agent"
+	"xbot/protocol"
+
 	"xbot/channel"
 	cli "xbot/channel/cli"
 	"xbot/channel/feishu"
@@ -303,7 +304,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	}
 	// Wire GetActiveProgress
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
-		return ag.GetActiveProgress(channel, chatID, 0) // web always requests full history
+		return ag.GetActiveProgress(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
 	}
 	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetPendingAskUser(channel, chatID)
@@ -326,7 +327,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		progress := ag.GetActiveProgress(sel.Channel, sel.ChatID, -1) // -1 = include iteration 0
+		progress := ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll()) // -1 = include iteration 0
 		if progress != nil && progress.Phase == "done" {
 			progress = nil
 		}

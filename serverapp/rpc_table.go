@@ -1099,7 +1099,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return nil, err
 		}
-		return h.Ag.GetActiveProgress(channelName, chatID, p.FromIteration), nil
+		return h.Ag.GetActiveProgress(channelName, chatID, protocol.FetchSinceWatermark(p.FromIteration)), nil
 	})
 
 	t["get_pending_ask_user"] = rpc1(func(ctx context.Context, p struct {

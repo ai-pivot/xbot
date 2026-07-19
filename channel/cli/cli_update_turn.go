@@ -6,6 +6,7 @@ import (
 	"time"
 
 	log "xbot/logger"
+	"xbot/protocol"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -490,7 +491,7 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 					watermark = it.Iteration
 				}
 			}
-			if snapshot := m.channel.config.GetActiveProgressFn(m.channelName, m.chatID, watermark); snapshot != nil {
+			if snapshot := m.channel.config.GetActiveProgressFn(m.channelName, m.chatID, protocol.FetchSinceWatermark(watermark)); snapshot != nil {
 				m.applyProgressSnapshot(snapshot)
 			}
 		}

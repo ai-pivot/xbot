@@ -58,14 +58,13 @@ func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 // For agent sessions, corrects Phase from the authoritative running state in
 // interactiveSubAgents when the agent is between iterations (Phase="done" but
 // still running). This unifies the busy/idle logic across all session types.
-func (a *Agent) GetActiveProgress(ch, chatID string, fromIter int) *protocol.ProgressEvent {
+func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent {
 	key := ch + ":" + chatID
 	v, ok := a.lastProgressSnapshot.Load(key)
 	if !ok {
 		return nil
 	}
 	snapshot := v.(*protocol.ProgressEvent)
-	// Shallow copy to avoid data race: agent may update snapshot fields concurrently.
 	result := *snapshot
 
 	// Merge live stream state (updated by stream callbacks between structured events).
@@ -107,13 +106,9 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fromIter int) *protocol.Pro
 		if len(hist) > 0 {
 			flat := progressHistoryWithoutNested(hist)
 			a.iterationHistories.CompareAndSwap(key, histPtr, &flat)
-			// Watermark filter: return only iterations newer than fromIter.
-			// This keeps pull payloads small — proportional to the gap, not the
-			// total turn length. The TUI appends these to its local list with
-			// per-iteration dedup.
 			filtered := make([]protocol.ProgressEvent, 0, len(flat))
 			for _, h := range flat {
-				if h.Iteration > fromIter {
+				if fetch.Filter(h.Iteration) {
 					filtered = append(filtered, h)
 				}
 			}

@@ -626,7 +626,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 				if progressFn != nil {
 					// /su switch: request full history (fromIter=-1) — new session needs
 					// ALL iterations including iteration 0.
-					activeProgress = progressFn(channelName, chatID, -1)
+					activeProgress = progressFn(channelName, chatID, protocol.FetchAll())
 				}
 				var todos []protocol.TodoItem
 				if todosFn != nil {
@@ -667,7 +667,7 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 		// iterations including iteration 0.
 		var activeProgress *protocol.ProgressEvent
 		if progressFn != nil {
-			activeProgress = progressFn(channelName, chatID, -1)
+			activeProgress = progressFn(channelName, chatID, protocol.FetchAll())
 		}
 		// Fetch server-side TODO list to overwrite local cache on first switch.
 		var todos []protocol.TodoItem

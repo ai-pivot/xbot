@@ -804,9 +804,9 @@ func (c *Client) IsProcessing(ch, chatID string) bool {
 	return r
 }
 
-func (c *Client) GetActiveProgress(ch, chatID string, fromIter int) *protocol.ProgressEvent {
+func (c *Client) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent {
 	var r *protocol.ProgressEvent
-	_ = c.call(MethodGetActiveProgress, getActiveProgressReq{Channel: ch, ChatID: chatID, FromIteration: fromIter}, &r)
+	_ = c.call(MethodGetActiveProgress, getActiveProgressReq{Channel: ch, ChatID: chatID, FromIteration: fetch.ToFromIter()}, &r)
 	return r
 }
 
