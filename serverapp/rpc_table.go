@@ -967,7 +967,9 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			if err != nil {
 				return nil, err
 			}
-			return channel.ConvertMessagesToHistory(msgs), nil
+			progress := h.Ag.GetActiveProgress(p.Channel, p.ChatID, 0)
+			activeTurn := progress != nil && progress.Phase != "done"
+			return channel.ConvertMessagesToHistory(msgs, activeTurn), nil
 		}()
 		if err != nil {
 			return nil, err

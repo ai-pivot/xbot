@@ -17,6 +17,15 @@ log, keyed by iteration; clients never synthesize an iteration when the current
 iteration advances. SSE/WS envelope sequence numbers remain transport replay
 IDs and are independent from the semantic progress watermark.
 
+History recovery must preserve the same ownership boundary. While an active
+snapshot exists, `ConvertMessagesToHistory(msgs, true)` excludes assistant/tool
+rows after the final user message: those rows are incremental persistence from
+the active turn, not committed history. The active snapshot alone renders that
+turn. Once no active snapshot exists, ordinary history conversion retains the
+same rows as an interrupted turn. This rule applies to both Web history snapshots
+and the shared `get_history` RPC; otherwise refresh renders the active tools once
+from DB history and again from the progress snapshot.
+
 ## Package Structure (Refactored)
 
 The `channel` package has been split into a shared root package plus implementation sub-packages:

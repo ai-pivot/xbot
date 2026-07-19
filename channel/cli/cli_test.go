@@ -1748,7 +1748,7 @@ func TestConvert_NormalCompletedTurn(t *testing.T) {
 		{Role: "tool", ToolCallID: "c2", ToolName: "Read", ToolArguments: "{}"},
 		{Role: "assistant", Content: "done!", Detail: detail},
 	}
-	history := channel.ConvertMessagesToHistory(msgs)
+	history := channel.ConvertMessagesToHistory(msgs, false)
 
 	// Should be: user, assistant(content + iterations merged)
 	if len(history) != 2 {
@@ -1779,7 +1779,7 @@ func TestConvert_CancelledTurn(t *testing.T) {
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c2", Name: "Read", Arguments: "{}"}}},
 		{Role: "tool", ToolCallID: "c2", ToolName: "Read", ToolArguments: "{}"},
 	}
-	history := channel.ConvertMessagesToHistory(msgs)
+	history := channel.ConvertMessagesToHistory(msgs, false)
 
 	// Should be: user, assistant (accumulated from both iterations)
 	if len(history) != 2 {
@@ -1813,7 +1813,7 @@ func TestConvert_MultipleTurns(t *testing.T) {
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c2", Name: "Grep", Arguments: "{}"}}},
 		{Role: "tool", ToolCallID: "c2", ToolName: "Grep", ToolArguments: "{}"},
 	}
-	history := channel.ConvertMessagesToHistory(msgs)
+	history := channel.ConvertMessagesToHistory(msgs, false)
 
 	// Expected: user, assistant(Detail, 1 iter, content), user, assistant(pending, 1 iter)
 	if len(history) != 4 {
@@ -1844,7 +1844,7 @@ func TestConvert_NoToolCalls(t *testing.T) {
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi!"},
 	}
-	history := channel.ConvertMessagesToHistory(msgs)
+	history := channel.ConvertMessagesToHistory(msgs, false)
 	if len(history) != 2 {
 		t.Fatalf("expected 2, got %d", len(history))
 	}
@@ -1876,7 +1876,7 @@ func TestConvert_CrashedTurn_ToolStatusFromToolMessages(t *testing.T) {
 		}},
 		{Role: "tool", ToolCallID: "c3", ToolName: "Grep", ToolArguments: "{}", Content: "Error: pattern not found"},
 	}
-	history := channel.ConvertMessagesToHistory(msgs)
+	history := channel.ConvertMessagesToHistory(msgs, false)
 
 	if len(history) != 2 {
 		t.Fatalf("expected 2 messages (user + assistant), got %d", len(history))

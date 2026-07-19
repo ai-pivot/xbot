@@ -159,12 +159,20 @@ func formatToolLabel(name, argsJSON string) string {
 	return name
 }
 
-// ConvertMessagesToHistory converts raw DB messages into HistoryMessages for CLI display.
-// It handles three scenarios:
-//  1. Normal completed turn: assistant with Detail → one tool_summary + assistant
-//  2. Cancelled/interrupted turn: intermediate assistant(ToolCalls) without Detail → pending tool_summary
-//  3. Mixed: some turns completed, last one cancelled
-func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
+// ConvertMessagesToHistory converts persisted messages for display. It handles
+// completed, cancelled/interrupted, and mixed turns. When
+// activeTurn is true, assistant/tool rows after the final user message are
+// excluded because the active ProgressEvent snapshot is authoritative for them.
+func ConvertMessagesToHistory(msgs []llm.ChatMessage, activeTurn bool) []HistoryMessage {
+	if activeTurn {
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == "user" {
+				msgs = msgs[:i+1]
+				break
+			}
+		}
+	}
+
 	var history []HistoryMessage
 	var pendingIters []HistoryIteration
 	var curIterTools []protocol.ToolProgress
