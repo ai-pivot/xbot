@@ -19,7 +19,6 @@ import { FoldedLine } from './FoldedLine'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
-import { dedupTools } from './progressStore'
 import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
@@ -39,43 +38,31 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   const { t } = useI18n()
   // ── Single source of truth ──────────────────────────────────────────
   // When a LIVE progress snapshot exists (phase != "done"), the snapshot is
-  // the sole authority for the active turn. We build a unified iteration list
-  // by merging snapshot.iterationHistory (completed iterations) with a
-  // synthetic current iteration from the snapshot's live fields. This
-  // eliminates the dual-path (message.iterations vs progress) that caused
-  // tools to vanish or duplicate across refresh.
+  // the sole authority for the active turn:
+  //   - Completed iterations ← progress.iterationHistory (snapshot only,
+  //     NEVER message.iterations from DB — those overlap with completedTools)
+  //   - Current in-flight iteration ← LiveIteration (rendered by TurnBody
+  //     via liveProgress, with SweepText animation + running indicator)
   //
   // When no live progress exists (phase="done" or null), DB history's
   // message.iterations is authoritative — no transformation needed.
   const hasLiveProgress = progress != null && progress.phase !== 'done'
 
-  // Unified iterations: snapshot history + DB fallback. When live, the
-  // snapshot's completed iterations are the source. When not live, use DB.
-  const baseIterations = hasLiveProgress
+  // Completed iterations: snapshot when live, DB when not.
+  // CRITICAL: when live, use progress.iterationHistory exclusively — even
+  // if empty. message.iterations from DB contains the active turn's tools
+  // (incremental persistence), which overlap with LiveIteration's tools.
+  const iterations = hasLiveProgress
     ? (progress.iterationHistory ?? [])
     : (message.iterations ?? [])
 
-  // Synthetic current iteration from the live snapshot: reasoning + text +
-  // tools that are in-flight right now. This is what CLI renders via
-  // liveIterationBlocks — the "live" part of the turn.
-  const currentIteration: WebIteration | null = hasLiveProgress
-    ? buildLiveIteration(progress)
-    : null
-
-  // The complete iteration list for rendering: base + current.
-  // When currentIteration is null (no live tools/reasoning/text), this is
-  // just baseIterations — no duplication possible.
-  const allRenderedIterations = currentIteration
-    ? [...baseIterations, currentIteration]
-    : baseIterations
+  // LiveIteration renders the current in-flight iteration. It has its own
+  // tool filtering (by iteration number) so it won't duplicate completed
+  // iterations. Pass the real progress when live, null when done.
+  const liveProgress: LiveProgress | null = hasLiveProgress ? progress : null
 
   const isStreaming = message.isPartial || hasLiveProgress
   const effectiveLevel: CollapseLevel = isStreaming ? 'minimal' : collapseLevel
-
-  // LiveIteration is no longer rendered separately by TurnBody — the current
-  // iteration is merged into allRenderedIterations. Pass null so TurnBody
-  // uses its unified path only.
-  const liveProgress: LiveProgress | null = null
 
   const hasReasoning = Boolean(progress?.reasoningStreamContent || progress?.lastReasoning)
   const hasToolInProgress = progress
@@ -85,7 +72,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     : false
   const showThinkingIndicator = isStreaming && !progress?.streamContent && !hasReasoning && !hasToolInProgress
   const emptyResponse = isEmptyResponseContent(message.content)
-  const finalContent = !emptyResponse && shouldRenderFinalContent(message.content, allRenderedIterations)
+  const finalContent = !emptyResponse && shouldRenderFinalContent(message.content, iterations)
     ? message.content
     : ''
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
@@ -94,19 +81,19 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // show only the last TEXT output. Last TEXT = message.content, or fall back to
   // the last iteration's thinking when content is empty.
   if (effectiveLevel === 'all' && !isStreaming) {
-    const totalTools = allRenderedIterations.reduce((sum, iter) => sum + iter.toolCount, 0)
-    const showSummary = allRenderedIterations.length > 0
-    const lastIteration = allRenderedIterations[allRenderedIterations.length - 1]
+    const totalTools = iterations.reduce((sum, iter) => sum + iter.toolCount, 0)
+    const showSummary = iterations.length > 0
+    const lastIteration = iterations[iterations.length - 1]
     const lastText = finalContent || lastIteration?.thinking || ''
 
     return (
       <div className="px-1">
         {showSummary && (
           <FoldedLine
-            title={t('agent.processed', { iterations: allRenderedIterations.length, tools: totalTools })}
+            title={t('agent.processed', { iterations: iterations.length, tools: totalTools })}
             defaultOpen={false}
           >
-            <TurnBody iterations={allRenderedIterations} level="minimal" mergeTools={mergeTools} />
+            <TurnBody iterations={iterations} level="minimal" mergeTools={mergeTools} />
           </FoldedLine>
         )}
         {lastText ? (
@@ -131,20 +118,20 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   return (
     <div className="px-1">
       <TurnBody
-        iterations={allRenderedIterations}
+        iterations={iterations}
         liveProgress={liveProgress}
         level={effectiveLevel}
         mergeTools={mergeTools}
       />
       {/* Final O: for committed messages, render message.content after iterations.
-          For streaming, the streamContent is already in the synthetic iteration. */}
+          For streaming, the streamContent is already in LiveIteration. */}
       {!isStreaming && finalContent && (
         <MarkdownRenderer content={finalContent} />
       )}
       {!isStreaming && emptyResponseWarning && (
         <LLMEmptyResponseWarning text={emptyResponseWarning} />
       )}
-      {!isStreaming && !finalContent && !emptyResponseWarning && allRenderedIterations.length === 0 && !showProgress(progress) && (
+      {!isStreaming && !finalContent && !emptyResponseWarning && iterations.length === 0 && !showProgress(progress) && (
         <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
       )}
       {message.displayOnly && (
@@ -156,38 +143,6 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       {showThinkingIndicator && <ShimmerThinking />}
     </div>
   )
-}
-
-/**
- * Build a synthetic WebIteration from the live progress snapshot's current
- * state — the in-flight iteration that hasn't been promoted to
- * iterationHistory yet. This merges reasoning, streaming text, and tools
- * (streaming + active + completed) into one iteration, mirroring CLI's
- * liveIterationBlocks.
- *
- * Returns null when there's no visible live content (no reasoning, no text,
- * no tools) — the turn hasn't produced anything for the current iteration.
- */
-function buildLiveIteration(progress: LiveProgress): WebIteration | null {
-  const reasoning = progress.reasoningStreamContent || progress.lastReasoning || ''
-  const text = progress.streamContent || progress.content || ''
-  const tools = dedupTools([
-    ...progress.streamingTools,
-    ...progress.activeTools,
-    ...progress.completedTools,
-  ])
-
-  if (!reasoning && !text && tools.length === 0 && progress.subAgents.length === 0) {
-    return null
-  }
-
-  return {
-    iteration: progress.iteration || 0,
-    thinking: text,
-    reasoning,
-    tools,
-    toolCount: tools.length,
-  }
 }
 
 function shouldRenderFinalContent(content: string, iterations: WebIteration[]): boolean {
