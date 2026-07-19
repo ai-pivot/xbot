@@ -154,7 +154,7 @@ function formatMergedTitle(tools: WebToolProgress[], sweepRunning = true): React
     .join('  ')
 
   return (
-    <span className="flex items-center gap-2" style={{ color }}>
+    <span className="flex flex-wrap items-center gap-2" style={{ color }}>
       {status === 'running' && sweepRunning && animatedText ? (
         <>
           <span className="flex items-center gap-0.5">
@@ -239,8 +239,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
             type="button"
             onClick={() => setExpanded(!expanded)}
             aria-expanded={expanded}
-            className="flex items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"
-          >
+            className="flex flex-wrap items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"          >
             <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
             {formatToolTitle(tools[0], !expanded)}
           </button>
