@@ -1730,6 +1730,10 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		if len(tools) == 0 && genuiContent == "" {
 			return
 		}
+
+		// No server-side throttle for genuiContent — the frontend already
+		// throttles compilation to 100ms. Server-side throttle would drop
+		// intermediate updates and potentially the final code.
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamingTools = tools
 			if genuiContent != "" {

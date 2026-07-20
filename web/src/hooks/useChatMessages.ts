@@ -588,7 +588,12 @@ export function useChatMessages({
   const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number) => {
     if (!content && !iterations.length) return
     messageMutationGenRef.current += 1
-    const id = `asst-${Date.now()}-${echoSeq++}`
+    // Use the same id format as parseHistoryMessages (seq-${eventSeq}) so that
+    // when reload returns and the server version replaces this optimistic row,
+    // TanStack Virtual's getItemKey returns the same key — React reuses the
+    // existing component instead of unmounting/remounting (which causes the
+    // "last iteration disappears for a frame" flicker).
+    const id = eventSeq != null ? `seq-${eventSeq}` : `asst-${Date.now()}-${echoSeq++}`
     const newMsg: ChatMessage = {
       id,
       role: 'assistant',

@@ -28,6 +28,7 @@ You write a TSX module — a single React component with a default export. The c
 Rules:
 - Write a single TSX module with ` + "`export default function App()`" + ` as the default export.
 - Use Tailwind CSS classes for all styling.
+- The rendering background is WHITE. All text must be dark-colored to be visible. Do NOT use text-white, text-slate-100, or any light text color on the root element — they will be invisible against the white background. Use text-gray-900, text-slate-800, text-black for body text. Only use text-white on elements with an explicit dark background (e.g. bg-blue-500 text-white on a button).
 - Use React hooks for state: ` + "`const [count, setCount] = useState(0)`" + `
 - For agent callbacks, use data-action="action_name" on any element. When clicked, the agent receives the action name and data-* attributes.
 - No imports needed — React is available globally. Just write the component.
@@ -46,7 +47,7 @@ export default function App() {
        <button onClick={() => setCount(count + 1)} className="px-4 py-2 bg-purple-100 rounded-lg">+</button>
        <button data-action="save" data-value={count} className="px-4 py-2 bg-blue-500 text-white rounded-lg">Save</button>
       </div>
-    </div>
+      </div>
   )
 }`
 }

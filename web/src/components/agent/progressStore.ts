@@ -267,10 +267,14 @@ export class ProgressStore {
    */
   reset(): void {
     if (this.disposed) return
-    this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
+    // Preserve todos across reset — a turn ending should NOT clear the TODO
+    // list. The todos are managed by TodoWrite tool calls and persist until
+    // the next turn's TodoWrite replaces them (mirrors TUI behavior).
+    const preservedTodos = this.current.todos
+    this.current = { ...EMPTY_PROGRESS_SNAPSHOT, todos: preservedTodos }
     // Synchronously update snapshot + cancel pending RAF — avoids a one-frame
     // window where liveMessage is still non-null after reset.
-    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
+    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT, todos: preservedTodos }
     this.dirty = false
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
@@ -479,10 +483,27 @@ export class ProgressStore {
     })
   }
 
-  /** Replace the whole progress (e.g. from history active_progress). */
+  /** Replace the whole progress (e.g. from history active_progress).
+   *  iterationHistory is MERGED by iteration number (union) — not replaced —
+   *  so a stale server snapshot can't clobber iterations already in the store
+   *  from live SSE events or cache restoration. */
   replace(next: Partial<ProgressSnapshot>): void {
     this.mutate((draft) => {
-      Object.assign(draft, next)
+      if (next.iterationHistory) {
+        const existing = new Set(draft.iterationHistory.map((i) => i.iteration))
+        const merged = [...draft.iterationHistory]
+        for (const iter of next.iterationHistory) {
+          if (!existing.has(iter.iteration)) {
+            merged.push(iter)
+            existing.add(iter.iteration)
+          }
+        }
+        const { iterationHistory, ...rest } = next
+        Object.assign(draft, rest)
+        draft.iterationHistory = merged
+      } else {
+        Object.assign(draft, next)
+      }
     })
   }
 

@@ -22,7 +22,7 @@ interface ToolRenderProps {
 }
 
 /** Try to parse the tool's args as JSON. Returns null on failure. */
-function parseArgs(tool: WebToolProgress): Record<string, unknown> | null {
+export function parseArgs(tool: WebToolProgress): Record<string, unknown> | null {
   if (!tool.args) return null
   try {
     return JSON.parse(tool.args)

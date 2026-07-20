@@ -91,11 +91,6 @@ export const LiveIteration = memo(function LiveIteration({
 
   return (
     <div className="flex flex-col gap-1">
-      {/* Streaming GenUI — incremental HTML preview */}
-      {hasGenUI && (
-        <GenUIBlock code={progress.genuiContent} streaming={progress.streaming} />
-      )}
-
       {/* Streaming T — typewriter reveal + character count */}
       {hasReasoning && (
         <FoldedLine
@@ -134,6 +129,11 @@ export const LiveIteration = memo(function LiveIteration({
             visibleChars={isLive ? tw.visibleChars : undefined}
           />
         </div>
+      )}
+
+      {/* Streaming GenUI — after content, before tools (GenUI is a tool product) */}
+      {hasGenUI && (
+        <GenUIBlock code={progress.genuiContent} streaming={progress.streaming} />
       )}
 
       {hasSubAgents && <SubAgentProgressTree nodes={progress.subAgents} />}
