@@ -196,15 +196,21 @@ func (rm *RegistryManager) uninstallPlugin(name, senderID string) error {
 		return fmt.Errorf("plugin %q is not installed", name)
 	}
 
-	// Deactivate via plugin manager first (stops hooks, widgets, runtime)
-	if rm.pluginDeactivator != nil {
-		if err := rm.pluginDeactivator(name); err != nil {
-			log.WithFields(log.Fields{"plugin": name, "error": err}).Warn("Failed to deactivate plugin, removing files anyway")
-		}
-	}
-
+	// Remove files FIRST, then ReloadAll.
+	// If we ReloadAll before removing, the plugin is still on disk →
+	// ReloadAll re-discovers and re-activates it → zombie plugin running
+	// on deleted files.
 	if err := os.RemoveAll(pluginDir); err != nil {
 		return fmt.Errorf("remove plugin: %w", err)
+	}
+
+	// ReloadAll re-discovers from disk (deleted plugin won't be found),
+	// re-activates remaining plugins, and fires OnReload callbacks which
+	// re-wire hooks/tools/widgets/commands.
+	if rm.pluginDeactivator != nil {
+		if err := rm.pluginDeactivator(name); err != nil {
+			log.WithFields(log.Fields{"plugin": name, "error": err}).Warn("Failed to reload plugins after uninstall")
+		}
 	}
 
 	log.WithFields(log.Fields{"type": "plugin", "name": name, "sender": senderID}).Info("Uninstalled")

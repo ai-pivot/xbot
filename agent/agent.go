@@ -1661,15 +1661,18 @@ func New(cfg Config) (*Agent, error) {
 		// Wire plugin activator into RegistryManager so newly installed plugins
 		// (via /app install) are activated immediately without manual reload.
 		// ReloadAll triggers OnReload callbacks which re-wire hooks/tools/widgets/commands.
+		//
+		// Note: ReloadAll reloads ALL plugins, not just the installed one.
+		// This is intentional — OnReload callbacks (which re-wire hooks/tools/widgets)
+		// only fire on full reload, not on single-plugin Activate. The O(n) overhead
+		// is acceptable since /app install is a rare manual operation.
 		agent.registryManager.SetPluginActivator(func(pluginID string) error {
 			return agent.pluginMgr.ReloadAll(context.Background())
 		})
 		// Wire plugin deactivator so /app uninstall stops the plugin (hooks,
-		// widgets, runtime) before removing files.
-		// ReloadAll re-discovers from disk (deleted plugin won't be found),
-		// re-activates remaining plugins, and fires OnReload callbacks which
-		// re-wire hooks/tools/widgets/commands — UninstallPlugin alone
-		// doesn't fire OnReload, leaving stale widgets/hooks visible.
+		// widgets, runtime) after removing files.
+		// uninstallPlugin deletes files FIRST, then calls this — so ReloadAll
+		// won't re-discover the deleted plugin. Same O(n) note as above.
 		agent.registryManager.SetPluginDeactivator(func(pluginID string) error {
 			return agent.pluginMgr.ReloadAll(context.Background())
 		})
