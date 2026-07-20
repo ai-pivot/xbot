@@ -468,18 +468,9 @@ type marketPackResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// handleMarketPack handles POST /api/market/pack
+// handleMarketPack handles POST /api/app/pack
 func (wc *WebChannel) handleMarketPack(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
-		return
-	}
-
 	senderID := senderIDFromContext(r.Context())
-	if senderID == "" {
-		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
-		return
-	}
 
 	if wc.callbacks.RPCHandler == nil {
 		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
@@ -512,19 +503,10 @@ func (wc *WebChannel) handleMarketPack(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, marketPackResponse{OK: true, Path: resp.Path})
 }
 
-// handleMarketInstallFile handles POST /api/market/install-file
+// handleMarketInstallFile handles POST /api/app/install-file
 // Accepts multipart/form-data with a "file" field containing the .xbot.zip
 func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
-		return
-	}
-
 	senderID := senderIDFromContext(r.Context())
-	if senderID == "" {
-		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
-		return
-	}
 
 	if wc.callbacks.RPCHandler == nil {
 		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
@@ -789,19 +771,9 @@ func (wc *WebChannel) handleLLMModelSet(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, llmConfigResponse{OK: true})
 }
 
-
-// handleMarketUninstall handles POST /api/market/uninstall
+// handleMarketUninstall handles POST /api/app/uninstall
 func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, marketResponse{OK: false, Error: "method not allowed"})
-		return
-	}
-
 	senderID := senderIDFromContext(r.Context())
-	if senderID == "" {
-		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
-		return
-	}
 
 	if wc.callbacks.RPCHandler == nil {
 		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
@@ -825,7 +797,6 @@ func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Reque
 
 	writeJSON(w, http.StatusOK, marketResponse{OK: true})
 }
-
 
 // ---------------------------------------------------------------------------
 // Search API

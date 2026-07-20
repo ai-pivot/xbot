@@ -457,7 +457,7 @@ func (wc *WebChannel) rpcCall(method string, params any, result any) error {
 	if err != nil {
 		return fmt.Errorf("marshal params: %w", err)
 	}
-	resp, err := wc.callbacks.RPCHandler(method, paramsJSON, "web_admin")
+	resp, err := wc.callbacks.RPCHandler(method, paramsJSON, RPCIdentity{SenderID: "web_admin"})
 	if err != nil {
 		return err
 	}
@@ -565,6 +565,11 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/admin/users/list", wc.authenticatedPOST(wc.handleAdminUsersListPOST))
 	mux.HandleFunc("/api/admin/users/{id}/set-role", wc.authenticatedPOST(wc.handleAdminSetRole))
+
+	// App bundle API
+	mux.HandleFunc("/api/app/pack", wc.authenticatedPOST(wc.handleMarketPack))
+	mux.HandleFunc("/api/app/install-file", wc.authenticatedPOST(wc.handleMarketInstallFile))
+	mux.HandleFunc("/api/app/uninstall", wc.authenticatedPOST(wc.handleMarketUninstall))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		jsonErrorResponse(w, http.StatusNotFound, "endpoint not found")
