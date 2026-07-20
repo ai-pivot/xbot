@@ -25,8 +25,8 @@ func TestSummarizeRetryError(t *testing.T) {
 		{"net.OpError non-timeout", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("refused")}, "网络错误"},
 		{"generic error", errors.New("something went wrong"), "临时错误"},
 		{"stream truncation", errors.New("stream ended without finish_reason (possible truncation)"), "流式响应被截断"},
-		{"truncation keyword", errors.New("truncation detected"), "流式响应被截断"},
 		{"unexpected EOF", errors.New("unexpected EOF"), "流式响应被截断"},
+		{"unrelated truncation", errors.New("request body truncated"), "临时错误"},
 	}
 
 	for _, tt := range tests {
