@@ -119,30 +119,6 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 	}
 }
 
-// registryCallbacks builds the shared Registry callback closures.
-func registryCallbacks(ag *agent.Agent) channel.RegistryCallbacks {
-	return channel.RegistryCallbacks{
-		RegistryBrowse: func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error) {
-			return ag.RegistryManager().Browse(entryType, limit, offset)
-		},
-		RegistryInstall: func(entryType string, id int64, senderID string) error {
-			return ag.RegistryManager().Install(entryType, id, senderID)
-		},
-		RegistryListMy: func(senderID, entryType string) ([]sqlite.SharedEntry, []string, error) {
-			return ag.RegistryManager().ListMy(senderID, entryType)
-		},
-		RegistryPublish: func(entryType, name, senderID string) error {
-			return ag.RegistryManager().Publish(entryType, name, senderID)
-		},
-		RegistryUnpublish: func(entryType, name, senderID string) error {
-			return ag.RegistryManager().Unpublish(entryType, name, senderID)
-		},
-		RegistryUninstall: func(entryType, name, senderID string) error {
-			return ag.RegistryManager().Uninstall(entryType, name, senderID)
-		},
-	}
-}
-
 // llmCallbacks builds the shared LLM callback closures.
 func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
@@ -1678,7 +1654,6 @@ func looksLikeWorkDir(s string) bool {
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.
 func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.SettingsCallbacks {
 	rc := runnerCallbacks(cfg)
-	regc := registryCallbacks(ag)
 	llmc := llmCallbacks(ag)
 
 	return feishu.SettingsCallbacks{
@@ -1852,14 +1827,6 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		ContextModeSet: func(mode string) error {
 			return ag.SetContextMode(mode)
 		},
-
-		// Registry
-		RegistryBrowse:    regc.RegistryBrowse,
-		RegistryInstall:   regc.RegistryInstall,
-		RegistryListMy:    regc.RegistryListMy,
-		RegistryPublish:   regc.RegistryPublish,
-		RegistryUnpublish: regc.RegistryUnpublish,
-		RegistryDelete:    regc.RegistryUninstall,
 
 		// Metrics
 		MetricsGet: func() string {

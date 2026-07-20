@@ -2,38 +2,64 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
 	log "xbot/logger"
-	"xbot/storage/sqlite"
+	"xbot/plugin"
 	"xbot/tools"
 )
 
-// RegistryManager manages skill/agent publishing, installation, and discovery.
+// RegistryManager manages skill/agent/plugin packaging, installation, and uninstall.
 type RegistryManager struct {
-	store       *SkillStore
-	agentStore  *AgentStore
-	sharedStore *sqlite.SharedSkillRegistry
-	workDir     string
-	sandbox     tools.Sandbox
+	store             *SkillStore
+	agentStore        *AgentStore
+	workDir           string
+	xbotHome          string // global xbot config dir (e.g. ~/.xbot), used for plugins dir
+	sandbox           tools.Sandbox
+	pluginActivator   func(pluginID string) error // activate a plugin after install (nil if plugin system unavailable)
+	pluginDeactivator func(pluginID string) error // deactivate+remove a plugin after uninstall (nil if plugin system unavailable)
+}
+
+// SetPluginActivator sets a callback to activate a plugin immediately after installation.
+// Called by Agent after the plugin system is initialized.
+func (rm *RegistryManager) SetPluginActivator(fn func(pluginID string) error) {
+	rm.pluginActivator = fn
+}
+
+// SetPluginDeactivator sets a callback to deactivate a plugin before uninstall.
+// Called by Agent after the plugin system is initialized.
+func (rm *RegistryManager) SetPluginDeactivator(fn func(pluginID string) error) {
+	rm.pluginDeactivator = fn
 }
 
 // NewRegistryManager creates a new RegistryManager.
-func NewRegistryManager(store *SkillStore, agentStore *AgentStore, sharedStore *sqlite.SharedSkillRegistry, workDir string, sandbox tools.Sandbox) *RegistryManager {
+func NewRegistryManager(store *SkillStore, agentStore *AgentStore, workDir, xbotHome string, sandbox tools.Sandbox) *RegistryManager {
 	return &RegistryManager{
-		store:       store,
-		agentStore:  agentStore,
-		sharedStore: sharedStore,
-		workDir:     workDir,
-		sandbox:     sandbox,
+		store:      store,
+		agentStore: agentStore,
+		workDir:    workDir,
+		xbotHome:   xbotHome,
+		sandbox:    sandbox,
 	}
+}
+
+// pluginsDir returns the global plugins directory (~/.xbot/plugins/).
+func (rm *RegistryManager) pluginsDir() string {
+	return filepath.Join(rm.xbotHome, "plugins")
+}
+
+// appsDir returns the directory for storing installed app manifests.
+func (rm *RegistryManager) appsDir() string {
+	return filepath.Join(rm.xbotHome, "apps")
 }
 
 // useSandbox 判断是否应使用 Sandbox 访问用户文件。
@@ -47,7 +73,6 @@ func (rm *RegistryManager) isDockerSandbox() bool {
 }
 
 // globalSyncedSkillsDir returns the directory where global skills are synced inside the sandbox.
-// Docker syncs to workspace/.skills (see skill_sync.go); remote syncs to workspace/skills.
 func (rm *RegistryManager) globalSyncedSkillsDir(senderID string) string {
 	if !rm.useSandbox() {
 		return ""
@@ -59,12 +84,10 @@ func (rm *RegistryManager) globalSyncedSkillsDir(senderID string) string {
 	if rm.isDockerSandbox() {
 		return filepath.Join(ws, ".skills")
 	}
-	// Remote sandbox: synced to workspace/skills (same as userSkillsDir)
 	return filepath.Join(ws, "skills")
 }
 
 // globalSyncedAgentsDir returns the directory where global agents are synced inside the sandbox.
-// Docker syncs to workspace/.agents; remote syncs to workspace/agents.
 func (rm *RegistryManager) globalSyncedAgentsDir(senderID string) string {
 	if !rm.useSandbox() {
 		return ""
@@ -76,12 +99,10 @@ func (rm *RegistryManager) globalSyncedAgentsDir(senderID string) string {
 	if rm.isDockerSandbox() {
 		return filepath.Join(ws, ".agents")
 	}
-	// Remote sandbox: synced to workspace/agents (same as userAgentsDir)
 	return filepath.Join(ws, "agents")
 }
 
 // sandboxCtx returns a context with a 30-second timeout for sandbox I/O operations.
-// This prevents indefinite blocking when the Runner is disconnected in remote mode.
 func (rm *RegistryManager) sandboxCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 30*time.Second)
 }
@@ -100,275 +121,19 @@ func (rm *RegistryManager) userAgentsDir(senderID string) string {
 	return tools.UserAgentsRoot(rm.workDir, senderID)
 }
 
-// Publish publishes a skill or agent to the shared registry.
-// Returns error if a public entry with the same type+name already exists from a different author.
-func (rm *RegistryManager) Publish(entryType, name, author string) error {
-	existing, err := rm.sharedStore.GetByTypeAndName(entryType, name)
-	if err != nil {
-		return fmt.Errorf("dedup check: %w", err)
-	}
-	if existing != nil && existing.Author != author && existing.Sharing == "public" {
-		return fmt.Errorf("%s %q 已被 %s 发布，不能重名分享", entryType, name, existing.Author)
-	}
+// --- Uninstall ---
 
-	switch entryType {
-	case "skill":
-		return rm.publishSkill(name, author)
-	case "agent":
-		return rm.publishAgent(name, author)
-	default:
-		return fmt.Errorf("unknown type %q, must be 'skill' or 'agent'", entryType)
-	}
-}
-
-func (rm *RegistryManager) publishSkill(name, author string) error {
-	skillDir := rm.findSkillDirForUser(name, author)
-	if skillDir == "" {
-		return fmt.Errorf("skill %q not found", name)
-	}
-
-	// Read SKILL.md — sandbox-aware
-	var data []byte
-	var err error
-	if rm.useSandbox() {
-		// skillDir is a sandbox path when sandboxed
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		data, err = rm.sandbox.ReadFile(ctx, filepath.Join(skillDir, "SKILL.md"), author)
-	} else {
-		data, err = os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
-	}
-	if err != nil {
-		return fmt.Errorf("read SKILL.md: %w", err)
-	}
-	info := parseSkillFrontmatterV2(data, skillDir)
-	if info.Author != "" && info.Author != author {
-		return fmt.Errorf("skill %q is owned by %q, cannot publish as %q", name, info.Author, author)
-	}
-	if info.Author == "" {
-		info.Author = author
-	}
-
-	cacheDir := rm.registryCacheDir("skill", info.Name)
-	if rm.useSandbox() {
-		if err := rm.snapshotDirFromSandbox(skillDir, cacheDir, author); err != nil {
-			return fmt.Errorf("snapshot skill: %w", err)
-		}
-	} else {
-		if err := rm.snapshotDirToCache(skillDir, cacheDir); err != nil {
-			return fmt.Errorf("snapshot skill: %w", err)
-		}
-	}
-
-	entry := &sqlite.SharedEntry{
-		Type:        "skill",
-		Name:        info.Name,
-		Description: info.Description,
-		Author:      info.Author,
-		Tags:        info.Tags,
-		SourcePath:  cacheDir,
-		Sharing:     "public",
-	}
-
-	return rm.sharedStore.Publish(entry)
-}
-
-// publishAgent finds a single agent .md file, snapshots it to cache, and publishes.
-func (rm *RegistryManager) publishAgent(name, author string) error {
-	agentFile := rm.findAgentFile(name, author)
-	if agentFile == "" {
-		return fmt.Errorf("agent %q not found", name)
-	}
-
-	var role tools.SubAgentRole
-	var err error
-	if rm.useSandbox() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		data, ferr := rm.sandbox.ReadFile(ctx, agentFile, author)
-		if ferr != nil {
-			return fmt.Errorf("read agent file: %w", ferr)
-		}
-		role, err = tools.ParseAgentFileContent(data, name)
-	} else {
-		role, err = tools.ParseAgentFile(agentFile)
-	}
-	if err != nil {
-		return fmt.Errorf("parse agent %q: %v", name, err)
-	}
-
-	cacheDir := rm.registryCacheDir("agent", role.Name)
-	if rm.useSandbox() {
-		if err := rm.snapshotFileFromSandbox(agentFile, cacheDir, author); err != nil {
-			return fmt.Errorf("snapshot agent: %w", err)
-		}
-	} else {
-		if err := rm.snapshotFileToCache(agentFile, cacheDir); err != nil {
-			return fmt.Errorf("snapshot agent: %w", err)
-		}
-	}
-
-	entry := &sqlite.SharedEntry{
-		Type:        "agent",
-		Name:        role.Name,
-		Description: role.Description,
-		Author:      author,
-		SourcePath:  cacheDir,
-		Sharing:     "public",
-	}
-
-	return rm.sharedStore.Publish(entry)
-}
-
-// Unpublish removes a skill/agent from the shared registry.
-func (rm *RegistryManager) Unpublish(entryType, name, author string) error {
-	entries, err := rm.sharedStore.ListByAuthor(author)
-	if err != nil {
-		return fmt.Errorf("list entries: %w", err)
-	}
-
-	for _, e := range entries {
-		if e.Type == entryType && e.Name == name {
-			return rm.sharedStore.Unpublish(e.ID, author)
-		}
-	}
-	return fmt.Errorf("%s %q not found in your published entries", entryType, name)
-}
-
-// Install installs a shared skill/agent by ID to the user's private directory.
-func (rm *RegistryManager) Install(entryType string, id int64, senderID string) error {
-	entry, err := rm.sharedStore.GetByID(id)
-	if err != nil {
-		return fmt.Errorf("get entry: %w", err)
-	}
-	if entry == nil {
-		return fmt.Errorf("entry with ID %d not found", id)
-	}
-	if entry.Type != entryType {
-		return fmt.Errorf("entry %d is type %q, not %q", id, entry.Type, entryType)
-	}
-
-	if _, err := os.Stat(entry.SourcePath); os.IsNotExist(err) {
-		return fmt.Errorf("%s %q 的源文件已不存在，请联系发布者重新发布", entryType, entry.Name)
-	}
-
-	switch entryType {
-	case "skill":
-		return rm.installSkill(entry, senderID)
-	case "agent":
-		return rm.installAgent(entry, senderID)
-	default:
-		return fmt.Errorf("unknown type %q", entryType)
-	}
-}
-
-func (rm *RegistryManager) installSkill(entry *sqlite.SharedEntry, senderID string) error {
-	destDir := filepath.Join(rm.userSkillsDir(senderID), entry.Name)
-
-	if rm.useSandbox() {
-		ctx, cancel := rm.sandboxCtx()
-		defer cancel()
-		if _, err := rm.sandbox.Stat(ctx, destDir, senderID); err == nil {
-			return fmt.Errorf("skill %q already installed", entry.Name)
-		}
-		if err := rm.copyDirToSandbox(ctx, entry.SourcePath, destDir, senderID); err != nil {
-			return fmt.Errorf("copy skill: %w", err)
-		}
-	} else {
-		if _, err := os.Stat(destDir); err == nil {
-			return fmt.Errorf("skill %q already installed", entry.Name)
-		}
-		if err := copyDir(entry.SourcePath, destDir); err != nil {
-			return fmt.Errorf("copy skill: %w", err)
-		}
-	}
-
-	rm.markInstalled(destDir, fmt.Sprintf("registry:%d", entry.ID), time.Now().UnixMilli())
-
-	log.WithFields(log.Fields{
-		"type": "skill", "name": entry.Name, "sender": senderID,
-		"from": entry.SourcePath, "to": destDir,
-	}).Info("Installed skill from registry")
-	return nil
-}
-
-// installAgent copies all .md files from cache dir into user's agents dir.
-func (rm *RegistryManager) installAgent(entry *sqlite.SharedEntry, senderID string) error {
-	agentsDir := rm.userAgentsDir(senderID)
-
-	installed := 0
-	if rm.useSandbox() {
-		ctx, cancel := rm.sandboxCtx()
-		defer cancel()
-		if err := rm.sandbox.MkdirAll(ctx, agentsDir, 0o755, senderID); err != nil {
-			return fmt.Errorf("create agents dir: %w", err)
-		}
-		// Read from server cache (os.*)
-		srcEntries, err := os.ReadDir(entry.SourcePath)
-		if err != nil {
-			return fmt.Errorf("read cache: %w", err)
-		}
-		for _, ent := range srcEntries {
-			if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".md") {
-				continue
-			}
-			destFile := filepath.Join(agentsDir, ent.Name())
-			if _, err := rm.sandbox.Stat(ctx, destFile, senderID); err == nil {
-				return fmt.Errorf("agent %q already installed", strings.TrimSuffix(ent.Name(), ".md"))
-			}
-			data, err := os.ReadFile(filepath.Join(entry.SourcePath, ent.Name()))
-			if err != nil {
-				return fmt.Errorf("read agent file: %w", err)
-			}
-			if err := rm.sandbox.WriteFile(ctx, destFile, data, 0o644, senderID); err != nil {
-				return fmt.Errorf("write agent file: %w", err)
-			}
-			installed++
-		}
-	} else {
-		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
-			return fmt.Errorf("create agents dir: %w", err)
-		}
-		// Cache dir contains the .md file(s); copy them to user's agents dir
-		srcEntries, err := os.ReadDir(entry.SourcePath)
-		if err != nil {
-			return fmt.Errorf("read cache: %w", err)
-		}
-
-		for _, ent := range srcEntries {
-			if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".md") {
-				continue
-			}
-			destFile := filepath.Join(agentsDir, ent.Name())
-			if _, err := os.Stat(destFile); err == nil {
-				return fmt.Errorf("agent %q already installed", strings.TrimSuffix(ent.Name(), ".md"))
-			}
-
-			data, err := os.ReadFile(filepath.Join(entry.SourcePath, ent.Name()))
-			if err != nil {
-				return fmt.Errorf("read agent file: %w", err)
-			}
-			if err := os.WriteFile(destFile, data, 0o644); err != nil {
-				return fmt.Errorf("write agent file: %w", err)
-			}
-			installed++
-		}
-	}
-
-	log.WithFields(log.Fields{
-		"type": "agent", "name": entry.Name, "sender": senderID,
-		"from": entry.SourcePath, "to": agentsDir, "files": installed,
-	}).Info("Installed agent from registry")
-	return nil
-}
-
-// Uninstall removes a user-installed skill/agent.
+// Uninstall removes a user-installed skill/agent/plugin/app.
 func (rm *RegistryManager) Uninstall(entryType, name, senderID string) error {
 	switch entryType {
 	case "skill":
 		return rm.uninstallSkill(name, senderID)
 	case "agent":
 		return rm.uninstallAgent(name, senderID)
+	case "plugin":
+		return rm.uninstallPlugin(name, senderID)
+	case "app":
+		return rm.uninstallApp(name, senderID)
 	default:
 		return fmt.Errorf("unknown type %q", entryType)
 	}
@@ -424,194 +189,176 @@ func (rm *RegistryManager) uninstallAgent(name, senderID string) error {
 	return nil
 }
 
-// Search searches the shared registry.
-func (rm *RegistryManager) Search(query, entryType string, limit int) ([]sqlite.SharedEntry, error) {
-	if query == "" {
-		return rm.sharedStore.ListShared(entryType, limit, 0)
+// uninstallPlugin removes a plugin directory from the global plugins directory.
+func (rm *RegistryManager) uninstallPlugin(name, senderID string) error {
+	pluginDir := rm.findPluginDir(name)
+	if pluginDir == "" {
+		return fmt.Errorf("plugin %q is not installed", name)
 	}
-	return rm.sharedStore.SearchShared(query, entryType, limit)
+
+	// Remove files FIRST, then ReloadAll.
+	// If we ReloadAll before removing, the plugin is still on disk →
+	// ReloadAll re-discovers and re-activates it → zombie plugin running
+	// on deleted files.
+	if err := os.RemoveAll(pluginDir); err != nil {
+		return fmt.Errorf("remove plugin: %w", err)
+	}
+
+	// ReloadAll re-discovers from disk (deleted plugin won't be found),
+	// re-activates remaining plugins, and fires OnReload callbacks which
+	// re-wire hooks/tools/widgets/commands.
+	if rm.pluginDeactivator != nil {
+		if err := rm.pluginDeactivator(name); err != nil {
+			log.WithFields(log.Fields{"plugin": name, "error": err}).Warn("Failed to reload plugins after uninstall")
+		}
+	}
+
+	log.WithFields(log.Fields{"type": "plugin", "name": name, "sender": senderID}).Info("Uninstalled")
+	return nil
 }
 
-// ListMy lists the user's own published entries and all locally available items
-// (global + user-private directories).
-func (rm *RegistryManager) ListMy(senderID string, entryType string) (published []sqlite.SharedEntry, local []string, err error) {
-	published, err = rm.sharedStore.ListByAuthor(senderID)
+// uninstallApp reads the saved manifest for an installed app and removes all its items.
+func (rm *RegistryManager) uninstallApp(name, senderID string) error {
+	manifestPath := filepath.Join(rm.appsDir(), name+".json")
+	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return nil, nil, err
+		return fmt.Errorf("app %q is not installed (no manifest found)", name)
 	}
 
-	if entryType != "" {
-		published = slices.DeleteFunc(published, func(e sqlite.SharedEntry) bool {
-			return e.Type != entryType
-		})
+	var manifest AppManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return fmt.Errorf("read app manifest: %w", err)
 	}
 
-	seen := make(map[string]bool)
-
-	// Skills: each skill is a DIRECTORY containing SKILL.md
-	if entryType == "" || entryType == "skill" {
-		for _, dir := range rm.store.globalDirs {
-			scanSkillDir(dir, &local, seen)
-		}
-		// In Docker sandbox, global skills are synced to workspace/.skills (not workspace/skills).
-		// We must scan the synced directory in addition to user-private directory.
-		if rm.isDockerSandbox() {
-			if syncedDir := rm.globalSyncedSkillsDir(senderID); syncedDir != "" {
-				scanSkillDirSandbox(rm.sandbox, syncedDir, senderID, &local, seen)
+	var errs []string
+	for _, c := range manifest.Contents {
+		switch c.Type {
+		case "skill":
+			if err := rm.uninstallSkill(c.Name, senderID); err != nil {
+				errs = append(errs, fmt.Sprintf("skill %s: %v", c.Name, err))
+			}
+		case "agent":
+			if err := rm.uninstallAgent(c.Name, senderID); err != nil {
+				errs = append(errs, fmt.Sprintf("agent %s: %v", c.Name, err))
+			}
+		case "plugin":
+			if err := rm.uninstallPlugin(c.Name, senderID); err != nil {
+				errs = append(errs, fmt.Sprintf("plugin %s: %v", c.Name, err))
 			}
 		}
-		userSkillsDir := rm.userSkillsDir(senderID)
-		if rm.useSandbox() {
-			scanSkillDirSandbox(rm.sandbox, userSkillsDir, senderID, &local, seen)
-		} else {
-			scanSkillDir(userSkillsDir, &local, seen)
-		}
 	}
 
-	// Agents: each agent is a .md FILE in the agents directory
-	if entryType == "" || entryType == "agent" {
-		if rm.agentStore != nil && rm.agentStore.globalDir != "" {
-			scanAgentDir(rm.agentStore.globalDir, &local, seen)
-		}
-		// In Docker sandbox, global agents are synced to workspace/.agents (not workspace/agents).
-		if rm.isDockerSandbox() {
-			if syncedDir := rm.globalSyncedAgentsDir(senderID); syncedDir != "" {
-				scanAgentDirSandbox(rm.sandbox, syncedDir, senderID, &local, seen)
-			}
-		}
-		userAgentsDir := rm.userAgentsDir(senderID)
-		if rm.useSandbox() {
-			scanAgentDirSandbox(rm.sandbox, userAgentsDir, senderID, &local, seen)
-		} else {
-			scanAgentDir(userAgentsDir, &local, seen)
-		}
+	// Only remove the manifest if all items uninstalled successfully
+	if len(errs) > 0 {
+		return fmt.Errorf("partial uninstall, %d errors: %s", len(errs), strings.Join(errs, "; "))
 	}
-
-	return published, local, nil
+	_ = os.Remove(manifestPath)
+	log.WithFields(log.Fields{"type": "app", "name": name, "sender": senderID}).Info("Uninstalled")
+	return nil
 }
 
-// scanSkillDir scans for skill subdirectories containing SKILL.md.
-func scanSkillDir(dir string, out *[]string, seen map[string]bool) {
+// --- List installed ---
+
+// ListInstalledSkills returns the names of skills installed for the given user.
+func (rm *RegistryManager) ListInstalledSkills(senderID string) []string {
+	dir := rm.userSkillsDir(senderID)
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		entries, err := rm.sandbox.ReadDir(ctx, dir, senderID)
+		if err != nil {
+			return nil
+		}
+		var names []string
+		for _, e := range entries {
+			if e.IsDir {
+				names = append(names, e.Name)
+			}
+		}
+		return names
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return nil
 	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+// ListInstalledAgents returns the names of agents installed for the given user.
+func (rm *RegistryManager) ListInstalledAgents(senderID string) []string {
+	dir := rm.userAgentsDir(senderID)
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		entries, err := rm.sandbox.ReadDir(ctx, dir, senderID)
+		if err != nil {
+			return nil
+		}
+		var names []string
+		for _, e := range entries {
+			if !e.IsDir && strings.HasSuffix(e.Name, ".md") {
+				names = append(names, strings.TrimSuffix(e.Name, ".md"))
+			}
+		}
+		return names
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			names = append(names, strings.TrimSuffix(e.Name(), ".md"))
+		}
+	}
+	return names
+}
+
+// ListInstalledPlugins returns the names (IDs) of installed plugins.
+func (rm *RegistryManager) ListInstalledPlugins(senderID string) []string {
+	pluginsDir := rm.pluginsDir()
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return nil
+	}
+	var names []string
 	for _, ent := range entries {
 		if !ent.IsDir() {
 			continue
 		}
-		key := "skill:" + ent.Name()
-		if seen[key] {
+		pluginDir := filepath.Join(pluginsDir, ent.Name())
+		manifest, err := plugin.LoadManifest(pluginDir)
+		if err != nil {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(dir, ent.Name(), "SKILL.md")); err == nil {
-			seen[key] = true
-			*out = append(*out, key)
-		}
+		names = append(names, manifest.ID)
 	}
+	return names
 }
 
-// scanAgentDir scans for agent .md files, extracting name from filename.
-func scanAgentDir(dir string, out *[]string, seen map[string]bool) {
-	entries, err := os.ReadDir(dir)
+// ListInstalledApps returns the names of installed apps.
+func (rm *RegistryManager) ListInstalledApps() []string {
+	entries, err := os.ReadDir(rm.appsDir())
 	if err != nil {
-		return
+		return nil
 	}
+	var names []string
 	for _, ent := range entries {
-		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".md") {
-			continue
-		}
-		name := strings.TrimSuffix(ent.Name(), ".md")
-		key := "agent:" + name
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		*out = append(*out, key)
-	}
-}
-
-// scanSkillDirSandbox scans for skill directories using Sandbox.
-func scanSkillDirSandbox(sb tools.Sandbox, dir, userID string, out *[]string, seen map[string]bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	entries, err := sb.ReadDir(ctx, dir, userID)
-	if err != nil {
-		return
-	}
-	for _, ent := range entries {
-		if !ent.IsDir {
-			continue
-		}
-		key := "skill:" + ent.Name
-		if seen[key] {
-			continue
-		}
-		if _, err := sb.Stat(ctx, dir+"/"+ent.Name+"/SKILL.md", userID); err == nil {
-			seen[key] = true
-			*out = append(*out, key)
+		if !ent.IsDir() && strings.HasSuffix(ent.Name(), ".json") {
+			names = append(names, strings.TrimSuffix(ent.Name(), ".json"))
 		}
 	}
+	return names
 }
 
-// scanAgentDirSandbox scans for agent .md files using Sandbox.
-func scanAgentDirSandbox(sb tools.Sandbox, dir, userID string, out *[]string, seen map[string]bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	entries, err := sb.ReadDir(ctx, dir, userID)
-	if err != nil {
-		return
-	}
-	for _, ent := range entries {
-		if ent.IsDir || !strings.HasSuffix(ent.Name, ".md") {
-			continue
-		}
-		name := strings.TrimSuffix(ent.Name, ".md")
-		key := "agent:" + name
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		*out = append(*out, key)
-	}
-}
-
-// Browse lists public entries in the marketplace.
-func (rm *RegistryManager) Browse(entryType string, limit, offset int) ([]sqlite.SharedEntry, error) {
-	return rm.sharedStore.ListShared(entryType, limit, offset)
-}
-
-// --- registry cache ---
-
-func (rm *RegistryManager) registryCacheDir(entryType, name string) string {
-	// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
-	return filepath.Join(rm.workDir, ".xbot", "registry", entryType, name)
-}
-
-// snapshotDirToCache copies a source directory into cacheDir, replacing any existing cache.
-func (rm *RegistryManager) snapshotDirToCache(src, cacheDir string) error {
-	if err := os.RemoveAll(cacheDir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("clean cache: %w", err)
-	}
-	return copyDir(src, cacheDir)
-}
-
-// snapshotFileToCache copies a single file into a cache directory.
-func (rm *RegistryManager) snapshotFileToCache(srcFile, cacheDir string) error {
-	if err := os.RemoveAll(cacheDir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("clean cache: %w", err)
-	}
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return fmt.Errorf("create cache dir: %w", err)
-	}
-	data, err := os.ReadFile(srcFile)
-	if err != nil {
-		return fmt.Errorf("read source: %w", err)
-	}
-	return os.WriteFile(filepath.Join(cacheDir, filepath.Base(srcFile)), data, 0o644)
-}
-
-// --- helpers ---
+// --- Find ---
 
 func (rm *RegistryManager) findSkillDir(name string) string {
 	for _, dir := range rm.store.globalDirs {
@@ -628,7 +375,6 @@ func (rm *RegistryManager) findSkillDirForUser(name, senderID string) string {
 		return dir
 	}
 	if senderID != "" {
-		// In Docker sandbox, also check workspace/.skills where global skills are synced.
 		if rm.isDockerSandbox() {
 			if syncedDir := rm.globalSyncedSkillsDir(senderID); syncedDir != "" {
 				path := filepath.Join(syncedDir, name)
@@ -656,16 +402,13 @@ func (rm *RegistryManager) findSkillDirForUser(name, senderID string) string {
 }
 
 func (rm *RegistryManager) findAgentFile(name, senderID string) string {
-	// Search global agents dir
 	if rm.agentStore != nil && rm.agentStore.globalDir != "" {
 		path := filepath.Join(rm.agentStore.globalDir, name+".md")
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}
 	}
-	// Search user-private agents dir
 	if senderID != "" {
-		// In Docker sandbox, also check workspace/.agents where global agents are synced.
 		if rm.isDockerSandbox() {
 			if syncedDir := rm.globalSyncedAgentsDir(senderID); syncedDir != "" {
 				path := filepath.Join(syncedDir, name+".md")
@@ -692,14 +435,35 @@ func (rm *RegistryManager) findAgentFile(name, senderID string) string {
 	return ""
 }
 
-// markInstalled records the installation source and timestamp for a skill.
-// TODO: 持久化安装信息到本地数据库，用于后续版本管理和自动更新。
-func (rm *RegistryManager) markInstalled(skillDir, installedFrom string, installedAt int64) {
-	// TODO: write install metadata to DB (installedFrom, installedAt)
+// findPluginDir locates a plugin directory by ID or name.
+func (rm *RegistryManager) findPluginDir(name string) string {
+	pluginsDir := rm.pluginsDir()
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return ""
+	}
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		pluginDir := filepath.Join(pluginsDir, ent.Name())
+		manifest, err := plugin.LoadManifest(pluginDir)
+		if err != nil {
+			continue
+		}
+		if manifest.ID == name || manifest.Name == name {
+			return pluginDir
+		}
+		if ent.Name() == name {
+			return pluginDir
+		}
+	}
+	return ""
 }
 
+// --- Sandbox helpers ---
+
 // copyDirToSandbox copies a local directory (server cache) to a sandbox directory (user workspace).
-// Source: os.*, Target: Sandbox.*
 func (rm *RegistryManager) copyDirToSandbox(ctx context.Context, src, dst, userID string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -728,48 +492,7 @@ func (rm *RegistryManager) copyDirToSandbox(ctx context.Context, src, dst, userI
 	})
 }
 
-// copyDirFromSandbox copies a sandbox directory (user workspace) to a local directory (server cache).
-// Source: Sandbox.*, Target: os.*
-func (rm *RegistryManager) copyDirFromSandbox(ctx context.Context, src, dst, userID string) error {
-	return tools.WalkSandboxDir(ctx, rm.sandbox, src, userID, func(relPath string, entry tools.DirEntry) error {
-		targetPath := filepath.Join(dst, relPath)
-		data, err := rm.sandbox.ReadFile(ctx, filepath.Join(src, relPath), userID)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(targetPath, data, 0o644)
-	})
-}
-
-// snapshotDirFromSandbox copies a sandbox directory into cache (Sandbox → os).
-func (rm *RegistryManager) snapshotDirFromSandbox(src, cacheDir, userID string) error {
-	if err := os.RemoveAll(cacheDir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("clean cache: %w", err)
-	}
-	ctx, cancel := rm.sandboxCtx()
-	defer cancel()
-	return rm.copyDirFromSandbox(ctx, src, cacheDir, userID)
-}
-
-// snapshotFileFromSandbox copies a single file from sandbox into cache.
-func (rm *RegistryManager) snapshotFileFromSandbox(srcFile, cacheDir, userID string) error {
-	if err := os.RemoveAll(cacheDir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("clean cache: %w", err)
-	}
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return fmt.Errorf("create cache dir: %w", err)
-	}
-	ctx, cancel := rm.sandboxCtx()
-	defer cancel()
-	data, err := rm.sandbox.ReadFile(ctx, srcFile, userID)
-	if err != nil {
-		return fmt.Errorf("read source: %w", err)
-	}
-	return os.WriteFile(filepath.Join(cacheDir, filepath.Base(srcFile)), data, 0o644)
-}
+// --- File helpers ---
 
 func copyDir(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
@@ -788,8 +511,6 @@ func copyDir(src, dst string) error {
 			return err
 		}
 
-		// Handle symbolic links: create symlink instead of copying content.
-		// WalkDir follows symlinks, so we must detect them via Lstat.
 		if fi.Mode()&os.ModeSymlink != 0 {
 			link, err := os.Readlink(path)
 			if err != nil {
@@ -809,4 +530,263 @@ func copyDir(src, dst string) error {
 
 		return os.WriteFile(targetPath, data, fi.Mode())
 	})
+}
+
+// --- Pack / Install ---
+
+// PackApp packs local skill/agent/plugin items into a .xbot.zip file.
+func (rm *RegistryManager) PackApp(items []AppItem, outputPath, author string) error {
+	bp := NewAppPackager(rm.workDir)
+	return bp.Pack(rm, items, outputPath, author)
+}
+
+// InstallAppFromFile installs a .xbot.zip app from a local file path.
+func (rm *RegistryManager) InstallAppFromFile(zipPath, senderID string, force bool) (*AppInstallResult, error) {
+	bp := NewAppPackager(rm.workDir)
+	manifest, tmpDir, err := bp.Unpack(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := bp.Validate(manifest, tmpDir); err != nil {
+		return nil, err
+	}
+
+	result := &AppInstallResult{
+		Manifest:  *manifest,
+		Installed: []string{},
+		Skipped:   []string{},
+	}
+
+	for _, c := range manifest.Contents {
+		switch c.Type {
+		case "skill":
+			skipped, err := rm.installAppSkill(c, tmpDir, senderID, force)
+			if err != nil {
+				return nil, fmt.Errorf("install skill %q: %w", c.Name, err)
+			}
+			if skipped {
+				result.Skipped = append(result.Skipped, fmt.Sprintf("skill: %s", c.Name))
+			} else {
+				result.Installed = append(result.Installed, fmt.Sprintf("skill: %s", c.Name))
+			}
+		case "agent":
+			skipped, err := rm.installAppAgent(c, tmpDir, senderID, force)
+			if err != nil {
+				return nil, fmt.Errorf("install agent %q: %w", c.Name, err)
+			}
+			if skipped {
+				result.Skipped = append(result.Skipped, fmt.Sprintf("agent: %s", c.Name))
+			} else {
+				result.Installed = append(result.Installed, fmt.Sprintf("agent: %s", c.Name))
+			}
+		case "plugin":
+			skipped, err := rm.installAppPlugin(c, tmpDir, senderID, force)
+			if err != nil {
+				return nil, fmt.Errorf("install plugin %q: %w", c.Name, err)
+			}
+			if skipped {
+				result.Skipped = append(result.Skipped, fmt.Sprintf("plugin: %s", c.Name))
+			} else {
+				result.Installed = append(result.Installed, fmt.Sprintf("plugin: %s", c.Name))
+			}
+		default:
+			return nil, fmt.Errorf("unsupported content type %q (use skill, agent, or plugin)", c.Type)
+		}
+	}
+
+	// Save manifest for future uninstall
+	if err := rm.saveAppManifest(manifest); err != nil {
+		log.WithError(err).Warn("Failed to save app manifest for uninstall tracking")
+	}
+
+	log.WithFields(log.Fields{
+		"app":    manifest.Name,
+		"items":  len(result.Installed),
+		"sender": senderID,
+	}).Info("Installed app from file")
+	return result, nil
+}
+
+// InstallAppFromURL downloads a .xbot.zip from a URL and installs it.
+func (rm *RegistryManager) InstallAppFromURL(url, senderID string, force bool) (*AppInstallResult, error) {
+	// Download to temp file
+	tmpFile, err := os.CreateTemp("", "xbot-install-*.zip")
+	if err != nil {
+		return nil, fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		tmpFile.Close()
+		return nil, fmt.Errorf("download from %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		tmpFile.Close()
+		return nil, fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+
+	// Limit download size to 100MB
+	if resp.ContentLength > 100*1024*1024 {
+		tmpFile.Close()
+		return nil, fmt.Errorf("file too large: %d bytes (max 100MB)", resp.ContentLength)
+	}
+
+	limited := io.LimitReader(resp.Body, 100*1024*1024+1)
+	written, err := io.Copy(tmpFile, limited)
+	if err != nil {
+		tmpFile.Close()
+		return nil, fmt.Errorf("download write: %w", err)
+	}
+	if written > 100*1024*1024 {
+		tmpFile.Close()
+		return nil, fmt.Errorf("file too large: exceeds 100MB limit")
+	}
+	tmpFile.Close()
+
+	return rm.InstallAppFromFile(tmpPath, senderID, force)
+}
+
+// saveAppManifest writes the app manifest to ~/.xbot/apps/<name>.json.
+func (rm *RegistryManager) saveAppManifest(manifest *AppManifest) error {
+	dir := rm.appsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create apps dir: %w", err)
+	}
+	path := filepath.Join(dir, manifest.Name+".json")
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// installAppSkill copies a skill from the unpacked app to the user's skill directory.
+// installAppSkill copies a skill directory from the unpacked app to the user's skills directory.
+// Returns skipped=true if the skill already exists and force=false.
+func (rm *RegistryManager) installAppSkill(c AppContent, srcDir, senderID string, force bool) (bool, error) {
+	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
+	destDir := filepath.Join(rm.userSkillsDir(senderID), c.Name)
+
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		if _, err := rm.sandbox.Stat(ctx, destDir, senderID); err == nil {
+			if !force {
+				return true, nil
+			}
+			if err := rm.sandbox.RemoveAll(ctx, destDir, senderID); err != nil {
+				return false, fmt.Errorf("remove old skill: %w", err)
+			}
+		}
+		if err := rm.copyDirToSandbox(ctx, srcPath, destDir, senderID); err != nil {
+			return false, fmt.Errorf("copy skill: %w", err)
+		}
+	} else {
+		if _, err := os.Stat(destDir); err == nil {
+			if !force {
+				return true, nil
+			}
+			if err := os.RemoveAll(destDir); err != nil {
+				return false, fmt.Errorf("remove old skill: %w", err)
+			}
+		}
+		if err := copyDir(srcPath, destDir); err != nil {
+			return false, fmt.Errorf("copy skill: %w", err)
+		}
+	}
+	return false, nil
+}
+
+// installAppAgent copies an agent .md file from the unpacked app to the user's agents directory.
+// Returns skipped=true if the agent already exists and force=false.
+func (rm *RegistryManager) installAppAgent(c AppContent, srcDir, senderID string, force bool) (bool, error) {
+	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
+	agentsDir := rm.userAgentsDir(senderID)
+
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		if err := rm.sandbox.MkdirAll(ctx, agentsDir, 0o755, senderID); err != nil {
+			return false, fmt.Errorf("create agents dir: %w", err)
+		}
+		destFile := filepath.Join(agentsDir, c.Name+".md")
+		if _, err := rm.sandbox.Stat(ctx, destFile, senderID); err == nil {
+			if !force {
+				return true, nil
+			}
+		}
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			return false, fmt.Errorf("read agent file: %w", err)
+		}
+		if err := rm.sandbox.WriteFile(ctx, destFile, data, 0o644, senderID); err != nil {
+			return false, fmt.Errorf("write agent file: %w", err)
+		}
+	} else {
+		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+			return false, fmt.Errorf("create agents dir: %w", err)
+		}
+		destFile := filepath.Join(agentsDir, c.Name+".md")
+		if _, err := os.Stat(destFile); err == nil {
+			if !force {
+				return true, nil
+			}
+		}
+		if err := copyFile(srcPath, destFile); err != nil {
+			return false, fmt.Errorf("copy agent file: %w", err)
+		}
+	}
+	return false, nil
+}
+
+// installAppPlugin copies a plugin directory from the unpacked app to the global plugins directory.
+// Returns skipped=true if the plugin already exists and force=false.
+func (rm *RegistryManager) installAppPlugin(c AppContent, srcDir, senderID string, force bool) (bool, error) {
+	srcPath := filepath.Join(srcDir, strings.TrimRight(c.Source, "/"))
+	pluginsDir := rm.pluginsDir()
+
+	manifest, err := plugin.LoadManifest(srcPath)
+	if err != nil {
+		return false, fmt.Errorf("read plugin manifest: %w", err)
+	}
+
+	destDir := filepath.Join(pluginsDir, manifest.ID)
+
+	if _, err := os.Stat(destDir); err == nil {
+		if !force {
+			return true, nil
+		}
+		if err := os.RemoveAll(destDir); err != nil {
+			return false, fmt.Errorf("remove old plugin: %w", err)
+		}
+	}
+
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		return false, fmt.Errorf("create plugins dir: %w", err)
+	}
+
+	if err := copyDir(srcPath, destDir); err != nil {
+		return false, fmt.Errorf("copy plugin: %w", err)
+	}
+
+	log.WithFields(log.Fields{
+		"type": "plugin", "name": manifest.ID, "sender": senderID,
+		"from": srcPath, "to": destDir,
+	}).Info("Installed plugin from app")
+
+	// Activate the plugin immediately if a plugin manager is available
+	if rm.pluginActivator != nil {
+		if err := rm.pluginActivator(manifest.ID); err != nil {
+			log.WithFields(log.Fields{"plugin": manifest.ID, "error": err}).Warn("Failed to activate plugin after install, use /plugin reload-all")
+		}
+	}
+
+	return false, nil
 }

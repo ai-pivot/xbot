@@ -24,7 +24,6 @@ import (
 	ch "xbot/channel"
 	log "xbot/logger"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
 	"xbot/tools"
 
 	"github.com/google/uuid"
@@ -95,16 +94,6 @@ type WebCallbacks struct {
 	RunnerGetActive func(senderID string) (string, error)
 	// RunnerSetActive sets the active runner for the user.
 	RunnerSetActive func(senderID, name string) error
-	// RegistryBrowse lists available agents/skills in the marketplace.
-	RegistryBrowse func(entryType string, limit, offset int) ([]sqlite.SharedEntry, error)
-	// RegistryInstall installs a shared entry for the user.
-	RegistryInstall func(entryType string, id int64, senderID string) error
-	// RegistryListMy lists the user's installed entries.
-	RegistryListMy func(senderID, entryType string) ([]sqlite.SharedEntry, []string, error)
-	// RegistryUnpublish removes a user's published entry.
-	RegistryUnpublish func(entryType, name, senderID string) error
-	// RegistryUninstall removes a user-installed entry.
-	RegistryUninstall func(entryType, name, senderID string) error
 	// LLMList returns available model entries and current entry.
 	LLMList func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry)
 	// LLMSet switches the user's model via explicit (subID, model).
@@ -150,8 +139,6 @@ type WebCallbacks struct {
 	// When subID/model are empty, falls back to session resolution.
 	LLMSetMaxContext func(senderID, subID, model string, maxContext int) error
 
-	// RegistryPublish publishes a user's agent/skill to the marketplace.
-	RegistryPublish func(entryType, name, senderID string) error
 	// SandboxWriteFile writes file data to the user's sandbox at the given path.
 	// Returns (sandboxInternalPath, error). sandboxInternalPath is the path inside
 	// the sandbox (e.g., /workspace/uploads/file.txt). Returns ("", nil) if no sandbox available.
@@ -460,6 +447,28 @@ func (wc *WebChannel) SetRPCHandler(fn func(method string, params json.RawMessag
 	wc.callbacks.RPCHandler = fn
 }
 
+// rpcCall invokes a server-side RPC method via the injected RPCHandler.
+// It marshals params to JSON, calls the handler, and unmarshals the result.
+func (wc *WebChannel) rpcCall(method string, params any, result any) error {
+	if wc.callbacks.RPCHandler == nil {
+		return fmt.Errorf("RPC handler not configured")
+	}
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("marshal params: %w", err)
+	}
+	resp, err := wc.callbacks.RPCHandler(method, paramsJSON, RPCIdentity{SenderID: "web_admin"})
+	if err != nil {
+		return err
+	}
+	if result != nil && len(resp) > 0 {
+		if err := json.Unmarshal(resp, result); err != nil {
+			return fmt.Errorf("unmarshal result: %w", err)
+		}
+	}
+	return nil
+}
+
 func (wc *WebChannel) Name() string { return "web" }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +565,11 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/admin/users/list", wc.authenticatedPOST(wc.handleAdminUsersListPOST))
 	mux.HandleFunc("/api/admin/users/{id}/set-role", wc.authenticatedPOST(wc.handleAdminSetRole))
+
+	// App bundle API
+	mux.HandleFunc("/api/app/pack", wc.authenticatedPOST(wc.handleMarketPack))
+	mux.HandleFunc("/api/app/install-file", wc.authenticatedPOST(wc.handleMarketInstallFile))
+	mux.HandleFunc("/api/app/uninstall", wc.authenticatedPOST(wc.handleMarketUninstall))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		jsonErrorResponse(w, http.StatusNotFound, "endpoint not found")

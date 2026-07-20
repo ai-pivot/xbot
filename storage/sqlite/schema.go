@@ -127,22 +127,6 @@ CREATE TABLE runners (
     UNIQUE(user_id, name)
 );
 
-CREATE TABLE shared_registry (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    type        TEXT NOT NULL CHECK(type IN ('skill', 'agent')),
-    name        TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    author      TEXT NOT NULL,
-    tags        TEXT NOT NULL DEFAULT '',
-    source_path TEXT NOT NULL,
-    sharing     TEXT NOT NULL DEFAULT 'private' CHECK(sharing IN ('private', 'public')),
-    created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL,
-    UNIQUE(type, name, author)
-);
-CREATE INDEX idx_shared_type_sharing ON shared_registry(type, sharing);
-CREATE INDEX idx_shared_author ON shared_registry(author);
-
 CREATE TABLE web_users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     username   TEXT NOT NULL UNIQUE,

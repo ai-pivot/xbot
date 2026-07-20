@@ -955,3 +955,60 @@ func (c *Client) RenameChat(ch, senderID, chatID, newName string) error {
 	})
 	return err
 }
+
+// ---------------------------------------------------------------------------
+// App (via RPC)
+// ---------------------------------------------------------------------------
+
+// AppPack packs local items into a .xbot.zip file and returns the output path.
+func (c *Client) AppPack(name string, items []AppItem, author string) (string, error) {
+	specs := make([]appItemSpec, len(items))
+	for i, it := range items {
+		specs[i] = appItemSpec(it)
+	}
+	var r appPackResp
+	if err := c.call(MethodAppPack, appPackReq{Name: name, Items: specs, Author: author}, &r); err != nil {
+		return "", err
+	}
+	return r.Path, nil
+}
+
+// AppInstallFile installs a .xbot.zip from a local file path.
+func (c *Client) AppInstallFile(zipPath, senderID string, force bool) (*AppInstallResult, error) {
+	var r appInstallResp
+	if err := c.call(MethodAppInstallFile, appInstallFileReq{ZipPath: zipPath, SenderID: senderID, Force: force}, &r); err != nil {
+		return nil, err
+	}
+	return &AppInstallResult{
+		Manifest:  AppManifest{Name: r.Name, Version: r.Version},
+		Installed: r.Installed,
+		Skipped:   r.Skipped,
+	}, nil
+}
+
+// AppInstallURL downloads a .xbot.zip from a URL and installs it.
+func (c *Client) AppInstallURL(url, senderID string, force bool) (*AppInstallResult, error) {
+	var r appInstallResp
+	if err := c.call(MethodAppInstallURL, appInstallURLReq{URL: url, SenderID: senderID, Force: force}, &r); err != nil {
+		return nil, err
+	}
+	return &AppInstallResult{
+		Manifest:  AppManifest{Name: r.Name, Version: r.Version},
+		Installed: r.Installed,
+		Skipped:   r.Skipped,
+	}, nil
+}
+
+// AppUninstall removes an installed skill/agent/plugin/app.
+func (c *Client) AppUninstall(entryType, name, senderID string) error {
+	return c.call(MethodAppUninstall, appUninstallReq{Type: entryType, Name: name, SenderID: senderID}, nil)
+}
+
+// AppList returns lists of installed skills, agents, and plugins.
+func (c *Client) AppList(senderID string) (skills, agents, plugins []string, err error) {
+	var r appListResp
+	if err := c.call(MethodAppList, appListReq{SenderID: senderID}, &r); err != nil {
+		return nil, nil, nil, err
+	}
+	return r.Skills, r.Agents, r.Plugins, nil
+}
