@@ -488,28 +488,6 @@ func (c *goalClearCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMes
 	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "✅ 目标已清除。后续 turn 将正常结束，不再自动继续。"}, nil
 }
 
-// --- /menu ---
-
-type menuCmd struct{}
-
-func (c *menuCmd) Name() string        { return "/menu" }
-func (c *menuCmd) Aliases() []string   { return nil }
-func (c *menuCmd) Match(s string) bool { return strings.ToLower(s) == "/menu" }
-func (c *menuCmd) Concurrent() bool    { return true }
-
-func (c *menuCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	return &channel.OutboundMsg{
-		Channel: msg.Channel,
-		ChatID:  msg.ChatID,
-		Content: "## 🏠 主菜单\n\n" +
-			"- ⚙️ `/settings` — 个人设置\n" +
-			"- 📦 `/app list` — 查看已安装\n" +
-			"- 📦 `/app install <file|url>` — 安装应用\n" +
-			"- 📦 `/app export <name> -s <skill>` — 打包导出\n" +
-			"- 🗑️ `/app uninstall -n <app> -s <skill> -a <agent> -p <plugin>` — 卸载\n",
-	}, nil
-}
-
 // registerBuiltinCommands registers all built-in commands to the registry.
 func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&newCmd{}, CommandInfo{Usage: "/new", Description: "开始新对话（归档记忆后重置）"})
@@ -530,7 +508,6 @@ func registerBuiltinCommands(r *CommandRegistry) {
 
 	// Registry & settings commands
 	r.Register(&settingsCmd{}, CommandInfo{Usage: "/settings", Description: "打开个人设置（仅私聊）"})
-	r.Register(&menuCmd{}, CommandInfo{Usage: "/menu", Description: "主菜单"})
 	r.Register(&pluginReloadAllCmd{}, CommandInfo{Usage: "/plugin reload-all", Description: "重新加载所有插件"})
 	r.Register(&appCmd{}, CommandInfo{Usage: "/app", Description: "应用管理（打包、安装、卸载）"})
 
