@@ -1666,8 +1666,12 @@ func New(cfg Config) (*Agent, error) {
 		})
 		// Wire plugin deactivator so /app uninstall stops the plugin (hooks,
 		// widgets, runtime) before removing files.
+		// ReloadAll re-discovers from disk (deleted plugin won't be found),
+		// re-activates remaining plugins, and fires OnReload callbacks which
+		// re-wire hooks/tools/widgets/commands — UninstallPlugin alone
+		// doesn't fire OnReload, leaving stale widgets/hooks visible.
 		agent.registryManager.SetPluginDeactivator(func(pluginID string) error {
-			return agent.pluginMgr.UninstallPlugin(context.Background(), pluginID)
+			return agent.pluginMgr.ReloadAll(context.Background())
 		})
 		// Wire plugin capabilities to xbot subsystems
 		hookBridge := plugin.NewPluginHookBridge()
