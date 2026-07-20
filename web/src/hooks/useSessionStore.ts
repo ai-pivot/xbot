@@ -845,6 +845,12 @@ export function useSessionStoreImpl(): SessionStore {
       if (carried.status === 'waiting_input' || carried.status === 'error' || carried.status === 'unread') {
         return { ...node, status: carried.status, running: carried.running ?? node.running, children }
       }
+      // Also carry over 'running' status — the server's session-tree API may
+      // not always reflect the latest busy state, and a refresh during an
+      // active turn must not clear the spinner.
+      if (carried.status === 'running' || carried.running) {
+        return { ...node, status: 'running', running: true, children }
+      }
       return { ...node, children }
     }
     collect(prev)
