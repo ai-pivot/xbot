@@ -280,6 +280,26 @@ export class ProgressStore {
     this.listeners.forEach((l) => l())
   }
 
+  /** Reset only streaming fields, preserving iterationHistory and todos.
+   *  Used when session(busy) fires after an ask_user response — the turn
+   *  continues and prior iterations must survive. */
+  resetStreamingState(): void {
+    if (this.disposed) return
+    this.mutate((draft) => {
+      draft.streamContent = ''
+      draft.reasoningStreamContent = ''
+      draft.content = ''
+      draft.streaming = false
+      draft.phase = ''
+      draft.streamingTools = []
+      draft.activeTools = []
+      draft.completedTools = []
+      draft.genuiContent = ''
+      draft.lastReasoning = ''
+      // Keep: iterationHistory, todos, subAgents, tokenUsage, iteration, lastIter
+    })
+  }
+
   /** Set streamed assistant text (cumulative value from stream_content events). */
   appendStreamContent(delta: string): void {
     if (!delta) return

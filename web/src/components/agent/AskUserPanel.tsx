@@ -12,6 +12,7 @@ import { HelpCircle } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { MarkdownRenderer } from '@/components/agent/MarkdownRenderer'
 import { useI18n } from '@/providers/i18n'
 import type { AskUserPrompt } from '@/types/agent'
 import { cn } from '@/lib/utils'
@@ -61,7 +62,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
           <div key={i} className="flex flex-col gap-2">
             <label className="text-sm text-text-primary">
               {prompt.questions.length > 1 ? `${i + 1}. ` : ''}
-              {q.question}
+              <MarkdownRenderer content={q.question} />
             </label>
             {q.options && q.options.length > 0 ? (
               <div className="flex flex-wrap gap-2">

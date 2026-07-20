@@ -431,7 +431,10 @@ function handleProgressMessage(
 
       if (action === 'busy') {
         if (finalizedRef) finalizedRef.current = false
-        store.reset()
+        // Don't fully reset on session(busy) — the ask_user response path
+        // re-enters the same turn, and prior iterations must survive.
+        // Only clear streaming fields, keep iterationHistory.
+        store.resetStreamingState()
         return
       }
 
