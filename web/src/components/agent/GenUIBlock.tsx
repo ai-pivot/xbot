@@ -28,12 +28,12 @@ function codeHash(code: string): string {
 
 // ─── Error Boundary ────────────────────────────────────────────
 // Catches render errors (e.g. invalid SVG attributes) so they don't
-// crash the entire React tree. Shows last successful render on error.
+// crash the entire React tree. Shows fallback on error.
 class GenUIErrorBoundary extends React.Component<
-  { children: React.ReactNode; fallback: React.ReactNode },
+  { children?: React.ReactNode; fallback: React.ReactNode },
   { hasError: boolean }
 > {
-  constructor(props: { children: React.ReactNode; fallback: React.ReactNode }) {
+  constructor(props: { children?: React.ReactNode; fallback: React.ReactNode }) {
     super(props)
     this.state = { hasError: false }
   }
@@ -204,7 +204,7 @@ ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
     doc.addEventListener('wheel', (e: WheelEvent) => {
       let el = e.target as HTMLElement | null
       let isScrollable = false
-      while (el && el !== doc) {
+      while (el && el !== doc.body && el !== doc.documentElement) {
         const style = doc.defaultView?.getComputedStyle(el)
         if (style && (
           (style.overflow === 'auto' || style.overflow === 'scroll' ||
@@ -296,11 +296,8 @@ ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
     if (!rootRef.current) return
     if (component) {
       rootRef.current.render(
-        React.createElement(GenUIErrorBoundary, {
-          fallback: React.createElement('div', {
-            style: { padding: '16px', color: '#94a3b8', fontSize: '13px' },
-          }, '⚠️ Render error — check SVG/HTML syntax'),
-        },
+        React.createElement(GenUIErrorBoundary,
+          { fallback: '⚠️ Render error — check SVG/HTML syntax' },
           React.createElement(component, { 'data-genui-root': true as const, onClick: handleClick } as Record<string, unknown>)
         )
       )
