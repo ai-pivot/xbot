@@ -25,6 +25,10 @@ interface SessionGroupProps {
   onToggleStar: (id: string) => void
   onRename: (session: SessionInfo) => void
   onDelete: (session: SessionInfo) => void
+  /** Multi-select mode props (passed through to SessionItem). */
+  multiSelectMode?: boolean
+  selectedIds?: Set<string>
+  onToggleSelect?: (key: string, shiftKey: boolean) => void
 }
 
 export function SessionGroup({
@@ -38,6 +42,9 @@ export function SessionGroup({
   onToggleStar,
   onRename,
   onDelete,
+  multiSelectMode = false,
+  selectedIds,
+  onToggleSelect,
 }: SessionGroupProps) {
   const { t } = useI18n()
   const [open, setOpen] = useState(true)
@@ -73,6 +80,9 @@ export function SessionGroup({
                 onToggleStar={onToggleStar}
                 onRename={onRename}
                 onDelete={onDelete}
+                multiSelectMode={multiSelectMode}
+                selected={selectedIds?.has(sessionKey(s)) ?? false}
+                onToggleSelect={onToggleSelect}
               />
               {/* Render SubAgent children (indented) for this parent session */}
               {childrenForParent(s).filter(isVisibleSubAgent).map((sa) => (

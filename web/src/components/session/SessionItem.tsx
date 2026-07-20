@@ -8,7 +8,7 @@
  * shows a Bot icon instead of the status dot, and hides the star/time.
  */
 import { useCallback } from 'react'
-import { Star, Pencil, Trash2, Bot, GitBranch, Loader2, ExternalLink } from 'lucide-react'
+import { Star, Pencil, Trash2, Bot, GitBranch, Loader2, ExternalLink, Check } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -32,6 +32,12 @@ interface SessionItemProps {
   onToggleStar: (id: string) => void
   onRename: (session: SessionInfo) => void
   onDelete: (session: SessionInfo) => void
+  /** Multi-select mode: show checkbox, click toggles selection. */
+  multiSelectMode?: boolean
+  /** Whether this item is currently selected in multi-select mode. */
+  selected?: boolean
+  /** Toggle selection (key, shiftKey) — shiftKey enables range select. */
+  onToggleSelect?: (key: string, shiftKey: boolean) => void
 }
 
 const STATUS_COLOR: Record<SessionStatus, string> = {
@@ -54,6 +60,9 @@ export function SessionItem({
   onToggleStar,
   onRename,
   onDelete,
+  multiSelectMode = false,
+  selected = false,
+  onToggleSelect,
 }: SessionItemProps) {
   const { t } = useI18n()
   const key = sessionKey(session)
@@ -70,20 +79,30 @@ export function SessionItem({
     <div
       role="button"
       tabIndex={0}
-      onClick={() => {
-        if (!session.synthetic) onSelect(session.chatID)
+      onClick={(e) => {
+        if (session.synthetic) return
+        if (multiSelectMode && onToggleSelect && !isSubAgent) {
+          onToggleSelect(key, e.shiftKey)
+        } else {
+          onSelect(session.chatID)
+        }
       }}
       onKeyDown={(e) => {
         if (session.synthetic) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          onSelect(session.chatID)
+          if (multiSelectMode && onToggleSelect && !isSubAgent) {
+            onToggleSelect(key, e.shiftKey)
+          } else {
+            onSelect(session.chatID)
+          }
         }
       }}
       className={cn(
         'group flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
-        active ? 'bg-bg-tertiary' : !session.synthetic && 'hover:bg-bg-tertiary/60 hover:shadow-md',
+        active && !multiSelectMode ? 'bg-bg-tertiary' : !session.synthetic && 'hover:bg-bg-tertiary/60 hover:shadow-md',
         session.synthetic && 'cursor-default opacity-80',
+        selected && 'bg-accent/15 ring-1 ring-accent/40',
       )}
       style={{
         ...(isSubAgent ? { marginLeft: `${depth}rem` } : {}),
@@ -93,7 +112,20 @@ export function SessionItem({
         } : {}),
       }}
     >
-      {executing ? (
+      {multiSelectMode && !isSubAgent && !session.synthetic ? (
+        /* Multi-select checkbox */
+        <span
+          className={cn(
+            'flex size-3.5 shrink-0 items-center justify-center rounded border transition-colors',
+            selected
+              ? 'border-accent bg-accent text-white'
+              : 'border-border-muted bg-transparent',
+          )}
+          aria-hidden
+        >
+          {selected && <Check className="size-2.5" strokeWidth={3} />}
+        </span>
+      ) : executing ? (
         <Loader2
           className="size-3.5 shrink-0 animate-spin"
           style={{ color: isSubAgent ? 'var(--accent)' : 'var(--status-running)' }}
@@ -115,8 +147,8 @@ export function SessionItem({
         />
       )}
 
-      {/* Star toggle (hover/starred) — hidden for SubAgents */}
-      {!isSubAgent && !session.synthetic && (
+      {/* Star toggle (hover/starred) — hidden for SubAgents and multi-select */}
+      {!isSubAgent && !session.synthetic && !multiSelectMode && (
         <button
           type="button"
           aria-label={starred ? t('session.unstar') : t('session.star')}
@@ -157,6 +189,9 @@ export function SessionItem({
       )}
     </div>
   )
+
+  // In multi-select mode, no context menu — just the row
+  if (multiSelectMode) return row
 
   // SubAgent items: context menu with only "open in tab"
   if (isSubAgent || session.synthetic) {

@@ -53,6 +53,10 @@ interface SessionListProps {
   onToggleStar: (id: string) => void
   onRename: (id: string, channel: string, label: string) => Promise<boolean>
   onDelete: (id: string, channel: string) => Promise<boolean>
+  /** Multi-select mode props. */
+  multiSelectMode?: boolean
+  selectedIds?: Set<string>
+  onToggleSelect?: (key: string, shiftKey: boolean) => void
 }
 
 type DialogState = { id: string; channel: string; label: string } | null
@@ -70,6 +74,9 @@ export function SessionList({
   onToggleStar,
   onRename,
   onDelete,
+  multiSelectMode = false,
+  selectedIds,
+  onToggleSelect,
 }: SessionListProps) {
   const { t } = useI18n()
   const [rename, setRename] = useState<DialogState>(null)
@@ -154,6 +161,9 @@ export function SessionList({
                   onToggleStar={onToggleStar}
                   onRename={openRename}
                   onDelete={openDelete}
+                  multiSelectMode={multiSelectMode}
+                  selected={selectedIds?.has(sessionKey(s)) ?? false}
+                  onToggleSelect={onToggleSelect}
                 />
                 {childrenForSearch(s).map((sa) => (
                   <SubAgentSearchItem
@@ -186,6 +196,9 @@ export function SessionList({
                 onToggleStar={onToggleStar}
                 onRename={openRename}
                 onDelete={openDelete}
+                multiSelectMode={multiSelectMode}
+                selectedIds={selectedIds}
+                onToggleSelect={onToggleSelect}
               />
             ))}
           </div>
