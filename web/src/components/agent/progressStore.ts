@@ -498,7 +498,7 @@ export class ProgressStore {
             existing.add(iter.iteration)
           }
         }
-        const { iterationHistory, ...rest } = next
+        const { iterationHistory: _ih, ...rest } = next
         Object.assign(draft, rest)
         draft.iterationHistory = merged
       } else {
