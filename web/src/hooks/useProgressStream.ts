@@ -140,6 +140,7 @@ export function useProgressStream({
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
   const finalizedRef = useRef(false)
+  const prevProgressCacheKeyRef = useRef<string | null>(null)
 
   // Track chatID inside the handlers via ref so we don't tear down the store on
   // every chat switch (we just reset it).
@@ -156,7 +157,14 @@ export function useProgressStream({
   // Switch immediately to this chat's in-memory snapshot while history refreshes.
   useLayoutEffect(() => {
     finalizedRef.current = false
-    store.reset()
+    // Full reset on chatID change (including todos — different session).
+    // On non-chatID triggers (disabled toggle), preserve todos via reset().
+    if (progressCacheKey !== prevProgressCacheKeyRef.current) {
+      prevProgressCacheKeyRef.current = progressCacheKey
+      store.fullReset()
+    } else {
+      store.reset()
+    }
     if (disabled) {
       return
     }

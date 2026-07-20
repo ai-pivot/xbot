@@ -60,11 +60,10 @@ type inboundIdentity struct {
 // override the sessionKey's channel prefix for tool resolution.
 //
 // Call this on every metadata map before constructing an InboundMessage.
+// The caller is responsible for ensuring metadata is non-nil (all existing
+// call sites pass map[string]string{...}).
 func withPhysicalChannel(metadata map[string]string, isCLI bool) {
 	if !isCLI {
-		if metadata == nil {
-			metadata = make(map[string]string)
-		}
 		metadata["physical_channel"] = "web"
 	}
 }

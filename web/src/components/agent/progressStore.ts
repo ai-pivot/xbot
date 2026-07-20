@@ -264,19 +264,34 @@ export class ProgressStore {
   /** Reset to idle (after a run completes or on errors). Synchronously flushes
    *  the snapshot so useSyncExternalStore immediately reads the empty state,
    *  preventing liveMessage and committed message from coexisting for a frame.
-   */
+   *  Preserves todos — they are per-session state managed by TodoWrite tool,
+   *  not per-turn streaming state. */
   reset(): void {
     if (this.disposed) return
-    this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
+    const todos = this.current.todos
+    this.current = { ...EMPTY_PROGRESS_SNAPSHOT, todos }
     // Synchronously update snapshot + cancel pending RAF — avoids a one-frame
     // window where liveMessage is still non-null after reset.
-    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
+    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT, todos }
     this.dirty = false
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null
     }
     // Notify listeners immediately (synchronous) so React re-render sees empty snapshot.
+    this.listeners.forEach((l) => l())
+  }
+
+  /** Full reset including todos — used on session switch. */
+  fullReset(): void {
+    if (this.disposed) return
+    this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
+    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
+    this.dirty = false
+    if (this.rafHandle !== null) {
+      cancelAnimationFrame(this.rafHandle)
+      this.rafHandle = null
+    }
     this.listeners.forEach((l) => l())
   }
 
