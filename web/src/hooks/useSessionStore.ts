@@ -980,6 +980,14 @@ export function useSessionStoreImpl(): SessionStore {
     async (id: string, ch: string): Promise<void> => {
       const switchSeq = ++switchSeqRef.current
       const useChannel = ch || DEFAULT_CHANNEL
+      // Clear the OLD session's caches so the new session loads fresh from the
+      // server (like a page refresh). Without this, stale progress snapshots
+      // and message caches from the previous session cause "iteration disappears"
+      // on 50% of busy-session switches.
+      if (activeSessionRef.current) {
+        const oldCacheKey = sessionCacheKey(activeSessionRef.current.channel, activeSessionRef.current.chatID)
+        clearSessionCaches(oldCacheKey)
+      }
       try {
         await postAPI<SwitchChatResponse>(
           `/api/chats/${encodeURIComponent(id)}/switch`,
