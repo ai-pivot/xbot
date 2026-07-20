@@ -27,6 +27,7 @@ function makeSnapshot(overrides: Partial<ProgressSnapshot> = {}): ProgressSnapsh
     completedTools: [],
     iterationHistory: [],
     streamingTools: [],
+    genuiContent: '',
     lastIter: 0,
     lastReasoning: '',
     todos: [],

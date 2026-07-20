@@ -13,6 +13,7 @@ import { memo } from 'react'
 
 import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
+import { GenUIBlock } from './GenUIBlock'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
@@ -84,7 +85,9 @@ export const LiveIteration = memo(function LiveIteration({
   const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
   const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress
 
-  if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents) return null
+  const hasGenUI = Boolean(progress.genuiContent)
+
+  if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) return null
 
   return (
     <div className="flex flex-col gap-1">
@@ -126,6 +129,11 @@ export const LiveIteration = memo(function LiveIteration({
             visibleChars={isLive ? tw.visibleChars : undefined}
           />
         </div>
+      )}
+
+      {/* Streaming GenUI — after content, before tools (GenUI is a tool product) */}
+      {hasGenUI && (
+        <GenUIBlock code={progress.genuiContent} streaming={progress.streaming} />
       )}
 
       {hasSubAgents && <SubAgentProgressTree nodes={progress.subAgents} />}

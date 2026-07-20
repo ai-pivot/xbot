@@ -1287,6 +1287,9 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 		registry.RegisterForChannel("feishu", t)
 	}
 
+	// display_html: web channel only — renders streaming HTML+Tailwind UI
+	registry.RegisterForChannel("web", tools.NewDisplayHTMLTool())
+
 	// Clean up expired waiting cards from previous runs (TTL: 24h)
 	if n := cardBuilder.CleanupExpiredWaitingCards(24 * time.Hour); n > 0 {
 		log.WithField("count", n).Info("Cleaned up expired waiting cards")
@@ -3486,6 +3489,13 @@ func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content strin
 
 // RunSubAgent 实现 tools.SubAgentManager 接口
 // 创建一个独立的子 Agent 循环来执行任务，子 Agent 拥有自己的工具集但不能再创建子 Agent
+
+// InjectAsyncMessage is the exported wrapper for injectAsyncMessage.
+// Used by RPC handlers (e.g. genui_action) to inject UI action callbacks
+// through the bgnotify pipeline.
+func (a *Agent) InjectAsyncMessage(channel, chatID, senderID, content, source string) string {
+	return a.injectAsyncMessage(channel, chatID, senderID, content, source)
+}
 
 // injectAsyncMessage is the UNIFIED entry point for all async message injection.
 // Used by peer messages, webhook events, and any other external source.

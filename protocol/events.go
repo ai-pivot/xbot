@@ -86,6 +86,9 @@ type ProgressEvent struct {
 	RequestID              string            `json:"request_id,omitempty"`
 	StreamContent          string            `json:"stream_content,omitempty"`
 	ReasoningStreamContent string            `json:"reasoning_stream_content,omitempty"`
+	// GenUIContent carries streaming HTML from display_html tool arguments.
+	// Stream-only field like StreamContent — must NOT enter structured snapshots.
+	GenUIContent string `json:"genui_content,omitempty"`
 	// StreamingTools carries tool names detected during LLM streaming,
 	// before arguments finish generating. Each entry has Status="generating".
 	// This is a stream-only field (like StreamContent) — it must NOT enter

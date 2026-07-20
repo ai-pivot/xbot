@@ -129,6 +129,7 @@ export type WSMessageType =
   | 'plugin_widgets'
   | 'runner_status'
   | 'sync_progress'
+  | 'genui'
   | '__pong__'
 
 /** Client operations mapped to REST endpoints by the connection adapter. */
@@ -202,6 +203,8 @@ export interface ProgressEvent {
   phase?: string
   thinking?: string
   stream_content?: string
+  /** Streaming HTML from display_html tool arguments (stream-only, like stream_content). */
+  genui_content?: string
   cwd?: string
   // Extended fields present in the backend payload (events.go ActiveTools /
   // CompletedTools / IterationHistory / ReasoningStreamContent / Questions /
@@ -316,6 +319,8 @@ export interface ProgressSnapshot {
   completedTools: WebToolProgress[]
   iterationHistory: WebIteration[]
   streamingTools: WebToolProgress[]
+  /** Streaming HTML from display_html tool (stream-only, like streamContent). */
+  genuiContent: string
   lastIter: number
   lastReasoning: string
   /** TODO list (from TodoWrite tool, carried forward when not present in events). */
@@ -346,6 +351,7 @@ export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
   completedTools: [],
   iterationHistory: [],
   streamingTools: [],
+  genuiContent: '',
   lastIter: -1,
   lastReasoning: '',
   todos: [],

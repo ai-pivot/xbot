@@ -596,9 +596,10 @@ func (c *CronFired) SenderID() string { return c.Sid }
 
 // AsyncSource constants identify the origin of an async message.
 const (
-	AsyncSourcePeer   = "peer_message"
-	AsyncSourceEvent  = "event_trigger"
-	AsyncSourceSystem = "system"
+	AsyncSourcePeer     = "peer_message"
+	AsyncSourceEvent    = "event_trigger"
+	AsyncSourceSystem   = "system"
+	AsyncSourceUIAction = "ui_action"
 )
 
 // AsyncMessageNotification is a BgNotification that wraps an arbitrary async message.

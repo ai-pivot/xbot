@@ -264,13 +264,15 @@ export class ProgressStore {
   /** Reset to idle (after a run completes or on errors). Synchronously flushes
    *  the snapshot so useSyncExternalStore immediately reads the empty state,
    *  preventing liveMessage and committed message from coexisting for a frame.
-   */
+   *  Preserves todos — they are per-session state managed by TodoWrite tool,
+   *  not per-turn streaming state. */
   reset(): void {
     if (this.disposed) return
-    this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
+    const todos = this.current.todos
+    this.current = { ...EMPTY_PROGRESS_SNAPSHOT, todos }
     // Synchronously update snapshot + cancel pending RAF — avoids a one-frame
     // window where liveMessage is still non-null after reset.
-    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
+    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT, todos }
     this.dirty = false
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
@@ -278,6 +280,39 @@ export class ProgressStore {
     }
     // Notify listeners immediately (synchronous) so React re-render sees empty snapshot.
     this.listeners.forEach((l) => l())
+  }
+
+  /** Full reset including todos — used on session switch. */
+  fullReset(): void {
+    if (this.disposed) return
+    this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
+    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
+    this.dirty = false
+    if (this.rafHandle !== null) {
+      cancelAnimationFrame(this.rafHandle)
+      this.rafHandle = null
+    }
+    this.listeners.forEach((l) => l())
+  }
+
+  /** Reset only streaming fields, preserving iterationHistory and todos.
+   *  Used when session(busy) fires after an ask_user response — the turn
+   *  continues and prior iterations must survive. */
+  resetStreamingState(): void {
+    if (this.disposed) return
+    this.mutate((draft) => {
+      draft.streamContent = ''
+      draft.reasoningStreamContent = ''
+      draft.content = ''
+      draft.streaming = false
+      draft.phase = ''
+      draft.streamingTools = []
+      draft.activeTools = []
+      draft.completedTools = []
+      draft.genuiContent = ''
+      draft.lastReasoning = ''
+      // Keep: iterationHistory, todos, subAgents, tokenUsage, iteration, lastIter
+    })
   }
 
   /** Set streamed assistant text (cumulative value from stream_content events). */
@@ -294,6 +329,15 @@ export class ProgressStore {
     if (!delta) return
     this.mutate((draft) => {
       draft.reasoningStreamContent = delta  // cumulative value, use assignment not append
+      draft.streaming = true
+    })
+  }
+
+  /** Set streaming GenUI HTML content (from display_html tool arguments). */
+  setGenUIContent(content: string): void {
+    if (!content) return
+    this.mutate((draft) => {
+      draft.genuiContent = content
       draft.streaming = true
     })
   }
@@ -363,6 +407,7 @@ export class ProgressStore {
         if (hadPreviousIteration) {
           draft.streamContent = ''
           draft.reasoningStreamContent = ''
+          draft.genuiContent = ''
           draft.content = ''
           draft.streamingTools = []
           draft.activeTools = []
@@ -469,10 +514,41 @@ export class ProgressStore {
     })
   }
 
-  /** Replace the whole progress (e.g. from history active_progress). */
+  /** Replace the whole progress (e.g. from history active_progress).
+   *  iterationHistory is MERGED by iteration number (union) — not replaced —
+   *  so a stale server snapshot can't clobber iterations already in the store
+   *  from live SSE events or cache restoration.
+   *  completedTools is filtered by current iteration (same as setStructured) —
+   *  the server sends ALL completed tools across iterations, but only the
+   *  current iteration's tools belong here (old iterations are in
+   *  iterationHistory). Without this filter, LiveIteration's iteration-based
+   *  filter removes old tools AND they're not in iterationHistory → disappear. */
   replace(next: Partial<ProgressSnapshot>): void {
     this.mutate((draft) => {
-      Object.assign(draft, next)
+      // Filter completedTools by current iteration (mirrors setStructured)
+      if (next.completedTools) {
+        const currentIter = next.iteration ?? draft.iteration
+        const filtered = currentIter > 0
+          ? next.completedTools.filter((t) => t.iteration === undefined || t.iteration === currentIter)
+          : next.completedTools
+        draft.completedTools = dedupTools(filtered)
+      }
+      if (next.iterationHistory) {
+        const existing = new Set(draft.iterationHistory.map((i) => i.iteration))
+        const merged = [...draft.iterationHistory]
+        for (const iter of next.iterationHistory) {
+          if (!existing.has(iter.iteration)) {
+            merged.push(iter)
+            existing.add(iter.iteration)
+          }
+        }
+        const { completedTools: _ct, iterationHistory: _ih, ...rest } = next
+        Object.assign(draft, rest)
+        draft.iterationHistory = merged
+      } else {
+        const { completedTools: _ct, ...rest } = next
+        Object.assign(draft, rest)
+      }
     })
   }
 
@@ -511,6 +587,7 @@ export class ProgressStore {
       completedTools: this.current.completedTools,
       iterationHistory: this.current.iterationHistory,
       streamingTools: this.current.streamingTools,
+      genuiContent: this.current.genuiContent,
       lastIter: this.current.lastIter,
       lastReasoning: this.current.lastReasoning,
       todos: this.current.todos,

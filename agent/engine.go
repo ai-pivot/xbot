@@ -401,6 +401,7 @@ type IterationToolSnapshot struct {
 	Status    string `json:"status"` // done | error
 	ElapsedMS int64  `json:"elapsed_ms,omitempty"`
 	Summary   string `json:"summary,omitempty"`
+	Args      string `json:"args,omitempty"`
 }
 
 // readArgsHasOffsetOrLimit checks whether a Read tool call's JSON arguments contain

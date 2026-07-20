@@ -298,7 +298,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			return web.HistorySnapshot{}, err
 		}
 		progress := ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll()) // -1 = include iteration 0
-		if progress != nil && progress.Phase == "done" {
+		// Don't discard progress with todos even when phase=done — the
+		// client needs todos to restore the TODO list on session switch.
+		if progress != nil && progress.Phase == "done" && len(progress.Todos) == 0 {
 			progress = nil
 		}
 		return web.HistorySnapshot{

@@ -140,6 +140,7 @@ export function useProgressStream({
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
   const finalizedRef = useRef(false)
+  const prevProgressCacheKeyRef = useRef<string | null>(null)
 
   // Track chatID inside the handlers via ref so we don't tear down the store on
   // every chat switch (we just reset it).
@@ -156,7 +157,14 @@ export function useProgressStream({
   // Switch immediately to this chat's in-memory snapshot while history refreshes.
   useLayoutEffect(() => {
     finalizedRef.current = false
-    store.reset()
+    // Full reset on chatID change (including todos — different session).
+    // On non-chatID triggers (disabled toggle), preserve todos via reset().
+    if (progressCacheKey !== prevProgressCacheKeyRef.current) {
+      prevProgressCacheKeyRef.current = progressCacheKey
+      store.fullReset()
+    } else {
+      store.reset()
+    }
     if (disabled) {
       return
     }
@@ -172,11 +180,19 @@ export function useProgressStream({
   // session's data triggers hydration (Spec 5 §2.7).
   useEffect(() => {
     if (disabled) return
-    if (!initialProgress || !initialProgress.phase || initialProgress.phase === 'done') {
-      if (initialProgress?.phase === 'done') {
-        if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
-        finalizedRef.current = false
-        if (hasVisibleProgress(store.getSnapshot())) store.reset()
+    if (!initialProgress || !initialProgress.phase) {
+      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      return
+    }
+    if (initialProgress.phase === 'done') {
+      // Turn ended. Clear progress but restore todos from server so they
+      // survive session switch (todos persist across turns in the todoManager).
+      if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
+      finalizedRef.current = false
+      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      const todos = (initialProgress.todos ?? []) as TodoItem[]
+      if (todos.length > 0) {
+        store.replace({ todos })
       }
       return
     }
@@ -185,12 +201,13 @@ export function useProgressStream({
     // hydrate if we haven't started receiving live events for this turn
     // (finalizedRef is false AND store is empty = fresh load/reconnect).
     if (finalizedRef.current) return
-    const currentSnap = store.getSnapshot()
     const live = historyProgressToLive(initialProgress)
-    // Install a newer authoritative snapshot even when a cache snapshot is
-    // already visible. Seq is the semantic watermark; older/equal snapshots
-    // cannot overwrite live state.
-    if (live.phase && live.eventSeq >= currentSnap.eventSeq) {
+    // initialProgress comes from the server's authoritative active_progress
+    // (fetched via reload). Always replace — the cache-restored snapshot
+    // (from the reset effect) may have a higher eventSeq (updated by live SSE
+    // events), which would block the server's authoritative data and cause
+    // incomplete iteration recovery on session switch.
+    if (live.phase) {
       if (progressCacheKey) progressSnapshotCache.set(progressCacheKey, initialProgress as ProgressEvent)
       store.replace(live)
     }
@@ -292,6 +309,8 @@ function handleProgressMessage(
       if (p.reasoning_stream_content) {
         store.appendReasoningContent(p.reasoning_stream_content)
       }
+      // GenUI streaming HTML (from display_html tool arguments)
+      if (p.genui_content) store.setGenUIContent(p.genui_content)
       // Streaming tools (generating status) — patch only, no snapshot replace
       if (p.streaming_tools) {
         store.setStreamOnlyFields({
@@ -397,9 +416,21 @@ function handleProgressMessage(
       const finalText = msg.content ?? ''
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
-      const iterations = parsedIterations.length > 0 ? parsedIterations : snap.iterationHistory
+      // Prefer the live snapshot's iterationHistory — it was built incrementally
+      // via SSE and already contains all completed iterations. Using the
+      // server's parsedIterations instead would replace the data source, causing
+      // all iterations to re-render (tool labels/status may differ in format).
+      // Only fall back to parsedIterations when the snapshot has no iterations
+      // (e.g. reconnect where no SSE events were received).
+      const iterations = snap.iterationHistory.length > 0 ? snap.iterationHistory : parsedIterations
       completeRef.current?.(finalText, iterations, msg.seq)
       store.reset()
+      return
+    }
+
+    case 'genui': {
+      // Final complete HTML from display_html tool (non-streaming, complete code)
+      if (msg.content) store.setGenUIContent(msg.content)
       return
     }
 
@@ -408,7 +439,10 @@ function handleProgressMessage(
 
       if (action === 'busy') {
         if (finalizedRef) finalizedRef.current = false
-        store.reset()
+        // Don't fully reset on session(busy) — the ask_user response path
+        // re-enters the same turn, and prior iterations must survive.
+        // Only clear streaming fields, keep iterationHistory.
+        store.resetStreamingState()
         return
       }
 
@@ -431,8 +465,12 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
-          store.reset()
+          // Call completeRef BEFORE store.reset() so onAssistantComplete can
+          // flushSync the append before liveMessage is cleared. Without this
+          // order, store.reset() synchronously nulls liveMessage while
+          // setMessages is still queued → flicker.
           completeRef.current?.(text, iters, msg.seq)
+          store.reset()
         } else {
           store.reset()
         }

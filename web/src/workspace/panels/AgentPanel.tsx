@@ -13,6 +13,7 @@
  *   - SubAgent tabs are fixed to their parent chat + role/instance params.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { toast } from 'sonner'
 
 import { useAskUser } from '@/hooks/useAskUser'
@@ -103,10 +104,6 @@ export function AgentPanel({ params }: PanelProps) {
   })
   const reloadChat = chat.reload
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
-  // Track whether onAssistantComplete already triggered a reload for the
-  // current turn. Prevents the SubAgent session event handler from firing
-  // a redundant concurrent reload that causes message list jitter.
-  const reloadForTurnRef = useRef(false)
   // Ref to hold resetProgress so the onSession effect can call it without
   // depending on the progress object (which is defined later).
   const resetProgressRef = useRef<() => void>(() => {})
@@ -131,10 +128,12 @@ export function AgentPanel({ params }: PanelProps) {
       // would stay in finalizing state forever without this reset.
       if (ev.action !== 'busy') {
         resetProgressRef.current()
+        // Reload to fetch the SubAgent's final persisted messages. SubAgent
+        // panels may never receive a `text` event (those carry the parent's
+        // chatID), so onAssistantComplete won't fire — reload is the only way
+        // to surface the final reply.
+        void reloadChat()
       }
-      // Skip if onAssistantComplete already triggered a reload for this turn.
-      if (reloadForTurnRef.current) return
-      void reloadChat()
     })
   }, [isSubAgent, params.agentChatID, params.parentChatID, params.subAgentInstance, params.subAgentRole, reloadChat, ws])
 
@@ -146,11 +145,13 @@ export function AgentPanel({ params }: PanelProps) {
       // Both main Agent and SubAgent panels append the final reply to the
       // message list. SubAgent panels previously had onAssistantComplete=undefined,
       // causing the final reply to never appear in the message list.
-      chat.appendAssistant(finalText, iterations)
-      reloadForTurnRef.current = true
-      void chat.reload().finally(() => {
-        reloadForTurnRef.current = false
+      // flushSync ensures setMessages flushes synchronously BEFORE store.reset()
+      // clears the live streaming message. Without this, there's a frame where
+      // liveMessage is null but the appended message hasn't rendered → flicker.
+      flushSync(() => {
+        chat.appendAssistant(finalText, iterations)
       })
+      void chat.reload()
       void sessionContext.refresh()
     },
     ws,

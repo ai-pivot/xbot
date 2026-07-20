@@ -185,6 +185,12 @@ function formatMergedTitle(tools: WebToolProgress[], sweepRunning = true): React
 /** Expanded tool card: [icon] name + input + output */
 function ToolCard({ tool }: { tool: WebToolProgress }) {
   const name = tool.name || 'tool'
+
+  // display_html: no card chrome, just render the GenUI directly
+  if (name === 'display_html') {
+    return <ToolRender tool={tool} />
+  }
+
   const status = singleStatus(tool)
   const color = statusColorVar(status)
   const dn = displayName(tool)
@@ -219,6 +225,43 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
 
   if (!tools.length) return null
 
+  // display_html tools have special status: always visible, never folded.
+  // Split them out and render before the folded tool group.
+  const genuiTools = tools.filter((t) => t.name === 'display_html')
+  const otherTools = tools.filter((t) => t.name !== 'display_html')
+
+  const genuiElements = genuiTools.map((tool, i) => (
+    <ToolCard key={`genui-${tool.label}-${i}`} tool={tool} />
+  ))
+
+  // If only GenUI tools, just render them
+  if (otherTools.length === 0) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        {genuiElements}
+      </div>
+    )
+  }
+
+  // Render GenUI first, then fold the remaining tools
+  const toolGroup = otherTools.length > 0 ? renderToolGroup(otherTools, level, mergeTools, expanded, setExpanded) : null
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {genuiElements}
+      {toolGroup}
+    </div>
+  )
+})
+
+/** Render a group of non-GenUI tools with folding logic. */
+function renderToolGroup(
+  tools: WebToolProgress[],
+  level: CollapseLevel,
+  mergeTools: boolean,
+  expanded: boolean,
+  setExpanded: (v: boolean) => void,
+): ReactNode {
   // 'none' level: always expanded, each tool as independent card
   if (level === 'none') {
     return (
@@ -239,7 +282,8 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
             type="button"
             onClick={() => setExpanded(!expanded)}
             aria-expanded={expanded}
-            className="flex flex-wrap items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"          >
+            className="flex flex-wrap items-center gap-1 border-none bg-transparent px-0 py-1 text-left text-xs cursor-pointer text-text-secondary hover:text-text-primary transition-colors"
+          >
             <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
             {formatToolTitle(tools[0], !expanded)}
           </button>
@@ -283,7 +327,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
       </AnimatedCollapse>
     </div>
   )
-})
+}
 
 /** Single tool as an independent foldable row with card expansion. */
 const SingleToolFold = memo(function SingleToolFold({ tool }: { tool: WebToolProgress }) {

@@ -245,6 +245,7 @@ var nonAdminRESTRPCMethods = map[string]struct{}{
 	"get_active_progress":                {},
 	"kill_bg_task":                       {},
 	"plugin_widgets":                     {},
+	"genui_action":                       {},
 }
 
 func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, method string, params json.RawMessage) (int, error) {

@@ -21,6 +21,7 @@ const (
 	MsgTypeRunnerStatus  = "runner_status"
 	MsgTypeSyncProgress  = "sync_progress"
 	MsgTypeSession       = "session"
+	MsgTypeGenUI         = "genui"
 	MsgTypePong          = "__pong__"
 
 	// Channel Plugin → xbot: tool declaration

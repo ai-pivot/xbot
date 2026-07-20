@@ -117,6 +117,7 @@ export const EMPTY_LIVE_PROGRESS: LiveProgress = {
   completedTools: [],
   iterationHistory: [],
   streamingTools: [],
+  genuiContent: '',
   lastIter: -1,
   lastReasoning: '',
   todos: [],

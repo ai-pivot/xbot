@@ -16,13 +16,15 @@
 import { memo } from 'react'
 
 import { FoldedLine } from './FoldedLine'
+import { GenUIBlock } from './GenUIBlock'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
-import type { WebIteration } from '@/types/shared'
+import type { WebIteration, WebToolProgress } from '@/types/shared'
+import { parseArgs } from './ToolRender'
 
 interface AssistantMessageProps {
   message: ChatMessage
@@ -80,11 +82,23 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // 'all' level + committed: fold all intermediate content (iterations' thinking/O),
   // show only the last TEXT output. Last TEXT = message.content, or fall back to
   // the last iteration's thinking when content is empty.
+  // GenUI (display_html) is extracted and rendered OUTSIDE the fold — it has
+  // special status and should never be hidden.
   if (effectiveLevel === 'all' && !isStreaming) {
     const totalTools = iterations.reduce((sum, iter) => sum + iter.toolCount, 0)
     const showSummary = iterations.length > 0
     const lastIteration = iterations[iterations.length - 1]
     const lastText = finalContent || lastIteration?.thinking || ''
+
+    // Extract GenUI tools from all iterations — render outside the fold
+    const genuiTools: WebToolProgress[] = []
+    for (const iter of iterations) {
+      for (const tool of iter.tools) {
+        if (tool.name === 'display_html') {
+          genuiTools.push(tool)
+        }
+      }
+    }
 
     return (
       <div className="px-1">
@@ -105,6 +119,10 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
             <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
           )
         )}
+        {/* GenUI: always visible, never folded */}
+        {genuiTools.map((tool, i) => (
+          <GenUIBlock key={`genui-${i}`} code={(parseArgs(tool)?.code as string) || ''} />
+        ))}
         {message.displayOnly && (
           <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">
             {t('agent.displayOnly')}

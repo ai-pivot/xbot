@@ -117,7 +117,9 @@ export function parseIterations(json: string | undefined | null): IterationSnaps
  */
 export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot {
   if (!p || !p.phase || p.phase === 'done') {
-    return { ...EMPTY_PROGRESS_SNAPSHOT }
+    // Even for done/idle sessions, restore todos so they survive session switch.
+    const todos = (p?.todos ?? []) as TodoItem[]
+    return { ...EMPTY_PROGRESS_SNAPSHOT, todos }
   }
   const active = normalizeWebTools(p.active_tools)
   const completed = normalizeWebTools(p.completed_tools)
@@ -136,6 +138,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     completedTools: completed,
     iterationHistory: iterHistory,
     streamingTools: [],
+    genuiContent: '',
     lastIter: -1, // -1 = no iteration seen yet; allows iteration 0 to be accepted
     lastReasoning: '',
     todos: (p.todos ?? []) as TodoItem[],

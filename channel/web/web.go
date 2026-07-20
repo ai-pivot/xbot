@@ -1185,6 +1185,8 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					msgSenderName = msg.SenderName
 				}
 			}
+			cancelMeta := map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}
+			withPhysicalChannel(cancelMeta, c.isCLI)
 			wc.msgBus.Inbound <- bus.InboundMessage{
 				Channel:    msgChannel,
 				SenderID:   msgSenderID,
@@ -1195,6 +1197,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				Time:       time.Now(),
 				RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 				From:       bus.NewIMAddress(msgChannel, msgSenderID),
+				Metadata:   cancelMeta,
 			}
 			continue
 		case protocol.MsgTypeRPC:
@@ -1356,7 +1359,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 
 			metadata := map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}
-
+			withPhysicalChannel(metadata, c.isCLI)
 			if feishuUserID != "" {
 				metadata["feishu_user_id"] = feishuUserID
 			}
@@ -1467,6 +1470,8 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 			if resp.Cancelled {
 				// User cancelled — send /cancel equivalent
+				cancelMeta := map[string]string{}
+				withPhysicalChannel(cancelMeta, c.isCLI)
 				wc.msgBus.Inbound <- bus.InboundMessage{
 					Channel:    respChannel,
 					SenderID:   c.userID,
@@ -1477,6 +1482,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					Time:       time.Now(),
 					RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 					From:       bus.NewIMAddress(respChannel, c.userID),
+					Metadata:   cancelMeta,
 				}
 			} else {
 				// Format answers as indexed Q/A pairs
@@ -1485,6 +1491,8 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					parts = append(parts, fmt.Sprintf("Q%s: %s", idx, ans))
 				}
 				content := strings.Join(parts, "\n\n")
+				answerMeta := map[string]string{"ask_user_answered": "true"}
+				withPhysicalChannel(answerMeta, c.isCLI)
 				wc.msgBus.Inbound <- bus.InboundMessage{
 					Channel:    respChannel,
 					SenderID:   c.userID,
@@ -1495,7 +1503,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					Time:       time.Now(),
 					RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 					From:       bus.NewIMAddress(respChannel, c.userID),
-					Metadata:   map[string]string{"ask_user_answered": "true"},
+					Metadata:   answerMeta,
 				}
 			}
 		default:
@@ -1528,7 +1536,7 @@ func (wc *WebChannel) securityHeadersMiddleware(next http.Handler) http.Handler 
 			"default-src 'self'; "+
 				"script-src 'self' 'unsafe-inline' 'unsafe-eval'; "+
 				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
-				"font-src 'self' https://fonts.gstatic.com; "+
+				"font-src 'self' data: https://fonts.gstatic.com; "+
 				"img-src "+imgSrc+"; "+
 				"connect-src 'self' ws: wss:; "+
 				"frame-ancestors 'none'",

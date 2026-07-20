@@ -268,7 +268,31 @@ func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher
 	registerPluginHandlers(t, h)
 	registerRunnerHandlers(t, h)
 	registerAppHandlers(t, h)
+	registerGenUIHandlers(t, h)
 	return t
+}
+
+func registerGenUIHandlers(t RPCTable, h *RPCContext) {
+	// genui_action: user clicked an element with data-action in a generated UI.
+	// Routes through injectAsyncMessage → bgnotify pipeline (same as peer messages, cron, etc).
+	// Busy: injected as synthetic tool result in current Run.
+	// Idle: injected as user message, triggers new turn.
+	t["genui_action"] = rpc1(func(ctx context.Context, p struct {
+		ChatID   string `json:"chat_id"`
+		Action   string `json:"action"`
+		Data     string `json:"data"`
+		UISource string `json:"ui_source"`
+	}) (any, error) {
+		if p.Action == "" {
+			return nil, fmt.Errorf("action is required")
+		}
+		content := fmt.Sprintf("🖱️ [UI Action] %s\n\nState: %s", p.Action, p.Data)
+		if p.UISource != "" {
+			content += fmt.Sprintf("\nUI Source: %s", p.UISource)
+		}
+		h.Ag.InjectAsyncMessage("web", p.ChatID, "", content, tools.AsyncSourceUIAction)
+		return map[string]any{"ok": true}, nil
+	})
 }
 
 func registerCommandHandlers(t RPCTable, h *RPCContext) {

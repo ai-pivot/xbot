@@ -50,6 +50,24 @@ type inboundIdentity struct {
 	OverrideSenderName string
 }
 
+// withPhysicalChannel injects the physical channel (the channel the user is
+// actually connected through) into an InboundMessage's metadata map.
+//
+// When a web user browses a CLI-created session, msg.Channel is "cli" (the
+// session's origin channel), but the user is on "web". Channel-scoped tools
+// (like display_html) must resolve against the physical channel, not the
+// session origin. The agent's buildMainRunConfig reads this metadata key to
+// override the sessionKey's channel prefix for tool resolution.
+//
+// Call this on every metadata map before constructing an InboundMessage.
+// The caller is responsible for ensuring metadata is non-nil (all existing
+// call sites pass map[string]string{...}).
+func withPhysicalChannel(metadata map[string]string, isCLI bool) {
+	if !isCLI {
+		metadata["physical_channel"] = "web"
+	}
+}
+
 func (wc *WebChannel) inboundIdentityFromRequest(r *http.Request) inboundIdentity {
 	identity := inboundIdentity{
 		SenderID:  senderIDFromContext(r.Context()),
@@ -116,6 +134,7 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 	originalContent := msg.Content
 	content := wc.expandUploadKeys(msg)
 	metadata := map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}
+	withPhysicalChannel(metadata, identity.IsCLI)
 	if identity.FeishuUserID != "" {
 		metadata["feishu_user_id"] = identity.FeishuUserID
 	}
@@ -254,6 +273,8 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 			msgSenderName = identity.OverrideSenderName
 		}
 	}
+	cancelMeta := map[string]string{}
+	withPhysicalChannel(cancelMeta, identity.IsCLI)
 	return sel, wc.enqueueInbound(ctx, bus.InboundMessage{
 		Channel:    sel.Channel,
 		SenderID:   msgSenderID,
@@ -264,6 +285,7 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 		Time:       time.Now(),
 		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 		From:       bus.NewIMAddress(sel.Channel, msgSenderID),
+		Metadata:   cancelMeta,
 	})
 }
 
@@ -292,7 +314,11 @@ func (wc *WebChannel) dispatchAskUserResponse(ctx context.Context, identity inbo
 		Time:       time.Now(),
 		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
 		From:       bus.NewIMAddress(sel.Channel, identity.SenderID),
-		Metadata:   map[string]string{"ask_user_answered": "true"},
+		Metadata: func() map[string]string {
+			m := map[string]string{"ask_user_answered": "true"}
+			withPhysicalChannel(m, identity.IsCLI)
+			return m
+		}(),
 	})
 }
 

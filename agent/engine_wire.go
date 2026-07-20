@@ -165,7 +165,7 @@ func (a *Agent) buildBaseRunConfig(
 		InjectInbound: a.injectInbound,
 
 		// 工具执行
-		ToolExecutor: a.buildToolExecutor(ctx, channel, chatID, senderID, senderName, sandboxUserID),
+		ToolExecutor: a.buildToolExecutor(ctx, channel, chatID, senderID, senderName, sandboxUserID, ""),
 
 		// 读写分离（主 Agent 始终启用）
 		EnableReadWriteSplit: true,
@@ -232,6 +232,22 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(ctx, channel, chatID, senderID, messages, senderName, sandboxUserID)
+
+	// physical_channel: the channel the user is actually connected through.
+	// When a web user browses a CLI-created session, msg.Channel is "cli"
+	// (the session's origin channel), but the user is on "web". Channel-scoped
+	// tools (like display_html) must resolve against the physical channel,
+	// not the session origin.
+	physicalChannel := msg.Metadata["physical_channel"]
+	if physicalChannel != "" && physicalChannel != channel {
+		// Override SessionKey so AsDefinitionsForSession/GetForSession find
+		// channel-scoped tools registered under the physical channel.
+		sessionKey = physicalChannel + ":" + chatID
+		cfg.SessionKey = sessionKey
+		// Rebuild ToolExecutor with the physical channel so tool EXECUTION
+		// also resolves channel-scoped tools correctly.
+		cfg.ToolExecutor = a.buildToolExecutor(ctx, channel, chatID, senderID, senderName, sandboxUserID, physicalChannel)
+	}
 
 	// Identity is resolved at processMessage entry and carried via ctx.
 	userCtx := UserContextFromContext(ctx)
@@ -821,9 +837,14 @@ func (a *Agent) buildSubAgentRunConfig(
 // buildToolExecutor 构建主 Agent 的工具执行器。
 // 包含 session MCP 查找、激活检查、工具使用追踪等完整逻辑。
 // 这是主 Agent 和 Cron 使用的执行器，SubAgent 使用 defaultToolExecutor。
-func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID, senderName, sandboxUserID string) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID, senderName, sandboxUserID string, physicalChannel string) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 	userCtx := UserContextFromContext(ctx)
+	// If physicalChannel is set (web user browsing CLI session), use it for
+	// channel-scoped tool resolution. Otherwise fall back to the session's origin channel.
 	sessionKey := qualifyChatID(channel, chatID)
+	if physicalChannel != "" && physicalChannel != channel {
+		sessionKey = physicalChannel + ":" + chatID
+	}
 
 	// Pre-build RunConfig outside closure to avoid reallocating on every tool call.
 	// Only ctx (from the caller) changes per-call; all config fields are stable.
@@ -1691,6 +1712,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
 		tools := make([]protocol.ToolProgress, 0, len(toolCalls))
+		var genuiContent string
 		for _, tc := range toolCalls {
 			if tc.Name != "" {
 				tools = append(tools, protocol.ToolProgress{
@@ -1698,20 +1720,36 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 					Status:   "generating",
 					GenChars: len(tc.Arguments),
 				})
+				// Extract streaming HTML from display_html tool arguments.
+				// tc.Arguments is accumulated partial JSON like {"code":"<div cla...
+				if tc.Name == "display_html" {
+					genuiContent = extractPartialCodeFromArgs(tc.Arguments)
+				}
 			}
 		}
-		if len(tools) == 0 {
+		if len(tools) == 0 && genuiContent == "" {
 			return
 		}
+
+		// No server-side throttle for genuiContent — the frontend already
+		// throttles compilation to 100ms. Server-side throttle would drop
+		// intermediate updates and potentially the final code.
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamingTools = tools
+			if genuiContent != "" {
+				s.GenUIContent = genuiContent
+			}
 		})
 		seq := progressSeq.Add(1)
-		broadcastProgress(&protocol.ProgressEvent{
+		payload := &protocol.ProgressEvent{
 			ChatID:         progressKey,
 			Seq:            seq,
 			StreamingTools: tools,
-		})
+		}
+		if genuiContent != "" {
+			payload.GenUIContent = genuiContent
+		}
+		broadcastProgress(payload)
 	}
 	streamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {
@@ -1728,6 +1766,65 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		})
 	}
 	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc
+}
+
+// extractPartialCodeFromArgs extracts the "code" field value from a partial JSON
+// string like {"code":"<div class='...'>...}. The JSON may be incomplete (streaming),
+// so we use a string scan instead of json.Unmarshal.
+func extractPartialCodeFromArgs(args string) string {
+	// Find "code":" or "code": "
+	idx := strings.Index(args, `"code"`)
+	if idx == -1 {
+		return ""
+	}
+	// Skip past "code"
+	rest := args[idx+6:]
+	// Skip whitespace and colon
+	for len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n' || rest[0] == ':') {
+		rest = rest[1:]
+	}
+	if len(rest) == 0 {
+		return ""
+	}
+	// Must start with a quote
+	quote := rest[0]
+	if quote != '"' && quote != '\'' {
+		return ""
+	}
+	rest = rest[1:]
+	// Read until matching quote (respecting backslash escapes)
+	var sb strings.Builder
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		if ch == '\\' && i+1 < len(rest) {
+			// Handle escape sequences
+			next := rest[i+1]
+			switch next {
+			case 'n':
+				sb.WriteByte('\n')
+			case 't':
+				sb.WriteByte('\t')
+			case 'r':
+				sb.WriteByte('\r')
+			case '"':
+				sb.WriteByte('"')
+			case '\\':
+				sb.WriteByte('\\')
+			case '/':
+				sb.WriteByte('/')
+			default:
+				sb.WriteByte(next)
+			}
+			i++
+			continue
+		}
+		if ch == quote {
+			return sb.String()
+		}
+		sb.WriteByte(ch)
+	}
+	// Stream incomplete — return what we have so far
+	return sb.String()
 }
 
 // interactiveSessionsToStatuses converts InteractiveSessionInfo slice to

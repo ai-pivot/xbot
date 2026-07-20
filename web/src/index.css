@@ -6,6 +6,11 @@
 /* Pluggable markdown code highlighting themes. */
 @import "./styles/markdown-themes.css";
 
+/* Safelist for GenUI: LLM-generated HTML uses Tailwind classes that don't
+   appear in source files. This file contains a comprehensive list of
+   common utility classes so they're included in the build output. */
+@source "./genui-safelist.html";
+
 /* dark variant driven by <html class="dark"> */
 @custom-variant dark (&:is(.dark *));
 
