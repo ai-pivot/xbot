@@ -285,6 +285,19 @@ func (s *runState) notifyProgress(extra string) {
 	if !s.autoNotify {
 		return
 	}
+	// Refresh todos from TodoManager on every progress notification. TodoWrite
+	// tool updates the manager's memory, but structuredProgress.Todos is only
+	// synced at iteration start (initToolProgress). Without this refresh, the
+	// first progress_structured event after a TodoWrite call carries stale todos.
+	if s.structuredProgress != nil && s.cfg.TodoManager != nil && s.sessionKey != "" {
+		todos := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
+		if len(todos) > 0 {
+			s.structuredProgress.Todos = make([]TodoProgressItem, len(todos))
+			copy(s.structuredProgress.Todos, todos)
+		} else {
+			s.structuredProgress.Todos = nil
+		}
+	}
 	// Increment seq and assign to structuredProgress (unified entry point).
 	if s.structuredProgress != nil && s.cfg.ProgressSeq != nil {
 		s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
