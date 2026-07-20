@@ -795,8 +795,15 @@ func Run(args []string) error {
 			userID := identity.CanonicalUserID
 			role := identity.CanonicalRole
 			if senderID == "admin" || senderID == "cli_user" {
+				// CLI users are always admin. Resolve the real user_id via
+				// IdentityResolver so subscription/settings queries (which use
+				// rpcUserID) hit the correct DB rows.
+				if ag.IdentityResolver() != nil {
+					if uid, _, err := ag.IdentityResolver().Resolve("cli", senderID); err == nil && uid > 0 {
+						userID = uid
+					}
+				}
 				role = "admin"
-				userID = 1
 			} else if role == "" {
 				role = "user"
 			}
