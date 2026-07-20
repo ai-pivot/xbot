@@ -121,7 +121,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
         )}
         {/* GenUI: always visible, never folded */}
         {genuiTools.map((tool, i) => (
-          <GenUIBlock key={`genui-${i}`} code={parseArgs(tool)?.code || ''} />
+          <GenUIBlock key={`genui-${i}`} code={(parseArgs(tool)?.code as string) || ''} />
         ))}
         {message.displayOnly && (
           <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">

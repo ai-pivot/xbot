@@ -240,7 +240,7 @@ ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
     if (component) {
       try {
         rootRef.current.render(
-          React.createElement(component, { 'data-genui-root': true, onClick: handleClick })
+          React.createElement(component, { 'data-genui-root': true as const, onClick: handleClick } as Record<string, unknown>)
         )
       } catch {
         // keep last successful render
