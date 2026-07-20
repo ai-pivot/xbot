@@ -1661,7 +1661,17 @@ func New(cfg Config) (*Agent, error) {
 		// Wire plugin activator into RegistryManager so newly installed plugins
 		// (via /app install) are activated immediately without manual reload.
 		agent.registryManager.SetPluginActivator(func(pluginID string) error {
-			return agent.pluginMgr.Reload(context.Background(), pluginID)
+			ctx := context.Background()
+			// Try reload first — handles -f force reinstall where the plugin
+			// entry already exists in pm.entries.
+			if err := agent.pluginMgr.Reload(ctx, pluginID); err == nil {
+				return nil
+			}
+			// New plugin (not yet discovered): discover from disk, then activate.
+			if _, err := agent.pluginMgr.Discover(ctx); err != nil {
+				return fmt.Errorf("discover plugins: %w", err)
+			}
+			return agent.pluginMgr.ActivateAll(ctx)
 		})
 		// Wire plugin capabilities to xbot subsystems
 		hookBridge := plugin.NewPluginHookBridge()
