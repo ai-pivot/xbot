@@ -486,9 +486,22 @@ export class ProgressStore {
   /** Replace the whole progress (e.g. from history active_progress).
    *  iterationHistory is MERGED by iteration number (union) — not replaced —
    *  so a stale server snapshot can't clobber iterations already in the store
-   *  from live SSE events or cache restoration. */
+   *  from live SSE events or cache restoration.
+   *  completedTools is filtered by current iteration (same as setStructured) —
+   *  the server sends ALL completed tools across iterations, but only the
+   *  current iteration's tools belong here (old iterations are in
+   *  iterationHistory). Without this filter, LiveIteration's iteration-based
+   *  filter removes old tools AND they're not in iterationHistory → disappear. */
   replace(next: Partial<ProgressSnapshot>): void {
     this.mutate((draft) => {
+      // Filter completedTools by current iteration (mirrors setStructured)
+      if (next.completedTools) {
+        const currentIter = next.iteration ?? draft.iteration
+        const filtered = currentIter > 0
+          ? next.completedTools.filter((t) => t.iteration === undefined || t.iteration === currentIter)
+          : next.completedTools
+        draft.completedTools = dedupTools(filtered)
+      }
       if (next.iterationHistory) {
         const existing = new Set(draft.iterationHistory.map((i) => i.iteration))
         const merged = [...draft.iterationHistory]
@@ -498,11 +511,12 @@ export class ProgressStore {
             existing.add(iter.iteration)
           }
         }
-        const { iterationHistory: _ih, ...rest } = next
+        const { completedTools: _ct, iterationHistory: _ih, ...rest } = next
         Object.assign(draft, rest)
         draft.iterationHistory = merged
       } else {
-        Object.assign(draft, next)
+        const { completedTools: _ct, ...rest } = next
+        Object.assign(draft, rest)
       }
     })
   }
