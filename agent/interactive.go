@@ -488,35 +488,89 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 	return key
 }
 
+// syncInteractiveSessionAfterRewind replaces the viewer/run cache with the
+// DB-authoritative prefix after an agent-session rewind. The caller holds the
+// session operation gate, so no Run can publish a newer state concurrently.
+func (a *Agent) syncInteractiveSessionAfterRewind(key string) {
+	value, ok := a.interactiveSubAgents.Load(key)
+	if !ok {
+		return
+	}
+	ia, ok := value.(*interactiveAgent)
+	if !ok || ia == nil {
+		return
+	}
+
+	var persisted []llm.ChatMessage
+	var promptTokens int64
+	if a.multiSession != nil {
+		if sess, err := a.multiSession.GetOrCreateSession("agent", key); err != nil {
+			log.WithError(err).WithField("session_key", key).Warn("Failed to reopen rewound interactive session")
+		} else {
+			if messages, err := sess.GetMessages(); err != nil {
+				log.WithError(err).WithField("session_key", key).Warn("Failed to reload rewound interactive session")
+			} else {
+				persisted = messages
+			}
+			if tokens, err := sess.GetLastContextTokens(); err == nil {
+				promptTokens = tokens
+			}
+		}
+	}
+
+	lastReply := ""
+	for i := len(persisted) - 1; i >= 0; i-- {
+		if persisted[i].Role == "assistant" && persisted[i].Content != "" {
+			lastReply = persisted[i].Content
+			break
+		}
+	}
+
+	ia.mu.Lock()
+	pending := ia.pendingMessages
+	ia.messages = append([]llm.ChatMessage(nil), persisted...)
+	ia.iterationHistory = nil
+	ia.pendingMessages = nil
+	ia.interrupted = false
+	ia.lastError = ""
+	ia.lastReply = lastReply
+	ia.promptTokens = promptTokens
+	ia.completionTokens = 0
+	ia.lastUsed = time.Now()
+	if ia.cfg != nil {
+		ia.cfg.LastPromptTokens = promptTokens
+		ia.cfg.LastCompletionTokens = 0
+	}
+	ia.mu.Unlock()
+
+	for _, message := range pending {
+		select {
+		case message.replyCh <- fmt.Errorf("interactive session history was rewound"):
+		default:
+		}
+	}
+}
+
 func appendInteractiveInterruption(sess *session.TenantSession, partial string) ([]llm.ChatMessage, error) {
 	if sess == nil {
 		return nil, fmt.Errorf("interactive interruption has no tenant session")
 	}
 	appended := make([]llm.ChatMessage, 0, 3)
 	if partial != "" {
-		msg := llm.NewAssistantMessage(partial)
-		historyID, err := sess.AppendMessage(msg)
-		if err != nil {
-			return appended, err
-		}
-		msg.HistoryID = historyID
-		appended = append(appended, msg)
+		appended = append(appended, llm.NewAssistantMessage(partial))
 	}
 	toolID := fmt.Sprintf("interactive_interrupt_%d", time.Now().UnixNano())
 	assistant := llm.ChatMessage{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: toolID, Name: "user_cancelled", Arguments: `{}`}}}
-	historyID, err := sess.AppendMessage(assistant)
-	if err != nil {
-		return appended, err
-	}
-	assistant.HistoryID = historyID
 	appended = append(appended, assistant)
 	toolMsg := llm.NewToolMessage("user_cancelled", toolID, `{}`, "interrupted by parent agent")
-	historyID, err = sess.AppendMessage(toolMsg)
-	if err != nil {
-		return appended, err
-	}
-	toolMsg.HistoryID = historyID
 	appended = append(appended, toolMsg)
+	historyIDs, err := sess.AppendMessages(appended)
+	if err != nil {
+		return nil, err
+	}
+	for i, historyID := range historyIDs {
+		appended[i].HistoryID = historyID
+	}
 	return appended, nil
 }
 
@@ -661,8 +715,6 @@ func (a *Agent) SpawnInteractiveSession(
 	// TUI status bar falls back to the parent agent's default subscription model.
 	placeholder.mu.Lock()
 	placeholder.cfg = &cfg
-	placeholder.mu.Unlock()
-
 	// Update placeholder with system prompt + user message so CLI session viewer
 	// can display them while Run() is executing (before the full session data
 	// replaces the placeholder).
@@ -672,15 +724,27 @@ func (a *Agent) SpawnInteractiveSession(
 	if len(cfg.Messages) > 1 {
 		placeholder.messages = []llm.ChatMessage{cfg.Messages[1]}
 	}
+	placeholder.mu.Unlock()
 
 	// Interactive SubAgent gets its own TenantSession for message persistence.
 	// Channel="agent", ChatID=key → messages saved to DB like normal sessions.
-	agentTenantSession, err := a.multiSession.GetOrCreateSession("agent", key)
+	agentTenantSession, err := a.multiSession.GetOrCreateSessionWithOwner("agent", key, cfg.UserID)
 	if err != nil {
 		a.destroyInteractiveSession(key)
 		return nil, fmt.Errorf("create agent tenant session: %w", err)
 	}
 	cfg.Session = agentTenantSession
+	operationGate := a.sessionOperationGate("agent", key)
+	if !operationGate.lock(ctx) {
+		a.destroyInteractiveSession(key)
+		return nil, ctx.Err()
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			operationGate.unlock()
+		}
+	}()
 
 	// Clear any stale messages from a previous session with the same key.
 	// This can happen after server restart (DB retains old tenant data) or
@@ -796,7 +860,9 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 		}
 
+		gateOwned = false
 		go func() {
+			defer operationGate.unlock()
 			startTime := time.Now()
 			defer func() {
 				if r := recover(); r != nil {
@@ -1161,15 +1227,6 @@ func (a *Agent) SpawnInteractiveSession(
 	// out.Messages (from Run) excludes the final text-only response — it's only
 	// in out.Content / buildOutput. Without this, switching away and back loses
 	// the assistant's final reply.
-	if out.Content != "" {
-		ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
-	}
-	// Carry ReasoningContent to the in-memory message for subsequent turns
-	if out.Content != "" && out.ReasoningContent != "" && len(ia.messages) > 0 {
-		ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
-	}
-	a.interactiveSubAgents.Store(key, ia)
-
 	// Persist final assistant message with iteration history as Detail,
 	// same as the main agent does in handleInboundMessage (agent.go:1884).
 	// The incremental persistence in postToolProcessing saves assistant messages
@@ -1184,17 +1241,19 @@ func (a *Agent) SpawnInteractiveSession(
 		}
 		historyID, err := agentTenantSession.AppendMessage(assistantMsg)
 		if err != nil {
-			if len(ia.messages) > 0 && ia.messages[len(ia.messages)-1].Role == "assistant" {
-				ia.messages = ia.messages[:len(ia.messages)-1]
-			}
-			ia.lastError = fmt.Sprintf("append interactive agent assistant message: %v", err)
-			a.interactiveSubAgents.Store(key, ia)
+			a.destroyInteractiveSession(key)
 			return nil, fmt.Errorf("append interactive agent assistant message: %w", err)
 		}
-		if len(ia.messages) > 0 && ia.messages[len(ia.messages)-1].Role == "assistant" {
-			ia.messages[len(ia.messages)-1].HistoryID = historyID
-		}
+		assistantMsg.HistoryID = historyID
+		ia.messages = append(ia.messages, assistantMsg)
+	} else if out.Content != "" {
+		assistantMsg := llm.NewAssistantMessage(out.Content)
+		assistantMsg.ReasoningContent = out.ReasoningContent
+		ia.messages = append(ia.messages, assistantMsg)
 	}
+	// Publish only the fully initialized state. Readers can never observe the
+	// final assistant reply before its durable HistoryID has been assigned.
+	a.interactiveSubAgents.Store(key, ia)
 
 	log.WithFields(log.Fields{
 		"role":     roleName,
@@ -1202,6 +1261,71 @@ func (a *Agent) SpawnInteractiveSession(
 	}).Info("Interactive session spawned")
 
 	return out.OutboundMsg, nil
+}
+
+// ContinueInteractiveSession continues an active interactive SubAgent by its
+// full canonical key. This is the UI/RPC entry point; it deliberately bypasses
+// generic inbound routing so the content cannot start a separate agent session.
+// A nil result means the asynchronous continuation was accepted, not completed.
+func (a *Agent) ContinueInteractiveSession(ctx context.Context, fullKey, content, senderID string) error {
+	if fullKey == "" {
+		return fmt.Errorf("full_key is required")
+	}
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("content is required")
+	}
+
+	value, ok := a.interactiveSubAgents.Load(fullKey)
+	if !ok {
+		return fmt.Errorf("no active interactive session for %q", fullKey)
+	}
+	ia, ok := value.(*interactiveAgent)
+	if !ok || ia == nil {
+		return fmt.Errorf("corrupted interactive session %q", fullKey)
+	}
+
+	ia.mu.Lock()
+	roleName := ia.roleName
+	instance := ia.instance
+	initialized := ia.cfg != nil
+	ia.mu.Unlock()
+	if !initialized {
+		return fmt.Errorf("interactive session %q is still initializing", fullKey)
+	}
+
+	parentChannel, parentChatID := parseInteractiveKeyParent(fullKey)
+	if parentChannel == "" || parentChatID == "" || roleName == "" ||
+		interactiveKey(parentChannel, parentChatID, roleName, instance) != fullKey {
+		return fmt.Errorf("invalid interactive session key %q", fullKey)
+	}
+
+	metadata := map[string]string(nil)
+	if instance != "" {
+		metadata = map[string]string{"instance_id": instance}
+	}
+	out, err := a.SendToInteractiveSession(ctx, roleName, bus.InboundMessage{
+		Channel:    parentChannel,
+		ChatID:     parentChatID,
+		SenderID:   senderID,
+		SenderName: "Interactive User",
+		ChatType:   "p2p",
+		Content:    content,
+		Metadata:   metadata,
+		Time:       time.Now(),
+	})
+	if err != nil {
+		return err
+	}
+	if out != nil && out.Error != nil {
+		return out.Error
+	}
+	if current, exists := a.interactiveSubAgents.Load(fullKey); !exists || current != value {
+		return fmt.Errorf("no active interactive session for %q", fullKey)
+	}
+	if out == nil {
+		return fmt.Errorf("interactive session %q did not accept the continuation", fullKey)
+	}
+	return nil
 }
 
 // SendToInteractiveSession 向已有的 interactive session 发送新消息。
@@ -1217,16 +1341,20 @@ func (a *Agent) SendToInteractiveSession(
 
 	val, ok := a.interactiveSubAgents.Load(key)
 	if !ok {
+		err := fmt.Errorf("no active interactive session for role %q, use interactive=true to create one first", roleName)
 		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("no active interactive session for role %q, use interactive=true to create one first", roleName),
+			Content: err.Error(),
+			Error:   err,
 		}, nil
 	}
 
 	ia, ok := val.(*interactiveAgent)
 	if !ok || ia == nil {
 		a.interactiveSubAgents.Delete(key)
+		err := fmt.Errorf("corrupted interactive session for role %q", roleName)
 		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("corrupted interactive session for role %q", roleName),
+			Content: err.Error(),
+			Error:   err,
 		}, nil
 	}
 
@@ -1240,8 +1368,10 @@ func (a *Agent) SendToInteractiveSession(
 	if ia.running {
 		if ia.cfg == nil {
 			ia.mu.Unlock()
+			err := fmt.Errorf("interactive session for role %q is still initializing, please try again later", roleName)
 			return &channelpkg.OutboundMsg{
-				Content: fmt.Sprintf("interactive session for role %q is still initializing, please try again later", roleName),
+				Content: err.Error(),
+				Error:   err,
 			}, nil
 		}
 
@@ -1257,8 +1387,10 @@ func (a *Agent) SendToInteractiveSession(
 		select {
 		case err := <-replyCh:
 			if err != nil {
+				deliveryErr := fmt.Errorf("failed to deliver message to %q (instance=%q): %w", roleName, instance, err)
 				return &channelpkg.OutboundMsg{
-					Content: fmt.Sprintf("failed to deliver message to %q (instance=%q): %v", roleName, instance, err),
+					Content: deliveryErr.Error(),
+					Error:   deliveryErr,
 				}, nil
 			}
 			return &channelpkg.OutboundMsg{
@@ -1274,16 +1406,20 @@ func (a *Agent) SendToInteractiveSession(
 				}
 			}
 			ia.mu.Unlock()
+			deliveryErr := fmt.Errorf("message delivery to %q (instance=%q) cancelled: %w", roleName, instance, ctx.Err())
 			return &channelpkg.OutboundMsg{
-				Content: fmt.Sprintf("message delivery to %q (instance=%q) cancelled: context deadline exceeded", roleName, instance),
+				Content: deliveryErr.Error(),
+				Error:   deliveryErr,
 			}, nil
 		}
 	}
 
 	if ia.cfg == nil {
 		ia.mu.Unlock()
+		err := fmt.Errorf("interactive session for role %q is still initializing, please try again later", roleName)
 		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("interactive session for role %q is still initializing, please try again later", roleName),
+			Content: err.Error(),
+			Error:   err,
 		}, nil
 	}
 
@@ -1298,18 +1434,43 @@ func (a *Agent) SendToInteractiveSession(
 	newMessages = append(newMessages, ia.messages...)
 	newMessages = append(newMessages, llm.NewUserMessage(msg.Content))
 	cfg.Messages = newMessages
+	systemPrompt := ia.systemPrompt
 
-	// Eager-save user message so get_history returns it during Run().
+	ia.mu.Unlock()
+	operationGate := a.sessionOperationGate("agent", key)
+	if !operationGate.lock(ctx) {
+		return nil, ctx.Err()
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			operationGate.unlock()
+		}
+	}()
+
+	// A rewind may have completed while this send waited for the operation gate.
+	// Rebuild from the DB-authoritative active replay before appending the turn.
 	if cfg.Session != nil {
-		historyID, err := cfg.Session.AppendMessage(llm.NewUserMessage(msg.Content))
+		persisted, err := cfg.Session.GetMessages()
 		if err != nil {
-			ia.mu.Unlock()
+			return nil, fmt.Errorf("reload interactive agent history: %w", err)
+		}
+		if promptTokens, err := cfg.Session.GetLastContextTokens(); err == nil {
+			cfg.LastPromptTokens = promptTokens
+			cfg.LastCompletionTokens = 0
+		}
+		newMessages = append([]llm.ChatMessage{systemPrompt}, persisted...)
+		newMessages = append(newMessages, llm.NewUserMessage(msg.Content))
+		cfg.Messages = newMessages
+		ia.mu.Lock()
+		ia.messages = append([]llm.ChatMessage(nil), persisted...)
+		ia.mu.Unlock()
+		historyID, err := cfg.Session.AppendMessage(newMessages[len(newMessages)-1])
+		if err != nil {
 			return nil, fmt.Errorf("append interactive agent user message: %w", err)
 		}
 		newMessages[len(newMessages)-1].HistoryID = historyID
 	}
-
-	ia.mu.Unlock()
 
 	// --- 阶段 2：锁外构建上下文和执行 ---
 	// BUG FIX: 不能在持有 ia.mu 期间调用 Run()。
@@ -1443,7 +1604,9 @@ func (a *Agent) SendToInteractiveSession(
 	}
 
 	// --- Always async: run in goroutine, return immediately ---
+	gateOwned = false
 	go func() {
+		defer operationGate.unlock()
 		startTime := time.Now()
 		defer func() {
 			if r := recover(); r != nil {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -177,7 +178,7 @@ func TestRun_CancelPreservesEngineMessages(t *testing.T) {
 // The fix ensures:
 // - Cancel interception does NOT send premature cancel ack (Part 1)
 // - DrainBgNotifications skips when ctx is cancelled (Part 2)
-// - Drained notifications are discarded on cancel (Part 3)
+// - Drained notifications are persisted on cancel (Part 3)
 
 // makeTestNotif creates a BgNotification with the given session key.
 // Uses CronFired because it has exported fields (no unexported sessionKey).
@@ -190,8 +191,7 @@ func makeTestNotif(sessionKey, id string) tools.BgNotification {
 }
 
 // TestWireBgNotificationDrain_TracksDrained verifies that wireBgNotificationDrain
-// records drained notifications into bgSessionState.drainedThisRun so they can
-// be discarded explicitly if the Run is cancelled.
+// records drained notifications until their synthetic tool pairs are committed.
 func TestWireBgNotificationDrain_TracksDrained(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -324,14 +324,13 @@ func TestClearDrainedThisRun_PreventsStaleCancelDiscard(t *testing.T) {
 	}
 }
 
-// TestHandleCancelledRun_DiscardsDrainedNotifications verifies that drained
-// notifications are DISCARDED (not re-queued) when the Run is cancelled.
-// The user pressed Ctrl+C — they want everything to stop. Re-queuing would
-// cause drainAndProcessNotifications to deliver the notification as a new
-// user message, starting a new turn the user explicitly wanted to cancel.
+// TestHandleCancelledRun_RecordsPendingNotifications verifies that both
+// unacknowledged drained notifications and still-pending notifications are
+// committed into the interrupted turn before either queue is cleared.
 func TestHandleCancelledRun_RecordsPendingNotifications(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	_, sess := newAgentHistorySession(t)
 
 	a := &Agent{
 		bus:      bus.NewMessageBus(),
@@ -357,7 +356,24 @@ func TestHandleCancelledRun_RecordsPendingNotifications(t *testing.T) {
 	}
 	out := &RunOutput{}
 
-	a.handleCancelledRun(ctx, msg, out, nil)
+	if _, err := a.handleCancelledRun(ctx, msg, out, sess); err != nil {
+		t.Fatal(err)
+	}
+	records, err := sess.GetFullHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notificationResults []string
+	for _, record := range records {
+		if record.Message.Role == "tool" && record.Message.ToolName == "cron_fired" {
+			notificationResults = append(notificationResults, record.Message.Content)
+		}
+	}
+	if len(notificationResults) != 2 ||
+		!strings.Contains(notificationResults[0], "cancel-record-test") ||
+		!strings.Contains(notificationResults[1], "pending-same-session") {
+		t.Fatalf("cancel notification results=%q", notificationResults)
+	}
 
 	if queued := a.pendingBgNotifications(sessionKey); len(queued) != 0 {
 		t.Fatalf("same-session bgRunPending has %d after cancel, want 0", len(queued))
@@ -376,6 +392,76 @@ func TestHandleCancelledRun_RecordsPendingNotifications(t *testing.T) {
 	ss.drainedThisRunMu.Unlock()
 	if trackedLen != 0 {
 		t.Errorf("drainedThisRun should be empty after cancel, got %d", trackedLen)
+	}
+}
+
+func TestHandleCancelledRun_FailedBatchRequeuesNotificationsForRetry(t *testing.T) {
+	ctx := context.Background()
+	mt, sess := newAgentHistorySession(t)
+	if _, err := mt.DB().Conn().Exec(`
+		CREATE TRIGGER fail_cancel_batch BEFORE INSERT ON session_messages
+		WHEN NEW.role = 'tool' AND NEW.tool_name = 'user_cancelled'
+		BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{bus: bus.NewMessageBus(), agentCtx: ctx}
+	sessionKey := "cli:test-chat"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(sessionKey, ss)
+	drained := makeTestNotif(sessionKey, "already-drained")
+	ss.drainedThisRun = []tools.BgNotification{drained}
+	pending := makeTestNotif(sessionKey, "pending")
+	a.enqueueBgNotification(pending)
+
+	_, err := a.handleCancelledRun(ctx, bus.InboundMessage{Channel: "cli", ChatID: "test-chat"}, &RunOutput{
+		EngineMessages: []llm.ChatMessage{llm.NewAssistantMessage("partial")},
+	}, sess)
+	if err == nil {
+		t.Fatal("expected cancelled batch failure")
+	}
+	records, loadErr := sess.GetFullHistory()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("cancelled batch partially persisted: %+v", records)
+	}
+	if queued := a.pendingBgNotifications(sessionKey); len(queued) != 2 {
+		t.Fatalf("notifications not requeued after failed commit: %+v", queued)
+	}
+	ss.drainedThisRunMu.Lock()
+	drainedCount := len(ss.drainedThisRun)
+	ss.drainedThisRunMu.Unlock()
+	if drainedCount != 0 {
+		t.Fatalf("requeued notifications remained in drained ledger: %d", drainedCount)
+	}
+
+	if _, err := mt.DB().Conn().Exec(`DROP TRIGGER fail_cancel_batch`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.handleCancelledRun(ctx, bus.InboundMessage{Channel: "cli", ChatID: "test-chat"}, &RunOutput{
+		EngineMessages: []llm.ChatMessage{llm.NewAssistantMessage("partial")},
+	}, sess); err != nil {
+		t.Fatal(err)
+	}
+	records, err = sess.GetFullHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notificationResults []string
+	for _, record := range records {
+		if record.Message.Role == "tool" && record.Message.ToolName == "cron_fired" {
+			notificationResults = append(notificationResults, record.Message.Content)
+		}
+	}
+	if len(notificationResults) != 2 ||
+		!strings.Contains(notificationResults[0], "already-drained") ||
+		!strings.Contains(notificationResults[1], "pending") {
+		t.Fatalf("retried cancel notification results=%q", notificationResults)
+	}
+	if queued := a.pendingBgNotifications(sessionKey); len(queued) != 0 {
+		t.Fatalf("notifications remained after successful retry: %+v", queued)
 	}
 }
 

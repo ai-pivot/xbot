@@ -1368,12 +1368,18 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	a.interactiveSubAgents.Store(oneshotKey, oneshotIA)
 
 	// Create TenantSession for message persistence (same as interactive SubAgents).
-	agentTenantSession, err := a.multiSession.GetOrCreateSession("agent", oneshotKey)
+	agentTenantSession, err := a.multiSession.GetOrCreateSessionWithOwner("agent", oneshotKey, cfg.UserID)
 	if err != nil {
 		a.interactiveSubAgents.Delete(oneshotKey)
 		return nil, fmt.Errorf("create oneshot agent tenant session: %w", err)
 	}
 	cfg.Session = agentTenantSession
+	operationGate := a.sessionOperationGate("agent", oneshotKey)
+	if !operationGate.lock(subCtx) {
+		a.interactiveSubAgents.Delete(oneshotKey)
+		return nil, subCtx.Err()
+	}
+	defer operationGate.unlock()
 	if err := agentTenantSession.Clear(); err != nil {
 		a.interactiveSubAgents.Delete(oneshotKey)
 		return nil, fmt.Errorf("clear oneshot agent tenant session: %w", err)

@@ -46,6 +46,12 @@ func (s *TenantSession) AppendMessages(messages []llm.ChatMessage) ([]int64, err
 	return s.sessionSvc.AppendMessages(s.tenantID, messages)
 }
 
+// AppendMessagesAndAskQuestion atomically appends an AskUser tool exchange and
+// the control record that makes the question pending across restarts.
+func (s *TenantSession) AppendMessagesAndAskQuestion(messages []llm.ChatMessage, metadata map[string]string) ([]int64, int64, error) {
+	return s.sessionSvc.AppendMessagesAndAskQuestion(s.tenantID, messages, metadata)
+}
+
 func (s *TenantSession) AppendControl(recordType sqlite.HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
 	return s.sessionSvc.AppendControl(s.tenantID, recordType, targetHistoryID, data)
 }

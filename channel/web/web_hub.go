@@ -25,7 +25,9 @@ type Hub struct {
 	offMu   sync.Mutex
 	seqMu   sync.Mutex
 	seqFn   func(string, protocol.WSMessage) protocol.WSMessage
-	stopped bool
+	// resetReplayFn clears the Web event stream for a route while seqMu is held.
+	resetReplayFn func(string)
+	stopped       bool
 
 	tuiRespFn func(id string, payload *protocol.TUIControlPayload) // set by RemoteCLIChannel
 }
@@ -88,20 +90,40 @@ func (h *Hub) subscribe(clientID, chatID string) bool {
 	}
 	// SSE replays from eventStream, its ordered source of truth. The legacy
 	// offline ring remains exclusively for WebSocket clients.
-	if c := h.conns[clientID]; c != nil && c.connType != clientConnTypeSSE {
+	if c := h.conns[clientID]; c != nil && c.connType != clientConnTypeSSE && !c.routeReplay {
 		h.offMu.Lock()
 		if buf, ok := h.offline[chatID]; ok {
 			msgs := buf.flush()
-			for _, msg := range msgs {
+			failedAt := -1
+			for i, msg := range msgs {
 				deliveryMsg := msg
-				if c.isCLI && isSSEEventType(deliveryMsg.Type) {
-					deliveryMsg.Seq = 0
-				}
 				select {
 				case c.sendCh <- deliveryMsg:
 				default:
-					log.WithFields(log.Fields{"client_id": clientID, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.subscribe flush: sendCh full, dropping buffered message")
+					failedAt = i
 				}
+				if failedAt >= 0 {
+					break
+				}
+			}
+			if failedAt >= 0 {
+				// The connection cannot accept its replay. Keep every undelivered
+				// message and retain a reset barrier admitted just before overflow.
+				for _, msg := range msgs {
+					if isSSEReplayBarrier(msg) {
+						buf.push(msg)
+					}
+				}
+				for _, msg := range msgs[failedAt:] {
+					if !isSSEReplayBarrier(msg) {
+						buf.push(msg)
+					}
+				}
+				c.closeDone()
+				log.WithFields(log.Fields{"client_id": clientID, "chat_id": chatID, "msg_type": msgs[failedAt].Type}).Warn("Hub.subscribe flush: sendCh full, disconnecting with replay retained")
+				h.offMu.Unlock()
+				h.mu.Unlock()
+				return false
 			}
 			delete(h.offline, chatID)
 		}
@@ -121,24 +143,46 @@ func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {
 	return h.sendToSession("web", chatID, msg)
 }
 
-// sendToSession isolates SSE routing and replay by channel+chatID while
-// preserving raw chatID routing for legacy and remote CLI WebSocket clients.
+// sendToSession routes by channel+chatID. Raw chatID delivery is retained only
+// as an explicit compatibility path for older in-process subscribers.
 func (h *Hub) sendToSession(channel, chatID string, msg protocol.WSMessage) bool {
+	routeKey := sessionRouteKey(channel, chatID)
 	if !isSSEEventType(msg.Type) {
-		return h.sendToClient(chatID, msg)
+		sent := h.deliverToSubscribersFiltered(routeKey, msg, msg, false, func(c *Client) bool {
+			return c.connType != clientConnTypeSSE
+		}, false)
+		if sent {
+			return true
+		}
+		// Raw-key subscribers are an explicit compatibility path for older
+		// in-process clients. Control messages are never buffered offline.
+		return h.deliverToSubscribersFiltered(chatID, msg, msg, false, func(c *Client) bool {
+			return c.connType != clientConnTypeSSE && c.sessionChannel == ""
+		}, false)
 	}
 
-	routeKey := sessionRouteKey(channel, chatID)
 	h.seqMu.Lock()
 	defer h.seqMu.Unlock()
 	sequencedMsg := h.sequenceEventLocked(routeKey, normalizeSSEEvent(msg))
 	sseSent := h.deliverToSubscribersFiltered(routeKey, msg, sequencedMsg, true, func(c *Client) bool {
 		return c.connType == clientConnTypeSSE
 	}, false)
-	wsSent := h.deliverToSubscribersFiltered(chatID, msg, sequencedMsg, true, func(c *Client) bool {
-		return c.connType != clientConnTypeSSE || c.sessionChannel == ""
-	}, true)
-	return sseSent || wsSent
+	wsSent := h.deliverToSubscribersFiltered(routeKey, msg, sequencedMsg, true, func(c *Client) bool {
+		return c.connType != clientConnTypeSSE
+	}, false)
+	// Keep raw-key delivery for in-process legacy subscribers. Network clients
+	// subscribe through a channel-qualified route, so same chat IDs remain
+	// isolated across Web and remote CLI sessions.
+	legacySent := false
+	if !wsSent {
+		legacySent = h.deliverToSubscribersFiltered(chatID, msg, sequencedMsg, true, func(c *Client) bool {
+			return c.sessionChannel == ""
+		}, false)
+	}
+	if !wsSent && !legacySent {
+		h.bufferOffline(routeKey, msg, sequencedMsg, true)
+	}
+	return sseSent || wsSent || legacySent
 }
 
 // sendSSEEventIf atomically checks and publishes a sequenced Web event.
@@ -200,11 +244,11 @@ func (h *Hub) deliverToSubscribersFiltered(
 			continue
 		}
 		deliveryMsg := msg
-		if !c.isCLI {
-			deliveryMsg.Seq = sequencedMsg.Seq
-			if c.connType == clientConnTypeSSE {
-				deliveryMsg = sequencedMsg
-			}
+		deliveryMsg.Seq = sequencedMsg.Seq
+		deliveryMsg.RouteChannel = sequencedMsg.RouteChannel
+		deliveryMsg.RouteChatID = sequencedMsg.RouteChatID
+		if c.connType == clientConnTypeSSE {
+			deliveryMsg = sequencedMsg
 		}
 		if !isStatefulMsg(deliveryMsg) && c.connType != clientConnTypeSSE {
 			// Stateless messages (stream_content, etc.) are superseded
@@ -231,26 +275,28 @@ func (h *Hub) deliverToSubscribersFiltered(
 		}
 	}
 	if !sent && bufferIfUnsent {
-		h.mu.RLock()
-		if h.stopped {
-			h.mu.RUnlock()
-			return false
-		}
-		h.offMu.Lock()
-		buf, ok := h.offline[chatID]
-		if !ok {
-			buf = newRingBuffer(webOfflineMsgBufSize)
-			h.offline[chatID] = buf
-		}
-		bufferedMsg := msg
-		if isSSEEvent {
-			bufferedMsg.Seq = sequencedMsg.Seq
-		}
-		buf.push(bufferedMsg)
-		h.offMu.Unlock()
-		h.mu.RUnlock()
+		h.bufferOffline(chatID, msg, sequencedMsg, isSSEEvent)
 	}
 	return sent
+}
+
+func (h *Hub) bufferOffline(chatID string, msg, sequencedMsg protocol.WSMessage, isSSEEvent bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.stopped {
+		return
+	}
+	h.offMu.Lock()
+	defer h.offMu.Unlock()
+	buf, ok := h.offline[chatID]
+	if !ok {
+		buf = newRingBuffer(webOfflineMsgBufSize)
+		h.offline[chatID] = buf
+	}
+	if isSSEEvent {
+		msg.Seq = sequencedMsg.Seq
+	}
+	buf.push(msg)
 }
 
 func (h *Hub) sequenceEventLocked(chatID string, msg protocol.WSMessage) protocol.WSMessage {
@@ -300,7 +346,49 @@ func isStreamOnlyProgress(p *protocol.ProgressEvent) bool {
 }
 
 func (c *Client) closeDone() {
-	c.closeOnce.Do(func() { close(c.done) })
+	c.closeOnce.Do(func() {
+		if c.done != nil {
+			close(c.done)
+		}
+	})
+}
+
+// clearSessionPending drops queued conversation events before a destructive
+// history reset. Non-session messages (notably RPC responses) keep their order.
+func (c *Client) clearSessionPending() bool {
+	c.statelessMu.Lock()
+	c.statelessMap = make(map[string]*protocol.WSMessage, len(c.statelessMap))
+	c.statelessMu.Unlock()
+	for {
+		select {
+		case <-c.statelessSig:
+		default:
+			goto drainQueue
+		}
+	}
+
+drainQueue:
+	preserved := make([]protocol.WSMessage, 0, len(c.sendCh))
+	for {
+		select {
+		case queued, ok := <-c.sendCh:
+			if !ok {
+				return false
+			}
+			if !isSSEEventType(queued.Type) {
+				preserved = append(preserved, queued)
+			}
+		default:
+			for _, queued := range preserved {
+				select {
+				case c.sendCh <- queued:
+				default:
+					return false
+				}
+			}
+			return true
+		}
+	}
 }
 
 // storeStateless saves a stateless message in a per-source slot (overwriting any
@@ -361,33 +449,63 @@ func (h *Hub) stopAll() {
 	h.mu.Unlock()
 }
 
-// broadcastSessionState preserves the existing WS broadcast while delivering
-// session state events to ALL connected clients. Session state events (busy/idle/
-// renamed/deleted) affect the global session sidebar — they are NOT per-session
-// stream events. Filtering by SSE subscription would prevent the sidebar from
-// receiving busy/idle for sessions the user hasn't opened.
+// broadcastSessionState delivers session state only to the exact authorized
+// route. Session events are never global connection broadcasts.
 func (h *Hub) broadcastSessionState(channel, chatID string, msg protocol.WSMessage) {
-	h.seqMu.Lock()
-	defer h.seqMu.Unlock()
 	routeKey := sessionRouteKey(channel, chatID)
+	if msg.Session != nil && msg.Session.Action == "history_rewound" {
+		h.seqMu.Lock()
+		defer h.seqMu.Unlock()
+		h.broadcastHistoryResetLocked(routeKey, msg)
+		return
+	}
+	h.sendToSession(channel, chatID, msg)
+}
+
+// broadcastHistoryResetLocked makes rewind a route-scoped transport barrier.
+// The caller holds seqMu, which excludes concurrent session event publication.
+func (h *Hub) broadcastHistoryResetLocked(routeKey string, msg protocol.WSMessage) {
+	if h.resetReplayFn != nil {
+		h.resetReplayFn(routeKey)
+	}
+	h.offMu.Lock()
+	delete(h.offline, routeKey)
+	h.offMu.Unlock()
 	sequencedMsg := h.sequenceEventLocked(routeKey, msg)
 
 	h.mu.RLock()
-	clients := make([]*Client, 0, len(h.conns))
-	for _, c := range h.conns {
-		clients = append(clients, c)
+	subscriberIDs := make([]string, 0, len(h.subs[routeKey]))
+	for clientID := range h.subs[routeKey] {
+		subscriberIDs = append(subscriberIDs, clientID)
 	}
 	h.mu.RUnlock()
-	for _, c := range clients {
-		deliveryMsg := msg
-		if !c.isCLI {
-			deliveryMsg = sequencedMsg
+
+	needsReplay := len(subscriberIDs) == 0
+	for _, clientID := range subscriberIDs {
+		h.mu.RLock()
+		client := h.conns[clientID]
+		h.mu.RUnlock()
+		if client == nil {
+			needsReplay = true
+			continue
 		}
+		if !client.clearSessionPending() {
+			client.closeDone()
+			needsReplay = true
+			continue
+		}
+		deliveryMsg := sequencedMsg
 		select {
-		case c.sendCh <- deliveryMsg:
+		case client.sendCh <- deliveryMsg:
 		default:
-			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastSessionState: sendCh full, skipping")
+			// A reset may never be silently dropped: force reconnect so the
+			// cleared replay stream delivers the barrier before any new state.
+			client.closeDone()
+			needsReplay = true
 		}
+	}
+	if needsReplay {
+		h.bufferOffline(routeKey, msg, sequencedMsg, true)
 	}
 }
 
@@ -440,11 +558,12 @@ type Client struct {
 	chatID           string
 	sessionChannel   string
 	lastSentSeq      uint64
-	id               string                      // unique client ID (UUID), generated at connection time
-	syncCh           atomic.Pointer[chan uint64] // for reconnect sync: client sends last_seq
-	isCLI            bool                        // true if client_type=cli (runner token auth)
-	canonicalUserID  int64                       // canonical user ID (from IdentityResolver)
-	canonicalRole    string                      // user role ("admin" | "user")
+	id               string // unique client ID (UUID), generated at connection time
+	isCLI            bool   // true if client_type=cli (runner token auth)
+	canonicalUserID  int64  // canonical user ID (from IdentityResolver)
+	canonicalRole    string // user role ("admin" | "user")
+	webUserID        int    // browser user ID for legacy admin fallback
+	routeReplay      bool   // eventStream cursor is the replay source
 	sseWriteCanceled atomic.Bool
 
 	// statelessSlot holds the latest stateless message per type (progress,
@@ -468,7 +587,8 @@ func isSSEEventType(msgType string) bool {
 		protocol.MsgTypePluginWidgets,
 		protocol.MsgTypeSession,
 		protocol.MsgTypeRunnerStatus,
-		protocol.MsgTypeSyncProgress:
+		protocol.MsgTypeSyncProgress,
+		protocol.MsgTypeResyncRequired:
 		return true
 	default:
 		return false
@@ -480,11 +600,12 @@ func isSSEEventType(msgType string) bool {
 // ---------------------------------------------------------------------------
 
 type ringBuffer struct {
-	buf   []protocol.WSMessage
-	size  int
-	head  int
-	tail  int
-	count int
+	buf     []protocol.WSMessage
+	size    int
+	head    int
+	tail    int
+	count   int
+	barrier *protocol.WSMessage
 }
 
 func newRingBuffer(size int) *ringBuffer {
@@ -523,6 +644,14 @@ func isStatefulMsg(msg protocol.WSMessage) bool {
 }
 
 func (rb *ringBuffer) push(msg protocol.WSMessage) {
+	if isSSEReplayBarrier(msg) {
+		msgCopy := msg
+		rb.barrier = &msgCopy
+		rb.head = 0
+		rb.tail = 0
+		rb.count = 0
+		return
+	}
 	if !isStatefulMsg(msg) {
 		// State-snapshot types: only keep the latest one.
 		// Scan backwards to find an existing message of the same type.
@@ -545,7 +674,11 @@ func (rb *ringBuffer) push(msg protocol.WSMessage) {
 }
 
 func (rb *ringBuffer) flush() []protocol.WSMessage {
-	result := make([]protocol.WSMessage, 0, rb.count)
+	result := make([]protocol.WSMessage, 0, rb.count+1)
+	if rb.barrier != nil {
+		result = append(result, *rb.barrier)
+		rb.barrier = nil
+	}
 	for rb.count > 0 {
 		result = append(result, rb.buf[rb.head])
 		rb.head = (rb.head + 1) % rb.size

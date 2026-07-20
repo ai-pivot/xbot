@@ -11,7 +11,7 @@ import {
   normalizeWebTools,
 } from '@/components/agent/progressStore'
 import type { HistProgress } from '@/components/agent/api'
-import type { WebIteration, WebToolProgress, ProgressSnapshot, TodoItem } from '@/types/shared'
+import type { WebIteration, WebToolProgress, ProgressSnapshot, TodoItem, TokenUsageInfo } from '@/types/shared'
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { IterationSnapshot, IterationTool, ToolProgress } from '@/types/agent'
 
@@ -126,23 +126,30 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
   const iterHistory = (p.iteration_history ?? [])
     .map(normalizeWebIteration)
     .filter(Boolean) as WebIteration[]
+  const tokenUsage: TokenUsageInfo | null = p.token_usage
+    ? {
+        promptTokens: p.token_usage.prompt_tokens ?? 0,
+        completionTokens: p.token_usage.completion_tokens ?? 0,
+        totalTokens: p.token_usage.total_tokens ?? 0,
+      }
+    : null
   return {
     eventSeq: typeof p.seq === 'number' ? p.seq : 0,
     phase: p.phase,
     iteration: typeof p.iteration === 'number' ? p.iteration : 0,
     streamContent: p.stream_content ?? '',
     content: p.content ?? '',
-    reasoningStreamContent: '',
+    reasoningStreamContent: p.reasoning_stream_content ?? '',
     streaming: true,
     activeTools: active,
     completedTools: completed,
     iterationHistory: iterHistory,
-    streamingTools: [],
+    streamingTools: normalizeWebTools(p.streaming_tools),
     genuiContent: '',
-    lastIter: -1, // -1 = no iteration seen yet; allows iteration 0 to be accepted
-    lastReasoning: '',
+    lastIter: typeof p.iteration === 'number' ? p.iteration : -1,
+    lastReasoning: p.reasoning ?? '',
     todos: (p.todos ?? []) as TodoItem[],
     subAgents: normalizeWebSubAgents(p.sub_agents),
-    tokenUsage: null,
+    tokenUsage,
   }
 }

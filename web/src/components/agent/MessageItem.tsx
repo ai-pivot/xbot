@@ -11,6 +11,7 @@
 import { memo } from 'react'
 
 import { AssistantMessage } from './AssistantMessage'
+import { ToolMessage } from './ToolMessage'
 import { UserMessage } from './UserMessage'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -56,6 +57,9 @@ export const MessageItem = memo(function MessageItem({
         editDisabled={editDisabled}
       />
     )
+  }
+  if (message.role === 'tool') {
+    return <ToolMessage message={message} />
   }
   return (
     <AssistantMessage

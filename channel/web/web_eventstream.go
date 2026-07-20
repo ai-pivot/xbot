@@ -22,19 +22,26 @@ func sessionRouteKey(channel, chatID string) string {
 	if channel == "" {
 		channel = "web"
 	}
-	if channel != "agent" && webChatIDLooksLikeSubAgent(chatID) {
-		channel = "agent"
-	}
 	return channel + "\x00" + chatID
 }
 
+func parseSessionRouteKey(routeKey string) (channel, chatID string, ok bool) {
+	channel, chatID, ok = strings.Cut(routeKey, "\x00")
+	return channel, chatID, ok && channel != "" && chatID != ""
+}
+
 type eventStream struct {
-	seq   atomic.Uint64
-	mu    sync.Mutex
-	buf   []protocol.WSMessage // ring buffer of seq-stamped events
-	head  int
-	tail  int
-	count int
+	seq     atomic.Uint64
+	mu      sync.Mutex
+	buf     []protocol.WSMessage // ring buffer of seq-stamped events
+	head    int
+	tail    int
+	count   int
+	barrier *protocol.WSMessage
+	// evictedThrough is the highest sequence removed because the bounded ring
+	// was full. A resume cursor below this boundary requires an authoritative
+	// history resync.
+	evictedThrough uint64
 }
 
 func newEventStream() *eventStream {
@@ -59,6 +66,15 @@ func (es *eventStream) lastSeq() uint64 {
 func (es *eventStream) push(msg protocol.WSMessage) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
+	if isSSEReplayBarrier(msg) {
+		msgCopy := msg
+		es.barrier = &msgCopy
+		es.head = 0
+		es.tail = 0
+		es.count = 0
+		es.evictedThrough = 0
+		return
+	}
 	if !isStatefulSSEEvent(msg) {
 		key := statelessSlotKey(&msg)
 		for i := es.count - 1; i >= 0; i-- {
@@ -75,6 +91,9 @@ func (es *eventStream) push(msg protocol.WSMessage) {
 		}
 	}
 	if es.count == eventStreamSize {
+		if dropped := es.buf[es.head].Seq; dropped > es.evictedThrough {
+			es.evictedThrough = dropped
+		}
 		es.head = (es.head + 1) % eventStreamSize
 		es.count--
 	}
@@ -146,23 +165,36 @@ func (es *eventStream) clear() {
 	es.head = 0
 	es.tail = 0
 	es.count = 0
+	es.barrier = nil
+	es.evictedThrough = 0
 }
 
-// eventsAfter returns all buffered events with seq > fromSeq, in order.
-func (es *eventStream) eventsAfter(fromSeq uint64) []protocol.WSMessage {
+// replayAfter returns the retained suffix and the highest missing sequence.
+// Missing stateless snapshots removed by replacement are not treated as
+// overflow; only capacity eviction advances the resync boundary.
+func (es *eventStream) replayAfter(fromSeq uint64) ([]protocol.WSMessage, uint64) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	if es.count == 0 {
-		return nil
+	if es.count == 0 && (es.barrier == nil || es.barrier.Seq <= fromSeq) {
+		if fromSeq < es.evictedThrough {
+			return nil, es.evictedThrough
+		}
+		return nil, 0
 	}
-	var result []protocol.WSMessage
+	result := make([]protocol.WSMessage, 0, es.count+1)
+	if es.barrier != nil && es.barrier.Seq > fromSeq {
+		result = append(result, *es.barrier)
+	}
 	for i := 0; i < es.count; i++ {
 		idx := (es.head + i) % eventStreamSize
 		if es.buf[idx].Seq > fromSeq {
 			result = append(result, es.buf[idx])
 		}
 	}
-	return result
+	if fromSeq < es.evictedThrough {
+		return result, es.evictedThrough
+	}
+	return result, 0
 }
 
 // getEventStream returns (or creates) the eventStream for a chatID.
@@ -181,6 +213,18 @@ func (wc *WebChannel) getEventStream(chatID string) *eventStream {
 		wc.evtBuf[chatID] = es
 	}
 	return es
+}
+
+// clearReplayStream drops buffered events while preserving the route's
+// monotonic sequence. The Hub calls this with seqMu held immediately before it
+// sequences a history_rewound event.
+func (wc *WebChannel) clearReplayStream(routeKey string) {
+	wc.evtBufMu.Lock()
+	es := wc.evtBuf[routeKey]
+	wc.evtBufMu.Unlock()
+	if es != nil {
+		es.clear()
+	}
 }
 
 // clearSessionTransportState drops replay and request-dedup state after a

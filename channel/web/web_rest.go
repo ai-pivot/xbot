@@ -241,8 +241,10 @@ var nonAdminRESTRPCMethods = map[string]struct{}{
 	"get_daily_token_usage":              {},
 	"get_agent_session_dump":             {},
 	"get_agent_session_dump_by_full_key": {},
+	"continue_interactive_session":       {},
 	"get_session_messages":               {},
 	"get_active_progress":                {},
+	"get_pending_ask_user":               {},
 	"kill_bg_task":                       {},
 	"plugin_widgets":                     {},
 	"genui_action":                       {},
@@ -285,7 +287,7 @@ func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, me
 			return http.StatusForbidden, fmt.Errorf("access denied")
 		}
 	}
-	if method == "get_active_progress" {
+	if method == "get_active_progress" || method == "get_pending_ask_user" {
 		var request sessionBody
 		if err := json.Unmarshal(params, &request); err != nil {
 			return http.StatusBadRequest, fmt.Errorf("invalid params: %w", err)

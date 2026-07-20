@@ -87,20 +87,6 @@ func TestKillBackgroundTaskRejectsForeignRootSession(t *testing.T) {
 	}
 }
 
-func TestOwnHistoryOrAdminResolvesNestedAgentParent(t *testing.T) {
-	ctx := WithRPCCtxResolved(context.Background(), "auth", "root-chat", 1, "user")
-	h := &RPCContext{}
-	if !h.ownHistoryOrAdmin(ctx, "agent", "cli:root-chat/reviewer") {
-		t.Fatal("direct owned agent key rejected")
-	}
-	if !h.ownHistoryOrAdmin(ctx, "agent", "agent:cli:root-chat/reviewer/fixer") {
-		t.Fatal("nested owned agent key rejected")
-	}
-	if h.ownHistoryOrAdmin(ctx, "agent", "agent:cli:foreign-chat/reviewer/fixer") {
-		t.Fatal("foreign nested agent key accepted")
-	}
-}
-
 func TestIsInteractiveSubAgentTenant(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1872,6 +1858,107 @@ func TestSetCWDAllowsOwnedGeneratedWebChat(t *testing.T) {
 	}
 }
 
+func TestHistoryRPCWebSelfRequiresCanonicalOwnership(t *testing.T) {
+	dir := t.TempDir()
+	ag, err := agent.New(agent.Config{
+		WorkDir:        dir,
+		DBPath:         filepath.Join(dir, "xbot.db"),
+		XbotHome:       dir,
+		SandboxMode:    "none",
+		MemoryProvider: "flat",
+	})
+	if err != nil {
+		t.Fatalf("new agent: %v", err)
+	}
+	t.Cleanup(func() { _ = ag.Close() })
+	db := ag.MultiSession().DB().Conn()
+	if _, err := db.Exec(`
+		INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at)
+		VALUES ('web', 'web-2', 99, ?)
+	`, time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id)
+		VALUES ('web', 'web-3', 'web-3', 'foreign self', 99)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO tenants (channel, chat_id, last_active_at)
+		VALUES ('agent', 'web:web-5/review:1', ?)
+	`, time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id)
+		VALUES ('web', 'web-6', 'owned-chat', 'owned', 42)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO users (id, display_name, role) VALUES (42, 'history-owner', 'user')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO user_identities (user_id, channel, channel_user_id)
+		VALUES (42, 'web', 'web-4')
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	table := BuildRPCTable(&config.Config{}, ag, nil, nil, nil)
+	foreignTenantCtx := WithRPCCtxResolved(context.Background(), "web-2", "web-2", 42, "user")
+	if _, err := table.Dispatch(foreignTenantCtx, "get_history", json.RawMessage(`{}`)); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("foreign canonical tenant accepted through self fast-path: %v", err)
+	}
+	if _, err := table.Dispatch(foreignTenantCtx, "rewind_history", json.RawMessage(`{"history_id":1}`)); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("foreign canonical tenant rewind accepted through self fast-path: %v", err)
+	}
+
+	foreignChatCtx := WithRPCCtxResolved(context.Background(), "web-3", "web-3", 42, "user")
+	if _, err := table.Dispatch(foreignChatCtx, "get_history", json.RawMessage(`{}`)); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("foreign canonical user_chats row accepted through self fast-path: %v", err)
+	}
+	var tenantCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tenants WHERE channel = 'web' AND chat_id = 'web-3'`).Scan(&tenantCount); err != nil {
+		t.Fatal(err)
+	}
+	if tenantCount != 0 {
+		t.Fatal("denied foreign user_chats row created a tenant")
+	}
+
+	missingRootCtx := WithRPCCtxResolved(context.Background(), "web-5", "web-5", 42, "user")
+	agentHistory, _ := json.Marshal(map[string]string{"channel": "agent", "chat_id": "web:web-5/review:1"})
+	if _, err := table.Dispatch(missingRootCtx, "get_history", agentHistory); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("agent history with missing root session should be denied: %v", err)
+	}
+
+	ownedCtx := WithRPCCtxResolved(context.Background(), "web-6", "web-6", 42, "user")
+	ownedHistory, _ := json.Marshal(map[string]string{"channel": "web", "chat_id": "owned-chat"})
+	if _, err := table.Dispatch(ownedCtx, "get_history", ownedHistory); err != nil {
+		t.Fatalf("canonical-owned generated chat denied: %v", err)
+	}
+	legacyRewind := json.RawMessage(`{"channel":"web","chat_id":"owned-chat","history_id":1,"cutoff_ms":123}`)
+	if _, err := table.Dispatch(ownedCtx, "rewind_history", legacyRewind); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("rewind_history accepted legacy cutoff_ms: %v", err)
+	}
+
+	newCtx := WithRPCCtxResolved(context.Background(), "web-4", "web-4", 42, "user")
+	if _, err := table.Dispatch(newCtx, "get_history", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("missing default self chat was not created: %v", err)
+	}
+	if _, err := table.Dispatch(newCtx, "get_history", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("new default self chat was not reusable: %v", err)
+	}
+	var defaultOwner int64
+	if err := db.QueryRow(`SELECT owner_user_id FROM tenants WHERE channel = 'web' AND chat_id = 'web-4'`).Scan(&defaultOwner); err != nil {
+		t.Fatal(err)
+	}
+	if defaultOwner != 42 {
+		t.Fatalf("new default self owner=%d, want 42", defaultOwner)
+	}
+}
+
 func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 	dir := t.TempDir()
 	ag, err := agent.New(agent.Config{
@@ -1889,9 +1976,10 @@ func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 	for _, chat := range []struct {
 		senderID string
 		chatID   string
+		owner    int64
 	}{
-		{senderID: "web-2", chatID: "owned-chat"},
-		{senderID: "web-3", chatID: "foreign-chat"},
+		{senderID: "web-2", chatID: "owned-chat", owner: 42},
+		{senderID: "web-3", chatID: "foreign-chat", owner: 99},
 	} {
 		if _, err := ag.MultiSession().DB().Conn().Exec(
 			"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
@@ -1900,8 +1988,8 @@ func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := ag.MultiSession().DB().Conn().Exec(
-			"INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)",
-			"agent", "web:"+chat.chatID+"/review:1", time.Now().Format(time.RFC3339),
+			"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
+			"agent", "web:"+chat.chatID+"/review:1", chat.owner, time.Now().Format(time.RFC3339),
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -1923,6 +2011,23 @@ func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, tenant := range []struct {
+		chatID string
+		owner  int64
+	}{
+		{chatID: "agent:web:owned-chat/review:1/fix:2", owner: 42},
+		{chatID: "agent:web:foreign-chat/review:1/fix:2", owner: 99},
+		{chatID: "web:owned-chat/foreign-child:1", owner: 99},
+		{chatID: "web:owned-chat/foreign-parent:1", owner: 99},
+		{chatID: "agent:web:owned-chat/foreign-parent:1/forged-child:2", owner: 42},
+	} {
+		if _, err := ag.MultiSession().DB().Conn().Exec(
+			"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
+			"agent", tenant.chatID, tenant.owner, time.Now().Format(time.RFC3339),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	table := BuildRPCTable(&config.Config{}, ag, nil, nil, nil)
 	ctx := WithRPCCtxResolved(context.Background(), "web-2", "web-2", 42, "user")
@@ -1935,6 +2040,39 @@ func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 	foreign, _ := json.Marshal(map[string]string{"channel": "agent", "chat_id": foreignChatID})
 	if _, err := table.Dispatch(ctx, "get_active_progress", foreign); err == nil {
 		t.Fatal("foreign agent progress should be denied")
+	}
+	if _, err := table.Dispatch(ctx, "get_history", owned); err != nil {
+		t.Fatalf("owned agent history: %v", err)
+	}
+	if _, err := table.Dispatch(ctx, "get_history", foreign); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("foreign agent history should be denied, got %v", err)
+	}
+	foreignRewind, _ := json.Marshal(map[string]any{"channel": "agent", "chat_id": foreignChatID, "history_id": int64(1)})
+	if _, err := table.Dispatch(ctx, "rewind_history", foreignRewind); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("foreign agent rewind should be denied, got %v", err)
+	}
+	for _, chatID := range []string{
+		"web:owned-chat/foreign-child:1",
+		"agent:web:owned-chat/foreign-parent:1/forged-child:2",
+	} {
+		params, _ := json.Marshal(map[string]string{"channel": "agent", "chat_id": chatID})
+		if _, err := table.Dispatch(ctx, "get_history", params); err == nil || !strings.Contains(err.Error(), "access denied") {
+			t.Fatalf("forged Agent ownership chain %q accepted: %v", chatID, err)
+		}
+	}
+	ownedContinuation, _ := json.Marshal(map[string]string{
+		"full_key": "agent:web:owned-chat/review:1/fix:2",
+		"content":  "continue",
+	})
+	if _, err := table.Dispatch(ctx, agent.MethodContinueInteractiveSession, ownedContinuation); err == nil || !strings.Contains(err.Error(), "no active interactive session") {
+		t.Fatalf("owned inactive agent continuation should fail explicitly, got %v", err)
+	}
+	foreignContinuation, _ := json.Marshal(map[string]string{
+		"full_key": "agent:web:foreign-chat/review:1/fix:2",
+		"content":  "continue",
+	})
+	if _, err := table.Dispatch(ctx, agent.MethodContinueInteractiveSession, foreignContinuation); err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("foreign nested agent continuation should be denied, got %v", err)
 	}
 
 	ownedDump, _ := json.Marshal(map[string]string{"full_key": ownedChatID})
@@ -2004,10 +2142,10 @@ func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 		{method: "list_interactive_sessions", params: map[string]any{}},
 		{method: "inspect_interactive_session", params: map[string]any{"role": "review"}},
 		{method: "get_history", params: map[string]any{}},
+		{method: "rewind_history", params: map[string]any{"history_id": int64(1)}},
 		{method: "delete_chat", params: map[string]any{}},
 		{method: "rename_chat", params: map[string]any{"new_name": "forbidden"}},
 		{method: "get_token_state", params: map[string]any{}},
-		{method: "trim_history", params: map[string]any{"cutoff": int64(0)}},
 		{method: "is_processing", params: map[string]any{}},
 		{method: "get_active_progress", params: map[string]any{}},
 		{method: "get_pending_ask_user", params: map[string]any{}},
@@ -2024,6 +2162,9 @@ func TestAgentRPCsCheckGeneratedWebChatOwner(t *testing.T) {
 				t.Fatalf("foreign CLI self-ID collision should be denied, got %v", err)
 			}
 		})
+	}
+	if _, err := table.Dispatch(ctx, "trim_history", json.RawMessage(`{}`)); err == nil || !strings.Contains(err.Error(), "unknown RPC method") {
+		t.Fatalf("legacy trim_history should not be registered, got %v", err)
 	}
 
 	ownedCLIChild, _ := json.Marshal(map[string]string{"full_key": "cli:owned-cli/review:1"})

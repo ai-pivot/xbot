@@ -311,8 +311,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			Channel:        sel.Channel,
 		}, nil
 	}
-	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, historyID int64, cutoff time.Time) (web.RewindHistoryResult, error) {
-		return rewindWebHistory(ag, sel.Channel, sel.ChatID, historyID, cutoff)
+	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, historyID int64) (web.RewindHistoryResult, error) {
+		return rewindWebHistory(ag, sel.Channel, sel.ChatID, historyID)
 	}
 	callbacks.GetCWD = func(senderID string, sel web.SessionSelector) (string, error) {
 		return webSessionCWD(ag, sel.Channel, sel.ChatID), nil
@@ -618,12 +618,12 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		applyWebRunningStatuses(ag, subagents)
 		return buildSessionTree(mains, subagents), nil
 	}
-	callbacks.ChatCreate = func(senderID, label string) (string, error) {
+	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64) (string, error) {
 		if webDB == nil {
 			return "", fmt.Errorf("database not available")
 		}
 		cs := sqlite.NewChatService(webDB)
-		return cs.CreateChat("web", senderID, label)
+		return cs.CreateChatOwned("web", senderID, label, canonicalUserID)
 	}
 	callbacks.ChatDelete = func(senderID, channel, chatID string) error {
 		if webDB == nil {
@@ -720,11 +720,11 @@ func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
 	return dir
 }
 
-func rewindWebHistory(ag *agent.Agent, channelName, chatID string, historyID int64, cutoff time.Time) (web.RewindHistoryResult, error) {
+func rewindWebHistory(ag *agent.Agent, channelName, chatID string, historyID int64) (web.RewindHistoryResult, error) {
 	if ag == nil || ag.MultiSession() == nil {
 		return web.RewindHistoryResult{}, fmt.Errorf("multi-session not available")
 	}
-	result, err := ag.RewindHistory(channelName, chatID, historyID, cutoff)
+	result, err := ag.RewindHistory(channelName, chatID, historyID)
 	if err != nil {
 		return web.RewindHistoryResult{}, err
 	}

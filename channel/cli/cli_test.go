@@ -5,6 +5,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -1319,6 +1320,153 @@ func TestCLIModelSendMessage(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Error("Message not received within timeout")
+	}
+}
+
+func TestCLIModelAgentSendUsesCanonicalContinuation(t *testing.T) {
+	model := newCLIModel()
+	model.handleResize(80, 24)
+	model.channelName = "agent"
+	model.chatID = "agent:cli:/repo/main/review:1/fix:2"
+	var gotKey, gotContent string
+	model.channel = &CLIChannel{config: &CLIChannelConfig{
+		ContinueAgentFn: func(fullKey, content string) error {
+			gotKey, gotContent = fullKey, content
+			return nil
+		},
+	}}
+	model.sendInboundFn = func(channel.InboundMsg) bool {
+		t.Fatal("Agent continuation must not use generic inbound routing")
+		return false
+	}
+
+	cmd := model.sendMessage("continue here")
+	if cmd == nil {
+		t.Fatal("Agent continuation must run asynchronously")
+	}
+	if gotKey != "" || gotContent != "" {
+		t.Fatal("continuation RPC ran synchronously in BubbleTea Update path")
+	}
+	msg := cmd()
+
+	if gotKey != model.chatID || gotContent != "continue here" {
+		t.Fatalf("continuation = (%q, %q)", gotKey, gotContent)
+	}
+	if !model.typing || model.inputReady {
+		t.Fatalf("turn state typing=%v inputReady=%v", model.typing, model.inputReady)
+	}
+	if accepted, ok := msg.(cliAgentContinueAcceptedMsg); !ok || accepted.err != nil {
+		t.Fatalf("continuation result = %#v", msg)
+	}
+}
+
+func TestCLIModelQueuedAgentContinuationSchedulesCommand(t *testing.T) {
+	model := newCLIModel()
+	model.handleResize(80, 24)
+	model.ready = true
+	model.splashState.done = true
+	model.channelName = "agent"
+	model.chatID = "cli:/repo/main/review:1"
+	model.cachedModelName = "test-model"
+	model.replyProcessed = true
+	model.needFlushQueue = true
+	model.messageQueue = []queuedMsg{{chatID: model.chatID, content: "queued continuation"}}
+
+	called := false
+	model.channel = &CLIChannel{config: &CLIChannelConfig{
+		ContinueAgentFn: func(fullKey, content string) error {
+			called = true
+			if fullKey != model.chatID || content != "queued continuation" {
+				t.Fatalf("continuation = (%q, %q)", fullKey, content)
+			}
+			return nil
+		},
+	}}
+
+	cmds := model.handleTickMsg()
+	if called {
+		t.Fatal("queue flush ran continuation synchronously")
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("queue flush commands = %d, want 1", len(cmds))
+	}
+	msg := cmds[0]()
+	if !called {
+		t.Fatal("scheduled continuation command did not run")
+	}
+	if accepted, ok := msg.(cliAgentContinueAcceptedMsg); !ok || accepted.err != nil {
+		t.Fatalf("continuation result = %#v", msg)
+	}
+}
+
+func TestCLIModelAgentContinuationAcceptedWaitsForPhaseDone(t *testing.T) {
+	model := newCLIModel()
+	model.handleResize(80, 24)
+	model.channelName = "agent"
+	model.chatID = "cli:/repo/main/review:1"
+	model.cachedModelName = "test-model"
+	reloads := 0
+	model.channel = &CLIChannel{config: &CLIChannelConfig{
+		ContinueAgentFn: func(string, string) error { return nil },
+		DynamicHistoryLoader: func(string, string) ([]channel.HistoryMessage, error) {
+			reloads++
+			return nil, nil
+		},
+	}}
+
+	acceptCmd := model.sendMessage("continue asynchronously")
+	if acceptCmd == nil {
+		t.Fatal("Agent continuation must return an acceptance command")
+	}
+	updated, followup := model.Update(acceptCmd())
+	model = updated.(*cliModel)
+	if followup != nil {
+		t.Fatal("accepted continuation scheduled a premature history reload")
+	}
+	if reloads != 0 || !model.typing {
+		t.Fatalf("accepted state reloads=%d typing=%v", reloads, model.typing)
+	}
+
+	model.applyProgressSnapshot(&protocol.ProgressEvent{
+		Phase:     "done",
+		Iteration: 1,
+		Content:   "durable final reply",
+	})
+	if reloads != 0 || model.typing {
+		t.Fatalf("PhaseDone state reloads=%d typing=%v", reloads, model.typing)
+	}
+	found := false
+	for _, message := range model.messages {
+		if message.role == "assistant" && !message.isPartial && message.content == "durable final reply" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("PhaseDone did not publish final reply: %+v", model.messages)
+	}
+}
+
+func TestCLIModelAgentSendFailsWithoutActiveContinuation(t *testing.T) {
+	model := newCLIModel()
+	model.handleResize(80, 24)
+	model.channelName = "agent"
+	model.chatID = "cli:/repo/main/review:1"
+	model.cachedModelName = "test-model"
+	model.channel = &CLIChannel{config: &CLIChannelConfig{
+		ContinueAgentFn: func(string, string) error { return fmt.Errorf("no active interactive session") },
+	}}
+
+	cmd := model.sendMessage("continue here")
+	if cmd == nil {
+		t.Fatal("Agent continuation must return a command")
+	}
+	result := cmd()
+	updated, _ := model.Update(result)
+	model = updated.(*cliModel)
+
+	if model.typing || len(model.messages) != 1 || !strings.Contains(model.messages[0].content, "no active interactive session") {
+		t.Fatalf("failed continuation state typing=%v messages=%+v", model.typing, model.messages)
 	}
 }
 

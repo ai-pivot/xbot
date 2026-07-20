@@ -17,6 +17,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from 'lucide-react'
 
+import { MarkdownRenderer } from './MarkdownRenderer'
 import { MessageItem } from './MessageItem'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
@@ -51,17 +52,23 @@ interface MessageListProps {
 const ESTIMATE = 120
 const EDGE_EPSILON = 2
 
-export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
-  let idx = -1
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i]
-    if (isCompactMarker(row)) idx = i
-  }
-  return idx
+export function visibleHistoryRows(messages: ChatMessage[]): ChatMessage[] {
+  return messages.filter((message) => (
+    (!message.recordType || message.recordType === 'message' || message.recordType === 'compress') &&
+    !isEmptyAssistantShell(message)
+  ))
 }
 
-export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boolean {
-  return row.role === 'user' && row.content.trimStart().startsWith('[Compacted context]')
+export function appendLiveMessage(messages: ChatMessage[], liveMessage: ChatMessage | null): ChatMessage[] {
+  return liveMessage ? [...messages, liveMessage] : messages
+}
+
+function isEmptyAssistantShell(message: ChatMessage): boolean {
+  return message.role === 'assistant' &&
+    message.content.trim() === '' &&
+    (message.reasoningContent?.trim() ?? '') === '' &&
+    (message.toolCalls?.length ?? 0) === 0 &&
+    message.iterations.length === 0
 }
 
 export function MessageList({
@@ -98,42 +105,21 @@ export function MessageList({
 
   const { t } = useI18n()
 
-  // Combined row list: committed messages + optional live streaming row.
-  // Dedup: if liveMessage content matches the last committed assistant message,
-  // skip adding liveMessage (prevents one-frame overlap during finalize).
-  const { visibleMessages, compressionSources } = useMemo(() => {
-    const sources = new Map<number, ChatMessage[]>()
-    const visible: ChatMessage[] = []
-    for (const message of messages) {
-      if (message.compactedBy) {
-        const group = sources.get(message.compactedBy) ?? []
-        group.push(message)
-        sources.set(message.compactedBy, group)
-        continue
-      }
-      if (message.recordType && message.recordType !== 'message' && message.recordType !== 'compress') continue
-      visible.push(message)
-    }
-    return { visibleMessages: visible, compressionSources: sources }
-  }, [messages])
+  // Combined row list: committed messages + optional live streaming row. Equal
+  // content is never deduped because each append-only occurrence is meaningful.
+  const visibleMessages = useMemo(() => visibleHistoryRows(messages), [messages])
 
-  const rows = useMemo<ChatMessage[]>(() => {
-    if (!liveMessage) return visibleMessages
-    const last = visibleMessages[visibleMessages.length - 1]
-    if (last && last.role === 'assistant' && last.content && liveMessage.content &&
-        last.content === liveMessage.content) {
-      return visibleMessages
-    }
-    return [...visibleMessages, liveMessage]
-  }, [visibleMessages, liveMessage])
+  const rows = useMemo<ChatMessage[]>(
+    () => appendLiveMessage(visibleMessages, liveMessage),
+    [visibleMessages, liveMessage],
+  )
   const liveId = liveMessage?.id ?? null
-  const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
   // User message indices for navigation
   const userMessageIndices = useMemo(
-    () => rows.map((r, i) => (r.role === 'user' ? i : -1)).filter((i) => i >= 0),
-    [rows],
+    () => visibleMessages.map((r, i) => (r.role === 'user' ? i : -1)).filter((i) => i >= 0),
+    [visibleMessages],
   )
 
   // TanStack Virtual
@@ -350,7 +336,7 @@ export function MessageList({
               {virtualizer.getVirtualItems().map((item) => {
                 const row = rows[item.index]
                 if (!row) return null
-                const canRewind = canRewindMessage(row, item.index, compactBoundaryIndex)
+                const canRewind = canRewindMessage(row)
                 const isEditing = editingMessageId === row.id
                 const editDisabled = editingMessageId !== null && editingMessageId !== row.id
                 return (
@@ -367,17 +353,21 @@ export function MessageList({
                     }}
                     className="py-1.5"
                   >
-                    <MessageItem
-                      message={row}
-                      liveProgress={row.id === liveId ? liveProgress : null}
-                      collapseLevel={collapseLevel}
-                      mergeTools={mergeTools}
-                      onRewind={canRewind && onRewind ? (editedContent: string) => onRewind(editedContent, row) : undefined}
-                      isEditing={isEditing}
-                      onStartEdit={canRewind && onStartEdit ? () => onStartEdit(row.id) : undefined}
-                      onEndEdit={onEndEdit}
-                      editDisabled={editDisabled}
-                    />
+                    {row.recordType === 'compress' ? (
+                      <CompressionBlock marker={row} />
+                    ) : (
+                      <MessageItem
+                        message={row}
+                        liveProgress={row.id === liveId ? liveProgress : null}
+                        collapseLevel={collapseLevel}
+                        mergeTools={mergeTools}
+                        onRewind={canRewind && onRewind ? (editedContent: string) => onRewind(editedContent, row) : undefined}
+                        isEditing={isEditing}
+                        onStartEdit={canRewind && onStartEdit ? () => onStartEdit(row.id) : undefined}
+                        onEndEdit={onEndEdit}
+                        editDisabled={editDisabled}
+                      />
+                    )}
                   </div>
                 )
               })}
@@ -467,15 +457,9 @@ function NavButton({
   )
 }
 
-export function canRewindMessage(
-  row: ChatMessage,
-  _index: number,
-  _compactBoundaryIndex: number,
-): boolean {
-  return row.role === 'user' && !row.displayOnly && row.recordType !== 'compress' &&
-    !!row.timestamp &&
-    row.persisted === true &&
-    !isCompactMarker(row)
+export function canRewindMessage(row: ChatMessage): boolean {
+  return row.role === 'user' && !row.displayOnly && row.recordType === 'message' &&
+    typeof row.historyID === 'number' && row.historyID > 0 && row.persisted === true
 }
 
 function isAtBottom(el: HTMLDivElement): boolean {
@@ -484,66 +468,27 @@ function isAtBottom(el: HTMLDivElement): boolean {
 
 export function CompressionBlock({
   marker,
-  messages,
-  collapseLevel,
-  onRewind,
 }: {
   marker: ChatMessage
-  messages: ChatMessage[]
-  collapseLevel: 'all' | 'minimal' | 'none'
-  onRewind?: (message: ChatMessage) => void
 }) {
+  const { t } = useI18n()
+  const sourceCount = marker.compression?.sourceHistoryIDs?.length ?? 0
+  const summary = compressionSummary(marker.content)
+  const title = sourceCount > 0
+    ? t('agent.compactedContextCount', { count: sourceCount })
+    : t('agent.compactedContext')
   return (
-    <details className="border-l-2 border-border pl-3 text-sm text-text-secondary">
+    <details className="border-l-2 border-border bg-bg-secondary/40 px-3 text-sm text-text-secondary">
       <summary className="cursor-pointer py-2 font-medium text-text-secondary">
-        Compacted context · {messages.length} messages
+        {title}
       </summary>
-      <div className="space-y-3 pb-2">
-        {messages.map((message) => (
-          <MessageItem
-            key={message.id}
-            message={message}
-            liveProgress={null}
-            collapseLevel={collapseLevel}
-            onRewind={canRewindMessage(message, 0, -1) ? onRewind : undefined}
-          />
-        ))}
+      <div className="border-t border-border/50 py-3 text-text-muted">
+        <MarkdownRenderer content={summary || t('agent.compressionSummaryUnavailable')} />
       </div>
-      {messages.length === 0 && <div className="pb-2 text-text-muted">{marker.content}</div>}
     </details>
   )
 }
 
-function scrollToBottom(el: HTMLDivElement): void {
-  el.scrollTop = el.scrollHeight
-}
-
-function isNearBottom(el: HTMLDivElement): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD
-}
-
-function scheduleScrollToBottom(
-  el: HTMLDivElement,
-  scrollVirtualizer?: () => void,
-  shouldRun?: () => boolean,
-): () => void {
-  let cancelled = false
-  const run = () => {
-    if (cancelled) return
-    if (shouldRun && !shouldRun()) return
-    scrollVirtualizer?.()
-    scrollToBottom(el)
-  }
-  run()
-  // RAF for post-measurement settle, plus short timeouts for async
-  // rendering (syntax highlighting, image loading) that completes after RAF.
-  const raf = requestAnimationFrame(run)
-  const t1 = window.setTimeout(run, 150)
-  const t2 = window.setTimeout(run, 400)
-  return () => {
-    cancelled = true
-    cancelAnimationFrame(raf)
-    clearTimeout(t1)
-    clearTimeout(t2)
-  }
+function compressionSummary(content: string): string {
+  return content.replace(/^\s*\[Compacted context\]\s*/i, '').trim()
 }

@@ -262,10 +262,98 @@ type bgSessionState struct {
 	drainedThisRun   []tools.BgNotification
 }
 
+// sessionOperationGate serializes a chat turn with destructive session
+// operations such as rewind. The channel form supports context-aware waiting
+// for turns and non-blocking acquisition for API requests.
+type sessionOperationGate struct {
+	token chan struct{}
+	refs  int // guarded by Agent.sessionOperationGatesMu
+}
+
+func newSessionOperationGate() *sessionOperationGate {
+	return &sessionOperationGate{token: make(chan struct{}, 1)}
+}
+
+type sessionOperationLease struct {
+	owner    *Agent
+	key      string
+	gate     *sessionOperationGate
+	released atomic.Bool
+}
+
+func (l *sessionOperationLease) lock(ctx context.Context) bool {
+	if l == nil || l.released.Load() {
+		return false
+	}
+	select {
+	case l.gate.token <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		l.release()
+		return false
+	}
+}
+
+func (l *sessionOperationLease) tryLock() bool {
+	if l == nil || l.released.Load() {
+		return false
+	}
+	select {
+	case l.gate.token <- struct{}{}:
+		return true
+	default:
+		l.release()
+		return false
+	}
+}
+
+func (l *sessionOperationLease) unlock() {
+	if l == nil || l.released.Load() {
+		return
+	}
+	<-l.gate.token
+	l.release()
+}
+
+func (l *sessionOperationLease) release() {
+	if l == nil || !l.released.CompareAndSwap(false, true) {
+		return
+	}
+	l.owner.releaseSessionOperationGate(l.key, l.gate)
+}
+
 const bgNotificationMetadataKey = "xbot_internal_bg_notification"
 
-// clearDrainedThisRun discards tracked notifications after a successful/error
-// turn completion. Called by chatProcessLoop before drainAndProcessNotifications.
+// acknowledgeDrainedThisRun removes notifications only after their synthetic
+// tool pairs have been durably persisted.
+func (ss *bgSessionState) acknowledgeDrainedThisRun(count int) {
+	if count <= 0 {
+		return
+	}
+	ss.drainedThisRunMu.Lock()
+	defer ss.drainedThisRunMu.Unlock()
+	if count >= len(ss.drainedThisRun) {
+		ss.drainedThisRun = nil
+		return
+	}
+	ss.drainedThisRun = append([]tools.BgNotification(nil), ss.drainedThisRun[count:]...)
+}
+
+func (ss *bgSessionState) snapshotDrainedThisRun() []tools.BgNotification {
+	ss.drainedThisRunMu.Lock()
+	defer ss.drainedThisRunMu.Unlock()
+	return append([]tools.BgNotification(nil), ss.drainedThisRun...)
+}
+
+func (ss *bgSessionState) takeDrainedThisRun() []tools.BgNotification {
+	ss.drainedThisRunMu.Lock()
+	defer ss.drainedThisRunMu.Unlock()
+	drained := ss.drainedThisRun
+	ss.drainedThisRun = nil
+	return drained
+}
+
+// clearDrainedThisRun discards any stale tracking after a successful turn.
 func (ss *bgSessionState) clearDrainedThisRun() {
 	ss.drainedThisRunMu.Lock()
 	ss.drainedThisRun = nil
@@ -338,6 +426,12 @@ type Agent struct {
 	// key: "channel:chatID" -> chan struct{} (buffered, cap=1)
 	cancelStateMu sync.Mutex
 	chatCancelCh  sync.Map
+
+	// sessionOperationGates serializes Run/command turns with history rewind.
+	// Leases are reference counted under the map mutex so idle entries can be
+	// removed without an ABA window that creates two gates for one session.
+	sessionOperationGatesMu sync.Mutex
+	sessionOperationGates   map[string]*sessionOperationGate
 
 	// pendingCancel: 当 /cancel 到达时 cancelCh 尚未注册（消息还在排队或等信号量），
 	// 先记录 pending，chatProcessLoop 注册 cancelCh 后立即消费。
@@ -757,20 +851,64 @@ func (a *Agent) RewindCheckpoint(channel, chatID string, turnIdx int) (*protocol
 	return &result, err
 }
 
+func (a *Agent) sessionOperationGate(channel, chatID string) *sessionOperationLease {
+	key := qualifyChatID(channel, chatID)
+	a.sessionOperationGatesMu.Lock()
+	if a.sessionOperationGates == nil {
+		a.sessionOperationGates = make(map[string]*sessionOperationGate)
+	}
+	gate := a.sessionOperationGates[key]
+	if gate == nil {
+		gate = newSessionOperationGate()
+		a.sessionOperationGates[key] = gate
+	}
+	gate.refs++
+	a.sessionOperationGatesMu.Unlock()
+	return &sessionOperationLease{owner: a, key: key, gate: gate}
+}
+
+func (a *Agent) releaseSessionOperationGate(key string, gate *sessionOperationGate) {
+	a.sessionOperationGatesMu.Lock()
+	defer a.sessionOperationGatesMu.Unlock()
+	if a.sessionOperationGates[key] != gate || gate.refs <= 0 {
+		return
+	}
+	gate.refs--
+	if gate.refs == 0 {
+		delete(a.sessionOperationGates, key)
+	}
+}
+
 // RewindHistory commits the DB truncate first, then best-effort restores files.
 // A checkpoint error is returned in-band because history has already rewound.
-func (a *Agent) RewindHistory(channel, chatID string, historyID int64, cutoff time.Time) (protocol.HistoryRewindResult, error) {
+func (a *Agent) RewindHistory(channel, chatID string, historyID int64) (protocol.HistoryRewindResult, error) {
 	if a.multiSession == nil {
 		return protocol.HistoryRewindResult{}, fmt.Errorf("multi-session not available")
 	}
+	gate := a.sessionOperationGate(channel, chatID)
+	if !gate.tryLock() {
+		return protocol.HistoryRewindResult{}, fmt.Errorf("cannot rewind while session is processing")
+	}
+	defer gate.unlock()
+	// Interactive paths that have not yet joined the common gate still publish
+	// active cancel state. Fail closed while they are running.
 	if a.IsProcessingByChannel(channel, chatID) {
 		return protocol.HistoryRewindResult{}, fmt.Errorf("cannot rewind while session is processing")
 	}
-	target, turnIdx, err := a.multiSession.RewindHistory(channel, chatID, historyID, cutoff)
+	target, turnIdx, err := a.multiSession.RewindHistory(channel, chatID, historyID)
 	if err != nil {
 		return protocol.HistoryRewindResult{}, err
 	}
+	// The truncate is committed and the operation gate is still held, so no Run
+	// can repopulate these snapshots until the reset event has been published.
+	progressKey := qualifyChatID(channel, chatID)
+	a.lastProgressSnapshot.Delete(progressKey)
+	a.iterationHistories.Delete(progressKey)
+	a.clearStreamState(progressKey)
 	a.ClearPendingAskUser(channel, chatID)
+	if channel == "agent" {
+		a.syncInteractiveSessionAfterRewind(chatID)
+	}
 	result := protocol.HistoryRewindResult{
 		TargetHistoryID: target.HistoryID,
 		Draft:           target.Content,
@@ -780,6 +918,9 @@ func (a *Agent) RewindHistory(channel, chatID string, historyID int64, cutoff ti
 	checkpoint, checkpointErr := a.RewindCheckpoint(channel, chatID, turnIdx)
 	result.Checkpoint = checkpoint
 	result.FilesRewound, result.CheckpointError = checkpointOutcome(checkpoint, checkpointErr)
+	a.emitSessionState(protocol.SessionEvent{
+		Channel: channel, ChatID: chatID, Action: "history_rewound", TargetHistoryID: target.HistoryID,
+	})
 	return result, nil
 }
 
@@ -831,18 +972,41 @@ func (a *Agent) SetChannelRange(fn func(func(string, channel.Channel) bool)) {
 	a.channelRange = fn
 }
 
-// emitSessionState pushes a session state event to ALL registered channels
-// that implement SessionStateSender — including plugin channels.
+// emitSessionState pushes a session state event to registered channels.
 func (a *Agent) emitSessionState(ev protocol.SessionEvent) {
-	if a.channelRange == nil {
-		return
+	sharedServerHub := false
+	if a.channelFinder != nil {
+		if cliChannel, ok := a.channelFinder("cli"); ok {
+			_, sharedServerHub = cliChannel.(*web.RemoteCLIChannel)
+		}
 	}
-	a.channelRange(func(name string, ch channel.Channel) bool {
+
+	publish := func(name string, ch channel.Channel) {
+		if sharedServerHub &&
+			((ev.Channel == "cli" && name == "web") ||
+				(ev.Channel == "web" && name == "cli")) {
+			return
+		}
 		if sender, ok := ch.(channel.SessionStateSender); ok {
 			sender.SendSessionState(ev)
 		}
-		return true
-	})
+	}
+
+	if a.channelRange != nil {
+		a.channelRange(func(name string, ch channel.Channel) bool {
+			publish(name, ch)
+			return true
+		})
+		return
+	}
+	if a.channelFinder == nil {
+		return
+	}
+	for _, name := range []string{"cli", "web"} {
+		if ch, ok := a.channelFinder(name); ok {
+			publish(name, ch)
+		}
+	}
 }
 
 // renameSession renames a chat session in DB and pushes the state change.
@@ -930,7 +1094,6 @@ func (a *Agent) IsProcessing(senderID string) bool {
 // GetPendingAskUser returns the pending AskUser prompt for a chat, or nil.
 // Used by the web channel to resend ask_user on WS reconnect so refreshing
 // the page doesn't lose the prompt.
-// Searches by chatID only (chatID is globally unique across channels).
 func (a *Agent) GetPendingAskUser(ch, chatID string) *protocol.ProgressEvent {
 	var result *protocol.ProgressEvent
 	a.WithPendingAskUser(ch, chatID, func(pending *protocol.ProgressEvent) bool {
@@ -970,21 +1133,14 @@ func (a *Agent) WithPendingAskUser(ch, chatID string, fn func(*protocol.Progress
 }
 
 func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskUserEntry) {
-	key := ch + ":" + chatID
+	if ch == "" || chatID == "" {
+		return "", nil
+	}
+	key := qualifyChatID(ch, chatID)
 	if value, ok := a.waitingUserSessions.Load(key); ok {
 		return key, value.(*pendingAskUserEntry)
 	}
-	var foundKey string
-	var found *pendingAskUserEntry
-	a.waitingUserSessions.Range(func(k, v any) bool {
-		if s, ok := k.(string); ok && strings.HasSuffix(s, ":"+chatID) {
-			foundKey = s
-			found = v.(*pendingAskUserEntry)
-			return false
-		}
-		return true
-	})
-	if found == nil && a.multiSession != nil {
+	if a.multiSession != nil {
 		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
 			if replay, err := sess.Replay(); err == nil && replay.PendingAskUser != nil {
 				event := &protocol.ProgressEvent{}
@@ -994,20 +1150,23 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 					_ = json.Unmarshal([]byte(raw), &event.Questions)
 				}
 				entry := &pendingAskUserEntry{pending: event}
-				a.waitingUserSessions.Store(foundKey, entry)
-				found = entry
+				actual, _ := a.waitingUserSessions.LoadOrStore(key, entry)
+				return key, actual.(*pendingAskUserEntry)
 			}
 		}
 	}
-	return foundKey, found
+	return key, nil
 }
 
 func (a *Agent) setPendingAskUser(ch, chatID string, pending *protocol.ProgressEvent) {
+	if ch == "" || chatID == "" {
+		return
+	}
 	if pending == nil {
 		a.clearPendingAskUser(ch, chatID)
 		return
 	}
-	key := ch + ":" + chatID
+	key := qualifyChatID(ch, chatID)
 	for {
 		fresh := &pendingAskUserEntry{pending: clonePendingAskUser(pending)}
 		value, loaded := a.waitingUserSessions.LoadOrStore(key, fresh)
@@ -1029,30 +1188,15 @@ func (a *Agent) setPendingAskUser(ch, chatID string, pending *protocol.ProgressE
 
 // ClearPendingAskUser removes the pending AskUser prompt for a chat.
 // Called when the user answers or cancels.
-// Searches by chatID only (chatID is globally unique across channels).
 func (a *Agent) ClearPendingAskUser(ch, chatID string) {
 	a.clearPendingAskUser(ch, chatID)
 }
 
 func (a *Agent) clearPendingAskUser(ch, chatID string) bool {
-	// Try exact key first
-	key := ch + ":" + chatID
-	if a.clearPendingAskUserKey(key) {
-		return true
+	if ch == "" || chatID == "" {
+		return false
 	}
-	// Fallback: search by chatID suffix
-	var keysToDelete []string
-	a.waitingUserSessions.Range(func(k, v any) bool {
-		if s, ok := k.(string); ok && strings.HasSuffix(s, ":"+chatID) {
-			keysToDelete = append(keysToDelete, s)
-		}
-		return true
-	})
-	cleared := false
-	for _, k := range keysToDelete {
-		cleared = a.clearPendingAskUserKey(k) || cleared
-	}
-	return cleared
+	return a.clearPendingAskUserKey(qualifyChatID(ch, chatID))
 }
 
 func (a *Agent) clearPendingAskUserKey(key string) bool {
@@ -2555,196 +2699,208 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 	var lastSenderID string // 记录最后活跃的 senderID
 
 	for msg := range ch {
-		if ctx.Err() != nil {
-			return
-		}
+		keepRunning := func() bool {
+			if ctx.Err() != nil {
+				return false
+			}
+			opGate := a.sessionOperationGate(msg.Channel, msg.ChatID)
+			if !opGate.lock(ctx) {
+				return false
+			}
+			defer opGate.unlock()
 
-		// Mark session busy so chatWorker skips notification drain
-		ss.busy.Store(true)
+			// Mark session busy so chatWorker skips notification drain
+			ss.busy.Store(true)
 
-		// 停止上一次的 idle timer（收到新消息，重置计时）
-		if idleTimer != nil {
-			if !idleTimer.Stop() {
-				select {
-				case <-idleTimer.C:
-				default:
+			// 停止上一次的 idle timer（收到新消息，重置计时）
+			if idleTimer != nil {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
 				}
 			}
-		}
 
-		sem := a.getSemaphoreForMessage(msg)
+			sem := a.getSemaphoreForMessage(msg)
 
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			ss.busy.Store(false)
-			return
-		}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				ss.busy.Store(false)
+				return false
+			}
 
-		// 创建 per-request cancel context
-		var response *channel.OutboundMsg
-		var err error
-		cancelCh := make(chan struct{}, 1)
-		// cancelKey 仅用 channel:chatID（不含 senderID），与 /cancel 拦截处保持一致
-		cancelKey := msg.Channel + ":" + msg.ChatID
-		reqCtx, reqCancel := context.WithCancel(ctx)
-		hadPending := a.registerActiveCancelState(cancelKey, cancelCh, reqCancel)
+			// 创建 per-request cancel context
+			var response *channel.OutboundMsg
+			var err error
+			cancelCh := make(chan struct{}, 1)
+			// cancelKey 仅用 channel:chatID（不含 senderID），与 /cancel 拦截处保持一致
+			cancelKey := msg.Channel + ":" + msg.ChatID
+			reqCtx, reqCancel := context.WithCancel(ctx)
+			hadPending := a.registerActiveCancelState(cancelKey, cancelCh, reqCancel)
 
-		// Emit session busy event for instant sidebar push.
-		a.emitSessionState(protocol.SessionEvent{
-			Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
-		})
+			// Emit session busy event for instant sidebar push.
+			a.emitSessionState(protocol.SessionEvent{
+				Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
+			})
 
-		if hadPending {
-			log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
-		}
+			if hadPending {
+				log.WithField("cancel_key", cancelKey).Info("Consumed pending cancel signal")
+			}
 
-		// 监听 cancel 信号（处理 processMessage 运行期间到达的 cancel）。
-		// Loop to handle multiple cancel requests — the goroutine was previously
-		// a single select{}, which exited after the first cancel. If the user
-		// pressed Ctrl+C again (because the agent didn't appear to stop), the
-		// channel reader was gone and subsequent sends got "buffer full".
-		clipanic.Go("agent.chatProcessLoop.cancelListener", func() {
-			for {
-				select {
-				case <-cancelCh:
-					reqCancel()
-				// reqCancel is idempotent — calling it multiple times is safe.
-				// Drain any additional signals that arrived between calls.
-				case <-reqCtx.Done():
+			// 监听 cancel 信号（处理 processMessage 运行期间到达的 cancel）。
+			// Loop to handle multiple cancel requests — the goroutine was previously
+			// a single select{}, which exited after the first cancel. If the user
+			// pressed Ctrl+C again (because the agent didn't appear to stop), the
+			// channel reader was gone and subsequent sends got "buffer full".
+			clipanic.Go("agent.chatProcessLoop.cancelListener", func() {
+				for {
+					select {
+					case <-cancelCh:
+						reqCancel()
+					// reqCancel is idempotent — calling it multiple times is safe.
+					// Drain any additional signals that arrived between calls.
+					case <-reqCtx.Done():
+						return
+					}
+				}
+			})
+
+			// Execute the request, then atomically snapshot cancellation and unregister
+			// the active cancel state before another /cancel can target this chat.
+			wasCancelled := false
+			func() {
+				defer func() {
+					wasCancelled = a.finishActiveCancelState(cancelKey, reqCtx, reqCancel)
+
+					// Emit session idle event for instant sidebar push.
+					a.emitSessionState(protocol.SessionEvent{
+						Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+					})
+					key := qualifyChatID(msg.Channel, msg.ChatID)
+					a.lastProgressSnapshot.Delete(key)
+					a.iterationHistories.Delete(key)
+					<-sem // 释放槽位
+				}()
+
+				// 沙箱正在 export+import 时，拒绝该用户所有请求
+				sbUID := sandboxUserID(msg)
+				if sb := tools.GetSandbox(); sb.IsExporting(sbUID) {
+					log.WithFields(log.Fields{"request_id": msg.RequestID, "sender": msg.SenderID, "sandbox_user": sbUID}).Info("Request rejected: sandbox export in progress")
+					a.sendMessage(msg.Channel, msg.ChatID, "⏳ 沙箱正在持久化中，请稍后再试...")
 					return
 				}
-			}
-		})
 
-		// Execute the request, then atomically snapshot cancellation and unregister
-		// the active cancel state before another /cancel can target this chat.
-		wasCancelled := false
-		func() {
-			defer func() {
-				wasCancelled = a.finishActiveCancelState(cancelKey, reqCtx, reqCancel)
-
-				// Emit session idle event for instant sidebar push.
-				a.emitSessionState(protocol.SessionEvent{
-					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
-				})
-				key := qualifyChatID(msg.Channel, msg.ChatID)
-				a.lastProgressSnapshot.Delete(key)
-				a.iterationHistories.Delete(key)
-				<-sem // 释放槽位
+				response, err = a.processMessage(reqCtx, msg)
 			}()
 
-			// 沙箱正在 export+import 时，拒绝该用户所有请求
-			sbUID := sandboxUserID(msg)
-			if sb := tools.GetSandbox(); sb.IsExporting(sbUID) {
-				log.WithFields(log.Fields{"request_id": msg.RequestID, "sender": msg.SenderID, "sandbox_user": sbUID}).Info("Request rejected: sandbox export in progress")
-				a.sendMessage(msg.Channel, msg.ChatID, "⏳ 沙箱正在持久化中，请稍后再试...")
-				return
-			}
-
-			response, err = a.processMessage(reqCtx, msg)
-		}()
-
-		if wasCancelled && ctx.Err() == nil {
-			// 请求被用户 /cancel 取消（而非全局 ctx 关闭）
-			log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).Info("Request cancelled by user")
-			a.ClearPendingAskUser(msg.Channel, msg.ChatID)
-			// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
-			// Always include cancelled metadata so CLI can distinguish cancel acks
-			// from normal replies and avoid ending a subsequently-started turn.
-			cancelMeta := map[string]string{"cancelled": "true"}
-			if response != nil {
-				// Merge cancelled into existing metadata
-				if response.Metadata == nil {
-					response.Metadata = cancelMeta
+			if wasCancelled && ctx.Err() == nil {
+				// 请求被用户 /cancel 取消（而非全局 ctx 关闭）
+				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).Info("Request cancelled by user")
+				a.ClearPendingAskUser(msg.Channel, msg.ChatID)
+				// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
+				// Always include cancelled metadata so CLI can distinguish cancel acks
+				// from normal replies and avoid ending a subsequently-started turn.
+				cancelMeta := map[string]string{"cancelled": "true"}
+				if response != nil {
+					// Merge cancelled into existing metadata
+					if response.Metadata == nil {
+						response.Metadata = cancelMeta
+					} else {
+						response.Metadata["cancelled"] = "true"
+					}
+					if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
+						log.Warn("Failed to send response: ", err)
+					}
 				} else {
-					response.Metadata["cancelled"] = "true"
+					// No response generated yet (cancelled mid-tool-call) — send empty
+					// message to signal turn end so CLI can clean up typing/progress state.
+					if err := a.sendMessage(msg.Channel, msg.ChatID, "", cancelMeta); err != nil {
+						log.Warn("Failed to send cancel ack: ", err)
+					}
 				}
-				if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
-					log.Warn("Failed to send response: ", err)
-				}
-			} else {
-				// No response generated yet (cancelled mid-tool-call) — send empty
-				// message to signal turn end so CLI can clean up typing/progress state.
-				if err := a.sendMessage(msg.Channel, msg.ChatID, "", cancelMeta); err != nil {
-					log.Warn("Failed to send cancel ack: ", err)
-				}
+				// Do not post-turn drain here: handleCancelledRun records same-session
+				// pending bg notifications in the interrupted turn, without starting a
+				// fresh bg-notification turn after the cancel ack.
+				ss.busy.Store(false)
+				return true
 			}
-			// Do not post-turn drain here: handleCancelledRun records same-session
-			// pending bg notifications in the interrupted turn, without starting a
-			// fresh bg-notification turn after the cancel ack.
-			ss.busy.Store(false)
-			continue
-		}
 
-		if err != nil {
-			log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).WithError(err).Error("Error processing message")
-			// 走 sendMessage 与正常回复同一路径：可 Patch 已发出的进度条为错误内容，避免错误静默不达用户
-			content := formatErrorForUser(err)
-			if sendErr := a.sendMessage(msg.Channel, msg.ChatID, content); sendErr != nil {
-				log.Ctx(ctx).WithError(sendErr).Warn("Failed to send error via sendMessage, fallback to bus")
-				a.bus.Outbound <- bus.OutboundMessage{
-					Channel: msg.Channel,
-					ChatID:  msg.ChatID,
-					Content: content,
+			if err != nil {
+				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).WithError(err).Error("Error processing message")
+				// 走 sendMessage 与正常回复同一路径：可 Patch 已发出的进度条为错误内容，避免错误静默不达用户
+				content := formatErrorForUser(err)
+				if sendErr := a.sendMessage(msg.Channel, msg.ChatID, content); sendErr != nil {
+					log.Ctx(ctx).WithError(sendErr).Warn("Failed to send error via sendMessage, fallback to bus")
+					a.bus.Outbound <- bus.OutboundMessage{
+						Channel: msg.Channel,
+						ChatID:  msg.ChatID,
+						Content: content,
+					}
+				}
+				// Synthetic notification pairs are acknowledged only after their DB
+				// append succeeds. Put any unacknowledged items back before retrying.
+				a.requeueDrainedBgNotifications(chatKey)
+				ss.busy.Store(false)
+				a.drainAndProcessNotifications(chatKey)
+				return true
+			}
+			if response != nil {
+				if response.WaitingUser {
+					// WaitingUser response: send directly with WaitingUser flag set.
+					// Bypass sendMessage (which doesn't support WaitingUser) since it applies
+					// Patch/Edit logic incompatible with async user interaction.
+					busMsg := bus.OutboundMessage{
+						Channel:     msg.Channel,
+						ChatID:      msg.ChatID,
+						Content:     response.Content,
+						WaitingUser: true,
+						Metadata:    response.Metadata,
+					}
+					if busMsg.Metadata == nil {
+						busMsg.Metadata = make(map[string]string)
+					}
+					select {
+					case a.bus.Outbound <- busMsg:
+					default:
+						log.Ctx(ctx).Warn("Message bus outbound channel is full, dropping WaitingUser response")
+					}
+				} else if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
+					log.Ctx(ctx).WithError(err).Warn("Failed to dispatch response via sendMessage")
 				}
 			}
-			// Turn done — error response sent, safe to drain bg notifications
+
+			// 更新最后活跃的 senderID
+			lastSenderID = msg.SenderID
+
+			// 处理完成后，如果启用了 idle timeout 且用户有 docker 沙箱，设置 timer
+			// Remote sandbox 连接应保持常驻，不做 idle 清理
+			if a.sandboxIdleTimeout > 0 && lastSenderID != "" {
+				// Skip idle cleanup for remote sandbox — the runner connection should be persistent
+				if !a.isRemoteUser(lastSenderID) {
+					idleTimer = time.AfterFunc(a.sandboxIdleTimeout, func() {
+						if err := a.sandbox.CloseForUser(lastSenderID); err != nil {
+							log.WithError(err).Warnf("Idle sandbox cleanup failed for user %s", lastSenderID)
+						} else {
+							log.Infof("Idle sandbox cleaned up for user %s (timeout: %s)", lastSenderID, a.sandboxIdleTimeout)
+						}
+					})
+				}
+			}
+
+			// Turn done — response sent, safe to drain bg notifications.
+			// This is the CRITICAL ordering: all response sends happen BEFORE this point,
+			// so injectCLIUserMessage in drainAndProcessNotifications cannot race with
+			// the turn's reply on asyncCh.
 			ss.clearDrainedThisRun()
 			ss.busy.Store(false)
 			a.drainAndProcessNotifications(chatKey)
-			continue
+			return true
+		}()
+		if !keepRunning {
+			return
 		}
-		if response != nil {
-			if response.WaitingUser {
-				// WaitingUser response: send directly with WaitingUser flag set.
-				// Bypass sendMessage (which doesn't support WaitingUser) since it applies
-				// Patch/Edit logic incompatible with async user interaction.
-				busMsg := bus.OutboundMessage{
-					Channel:     msg.Channel,
-					ChatID:      msg.ChatID,
-					Content:     response.Content,
-					WaitingUser: true,
-					Metadata:    response.Metadata,
-				}
-				if busMsg.Metadata == nil {
-					busMsg.Metadata = make(map[string]string)
-				}
-				select {
-				case a.bus.Outbound <- busMsg:
-				default:
-					log.Ctx(ctx).Warn("Message bus outbound channel is full, dropping WaitingUser response")
-				}
-			} else if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to dispatch response via sendMessage")
-			}
-		}
-
-		// 更新最后活跃的 senderID
-		lastSenderID = msg.SenderID
-
-		// 处理完成后，如果启用了 idle timeout 且用户有 docker 沙箱，设置 timer
-		// Remote sandbox 连接应保持常驻，不做 idle 清理
-		if a.sandboxIdleTimeout > 0 && lastSenderID != "" {
-			// Skip idle cleanup for remote sandbox — the runner connection should be persistent
-			if !a.isRemoteUser(lastSenderID) {
-				idleTimer = time.AfterFunc(a.sandboxIdleTimeout, func() {
-					if err := a.sandbox.CloseForUser(lastSenderID); err != nil {
-						log.WithError(err).Warnf("Idle sandbox cleanup failed for user %s", lastSenderID)
-					} else {
-						log.Infof("Idle sandbox cleaned up for user %s (timeout: %s)", lastSenderID, a.sandboxIdleTimeout)
-					}
-				})
-			}
-		}
-
-		// Turn done — response sent, safe to drain bg notifications.
-		// This is the CRITICAL ordering: all response sends happen BEFORE this point,
-		// so injectCLIUserMessage in drainAndProcessNotifications cannot race with
-		// the turn's reply on asyncCh.
-		ss.clearDrainedThisRun()
-		ss.busy.Store(false)
-		a.drainAndProcessNotifications(chatKey)
 	}
 }
 
@@ -2797,8 +2953,19 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		a.sessionReplyTo.Delete(key)
 	}
 
-	// 获取或创建租户会话（senderID 通过 context 传递，不在这里传）
-	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
+	// Create the tenant with the identity already authenticated by the channel
+	// boundary. Metadata is authoritative for linked identities whose transport
+	// channel differs from their canonical identity channel.
+	tenantOwner := int64(0)
+	if msg.Channel == "web" || msg.Channel == "cli" || msg.Channel == "agent" {
+		if userCtx != nil {
+			tenantOwner = userCtx.UserID
+		}
+		if uid, _, ok := parseUserIDFromMetadata(msg.Metadata); ok {
+			tenantOwner = uid
+		}
+	}
+	tenantSession, err := a.multiSession.GetOrCreateSessionWithOwner(msg.Channel, msg.ChatID, tenantOwner)
 	if err != nil {
 		return nil, fmt.Errorf("get/create tenant session: %w", err)
 	}
@@ -2906,7 +3073,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// 运行 Agent 循环（统一 Run）
 	// Eager-save user message BEFORE Run() so incrementally persisted assistant/tool
 	// messages appear after it in the DB. GetHistory uses user messages as turn boundaries.
-	if !askUserAnswered && (msg.Metadata == nil || msg.Metadata["user_msg_eager_saved"] != "true") {
+	if !askUserAnswered {
 		userMsg := llm.NewUserMessage(msg.Content)
 		if !msg.Time.IsZero() {
 			userMsg.Timestamp = msg.Time
@@ -2945,6 +3112,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// are put back into the pending list to prevent cross-session contamination.
 	currentSessionKey := qualifyChatID(msg.Channel, msg.ChatID)
 	cfg.DrainBgNotifications = a.wireBgNotificationDrain(currentSessionKey)
+	cfg.AcknowledgeBgNotifications = a.wireBgNotificationAcknowledge(currentSessionKey)
 
 	// Emit SessionStart event (notification, non-blocking)
 	if a.hookManager != nil {
@@ -3015,38 +3183,12 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 // buildPrompt 构建完整的 LLM 消息列表（共用逻辑：processMessage 和 handlePromptQuery 都调用）。
 // 使用 Agent 持有的 pipeline 实例，通过 MessageContext.Extra 传递动态数据。
-func detachEagerSavedUser(history []llm.ChatMessage, msg bus.InboundMessage) ([]llm.ChatMessage, int64, error) {
-	if msg.Metadata == nil || msg.Metadata["user_msg_eager_saved"] != "true" {
-		return history, 0, nil
-	}
-	if len(history) == 0 || history[len(history)-1].Role != "user" || history[len(history)-1].Content != msg.Content {
-		return nil, 0, fmt.Errorf("eager-saved user message is missing from session history")
-	}
-	return history[:len(history)-1], history[len(history)-1].HistoryID, nil
-}
-
-func bindEagerSavedUser(messages []llm.ChatMessage, historyID int64) {
-	if historyID == 0 {
-		return
-	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
-			messages[i].HistoryID = historyID
-			return
-		}
-	}
-}
-
 func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) ([]llm.ChatMessage, error) {
 	userCtx := UserContextFromContext(ctx)
 
 	history, err := tenantSession.GetMessages()
 	if err != nil {
 		return nil, fmt.Errorf("replay session history: %w", err)
-	}
-	history, eagerHistoryID, err := detachEagerSavedUser(history, msg)
-	if err != nil {
-		return nil, err
 	}
 
 	// Auto worktree detection: if multiple sessions share the same git repo,
@@ -3192,9 +3334,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 	mc.SetExtra(ExtraKeySessionName, sessionName)
 
-	assembled := a.pipeline.Run(mc)
-	bindEagerSavedUser(assembled, eagerHistoryID)
-	return assembled, nil
+	return a.pipeline.Run(mc), nil
 }
 
 // summarizeRetryError 将 LLM 错误简化为用户友好的描述。
@@ -3652,6 +3792,11 @@ func (a *Agent) ProcessDirect(ctx context.Context, content string) (string, erro
 		Time:      time.Now(),
 		RequestID: log.NewRequestID(),
 	}
+	gate := a.sessionOperationGate(msg.Channel, msg.ChatID)
+	if !gate.lock(ctx) {
+		return "", ctx.Err()
+	}
+	defer gate.unlock()
 	resp, err := a.processMessage(ctx, msg)
 	if err != nil {
 		return "", err

@@ -376,7 +376,6 @@ type CLIChannelConfig struct {
 	HistoryLoader          func() ([]ch.HistoryMessage, error)                                                                                                                          // 会话恢复：加载历史消息
 	DynamicHistoryLoader   func(channelName, chatID string) ([]ch.HistoryMessage, error)                                                                                                // /su 切换用户后加载目标用户历史
 	TokenStateLoader       func() (promptTokens, completionTokens int64)                                                                                                                // 会话恢复：从 DB 加载上次 Run 的 token 计数
-	AgentSessionDumpFn     func(chatID string) ([]ch.HistoryMessage, error)                                                                                                             // agent session 切换时从 Agent 内存加载消息
 	AgentSessionLLMStateFn func(chatID string) (modelName, subscriptionID string, maxContextTokens, maxOutputTokens int64, compressRatio float64, promptTokens, completionTokens int64) // SubAgent LLM 状态（模型名、订阅ID、上下文限制、token用量）
 	GetCurrentValues       func() map[string]string                                                                                                                                     // 获取当前配置值（用于 settings panel 初始值）
 	ApplySettings          func(values map[string]string, chatID string)                                                                                                                // 应用设置变更（写 config.json + 更新运行时状态）
@@ -390,16 +389,17 @@ type CLIChannelConfig struct {
 	AgentList              func() []AgentPanelEntry                                                                                                                                     // 列出活跃 interactive agents（用于 panel 展示）
 	AgentInspect           func(roleName, instance string, tailCount int) (string, error)                                                                                               // 窥探 interactive agent 的最近活动（tail 风格）
 	AgentMessages          func(roleName, instance string) []ch.SessionChatMessage                                                                                                      // 获取 interactive agent 的对话消息
+	ContinueAgentFn        func(fullKey, content string) error                                                                                                                          // continue the active interactive Agent session by canonical full key
 	ChatCreateFn           func(channelName, senderID, label string) (string, error)                                                                                                    // 创建新 ChatRoom（返回 chatID）
 	SessionsDeleteFn       func(channelName, chatID string) error                                                                                                                       // 删除 session（本地 JSON + 服务端 DB 级联）
 	ChatRenameFn           func(channelName, chatID, newName string) error                                                                                                              // 重命名 session（DB label）
 	SessionsListRefresh    func()                                                                                                                                                       // 侧边栏刷新：session 创建/删除后立即调用，确保 sidebar 不显示过期数据
 	SessionsList           func() []SessionPanelEntry                                                                                                                                   // 列出所有 session（main + subagent）
 	GetActiveProgressFn    func(channelName, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent                                                                       // 获取目标 session 的活跃进度（增量拉取：只返回 iteration > fromIter 的历史）
+	GetPendingAskUserFn    func(channelName, chatID string) *protocol.ProgressEvent                                                                                                     // 获取目标 session 的服务端 pending AskUser
 	GetTodosFn             func(channelName, chatID string) []protocol.TodoItem                                                                                                         // 获取目标 session 的服务端 TODO 列表（session switch 覆盖本地缓存用）
 	GetTokenStateFn        func(channelName, chatID string) (promptTokens, completionTokens int64)                                                                                      // 获取目标 session 的最后 token 状态（session switch 恢复 context bar 用）
-	TrimHistoryFn          func(channelName, chatID string, cutoff time.Time) error                                                                                                     // rewind 回退时删除 DB 消息（channel+chatID 动态传入，支持多 session）
-	RewindHistoryFn        func(channelName, chatID string, historyID int64, cutoff time.Time) (protocol.HistoryRewindResult, error)                                                    // history_id-first rewind with timestamp fallback
+	RewindHistoryFn        func(channelName, chatID string, historyID int64) (protocol.HistoryRewindResult, error)                                                                      // stable history node rewind
 	ChannelConfigGetFn     func() (map[string]map[string]string, error)                                                                                                                 // 获取频道配置（用于 /channel 面板）
 	ChannelConfigSetFn     func(channel string, values map[string]string) error                                                                                                         // 保存频道配置（用于 /channel 面板）
 	CreateWebUserFn        func(username string) (password string, err error)                                                                                                           // 创建 Web 用户（admin only，返回自动生成的密码）
@@ -466,27 +466,34 @@ type AllSessionInfo struct {
 // Flushed to model fields in a single applyPending() call inside Start().
 type cliPending struct {
 	// Function callbacks
-	trimHistoryFn     func(time.Time) error
-	resetTokenStateFn func()
-	sendInboundFn     func(ch.InboundMsg) bool
-	bgTaskCountFn     func() int
-	bgTaskListFn      func() []*BgTask
-	bgTaskKillFn      func(taskID string) error
-	bgTaskCleanupFn   func()
-	pluginMgrFn       func() *plugin.PluginManager
+	sendInboundFn   func(ch.InboundMsg) bool
+	bgTaskCountFn   func() int
+	bgTaskListFn    func() []*BgTask
+	bgTaskKillFn    func(taskID string) error
+	bgTaskCleanupFn func()
+	pluginMgrFn     func() *plugin.PluginManager
 
 	// Data objects (may need special wiring beyond simple assignment)
-	checkpointState   *protocol.CheckpointState
-	widgetRegistry    *plugin.WidgetRegistry
-	remotePluginCache *remotePluginCache
-	history           []ch.HistoryMessage     // cached before model is ready
-	progress          *protocol.ProgressEvent // cached before model is ready
+	checkpointState     *protocol.CheckpointState
+	widgetRegistry      *plugin.WidgetRegistry
+	remotePluginCache   *remotePluginCache
+	history             []ch.HistoryMessage     // cached before model is ready
+	progress            *protocol.ProgressEvent // cached before model is ready
+	todos               []protocol.TodoItem
+	pendingAskUser      *protocol.ProgressEvent
+	pendingAskUserKnown bool
+	sessionRestoreSet   bool
+}
+
+type queuedCLIOutbound struct {
+	msg   ch.OutboundMsg
+	epoch uint64
 }
 
 type CLIChannel struct {
 	config  *CLIChannelConfig
-	msgChan chan ch.OutboundMsg // 接收 agent 回复的通道
-	workDir string              // 工作目录
+	msgChan chan queuedCLIOutbound // 接收 agent 回复的通道
+	workDir string                 // 工作目录
 
 	// Bubble Tea
 	program   *tea.Program
@@ -519,11 +526,19 @@ type CLIChannel struct {
 	// goroutine. This eliminates the eviction race in the old buffer-1 channel
 	// where structured "done" events could be silently lost (tool stuck as
 	// running forever).
-	progressMu     sync.Mutex
-	progressSlot   *protocol.ProgressEvent
-	progressSignal chan struct{}
-	tickCh         chan tea.Msg // dedicated tick channel (buffer 1, drop on full)
-	asyncCh        chan tea.Msg // unified async send channel (buffered)
+	progressMu      sync.Mutex
+	progressSlot    *protocol.ProgressEvent
+	progressSignal  chan struct{}
+	connStateMu     sync.Mutex
+	connStateSlot   string
+	connStateSignal chan struct{}
+	tickCh          chan tea.Msg // dedicated tick channel (buffer 1, drop on full)
+	asyncCh         chan tea.Msg // unified async send channel (buffered)
+
+	// deliveryEpoch orders destructive resets against outbound messages and
+	// coalesced progress that may still be waiting for Bubble Tea delivery.
+	deliveryMu    sync.Mutex
+	deliveryEpoch uint64
 
 	// Services (injected by Agent or main)
 	settingsSvc        SettingsService    // interface for GetSettings/SetSetting

@@ -41,6 +41,40 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 	if b.session == nil || len(messages) <= b.lastPersistedCount {
 		return nil
 	}
+	pending, indices := b.pendingMessages(messages)
+	historyIDs, err := b.session.AppendMessages(pending)
+	if err != nil {
+		log.WithError(err).Error("Failed to persist messages to session")
+		return fmt.Errorf("persist message batch: %w", err)
+	}
+	b.commitPending(messages, indices, historyIDs)
+	return nil
+}
+
+// IncrementalPersistAndAskQuestion persists the new AskUser tool exchange and
+// pending control in one transaction. The watermark and in-memory history IDs
+// advance only after the compound commit succeeds.
+func (b *PersistenceBridge) IncrementalPersistAndAskQuestion(messages []llm.ChatMessage, metadata map[string]string) error {
+	if b.session == nil {
+		return nil
+	}
+	pending, indices := b.pendingMessages(messages)
+	if len(pending) == 0 {
+		return fmt.Errorf("persist AskUser question: no pending messages")
+	}
+	historyIDs, _, err := b.session.AppendMessagesAndAskQuestion(pending, metadata)
+	if err != nil {
+		log.WithError(err).Error("Failed to persist AskUser exchange")
+		return fmt.Errorf("persist AskUser exchange: %w", err)
+	}
+	b.commitPending(messages, indices, historyIDs)
+	return nil
+}
+
+func (b *PersistenceBridge) pendingMessages(messages []llm.ChatMessage) ([]llm.ChatMessage, []int) {
+	if len(messages) <= b.lastPersistedCount {
+		return nil, nil
+	}
 	pending := make([]llm.ChatMessage, 0, len(messages)-b.lastPersistedCount)
 	indices := make([]int, 0, len(messages)-b.lastPersistedCount)
 	for idx := b.lastPersistedCount; idx < len(messages); idx++ {
@@ -58,16 +92,14 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 		pending = append(pending, persistMsg)
 		indices = append(indices, idx)
 	}
-	historyIDs, err := b.session.AppendMessages(pending)
-	if err != nil {
-		log.WithError(err).Error("Failed to persist messages to session")
-		return fmt.Errorf("persist message batch: %w", err)
-	}
+	return pending, indices
+}
+
+func (b *PersistenceBridge) commitPending(messages []llm.ChatMessage, indices []int, historyIDs []int64) {
 	for i, historyID := range historyIDs {
 		messages[indices[i]].HistoryID = historyID
 	}
 	b.lastPersistedCount = len(messages)
-	return nil
 }
 
 // RewriteAfterCompress appends a compression control record containing the new

@@ -263,9 +263,30 @@ func (m *MultiTenantSession) GetAllUserTokenUsage() ([]sqlite.UserTokenUsage, er
 // GetOrCreateSession retrieves or creates a tenant session for the given channel and chatID.
 // senderID is passed via context (letta.WithUserID) at call time, not here.
 func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*TenantSession, error) {
+	return m.getOrCreateSession(channel, chatID, 0)
+}
+
+// GetOrCreateSessionWithOwner creates or verifies a session against its
+// canonical owner before returning a cached or newly-built TenantSession.
+func (m *MultiTenantSession) GetOrCreateSessionWithOwner(channel, chatID string, canonicalUserID int64) (*TenantSession, error) {
+	return m.getOrCreateSession(channel, chatID, canonicalUserID)
+}
+
+func (m *MultiTenantSession) getOrCreateSession(channel, chatID string, canonicalUserID int64) (*TenantSession, error) {
 	// Cache key: channel:chat_id (NOT senderID)
 	// Per-user human block is handled dynamically via Recall/Memorize with senderID parameter
 	key := sessKey(channel, chatID)
+
+	// Verify ownership before the cache fast path; a cached session must not turn
+	// a same-name session collision into an authorization bypass.
+	claimedTenantID := int64(0)
+	if canonicalUserID > 0 {
+		var err error
+		claimedTenantID, err = m.tenantSvc.GetOrCreateTenantIDWithOwner(channel, chatID, canonicalUserID)
+		if err != nil {
+			return nil, fmt.Errorf("claim tenant owner: %w", err)
+		}
+	}
 
 	// Fast path: check cache with read lock
 	m.mu.RLock()
@@ -289,9 +310,13 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 	}
 
 	// Get or create tenant ID
-	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
-	if err != nil {
-		return nil, fmt.Errorf("get/create tenant: %w", err)
+	tenantID := claimedTenantID
+	if tenantID == 0 {
+		var err error
+		tenantID, err = m.tenantSvc.GetOrCreateTenantID(channel, chatID)
+		if err != nil {
+			return nil, fmt.Errorf("get/create tenant: %w", err)
+		}
 	}
 
 	// 创建会话 MCP 管理器（用户作用域由 ConfigureSessionMCP 在消息处理时注入）
@@ -879,60 +904,15 @@ func (m *MultiTenantSession) GetMemoryStats(ctx context.Context, channel, chatID
 	return stats
 }
 
-// TrimHistory deletes messages newer than or equal to the given cutoff timestamp
-// for the tenant identified by channel and chatID, and clears the cached token
-// state so maybeCompress doesn't use stale values from before the rewind.
-func (m *MultiTenantSession) TrimHistory(channel, chatID string, cutoff time.Time) error {
-	if cutoff.IsZero() {
-		return nil
-	}
-	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
-	if err != nil {
-		return fmt.Errorf("get tenant: %w", err)
-	}
-	_, err = m.sessionSvc.PurgeNewerThanOrEqual(tenantID, cutoff)
-	if err != nil {
-		return err
-	}
-	// Restore token state from the last remaining user message's context_tokens.
-	// This avoids triggering incorrect compression after rewind.
-	// Falls back to 0 if no user message remains (full rewind to empty session).
-	lastCtx, err := m.sessionSvc.GetLastUserMessageContextTokens(tenantID)
-	if err != nil {
-		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to get context tokens after trim, using 0")
-		lastCtx = 0
-	}
-	if err := m.memorySvc.SetTokenState(context.Background(), tenantID, lastCtx, 0); err != nil {
-		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to restore token state after trim")
-	}
-	return nil
-}
-
-// RewindHistory truncates a session at a stable user history node. A zero
-// historyID is accepted only for legacy timestamp callers and must resolve to
-// exactly one user message in that second.
-func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int64, cutoff time.Time) (llm.ChatMessage, int, error) {
+// RewindHistory truncates a session at a stable user history node.
+func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int64) (llm.ChatMessage, int, error) {
 	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
 	if err != nil {
 		return llm.ChatMessage{}, 0, fmt.Errorf("get tenant: %w", err)
 	}
-	if historyID == 0 {
-		historyID, err = m.sessionSvc.ResolveRewindTimestamp(tenantID, cutoff)
-		if err != nil {
-			return llm.ChatMessage{}, 0, err
-		}
-	}
 	target, turnIdx, err := m.sessionSvc.RewindToHistoryID(tenantID, historyID)
 	if err != nil {
 		return llm.ChatMessage{}, 0, err
-	}
-	lastCtx, err := m.sessionSvc.GetLastUserMessageContextTokens(tenantID)
-	if err != nil {
-		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to get context tokens after rewind, using 0")
-		lastCtx = 0
-	}
-	if err := m.memorySvc.SetTokenState(context.Background(), tenantID, lastCtx, 0); err != nil {
-		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to restore token state after rewind")
 	}
 	return target, turnIdx, nil
 }

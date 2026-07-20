@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -24,6 +25,74 @@ func newHistoryTestService(t *testing.T) (*DB, *SessionService, int64) {
 		t.Fatal(err)
 	}
 	return db, NewSessionService(db), tenantID
+}
+
+func newCrossHandleHistoryServices(t *testing.T) (*DB, *SessionService, *DB, *SessionService, int64) {
+	t.Helper()
+	path := t.TempDir() + "/shared-history.db"
+	dbA, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbA.Close() })
+	dbB, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbB.Close() })
+	tenantID, err := NewTenantService(dbA).GetOrCreateTenantID("test", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dbA, NewSessionService(dbA), dbB, NewSessionService(dbB), tenantID
+}
+
+// holdCrossHandleRewindDelete holds the destructive phase of a rewind open on
+// one DB handle, so another handle can attempt a stale semantic append while
+// the deletion is still uncommitted.
+func holdCrossHandleRewindDelete(t *testing.T, svc *SessionService, tenantID, historyID int64) (func(), <-chan error) {
+	t.Helper()
+	ready := make(chan error, 1)
+	releaseCh := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+			result, err := store.Exec(`DELETE FROM session_messages WHERE tenant_id = ? AND id >= ?`, tenantID, historyID)
+			if err != nil {
+				ready <- err
+				return err
+			}
+			rows, err := result.RowsAffected()
+			if err != nil {
+				ready <- err
+				return err
+			}
+			if rows == 0 {
+				err := fmt.Errorf("held rewind deleted no rows")
+				ready <- err
+				return err
+			}
+			ready <- nil
+			<-releaseCh
+			return nil
+		})
+	}()
+	if err := <-ready; err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	return func() { once.Do(func() { close(releaseCh) }) }, done
+}
+
+func waitHistoryOperation(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(3 * time.Second):
+		t.Fatal("history operation did not finish")
+		return nil
+	}
 }
 
 func TestFullHistoryCompressionMetadataAndCrossBoundaryRewind(t *testing.T) {
@@ -76,21 +145,153 @@ func TestFullHistoryCompressionMetadataAndCrossBoundaryRewind(t *testing.T) {
 	}
 }
 
-func TestResolveRewindTimestampRequiresUniqueUserAndInvalidTargetIsFailClosed(t *testing.T) {
-	db, svc, tenantID := newHistoryTestService(t)
-	stamp := time.Unix(200, 0)
-	if _, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "user", Content: "one", Timestamp: stamp}); err != nil {
+func TestFullHistoryCompressionSourcesExcludeHiddenPruneControls(t *testing.T) {
+	_, svc, tenantID := newHistoryTestService(t)
+	if _, err := svc.AppendMessage(tenantID, llm.NewUserMessage("old user")); err != nil {
 		t.Fatal(err)
 	}
-	assistantID, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "assistant", Content: "answer", Timestamp: stamp})
+	answerID, err := svc.AppendMessage(tenantID, llm.NewAssistantMessage("old answer"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "user", Content: "two", Timestamp: stamp}); err != nil {
+	pruneID, err := svc.AppendContextSnapshot(tenantID, HistoryRecordPrune, []llm.ChatMessage{
+		{Role: "assistant", Content: "truncation notice"},
+		{HistoryID: answerID, Role: "assistant", Content: "old answer"},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ResolveRewindTimestamp(tenantID, stamp); err == nil || !strings.Contains(err.Error(), "ambiguous") {
-		t.Fatalf("expected timestamp ambiguity, got %v", err)
+	laterID, err := svc.AppendMessage(tenantID, llm.NewUserMessage("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressID, err := svc.AppendContextSnapshot(tenantID, HistoryRecordCompress, []llm.ChatMessage{
+		{HistoryID: laterID, Role: "user", Content: "later"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := svc.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compression *CompressionRange
+	publicIDs := make(map[int64]bool)
+	for _, record := range records {
+		if record.Type == HistoryRecordMessage || record.Type == HistoryRecordCompress {
+			publicIDs[record.HistoryID] = true
+		}
+		if record.HistoryID == compressID {
+			compression = record.Compression
+		}
+	}
+	if compression == nil {
+		t.Fatalf("compression %d has no source metadata: %+v", compressID, records)
+	}
+	if len(compression.SourceHistoryIDs) != 1 || compression.SourceHistoryIDs[0] != answerID {
+		t.Fatalf("compression sources=%v, want public answer %d only (hidden prune=%d)", compression.SourceHistoryIDs, answerID, pruneID)
+	}
+	for _, sourceID := range compression.SourceHistoryIDs {
+		if !publicIDs[sourceID] {
+			t.Fatalf("compression source %d has no public history row", sourceID)
+		}
+	}
+}
+
+func TestRewindAtomicallyRestoresTokenState(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	previousID, err := svc.AppendMessage(tenantID, llm.NewUserMessage("previous"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Conn().Exec(`UPDATE session_messages SET context_tokens = 321 WHERE id = ?`, previousID); err != nil {
+		t.Fatal(err)
+	}
+	targetID, err := svc.AppendMessage(tenantID, llm.NewUserMessage("rewrite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendMessage(tenantID, llm.NewAssistantMessage("future")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Conn().Exec(`
+		INSERT INTO tenant_state (tenant_id, last_consolidated, last_prompt_tokens, last_completion_tokens)
+		VALUES (?, 7, 999, 88)
+	`, tenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := svc.RewindToHistoryID(tenantID, targetID); err != nil {
+		t.Fatal(err)
+	}
+	var promptTokens, completionTokens, lastConsolidated int64
+	if err := db.Conn().QueryRow(`
+		SELECT last_prompt_tokens, last_completion_tokens, last_consolidated
+		FROM tenant_state WHERE tenant_id = ?
+	`, tenantID).Scan(&promptTokens, &completionTokens, &lastConsolidated); err != nil {
+		t.Fatal(err)
+	}
+	if promptTokens != 321 || completionTokens != 0 || lastConsolidated != 7 {
+		t.Fatalf("token state=(%d,%d) consolidated=%d, want (321,0) consolidated=7", promptTokens, completionTokens, lastConsolidated)
+	}
+}
+
+func TestRewindRollsBackHistoryWhenTokenStateUpdateFails(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	if _, err := svc.AppendMessage(tenantID, llm.NewUserMessage("previous")); err != nil {
+		t.Fatal(err)
+	}
+	targetID, err := svc.AppendMessage(tenantID, llm.NewUserMessage("rewrite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendMessage(tenantID, llm.NewAssistantMessage("future")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Conn().Exec(`
+		INSERT INTO tenant_state (tenant_id, last_consolidated, last_prompt_tokens, last_completion_tokens)
+		VALUES (?, 0, 999, 88)
+	`, tenantID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Conn().Exec(`
+		CREATE TRIGGER fail_rewind_token_state
+		BEFORE UPDATE OF last_prompt_tokens ON tenant_state
+		BEGIN SELECT RAISE(ABORT, 'injected token state failure'); END
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := svc.RewindToHistoryID(tenantID, targetID); err == nil || !strings.Contains(err.Error(), "injected token state failure") {
+		t.Fatalf("rewind error=%v", err)
+	}
+	records, err := svc.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 || records[1].HistoryID != targetID || records[2].Message.Content != "future" {
+		t.Fatalf("failed token-state update truncated history: %+v", records)
+	}
+	var promptTokens, completionTokens int64
+	if err := db.Conn().QueryRow(`
+		SELECT last_prompt_tokens, last_completion_tokens FROM tenant_state WHERE tenant_id = ?
+	`, tenantID).Scan(&promptTokens, &completionTokens); err != nil {
+		t.Fatal(err)
+	}
+	if promptTokens != 999 || completionTokens != 88 {
+		t.Fatalf("failed rewind changed token state to (%d,%d)", promptTokens, completionTokens)
+	}
+}
+
+func TestRewindInvalidTargetIsFailClosed(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	if _, err := svc.AppendMessage(tenantID, llm.NewUserMessage("one")); err != nil {
+		t.Fatal(err)
+	}
+	assistantID, err := svc.AppendMessage(tenantID, llm.NewAssistantMessage("answer"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	before, _ := svc.GetFullHistory(tenantID)
 	if _, _, err := svc.RewindToHistoryID(tenantID, assistantID); err == nil || !strings.Contains(err.Error(), "not a rewindable user") {
@@ -106,6 +307,80 @@ func TestResolveRewindTimestampRequiresUniqueUserAndInvalidTargetIsFailClosed(t 
 	}
 	if _, _, err := svc.RewindToHistoryID(otherTenant, before[0].HistoryID); err == nil {
 		t.Fatal("cross-tenant history_id unexpectedly rewound")
+	}
+}
+
+func TestRewindTransactionRollsBackOnDeleteFailure(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	targetID, err := svc.AppendMessage(tenantID, llm.NewUserMessage("rewrite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendMessage(tenantID, llm.NewAssistantMessage("future")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Conn().Exec(`
+		CREATE TRIGGER fail_history_rewind BEFORE DELETE ON session_messages
+		BEGIN SELECT RAISE(ABORT, 'injected rewind failure'); END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := svc.RewindToHistoryID(tenantID, targetID); err == nil || !strings.Contains(err.Error(), "injected rewind failure") {
+		t.Fatalf("rewind error=%v", err)
+	}
+	records, err := svc.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0].HistoryID != targetID || records[1].Message.Content != "future" {
+		t.Fatalf("failed rewind changed history: %+v", records)
+	}
+}
+
+func TestRewindSerializesWithConcurrentAppend(t *testing.T) {
+	db, svc, _ := newHistoryTestService(t)
+	tenants := NewTenantService(db)
+	for i := 0; i < 24; i++ {
+		tenantID, err := tenants.GetOrCreateTenantID("test", fmt.Sprintf("rewind-race-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		targetID, err := svc.AppendMessage(tenantID, llm.NewUserMessage("rewrite"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.AppendMessage(tenantID, llm.NewAssistantMessage("future")); err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		go func() {
+			<-start
+			_, _, err := svc.RewindToHistoryID(tenantID, targetID)
+			errs <- err
+		}()
+		go func() {
+			<-start
+			_, err := svc.AppendMessage(tenantID, llm.NewUserMessage("concurrent"))
+			errs <- err
+		}()
+		close(start)
+		if first, second := <-errs, <-errs; first != nil || second != nil {
+			t.Fatalf("iteration %d concurrent rewind/append errors: %v / %v", i, first, second)
+		}
+
+		records, err := svc.GetFullHistory(tenantID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) > 1 || (len(records) == 1 && records[0].Message.Content != "concurrent") {
+			t.Fatalf("iteration %d non-serial history: %+v", i, records)
+		}
+		if _, err := svc.Replay(tenantID); err != nil {
+			t.Fatalf("iteration %d replay after concurrent rewind: %v", i, err)
+		}
 	}
 }
 
@@ -255,6 +530,43 @@ func TestReplayCompressionContextEditAndAskUser(t *testing.T) {
 	}
 }
 
+func TestReplayRejectsAskAnswerForDifferentToolTarget(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	if _, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "ask-1", Name: "AskUser", Arguments: `{}`}}}); err != nil {
+		t.Fatal(err)
+	}
+	firstToolID, err := svc.AppendMessage(tenantID, llm.NewToolMessage("AskUser", "ask-1", `{}`, "waiting one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendMessage(tenantID, llm.ChatMessage{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "ask-2", Name: "AskUser", Arguments: `{}`}}}); err != nil {
+		t.Fatal(err)
+	}
+	secondToolID, err := svc.AppendMessage(tenantID, llm.NewToolMessage("AskUser", "ask-2", `{}`, "waiting two"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	questionID, err := svc.AppendAskQuestion(tenantID, map[string]string{"request_id": "r2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(AskAnswerRecord{Answer: "wrong target", ToolHistoryID: firstToolID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Conn().Exec(`
+		INSERT INTO session_messages
+			(tenant_id, role, content, display_only, record_type, target_history_id, record_data)
+		VALUES (?, 'control', '', 1, 'ask_answer', ?, ?)
+	`, tenantID, questionID, string(payload)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Replay(tenantID); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("does not match pending target %d", secondToolID)) {
+		t.Fatalf("mismatched AskAnswer replay error=%v", err)
+	}
+}
+
 func TestReplayRejectsCorruptControlWithHistoryID(t *testing.T) {
 	db, svc, tenantID := newHistoryTestService(t)
 	result, err := db.Conn().Exec(`INSERT INTO session_messages
@@ -393,8 +705,8 @@ func TestAppendAskQuestionConcurrentDuplicateRejected(t *testing.T) {
 	}
 }
 
-func TestMigrationV46KeepsExistingRowsAsBaseline(t *testing.T) {
-	path := t.TempDir() + "/v45.db"
+func TestMigrationV47KeepsExistingRowsAsBaseline(t *testing.T) {
+	path := t.TempDir() + "/v46.db"
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -411,7 +723,7 @@ func TestMigrationV46KeepsExistingRowsAsBaseline(t *testing.T) {
 		);
 		INSERT INTO session_messages(id, tenant_id, role, content) VALUES (7, 1, 'user', 'survives');
 		CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
-		INSERT INTO schema_version(version) VALUES (45);
+		INSERT INTO schema_version(version) VALUES (46);
 	`)
 	if err != nil {
 		t.Fatal(err)
@@ -506,5 +818,254 @@ func TestConcurrentSnapshotAndMutationsRemainReplayable(t *testing.T) {
 		if _, err := writerA.Replay(tenantID); err != nil {
 			t.Fatalf("iteration %d: concurrent append corrupted replay: %v", i, err)
 		}
+	}
+}
+
+func TestCrossHandleRewindCannotBeFollowedByStaleContextEdit(t *testing.T) {
+	_, writer, _, rewinder, tenantID := newCrossHandleHistoryServices(t)
+	targetID, err := writer.AppendMessage(tenantID, llm.NewUserMessage("remove me"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	release, rewindDone := holdCrossHandleRewindDelete(t, rewinder, tenantID, targetID)
+	defer release()
+	started := make(chan struct{})
+	appendDone := make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := writer.AppendControl(tenantID, HistoryRecordContextEdit, targetID, MessageMutations{Mutations: []MessageMutation{{
+			TargetHistoryID: targetID,
+			Message:         llm.ChatMessage{Role: "user", Content: "stale edit"},
+		}}})
+		appendDone <- err
+	}()
+	<-started
+	// Give the competing handle time to reach the database lock. With a
+	// deferred transaction this is enough to read the old committed target.
+	time.Sleep(100 * time.Millisecond)
+	release()
+	if err := waitHistoryOperation(t, rewindDone); err != nil {
+		t.Fatalf("held rewind: %v", err)
+	}
+	if err := waitHistoryOperation(t, appendDone); err == nil {
+		t.Fatal("stale context edit succeeded after cross-handle rewind")
+	}
+
+	records, err := writer.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("stale control survived rewind: %+v", records)
+	}
+	replay, err := writer.Replay(tenantID)
+	if err != nil || len(replay.Messages) != 0 {
+		t.Fatalf("rewound history was revived: replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestCrossHandleRewindCannotBeFollowedByStaleCheckpoint(t *testing.T) {
+	_, writer, _, rewinder, tenantID := newCrossHandleHistoryServices(t)
+	targetID, err := writer.AppendMessage(tenantID, llm.NewUserMessage("remove me"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := writer.Replay(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	release, rewindDone := holdCrossHandleRewindDelete(t, rewinder, tenantID, targetID)
+	defer release()
+	started := make(chan struct{})
+	appendDone := make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := writer.AppendContextSnapshot(tenantID, HistoryRecordPrune, stale.Messages)
+		appendDone <- err
+	}()
+	<-started
+	time.Sleep(100 * time.Millisecond)
+	release()
+	if err := waitHistoryOperation(t, rewindDone); err != nil {
+		t.Fatalf("held rewind: %v", err)
+	}
+	if err := waitHistoryOperation(t, appendDone); err == nil {
+		t.Fatal("stale checkpoint succeeded after cross-handle rewind")
+	}
+
+	records, err := writer.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("stale checkpoint survived rewind: %+v", records)
+	}
+	replay, err := writer.Replay(tenantID)
+	if err != nil || len(replay.Messages) != 0 {
+		t.Fatalf("checkpoint revived rewound history: replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestCrossHandleControlFailureRollsBackTriggerWrites(t *testing.T) {
+	_, writer, triggerDB, _, tenantID := newCrossHandleHistoryServices(t)
+	targetID, err := writer.AppendMessage(tenantID, llm.NewUserMessage("original"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := triggerDB.Conn().Exec(`
+		CREATE TRIGGER fail_context_edit BEFORE INSERT ON session_messages
+		WHEN NEW.record_type = 'context_edit'
+		BEGIN
+			UPDATE session_messages SET content = 'trigger mutation'
+			WHERE tenant_id = NEW.tenant_id AND id = NEW.target_history_id;
+			SELECT RAISE(FAIL, 'injected context edit failure');
+		END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = writer.AppendControl(tenantID, HistoryRecordContextEdit, targetID, MessageMutations{Mutations: []MessageMutation{{
+		TargetHistoryID: targetID,
+		Message:         llm.ChatMessage{Role: "user", Content: "edited"},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "injected context edit failure") {
+		t.Fatalf("context edit error=%v", err)
+	}
+	records, err := writer.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Message.Content != "original" {
+		t.Fatalf("failed control transaction was not fully rolled back: %+v", records)
+	}
+}
+
+func TestAppendMessagesAndAskQuestionRollsBackAsOneUnit(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	messages := []llm.ChatMessage{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "ask-1", Name: "AskUser", Arguments: `{}`}}},
+		llm.NewToolMessage("AskUser", "ask-1", `{}`, "waiting"),
+	}
+	if _, err := db.Conn().Exec(`
+		CREATE TRIGGER fail_ask_control BEFORE INSERT ON session_messages
+		WHEN NEW.record_type = 'ask_question' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.AppendMessagesAndAskQuestion(tenantID, messages, map[string]string{"request_id": "r1"}); err == nil {
+		t.Fatal("expected injected AskUser control failure")
+	}
+	records, err := svc.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("failed AskUser transaction left records: %+v", records)
+	}
+	if _, err := db.Conn().Exec(`DROP TRIGGER fail_ask_control`); err != nil {
+		t.Fatal(err)
+	}
+	ids, questionID, err := svc.AppendMessagesAndAskQuestion(tenantID, messages, map[string]string{"request_id": "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] == 0 || ids[1] == 0 || questionID == 0 {
+		t.Fatalf("AskUser transaction IDs=%v question=%d", ids, questionID)
+	}
+	replay, err := svc.Replay(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay.Messages) != 2 || replay.PendingAskUser == nil || replay.PendingAskUser.HistoryID != questionID || replay.PendingAskUser.ToolHistoryID != ids[1] {
+		t.Fatalf("AskUser replay=%+v", replay)
+	}
+}
+
+func TestVersionedCheckpointRestoresPendingAskUserFromSuffix(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	baselineID, err := svc.AppendMessage(tenantID, llm.NewUserMessage("baseline"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, questionID, err := svc.AppendMessagesAndAskQuestion(tenantID, []llm.ChatMessage{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "ask-1", Name: "AskUser", Arguments: `{}`}}},
+		llm.NewToolMessage("AskUser", "ask-1", `{}`, "waiting"),
+	}, map[string]string{"request_id": "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := svc.Replay(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointID, err := svc.AppendContextSnapshot(tenantID, HistoryRecordCompress, before.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := svc.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot ContextSnapshot
+	if err := json.Unmarshal(records[len(records)-1].Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Version != contextSnapshotVersion || snapshot.PendingAskUser == nil || snapshot.PendingAskUser.HistoryID != questionID {
+		t.Fatalf("checkpoint %d snapshot=%+v", checkpointID, snapshot)
+	}
+	// A self-contained checkpoint must make corrupt, inactive prefix rows
+	// irrelevant to prompt replay.
+	if _, err := db.Conn().Exec(`UPDATE session_messages SET record_type = 'future_control' WHERE tenant_id = ? AND id = ?`, tenantID, baselineID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AppendAskAnswer(tenantID, "yes"); err != nil {
+		t.Fatalf("answer through checkpoint suffix: %v", err)
+	}
+	after, err := svc.Replay(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PendingAskUser != nil || len(after.Messages) != len(before.Messages) || after.Messages[len(after.Messages)-1].Content != "yes" {
+		t.Fatalf("checkpoint suffix replay=%+v", after)
+	}
+}
+
+func TestHistorySemanticLocksAreTenantScoped(t *testing.T) {
+	db, svc, tenantA := newHistoryTestService(t)
+	tenantB, err := NewTenantService(db).GetOrCreateTenantID("test", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockA := db.historyLock(tenantA)
+	lockA.Lock()
+	defer lockA.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.AppendMessage(tenantB, llm.NewUserMessage("independent"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tenant B history operation blocked behind tenant A semantic lock")
+	}
+}
+
+func TestHistorySemanticLocksUseBoundedStripes(t *testing.T) {
+	db, _, _ := newHistoryTestService(t)
+	locks := make(map[*sync.Mutex]struct{})
+	for tenantID := int64(0); tenantID < historyLockStripes*4; tenantID++ {
+		locks[db.historyLock(tenantID)] = struct{}{}
+	}
+	if len(locks) != historyLockStripes {
+		t.Fatalf("history lock stripes=%d, want %d", len(locks), historyLockStripes)
+	}
+	if db.historyLock(1) != db.historyLock(1+historyLockStripes) {
+		t.Fatal("tenant IDs in the same stripe did not share the bounded lock")
 	}
 }

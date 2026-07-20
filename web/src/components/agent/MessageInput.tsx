@@ -30,6 +30,8 @@ import type { TodoState } from '@/hooks/useTodos'
 interface MessageInputProps {
   /** True while the agent is producing output; shows the cancel button. */
   busy: boolean
+  /** Disable composer mutation while a destructive history operation runs. */
+  disabled?: boolean
   /** Send a message, optionally with uploaded attachments. */
   onSend: (content: string, attachments?: Attachments) => void
   /** Cancel the running agent. */
@@ -39,7 +41,7 @@ interface MessageInputProps {
   /** Open the right Tasks panel for the current session. */
   onOpenTasks?: () => void
   /** Upload a file; resolves with server metadata. */
-  onUpload: (file: File) => Promise<{
+  onUpload?: (file: File) => Promise<{
     upload_key?: string
     name?: string
     size?: number
@@ -62,7 +64,7 @@ interface PendingAttachment {
   mime: string
 }
 
-export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
+export function MessageInput({ busy, disabled = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
@@ -113,6 +115,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
   }, [draft, onDraftConsumed, resize])
 
   const submit = useCallback(() => {
+    if (disabled) return
     const text = value.trim()
     if (!text && pending.length === 0) return
     if (text === '/rewind' && pending.length === 0 && onRewindLatest) {
@@ -149,7 +152,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
     setValue('')
     setPending([])
     scheduleTextareaResize(resize)
-  }, [busy, value, pending, onCancel, onRewindLatest, onOpenTasks, onSend, resize])
+  }, [busy, disabled, value, pending, onCancel, onRewindLatest, onOpenTasks, onSend, resize])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Let completion handle navigation keys first
@@ -162,7 +165,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
 
   const onPickFiles = useCallback(
     async (files: FileList | null) => {
-      if (!files || files.length === 0) return
+      if (disabled || !onUpload || !files || files.length === 0) return
       setUploading(true)
       try {
         const added: PendingAttachment[] = []
@@ -182,10 +185,10 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
         setUploading(false)
       }
     },
-    [onUpload, t],
+    [disabled, onUpload, t],
   )
 
-  const canSend = value.trim().length > 0 || pending.length > 0
+  const canSend = !disabled && (value.trim().length > 0 || pending.length > 0)
 
   return (
     <div className="border-t border-border bg-bg-primary px-3 py-2.5">
@@ -213,6 +216,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
                 <button
                   type="button"
                   aria-label="remove"
+                  disabled={disabled}
                   onClick={() => setPending((prev) => prev.filter((_, idx) => idx !== i))}
                   className="text-text-muted hover:text-text-primary"
                 >
@@ -235,6 +239,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
           <textarea
             ref={textareaRef}
             value={value}
+            disabled={disabled}
             onChange={(e) => {
               setValue(e.target.value)
               resize()
@@ -255,27 +260,31 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
         {/* Bottom row: attach button (left) + send/cancel button (right) */}
         <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
           <div className="flex items-center gap-1">
-            <input
-              ref={fileRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                onPickFiles(e.target.files)
-                e.target.value = ''
-              }}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={t('agent.attach')}
-              disabled={uploading}
-              onClick={() => fileRef.current?.click()}
-              className={cn('size-7 rounded-md', uploading && 'opacity-40')}
-            >
-              {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
-            </Button>
+            {onUpload ? (
+              <>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    onPickFiles(e.target.files)
+                    e.target.value = ''
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t('agent.attach')}
+                  disabled={uploading || disabled}
+                  onClick={() => fileRef.current?.click()}
+                  className={cn('size-7 rounded-md', uploading && 'opacity-40')}
+                >
+                  {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
+                </Button>
+              </>
+            ) : null}
           </div>
 
           <div className="flex min-w-0 items-center gap-1">

@@ -130,6 +130,8 @@ export type WSMessageType =
   | 'runner_status'
   | 'sync_progress'
   | 'genui'
+  | 'resync_required'
+  | 'history_gap'
   | '__pong__'
 
 /** Client operations mapped to REST endpoints by the connection adapter. */
@@ -213,11 +215,19 @@ export interface ProgressEvent {
   completed_tools?: unknown[]
   iteration_history?: unknown[]
   reasoning_stream_content?: string
+  token_usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+    cache_hit_tokens?: number
+    max_output_tokens?: number
+  }
   questions?: unknown[]
   request_id?: string
   /** Tools detected during LLM streaming (status="generating"), before
    *  arguments finish generating. Sent via stream_content events. */
   streaming_tools?: unknown[]
+  stream_tokens?: number
   /** Tool hints from plugins (PostToolUse hook). */
   tool_hints?: string
   /** TODO list from TodoWrite tool (mirrors Go protocol.ProgressEvent.Todos). */
@@ -233,6 +243,7 @@ export interface SessionEvent {
   chat_id?: string
   session_key?: string
   action?: string
+  target_history_id?: number
   label?: string
   role?: string
   instance?: string
@@ -360,7 +371,7 @@ export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
 }
 
 /** Chat message role. */
-export type ChatMessageRole = 'user' | 'assistant' | 'system'
+export type ChatMessageRole = 'user' | 'assistant' | 'system' | 'tool'
 
 /**
  * Committed chat message — the shape all rendering components consume.
@@ -379,6 +390,11 @@ export interface ChatMessage {
   }
   role: ChatMessageRole
   content: string
+  reasoningContent?: string
+  toolCallID?: string
+  toolName?: string
+  toolArguments?: string
+  toolCalls?: { id: string; name: string; arguments: string }[]
   iterations: WebIteration[]
   timestamp: string
   isPartial: boolean

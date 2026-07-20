@@ -18,6 +18,7 @@ export const lastSeqCache = new Map<string, number>()
 /** Latest structured progress event for each channel-qualified session. */
 export const progressSnapshotCache = new Map<string, ProgressEvent>()
 const progressGenerationCache = new Map<string, number>()
+let webCacheEpoch = 0
 
 interface StoredSessionTree {
   version: 1
@@ -86,7 +87,13 @@ export function clearSessionCaches(cacheKey: string): void {
   progressGenerationCache.delete(cacheKey)
 }
 
+/** Changes whenever authentication-scoped Web caches are invalidated. */
+export function getWebCacheEpoch(): number {
+  return webCacheEpoch
+}
+
 export function clearWebCaches(): void {
+  webCacheEpoch += 1
   try {
     localStorage.removeItem(SESSION_TREE_CACHE_KEY)
   } catch {

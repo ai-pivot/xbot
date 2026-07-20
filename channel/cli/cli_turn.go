@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"xbot/protocol"
 )
 
@@ -311,37 +312,36 @@ func (m *cliModel) insertUserMessageBeforeStreaming(content string) {
 	m.streamingMsgIdx++
 }
 
-func (m *cliModel) flushMessageQueue() {
+func (m *cliModel) flushMessageQueue() tea.Cmd {
 	if len(m.messageQueue) == 0 {
-		return
+		return nil
 	}
 	// Only flush messages queued for the current session.
 	// If user queued a message in main session and switched to a SubAgent session,
 	// skip until we're back in the correct session.
 	msg := m.messageQueue[0]
 	if msg.chatID != m.chatID {
-		return // wrong session, wait for the correct one
+		return nil // wrong session, wait for the correct one
 	}
 	m.messageQueue = m.messageQueue[1:]
 	m.queueEditing = false
 	m.queueEditBuf = ""
 	// Put message into textarea and trigger send
 	m.textarea.SetValue(msg.content)
-	m.sendMessageFromQueue()
+	return m.sendMessageFromQueue()
 }
 
 // sendMessageFromQueue sends the current textarea content as a queued message.
-// Does NOT return tickCmd() — startAgentTurn() inside sendMessage() handles that.
-// sendMessageFromQueue sends the current textarea content as a queued message.
-// Does NOT return tickCmd() — startAgentTurn() inside sendMessage() handles that.
-func (m *cliModel) sendMessageFromQueue() {
+// The returned command must be scheduled by the caller; Agent continuations
+// use it to perform their RPC outside BubbleTea's Update path.
+func (m *cliModel) sendMessageFromQueue() tea.Cmd {
 	content := strings.TrimSpace(m.textarea.Value())
 	if content == "" {
-		return
+		return nil
 	}
 	m.textarea.Reset()
 	m.autoExpandInput()
-	m.sendMessage(content)
+	return m.sendMessage(content)
 }
 
 // applyThemeAndRebuild applies a theme change synchronously: sets the theme,

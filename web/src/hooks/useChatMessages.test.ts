@@ -4,22 +4,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChatMessages } from './useChatMessages'
 import type { WSConnection } from '@/types/ws'
 import type { WSMessage } from '@/types/shared'
-import {
-  bumpProgressGeneration,
-  clearWebCaches,
-  messagesCache,
-  sessionCacheKey,
-} from '@/lib/webCache'
+import { bumpProgressGeneration, clearWebCaches, messagesCache, sessionCacheKey } from '@/lib/webCache'
 
 function makeWS(responses: unknown[]): WSConnection {
-  vi.stubGlobal('fetch', vi.fn(async () => {
-    const next = responses.shift() ?? { messages: [] }
-    const body = await Promise.resolve(next)
-    return new Response(JSON.stringify({ ok: true, data: body, error: null }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }))
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      const next = responses.shift() ?? { messages: [] }
+      const body = await Promise.resolve(next)
+      return new Response(JSON.stringify({ ok: true, data: body, error: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }),
+  )
   return {
     rpc: vi.fn(async () => responses.shift() ?? { messages: [] }),
     send: vi.fn(async () => undefined),
@@ -42,8 +40,18 @@ describe('useChatMessages', () => {
   })
   it('keeps cached rows visible during same-session background reloads', async () => {
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-08T00:00:00Z' }] },
-      { messages: [{ role: 'user', content: 'hello again', timestamp: '2026-07-08T00:00:01Z' }] },
+      {
+        messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-08T00:00:00Z' }],
+      },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'hello again',
+            timestamp: '2026-07-08T00:00:01Z',
+          },
+        ],
+      },
     ])
 
     const { result } = renderHook(() =>
@@ -70,13 +78,28 @@ describe('useChatMessages', () => {
 
   it('isolates message caches for matching chat IDs on different channels', async () => {
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'from web', timestamp: '2026-07-08T00:00:00Z' }] },
-      { messages: [{ role: 'user', content: 'from cli', timestamp: '2026-07-08T00:00:01Z' }] },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'from web',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+        ],
+      },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'from cli',
+            timestamp: '2026-07-08T00:00:01Z',
+          },
+        ],
+      },
     ])
-    const { result, rerender } = renderHook(
-      ({ channel }) => useChatMessages({ chatID: 'shared', channel, ws }),
-      { initialProps: { channel: 'web' } },
-    )
+    const { result, rerender } = renderHook(({ channel }) => useChatMessages({ chatID: 'shared', channel, ws }), {
+      initialProps: { channel: 'web' },
+    })
     await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['from web']))
 
     rerender({ channel: 'cli' })
@@ -89,17 +112,30 @@ describe('useChatMessages', () => {
   it('ignores an old-channel listener after switching the same raw chat ID', async () => {
     const handlers: Array<(message: WSMessage) => void> = []
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'from web', timestamp: '2026-07-08T00:00:00Z' }] },
-      { messages: [{ role: 'user', content: 'from cli', timestamp: '2026-07-08T00:00:01Z' }] },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'from web',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+        ],
+      },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'from cli',
+            timestamp: '2026-07-08T00:00:01Z',
+          },
+        ],
+      },
     ])
     vi.mocked(ws.onMessage).mockImplementation((handler) => {
       handlers.push(handler)
       return vi.fn()
     })
-    const { result, rerender } = renderHook(
-      ({ channel }) => useChatMessages({ chatID: 'shared-listener', channel, ws }),
-      { initialProps: { channel: 'web' } },
-    )
+    const { result, rerender } = renderHook(({ channel }) => useChatMessages({ chatID: 'shared-listener', channel, ws }), { initialProps: { channel: 'web' } })
     await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['from web']))
     const staleWebHandler = handlers[0]
 
@@ -118,10 +154,65 @@ describe('useChatMessages', () => {
     expect(messagesCache.get(sessionCacheKey('cli', 'shared-listener'))?.map((message) => message.content)).toEqual(['from cli'])
   })
 
+  it('isolates user echoes for the same raw chat ID across channels', async () => {
+    const handlers = new Set<(message: WSMessage) => void>()
+    const ws = makeWS([{ messages: [] }, { messages: [] }])
+    vi.mocked(ws.onMessage).mockImplementation((handler) => {
+      handlers.add(handler)
+      return () => handlers.delete(handler)
+    })
+    const web = renderHook(() => useChatMessages({ chatID: 'shared-echo', channel: 'web', ws }))
+    const cli = renderHook(() => useChatMessages({ chatID: 'shared-echo', channel: 'cli', ws }))
+    await waitFor(() => {
+      expect(web.result.current.loading).toBe(false)
+      expect(cli.result.current.loading).toBe(false)
+    })
+
+    act(() => {
+      handlers.forEach((handler) =>
+        handler({
+          type: 'user_echo',
+          channel: 'web',
+          chat_id: 'shared-echo',
+          content: 'web only',
+          seq: 1,
+        }),
+      )
+    })
+
+    expect(web.result.current.messages.map((message) => message.content)).toEqual(['web only'])
+    expect(cli.result.current.messages).toEqual([])
+
+    act(() => {
+      handlers.forEach((handler) =>
+        handler({
+          type: 'user_echo',
+          channel: 'cli',
+          chat_id: 'shared-echo',
+          content: 'cli only',
+          seq: 2,
+        }),
+      )
+    })
+
+    expect(web.result.current.messages.map((message) => message.content)).toEqual(['web only'])
+    expect(cli.result.current.messages.map((message) => message.content)).toEqual(['cli only'])
+  })
+
   it('reuses cached rows across hook remounts without a loading flash', async () => {
-    const pendingSecond = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
+    const pendingSecond = deferred<{
+      messages: { role: string; content: string; timestamp: string }[]
+    }>()
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'cached', timestamp: '2026-07-08T00:00:00Z' }] },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'cached',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+        ],
+      },
       pendingSecond.promise,
     ])
 
@@ -157,9 +248,19 @@ describe('useChatMessages', () => {
   })
 
   it('does not let stale unmounted reloads overwrite the shared cache', async () => {
-    const stale = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
-    const fresh = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
-    const ws = makeWS([stale.promise, fresh.promise, { messages: [{ role: 'user', content: 'fresh', timestamp: '2026-07-08T00:00:02Z' }] }])
+    const stale = deferred<{
+      messages: { role: string; content: string; timestamp: string }[]
+    }>()
+    const fresh = deferred<{
+      messages: { role: string; content: string; timestamp: string }[]
+    }>()
+    const ws = makeWS([
+      stale.promise,
+      fresh.promise,
+      {
+        messages: [{ role: 'user', content: 'fresh', timestamp: '2026-07-08T00:00:02Z' }],
+      },
+    ])
 
     const first = renderHook(() =>
       useChatMessages({
@@ -179,13 +280,17 @@ describe('useChatMessages', () => {
     )
 
     await act(async () => {
-      fresh.resolve({ messages: [{ role: 'user', content: 'fresh', timestamp: '2026-07-08T00:00:01Z' }] })
+      fresh.resolve({
+        messages: [{ role: 'user', content: 'fresh', timestamp: '2026-07-08T00:00:01Z' }],
+      })
       await fresh.promise
     })
     await waitFor(() => expect(second.result.current.messages.map((m) => m.content)).toEqual(['fresh']))
 
     await act(async () => {
-      stale.resolve({ messages: [{ role: 'user', content: 'stale', timestamp: '2026-07-08T00:00:00Z' }] })
+      stale.resolve({
+        messages: [{ role: 'user', content: 'stale', timestamp: '2026-07-08T00:00:00Z' }],
+      })
       await stale.promise
     })
     second.unmount()
@@ -203,17 +308,30 @@ describe('useChatMessages', () => {
 
   it('keeps concurrent history cursors scoped to their response chats', async () => {
     const histories = {
-      'cursor-a': deferred<{ messages: never[]; chat_id: string; last_seq: number }>(),
-      'cursor-b': deferred<{ messages: never[]; chat_id: string; last_seq: number }>(),
+      'cursor-a': deferred<{
+        messages: never[]
+        chat_id: string
+        last_seq: number
+      }>(),
+      'cursor-b': deferred<{
+        messages: never[]
+        chat_id: string
+        last_seq: number
+      }>(),
     }
-    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const request = JSON.parse(String(init?.body)) as { chat_id: keyof typeof histories }
-      const data = await histories[request.chat_id].promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as {
+          chat_id: keyof typeof histories
+        }
+        const data = await histories[request.chat_id].promise
+        return new Response(JSON.stringify({ ok: true, data, error: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     const ws = {
       rpc: vi.fn(),
       send: vi.fn(async () => undefined),
@@ -225,8 +343,16 @@ describe('useChatMessages', () => {
     const second = renderHook(() => useChatMessages({ chatID: 'cursor-b', channel: 'web', ws }))
 
     await act(async () => {
-      histories['cursor-b'].resolve({ messages: [], chat_id: 'cursor-b', last_seq: 22 })
-      histories['cursor-a'].resolve({ messages: [], chat_id: 'cursor-a', last_seq: 11 })
+      histories['cursor-b'].resolve({
+        messages: [],
+        chat_id: 'cursor-b',
+        last_seq: 22,
+      })
+      histories['cursor-a'].resolve({
+        messages: [],
+        chat_id: 'cursor-a',
+        last_seq: 11,
+      })
       await Promise.all([histories['cursor-a'].promise, histories['cursor-b'].promise])
     })
     await waitFor(() => expect(ws.setLastSeq).toHaveBeenCalledTimes(2))
@@ -244,13 +370,16 @@ describe('useChatMessages', () => {
       last_seq: number
     }>()
     let messageHandler: ((message: WSMessage) => void) | null = null
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const data = await history.promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const data = await history.promise
+        return new Response(JSON.stringify({ ok: true, data, error: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     const ws = {
       rpc: vi.fn(),
       send: vi.fn(async () => undefined),
@@ -273,6 +402,7 @@ describe('useChatMessages', () => {
       messageHandler?.({
         type: 'user_echo',
         id: sentMessage.id,
+        channel: 'web',
         chat_id: 'slow-chat',
         content: 'new message with attachment',
         original_content: 'new message',
@@ -284,7 +414,13 @@ describe('useChatMessages', () => {
 
     await act(async () => {
       history.resolve({
-        messages: [{ role: 'user', content: 'old history', timestamp: '2026-07-08T00:00:00Z' }],
+        messages: [
+          {
+            role: 'user',
+            content: 'old history',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+        ],
         chat_id: 'slow-chat',
         last_seq: 99,
       })
@@ -292,14 +428,8 @@ describe('useChatMessages', () => {
     })
     await waitFor(() => expect(result.current.loading).toBe(false))
 
-    expect(result.current.messages.map((message) => message.content)).toEqual([
-      'old history',
-      'new message with attachment',
-    ])
-    expect(messagesCache.get(sessionCacheKey('web', 'slow-chat'))?.map((message) => message.content)).toEqual([
-      'old history',
-      'new message with attachment',
-    ])
+    expect(result.current.messages.map((message) => message.content)).toEqual(['old history', 'new message with attachment'])
+    expect(messagesCache.get(sessionCacheKey('web', 'slow-chat'))?.map((message) => message.content)).toEqual(['old history', 'new message with attachment'])
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 
@@ -311,13 +441,16 @@ describe('useChatMessages', () => {
       last_seq: number
     }>()
     let messageHandler: ((message: WSMessage) => void) | null = null
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const data = await history.promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const data = await history.promise
+        return new Response(JSON.stringify({ ok: true, data, error: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     const ws = {
       rpc: vi.fn(),
       send: vi.fn(async () => undefined),
@@ -327,31 +460,30 @@ describe('useChatMessages', () => {
         return vi.fn()
       }),
     } as unknown as WSConnection
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: 'replay-chat', channel: 'web', ws })
-    ))
+    const { result } = renderHook(() => useChatMessages({ chatID: 'replay-chat', channel: 'web', ws }))
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
 
     act(() => {
       messageHandler?.({
         type: 'user_echo',
+        channel: 'web',
         chat_id: 'replay-chat',
         content: 'message with attachment',
         ts: Date.parse(replayTimestamp) / 1000,
         seq: 7,
       })
     })
-    expect(result.current.messages.map((message) => message.content)).toEqual([
-      'message with attachment',
-    ])
+    expect(result.current.messages.map((message) => message.content)).toEqual(['message with attachment'])
 
     await act(async () => {
       history.resolve({
-        messages: [{
-          role: 'user',
-          content: 'message with attachment',
-          timestamp: replayTimestamp,
-        }],
+        messages: [
+          {
+            role: 'user',
+            content: 'message with attachment',
+            timestamp: replayTimestamp,
+          },
+        ],
         chat_id: 'replay-chat',
         last_seq: 7,
       })
@@ -373,33 +505,42 @@ describe('useChatMessages', () => {
       chat_id: string
       last_seq: number
     }>()
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const data = await history.promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const data = await history.promise
+        return new Response(JSON.stringify({ ok: true, data, error: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     const ws = {
       rpc: vi.fn(),
       send: vi.fn(async () => undefined),
       setLastSeq: vi.fn(),
       onMessage: vi.fn(() => vi.fn()),
     } as unknown as WSConnection
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: 'optimistic-history-chat', channel: 'web', ws })
-    ))
+    const { result } = renderHook(() =>
+      useChatMessages({
+        chatID: 'optimistic-history-chat',
+        channel: 'web',
+        ws,
+      }),
+    )
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
 
     act(() => result.current.sendMessage('persisted while loading'))
     const optimisticTimestamp = result.current.messages[0].timestamp
     await act(async () => {
       history.resolve({
-        messages: [{
-          role: 'user',
-          content: 'persisted while loading',
-          timestamp: optimisticTimestamp,
-        }],
+        messages: [
+          {
+            role: 'user',
+            content: 'persisted while loading',
+            timestamp: optimisticTimestamp,
+          },
+        ],
         chat_id: 'optimistic-history-chat',
         last_seq: 0,
       })
@@ -421,13 +562,16 @@ describe('useChatMessages', () => {
       last_seq: number
     }>()
     let messageHandler: ((message: WSMessage) => void) | null = null
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const data = await history.promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const data = await history.promise
+        return new Response(JSON.stringify({ ok: true, data, error: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     const ws = {
       rpc: vi.fn(),
       send: vi.fn(async () => undefined),
@@ -437,14 +581,13 @@ describe('useChatMessages', () => {
         return vi.fn()
       }),
     } as unknown as WSConnection
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: 'missing-echo-chat', channel: 'web', ws })
-    ))
+    const { result } = renderHook(() => useChatMessages({ chatID: 'missing-echo-chat', channel: 'web', ws }))
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
 
     act(() => {
       messageHandler?.({
         type: 'user_echo',
+        channel: 'web',
         chat_id: 'missing-echo-chat',
         content: 'not persisted yet',
         ts: Date.parse('2026-08-06T07:06:40Z') / 1000,
@@ -455,7 +598,7 @@ describe('useChatMessages', () => {
       history.resolve({
         messages: [],
         chat_id: 'missing-echo-chat',
-        last_seq: 6,
+        last_seq: 7,
       })
       await history.promise
     })
@@ -481,17 +624,24 @@ describe('useChatMessages', () => {
         return vi.fn()
       }),
     } as unknown as WSConnection
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
-      ok: true,
-      data: { messages: [] },
-      error: null,
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })))
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: 'echo-order-chat', channel: 'web', ws })
-    ))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              data: { messages: [] },
+              error: null,
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          ),
+      ),
+    )
+    const { result } = renderHook(() => useChatMessages({ chatID: 'echo-order-chat', channel: 'web', ws }))
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => result.current.sendMessage('first'))
@@ -504,6 +654,7 @@ describe('useChatMessages', () => {
     const secondEcho: WSMessage = {
       type: 'user_echo',
       id: sent[1].id,
+      channel: 'web',
       chat_id: 'echo-order-chat',
       content: 'second + attachment',
       original_content: 'second',
@@ -513,6 +664,7 @@ describe('useChatMessages', () => {
     const firstEcho: WSMessage = {
       type: 'user_echo',
       id: sent[0].id,
+      channel: 'web',
       chat_id: 'echo-order-chat',
       content: 'first + attachment',
       original_content: 'first',
@@ -525,14 +677,8 @@ describe('useChatMessages', () => {
       messageHandler?.(firstEcho)
     })
 
-    expect(result.current.messages.map((message) => message.content)).toEqual([
-      'first + attachment',
-      'second + attachment',
-    ])
-    expect(result.current.messages.map((message) => message.requestID)).toEqual([
-      sent[0].id,
-      sent[1].id,
-    ])
+    expect(result.current.messages.map((message) => message.content)).toEqual(['first + attachment', 'second + attachment'])
+    expect(result.current.messages.map((message) => message.requestID)).toEqual([sent[0].id, sent[1].id])
   })
 
   it('accepts qualified inject_user events for CLI sessions', async () => {
@@ -542,9 +688,7 @@ describe('useChatMessages', () => {
       messageHandler = handler
       return vi.fn()
     })
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: '/repo', channel: 'cli', ws })
-    ))
+    const { result } = renderHook(() => useChatMessages({ chatID: '/repo', channel: 'cli', ws }))
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
@@ -566,13 +710,16 @@ describe('useChatMessages', () => {
       chat_id: string
       last_seq: number
     }>()
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const data = await initialHistory.promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const data = await initialHistory.promise
+        return new Response(JSON.stringify({ ok: true, data, error: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     let rejectSend!: (reason: Error) => void
     const sendPromise = new Promise<void>((_resolve, reject) => {
       rejectSend = reject
@@ -583,9 +730,7 @@ describe('useChatMessages', () => {
       setLastSeq: vi.fn(),
       onMessage: vi.fn(() => vi.fn()),
     } as unknown as WSConnection
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: 'failed-send-chat', channel: 'web', ws })
-    ))
+    const { result } = renderHook(() => useChatMessages({ chatID: 'failed-send-chat', channel: 'web', ws }))
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
 
     act(() => {
@@ -601,19 +746,21 @@ describe('useChatMessages', () => {
 
     await act(async () => {
       initialHistory.resolve({
-        messages: [{ role: 'user', content: 'persisted history', timestamp: '2026-07-08T00:00:01Z' }],
+        messages: [
+          {
+            role: 'user',
+            content: 'persisted history',
+            timestamp: '2026-07-08T00:00:01Z',
+          },
+        ],
         chat_id: 'failed-send-chat',
         last_seq: 77,
       })
       await initialHistory.promise
     })
 
-    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual([
-      'persisted history',
-    ]))
-    expect(messagesCache.get(sessionCacheKey('web', 'failed-send-chat'))?.map((message) => message.content)).toEqual([
-      'persisted history',
-    ])
+    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['persisted history']))
+    expect(messagesCache.get(sessionCacheKey('web', 'failed-send-chat'))?.map((message) => message.content)).toEqual(['persisted history'])
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 
@@ -623,14 +770,29 @@ describe('useChatMessages', () => {
       rejectSend = reject
     })
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'history A', timestamp: '2026-07-08T00:00:00Z' }] },
-      { messages: [{ role: 'user', content: 'history B', timestamp: '2026-07-08T00:00:01Z' }] },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'history A',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+        ],
+      },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'history B',
+            timestamp: '2026-07-08T00:00:01Z',
+          },
+        ],
+      },
     ])
     vi.mocked(ws.send).mockReturnValue(sendPromise)
-    const { result, rerender } = renderHook(
-      ({ chatID }) => useChatMessages({ chatID, channel: 'web', ws }),
-      { initialProps: { chatID: 'session-a' } },
-    )
+    const { result, rerender } = renderHook(({ chatID }) => useChatMessages({ chatID, channel: 'web', ws }), {
+      initialProps: { chatID: 'session-a' },
+    })
     await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['history A']))
 
     act(() => result.current.sendMessage('temporary A'))
@@ -651,13 +813,20 @@ describe('useChatMessages', () => {
   it('never returns the previous session messages during a target transition', async () => {
     const historyB = deferred<{ messages: never[]; chat_id: string }>()
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'history A', timestamp: '2026-07-08T00:00:00Z' }] },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'history A',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+        ],
+      },
       historyB.promise,
     ])
-    const { result, rerender } = renderHook(
-      ({ chatID }) => useChatMessages({ chatID, channel: 'web', ws }),
-      { initialProps: { chatID: 'session-a' } },
-    )
+    const { result, rerender } = renderHook(({ chatID }) => useChatMessages({ chatID, channel: 'web', ws }), {
+      initialProps: { chatID: 'session-a' },
+    })
     await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['history A']))
 
     rerender({ chatID: 'session-b' })
@@ -671,16 +840,17 @@ describe('useChatMessages', () => {
     const historyPromise = new Promise<never>((_resolve, reject) => {
       rejectHistory = reject
     })
-    vi.stubGlobal('fetch', vi.fn(async () => historyPromise))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => historyPromise),
+    )
     const ws = {
       rpc: vi.fn(),
       send: vi.fn(async () => undefined),
       setLastSeq: vi.fn(),
       onMessage: vi.fn(() => vi.fn()),
     } as unknown as WSConnection
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: 'failed-history-chat', channel: 'web', ws })
-    ))
+    const { result } = renderHook(() => useChatMessages({ chatID: 'failed-history-chat', channel: 'web', ws }))
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
 
     act(() => {
@@ -692,9 +862,7 @@ describe('useChatMessages', () => {
     })
 
     expect(result.current.messages.map((message) => message.content)).toEqual(['keep optimistic'])
-    expect(messagesCache.get(sessionCacheKey('web', 'failed-history-chat'))?.map((message) => message.content)).toEqual([
-      'keep optimistic',
-    ])
+    expect(messagesCache.get(sessionCacheKey('web', 'failed-history-chat'))?.map((message) => message.content)).toEqual(['keep optimistic'])
     expect(result.current.error).toBe('history unavailable')
   })
 
@@ -704,13 +872,16 @@ describe('useChatMessages', () => {
       chat_id: string
       active_progress: { phase: string; stream_content: string }
     }>()
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const data = await history.promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const data = await history.promise
+        return new Response(JSON.stringify({ ok: true, data, error: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
     const ws = makeWS([])
     const { result } = renderHook(() => useChatMessages({ chatID: 'progress-chat', channel: 'web', ws }))
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
@@ -720,7 +891,10 @@ describe('useChatMessages', () => {
       history.resolve({
         messages: [],
         chat_id: 'progress-chat',
-        active_progress: { phase: 'thinking', stream_content: 'stale progress' },
+        active_progress: {
+          phase: 'thinking',
+          stream_content: 'stale progress',
+        },
       })
       await history.promise
     })
@@ -731,11 +905,10 @@ describe('useChatMessages', () => {
   })
 
   it('does not flash loading during same-session background reloads after an empty history loaded', async () => {
-    const pendingSecond = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
-    const ws = makeWS([
-      { messages: [] },
-      pendingSecond.promise,
-    ])
+    const pendingSecond = deferred<{
+      messages: { role: string; content: string; timestamp: string }[]
+    }>()
+    const ws = makeWS([{ messages: [] }, pendingSecond.promise])
 
     const { result } = renderHook(() =>
       useChatMessages({
@@ -759,9 +932,17 @@ describe('useChatMessages', () => {
     expect(result.current.loading).toBe(false)
   })
 
-  it('does not replace visible same-session rows with an empty background refresh', async () => {
+  it('accepts an authoritative empty same-session history response', async () => {
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'keep me', timestamp: '2026-07-08T00:00:00Z' }] },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'keep me',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+        ],
+      },
       { messages: [] },
     ])
 
@@ -779,19 +960,19 @@ describe('useChatMessages', () => {
       await result.current.reload()
     })
 
-    expect(result.current.messages.map((m) => m.content)).toEqual(['keep me'])
+    expect(result.current.messages).toEqual([])
     expect(result.current.loading).toBe(false)
   })
 
   it('accepts an empty history after an explicit destructive clear', async () => {
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'first', timestamp: '2026-07-08T00:00:00Z' }] },
+      {
+        messages: [{ role: 'user', content: 'first', timestamp: '2026-07-08T00:00:00Z' }],
+      },
       { messages: [] },
     ])
 
-    const { result } = renderHook(() =>
-      useChatMessages({ chatID: 'rewind-first', channel: 'web', ws }),
-    )
+    const { result } = renderHook(() => useChatMessages({ chatID: 'rewind-first', channel: 'web', ws }))
 
     await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['first']))
 
@@ -807,17 +988,35 @@ describe('useChatMessages', () => {
     const ws = makeWS([
       {
         messages: [
-          { role: 'user', content: 'prefix', timestamp: '2026-07-08T00:00:00Z' },
-          { role: 'user', content: 'rewind target', timestamp: '2026-07-08T00:00:01Z' },
-          { role: 'assistant', content: 'later reply', timestamp: '2026-07-08T00:00:02Z' },
+          {
+            role: 'user',
+            content: 'prefix',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+          {
+            role: 'user',
+            content: 'rewind target',
+            timestamp: '2026-07-08T00:00:01Z',
+          },
+          {
+            role: 'assistant',
+            content: 'later reply',
+            timestamp: '2026-07-08T00:00:02Z',
+          },
         ],
       },
-      { messages: [{ role: 'user', content: 'prefix', timestamp: '2026-07-08T00:00:00Z' }] },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'prefix',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+        ],
+      },
     ])
 
-    const { result } = renderHook(() =>
-      useChatMessages({ chatID: 'rewind-prefix', channel: 'web', ws }),
-    )
+    const { result } = renderHook(() => useChatMessages({ chatID: 'rewind-prefix', channel: 'web', ws }))
 
     await waitFor(() => expect(result.current.messages).toHaveLength(3))
 
@@ -830,9 +1029,19 @@ describe('useChatMessages', () => {
   })
 
   it('does not show the previous session while a newly selected session loads', async () => {
-    const pendingSecond = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
+    const pendingSecond = deferred<{
+      messages: { role: string; content: string; timestamp: string }[]
+    }>()
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'from A', timestamp: '2026-07-08T00:00:00Z' }] },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: 'from A',
+            timestamp: '2026-07-08T00:00:00Z',
+          },
+        ],
+      },
       pendingSecond.promise,
     ])
 
@@ -855,7 +1064,13 @@ describe('useChatMessages', () => {
 
     await act(async () => {
       pendingSecond.resolve({
-        messages: [{ role: 'user', content: 'from B', timestamp: '2026-07-08T00:00:01Z' }],
+        messages: [
+          {
+            role: 'user',
+            content: 'from B',
+            timestamp: '2026-07-08T00:00:01Z',
+          },
+        ],
       })
     })
 
@@ -865,7 +1080,9 @@ describe('useChatMessages', () => {
 
   it('sends /new to the agent without showing an optimistic slash-command row', async () => {
     const ws = makeWS([
-      { messages: [{ role: 'user', content: 'old', timestamp: '2026-07-08T00:00:00Z' }] },
+      {
+        messages: [{ role: 'user', content: 'old', timestamp: '2026-07-08T00:00:00Z' }],
+      },
     ])
 
     const { result } = renderHook(() =>
@@ -883,12 +1100,14 @@ describe('useChatMessages', () => {
     })
 
     expect(result.current.messages.map((m) => m.content)).toEqual(['old'])
-    expect(ws.send).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'message',
-      channel: 'web',
-      chat_id: 'chat-1',
-      content: '/new',
-    }))
+    expect(ws.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'message',
+        channel: 'web',
+        chat_id: 'chat-1',
+        content: '/new',
+      }),
+    )
   })
 
   it('does not subscribe to live user_echo events when live events are disabled', async () => {
@@ -905,6 +1124,125 @@ describe('useChatMessages', () => {
 
     await waitFor(() => expect(fetch).toHaveBeenCalled())
     expect(ws.onMessage).not.toHaveBeenCalled()
+  })
+
+  it('reloads authoritative history only for an exact-session sequence gap', async () => {
+    const handlers = new Set<(message: WSMessage) => void>()
+    const ws = makeWS([
+      { messages: [{ role: 'user', content: 'before gap', timestamp: '2026-07-08T00:00:00Z' }] },
+      { messages: [{ role: 'user', content: 'after gap', timestamp: '2026-07-08T00:00:01Z' }] },
+    ])
+    vi.mocked(ws.onMessage).mockImplementation((handler) => {
+      handlers.add(handler)
+      return () => handlers.delete(handler)
+    })
+    const { result } = renderHook(() => useChatMessages({ chatID: 'gap-chat', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['before gap']))
+
+    act(() => {
+      handlers.forEach((handler) => handler({
+        type: 'history_gap', channel: 'cli', chat_id: 'gap-chat',
+      }))
+    })
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      handlers.forEach((handler) => handler({
+        type: 'history_gap', channel: 'web', chat_id: 'gap-chat',
+      }))
+    })
+    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['after gap']))
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('reloads authoritative history only for an exact-session resync request', async () => {
+    const handlers = new Set<(message: WSMessage) => void>()
+    const ws = makeWS([
+      { messages: [{ role: 'user', content: 'before resync', timestamp: '2026-07-08T00:00:00Z' }] },
+      { messages: [{ role: 'user', content: 'after resync', timestamp: '2026-07-08T00:00:01Z' }] },
+    ])
+    vi.mocked(ws.onMessage).mockImplementation((handler) => {
+      handlers.add(handler)
+      return () => handlers.delete(handler)
+    })
+    const { result } = renderHook(() => useChatMessages({ chatID: 'resync-chat', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['before resync']))
+
+    act(() => {
+      handlers.forEach((handler) => handler({
+        type: 'resync_required', channel: 'cli', chat_id: 'resync-chat',
+      }))
+    })
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      handlers.forEach((handler) => handler({
+        type: 'resync_required', channel: 'web', chat_id: 'resync-chat',
+      }))
+    })
+    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['after resync']))
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('exposes processing and the complete active progress snapshot', async () => {
+    const ws = makeWS([{
+      messages: [],
+      processing: true,
+      chat_id: 'processing-chat',
+      active_progress: {
+        phase: 'thinking',
+        reasoning_stream_content: 'reasoning now',
+        token_usage: { prompt_tokens: 21, completion_tokens: 3, total_tokens: 24 },
+      },
+    }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'processing-chat', channel: 'web', ws }))
+
+    await waitFor(() => expect(result.current.processing).toBe(true))
+    expect(result.current.initialProgress).toMatchObject({
+      phase: 'thinking',
+      reasoning_stream_content: 'reasoning now',
+      token_usage: { prompt_tokens: 21, completion_tokens: 3, total_tokens: 24 },
+    })
+  })
+
+  it('does not let a pre-logout history response repopulate the cleared cache', async () => {
+    const history = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
+    const ws = makeWS([])
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const data = await history.promise
+      return new Response(JSON.stringify({ ok: true, data, error: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+    const hook = renderHook(() => useChatMessages({ chatID: 'shared-auth-chat', channel: 'web', ws }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+
+    clearWebCaches()
+    hook.unmount()
+    await act(async () => {
+      history.resolve({
+        messages: [{ role: 'user', content: 'previous user secret', timestamp: '2026-07-08T00:00:00Z' }],
+      })
+      await history.promise
+    })
+
+    expect(messagesCache.has(sessionCacheKey('web', 'shared-auth-chat'))).toBe(false)
+  })
+
+  it('keeps equal assistant text from distinct event sequences', async () => {
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'repeat-chat', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.appendAssistant('same answer', [], 10)
+      result.current.appendAssistant('same answer', [], 11)
+      result.current.appendAssistant('same answer', [], 11)
+    })
+
+    expect(result.current.messages).toHaveLength(2)
+    expect(result.current.messages.map((message) => message.eventSeq)).toEqual([10, 11])
   })
 
   it('does not refetch history when only the ws wrapper identity changes', async () => {
@@ -924,11 +1262,7 @@ describe('useChatMessages', () => {
       { initialProps: { currentWS: ws } },
     )
 
-    await waitFor(() => expect(ws.setLastSeq).toHaveBeenCalledWith(
-      'chat-stable-ws-wrapper',
-      11,
-      'web',
-    ))
+    await waitFor(() => expect(ws.setLastSeq).toHaveBeenCalledWith('chat-stable-ws-wrapper', 11, 'web'))
 
     rerender({ currentWS: replacement })
     await act(async () => {
@@ -939,42 +1273,105 @@ describe('useChatMessages', () => {
     expect(ws.setLastSeq).toHaveBeenCalledTimes(1)
   })
 
-  it('attaches SubAgent dump iterations to the assistant message', async () => {
+  it('loads Agent history through the canonical REST projection', async () => {
     const ws = makeWS([
       {
         messages: [
-          { role: 'user', content: 'check this' },
-          { role: 'assistant', content: 'done' },
-        ],
-        iterations: [
           {
-            iteration: 1,
-            thinking: 'thinking',
-            completed_tools: [{ name: 'Read', status: 'done', summary: 'ok' }],
+            history_id: 1,
+            record_type: 'message',
+            role: 'user',
+            content: 'check this',
+          },
+          {
+            history_id: 2,
+            record_type: 'message',
+            role: 'assistant',
+            content: '',
+            reasoning_content: 'thinking',
+            tool_calls: [{ id: 'call-1', name: 'Read', arguments: '{"path":"README.md"}' }],
+            iterations: [
+              {
+                iteration: 1,
+                reasoning: 'thinking',
+                tools: [{ name: 'Read', status: 'done', summary: 'ok' }],
+              },
+            ],
+          },
+          {
+            history_id: 3,
+            record_type: 'message',
+            role: 'tool',
+            content: 'file contents',
+            tool_call_id: 'call-1',
+            tool_name: 'Read',
+          },
+          {
+            history_id: 4,
+            record_type: 'message',
+            role: 'assistant',
+            content: '',
+            display_only: true,
+          },
+          {
+            history_id: 5,
+            record_type: 'compress',
+            role: 'system',
+            content: '[Compacted context]\nsummary',
+            compression: { source_history_ids: [1, 2, 3, 4] },
           },
         ],
+        active_progress: {
+          iteration: 1,
+          completed_tools: [{ name: 'Read', status: 'done', summary: 'ok' }],
+        },
       },
     ])
 
+    const fullKey = 'cli:/repo:Agent-main/review:1'
+
     const { result } = renderHook(() =>
       useChatMessages({
-        chatID: 'cli:/repo:Agent-main/review:1',
+        chatID: fullKey,
         channel: 'agent',
         ws,
-        agentChatID: 'cli:/repo:Agent-main/review:1',
       }),
     )
 
-    await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['check this', 'done']))
+    await waitFor(() => expect(result.current.messages).toHaveLength(5))
+    expect(result.current.messages.map((message) => message.historyID)).toEqual([1, 2, 3, 4, 5])
     expect(result.current.messages[1].iterations).toHaveLength(1)
     expect(result.current.messages[1].iterations[0].tools[0].name).toBe('Read')
+    expect(result.current.messages[1].toolCalls?.[0].id).toBe('call-1')
+    expect(result.current.messages[2]).toMatchObject({
+      role: 'tool',
+      toolCallID: 'call-1',
+      toolName: 'Read',
+    })
+    expect(result.current.messages[3]).toMatchObject({
+      role: 'assistant',
+      content: '',
+      displayOnly: true,
+    })
+    expect(result.current.messages[4].compression?.sourceHistoryIDs).toEqual([1, 2, 3, 4])
+    expect(ws.rpc).not.toHaveBeenCalled()
+    const [, request] = vi.mocked(fetch).mock.calls[0]
+    expect(JSON.parse(String(request?.body))).toEqual({
+      channel: 'agent',
+      chat_id: fullKey,
+    })
   })
 
-  it('loads nested SubAgent dumps by full key without truncating the parent chain', async () => {
+  it('loads nested Agent history without truncating the full key', async () => {
     const ws = makeWS([
       {
         messages: [
-          { role: 'assistant', content: 'nested done' },
+          {
+            history_id: 9,
+            record_type: 'message',
+            role: 'assistant',
+            content: 'nested done',
+          },
         ],
       },
     ])
@@ -985,40 +1382,70 @@ describe('useChatMessages', () => {
         chatID: fullKey,
         channel: 'agent',
         ws,
-        agentChatID: fullKey,
       }),
     )
 
     await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['nested done']))
-    expect(ws.rpc).toHaveBeenCalledWith('get_agent_session_dump_by_full_key', {
-      full_key: fullKey,
+    const [, request] = vi.mocked(fetch).mock.calls[0]
+    expect(JSON.parse(String(request?.body))).toEqual({
+      channel: 'agent',
+      chat_id: fullKey,
     })
   })
 
-  it('shows SubAgent dump iterations even when there is no assistant text yet', async () => {
-    const ws = makeWS([
-      {
-        messages: [],
-        iterations: [
-          {
-            iteration: 1,
-            completed_tools: [{ name: 'Shell', status: 'running', summary: 'running' }],
-          },
-        ],
-      },
-    ])
+  it('sends Agent messages through the canonical interactive continuation RPC', async () => {
+    const ws = makeWS([{ messages: [] }])
+    const fullKey = 'agent:web:chat-1/review:1/fix:2'
+    const { result } = renderHook(() => useChatMessages({ chatID: fullKey, channel: 'agent', ws }))
+    await waitFor(() => expect(fetch).toHaveBeenCalled())
 
-    const { result } = renderHook(() =>
-      useChatMessages({
-        chatID: 'cli:/repo:Agent-main/review:1',
-        channel: 'agent',
-        ws,
-        agentChatID: 'cli:/repo:Agent-main/review:1',
+    act(() => result.current.sendMessage('continue here'))
+
+    await waitFor(() =>
+      expect(ws.rpc).toHaveBeenCalledWith('continue_interactive_session', {
+        full_key: fullKey,
+        content: 'continue here',
       }),
     )
+    expect(ws.send).not.toHaveBeenCalled()
+  })
 
-    await waitFor(() => expect(result.current.messages).toHaveLength(1))
-    expect(result.current.messages[0].role).toBe('assistant')
-    expect(result.current.messages[0].iterations[0].tools[0].name).toBe('Shell')
+  it('restores the caller draft when an Agent continuation is rejected', async () => {
+    const ws = makeWS([{ messages: [] }])
+    vi.mocked(ws.rpc).mockRejectedValueOnce(new Error('no active interactive session'))
+    const onSendError = vi.fn()
+    const fullKey = 'web:chat-1/review:1'
+    const { result } = renderHook(() =>
+      useChatMessages({ chatID: fullKey, channel: 'agent', ws, onSendError }),
+    )
+    await waitFor(() => expect(fetch).toHaveBeenCalled())
+
+    act(() => result.current.sendMessage('keep this draft'))
+
+    await waitFor(() =>
+      expect(onSendError).toHaveBeenCalledWith(
+        'keep this draft',
+        expect.objectContaining({ message: 'no active interactive session' }),
+      ),
+    )
+    expect(result.current.messages).toEqual([])
+  })
+
+  it('restores the caller draft when a main-session send is rejected', async () => {
+    const ws = makeWS([{ messages: [] }])
+    vi.mocked(ws.send).mockRejectedValueOnce(new Error('send rejected'))
+    const onSendError = vi.fn()
+    const { result } = renderHook(() =>
+      useChatMessages({ chatID: 'main-chat', channel: 'web', ws, onSendError }),
+    )
+    await waitFor(() => expect(fetch).toHaveBeenCalled())
+
+    act(() => result.current.sendMessage('keep main draft'))
+
+    await waitFor(() => expect(onSendError).toHaveBeenCalledWith(
+      'keep main draft',
+      expect.objectContaining({ message: 'send rejected' }),
+    ))
+    expect(result.current.messages).toEqual([])
   })
 })

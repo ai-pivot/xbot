@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
-	"xbot/bus"
 	"xbot/llm"
 	"xbot/protocol"
 	"xbot/session"
@@ -59,6 +59,45 @@ func TestPersistenceBridgeCompressionAppendsAndReplays(t *testing.T) {
 	}
 	if len(records) != 3 || records[0].Message.Content != "raw user" || records[1].Message.Content != "raw answer" || records[2].Type != sqlite.HistoryRecordCompress {
 		t.Fatalf("full history=%+v", records)
+	}
+}
+
+func TestRunWaitingUserPersistsToolPairAndControlAtomically(t *testing.T) {
+	_, sess := newAgentHistorySession(t)
+	userID, err := sess.AppendMessage(llm.NewUserMessage("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock := &mockLLM{responses: []llm.LLMResponse{{
+		FinishReason: llm.FinishReasonToolCalls,
+		ToolCalls:    []llm.ToolCall{{ID: "ask-1", Name: "AskUser", Arguments: `{}`}},
+	}}}
+	out := Run(context.Background(), RunConfig{
+		LLMClient: mock, Model: "test", Session: sess, AgentID: "main",
+		Tools: newTestRegistry(&mockTool{name: "AskUser"}),
+		Messages: []llm.ChatMessage{
+			llm.NewSystemMessage("system"), {HistoryID: userID, Role: "user", Content: "hello"},
+		},
+		ToolExecutor: func(context.Context, llm.ToolCall) (*tools.ToolResult, error) {
+			return &tools.ToolResult{Summary: "waiting", WaitingUser: true, Metadata: map[string]string{"request_id": "r1"}}, nil
+		},
+	})
+	if out.Error != nil || !out.WaitingUser {
+		t.Fatalf("Run output=%+v", out)
+	}
+	records, err := sess.GetFullHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 4 || records[1].Type != sqlite.HistoryRecordMessage || records[2].Message.ToolName != "AskUser" || records[3].Type != sqlite.HistoryRecordAskQuestion {
+		t.Fatalf("AskUser history=%+v", records)
+	}
+	replay, err := sess.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.PendingAskUser == nil || replay.PendingAskUser.Metadata["request_id"] != "r1" {
+		t.Fatalf("pending AskUser=%+v", replay.PendingAskUser)
 	}
 }
 
@@ -221,6 +260,84 @@ func TestSyntheticToolPairAppendIsAtomic(t *testing.T) {
 	}
 }
 
+func TestSyntheticNotificationAppendFailureRemainsRetryable(t *testing.T) {
+	mt, sess := newAgentHistorySession(t)
+	if _, err := mt.DB().Conn().Exec(`
+		CREATE TRIGGER fail_notification_pair BEFORE INSERT ON session_messages
+		WHEN NEW.role = 'tool' AND NEW.tool_name = 'cron_fired' AND NEW.content LIKE '%retry me%'
+		BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{}
+	sessionKey := "test:chat"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(sessionKey, ss)
+	a.enqueueBgNotifications([]tools.BgNotification{
+		&tools.CronFired{Key: sessionKey, Sid: "user-1", Message: "commit once"},
+		&tools.CronFired{Key: sessionKey, Sid: "user-1", Message: "retry me"},
+	})
+
+	state := &runState{
+		cfg: RunConfig{
+			Session:                    sess,
+			DrainBgNotifications:       a.wireBgNotificationDrain(sessionKey),
+			AcknowledgeBgNotifications: a.wireBgNotificationAcknowledge(sessionKey),
+		},
+		persistence: NewPersistenceBridge(sess, 0),
+	}
+	if consumed := state.drainAndInjectBgNotifications(context.Background(), 1); consumed != 1 {
+		t.Fatalf("consumed=%d after second append failed, want 1", consumed)
+	}
+	if state.persistenceErr == nil {
+		t.Fatal("expected notification pair persistence failure")
+	}
+	if got := len(ss.snapshotDrainedThisRun()); got != 1 {
+		t.Fatalf("unacknowledged notifications=%d, want 1", got)
+	}
+	if records, err := sess.GetFullHistory(); err != nil || len(records) != 2 || !strings.Contains(records[1].Message.Content, "commit once") {
+		t.Fatalf("records before retry=%+v err=%v", records, err)
+	}
+
+	a.requeueDrainedBgNotifications(sessionKey)
+	if got := len(a.pendingBgNotifications(sessionKey)); got != 1 {
+		t.Fatalf("requeued notifications=%d, want 1", got)
+	}
+	if _, err := mt.DB().Conn().Exec(`DROP TRIGGER fail_notification_pair`); err != nil {
+		t.Fatal(err)
+	}
+	retry := &runState{
+		cfg: RunConfig{
+			Session:                    sess,
+			DrainBgNotifications:       a.wireBgNotificationDrain(sessionKey),
+			AcknowledgeBgNotifications: a.wireBgNotificationAcknowledge(sessionKey),
+		},
+		persistence: NewPersistenceBridge(sess, 0),
+	}
+	if consumed := retry.drainAndInjectBgNotifications(context.Background(), 2); consumed != 1 {
+		t.Fatalf("retry consumed=%d, want 1", consumed)
+	}
+	if retry.persistenceErr != nil {
+		t.Fatal(retry.persistenceErr)
+	}
+	if got := len(ss.snapshotDrainedThisRun()); got != 0 {
+		t.Fatalf("acknowledged notifications left in ledger: %d", got)
+	}
+	if got := len(a.pendingBgNotifications(sessionKey)); got != 0 {
+		t.Fatalf("acknowledged notifications left pending: %d", got)
+	}
+	records, err := sess.GetFullHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 4 ||
+		records[1].Message.ToolName != "cron_fired" || !strings.Contains(records[1].Message.Content, "commit once") ||
+		records[3].Message.ToolName != "cron_fired" || !strings.Contains(records[3].Message.Content, "retry me") {
+		t.Fatalf("retried pair records=%+v", records)
+	}
+}
+
 func TestPersistenceBridgeAppendFailureDoesNotAdvanceWatermark(t *testing.T) {
 	mt, sess := newAgentHistorySession(t)
 	bridge := NewPersistenceBridge(sess, 0)
@@ -339,6 +456,48 @@ func TestAggressiveTruncateAppendFailureKeepsEditorOnOldContext(t *testing.T) {
 	}
 }
 
+func TestAggressiveTruncatePersistsReplayEquivalentSingleSystemContext(t *testing.T) {
+	_, sess := newAgentHistorySession(t)
+	for i := 0; i < 10; i++ {
+		if _, err := sess.AppendMessage(llm.ChatMessage{Role: "user", Content: fmt.Sprintf("m%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, err := sess.GetMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := append([]llm.ChatMessage{{Role: "system", Content: "system"}}, loaded...)
+	state := &runState{
+		cfg: RunConfig{Session: sess}, messages: messages,
+		persistence: NewPersistenceBridge(sess, len(messages)), tokenTracker: NewTokenTracker(100, 0),
+	}
+	if !state.aggressiveTruncate(context.Background()) {
+		t.Fatal("aggressive truncate was not applied")
+	}
+	systemCount := 0
+	for _, message := range state.messages {
+		if message.Role == "system" {
+			systemCount++
+		}
+	}
+	if systemCount != 1 || len(state.messages) != 8 || state.messages[1].Role != "assistant" || !strings.HasPrefix(state.messages[1].Content, "[System notice:") {
+		t.Fatalf("truncated context=%+v", state.messages)
+	}
+	replayed, err := sess.GetMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replayed) != len(state.messages)-1 {
+		t.Fatalf("replayed=%+v state=%+v", replayed, state.messages)
+	}
+	for i := range replayed {
+		if replayed[i].Role != state.messages[i+1].Role || replayed[i].Content != state.messages[i+1].Content {
+			t.Fatalf("replay mismatch at %d: replay=%+v state=%+v", i, replayed[i], state.messages[i+1])
+		}
+	}
+}
+
 func TestContextEditorRollsBackWhenHistoryAppendFails(t *testing.T) {
 	messages := []llm.ChatMessage{
 		{HistoryID: 1, Role: "user", Content: "0123456789"},
@@ -452,9 +611,18 @@ func TestGetPendingAskUserRestoresFromHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &Agent{multiSession: mt}
+	if pending := agent.GetPendingAskUser("other", "chat"); pending != nil {
+		t.Fatalf("restored pending AskUser across channel boundary: %+v", pending)
+	}
 	pending := agent.GetPendingAskUser("test", "chat")
 	if pending == nil || pending.RequestID != "req-1" || len(pending.Questions) != 1 || pending.Questions[0].Question != "Continue?" {
 		t.Fatalf("restored pending=%+v", pending)
+	}
+	if _, ok := agent.waitingUserSessions.Load("test:chat"); !ok {
+		t.Fatal("DB replay did not cache pending AskUser under its qualified key")
+	}
+	if _, ok := agent.waitingUserSessions.Load(""); ok {
+		t.Fatal("DB replay cached pending AskUser under an empty key")
 	}
 }
 
@@ -481,29 +649,61 @@ func TestInteractiveInterruptionIsPersistedWithoutSystemMessage(t *testing.T) {
 	}
 }
 
-func TestEagerSavedUserAppearsOnceAndKeepsHistoryID(t *testing.T) {
-	history := []llm.ChatMessage{
-		{HistoryID: 1, Role: "user", Content: "old"},
-		{HistoryID: 2, Role: "assistant", Content: "answer"},
-		{HistoryID: 3, Role: "user", Content: "current"},
+func TestInteractiveInterruptionBatchRollsBackOnFailure(t *testing.T) {
+	mt, sess := newAgentHistorySession(t)
+	if _, err := mt.DB().Conn().Exec(`
+		CREATE TRIGGER fail_interruption_tool BEFORE INSERT ON session_messages
+		WHEN NEW.role = 'tool' AND NEW.tool_name = 'user_cancelled'
+		BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+	`); err != nil {
+		t.Fatal(err)
 	}
-	msg := bus.InboundMessage{Content: "current", Metadata: map[string]string{"user_msg_eager_saved": "true"}}
-	base, historyID, err := detachEagerSavedUser(history, msg)
+	if appended, err := appendInteractiveInterruption(sess, "partial"); err == nil || appended != nil {
+		t.Fatalf("append result=%+v err=%v", appended, err)
+	}
+	records, err := sess.GetFullHistory()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(base) != 2 || historyID != 3 {
-		t.Fatalf("base=%+v historyID=%d", base, historyID)
+	if len(records) != 0 {
+		t.Fatalf("interruption batch partially persisted: %+v", records)
 	}
-	assembled := append(append([]llm.ChatMessage(nil), base...), llm.ChatMessage{Role: "user", Content: "current with middleware"})
-	bindEagerSavedUser(assembled, historyID)
+}
+
+func TestAgentOwnedUserAppendIsNotDuplicatedByRun(t *testing.T) {
+	_, sess := newAgentHistorySession(t)
+	userID, err := sess.AppendMessage(llm.NewUserMessage("current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Run(context.Background(), RunConfig{
+		LLMClient: &mockLLM{responses: []llm.LLMResponse{{Content: "done"}}},
+		Model:     "test",
+		Session:   sess,
+		AgentID:   "main",
+		Tools:     newTestRegistry(),
+		Messages: []llm.ChatMessage{
+			llm.NewSystemMessage("system"),
+			{HistoryID: userID, Role: "user", Content: "current"},
+		},
+	})
+	if out.Error != nil {
+		t.Fatal(out.Error)
+	}
+	records, err := sess.GetFullHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
 	userCount := 0
-	for _, item := range assembled {
-		if item.Role == "user" && item.HistoryID == 3 {
+	for _, record := range records {
+		if record.Type == sqlite.HistoryRecordMessage && record.Message.Role == "user" {
 			userCount++
+			if record.HistoryID != userID {
+				t.Fatalf("user history_id=%d want %d", record.HistoryID, userID)
+			}
 		}
 	}
-	if userCount != 1 || assembled[len(assembled)-1].HistoryID != 3 {
-		t.Fatalf("assembled=%+v", assembled)
+	if userCount != 1 {
+		t.Fatalf("user rows=%d history=%+v", userCount, records)
 	}
 }

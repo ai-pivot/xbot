@@ -62,8 +62,37 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-/** Emit a WS message and flush the store's throttled notify within one act. */
-function emitAndFlush(msg: WSMessage) {
+function annotateSource(msg: WSMessage, channel: string, chatID: string): WSMessage {
+  return {
+    ...msg,
+    channel: msg.channel ?? channel,
+    chat_id: msg.chat_id ?? chatID,
+    session: msg.session
+      ? {
+          ...msg.session,
+          channel: msg.session.channel ?? channel,
+          chat_id: msg.session.chat_id ?? chatID,
+        }
+      : msg.session,
+    progress: msg.progress
+      ? {
+          ...msg.progress,
+          chat_id: msg.progress.chat_id ?? chatID,
+        }
+      : msg.progress,
+  }
+}
+
+/** Emit a message as SSEConnection would and flush the throttled store notify. */
+function emitAndFlush(msg: WSMessage, sourceChannel = 'web', sourceChatID = 'c1') {
+  act(() => {
+    currentWS.emit(annotateSource(msg, sourceChannel, sourceChatID))
+    const cbs = rafCbs.splice(0, rafCbs.length)
+    cbs.forEach((cb) => cb())
+  })
+}
+
+function emitRawAndFlush(msg: WSMessage) {
   act(() => {
     currentWS.emit(msg)
     const cbs = rafCbs.splice(0, rafCbs.length)
@@ -197,6 +226,40 @@ describe('useProgressStream event dispatch', () => {
     expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), undefined)
   })
 
+  it('accepts the final text after an authoritative resync reset', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'text', content: 'previous turn' })
+    emitAndFlush({ type: 'resync_required' })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+    emitAndFlush({ type: 'text', content: 'recovered final' })
+    emitAndFlush({ type: 'session', session: { action: 'idle' } })
+
+    expect(complete).toHaveBeenCalledTimes(2)
+    expect(complete.mock.calls.map((call) => call[0])).toEqual(['previous turn', 'recovered final'])
+  })
+
+  it('accepts one final text after history rewind without a busy event', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({
+      type: 'session',
+      session: { action: 'history_rewound', channel: 'web', chat_id: 'c1', target_history_id: 42 },
+    })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+    emitAndFlush({ type: 'text', content: 'replacement answer' })
+    emitAndFlush({ type: 'session', session: { action: 'idle' } })
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete).toHaveBeenCalledWith('replacement answer', expect.any(Array), undefined)
+  })
+
   it('handles session_reset text without appending assistant content', () => {
     const complete = vi.fn()
     const reset = vi.fn()
@@ -314,13 +377,135 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.liveMessage?.content).toBe('ours')
   })
 
-  it('ignores stream_content from a different chat (top-level chat_id filter)', () => {
-    const { result } = renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }))
+  it('clears progress and reloads only for an exact history_rewound session', () => {
+    const rewound = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        channel: 'web',
+        onHistoryRewound: rewound,
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'ours' } })
     emitAndFlush({
-      type: 'stream_content',
-      chat_id: 'other',
-      progress: { stream_content: 'not ours' },
+      type: 'session',
+      session: { action: 'history_rewound', channel: 'cli', chat_id: 'c1', target_history_id: 40 },
     })
+    expect(rewound).not.toHaveBeenCalled()
+    expect(result.current.liveMessage?.content).toBe('ours')
+
+    emitAndFlush({
+      type: 'session',
+      seq: 8,
+      session: { action: 'history_rewound', channel: 'web', chat_id: 'c1', target_history_id: 42 },
+    })
+    expect(rewound).toHaveBeenCalledWith(42, 8)
+    expect(result.current.liveMessage).toBeNull()
+  })
+
+  it('rejects every global event while no exact chat is selected', () => {
+    const complete = vi.fn()
+    const rewound = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({
+        chatID: null,
+        onAssistantComplete: complete,
+        onHistoryRewound: rewound,
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'foreign' } }, 'web', 'other')
+    emitAndFlush({ type: 'text', content: 'foreign final' }, 'web', 'other')
+    emitAndFlush({
+      type: 'session',
+      session: { action: 'history_rewound', target_history_id: 9 },
+    }, 'web', 'other')
+
+    expect(complete).not.toHaveBeenCalled()
+    expect(rewound).not.toHaveBeenCalled()
+    expect(result.current.liveMessage).toBeNull()
+  })
+
+  it('enters a visible busy state before the first progress payload', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'session', session: { action: 'busy' } })
+
+    expect(result.current.isStreaming).toBe(true)
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.progressSnapshot.phase).toBe('busy')
+  })
+
+  it('rejects session events without a source identity', () => {
+    const rewound = vi.fn()
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        channel: 'web',
+        onHistoryRewound: rewound,
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+
+    emitRawAndFlush({
+      type: 'session',
+      session: { action: 'history_rewound', target_history_id: 42 },
+    })
+
+    expect(rewound).not.toHaveBeenCalled()
+  })
+
+  it('isolates text and reset events for the same raw chat ID across channels', () => {
+    const webComplete = vi.fn()
+    const cliComplete = vi.fn()
+    const webReset = vi.fn()
+    const cliReset = vi.fn()
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'shared',
+        channel: 'web',
+        onAssistantComplete: webComplete,
+        onSessionReset: webReset,
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'shared',
+        channel: 'cli',
+        onAssistantComplete: cliComplete,
+        onSessionReset: cliReset,
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+
+    emitAndFlush({ type: 'text', content: 'web reply' }, 'web', 'shared')
+    expect(webComplete).toHaveBeenCalledWith('web reply', expect.any(Array), undefined)
+    expect(cliComplete).not.toHaveBeenCalled()
+
+    emitAndFlush(
+      { type: 'text', content: 'reset', metadata: { session_reset: 'true' } },
+      'cli',
+      'shared',
+    )
+    expect(cliReset).toHaveBeenCalledTimes(1)
+    expect(webReset).not.toHaveBeenCalled()
+  })
+
+  it('ignores stream_content from a different source chat', () => {
+    const { result } = renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }))
+    emitAndFlush(
+      {
+        type: 'stream_content',
+        progress: { stream_content: 'not ours' },
+      },
+      'web',
+      'other',
+    )
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -332,6 +517,10 @@ describe('useProgressStream event dispatch', () => {
           phase: 'thinking',
           iteration: 3,
           stream_content: 'resumed stream',
+          reasoning: 'last reasoning',
+          reasoning_stream_content: 'live reasoning',
+          token_usage: { prompt_tokens: 120, completion_tokens: 8, total_tokens: 128 },
+          streaming_tools: [{ name: 'Write', status: 'generating' }],
           active_tools: [{ name: 'Shell', status: 'running' }],
           completed_tools: [{ name: 'Read', status: 'done', summary: 'ok' }],
           // active_progress iteration_history uses the slim histIterSnapshot
@@ -367,6 +556,58 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.progressSnapshot.iterationHistory[0].tools[0].name).toBe('Grep')
     expect(result.current.progressSnapshot.subAgents[0].role).toBe('review')
     expect(result.current.progressSnapshot.subAgents[0].children?.[0].role).toBe('fix')
+    expect(result.current.progressSnapshot.reasoningStreamContent).toBe('live reasoning')
+    expect(result.current.progressSnapshot.lastReasoning).toBe('last reasoning')
+    expect(result.current.progressSnapshot.streamingTools[0].name).toBe('Write')
+    expect(result.current.progressSnapshot.tokenUsage).toEqual({
+      promptTokens: 120,
+      completionTokens: 8,
+      totalTokens: 128,
+    })
+  })
+
+  it('reopens finalization when active progress is hydrated for a later turn', () => {
+    const complete = vi.fn()
+    const { rerender } = renderHook(
+      ({ initialProgress }) => useProgressStream({
+        chatID: 'c1',
+        initialProgress,
+        onAssistantComplete: complete,
+        ws: currentWS as unknown as WSConnection,
+      }),
+      { initialProps: { initialProgress: null as ProgressEvent | null } },
+    )
+
+    emitAndFlush({ type: 'text', content: 'first' })
+    emitAndFlush({ type: 'session', session: { action: 'busy' } })
+    rerender({ initialProgress: { phase: 'processing', stream_content: 'resumed' } })
+    act(() => {
+      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+    })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+    emitAndFlush({ type: 'text', content: 'second' })
+
+    expect(complete.mock.calls.map((call) => call[0])).toEqual(['first', 'second'])
+  })
+
+  it('does not resurrect stale active progress after finalization', () => {
+    const { result, rerender } = renderHook(
+      ({ initialProgress }) => useProgressStream({
+        chatID: 'c1',
+        initialProgress,
+        ws: currentWS as unknown as WSConnection,
+      }),
+      { initialProps: { initialProgress: null as ProgressEvent | null } },
+    )
+
+    emitAndFlush({ type: 'text', content: 'final' })
+    rerender({ initialProgress: { phase: 'processing', stream_content: 'stale' } })
+    act(() => {
+      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+    })
+
+    expect(result.current.isStreaming).toBe(false)
+    expect(result.current.liveMessage).toBeNull()
   })
 
   it('installs a busy snapshot watermark and ignores replayed semantic logs', () => {

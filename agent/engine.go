@@ -222,6 +222,11 @@ type RunConfig struct {
 	// Returns nil when no notifications are pending. Called on each iteration.
 	DrainBgNotifications func() []tools.BgNotification
 
+	// AcknowledgeBgNotifications confirms that the first count notifications
+	// returned by DrainBgNotifications were durably persisted or intentionally
+	// discarded. A failed injection must not acknowledge its notification.
+	AcknowledgeBgNotifications func(count int)
+
 	// LLMSemAcquire is called before each LLM call to acquire a per-tenant
 	// concurrency slot. Returns a release function that must be called after
 	// the LLM call completes. If nil, no concurrency limiting is applied.

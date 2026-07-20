@@ -3,6 +3,7 @@ package channel
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -379,66 +380,120 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	return history
 }
 
-// ConvertHistoryRecords exposes the append-only DB history while preserving the
-// existing assistant/tool presentation shape. Control records remain in the
-// response; clients normally render only compression controls.
+// ConvertHistoryRecords exposes one row for every raw message and compression
+// marker while keeping internal history controls private.
 func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
-	var history []HistoryMessage
-	var segment []llm.ChatMessage
-	compactedBy := make(map[int64]int64)
-	for _, record := range records {
-		if record.CompactedBy != 0 {
-			compactedBy[record.HistoryID] = record.CompactedBy
+	ordered := append([]sqlite.HistoryRecord(nil), records...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].HistoryID < ordered[j].HistoryID
+	})
+
+	toolResults := make(map[string]string)
+	for _, record := range ordered {
+		if record.Type == sqlite.HistoryRecordMessage && record.Message.Role == "tool" && record.Message.ToolCallID != "" {
+			toolResults[record.Message.ToolCallID] = record.Message.Content
 		}
 	}
-	flush := func() {
-		if len(segment) == 0 {
-			return
-		}
-		converted := ConvertMessagesToHistory(segment)
-		displayOnlyByID := make(map[int64]bool, len(segment))
-		for _, message := range segment {
-			displayOnlyByID[message.HistoryID] = message.DisplayOnly
-		}
-		for i := range converted {
-			converted[i].RecordType = string(sqlite.HistoryRecordMessage)
-			converted[i].CompactedBy = compactedBy[converted[i].HistoryID]
-			converted[i].DisplayOnly = displayOnlyByID[converted[i].HistoryID]
-		}
-		history = append(history, converted...)
-		segment = nil
-	}
-	for _, record := range records {
+
+	history := make([]HistoryMessage, 0, len(ordered))
+	for _, record := range ordered {
 		if record.Type == sqlite.HistoryRecordMessage {
-			segment = append(segment, record.Message)
-			continue
-		}
-		flush()
-		control := HistoryMessage{
-			HistoryID: record.HistoryID, Role: "control", Timestamp: record.CreatedAt, RecordType: string(record.Type), TargetHistoryID: record.TargetHistoryID,
-		}
-		if record.Type == sqlite.HistoryRecordCompress {
-			control.Role = "system"
-			control.Content = "[Compacted context]"
-			var snapshot sqlite.ContextSnapshot
-			if err := json.Unmarshal(record.Data, &snapshot); err == nil {
-				for _, msg := range snapshot.Messages {
-					if strings.HasPrefix(strings.TrimSpace(msg.Content), "[Compacted context]") {
-						control.Content = msg.Content
-						break
-					}
+			message := record.Message
+			timestamp := message.Timestamp
+			if timestamp.IsZero() {
+				timestamp = record.CreatedAt
+			}
+			toolCalls := make([]protocol.HistoryToolCall, len(message.ToolCalls))
+			for i, call := range message.ToolCalls {
+				toolCalls[i] = protocol.HistoryToolCall{
+					ID: call.ID, Name: call.Name, Arguments: call.Arguments,
 				}
 			}
-			if record.Compression != nil {
-				control.Compression = &protocol.HistoryCompression{
-					StartHistoryID:   record.Compression.StartHistoryID,
-					EndHistoryID:     record.Compression.EndHistoryID,
-					SourceHistoryIDs: append([]int64(nil), record.Compression.SourceHistoryIDs...),
+			history = append(history, HistoryMessage{
+				HistoryID:        record.HistoryID,
+				Role:             message.Role,
+				Content:          message.Content,
+				ReasoningContent: message.ReasoningContent,
+				ToolCallID:       message.ToolCallID,
+				ToolName:         message.ToolName,
+				ToolArguments:    message.ToolArguments,
+				ToolCalls:        toolCalls,
+				Timestamp:        timestamp,
+				Iterations:       rawMessageIterations(message, toolResults),
+				RecordType:       string(sqlite.HistoryRecordMessage),
+				CompactedBy:      record.CompactedBy,
+				DisplayOnly:      message.DisplayOnly,
+			})
+			continue
+		}
+		if record.Type != sqlite.HistoryRecordCompress {
+			continue
+		}
+		control := HistoryMessage{
+			HistoryID: record.HistoryID, Role: "control", Timestamp: record.CreatedAt, RecordType: string(record.Type),
+			TargetHistoryID: record.TargetHistoryID, CompactedBy: record.CompactedBy,
+		}
+		control.Role = "system"
+		control.Content = "[Compacted context]"
+		var snapshot sqlite.ContextSnapshot
+		if err := json.Unmarshal(record.Data, &snapshot); err == nil {
+			for _, msg := range snapshot.Messages {
+				if strings.HasPrefix(strings.TrimSpace(msg.Content), "[Compacted context]") {
+					control.Content = msg.Content
+					break
 				}
+			}
+		}
+		if record.Compression != nil {
+			control.Compression = &protocol.HistoryCompression{
+				StartHistoryID:   record.Compression.StartHistoryID,
+				EndHistoryID:     record.Compression.EndHistoryID,
+				SourceHistoryIDs: append([]int64(nil), record.Compression.SourceHistoryIDs...),
 			}
 		}
 		history = append(history, control)
 	}
-	flush()
 	return history
+}
+
+func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string) []HistoryIteration {
+	if message.Detail != "" {
+		var snapshots []iterSnapshot
+		if err := json.Unmarshal([]byte(message.Detail), &snapshots); err == nil {
+			iterations := make([]HistoryIteration, len(snapshots))
+			for i, snapshot := range snapshots {
+				tools := make([]protocol.ToolProgress, len(snapshot.Tools))
+				for j, tool := range snapshot.Tools {
+					label := tool.Label
+					if label == "" {
+						label = tool.Name
+					}
+					tools[j] = protocol.ToolProgress{
+						Name: tool.Name, Label: label, Status: tool.Status,
+						Elapsed: tool.ElapsedMS, Iteration: snapshot.Iteration, Summary: tool.Summary,
+					}
+				}
+				iterations[i] = HistoryIteration{
+					Iteration: snapshot.Iteration, Content: snapshot.Content,
+					Reasoning: snapshot.Reasoning, Tools: tools,
+				}
+			}
+			return iterations
+		}
+	}
+	if message.Role != "assistant" || (len(message.ToolCalls) == 0 && message.ReasoningContent == "") {
+		return nil
+	}
+	tools := make([]protocol.ToolProgress, len(message.ToolCalls))
+	for i, call := range message.ToolCalls {
+		status := "done"
+		if content, ok := toolResults[call.ID]; ok && strings.HasPrefix(content, "Error:") {
+			status = "error"
+		}
+		tools[i] = protocol.ToolProgress{
+			Name: call.Name, Label: formatToolLabel(call.Name, call.Arguments),
+			Status: status, Iteration: 1,
+		}
+	}
+	return []HistoryIteration{{Iteration: 1, Reasoning: message.ReasoningContent, Tools: tools}}
 }

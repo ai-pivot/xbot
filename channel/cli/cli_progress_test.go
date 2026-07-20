@@ -664,7 +664,7 @@ func TestCancelMessagePreservesCurrentUnsnappedIteration(t *testing.T) {
 // fields). Before the fix, isStreamOnly did not check StreamTokens>0, so these
 // events fell through to the structured path and REPLACED m.progressState.current
 // with an empty shell — wiping Phase/Iteration/ActiveTools.
-func TestCompReloadingClearedOnStaleAndErrorPaths(t *testing.T) {
+func TestCompReloadingUnaffectedByStaleAndClearedOnErrorPaths(t *testing.T) {
 	// Stale path: different chatID.
 	model := initTestModel()
 	model.splashState.compReloading = true
@@ -672,8 +672,8 @@ func TestCompReloadingClearedOnStaleAndErrorPaths(t *testing.T) {
 		channelName: "cli",
 		chatID:      "/different-session",
 	})
-	if model.splashState.compReloading {
-		t.Fatal("compReloading not cleared on stale session path")
+	if !model.splashState.compReloading {
+		t.Fatal("stale session reload changed the active session loading state")
 	}
 
 	// Error path: reload failed.
@@ -1939,6 +1939,76 @@ func TestHistoryReloadForceFullRebuildNoAssistantCreatesOne(t *testing.T) {
 	streaming := model.messages[model.streamingMsgIdx]
 	if !streaming.isPartial {
 		t.Fatal("created streaming assistant should have isPartial=true")
+	}
+}
+
+func TestHistoryReloadForceFullRebuildDoesNotCrossHistoryBoundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		boundary channel.HistoryMessage
+	}{
+		{
+			name: "compression marker",
+			boundary: channel.HistoryMessage{
+				HistoryID:  12,
+				RecordType: "compress",
+				Role:       "system",
+				Content:    "[Compacted context]",
+			},
+		},
+		{
+			name: "user message",
+			boundary: channel.HistoryMessage{
+				HistoryID:  12,
+				RecordType: "message",
+				Role:       "user",
+				Content:    "next turn",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := initTestModel()
+			model.typing = true
+			model.agentTurnID = 5
+			now := time.Now()
+			tt.boundary.Timestamp = now.Add(time.Second)
+
+			model.handleHistoryReload(cliHistoryReloadMsg{
+				channelName:      model.channelName,
+				chatID:           model.chatID,
+				forceFullRebuild: true,
+				history: []channel.HistoryMessage{
+					{HistoryID: 11, RecordType: "message", Role: "assistant", Content: "original reply", Timestamp: now},
+					tt.boundary,
+				},
+			})
+
+			if got := model.messages[0]; got.content != "original reply" || got.isPartial {
+				t.Fatalf("original assistant was reused as streaming target: %+v", got)
+			}
+			if model.streamingMsgIdx != len(model.messages)-1 {
+				t.Fatalf("streamingMsgIdx=%d, want tail index %d", model.streamingMsgIdx, len(model.messages)-1)
+			}
+			streaming := model.messages[model.streamingMsgIdx]
+			if streaming.role != "assistant" || !streaming.isPartial || streaming.content != "" || streaming.historyID != 0 {
+				t.Fatalf("expected fresh streaming slot after boundary, got %+v", streaming)
+			}
+			if model.messages[len(model.messages)-2].historyID != tt.boundary.HistoryID {
+				t.Fatalf("streaming slot was not appended after boundary: %+v", model.messages)
+			}
+
+			model.handleAgentMessage(channel.OutboundMsg{
+				Channel: model.channelName, ChatID: model.chatID, Content: "final reply",
+			})
+			if model.messages[0].content != "original reply" {
+				t.Fatalf("final reply overwrote original assistant: %+v", model.messages)
+			}
+			if got := model.messages[len(model.messages)-1].content; got != "final reply" {
+				t.Fatalf("final reply=%q, want it at history tail", got)
+			}
+		})
 	}
 }
 

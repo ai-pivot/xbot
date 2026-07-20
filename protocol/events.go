@@ -116,18 +116,31 @@ type HistoryIteration struct {
 	ElapsedWall int64          `json:"elapsed_wall"`
 }
 
+// HistoryToolCall preserves the raw assistant tool-call relation in the
+// append-only history projection.
+type HistoryToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 // HistoryMessage represents a message in session history.
 type HistoryMessage struct {
-	HistoryID       int64               `json:"history_id,omitempty"`
-	Role            string              `json:"role"`
-	Content         string              `json:"content"`
-	Timestamp       time.Time           `json:"timestamp"`
-	Iterations      []HistoryIteration  `json:"iterations,omitempty"`
-	RecordType      string              `json:"record_type,omitempty"`
-	TargetHistoryID int64               `json:"target_history_id,omitempty"`
-	CompactedBy     int64               `json:"compacted_by,omitempty"`
-	Compression     *HistoryCompression `json:"compression,omitempty"`
-	DisplayOnly     bool                `json:"display_only,omitempty"`
+	HistoryID        int64               `json:"history_id,omitempty"`
+	Role             string              `json:"role"`
+	Content          string              `json:"content"`
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ToolCallID       string              `json:"tool_call_id,omitempty"`
+	ToolName         string              `json:"tool_name,omitempty"`
+	ToolArguments    string              `json:"tool_arguments,omitempty"`
+	ToolCalls        []HistoryToolCall   `json:"tool_calls,omitempty"`
+	Timestamp        time.Time           `json:"timestamp"`
+	Iterations       []HistoryIteration  `json:"iterations,omitempty"`
+	RecordType       string              `json:"record_type,omitempty"`
+	TargetHistoryID  int64               `json:"target_history_id,omitempty"`
+	CompactedBy      int64               `json:"compacted_by,omitempty"`
+	Compression      *HistoryCompression `json:"compression,omitempty"`
+	DisplayOnly      bool                `json:"display_only,omitempty"`
 }
 
 // HistoryCompression describes the original DB nodes replaced by one
@@ -270,16 +283,17 @@ func (AskUserEvent) EventVersion() int { return 1 }
 // Covers busy/idle transitions, session lifecycle (create/delete/rename),
 // and SubAgent lifecycle (started/stopped).
 // Action values: "busy", "idle", "created", "deleted", "renamed",
-// "subagent_started", "subagent_stopped".
+// "subagent_started", "subagent_stopped", "history_rewound".
 type SessionEvent struct {
-	Channel    string `json:"channel"`
-	ChatID     string `json:"chat_id"`
-	Action     string `json:"action"`
-	Label      string `json:"label,omitempty"`
-	Role       string `json:"role,omitempty"`
-	Instance   string `json:"instance,omitempty"`
-	SessionKey string `json:"session_key,omitempty"`
-	ParentID   string `json:"parent_id,omitempty"`
+	Channel         string `json:"channel"`
+	ChatID          string `json:"chat_id"`
+	Action          string `json:"action"`
+	Label           string `json:"label,omitempty"`
+	Role            string `json:"role,omitempty"`
+	Instance        string `json:"instance,omitempty"`
+	SessionKey      string `json:"session_key,omitempty"`
+	ParentID        string `json:"parent_id,omitempty"`
+	TargetHistoryID int64  `json:"target_history_id,omitempty"`
 }
 
 func (SessionEvent) EventType() string { return "session" }

@@ -319,7 +319,7 @@ func TestWebSocketAuth(t *testing.T) {
 	}
 	wc.hub.mu.RUnlock()
 	if clientCID != "" {
-		wc.hub.subscribe(clientCID, "web-1")
+		wc.hub.subscribe(clientCID, sessionRouteKey("web", "web-1"))
 	}
 	conn.Close()
 }
@@ -370,6 +370,20 @@ func TestWebSocketChat(t *testing.T) {
 		}
 		if !strings.HasPrefix(msg.SenderID, "web-") {
 			t.Errorf("expected senderID to start with 'web-', got '%s'", msg.SenderID)
+		}
+		if msg.Metadata["user_msg_eager_saved"] != "" {
+			t.Fatalf("WS transport marked user message as eagerly saved: %#v", msg.Metadata)
+		}
+		var persisted int
+		if err := db.QueryRow(`
+			SELECT COUNT(*) FROM session_messages sm
+			JOIN tenants t ON t.id = sm.tenant_id
+			WHERE t.channel = ? AND t.chat_id = ?
+		`, msg.Channel, msg.ChatID).Scan(&persisted); err != nil {
+			t.Fatal(err)
+		}
+		if persisted != 0 {
+			t.Fatalf("WS transport persisted %d history rows before Agent admission", persisted)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for inbound message")
@@ -535,7 +549,7 @@ func TestChatsCreateSetsCurrentSession(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
 	wc.SetCallbacks(WebCallbacks{
-		ChatCreate: func(senderID, label string) (string, error) {
+		ChatCreate: func(senderID, label string, canonicalUserID int64) (string, error) {
 			return "created-chat", nil
 		},
 	})
@@ -712,7 +726,7 @@ func TestSendToWebSocket(t *testing.T) {
 	}
 	wc.hub.mu.RUnlock()
 	if clientCID != "" {
-		wc.hub.subscribe(clientCID, "web-1")
+		wc.hub.subscribe(clientCID, sessionRouteKey("web", "web-1"))
 	}
 
 	// Send a message to the client
@@ -742,6 +756,79 @@ func TestSendToWebSocket(t *testing.T) {
 	}
 	if wsMsg.ID == "" {
 		t.Error("expected non-empty WS message ID")
+	}
+}
+
+func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	db := newTestDB(t)
+	wc := NewWebChannel(WebChannelConfig{Host: "127.0.0.1", Port: 0, DB: db, AdminToken: "test-token"}, msgBus)
+	wc.SetCallbacks(WebCallbacks{IdentityResolver: fixedIdentityResolver{userID: 1, role: "admin"}})
+	wc.SetOSSProvider(fixedOSSProvider{})
+	server := startTestServer(t, wc)
+	chatID := "/repo/upload"
+
+	webObserver := &Client{
+		connType:     clientConnTypeWS,
+		sendCh:       make(chan protocol.WSMessage, 1),
+		done:         make(chan struct{}),
+		id:           "web-upload-observer",
+		statelessSig: make(chan struct{}, 1),
+	}
+	wc.hub.addClient(webObserver.id, webObserver)
+	wc.hub.subscribe(webObserver.id, sessionRouteKey("web", chatID))
+
+	dialer := websocket.Dialer{}
+	wsURL := strings.Replace(server.URL, "http://", "ws://", 1) + "/ws?client_type=cli&token=test-token"
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		status := -1
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("remote CLI WebSocket dial failed: %v (status: %d)", err, status)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(protocol.WSClientMessage{
+		Type: protocol.MsgTypeSubscribe, Channel: "cli", ChatID: chatID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var syncAck protocol.WSMessage
+	if err := conn.ReadJSON(&syncAck); err != nil || syncAck.Type != protocol.MsgTypeSync {
+		t.Fatalf("remote CLI subscribe ack = %#v, err=%v", syncAck, err)
+	}
+	if err := conn.WriteJSON(protocol.WSClientMessage{
+		Type:       protocol.MsgTypeMessage,
+		Channel:    "cli",
+		ChatID:     chatID,
+		Content:    "inspect",
+		UploadKeys: []string{"upload-key"},
+		FileNames:  []string{"report.txt"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var echo protocol.WSMessage
+	if err := conn.ReadJSON(&echo); err != nil {
+		t.Fatal(err)
+	}
+	if echo.Type != protocol.MsgTypeUserEcho || echo.OriginalContent != "inspect" || !strings.Contains(echo.Content, "report.txt") {
+		t.Fatalf("remote CLI upload echo = %#v", echo)
+	}
+	select {
+	case leaked := <-webObserver.sendCh:
+		t.Fatalf("CLI upload echo leaked to Web route: %#v", leaked)
+	default:
+	}
+	select {
+	case inbound := <-msgBus.Inbound:
+		if inbound.Channel != "cli" || inbound.ChatID != chatID || !strings.Contains(inbound.Content, "report.txt") {
+			t.Fatalf("remote CLI upload inbound = %#v", inbound)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("remote CLI upload was not handed to the Agent bus")
 	}
 }
 
@@ -845,7 +932,8 @@ func TestHubOfflineBuffering(t *testing.T) {
 	hub := newHub()
 
 	chatID := "web-1"
-	msg := protocol.WSMessage{Content: "offline msg"}
+	routeKey := sessionRouteKey("web", chatID)
+	msg := protocol.WSMessage{Type: protocol.MsgTypeText, Content: "offline msg"}
 
 	// Send to unsubscribed chatID → should be buffered
 	ok := hub.sendToClient(chatID, msg)
@@ -854,7 +942,7 @@ func TestHubOfflineBuffering(t *testing.T) {
 	}
 
 	// Verify buffered message count
-	if hub.offline[chatID] == nil || hub.offline[chatID].count != 1 {
+	if hub.offline[routeKey] == nil || hub.offline[routeKey].count != 1 {
 		t.Error("expected 1 buffered message")
 	}
 
@@ -866,7 +954,7 @@ func TestHubOfflineBuffering(t *testing.T) {
 		statelessSig: make(chan struct{}, 1),
 	}
 	hub.addClient(client.id, client)
-	hub.subscribe(client.id, chatID)
+	hub.subscribe(client.id, routeKey)
 
 	// Wait for flush
 	time.Sleep(100 * time.Millisecond)
@@ -1132,7 +1220,7 @@ func TestConcurrentSends(t *testing.T) {
 	if clientCID == "" {
 		t.Fatal("no connected clients in hub")
 	}
-	wc.hub.subscribe(clientCID, "web-1")
+	wc.hub.subscribe(clientCID, sessionRouteKey("web", "web-1"))
 
 	// Send messages concurrently — must not block (non-blocking design)
 	// sendCh has capacity 64, so some may be dropped for rapid sends
@@ -1191,15 +1279,21 @@ func TestConcurrentSends(t *testing.T) {
 
 func TestPushPluginWidgetsPerSession_Incremental(t *testing.T) {
 	h := newHub()
-	// Add a client and subscribe to chatID "chat1"
+	// Only channel-qualified CLI routes participate in widget rendering.
 	cl := &Client{sendCh: make(chan protocol.WSMessage, 16), statelessSig: make(chan struct{}, 1)}
 	h.addClient("client1", cl)
-	h.subscribe("client1", "/home/user/test")
+	h.subscribe("client1", sessionRouteKey("cli", "/home/user/test"))
+	webClient := &Client{sendCh: make(chan protocol.WSMessage, 1), statelessSig: make(chan struct{}, 1)}
+	h.addClient("web-client", webClient)
+	h.subscribe("web-client", sessionRouteKey("web", "/home/user/web"))
 
 	rcli := NewRemoteCLIChannel(h)
 
 	callIdx := 0
 	renderFn := func(chatID string) map[string]string {
+		if chatID != "/home/user/test" {
+			t.Fatalf("widget renderer received non-CLI or qualified route %q", chatID)
+		}
 		callIdx++
 		if callIdx == 1 {
 			return map[string]string{"zone1": "contentA"}
@@ -1219,6 +1313,11 @@ func TestPushPluginWidgetsPerSession_Incremental(t *testing.T) {
 		}
 	default:
 		t.Error("first push should have sent a message")
+	}
+	select {
+	case msg := <-webClient.sendCh:
+		t.Fatalf("widget leaked to Web route: %#v", msg)
+	default:
 	}
 
 	// Second push — same content, should be skipped (incremental)
@@ -1316,29 +1415,6 @@ func TestRPCNonBlocking(t *testing.T) {
 	}
 	if secondResp.ID != "rpc-slow" {
 		t.Errorf("expected slow RPC response second, got ID=%s", secondResp.ID)
-	}
-}
-
-func TestShouldEagerSaveUserMessageSkipsCommands(t *testing.T) {
-	cases := []struct {
-		name    string
-		channel string
-		content string
-		want    bool
-	}{
-		{name: "web normal", channel: "web", content: "hello", want: true},
-		{name: "web empty", channel: "web", content: "", want: true},
-		{name: "cli normal", channel: "cli", content: "hello", want: false},
-		{name: "bang command", channel: "web", content: "!pwd", want: false},
-		{name: "slash new", channel: "web", content: "/new", want: false},
-		{name: "slash rewind", channel: "web", content: "/rewind", want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldEagerSaveUserMessage(tc.channel, tc.content); got != tc.want {
-				t.Fatalf("shouldEagerSaveUserMessage(%q, %q) = %v, want %v", tc.channel, tc.content, got, tc.want)
-			}
-		})
 	}
 }
 

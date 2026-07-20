@@ -210,6 +210,9 @@ const en: Translations = {
     navNextUser: 'Next user message',
     navToBottom: 'Scroll to bottom',
     newContent: 'New content',
+    compactedContext: 'Compacted context',
+    compactedContextCount: 'Compacted context · {{count}} messages',
+    compressionSummaryUnavailable: 'No summary available',
   },
   settings: {
     title: 'Settings',

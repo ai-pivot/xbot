@@ -34,25 +34,20 @@ describe('SubAgentProgressTree', () => {
     expect(container.textContent).toContain('searching codebase')
   })
 
-  it('renders a done SubAgent node without sweep animation', () => {
+  it('does not render a completed top-level SubAgent twice', () => {
     const nodes: WebSubAgentProgress[] = [
       { role: 'dev-node', instance: 'fix-1', status: 'done', desc: 'completed task' },
     ]
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
-    expect(container.querySelector('.sweep-text')).toBeNull()
-    // Should show the role and desc
-    expect(container.textContent).toContain('dev-node:fix-1')
-    expect(container.textContent).toContain('completed task')
+    expect(container.firstChild).toBeNull()
   })
 
-  it('renders an error SubAgent node', () => {
+  it('does not render a failed top-level SubAgent twice', () => {
     const nodes: WebSubAgentProgress[] = [
       { role: 'reviewer', instance: 'cr-1', status: 'error', desc: 'failed' },
     ]
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
-    expect(container.querySelector('.sweep-text')).toBeNull()
-    expect(container.textContent).toContain('reviewer:cr-1')
-    expect(container.textContent).toContain('failed')
+    expect(container.firstChild).toBeNull()
   })
 
   it('renders children with dashed border connection', () => {
@@ -80,16 +75,16 @@ describe('SubAgentProgressTree', () => {
     expect(container.querySelector('.animate-pulse')).toBeNull()
   })
 
-  it('renders multiple top-level nodes', () => {
+  it('renders only active top-level nodes', () => {
     const nodes: WebSubAgentProgress[] = [
       { role: 'explore', instance: 'a', status: 'running', desc: 'search A' },
       { role: 'explore', instance: 'b', status: 'done', desc: 'search B' },
     ]
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
     expect(container.textContent).toContain('explore:a')
-    expect(container.textContent).toContain('explore:b')
     expect(container.textContent).toContain('search A')
-    expect(container.textContent).toContain('search B')
+    expect(container.textContent).not.toContain('explore:b')
+    expect(container.textContent).not.toContain('search B')
   })
 
   it('renders node without instance', () => {

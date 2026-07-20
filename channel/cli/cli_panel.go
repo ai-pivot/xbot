@@ -122,6 +122,8 @@ func (m *cliModel) closePanel() {
 	m.panelState.askUser.askTab = 0
 	m.panelState.askUser.askOptSel = nil
 	m.panelState.askUser.askOptCursor = nil
+	m.panelState.askUser.onAnswer = nil
+	m.panelState.askUser.onCancel = nil
 	// Bg tasks/agents panel cleanup
 	m.cleanupCompletedBgTasks()
 	m.panelState.misc.bgTasks = nil

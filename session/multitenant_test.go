@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"xbot/config"
 	"xbot/llm"
 	"xbot/memory/letta"
+	"xbot/storage/sqlite"
 )
 
 func TestMultiTenantSession_GetOrCreateSession(t *testing.T) {
@@ -61,6 +63,26 @@ func TestMultiTenantSession_GetOrCreateSession(t *testing.T) {
 	}
 	if sess3.TenantID() == sess1.TenantID() || sess3.TenantID() == sess2.TenantID() {
 		t.Error("Expected different tenant ID for different channel")
+	}
+}
+
+func TestMultiTenantSession_OwnedSessionRejectsCachedForeignOwner(t *testing.T) {
+	mt, err := NewMultiTenant(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("create multi-tenant session: %v", err)
+	}
+	defer mt.Close()
+
+	first, err := mt.GetOrCreateSessionWithOwner("agent", "web:chat/review:1", 42)
+	if err != nil {
+		t.Fatalf("create owned agent session: %v", err)
+	}
+	again, err := mt.GetOrCreateSessionWithOwner("agent", "web:chat/review:1", 42)
+	if err != nil || again != first {
+		t.Fatalf("same owner cached session = (%p, %v), want (%p, nil)", again, err, first)
+	}
+	if _, err := mt.GetOrCreateSessionWithOwner("agent", "web:chat/review:1", 99); !errors.Is(err, sqlite.ErrTenantOwnerConflict) {
+		t.Fatalf("foreign cached owner error = %v, want ErrTenantOwnerConflict", err)
 	}
 }
 

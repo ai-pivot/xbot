@@ -126,6 +126,16 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 		return m, nil
 	}
 
+	// Rewind mutates persisted history behind this composer. Freeze input until
+	// the RPC resolves so a normal Run cannot queue behind the rewind gate and
+	// the response cannot overwrite a draft edited in the meantime.
+	if m.rewindPending {
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.PasteMsg:
+			return m, nil
+		}
+	}
+
 	// Ctrl+C: 统一处理，位于所有其他 key handler 之前。
 	// 这是唯一的 Ctrl+C 处理点——任何其他地方不得再拦截 Ctrl+C。
 	// 保证无论什么状态（typing/idle/panel/queue/editing），Ctrl+C 始终有效。
@@ -288,6 +298,35 @@ func (m *cliModel) Update(msg tea.Msg) (model tea.Model, retCmd tea.Cmd) {
 
 	case cliSessionStateMsg:
 		m.handleSessionStateMsg(msg)
+
+	case cliRewindDoneMsg:
+		m.handleRewindDoneMsg(msg)
+
+	case cliAgentContinueAcceptedMsg:
+		if msg.channelName != m.channelName || msg.chatID != m.chatID {
+			break
+		}
+		if msg.err != nil {
+			m.pendingUserMsg = nil
+			filtered := m.messages[:0]
+			for _, historyMsg := range m.messages {
+				unsentUser := historyMsg.historyID == 0 && historyMsg.role == "user" && historyMsg.content == msg.content
+				failedStream := historyMsg.isPartial && historyMsg.turnID == m.agentTurnID
+				if !unsentUser && !failedStream {
+					filtered = append(filtered, historyMsg)
+				}
+			}
+			m.messages = filtered
+			m.streamingMsgIdx = -1
+			m.endAgentTurn(m.agentTurnID)
+			m.showSystemMsg(fmt.Sprintf("Send failed: %v", msg.err), feedbackError)
+			m.invalidateAllCache(false)
+			m.updateViewportContent()
+			break
+		}
+		// Success only means the asynchronous interactive Run was accepted.
+		// Keep live progress intact; PhaseDone and existing reload paths publish
+		// the durable timeline without racing a premature canonical reload.
 
 	case cliProcessingMsg:
 		// suLoading guard: during session switch, handleSuHistoryLoad

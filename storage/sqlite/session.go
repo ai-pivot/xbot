@@ -3,7 +3,6 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"time"
 
 	"xbot/llm"
 	log "xbot/logger"
@@ -44,31 +43,34 @@ func (s *SessionService) AddMessage(tenantID int64, msg llm.ChatMessage) error {
 //
 // Returns sql.ErrNoRows if no matching message exists.
 func (s *SessionService) ReplaceToolMessage(tenantID int64, toolName, toolCallID, content string) error {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
-	if toolName == "AskUser" {
-		_, err := s.appendAskAnswerLocked(tenantID, content)
-		return err
-	}
-	replay, err := s.replayLocked(tenantID)
-	if err != nil {
-		return err
-	}
-	for i := len(replay.Messages) - 1; i >= 0; i-- {
-		msg := replay.Messages[i]
-		if msg.Role == "tool" && (toolName == "" || msg.ToolName == toolName) && (toolCallID == "" || msg.ToolCallID == toolCallID) {
-			msg.Content = content
-			occurrence := 0
-			for j := 0; j < i; j++ {
-				if replay.Messages[j].HistoryID == msg.HistoryID {
-					occurrence++
-				}
-			}
-			_, err := s.appendControlLocked(tenantID, HistoryRecordContextEdit, msg.HistoryID, MessageMutations{Mutations: []MessageMutation{{TargetHistoryID: msg.HistoryID, TargetOccurrence: occurrence, Message: msg}}})
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	return s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		if toolName == "AskUser" {
+			_, err := validateAndAppendAskAnswerWith(store, tenantID, content)
 			return err
 		}
-	}
-	return sql.ErrNoRows
+		replay, err := replayWith(store, tenantID)
+		if err != nil {
+			return err
+		}
+		for i := len(replay.Messages) - 1; i >= 0; i-- {
+			msg := replay.Messages[i]
+			if msg.Role == "tool" && (toolName == "" || msg.ToolName == toolName) && (toolCallID == "" || msg.ToolCallID == toolCallID) {
+				msg.Content = content
+				occurrence := 0
+				for j := 0; j < i; j++ {
+					if replay.Messages[j].HistoryID == msg.HistoryID {
+						occurrence++
+					}
+				}
+				_, err := appendControlWith(store, tenantID, HistoryRecordContextEdit, msg.HistoryID, MessageMutations{Mutations: []MessageMutation{{TargetHistoryID: msg.HistoryID, TargetOccurrence: occurrence, Message: msg}}})
+				return err
+			}
+		}
+		return sql.ErrNoRows
+	})
 }
 
 // GetHistory retrieves the most recent messages for a tenant.
@@ -141,8 +143,9 @@ func (s *SessionService) GetUserMessageCount(tenantID int64) (int, error) {
 
 // Clear removes all messages for a tenant
 func (s *SessionService) Clear(tenantID int64) error {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	conn, err := s.conn()
 	if err != nil {
 		return err
@@ -165,76 +168,6 @@ func (s *SessionService) PurgeOldMessages(tenantID int64, keepCount int) (int64,
 	return 0, nil
 }
 
-// PurgeNewerThanOrEqual deletes all messages for a tenant with created_at >= the given timestamp.
-// Used by Ctrl+K rewind to truncate DB history to match UI truncation.
-// Uses ">=" (not ">") so the selected rewind message is also removed — the UI already
-// places its content into the input box for re-editing, so keeping it in DB would cause
-// a duplicate on re-send.
-func (s *SessionService) PurgeNewerThanOrEqual(tenantID int64, cutoff time.Time) (int64, error) {
-	if cutoff.IsZero() {
-		return 0, nil
-	}
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-	// IMPORTANT: created_at is stored as RFC3339 TEXT (e.g. "2026-04-14T20:34:25+08:00").
-	// We must compare against the same string format — passing time.Time directly causes
-	// modernc.org/sqlite to serialize it differently (e.g. "2026-04-14 20:34:25+08:00"),
-	// which breaks lexicographic comparison and deletes ALL messages.
-	cutoffStr := cutoff.Format(time.RFC3339)
-	result, err := conn.Exec(
-		"DELETE FROM session_messages WHERE tenant_id = ? AND created_at >= ?",
-		tenantID, cutoffStr,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("purge newer or equal: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	log.WithFields(log.Fields{
-		"tenant_id": tenantID,
-		"purged":    rows,
-		"cutoff":    cutoff.Format(time.RFC3339),
-	}).Info("Session messages purged (newer or equal)")
-	return rows, nil
-}
-
-// PurgeNewerThan deletes all messages for a tenant with created_at after the given timestamp.
-// Used by Ctrl+K rewind to truncate DB history to match UI truncation.
-// NOTE: Prefer PurgeNewerThanOrEqual for rewind to avoid duplicate user messages on re-send.
-func (s *SessionService) PurgeNewerThan(tenantID int64, cutoff time.Time) (int64, error) {
-	if cutoff.IsZero() {
-		return 0, nil
-	}
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-	// IMPORTANT: created_at is stored as RFC3339 TEXT (e.g. "2026-04-14T20:34:25+08:00").
-	// We must compare against the same string format — passing time.Time directly causes
-	// modernc.org/sqlite to serialize it differently (e.g. "2026-04-14 20:34:25+08:00"),
-	// which breaks lexicographic comparison and deletes ALL messages.
-	cutoffStr := cutoff.Format(time.RFC3339)
-	result, err := conn.Exec(
-		"DELETE FROM session_messages WHERE tenant_id = ? AND created_at > ?",
-		tenantID, cutoffStr,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("purge newer than: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	log.WithFields(log.Fields{
-		"tenant_id": tenantID,
-		"purged":    rows,
-		"cutoff":    cutoff.Format(time.RFC3339),
-	}).Info("Session messages purged (newer than)")
-	return rows, nil
-}
-
 // UpdateMessageContent updates the content of the Nth message (0-indexed) for a tenant.
 // Used by observation masking to persist masked content back to session.
 func (s *SessionService) UpdateMessageContent(tenantID int64, messageIndex int, content string) error {
@@ -245,33 +178,37 @@ func (s *SessionService) UpdateMessageContent(tenantID int64, messageIndex int, 
 // The index corresponds to the ordering used by GetAllMessages (which excludes display_only messages).
 // Used by context_edit persistence to sync in-memory edits back to the database.
 func (s *SessionService) UpdateMessageContentNonDisplayOnly(tenantID int64, messageIndex int, content string) error {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
-	replay, err := s.replayLocked(tenantID)
-	if err != nil {
-		return err
-	}
-	if messageIndex < 0 || messageIndex >= len(replay.Messages) {
-		return fmt.Errorf("no non-display-only message found at index %d for tenant %d", messageIndex, tenantID)
-	}
-	msg := replay.Messages[messageIndex]
-	msg.Content = content
-	occurrence := 0
-	for i := 0; i < messageIndex; i++ {
-		if replay.Messages[i].HistoryID == msg.HistoryID {
-			occurrence++
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	return s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		replay, err := replayWith(store, tenantID)
+		if err != nil {
+			return err
 		}
-	}
-	_, err = s.appendControlLocked(tenantID, HistoryRecordContextEdit, msg.HistoryID, MessageMutations{Mutations: []MessageMutation{{TargetHistoryID: msg.HistoryID, TargetOccurrence: occurrence, Message: msg}}})
-	return err
+		if messageIndex < 0 || messageIndex >= len(replay.Messages) {
+			return fmt.Errorf("no non-display-only message found at index %d for tenant %d", messageIndex, tenantID)
+		}
+		msg := replay.Messages[messageIndex]
+		msg.Content = content
+		occurrence := 0
+		for i := 0; i < messageIndex; i++ {
+			if replay.Messages[i].HistoryID == msg.HistoryID {
+				occurrence++
+			}
+		}
+		_, err = appendControlWith(store, tenantID, HistoryRecordContextEdit, msg.HistoryID, MessageMutations{Mutations: []MessageMutation{{TargetHistoryID: msg.HistoryID, TargetOccurrence: occurrence, Message: msg}}})
+		return err
+	})
 }
 
 // UpdateUserMessageContextTokens sets the context_tokens field on the most recent
 // user-role message for a tenant. This records the exact API prompt_tokens at the
 // time that user message was sent, enabling precise token accounting for rewind.
 func (s *SessionService) UpdateUserMessageContextTokens(tenantID int64, promptTokens int64) error {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	conn, err := s.conn()
 	if err != nil {
 		return err
@@ -298,8 +235,9 @@ ORDER BY id DESC LIMIT 1
 // non-display-only user message for a tenant. Used by rewind to restore accurate
 // token state. Returns (0, nil) if no user message or context_tokens is 0.
 func (s *SessionService) GetLastUserMessageContextTokens(tenantID int64) (int64, error) {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	conn, err := s.conn()
 	if err != nil {
 		return 0, err

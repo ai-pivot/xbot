@@ -682,8 +682,7 @@ func (m *cliModel) executeRewind() (bool, tea.Model, tea.Cmd) {
 	if m.rewindCursor >= len(m.rewindItems) {
 		return true, m, nil
 	}
-	m.applyRewind()
-	return true, m, nil
+	return true, m, m.applyRewind()
 }
 
 // --- Approval click handler ---

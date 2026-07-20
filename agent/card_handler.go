@@ -56,9 +56,6 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 	waitingUser := cardOut.WaitingUser
 
 	if waitingUser {
-		if _, err := tenantSession.AppendAskQuestion(cardOut.Metadata); err != nil {
-			return nil, err
-		}
 		outbound := buildWaitingUserOutbound(ctx, msg, cardOut, tenantSession)
 		a.storePendingAskUserOutbound(msg, outbound)
 		return outbound, nil

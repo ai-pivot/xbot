@@ -173,6 +173,15 @@ func TestSSEIsolatesChannelsWithTheSameChatID(t *testing.T) {
 	}
 }
 
+func TestSessionRouteKeyNeverInfersChannelFromChatID(t *testing.T) {
+	chatID := "web:chat-1/reviewer:1"
+	webRoute := sessionRouteKey("web", chatID)
+	agentRoute := sessionRouteKey("agent", chatID)
+	if webRoute == agentRoute {
+		t.Fatalf("explicit Web and Agent routes collided: %q", webRoute)
+	}
+}
+
 func TestSSEFreshConnectionCursorRecoversEventsPublishedWhileDisconnected(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
@@ -198,6 +207,26 @@ func TestSSEFreshConnectionCursorRecoversEventsPublishedWhileDisconnected(t *tes
 	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(reconnected.Body)), protocol.MsgTypeText, 1)
 	if msg.Content != "while disconnected" {
 		t.Fatalf("replayed content = %q, want while disconnected", msg.Content)
+	}
+}
+
+func TestSSEResumeAtHighWaterForcesAuthoritativeResync(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.SendSessionState(protocol.SessionEvent{
+		Channel: "web", ChatID: "web-1", Action: "history_rewound", TargetHistoryID: 11,
+	})
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+
+	// Cursor 1 may mean either "already consumed seq 1" or "old server epoch
+	// also ended at 1". The server cannot distinguish them, so it requires one
+	// authoritative client resync instead of silently dropping a new reset.
+	resp := openSSE(t, server.URL, cookie, "web-1", "1")
+	defer resp.Body.Close()
+	control := assertSSEResyncControl(t, readSSEEvent(t, bufio.NewReader(resp.Body)), "web", "web-1")
+	if control.Metadata["baseline_seq"] != "1" {
+		t.Fatalf("resync baseline = %q, want 1", control.Metadata["baseline_seq"])
 	}
 }
 
@@ -388,8 +417,9 @@ func TestSSEReconnectSendsActiveProgressWhenReplayHasNone(t *testing.T) {
 
 	resp := openSSE(t, server.URL, cookie, "web-1", "1")
 	defer resp.Body.Close()
-	event := readSSEEvent(t, bufio.NewReader(resp.Body))
-	msg := assertSSEMessage(t, event, protocol.MsgTypeProgress, 2)
+	reader := bufio.NewReader(resp.Body)
+	assertSSEResyncControl(t, readSSEEvent(t, reader), "web", "web-1")
+	msg := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeProgress, 2)
 	if msg.Progress == nil || msg.Progress.Phase != "tool_exec" {
 		t.Fatalf("unexpected active progress: %#v", msg.Progress)
 	}
@@ -436,6 +466,65 @@ func TestSSEStatelessReplacementStaysNewestWhenEventStreamIsFull(t *testing.T) {
 	}
 }
 
+func TestSSEReconnectRetainsDestructiveBarrierBeyondRingCapacity(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+	sel := SessionSelector{Channel: "web", ChatID: "web-1"}
+	wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "before reset"})
+	wc.SendSessionState(protocol.SessionEvent{
+		Channel: sel.Channel, ChatID: sel.ChatID, Action: "history_rewound", TargetHistoryID: 41,
+	})
+	barrierSeq := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
+	for i := 0; i < eventStreamSize+1; i++ {
+		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: strconv.Itoa(i)})
+	}
+
+	// Reconnecting from before the reset must receive the barrier even though
+	// the bounded suffix now starts with a sequence gap.
+	replayed := wc.replaySSEEvents(sel, barrierSeq-1)
+	if len(replayed) != eventStreamSize+1 {
+		t.Fatalf("replay length = %d, want barrier + %d suffix events", len(replayed), eventStreamSize)
+	}
+	if replayed[0].Session == nil || replayed[0].Session.Action != "history_rewound" || replayed[0].Seq != barrierSeq {
+		t.Fatalf("first reconnect event is not retained barrier: %#v", replayed[0])
+	}
+	if replayed[1].Seq <= barrierSeq+1 {
+		t.Fatalf("test did not create expected post-barrier sequence gap: barrier=%d first_suffix=%d", barrierSeq, replayed[1].Seq)
+	}
+	resp := openSSE(t, server.URL, cookie, sel.ChatID, strconv.FormatUint(barrierSeq-1, 10))
+	reader := bufio.NewReader(resp.Body)
+	reset := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeSession, barrierSeq)
+	if reset.Session == nil || reset.Session.Action != "history_rewound" {
+		t.Fatalf("SSE reconnect did not receive reset first: %#v", reset)
+	}
+	resync := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeResyncRequired, barrierSeq+1)
+	if resync.Channel != sel.Channel || resync.ChatID != sel.ChatID {
+		t.Fatalf("SSE resync route = %#v", resync)
+	}
+	firstSuffix := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeText, replayed[1].Seq)
+	if firstSuffix.Seq <= barrierSeq+1 {
+		t.Fatalf("SSE reconnect did not expose expected sequence gap: %#v", firstSuffix)
+	}
+	resp.Body.Close()
+	waitForHubClients(t, wc, 0)
+	if got := wc.replaySSEEvents(sel, barrierSeq); len(got) != eventStreamSize || got[0].Session != nil {
+		t.Fatalf("cursor at barrier replayed barrier again: %#v", got)
+	}
+
+	// SessionReset is destructive too and replaces the prior barrier epoch.
+	wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, SessionReset: true})
+	latestBarrier := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
+	for i := 0; i < eventStreamSize+1; i++ {
+		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "new-" + strconv.Itoa(i)})
+	}
+	latest := wc.replaySSEEvents(sel, latestBarrier-1)
+	if len(latest) != eventStreamSize+1 || !latest[0].SessionReset || latest[0].Seq != latestBarrier {
+		t.Fatalf("latest session reset barrier was not retained: %#v", latest)
+	}
+}
+
 func TestSSEReplayHandoffSuppressesStaleFallback(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
@@ -463,6 +552,7 @@ func TestSSEReplayHandoffSuppressesStaleFallback(t *testing.T) {
 	close(releaseLookup)
 
 	reader := bufio.NewReader(resp.Body)
+	assertSSEResyncControl(t, readSSEEvent(t, reader), "web", "web-1")
 	live := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeProgress, 2)
 	if live.Progress == nil || live.Progress.Phase != "thinking" {
 		t.Fatalf("unexpected live progress: %#v", live.Progress)
@@ -551,6 +641,72 @@ func TestWSReconnectRestoresOnlyMatchingPendingAskUser(t *testing.T) {
 	}
 	if len(client.sendCh) != 0 {
 		t.Fatalf("WS AskUser restored more than once: %#v", <-client.sendCh)
+	}
+}
+
+func TestWSAgentRouteFallbackUsesCanonicalSession(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "cli:root/reviewer:1"
+	var progressChannel, pendingChannel string
+	wc.SetCallbacks(WebCallbacks{
+		GetActiveProgress: func(channel, gotChatID string) *protocol.ProgressEvent {
+			progressChannel = channel
+			if gotChatID != chatID {
+				t.Fatalf("progress chat ID = %q", gotChatID)
+			}
+			return &protocol.ProgressEvent{Phase: "thinking"}
+		},
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			pendingChannel = channel
+			if gotChatID != chatID {
+				t.Fatalf("pending chat ID = %q", gotChatID)
+			}
+			return fn(&protocol.ProgressEvent{
+				RequestID: "request-1",
+				Questions: []protocol.AskUserQuestion{{Question: "Continue?"}},
+			})
+		},
+	})
+	client := &Client{
+		id:          "agent-replay",
+		isCLI:       true,
+		routeReplay: true,
+		sendCh:      make(chan protocol.WSMessage, 4),
+		done:        make(chan struct{}),
+	}
+	wc.hub.addClient(client.id, client)
+	route := SessionSelector{Channel: "cli", ChatID: chatID}
+	if !wc.subscribeAndReplay(client, route, "agent", 0, false) {
+		t.Fatal("Agent replay subscription failed")
+	}
+	if progressChannel != "agent" || pendingChannel != "agent" {
+		t.Fatalf("fallback channels = progress:%q pending:%q", progressChannel, pendingChannel)
+	}
+
+	var progress, ask *protocol.WSMessage
+	for len(client.sendCh) > 0 {
+		msg := <-client.sendCh
+		switch msg.Type {
+		case protocol.MsgTypeProgress:
+			copy := msg
+			progress = &copy
+		case protocol.MsgTypeAskUser:
+			copy := msg
+			ask = &copy
+		}
+	}
+	if progress == nil || progress.Channel != "agent" || progress.RouteChannel != "cli" || progress.Progress == nil || progress.Progress.Phase != "thinking" {
+		t.Fatalf("Agent progress fallback = %#v", progress)
+	}
+	if ask == nil || ask.Channel != "agent" || ask.RouteChannel != "cli" || ask.Progress == nil || ask.Progress.RequestID != "request-1" {
+		t.Fatalf("Agent AskUser fallback = %#v", ask)
+	}
+	var event protocol.AskUserEvent
+	if err := json.Unmarshal([]byte(ask.Content), &event); err != nil {
+		t.Fatalf("decode AskUser content: %v", err)
+	}
+	if event.Channel != "agent" || event.ChatID != chatID || event.RequestID != "request-1" || event.Questions == "" {
+		t.Fatalf("Agent AskUser event = %#v", event)
 	}
 }
 
@@ -776,24 +932,20 @@ func TestWSWriteBoundaryDoesNotHoldPendingLockDuringNetworkWrite(t *testing.T) {
 
 func runWSReplay(t *testing.T, wc *WebChannel, client *Client, senderID string, lastSeq uint64) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		wc.replayMissedEvents(client, senderID)
-		close(done)
-	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for client.syncCh.Load() == nil && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	client.id = "replay-" + senderID
+	client.userID = senderID
+	client.done = make(chan struct{})
+	client.routeReplay = true
+	wc.hub.addClient(client.id, client)
+	if !wc.subscribeAndReplay(client, SessionSelector{Channel: "web", ChatID: senderID}, "web", lastSeq, true) {
+		t.Fatal("WS replay subscription failed")
 	}
-	syncCh := client.syncCh.Load()
-	if syncCh == nil {
-		t.Fatal("WS replay did not install sync channel")
-	}
-	*syncCh <- lastSeq
 	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("WS replay did not finish")
+	case ack := <-client.sendCh:
+		if ack.Type != protocol.MsgTypeSync {
+			client.sendCh <- ack
+		}
+	default:
 	}
 }
 
@@ -1276,11 +1428,15 @@ func TestHubOfflineSequencingPreservesWebAndCLIContracts(t *testing.T) {
 		wantSeq uint64
 	}{
 		{name: "web websocket", chatID: "web-1", wantSeq: 1},
-		{name: "CLI websocket", chatID: "/workspace/cli-1", isCLI: true, wantSeq: 0},
+		{name: "CLI websocket", chatID: "/workspace/cli-1", isCLI: true, wantSeq: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wc.hub.sendToClient(tt.chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "offline"})
+			channelName := "web"
+			if tt.isCLI {
+				channelName = "cli"
+			}
+			wc.hub.sendToSession(channelName, tt.chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "offline"})
 			client := &Client{
 				connType: clientConnTypeWS,
 				sendCh:   make(chan protocol.WSMessage, 1),
@@ -1289,7 +1445,7 @@ func TestHubOfflineSequencingPreservesWebAndCLIContracts(t *testing.T) {
 				isCLI:    tt.isCLI,
 			}
 			wc.hub.addClient(client.id, client)
-			wc.hub.subscribe(client.id, tt.chatID)
+			wc.hub.subscribe(client.id, sessionRouteKey(channelName, tt.chatID))
 
 			msg := <-client.sendCh
 			if msg.Seq != tt.wantSeq {
@@ -1350,7 +1506,7 @@ func TestSSEContractEventsReceiveSequences(t *testing.T) {
 		id:       "sse-contract",
 	}
 	wc.hub.addClient(client.id, client)
-	wc.hub.subscribe(client.id, "web-1")
+	wc.hub.subscribe(client.id, sessionRouteKey("web", "web-1"))
 
 	types := []string{
 		protocol.MsgTypeText,
@@ -1386,11 +1542,7 @@ func TestSSEContractEventsReceiveSequences(t *testing.T) {
 	}
 }
 
-func TestSSESessionBroadcastReachesAllClients(t *testing.T) {
-	// Session state events (busy/idle/renamed/deleted) affect the global
-	// session sidebar — they must reach ALL connected clients, not just
-	// those subscribed to the event's session. This is the fix for the
-	// sidebar not showing busy state until manual refresh.
+func TestSSESessionBroadcastIsIsolatedBySubscription(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	client1 := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "user-1", userID: "web-1"}
 	client2 := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "user-2", userID: "web-2"}
@@ -1399,12 +1551,13 @@ func TestSSESessionBroadcastReachesAllClients(t *testing.T) {
 	for _, client := range []*Client{client1, client2, wsClient, cliClient} {
 		wc.hub.addClient(client.id, client)
 	}
-	// Only client1 subscribes to "web-1" — client2 does NOT.
-	wc.hub.subscribe(client1.id, "web-1")
+	wc.hub.subscribe(client1.id, sessionRouteKey("web", "web-1"))
+	wc.hub.subscribe(client2.id, sessionRouteKey("web", "web-2"))
+	wc.hub.subscribe(wsClient.id, sessionRouteKey("web", "web-1"))
+	wc.hub.subscribe(cliClient.id, sessionRouteKey("cli", "web-1"))
 
 	wc.SendSessionState(protocol.SessionEvent{Channel: "web", ChatID: "web-1", Action: "busy"})
 
-	// client1 (subscribed) must receive the event
 	var sseMsg protocol.WSMessage
 	select {
 	case sseMsg = <-client1.sendCh:
@@ -1412,34 +1565,404 @@ func TestSSESessionBroadcastReachesAllClients(t *testing.T) {
 			t.Fatalf("user-1 session event = %#v", sseMsg)
 		}
 	default:
-		t.Fatal("subscribed SSE client did not receive session event")
+		t.Fatal("authorized SSE client did not receive session event")
 	}
-	// client2 (NOT subscribed) must ALSO receive the event — this is the fix
 	select {
 	case msg := <-client2.sendCh:
-		if msg.Type != protocol.MsgTypeSession {
-			t.Fatalf("user-2 session event type = %#v", msg)
-		}
+		t.Fatalf("foreign SSE client received session event: %#v", msg)
 	default:
-		t.Fatal("unsubscribed SSE client did not receive session event (sidebar won't update)")
 	}
-	// WS clients must also receive it
 	select {
 	case msg := <-wsClient.sendCh:
 		if msg.Seq != sseMsg.Seq {
 			t.Fatalf("browser WS session seq = %d, SSE seq = %d", msg.Seq, sseMsg.Seq)
 		}
 	default:
-		t.Fatal("browser WS client did not receive session event")
+		t.Fatal("browser WS broadcast behavior changed")
 	}
-	// CLI clients receive unsequenced messages
 	select {
 	case msg := <-cliClient.sendCh:
-		if msg.Seq != 0 {
-			t.Fatalf("CLI WS session seq = %d, want 0", msg.Seq)
+		t.Fatalf("CLI WS client on a different route received session event: %#v", msg)
+	default:
+	}
+}
+
+func TestAgentProgressUsesCanonicalChildRoute(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	fullKey := "cli:/workspace/review:1"
+	client := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "agent-view"}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, sessionRouteKey("agent", fullKey))
+
+	wc.SendProgress(fullKey, &protocol.ProgressEvent{ChatID: "agent:" + fullKey, Phase: "thinking"})
+
+	select {
+	case msg := <-client.sendCh:
+		if msg.Type != protocol.MsgTypeProgress || msg.RouteChannel != "agent" || msg.RouteChatID != fullKey {
+			t.Fatalf("agent progress route = %#v", msg)
 		}
 	default:
-		t.Fatal("CLI WS client did not receive session event")
+		t.Fatal("agent progress did not reach the canonical child route")
+	}
+	if got := wc.getEventStream(sessionRouteKey("web", fullKey)).lastSeq(); got != 0 {
+		t.Fatalf("agent progress leaked into web route: seq=%d", got)
+	}
+}
+
+func TestCLISubAgentLifecycleAlsoReachesBrowserChildRoute(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	remoteCLI := NewRemoteCLIChannel(wc.Hub())
+	fullKey := "cli:/workspace/review:1"
+	parentClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "cli-parent"}
+	childClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "agent-child"}
+	for _, client := range []*Client{parentClient, childClient} {
+		wc.hub.addClient(client.id, client)
+	}
+	wc.hub.subscribe(parentClient.id, sessionRouteKey("cli", "/workspace"))
+	wc.hub.subscribe(childClient.id, sessionRouteKey("agent", fullKey))
+
+	remoteCLI.SendSessionState(protocol.SessionEvent{
+		Channel: "cli", ChatID: "/workspace", Action: "subagent_started", SessionKey: fullKey,
+	})
+
+	for name, client := range map[string]*Client{"parent": parentClient, "child": childClient} {
+		select {
+		case msg := <-client.sendCh:
+			if msg.Type != protocol.MsgTypeSession || msg.Session == nil || msg.Session.SessionKey != fullKey {
+				t.Fatalf("%s lifecycle event = %#v", name, msg)
+			}
+		default:
+			t.Fatalf("%s route did not receive SubAgent lifecycle", name)
+		}
+	}
+}
+
+func TestHistoryRewoundClearsReplayBeforeResetEvent(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "web-1"
+	otherChatID := "web-2"
+
+	wc.hub.sendToSession("web", chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "deleted future 1"})
+	wc.hub.sendToSession("web", chatID, protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{Phase: "thinking"}})
+	wc.hub.sendToSession("web", otherChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "keep me"})
+	stream := wc.getEventStream(sessionRouteKey("web", chatID))
+	if stream.lastSeq() != 2 {
+		t.Fatalf("pre-reset sequence = %d, want 2", stream.lastSeq())
+	}
+	if wc.hub.offline[sessionRouteKey("web", chatID)] == nil {
+		t.Fatal("expected legacy WebSocket replay buffer before reset")
+	}
+
+	wc.SendSessionState(protocol.SessionEvent{
+		Channel: "web", ChatID: chatID, Action: "history_rewound", TargetHistoryID: 17,
+	})
+
+	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+	if len(events) != 1 || events[0].Type != protocol.MsgTypeSession || events[0].Session == nil {
+		t.Fatalf("post-reset replay = %+v", events)
+	}
+	if events[0].Seq != 3 || events[0].Session.Action != "history_rewound" || events[0].Session.TargetHistoryID != 17 {
+		t.Fatalf("reset event = %+v", events[0])
+	}
+	offlineReset := wc.hub.offline[sessionRouteKey("web", chatID)]
+	if offlineReset == nil {
+		t.Fatal("offline WebSocket reset barrier was not retained")
+	}
+	offlineEvents := offlineReset.flush()
+	if len(offlineEvents) != 1 || offlineEvents[0].Session == nil || offlineEvents[0].Session.Action != "history_rewound" {
+		t.Fatalf("stale WebSocket replay survived history reset: %+v", offlineEvents)
+	}
+	other := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: otherChatID}, 0)
+	if len(other) != 1 || other[0].Content != "keep me" {
+		t.Fatalf("unrelated replay changed: %+v", other)
+	}
+}
+
+func TestHistoryRewoundIsRouteScopedWSBarrier(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "shared-chat"
+	webRoute := sessionRouteKey("web", chatID)
+	cliRoute := sessionRouteKey("cli", chatID)
+	webClient := &Client{
+		connType:     clientConnTypeWS,
+		sendCh:       make(chan protocol.WSMessage, 8),
+		done:         make(chan struct{}),
+		id:           "web-target",
+		statelessSig: make(chan struct{}, 1),
+	}
+	cliClient := &Client{
+		connType:     clientConnTypeWS,
+		sendCh:       make(chan protocol.WSMessage, 8),
+		done:         make(chan struct{}),
+		id:           "cli-other-route",
+		isCLI:        true,
+		statelessSig: make(chan struct{}, 1),
+	}
+	for _, client := range []*Client{webClient, cliClient} {
+		wc.hub.addClient(client.id, client)
+	}
+	wc.hub.subscribe(webClient.id, webRoute)
+	wc.hub.subscribe(cliClient.id, cliRoute)
+
+	webClient.sendCh <- protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{Content: "deleted queued future"}}
+	webClient.sendCh <- protocol.WSMessage{Type: protocol.MsgTypeRPCResponse, ID: "preserve-rpc"}
+	webClient.storeStateless(&protocol.WSMessage{Type: protocol.MsgTypeStreamContent, Progress: &protocol.ProgressEvent{StreamContent: "deleted stream"}})
+	cliClient.sendCh <- protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{Content: "other route"}}
+	cliClient.storeStateless(&protocol.WSMessage{Type: protocol.MsgTypeStreamContent, Progress: &protocol.ProgressEvent{StreamContent: "other route"}})
+
+	wc.hub.sendToSession("web", chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "deleted web replay"})
+	wc.hub.sendToSession("cli", chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "keep cli replay"})
+	wc.hub.offMu.Lock()
+	wc.hub.offline[webRoute] = newRingBuffer(webOfflineMsgBufSize)
+	wc.hub.offline[webRoute].push(protocol.WSMessage{Type: protocol.MsgTypeText, Content: "deleted offline future"})
+	wc.hub.offline[cliRoute] = newRingBuffer(webOfflineMsgBufSize)
+	wc.hub.offline[cliRoute].push(protocol.WSMessage{Type: protocol.MsgTypeText, Content: "keep offline future"})
+	wc.hub.offMu.Unlock()
+
+	wc.SendSessionState(protocol.SessionEvent{
+		Channel: "web", ChatID: chatID, Action: "history_rewound", TargetHistoryID: 17,
+	})
+
+	first := <-webClient.sendCh
+	if first.Type != protocol.MsgTypeRPCResponse || first.ID != "preserve-rpc" {
+		t.Fatalf("non-session queue was not preserved: %#v", first)
+	}
+	reset := <-webClient.sendCh
+	if reset.Type != protocol.MsgTypeSession || reset.Session == nil || reset.Session.Action != "history_rewound" {
+		t.Fatalf("target reset = %#v", reset)
+	}
+	if got := webClient.drainStateless(); len(got) != 0 {
+		t.Fatalf("target stateless future survived: %#v", got)
+	}
+	otherQueued := <-cliClient.sendCh
+	if otherQueued.Type != protocol.MsgTypeProgress || otherQueued.Progress == nil || otherQueued.Progress.Content != "other route" {
+		t.Fatalf("other route queue changed: %#v", otherQueued)
+	}
+	otherText := <-cliClient.sendCh
+	if otherText.Type != protocol.MsgTypeText || otherText.Content != "keep cli replay" {
+		t.Fatalf("other route text queue changed: %#v", otherText)
+	}
+	if got := cliClient.drainStateless(); len(got) != 1 || got[0].Progress.StreamContent != "other route" {
+		t.Fatalf("other route stateless state changed: %#v", got)
+	}
+	select {
+	case unexpected := <-cliClient.sendCh:
+		t.Fatalf("reset leaked to same chat ID on another channel: %#v", unexpected)
+	default:
+	}
+
+	webReplay := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+	if len(webReplay) != 1 || webReplay[0].Session == nil || webReplay[0].Session.Action != "history_rewound" {
+		t.Fatalf("web replay after reset = %#v", webReplay)
+	}
+	cliReplay := wc.replaySSEEvents(SessionSelector{Channel: "cli", ChatID: chatID}, 0)
+	if len(cliReplay) != 1 || cliReplay[0].Content != "keep cli replay" {
+		t.Fatalf("CLI replay changed by Web reset = %#v", cliReplay)
+	}
+	wc.hub.offMu.Lock()
+	webOffline := wc.hub.offline[webRoute]
+	cliOffline := wc.hub.offline[cliRoute]
+	wc.hub.offMu.Unlock()
+	if webOffline != nil {
+		t.Fatalf("target route offline future survived reset: %#v", webOffline.flush())
+	}
+	if cliOffline == nil {
+		t.Fatal("same chat ID on another channel lost offline state")
+	}
+	cliOfflineEvents := cliOffline.flush()
+	if len(cliOfflineEvents) != 1 || cliOfflineEvents[0].Content != "keep offline future" {
+		t.Fatalf("other route offline state changed: %#v", cliOfflineEvents)
+	}
+}
+
+func TestHistoryRewoundDisconnectsFullWSAndReplaysBarrier(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	chatID := "cli-chat"
+	routeKey := sessionRouteKey("cli", chatID)
+	client := &Client{
+		connType:     clientConnTypeWS,
+		sendCh:       make(chan protocol.WSMessage, 1),
+		done:         make(chan struct{}),
+		id:           "blocked-cli",
+		isCLI:        true,
+		statelessSig: make(chan struct{}, 1),
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, routeKey)
+	client.sendCh <- protocol.WSMessage{Type: protocol.MsgTypeRPCResponse, ID: "in-flight-rpc"}
+
+	wc.SendSessionState(protocol.SessionEvent{
+		Channel: "cli", ChatID: chatID, Action: "history_rewound", TargetHistoryID: 9,
+	})
+	select {
+	case <-client.done:
+	default:
+		t.Fatal("full reset queue did not disconnect client")
+	}
+	queued := <-client.sendCh
+	if queued.Type != protocol.MsgTypeRPCResponse || queued.ID != "in-flight-rpc" {
+		t.Fatalf("full queue was corrupted: %#v", queued)
+	}
+	replay := wc.replaySSEEvents(SessionSelector{Channel: "cli", ChatID: chatID}, 0)
+	if len(replay) != 1 || replay[0].Session == nil || replay[0].Session.Action != "history_rewound" {
+		t.Fatalf("reset barrier unavailable for reconnect: %#v", replay)
+	}
+
+	reconnected := &Client{
+		connType:     clientConnTypeWS,
+		sendCh:       make(chan protocol.WSMessage, 1),
+		done:         make(chan struct{}),
+		id:           "reconnected-cli",
+		isCLI:        true,
+		statelessSig: make(chan struct{}, 1),
+	}
+	wc.hub.addClient(reconnected.id, reconnected)
+	wc.hub.subscribe(reconnected.id, routeKey)
+	reset := <-reconnected.sendCh
+	if reset.Session == nil || reset.Session.Action != "history_rewound" || reset.Seq != replay[0].Seq {
+		t.Fatalf("reconnected CLI reset = %#v", reset)
+	}
+}
+
+func TestRemoteCLIControlUsesQualifiedRoute(t *testing.T) {
+	hub := newHub()
+	remoteCLI := NewRemoteCLIChannel(hub)
+	chatID := "/repo/control"
+	client := &Client{
+		connType:     clientConnTypeWS,
+		sendCh:       make(chan protocol.WSMessage, 1),
+		done:         make(chan struct{}),
+		id:           "control-cli",
+		isCLI:        true,
+		statelessSig: make(chan struct{}, 1),
+	}
+	hub.addClient(client.id, client)
+	hub.subscribe(client.id, sessionRouteKey("cli", chatID))
+
+	type controlResult struct {
+		value map[string]string
+		err   error
+	}
+	resultCh := make(chan controlResult, 1)
+	go func() {
+		value, err := remoteCLI.SendTUIControlRequest(chatID, "layout", map[string]string{"mode": "wide"})
+		resultCh <- controlResult{value: value, err: err}
+	}()
+
+	request := <-client.sendCh
+	if request.Type != protocol.MsgTypeTUIControlReq || request.TUIControl == nil || request.TUIControl.Action != "layout" {
+		t.Fatalf("remote CLI control request = %#v", request)
+	}
+	remoteCLI.deliverTUIResponse(request.ID, &protocol.TUIControlPayload{Result: map[string]string{"status": "ok"}})
+	result := <-resultCh
+	if result.err != nil || result.value["status"] != "ok" {
+		t.Fatalf("remote CLI control result = (%#v, %v)", result.value, result.err)
+	}
+}
+
+func TestRemoteCLIAgentHistoryResetUsesCLITransportRoute(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	remoteCLI := NewRemoteCLIChannel(wc.hub)
+	fullKey := "cli:/repo/reviewer:one"
+	client := &Client{
+		connType:     clientConnTypeWS,
+		sendCh:       make(chan protocol.WSMessage, 2),
+		done:         make(chan struct{}),
+		id:           "agent-view-cli",
+		isCLI:        true,
+		statelessSig: make(chan struct{}, 1),
+	}
+	wc.hub.addClient(client.id, client)
+	wc.hub.subscribe(client.id, sessionRouteKey("cli", fullKey))
+	wc.hub.sendToSession("agent", fullKey, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "web-agent-route"})
+
+	remoteCLI.SendSessionState(protocol.SessionEvent{
+		Channel: "agent", ChatID: fullKey, Action: "history_rewound", TargetHistoryID: 23,
+	})
+	reset := <-client.sendCh
+	if reset.Type != protocol.MsgTypeSession || reset.Session == nil || reset.Session.Channel != "agent" || reset.Session.ChatID != fullKey || reset.Session.Action != "history_rewound" {
+		t.Fatalf("remote Agent reset = %#v", reset)
+	}
+	cliReplay := wc.replaySSEEvents(SessionSelector{Channel: "cli", ChatID: fullKey}, 0)
+	if len(cliReplay) != 1 || cliReplay[0].Session == nil || cliReplay[0].Session.Channel != "agent" {
+		t.Fatalf("CLI transport replay = %#v", cliReplay)
+	}
+	agentReplay := wc.replaySSEEvents(SessionSelector{Channel: "agent", ChatID: fullKey}, 0)
+	if len(agentReplay) != 1 || agentReplay[0].Content != "web-agent-route" {
+		t.Fatalf("remote CLI reset changed Web Agent route = %#v", agentReplay)
+	}
+}
+
+func TestOfflineResetBarrierSurvivesOverflowAndFullSubscribe(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	remoteCLI := NewRemoteCLIChannel(wc.hub)
+	chatID := "/repo/offline"
+	routeKey := sessionRouteKey("cli", chatID)
+	remoteCLI.SendSessionState(protocol.SessionEvent{
+		Channel: "cli", ChatID: chatID, Action: "history_rewound", TargetHistoryID: 31,
+	})
+	for i := 0; i < webOfflineMsgBufSize+10; i++ {
+		wc.hub.sendToSession("cli", chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: strconv.Itoa(i)})
+	}
+
+	blocked := &Client{
+		connType:     clientConnTypeWS,
+		sendCh:       make(chan protocol.WSMessage, 1),
+		done:         make(chan struct{}),
+		id:           "blocked-replay-cli",
+		isCLI:        true,
+		statelessSig: make(chan struct{}, 1),
+	}
+	blocked.sendCh <- protocol.WSMessage{Type: protocol.MsgTypeRPCResponse, ID: "busy"}
+	wc.hub.addClient(blocked.id, blocked)
+	if wc.hub.subscribe(blocked.id, routeKey) {
+		t.Fatal("full replay subscriber was accepted")
+	}
+	select {
+	case <-blocked.done:
+	default:
+		t.Fatal("full replay subscriber was not disconnected")
+	}
+
+	reconnected := &Client{
+		connType:     clientConnTypeWS,
+		sendCh:       make(chan protocol.WSMessage, webOfflineMsgBufSize+1),
+		done:         make(chan struct{}),
+		id:           "reconnected-replay-cli",
+		isCLI:        true,
+		statelessSig: make(chan struct{}, 1),
+	}
+	wc.hub.addClient(reconnected.id, reconnected)
+	if !wc.hub.subscribe(reconnected.id, routeKey) {
+		t.Fatal("reconnected replay subscriber was rejected")
+	}
+	reset := <-reconnected.sendCh
+	if reset.Session == nil || reset.Session.Action != "history_rewound" || reset.Session.TargetHistoryID != 31 {
+		t.Fatalf("first replay event is not reset barrier: %#v", reset)
+	}
+	if got := len(reconnected.sendCh); got != webOfflineMsgBufSize {
+		t.Fatalf("offline messages after barrier = %d, want %d", got, webOfflineMsgBufSize)
+	}
+	wc.hub.offMu.Lock()
+	remaining := wc.hub.offline[routeKey]
+	wc.hub.offMu.Unlock()
+	if remaining != nil {
+		t.Fatalf("successful replay left offline state: %#v", remaining.flush())
+	}
+}
+
+func TestSSEProgressFallbackStopsAtHistoryAndSessionResetBarriers(t *testing.T) {
+	snapshot := &protocol.ProgressEvent{Seq: 1, Phase: "thinking", Content: "deleted future"}
+	for _, barrier := range []protocol.WSMessage{
+		{Type: protocol.MsgTypeSession, Seq: 2, Session: &protocol.SessionEvent{Action: "history_rewound"}},
+		{Type: protocol.MsgTypeText, Seq: 2, SessionReset: true},
+	} {
+		if progress, ok := selectSSEProgressFallback(snapshot, []protocol.WSMessage{
+			{Type: protocol.MsgTypeProgress, Seq: 1, Progress: snapshot},
+			barrier,
+		}); ok || progress != nil {
+			t.Fatalf("stale fallback crossed reset barrier %#v: %#v", barrier, progress)
+		}
 	}
 }
 
@@ -1581,8 +2104,8 @@ func TestHubUsesSequencedCopyWithoutChangingCLIWSMessage(t *testing.T) {
 	if sseMsg.Seq != 1 || webSocketMsg.Seq != sseMsg.Seq {
 		t.Fatalf("Web transport sequences differ: SSE=%d WS=%d", sseMsg.Seq, webSocketMsg.Seq)
 	}
-	if cliMsg.Seq != 0 {
-		t.Fatalf("CLI WS envelope sequence changed: %d", cliMsg.Seq)
+	if cliMsg.Seq != sseMsg.Seq {
+		t.Fatalf("CLI WS envelope sequence = %d, want %d", cliMsg.Seq, sseMsg.Seq)
 	}
 }
 
@@ -1608,7 +2131,7 @@ func TestHubNormalizesSparseProgressOnlyForSSE(t *testing.T) {
 		t.Fatalf("browser WS sparse progress = %#v", webMsgs)
 	}
 	cliMsgs := cliClient.drainStateless()
-	if len(cliMsgs) != 1 || cliMsgs[0].Type != protocol.MsgTypeProgress || cliMsgs[0].Seq != 0 {
+	if len(cliMsgs) != 1 || cliMsgs[0].Type != protocol.MsgTypeProgress || cliMsgs[0].Seq != 1 {
 		t.Fatalf("CLI WS sparse progress = %#v", cliMsgs)
 	}
 }
@@ -1799,6 +2322,226 @@ func TestSSEAllowsCanonicalOwnerForCLIAndNestedAgentSessions(t *testing.T) {
 				t.Fatalf("resolveSSESession ok=%v, want %v; status=%d body=%s", ok, tc.want, recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestCLIClientCanonicalOwnershipAndAgentParentForgery(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	for _, tenant := range []struct {
+		channel string
+		chatID  string
+		owner   int64
+	}{
+		{channel: "cli", chatID: "owned", owner: 42},
+		{channel: "cli", chatID: "foreign", owner: 99},
+		{channel: "agent", chatID: "cli:owned/review:1", owner: 42},
+		// The key claims an owned parent, but the child tenant belongs to another user.
+		{channel: "agent", chatID: "agent:cli:owned/review:1/fix:2", owner: 99},
+		{channel: "agent", chatID: "cli:owned/foreign-parent:1", owner: 99},
+		// The child owner matches, but its direct parent tenant does not.
+		{channel: "agent", chatID: "agent:cli:owned/foreign-parent:1/forged-child:2", owner: 42},
+		// A same-name CLI tenant must not shadow the foreign Agent tenant on the
+		// shared remote CLI transport route.
+		{channel: "agent", chatID: "cli:foreign/review:1", owner: 99},
+		{channel: "cli", chatID: "cli:foreign/review:1", owner: 42},
+		// Agent-shaped IDs remain reserved even when a legacy CLI tenant exists
+		// without an Agent tenant of the same name.
+		{channel: "cli", chatID: "cli:owned/legacy-agent-key:1", owner: 42},
+	} {
+		if _, err := db.Exec(
+			"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
+			tenant.channel, tenant.chatID, tenant.owner, time.Now().Format(time.RFC3339),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client := &Client{isCLI: true, userID: "web-2", canonicalUserID: 42, canonicalRole: "user"}
+
+	if !wc.canAccessClientSession(client, "cli", "owned", false) {
+		t.Fatal("runner token owner cannot access its CLI tenant")
+	}
+	if wc.canAccessClientSession(client, "cli", "foreign", true) {
+		t.Fatal("runner token accessed a foreign existing tenant")
+	}
+	if !wc.canAccessClientSession(client, "cli", "new-session", true) {
+		t.Fatal("runner token cannot create a new CLI tenant")
+	}
+	if !wc.canAccessClientSession(client, "cli", "new-session", false) {
+		t.Fatal("claimed CLI tenant was not available to subsequent control requests")
+	}
+	if wc.canAccessClientSession(client, "cli", "cli:new-session/review:1", true) {
+		t.Fatal("runner created an Agent-shaped CLI tenant")
+	}
+	if wc.canAccessClientSession(client, "cli", "cli:owned/legacy-agent-key:1", false) {
+		t.Fatal("runner accessed an existing Agent-shaped CLI tenant")
+	}
+	if _, err := wc.resolveInboundSession(context.Background(), inboundIdentity{
+		SenderID: "web-2", CanonicalUserID: 42, CanonicalRole: "user", IsCLI: true,
+	}, "cli", "cli:owned/legacy-agent-key:1"); err == nil {
+		t.Fatal("REST inbound accepted an existing Agent-shaped CLI tenant")
+	}
+	collisionID := "cli:foreign/review:1"
+	if accessChannel := wc.clientRouteAccessChannel(client, "cli", collisionID); accessChannel != "agent" {
+		t.Fatalf("same-name Agent route resolved as %q, want agent", accessChannel)
+	}
+	if wc.canAccessClientSession(client, wc.clientRouteAccessChannel(client, "cli", collisionID), collisionID, false) {
+		t.Fatal("same-name CLI tenant shadowed foreign Agent ownership")
+	}
+	if wc.canAccessClientSession(client, "agent", "agent:cli:owned/review:1/fix:2", false) {
+		t.Fatal("forged Agent parent key bypassed child tenant ownership")
+	}
+	if wc.canAccessClientSession(client, "agent", "agent:cli:owned/foreign-parent:1/forged-child:2", false) {
+		t.Fatal("foreign direct Agent parent ownership was not checked recursively")
+	}
+}
+
+func TestCLIClientConcurrentTenantClaimHasSingleOwner(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	clients := []*Client{
+		{isCLI: true, userID: "web-42", canonicalUserID: 42, canonicalRole: "user"},
+		{isCLI: true, userID: "web-99", canonicalUserID: 99, canonicalRole: "user"},
+	}
+
+	start := make(chan struct{})
+	results := make(chan bool, len(clients))
+	for _, client := range clients {
+		client := client
+		go func() {
+			<-start
+			results <- wc.canAccessClientSession(client, "cli", "concurrent-claim", true)
+		}()
+	}
+	close(start)
+
+	allowed := 0
+	for range clients {
+		if <-results {
+			allowed++
+		}
+	}
+	if allowed != 1 {
+		t.Fatalf("concurrent claim allowed %d users, want 1", allowed)
+	}
+
+	var ownerUserID int64
+	if err := db.QueryRow(
+		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = 'cli' AND chat_id = 'concurrent-claim'`,
+	).Scan(&ownerUserID); err != nil {
+		t.Fatalf("read claimed tenant owner: %v", err)
+	}
+	if ownerUserID != 42 && ownerUserID != 99 {
+		t.Fatalf("claimed tenant owner = %d, want 42 or 99", ownerUserID)
+	}
+	for _, client := range clients {
+		got := wc.canAccessClientSession(client, "cli", "concurrent-claim", false)
+		want := client.canonicalUserID == ownerUserID
+		if got != want {
+			t.Fatalf("post-claim access for user %d = %v, want %v", client.canonicalUserID, got, want)
+		}
+	}
+}
+
+func TestWSReplayOverflowRequiresAuthoritativeResync(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	sel := SessionSelector{Channel: "cli", ChatID: "chat"}
+	for i := 0; i < eventStreamSize+1; i++ {
+		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{
+			Type: protocol.MsgTypeText, Content: strconv.Itoa(i),
+		})
+	}
+	client := &Client{
+		connType:    clientConnTypeWS,
+		sendCh:      make(chan protocol.WSMessage, webSendChBufSize),
+		done:        make(chan struct{}),
+		id:          "overflow-client",
+		userID:      "web-2",
+		routeReplay: true,
+	}
+	wc.hub.addClient(client.id, client)
+	if !wc.subscribeAndReplay(client, sel, sel.Channel, 0, true) {
+		t.Fatal("overflow replay subscription failed")
+	}
+	resync := <-client.sendCh
+	if resync.Type != protocol.MsgTypeResyncRequired || resync.Seq == 0 || resync.RouteChannel != sel.Channel || resync.RouteChatID != sel.ChatID {
+		t.Fatalf("resync signal = %#v", resync)
+	}
+	if len(client.sendCh) != 0 {
+		t.Fatalf("overflow replay sent stale suffix instead of requiring resync: %d queued", len(client.sendCh))
+	}
+}
+
+func TestWSAgentReplayOverflowUsesCanonicalResyncChannel(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	sel := SessionSelector{Channel: "cli", ChatID: "cli:root/reviewer:1"}
+	wc.SetCallbacks(WebCallbacks{
+		GetActiveProgress: func(channel, chatID string) *protocol.ProgressEvent {
+			if channel != "agent" || chatID != sel.ChatID {
+				t.Fatalf("progress fallback target = (%q, %q)", channel, chatID)
+			}
+			return &protocol.ProgressEvent{Phase: "thinking", Iteration: 3}
+		},
+		WithPendingAskUser: func(channel, chatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			if channel != "agent" || chatID != sel.ChatID {
+				t.Fatalf("AskUser fallback target = (%q, %q)", channel, chatID)
+			}
+			return fn(&protocol.ProgressEvent{RequestID: "request-overflow", Questions: []protocol.AskUserQuestion{{Question: "Continue?"}}})
+		},
+	})
+	for i := 0; i < eventStreamSize+1; i++ {
+		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{
+			Type: protocol.MsgTypeText, Content: strconv.Itoa(i),
+		})
+	}
+	client := &Client{
+		connType:    clientConnTypeWS,
+		sendCh:      make(chan protocol.WSMessage, webSendChBufSize),
+		done:        make(chan struct{}),
+		id:          "agent-overflow-client",
+		routeReplay: true,
+	}
+	wc.hub.addClient(client.id, client)
+	if !wc.subscribeAndReplay(client, sel, "agent", 0, true) {
+		t.Fatal("Agent overflow replay subscription failed")
+	}
+	resync := <-client.sendCh
+	if resync.Type != protocol.MsgTypeResyncRequired || resync.Channel != "agent" || resync.RouteChannel != "cli" || resync.ChatID != sel.ChatID {
+		t.Fatalf("Agent resync signal = %#v", resync)
+	}
+	progress := <-client.sendCh
+	if progress.Type != protocol.MsgTypeProgress || progress.Channel != "agent" || progress.RouteChannel != "cli" || progress.Progress == nil || progress.Progress.Iteration != 3 {
+		t.Fatalf("Agent overflow progress fallback = %#v", progress)
+	}
+	ask := <-client.sendCh
+	if ask.Type != protocol.MsgTypeAskUser || ask.Channel != "agent" || ask.RouteChannel != "cli" || ask.Progress == nil || ask.Progress.RequestID != "request-overflow" {
+		t.Fatalf("Agent overflow AskUser fallback = %#v", ask)
+	}
+}
+
+func TestSSEReplayOverflowEmitsResyncEvent(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	sel := SessionSelector{Channel: "web", ChatID: "web-1"}
+	for i := 0; i < eventStreamSize+1; i++ {
+		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{
+			Type: protocol.MsgTypeText, Content: strconv.Itoa(i),
+		})
+	}
+	recorder := httptest.NewRecorder()
+	client := &Client{
+		connType:       clientConnTypeSSE,
+		w:              recorder,
+		flusher:        recorder,
+		sendCh:         make(chan protocol.WSMessage, 1),
+		done:           make(chan struct{}),
+		chatID:         sel.ChatID,
+		sessionChannel: sel.Channel,
+	}
+	if closed, err := wc.catchUpSSE(context.Background(), client, nil); err != nil || closed {
+		t.Fatalf("SSE catch-up = closed %v, err %v", closed, err)
+	}
+	if !strings.Contains(recorder.Body.String(), "event:"+protocol.MsgTypeResyncRequired) {
+		t.Fatalf("SSE overflow response did not contain resync event: %s", recorder.Body.String())
 	}
 }
 
@@ -1994,6 +2737,24 @@ func assertSSEMessage(t *testing.T, event map[string]string, wantType string, wa
 	}
 	if msg.Type != wantType || msg.Seq != wantSeq {
 		t.Fatalf("SSE data envelope = %#v", msg)
+	}
+	return msg
+}
+
+func assertSSEResyncControl(t *testing.T, event map[string]string, channel, chatID string) protocol.WSMessage {
+	t.Helper()
+	if event["event"] != protocol.MsgTypeResyncRequired {
+		t.Fatalf("SSE resync control = %#v", event)
+	}
+	var msg protocol.WSMessage
+	if err := json.Unmarshal([]byte(event["data"]), &msg); err != nil {
+		t.Fatalf("decode SSE resync control: %v", err)
+	}
+	if msg.Type != protocol.MsgTypeResyncRequired || msg.Channel != channel || msg.ChatID != chatID || msg.Seq != 0 || msg.Metadata["baseline_seq"] == "" {
+		t.Fatalf("SSE resync message = %#v", msg)
+	}
+	if event["id"] != msg.Metadata["baseline_seq"] {
+		t.Fatalf("SSE resync cursor = %q, baseline = %q", event["id"], msg.Metadata["baseline_seq"])
 	}
 	return msg
 }

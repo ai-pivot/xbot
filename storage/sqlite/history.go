@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -40,9 +41,13 @@ type CompressionRange struct {
 }
 
 type ContextSnapshot struct {
-	Messages   []llm.ChatMessage `json:"messages"`
-	HistoryIDs []int64           `json:"history_ids"`
+	Version        int               `json:"version,omitempty"`
+	Messages       []llm.ChatMessage `json:"messages"`
+	HistoryIDs     []int64           `json:"history_ids"`
+	PendingAskUser *PendingAskUser   `json:"pending_ask_user,omitempty"`
 }
+
+const contextSnapshotVersion = 1
 
 type MessageMutation struct {
 	TargetHistoryID  int64           `json:"target_history_id"`
@@ -75,9 +80,9 @@ type AskAnswerRecord struct {
 }
 
 type PendingAskUser struct {
-	HistoryID     int64
-	ToolHistoryID int64
-	Metadata      map[string]string
+	HistoryID     int64             `json:"history_id"`
+	ToolHistoryID int64             `json:"tool_history_id"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 
 type ReplayResult struct {
@@ -95,11 +100,71 @@ func isControlRecordType(recordType HistoryRecordType) bool {
 	}
 }
 
-type messageExecer interface {
+type historyExecer interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
-func appendMessageWith(execer messageExecer, tenantID int64, msg llm.ChatMessage) (int64, error) {
+type historyQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+type historyQueryExecer interface {
+	historyExecer
+	historyQueryer
+}
+
+type immediateHistoryConn struct {
+	ctx  context.Context
+	conn *sql.Conn
+}
+
+func (c *immediateHistoryConn) Exec(query string, args ...any) (sql.Result, error) {
+	return c.conn.ExecContext(c.ctx, query, args...)
+}
+
+func (c *immediateHistoryConn) Query(query string, args ...any) (*sql.Rows, error) {
+	return c.conn.QueryContext(c.ctx, query, args...)
+}
+
+func (c *immediateHistoryConn) QueryRow(query string, args ...any) *sql.Row {
+	return c.conn.QueryRowContext(c.ctx, query, args...)
+}
+
+// withImmediateHistoryWrite binds the whole semantic operation to one SQLite
+// connection and acquires the write lock before any replay or validation read.
+func (s *SessionService) withImmediateHistoryWrite(fn func(historyQueryExecer) error) error {
+	db, err := s.conn()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire history write connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin immediate history write: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+	store := &immediateHistoryConn{ctx: ctx, conn: conn}
+	if err := fn(store); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit history write: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage) (int64, error) {
 	var toolCallsJSON sql.NullString
 	if len(msg.ToolCalls) > 0 {
 		data, err := json.Marshal(msg.ToolCalls)
@@ -142,15 +207,17 @@ func (s *SessionService) appendMessage(tenantID int64, msg llm.ChatMessage) (int
 }
 
 func (s *SessionService) AppendMessage(tenantID int64, msg llm.ChatMessage) (int64, error) {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	return s.appendMessage(tenantID, msg)
 }
 
 // AppendMessages atomically appends a related message batch.
 func (s *SessionService) AppendMessages(tenantID int64, messages []llm.ChatMessage) ([]int64, error) {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	conn, err := s.conn()
 	if err != nil {
 		return nil, err
@@ -173,13 +240,69 @@ func (s *SessionService) AppendMessages(tenantID int64, messages []llm.ChatMessa
 	return ids, nil
 }
 
+// AppendMessagesAndAskQuestion atomically persists an AskUser tool exchange and
+// its pending-question control record. A failed control insert rolls back the
+// entire message batch, so restart can never observe a half-created prompt.
+func (s *SessionService) AppendMessagesAndAskQuestion(tenantID int64, messages []llm.ChatMessage, metadata map[string]string) ([]int64, int64, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	toolIndex := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "tool" && messages[i].ToolName == "AskUser" {
+			toolIndex = i
+			break
+		}
+	}
+	if toolIndex < 0 {
+		return nil, 0, fmt.Errorf("append AskUser question: message batch has no AskUser tool result")
+	}
+	conn, err := s.conn()
+	if err != nil {
+		return nil, 0, err
+	}
+	tx, err := conn.Begin()
+	if err != nil {
+		return nil, 0, fmt.Errorf("begin AskUser message batch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	ids := make([]int64, len(messages))
+	for i, msg := range messages {
+		ids[i], err = appendMessageWith(tx, tenantID, msg)
+		if err != nil {
+			return nil, 0, fmt.Errorf("append AskUser message batch item %d: %w", i, err)
+		}
+	}
+	questionID, err := appendAskQuestionWith(tx, tenantID, ids[toolIndex], metadata)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, fmt.Errorf("commit AskUser message batch: %w", err)
+	}
+	return ids, questionID, nil
+}
+
 func (s *SessionService) AppendControl(tenantID int64, recordType HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	return s.appendControlLocked(tenantID, recordType, targetHistoryID, data)
 }
 
 func (s *SessionService) appendControlLocked(tenantID int64, recordType HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
+	var historyID int64
+	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		var err error
+		historyID, err = appendControlWith(store, tenantID, recordType, targetHistoryID, data)
+		return err
+	})
+	return historyID, err
+}
+
+func appendControlWith(store historyQueryExecer, tenantID int64, recordType HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
 	if !isControlRecordType(recordType) {
 		return 0, fmt.Errorf("unknown history record type %q", recordType)
 	}
@@ -187,13 +310,9 @@ func (s *SessionService) appendControlLocked(tenantID int64, recordType HistoryR
 		recordType == HistoryRecordAskQuestion || recordType == HistoryRecordAskAnswer || recordType == HistoryRecordMask {
 		return 0, fmt.Errorf("history record type %q requires its atomic append method", recordType)
 	}
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
 	if targetHistoryID != 0 {
 		var exists int
-		if err := conn.QueryRow(`SELECT 1 FROM session_messages WHERE tenant_id = ? AND id = ?`, tenantID, targetHistoryID).Scan(&exists); err != nil {
+		if err := store.QueryRow(`SELECT 1 FROM session_messages WHERE tenant_id = ? AND id = ?`, tenantID, targetHistoryID).Scan(&exists); err != nil {
 			if err == sql.ErrNoRows {
 				return 0, fmt.Errorf("target history_id %d does not exist for tenant %d", targetHistoryID, tenantID)
 			}
@@ -212,7 +331,7 @@ func (s *SessionService) appendControlLocked(tenantID int64, recordType HistoryR
 		if len(mutations.Mutations) == 0 {
 			return 0, fmt.Errorf("context edit has no mutations")
 		}
-		replay, err := s.replayLocked(tenantID)
+		replay, err := replayWith(store, tenantID)
 		if err != nil {
 			return 0, err
 		}
@@ -221,7 +340,7 @@ func (s *SessionService) appendControlLocked(tenantID int64, recordType HistoryR
 			if mutation.TargetHistoryID == 0 {
 				return 0, fmt.Errorf("context edit target has no history_id")
 			}
-			if err := conn.QueryRow(`SELECT 1 FROM session_messages WHERE tenant_id = ? AND id = ?`, tenantID, mutation.TargetHistoryID).Scan(&exists); err != nil {
+			if err := store.QueryRow(`SELECT 1 FROM session_messages WHERE tenant_id = ? AND id = ?`, tenantID, mutation.TargetHistoryID).Scan(&exists); err != nil {
 				if err == sql.ErrNoRows {
 					return 0, fmt.Errorf("context edit target history_id %d does not exist for tenant %d", mutation.TargetHistoryID, tenantID)
 				}
@@ -232,7 +351,7 @@ func (s *SessionService) appendControlLocked(tenantID int64, recordType HistoryR
 			}
 		}
 	}
-	result, err := conn.Exec(`
+	result, err := store.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, target_history_id, record_data, created_at)
 		VALUES (?, 'control', '', 1, ?, NULLIF(?, 0), ?, ?)
@@ -248,47 +367,66 @@ func (s *SessionService) appendControlLocked(tenantID int64, recordType HistoryR
 }
 
 func (s *SessionService) AppendContextSnapshot(tenantID int64, recordType HistoryRecordType, messages []llm.ChatMessage) (int64, error) {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	if recordType != HistoryRecordCompress && recordType != HistoryRecordPrune {
 		return 0, fmt.Errorf("record type %q does not accept a context snapshot", recordType)
 	}
-	replay, err := s.replayLocked(tenantID)
-	if err != nil {
-		return 0, err
-	}
-	active := make([]llm.ChatMessage, 0, len(messages))
-	historyIDs := make([]int64, 0, len(messages))
-	occurrences := make(map[int64]int)
-	for _, msg := range messages {
-		if msg.Role != "system" && !msg.DisplayOnly {
-			if msg.HistoryID != 0 {
-				occurrence := occurrences[msg.HistoryID]
-				if activeMessageIndexOccurrence(replay.Messages, msg.HistoryID, occurrence) < 0 {
-					return 0, fmt.Errorf("%s snapshot history_id %d occurrence %d is not active", recordType, msg.HistoryID, occurrence)
-				}
-				occurrences[msg.HistoryID] = occurrence + 1
-			}
-			active = append(active, msg)
-			historyIDs = append(historyIDs, msg.HistoryID)
+	var historyID int64
+	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		replay, err := replayWith(store, tenantID)
+		if err != nil {
+			return err
 		}
-	}
-	if replay.PendingAskUser != nil && activeMessageIndex(active, replay.PendingAskUser.ToolHistoryID) < 0 {
-		return 0, fmt.Errorf("%s snapshot removes pending AskUser tool target %d", recordType, replay.PendingAskUser.ToolHistoryID)
-	}
-	return s.appendSnapshotLocked(tenantID, recordType, ContextSnapshot{Messages: active, HistoryIDs: historyIDs})
+		active := make([]llm.ChatMessage, 0, len(messages))
+		historyIDs := make([]int64, 0, len(messages))
+		occurrences := make(map[int64]int)
+		for _, msg := range messages {
+			if msg.Role != "system" && !msg.DisplayOnly {
+				if msg.HistoryID != 0 {
+					occurrence := occurrences[msg.HistoryID]
+					if activeMessageIndexOccurrence(replay.Messages, msg.HistoryID, occurrence) < 0 {
+						return fmt.Errorf("%s snapshot history_id %d occurrence %d is not active", recordType, msg.HistoryID, occurrence)
+					}
+					occurrences[msg.HistoryID] = occurrence + 1
+				}
+				active = append(active, msg)
+				historyIDs = append(historyIDs, msg.HistoryID)
+			}
+		}
+		if replay.PendingAskUser != nil && activeMessageIndex(active, replay.PendingAskUser.ToolHistoryID) < 0 {
+			return fmt.Errorf("%s snapshot removes pending AskUser tool target %d", recordType, replay.PendingAskUser.ToolHistoryID)
+		}
+		historyID, err = appendSnapshotWith(store, tenantID, recordType, ContextSnapshot{
+			Version: contextSnapshotVersion, Messages: active, HistoryIDs: historyIDs,
+			PendingAskUser: clonePendingAskUser(replay.PendingAskUser),
+		})
+		return err
+	})
+	return historyID, err
 }
 
-func (s *SessionService) appendSnapshotLocked(tenantID int64, recordType HistoryRecordType, snapshot ContextSnapshot) (int64, error) {
+func clonePendingAskUser(pending *PendingAskUser) *PendingAskUser {
+	if pending == nil {
+		return nil
+	}
+	clone := *pending
+	if pending.Metadata != nil {
+		clone.Metadata = make(map[string]string, len(pending.Metadata))
+		for key, value := range pending.Metadata {
+			clone.Metadata[key] = value
+		}
+	}
+	return &clone
+}
+
+func appendSnapshotWith(execer historyExecer, tenantID int64, recordType HistoryRecordType, snapshot ContextSnapshot) (int64, error) {
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
 		return 0, fmt.Errorf("marshal %s history data: %w", recordType, err)
 	}
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-	result, err := conn.Exec(`
+	result, err := execer.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, record_data, created_at)
 		VALUES (?, 'control', '', 1, ?, ?, ?)
@@ -304,13 +442,24 @@ func (s *SessionService) appendSnapshotLocked(tenantID int64, recordType History
 }
 
 func (s *SessionService) AppendAskQuestion(tenantID int64, metadata map[string]string) (int64, error) {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	return s.appendAskQuestionLocked(tenantID, metadata)
 }
 
 func (s *SessionService) appendAskQuestionLocked(tenantID int64, metadata map[string]string) (int64, error) {
-	replay, err := s.replayLocked(tenantID)
+	var historyID int64
+	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		var err error
+		historyID, err = validateAndAppendAskQuestionWith(store, tenantID, metadata)
+		return err
+	})
+	return historyID, err
+}
+
+func validateAndAppendAskQuestionWith(store historyQueryExecer, tenantID int64, metadata map[string]string) (int64, error) {
+	replay, err := replayWith(store, tenantID)
 	if err != nil {
 		return 0, err
 	}
@@ -327,15 +476,15 @@ func (s *SessionService) appendAskQuestionLocked(tenantID int64, metadata map[st
 	if toolHistoryID == 0 {
 		return 0, fmt.Errorf("append AskUser question: matching active tool result not found")
 	}
+	return appendAskQuestionWith(store, tenantID, toolHistoryID, metadata)
+}
+
+func appendAskQuestionWith(execer historyExecer, tenantID, toolHistoryID int64, metadata map[string]string) (int64, error) {
 	payload, err := json.Marshal(AskQuestionRecord{Metadata: metadata, ToolHistoryID: toolHistoryID})
 	if err != nil {
 		return 0, fmt.Errorf("marshal AskUser question: %w", err)
 	}
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-	result, err := conn.Exec(`
+	result, err := execer.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, target_history_id, record_data, created_at)
 		SELECT ?, 'control', '', 1, 'ask_question', ?, ?, ?
@@ -367,73 +516,83 @@ func (s *SessionService) appendAskQuestionLocked(tenantID int64, metadata map[st
 }
 
 func (s *SessionService) AppendMasks(tenantID int64, mutations []MaskMutation) error {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	if len(mutations) == 0 {
 		return nil
-	}
-	conn, err := s.conn()
-	if err != nil {
-		return err
 	}
 	for _, mutation := range mutations {
 		if mutation.TargetHistoryID == 0 {
 			return fmt.Errorf("mask target has no history_id")
 		}
 	}
-	replay, err := s.replayLocked(tenantID)
-	if err != nil {
-		return err
-	}
-	for _, mutation := range mutations {
-		if activeMessageIndexOccurrence(replay.Messages, mutation.TargetHistoryID, mutation.TargetOccurrence) < 0 {
-			return fmt.Errorf("mask target history_id %d is not active", mutation.TargetHistoryID)
-		}
-	}
 	raw, err := json.Marshal(MaskMutations{Mutations: mutations})
 	if err != nil {
 		return fmt.Errorf("marshal mask history data: %w", err)
 	}
-	result, err := conn.Exec(`
-		INSERT INTO session_messages
-		(tenant_id, role, content, display_only, record_type, record_data, created_at)
-		SELECT ?, 'control', '', 1, 'mask', ?, ?
-		WHERE NOT EXISTS (
-			SELECT 1 FROM json_each(json_extract(?, '$.mutations')) m
-			WHERE NOT EXISTS (
-				SELECT 1 FROM session_messages sm
-				WHERE sm.tenant_id = ? AND sm.id = json_extract(m.value, '$.target_history_id')
-			)
-		)
-	`, tenantID, string(raw), time.Now().Format(time.RFC3339Nano), string(raw), tenantID)
-	if err != nil {
-		return fmt.Errorf("append mask history record: %w", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read mask append result: %w", err)
-	}
-	if rows != 1 {
-		return fmt.Errorf("append mask history record: one or more targets do not exist")
-	}
-	return nil
+	return s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		replay, err := replayWith(store, tenantID)
+		if err != nil {
+			return err
+		}
+		for _, mutation := range mutations {
+			if activeMessageIndexOccurrence(replay.Messages, mutation.TargetHistoryID, mutation.TargetOccurrence) < 0 {
+				return fmt.Errorf("mask target history_id %d is not active", mutation.TargetHistoryID)
+			}
+		}
+		result, err := store.Exec(`
+				INSERT INTO session_messages
+				(tenant_id, role, content, display_only, record_type, record_data, created_at)
+				SELECT ?, 'control', '', 1, 'mask', ?, ?
+				WHERE NOT EXISTS (
+					SELECT 1 FROM json_each(json_extract(?, '$.mutations')) m
+					WHERE NOT EXISTS (
+						SELECT 1 FROM session_messages sm
+						WHERE sm.tenant_id = ? AND sm.id = json_extract(m.value, '$.target_history_id')
+					)
+				)
+			`, tenantID, string(raw), time.Now().Format(time.RFC3339Nano), string(raw), tenantID)
+		if err != nil {
+			return fmt.Errorf("append mask history record: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read mask append result: %w", err)
+		}
+		if rows != 1 {
+			return fmt.Errorf("append mask history record: one or more targets do not exist")
+		}
+		return nil
+	})
 }
 
 func (s *SessionService) AppendAskAnswer(tenantID int64, answer string) (int64, error) {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	return s.appendAskAnswerLocked(tenantID, answer)
 }
 
 func (s *SessionService) appendAskAnswerLocked(tenantID int64, answer string) (int64, error) {
-	replay, err := s.replayLocked(tenantID)
+	var historyID int64
+	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		var err error
+		historyID, err = validateAndAppendAskAnswerWith(store, tenantID, answer)
+		return err
+	})
+	return historyID, err
+}
+
+func validateAndAppendAskAnswerWith(store historyQueryExecer, tenantID int64, answer string) (int64, error) {
+	replay, err := replayWith(store, tenantID)
 	if err != nil {
 		return 0, err
 	}
 	if replay.PendingAskUser == nil {
 		return 0, fmt.Errorf("AskUser question is no longer pending")
 	}
-	records, err := s.getFullHistoryLocked(tenantID)
+	records, err := getHistoryFromWith(store, tenantID, 0, true)
 	if err != nil {
 		return 0, err
 	}
@@ -456,11 +615,7 @@ func (s *SessionService) appendAskAnswerLocked(tenantID int64, answer string) (i
 	if err != nil {
 		return 0, fmt.Errorf("marshal AskUser answer: %w", err)
 	}
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-	result, err := conn.Exec(`
+	result, err := store.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, target_history_id, record_data, created_at)
 		SELECT ?, 'control', '', 1, 'ask_answer', ?, ?, ?
@@ -496,22 +651,37 @@ func (s *SessionService) appendAskAnswerLocked(tenantID int64, answer string) (i
 }
 
 func (s *SessionService) GetFullHistory(tenantID int64) ([]HistoryRecord, error) {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	return s.getFullHistoryLocked(tenantID)
 }
 
 func (s *SessionService) getFullHistoryLocked(tenantID int64) ([]HistoryRecord, error) {
+	return s.getHistoryFromLocked(tenantID, 0, true)
+}
+
+func (s *SessionService) getHistoryFromLocked(tenantID, fromHistoryID int64, decorate bool) ([]HistoryRecord, error) {
 	conn, err := s.conn()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := conn.Query(`
+	return getHistoryFromWith(conn, tenantID, fromHistoryID, decorate)
+}
+
+func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID int64, decorate bool) ([]HistoryRecord, error) {
+	query := `
 		SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
 		       role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail,
 		       reasoning_content, display_only, created_at
-		FROM session_messages WHERE tenant_id = ? ORDER BY id ASC
-	`, tenantID)
+		FROM session_messages WHERE tenant_id = ?`
+	args := []any{tenantID}
+	if fromHistoryID > 0 {
+		query += ` AND id >= ?`
+		args = append(args, fromHistoryID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := queryer.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query full session history: %w", err)
 	}
@@ -558,7 +728,9 @@ func (s *SessionService) getFullHistoryLocked(tenantID int64) ([]HistoryRecord, 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate full session history: %w", err)
 	}
-	decorateCompressionRanges(records)
+	if decorate {
+		decorateCompressionRanges(records)
+	}
 	return records, nil
 }
 
@@ -593,10 +765,18 @@ func decorateCompressionRanges(records []HistoryRecord) {
 					if _, ok := kept[id]; ok {
 						continue
 					}
-					source = append(source, id)
-					if idx, ok := byID[id]; ok && records[idx].CompactedBy == 0 {
-						records[idx].CompactedBy = record.HistoryID
+					if idx, ok := byID[id]; ok {
+						if records[idx].CompactedBy == 0 {
+							records[idx].CompactedBy = record.HistoryID
+						}
+						// Public history exposes raw messages and compression markers
+						// only. A prune snapshot may introduce a synthetic ID equal to
+						// its hidden control row; do not leak that dangling relation.
+						if records[idx].Type != HistoryRecordMessage && records[idx].Type != HistoryRecordCompress {
+							continue
+						}
 					}
+					source = append(source, id)
 				}
 				if len(source) > 0 {
 					record.Compression = &CompressionRange{
@@ -616,100 +796,103 @@ func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 	if historyID <= 0 {
 		return llm.ChatMessage{}, 0, fmt.Errorf("history_id is required")
 	}
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
-	conn, err := s.conn()
-	if err != nil {
-		return llm.ChatMessage{}, 0, err
-	}
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	var role, recordType, content, createdAt string
 	var displayOnly int
-	if err := conn.QueryRow(`
-		SELECT role, record_type, content, created_at, display_only
-		FROM session_messages WHERE tenant_id = ? AND id = ?
-	`, tenantID, historyID).Scan(&role, &recordType, &content, &createdAt, &displayOnly); err != nil {
-		if err == sql.ErrNoRows {
-			return llm.ChatMessage{}, 0, fmt.Errorf("rewind target history_id %d not found", historyID)
-		}
-		return llm.ChatMessage{}, 0, fmt.Errorf("load rewind target: %w", err)
-	}
-	if displayOnly != 0 || role != "user" || HistoryRecordType(recordType) != HistoryRecordMessage {
-		return llm.ChatMessage{}, 0, fmt.Errorf("history_id %d is not a rewindable user message", historyID)
-	}
 	var turnIdx int
-	if err := conn.QueryRow(`
-		SELECT COUNT(*) FROM session_messages
-		WHERE tenant_id = ? AND id <= ? AND record_type = 'message' AND role = 'user' AND display_only = 0
-	`, tenantID, historyID).Scan(&turnIdx); err != nil {
-		return llm.ChatMessage{}, 0, fmt.Errorf("resolve rewind turn: %w", err)
-	}
-	result, err := conn.Exec(`DELETE FROM session_messages WHERE tenant_id = ? AND id >= ?`, tenantID, historyID)
+	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		if err := store.QueryRow(`
+				SELECT role, record_type, content, created_at, display_only
+				FROM session_messages WHERE tenant_id = ? AND id = ?
+			`, tenantID, historyID).Scan(&role, &recordType, &content, &createdAt, &displayOnly); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("rewind target history_id %d not found", historyID)
+			}
+			return fmt.Errorf("load rewind target: %w", err)
+		}
+		if displayOnly != 0 || role != "user" || HistoryRecordType(recordType) != HistoryRecordMessage {
+			return fmt.Errorf("history_id %d is not a rewindable user message", historyID)
+		}
+		if err := store.QueryRow(`
+				SELECT COUNT(*) FROM session_messages
+				WHERE tenant_id = ? AND id <= ? AND record_type = 'message' AND role = 'user' AND display_only = 0
+			`, tenantID, historyID).Scan(&turnIdx); err != nil {
+			return fmt.Errorf("resolve rewind turn: %w", err)
+		}
+		result, err := store.Exec(`DELETE FROM session_messages WHERE tenant_id = ? AND id >= ?`, tenantID, historyID)
+		if err != nil {
+			return fmt.Errorf("truncate history at history_id %d: %w", historyID, err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count truncated history rows at history_id %d: %w", historyID, err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("truncate history at history_id %d changed no records", historyID)
+		}
+		var lastContextTokens sql.NullInt64
+		if err := store.QueryRow(`
+				SELECT context_tokens FROM session_messages
+				WHERE tenant_id = ? AND record_type = 'message' AND role = 'user' AND COALESCE(display_only, 0) = 0
+				ORDER BY id DESC LIMIT 1
+			`, tenantID).Scan(&lastContextTokens); err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("restore rewind token state: %w", err)
+		}
+		promptTokens := int64(0)
+		if lastContextTokens.Valid {
+			promptTokens = lastContextTokens.Int64
+		}
+		if _, err := store.Exec(`
+				INSERT INTO tenant_state
+					(tenant_id, last_consolidated, last_prompt_tokens, last_completion_tokens)
+				VALUES (?, 0, ?, 0)
+				ON CONFLICT(tenant_id) DO UPDATE SET
+					last_prompt_tokens = excluded.last_prompt_tokens,
+					last_completion_tokens = 0
+			`, tenantID, promptTokens); err != nil {
+			return fmt.Errorf("restore rewind token state: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return llm.ChatMessage{}, 0, fmt.Errorf("truncate history at history_id %d: %w", historyID, err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil || rows == 0 {
-		return llm.ChatMessage{}, 0, fmt.Errorf("truncate history at history_id %d changed no records", historyID)
+		return llm.ChatMessage{}, 0, err
 	}
 	return llm.ChatMessage{HistoryID: historyID, Role: role, Content: content, Timestamp: internal.ParseTimestamp(createdAt)}, turnIdx, nil
 }
 
-// ResolveRewindTimestamp keeps old timestamp clients compatible only when the
-// selected second identifies exactly one user history node.
-func (s *SessionService) ResolveRewindTimestamp(tenantID int64, cutoff time.Time) (int64, error) {
-	if cutoff.IsZero() {
-		return 0, fmt.Errorf("history_id is required")
-	}
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-	rows, err := conn.Query(`
-		SELECT id FROM session_messages
-		WHERE tenant_id = ? AND record_type = 'message' AND role = 'user' AND display_only = 0
-		  AND unixepoch(created_at) = ?
-		ORDER BY id
-	`, tenantID, cutoff.Unix())
-	if err != nil {
-		return 0, fmt.Errorf("resolve rewind timestamp: %w", err)
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return 0, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	if len(ids) == 0 {
-		return 0, fmt.Errorf("rewind timestamp does not match a user message")
-	}
-	if len(ids) != 1 {
-		return 0, fmt.Errorf("rewind timestamp is ambiguous: %d user messages match", len(ids))
-	}
-	return ids[0], nil
-}
-
 func (s *SessionService) Replay(tenantID int64) (*ReplayResult, error) {
-	s.db.historyMu.Lock()
-	defer s.db.historyMu.Unlock()
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	return s.replayLocked(tenantID)
 }
 
 func (s *SessionService) replayLocked(tenantID int64) (*ReplayResult, error) {
-	records, err := s.getFullHistoryLocked(tenantID)
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	return replayWith(conn, tenantID)
+}
+
+func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
+	checkpoint, hasCheckpoint, err := latestCheckpointWith(queryer, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	fromHistoryID := int64(0)
+	if hasCheckpoint {
+		fromHistoryID = checkpoint.HistoryID
+	}
+	records, err := getHistoryFromWith(queryer, tenantID, fromHistoryID, false)
 	if err != nil {
 		return nil, err
 	}
 	result := &ReplayResult{}
 	known := make(map[int64]struct{}, len(records))
-	for _, record := range records {
+	for recordIndex, record := range records {
 		switch record.Type {
 		case HistoryRecordMessage:
 			if !record.Message.DisplayOnly {
@@ -719,6 +902,9 @@ func (s *SessionService) replayLocked(tenantID int64) (*ReplayResult, error) {
 			var snapshot ContextSnapshot
 			if err := decodeHistoryData(record, &snapshot); err != nil {
 				return nil, err
+			}
+			if snapshot.Version != 0 && snapshot.Version != contextSnapshotVersion {
+				return nil, fmt.Errorf("history_id %d: unsupported %s snapshot version %d", record.HistoryID, record.Type, snapshot.Version)
 			}
 			if snapshot.Messages == nil || snapshot.HistoryIDs == nil || len(snapshot.HistoryIDs) != len(snapshot.Messages) {
 				return nil, fmt.Errorf("history_id %d: invalid %s snapshot shape", record.HistoryID, record.Type)
@@ -730,17 +916,25 @@ func (s *SessionService) replayLocked(tenantID int64) (*ReplayResult, error) {
 				result.Messages[i].HistoryID = snapshot.HistoryIDs[i]
 				if result.Messages[i].HistoryID == 0 {
 					result.Messages[i].HistoryID = record.HistoryID
-				} else if _, ok := known[result.Messages[i].HistoryID]; !ok {
-					return nil, fmt.Errorf("history_id %d: snapshot references unknown history_id %d", record.HistoryID, result.Messages[i].HistoryID)
-				} else {
+				} else if !hasCheckpoint || recordIndex != 0 {
+					if _, ok := known[result.Messages[i].HistoryID]; !ok {
+						return nil, fmt.Errorf("history_id %d: snapshot references unknown history_id %d", record.HistoryID, result.Messages[i].HistoryID)
+					}
 					occurrence := occurrences[result.Messages[i].HistoryID]
 					if activeMessageIndexOccurrence(previousMessages, result.Messages[i].HistoryID, occurrence) < 0 {
 						return nil, fmt.Errorf("history_id %d: snapshot references inactive history_id %d occurrence %d", record.HistoryID, result.Messages[i].HistoryID, occurrence)
 					}
 					occurrences[result.Messages[i].HistoryID] = occurrence + 1
 				}
+				known[result.Messages[i].HistoryID] = struct{}{}
 			}
-			if result.PendingAskUser != nil && activeMessageIndex(result.Messages, result.PendingAskUser.ToolHistoryID) < 0 {
+			if hasCheckpoint && recordIndex == 0 {
+				result.PendingAskUser = clonePendingAskUser(snapshot.PendingAskUser)
+				if result.PendingAskUser != nil {
+					known[result.PendingAskUser.HistoryID] = struct{}{}
+					known[result.PendingAskUser.ToolHistoryID] = struct{}{}
+				}
+			} else if result.PendingAskUser != nil && activeMessageIndex(result.Messages, result.PendingAskUser.ToolHistoryID) < 0 {
 				return nil, fmt.Errorf("history_id %d: snapshot removes pending AskUser tool target %d", record.HistoryID, result.PendingAskUser.ToolHistoryID)
 			}
 		case HistoryRecordContextEdit:
@@ -810,6 +1004,9 @@ func (s *SessionService) replayLocked(tenantID int64) (*ReplayResult, error) {
 			if result.PendingAskUser == nil || result.PendingAskUser.HistoryID != record.TargetHistoryID {
 				return nil, fmt.Errorf("history_id %d: AskUser answer targets non-pending question %d", record.HistoryID, record.TargetHistoryID)
 			}
+			if answer.ToolHistoryID != result.PendingAskUser.ToolHistoryID {
+				return nil, fmt.Errorf("history_id %d: AskUser answer tool target %d does not match pending target %d", record.HistoryID, answer.ToolHistoryID, result.PendingAskUser.ToolHistoryID)
+			}
 			idx := activeMessageIndex(result.Messages, answer.ToolHistoryID)
 			if idx < 0 {
 				return nil, fmt.Errorf("history_id %d: AskUser answer tool target %d is not active", record.HistoryID, answer.ToolHistoryID)
@@ -822,6 +1019,67 @@ func (s *SessionService) replayLocked(tenantID int64) (*ReplayResult, error) {
 		known[record.HistoryID] = struct{}{}
 	}
 	return result, nil
+}
+
+// latestCheckpointWith returns the newest self-contained snapshot that this
+// binary understands. Legacy snapshots have no version and intentionally fall
+// back to full replay so their historical references can still be validated.
+func latestCheckpointWith(queryer historyQueryer, tenantID int64) (HistoryRecord, bool, error) {
+	rows, err := queryer.Query(`
+		SELECT id, record_type, COALESCE(record_data, ''), created_at
+		FROM session_messages
+		WHERE tenant_id = ? AND record_type IN ('compress', 'prune')
+		ORDER BY id DESC
+	`, tenantID)
+	if err != nil {
+		return HistoryRecord{}, false, fmt.Errorf("query replay checkpoints: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var record HistoryRecord
+		var rawData, createdAt string
+		if err := rows.Scan(&record.HistoryID, &record.Type, &rawData, &createdAt); err != nil {
+			return HistoryRecord{}, false, fmt.Errorf("scan replay checkpoint: %w", err)
+		}
+		record.Data = json.RawMessage(rawData)
+		record.CreatedAt = internal.ParseTimestamp(createdAt)
+		var snapshot ContextSnapshot
+		if json.Unmarshal(record.Data, &snapshot) != nil || !validCheckpointSnapshot(record.HistoryID, snapshot) {
+			continue
+		}
+		return record, true, nil
+	}
+	if err := rows.Err(); err != nil {
+		return HistoryRecord{}, false, fmt.Errorf("iterate replay checkpoints: %w", err)
+	}
+	return HistoryRecord{}, false, nil
+}
+
+func validCheckpointSnapshot(historyID int64, snapshot ContextSnapshot) bool {
+	if snapshot.Version != contextSnapshotVersion || snapshot.Messages == nil || snapshot.HistoryIDs == nil || len(snapshot.Messages) != len(snapshot.HistoryIDs) {
+		return false
+	}
+	for i, sourceID := range snapshot.HistoryIDs {
+		if sourceID < 0 || sourceID >= historyID {
+			return false
+		}
+		if snapshot.Messages[i].Role == "system" || snapshot.Messages[i].DisplayOnly {
+			return false
+		}
+	}
+	if snapshot.PendingAskUser == nil {
+		return true
+	}
+	pending := snapshot.PendingAskUser
+	if pending.HistoryID <= 0 || pending.HistoryID >= historyID || pending.ToolHistoryID <= 0 || pending.ToolHistoryID >= historyID {
+		return false
+	}
+	for i, sourceID := range snapshot.HistoryIDs {
+		if sourceID == pending.ToolHistoryID && snapshot.Messages[i].Role == "tool" && snapshot.Messages[i].ToolName == "AskUser" {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeHistoryData(record HistoryRecord, dst any) error {

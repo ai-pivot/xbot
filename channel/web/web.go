@@ -115,7 +115,7 @@ type WebCallbacks struct {
 	// HistorySnapshot returns a Web-only history snapshot with runtime state.
 	HistorySnapshot func(senderID string, sel SessionSelector) (HistorySnapshot, error)
 	// RewindHistory rewinds a Web-accessible session to a selected user message.
-	RewindHistory func(senderID string, sel SessionSelector, historyID int64, cutoff time.Time) (RewindHistoryResult, error)
+	RewindHistory func(senderID string, sel SessionSelector, historyID int64) (RewindHistoryResult, error)
 	// GetCWD returns the current directory for a Web-accessible session.
 	GetCWD func(senderID string, sel SessionSelector) (string, error)
 	// SetCWD sets the current directory for a Web-accessible session.
@@ -169,7 +169,7 @@ type WebCallbacks struct {
 	// SessionTree returns Web-only main sessions with SubAgent children already attached.
 	SessionTree func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error)
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
-	ChatCreate func(senderID, label string) (string, error)
+	ChatCreate func(senderID, label string, canonicalUserID int64) (string, error)
 	// ChatDelete deletes a chatroom (except the default one).
 	ChatDelete func(senderID, channel, chatID string) error
 	// ChatRename renames a chatroom.
@@ -378,14 +378,22 @@ type sessionInfo struct {
 var _ ch.SessionStateSender = (*WebChannel)(nil)
 
 // SendSessionState implements ch.SessionStateSender.
-// WebSocket clients retain the legacy broadcast behavior; SSE clients receive
-// only events for their authorized chat subscription.
+// Events are route-scoped. SubAgent lifecycle also reaches the canonical child
+// route used by browser Agent panels.
 func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
-	wc.hub.broadcastSessionState(ev.Channel, ev.ChatID, protocol.WSMessage{
+	msg := protocol.WSMessage{
 		Type:    protocol.MsgTypeSession,
 		TS:      time.Now().Unix(),
 		Session: &ev,
-	})
+	}
+	wc.hub.broadcastSessionState(ev.Channel, ev.ChatID, msg)
+	if isSubAgentLifecycle(ev) && ev.Channel != "cli" {
+		wc.hub.broadcastSessionState("agent", ev.SessionKey, msg)
+	}
+}
+
+func isSubAgentLifecycle(ev protocol.SessionEvent) bool {
+	return ev.SessionKey != "" && (ev.Action == "subagent_started" || ev.Action == "subagent_stopped")
 }
 
 // SessionSelector holds the active channel + chatID for cross-channel browsing.
@@ -408,6 +416,7 @@ func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 		singleUser:         cfg.SingleUser,
 	}
 	wc.hub.seqFn = wc.stampAndBuffer
+	wc.hub.resetReplayFn = wc.clearReplayStream
 	return wc
 }
 
@@ -686,6 +695,10 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 // stampAndBuffer assigns a monotonic seq to the message and appends it to the
 // per-chatID event stream buffer. Returns the stamped message (ready to send).
 func (wc *WebChannel) stampAndBuffer(chatID string, msg protocol.WSMessage) protocol.WSMessage {
+	if channelName, routeChatID, ok := parseSessionRouteKey(chatID); ok {
+		msg.RouteChannel = channelName
+		msg.RouteChatID = routeChatID
+	}
 	es := wc.getEventStream(chatID)
 	msg.Seq = es.nextSeq()
 	es.push(msg)
@@ -705,7 +718,11 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 		Progress: payload,
 	}
 
-	if !wc.hub.sendToSession("web", chatID, wsMsg) {
+	routeChannel := "web"
+	if channelName, qualifiedChatID, ok := strings.Cut(payload.ChatID, ":"); ok && qualifiedChatID == chatID {
+		routeChannel = channelName
+	}
+	if !wc.hub.sendToSession(routeChannel, chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
 	}
 }
@@ -800,10 +817,11 @@ func (wc *WebChannel) wsUpgrader() *websocket.Upgrader {
 func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 	var senderID, username string
 	var si *sessionInfo
+	isCLI := r.URL.Query().Get("client_type") == "cli"
 
 	// Support token-based auth for CLI clients (RemoteBackend).
 	// Query params: ?token=<runner_token>&client_type=cli
-	if token := r.URL.Query().Get("token"); token != "" && r.URL.Query().Get("client_type") == "cli" {
+	if token := r.URL.Query().Get("token"); token != "" && isCLI {
 		var err error
 		senderID, err = wc.validateCLIToken(token)
 		if err != nil {
@@ -829,18 +847,8 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		username = si.username
 	}
 
-	// Resolve canonical user identity (injects user_id + role for agent layer).
-	var wsUserID int64
-	var wsRole string
-	if wc.callbacks.IdentityResolver != nil {
-		resolveChannel := "web"
-		if si != nil && si.feishuUserID != "" {
-			resolveChannel = "feishu"
-		} else if senderID == "admin" || senderID == "cli_user" {
-			resolveChannel = "cli"
-		}
-		wsUserID, wsRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, senderID)
-	}
+	// Resolve canonical identity once at the authenticated transport boundary.
+	wsUserID, wsRole := wc.resolveWSCanonicalIdentity(senderID, isCLI, si)
 
 	// Upgrade to WebSocket
 	conn, err := wc.wsUpgrader().Upgrade(w, r, nil)
@@ -849,7 +857,6 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isCLI := r.URL.Query().Get("client_type") == "cli"
 	client := &Client{
 		connType:        clientConnTypeWS,
 		wsConn:          conn,
@@ -861,7 +868,11 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		isCLI:           isCLI,
 		canonicalUserID: wsUserID,
 		canonicalRole:   wsRole,
+		routeReplay:     true,
 		statelessSig:    make(chan struct{}, 1),
+	}
+	if si != nil {
+		client.webUserID = si.userID
 	}
 
 	if !wc.hub.addClient(client.id, client) {
@@ -884,11 +895,6 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		"username":  username,
 	}).Info("Web client connected")
 
-	// Reconnect sync: wait for client's sync message with last_seq,
-	// then replay missed events from the event stream buffer.
-	// This runs in a goroutine to not block the read pump startup.
-	go wc.replayMissedEvents(client, senderID)
-
 	// Write pump
 	wc.wg.Add(1)
 	go func() {
@@ -899,6 +905,33 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Read pump (blocks until disconnect)
 	// si is nil for CLI token auth; readPump uses it only for username lookup
 	wc.readPump(client, si)
+}
+
+func (wc *WebChannel) resolveWSCanonicalIdentity(senderID string, isCLI bool, si *sessionInfo) (int64, string) {
+	role := ""
+	if senderID == "admin" || wc.singleUser {
+		role = "admin"
+	}
+	if wc.callbacks.IdentityResolver == nil {
+		return 0, role
+	}
+	identityChannel := "web"
+	switch {
+	case si != nil && si.feishuUserID != "":
+		identityChannel = "feishu"
+	case isCLI && strings.HasPrefix(senderID, "ou_"):
+		identityChannel = "feishu"
+	case isCLI && !strings.HasPrefix(senderID, "web-"):
+		identityChannel = "cli"
+	}
+	userID, resolvedRole, err := wc.callbacks.IdentityResolver.Resolve(identityChannel, senderID)
+	if err != nil {
+		return 0, role
+	}
+	if role == "" {
+		role = resolvedRole
+	}
+	return userID, role
 }
 
 // validateCLIToken validates a CLI auth token and returns the associated senderID.
@@ -919,6 +952,9 @@ func (wc *WebChannel) validateCLIToken(token string) (string, error) {
 		return "", fmt.Errorf("runner token auth not available")
 	}
 	store := tools.NewRunnerTokenStore(db)
+	if userID, _, err := store.FindByToken(token); err == nil && userID != "" {
+		return userID, nil
+	}
 	userID := store.FindByTokenInRunnerTokens(token)
 	if userID == "" {
 		return "", fmt.Errorf("invalid token")
@@ -926,97 +962,120 @@ func (wc *WebChannel) validateCLIToken(token string) (string, error) {
 	return userID, nil
 }
 
-// replayMissedEvents replays buffered events with seq > client's last_seq.
-// Waits up to 2s for the client's sync message, then replays.
-func (wc *WebChannel) replayMissedEvents(client *Client, senderID string) {
-	// Resolve the user's currently active session (channel + chatID, respects chat switching)
-	sel := wc.GetCurrentSession(senderID)
-	chatID := sel.ChatID
-	// The client sends sync immediately after WS connect.
-	// If no sync arrives within 2s, send current state anyway (backward compat).
-	syncCh := make(chan uint64, 1)
-	client.syncCh.Store(&syncCh)
-	defer client.syncCh.Store(nil)
-
-	var fromSeq uint64
-	select {
-	case lastSeq := <-syncCh:
-		fromSeq = lastSeq
-	case <-time.After(2 * time.Second):
-		// No sync message — client is old version. Send current progress snapshot.
-		if wc.callbacks.GetActiveProgress != nil {
-			if p := wc.callbacks.GetActiveProgress(sel.Channel, chatID); p != nil {
-				select {
-				case client.sendCh <- protocol.WSMessage{
-					Type:     protocol.MsgTypeProgress,
-					TS:       time.Now().Unix(),
-					Progress: p,
-				}:
-				default:
-				}
-				if p.StreamContent != "" || p.ReasoningStreamContent != "" {
-					select {
-					case client.sendCh <- protocol.WSMessage{
-						Type: protocol.MsgTypeStreamContent,
-						TS:   time.Now().Unix(),
-						Progress: &protocol.ProgressEvent{
-							StreamContent:          p.StreamContent,
-							ReasoningStreamContent: p.ReasoningStreamContent,
-						},
-					}:
-					default:
-					}
-				}
-			}
-		}
-		wc.enqueuePendingAskUser(client, sel.Channel, chatID)
-		return
+// subscribeAndReplay atomically switches a WS client to one route and installs
+// its retained suffix. Route publication uses the same seqMu, so live events
+// cannot enter between subscription and replay.
+func (wc *WebChannel) subscribeAndReplay(client *Client, sel SessionSelector, accessChannel string, lastSeq uint64, resume bool) bool {
+	routeKey := sessionRouteKey(sel.Channel, sel.ChatID)
+	wc.hub.seqMu.Lock()
+	if !client.clearSessionPending() || !wc.hub.subscribe(client.id, routeKey) {
+		wc.hub.seqMu.Unlock()
+		return false
+	}
+	stream := wc.getEventStream(routeKey)
+	streamLastSeq := stream.lastSeq()
+	if lastSeq > streamLastSeq {
+		resume = false
+		lastSeq = 0
 	}
 
-	// Replay missed events from buffer. If no progress event is replayed, send the
-	// current active progress snapshot once so reconnecting clients can still
-	// restore an in-flight turn when their last_seq is already up to date.
-	es := wc.getEventStream(sessionRouteKey(sel.Channel, chatID))
-	events := es.eventsAfter(fromSeq)
-	replayedProgress := false
-	for _, evt := range events {
-		if evt.Type == protocol.MsgTypeAskUser {
-			continue
+	var replay []protocol.WSMessage
+	var evictedThrough uint64
+	if resume {
+		replay, evictedThrough = stream.replayAfter(lastSeq)
+	}
+	filtered := replay[:0]
+	for _, event := range replay {
+		if event.Type != protocol.MsgTypeAskUser {
+			filtered = append(filtered, event)
 		}
-		if evt.Type == protocol.MsgTypeProgress {
-			replayedProgress = true
-		}
+	}
+	replay = filtered
+	available := cap(client.sendCh) - len(client.sendCh)
+	requiresResync := evictedThrough > 0 || len(replay)+1 > available
+	if requiresResync {
+		replay = []protocol.WSMessage{{
+			Type:         protocol.MsgTypeResyncRequired,
+			Seq:          streamLastSeq,
+			Channel:      accessChannel,
+			ChatID:       sel.ChatID,
+			RouteChannel: sel.Channel,
+			RouteChatID:  sel.ChatID,
+		}}
+	}
+	for _, event := range replay {
 		select {
-		case client.sendCh <- evt:
+		case client.sendCh <- event:
 		default:
-			log.Debug("Client sendCh full during replay, stopping")
-			return
+			client.closeDone()
+			wc.hub.seqMu.Unlock()
+			return false
 		}
 	}
-	if !replayedProgress && wc.callbacks.GetActiveProgress != nil {
-		if p := wc.callbacks.GetActiveProgress(sel.Channel, chatID); p != nil {
+	if !requiresResync {
+		select {
+		case client.sendCh <- protocol.WSMessage{
+			Type:         protocol.MsgTypeSync,
+			Seq:          streamLastSeq,
+			RouteChannel: sel.Channel,
+			RouteChatID:  sel.ChatID,
+		}:
+		default:
+			client.closeDone()
+			wc.hub.seqMu.Unlock()
+			return false
+		}
+	}
+	wc.hub.seqMu.Unlock()
+
+	if wc.callbacks.GetActiveProgress != nil {
+		if p := wc.callbacks.GetActiveProgress(accessChannel, sel.ChatID); p != nil {
 			select {
-			case client.sendCh <- protocol.WSMessage{Type: protocol.MsgTypeProgress, TS: time.Now().Unix(), Progress: p}:
+			case client.sendCh <- protocol.WSMessage{
+				Type:         protocol.MsgTypeProgress,
+				TS:           time.Now().Unix(),
+				Channel:      accessChannel,
+				ChatID:       sel.ChatID,
+				RouteChannel: sel.Channel,
+				RouteChatID:  sel.ChatID,
+				Progress:     p,
+			}:
 			default:
 			}
 		}
 	}
-
-	wc.enqueuePendingAskUser(client, sel.Channel, chatID)
+	wc.enqueuePendingAskUser(client, sel, accessChannel)
+	return true
 }
 
-func (wc *WebChannel) enqueuePendingAskUser(client *Client, channelName, chatID string) bool {
+func (wc *WebChannel) enqueuePendingAskUser(client *Client, route SessionSelector, accessChannel string) bool {
 	if wc.callbacks.WithPendingAskUser == nil {
 		return false
 	}
-	return wc.callbacks.WithPendingAskUser(channelName, chatID, func(pending *protocol.ProgressEvent) bool {
+	return wc.callbacks.WithPendingAskUser(accessChannel, route.ChatID, func(pending *protocol.ProgressEvent) bool {
+		questions, err := json.Marshal(pending.Questions)
+		if err != nil {
+			return false
+		}
+		content, err := json.Marshal(protocol.AskUserEvent{
+			Channel:   accessChannel,
+			ChatID:    route.ChatID,
+			Questions: string(questions),
+			RequestID: pending.RequestID,
+		})
+		if err != nil {
+			return false
+		}
 		select {
 		case client.sendCh <- protocol.WSMessage{
-			Type:     protocol.MsgTypeAskUser,
-			TS:       time.Now().Unix(),
-			Channel:  channelName,
-			ChatID:   chatID,
-			Progress: pending,
+			Type:         protocol.MsgTypeAskUser,
+			TS:           time.Now().Unix(),
+			Channel:      accessChannel,
+			ChatID:       route.ChatID,
+			RouteChannel: route.Channel,
+			RouteChatID:  route.ChatID,
+			Content:      string(content),
+			Progress:     pending,
 		}:
 			return true
 		default:
@@ -1139,21 +1198,16 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 
 		switch msg.Type {
 		case protocol.MsgTypeSync:
-			// Client reconnect sync: sends last_seq from history API response.
-			// The replayMissedEvents goroutine is waiting on this.
-			if ch := c.syncCh.Load(); ch != nil {
-				lastSeq := uint64(0)
-				var syncMsg struct {
-					LastSeq uint64 `json:"last_seq"`
-				}
-				if err := json.Unmarshal(raw, &syncMsg); err == nil {
-					lastSeq = syncMsg.LastSeq
-				}
-				select {
-				case *ch <- lastSeq:
-				default:
-				}
+			syncSel := wc.GetCurrentSession(c.userID)
+			if msg.Channel != "" && msg.ChatID != "" {
+				syncSel = SessionSelector{Channel: msg.Channel, ChatID: msg.ChatID}
 			}
+			accessChannel := wc.clientRouteAccessChannel(c, syncSel.Channel, syncSel.ChatID)
+			if !wc.canAccessClientSession(c, accessChannel, syncSel.ChatID, false) {
+				log.WithFields(log.Fields{"channel": syncSel.Channel, "chat_id": syncSel.ChatID, "user_id": c.userID}).Warn("WS sync denied")
+				continue
+			}
+			wc.subscribeAndReplay(c, syncSel, accessChannel, msg.LastSeq, true)
 			continue
 		case protocol.MsgTypeCancel:
 			// Reuse existing /cancel mechanism: push "/cancel" text into msgBus.
@@ -1167,19 +1221,12 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			if msg.Channel != "" && msg.ChatID != "" {
 				msgChannel = msg.Channel
 				msgChatID = msg.ChatID
-				webUserID := 0
-				if si != nil {
-					webUserID = si.userID
-				}
-				if !c.isCLI && !wc.canAccessSession(context.Background(), webUserID, c.userID, msgChannel, msgChatID) {
-					log.WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client cancel denied")
-					continue
-				}
+			}
+			if !wc.canAccessClientSession(c, msgChannel, msgChatID, false) {
+				log.WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client cancel denied")
+				continue
 			}
 			if c.isCLI {
-				if msg.SenderID != "" {
-					msgSenderID = msg.SenderID
-				}
 				if msg.SenderName != "" {
 					msgSenderName = msg.SenderName
 				}
@@ -1263,56 +1310,30 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 		case protocol.MsgTypeSubscribe:
 			// Subscribe to a business chatID so the Hub can route
 			// progress/stream/outbound events to this WS client.
-			var subMsg struct {
-				ChatID string `json:"chat_id"`
-			}
-			if err := json.Unmarshal(raw, &subMsg); err != nil || subMsg.ChatID == "" {
+			if msg.ChatID == "" {
 				continue
 			}
-			// Authorization: web clients may subscribe to any chatID they own
-			// (verified via userCurrentChat or owned chatroom list). CLI users
-			// can subscribe to their business chatID (workspace path).
-			if !c.isCLI {
-				// Web client: allow subscribing to the user's current active chat
-				// (set via POST /api/chats/{id}/switch), their default senderID,
-				// or an authorized SubAgent tenant for a visible parent session.
+			subscribeChannel := msg.Channel
+			if subscribeChannel == "" {
 				activeSel := wc.GetCurrentSession(c.userID)
-				if subMsg.ChatID != c.userID && subMsg.ChatID != activeSel.ChatID {
-					webUserID := 0
-					if si != nil {
-						webUserID = si.userID
-					}
-					channelName := "web"
-					if webChatIDLooksLikeSubAgent(subMsg.ChatID) {
-						channelName = "agent"
-					}
-					if !wc.canAccessSession(context.Background(), webUserID, c.userID, channelName, subMsg.ChatID) {
-						log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID, "user_id": c.userID}).Warn("Hub: web client tried to subscribe to foreign chatID, denied")
-						continue
-					}
+				switch {
+				case c.isCLI:
+					subscribeChannel = "cli"
+				case msg.ChatID == activeSel.ChatID:
+					subscribeChannel = activeSel.Channel
+				case webChatIDLooksLikeSubAgent(msg.ChatID):
+					subscribeChannel = "agent"
+				default:
+					subscribeChannel = "web"
 				}
 			}
-			wc.hub.subscribe(c.id, subMsg.ChatID)
-			log.WithFields(log.Fields{"client_id": c.id, "chat_id": subMsg.ChatID}).Info("Hub: client subscribed to chatID")
-
-			// Resend pending AskUser prompt if this session is waiting for user input.
-			// This handles the case where the AskUser was triggered before the web
-			// client subscribed (e.g. CLI session triggered AskUser, web user switches
-			// to that session afterwards). GetPendingAskUser searches by chatID
-			// across all channels, so we pass an empty channel to trigger fallback.
-			if wc.callbacks.GetPendingAskUser != nil {
-				if askP := wc.callbacks.GetPendingAskUser("", subMsg.ChatID); askP != nil {
-					select {
-					case c.sendCh <- protocol.WSMessage{
-						Type:     protocol.MsgTypeAskUser,
-						TS:       time.Now().Unix(),
-						ChatID:   subMsg.ChatID,
-						Progress: askP,
-					}:
-					default:
-					}
-				}
+			accessChannel := wc.clientRouteAccessChannel(c, subscribeChannel, msg.ChatID)
+			if !wc.canAccessClientSession(c, accessChannel, msg.ChatID, true) {
+				log.WithFields(log.Fields{"client_id": c.id, "channel": subscribeChannel, "chat_id": msg.ChatID, "user_id": c.userID}).Warn("Hub: client tried to subscribe to foreign session, denied")
+				continue
 			}
+			wc.subscribeAndReplay(c, SessionSelector{Channel: subscribeChannel, ChatID: msg.ChatID}, accessChannel, msg.LastSeq, msg.Resume)
+			log.WithFields(log.Fields{"client_id": c.id, "channel": subscribeChannel, "chat_id": msg.ChatID}).Info("Hub: client subscribed to session")
 		case protocol.MsgTypeTUIControlResp:
 			// Remote CLI TUI control response — route to pending request handler
 			if msg.TUIControl != nil && msg.ID != "" && wc.hub.tuiRespFn != nil {
@@ -1378,19 +1399,12 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			if msg.Channel != "" && msg.ChatID != "" {
 				msgChannel = msg.Channel
 				msgChatID = msg.ChatID
-				webUserID := 0
-				if si != nil {
-					webUserID = si.userID
-				}
-				if !c.isCLI && !wc.canAccessSession(context.Background(), webUserID, c.userID, msgChannel, msgChatID) {
-					log.WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client message denied")
-					continue
-				}
+			}
+			if !wc.canAccessClientSession(c, msgChannel, msgChatID, true) {
+				log.WithFields(log.Fields{"channel": msgChannel, "chat_id": msgChatID, "user_id": c.userID}).Warn("Web client message denied")
+				continue
 			}
 			if c.isCLI {
-				if msg.SenderID != "" {
-					msgSenderID = msg.SenderID
-				}
 				if msg.SenderName != "" {
 					msgSenderName = msg.SenderName
 				}
@@ -1402,35 +1416,22 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// Echo back complete user message (with file info) so frontend can update optimistic message
 			if content != originalContent && len(msg.UploadKeys) > 0 {
 				echoMsg := protocol.WSMessage{
-					Type:            "user_echo",
+					Type:            protocol.MsgTypeUserEcho,
 					Content:         content,
 					OriginalContent: originalContent,
 					TS:              time.Now().Unix(),
 				}
-				wc.hub.sendToClient(msgChatID, echoMsg)
+				wc.hub.sendToSession(msgChannel, msgChatID, echoMsg)
 			}
 
 			// Subscribe this client to receive messages for this chatID.
 			// Hub routes by business chatID directly — no transport metadata needed.
 			// Always subscribe on every message — idempotent and handles both
 			// vanilla web messages (no channel/chat_id) and CLI relay messages.
-			wc.hub.subscribe(c.id, msgChatID)
+			wc.hub.subscribe(c.id, sessionRouteKey(msgChannel, msgChatID))
 
-			// Eagerly save user message so history API can return it during processing.
-			// Skip command inputs (! and / prefixes). TUI handles slash commands
-			// locally, so Web must not persist command text such as /new as chat
-			// history before the agent command handler runs.
-			// For remote CLI (business channel=cli), do NOT eager-save here: this web-layer
-			// helper persists by web sender/chat tenant, while remote CLI history must be
-			// stored under business tenant (channel=cli, chat_id=<abs cwd>) inside agent.processMessage().
-			trimmed := strings.TrimSpace(content)
-			if shouldEagerSaveUserMessage(msgChannel, trimmed) {
-				if err := eagerSaveUserMsg(wc.db, msgChannel, msgChatID, content); err != nil {
-					log.WithError(err).Warn("Failed to eager-save user message")
-				}
-				metadata["user_msg_eager_saved"] = "true"
-			}
-
+			// History persistence is Agent-owned after session operation-gate
+			// admission. A transport must not pre-write queued messages.
 			wc.msgBus.Inbound <- bus.InboundMessage{
 				Channel:    msgChannel,
 				SenderID:   msgSenderID,
@@ -1458,14 +1459,10 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			if msg.Channel != "" && msg.ChatID != "" {
 				respChatID = msg.ChatID
 				respChannel = msg.Channel
-				webUserID := 0
-				if si != nil {
-					webUserID = si.userID
-				}
-				if !c.isCLI && !wc.canAccessSession(context.Background(), webUserID, c.userID, respChannel, respChatID) {
-					log.WithFields(log.Fields{"channel": respChannel, "chat_id": respChatID, "user_id": c.userID}).Warn("Web client ask_user_response denied")
-					continue
-				}
+			}
+			if !wc.canAccessClientSession(c, respChannel, respChatID, false) {
+				log.WithFields(log.Fields{"channel": respChannel, "chat_id": respChatID, "user_id": c.userID}).Warn("Web client ask_user_response denied")
+				continue
 			}
 			if resp.Cancelled {
 				// User cancelled — send /cancel equivalent
@@ -1510,6 +1507,18 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 		}
 	}
 
+}
+
+// clientRouteAccessChannel maps the remote CLI transport route back to the
+// canonical Agent tenant it carries. Delivery remains on the CLI route.
+func (wc *WebChannel) clientRouteAccessChannel(client *Client, routeChannel, chatID string) string {
+	if client == nil || !client.isCLI || routeChannel != "cli" {
+		return routeChannel
+	}
+	if _, ok := parseWebAgentTenantChatID(chatID); ok && wc.tenantExists("agent", chatID) {
+		return "agent"
+	}
+	return routeChannel
 }
 
 // ---------------------------------------------------------------------------
@@ -1619,59 +1628,6 @@ func (wc *WebChannel) sessionCleanup() {
 			wc.sessionsMu.Unlock()
 		}
 	}
-}
-
-func shouldEagerSaveUserMessage(channel, trimmedContent string) bool {
-	if channel == "cli" {
-		return false
-	}
-	return trimmedContent == "" || (trimmedContent[0] != '!' && trimmedContent[0] != '/')
-}
-
-// isImageExt returns true if the file extension is a common image format.
-// eagerSaveUserMsg persists a user message to session_messages immediately
-// so that a page-refresh can recover it while the backend is still processing.
-func eagerSaveUserMsg(db *sql.DB, channel, chatID, content string) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Ensure tenant exists before saving (first message from a new client).
-	now := time.Now().Format(time.RFC3339)
-	_, err = tx.Exec(`INSERT OR IGNORE INTO tenants (channel, chat_id, created_at, last_active_at) VALUES (?, ?, ?, ?)`,
-		channel, chatID, now, now)
-	if err != nil {
-		return err
-	}
-
-	var tenantID int64
-	if err := tx.QueryRow(
-		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", channel, chatID,
-	).Scan(&tenantID); err != nil {
-		return err
-	}
-	// Dedup by checking if the very last message for this tenant is an identical
-	// user message saved within the last 2 seconds (handles page-refresh double-submit).
-	// We do NOT dedup by content alone — users may send the same text legitimately.
-	// IMPORTANT: wrap both sides in datetime() for correct comparison.
-	// created_at stores RFC3339 with timezone (e.g. '2026-05-24T14:00:00+08:00'),
-	// while datetime(?, '-2 seconds') returns UTC without timezone (e.g. '2026-05-24 05:59:58').
-	// Raw string comparison of 'T' > ' ' makes the check always TRUE, breaking the 2s window
-	// and deduping ALL duplicate-content messages regardless of time gap.
-	_, err = tx.Exec(`INSERT INTO session_messages (tenant_id, role, content, created_at)
-	SELECT ?, 'user', ?, ?
-	WHERE NOT EXISTS (
-	SELECT 1 FROM session_messages
-	WHERE tenant_id = ? AND role = 'user' AND content = ?
-	  AND datetime(created_at) > datetime(?, '-2 seconds')
-	LIMIT 1
-	)`, tenantID, content, now, tenantID, content, now)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 // ---------------------------------------------------------------------------

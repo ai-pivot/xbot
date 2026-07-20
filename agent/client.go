@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"xbot/bus"
 	"xbot/channel"
@@ -123,6 +122,12 @@ func (c *Client) dispatchWSMessage(msg protocol.WSMessage) {
 		if msg.Session != nil {
 			c.base.emit(c.ctx, *msg.Session)
 		}
+	case protocol.MsgTypeResyncRequired:
+		c.base.emit(c.ctx, protocol.SessionEvent{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+			Action:  "resync_required",
+		})
 	case protocol.MsgTypePluginWidgets:
 		var zones map[string]string
 		if err := json.Unmarshal([]byte(msg.Content), &zones); err == nil {
@@ -728,17 +733,9 @@ func (c *Client) GetHistory(channelName, chatID string) ([]protocol.HistoryMessa
 	return r, c.call(MethodGetHistory, getHistoryReq{Channel: channelName, ChatID: chatID}, &r)
 }
 
-func (c *Client) TrimHistory(ch, chatID string, cutoff time.Time) error {
-	return c.call(MethodTrimHistory, trimHistoryReq{Channel: ch, ChatID: chatID, Cutoff: cutoff.Unix()}, nil)
-}
-
-func (c *Client) RewindHistory(ch, chatID string, historyID int64, cutoff time.Time) (protocol.HistoryRewindResult, error) {
+func (c *Client) RewindHistory(ch, chatID string, historyID int64) (protocol.HistoryRewindResult, error) {
 	var result protocol.HistoryRewindResult
-	var cutoffMS int64
-	if !cutoff.IsZero() {
-		cutoffMS = cutoff.UnixMilli()
-	}
-	err := c.call(MethodRewindHistory, rewindHistoryReq{Channel: ch, ChatID: chatID, HistoryID: historyID, CutoffMS: cutoffMS}, &result)
+	err := c.call(MethodRewindHistory, rewindHistoryReq{Channel: ch, ChatID: chatID, HistoryID: historyID}, &result)
 	return result, err
 }
 
@@ -792,6 +789,16 @@ func (c *Client) GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump
 		return nil, false
 	}
 	return &dump, len(dump.Messages) > 0
+}
+
+// ContinueInteractiveSession submits content to the active interactive SubAgent
+// identified by its canonical full key. A nil error means accepted; completion
+// is reported later through progress events.
+func (c *Client) ContinueInteractiveSession(fullKey, content string) error {
+	return c.call(MethodContinueInteractiveSession, continueInteractiveSessionReq{
+		FullKey: fullKey,
+		Content: content,
+	}, nil)
 }
 
 // ---------------------------------------------------------------------------
