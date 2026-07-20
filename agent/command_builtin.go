@@ -668,7 +668,7 @@ func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
 	}
 
-	outputPath := filepath.Join(os.TempDir(), appName+".xbot.zip")
+	outputPath := filepath.Join(os.TempDir(), appName+".zip")
 	if err := a.registryManager.PackApp(items, outputPath, msg.SenderID); err != nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("导出失败：%v", err)}, nil
 	}
@@ -832,15 +832,15 @@ func appHelp() string {
 	return "## 📦 /app — 应用管理\n\n" +
 		"**子命令：**\n\n" +
 		"- `/app list` — 查看已安装\n" +
-		"- `/app install [-f] <file-path>` — 从 .xbot.zip 文件安装（-f 强制覆盖）\n" +
+		"- `/app install [-f] <file-path>` — 从 .zip 文件安装（-f 强制覆盖）\n" +
 		"- `/app install [-f] <url>` — 从 URL 下载并安装（-f 强制覆盖）\n" +
 		"- `/app uninstall -n <app> -s <skill> -a <agent> -p <plugin>` — 卸载（-n 卸载整个 app 包）\n" +
 		"- `/app export <name> -s <skill> -a <agent> -p <plugin>` — 打包导出\n\n" +
 		"**示例：**\n\n" +
 		"```\n" +
 		"/app list\n" +
-		"/app install /tmp/my-app.xbot.zip\n" +
-		"/app install -f https://example.com/my-app.xbot.zip\n" +
+		"/app install /tmp/my-app.zip\n" +
+		"/app install -f https://example.com/my-app.zip\n" +
 		"/app uninstall -n my-app\n" +
 		"/app uninstall -s debug -a explore\n" +
 		"/app export my-app -s debug -a explore -p git-widget\n" +

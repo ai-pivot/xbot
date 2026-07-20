@@ -72,8 +72,8 @@ func NewAppPackager(workDir string) *AppPackager {
 func (bp *AppPackager) Pack(rm *RegistryManager, items []AppItem, outputPath, author string) error {
 	manifest := AppManifest{
 		Schema:      AppManifestSchema,
-		ID:          filepath.Base(strings.TrimSuffix(outputPath, ".xbot.zip")),
-		Name:        filepath.Base(strings.TrimSuffix(outputPath, ".xbot.zip")),
+		ID:          filepath.Base(strings.TrimSuffix(outputPath, ".zip")),
+		Name:        filepath.Base(strings.TrimSuffix(outputPath, ".zip")),
 		Version:     "1.0.0",
 		Author:      author,
 		Description: "",

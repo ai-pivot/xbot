@@ -606,7 +606,7 @@ func (rm *RegistryManager) InstallAppFromFile(zipPath, senderID string, force bo
 // InstallAppFromURL downloads a .xbot.zip from a URL and installs it.
 func (rm *RegistryManager) InstallAppFromURL(url, senderID string, force bool) (*AppInstallResult, error) {
 	// Download to temp file
-	tmpFile, err := os.CreateTemp("", "xbot-install-*.xbot.zip")
+	tmpFile, err := os.CreateTemp("", "xbot-install-*.zip")
 	if err != nil {
 		return nil, fmt.Errorf("create temp file: %w", err)
 	}
