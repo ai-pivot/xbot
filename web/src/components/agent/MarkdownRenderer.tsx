@@ -288,7 +288,11 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 
   return (
     <div ref={rootRef} className={cn('markdown-body text-sm leading-relaxed', className)}>
-      <ParsedMarkdown content={debouncedContent} />
+      {/* key forces React to create fresh DOM nodes on every content change.
+          clipTextNodes mutates text.data behind React's back; without a remount,
+          React's reconciler skips DOM updates for text nodes whose virtual DOM
+          value is unchanged, leaving clipped (empty) values in place. */}
+      <ParsedMarkdown key={debouncedContent} content={debouncedContent} />
     </div>
   )
 }, (prev, next) => (

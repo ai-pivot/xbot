@@ -185,12 +185,13 @@ export function useProgressStream({
     // hydrate if we haven't started receiving live events for this turn
     // (finalizedRef is false AND store is empty = fresh load/reconnect).
     if (finalizedRef.current) return
-    const currentSnap = store.getSnapshot()
     const live = historyProgressToLive(initialProgress)
-    // Install a newer authoritative snapshot even when a cache snapshot is
-    // already visible. Seq is the semantic watermark; older/equal snapshots
-    // cannot overwrite live state.
-    if (live.phase && live.eventSeq >= currentSnap.eventSeq) {
+    // initialProgress comes from the server's authoritative active_progress
+    // (fetched via reload). Always replace — the cache-restored snapshot
+    // (from the reset effect) may have a higher eventSeq (updated by live SSE
+    // events), which would block the server's authoritative data and cause
+    // incomplete iteration recovery on session switch.
+    if (live.phase) {
       if (progressCacheKey) progressSnapshotCache.set(progressCacheKey, initialProgress as ProgressEvent)
       store.replace(live)
     }
@@ -292,6 +293,8 @@ function handleProgressMessage(
       if (p.reasoning_stream_content) {
         store.appendReasoningContent(p.reasoning_stream_content)
       }
+      // GenUI streaming HTML (from display_html tool arguments)
+      if (p.genui_content) store.setGenUIContent(p.genui_content)
       // Streaming tools (generating status) — patch only, no snapshot replace
       if (p.streaming_tools) {
         store.setStreamOnlyFields({
@@ -397,9 +400,21 @@ function handleProgressMessage(
       const finalText = msg.content ?? ''
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
-      const iterations = parsedIterations.length > 0 ? parsedIterations : snap.iterationHistory
+      // Prefer the live snapshot's iterationHistory — it was built incrementally
+      // via SSE and already contains all completed iterations. Using the
+      // server's parsedIterations instead would replace the data source, causing
+      // all iterations to re-render (tool labels/status may differ in format).
+      // Only fall back to parsedIterations when the snapshot has no iterations
+      // (e.g. reconnect where no SSE events were received).
+      const iterations = snap.iterationHistory.length > 0 ? snap.iterationHistory : parsedIterations
       completeRef.current?.(finalText, iterations, msg.seq)
       store.reset()
+      return
+    }
+
+    case 'genui': {
+      // Final complete HTML from display_html tool (non-streaming, complete code)
+      if (msg.content) store.setGenUIContent(msg.content)
       return
     }
 
@@ -431,8 +446,12 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
-          store.reset()
+          // Call completeRef BEFORE store.reset() so onAssistantComplete can
+          // flushSync the append before liveMessage is cleared. Without this
+          // order, store.reset() synchronously nulls liveMessage while
+          // setMessages is still queued → flicker.
           completeRef.current?.(text, iters, msg.seq)
+          store.reset()
         } else {
           store.reset()
         }

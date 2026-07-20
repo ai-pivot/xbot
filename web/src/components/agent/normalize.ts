@@ -136,6 +136,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     completedTools: completed,
     iterationHistory: iterHistory,
     streamingTools: [],
+    genuiContent: '',
     lastIter: -1, // -1 = no iteration seen yet; allows iteration 0 to be accepted
     lastReasoning: '',
     todos: (p.todos ?? []) as TodoItem[],

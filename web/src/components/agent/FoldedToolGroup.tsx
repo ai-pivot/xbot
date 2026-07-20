@@ -185,6 +185,12 @@ function formatMergedTitle(tools: WebToolProgress[], sweepRunning = true): React
 /** Expanded tool card: [icon] name + input + output */
 function ToolCard({ tool }: { tool: WebToolProgress }) {
   const name = tool.name || 'tool'
+
+  // display_html: no card chrome, just render the GenUI directly
+  if (name === 'display_html') {
+    return <ToolRender tool={tool} />
+  }
+
   const status = singleStatus(tool)
   const color = statusColorVar(status)
   const dn = displayName(tool)
@@ -218,6 +224,19 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   const [expanded, setExpanded] = useState(false)
 
   if (!tools.length) return null
+
+  // display_html tools are always expanded — they render interactive UI
+  // that should never be folded away.
+  const allGenUI = tools.every((t) => t.name === 'display_html')
+  if (allGenUI) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        {tools.map((tool, i) => (
+          <ToolCard key={`${tool.name}-${tool.label}-${i}`} tool={tool} />
+        ))}
+      </div>
+    )
+  }
 
   // 'none' level: always expanded, each tool as independent card
   if (level === 'none') {

@@ -51,6 +51,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "sonner": "^2.0.7",
+    "sucrase": "^3.35.1",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.2.2",
     "tiptap-markdown": "^0.9.0",

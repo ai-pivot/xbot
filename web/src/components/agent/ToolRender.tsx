@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
 import { ToolCallBlock } from './ToolCallBlock'
+import { GenUIBlock } from './GenUIBlock'
 
 interface ToolRenderProps {
   tool: WebToolProgress
@@ -78,6 +79,8 @@ export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
       return <GrepRender tool={tool} summary={summary} detail={detail} />
     case 'Glob':
       return <GlobRender tool={tool} summary={summary} />
+    case 'display_html':
+      return <DisplayHTMLRender tool={tool} summary={summary} />
     default:
       return <ToolCallBlock tool={tool} />
   }
@@ -241,4 +244,15 @@ function GlobRender({ tool, summary }: { tool: WebToolProgress; summary: string 
       {files.length === 0 && <div className="text-text-muted">No files matched</div>}
     </div>
   )
+}
+
+// ── display_html ──────────────────────────────────────────────────────
+
+function DisplayHTMLRender({ tool }: { tool: WebToolProgress; summary: string }) {
+  const args = parseArgs(tool)
+  const code = args?.code as string | undefined
+  if (!code) {
+    return <ToolCallBlock tool={tool} />
+  }
+  return <GenUIBlock code={code} />
 }

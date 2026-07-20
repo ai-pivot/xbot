@@ -387,6 +387,7 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 				Status:    string(t.Status),
 				ElapsedMS: t.Elapsed.Milliseconds(),
 				Summary:   t.Summary,
+				Args:      t.Args,
 			}
 		}
 		s.iterationSnapshots = append(s.iterationSnapshots, snap)

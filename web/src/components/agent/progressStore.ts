@@ -298,6 +298,15 @@ export class ProgressStore {
     })
   }
 
+  /** Set streaming GenUI HTML content (from display_html tool arguments). */
+  setGenUIContent(content: string): void {
+    if (!content) return
+    this.mutate((draft) => {
+      draft.genuiContent = content
+      draft.streaming = true
+    })
+  }
+
   /**
    * Apply stream-only fields (streaming_tools) without replacing the snapshot.
    * Called for stream_content events that carry tool-name detection (generating).
@@ -363,6 +372,7 @@ export class ProgressStore {
         if (hadPreviousIteration) {
           draft.streamContent = ''
           draft.reasoningStreamContent = ''
+          draft.genuiContent = ''
           draft.content = ''
           draft.streamingTools = []
           draft.activeTools = []
@@ -511,6 +521,7 @@ export class ProgressStore {
       completedTools: this.current.completedTools,
       iterationHistory: this.current.iterationHistory,
       streamingTools: this.current.streamingTools,
+      genuiContent: this.current.genuiContent,
       lastIter: this.current.lastIter,
       lastReasoning: this.current.lastReasoning,
       todos: this.current.todos,
