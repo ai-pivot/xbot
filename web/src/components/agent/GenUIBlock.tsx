@@ -26,6 +26,25 @@ function codeHash(code: string): string {
   return `${code.length}:${code.slice(0, 32)}…${code.slice(-32)}`
 }
 
+// ─── Error Boundary ────────────────────────────────────────────
+// Catches render errors (e.g. invalid SVG attributes) so they don't
+// crash the entire React tree. Shows last successful render on error.
+class GenUIErrorBoundary extends React.Component<
+  { children: React.ReactNode; fallback: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode; fallback: React.ReactNode }) {
+    super(props)
+    this.state = { hasError: false }
+  }
+  override componentDidCatch() {
+    this.setState({ hasError: true })
+  }
+  override render() {
+    return this.state.hasError ? this.props.fallback : this.props.children
+  }
+}
+
 // ─── Component ────────────────────────────────────────────────
 
 interface GenUIBlockProps {
@@ -49,6 +68,18 @@ export function GenUIBlock({ code, chatId, uiSource, streaming = false, onAction
   const timerRef = useRef<number | null>(null)
   const compileSeqRef = useRef(0)
   const lastRenderRef = useRef(0)
+
+  // Forward wheel events from iframe to parent: iframe has overflow:hidden
+  // so wheel events are swallowed. This lets the parent chat history scroll
+  // when the user scrolls inside the GenUI iframe.
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type !== 'genui_wheel') return
+      window.scrollBy({ top: e.data.deltaY, behavior: 'auto' })
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [])
 
   // Schedule compilation with throttle: max 100ms between renders during streaming.
   useEffect(() => {
@@ -167,7 +198,33 @@ ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
 <style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}*{box-sizing:border-box}</style>
 </head><body></body></html>`)
     doc.close()
-    rootRef.current = createRoot(doc.body)
+
+    // Add wheel event forwarding via JS (not inline <script> which breaks
+    // React 19's createRoot under allow-scripts allow-same-origin sandbox).
+    doc.addEventListener('wheel', (e: WheelEvent) => {
+      let el = e.target as HTMLElement | null
+      let isScrollable = false
+      while (el && el !== doc) {
+        const style = doc.defaultView?.getComputedStyle(el)
+        if (style && (
+          (style.overflow === 'auto' || style.overflow === 'scroll' ||
+           style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+          el.scrollHeight > el.clientHeight
+        )) {
+          isScrollable = true
+          break
+        }
+        el = el.parentElement
+      }
+      if (!isScrollable) {
+        window.scrollBy({ top: e.deltaY })
+      }
+    }, { passive: true })
+
+    // Reuse existing root if body already has one (prevents React #299)
+    if (!rootRef.current) {
+      rootRef.current = createRoot(doc.body)
+    }
     return () => {
       rootRef.current?.unmount()
       rootRef.current = null
@@ -234,19 +291,20 @@ ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
     }
   }, [ws, effectiveChatId, uiSource, onAction])
 
-  // Render component into iframe root
+  // Render component into iframe root, wrapped in error boundary
   useEffect(() => {
     if (!rootRef.current) return
     if (component) {
-      try {
-        rootRef.current.render(
+      rootRef.current.render(
+        React.createElement(GenUIErrorBoundary, {
+          fallback: React.createElement('div', {
+            style: { padding: '16px', color: '#94a3b8', fontSize: '13px' },
+          }, '⚠️ Render error — check SVG/HTML syntax'),
+        },
           React.createElement(component, { 'data-genui-root': true as const, onClick: handleClick } as Record<string, unknown>)
         )
-      } catch {
-        // keep last successful render
-      }
+      )
     }
-    // Don't render null on failure — keep last successful render
   }, [component, handleClick])
 
   // Lazy: don't render iframe until code exists
