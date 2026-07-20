@@ -80,7 +80,7 @@ export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
     case 'Glob':
       return <GlobRender tool={tool} summary={summary} />
     case 'display_html':
-      return <DisplayHTMLRender tool={tool} summary={summary} />
+      return <DisplayHTMLRender tool={tool} />
     default:
       return <ToolCallBlock tool={tool} />
   }
@@ -248,7 +248,7 @@ function GlobRender({ tool, summary }: { tool: WebToolProgress; summary: string 
 
 // ── display_html ──────────────────────────────────────────────────────
 
-function DisplayHTMLRender({ tool }: { tool: WebToolProgress; summary: string }) {
+function DisplayHTMLRender({ tool }: { tool: WebToolProgress }) {
   const args = parseArgs(tool)
   const code = args?.code as string | undefined
   if (!code) {

@@ -1,9 +1,9 @@
 /**
  * GenUIBlock — renders LLM-generated TSX in an isolated iframe.
  *
- * Optimized architecture:
+ * Architecture:
  * 1. Compilation cache: Map<hash, ComponentType> — skip recompile if hash matches
- * 2. Throttled compilation: 300ms during streaming, immediate when not streaming
+ * 2. Throttled compilation: 100ms during streaming, immediate when not streaming
  * 3. Last-good retention: keep previous component on compile failure (no flash to empty)
  * 4. ResizeObserver for height: no setTimeout polling, instant height updates
  * 5. Separate React root in iframe via createRoot
@@ -138,8 +138,6 @@ export function GenUIBlock({ code, chatId, uiSource, streaming = false, onAction
 
       if (seq !== compileSeqRef.current) return
 
-      console.log('[GenUI] compileAndLoad:', { seq, hasComp: !!Comp, codeLen: tsx.length, isStreaming })
-
       if (Comp && typeof Comp === 'function') {
         // Cache the result
         if (compileCache.size >= CACHE_MAX) {
@@ -150,8 +148,7 @@ export function GenUIBlock({ code, chatId, uiSource, streaming = false, onAction
         setComponent(() => Comp)
       }
       // On failure: keep previous component (no flash to empty)
-    } catch (e) {
-      console.error('[GenUI] compile error:', e instanceof Error ? e.message : e, 'codeLen:', tsx.length)
+    } catch {
       if (seq !== compileSeqRef.current) return
     }
   }, []) // no deps — streaming is passed as parameter
@@ -240,14 +237,13 @@ ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
   // Render component into iframe root
   useEffect(() => {
     if (!rootRef.current) return
-    console.log('[GenUI] render effect:', { hasComponent: !!component })
     if (component) {
       try {
         rootRef.current.render(
           React.createElement(component, { 'data-genui-root': true, onClick: handleClick })
         )
-      } catch (e) {
-        console.error('[GenUI] render failed:', e instanceof Error ? e.message : e)
+      } catch {
+        // keep last successful render
       }
     }
     // Don't render null on failure — keep last successful render
