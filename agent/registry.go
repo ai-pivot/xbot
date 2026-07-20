@@ -20,11 +20,18 @@ import (
 
 // RegistryManager manages skill/agent/plugin packaging, installation, and uninstall.
 type RegistryManager struct {
-	store      *SkillStore
-	agentStore *AgentStore
-	workDir    string
-	xbotHome   string // global xbot config dir (e.g. ~/.xbot), used for plugins dir
-	sandbox    tools.Sandbox
+	store           *SkillStore
+	agentStore      *AgentStore
+	workDir         string
+	xbotHome        string // global xbot config dir (e.g. ~/.xbot), used for plugins dir
+	sandbox         tools.Sandbox
+	pluginActivator func(pluginID string) error // activate a plugin after install (nil if plugin system unavailable)
+}
+
+// SetPluginActivator sets a callback to activate a plugin immediately after installation.
+// Called by Agent after the plugin system is initialized.
+func (rm *RegistryManager) SetPluginActivator(fn func(pluginID string) error) {
+	rm.pluginActivator = fn
 }
 
 // NewRegistryManager creates a new RegistryManager.
@@ -753,5 +760,13 @@ func (rm *RegistryManager) installAppPlugin(c AppContent, srcDir, senderID strin
 		"type": "plugin", "name": manifest.ID, "sender": senderID,
 		"from": srcPath, "to": destDir,
 	}).Info("Installed plugin from app")
+
+	// Activate the plugin immediately if a plugin manager is available
+	if rm.pluginActivator != nil {
+		if err := rm.pluginActivator(manifest.ID); err != nil {
+			log.WithFields(log.Fields{"plugin": manifest.ID, "error": err}).Warn("Failed to activate plugin after install, use /plugin reload-all")
+		}
+	}
+
 	return false, nil
 }

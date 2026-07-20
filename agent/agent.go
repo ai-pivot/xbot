@@ -1658,6 +1658,11 @@ func New(cfg Config) (*Agent, error) {
 		if err := agent.pluginMgr.ActivateAll(context.Background()); err != nil {
 			log.WithError(err).Warn("Plugin activation failed")
 		}
+		// Wire plugin activator into RegistryManager so newly installed plugins
+		// (via /app install) are activated immediately without manual reload.
+		agent.registryManager.SetPluginActivator(func(pluginID string) error {
+			return agent.pluginMgr.Reload(context.Background(), pluginID)
+		})
 		// Wire plugin capabilities to xbot subsystems
 		hookBridge := plugin.NewPluginHookBridge()
 		enricherReg := plugin.NewEnricherRegistry()
