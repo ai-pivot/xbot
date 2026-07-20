@@ -20,18 +20,25 @@ import (
 
 // RegistryManager manages skill/agent/plugin packaging, installation, and uninstall.
 type RegistryManager struct {
-	store           *SkillStore
-	agentStore      *AgentStore
-	workDir         string
-	xbotHome        string // global xbot config dir (e.g. ~/.xbot), used for plugins dir
-	sandbox         tools.Sandbox
-	pluginActivator func(pluginID string) error // activate a plugin after install (nil if plugin system unavailable)
+	store             *SkillStore
+	agentStore        *AgentStore
+	workDir           string
+	xbotHome          string // global xbot config dir (e.g. ~/.xbot), used for plugins dir
+	sandbox           tools.Sandbox
+	pluginActivator   func(pluginID string) error // activate a plugin after install (nil if plugin system unavailable)
+	pluginDeactivator func(pluginID string) error // deactivate+remove a plugin after uninstall (nil if plugin system unavailable)
 }
 
 // SetPluginActivator sets a callback to activate a plugin immediately after installation.
 // Called by Agent after the plugin system is initialized.
 func (rm *RegistryManager) SetPluginActivator(fn func(pluginID string) error) {
 	rm.pluginActivator = fn
+}
+
+// SetPluginDeactivator sets a callback to deactivate a plugin before uninstall.
+// Called by Agent after the plugin system is initialized.
+func (rm *RegistryManager) SetPluginDeactivator(fn func(pluginID string) error) {
+	rm.pluginDeactivator = fn
 }
 
 // NewRegistryManager creates a new RegistryManager.
@@ -187,6 +194,13 @@ func (rm *RegistryManager) uninstallPlugin(name, senderID string) error {
 	pluginDir := rm.findPluginDir(name)
 	if pluginDir == "" {
 		return fmt.Errorf("plugin %q is not installed", name)
+	}
+
+	// Deactivate via plugin manager first (stops hooks, widgets, runtime)
+	if rm.pluginDeactivator != nil {
+		if err := rm.pluginDeactivator(name); err != nil {
+			log.WithFields(log.Fields{"plugin": name, "error": err}).Warn("Failed to deactivate plugin, removing files anyway")
+		}
 	}
 
 	if err := os.RemoveAll(pluginDir); err != nil {

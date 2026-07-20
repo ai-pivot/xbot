@@ -1673,6 +1673,11 @@ func New(cfg Config) (*Agent, error) {
 			}
 			return agent.pluginMgr.ActivateAll(ctx)
 		})
+		// Wire plugin deactivator so /app uninstall stops the plugin (hooks,
+		// widgets, runtime) before removing files.
+		agent.registryManager.SetPluginDeactivator(func(pluginID string) error {
+			return agent.pluginMgr.UninstallPlugin(context.Background(), pluginID)
+		})
 		// Wire plugin capabilities to xbot subsystems
 		hookBridge := plugin.NewPluginHookBridge()
 		enricherReg := plugin.NewEnricherRegistry()
