@@ -172,11 +172,19 @@ export function useProgressStream({
   // session's data triggers hydration (Spec 5 §2.7).
   useEffect(() => {
     if (disabled) return
-    if (!initialProgress || !initialProgress.phase || initialProgress.phase === 'done') {
-      if (initialProgress?.phase === 'done') {
-        if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
-        finalizedRef.current = false
-        if (hasVisibleProgress(store.getSnapshot())) store.reset()
+    if (!initialProgress || !initialProgress.phase) {
+      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      return
+    }
+    if (initialProgress.phase === 'done') {
+      // Turn ended. Clear progress but restore todos from server so they
+      // survive session switch (todos persist across turns in the todoManager).
+      if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
+      finalizedRef.current = false
+      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      const todos = (initialProgress.todos ?? []) as TodoItem[]
+      if (todos.length > 0) {
+        store.replace({ todos })
       }
       return
     }

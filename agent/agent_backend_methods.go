@@ -62,7 +62,18 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	key := ch + ":" + chatID
 	v, ok := a.lastProgressSnapshot.Load(key)
 	if !ok {
-		return nil
+		// Turn has ended (snapshot deleted). Return a minimal snapshot with
+		// only todos so the client can restore the TODO list on session switch.
+		// Without this, switching to an idle session with todos shows no todos
+		// until the next TodoWrite tool call.
+		todos := a.GetTodos(ch, chatID)
+		if len(todos) == 0 {
+			return nil
+		}
+		return &protocol.ProgressEvent{
+			Phase: "done",
+			Todos: todos,
+		}
 	}
 	snapshot := v.(*protocol.ProgressEvent)
 	result := *snapshot

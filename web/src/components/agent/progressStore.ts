@@ -267,14 +267,10 @@ export class ProgressStore {
    */
   reset(): void {
     if (this.disposed) return
-    // Preserve todos across reset — a turn ending should NOT clear the TODO
-    // list. The todos are managed by TodoWrite tool calls and persist until
-    // the next turn's TodoWrite replaces them (mirrors TUI behavior).
-    const preservedTodos = this.current.todos
-    this.current = { ...EMPTY_PROGRESS_SNAPSHOT, todos: preservedTodos }
+    this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
     // Synchronously update snapshot + cancel pending RAF — avoids a one-frame
     // window where liveMessage is still non-null after reset.
-    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT, todos: preservedTodos }
+    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
     this.dirty = false
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
