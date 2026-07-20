@@ -158,17 +158,20 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
   // Batch delete: iterate selected sessions and delete each
   const handleBatchDelete = useCallback(async () => {
     setBatchBusy(true)
-    const entries = Array.from(selectedIds)
-    await Promise.all(
-      entries.map((key) => {
-        const [channel, ...chatIDParts] = key.split(':')
-        const chatID = chatIDParts.join(':')
-        return store.deleteSession(chatID, channel || 'web')
-      }),
-    )
-    setBatchBusy(false)
-    setBatchDeleteOpen(false)
-    exitMultiSelect()
+    try {
+      const entries = Array.from(selectedIds)
+      await Promise.allSettled(
+        entries.map((key) => {
+          const [channel, ...chatIDParts] = key.split(':')
+          const chatID = chatIDParts.join(':')
+          return store.deleteSession(chatID, channel || 'web')
+        }),
+      )
+    } finally {
+      setBatchBusy(false)
+      setBatchDeleteOpen(false)
+      exitMultiSelect()
+    }
   }, [selectedIds, store, exitMultiSelect])
 
   // Select all visible main sessions
