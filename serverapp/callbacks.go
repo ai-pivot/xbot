@@ -232,6 +232,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		RunnerGetActive:     rc.RunnerGetActive,
 		RunnerSetActive:     rc.RunnerSetActive,
 
+
+
 		// LLM callbacks (Web channel exposes only basic model/max-context via HTTP API;
 		// ThinkingMode/MaxOutputTokens/PersonalConcurrency are CLI-only via RPC.)
 		LLMList:          llmc.LLMList,

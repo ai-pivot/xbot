@@ -796,6 +796,7 @@ func Run(args []string) error {
 			role := identity.CanonicalRole
 			if senderID == "admin" || senderID == "cli_user" {
 				role = "admin"
+				userID = 1
 			} else if role == "" {
 				role = "user"
 			}
