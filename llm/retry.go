@@ -158,6 +158,11 @@ func isRetryableError(err error) bool {
 		"no such host",
 		"i/o timeout",
 		"tls: handshake",
+		// Stream truncation: provider/proxy closed SSE before finish_reason.
+		// Not a net.Error type (string-only from CollectStreamWithCallback),
+		// so string matching is the only way to catch it.
+		"stream ended without finish_reason",
+		"unexpected EOF",
 	} {
 		if strings.Contains(msg, kw) {
 			return true

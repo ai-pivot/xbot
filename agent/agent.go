@@ -3161,6 +3161,10 @@ func summarizeRetryError(err error) string {
 		return "服务暂时不可用"
 	case strings.Contains(msg, "500") || strings.Contains(msg, "504"):
 		return "服务端错误"
+	case strings.Contains(msg, "stream ended without finish_reason") ||
+		strings.Contains(msg, "truncation") ||
+		strings.Contains(msg, "unexpected EOF"):
+		return "流式响应被截断"
 	default:
 		var netErr net.Error
 		if errors.As(err, &netErr) {
