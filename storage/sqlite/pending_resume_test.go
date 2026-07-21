@@ -126,6 +126,33 @@ func TestGetLastUserMessage(t *testing.T) {
 	}
 }
 
+func TestGetLastUserMessage_NoUserChatsRow(t *testing.T) {
+	db := openTestDB(t)
+
+	// Create tenant + messages, but NO user_chats row (simulates CLI sessions
+	// created locally without an explicit user_chats INSERT).
+	tenantSvc := NewTenantService(db)
+	tenantID, err := tenantSvc.GetOrCreateTenantID("cli", "/workspace")
+	if err != nil {
+		t.Fatalf("GetOrCreateTenantID: %v", err)
+	}
+	sessionSvc := NewSessionService(db)
+	sessionSvc.AddMessage(tenantID, llm.ChatMessage{Role: "user", Content: "hello", Timestamp: time.Now()})
+
+	// Must NOT crash with "converting NULL to string" — senderID should be
+	// empty string, content should still be returned.
+	content, senderID, err := db.GetLastUserMessage("cli", "/workspace")
+	if err != nil {
+		t.Fatalf("GetLastUserMessage with no user_chats: %v", err)
+	}
+	if content != "hello" {
+		t.Fatalf("expected 'hello', got %q", content)
+	}
+	if senderID != "" {
+		t.Fatalf("expected empty senderID, got %q", senderID)
+	}
+}
+
 func TestHasAssistantReplyAfterLastUser(t *testing.T) {
 	db := openTestDB(t)
 	tenantSvc := NewTenantService(db)

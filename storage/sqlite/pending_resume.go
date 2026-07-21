@@ -36,11 +36,11 @@ func (db *DB) AddPendingResume(channel, chatID, senderID, content string) error 
 func (db *DB) GetLastUserMessage(channel, chatID string) (content, senderID string, err error) {
 	conn := db.Conn()
 	err = conn.QueryRow(`
-		SELECT sm.content, (
+		SELECT sm.content, COALESCE((
 			SELECT uc.sender_id FROM user_chats uc
 			WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
 			ORDER BY uc.created_at DESC LIMIT 1
-		)
+		), '')
 		FROM session_messages sm
 		JOIN tenants t ON sm.tenant_id = t.id
 		WHERE t.channel = ? AND t.chat_id = ? AND sm.role = 'user' AND COALESCE(sm.display_only, 0) = 0
