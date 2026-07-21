@@ -1079,7 +1079,7 @@ func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
 // resumePendingTurns re-triggers agent turns for sessions that were
 // interrupted by graceful shutdown. Called after all channels start.
 // A short delay lets web clients reconnect before the turn fires.
-func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh <-chan os.Signal) {
+func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh chan os.Signal) {
 	if ag == nil || webDB == nil {
 		return
 	}
@@ -1094,11 +1094,14 @@ func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh <-chan os.Signa
 	// Delay to let web/feishu clients reconnect so resumed replies reach them.
 	// Use select instead of time.Sleep so a SIGTERM during the wait still
 	// triggers graceful shutdown instead of Go's default (immediate exit).
+	// If we consume the signal here, re-inject it so the outer handler
+	// (sig := <-sigCh) still receives it — otherwise the process hangs.
 	log.Info("Pending resumes found, waiting 3s for clients to reconnect...")
 	select {
 	case <-time.After(3 * time.Second):
-	case <-sigCh:
-		log.Info("Shutdown signal received during resume wait, skipping resume")
+	case sig := <-sigCh:
+		log.WithField("signal", sig.String()).Info("Shutdown signal received during resume wait, skipping resume")
+		go func() { sigCh <- sig }()
 		return
 	}
 	for _, pr := range pending {
