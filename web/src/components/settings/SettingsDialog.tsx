@@ -107,6 +107,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       <SheetContent
         side="right"
         className="flex h-full w-[480px] max-w-full flex-col gap-0 p-0 sm:max-w-[480px]"
+        style={{ paddingTop: 'var(--safe-area-top)' }}
       >
         <SheetHeader className="border-b border-border px-5 py-4">
           <SheetTitle>{t('settings.title')}</SheetTitle>
