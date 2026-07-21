@@ -1,10 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { APIError } from '@/lib/api'
 
 // Mock postAPI before importing the module under test.
 const postAPIMock = vi.fn()
-vi.mock('@/lib/api', () => ({
-  postAPI: (...args: unknown[]) => postAPIMock(...args),
-}))
+vi.mock('@/lib/api', () => {
+  class APIError extends Error {
+    readonly status: number
+    constructor(message: string, _code: string, status: number) {
+      super(message)
+      this.name = 'APIError'
+      this.status = status
+    }
+  }
+  return {
+    postAPI: (...args: unknown[]) => postAPIMock(...args),
+    APIError,
+  }
+})
 
 import {
   syncSettingToServer,
@@ -138,7 +150,7 @@ describe('userSettings', () => {
   })
 
   it('silently no-ops when not logged in (401)', async () => {
-    postAPIMock.mockRejectedValue(new Error('unauthorized'))
+    postAPIMock.mockRejectedValue(new APIError('unauthorized', 'unauthorized', 401))
 
     await syncAndMigrateSettings()
 

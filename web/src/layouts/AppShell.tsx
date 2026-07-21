@@ -48,6 +48,7 @@ export function AppShell() {
   const [settingsVersion, setSettingsVersion] = useState(0)
   const leftDragging = useRef(false)
   const leftUserSized = useRef(localStorage.getItem(LEFT_WIDTH_KEY) !== null)
+  const leftWidthRef = useRef(leftWidth)
 
   // Persist and restore tab layout per session (Child 5 §3).
   useLayoutPersistence(tabManager, sessionStore)
@@ -71,18 +72,17 @@ export function AppShell() {
       if (!leftDragging.current) return
       leftUserSized.current = true
       const next = clampLeftWidth(e.clientX - 48)
-      setLeftWidth(Math.round(next))
+      leftWidthRef.current = Math.round(next)
+      setLeftWidth(leftWidthRef.current)
     }
     const onUp = () => {
       if (!leftDragging.current) return
       leftDragging.current = false
       document.body.style.userSelect = ''
       // Persist the user-chosen width so it survives refresh.
-      setLeftWidth((w) => {
-        localStorage.setItem(LEFT_WIDTH_KEY, String(w))
-        syncSettingToServer(LEFT_WIDTH_KEY, String(w))
-        return w
-      })
+      const w = leftWidthRef.current
+      localStorage.setItem(LEFT_WIDTH_KEY, String(w))
+      syncSettingToServer(LEFT_WIDTH_KEY, String(w))
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)

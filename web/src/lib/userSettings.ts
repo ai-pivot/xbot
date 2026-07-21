@@ -16,7 +16,7 @@
  *      debounces a PUT to the server (500ms, batched).
  *   3. Components listen for SETTINGS_SYNCED_EVENT → re-read from localStorage.
  */
-import { postAPI } from '@/lib/api'
+import { postAPI, APIError } from '@/lib/api'
 
 /** localStorage key → server key mapping */
 const SETTING_MAP: Record<string, string> = {
@@ -60,8 +60,10 @@ export async function syncAndMigrateSettings(): Promise<void> {
   try {
     const data = await postAPI<{ settings: Record<string, string> }>('/api/settings')
     serverSettings = data.settings ?? {}
-  } catch {
-    return // not logged in or server unavailable
+  } catch (err) {
+    if (err instanceof APIError && err.status === 401) return // not logged in
+    console.warn('[userSettings] syncAndMigrateSettings failed:', err)
+    return
   }
 
   // Filter synced keys (web:ui:*, web:session:*, web:workspace:*)

@@ -66,10 +66,10 @@ export function useSendKeyMode(): {
     try {
       localStorage.setItem(SEND_KEY_MODE_STORAGE_KEY, next)
       syncSettingToServer(SEND_KEY_MODE_STORAGE_KEY, next)
+      notify()
     } catch {
       /* ignore */
     }
-    notify()
   }, [])
 
   return { mode, setMode }
