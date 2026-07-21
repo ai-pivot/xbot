@@ -1898,11 +1898,11 @@ func migrateV46ToV47(conn *sql.DB) error {
 	PRIMARY KEY (channel, chat_id)
 	);`); err != nil {
 		return fmt.Errorf("create pending_resumes table: %w", err)
-}
+	}
 
 	if _, err := conn.Exec("UPDATE schema_version SET version = 47"); err != nil {
 		return fmt.Errorf("migrate v47 update version: %w", err)
-}
+	}
 
 	log.Info("Database migrated to v47: added pending_resumes table")
 	return nil
