@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings } from 'lucide-react'
+import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal } from 'lucide-react'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
@@ -8,6 +8,7 @@ import { SessionInfo } from '@/components/sidebar/SessionInfo'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
+import { TerminalList } from '@/components/sidebar/TerminalList'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { DockviewContext, type DockviewContextValue } from '@/workspace/types'
@@ -19,6 +20,7 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTabManager } from '@/hooks/useTabManager'
 import { useTheme } from '@/hooks/useTheme'
 import { useWSConnection } from '@/providers/WSProvider'
+import { useTerminal } from '@/hooks/useTerminal'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import type { PanelProps } from '@/workspace/panels/types'
 
@@ -29,6 +31,7 @@ const PANEL_BUTTONS: { panel: SidebarPanel; icon: typeof Files; labelKey: string
   { panel: 'search', icon: Search, labelKey: 'sidebar.search' },
   { panel: 'info', icon: Info, labelKey: 'sidebar.info' },
   { panel: 'tasks', icon: ListChecks, labelKey: 'sidebar.tasks' },
+  { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
 ]
 
 const mobilePanelProps: PanelProps = {
@@ -47,6 +50,7 @@ const mobilePanelProps: PanelProps = {
 export function MobileAppShell() {
   const tabManager = useTabManager()
   const sessionStore = useSessionStore()
+  const terminalManager = useTerminal(tabManager)
   const theme = useTheme()
   const i18n = useI18n()
   const ws = useWSConnection()
@@ -113,6 +117,7 @@ export function MobileAppShell() {
                 activePanel={activePanel}
                 onPanelChange={setActivePanel}
                 tabManager={tabManager}
+                terminalManager={terminalManager}
               />
             )}
           </main>
@@ -158,10 +163,12 @@ function MobileDetail({
   activePanel,
   onPanelChange,
   tabManager,
+  terminalManager,
 }: {
   activePanel: SidebarPanel
   onPanelChange: (panel: SidebarPanel) => void
   tabManager: ReturnType<typeof useTabManager>
+  terminalManager: ReturnType<typeof useTerminal>
 }) {
   const { t } = useI18n()
   return (
@@ -181,13 +188,13 @@ function MobileDetail({
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
-        {renderMobilePanel(activePanel, tabManager)}
+        {renderMobilePanel(activePanel, tabManager, terminalManager)}
       </div>
     </div>
   )
 }
 
-function renderMobilePanel(panel: SidebarPanel, tabManager: ReturnType<typeof useTabManager>) {
+function renderMobilePanel(panel: SidebarPanel, tabManager: ReturnType<typeof useTabManager>, terminalManager?: ReturnType<typeof useTerminal>) {
   switch (panel) {
     case 'files':
       return <FileExplorer tabManager={tabManager} />
@@ -197,5 +204,7 @@ function renderMobilePanel(panel: SidebarPanel, tabManager: ReturnType<typeof us
       return <SessionInfo tabManager={tabManager} />
     case 'tasks':
       return <TasksPanel tabManager={tabManager} />
+    case 'terminal':
+      return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
   }
 }
