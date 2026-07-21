@@ -1,16 +1,12 @@
 /**
- * usePwaInstall — captures the BeforeInstallPrompt event and exposes
- * install/update state for the settings panel.
+ * usePwaInstall — exposes PWA install/update state for the settings panel.
  *
- * - `canInstall`: true when the browser fired beforeinstallprompt (PWA
- *   meets installability criteria). False on iOS Safari (no prompt API)
- *   or when already installed.
- * - `isInstalled`: true when running in standalone mode (already installed).
+ * - `canInstall`: true when the browser fired beforeinstallprompt.
+ * - `isInstalled`: true when running in standalone mode.
  * - `install()`: triggers the native install prompt.
- * - `updateAvailable` + `refreshSW()`: from vite-plugin-pwa's useRegisterSW.
+ * - `updateAvailable` + `refreshSW()`: checks for SW updates and reloads.
  */
 import { useEffect, useState } from 'react'
-import { useRegisterSW } from 'virtual:pwa-register/react'
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>
@@ -20,20 +16,13 @@ interface BeforeInstallPromptEvent extends Event {
 export function usePwaInstall() {
   const [promptEvent, setPromptEvent] = useState<BeforeInstallPromptEvent | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [updateAvailable, setUpdateAvailable] = useState(false)
   const isInstalled = useState(() =>
     window.matchMedia('(display-mode: standalone)').matches ||
-    // iOS Safari
     (window.navigator as unknown as { standalone?: boolean }).standalone === true,
   )[0]
-
-  const {
-    needRefresh: [needRefresh, setNeedRefresh],
-    updateServiceWorker,
-  } = useRegisterSW({
-    onRegisterError(err) {
-      setError(err?.message ?? 'Service Worker registration failed')
-    },
-  })
+  // setError is used for future SW registration error reporting.
+  void setError
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -42,6 +31,25 @@ export function usePwaInstall() {
     }
     window.addEventListener('beforeinstallprompt', handler)
     return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
+
+  // Check for SW updates.
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    navigator.serviceWorker.getRegistration('/').then((reg) => {
+      if (!reg) return
+      const onUpdate = () => {
+        const newWorker = reg.installing
+        if (newWorker) {
+          newWorker.addEventListener('statechange', () => {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              setUpdateAvailable(true)
+            }
+          })
+        }
+      }
+      reg.addEventListener('updatefound', onUpdate)
+    }).catch(() => {})
   }, [])
 
   const install = async () => {
@@ -53,11 +61,14 @@ export function usePwaInstall() {
     }
   }
 
-  const refreshSW = () => {
-    updateServiceWorker(true).then(() => {
-      setNeedRefresh(false)
+  const refreshSW = async () => {
+    if (!('serviceWorker' in navigator)) return
+    const reg = await navigator.serviceWorker.getRegistration('/')
+    if (reg?.waiting) {
+      reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+    } else {
       window.location.reload()
-    })
+    }
   }
 
   return {
@@ -65,7 +76,7 @@ export function usePwaInstall() {
     isInstalled,
     install,
     error,
-    updateAvailable: needRefresh,
+    updateAvailable,
     refreshSW,
   }
 }

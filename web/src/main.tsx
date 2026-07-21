@@ -6,6 +6,10 @@ import { AuthProvider } from '@/providers/AuthProvider'
 import { UserSettingsProvider } from '@/providers/UserSettingsProvider'
 import { ThemeProvider } from '@/providers/theme'
 import { I18nProvider } from '@/providers/i18n'
+import { registerSW } from '@/components/PWAUpdatePrompt'
+
+// Register Service Worker (PWA auto-update).
+registerSW()
 
 createRoot(document.getElementById('root')!).render(
   <AuthProvider>
