@@ -196,4 +196,31 @@ func TestHasAssistantReplyAfterLastUser(t *testing.T) {
 	if !hasReply {
 		t.Fatal("expected true: real assistant reply exists after last user")
 	}
+
+	// new user message (turn 3), then an intermediate assistant with tool_calls
+	// (persisted mid-Run by IncrementalPersist) — should NOT count as a reply
+	sessionSvc.AddMessage(tenantID, llm.ChatMessage{Role: "user", Content: "turn 3", Timestamp: time.Now()})
+	sessionSvc.AddMessage(tenantID, llm.ChatMessage{
+		Role:      "assistant",
+		Content:   "I'll call a tool",
+		ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "Shell", Arguments: "{}"}},
+		Timestamp: time.Now(),
+	})
+	hasReply, err = db.HasAssistantReplyAfterLastUser("web", "chat-1")
+	if err != nil {
+		t.Fatalf("HasAssistantReplyAfterLastUser after tool-call assistant: %v", err)
+	}
+	if hasReply {
+		t.Fatal("expected false: assistant with tool_calls is not a final reply")
+	}
+
+	// final reply (no tool_calls) → should be true
+	sessionSvc.AddMessage(tenantID, llm.ChatMessage{Role: "assistant", Content: "final answer", Timestamp: time.Now()})
+	hasReply, err = db.HasAssistantReplyAfterLastUser("web", "chat-1")
+	if err != nil {
+		t.Fatalf("HasAssistantReplyAfterLastUser after final reply: %v", err)
+	}
+	if !hasReply {
+		t.Fatal("expected true: final reply (no tool_calls) exists after last user")
+	}
 }

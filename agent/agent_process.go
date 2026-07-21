@@ -182,6 +182,7 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 		Arguments: "{}",
 	}}
 	toolMsg := llm.NewToolMessage(toolName, toolID, "{}", toolContent)
+	toolMsg.DisplayOnly = true
 	snapshot := IterationToolSnapshot{
 		Name:      toolName,
 		Label:     label,
@@ -205,6 +206,7 @@ func userCancelledSyntheticTool() (llm.ChatMessage, llm.ChatMessage, IterationTo
 		Arguments: "{}",
 	}}
 	toolMsg := llm.NewToolMessage(toolName, toolID, "{}", content)
+	toolMsg.DisplayOnly = true
 	snapshot := IterationToolSnapshot{
 		Name:    toolName,
 		Label:   "cancelled by user",
