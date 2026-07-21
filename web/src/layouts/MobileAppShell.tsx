@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
+import { ArrowLeft } from 'lucide-react'
 import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal } from 'lucide-react'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
+import { TerminalPanel } from '@/workspace/panels/TerminalPanel'
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
@@ -24,7 +26,7 @@ import { useTerminal } from '@/hooks/useTerminal'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import type { PanelProps } from '@/workspace/panels/types'
 
-type MobileView = 'agent' | 'detail'
+type MobileView = 'agent' | 'detail' | 'terminal'
 
 const PANEL_BUTTONS: { panel: SidebarPanel; icon: typeof Files; labelKey: string }[] = [
   { panel: 'files', icon: Files, labelKey: 'sidebar.files' },
@@ -47,10 +49,26 @@ const mobilePanelProps: PanelProps = {
   containerApi: {} as PanelProps['containerApi'],
 }
 
+/** Construct PanelProps for a mobile terminal panel (no Dockview needed). */
+function mobileTerminalProps(terminalId: string): PanelProps {
+  return {
+    params: {
+      tabId: `mobile-terminal-${terminalId}`,
+      type: 'terminal',
+      title: 'Terminal',
+      icon: 'terminal',
+      closable: true,
+      active: true,
+      terminalId,
+    },
+    api: {} as PanelProps['api'],
+    containerApi: {} as PanelProps['containerApi'],
+  }
+}
+
 export function MobileAppShell() {
   const tabManager = useTabManager()
   const sessionStore = useSessionStore()
-  const terminalManager = useTerminal(tabManager)
   const theme = useTheme()
   const i18n = useI18n()
   const ws = useWSConnection()
@@ -61,6 +79,12 @@ export function MobileAppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [view, setView] = useState<MobileView>('agent')
   const [activePanel, setActivePanel] = useState<SidebarPanel>('info')
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null)
+
+  const terminalManager = useTerminal(tabManager, (terminalId) => {
+    setActiveTerminalId(terminalId)
+    setView('terminal')
+  })
 
   const rightSidebar = useMemo(() => ({
     openPanel: (panel: SidebarPanel) => {
@@ -112,6 +136,26 @@ export function MobileAppShell() {
           <main className="min-h-0 flex-1 overflow-hidden">
             {view === 'agent' ? (
               <AgentPanel {...mobilePanelProps} />
+            ) : view === 'terminal' && activeTerminalId ? (
+              <div className="flex h-full flex-col">
+                <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Back"
+                    onClick={() => setView('detail')}
+                  >
+                    <ArrowLeft className="size-4" />
+                  </Button>
+                  <span className="text-sm font-medium">
+                    {terminalManager.terminals.find((t) => t.id === activeTerminalId)?.title ?? 'Terminal'}
+                  </span>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <TerminalPanel {...mobileTerminalProps(activeTerminalId)} />
+                </div>
+              </div>
             ) : (
               <MobileDetail
                 activePanel={activePanel}
