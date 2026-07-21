@@ -54,6 +54,18 @@ function SheetContent({
   side?: "top" | "right" | "bottom" | "left"
   showCloseButton?: boolean
 }) {
+  // Safe-area padding at the SheetContent level — covers ALL sheets
+  // (settings, session drawer, etc.) so they respect the Dynamic Island /
+  // home indicator without each caller needing its own padding.
+  const safeAreaStyle: React.CSSProperties = {}
+  if (side === "left" || side === "right") {
+    safeAreaStyle.paddingTop = "var(--safe-area-top)"
+  }
+  if (side === "bottom") {
+    safeAreaStyle.paddingBottom = "var(--safe-area-bottom)"
+  }
+  const mergedStyle: React.CSSProperties = { ...safeAreaStyle, ...(props.style || {}) }
+
   return (
     <SheetPortal>
       <SheetOverlay />
@@ -72,6 +84,7 @@ function SheetContent({
           className
         )}
         {...props}
+        style={mergedStyle}
       >
         {children}
         {showCloseButton && (
