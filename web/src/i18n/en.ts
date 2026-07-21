@@ -350,6 +350,7 @@ const en: Translations = {
       account: 'Account',
       linking: 'Account Linking',
       users: 'User Management',
+      about: 'About',
     },
   },
   designSystem: {
