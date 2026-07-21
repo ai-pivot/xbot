@@ -57,6 +57,12 @@ export const SEND_KEY_MODE_STORAGE_KEY = 'xbot-send-key-mode'
 export const DEFAULT_SEND_KEY_MODE: SendKeyMode = 'ctrl-enter'
 export const SEND_KEY_MODES: SendKeyMode[] = ['ctrl-enter', 'enter']
 
+/** Code word-wrap toggle persisted at localStorage key `xbot-code-word-wrap`.
+ *  When true (default), long code lines wrap to the next line.
+ *  When false, code blocks scroll horizontally instead of wrapping. */
+export const CODE_WORD_WRAP_STORAGE_KEY = 'xbot-code-word-wrap'
+export const DEFAULT_CODE_WORD_WRAP = true
+
 /** A single tool snapshot inside an iteration (agent/engine.go IterationToolSnapshot). */
 export interface IterationTool {
   name: string

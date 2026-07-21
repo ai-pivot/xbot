@@ -24,6 +24,7 @@ import type { PluggableList } from 'unified'
 import { Check, Copy } from 'lucide-react'
 
 import { highlightAuto, highlightCode, normalizeLanguage } from './highlight'
+import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
 import { cn } from '@/lib/utils'
 
 interface MarkdownRendererProps {
@@ -94,6 +95,7 @@ type CodeProps = ComponentPropsWithoutRef<'code'> & {
 }
 
 const CodeBlock = memo(function CodeBlock({ inline, className, children, ...props }: CodeProps) {
+  const { wordWrap } = useCodeWordWrap()
   const text = String(children ?? '')
   const lang = normalizeLanguage(
     /language-(\w+)/.exec(className ?? '')?.[1] ??
@@ -135,7 +137,10 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
         </span>
       )}
       <CopyButton getText={() => text} />
-      <pre className="overflow-x-auto p-3 pt-7 text-[13px] leading-relaxed whitespace-pre-wrap break-words">
+      <pre className={cn(
+        'p-3 pt-7 text-[13px] leading-relaxed',
+        wordWrap ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto whitespace-pre',
+      )}>
         {html ? (
           <code
             className={cn('font-mono hljs', className)}
