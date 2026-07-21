@@ -855,7 +855,7 @@ export function useSessionStoreImpl(): SessionStore {
       // arrived during the HTTP round-trip — the subsequent session(busy)
       // SSE event will correct this if needed.
       if (carried.status === 'running' || carried.status === 'idle') {
-        return { ...node, status: carried.status, running: carried.running, children }
+        return { ...node, status: carried.status, running: carried.running ?? node.running, children }
       }
       return { ...node, children }
     }
