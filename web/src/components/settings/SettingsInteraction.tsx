@@ -12,6 +12,7 @@
  */
 import { useCollapseLevel, useMergeTools } from '@/hooks/useCollapseLevel'
 import { useSendKeyMode } from '@/hooks/useSendKeyMode'
+import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
 import { useI18n } from '@/providers/i18n'
 import type { CollapseLevel } from '@/types/shared'
 import type { SendKeyMode } from '@/types/agent'
@@ -35,6 +36,7 @@ export function SettingsInteraction() {
   const { level: collapseLevel, setLevel: setCollapseLevel } = useCollapseLevel()
   const { mergeTools, setMergeTools } = useMergeTools()
   const { mode: sendKeyMode, setMode: setSendKeyMode } = useSendKeyMode()
+  const { wordWrap, setWordWrap } = useCodeWordWrap()
 
   return (
     <div className="flex flex-col">
@@ -112,6 +114,43 @@ export function SettingsInteraction() {
           <span className="flex flex-col gap-0.5">
             <span className="text-sm font-medium text-foreground">
               {mergeTools ? t('settings.mergeToolsOn') : t('settings.mergeToolsOff')}
+            </span>
+          </span>
+        </button>
+      </SettingsSection>
+
+      {/* Code Word Wrap Toggle */}
+      <SettingsSection
+        title={t('settings.codeWordWrap')}
+        description={t('settings.codeWordWrapDesc')}
+      >
+        <button
+          type="button"
+          aria-pressed={wordWrap}
+          onClick={() => setWordWrap(!wordWrap)}
+          className={cn(
+            'flex items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors',
+            wordWrap
+              ? 'border-accent bg-accent/10'
+              : 'border-border bg-transparent hover:bg-muted',
+          )}
+        >
+          <span
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+              wordWrap ? 'bg-accent' : 'bg-border',
+            )}
+          >
+            <span
+              className={cn(
+                'inline-block size-4 transform rounded-full bg-white transition-transform',
+                wordWrap ? 'translate-x-4' : 'translate-x-1',
+              )}
+            />
+          </span>
+          <span className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium text-foreground">
+              {wordWrap ? t('settings.codeWordWrapOn') : t('settings.codeWordWrapOff')}
             </span>
           </span>
         </button>

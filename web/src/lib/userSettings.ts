@@ -27,6 +27,7 @@ const SETTING_MAP: Record<string, string> = {
   'xbot-collapse-level': 'web:ui:collapse-level',
   'xbot-merge-tools': 'web:ui:merge-tools',
   'xbot-send-key-mode': 'web:ui:send-key-mode',
+  'xbot-code-word-wrap': 'web:ui:code-word-wrap',
   'xbot:leftSidebarWidth': 'web:ui:left-sidebar-width',
   // Session data (user-authored)
   'xbot-starred': 'web:session:starred',
