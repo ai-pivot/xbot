@@ -18,6 +18,7 @@ import { Check, Pencil, X } from 'lucide-react'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/providers/i18n'
+import { useSendKeyMode, isSendKey } from '@/hooks/useSendKeyMode'
 import { cn } from '@/lib/utils'
 
 interface UserMessageProps {
@@ -43,6 +44,7 @@ export const UserMessage = memo(function UserMessage({
   editDisabled = false,
 }: UserMessageProps) {
   const { t } = useI18n()
+  const { mode: sendKeyMode } = useSendKeyMode()
   const [editValue, setEditValue] = useState(content)
   const editRef = useRef<HTMLTextAreaElement>(null)
   const displayRef = useRef<HTMLDivElement>(null)
@@ -98,7 +100,7 @@ export const UserMessage = memo(function UserMessage({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.shiftKey) {
+    if (isSendKey(e, sendKeyMode)) {
       e.preventDefault()
       handleConfirm()
     }

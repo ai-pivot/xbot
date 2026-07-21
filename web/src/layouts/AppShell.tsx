@@ -24,6 +24,7 @@ import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabManager } from '@/hooks/useTabManager'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
+import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 
 const MIN_LEFT_WIDTH = 200
 const MAX_LEFT_WIDTH = 460
@@ -47,6 +48,7 @@ export function AppShell() {
   const [settingsVersion, setSettingsVersion] = useState(0)
   const leftDragging = useRef(false)
   const leftUserSized = useRef(localStorage.getItem(LEFT_WIDTH_KEY) !== null)
+  const leftWidthRef = useRef(leftWidth)
 
   // Persist and restore tab layout per session (Child 5 §3).
   useLayoutPersistence(tabManager, sessionStore)
@@ -70,17 +72,17 @@ export function AppShell() {
       if (!leftDragging.current) return
       leftUserSized.current = true
       const next = clampLeftWidth(e.clientX - 48)
-      setLeftWidth(Math.round(next))
+      leftWidthRef.current = Math.round(next)
+      setLeftWidth(leftWidthRef.current)
     }
     const onUp = () => {
       if (!leftDragging.current) return
       leftDragging.current = false
       document.body.style.userSelect = ''
       // Persist the user-chosen width so it survives refresh.
-      setLeftWidth((w) => {
-        localStorage.setItem(LEFT_WIDTH_KEY, String(w))
-        return w
-      })
+      const w = leftWidthRef.current
+      localStorage.setItem(LEFT_WIDTH_KEY, String(w))
+      syncSettingToServer(LEFT_WIDTH_KEY, String(w))
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -96,6 +98,22 @@ export function AppShell() {
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // Re-read sidebar width from localStorage when server sync updates the value.
+  useEffect(() => {
+    const handler = () => {
+      const stored = localStorage.getItem(LEFT_WIDTH_KEY)
+      if (stored) {
+        const w = Number(stored)
+        if (!Number.isNaN(w)) {
+          leftUserSized.current = true
+          setLeftWidth(clampLeftWidth(w))
+        }
+      }
+    }
+    window.addEventListener(SETTINGS_SYNCED_EVENT, handler)
+    return () => window.removeEventListener(SETTINGS_SYNCED_EVENT, handler)
   }, [])
 
   if (isMobile) return <MobileAppShell />
