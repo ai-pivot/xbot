@@ -933,7 +933,13 @@ export function useSessionStoreImpl(): SessionStore {
 
   const setStatus = useCallback((selector: SessionSelector, status: SessionStatus) => {
     const running = status === 'running' || status === 'pending'
-    setSessions((prev) => updateSessionTree(prev, selector, (s) => ({ ...s, status, running })))
+    setSessions((prev) => {
+      const next = updateSessionTree(prev, selector, (s) => ({ ...s, status, running }))
+      // Keep sessionsRef in sync so mergeStatus in refresh() sees the latest
+      // SSE-driven status (e.g. 'idle') instead of a stale 'running'.
+      sessionsRef.current = next
+      return next
+    })
   }, [])
 
   const applySubAgentLifecycle = useCallback((ev: SessionEvent, running: boolean) => {
