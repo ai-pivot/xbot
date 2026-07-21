@@ -522,7 +522,10 @@ export class ProgressStore {
    *  the server sends ALL completed tools across iterations, but only the
    *  current iteration's tools belong here (old iterations are in
    *  iterationHistory). Without this filter, LiveIteration's iteration-based
-   *  filter removes old tools AND they're not in iterationHistory → disappear. */
+   *  filter removes old tools AND they're not in iterationHistory → disappear.
+   *  lastIter and eventSeq are client-side tracking fields — NOT overwritten
+   *  by server data. lastIter is computed from the merged iterationHistory
+   *  (max iteration), eventSeq takes the max of current and incoming. */
   replace(next: Partial<ProgressSnapshot>): void {
     this.mutate((draft) => {
       // Filter completedTools by current iteration (mirrors setStructured)
@@ -533,6 +536,7 @@ export class ProgressStore {
           : next.completedTools
         draft.completedTools = dedupTools(filtered)
       }
+      // Merge iterationHistory by iteration number (union)
       if (next.iterationHistory) {
         const existing = new Set(draft.iterationHistory.map((i) => i.iteration))
         const merged = [...draft.iterationHistory]
@@ -542,13 +546,20 @@ export class ProgressStore {
             existing.add(iter.iteration)
           }
         }
-        const { completedTools: _ct, iterationHistory: _ih, ...rest } = next
-        Object.assign(draft, rest)
         draft.iterationHistory = merged
-      } else {
-        const { completedTools: _ct, ...rest } = next
-        Object.assign(draft, rest)
+        // Recompute lastIter from merged history so the delta push protocol
+        // continues correctly (next SSE event knows which iterations exist).
+        const maxIter = merged.reduce((max, i) => Math.max(max, i.iteration), -1)
+        if (maxIter > draft.lastIter) draft.lastIter = maxIter
       }
+      // Assign remaining fields, but NEVER downgrade client-side tracking:
+      // - eventSeq: take max (server seq may be older than what SSE already delivered)
+      // - lastIter: already computed above from merged iterationHistory
+      const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, ...rest } = next
+      if (next.eventSeq !== undefined && next.eventSeq > draft.eventSeq) {
+        draft.eventSeq = next.eventSeq
+      }
+      Object.assign(draft, rest)
     })
   }
 
