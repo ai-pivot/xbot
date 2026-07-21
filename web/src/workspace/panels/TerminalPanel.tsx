@@ -38,13 +38,13 @@ export function TerminalPanel({ params }: PanelProps) {
       scrollback: 10000,
       convertEol: true,
       theme: theme === 'dark' ? {
-        background: '#1e1e2e',
-        foreground: '#cdd6f4',
-        cursor: '#f5e0dc',
+        background: '#1e1e1e',
+        foreground: '#cccccc',
+        cursor: '#cccccc',
       } : {
         background: '#ffffff',
-        foreground: '#1e1e2e',
-        cursor: '#1e1e2e',
+        foreground: '#1e1e1e',
+        cursor: '#1e1e1e',
       },
     })
     const fitAddon = new FitAddon()
@@ -125,5 +125,5 @@ export function TerminalPanel({ params }: PanelProps) {
     )
   }
 
-  return <div ref={containerRef} className="h-full w-full overflow-hidden bg-black" />
+  return <div ref={containerRef} className="h-full w-full overflow-hidden bg-bg-primary" />
 }

@@ -559,6 +559,7 @@ func (wc *WebChannel) handleTerminalDelete(w http.ResponseWriter, r *http.Reques
 		jsonErrorResponse(w, http.StatusBadRequest, "tid is required")
 		return
 	}
+	log.Infof("terminal/delete: tid=%s", tid)
 	wc.ptyMgr.Delete(tid)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
