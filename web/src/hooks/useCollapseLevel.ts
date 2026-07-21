@@ -20,6 +20,7 @@ import {
   MERGE_TOOLS_STORAGE_KEY,
   type CollapseLevel,
 } from '@/types/agent'
+import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 
 // ── Global store for collapse level (useSyncExternalStore compatible) ──────
 
@@ -62,11 +63,15 @@ function notifyMerge() {
   mergeListeners.forEach((l) => l())
 }
 
-// Cross-window sync via storage event
+// Cross-window sync via storage event + same-window sync via settings event
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e: StorageEvent) => {
     if (e.key === COLLAPSE_LEVEL_STORAGE_KEY) notifyCollapse()
     if (e.key === MERGE_TOOLS_STORAGE_KEY) notifyMerge()
+  })
+  window.addEventListener(SETTINGS_SYNCED_EVENT, () => {
+    notifyCollapse()
+    notifyMerge()
   })
 }
 
@@ -133,6 +138,7 @@ export function useCollapseLevel(): UseCollapseLevelResult {
   const setLevel = useCallback((next: CollapseLevel) => {
     try {
       localStorage.setItem(COLLAPSE_LEVEL_STORAGE_KEY, next)
+      syncSettingToServer(COLLAPSE_LEVEL_STORAGE_KEY, next)
     } catch {
       /* ignore */
     }
@@ -156,6 +162,7 @@ export function useMergeTools(): {
   const setMergeTools = useCallback((value: boolean) => {
     try {
       localStorage.setItem(MERGE_TOOLS_STORAGE_KEY, String(value))
+      syncSettingToServer(MERGE_TOOLS_STORAGE_KEY, String(value))
     } catch {
       /* ignore */
     }

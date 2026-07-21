@@ -23,6 +23,7 @@ import {
   modeForTheme,
   type MarkdownThemeId,
 } from '@/types/markdown-theme'
+import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 
 export { type ThemeContextValue }
 
@@ -107,6 +108,7 @@ export function ThemeProvider({
     root.classList.toggle('dark', theme === 'dark')
     try {
       localStorage.setItem(MARKDOWN_THEME_STORAGE_KEY, mdTheme)
+      syncSettingToServer(MARKDOWN_THEME_STORAGE_KEY, mdTheme)
     } catch { /* ignore */ }
   }, [mdTheme, theme])
 
@@ -125,11 +127,22 @@ export function ThemeProvider({
     root.style.setProperty('--accent-foreground', contrastForeground(accentColor))
     try {
       localStorage.setItem(accentStorageKey, accentColor)
+      syncSettingToServer(accentStorageKey, accentColor)
     } catch { /* ignore */ }
   }, [accentColor, accentStorageKey])
 
   const setMdTheme = useCallback((id: MarkdownThemeId) => setMdThemeState(id), [])
   const setAccentColor = useCallback((c: string) => setAccentColorState(c), [])
+
+  // Re-read from localStorage when server sync updates values.
+  useEffect(() => {
+    const handler = () => {
+      setMdThemeState(getInitialMdTheme())
+      setAccentColorState(getInitialAccent())
+    }
+    window.addEventListener(SETTINGS_SYNCED_EVENT, handler)
+    return () => window.removeEventListener(SETTINGS_SYNCED_EVENT, handler)
+  }, [])
 
   const value = useMemo<ThemeContextValue>(
     () => ({ theme, accentColor, setAccentColor, mdTheme, setMdTheme }),

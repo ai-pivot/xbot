@@ -11,6 +11,7 @@ import { initReactI18next } from 'react-i18next'
 import zhCN from './zh-CN'
 import en from './en'
 import type { Locale } from '@/types/shared'
+import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 
 export const LOCALE_STORAGE_KEY = 'xbot-locale'
 /** Legacy key used before the Spec 7 rename; migrated on read for continuity. */
@@ -64,6 +65,7 @@ export function changeLocale(locale: Locale): void {
   void i18n.changeLanguage(locale)
   try {
     localStorage.setItem(LOCALE_STORAGE_KEY, locale)
+    syncSettingToServer(LOCALE_STORAGE_KEY, locale)
     // Drop the legacy key on any explicit change so it doesn't linger.
     localStorage.removeItem(LEGACY_LOCALE_STORAGE_KEY)
   } catch { /* ignore */ }
@@ -71,6 +73,16 @@ export function changeLocale(locale: Locale): void {
 
 export function getLocale(): Locale {
   return (i18n.language as Locale) || DEFAULT_LOCALE
+}
+
+// Re-read locale from localStorage when server sync updates the value.
+if (typeof window !== 'undefined') {
+  window.addEventListener(SETTINGS_SYNCED_EVENT, () => {
+    const locale = detectInitialLocale()
+    if (i18n.language !== locale) {
+      void i18n.changeLanguage(locale)
+    }
+  })
 }
 
 export default i18n
