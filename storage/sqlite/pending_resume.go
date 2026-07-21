@@ -59,6 +59,13 @@ func (db *DB) GetLastUserMessage(channel, chatID string) (content, senderID stri
 // the session already has a subsequent assistant reply. Used by resume to
 // detect turns that completed naturally between shutdown collection and
 // cancel() — if so, the resume should be skipped.
+//
+// Note: The (tool_calls IS NULL OR tool_calls = ”) filter matches only
+// final text replies (no tool calls). If a provider returns content +
+// tool_calls in the same message as the final reply, this check would
+// miss it — but that's safe: the re-injected turn is idempotent (the
+// user message is already in DB, processMessage detects resume_turn and
+// skips eager-save). The worst case is a duplicate turn, not data loss.
 func (db *DB) HasAssistantReplyAfterLastUser(channel, chatID string) (bool, error) {
 	conn := db.Conn()
 	var count int

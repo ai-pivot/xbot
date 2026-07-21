@@ -978,7 +978,7 @@ func Run(args []string) error {
 	}
 
 	// 恢复被 graceful shutdown 中断的 agent loop
-	resumePendingTurns(ag, webDB)
+	resumePendingTurns(ag, webDB, sigCh)
 
 	// 等待退出信号
 	sig := <-sigCh
@@ -1079,7 +1079,7 @@ func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
 // resumePendingTurns re-triggers agent turns for sessions that were
 // interrupted by graceful shutdown. Called after all channels start.
 // A short delay lets web clients reconnect before the turn fires.
-func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB) {
+func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh <-chan os.Signal) {
 	if ag == nil || webDB == nil {
 		return
 	}
@@ -1092,8 +1092,15 @@ func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB) {
 		return
 	}
 	// Delay to let web/feishu clients reconnect so resumed replies reach them.
+	// Use select instead of time.Sleep so a SIGTERM during the wait still
+	// triggers graceful shutdown instead of Go's default (immediate exit).
 	log.Info("Pending resumes found, waiting 3s for clients to reconnect...")
-	time.Sleep(3 * time.Second)
+	select {
+	case <-time.After(3 * time.Second):
+	case <-sigCh:
+		log.Info("Shutdown signal received during resume wait, skipping resume")
+		return
+	}
 	for _, pr := range pending {
 		// Skip turns that already completed naturally between shutdown
 		// collection and cancel() — the turn finished and reply was persisted.
@@ -1113,7 +1120,7 @@ func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB) {
 		}).Info("Resuming interrupted agent turn")
 		ag.InjectInboundResume(pr.Channel, pr.ChatID, pr.SenderID, pr.Content)
 		if err := webDB.ClearPendingResume(pr.Channel, pr.ChatID); err != nil {
-			log.WithError(err).Warn("Failed to clear pending resume record")
+			log.WithError(err).Error("Failed to clear pending resume record after injection — residual record will self-heal on next restart if the turn completes")
 		}
 	}
 }
