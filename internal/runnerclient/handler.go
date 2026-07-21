@@ -24,6 +24,7 @@ type Handler struct {
 	// 内部管理
 	stdioMgr *stdioManager
 	bgMgr    *bgTaskManager
+	ptyMgr   *ptyManager
 
 	// 日志回调（nil 时静默）
 	LogFunc LogFunc
@@ -110,6 +111,7 @@ func (h *Handler) LLMModel() string {
 func (h *Handler) SetWriteChannels(writeCh chan<- WriteMsg, writeDone <-chan struct{}) {
 	h.ensureManagers()
 	h.stdioMgr.SetWriteChannels(writeCh, writeDone)
+	h.ptyMgr.SetWriteChannels(writeCh, writeDone)
 }
 
 // Cleanup 清理所有资源（stdio 进程、后台任务）。
@@ -120,6 +122,9 @@ func (h *Handler) Cleanup() {
 	if h.bgMgr != nil {
 		h.bgMgr.Cleanup()
 	}
+	if h.ptyMgr != nil {
+		h.ptyMgr.Cleanup()
+	}
 }
 
 // ensureManagers 确保 stdio 和 bg task 管理器已初始化。
@@ -127,6 +132,10 @@ func (h *Handler) ensureManagers() {
 	if h.stdioMgr == nil {
 		h.stdioMgr = newStdioManager(h.Verbose, h.dockerMode, h.LogFunc)
 		h.stdioMgr.executor = h.Executor
+	}
+	if h.ptyMgr == nil {
+		h.ptyMgr = newPtyManager(h.Verbose, h.dockerMode, h.LogFunc)
+		h.ptyMgr.executor = h.Executor
 	}
 	if h.bgMgr == nil {
 		ws := ""
@@ -191,6 +200,10 @@ func (h *Handler) Dispatch(msg runnerproto.RunnerMessage) *runnerproto.RunnerMes
 		return h.stdioMgr.HandleStart(msg)
 	case runnerproto.ProtoStdioClose:
 		return h.stdioMgr.HandleClose(msg)
+	case runnerproto.ProtoPtyCreate:
+		return h.ptyMgr.HandleCreate(msg)
+	case runnerproto.ProtoPtyClose:
+		return h.ptyMgr.HandleClose(msg)
 	default:
 		return runnerproto.MakeError(msg.ID, "EINVAL", fmt.Sprintf("unknown request type: %s", msg.Type))
 	}
@@ -203,6 +216,10 @@ func (h *Handler) DispatchFireAndForget(msg runnerproto.RunnerMessage) {
 	switch msg.Type {
 	case runnerproto.ProtoStdioWrite:
 		h.stdioMgr.HandleWrite(msg)
+	case runnerproto.ProtoPtyStdin:
+		h.ptyMgr.HandleStdin(msg)
+	case runnerproto.ProtoPtyResize:
+		h.ptyMgr.HandleResize(msg)
 	}
 }
 
