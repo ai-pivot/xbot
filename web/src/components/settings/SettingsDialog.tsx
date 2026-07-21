@@ -26,7 +26,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { cn } from '@/lib/utils'
 
 import { SettingsAppearance } from './SettingsAppearance'
-import { SettingsCollapse } from './SettingsCollapse'
+import { SettingsInteraction } from './SettingsInteraction'
 import { SettingsGeneral } from './SettingsGeneral'
 import { SettingsLLM } from './SettingsLLM'
 import { SettingsSection } from './SettingsSection'
@@ -34,7 +34,7 @@ import { SettingsAccountLinking } from './SettingsAccountLinking'
 import { SettingsAdminUsers } from './SettingsAdminUsers'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 
-type Category = 'appearance' | 'collapse' | 'language' | 'llm' | 'account' | 'linking' | 'users'
+type Category = 'appearance' | 'interaction' | 'language' | 'llm' | 'account' | 'linking' | 'users'
 
 interface SettingsDialogProps {
   open: boolean
@@ -92,7 +92,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   const nav: { key: Category; labelKey: string }[] = [
     { key: 'appearance', labelKey: 'nav.appearance' },
-    { key: 'collapse', labelKey: 'nav.collapse' },
+    { key: 'interaction', labelKey: 'nav.interaction' },
     { key: 'language', labelKey: 'nav.language' },
     { key: 'llm', labelKey: 'nav.llm' },
     { key: 'account', labelKey: 'nav.account' },
@@ -135,7 +135,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           {/* Right content */}
           <div className="min-w-0 flex-1 overflow-y-auto">
             {active === 'appearance' ? <SettingsAppearance /> : null}
-            {active === 'collapse' ? <SettingsCollapse /> : null}
+            {active === 'interaction' ? <SettingsInteraction /> : null}
             {active === 'language' ? <SettingsGeneral /> : null}
             {active === 'llm' ? <SettingsLLMPanel /> : null}
             {active === 'account' ? (

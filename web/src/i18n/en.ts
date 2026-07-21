@@ -333,7 +333,7 @@ const en: Translations = {
     providerAnthropic: 'Anthropic',
     nav: {
       appearance: 'Appearance',
-      collapse: 'Collapse',
+      interaction: 'Interaction',
       language: 'Language',
       llm: 'LLM Config',
       account: 'Account',

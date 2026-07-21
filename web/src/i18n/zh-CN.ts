@@ -330,7 +330,7 @@ const zhCN = {
     providerAnthropic: 'Anthropic',
     nav: {
       appearance: '外观',
-      collapse: '折叠',
+      interaction: '交互',
       language: '语言',
       llm: 'LLM 配置',
       account: '账号',

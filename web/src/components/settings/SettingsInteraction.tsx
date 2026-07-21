@@ -30,7 +30,7 @@ const SEND_KEY_OPTIONS: { value: SendKeyMode; labelKey: string; descKey: string 
   { value: 'enter', labelKey: 'sendKeyEnter', descKey: 'sendKeyEnterDesc' },
 ]
 
-export function SettingsCollapse() {
+export function SettingsInteraction() {
   const { t } = useI18n()
   const { level: collapseLevel, setLevel: setCollapseLevel } = useCollapseLevel()
   const { mergeTools, setMergeTools } = useMergeTools()
