@@ -7,7 +7,7 @@
  *   - Textarea defaults to two rows height, auto-grows to max 200px
  *   - Attach button (left) + Send/Cancel button (right) inside the container
  *
- * Multi-line textarea (Ctrl/Cmd+Enter to send), a file-attach button (uploads
+ * Multi-line textarea (send key configurable via Settings), a file-attach button (uploads
  * via POST /api/files/upload and stashes the returned key to attach to the next
  * message), and a cancel button shown while the agent is busy (sends a WS
  * `cancel`). Pending uploads show as chips inside the container.
@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button'
 import { useI18n } from '@/providers/i18n'
 import { useCwd } from '@/providers/CwdProvider'
 import { useWSConnection } from '@/hooks/useWSConnection'
+import { useSendKeyMode, isSendKey } from '@/hooks/useSendKeyMode'
 import type { Attachments } from '@/hooks/useChatMessages'
 import { cn } from '@/lib/utils'
 import { TodoPullOut } from './TodoPullOut'
@@ -66,6 +67,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
+  const { mode: sendKeyMode } = useSendKeyMode()
   const draftStorageKey = sessionKey ? `xbot:draft:${sessionKey}` : null
   const [value, setValue] = useState(() => {
     if (draft !== undefined) return draft
@@ -154,7 +156,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Let completion handle navigation keys first
     if (completion.handleKeyDown(e)) return
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.shiftKey) {
+    if (isSendKey(e, sendKeyMode)) {
       e.preventDefault()
       submit()
     }

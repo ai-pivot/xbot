@@ -44,6 +44,7 @@ describe('userSettings', () => {
     expect(__SETTING_MAP['xbot-locale']).toBe('web:ui:locale')
     expect(__SETTING_MAP['xbot-collapse-level']).toBe('web:ui:collapse-level')
     expect(__SETTING_MAP['xbot-merge-tools']).toBe('web:ui:merge-tools')
+    expect(__SETTING_MAP['xbot-send-key-mode']).toBe('web:ui:send-key-mode')
     expect(__SETTING_MAP['xbot:leftSidebarWidth']).toBe('web:ui:left-sidebar-width')
     expect(__SETTING_MAP['xbot-starred']).toBe('web:session:starred')
     expect(__SETTING_MAP['xbot:session-category']).toBe('web:session:category')

@@ -48,6 +48,15 @@ export const COLLAPSE_LEVELS: CollapseLevel[] = ['all', 'minimal', 'none']
 export const MERGE_TOOLS_STORAGE_KEY = 'xbot-merge-tools'
 export const DEFAULT_MERGE_TOOLS = true
 
+/** Send-key mode persisted at localStorage key `xbot-send-key-mode`.
+ *  - 'ctrl-enter' (default): Ctrl/Cmd+Enter sends, Enter inserts a newline.
+ *  - 'enter': Enter sends, Shift/Ctrl+Enter inserts a newline. */
+export type SendKeyMode = 'ctrl-enter' | 'enter'
+
+export const SEND_KEY_MODE_STORAGE_KEY = 'xbot-send-key-mode'
+export const DEFAULT_SEND_KEY_MODE: SendKeyMode = 'ctrl-enter'
+export const SEND_KEY_MODES: SendKeyMode[] = ['ctrl-enter', 'enter']
+
 /** A single tool snapshot inside an iteration (agent/engine.go IterationToolSnapshot). */
 export interface IterationTool {
   name: string
