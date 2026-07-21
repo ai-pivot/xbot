@@ -1889,14 +1889,14 @@ func migrateV45ToV46(conn *sql.DB) error {
 // affected sessions are recorded here and resumed on next startup.
 func migrateV46ToV47(conn *sql.DB) error {
 	if _, err := conn.Exec(`
-	CREATE TABLE IF NOT EXISTS pending_resumes (
-	channel TEXT NOT NULL,
-	chat_id TEXT NOT NULL,
-	sender_id TEXT NOT NULL,
-	content TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	PRIMARY KEY (channel, chat_id)
-	);`); err != nil {
+  CREATE TABLE IF NOT EXISTS pending_resumes (
+   channel TEXT NOT NULL,
+   chat_id TEXT NOT NULL,
+   sender_id TEXT NOT NULL,
+   content TEXT NOT NULL,
+   created_at TEXT NOT NULL,
+   PRIMARY KEY (channel, chat_id)
+  );`); err != nil {
 		return fmt.Errorf("create pending_resumes table: %w", err)
 	}
 

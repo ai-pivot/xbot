@@ -63,11 +63,14 @@ func TestPendingResume_CRUD(t *testing.T) {
 		t.Fatalf("expected empty after clear, got %d", len(list))
 	}
 
-	// Clear all with multiple entries
+	// Clear multiple entries individually
 	db.AddPendingResume("web", "chat-1", "web-1", "msg1")
 	db.AddPendingResume("feishu", "chat-2", "ou_xxx", "msg2")
-	if err := db.ClearPendingResumes(); err != nil {
-		t.Fatalf("ClearPendingResumes: %v", err)
+	if err := db.ClearPendingResume("web", "chat-1"); err != nil {
+		t.Fatalf("ClearPendingResume web: %v", err)
+	}
+	if err := db.ClearPendingResume("feishu", "chat-2"); err != nil {
+		t.Fatalf("ClearPendingResume feishu: %v", err)
 	}
 	list, err = db.ListPendingResumes()
 	if err != nil {
@@ -120,5 +123,54 @@ func TestGetLastUserMessage(t *testing.T) {
 	}
 	if senderID != "web-1" {
 		t.Fatalf("expected 'web-1', got %q", senderID)
+	}
+}
+
+func TestHasAssistantReplyAfterLastUser(t *testing.T) {
+	db := openTestDB(t)
+	tenantSvc := NewTenantService(db)
+	tenantID, err := tenantSvc.GetOrCreateTenantID("web", "chat-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateTenantID: %v", err)
+	}
+	sessionSvc := NewSessionService(db)
+
+	// No messages: no reply
+	hasReply, err := db.HasAssistantReplyAfterLastUser("web", "chat-1")
+	if err != nil {
+		t.Fatalf("HasAssistantReplyAfterLastUser empty: %v", err)
+	}
+	if hasReply {
+		t.Fatal("expected false on empty")
+	}
+
+	// user only, no assistant reply yet
+	sessionSvc.AddMessage(tenantID, llm.ChatMessage{Role: "user", Content: "hello", Timestamp: time.Now()})
+	hasReply, err = db.HasAssistantReplyAfterLastUser("web", "chat-1")
+	if err != nil {
+		t.Fatalf("HasAssistantReplyAfterLastUser after user: %v", err)
+	}
+	if hasReply {
+		t.Fatal("expected false: no assistant reply after last user")
+	}
+
+	// assistant reply added → should be true
+	sessionSvc.AddMessage(tenantID, llm.ChatMessage{Role: "assistant", Content: "hi there", Timestamp: time.Now()})
+	hasReply, err = db.HasAssistantReplyAfterLastUser("web", "chat-1")
+	if err != nil {
+		t.Fatalf("HasAssistantReplyAfterLastUser after reply: %v", err)
+	}
+	if !hasReply {
+		t.Fatal("expected true: assistant reply exists after last user")
+	}
+
+	// new user message (turn 2), no reply yet → should be false
+	sessionSvc.AddMessage(tenantID, llm.ChatMessage{Role: "user", Content: "again", Timestamp: time.Now()})
+	hasReply, err = db.HasAssistantReplyAfterLastUser("web", "chat-1")
+	if err != nil {
+		t.Fatalf("HasAssistantReplyAfterLastUser turn2: %v", err)
+	}
+	if hasReply {
+		t.Fatal("expected false: turn 2 has no assistant reply yet")
 	}
 }

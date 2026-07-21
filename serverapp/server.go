@@ -1076,8 +1076,9 @@ func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
 	}
 }
 
-// resumePendingTurns re-injects the last user message for sessions that were
+// resumePendingTurns re-triggers agent turns for sessions that were
 // interrupted by graceful shutdown. Called after all channels start.
+// A short delay lets web clients reconnect before the turn fires.
 func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB) {
 	if ag == nil || webDB == nil {
 		return
@@ -1090,7 +1091,23 @@ func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB) {
 	if len(pending) == 0 {
 		return
 	}
+	// Delay to let web/feishu clients reconnect so resumed replies reach them.
+	log.Info("Pending resumes found, waiting 3s for clients to reconnect...")
+	time.Sleep(3 * time.Second)
 	for _, pr := range pending {
+		// Skip turns that already completed naturally between shutdown
+		// collection and cancel() — the turn finished and reply was persisted.
+		hasReply, err := webDB.HasAssistantReplyAfterLastUser(pr.Channel, pr.ChatID)
+		if err != nil {
+			log.WithError(err).WithField("session", pr.Channel+":"+pr.ChatID).Warn("Failed to check assistant reply, skipping resume")
+			webDB.ClearPendingResume(pr.Channel, pr.ChatID)
+			continue
+		}
+		if hasReply {
+			log.WithField("session", pr.Channel+":"+pr.ChatID).Info("Turn already completed, skipping resume")
+			webDB.ClearPendingResume(pr.Channel, pr.ChatID)
+			continue
+		}
 		log.WithFields(log.Fields{
 			"channel": pr.Channel,
 			"chat_id": pr.ChatID,

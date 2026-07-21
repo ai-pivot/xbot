@@ -2908,10 +2908,21 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		}
 	}
 
+	// Resume turn: the user message is already in the DB (eager-saved before
+	// the original Run() started). Assemble appended a duplicate user message
+	// from msg.Content — remove it so LLM sees exactly what's in the DB.
+	resumeTurn := msg.Metadata != nil && msg.Metadata["resume_turn"] == "true"
+	if resumeTurn {
+		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+			messages = messages[:len(messages)-1]
+		}
+	}
+
 	// 运行 Agent 循环（统一 Run）
 	// Eager-save user message BEFORE Run() so incrementally persisted assistant/tool
 	// messages appear after it in the DB. GetHistory uses user messages as turn boundaries.
-	if !askUserAnswered && (msg.Metadata == nil || msg.Metadata["user_msg_eager_saved"] != "true") {
+	// Skip for resume (already in DB) and AskUser (not a new user message).
+	if !askUserAnswered && !resumeTurn && (msg.Metadata == nil || msg.Metadata["user_msg_eager_saved"] != "true") {
 		userMsg := llm.NewUserMessage(msg.Content)
 		if !msg.Time.IsZero() {
 			userMsg.Timestamp = msg.Time
@@ -3412,11 +3423,14 @@ func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 	a.injectInboundWithMetadata(channel, chatID, senderID, content, nil)
 }
 
-// InjectInboundResume is the exported version of injectInbound, used by
-// graceful shutdown recovery to re-trigger interrupted agent turns.
+// InjectInboundResume triggers a resume turn for a session interrupted by
+// graceful shutdown. It does NOT inject a new user message — the original
+// user message is already in the DB. The resume_turn metadata tells
+// processMessage to skip eager-save and remove the duplicate user message
+// that Assemble appends (since history from DB already contains it).
 func (a *Agent) InjectInboundResume(channel, chatID, senderID, content string) {
 	a.injectInboundWithMetadata(channel, chatID, senderID, content, map[string]string{
-		"resumed_turn": "true",
+		"resume_turn": "true",
 	})
 }
 

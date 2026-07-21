@@ -31,13 +31,18 @@ func (db *DB) AddPendingResume(channel, chatID, senderID, content string) error 
 
 // GetLastUserMessage retrieves the last non-display-only user message
 // (content + sender_id) for a given channel:chatID session.
+// Uses a correlated subquery to deterministically pick the most recent
+// sender_id (avoids non-deterministic LEFT JOIN with multiple senders).
 func (db *DB) GetLastUserMessage(channel, chatID string) (content, senderID string, err error) {
 	conn := db.Conn()
 	err = conn.QueryRow(`
-		SELECT sm.content, uc.sender_id
+		SELECT sm.content, (
+			SELECT uc.sender_id FROM user_chats uc
+			WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
+			ORDER BY uc.created_at DESC LIMIT 1
+		)
 		FROM session_messages sm
 		JOIN tenants t ON sm.tenant_id = t.id
-		LEFT JOIN user_chats uc ON uc.channel = t.channel AND uc.chat_id = t.chat_id
 		WHERE t.channel = ? AND t.chat_id = ? AND sm.role = 'user' AND COALESCE(sm.display_only, 0) = 0
 		ORDER BY sm.id DESC LIMIT 1
 	`, channel, chatID).Scan(&content, &senderID)
@@ -48,6 +53,32 @@ func (db *DB) GetLastUserMessage(channel, chatID string) (content, senderID stri
 		return "", "", fmt.Errorf("get last user message: %w", err)
 	}
 	return content, senderID, nil
+}
+
+// HasAssistantReplyAfterLastUser checks whether the last user message in
+// the session already has a subsequent assistant reply. Used by resume to
+// detect turns that completed naturally between shutdown collection and
+// cancel() — if so, the resume should be skipped.
+func (db *DB) HasAssistantReplyAfterLastUser(channel, chatID string) (bool, error) {
+	conn := db.Conn()
+	var count int
+	err := conn.QueryRow(`
+		SELECT COUNT(*) FROM session_messages sm
+		JOIN tenants t ON sm.tenant_id = t.id
+		WHERE t.channel = ? AND t.chat_id = ?
+		  AND sm.role = 'assistant'
+		  AND sm.id > (
+		    SELECT sm2.id FROM session_messages sm2
+		    JOIN tenants t2 ON sm2.tenant_id = t2.id
+		    WHERE t2.channel = ? AND t2.chat_id = ?
+		      AND sm2.role = 'user' AND COALESCE(sm2.display_only, 0) = 0
+		    ORDER BY sm2.id DESC LIMIT 1
+		  )
+	`, channel, chatID, channel, chatID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("has assistant reply after last user: %w", err)
+	}
+	return count > 0, nil
 }
 
 // ListPendingResumes returns all sessions marked for resumption.
@@ -68,16 +99,6 @@ func (db *DB) ListPendingResumes() ([]PendingResume, error) {
 		result = append(result, pr)
 	}
 	return result, rows.Err()
-}
-
-// ClearPendingResumes removes all pending resume records.
-func (db *DB) ClearPendingResumes() error {
-	conn := db.Conn()
-	_, err := conn.Exec(`DELETE FROM pending_resumes`)
-	if err != nil {
-		return fmt.Errorf("clear pending resumes: %w", err)
-	}
-	return nil
 }
 
 // ClearPendingResume removes a single pending resume record.
