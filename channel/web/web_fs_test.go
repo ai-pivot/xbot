@@ -1,8 +1,11 @@
 package web
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +25,7 @@ func startFsTestServer(t *testing.T, wc *WebChannel) *httptest.Server {
 	mux.HandleFunc("/api/auth/login", wc.handleLogin)
 	mux.HandleFunc("/api/fs/list", wc.authMiddleware(wc.handleFsList))
 	mux.HandleFunc("/api/fs/read", wc.authMiddleware(wc.handleFsRead))
+	mux.HandleFunc("/api/fs/raw", wc.authMiddleware(wc.handleFsRaw))
 	mux.HandleFunc("/api/fs/search", wc.authMiddleware(wc.handleFsSearch))
 	mux.HandleFunc("/api/fs/stat", wc.authMiddleware(wc.handleFsStat))
 	server := httptest.NewServer(mux)
@@ -418,6 +422,61 @@ func TestFsReadLargeTextFile(t *testing.T) {
 	}
 	if result.Size != int64(len(content)) {
 		t.Errorf("reported size: got %d, want %d", result.Size, len(content))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleFsRaw tests (GET /api/fs/raw — serves raw file bytes for <img src>)
+// ---------------------------------------------------------------------------
+
+func TestFsRawImage(t *testing.T) {
+	dir := t.TempDir()
+	// Create a minimal PNG (1×1 transparent).
+	pngBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	os.WriteFile(filepath.Join(dir, "test.png"), pngBytes, 0644)
+
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startFsTestServer(t, wc)
+	cookie := registerAndGetCookie(t, server)
+
+	resp := authedGet(t, server, cookie, "/api/fs/raw?path="+url.QueryEscape(filepath.Join(dir, "test.png")))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/png" {
+		t.Errorf("Content-Type: got %q, want image/png", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(body, pngBytes) {
+		t.Errorf("body mismatch: got %d bytes, want %d bytes", len(body), len(pngBytes))
+	}
+}
+
+func TestFsRawNotFound(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startFsTestServer(t, wc)
+	cookie := registerAndGetCookie(t, server)
+
+	resp := authedGet(t, server, cookie, "/api/fs/raw?path=/nonexistent/file.png")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestFsRawPathTraversal(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startFsTestServer(t, wc)
+	cookie := registerAndGetCookie(t, server)
+
+	resp := authedGet(t, server, cookie, "/api/fs/raw?path=../../../../etc/passwd")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for path traversal, got %d", resp.StatusCode)
 	}
 }
 

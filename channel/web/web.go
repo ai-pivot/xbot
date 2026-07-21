@@ -549,6 +549,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/files/upload", wc.authenticatedPOST(wc.handleFileUpload))
 	mux.HandleFunc("/api/fs/list", wc.authenticatedPOST(wc.handleFsListPOST))
 	mux.HandleFunc("/api/fs/read", wc.authenticatedPOST(wc.handleFsReadPOST))
+	mux.HandleFunc("/api/fs/raw", wc.authMiddleware(wc.handleFsRaw))
 	mux.HandleFunc("/api/fs/search", wc.authenticatedPOST(wc.handleFsSearchPOST))
 
 	mux.HandleFunc("/api/chats/list", wc.authenticatedPOST(wc.handleChatsListPOST))
