@@ -522,6 +522,7 @@ type terminalCreateResp struct {
 func (wc *WebChannel) handleTerminalCreate(w http.ResponseWriter, r *http.Request) {
 	senderID := senderIDFromContext(r.Context())
 	if senderID == "" {
+		log.Warn("terminal/create: no senderID in context")
 		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -540,6 +541,7 @@ func (wc *WebChannel) handleTerminalCreate(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	log.Infof("terminal/create: senderID=%s chatID=%s cwd=%s", senderID, req.ChatID, cwd)
 	tid, err := wc.ptyMgr.Create(senderID, req.ChatID, cwd, 80, 24)
 	if err != nil {
 		log.WithError(err).Warn("Failed to create PTY")
@@ -547,6 +549,7 @@ func (wc *WebChannel) handleTerminalCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	log.Infof("terminal/create: created tid=%s", tid)
 	writeJSON(w, http.StatusOK, terminalCreateResp{Tid: tid})
 }
 
@@ -594,6 +597,7 @@ func (wc *WebChannel) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// Cookie auth (same as handleWS for browser clients).
 	si := wc.validateSession(r)
 	if si == nil {
+		log.Warn("terminal/ws: no valid session")
 		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -606,15 +610,18 @@ func (wc *WebChannel) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	sess, ok := wc.ptyMgr.get(tid)
 	if !ok {
+		log.Warnf("terminal/ws: tid=%s not found", tid)
 		jsonErrorResponse(w, http.StatusNotFound, "terminal not found")
 		return
 	}
 
+	log.Infof("terminal/ws: upgrading tid=%s", tid)
 	conn, err := terminalWSUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.WithError(err).Warn("Terminal WS upgrade failed")
 		return
 	}
+	log.Infof("terminal/ws: connected tid=%s", tid)
 
 	client := &ptyWSClient{
 		conn: conn,

@@ -141,7 +141,6 @@ export function useTabManager(): TabManager {
   )
 
   const openTab = useCallback((input: Omit<Tab, 'id'>): string => {
-    if (input.type === 'terminal') return ''
     const api = apiRef.current
     if (!api) {
       pending.current.push(input)
@@ -168,6 +167,7 @@ export function useTabManager(): TabManager {
       icon: input.icon,
       sessionId: input.type === 'agent' ? input.data?.filePath : undefined,
       filePath: input.type === 'file' ? input.data?.filePath : undefined,
+      terminalId: input.type === 'terminal' ? input.data?.terminalId : undefined,
       closable: input.closable,
       subAgentRole: input.type === 'agent' ? input.data?.subAgentRole : undefined,
       subAgentInstance: input.type === 'agent' ? input.data?.subAgentInstance : undefined,
