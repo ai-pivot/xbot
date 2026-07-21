@@ -17,6 +17,7 @@ import { AppShell } from '@/layouts/AppShell'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { LoginPage } from '@/pages/LoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
+import { PWAUpdatePrompt } from '@/components/PWAUpdatePrompt'
 
 export default function App() {
   return (
@@ -42,6 +43,7 @@ export default function App() {
         </Routes>
       </BrowserRouter>
       <Toaster />
+      <PWAUpdatePrompt />
     </TooltipProvider>
   )
 }

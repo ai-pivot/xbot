@@ -77,6 +77,8 @@ export function TerminalPanel({ params }: PanelProps) {
   const { theme } = themeCtx
   const isMobile = useIsMobile()
   const keyboardInset = useKeyboardInset()
+  const keyboardInsetRef = useRef(0)
+  keyboardInsetRef.current = keyboardInset
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const wsRef = useRef<TerminalWS | null>(null)
@@ -111,6 +113,8 @@ export function TerminalPanel({ params }: PanelProps) {
     } else {
       sendToPty(key.data)
     }
+    // Re-focus the terminal so the soft keyboard stays open.
+    termRef.current?.focus()
   }, [ctrlActive, sendToPty])
 
   useEffect(() => {
@@ -173,6 +177,10 @@ export function TerminalPanel({ params }: PanelProps) {
     // Watch container size → fitAddon
     const resizeObserver = new ResizeObserver(() => {
       try { fitAddon.fit() } catch { /* ignore */ }
+      // When the keyboard is open, scroll to show the cursor after resize.
+      if (keyboardInsetRef.current > 0) {
+        setTimeout(() => termRef.current?.scrollToBottom(), 50)
+      }
     })
     resizeObserver.observe(containerRef.current)
 
@@ -196,6 +204,16 @@ export function TerminalPanel({ params }: PanelProps) {
       termRef.current = null
     }
   }, [tid, terminalId, theme])
+
+  // When the keyboard opens, scroll the terminal to show the cursor.
+  useEffect(() => {
+    if (keyboardInset > 0) {
+      // Defer to next frame so the layout has settled before scrolling.
+      requestAnimationFrame(() => {
+        termRef.current?.scrollToBottom()
+      })
+    }
+  }, [keyboardInset])
 
   if (!tid || !terminalId) {
     return (
@@ -236,51 +254,87 @@ export function TerminalPanel({ params }: PanelProps) {
         >
           {/* Key row */}
           <div className="flex items-center gap-1 px-1 py-1.5 overflow-x-auto">
-            {/* Toggle button for the accessory bar itself */}
-            <button
-              type="button"
-              onClick={() => setShowAux(false)}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-text-muted hover:bg-bg-tertiary"
-              aria-label="Hide keyboard"
-            >
-              <span className="text-xs">▾</span>
-            </button>
+            {/* When in Ctrl mode, show a back button to return to primary keys. */}
+            {ctrlActive && (
+              <div
+                role="button"
+                tabIndex={-1}
+                aria-label="Back"
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setCtrlActive(false)
+                }}
+                className="flex h-7 w-7 shrink-0 select-none items-center justify-center rounded text-text-muted"
+                style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+              >
+                <span className="text-xs">←</span>
+              </div>
+            )}
+
+            {/* Toggle button for the accessory bar itself (hidden in Ctrl mode) */}
+            {!ctrlActive && (
+              <div
+                role="button"
+                tabIndex={-1}
+                aria-label="Hide keyboard"
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setShowAux(false)
+                }}
+                className="flex h-7 w-7 shrink-0 select-none items-center justify-center rounded text-text-muted"
+                style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+              >
+                <span className="text-xs">▾</span>
+              </div>
+            )}
 
             {activeKeys.map((key) => (
-              <button
+              <div
                 key={key.label}
-                type="button"
-                onTouchStart={(e) => {
+                role="button"
+                tabIndex={-1}
+                aria-label={key.label}
+                onPointerDown={(e) => {
                   e.preventDefault()
-                  handleAuxKey(key)
-                }}
-                onMouseDown={(e) => {
-                  e.preventDefault()
+                  e.stopPropagation()
                   handleAuxKey(key)
                 }}
                 className={
-                  'flex h-7 shrink-0 items-center justify-center rounded text-xs font-medium transition-colors ' +
+                  'flex h-7 shrink-0 select-none items-center justify-center rounded text-xs font-medium transition-colors ' +
                   (key.toggle && ctrlActive
                     ? 'bg-accent text-white '
                     : 'bg-bg-tertiary text-text-primary hover:bg-bg-tertiary/80 ') +
                   (key.wide ? 'min-w-12 px-3 ' : 'min-w-7 px-1')
                 }
-                style={key.toggle && ctrlActive ? { backgroundColor: 'var(--accent)', color: 'white' } : undefined}
+                style={{
+                  touchAction: 'none',
+                  WebkitUserSelect: 'none',
+                  userSelect: 'none',
+                  ...(key.toggle && ctrlActive ? { backgroundColor: 'var(--accent)', color: 'white' } : {}),
+                }}
               >
                 {key.toggle ? (ctrlActive ? 'Ctrl ✓' : key.label) : key.label}
-              </button>
+              </div>
             ))}
 
             {/* Expand/collapse secondary keys (only when not in Ctrl mode) */}
             {!ctrlActive && (
-              <button
-                type="button"
-                onClick={() => setShowExpanded((v) => !v)}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-text-muted hover:bg-bg-tertiary"
+              <div
+                role="button"
+                tabIndex={-1}
                 aria-label={showExpanded ? 'Show less' : 'Show more'}
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setShowExpanded((v) => !v)
+                }}
+                className="flex h-7 w-7 shrink-0 select-none items-center justify-center rounded text-text-muted"
+                style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
               >
                 <span className="text-xs">{showExpanded ? '‹' : '›'}</span>
-              </button>
+              </div>
             )}
           </div>
         </div>
@@ -288,14 +342,20 @@ export function TerminalPanel({ params }: PanelProps) {
 
       {/* Show button to re-open the accessory bar when hidden */}
       {isMobile && !showAux && (
-        <button
-          type="button"
-          onClick={() => setShowAux(true)}
-          className="flex h-7 shrink-0 items-center justify-center border-t border-border bg-bg-secondary text-text-muted hover:bg-bg-tertiary"
+        <div
+          role="button"
+          tabIndex={-1}
           aria-label="Show keyboard"
+          onPointerDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setShowAux(true)
+          }}
+          className="flex h-7 shrink-0 select-none items-center justify-center border-t border-border bg-bg-secondary text-text-muted"
+          style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
         >
           <span className="text-xs">▴ Keys</span>
-        </button>
+        </div>
       )}
     </div>
   )

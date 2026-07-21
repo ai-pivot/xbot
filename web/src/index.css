@@ -684,3 +684,9 @@
     transition: none !important;
   }
 }
+
+/* xterm.js: enable touch scrolling on mobile (the viewport has overflow-y: scroll
+   but no touch-action, so mobile browsers block touch scrolling by default). */
+.xterm .xterm-viewport {
+  touch-action: pan-y;
+}

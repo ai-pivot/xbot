@@ -179,11 +179,11 @@ export function MobileAppShell() {
             <button
               type="button"
               className="flex flex-col items-center justify-center gap-0.5 text-xs"
-              style={{ color: view === 'detail' ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-              onClick={() => setView(view === 'detail' ? 'agent' : 'detail')}
+              style={{ color: view === 'detail' || view === 'terminal' ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+              onClick={() => setView('detail')}
             >
-              <Info className="size-5" />
-              <span>{view === 'detail' ? '返回' : '详细'}</span>
+              <SquareTerminal className="size-5" />
+              <span>工具</span>
             </button>
           </nav>
 
