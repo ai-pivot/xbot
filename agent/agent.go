@@ -890,6 +890,20 @@ func (a *Agent) IsProcessing(senderID string) bool {
 	return found
 }
 
+// ActiveSessionKeys returns all active "channel:chatID" keys from
+// chatCancelCh. Used by graceful shutdown to collect sessions whose
+// agent loops should be resumed on next startup.
+func (a *Agent) ActiveSessionKeys() []string {
+	var keys []string
+	a.chatCancelCh.Range(func(key, _ any) bool {
+		if k, ok := key.(string); ok {
+			keys = append(keys, k)
+		}
+		return true
+	})
+	return keys
+}
+
 // GetPendingAskUser returns the pending AskUser prompt for a chat, or nil.
 // Used by the web channel to resend ask_user on WS reconnect so refreshing
 // the page doesn't lose the prompt.
@@ -3396,6 +3410,14 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 // 用于 cron 调度和后台任务通知等内部系统消息。
 func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 	a.injectInboundWithMetadata(channel, chatID, senderID, content, nil)
+}
+
+// InjectInboundResume is the exported version of injectInbound, used by
+// graceful shutdown recovery to re-trigger interrupted agent turns.
+func (a *Agent) InjectInboundResume(channel, chatID, senderID, content string) {
+	a.injectInboundWithMetadata(channel, chatID, senderID, content, map[string]string{
+		"resumed_turn": "true",
+	})
 }
 
 func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content string, metadata map[string]string) {

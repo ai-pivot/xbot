@@ -191,6 +191,15 @@ CREATE TABLE user_chats (
     UNIQUE(channel, sender_id, chat_id)
 );
 CREATE INDEX idx_user_chats_sender ON user_chats(channel, sender_id);
+
+CREATE TABLE IF NOT EXISTS pending_resumes (
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (channel, chat_id)
+);
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
