@@ -12,7 +12,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      injectRegister: 'auto',
+      injectRegister: false,
       includeAssets: ['favicon.svg', 'icons.svg', 'apple-touch-icon.png', 'pwa-192.png', 'pwa-512.png'],
       manifest: {
         name: 'xbot',
@@ -33,6 +33,11 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+        // Auto-activate new SW without waiting for page message — breaks the
+        // chicken-and-egg cycle where old SW caches old HTML that can't send
+        // SKIP_WAITING. clientsClaim takes control of existing tabs immediately.
+        skipWaiting: true,
+        clientsClaim: true,
         // Precache up to 8MB (monaco/katex/highlight are large but cacheable)
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [
