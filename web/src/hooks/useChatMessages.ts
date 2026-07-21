@@ -61,6 +61,8 @@ export interface UseChatMessagesResult {
   error: string | null
   /** Active progress snapshot from history (for resuming a busy session). */
   initialProgress: HistProgress | null
+  /** Whether the backend reports this session as actively processing. */
+  processing: boolean
   /** The chat_id reported by the most recent history load (server's active chat). */
   resolvedChatID: string | null
   /** Reload history for the current chatID. */
@@ -278,6 +280,7 @@ export function useChatMessages({
   const [error, setError] = useState<string | null>(null)
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
+  const [processing, setProcessing] = useState(false)
 
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
@@ -360,6 +363,7 @@ export function useChatMessages({
           messagesRef.current = next
           setMessages(next)
           setInitialProgress(null)
+      setProcessing(false)
           return
         }
       }
@@ -430,6 +434,7 @@ export function useChatMessages({
       messagesRef.current = next
       setMessages(next)
       setInitialProgress(progressChanged || mutated ? null : (data.active_progress ?? null))
+      setProcessing(Boolean(data.processing))
       if (data.chat_id) setResolvedChatID(data.chat_id)
     } catch (e) {
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return
@@ -649,6 +654,7 @@ export function useChatMessages({
     loading,
     error,
     initialProgress: visibleInitialProgress,
+    processing,
     resolvedChatID,
     reload,
     sendMessage,

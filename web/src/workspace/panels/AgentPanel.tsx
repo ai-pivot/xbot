@@ -174,8 +174,9 @@ export function AgentPanel({ params }: PanelProps) {
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
-  // Busy while streaming (live or hydrated from a resumed session).
-  const busy = isStreaming && !askUser.prompt
+  // Busy while streaming (live or hydrated from a resumed session) OR
+  // backend reports processing (covers SSE reconnect gap).
+  const busy = (isStreaming || chat.processing) && !askUser.prompt
 
   const llmSettings = useLLMSettings()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens

@@ -488,10 +488,10 @@ export class ProgressStore {
         draft.iterationHistory = appended
       }
 
-      // ── todos: carry-forward when not present (mirrors TUI cli_update_progress).
-      //  An empty/undefined todos means the event carries no todo data, not that
-      //  todos were deleted. Only update when a non-empty array is provided.
-      if (opts.todos && opts.todos.length > 0) {
+      // ── todos: always update when present (including empty arrays).
+      //  undefined = event carries no todo data → carry-forward.
+      //  [] = todo_write([]) explicitly cleared todos → update to empty.
+      if (opts.todos !== undefined) {
         draft.todos = opts.todos
       }
       if (opts.subAgents !== undefined) {

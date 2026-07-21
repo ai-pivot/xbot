@@ -191,9 +191,8 @@ export function useProgressStream({
       finalizedRef.current = false
       if (hasVisibleProgress(store.getSnapshot())) store.reset()
       const todos = (initialProgress.todos ?? []) as TodoItem[]
-      if (todos.length > 0) {
-        store.replace({ todos })
-      }
+      // Always replace — empty array clears stale todos, non-empty restores.
+      store.replace({ todos })
       return
     }
     // Don't re-hydrate after finalization — the turn is over, and the
