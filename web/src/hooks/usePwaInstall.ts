@@ -136,10 +136,12 @@ export function usePwaInstall() {
     if (!('serviceWorker' in navigator)) return
     const reg = await navigator.serviceWorker.getRegistration('/')
     if (reg?.waiting) {
+      // Tell the waiting SW to skip waiting, then reload immediately.
+      // Don't wait for controllerchange — it may not fire reliably on iOS.
       reg.waiting.postMessage({ type: 'SKIP_WAITING' })
-    } else {
-      window.location.reload()
     }
+    // Always reload to pick up new assets.
+    window.location.reload()
   }
 
   return {
