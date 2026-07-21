@@ -244,6 +244,10 @@ func (a *Agent) buildMainRunConfig(
 		// channel-scoped tools registered under the physical channel.
 		sessionKey = physicalChannel + ":" + chatID
 		cfg.SessionKey = sessionKey
+		// Set RootSessionKey so offload_recall uses the same key as MaybeOffload.
+		// Without this, offload stores under "web:chatID" (physical) but recall
+		// falls back to "cli:chatID" (original channel) → "not found" error.
+		cfg.RootSessionKey = sessionKey
 		// Rebuild ToolExecutor with the physical channel so tool EXECUTION
 		// also resolves channel-scoped tools correctly.
 		cfg.ToolExecutor = a.buildToolExecutor(ctx, channel, chatID, senderID, senderName, sandboxUserID, physicalChannel)

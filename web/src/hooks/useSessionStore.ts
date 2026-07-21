@@ -828,7 +828,12 @@ export function useSessionStoreImpl(): SessionStore {
   }, [])
 
   /* Preserve live status/activeSessionId across refresh: a fresh fetch resets
-   * every row to 'idle', so carry over the inferred status keyed by chatID. */
+   * every row to 'idle', so carry over the inferred status keyed by chatID.
+   * SSE events (session busy/idle) are more real-time than refresh() — they
+   * must take priority over the server snapshot, which may be stale by the
+   * time the HTTP response arrives (e.g. plugin channel received a new
+   * webhook during the round-trip, making IsProcessingByChannel return true
+   * even though the SSE idle event already fired). */
   function mergeStatus(prev: SessionInfo[], next: SessionInfo[]): SessionInfo[] {
     if (prev.length === 0) return next
     const statusBy = new Map<string, Pick<SessionInfo, 'status' | 'running'>>()
@@ -843,6 +848,13 @@ export function useSessionStoreImpl(): SessionStore {
       const children = node.children?.map(apply)
       if (!carried) return { ...node, children }
       if (carried.status === 'waiting_input' || carried.status === 'error' || carried.status === 'unread') {
+        return { ...node, status: carried.status, running: carried.running ?? node.running, children }
+      }
+      // SSE-driven running/idle takes priority over server snapshot.
+      // The server's IsProcessingByChannel may return true if a new message
+      // arrived during the HTTP round-trip — the subsequent session(busy)
+      // SSE event will correct this if needed.
+      if (carried.status === 'running' || carried.status === 'idle') {
         return { ...node, status: carried.status, running: carried.running ?? node.running, children }
       }
       return { ...node, children }

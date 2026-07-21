@@ -476,10 +476,14 @@ func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *
 		meta["request_id"] = uuid.NewString()
 	}
 	// Persist iteration history to session so it survives restarts.
+	// NOT DisplayOnly — GetAllMessages filters display_only messages, which
+	// would cause the iteration history to be invisible to ConvertMessagesToHistory
+	// on history reload (both web and TUI). A regular empty-content assistant
+	// message with Detail is handled correctly by ConvertMessagesToHistory
+	// (it merges with the next content-bearing assistant message).
 	if len(out.IterationHistory) > 0 {
 		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
 			histMsg := llm.NewAssistantMessage("")
-			histMsg.DisplayOnly = true
 			histMsg.Detail = string(jsonBytes)
 			if err := tenantSession.AddMessage(histMsg); err != nil {
 				log.Ctx(ctx).WithError(err).Warn("Failed to save waitingUser iteration history")
