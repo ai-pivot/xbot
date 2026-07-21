@@ -18,6 +18,7 @@ import { TerminalWS } from '@/lib/terminalWS'
 import { terminalStore } from '@/hooks/useTerminal'
 import { useDockviewContext } from '@/workspace/types'
 import { useIsMobile } from '@/hooks/useIsMobile'
+import { useKeyboardInset } from '@/hooks/useKeyboardInset'
 import type { PanelProps } from '@/workspace/panels/types'
 
 // ── Mobile accessory bar keys ─────────────────────────────────────────
@@ -75,6 +76,7 @@ export function TerminalPanel({ params }: PanelProps) {
   const { t } = i18n
   const { theme } = themeCtx
   const isMobile = useIsMobile()
+  const keyboardInset = useKeyboardInset()
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const wsRef = useRef<TerminalWS | null>(null)
@@ -208,12 +210,30 @@ export function TerminalPanel({ params }: PanelProps) {
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-bg-primary">
-      {/* Terminal area */}
-      <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden" />
+      {/* Terminal area — add bottom padding when keyboard is open so text
+          isn't hidden behind the floating accessory bar. */}
+      <div
+        ref={containerRef}
+        className="min-h-0 flex-1 overflow-hidden"
+        style={keyboardInset > 0 ? { paddingBottom: '40px' } : undefined}
+      />
 
       {/* Mobile accessory bar */}
       {isMobile && showAux && (
-        <div className="shrink-0 border-t border-border bg-bg-secondary">
+        <div
+          className="border-t border-border bg-bg-secondary"
+          style={
+            keyboardInset > 0
+              ? {
+                  position: 'fixed',
+                  left: 0,
+                  right: 0,
+                  bottom: `${keyboardInset}px`,
+                  zIndex: 50,
+                }
+              : undefined
+          }
+        >
           {/* Key row */}
           <div className="flex items-center gap-1 px-1 py-1.5 overflow-x-auto">
             {/* Toggle button for the accessory bar itself */}
