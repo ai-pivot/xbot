@@ -26,7 +26,7 @@ import {
   type FileViewMode,
 } from '@/components/file/fileTypes'
 import { useFileContent } from '@/hooks/useFileContent'
-import { joinPath } from '@/hooks/useFileSystem'
+import { joinPath, parentPath } from '@/hooks/useFileSystem'
 import { useI18n } from '@/providers/i18n'
 import { useDockviewContext } from '@/workspace/types'
 import type { PanelProps } from '@/workspace/panels/types'
@@ -53,8 +53,7 @@ export function FilePanel({ params }: PanelProps) {
   const baseDir = useMemo(() => {
     if (!filePath) return undefined
     const absPath = filePath.startsWith('/') ? filePath : (cwd.cwd ? joinPath(cwd.cwd, filePath) : filePath)
-    const idx = absPath.lastIndexOf('/')
-    return idx > 0 ? absPath.slice(0, idx) : absPath
+    return parentPath(absPath)
   }, [filePath, cwd.cwd])
 
   // Re-seed the view mode if the file ever changes (dockview reuses a panel
