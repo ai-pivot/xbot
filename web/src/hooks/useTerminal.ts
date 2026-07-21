@@ -100,6 +100,14 @@ class TerminalStore {
   remove(id: string): void {
     if (this.sessions.delete(id)) this.notify()
   }
+  /** Clear the stored tabId so focusTerminal knows to create a new tab. */
+  clearTabId(id: string): void {
+    const s = this.sessions.get(id)
+    if (s && s.tabId) {
+      s.tabId = undefined
+      this.notify()
+    }
+  }
 
   /** Resolve the Dockview tab id for a terminal (stored, else search tabs). */
   private tabIdFor(id: string): string | undefined {
@@ -156,10 +164,25 @@ class TerminalStore {
     return id
   }
 
-  /** Focus a terminal's tab (sidebar click). No-op if the tab is gone. */
+  /** Focus a terminal's tab. Re-creates the tab if it was closed via X button. */
   focusTerminal(id: string): void {
     const tabId = this.tabIdFor(id)
-    if (tabId) this.tabOps?.setActiveTab(tabId)
+    if (tabId) {
+      this.tabOps?.setActiveTab(tabId)
+      return
+    }
+    // Tab was closed (e.g. via X button) but the session persists — reopen it.
+    const s = this.sessions.get(id)
+    if (s) {
+      const newTabId = this.tabOps?.openTab({
+        type: 'terminal',
+        title: s.title,
+        icon: 'terminal',
+        closable: true,
+        data: { terminalId: id },
+      }) ?? ''
+      if (newTabId) this.patch(id, { tabId: newTabId, status: 'connecting' })
+    }
   }
 
   /**

@@ -101,12 +101,14 @@ export function TerminalPanel({ params }: PanelProps) {
       // closeTerminal), send a WS close frame so the backend destroys the PTY
       // and remove the session from the store. Otherwise just disconnect the
       // WS — the terminal persists so a later panel remount can reconnect.
+      // Clear the tabId so focusTerminal knows to create a new tab.
       const sess = terminalStore.getSession(terminalId)
       if (sess?.closing) {
         ws.close()
         terminalStore.remove(terminalId)
       } else {
         ws.disconnect()
+        terminalStore.clearTabId(terminalId)
       }
 
       wsRef.current = null
