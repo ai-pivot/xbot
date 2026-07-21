@@ -45,6 +45,9 @@ describe('userSettings', () => {
     expect(__SETTING_MAP['xbot-collapse-level']).toBe('web:ui:collapse-level')
     expect(__SETTING_MAP['xbot-merge-tools']).toBe('web:ui:merge-tools')
     expect(__SETTING_MAP['xbot:leftSidebarWidth']).toBe('web:ui:left-sidebar-width')
+    expect(__SETTING_MAP['xbot-starred']).toBe('web:ui:starred')
+    expect(__SETTING_MAP['xbot:session-category']).toBe('web:ui:session-category')
+    expect(__SETTING_MAP['xbot:recent-workdirs:v1']).toBe('web:ui:recent-workdirs')
   })
 
   it('debounces and batches multiple writes into one request', async () => {

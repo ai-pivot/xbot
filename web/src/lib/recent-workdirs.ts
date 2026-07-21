@@ -1,3 +1,5 @@
+import { syncSettingToServer } from '@/lib/userSettings'
+
 const STORAGE_KEY = 'xbot:recent-workdirs:v1'
 const STORAGE_VERSION = 1
 const MAX_RECENT_WORKDIRS = 5
@@ -36,7 +38,9 @@ export function removeRecentWorkDir(workDir: string): string[] {
 
 function persistRecentWorkDirs(paths: string[]): string[] {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: STORAGE_VERSION, paths }))
+    const value = JSON.stringify({ version: STORAGE_VERSION, paths })
+    localStorage.setItem(STORAGE_KEY, value)
+    syncSettingToServer(STORAGE_KEY, value)
   } catch {
     // Keep the in-memory result usable when storage is unavailable.
   }

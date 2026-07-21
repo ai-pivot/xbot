@@ -26,6 +26,9 @@ const SETTING_MAP: Record<string, string> = {
   'xbot-collapse-level': 'web:ui:collapse-level',
   'xbot-merge-tools': 'web:ui:merge-tools',
   'xbot:leftSidebarWidth': 'web:ui:left-sidebar-width',
+  'xbot-starred': 'web:ui:starred',
+  'xbot:session-category': 'web:ui:session-category',
+  'xbot:recent-workdirs:v1': 'web:ui:recent-workdirs',
 }
 
 /** server key → localStorage key (reverse mapping) */

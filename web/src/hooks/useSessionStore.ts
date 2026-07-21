@@ -26,6 +26,7 @@ import { toast } from 'sonner'
 import { setCwd } from '@/components/agent/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { postAPI } from '@/lib/api'
+import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import { groupSessions, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
 import { rememberRecentWorkDir } from '@/lib/recent-workdirs'
@@ -97,7 +98,9 @@ function loadStarred(): string[] {
 
 function persistStarred(ids: string[]): void {
   try {
-    localStorage.setItem(STARRED_KEY, JSON.stringify(ids))
+    const value = JSON.stringify(ids)
+    localStorage.setItem(STARRED_KEY, value)
+    syncSettingToServer(STARRED_KEY, value)
   } catch {
     /* ignore */
   }
@@ -118,6 +121,7 @@ function loadCategory(): SessionCategory {
 function persistCategory(c: SessionCategory): void {
   try {
     localStorage.setItem(CATEGORY_KEY, c)
+    syncSettingToServer(CATEGORY_KEY, c)
   } catch {
     /* ignore */
   }
@@ -788,6 +792,16 @@ export function useSessionStoreImpl(): SessionStore {
   const [error, setError] = useState<string | null>(null)
   // AskUser prompts keyed by "channel:chatID" — survives session switch.
   const [askUserPrompts, setAskUserPrompts] = useState<Map<string, AskUserPrompt>>(new Map())
+
+  // Re-read starred/category from localStorage when server sync updates values.
+  useEffect(() => {
+    const handler = () => {
+      setStarredIds(loadStarred())
+      setCategoryState(loadCategory())
+    }
+    window.addEventListener(SETTINGS_SYNCED_EVENT, handler)
+    return () => window.removeEventListener(SETTINGS_SYNCED_EVENT, handler)
+  }, [])
 
   // Keep the latest session list available to SSE handlers without re-binding.
   const sessionsRef = useRef(sessions)
