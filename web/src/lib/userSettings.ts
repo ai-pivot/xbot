@@ -20,15 +20,18 @@ import { postAPI } from '@/lib/api'
 
 /** localStorage key → server key mapping */
 const SETTING_MAP: Record<string, string> = {
+  // UI preferences (visual / interaction)
   'xbot-md-theme': 'web:ui:md-theme',
   'xbot-accent': 'web:ui:accent',
   'xbot-locale': 'web:ui:locale',
   'xbot-collapse-level': 'web:ui:collapse-level',
   'xbot-merge-tools': 'web:ui:merge-tools',
   'xbot:leftSidebarWidth': 'web:ui:left-sidebar-width',
-  'xbot-starred': 'web:ui:starred',
-  'xbot:session-category': 'web:ui:session-category',
-  'xbot:recent-workdirs:v1': 'web:ui:recent-workdirs',
+  // Session data (user-authored)
+  'xbot-starred': 'web:session:starred',
+  'xbot:session-category': 'web:session:category',
+  // Workspace data (user-authored)
+  'xbot:recent-workdirs:v1': 'web:workspace:recent-workdirs',
 }
 
 /** server key → localStorage key (reverse mapping) */
@@ -60,15 +63,15 @@ export async function syncAndMigrateSettings(): Promise<void> {
     return // not logged in or server unavailable
   }
 
-  // Filter web:ui:* keys
-  const uiSettings = Object.entries(serverSettings).filter(
-    ([k]) => k.startsWith('web:ui:'),
+  // Filter synced keys (web:ui:*, web:session:*, web:workspace:*)
+  const syncedSettings = Object.entries(serverSettings).filter(
+    ([k]) => k in REVERSE_MAP,
   )
 
-  if (uiSettings.length > 0) {
-    // Server has UI settings → write to localStorage (server authoritative)
+  if (syncedSettings.length > 0) {
+    // Server has synced settings → write to localStorage (server authoritative)
     const changedKeys: string[] = []
-    for (const [serverKey, value] of uiSettings) {
+    for (const [serverKey, value] of syncedSettings) {
       const lsKey = REVERSE_MAP[serverKey]
       if (!lsKey) continue
       try {
@@ -82,7 +85,7 @@ export async function syncAndMigrateSettings(): Promise<void> {
       )
     }
   } else {
-    // Server has no UI settings → migrate from localStorage
+    // Server has no synced settings → migrate from localStorage
     const batch: Record<string, string> = {}
     for (const [lsKey, serverKey] of Object.entries(SETTING_MAP)) {
       try {
