@@ -26,6 +26,7 @@ import {
   type FileViewMode,
 } from '@/components/file/fileTypes'
 import { useFileContent } from '@/hooks/useFileContent'
+import { joinPath, parentPath } from '@/hooks/useFileSystem'
 import { useI18n } from '@/providers/i18n'
 import { useDockviewContext } from '@/workspace/types'
 import type { PanelProps } from '@/workspace/panels/types'
@@ -47,6 +48,13 @@ export function FilePanel({ params }: PanelProps) {
 
   const { content, loading, error, setContent, imageUrl } = useFileContent({ filePath, ws, cwd: cwd.cwd })
   const [mode, setMode] = useState<FileViewMode>(() => defaultViewMode(fileName))
+
+  // Directory of the markdown file — used to resolve relative image paths.
+  const baseDir = useMemo(() => {
+    if (!filePath) return undefined
+    const absPath = filePath.startsWith('/') ? filePath : (cwd.cwd ? joinPath(cwd.cwd, filePath) : filePath)
+    return parentPath(absPath)
+  }, [filePath, cwd.cwd])
 
   // Re-seed the view mode if the file ever changes (dockview reuses a panel
   // instance when its params update). Image files ignore `mode` entirely.
@@ -96,7 +104,7 @@ export function FilePanel({ params }: PanelProps) {
               sandbox="allow-scripts"
             />
           ) : (
-            <MarkdownPreview source={content} />
+            <MarkdownPreview source={content} baseDir={baseDir} />
           )
         ) : (
           <MonacoEditor value={content} language={language} onChange={setContent} />

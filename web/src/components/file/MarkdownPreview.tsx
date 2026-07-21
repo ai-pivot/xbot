@@ -16,12 +16,16 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import hljs from 'highlight.js'
 
+import { joinPath } from '@/hooks/useFileSystem'
+
 import 'katex/dist/katex.min.css'
 import './markdown-preview.css'
 
 export interface MarkdownPreviewProps {
   /** Markdown source. */
   source: string
+  /** Directory of the markdown file, used to resolve relative image paths. */
+  baseDir?: string
   /** Extra className on the scroll container. */
   className?: string
 }
@@ -53,8 +57,26 @@ function isCodeBlock(className: string | undefined, children: ReactNode): boolea
   return text.includes('\n')
 }
 
+/**
+ * Resolve a markdown image `src` against the markdown file's directory.
+ * Absolute URLs (http/https/data/blob) are passed through unchanged.
+ * Relative paths are joined with `baseDir` and rewritten to `/api/fs/raw?path=...`.
+ */
+function resolveImgSrc(src: string | undefined, baseDir?: string): string | undefined {
+  if (!src) return src
+  // Already a full URL or data/blob URI — leave as-is.
+  if (/^(https?:|data:|blob:|\/api\/)/.test(src)) return src
+  if (!baseDir) return src
+
+  // Normalize: strip leading "./" but keep subdirectory paths intact.
+  const cleanSrc = src.replace(/^\.\//, '')
+  const absPath = src.startsWith('/') ? src : joinPath(baseDir, cleanSrc)
+  return `/api/fs/raw?path=${encodeURIComponent(absPath)}`
+}
+
 export const MarkdownPreview = memo(function MarkdownPreview({
   source,
+  baseDir,
   className,
 }: MarkdownPreviewProps) {
   return (
@@ -89,8 +111,13 @@ export const MarkdownPreview = memo(function MarkdownPreview({
               {children}
             </a>
           ),
-          img: ({ node: _node, alt, ...props }) => (
-            <img alt={alt ?? ''} loading="lazy" {...props} />
+          img: ({ node: _node, alt, src, ...props }) => (
+            <img
+              alt={alt ?? ''}
+              loading="lazy"
+              src={resolveImgSrc(src, baseDir)}
+              {...props}
+            />
           ),
         }}
       >
