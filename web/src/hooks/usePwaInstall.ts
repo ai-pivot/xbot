@@ -103,6 +103,20 @@ export function usePwaInstall() {
     }).catch(() => {})
   }, [])
 
+  // Manually check for SW updates (called by the update button).
+  const checkForUpdate = async () => {
+    if (!('serviceWorker' in navigator)) return false
+    const reg = await navigator.serviceWorker.getRegistration('/')
+    if (!reg) return false
+    await reg.update()
+    // If a waiting SW exists after update, mark as available.
+    if (reg.waiting) {
+      setUpdateAvailable(true)
+      return true
+    }
+    return false
+  }
+
   const install = async () => {
     if (!promptEvent) return
     await promptEvent.prompt()
@@ -128,6 +142,7 @@ export function usePwaInstall() {
     install,
     error,
     updateAvailable,
+    checkForUpdate,
     refreshSW,
     diagnostics,
   }

@@ -1,6 +1,7 @@
 /**
  * SettingsAbout — about / PWA install panel with diagnostics.
  */
+import { useState } from 'react'
 import { Download, Check, AlertCircle, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { usePwaInstall } from '@/hooks/usePwaInstall'
@@ -19,7 +20,24 @@ function DiagRow({ label, ok }: { label: string; ok: boolean }) {
 }
 
 export function SettingsAbout() {
-  const { canInstall, isInstalled, install, error, refreshSW, updateAvailable, diagnostics } = usePwaInstall()
+  const { canInstall, isInstalled, install, error, updateAvailable, checkForUpdate, refreshSW, diagnostics } = usePwaInstall()
+  const [checking, setChecking] = useState(false)
+
+  const handleUpdate = async () => {
+    if (updateAvailable) {
+      // Already know there's an update — apply it directly.
+      await refreshSW()
+    } else {
+      // Check for updates manually.
+      setChecking(true)
+      const found = await checkForUpdate()
+      setChecking(false)
+      if (!found) {
+        // No update — reload to pick up latest.
+        window.location.reload()
+      }
+    }
+  }
 
   return (
     <div className="flex flex-col gap-6 p-5">
@@ -83,13 +101,24 @@ export function SettingsAbout() {
           </div>
         )}
 
-        {/* Update available */}
-        {updateAvailable && (
-          <Button type="button" variant="outline" onClick={() => refreshSW()} className="w-fit gap-2">
-            <RefreshCw className="size-4" />
-            更新到最新版本
+        {/* Update / check for updates */}
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant={updateAvailable ? 'default' : 'outline'}
+            onClick={() => void handleUpdate()}
+            disabled={checking}
+            className="w-fit gap-2"
+          >
+            <RefreshCw className={`size-4 ${checking ? 'animate-spin' : ''}`} />
+            {updateAvailable ? '有新版本，点击更新' : checking ? '检查更新中…' : '检查更新'}
           </Button>
-        )}
+          {updateAvailable && (
+            <span className="text-xs" style={{ color: 'var(--status-running)' }}>
+              ● 有新版本可用
+            </span>
+          )}
+        </div>
       </section>
     </div>
   )
