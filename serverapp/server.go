@@ -1099,8 +1099,7 @@ func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB) {
 		// collection and cancel() — the turn finished and reply was persisted.
 		hasReply, err := webDB.HasAssistantReplyAfterLastUser(pr.Channel, pr.ChatID)
 		if err != nil {
-			log.WithError(err).WithField("session", pr.Channel+":"+pr.ChatID).Warn("Failed to check assistant reply, skipping resume")
-			webDB.ClearPendingResume(pr.Channel, pr.ChatID)
+			log.WithError(err).WithField("session", pr.Channel+":"+pr.ChatID).Error("Failed to check assistant reply, keeping record for next restart")
 			continue
 		}
 		if hasReply {

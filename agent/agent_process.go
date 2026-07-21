@@ -175,6 +175,7 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 	}
 
 	assistantMsg := llm.NewAssistantMessage(assistantContent)
+	assistantMsg.DisplayOnly = true
 	assistantMsg.ToolCalls = []llm.ToolCall{{
 		ID:        toolID,
 		Name:      toolName,
@@ -197,6 +198,7 @@ func userCancelledSyntheticTool() (llm.ChatMessage, llm.ChatMessage, IterationTo
 	const content = "User cancelled this run with Ctrl+C. Treat the previous turn as interrupted. Do not continue unfinished actions unless the user asks to resume."
 
 	assistantMsg := llm.NewAssistantMessage("The user cancelled this run. I will record the interruption.")
+	assistantMsg.DisplayOnly = true
 	assistantMsg.ToolCalls = []llm.ToolCall{{
 		ID:        toolID,
 		Name:      toolName,

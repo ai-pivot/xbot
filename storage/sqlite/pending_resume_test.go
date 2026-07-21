@@ -173,4 +173,27 @@ func TestHasAssistantReplyAfterLastUser(t *testing.T) {
 	if hasReply {
 		t.Fatal("expected false: turn 2 has no assistant reply yet")
 	}
+
+	// display_only assistant (e.g. user_cancelled synthetic) should NOT count
+	// as a reply — this is the key fix for graceful shutdown resume.
+	cancelMsg := llm.ChatMessage{Role: "assistant", Content: "cancelled", Timestamp: time.Now()}
+	cancelMsg.DisplayOnly = true
+	sessionSvc.AddMessage(tenantID, cancelMsg)
+	hasReply, err = db.HasAssistantReplyAfterLastUser("web", "chat-1")
+	if err != nil {
+		t.Fatalf("HasAssistantReplyAfterLastUser after display_only: %v", err)
+	}
+	if hasReply {
+		t.Fatal("expected false: display_only assistant should not count as reply")
+	}
+
+	// real (non-display-only) assistant reply → should be true
+	sessionSvc.AddMessage(tenantID, llm.ChatMessage{Role: "assistant", Content: "real reply", Timestamp: time.Now()})
+	hasReply, err = db.HasAssistantReplyAfterLastUser("web", "chat-1")
+	if err != nil {
+		t.Fatalf("HasAssistantReplyAfterLastUser after real reply: %v", err)
+	}
+	if !hasReply {
+		t.Fatal("expected true: real assistant reply exists after last user")
+	}
 }

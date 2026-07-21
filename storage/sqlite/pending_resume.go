@@ -67,6 +67,7 @@ func (db *DB) HasAssistantReplyAfterLastUser(channel, chatID string) (bool, erro
 		JOIN tenants t ON sm.tenant_id = t.id
 		WHERE t.channel = ? AND t.chat_id = ?
 		  AND sm.role = 'assistant'
+		  AND COALESCE(sm.display_only, 0) = 0
 		  AND sm.id > (
 		    SELECT sm2.id FROM session_messages sm2
 		    JOIN tenants t2 ON sm2.tenant_id = t2.id
