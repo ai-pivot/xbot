@@ -95,8 +95,8 @@ describe('userSettings', () => {
     expect(store.has('max_context_tokens')).toBe(false)
 
     // Sync event dispatched.
-    const events = dispatchSpy.mock.calls.map((c) => c[0])
-    const syncEvent = events.find((e) => e instanceof CustomEvent && e.type === SETTINGS_SYNCED_EVENT)
+    const events = dispatchSpy.mock.calls.map((c: unknown[]) => c[0] as Event)
+    const syncEvent = events.find((e: Event) => e instanceof CustomEvent && e.type === SETTINGS_SYNCED_EVENT)
     expect(syncEvent).toBeDefined()
   })
 
@@ -140,8 +140,8 @@ describe('userSettings', () => {
 
     expect(postAPIMock).toHaveBeenCalledTimes(1)
     // No sync event dispatched.
-    const events = dispatchSpy.mock.calls.map((c) => c[0])
-    const syncEvent = events.find((e) => e instanceof CustomEvent && e.type === SETTINGS_SYNCED_EVENT)
+    const events = dispatchSpy.mock.calls.map((c: unknown[]) => c[0] as Event)
+    const syncEvent = events.find((e: Event) => e instanceof CustomEvent && e.type === SETTINGS_SYNCED_EVENT)
     expect(syncEvent).toBeUndefined()
   })
 })
