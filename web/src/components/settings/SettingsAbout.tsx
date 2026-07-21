@@ -59,7 +59,7 @@ export function SettingsAbout() {
           </div>
         )}
 
-        {/* Install button */}
+        {/* Install button (Chrome/Edge) */}
         {!isInstalled && canInstall && (
           <Button type="button" variant="default" onClick={() => install()} className="w-fit gap-2">
             <Download className="size-4" />
@@ -67,8 +67,24 @@ export function SettingsAbout() {
           </Button>
         )}
 
-        {/* Not installable — show diagnostics */}
-        {!isInstalled && !canInstall && (
+        {/* Safari / iOS — manual install instructions */}
+        {!isInstalled && !canInstall && diagnostics?.isSafari && (
+          <div className="flex flex-col gap-2 rounded-md bg-bg-tertiary px-3 py-3 text-xs">
+            <div className="flex items-start gap-2">
+              <Download className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--status-running)' }} />
+              <div className="flex flex-col gap-1 text-text-secondary">
+                <span className="font-medium text-text-primary">添加到主屏幕</span>
+                <span>Safari 不支持自动安装，请按以下步骤操作：</span>
+                <span>1. 点击底部「分享」按钮 (方框+向上箭头)</span>
+                <span>2. 滚动选择「添加到主屏幕」</span>
+                <span>3. 点击「添加」完成安装</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Not installable (non-Safari) — show diagnostics */}
+        {!isInstalled && !canInstall && !(diagnostics?.isSafari) && (
           <div className="flex flex-col gap-3 rounded-md bg-bg-tertiary px-3 py-3 text-xs">
             <div className="flex items-start gap-2">
               <AlertCircle className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--status-error)' }} />
@@ -92,7 +108,9 @@ export function SettingsAbout() {
                 <DiagRow label={`192x192 图标`} ok={diagnostics.has192Icon} />
                 <DiagRow label={`512x512 图标`} ok={diagnostics.has512Icon} />
                 <DiagRow label={`图标总数: ${diagnostics.iconCount}`} ok={diagnostics.iconCount >= 2} />
-                <DiagRow label="beforeinstallprompt 事件" ok={false} />
+                {!diagnostics.isSafari && (
+                  <DiagRow label="beforeinstallprompt 事件" ok={canInstall} />
+                )}
                 {diagnostics.swUrl && (
                   <p className="text-text-muted">SW: {diagnostics.swUrl.split('/').pop()}</p>
                 )}

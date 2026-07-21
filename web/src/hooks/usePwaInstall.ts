@@ -25,6 +25,8 @@ interface PwaDiagnostics {
   isHttps: boolean
   isStandalone: boolean
   browserName: string
+  isSafari: boolean
+  isIOS: boolean
 }
 
 export function usePwaInstall() {
@@ -42,10 +44,12 @@ export function usePwaInstall() {
     let cancelled = false
     async function collect() {
       const ua = navigator.userAgent
+      const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+      const isSafari = /^((?!chrome|android|crios|fxios).)*safari/i.test(ua)
       let browserName = 'Unknown'
       if (/Chrome\/(\d+)/.test(ua) && !/Edg|OPR/.test(ua)) browserName = `Chrome ${RegExp.$1}`
       else if (/Edg\/(\d+)/.test(ua)) browserName = `Edge ${RegExp.$1}`
-      else if (/Safari\/(\d+)/.test(ua) && !/Chrome/.test(ua)) browserName = `Safari`
+      else if (isSafari) browserName = isIOS ? 'Safari (iOS)' : 'Safari'
       else if (/Firefox\/(\d+)/.test(ua)) browserName = `Firefox ${RegExp.$1}`
 
       const reg = await navigator.serviceWorker?.getRegistration?.('/').catch(() => null)
@@ -69,6 +73,8 @@ export function usePwaInstall() {
           isHttps: location.protocol === 'https:' || location.hostname === 'localhost',
           isStandalone: window.matchMedia('(display-mode: standalone)').matches,
           browserName,
+          isSafari,
+          isIOS,
         })
       }
     }

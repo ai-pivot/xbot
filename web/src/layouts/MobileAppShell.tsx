@@ -120,7 +120,7 @@ export function MobileAppShell() {
     <DockviewContext.Provider value={ctxValue}>
       <RightSidebarControlContext.Provider value={rightSidebar}>
         <div className="flex h-dvh w-full flex-col overflow-hidden bg-bg-primary text-text-primary">
-          <header className="flex h-12 shrink-0 items-center gap-1 border-b border-border px-2">
+          <header className="flex shrink-0 items-center gap-1 border-b border-border px-2" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(3rem + var(--safe-area-top))' }}>
             <Button type="button" variant="ghost" size="icon-sm" aria-label={t('sidebar.sessions')} onClick={() => setDrawerOpen(true)}>
               <Menu />
             </Button>
@@ -138,7 +138,7 @@ export function MobileAppShell() {
               <AgentPanel {...mobilePanelProps} />
             ) : view === 'terminal' && activeTerminalId ? (
               <div className="flex h-full flex-col">
-                <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-2">
+                <div className="flex shrink-0 items-center gap-2 border-b border-border px-2" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(2.5rem + var(--safe-area-top))' }}>
                   <Button
                     type="button"
                     variant="ghost"
@@ -166,7 +166,7 @@ export function MobileAppShell() {
             )}
           </main>
 
-          <nav className="grid h-14 shrink-0 grid-cols-2 border-t border-border bg-bg-secondary">
+          <nav className="grid shrink-0 grid-cols-2 border-t border-border bg-bg-secondary" style={{ paddingBottom: 'var(--safe-area-bottom)', height: 'calc(3.5rem + var(--safe-area-bottom))' }}>
             <button
               type="button"
               className="flex flex-col items-center justify-center gap-0.5 text-xs"
@@ -217,7 +217,7 @@ function MobileDetail({
   const { t } = useI18n()
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
+      <div className="flex shrink-0 items-center gap-1 border-b border-border px-2" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(2.5rem + var(--safe-area-top))' }}>
         {PANEL_BUTTONS.map(({ panel, icon: Icon, labelKey }) => (
           <Button
             key={panel}
