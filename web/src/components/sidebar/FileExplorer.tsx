@@ -7,12 +7,13 @@
  *
  * Includes a path bar at the top to navigate to any directory on the server.
  */
-import { useCallback, useEffect, useState } from 'react'
-import { ChevronRight, ChevronDown, FolderOpen, Loader2, RotateCcw } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronRight, ChevronDown, FolderOpen, FolderUp, Loader2, RotateCcw, Search, X } from 'lucide-react'
 
 import { useI18n } from '@/providers/i18n'
 import { useCwd } from '@/providers/CwdProvider'
 import { useFileTree } from '@/hooks/useFileTree'
+import { insertIntoChat } from '@/lib/chatInputBridge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   ContextMenu,
@@ -36,8 +37,12 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
   // browseRoot: null means "follow session CWD". Non-null means user navigated
   // to a custom path via the path bar.
   const [browseRoot, setBrowseRoot] = useState<string | null>(null)
-  const { tree, loading, error, expandDir, expandingPath } = useFileTree(browseRoot)
+  const { tree, flatFiles, loading, error, expandDir, expandingPath } = useFileTree(browseRoot)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  // Inline file-name filter (toggled from the path bar search icon).
+  const [searchMode, setSearchMode] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   // Reset expanded set when browse root changes
   useEffect(() => {
@@ -105,6 +110,30 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
   }, [])
 
   const displayPath = browseRoot ?? cwd ?? ''
+  const canGoUp = parentPath(displayPath) !== displayPath
+
+  // Temporarily browse the parent directory (display-only — does NOT change
+  // the session CWD). browseRoot is separate from the session cwd.
+  const handleGoUp = useCallback(() => {
+    const parent = parentPath(displayPath)
+    if (parent === displayPath) return // already at filesystem root
+    invalidateFsCache()
+    setBrowseRoot(parent)
+  }, [displayPath])
+
+  // Filter the flattened file tree by name/path (case-insensitive substring).
+  const filteredFiles = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return []
+    return flatFiles.filter(
+      (f) => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q),
+    )
+  }, [searchQuery, flatFiles])
+
+  const exitSearch = useCallback(() => {
+    setSearchQuery('')
+    setSearchMode(false)
+  }, [])
 
   return (
     <div className="flex h-full flex-col">
@@ -113,10 +142,66 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
         path={displayPath}
         onNavigate={handleNavigate}
         onReset={browseRoot !== null ? handleReset : undefined}
+        onToggleSearch={() => setSearchMode((v) => !v)}
+        searchActive={searchMode}
       />
 
-      {/* File tree */}
-      {loading && tree.length === 0 ? (
+      {/* Inline file-name filter */}
+      {searchMode && (
+        <div className="relative shrink-0 border-b px-2 py-1.5" style={{ borderColor: 'var(--border)' }}>
+          <Search className="pointer-events-none absolute left-4 top-1/2 size-3 -translate-y-1/2 text-text-muted" />
+          <input
+            ref={searchInputRef}
+            value={searchQuery}
+            spellCheck={false}
+            autoComplete="off"
+            autoFocus
+            placeholder={t('sidebar.filterPlaceholder')}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') exitSearch()
+            }}
+            className="min-w-0 w-full bg-transparent pl-6 pr-6 text-xs outline-none"
+            style={{ color: 'var(--text-primary)' }}
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              aria-label={t('common.close')}
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary"
+            >
+              <X className="size-3" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* File tree / filtered results */}
+      {searchMode && searchQuery.trim() ? (
+        <ScrollArea className="min-h-0 flex-1">
+          <ul className="py-1 text-sm">
+            {filteredFiles.map((node) => (
+              <li key={node.path}>
+                <button
+                  type="button"
+                  onClick={() => openFile(node)}
+                  className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-bg-tertiary"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <FileNodeIcon node={node} className="size-3.5 shrink-0 text-text-secondary" />
+                    <span className="truncate text-text-primary">{node.name}</span>
+                  </span>
+                  <span className="truncate pl-5 text-[11px] text-text-muted">{node.path}</span>
+                </button>
+              </li>
+            ))}
+            {filteredFiles.length === 0 && (
+              <div className="px-3 py-6 text-center text-xs text-text-muted">{t('sidebar.noResults')}</div>
+            )}
+          </ul>
+        </ScrollArea>
+      ) : loading && tree.length === 0 ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-text-secondary">
           <Loader2 className="size-4 animate-spin" />
           <span className="text-sm">{t('sidebar.loadingFiles')}</span>
@@ -129,6 +214,21 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
       ) : (
         <ScrollArea className="min-h-0 flex-1">
           <div className="py-1 text-sm">
+            {canGoUp && (
+              <button
+                type="button"
+                onClick={handleGoUp}
+                title={t('sidebar.goUp')}
+                className="flex w-full items-center gap-1 py-[3px] pr-2 text-left transition-colors hover:bg-bg-tertiary"
+                style={{ paddingLeft: 4 }}
+              >
+                <span className="flex size-4 shrink-0 items-center justify-center text-text-muted">
+                  <ChevronRight className="size-3.5" />
+                </span>
+                <FolderUp className="size-4 shrink-0 text-text-secondary" />
+                <span className="truncate text-text-secondary">..</span>
+              </button>
+            )}
             {tree.map((node) => (
               <FileTreeNode
                 key={node.path}
@@ -156,9 +256,11 @@ interface PathBarProps {
   path: string
   onNavigate: (path: string) => void
   onReset?: (() => void) | undefined
+  onToggleSearch?: (() => void) | undefined
+  searchActive?: boolean
 }
 
-function PathBar({ path, onNavigate, onReset }: PathBarProps) {
+function PathBar({ path, onNavigate, onReset, onToggleSearch, searchActive }: PathBarProps) {
   const { t } = useI18n()
   const [value, setValue] = useState(path)
 
@@ -187,6 +289,19 @@ function PathBar({ path, onNavigate, onReset }: PathBarProps) {
         className="min-w-0 flex-1 bg-transparent text-xs font-mono outline-none"
         style={{ color: 'var(--text-primary)' }}
       />
+      {onToggleSearch && (
+        <button
+          type="button"
+          aria-label={t('sidebar.search')}
+          title={t('sidebar.search')}
+          aria-pressed={searchActive}
+          onClick={onToggleSearch}
+          className="flex size-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-bg-tertiary"
+          style={{ color: searchActive ? 'var(--accent)' : 'var(--text-secondary)' }}
+        >
+          <Search className="size-3" />
+        </button>
+      )}
       {onReset && (
         <button
           type="button"
@@ -256,6 +371,9 @@ function FileTreeNode({ node, depth, expanded, onToggleDir, onOpenFile, expandin
         <ContextMenuContent>
           <ContextMenuItem onSelect={() => onOpenFile(node)}>
             {t('sidebar.openInTab')}
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => insertIntoChat(`@${node.path}`)}>
+            {t('sidebar.addToChat')}
           </ContextMenuItem>
           <ContextMenuItem
             onSelect={() => {

@@ -23,6 +23,7 @@ import { useWSConnection } from '@/hooks/useWSConnection'
 import { useSendKeyMode, isSendKey } from '@/hooks/useSendKeyMode'
 import type { Attachments } from '@/hooks/useChatMessages'
 import { cn } from '@/lib/utils'
+import { setChatInsertHandler } from '@/lib/chatInputBridge'
 import { TodoPullOut } from './TodoPullOut'
 import { CompletionPopup } from './CompletionPopup'
 import { useCompletion } from '@/hooks/useCompletion'
@@ -103,6 +104,29 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`
   }, [])
+
+  // Bridge: let the file explorer inject a file path into this input.
+  // Appends the text on a new line (if non-empty) and focuses the textarea.
+  useEffect(() => {
+    const insertHandler = (text: string) => {
+      setValue((prev) => {
+        if (!prev) return text
+        return prev.endsWith('\n') ? prev + text : prev + '\n' + text
+      })
+      scheduleTextareaResize(() => {
+        resize()
+        const el = textareaRef.current
+        if (el) {
+          el.focus()
+          // Move caret to end so the user can keep typing.
+          const len = el.value.length
+          el.setSelectionRange(len, len)
+        }
+      })
+    }
+    setChatInsertHandler(insertHandler)
+    return () => setChatInsertHandler(null)
+  }, [resize])
 
   useEffect(() => {
     if (draft === undefined) return
