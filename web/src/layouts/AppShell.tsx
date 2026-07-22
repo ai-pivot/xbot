@@ -10,21 +10,27 @@
  * file browser / search / info / tasks panels, each switchable via its
  * own RightActivityBar (Spec 6).
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 
 import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
-import { SettingsDialog } from '@/components/settings/SettingsDialog'
-import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabManager } from '@/hooks/useTabManager'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
+
+// Lazy-load heavy components not on the critical render path.
+// DockviewContainer pulls in dockview core + all panel components;
+// SettingsDialog is only needed when the user opens settings.
+const DockviewContainer = lazy(() =>
+  import('@/workspace/DockviewContainer').then(m => ({ default: m.DockviewContainer })))
+const SettingsDialog = lazy(() =>
+  import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
 
 const MIN_LEFT_WIDTH = 200
 const MAX_LEFT_WIDTH = 460
@@ -149,7 +155,9 @@ export function AppShell() {
       <RightSidebarControlContext.Provider value={{ openPanel }}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="h-full min-w-0 flex-1">
-          <DockviewContainer tabManager={tabManager} />
+          <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-text-muted">Loading…</div>}>
+            <DockviewContainer tabManager={tabManager} />
+          </Suspense>
         </main>
       </RightSidebarControlContext.Provider>
 
@@ -163,13 +171,15 @@ export function AppShell() {
       <RightActivityBar activePanel={activePanel} onTogglePanel={togglePanel} />
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
-      <SettingsDialog
-        open={settingsOpen}
-        onOpenChange={(open) => {
-          setSettingsOpen(open)
-          if (!open) setSettingsVersion((v) => v + 1)
-        }}
-      />
+      <Suspense fallback={null}>
+        <SettingsDialog
+          open={settingsOpen}
+          onOpenChange={(open) => {
+            setSettingsOpen(open)
+            if (!open) setSettingsVersion((v) => v + 1)
+          }}
+        />
+      </Suspense>
     </div>
   )
 }

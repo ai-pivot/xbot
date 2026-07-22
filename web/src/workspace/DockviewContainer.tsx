@@ -17,15 +17,7 @@
  * `DockviewContext` (aggregating Theme, I18n, WS, Cwd, Auth, SessionStore)
  * so panels read from one typed source via `useDockviewContext()`.
  */
-import {
-  createElement,
-  Suspense,
-  useEffect,
-  useMemo,
-  useRef,
-  type ReactElement,
-  type RefObject,
-} from 'react'
+import { lazy, Suspense, createElement, useEffect, useMemo, useRef, type ReactElement, type RefObject } from 'react'
 import {
   DockviewComponent,
   themeVisualStudio,
@@ -41,8 +33,13 @@ import { createRoot, type Root } from 'react-dom/client'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
 import { BackgroundPanel } from '@/workspace/panels/BackgroundPanel'
-import { FilePanel } from '@/workspace/panels/FilePanel'
-import { TerminalPanel } from '@/workspace/panels/TerminalPanel'
+// Lazy-load heavy panels: FilePanel pulls in Monaco editor (~3-5MB),
+// TerminalPanel pulls in xterm + addons (~200KB). Neither is needed
+// for the initial Agent tab render.
+const FilePanel = lazy(() =>
+  import('@/workspace/panels/FilePanel').then(m => ({ default: m.FilePanel })))
+const TerminalPanel = lazy(() =>
+  import('@/workspace/panels/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
 import { TabHeader } from '@/workspace/TabHeader'
 import {
   DockviewContext,

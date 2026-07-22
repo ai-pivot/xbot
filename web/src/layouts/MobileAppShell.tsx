@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { lazy, Suspense, useMemo, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal } from 'lucide-react'
 
@@ -8,9 +8,11 @@ import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
-import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
+
+const SettingsDialog = lazy(() =>
+  import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { DockviewContext, type DockviewContextValue } from '@/workspace/types'
@@ -196,7 +198,9 @@ export function MobileAppShell() {
             </SheetContent>
           </Sheet>
 
-          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+          <Suspense fallback={null}>
+            <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+          </Suspense>
         </div>
       </RightSidebarControlContext.Provider>
     </DockviewContext.Provider>
