@@ -36,6 +36,54 @@ func (s *TenantSession) AddMessage(msg llm.ChatMessage) error {
 	return s.sessionSvc.AddMessage(s.tenantID, msg)
 }
 
+// AppendMessage appends a message and returns its stable history ID.
+func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AppendMessage(s.tenantID, msg)
+}
+
+// AppendMessages atomically appends a related message batch.
+func (s *TenantSession) AppendMessages(messages []llm.ChatMessage) ([]int64, error) {
+	return s.sessionSvc.AppendMessages(s.tenantID, messages)
+}
+
+// AppendMessagesAndAskQuestion atomically appends an AskUser tool exchange and
+// the control record that makes the question pending across restarts.
+func (s *TenantSession) AppendMessagesAndAskQuestion(messages []llm.ChatMessage, metadata map[string]string) ([]int64, int64, error) {
+	return s.sessionSvc.AppendMessagesAndAskQuestion(s.tenantID, messages, metadata)
+}
+
+func (s *TenantSession) AppendControl(recordType sqlite.HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
+	return s.sessionSvc.AppendControl(s.tenantID, recordType, targetHistoryID, data)
+}
+
+func (s *TenantSession) AppendContextSnapshot(recordType sqlite.HistoryRecordType, messages []llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AppendContextSnapshot(s.tenantID, recordType, messages)
+}
+
+func (s *TenantSession) AppendAskQuestion(metadata map[string]string) (int64, error) {
+	return s.sessionSvc.AppendAskQuestion(s.tenantID, metadata)
+}
+
+func (s *TenantSession) AppendAskAnswer(answer string) (int64, error) {
+	return s.sessionSvc.AppendAskAnswer(s.tenantID, answer)
+}
+
+func (s *TenantSession) AppendMasks(mutations []sqlite.MaskMutation) error {
+	return s.sessionSvc.AppendMasks(s.tenantID, mutations)
+}
+
+func (s *TenantSession) Replay() (*sqlite.ReplayResult, error) {
+	return s.sessionSvc.Replay(s.tenantID)
+}
+
+func (s *TenantSession) GetFullHistory() ([]sqlite.HistoryRecord, error) {
+	return s.sessionSvc.GetFullHistory(s.tenantID)
+}
+
+func (s *TenantSession) RewindToHistoryID(historyID int64) (llm.ChatMessage, int, error) {
+	return s.sessionSvc.RewindToHistoryID(s.tenantID, historyID)
+}
+
 // ReplaceToolMessage updates the most recent matching tool-role message.
 // Empty toolName/toolCallID act as wildcards (match any).
 func (s *TenantSession) ReplaceToolMessage(toolName, toolCallID, content string) error {

@@ -150,6 +150,25 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 // CreateChat creates a new chatroom for a user. Returns the new chatID.
 func (s *ChatService) CreateChat(channel, senderID, label string) (string, error) {
 	conn := s.db.Conn()
+	userID, err := canonicalUserID(conn, channel, senderID)
+	if err != nil {
+		return "", fmt.Errorf("resolve chat owner: %w", err)
+	}
+	return s.createChat(channel, senderID, label, userID)
+}
+
+// CreateChatOwned creates a chat using the canonical identity resolved at the
+// authenticated channel boundary. This is required when a linked identity uses
+// Web transport with a non-Web sender ID.
+func (s *ChatService) CreateChatOwned(channel, senderID, label string, canonicalUserID int64) (string, error) {
+	if canonicalUserID <= 0 {
+		return s.CreateChat(channel, senderID, label)
+	}
+	return s.createChat(channel, senderID, label, canonicalUserID)
+}
+
+func (s *ChatService) createChat(channel, senderID, label string, userID int64) (string, error) {
+	conn := s.db.Conn()
 
 	// Generate a unique chat ID
 	var chatID string
@@ -185,11 +204,7 @@ func (s *ChatService) CreateChat(channel, senderID, label string) (string, error
 		}
 	}
 
-	userID, err := canonicalUserID(conn, channel, senderID)
-	if err != nil {
-		return "", fmt.Errorf("resolve chat owner: %w", err)
-	}
-	_, err = conn.Exec(
+	_, err := conn.Exec(
 		"INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id) VALUES (?, ?, ?, ?, ?)",
 		channel, senderID, chatID, label, userID,
 	)

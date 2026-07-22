@@ -19,6 +19,9 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		m.savePendingAskUser(msg.ChatID, msg.Metadata)
 	}
 
+	matchesCurrentSession := msg.Channel == "" || msg.ChatID == "" ||
+		(msg.Channel == m.channelName && msg.ChatID == m.chatID)
+
 	// suLoading guard: during session switch in remote mode, the history
 	// RPC is in-flight. handleSuHistoryLoad will load all messages from DB
 	// (including this reply). Without this guard, handleAgentMessage appends
@@ -27,6 +30,9 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 	// because time.Now() ≠ DB timestamp, producing duplicate messages in
 	// m.messages that survive fullRebuild (symptom: entire chat block repeated).
 	if m.splashState.suLoading {
+		if matchesCurrentSession {
+			m.historyMutationGeneration++
+		}
 		log.WithFields(log.Fields{
 			"msg_chatid":   msg.ChatID,
 			"waiting_user": msg.WaitingUser,
@@ -59,6 +65,7 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 			"content_len":    len(msg.Content),
 		}).Error("handleAgentMessage: ChatID empty — filter bypassed, risk of cross-session contamination")
 	}
+	m.historyMutationGeneration++
 
 	turnID := m.agentTurnID // capture at entry for stale-signal guard
 	content := msg.Content

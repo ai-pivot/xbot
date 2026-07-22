@@ -21,6 +21,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
+import { RawToolCalls } from './ToolMessage'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
@@ -78,6 +79,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     ? message.content
     : ''
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
+  const rawToolCalls = iterations.length === 0 ? (message.toolCalls ?? []) : []
 
   // 'all' level + committed: fold all intermediate content (iterations' thinking/O),
   // show only the last TEXT output. Last TEXT = message.content, or fall back to
@@ -110,12 +112,13 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
             <TurnBody iterations={iterations} level="minimal" mergeTools={mergeTools} />
           </FoldedLine>
         )}
+        {rawToolCalls.length > 0 ? <RawToolCalls calls={rawToolCalls} /> : null}
         {lastText ? (
           <MarkdownRenderer content={lastText} />
         ) : emptyResponseWarning ? (
           <LLMEmptyResponseWarning text={emptyResponseWarning} />
         ) : (
-          !showSummary && (
+          !showSummary && rawToolCalls.length === 0 && (
             <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
           )
         )}
@@ -141,6 +144,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
         level={effectiveLevel}
         mergeTools={mergeTools}
       />
+      {rawToolCalls.length > 0 ? <RawToolCalls calls={rawToolCalls} /> : null}
       {/* Final O: for committed messages, render message.content after iterations.
           For streaming, the streamContent is already in LiveIteration. */}
       {!isStreaming && finalContent && (
@@ -149,7 +153,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       {!isStreaming && emptyResponseWarning && (
         <LLMEmptyResponseWarning text={emptyResponseWarning} />
       )}
-      {!isStreaming && !finalContent && !emptyResponseWarning && iterations.length === 0 && !showProgress(progress) && (
+      {!isStreaming && !finalContent && !emptyResponseWarning && iterations.length === 0 && rawToolCalls.length === 0 && !showProgress(progress) && (
         <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
       )}
       {message.displayOnly && (

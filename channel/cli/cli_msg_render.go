@@ -11,6 +11,9 @@ import (
 )
 
 func (m *cliModel) renderMessage(msg *cliMessage) string {
+	if msg.hidden {
+		return ""
+	}
 	// §20 使用缓存样式
 	s := &m.styles
 	var sb strings.Builder
@@ -103,6 +106,26 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 			userLines[i] = strings.TrimRight(rl, " \t")
 		}
 		sb.WriteString(strings.Join(userLines, "\n"))
+	case "tool":
+		toolName := ""
+		if len(msg.tools) > 0 {
+			toolName = oneLineToolLabel(msg.tools[0].Name)
+		}
+		label := "Tool result"
+		if toolName != "" {
+			label += " · " + toolName
+		}
+		fmt.Fprintf(&sb, "%s %s", timeStr, s.ToolHeader.Render(label))
+		if body := strings.TrimSpace(rendered); body != "" {
+			bodyStyle := s.ToolHint
+			if isErrorContent(body) {
+				bodyStyle = s.ProgressError
+			}
+			for _, line := range strings.Split(body, "\n") {
+				sb.WriteString("\n  ")
+				sb.WriteString(bodyStyle.Render(line))
+			}
+		}
 	default:
 		// assistant 消息 — crush 风格：先构建内容体，再逐行加 guide 前缀
 		// Streaming: bright guide; Completed: dim guide
@@ -133,7 +156,7 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		// use renderTurnBody instead of separate thinking box + content.
 		// For streaming (isPartial) messages during busy state, also include
 		// live iteration data from m.progressState.iterations + m.progressState.current.
-		hasIterData := len(msg.iterations) > 0
+		hasIterData := len(msg.iterations) > 0 || len(msg.tools) > 0
 		isLiveTurn := msg.isPartial && m.typing && (len(m.progressState.iterations) > 0 || m.progressState.current != nil)
 		if hasIterData || isLiveTurn {
 			var iterations []cliIterationSnapshot
@@ -145,6 +168,18 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 				fallbackContent = msg.content
 			} else {
 				iterations = msg.iterations
+				if len(msg.tools) > 0 {
+					hasIterationTools := false
+					for _, iteration := range iterations {
+						if len(iteration.Tools) > 0 {
+							hasIterationTools = true
+							break
+						}
+					}
+					if !hasIterationTools {
+						iterations = append(append([]cliIterationSnapshot(nil), iterations...), cliIterationSnapshot{Tools: msg.tools})
+					}
+				}
 				fallbackContent = msg.content
 			}
 			bodyContent := m.renderTurnBody(iterations, liveProgress, contentWidth, fallbackContent)

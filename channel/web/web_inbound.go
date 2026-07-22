@@ -80,12 +80,19 @@ func (wc *WebChannel) inboundIdentityFromRequest(r *http.Request) inboundIdentit
 	if identity.SenderName == "" {
 		identity.SenderName = identity.SenderID
 	}
-	if wc.callbacks.IdentityResolver != nil {
+	if userID, role, ok := canonicalIdentityFromContext(r.Context()); ok {
+		identity.CanonicalUserID = userID
+		identity.CanonicalRole = role
+	} else if wc.callbacks.IdentityResolver != nil {
 		resolveChannel := "web"
 		if identity.FeishuUserID != "" {
 			resolveChannel = "feishu"
 		}
-		identity.CanonicalUserID, identity.CanonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, identity.SenderID)
+		resolveID := identity.SenderID
+		if identity.FeishuUserID != "" {
+			resolveID = identity.FeishuUserID
+		}
+		identity.CanonicalUserID, identity.CanonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, resolveID)
 	}
 	// In single-user mode, all users share one identity and are treated as admin.
 	if wc.singleUser {
@@ -99,7 +106,22 @@ func (wc *WebChannel) resolveInboundSession(ctx context.Context, identity inboun
 	if channelName != "" && chatID != "" {
 		sel = SessionSelector{Channel: channelName, ChatID: chatID}
 	}
-	if !identity.IsCLI && !wc.canAccessSession(ctx, identity.WebUserID, identity.SenderID, sel.Channel, sel.ChatID) {
+	access := sessionAccessIdentity{
+		senderID:        identity.SenderID,
+		webUserID:       identity.WebUserID,
+		canonicalUserID: identity.CanonicalUserID,
+		canonicalRole:   identity.CanonicalRole,
+	}
+	if identity.IsCLI && sel.Channel == "cli" {
+		if _, agentShaped := parseWebAgentTenantChatID(sel.ChatID); agentShaped {
+			return SessionSelector{}, fmt.Errorf("access denied")
+		}
+	}
+	allowed := wc.canAccessSessionAs(access, sel.Channel, sel.ChatID)
+	if !allowed && identity.IsCLI && sel.Channel == "cli" {
+		allowed = wc.claimCLIClientSession(sel.ChatID, identity.CanonicalUserID)
+	}
+	if !allowed {
 		return SessionSelector{}, fmt.Errorf("access denied")
 	}
 	return sel, nil

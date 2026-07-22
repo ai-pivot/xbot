@@ -682,25 +682,7 @@ func (m *cliModel) executeRewind() (bool, tea.Model, tea.Cmd) {
 	if m.rewindCursor >= len(m.rewindItems) {
 		return true, m, nil
 	}
-	item := m.rewindItems[m.rewindCursor]
-	// Truncate local messages — same as panel rewind path (cli_panel.go).
-	cutIdx := item.MsgIndex
-	m.messages = m.messages[:cutIdx]
-	// Truncate DB messages (synchronous).
-	if m.trimHistoryFn != nil {
-		if err := m.trimHistoryFn(item.Time); err != nil {
-			m.showSystemMsg(fmt.Sprintf("❌ Rewind failed: %v", err), feedbackError)
-		} else {
-			if m.resetTokenStateFn != nil {
-				m.resetTokenStateFn()
-			}
-			m.showSystemMsg("✅ Rewound to selected point", feedbackInfo)
-		}
-	}
-	m.rewindMode = false
-	m.rewindResult = nil
-	m.invalidateAllCache(true)
-	return true, m, nil
+	return true, m, m.applyRewind()
 }
 
 // --- Approval click handler ---

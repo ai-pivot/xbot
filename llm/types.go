@@ -18,6 +18,7 @@ var (
 
 // ChatMessage 业务层定义的消息类型，与具体 LLM 实现解耦
 type ChatMessage struct {
+	HistoryID        int64      `json:"-"`    // stable append-only history node; never sent to the LLM
 	Role             string     `json:"role"` // "system", "user", "assistant", "tool"
 	Content          string     `json:"content"`
 	ReasoningContent string     `json:"reasoning_content,omitempty"` // DeepSeek/OpenAI reasoning 模型的思维链内容

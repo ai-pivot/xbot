@@ -21,6 +21,9 @@ type ChannelCliChannel struct {
 	eventCh      chan<- protocol.WSMessage
 	tuiPendingMu sync.Mutex
 	tuiPending   map[string]chan *protocol.TUIControlPayload
+	reliableMu   sync.Mutex
+	stopCh       chan struct{}
+	stopped      bool
 }
 
 // NewChannelCliChannel creates a ChannelCliChannel that writes to the given event channel.
@@ -28,14 +31,22 @@ func NewChannelCliChannel(eventCh chan<- protocol.WSMessage) *ChannelCliChannel 
 	return &ChannelCliChannel{
 		eventCh:    eventCh,
 		tuiPending: make(map[string]chan *protocol.TUIControlPayload),
+		stopCh:     make(chan struct{}),
 	}
 }
 
 // Channel interface
 
-func (c *ChannelCliChannel) Name() string                            { return "cli" }
-func (c *ChannelCliChannel) Start() error                            { return nil }
-func (c *ChannelCliChannel) Stop()                                   {}
+func (c *ChannelCliChannel) Name() string { return "cli" }
+func (c *ChannelCliChannel) Start() error { return nil }
+func (c *ChannelCliChannel) Stop() {
+	c.reliableMu.Lock()
+	if !c.stopped {
+		c.stopped = true
+		close(c.stopCh)
+	}
+	c.reliableMu.Unlock()
+}
 func (c *ChannelCliChannel) SetChatID(string)                        {}
 func (c *ChannelCliChannel) SetSendInboundFn(func(InboundMsg) error) {}
 
@@ -58,8 +69,38 @@ func (c *ChannelCliChannel) sendMsgBestEffort(msg protocol.WSMessage) {
 	}
 }
 
+// sendMsgReliable waits until a destructive state event is queued or the
+// channel stops. Returning only after enqueue preserves reset ordering across
+// the rewind operation gate.
+func (c *ChannelCliChannel) sendMsgReliable(msg protocol.WSMessage) bool {
+	c.reliableMu.Lock()
+	if c.stopped {
+		c.reliableMu.Unlock()
+		return false
+	}
+	c.reliableMu.Unlock()
+	select {
+	case c.eventCh <- msg:
+		return true
+	case <-c.stopCh:
+		return false
+	}
+}
+
+func isDestructiveCLIMessage(msg protocol.WSMessage) bool {
+	if msg.SessionReset || msg.Metadata != nil && msg.Metadata["session_reset"] == "true" {
+		return true
+	}
+	return msg.Type == protocol.MsgTypeSession && msg.Session != nil && msg.Session.Action == "history_rewound"
+}
+
 func (c *ChannelCliChannel) Send(msg OutboundMsg) (string, error) {
-	if err := c.sendMsg(CliMsg.BuildTextMsg(msg)); err != nil {
+	textMsg := CliMsg.BuildTextMsg(msg)
+	if isDestructiveCLIMessage(textMsg) {
+		if !c.sendMsgReliable(textMsg) {
+			return "", fmt.Errorf("channel cli: stopped")
+		}
+	} else if err := c.sendMsg(textMsg); err != nil {
 		return "", err
 	}
 	if askMsg := CliMsg.BuildAskUserMsg(msg); askMsg != nil {
@@ -77,7 +118,12 @@ func (c *ChannelCliChannel) SendProgress(chatID string, payload *protocol.Progre
 }
 
 func (c *ChannelCliChannel) SendSessionState(ev protocol.SessionEvent) {
-	c.sendMsgBestEffort(CliMsg.BuildSessionStateMsg(ev))
+	msg := CliMsg.BuildSessionStateMsg(ev)
+	if isDestructiveCLIMessage(msg) {
+		c.sendMsgReliable(msg)
+		return
+	}
+	c.sendMsgBestEffort(msg)
 }
 
 func (c *ChannelCliChannel) SendToast(msg string) {

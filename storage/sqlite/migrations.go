@@ -252,6 +252,14 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v47: make session_messages an append-only history log. Existing rows are
+	// the migration baseline and remain ordinary message records.
+	if from < 47 {
+		if err := migrateV46ToV47(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v47: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1874,5 +1882,35 @@ func migrateV45ToV46(conn *sql.DB) error {
 	}
 
 	log.Info("Database migrated to v46: re-backfill user_id for rows added after v45")
+	return nil
+}
+
+func migrateV46ToV47(conn *sql.DB) error {
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{"record_type", "ALTER TABLE session_messages ADD COLUMN record_type TEXT NOT NULL DEFAULT 'message'"},
+		{"target_history_id", "ALTER TABLE session_messages ADD COLUMN target_history_id INTEGER"},
+		{"record_data", "ALTER TABLE session_messages ADD COLUMN record_data TEXT"},
+	}
+	for _, column := range columns {
+		exists, err := columnExists(conn, "session_messages", column.name)
+		if err != nil {
+			return fmt.Errorf("check session_messages.%s: %w", column.name, err)
+		}
+		if !exists {
+			if _, err := conn.Exec(column.ddl); err != nil {
+				return fmt.Errorf("add session_messages.%s: %w", column.name, err)
+			}
+		}
+	}
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_session_messages_tenant_history ON session_messages(tenant_id, id)`); err != nil {
+		return fmt.Errorf("create history index: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 47"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v47: append-only session history records")
 	return nil
 }

@@ -1742,3 +1742,75 @@ func TestSuHistoryLoad_SameTurnMergeStillWorks(t *testing.T) {
 			len(m.messages), m.messages)
 	}
 }
+
+func TestSuHistoryLoad_DoesNotMergeAcrossCompressionMarker(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+	m.splashState.suLoading = true
+
+	now := time.Now()
+	_ = m.handleSuHistoryLoad(suHistoryLoadMsg{
+		channelName: "cli",
+		chatID:      "/test",
+		activeProgress: &protocol.ProgressEvent{
+			ChatID:    "cli:/test",
+			Phase:     "executing",
+			Iteration: 2,
+		},
+		history: []channel.HistoryMessage{
+			{HistoryID: 10, RecordType: "message", Role: "assistant", Content: "original reply", Timestamp: now},
+			{HistoryID: 11, RecordType: "compress", Role: "system", Content: "[Compacted context]", Timestamp: now.Add(time.Second)},
+		},
+	})
+
+	if len(m.messages) != 3 {
+		t.Fatalf("expected original, marker, and streaming slot; got %+v", m.messages)
+	}
+	if got := m.messages[0]; got.content != "original reply" || got.isPartial {
+		t.Fatalf("original assistant was merged across compression marker: %+v", got)
+	}
+	if got := m.messages[1]; got.recordType != "compress" || got.historyID != 11 {
+		t.Fatalf("compression marker moved or changed: %+v", got)
+	}
+	if m.streamingMsgIdx != 2 {
+		t.Fatalf("streamingMsgIdx=%d, want 2", m.streamingMsgIdx)
+	}
+	if got := m.messages[m.streamingMsgIdx]; got.content != "" || !got.isPartial {
+		t.Fatalf("expected fresh streaming slot after marker, got %+v", got)
+	}
+}
+
+func TestSuHistoryLoad_MergePreservesPersistedAssistantMetadata(t *testing.T) {
+	m := newCLIModel()
+	m.channelName = "cli"
+	m.chatID = "/test"
+	m.handleResize(120, 40)
+	setupTestRemoteChannel(m)
+	m.splashState.suLoading = true
+
+	_ = m.handleSuHistoryLoad(suHistoryLoadMsg{
+		channelName: "cli",
+		chatID:      "/test",
+		activeProgress: &protocol.ProgressEvent{
+			ChatID: "cli:/test", Phase: "executing", Iteration: 2,
+		},
+		history: []channel.HistoryMessage{{
+			HistoryID: 42, RecordType: "message", Role: "assistant",
+			Content: "persisted reply", ReasoningContent: "persisted reasoning", Timestamp: time.Now(),
+		}},
+	})
+
+	if len(m.messages) != 1 || m.streamingMsgIdx != 0 {
+		t.Fatalf("expected one merged streaming assistant, got idx=%d messages=%+v", m.streamingMsgIdx, m.messages)
+	}
+	got := m.messages[0]
+	if got.historyID != 42 || got.recordType != "message" || got.reasoning != "persisted reasoning" {
+		t.Fatalf("persisted assistant metadata was lost during merge: %+v", got)
+	}
+	if !got.isPartial || got.turnID != m.agentTurnID {
+		t.Fatalf("merged assistant is not the active streaming target: %+v", got)
+	}
+}

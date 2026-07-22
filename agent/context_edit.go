@@ -9,6 +9,8 @@ import (
 
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/session"
+	"xbot/storage/sqlite"
 )
 
 // ContextEditAction 定义 context_edit 工具的操作类型。
@@ -84,10 +86,9 @@ func (s *ContextEditStore) History() []ContextEditResult {
 // 它持有一个指向 messages slice 的指针，由 engine.go 在每次 Run 开始时设置。
 type ContextEditor struct {
 	Store     *ContextEditStore
-	messages  []llm.ChatMessage         // 当前对话消息，由 engine 在 Run 时设置
-	mu        sync.RWMutex              // 保护 messages 引用
-	PersistFn func(editedIndices []int) // persistence callback for syncing edits to DB (best-effort)
-	tenantID  int64                     // current tenant ID for persistence (set per-request)
+	messages  []llm.ChatMessage               // 当前对话消息，由 engine 在 Run 时设置
+	mu        sync.RWMutex                    // 保护 messages 引用
+	PersistFn func(editedIndices []int) error // fail-closed append callback
 }
 
 // NewContextEditor 创建 ContextEditor。
@@ -102,12 +103,38 @@ func (e *ContextEditor) SetMessages(messages []llm.ChatMessage) {
 	e.messages = messages
 }
 
-// SetTenantID sets the current tenant ID for persistence callbacks.
-// Called per-request before the engine run that may trigger context edits.
-func (e *ContextEditor) SetTenantID(tenantID int64) {
+func (e *ContextEditor) BindSession(sess *session.TenantSession) {
+	if e == nil || sess == nil {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.tenantID = tenantID
+	e.PersistFn = func(editedIndices []int) error {
+		msgs := e.messages // caller holds e.mu
+		mutations := make([]sqlite.MessageMutation, 0, len(editedIndices))
+		for _, idx := range editedIndices {
+			if idx < 0 || idx >= len(msgs) || msgs[idx].Role == "system" || msgs[idx].DisplayOnly {
+				continue
+			}
+			if msgs[idx].HistoryID == 0 {
+				return fmt.Errorf("context edit target at index %d has no history_id", idx)
+			}
+			occurrence := 0
+			for i := 0; i < idx; i++ {
+				if msgs[i].HistoryID == msgs[idx].HistoryID {
+					occurrence++
+				}
+			}
+			mutations = append(mutations, sqlite.MessageMutation{
+				TargetHistoryID: msgs[idx].HistoryID, TargetOccurrence: occurrence, Message: msgs[idx],
+			})
+		}
+		if len(mutations) == 0 {
+			return nil
+		}
+		_, err := sess.AppendControl(sqlite.HistoryRecordContextEdit, mutations[0].TargetHistoryID, sqlite.MessageMutations{Mutations: mutations})
+		return err
+	}
 }
 
 // HandleRequest 处理 context_edit 请求，直接修改 messages slice。
@@ -140,6 +167,7 @@ func (e *ContextEditor) HandleRequest(action string, params map[string]any) (str
 
 // applyEdit 执行编辑操作并修改 messages slice。
 func (e *ContextEditor) applyEdit(messages []llm.ChatMessage, action string, params map[string]any) (string, error) {
+	originalMessages := append([]llm.ChatMessage(nil), messages...)
 	req := ContextEditRequest{
 		Action: ContextEditAction(action),
 	}
@@ -265,23 +293,21 @@ func (e *ContextEditor) applyEdit(messages []llm.ChatMessage, action string, par
 		EditedAt:   time.Now(),
 	}
 
+	// Persist before reporting success. Restore the shared slice on failure so
+	// in-memory context never advances beyond the append-only history.
+	if e.PersistFn != nil {
+		if err := e.PersistFn(editedIndices); err != nil {
+			copy(messages, originalMessages)
+			return "", fmt.Errorf("persist context edit: %w", err)
+		}
+	}
 	if e.Store != nil {
 		e.Store.Record(result)
 	}
-
 	log.WithFields(map[string]any{
-		"action":      req.Action,
-		"message_idx": req.MessageIdx,
-		"role":        msg.Role,
-		"before":      beforeChars,
-		"after":       afterChars,
-		"reason":      req.Reason,
+		"action": req.Action, "message_idx": req.MessageIdx, "role": msg.Role,
+		"before": beforeChars, "after": afterChars, "reason": req.Reason,
 	}).Info("Context edit applied")
-
-	// Persist edited message(s) to database (best-effort).
-	if e.PersistFn != nil {
-		e.PersistFn(editedIndices)
-	}
 
 	return fmt.Sprintf("✅ %s message #%d [%s]: %s → %s — %s", req.Action, req.MessageIdx, msg.Role, beforeChars, afterChars, req.Reason), nil
 }
@@ -416,6 +442,7 @@ func listMessagesByTurn(messages []llm.ChatMessage) string {
 
 // deleteTurn 删除整个对话轮次（user 消息 + 所有关联的 assistant/tool 消息）。
 func (e *ContextEditor) deleteTurn(messages []llm.ChatMessage, params map[string]any) (string, error) {
+	originalMessages := append([]llm.ChatMessage(nil), messages...)
 	turnIdx, ok := params["turn_idx"].(float64)
 	if !ok {
 		return "", fmt.Errorf("turn_idx is required for delete_turn action")
@@ -452,34 +479,27 @@ func (e *ContextEditor) deleteTurn(messages []llm.ChatMessage, params map[string
 		deletedMsgCount++
 	}
 
-	if e.Store != nil {
-		e.Store.Record(ContextEditResult{
-			Action:     ContextEditDeleteTurn,
-			MessageIdx: idx,
-			Role:       "turn",
-			Reason:     reason,
-			Before:     fmt.Sprintf("%d msgs", t.MsgCount),
-			After:      "0 chars",
-			EditedAt:   time.Now(),
-		})
-	}
-
-	log.WithFields(map[string]any{
-		"action":     "delete_turn",
-		"turn_idx":   idx,
-		"msg_count":  deletedMsgCount,
-		"tool_count": t.ToolCount,
-		"reason":     reason,
-	}).Info("Context edit: deleted turn")
-
-	// Persist deleted turn messages to database (best-effort).
+	// Persist deleted turn messages before exposing the mutation.
 	if e.PersistFn != nil {
 		turnIndices := make([]int, 0, t.EndSliceIdx-t.StartSliceIdx+1)
 		for i := t.StartSliceIdx; i <= t.EndSliceIdx; i++ {
 			turnIndices = append(turnIndices, i)
 		}
-		e.PersistFn(turnIndices)
+		if err := e.PersistFn(turnIndices); err != nil {
+			copy(messages, originalMessages)
+			return "", fmt.Errorf("persist context edit: %w", err)
+		}
 	}
+	if e.Store != nil {
+		e.Store.Record(ContextEditResult{
+			Action: ContextEditDeleteTurn, MessageIdx: idx, Role: "turn", Reason: reason,
+			Before: fmt.Sprintf("%d msgs", t.MsgCount), After: "0 chars", EditedAt: time.Now(),
+		})
+	}
+	log.WithFields(map[string]any{
+		"action": "delete_turn", "turn_idx": idx, "msg_count": deletedMsgCount,
+		"tool_count": t.ToolCount, "reason": reason,
+	}).Info("Context edit: deleted turn")
 
 	return fmt.Sprintf("✅ Deleted turn %d (%d messages, %d tool calls, %d total chars) — %s",
 		idx, deletedMsgCount, t.ToolCount, t.TotalChars, reason), nil

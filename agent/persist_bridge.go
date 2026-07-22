@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/session"
+	"xbot/storage/sqlite"
 )
 
 // dynamicContextRe matches <dynamic-context>...</dynamic-context> blocks for stripping
@@ -39,8 +41,44 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 	if b.session == nil || len(messages) <= b.lastPersistedCount {
 		return nil
 	}
-	persistOk := true
-	for _, msg := range messages[b.lastPersistedCount:] {
+	pending, indices := b.pendingMessages(messages)
+	historyIDs, err := b.session.AppendMessages(pending)
+	if err != nil {
+		log.WithError(err).Error("Failed to persist messages to session")
+		return fmt.Errorf("persist message batch: %w", err)
+	}
+	b.commitPending(messages, indices, historyIDs)
+	return nil
+}
+
+// IncrementalPersistAndAskQuestion persists the new AskUser tool exchange and
+// pending control in one transaction. The watermark and in-memory history IDs
+// advance only after the compound commit succeeds.
+func (b *PersistenceBridge) IncrementalPersistAndAskQuestion(messages []llm.ChatMessage, metadata map[string]string) error {
+	if b.session == nil {
+		return nil
+	}
+	pending, indices := b.pendingMessages(messages)
+	if len(pending) == 0 {
+		return fmt.Errorf("persist AskUser question: no pending messages")
+	}
+	historyIDs, _, err := b.session.AppendMessagesAndAskQuestion(pending, metadata)
+	if err != nil {
+		log.WithError(err).Error("Failed to persist AskUser exchange")
+		return fmt.Errorf("persist AskUser exchange: %w", err)
+	}
+	b.commitPending(messages, indices, historyIDs)
+	return nil
+}
+
+func (b *PersistenceBridge) pendingMessages(messages []llm.ChatMessage) ([]llm.ChatMessage, []int) {
+	if len(messages) <= b.lastPersistedCount {
+		return nil, nil
+	}
+	pending := make([]llm.ChatMessage, 0, len(messages)-b.lastPersistedCount)
+	indices := make([]int, 0, len(messages)-b.lastPersistedCount)
+	for idx := b.lastPersistedCount; idx < len(messages); idx++ {
+		msg := messages[idx]
 		if msg.Role == "system" {
 			continue
 		}
@@ -51,33 +89,30 @@ func (b *PersistenceBridge) IncrementalPersist(messages []llm.ChatMessage) error
 		if strings.Contains(persistMsg.Content, "<dynamic-context>") {
 			persistMsg.Content = dynamicContextRe.ReplaceAllString(persistMsg.Content, "")
 		}
-		if err := b.session.AddMessage(persistMsg); err != nil {
-			log.WithError(err).Error("Failed to persist message to session")
-			persistOk = false
-			break
-		}
+		pending = append(pending, persistMsg)
+		indices = append(indices, idx)
 	}
-	if persistOk {
-		b.lastPersistedCount = len(messages)
-	}
-	return nil
+	return pending, indices
 }
 
-// RewriteAfterCompress clears the session and re-adds all compressed messages.
-// Used after context compression when the entire session must be rewritten.
+func (b *PersistenceBridge) commitPending(messages []llm.ChatMessage, indices []int, historyIDs []int64) {
+	for i, historyID := range historyIDs {
+		messages[indices[i]].HistoryID = historyID
+	}
+	b.lastPersistedCount = len(messages)
+}
+
+// RewriteAfterCompress appends a compression control record containing the new
+// active context. Original history rows are never rewritten or deleted.
 // Strips <system-reminder> and <dynamic-context> blocks before writing to prevent
 // transient injection artifacts from being persisted.
 // Updates lastPersistedCount to totalMsgCount on success.
-// Returns (true, nil) on success, (false, err) on partial/total failure.
-func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, totalMsgCount int) (bool, error) {
+// Returns the compression history ID. A zero ID means persistence is disabled.
+func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, totalMsgCount int) (int64, error) {
 	if b.session == nil {
-		return true, nil
+		return 0, nil
 	}
-	if err := b.session.Clear(); err != nil {
-		log.WithError(err).Warn("Failed to clear session for compression, skipping persistence")
-		return false, err
-	}
-	allOk := true
+	clean := make([]llm.ChatMessage, 0, len(sessionView))
 	for _, msg := range sessionView {
 		if err := assertNoSystemPersist(msg); err != nil {
 			continue
@@ -90,17 +125,27 @@ func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, 
 		if strings.Contains(persistMsg.Content, "<dynamic-context>") {
 			persistMsg.Content = dynamicContextRe.ReplaceAllString(persistMsg.Content, "")
 		}
-		if err := b.session.AddMessage(persistMsg); err != nil {
-			log.WithError(err).Error("Partial write during compression, session may be corrupted")
-			allOk = false
-			break
-		}
+		clean = append(clean, persistMsg)
 	}
-	if allOk {
-		b.lastPersistedCount = totalMsgCount
-		return true, nil
+	historyID, err := b.session.AppendContextSnapshot(sqlite.HistoryRecordCompress, clean)
+	if err != nil {
+		log.WithError(err).Error("Failed to append compression history record")
+		return 0, err
 	}
-	return false, nil
+	b.lastPersistedCount = totalMsgCount
+	return historyID, nil
+}
+
+// AppendPrune records an aggressive context truncation without deleting history.
+func (b *PersistenceBridge) AppendPrune(sessionView []llm.ChatMessage, totalMsgCount int) error {
+	if b.session == nil {
+		return nil
+	}
+	if _, err := b.session.AppendContextSnapshot(sqlite.HistoryRecordPrune, sessionView); err != nil {
+		return fmt.Errorf("append prune history: %w", err)
+	}
+	b.lastPersistedCount = totalMsgCount
+	return nil
 }
 
 // MarkAllPersisted updates the watermark to the given count without writing anything.

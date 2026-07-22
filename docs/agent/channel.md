@@ -167,11 +167,51 @@ When viewing an interactive SubAgent session, the CLI switches to an "agent sess
 - `m.activeAgentSession` tracks the current agent session key (`channel:chatID/roleName:instance`)
 - Messages are loaded via `handleSuHistoryLoad` which calls `get_history` RPC
 - Outbound messages from the SubAgent are routed to the parent's chatID — CLI detects and filters
-- **`get_active_progress` RPC bypasses bizID check for agent channel** (`p.Channel != "agent"`)
+- Agent-channel history/progress access recursively validates the child session's
+  real parent channel and chat ID; there is no `chat_id == bizID` authorization
+  shortcut.
 - **Tick chain must not break** — `tickCmd()` injection should be unconditional in multiple code paths to prevent chain breakage during session switches
 - **`handleSuHistoryLoad` default case (PhaseDone)**: triggers `DynamicHistoryLoader` reload to pick up the final assistant reply
 - **Viewport dirty-check fallback**: tick handler checks `!m.renderCacheValid` when `busy=false` to ensure viewport refreshes after session switch
 - **`removeAllToolSummaries()`** must be called in all progress restore paths to prevent duplicate tool summaries
+
+### Append-only History Display and Rewind
+
+- `get_history` WS RPC and `/api/history` REST expose the same chronological
+  projection: every persisted message row (including tool/tool-call rows) plus
+  every compression marker, ordered by `history_id`. Internal controls
+  (`context_edit`, `mask`, AskUser controls, `prune`) stay private.
+- `compacted_by` and compression source IDs are relationship metadata only.
+  Neither TUI nor Web hides source messages after compression.
+- TUI renders compression markers with its existing summary style. Web renders
+  each marker as an independent collapsible tool-like block whose body contains
+  only that compression summary.
+- Every persisted, non-display-only user message is a Rewind candidate, including
+  messages before a compression boundary. Rewind requests contain exactly
+  `channel`, `chat_id`, and `history_id`; timestamp and cutoff fallbacks do not
+  exist.
+- A matching `history_rewound` session event clears live progress and forces a
+  history reload. Server WS/SSE state is keyed by explicit channel + chat ID;
+  reset clears only the target route before broadcasting the barrier, so
+  reconnect cannot restore deleted future events and same-ID sessions on other
+  channels remain intact.
+- Remote CLI subscriptions carry an explicit route and a route-scoped replay
+  cursor. The server installs the subscription and replay suffix under one
+  publication lock. If the retained ring cannot cover the cursor, it sends
+  `resync_required`; both TUI and Web then reload the complete authoritative
+  session snapshot, including active progress, TODOs, and pending AskUser.
+- Web edit-and-rewind waits for REST success and a completed history reload before
+  resending the edited text. File-checkpoint rollback errors are warnings after
+  history commits; REST or reload failures retain the draft and do not send.
+- TUI and Web keep rewind locked through the matching reset and history reload.
+  Session generation guards prevent a late rewind/reload from clearing or
+  resending into a newly selected session, and AskUser input is disabled while
+  that destructive operation is pending.
+- Agent child sessions load the same canonical history API. TUI/Web sending and
+  post-rewind resend use `continue_interactive_session(full_key, content)` so an
+  active interactive object is continued with its own Run config; stale/one-shot
+  history is read-only. TUI invokes the blocking RPC through an asynchronous
+  BubbleTea command so progress rendering remains responsive.
 
 ### CLI Context Bar Rendering
 

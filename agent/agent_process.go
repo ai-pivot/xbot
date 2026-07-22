@@ -131,6 +131,20 @@ func (a *Agent) pendingBgNotifications(sessionKey string) []tools.BgNotification
 	return out
 }
 
+func (a *Agent) acknowledgePendingBgNotifications(sessionKey string, count int) {
+	if count <= 0 {
+		return
+	}
+	a.bgRunPendingMu.Lock()
+	defer a.bgRunPendingMu.Unlock()
+	pending := a.bgRunPending[sessionKey]
+	if count >= len(pending) {
+		delete(a.bgRunPending, sessionKey)
+		return
+	}
+	a.bgRunPending[sessionKey] = append([]tools.BgNotification(nil), pending[count:]...)
+}
+
 func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (llm.ChatMessage, llm.ChatMessage, IterationToolSnapshot, bool) {
 	toolName := ""
 	toolID := ""
@@ -233,6 +247,29 @@ func (a *Agent) wireBgNotificationDrain(sessionKey string) func() []tools.BgNoti
 	}
 }
 
+func (a *Agent) wireBgNotificationAcknowledge(sessionKey string) func(int) {
+	return func(count int) {
+		if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+			state.(*bgSessionState).acknowledgeDrainedThisRun(count)
+		}
+	}
+}
+
+func (a *Agent) requeueDrainedBgNotifications(sessionKey string) {
+	state, ok := a.bgSessionStates.Load(sessionKey)
+	if !ok {
+		return
+	}
+	drained := state.(*bgSessionState).takeDrainedThisRun()
+	if len(drained) == 0 {
+		return
+	}
+
+	a.bgRunPendingMu.Lock()
+	a.bgRunPending[sessionKey] = append(drained, a.bgRunPending[sessionKey]...)
+	a.bgRunPendingMu.Unlock()
+}
+
 // drainAndProcessNotifications drains bg notifications for the given session
 // from bgRunPending and processes them via processBgNotification/processSubAgentBgNotification.
 // Called by chatProcessLoop after each turn completes (response sent), and by
@@ -325,33 +362,33 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	// Ctrl+C should not start a fresh bg-notification turn, but completed work
 	// should remain visible to the next model call as tool observations.
 	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
-	pendingNotifications := a.takePendingBgNotifications(sessionKey)
-	drainedThisRun := 0
+	pendingNotifications := a.pendingBgNotifications(sessionKey)
+	var drainedNotifications []tools.BgNotification
+	var sessionState *bgSessionState
 	if state, ok := a.bgSessionStates.Load(sessionKey); ok {
-		ss := state.(*bgSessionState)
-		ss.drainedThisRunMu.Lock()
-		drainedThisRun = len(ss.drainedThisRun)
-		ss.drainedThisRun = nil
-		ss.drainedThisRunMu.Unlock()
+		sessionState = state.(*bgSessionState)
+		drainedNotifications = sessionState.snapshotDrainedThisRun()
 	}
-	if len(pendingNotifications)+drainedThisRun > 0 {
+	if len(pendingNotifications)+len(drainedNotifications) > 0 {
 		log.Ctx(ctx).WithFields(log.Fields{
 			"pending": len(pendingNotifications),
-			"drained": drainedThisRun,
+			"drained": len(drainedNotifications),
 		}).Info("Recording background notifications in cancelled turn")
 	}
 
+	notifications := make([]tools.BgNotification, 0, len(drainedNotifications)+len(pendingNotifications))
+	notifications = append(notifications, drainedNotifications...)
+	notifications = append(notifications, pendingNotifications...)
+	batch := make([]llm.ChatMessage, 0, len(out.EngineMessages)+2*len(notifications)+3)
 	// Save any un-persisted engine messages from the interrupted iteration.
 	for _, em := range out.EngineMessages {
 		if err := assertNoSystemPersist(em); err != nil {
 			continue
 		}
-		if err := tenantSession.AddMessage(em); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save engine message on cancel")
-		}
+		batch = append(batch, em)
 	}
 	if len(out.EngineMessages) > 0 {
-		log.Ctx(ctx).Infof("Cancelled: persisted %d un-persisted engine messages", len(out.EngineMessages))
+		log.Ctx(ctx).Infof("Cancelled: prepared %d un-persisted engine messages", len(out.EngineMessages))
 	}
 	// Save iteration history as an assistant message with detail,
 	// so web UI can restore it on page refresh without showing "loading".
@@ -407,27 +444,20 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		}
 		iterHistory[idx].Tools = append(iterHistory[idx].Tools, snapshot)
 	}
-	persistCancelTool := func(assistantMsg, toolMsg llm.ChatMessage, snapshot IterationToolSnapshot) {
-		if tenantSession != nil {
-			if err := tenantSession.AddMessage(assistantMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save cancel synthetic assistant message")
-			}
-			if err := tenantSession.AddMessage(toolMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save cancel synthetic tool message")
-			}
-		}
+	appendCancelTool := func(assistantMsg, toolMsg llm.ChatMessage, snapshot IterationToolSnapshot) {
+		batch = append(batch, assistantMsg, toolMsg)
 		appendCancelToolSnapshot(snapshot)
 	}
 
-	for i, notif := range pendingNotifications {
+	for i, notif := range notifications {
 		assistantMsg, toolMsg, snapshot, ok := backgroundNotificationSyntheticTool(notif, i+1)
 		if !ok {
 			continue
 		}
-		persistCancelTool(assistantMsg, toolMsg, snapshot)
+		appendCancelTool(assistantMsg, toolMsg, snapshot)
 	}
 	cancelAssistantMsg, cancelToolMsg, cancelSnapshot := userCancelledSyntheticTool()
-	persistCancelTool(cancelAssistantMsg, cancelToolMsg, cancelSnapshot)
+	appendCancelTool(cancelAssistantMsg, cancelToolMsg, cancelSnapshot)
 
 	if len(iterHistory) > 0 {
 		if jsonBytes, err := json.Marshal(iterHistory); err == nil {
@@ -440,11 +470,21 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		if iterationHistoryJSON != "" {
 			cancelMsg.Detail = iterationHistoryJSON
 		}
-		if tenantSession != nil {
-			if err := tenantSession.AddMessage(cancelMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save cancelled iteration history")
-			}
+		batch = append(batch, cancelMsg)
+	}
+	if tenantSession != nil {
+		if _, err := tenantSession.AppendMessages(batch); err != nil {
+			// Drained notifications are no longer reachable through bgRunPending.
+			// Restore them before returning so a later turn can retry the batch.
+			a.requeueDrainedBgNotifications(sessionKey)
+			return nil, fmt.Errorf("append cancelled run batch: %w", err)
 		}
+	}
+	// Pending notifications and the per-run drained ledger are acknowledgements:
+	// clear them only after the interrupted turn is durably committed.
+	a.acknowledgePendingBgNotifications(sessionKey, len(pendingNotifications))
+	if sessionState != nil {
+		sessionState.clearDrainedThisRun()
 	}
 	// Send a minimal outbound so the web channel knows processing ended.
 	meta := map[string]string{"cancelled": "true"}
@@ -566,7 +606,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		}
 	}
 	if err := tenantSession.AddMessage(assistantMsg); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to save assistant message")
+		return nil, fmt.Errorf("append assistant message: %w", err)
 	}
 
 	// Send via sendMessage (reuses session message tracking)

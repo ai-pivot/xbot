@@ -62,6 +62,7 @@ type runState struct {
 	waitingUser        bool
 	waitingQuestion    string
 	waitingMetadata    map[string]string
+	persistenceErr     error
 	lastContent        string
 	compressRetryCount int
 	compressAttempts   int
@@ -122,7 +123,7 @@ func newRunState(cfg RunConfig) *runState {
 	autoNotify := cfg.ProgressNotifier != nil || cfg.ProgressEventHandler != nil
 	batchProgressByIteration := cfg.Channel == "web"
 
-	return &runState{
+	state := &runState{
 		cfg:                      cfg,
 		maxIter:                  maxIter,
 		sessionKey:               sessionKey,
@@ -135,6 +136,10 @@ func newRunState(cfg RunConfig) *runState {
 		persistence:              NewPersistenceBridge(cfg.Session, len(messages)),
 		tokenTracker:             NewTokenTracker(cfg.LastPromptTokens, cfg.LastCompletionTokens),
 	}
+	if cfg.ContextEditor != nil {
+		cfg.ContextEditor.BindSession(cfg.Session)
+	}
+	return state
 }
 
 // initProgress sets up structured progress tracking and the progress finalizer.
@@ -750,14 +755,16 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 				if s.cfg.ContextManagerConfig != nil {
 					maxTokens = s.cfg.ContextManagerConfig.MaxContextTokens
 				}
-				s.runCompression(ctx, cm, int(totalTokens), maxTokens)
-				if len(s.messages) > 0 {
-					log.Ctx(ctx).WithFields(log.Fields{
-						"new_msg_count": len(s.messages),
-						"retry":         s.compressRetryCount,
-					}).Info("Compression completed after context_window_exceeded, retrying")
-					return nil, true // retry loop iteration
+				if err := s.runCompression(ctx, cm, int(totalTokens), maxTokens); err != nil {
+					out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
+					out.Error = fmt.Errorf("persist forced context compression: %w", err)
+					return out, false
 				}
+				log.Ctx(ctx).WithFields(log.Fields{
+					"new_msg_count": len(s.messages),
+					"retry":         s.compressRetryCount,
+				}).Info("Compression completed after context_window_exceeded, retrying")
+				return nil, true // retry loop iteration
 			}
 
 			// Phase 2: Aggressive truncation — keep system messages + last N messages
@@ -899,11 +906,11 @@ func stripRenameHint(content string) string {
 }
 
 // maybeCompress checks if context compression or observation masking is needed.
-func (s *runState) maybeCompress(ctx context.Context) {
+func (s *runState) maybeCompress(ctx context.Context) error {
 	s.compressAttempts++
 	cm := s.cfg.ContextManager
 	if cm == nil || len(s.messages) <= 3 {
-		return
+		return nil
 	}
 
 	maxTokens := 0
@@ -915,7 +922,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 			"last_prompt_tokens": s.tokenTracker.PromptTokens(),
 			"msg_count":          len(s.messages),
 		}).Info("maybeCompress skipped: maxTokens=0")
-		return
+		return nil
 	}
 
 	// Reserve headroom for max_output_tokens: the API budget is shared
@@ -938,7 +945,7 @@ func (s *runState) maybeCompress(ctx context.Context) {
 	if tokenSource == "no_data" {
 		// No API token data means we do not know the actual context pressure.
 		// Do not compact or mask based on local guesses.
-		return
+		return nil
 	}
 
 	compressThreshold := 0.9
@@ -968,17 +975,18 @@ func (s *runState) maybeCompress(ctx context.Context) {
 		if cm.Mode() == ContextModeNone {
 			log.Ctx(ctx).Debug("maybeCompress: auto-compression skipped (mode=none)")
 		} else {
-			s.runCompression(ctx, cm, int(totalTokens), maxTokens)
+			return s.runCompression(ctx, cm, int(totalTokens), maxTokens)
 		}
-		return
+		return nil
 	}
 
 	// Observation masking (lightweight, no LLM call).
 	s.maybeMaskObservations(ctx, totalTokens, maxTokens)
+	return nil
 }
 
 // runCompression performs the actual context compression.
-func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalTokens, maxTokens int) {
+func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalTokens, maxTokens int) error {
 	if s.structuredProgress != nil {
 		s.structuredProgress.Phase = PhaseCompressing
 	}
@@ -1033,7 +1041,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		if s.structuredProgress != nil {
 			s.structuredProgress.Phase = PhaseThinking
 		}
-		return
+		return nil
 	}
 	if s.cfg.MemoryToolDefs != nil && s.cfg.MemoryToolExec != nil {
 		sessionCM.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
@@ -1057,7 +1065,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		if s.structuredProgress != nil {
 			s.structuredProgress.Phase = PhaseThinking
 		}
-		return
+		return compressErr
 	}
 	s.messages = pipelineResult.NewMessages
 	s.lastCompressIter = s.compressAttempts
@@ -1174,6 +1182,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			s.notifyProgress("")
 		}
 	}
+	return nil
 }
 
 // aggressiveTruncate performs emergency context truncation when all compression
@@ -1187,12 +1196,17 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 		return false
 	}
 
-	// Separate system messages from conversation
-	var systemMsgs []llm.ChatMessage
+	// Preserve exactly one system prompt; the runtime invariant requires one and
+	// only one system-role message on every LLM call.
+	var systemMsg llm.ChatMessage
+	hasSystem := false
 	var conversationMsgs []llm.ChatMessage
 	for _, m := range msgs {
 		if m.Role == "system" {
-			systemMsgs = append(systemMsgs, m)
+			if !hasSystem {
+				systemMsg = m
+				hasSystem = true
+			}
 		} else {
 			conversationMsgs = append(conversationMsgs, m)
 		}
@@ -1202,14 +1216,18 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 		return false // nothing to truncate
 	}
 
-	// Keep: system messages + last keepTailMessages conversation messages
+	if !hasSystem {
+		return false
+	}
+	// Keep: one system prompt + persistent context notice + recent messages.
 	tailMsgs := conversationMsgs[len(conversationMsgs)-keepTailMessages:]
-	newMessages := make([]llm.ChatMessage, 0, len(systemMsgs)+1+len(tailMsgs))
-	newMessages = append(newMessages, systemMsgs...)
+	newMessages := make([]llm.ChatMessage, 0, 2+len(tailMsgs))
+	newMessages = append(newMessages, systemMsg)
 
-	// Insert a notice about the truncation so the model knows context was lost
+	// The notice is intentionally non-system so AppendPrune persists it in the
+	// checkpoint and restart replay reconstructs the same active context.
 	newMessages = append(newMessages, llm.ChatMessage{
-		Role: "system",
+		Role: "assistant",
 		Content: "[System notice: Earlier conversation history was truncated due to context " +
 			"window limits. Some earlier context may be lost. Continue from the " +
 			"remaining conversation below.]",
@@ -1217,18 +1235,19 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 	newMessages = append(newMessages, tailMsgs...)
 
 	oldCount := len(msgs)
-	s.messages = s.syncMessages(newMessages)
+	// Persist first so an append failure cannot leave memory ahead of the DB.
+	if s.persistence != nil {
+		if err := s.persistence.AppendPrune(newMessages, len(newMessages)); err != nil {
+			log.Ctx(ctx).WithError(err).Error("Aggressive truncation history append failed")
+			return false
+		}
+	}
+	newMessages = s.syncMessages(newMessages)
+	s.messages = newMessages
 
 	// Reset token tracker so the next iteration gets fresh data from the API
 	if s.tokenTracker != nil {
 		s.tokenTracker.ResetAfterCompress()
-	}
-
-	// Persist the truncated history
-	if s.persistence != nil {
-		s.persistence.RewriteAfterCompress(
-			newMessages, len(newMessages),
-		)
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{
@@ -1438,63 +1457,95 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	}
 
 	// --- Incremental session persistence ---
-	s.persistence.IncrementalPersist(s.messages)
+	var persistErr error
+	if s.waitingUser {
+		persistErr = s.persistence.IncrementalPersistAndAskQuestion(s.messages, s.waitingUserMetadata())
+	} else {
+		persistErr = s.persistence.IncrementalPersist(s.messages)
+	}
+	if persistErr != nil {
+		out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
+		out.Error = fmt.Errorf("append session history: %w", persistErr)
+		return out
+	}
 	s.validateInvariantsAt(ctx, "post_persist")
 
 	// --- Background notification draining (bg tasks + bg subagents) ---
 	s.drainAndInjectBgNotifications(ctx, iteration)
-
-	// Check if any tool marked as waiting for user response
+	if s.persistenceErr != nil {
+		out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
+		out.Error = fmt.Errorf("append session history: %w", s.persistenceErr)
+		return out
+	}
 	if s.waitingUser {
 		log.Ctx(ctx).Info("Tool is waiting for user response, ending loop without additional reply")
-		outMsg := &channel.OutboundMsg{
-			Channel:     s.cfg.Channel,
-			ChatID:      s.cfg.ChatID,
-			ToolsUsed:   s.toolsUsed,
-			WaitingUser: true,
-		}
-		if s.waitingQuestion != "" || len(s.waitingMetadata) > 0 || s.cfg.SenderID != "" {
-			outMsg.Metadata = make(map[string]string)
-			if s.cfg.SenderID != "" {
-				outMsg.Metadata["sender_id"] = s.cfg.SenderID
-			}
-			if s.waitingQuestion != "" {
-				outMsg.Metadata["ask_question"] = s.waitingQuestion
-			}
-			for k, v := range s.waitingMetadata {
-				outMsg.Metadata[k] = v
-			}
-		}
-		return s.buildOutput(outMsg)
+		return s.buildOutput(&channel.OutboundMsg{
+			Channel: s.cfg.Channel, ChatID: s.cfg.ChatID, ToolsUsed: s.toolsUsed,
+			WaitingUser: true, Metadata: s.waitingUserMetadata(),
+		})
 	}
 
 	return nil
+}
+
+func (s *runState) waitingUserMetadata() map[string]string {
+	if s.waitingQuestion == "" && len(s.waitingMetadata) == 0 && s.cfg.SenderID == "" {
+		return nil
+	}
+	metadata := make(map[string]string, len(s.waitingMetadata)+2)
+	if s.cfg.SenderID != "" {
+		metadata["sender_id"] = s.cfg.SenderID
+	}
+	if s.waitingQuestion != "" {
+		metadata["ask_question"] = s.waitingQuestion
+	}
+	for key, value := range s.waitingMetadata {
+		metadata[key] = value
+	}
+	return metadata
 }
 
 // drainAndInjectBgNotifications drains pending background notifications and
 // injects them as synthetic tool-call/result pairs into the conversation.
 // Cancel-aware: skips draining if ctx is cancelled (the cancel signal may have
 // arrived during the LLM call; leaving notifications in bgRunPending lets
-// handleCancelledRun discard them before the cancel ack reaches the UI).
-// Returns the count of injected notifications.
+// handleCancelledRun record them before the cancel ack reaches the UI).
+// Returns the count of successfully consumed notifications.
 func (s *runState) drainAndInjectBgNotifications(ctx context.Context, iteration int) int {
-	if s.cfg.DrainBgNotifications == nil || ctx.Err() != nil {
+	if s.cfg.DrainBgNotifications == nil || ctx.Err() != nil || s.persistenceErr != nil {
 		return 0
 	}
 	pending := s.cfg.DrainBgNotifications()
-	for _, notif := range pending {
+	consumed := 0
+	for i, notif := range pending {
+		var err error
 		switch n := notif.(type) {
 		case *tools.BackgroundTask:
-			s.injectBgTaskNotification(ctx, iteration, n)
+			err = s.injectBgTaskNotification(ctx, iteration, n)
 		case *tools.SubAgentBgNotify:
-			s.injectSubAgentBgNotification(ctx, iteration, n)
+			err = s.injectSubAgentBgNotification(ctx, iteration, n)
 		case *tools.CronFired:
-			s.injectCronFiredNotification(ctx, iteration, n)
+			err = s.injectCronFiredNotification(ctx, iteration, n)
 		case *tools.QueuedUserMessage:
-			s.injectQueuedUserMessage(ctx, iteration, n)
+			err = s.injectQueuedUserMessage(ctx, iteration, n)
+		}
+		if err != nil {
+			// Interactive message drains are destructive and do not use the main
+			// Agent's acknowledgement ledger. Unblock the remaining senders with
+			// the same persistence error; background notifications stay unacked.
+			for _, remaining := range pending[i+1:] {
+				if queued, ok := remaining.(*tools.QueuedUserMessage); ok && queued.ReplyFn != nil {
+					queued.ReplyFn(err)
+				}
+			}
+			break
+		}
+		consumed++
+		if s.cfg.AcknowledgeBgNotifications != nil {
+			s.cfg.AcknowledgeBgNotifications(1)
 		}
 	}
-	return len(pending)
+	return consumed
 }
 
 // maybeContinueTurn is called when the LLM returns a text-only response
@@ -1527,7 +1578,7 @@ func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMRespo
 		s.cfg.HookManager.Emit(ctx, event)
 		if event.Continue && event.Reason != "" {
 			s.recordAssistantMsg(ctx, response)
-			s.injectSyntheticToolPair(ctx, iteration,
+			_ = s.injectSyntheticToolPair(ctx, iteration,
 				"pre_turn_end", fmt.Sprintf("pre_turn_end_%d", iteration),
 				"A system notification arrived before the turn ended.",
 				event.Reason, "pre_turn_end", 0,
@@ -1548,7 +1599,10 @@ func (s *runState) injectSyntheticToolPair(
 	iteration int,
 	toolName, toolID, assistantContent, toolContent, progressLabel string,
 	progressElapsed time.Duration,
-) {
+) error {
+	if s.persistenceErr != nil {
+		return s.persistenceErr
+	}
 	assistantMsg := llm.ChatMessage{
 		Role:    "assistant",
 		Content: assistantContent,
@@ -1569,15 +1623,18 @@ func (s *runState) injectSyntheticToolPair(
 	}
 
 	toolMsg := llm.NewToolMessage(toolName, toolID, "", content)
-	s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
 
 	if s.cfg.Session != nil {
-		if err := s.cfg.Session.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).Warn("Failed to persist synthetic assistant message: ", err)
+		historyIDs, err := s.cfg.Session.AppendMessages([]llm.ChatMessage{assistantMsg, toolMsg})
+		if err != nil {
+			s.persistenceErr = fmt.Errorf("persist synthetic tool pair: %w", err)
+			return s.persistenceErr
 		}
-		if err := s.cfg.Session.AddMessage(toolMsg); err != nil {
-			log.Ctx(ctx).Warn("Failed to persist synthetic tool message: ", err)
-		}
+		assistantMsg.HistoryID = historyIDs[0]
+		toolMsg.HistoryID = historyIDs[1]
+	}
+	s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
+	if s.cfg.Session != nil && s.persistence != nil {
 		s.persistence.MarkAllPersisted(len(s.messages))
 	}
 
@@ -1593,60 +1650,70 @@ func (s *runState) injectSyntheticToolPair(
 			s.notifyProgress("")
 		}
 	}
+	return nil
 }
 
 // injectBgTaskNotification injects a bg task completion as a synthetic tool call/result pair.
-func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, bgTask *tools.BackgroundTask) {
+func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, bgTask *tools.BackgroundTask) error {
 	content := tools.FormatBgTaskCompletion(bgTask, "")
 	var elapsed time.Duration
 	if bgTask.FinishedAt != nil {
 		elapsed = bgTask.FinishedAt.Sub(bgTask.StartedAt)
 	}
-	s.injectSyntheticToolPair(ctx, iteration,
+	err := s.injectSyntheticToolPair(ctx, iteration,
 		"background_task_result", "bg_"+bgTask.ID,
 		"A background task has completed. Let me check the result.",
 		content, fmt.Sprintf("bg:%s", bgTask.ID), elapsed,
 	)
-	log.Ctx(ctx).WithField("task_id", bgTask.ID).Info("Injected bg task completion into Run loop")
+	if err == nil {
+		log.Ctx(ctx).WithField("task_id", bgTask.ID).Info("Injected bg task completion into Run loop")
+	}
+	return err
 }
 
 // injectSubAgentBgNotification injects a bg subagent notification as a synthetic tool call/result pair.
 // Progress notifications are dropped entirely — they would pollute the parent's TUI and waste LLM tokens.
 // Only completed notifications are injected (as tool messages) and shown in the TUI progress block.
-func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration int, n *tools.SubAgentBgNotify) {
+func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration int, n *tools.SubAgentBgNotify) error {
 	if n.Type == tools.SubAgentBgNotifyProgress {
 		log.Ctx(ctx).WithFields(log.Fields{
 			"role":     n.Role,
 			"instance": n.Instance,
 		}).Debug("Dropping bg subagent progress notification in Run loop")
-		return
+		return nil
 	}
 	toolName := "bg_subagent_" + string(n.Type)
 	toolID := fmt.Sprintf("bgsub_%s_%s", n.Role, n.Instance)
 	content := tools.FormatSubAgentBgNotify(n)
-	s.injectSyntheticToolPair(ctx, iteration,
+	err := s.injectSyntheticToolPair(ctx, iteration,
 		toolName, toolID,
 		fmt.Sprintf("Background subagent %s has a %s update.", n.Role, n.Type),
 		content, fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance), 0,
 	)
-	log.Ctx(ctx).WithFields(log.Fields{
-		"role":     n.Role,
-		"instance": n.Instance,
-		"type":     n.Type,
-	}).Info("Injected bg subagent notification into Run loop")
+	if err == nil {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"role":     n.Role,
+			"instance": n.Instance,
+			"type":     n.Type,
+		}).Info("Injected bg subagent notification into Run loop")
+	}
+	return err
 }
 
 // injectCronFiredNotification injects a cron fired notification as a synthetic tool call/result pair.
 // Cron messages are injected as tool results so the LLM can act on them during the current Run.
-func (s *runState) injectCronFiredNotification(ctx context.Context, iteration int, c *tools.CronFired) {
+func (s *runState) injectCronFiredNotification(ctx context.Context, iteration int, c *tools.CronFired) error {
 	content := fmt.Sprintf("⏰ A scheduled cron job has fired.\n\nMessage: %s", c.Message)
 	toolID := "cron_" + c.SessionKey()
-	s.injectSyntheticToolPair(ctx, iteration,
+	err := s.injectSyntheticToolPair(ctx, iteration,
 		"cron_fired", toolID,
 		"A scheduled cron job has fired. Let me process it.",
 		content, "cron", 0,
 	)
-	log.Ctx(ctx).WithField("session_key", c.SessionKey()).Info("Injected cron fired notification into Run loop")
+	if err == nil {
+		log.Ctx(ctx).WithField("session_key", c.SessionKey()).Info("Injected cron fired notification into Run loop")
+	}
+	return err
 }
 
 // injectQueuedUserMessage injects a user message that was delivered while the SubAgent
@@ -1654,25 +1721,28 @@ func (s *runState) injectCronFiredNotification(ctx context.Context, iteration in
 // SubAgent sees it between iterations. ReplyFn is called after injection to notify
 // the sender of success. The message content explicitly tells the SubAgent the delivery
 // was successful.
-func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m *tools.QueuedUserMessage) {
+func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m *tools.QueuedUserMessage) error {
 	toolName := "delivered_message"
 	toolID := fmt.Sprintf("delivered_%d_%d", iteration, time.Now().UnixNano())
 	content := fmt.Sprintf("📬 [消息已送达确认] 你收到了一条来自主 agent 的消息：\n\n%s\n\n✅ 此消息已成功送达，无需回复确认。", m.Content)
 
-	s.injectSyntheticToolPair(ctx, iteration,
+	err := s.injectSyntheticToolPair(ctx, iteration,
 		toolName, toolID,
 		"A message from the parent agent was delivered while I was working.",
 		content, "delivered_message", 0,
 	)
 
-	log.Ctx(ctx).WithFields(log.Fields{
-		"content_len": len(m.Content),
-		"iteration":   iteration,
-	}).Info("Injected queued user message into SubAgent Run loop")
+	if err == nil {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"content_len": len(m.Content),
+			"iteration":   iteration,
+		}).Info("Injected queued user message into SubAgent Run loop")
+	}
 
 	if m.ReplyFn != nil {
-		m.ReplyFn(nil)
+		m.ReplyFn(err)
 	}
+	return err
 }
 
 // buildMaxIterOutput creates the output for when max iterations is reached.

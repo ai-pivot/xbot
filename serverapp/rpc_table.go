@@ -2,6 +2,7 @@ package serverapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
@@ -67,13 +68,14 @@ func (h *RPCContext) ownOrAdmin(ctx context.Context, channel, chatID string) boo
 	if channel == "" || chatID == "" {
 		return false
 	}
-	if channel == "web" && chatID == rpcBizID(ctx) {
-		return true
-	}
-	// A newly created Web chat is recorded in user_chats before its first
-	// message or CWD update creates the corresponding tenant row.
-	if channel == "web" && h.webChatOwnedBySender(chatID, rpcAuthID(ctx)) {
-		return true
+	if channel == "web" {
+		exists, owned := h.webSessionOwnership(chatID, rpcAuthID(ctx), rpcUserID(ctx))
+		if exists {
+			return owned
+		}
+		// The default Web chat has no row before first use. It is the only
+		// resource that may be authorized by its self ID and created lazily.
+		return owned && chatID == rpcBizID(ctx)
 	}
 	if channel == "agent" && h.agentSessionOwnedBySender(chatID, rpcAuthID(ctx), rpcUserID(ctx)) {
 		return true
@@ -99,10 +101,10 @@ func (h *RPCContext) resolveOwnedSession(ctx context.Context, channel, chatID, d
 }
 
 func (h *RPCContext) agentSessionOwnedBySender(chatID, senderID string, userID int64) bool {
-	if senderID == "" || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
+	if senderID == "" || userID <= 0 || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
 		return false
 	}
-	if !h.agentTenantExists(chatID) {
+	if !h.sessionOwnedByUser("agent", chatID, userID) {
 		return false
 	}
 	for depth := 0; depth < 32; depth++ {
@@ -112,9 +114,10 @@ func (h *RPCContext) agentSessionOwnedBySender(chatID, senderID string, userID i
 		}
 		switch parentChannel {
 		case "web":
-			return parentChatID == senderID || h.webChatOwnedBySender(parentChatID, senderID)
+			exists, owned := h.webSessionOwnership(parentChatID, senderID, userID)
+			return exists && owned
 		case "agent":
-			if !h.agentTenantExists(parentChatID) {
+			if !h.sessionOwnedByUser("agent", parentChatID, userID) {
 				return false
 			}
 			chatID = parentChatID
@@ -123,14 +126,6 @@ func (h *RPCContext) agentSessionOwnedBySender(chatID, senderID string, userID i
 		}
 	}
 	return false
-}
-
-func (h *RPCContext) agentTenantExists(chatID string) bool {
-	var count int
-	err := h.Ag.MultiSession().DB().Conn().QueryRow(
-		`SELECT COUNT(*) FROM tenants WHERE channel = 'agent' AND chat_id = ?`, chatID,
-	).Scan(&count)
-	return err == nil && count > 0
 }
 
 func sessionKeyParent(key string) (string, string) {
@@ -146,16 +141,149 @@ func sessionKeyParent(key string) (string, string) {
 	return parts[0], parts[1]
 }
 
-func (h *RPCContext) webChatOwnedBySender(chatID, senderID string) bool {
-	if senderID == "" || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
+// webSessionOwnership resolves existing Web resources to one canonical user.
+// The bools report (resource exists, canonical identity is authorized). Query
+// failures are fail-closed and therefore report an existing, unowned resource.
+func (h *RPCContext) webSessionOwnership(chatID, senderID string, userID int64) (bool, bool) {
+	if chatID == "" || userID <= 0 || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
+		return true, false
+	}
+	db := h.Ag.MultiSession().DB().Conn()
+	var tenantOwner int64
+	tenantExists := true
+	if err := db.QueryRow(
+		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = 'web' AND chat_id = ?`, chatID,
+	).Scan(&tenantOwner); err != nil {
+		if err != sql.ErrNoRows {
+			return true, false
+		}
+		tenantExists = false
+	}
+
+	rows, err := db.Query(`
+		SELECT uc.sender_id, COALESCE(uc.user_id, 0), COALESCE(ui.user_id, 0)
+		FROM user_chats uc
+		LEFT JOIN user_identities ui
+			ON ui.channel = uc.channel AND ui.channel_user_id = uc.sender_id
+		WHERE uc.channel = 'web' AND uc.chat_id = ?
+	`, chatID)
+	if err != nil {
+		return true, false
+	}
+	defer rows.Close()
+	chatExists := false
+	var chatOwner int64
+	for rows.Next() {
+		chatExists = true
+		var rowSender string
+		var storedOwner, identityOwner int64
+		if err := rows.Scan(&rowSender, &storedOwner, &identityOwner); err != nil {
+			return true, false
+		}
+		if storedOwner > 0 && identityOwner > 0 && storedOwner != identityOwner {
+			return true, false
+		}
+		resolvedOwner := storedOwner
+		if resolvedOwner == 0 {
+			resolvedOwner = identityOwner
+		}
+		// Legacy user_chats rows can predate user_id. The authenticated
+		// sender has already been resolved to userID in the RPC context.
+		if resolvedOwner == 0 && rowSender == senderID {
+			resolvedOwner = userID
+		}
+		if resolvedOwner == 0 || (chatOwner != 0 && chatOwner != resolvedOwner) {
+			return true, false
+		}
+		chatOwner = resolvedOwner
+	}
+	if err := rows.Err(); err != nil {
+		return true, false
+	}
+	if err := rows.Close(); err != nil {
+		return true, false
+	}
+
+	var channelIdentityOwner int64
+	if err := db.QueryRow(`
+		SELECT user_id FROM user_identities
+		WHERE channel = 'web' AND channel_user_id = ?
+	`, chatID).Scan(&channelIdentityOwner); err != nil && err != sql.ErrNoRows {
+		return true, false
+	}
+	if !tenantExists && !chatExists {
+		return false, channelIdentityOwner == userID
+	}
+	if tenantOwner > 0 && chatOwner > 0 && tenantOwner != chatOwner {
+		return true, false
+	}
+	owner := tenantOwner
+	if owner == 0 {
+		owner = chatOwner
+	}
+	if owner == 0 {
+		// Legacy default sessions may have a tenant but no user_chats row.
+		// Resolve their channel identity instead of trusting chatID equality.
+		owner = channelIdentityOwner
+	}
+	return true, owner == userID
+}
+
+func (h *RPCContext) ownHistoryOrAdmin(ctx context.Context, channel, chatID string) bool {
+	if isAdmin(ctx) {
+		return true
+	}
+	agentRoot := channel == "agent"
+	userID := rpcUserID(ctx)
+	if agentRoot && userID <= 0 {
 		return false
 	}
-	var count int
-	err := h.Ag.MultiSession().DB().Conn().QueryRow(
-		`SELECT COUNT(*) FROM user_chats WHERE channel = 'web' AND sender_id = ? AND chat_id = ?`,
-		senderID, chatID,
-	).Scan(&count)
-	return err == nil && count > 0
+	// Agent sessions inherit access from their actual root session. Verify each
+	// agent tenant exists before walking to its encoded parent; a matching chatID
+	// alone is never proof of ownership.
+	for depth := 0; channel == "agent" && depth < 32; depth++ {
+		if !h.sessionOwnedByUser("agent", chatID, userID) {
+			return false
+		}
+		parentChannel, parentChatID, ok := parentSessionKey(chatID)
+		if !ok {
+			return false
+		}
+		channel, chatID = parentChannel, parentChatID
+	}
+	if channel == "agent" {
+		return false
+	}
+	if agentRoot && channel == "web" {
+		exists, owned := h.webSessionOwnership(chatID, rpcAuthID(ctx), rpcUserID(ctx))
+		return exists && owned
+	}
+	return h.ownOrAdmin(ctx, channel, chatID)
+}
+
+func (h *RPCContext) resolveOwnedHistorySession(ctx context.Context, channel, chatID, defaultChannel string) (string, string, error) {
+	if channel == "" {
+		channel = defaultChannel
+	}
+	if chatID == "" {
+		chatID = rpcBizID(ctx)
+	}
+	if !h.ownHistoryOrAdmin(ctx, channel, chatID) {
+		return "", "", fmt.Errorf("access denied")
+	}
+	return channel, chatID, nil
+}
+
+func parentSessionKey(key string) (string, string, bool) {
+	slash := strings.LastIndex(key, "/")
+	if slash <= 0 {
+		return "", "", false
+	}
+	parts := strings.SplitN(key[:slash], ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // sessionOwnedByUser checks if a tenant (channel+chatID) has owner_user_id == userID.
@@ -974,13 +1102,29 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		return dump, nil
 	})
+	t[agent.MethodContinueInteractiveSession] = rpc1void(func(ctx context.Context, p struct {
+		FullKey string `json:"full_key"`
+		Content string `json:"content"`
+	}) error {
+		if p.FullKey == "" {
+			return fmt.Errorf("full_key is required")
+		}
+		if strings.TrimSpace(p.Content) == "" {
+			return fmt.Errorf("content is required")
+		}
+		_, fullKey, err := h.resolveOwnedHistorySession(ctx, "agent", p.FullKey, "agent")
+		if err != nil {
+			return err
+		}
+		return h.Ag.ContinueInteractiveSession(ctx, fullKey, p.Content, rpcBizID(ctx))
+	})
 
 	// ── History ──
 	t["get_history"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 	}) (any, error) {
-		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		channelName, chatID, err := h.resolveOwnedHistorySession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
 			return nil, err
 		}
@@ -1000,11 +1144,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			if err != nil {
 				return nil, err
 			}
-			msgs, err := sess.GetMessages()
+			records, err := sess.GetFullHistory()
 			if err != nil {
 				return nil, err
 			}
-			return channel.ConvertMessagesToHistory(msgs), nil
+			return channel.ConvertHistoryRecords(records), nil
 		}()
 		if err != nil {
 			return nil, err
@@ -1095,21 +1239,19 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		return map[string]int64{"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens}, nil
 	})
-	t["trim_history"] = rpc1void(func(ctx context.Context, p struct {
-		Channel string `json:"channel"`
-		ChatID  string `json:"chat_id"`
-		Cutoff  int64  `json:"cutoff"`
-	}) error {
-		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+	t["rewind_history"] = rpc1strict(func(ctx context.Context, p struct {
+		Channel   string `json:"channel"`
+		ChatID    string `json:"chat_id"`
+		HistoryID int64  `json:"history_id"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedHistorySession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
-			return err
+			return nil, err
 		}
-		p.Channel, p.ChatID = channelName, chatID
-		var cutoff time.Time
-		if p.Cutoff > 0 {
-			cutoff = time.Unix(p.Cutoff, 0)
+		if p.HistoryID <= 0 {
+			return nil, fmt.Errorf("history_id is required")
 		}
-		return h.Ag.MultiSession().TrimHistory(p.Channel, p.ChatID, cutoff)
+		return h.Ag.RewindHistory(channelName, chatID, p.HistoryID)
 	})
 
 	// ── Status ──

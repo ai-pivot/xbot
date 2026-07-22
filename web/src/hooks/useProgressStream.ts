@@ -60,6 +60,8 @@ interface UseProgressStreamOptions {
   onHistoryCompacted?: () => void
   /** Called when the server signals a slash-command session reset (/new). */
   onSessionReset?: () => void
+  /** Called after another client rewinds this exact session. */
+  onHistoryRewound?: (targetHistoryID?: number, eventSeq?: number) => void
   /**
    * Optional live-progress snapshot from history (active_progress). When the
    * tracked chat is busy (phase != done) this hydrates the store so a page
@@ -85,31 +87,28 @@ export interface UseProgressStreamResult {
 }
 
 /**
- * 3-layer chatID check: some messages carry chat_id at the top level (text),
- * some in msg.session.chat_id (session events), and some in msg.progress.chat_id
- * with a "web:" prefix (stream_content, progress_structured). Strip the prefix
- * and compare.
- *
- * If the message carries NO chat_id in any layer, it passes through (legacy
- * behavior — early events may not carry chat_id).
+ * Resolve the event's authoritative identity layer, then require an exact
+ * channel+chat match. SSEConnection annotates bare source payloads; legacy
+ * WebSocket payloads must provide either an explicit channel or a
+ * channel-qualified chat_id.
  */
 export function matchesChatID(msg: WSMessage, targetChatID: string, targetChannel = 'web'): boolean {
-  // If no chat_id anywhere, don't filter (legacy behavior)
-  if (!msg.chat_id && !msg.session?.chat_id && !msg.progress?.chat_id) {
-    return true
+  if (msg.type === 'session' && (msg.session?.chat_id || msg.session?.channel)) {
+    return matchesSessionIdentity(msg.session?.chat_id, msg.session?.channel ?? msg.channel, targetChatID, targetChannel)
   }
-  // Layer 1: top-level chat_id
-  if (msg.chat_id === targetChatID) return true
-  if (msg.chat_id === `${targetChannel}:${targetChatID}`) return true
-  // Layer 2: session.chat_id
-  if (msg.session?.chat_id === targetChatID) return true
-  if (msg.session?.chat_id === `${targetChannel}:${targetChatID}`) return true
-  // Layer 3: progress.chat_id may be bare or channel-qualified.
-  if (msg.progress?.chat_id) {
-    const progressChatID = String(msg.progress.chat_id)
-    if (progressChatID === targetChatID || progressChatID === `${targetChannel}:${targetChatID}`) return true
+  if (
+    (msg.type === 'progress_structured' || msg.type === 'stream_content' || msg.type === 'sync_progress') &&
+    msg.progress?.chat_id
+  ) {
+    return matchesSessionIdentity(String(msg.progress.chat_id), msg.channel, targetChatID, targetChannel)
   }
-  return false
+  return matchesSessionIdentity(msg.chat_id, msg.channel, targetChatID, targetChannel)
+}
+
+function matchesSessionIdentity(rawChatID: string | undefined, channel: string | undefined, targetChatID: string, targetChannel: string): boolean {
+  if (!rawChatID) return false
+  if (rawChatID === `${targetChannel}:${targetChatID}`) return true
+  return rawChatID === targetChatID && channel === targetChannel
 }
 
 export function useProgressStream({
@@ -118,6 +117,7 @@ export function useProgressStream({
   onAssistantComplete,
   onHistoryCompacted,
   onSessionReset,
+  onHistoryRewound,
   initialProgress,
   ws,
   disabled = false,
@@ -136,6 +136,8 @@ export function useProgressStream({
   compactedRef.current = onHistoryCompacted
   const resetRef = useRef(onSessionReset)
   resetRef.current = onSessionReset
+  const rewoundRef = useRef(onHistoryRewound)
+  rewoundRef.current = onHistoryRewound
 
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
@@ -196,10 +198,9 @@ export function useProgressStream({
       }
       return
     }
-    // Don't re-hydrate after finalization — the turn is over, and the
-    // server's active_progress may be stale (not yet cleaned up). Only
-    // hydrate if we haven't started receiving live events for this turn
-    // (finalizedRef is false AND store is empty = fresh load/reconnect).
+    // A completed turn can briefly remain in active_progress while its final
+    // history reload races server cleanup. Only an explicit new-turn event may
+    // reopen hydration after finalization.
     if (finalizedRef.current) return
     const live = historyProgressToLive(initialProgress)
     // initialProgress comes from the server's authoritative active_progress
@@ -225,14 +226,14 @@ export function useProgressStream({
   useEffect(() => {
     if (disabled) return
     const offMessage = ws.onMessage((msg: WSMessage) => {
-      // 3-layer chatID filtering.
-      if (chatIDRef.current && !matchesChatID(msg, chatIDRef.current, channel)) {
+      const targetChatID = chatIDRef.current
+      if (!targetChatID || !matchesChatID(msg, targetChatID, channel)) {
         return
       }
-      if (chatIDRef.current && isTerminalProgressMessage(msg)) {
-        clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
+      if (isTerminalProgressMessage(msg)) {
+        clearProgressSnapshot(sessionCacheKey(channel, targetChatID))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, rewoundRef, finalizedRef)
     })
     return offMessage
   }, [ws, store, disabled, channel])
@@ -289,6 +290,7 @@ function handleProgressMessage(
   completeRef: React.MutableRefObject<UseProgressStreamOptions['onAssistantComplete']>,
   compactedRef: React.MutableRefObject<UseProgressStreamOptions['onHistoryCompacted']>,
   resetRef: React.MutableRefObject<UseProgressStreamOptions['onSessionReset']>,
+  rewoundRef: React.MutableRefObject<UseProgressStreamOptions['onHistoryRewound']>,
   finalizedRef?: React.MutableRefObject<boolean>,
 ): void {
   switch (msg.type) {
@@ -434,6 +436,12 @@ function handleProgressMessage(
       return
     }
 
+    case 'resync_required': {
+      if (finalizedRef) finalizedRef.current = false
+      store.reset()
+      return
+    }
+
     case 'session': {
       const action = msg.session?.action
 
@@ -443,6 +451,7 @@ function handleProgressMessage(
         // re-enters the same turn, and prior iterations must survive.
         // Only clear streaming fields, keep iterationHistory.
         store.resetStreamingState()
+        store.replace({ phase: 'busy', streaming: true })
         return
       }
 
@@ -450,6 +459,13 @@ function handleProgressMessage(
       if (action === 'HistoryCompacted') {
         store.reset()
         compactedRef.current?.()
+        return
+      }
+
+      if (action === 'history_rewound') {
+        if (finalizedRef) finalizedRef.current = false
+        store.reset()
+        rewoundRef.current?.(msg.session?.target_history_id, msg.seq)
         return
       }
 
@@ -484,8 +500,9 @@ function handleProgressMessage(
 }
 
 function isTerminalProgressMessage(msg: WSMessage): boolean {
+  if (msg.type === 'resync_required') return true
   if (msg.type === 'text') return true
   if (msg.progress?.phase === 'done') return true
   if (msg.type !== 'session') return false
-  return ['busy', 'idle', 'deleted', 'HistoryCompacted'].includes(msg.session?.action ?? '')
+  return ['busy', 'idle', 'deleted', 'HistoryCompacted', 'history_rewound'].includes(msg.session?.action ?? '')
 }

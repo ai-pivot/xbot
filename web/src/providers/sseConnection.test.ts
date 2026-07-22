@@ -8,8 +8,8 @@ import {
   progressSnapshotCache,
   sessionCacheKey,
 } from '@/lib/webCache'
-import { SSEConnectionImpl, SSE_EVENT_TYPES } from './sseConnection'
-import type { WSMessage } from '@/types/shared'
+import { MultiSSEManager, SSEConnectionImpl, SSE_EVENT_TYPES } from './sseConnection'
+import type { ProgressEvent, SessionEvent, WSMessage } from '@/types/shared'
 
 vi.mock('@/lib/api', () => ({
   postAPI: vi.fn(),
@@ -119,6 +119,84 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('annotates each concurrent source with its exact channel and chat identity', () => {
+    const manager = new MultiSSEManager()
+    const messages: WSMessage[] = []
+    const sessions: SessionEvent[] = []
+    const progressEvents: ProgressEvent[] = []
+    manager.onMessage((message) => messages.push(message))
+    manager.onSession((event) => sessions.push(event))
+    manager.onProgress((event) => progressEvents.push(event))
+
+    manager.addSubscription('shared', 'web')
+    manager.addSubscription('shared', 'cli')
+    manager.addSubscription('shared', 'agent')
+    const [webSource, cliSource, agentSource] = MockEventSource.instances
+
+    webSource.emit('text', {
+      type: 'text',
+      content: 'reset',
+      metadata: { session_reset: 'true' },
+    })
+    cliSource.emit('user_echo', { type: 'user_echo', content: 'cli echo' })
+    agentSource.emit('session', {
+      type: 'session',
+      session: { action: 'history_rewound', target_history_id: 42 },
+    })
+    cliSource.emit('progress_structured', {
+      type: 'progress_structured',
+      progress: { phase: 'tool' },
+    })
+
+    expect(messages[0]).toMatchObject({
+      type: 'text',
+      channel: 'web',
+      chat_id: 'shared',
+      metadata: { session_reset: 'true' },
+    })
+    expect(messages[1]).toMatchObject({
+      type: 'user_echo',
+      channel: 'cli',
+      chat_id: 'shared',
+    })
+    expect(messages[2]).toMatchObject({
+      type: 'session',
+      channel: 'agent',
+      chat_id: 'shared',
+      session: {
+        action: 'history_rewound',
+        channel: 'agent',
+        chat_id: 'shared',
+        target_history_id: 42,
+      },
+    })
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        action: 'history_rewound',
+        channel: 'agent',
+        chat_id: 'shared',
+      }),
+    ])
+    expect(progressEvents).toEqual([
+      expect.objectContaining({ phase: 'tool', chat_id: 'shared' }),
+    ])
+    manager.dispose()
+  })
+
+  it('applies a history cursor to the matching extra channel connection', () => {
+    const manager = new MultiSSEManager()
+    manager.addSubscription('shared', 'web')
+    manager.addSubscription('shared', 'cli')
+    const [webSource, cliSource] = MockEventSource.instances
+
+    manager.setLastSeq('shared', 9, 'cli')
+
+    expect(webSource.closed).toBe(false)
+    expect(cliSource.closed).toBe(true)
+    expect(MockEventSource.instances[2].url).toBe('/api/sse?chat_id=shared&channel=cli&last_event_id=9')
+    manager.dispose()
+  })
+
   it('replays from a zero cursor established by history', () => {
     const connection = new SSEConnectionImpl()
     const received: WSMessage[] = []
@@ -200,7 +278,7 @@ describe('SSEConnectionImpl', () => {
       progress: { phase: 'tool' },
     })
 
-    expect(received.map((message) => message.seq)).toEqual([3, 4])
+    expect(received.filter((message) => message.type !== 'history_gap').map((message) => message.seq)).toEqual([3, 4])
     const cacheKey = sessionCacheKey('web', 'chat-a')
     expect(lastSeqCache.get(cacheKey)).toBe(4)
     expect(progressSnapshotCache.get(cacheKey)).toMatchObject({ phase: 'tool' })
@@ -223,6 +301,61 @@ describe('SSEConnectionImpl', () => {
     source.emit('text', { type: 'text', seq: 2, content: 'done' })
 
     expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
+    connection.dispose()
+  })
+
+  it('clears cached progress and advances its generation on history rewind', () => {
+    const connection = new SSEConnectionImpl()
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    source.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 1,
+      progress: { phase: 'tool', completed_tools: [{ name: 'Read' }] },
+    })
+    const cacheKey = sessionCacheKey('web', 'chat-a')
+    const generation = getProgressGeneration(cacheKey)
+
+    source.emit('session', {
+      type: 'session',
+      seq: 2,
+      session: { action: 'history_rewound', channel: 'web', chat_id: 'chat-a', target_history_id: 42 },
+    })
+
+    expect(progressSnapshotCache.has(cacheKey)).toBe(false)
+    expect(getProgressGeneration(cacheKey)).toBeGreaterThan(generation)
+    connection.dispose()
+  })
+
+  it('dispatches explicit resync without synthesizing a duplicate local gap', () => {
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a', 'cli')
+    const source = MockEventSource.instances[0]
+    source.open()
+    source.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 1,
+      progress: { phase: 'tool', completed_tools: [{ name: 'Read' }] },
+    })
+    const cacheKey = sessionCacheKey('cli', 'chat-a')
+    const generation = getProgressGeneration(cacheKey)
+
+    source.emit('resync_required', {
+      type: 'resync_required',
+      seq: 4,
+      channel: 'cli',
+      chat_id: 'chat-a',
+    })
+
+    expect(received.map((message) => message.type)).toEqual([
+      'progress_structured',
+      'resync_required',
+    ])
+    expect(progressSnapshotCache.has(cacheKey)).toBe(false)
+    expect(getProgressGeneration(cacheKey)).toBeGreaterThan(generation)
     connection.dispose()
   })
 
@@ -394,7 +527,7 @@ describe('SSEConnectionImpl', () => {
     expect(received).toEqual([
       expect.objectContaining({
         type: 'progress_structured',
-        progress: { phase: 'done' },
+        progress: expect.objectContaining({ phase: 'done' }),
       }),
     ])
     expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
@@ -424,7 +557,7 @@ describe('SSEConnectionImpl', () => {
     resolveProgress({ phase: 'tool', iteration: 1 })
     await Promise.resolve()
 
-    expect(received.map((message) => message.content)).toEqual(['gap event', 'newer event'])
+    expect(received.filter((message) => message.type !== 'history_gap').map((message) => message.content)).toEqual(['gap event', 'newer event'])
     expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
     connection.dispose()
   })
@@ -487,7 +620,9 @@ describe('SSEConnectionImpl', () => {
     resolvers[1]({ phase: 'tool', iteration: 2 })
     await Promise.resolve()
     expect(received.filter((message) => message.type === 'progress_structured')).toEqual([
-      expect.objectContaining({ progress: { phase: 'tool', iteration: 2 } }),
+      expect.objectContaining({
+        progress: expect.objectContaining({ phase: 'tool', iteration: 2 }),
+      }),
     ])
     connection.dispose()
   })
@@ -515,7 +650,7 @@ describe('SSEConnectionImpl', () => {
     resolveProgress({ phase: 'tool', iteration: 1 })
     await Promise.resolve()
 
-    expect(received).toHaveLength(1)
+    expect(received.filter((message) => message.type !== 'history_gap')).toHaveLength(1)
     expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
     expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-b'))).toBe(false)
     connection.dispose()
@@ -541,11 +676,47 @@ describe('SSEConnectionImpl', () => {
       method: 'get_active_progress',
       params: { channel: 'web', chat_id: 'chat-a' },
     })
+    expect(received).toContainEqual(expect.objectContaining({
+      type: 'history_gap',
+      channel: 'web',
+      chat_id: 'chat-a',
+      metadata: { from_seq: '1', to_seq: '4' },
+    }))
     expect(received.at(-1)).toMatchObject({
       type: 'progress_structured',
       progress: { phase: 'tool', iteration: 3 },
     })
     connection.dispose()
+  })
+
+  it('reference-counts duplicate panel subscriptions for the same session', () => {
+    const manager = new MultiSSEManager()
+    const firstID = manager.addSubscription('chat-a', 'web')
+    const secondID = manager.addSubscription('chat-a', 'web')
+    const source = MockEventSource.instances[0]
+
+    expect(MockEventSource.instances).toHaveLength(1)
+    manager.removeSubscription(firstID)
+    expect(source.closed).toBe(false)
+
+    manager.removeSubscription(secondID)
+    expect(source.closed).toBe(true)
+    manager.dispose()
+  })
+
+  it('does not retain an unsubscribed handler on connections created later', () => {
+    const manager = new MultiSSEManager()
+    const handler = vi.fn()
+    const off = manager.onMessage(handler)
+    manager.addSubscription('chat-a', 'web')
+    manager.addSubscription('chat-b', 'web')
+    const extraSource = MockEventSource.instances[1]
+
+    off()
+    extraSource.emit('text', { type: 'text', seq: 1, content: 'after unmount' })
+
+    expect(handler).not.toHaveBeenCalled()
+    manager.dispose()
   })
 
   it('requests active progress when replay overflow starts above a zero cursor', async () => {
@@ -587,6 +758,33 @@ describe('SSEConnectionImpl', () => {
 
     expect(received).toHaveLength(1)
     expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(1)
+    connection.dispose()
+  })
+
+  it('accepts an equal sequence after an unsequenced server resync', () => {
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 1)
+
+    source.emit('resync_required', { type: 'resync_required', metadata: { baseline_seq: '0' } }, '1')
+    source.emit('session', {
+      type: 'session',
+      seq: 1,
+      session: { action: 'history_rewound', channel: 'web', chat_id: 'chat-a', target_history_id: 42 },
+    })
+
+    expect(received.map((message) => message.type)).toEqual(['resync_required', 'session'])
+    expect(received[1]).toMatchObject({
+      seq: 1,
+      session: { action: 'history_rewound', target_history_id: 42 },
+    })
+    expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(1)
+    connection.setLastSeq('chat-a', 1)
+    expect(MockEventSource.instances).toHaveLength(1)
     connection.dispose()
   })
 })

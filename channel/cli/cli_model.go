@@ -88,18 +88,15 @@ type cliModel struct {
 	userScrolledUp bool
 
 	// --- Agent state ---
-	agentTurnID       uint64                       // monotonically increasing turn counter
-	typing            bool                         // agent 是否正在回复
-	replyProcessed    bool                         // true = reply (or cancel ack) has been fully processed for current turn
-	typingStartTime   time.Time                    // 本次处理开始时间
-	inputReady        bool                         // 输入就绪状态（agent 回复期间禁止发送）
-	sendInboundFn     func(ch.InboundMsg) bool     // forward to server via backend.SendInbound
-	tempStatus        string                       // 临时状态提示（自动过期）
-	pendingCmds       []tea.Cmd                    // commands queued by helpers (auto-drained in Update)
-	shouldQuit        bool                         // Smart quit: quit after current operation completes
-	trimHistoryFn     func(cutoff time.Time) error // /rewind: delete DB messages at or after cutoff timestamp
-	resetTokenStateFn func()                       // /rewind: clear stale prompt/completion token counts
-
+	agentTurnID     uint64                   // monotonically increasing turn counter
+	typing          bool                     // agent 是否正在回复
+	replyProcessed  bool                     // true = reply (or cancel ack) has been fully processed for current turn
+	typingStartTime time.Time                // 本次处理开始时间
+	inputReady      bool                     // 输入就绪状态（agent 回复期间禁止发送）
+	sendInboundFn   func(ch.InboundMsg) bool // forward to server via backend.SendInbound
+	tempStatus      string                   // 临时状态提示（自动过期）
+	pendingCmds     []tea.Cmd                // commands queued by helpers (auto-drained in Update)
+	shouldQuit      bool                     // Smart quit: quit after current operation completes
 	// --- Message queue (typing 期间排队的消息) ---
 	messageQueue   []queuedMsg // 排队等待发送的消息（绑定 chatID 防止跨 session 误投）
 	queueEditing   bool        // true = 正在编辑/查看最后一条排队消息
@@ -173,11 +170,15 @@ type cliModel struct {
 	fileCompActive  bool     // true = Tab 循环中，阻止重新 glob
 
 	// --- §9 Rewind (/rewind command) ---
-	rewindMode      bool                      // true = rewind overlay active
-	rewindItems     []rewindItem              // candidate user messages for rewind selection
-	rewindCursor    int                       // selected index in rewindItems
-	rewindResult    *protocol.RewindResult    // result of the last rewind operation (for display)
-	checkpointState *protocol.CheckpointState // file checkpoint state for rewind file rollback (nil = no file tracking)
+	rewindMode       bool                      // true = rewind overlay active
+	rewindItems      []rewindItem              // candidate user messages for rewind selection
+	rewindCursor     int                       // selected index in rewindItems
+	rewindResult     *protocol.RewindResult    // result of the last rewind operation (for display)
+	checkpointState  *protocol.CheckpointState // file checkpoint state for rewind file rollback (nil = no file tracking)
+	rewindGeneration uint64
+	rewindSync       rewindWarningSync
+	rewindPending    bool
+	rewindPendingGen uint64
 
 	// --- §10 TODO 进度条 ---
 	todos            []protocol.TodoItem // 从 progress 事件同步的 TODO 列表
@@ -242,8 +243,13 @@ type cliModel struct {
 	savedSessions    map[string]*sessionState
 	pendingUserMsg   *cliMessage       // most recent user message sent but not yet confirmed in DB
 	pendingSuRestore *suHistoryLoadMsg // pre-start restore data, consumed by Init()
-	turnCancelled    bool              // true after Ctrl+C — prevents auto-start on stale progress
-	turnAutoStarted  bool              // true when turn was started by progress auto-start (no user message yet).
+	// historyMutationGeneration invalidates async DB snapshots when a live
+	// message for the active session arrives before the snapshot is applied.
+	historyMutationGeneration uint64
+	sessionSnapshotGeneration uint64
+	historyReloadGeneration   uint64
+	turnCancelled             bool // true after Ctrl+C — prevents auto-start on stale progress
+	turnAutoStarted           bool // true when turn was started by progress auto-start (no user message yet).
 	// handleInjectedUserMsg checks this to claim the auto-started turn
 	// instead of queuing (which would create a second assistant).
 	cancelTargetTurnID uint64 // turnID being cancelled; guards stale cancel ack from modifying wrong message
@@ -306,10 +312,15 @@ type queuedMsg struct {
 }
 
 type cliMessage struct {
-	role      string
-	content   string
-	timestamp time.Time
-	isPartial bool
+	historyID   int64
+	recordType  string
+	compactedBy int64
+	displayOnly bool
+	hidden      bool
+	role        string
+	content     string
+	timestamp   time.Time
+	isPartial   bool
 	// --- turn identification for deterministic rendering ---
 	turnID uint64 // agentTurnID when this message was created (0 = not agent-generated)
 	// --- thinking/reasoning content (displayed in a collapsible box) ---
@@ -464,6 +475,16 @@ type cliSessionStateMsg struct {
 	event protocol.SessionEvent
 }
 
+// cliAgentContinueAcceptedMsg reports whether the continuation RPC accepted
+// the new turn. The interactive Run remains asynchronous; PhaseDone and the
+// existing history reload paths publish its durable result later.
+type cliAgentContinueAcceptedMsg struct {
+	channelName string
+	chatID      string
+	content     string
+	err         error
+}
+
 // liveSessionState holds event-driven session state received from the server
 // via SessionEvent push. This provides instant sidebar updates (<100ms)
 // instead of waiting for the safety-net poll. Keyed by session ID:
@@ -609,55 +630,32 @@ func (m *cliModel) debugCaptureTick() tea.Cmd {
 
 // suLoadHistoryCmd 异步加载 /su 目标用户的历史消息
 func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
+	return m.loadSessionSnapshotCmd(false)
+}
+
+func (m *cliModel) authoritativeSessionReloadCmd() tea.Cmd {
+	return m.loadSessionSnapshotCmd(true)
+}
+
+func (m *cliModel) loadSessionSnapshotCmd(authoritative bool) tea.Cmd {
 	chatID := m.chatID
 	channelName := m.channelName
+	m.sessionSnapshotGeneration++
+	snapshotGeneration := m.sessionSnapshotGeneration
+	mutationGeneration := m.historyMutationGeneration
 	progressFn := m.channel.config.GetActiveProgressFn
+	pendingAskUserFn := m.channel.config.GetPendingAskUserFn
 	todosFn := m.channel.config.GetTodosFn
 	tokenFn := m.channel.config.GetTokenStateFn
-
-	// Agent sessions: load from in-memory interactiveSubAgents (not DB).
-	if channelName == "agent" {
-		dumpFn := m.channel.config.AgentSessionDumpFn
-		llmStateFn := m.channel.config.AgentSessionLLMStateFn
-		if dumpFn != nil {
-			return func() tea.Msg {
-				history, err := dumpFn(chatID)
-				var activeProgress *protocol.ProgressEvent
-				if progressFn != nil {
-					// /su switch: request full history (fromIter=-1) — new session needs
-					// ALL iterations including iteration 0.
-					activeProgress = progressFn(channelName, chatID, protocol.FetchAll())
-				}
-				var todos []protocol.TodoItem
-				if todosFn != nil {
-					todos = todosFn(channelName, chatID)
-				}
-				// Fetch LLM state from agent for SubAgent session status bar
-				var modelName, subID string
-				var maxCtx, maxOut, tokPrompt, tokComp int64
-				var compRatio float64
-				if llmStateFn != nil {
-					modelName, subID, maxCtx, maxOut, compRatio, tokPrompt, tokComp = llmStateFn(chatID)
-				}
-				// Fallback token state from DB if agent didn't provide it
-				if tokPrompt == 0 && tokenFn != nil {
-					tokPrompt, tokComp = tokenFn(channelName, chatID)
-				}
-				return suHistoryLoadMsg{
-					history: history, err: err, channelName: channelName, chatID: chatID,
-					activeProgress: activeProgress, todos: todos,
-					tokenPrompt: tokPrompt, tokenCompletion: tokComp,
-					modelName: modelName, subscriptionID: subID, maxContextTokens: maxCtx,
-					maxOutputTokens: maxOut, compressRatio: compRatio,
-				}
-			}
-		}
-	}
 
 	loader := m.channel.config.DynamicHistoryLoader
 	if loader == nil {
 		return func() tea.Msg {
-			return suHistoryLoadMsg{err: fmt.Errorf("no dynamic history loader"), channelName: channelName, chatID: chatID}
+			return suHistoryLoadMsg{
+				err: fmt.Errorf("no dynamic history loader"), channelName: channelName, chatID: chatID,
+				authoritative: authoritative, mutationGuard: true,
+				mutationGeneration: mutationGeneration, snapshotGeneration: snapshotGeneration,
+			}
 		}
 	}
 	return func() tea.Msg {
@@ -669,25 +667,51 @@ func (m *cliModel) suLoadHistoryCmd() tea.Cmd {
 		if progressFn != nil {
 			activeProgress = progressFn(channelName, chatID, protocol.FetchAll())
 		}
+		var pendingAskUser *protocol.ProgressEvent
+		pendingAskUserKnown := pendingAskUserFn != nil
+		if pendingAskUserKnown {
+			pendingAskUser = pendingAskUserFn(channelName, chatID)
+		}
 		// Fetch server-side TODO list to overwrite local cache on first switch.
 		var todos []protocol.TodoItem
-		if todosFn != nil {
+		todosKnown := todosFn != nil
+		if todosKnown {
 			todos = todosFn(channelName, chatID)
 		}
-		// Fetch last token state so the context bar shows immediately
-		// even when the session is idle (no active turn).
+		// Agent runtime state supplements canonical persisted history with model
+		// and token information used by the status bar.
+		var modelName, subscriptionID string
+		var maxContextTokens, maxOutputTokens int64
+		var compressRatio float64
 		var tokenPrompt, tokenCompletion int64
-		if tokenFn != nil {
+		if channelName == "agent" && m.channel.config.AgentSessionLLMStateFn != nil {
+			modelName, subscriptionID, maxContextTokens, maxOutputTokens, compressRatio, tokenPrompt, tokenCompletion =
+				m.channel.config.AgentSessionLLMStateFn(chatID)
+		}
+		// Fall back to persisted token state when no live Agent state exists.
+		if tokenPrompt == 0 && tokenFn != nil {
 			tokenPrompt, tokenCompletion = tokenFn(channelName, chatID)
 		}
 		return suHistoryLoadMsg{
 			history: history, err: err,
-			channelName:     channelName,
-			chatID:          chatID,
-			activeProgress:  activeProgress,
-			tokenPrompt:     tokenPrompt,
-			tokenCompletion: tokenCompletion,
-			todos:           todos,
+			channelName:         channelName,
+			chatID:              chatID,
+			activeProgress:      activeProgress,
+			authoritative:       authoritative,
+			mutationGuard:       true,
+			mutationGeneration:  mutationGeneration,
+			snapshotGeneration:  snapshotGeneration,
+			tokenPrompt:         tokenPrompt,
+			tokenCompletion:     tokenCompletion,
+			todos:               todos,
+			todosKnown:          todosKnown,
+			pendingAskUser:      pendingAskUser,
+			pendingAskUserKnown: pendingAskUserKnown,
+			modelName:           modelName,
+			subscriptionID:      subscriptionID,
+			maxContextTokens:    maxContextTokens,
+			maxOutputTokens:     maxOutputTokens,
+			compressRatio:       compressRatio,
 		}
 	}
 }

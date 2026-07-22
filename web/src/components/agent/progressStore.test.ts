@@ -458,4 +458,21 @@ describe('dedupMessages', () => {
     const result = dedupMessages(msgs)
     expect(result).toEqual(msgs)
   })
+
+  it('keeps equal live content when it came from distinct event occurrences', () => {
+    const msgs = [
+      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'hello' },
+      { turnID: 0, role: 'assistant', eventSeq: 11, content: 'hello' },
+    ]
+    const result = dedupMessages(msgs)
+    expect(result).toHaveLength(2)
+  })
+
+  it('dedupes a replay of the same event occurrence', () => {
+    const msgs = [
+      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'partial' },
+      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'final' },
+    ]
+    expect(dedupMessages(msgs)).toEqual([msgs[1]])
+  })
 })

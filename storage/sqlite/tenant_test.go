@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -87,6 +88,35 @@ func TestChatAndTenantOwnership_BackfillsCanonicalUser(t *testing.T) {
 	}
 }
 
+func TestLinkedIdentityChatAndTenantUseExplicitCanonicalOwner(t *testing.T) {
+	db, err := Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	ownerUserID := createCanonicalIdentity(t, db, "feishu", "ou_linked")
+	chatID, err := NewChatService(db).CreateChatOwned("web", "ou_linked", "linked chat", ownerUserID)
+	if err != nil {
+		t.Fatalf("create linked chat: %v", err)
+	}
+	tenantID, err := NewTenantService(db).GetOrCreateTenantID("web", chatID)
+	if err != nil {
+		t.Fatalf("create linked tenant: %v", err)
+	}
+
+	var chatOwner, tenantOwner int64
+	if err := db.Conn().QueryRow(`SELECT COALESCE(user_id, 0) FROM user_chats WHERE channel = 'web' AND chat_id = ?`, chatID).Scan(&chatOwner); err != nil {
+		t.Fatalf("read linked chat owner: %v", err)
+	}
+	if err := db.Conn().QueryRow(`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE id = ?`, tenantID).Scan(&tenantOwner); err != nil {
+		t.Fatalf("read linked tenant owner: %v", err)
+	}
+	if chatOwner != ownerUserID || tenantOwner != ownerUserID {
+		t.Fatalf("linked ownership = chat %d tenant %d, want %d", chatOwner, tenantOwner, ownerUserID)
+	}
+}
+
 func TestTenantService_GetOrCreateTenantID(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 	db, err := Open(dbPath)
@@ -131,6 +161,43 @@ func TestTenantService_GetOrCreateTenantID(t *testing.T) {
 	}
 	if id4 == id1 || id4 == id3 {
 		t.Error("Expected different tenant ID for different channel")
+	}
+}
+
+func TestTenantService_ClaimOrVerifyTenantOwner(t *testing.T) {
+	db, err := Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewTenantService(db)
+	tenantID, err := svc.ClaimOrVerifyTenantOwner("cli", "claimed", 42)
+	if err != nil {
+		t.Fatalf("initial claim: %v", err)
+	}
+	verifiedID, err := svc.ClaimOrVerifyTenantOwner("cli", "claimed", 42)
+	if err != nil || verifiedID != tenantID {
+		t.Fatalf("same-owner verification = (%d, %v), want (%d, nil)", verifiedID, err, tenantID)
+	}
+	if _, err := svc.ClaimOrVerifyTenantOwner("cli", "claimed", 99); !errors.Is(err, ErrTenantOwnerConflict) {
+		t.Fatalf("foreign claim error = %v, want ErrTenantOwnerConflict", err)
+	}
+
+	if _, err := svc.GetOrCreateTenantID("cli", "legacy"); err != nil {
+		t.Fatalf("create legacy tenant: %v", err)
+	}
+	if _, err := svc.ClaimOrVerifyTenantOwner("cli", "legacy", 99); err != nil {
+		t.Fatalf("claim legacy tenant: %v", err)
+	}
+	var ownerUserID int64
+	if err := db.Conn().QueryRow(
+		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = 'cli' AND chat_id = 'legacy'`,
+	).Scan(&ownerUserID); err != nil {
+		t.Fatalf("read legacy owner: %v", err)
+	}
+	if ownerUserID != 99 {
+		t.Fatalf("legacy owner = %d, want 99", ownerUserID)
 	}
 }
 

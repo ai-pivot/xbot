@@ -36,13 +36,14 @@ import (
 
 func NewCLIChannel(cfg *CLIChannelConfig) *CLIChannel {
 	ch := &CLIChannel{
-		config:         cfg,
-		workDir:        cfg.WorkDir,
-		msgChan:        make(chan ch.OutboundMsg, cliMsgBufSize),
-		progressSignal: make(chan struct{}, 1),  // buffer-1: latest progress wins
-		tickCh:         make(chan tea.Msg, 1),   // buffered-1: tick, drop on full
-		asyncCh:        make(chan tea.Msg, 256), // unified async send: progress + outbound
-		stopCh:         make(chan struct{}),
+		config:          cfg,
+		workDir:         cfg.WorkDir,
+		msgChan:         make(chan queuedCLIOutbound, cliMsgBufSize),
+		progressSignal:  make(chan struct{}, 1),  // buffer-1: latest progress wins
+		connStateSignal: make(chan struct{}, 1),  // buffer-1: latest connection state wins
+		tickCh:          make(chan tea.Msg, 1),   // buffered-1: tick, drop on full
+		asyncCh:         make(chan tea.Msg, 256), // unified async send: progress + outbound
+		stopCh:          make(chan struct{}),
 	}
 	// Global ticker goroutine: sends cliTickMsg every 100ms to tickCh.
 	// tickCh is separate from asyncCh so tick flood never blocks business messages.
@@ -94,6 +95,9 @@ func (c *CLIChannel) Start() error {
 		}()
 	}
 
+	// RestoreSession uses programMu too. Hold it from model publication through
+	// applyPending so a pre-start restore cannot miss the only pending flush.
+	c.programMu.Lock()
 	// 初始化 Bubble Tea model
 	c.model = newCLIModel()
 	c.model.channel = c
@@ -129,6 +133,7 @@ func (c *CLIChannel) Start() error {
 
 	// Apply pending injections that were set before model existed
 	c.applyPending()
+	c.programMu.Unlock()
 
 	// Set identity fields on the model.
 	c.model.channelName = "cli"
@@ -190,21 +195,7 @@ func (c *CLIChannel) Start() error {
 	if c.config.HistoryLoader != nil {
 		if history, err := c.config.HistoryLoader(); err == nil && len(history) > 0 {
 			for _, hm := range history {
-				cm := cliMessage{
-					role:      hm.Role,
-					content:   hm.Content,
-					timestamp: hm.Timestamp,
-					isPartial: false,
-					dirty:     true,
-				}
-				// 映射迭代快照
-				if len(hm.Iterations) > 0 {
-					cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
-					for i, hi := range hm.Iterations {
-						cm.iterations[i] = cliIterationSnapshot(hi)
-					}
-				}
-				c.model.messages = append(c.model.messages, cm)
+				c.model.messages = append(c.model.messages, toCLIMessage(hm))
 			}
 			log.WithField("count", len(history)).Info("Restored session history")
 		} else if err != nil {
@@ -275,6 +266,11 @@ func (c *CLIChannel) Start() error {
 	// 启动 unified async drain goroutine: single sender to p.msgs
 	c.wg.Add(1)
 	clipanic.Go("ch.CLIChannel.handleAsyncDrain", c.handleAsyncDrain)
+
+	// Connection state is coalesced separately so SetConnState never writes the
+	// Bubble Tea model from a transport goroutine.
+	c.wg.Add(1)
+	clipanic.Go("ch.CLIChannel.handleConnStateDrain", c.handleConnStateDrain)
 
 	// 启动 tick drain goroutine: independent of asyncCh to prevent tick starvation
 	c.wg.Add(1)
@@ -363,12 +359,6 @@ func (c *CLIChannel) applyPending() {
 	m := c.model
 
 	// Simple callback assignments
-	if p.trimHistoryFn != nil {
-		m.trimHistoryFn = p.trimHistoryFn
-	}
-	if p.resetTokenStateFn != nil {
-		m.resetTokenStateFn = p.resetTokenStateFn
-	}
 	if p.checkpointState != nil {
 		m.checkpointState = p.checkpointState
 	}
@@ -418,15 +408,24 @@ func (c *CLIChannel) applyPending() {
 
 	// History/progress: convert to pendingSuRestore so Init() emits
 	// it as a suHistoryLoadMsg via the event loop.
-	if p.history != nil || p.progress != nil {
+	if p.sessionRestoreSet {
 		m.pendingSuRestore = &suHistoryLoadMsg{
-			history:        p.history,
-			channelName:    "cli",
-			chatID:         c.config.ChatID,
-			activeProgress: p.progress,
+			history:             p.history,
+			channelName:         "cli",
+			chatID:              c.config.ChatID,
+			activeProgress:      p.progress,
+			todos:               p.todos,
+			todosKnown:          true,
+			pendingAskUser:      p.pendingAskUser,
+			pendingAskUserKnown: p.pendingAskUserKnown,
+			authoritative:       true,
 		}
 		p.history = nil
 		p.progress = nil
+		p.todos = nil
+		p.pendingAskUser = nil
+		p.pendingAskUserKnown = false
+		p.sessionRestoreSet = false
 	}
 }
 
@@ -452,16 +451,60 @@ func (c *CLIChannel) Stop() {
 // Send 发送消息到 CLI（实现 ch.Channel 接口）
 func (c *CLIChannel) Send(msg ch.OutboundMsg) (string, error) {
 	msgID := strings.ReplaceAll(uuid.New().String(), "-", "")
+	if msg.Metadata != nil && msg.Metadata["session_reset"] == "true" {
+		c.deliveryMu.Lock()
+		c.advanceDeliveryEpochLocked()
+		ok := c.sendCritical(cliOutboundMsg{msg: msg})
+		c.deliveryMu.Unlock()
+		if !ok {
+			return "", errors.New("CLI channel stopped")
+		}
+		return msgID, nil
+	}
 
 	// 发送到消息通道，由 handleOutbound 处理
 	log.WithField("msg_id", msgID).WithField("content_len", len(msg.Content)).Debug("CLIChannel.Send: queuing")
+	c.deliveryMu.Lock()
+	queued := queuedCLIOutbound{msg: msg, epoch: c.deliveryEpoch}
 	select {
-	case c.msgChan <- msg:
+	case c.msgChan <- queued:
 	default:
 		log.Warn("CLI message channel full, dropping message")
 	}
+	c.deliveryMu.Unlock()
 
 	return msgID, nil
+}
+
+// sendCritical waits until a destructive state event enters asyncCh or the
+// channel stops. handleAsyncDrain remains the only goroutine that calls
+// program.Send.
+func (c *CLIChannel) sendCritical(msg tea.Msg) bool {
+	select {
+	case <-c.stopCh:
+		return false
+	default:
+	}
+	select {
+	case c.asyncCh <- msg:
+		return true
+	case <-c.stopCh:
+		return false
+	}
+}
+
+// advanceDeliveryEpochLocked invalidates work queued before a destructive
+// history barrier. The caller holds deliveryMu, which also serializes the
+// progress drain against the barrier's position in asyncCh.
+func (c *CLIChannel) advanceDeliveryEpochLocked() {
+	c.deliveryEpoch++
+	c.progressMu.Lock()
+	c.progressSlot = nil
+	c.progressMu.Unlock()
+	select {
+	case <-c.progressSignal:
+	default:
+	}
 }
 
 // SendProgress 发送结构化进度事件到 CLI（非阻塞）。
@@ -473,6 +516,8 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 	if payload == nil || c.program == nil {
 		return
 	}
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
 	if payload.ChatID == "" {
 		payload.ChatID = chatID
 	}
@@ -628,6 +673,8 @@ func (c *CLIChannel) SetProcessing(processing bool) {
 	if c.program == nil {
 		return
 	}
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
 	select {
 	case c.asyncCh <- cliProcessingMsg{processing: processing}:
 	default:
@@ -637,20 +684,26 @@ func (c *CLIChannel) SetProcessing(processing bool) {
 
 // SendSessionState delivers a server-pushed session state change event
 // (busy/idle, subagent started/stopped) to the BubbleTea Update loop.
-// Non-blocking — drops if asyncCh is full. The 5s safety-net poll will recover.
+// Ordinary state is best-effort. A history rewind blocks until queued so later
+// events cannot overtake its destructive reset.
 func (c *CLIChannel) SendSessionState(ev protocol.SessionEvent) {
-	if c.program == nil {
+	msg := cliSessionStateMsg{event: ev}
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
+	if ev.Action == "history_rewound" || ev.Action == "resync_required" {
+		c.advanceDeliveryEpochLocked()
+		c.sendCritical(msg)
 		return
 	}
-	select {
-	case c.asyncCh <- cliSessionStateMsg{event: ev}:
-	default:
+	if c.program != nil {
+		select {
+		case c.asyncCh <- msg:
+		default:
+		}
 	}
 }
 
 // SetConnState updates the connection state indicator in the header bar.
-// Writes directly to cliModel fields — bypasses ALL message channels (asyncCh,
-// program.Send) which are unreliable during disconnect (tick flood fills buffers).
 //
 // ConnState state machine (single source of truth):
 //
@@ -660,19 +713,18 @@ func (c *CLIChannel) SendSessionState(ev protocol.SessionEvent) {
 //	"reconnecting" ──(connect() success)──→ "connected"
 //
 // Rules:
-//  1. Only SetConnState modifies connState in the model
+//  1. Only Bubble Tea Update modifies connState after program startup
 //  2. View(), guards, splash only READ connState, never write
 //  3. There is NO showDisconnect or other flag — connState alone is sufficient
 func (c *CLIChannel) SetConnState(state string) {
-	// Write directly to model field — bypasses program.Send/asyncCh entirely.
-	// During disconnect, tick flood fills all message channels, making
-	// delivery impossible. Direct write is the only reliable path.
-	c.programMu.Lock()
-	if c.model != nil {
-		c.model.connState = state
+	c.connStateMu.Lock()
+	c.connStateSlot = state
+	c.connStateMu.Unlock()
+	select {
+	case c.connStateSignal <- struct{}{}:
+	default:
 	}
-	c.programMu.Unlock()
-	log.WithField("state", state).Info("SetConnState: written directly to model")
+	log.WithField("state", state).Info("SetConnState: coalesced")
 }
 
 // SendToast shows a toast notification in the CLI (non-blocking).
@@ -802,13 +854,22 @@ func (c *CLIChannel) SyncPluginWidgetChatID(chatID string) {
 // RestoreSession restores history + active progress + todos in one atomic step.
 // Uses the same suHistoryLoadMsg path as session switch, guaranteeing identical
 // rendering behavior for initial connect and reconnect.
-func (c *CLIChannel) RestoreSession(history []ch.HistoryMessage, activeProgress *protocol.ProgressEvent, todos []protocol.TodoItem) {
+func (c *CLIChannel) RestoreSession(history []ch.HistoryMessage, activeProgress *protocol.ProgressEvent, todos []protocol.TodoItem, pendingAskUsers ...*protocol.ProgressEvent) {
+	var pendingAskUser *protocol.ProgressEvent
+	pendingAskUserKnown := len(pendingAskUsers) > 0
+	if pendingAskUserKnown {
+		pendingAskUser = pendingAskUsers[0]
+	}
 	c.programMu.Lock()
 	defer c.programMu.Unlock()
 	if c.model == nil {
 		// Model not created yet — cache for Start().
 		c.pending.history = history
 		c.pending.progress = activeProgress
+		c.pending.todos = todos
+		c.pending.pendingAskUser = pendingAskUser
+		c.pending.pendingAskUserKnown = pendingAskUserKnown
+		c.pending.sessionRestoreSet = true
 		return
 	}
 	if c.program == nil {
@@ -817,50 +878,34 @@ func (c *CLIChannel) RestoreSession(history []ch.HistoryMessage, activeProgress 
 		// suHistoryLoadMsg, guaranteeing the handler's returned cmds
 		// (tickCmd, typewriterTick) are properly batched by BubbleTea.
 		c.model.pendingSuRestore = &suHistoryLoadMsg{
-			history:        history,
-			channelName:    "cli",
-			chatID:         c.config.ChatID,
-			activeProgress: activeProgress,
-			todos:          todos,
+			history:             history,
+			channelName:         "cli",
+			chatID:              c.config.ChatID,
+			activeProgress:      activeProgress,
+			todos:               todos,
+			todosKnown:          true,
+			pendingAskUser:      pendingAskUser,
+			pendingAskUserKnown: pendingAskUserKnown,
+			authoritative:       true,
 		}
 		return
 	}
 	// Program running — send as suHistoryLoadMsg (same as session switch).
 	select {
 	case c.asyncCh <- suHistoryLoadMsg{
-		history:        history,
-		channelName:    "cli",
-		chatID:         c.config.ChatID,
-		activeProgress: activeProgress,
-		todos:          todos,
+		history:             history,
+		channelName:         "cli",
+		chatID:              c.config.ChatID,
+		activeProgress:      activeProgress,
+		todos:               todos,
+		todosKnown:          true,
+		pendingAskUser:      pendingAskUser,
+		pendingAskUserKnown: pendingAskUserKnown,
+		authoritative:       true,
 	}:
 	default:
 		log.Warn("RestoreSession: asyncCh full, dropping restore")
 	}
-}
-
-// SetTrimHistoryFn sets the callback for /rewind DB truncation.
-// cutoff is the timestamp threshold — all DB messages with created_at < cutoff will be deleted.
-// If the model hasn't been created yet, the callback is cached and applied later.
-func (c *CLIChannel) SetTrimHistoryFn(fn func(cutoff time.Time) error) {
-	c.programMu.Lock()
-	defer c.programMu.Unlock()
-	if c.model != nil {
-		c.model.trimHistoryFn = fn
-	}
-	c.pending.trimHistoryFn = fn
-}
-
-// SetResetTokenStateFn sets the callback for /rewind token state reset.
-// Must be called to prevent stale prompt_tokens from triggering immediate
-// compression after a rewind truncates history.
-func (c *CLIChannel) SetResetTokenStateFn(fn func()) {
-	c.programMu.Lock()
-	defer c.programMu.Unlock()
-	if c.model != nil {
-		c.model.resetTokenStateFn = fn
-	}
-	c.pending.resetTokenStateFn = fn
 }
 
 // ApplyInitialLayout applies layout settings (sidebar_width, sidebar_position, etc.)
@@ -990,30 +1035,54 @@ func (c *CLIChannel) handleOutbound() {
 		select {
 		case <-c.stopCh:
 			return
-		case msg := <-c.msgChan:
+		case queued := <-c.msgChan:
 			c.programMu.Lock()
 			p := c.program
 			c.programMu.Unlock()
 			if p == nil {
 				continue
 			}
-			// Route through asyncCh: non-blocking send, drops if full.
-			// WaitingUser messages (AskUser) must not be dropped, send directly.
-			if msg.WaitingUser {
-				p.Send(cliOutboundMsg{msg: msg})
+			c.deliveryMu.Lock()
+			if queued.epoch != c.deliveryEpoch {
+				c.deliveryMu.Unlock()
+				continue
+			}
+			msg := cliOutboundMsg{msg: queued.msg}
+			if queued.msg.WaitingUser {
+				c.sendCritical(msg)
+				c.deliveryMu.Unlock()
 				continue
 			}
 			select {
-			case c.asyncCh <- cliOutboundMsg{msg: msg}:
+			case c.asyncCh <- msg:
 			default:
-				// asyncCh full — drain one stale message, then send
-				select {
-				case <-c.asyncCh:
-				default:
+				log.Warn("handleOutbound: asyncCh full, dropping non-critical outbound")
+			}
+			c.deliveryMu.Unlock()
+		}
+	}
+}
+
+func (c *CLIChannel) handleConnStateDrain() {
+	defer c.wg.Done()
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-c.connStateSignal:
+			for {
+				c.connStateMu.Lock()
+				state := c.connStateSlot
+				c.connStateSlot = ""
+				c.connStateMu.Unlock()
+				if state == "" || !c.sendCritical(cliConnStateMsg{state: state}) {
+					break
 				}
-				select {
-				case c.asyncCh <- cliOutboundMsg{msg: msg}:
-				default:
+				c.connStateMu.Lock()
+				pending := c.connStateSlot != ""
+				c.connStateMu.Unlock()
+				if !pending {
+					break
 				}
 			}
 		}
@@ -1031,6 +1100,7 @@ func (c *CLIChannel) handleProgressDrain() {
 		case <-c.stopCh:
 			return
 		case <-c.progressSignal:
+			c.deliveryMu.Lock()
 			// Drain the slot — take whatever is there (may be nil if a
 			// previous drain already consumed it).
 			c.progressMu.Lock()
@@ -1038,6 +1108,7 @@ func (c *CLIChannel) handleProgressDrain() {
 			c.progressSlot = nil
 			c.progressMu.Unlock()
 			if payload == nil {
+				c.deliveryMu.Unlock()
 				continue
 			}
 			select {
@@ -1061,6 +1132,7 @@ func (c *CLIChannel) handleProgressDrain() {
 					c.programMu.Unlock()
 				}
 			}
+			c.deliveryMu.Unlock()
 		}
 	}
 }

@@ -59,7 +59,7 @@ const (
 	MethodGetHistory                   = "get_history"
 	MethodGetTokenState                = "get_token_state"
 	MethodGetContextUsage              = "get_context_usage"
-	MethodTrimHistory                  = "trim_history"
+	MethodRewindHistory                = "rewind_history"
 	MethodResetTokenState              = "reset_token_state"
 	MethodGetChannelConfig             = "get_channel_config"
 	MethodSetChannelConfig             = "set_channel_config"
@@ -73,6 +73,7 @@ const (
 	MethodGetSessionMessages           = "get_session_messages"
 	MethodGetAgentSessionDump          = "get_agent_session_dump"
 	MethodGetAgentSessionDumpByFullKey = "get_agent_session_dump_by_full_key"
+	MethodContinueInteractiveSession   = "continue_interactive_session"
 	MethodListTenants                  = "list_tenants"
 	MethodSetMaxIterations             = "set_max_iterations"
 	MethodSetMaxConcurrency            = "set_max_concurrency"
@@ -314,10 +315,15 @@ type getContextUsageReq struct {
 	ChatID  string `json:"chat_id"`
 }
 
-type trimHistoryReq struct {
-	Channel string `json:"channel"`
-	ChatID  string `json:"chat_id"`
-	Cutoff  int64  `json:"cutoff"` // unix timestamp
+type rewindHistoryReq struct {
+	Channel   string `json:"channel"`
+	ChatID    string `json:"chat_id"`
+	HistoryID int64  `json:"history_id"`
+}
+
+type continueInteractiveSessionReq struct {
+	FullKey string `json:"full_key"`
+	Content string `json:"content"`
 }
 
 // --- Channel Config ---

@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"xbot/llm"
-	log "xbot/logger"
 )
 
 // CompressPipelineParams holds the inputs for a compression pipeline execution.
@@ -55,7 +54,8 @@ type CompressPipelineResult struct {
 //  6. Cleans OffloadStore and MaskStore entries
 //
 // Returns the pipeline result or the compression error.
-// Persistence failures are logged but do not cause an error return.
+// Persistence is fail-closed: the caller must not install the compressed
+// in-memory view unless its control record was appended successfully.
 func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*CompressPipelineResult, error) {
 	var result *CompressResult
 	var err error
@@ -74,19 +74,12 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 	}
 
 	newMessages := llm.SanitizeMessages(result.LLMView)
-	if params.SyncMessages != nil {
-		newMessages = params.SyncMessages(newMessages)
-	}
 
 	// Use the locally-estimated token count of the compressed LLMView.
 	// This represents the actual size of the new context — what the NEXT LLM call
 	// will see as input.  result.InputTokens is the compress LLM's API cost, NOT
 	// the compressed context size (that was the root cause of the "117k → 259k" bug).
 	newTokenCount := int64(result.CompressedTokens)
-
-	if params.TokenTracker != nil {
-		params.TokenTracker.ResetAfterCompress()
-	}
 
 	if params.Persistence != nil {
 		// Persist LLMView (not SessionView) to preserve complete tool call/result
@@ -100,15 +93,29 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 				persistView = append(persistView, msg)
 			}
 		}
-		if ok, _ := params.Persistence.RewriteAfterCompress(persistView, len(persistView)); !ok {
-			log.Ctx(ctx).Warn("Compression persistence failed, session may be inconsistent")
+		historyID, persistErr := params.Persistence.RewriteAfterCompress(persistView, len(newMessages))
+		if persistErr != nil {
+			return nil, persistErr
 		}
+		if historyID != 0 {
+			for i := range newMessages {
+				if newMessages[i].Role != "system" && !newMessages[i].DisplayOnly && newMessages[i].HistoryID == 0 {
+					newMessages[i].HistoryID = historyID
+				}
+			}
+		}
+	}
+	if params.SyncMessages != nil {
+		newMessages = params.SyncMessages(newMessages)
 	}
 
 	// Smart cleanup: only clean mask/offload entries that are NOT referenced
 	// by any message in the compressed LLMView. This is a key improvement over
 	// the old time-based cleanup — it ensures that mask/offload references in
 	// tail messages and the compaction summary remain loadable after compression.
+	if params.TokenTracker != nil {
+		params.TokenTracker.ResetAfterCompress()
+	}
 	referencedIDs := extractMaskOffloadIDs(newMessages)
 	if params.OffloadStore != nil {
 		params.OffloadStore.CleanUnreferencedEntries(params.OffloadSessionKey, referencedIDs)

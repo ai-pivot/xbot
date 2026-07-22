@@ -394,7 +394,9 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	// ContextEditor — Context Editing（精确编辑上下文）
-	cfg.ContextEditor = a.contextEditor
+	if a.contextEditor != nil {
+		cfg.ContextEditor = NewContextEditor(a.contextEditor.Store)
+	}
 
 	// TodoManager — TODO 状态查询
 	if a.todoManager != nil {
@@ -1370,19 +1372,31 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	a.interactiveSubAgents.Store(oneshotKey, oneshotIA)
 
 	// Create TenantSession for message persistence (same as interactive SubAgents).
-	agentTenantSession, err := a.multiSession.GetOrCreateSession("agent", oneshotKey)
+	agentTenantSession, err := a.multiSession.GetOrCreateSessionWithOwner("agent", oneshotKey, cfg.UserID)
 	if err != nil {
 		a.interactiveSubAgents.Delete(oneshotKey)
 		return nil, fmt.Errorf("create oneshot agent tenant session: %w", err)
 	}
 	cfg.Session = agentTenantSession
+	operationGate := a.sessionOperationGate("agent", oneshotKey)
+	if !operationGate.lock(subCtx) {
+		a.interactiveSubAgents.Delete(oneshotKey)
+		return nil, subCtx.Err()
+	}
+	defer operationGate.unlock()
 	if err := agentTenantSession.Clear(); err != nil {
-		log.Warn("Failed to clear agent tenant session: ", err)
+		a.interactiveSubAgents.Delete(oneshotKey)
+		return nil, fmt.Errorf("clear oneshot agent tenant session: %w", err)
 	}
 
 	// Eager-save user message so get_history returns it during Run().
-	if err := agentTenantSession.AddMessage(llm.NewUserMessage(task)); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to eager-save oneshot agent user message")
+	historyID, err := agentTenantSession.AppendMessage(llm.NewUserMessage(task))
+	if err != nil {
+		a.interactiveSubAgents.Delete(oneshotKey)
+		return nil, fmt.Errorf("append oneshot agent user message: %w", err)
+	}
+	if len(cfg.Messages) > 1 && cfg.Messages[1].Role == "user" {
+		cfg.Messages[1].HistoryID = historyID
 	}
 
 	// Wire CLI progress + stream callbacks so Ctrl+T shows real-time progress.
@@ -1466,10 +1480,8 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		}
 		if out.Content != "" {
 			oneshotIA.messages = append(oneshotIA.messages, llm.NewAssistantMessage(out.Content))
-		} else {
-			oneshotIA.messages = append(oneshotIA.messages, llm.NewAssistantMessage("(empty response)"))
 		}
-		if out.ReasoningContent != "" && len(oneshotIA.messages) > 0 {
+		if out.Content != "" && out.ReasoningContent != "" && len(oneshotIA.messages) > 0 {
 			oneshotIA.messages[len(oneshotIA.messages)-1].ReasoningContent = out.ReasoningContent
 		}
 		if len(out.IterationHistory) > 0 {
@@ -1491,9 +1503,24 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 				assistantMsg.Detail = string(jsonBytes)
 			}
 		}
-		if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save one-shot agent assistant message with detail")
+		historyID, err := agentTenantSession.AppendMessage(assistantMsg)
+		if err != nil {
+			a.cancelChildSessions(oneshotKey)
+			persistErrText := fmt.Sprintf("append oneshot agent assistant message: %v", err)
+			oneshotIA.mu.Lock()
+			oneshotIA.running = false
+			oneshotIA.lastError = persistErrText
+			if len(oneshotIA.messages) > 0 && oneshotIA.messages[len(oneshotIA.messages)-1].Role == "assistant" {
+				oneshotIA.messages = oneshotIA.messages[:len(oneshotIA.messages)-1]
+			}
+			oneshotIA.mu.Unlock()
+			return nil, fmt.Errorf("append oneshot agent assistant message: %w", err)
 		}
+		oneshotIA.mu.Lock()
+		if len(oneshotIA.messages) > 0 && oneshotIA.messages[len(oneshotIA.messages)-1].Role == "assistant" {
+			oneshotIA.messages[len(oneshotIA.messages)-1].HistoryID = historyID
+		}
+		oneshotIA.mu.Unlock()
 	}
 	// Cascade-cancel any bg sessions spawned during this one-shot's Run(),
 	// then destroy the one-shot session immediately. Persisted agent tenant

@@ -13,7 +13,8 @@ import { describe, expect, it } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
-import { canRewindMessage, isCompactMarker, latestCompactBoundaryIndex, MessageList } from '@/components/agent/MessageList'
+import { appendLiveMessage, canRewindMessage, CompressionBlock, MessageList, visibleHistoryRows } from '@/components/agent/MessageList'
+import { MessageItem } from '@/components/agent/MessageItem'
 import { EMPTY_LIVE_PROGRESS } from '@/types/agent'
 import type { ChatMessage } from '@/types/agent'
 import { I18nProvider } from '@/providers/i18n'
@@ -241,6 +242,16 @@ describe('MessageList virtualization', () => {
         />,
       ),
     ).not.toThrow()
+  })
+
+  it('keeps a live occurrence when its content equals the previous assistant message', () => {
+    const committed: ChatMessage = {
+      id: 'committed', role: 'assistant', content: 'same answer', iterations: [], timestamp: '', isPartial: false, turnID: 0,
+    }
+    const live: ChatMessage = {
+      id: 'live', role: 'assistant', content: 'same answer', iterations: [], timestamp: '', isPartial: true, turnID: 0,
+    }
+    expect(appendLiveMessage([committed], live)).toEqual([committed, live])
   })
 
   it('scrolls to bottom on initial load', async () => {
@@ -511,29 +522,66 @@ describe('MessageList virtualization', () => {
     expect(container.textContent).toContain('history 500')
   })
 
-  it('finds the latest compact marker for rewind eligibility', () => {
+  it('keeps compacted persisted user messages rewindable', () => {
     const messages: ChatMessage[] = [
-      { id: 'u-old', role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0 },
-      { id: 'compact', role: 'user', content: '[Compacted context]', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0 },
-      { id: 'u-new', role: 'user', content: 'new', iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0 },
+      { id: 'u-old', historyID: 1, recordType: 'message', compactedBy: 3, role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'compact', historyID: 3, recordType: 'compress', role: 'system', content: '[Compacted context]\nsummary', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'u-new', historyID: 4, recordType: 'message', role: 'user', content: 'new', iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: true },
     ]
-    expect(latestCompactBoundaryIndex(messages)).toBe(1)
+
+    expect(messages.map(canRewindMessage)).toEqual([true, false, true])
   })
 
-  it('uses TUI-style compact marker prefix matching', () => {
-    expect(isCompactMarker({ role: 'user', content: '[Compacted context]\nsummary' })).toBe(true)
-    expect(isCompactMarker({ role: 'user', content: 'prefix [Compacted context]' })).toBe(false)
+  it('keeps compacted sources and compression markers as separate chronological rows', () => {
+    const messages: ChatMessage[] = [
+      { id: 'hist-1', historyID: 1, recordType: 'message', compactedBy: 3, role: 'user', content: 'original question', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'hist-2', historyID: 2, recordType: 'message', compactedBy: 3, role: 'assistant', content: 'original answer', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'hist-3', historyID: 3, recordType: 'compress', role: 'system', content: '[Compacted context]\nsummary', compression: { sourceHistoryIDs: [1, 2] }, iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'hist-4', historyID: 4, recordType: 'mask', role: 'system', content: 'internal', iterations: [], timestamp: '2026-07-08T00:00:03Z', isPartial: false, turnID: 0, persisted: true },
+    ]
+    expect(visibleHistoryRows(messages).map((message) => message.id)).toEqual(['hist-1', 'hist-2', 'hist-3'])
   })
 
-  it('allows rewind only for persisted user messages after the latest compact boundary', () => {
+  it('keeps raw tool rows and tool-call assistants visible', () => {
     const messages: ChatMessage[] = [
-      { id: 'u-old', role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0, persisted: true },
-      { id: 'compact', role: 'user', content: '[Compacted context]\nsummary', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0, persisted: true },
-      { id: 'u-new', role: 'user', content: 'new', iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'assistant-tool', historyID: 1, recordType: 'message', role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'Read', arguments: '{}' }], iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
+      { id: 'tool', historyID: 2, recordType: 'message', role: 'tool', content: 'result', toolCallID: 'call-1', iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
+      { id: 'empty-shell', historyID: 3, recordType: 'message', role: 'assistant', content: '', iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
     ]
-    const boundary = latestCompactBoundaryIndex(messages)
 
-    expect(messages.map((m, i) => canRewindMessage(m, i, boundary))).toEqual([false, false, true])
+    expect(visibleHistoryRows(messages).map((message) => message.id)).toEqual(['assistant-tool', 'tool'])
+  })
+
+  it('renders raw tool calls and results with tool semantics', () => {
+    const messages: ChatMessage[] = [
+      { id: 'assistant-tool', historyID: 1, recordType: 'message', role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'Read', arguments: '{"path":"README.md"}' }], iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
+      { id: 'tool', historyID: 2, recordType: 'message', role: 'tool', content: 'file contents', toolCallID: 'call-1', toolName: 'Read result', iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
+    ]
+    const { container } = renderMessageList(
+      <>
+        {messages.map((message) => (
+          <MessageItem key={message.id} message={message} collapseLevel="all" />
+        ))}
+      </>,
+    )
+
+    expect(container.textContent).toContain('Read')
+    expect(container.textContent).toContain('{"path":"README.md"}')
+    expect(container.textContent).toContain('Read result')
+    expect(container.textContent).toContain('file contents')
+    expect(container.textContent).not.toContain('Empty assistant message')
+  })
+
+  it('shows only the compression summary inside an expanded marker', () => {
+    const marker: ChatMessage = {
+      id: 'hist-3', historyID: 3, recordType: 'compress', role: 'system',
+      content: '[Compacted context]\nsummary only', compression: { sourceHistoryIDs: [1, 2] },
+      iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: true,
+    }
+    const { getByText, queryByText } = renderMessageList(<CompressionBlock marker={marker} />)
+    fireEvent.click(getByText('Compacted context · 2 messages'))
+    expect(getByText('summary only')).toBeInTheDocument()
+    expect(queryByText('original question')).not.toBeInTheDocument()
   })
 
   it('does not show rewind for optimistic user messages', () => {
@@ -541,7 +589,15 @@ describe('MessageList virtualization', () => {
       { id: 'user-1', role: 'user', content: 'new', iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: false },
     ]
 
-    expect(canRewindMessage(messages[0], 0, -1)).toBe(false)
+    expect(canRewindMessage(messages[0])).toBe(false)
+  })
+
+  it('does not rewind a user-shaped internal control', () => {
+    const control: ChatMessage = {
+      id: 'control', historyID: 7, recordType: 'context_edit', role: 'user', content: 'hidden',
+      iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true,
+    }
+    expect(canRewindMessage(control)).toBe(false)
   })
 })
 

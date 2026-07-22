@@ -1,10 +1,12 @@
 package serverapp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 )
 
 // RPCHandler is a function that handles a single RPC method.
@@ -89,6 +91,28 @@ func rpc1[P any, R any](fn func(ctx context.Context, p P) (R, error)) RPCHandler
 	return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 		var p P
 		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		result, err := fn(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+}
+
+func rpc1strict[P any, R any](fn func(ctx context.Context, p P) (R, error)) RPCHandler {
+	return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+		var p P
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&p); err != nil {
+			return nil, err
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			if err == nil {
+				return nil, fmt.Errorf("multiple JSON values")
+			}
 			return nil, err
 		}
 		result, err := fn(ctx, p)

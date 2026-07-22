@@ -9,17 +9,18 @@ import {
   SESSION_TREE_CACHE_KEY,
   sessionCacheKey,
 } from '@/lib/webCache'
-import type { SessionInfo, WSMessage } from '@/types/shared'
+import type { ProgressEvent, SessionInfo, WSMessage } from '@/types/shared'
 
 let sessionHandler: ((event: { channel?: string; chat_id?: string; session_key?: string; action?: string; role?: string; instance?: string; parent_id?: string }) => void) | null = null
 let messageHandler: ((event: WSMessage) => void) | null = null
+const wsRPCMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hooks/useWSConnection', () => ({
   useWSConnection: () => ({
     connected: true,
     subscribe: vi.fn(),
     disconnect: vi.fn(),
-    rpc: vi.fn(),
+    rpc: wsRPCMock,
     onSession: vi.fn((handler) => {
       sessionHandler = handler
       return vi.fn()
@@ -61,6 +62,8 @@ vi.mock('@/lib/api', () => ({
 beforeEach(() => {
   sessionHandler = null
   messageHandler = null
+  wsRPCMock.mockReset()
+  wsRPCMock.mockResolvedValue(null)
   const store = new Map<string, string>()
   vi.stubGlobal('localStorage', {
     getItem: vi.fn((key: string) => store.get(key) ?? null),
@@ -80,6 +83,30 @@ afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
+
+function stubSessionFetch(sessions: Array<Record<string, unknown>>) {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url === '/api/chats') {
+      return {
+        ok: true,
+        json: async () => ({ ok: true, sessions }),
+      } as Response
+    }
+    if (url === '/api/subagents') {
+      return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }))
+}
 
 describe('normalizeSessionTree', () => {
   it('keeps canonical session trees as backend-authored children only', () => {
@@ -634,6 +661,203 @@ describe('normalizeSessionTree', () => {
       requestId: 'request-1',
       questions: [{ question: 'Continue?', options: ['yes', 'no'] }],
     })
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'web',
+        chat_id: '/repo',
+        progress: {
+          request_id: 'request-web',
+          questions: [{ question: 'Other channel?' }],
+        },
+      })
+    })
+
+    await act(async () => {
+      messageHandler?.({ type: 'resync_required', channel: 'cli', chat_id: '/repo' })
+      await Promise.resolve()
+    })
+    expect(result.current.askUserPrompts.has('cli:/repo')).toBe(false)
+    expect(result.current.askUserPrompts.has('web:/repo')).toBe(true)
+    expect(result.current.sessions[0].status).toBe('idle')
+
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'cli',
+        chat_id: '/repo',
+        progress: {
+          request_id: 'request-2',
+          questions: [{ question: 'Recovered prompt?' }],
+        },
+      })
+    })
+    expect(result.current.askUserPrompts.get('cli:/repo')?.requestId).toBe('request-2')
+    expect(result.current.sessions[0].status).toBe('waiting_input')
+
+    act(() => {
+      sessionHandler?.({
+        action: 'history_rewound',
+        channel: 'cli',
+        chat_id: '/repo',
+      })
+    })
+
+    expect(result.current.sessions[0].status).toBe('idle')
+    expect(result.current.askUserPrompts.has('cli:/repo')).toBe(false)
+    expect(result.current.askUserPrompts.has('web:/repo')).toBe(true)
+  })
+
+  it('restores a pending AskUser prompt after an exact-session resync', async () => {
+    stubSessionFetch([{
+      chat_id: 'chat-1',
+      channel: 'web',
+      label: 'chat-1',
+      last_active: '2026-07-08T00:00:00Z',
+      is_current: true,
+    }])
+    wsRPCMock.mockResolvedValueOnce({
+      request_id: 'pending-1',
+      questions: [{ question: 'Continue?', options: ['yes', 'no'] }],
+    })
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    act(() => {
+      messageHandler?.({ type: 'resync_required', channel: 'web', chat_id: 'chat-1' })
+    })
+
+    await waitFor(() => expect(result.current.askUserPrompts.get('web:chat-1')).toEqual({
+      requestId: 'pending-1',
+      questions: [{ question: 'Continue?', options: ['yes', 'no'] }],
+    }))
+    expect(wsRPCMock).toHaveBeenCalledWith('get_pending_ask_user', { channel: 'web', chat_id: 'chat-1' })
+    expect(result.current.sessions[0].status).toBe('waiting_input')
+  })
+
+  it('uses history_gap recovery to authoritatively clear a stale AskUser prompt', async () => {
+    stubSessionFetch([{
+      chat_id: 'chat-1',
+      channel: 'web',
+      label: 'chat-1',
+      last_active: '2026-07-08T00:00:00Z',
+      is_current: true,
+    }])
+    wsRPCMock.mockResolvedValueOnce(null)
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'web',
+        chat_id: 'chat-1',
+        progress: { request_id: 'stale', questions: [{ question: 'Stale?' }] },
+      })
+    })
+    expect(result.current.sessions[0].status).toBe('waiting_input')
+
+    act(() => {
+      messageHandler?.({ type: 'history_gap', channel: 'web', chat_id: 'chat-1' })
+    })
+
+    await waitFor(() => expect(result.current.askUserPrompts.has('web:chat-1')).toBe(false))
+    expect(wsRPCMock).toHaveBeenCalledWith('get_pending_ask_user', { channel: 'web', chat_id: 'chat-1' })
+    expect(result.current.sessions[0].status).toBe('idle')
+  })
+
+  it('does not let a pending resync overwrite a newer live AskUser prompt', async () => {
+    stubSessionFetch([{
+      chat_id: 'chat-1',
+      channel: 'web',
+      label: 'chat-1',
+      last_active: '2026-07-08T00:00:00Z',
+      is_current: true,
+    }])
+    const pending = deferred<ProgressEvent | null>()
+    wsRPCMock.mockReturnValueOnce(pending.promise)
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    act(() => {
+      messageHandler?.({ type: 'resync_required', channel: 'web', chat_id: 'chat-1' })
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'web',
+        chat_id: 'chat-1',
+        progress: { request_id: 'live', questions: [{ question: 'Newest?' }] },
+      })
+    })
+
+    await act(async () => {
+      pending.resolve({ request_id: 'stale', questions: [{ question: 'Old?' }] })
+      await pending.promise
+    })
+
+    expect(result.current.askUserPrompts.get('web:chat-1')).toEqual({
+      requestId: 'live',
+      questions: [{ question: 'Newest?' }],
+    })
+  })
+
+  it('does not reopen an AskUser prompt cleared while resync is pending', async () => {
+    stubSessionFetch([{
+      chat_id: 'chat-1',
+      channel: 'web',
+      label: 'chat-1',
+      last_active: '2026-07-08T00:00:00Z',
+      is_current: true,
+    }])
+    const pending = deferred<ProgressEvent | null>()
+    wsRPCMock.mockReturnValueOnce(pending.promise)
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    act(() => {
+      messageHandler?.({ type: 'resync_required', channel: 'web', chat_id: 'chat-1' })
+      result.current.clearAskUserPrompt('web', 'chat-1')
+    })
+
+    await act(async () => {
+      pending.resolve({ request_id: 'stale', questions: [{ question: 'Old?' }] })
+      await pending.promise
+    })
+
+    expect(result.current.askUserPrompts.has('web:chat-1')).toBe(false)
+  })
+
+  it('isolates AskUser recovery by channel for matching raw chat IDs', async () => {
+    stubSessionFetch([
+      {
+        chat_id: 'shared',
+        channel: 'web',
+        label: 'web',
+        last_active: '2026-07-08T00:00:00Z',
+        is_current: true,
+      },
+      {
+        chat_id: 'shared',
+        channel: 'cli',
+        label: 'cli',
+        last_active: '2026-07-08T00:00:01Z',
+      },
+    ])
+    wsRPCMock.mockResolvedValueOnce(null)
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2))
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'web',
+        chat_id: 'shared',
+        progress: { request_id: 'web-prompt', questions: [{ question: 'Web?' }] },
+      })
+      messageHandler?.({ type: 'history_gap', channel: 'cli', chat_id: 'shared' })
+    })
+
+    await waitFor(() => expect(wsRPCMock).toHaveBeenCalledWith(
+      'get_pending_ask_user',
+      { channel: 'cli', chat_id: 'shared' },
+    ))
+    expect(result.current.askUserPrompts.get('web:shared')?.requestId).toBe('web-prompt')
+    expect(result.current.askUserPrompts.has('cli:shared')).toBe(false)
   })
 
   it('sends the selected channel when renaming and deleting matching chat IDs', async () => {

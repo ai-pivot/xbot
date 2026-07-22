@@ -3,11 +3,13 @@ package channel
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"xbot/llm"
 	"xbot/protocol"
+	"xbot/storage/sqlite"
 )
 
 // Subscription represents a LLM subscription for display/selection.
@@ -193,6 +195,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	// tool_summary messages with zero timestamps, causing dedup to drop all
 	// but the first.
 	var lastAssistantTS time.Time
+	var lastAssistantID int64
 	// syntheticIdx provides monotonically-increasing nanosecond offsets to
 	// guarantee unique timestamps for consecutive flushPending() calls when
 	// no real assistant timestamp is available (e.g. all turns interrupted).
@@ -209,6 +212,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				syntheticIdx++
 			}
 			history = append(history, HistoryMessage{
+				HistoryID:  lastAssistantID,
 				Role:       "assistant",
 				Content:    "",
 				Timestamp:  ts,
@@ -234,6 +238,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			continue
 		case "assistant":
 			lastAssistantTS = m.Timestamp
+			lastAssistantID = m.HistoryID
 			if m.Detail != "" {
 				// Detail has authoritative iteration history. Discard pending iters
 				// from intermediate assistant messages — they lack elapsed/label data.
@@ -274,6 +279,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
 						if m.Content != "" && !isInterrupted {
 							history = append(history, HistoryMessage{
+								HistoryID:  m.HistoryID,
 								Role:       "assistant",
 								Content:    m.Content,
 								Timestamp:  m.Timestamp,
@@ -283,6 +289,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 							// Detail has iterations but no displayable content
 							// (intermediate assistant, cancelled turn, or [interrupted] marker).
 							history = append(history, HistoryMessage{
+								HistoryID:  m.HistoryID,
 								Role:       "assistant",
 								Content:    "",
 								Timestamp:  m.Timestamp,
@@ -291,6 +298,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						}
 					} else if m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]") {
 						history = append(history, HistoryMessage{
+							HistoryID: m.HistoryID,
 							Role:      "assistant",
 							Content:   m.Content,
 							Timestamp: m.Timestamp,
@@ -328,10 +336,12 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				// We need to combine them into one HistoryMessage for unified rendering.
 				if len(history) > 0 && history[len(history)-1].Role == "assistant" &&
 					history[len(history)-1].Content == "" && len(history[len(history)-1].Iterations) > 0 {
+					history[len(history)-1].HistoryID = m.HistoryID
 					history[len(history)-1].Content = m.Content
 					history[len(history)-1].Timestamp = m.Timestamp
 				} else {
 					hm := HistoryMessage{
+						HistoryID: m.HistoryID,
 						Role:      "assistant",
 						Content:   m.Content,
 						Timestamp: m.Timestamp,
@@ -355,8 +365,10 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			// so it should use its own synthetic timestamp if that turn
 			// is also interrupted (no assistant reply).
 			lastAssistantTS = time.Time{}
+			lastAssistantID = 0
 			if m.Content != "" {
 				history = append(history, HistoryMessage{
+					HistoryID: m.HistoryID,
 					Role:      m.Role,
 					Content:   m.Content,
 					Timestamp: m.Timestamp,
@@ -366,4 +378,122 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	}
 	flushPending()
 	return history
+}
+
+// ConvertHistoryRecords exposes one row for every raw message and compression
+// marker while keeping internal history controls private.
+func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
+	ordered := append([]sqlite.HistoryRecord(nil), records...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].HistoryID < ordered[j].HistoryID
+	})
+
+	toolResults := make(map[string]string)
+	for _, record := range ordered {
+		if record.Type == sqlite.HistoryRecordMessage && record.Message.Role == "tool" && record.Message.ToolCallID != "" {
+			toolResults[record.Message.ToolCallID] = record.Message.Content
+		}
+	}
+
+	history := make([]HistoryMessage, 0, len(ordered))
+	for _, record := range ordered {
+		if record.Type == sqlite.HistoryRecordMessage {
+			message := record.Message
+			timestamp := message.Timestamp
+			if timestamp.IsZero() {
+				timestamp = record.CreatedAt
+			}
+			toolCalls := make([]protocol.HistoryToolCall, len(message.ToolCalls))
+			for i, call := range message.ToolCalls {
+				toolCalls[i] = protocol.HistoryToolCall{
+					ID: call.ID, Name: call.Name, Arguments: call.Arguments,
+				}
+			}
+			history = append(history, HistoryMessage{
+				HistoryID:        record.HistoryID,
+				Role:             message.Role,
+				Content:          message.Content,
+				ReasoningContent: message.ReasoningContent,
+				ToolCallID:       message.ToolCallID,
+				ToolName:         message.ToolName,
+				ToolArguments:    message.ToolArguments,
+				ToolCalls:        toolCalls,
+				Timestamp:        timestamp,
+				Iterations:       rawMessageIterations(message, toolResults),
+				RecordType:       string(sqlite.HistoryRecordMessage),
+				CompactedBy:      record.CompactedBy,
+				DisplayOnly:      message.DisplayOnly,
+			})
+			continue
+		}
+		if record.Type != sqlite.HistoryRecordCompress {
+			continue
+		}
+		control := HistoryMessage{
+			HistoryID: record.HistoryID, Role: "control", Timestamp: record.CreatedAt, RecordType: string(record.Type),
+			TargetHistoryID: record.TargetHistoryID, CompactedBy: record.CompactedBy,
+		}
+		control.Role = "system"
+		control.Content = "[Compacted context]"
+		var snapshot sqlite.ContextSnapshot
+		if err := json.Unmarshal(record.Data, &snapshot); err == nil {
+			for _, msg := range snapshot.Messages {
+				if strings.HasPrefix(strings.TrimSpace(msg.Content), "[Compacted context]") {
+					control.Content = msg.Content
+					break
+				}
+			}
+		}
+		if record.Compression != nil {
+			control.Compression = &protocol.HistoryCompression{
+				StartHistoryID:   record.Compression.StartHistoryID,
+				EndHistoryID:     record.Compression.EndHistoryID,
+				SourceHistoryIDs: append([]int64(nil), record.Compression.SourceHistoryIDs...),
+			}
+		}
+		history = append(history, control)
+	}
+	return history
+}
+
+func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string) []HistoryIteration {
+	if message.Detail != "" {
+		var snapshots []iterSnapshot
+		if err := json.Unmarshal([]byte(message.Detail), &snapshots); err == nil {
+			iterations := make([]HistoryIteration, len(snapshots))
+			for i, snapshot := range snapshots {
+				tools := make([]protocol.ToolProgress, len(snapshot.Tools))
+				for j, tool := range snapshot.Tools {
+					label := tool.Label
+					if label == "" {
+						label = tool.Name
+					}
+					tools[j] = protocol.ToolProgress{
+						Name: tool.Name, Label: label, Status: tool.Status,
+						Elapsed: tool.ElapsedMS, Iteration: snapshot.Iteration, Summary: tool.Summary,
+					}
+				}
+				iterations[i] = HistoryIteration{
+					Iteration: snapshot.Iteration, Content: snapshot.Content,
+					Reasoning: snapshot.Reasoning, Tools: tools,
+				}
+			}
+			return iterations
+		}
+	}
+	if message.Role != "assistant" || (len(message.ToolCalls) == 0 && message.ReasoningContent == "") {
+		return nil
+	}
+	tools := make([]protocol.ToolProgress, len(message.ToolCalls))
+	for i, call := range message.ToolCalls {
+		status := "done"
+		if content, ok := toolResults[call.ID]; ok && strings.HasPrefix(content, "Error:") {
+			status = "error"
+		}
+		tools[i] = protocol.ToolProgress{
+			Name: call.Name, Label: formatToolLabel(call.Name, call.Arguments),
+			Status: status, Iteration: 1,
+		}
+	}
+	return []HistoryIteration{{Iteration: 1, Reasoning: message.ReasoningContent, Tools: tools}}
 }

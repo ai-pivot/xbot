@@ -222,6 +222,11 @@ type RunConfig struct {
 	// Returns nil when no notifications are pending. Called on each iteration.
 	DrainBgNotifications func() []tools.BgNotification
 
+	// AcknowledgeBgNotifications confirms that the first count notifications
+	// returned by DrainBgNotifications were durably persisted or intentionally
+	// discarded. A failed injection must not acknowledge its notification.
+	AcknowledgeBgNotifications func(count int)
+
 	// LLMSemAcquire is called before each LLM call to acquire a per-tenant
 	// concurrency slot. Returns a release function that must be called after
 	// the LLM call completes. If nil, no concurrency limiting is applied.
@@ -554,7 +559,11 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		}
 
 		s.beginIteration(i)
-		s.maybeCompress(ctx)
+		if err := s.maybeCompress(ctx); err != nil {
+			out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
+			out.Error = fmt.Errorf("persist context compression: %w", err)
+			return out
+		}
 		s.notifyThinking(i)
 
 		if out := s.assertSystemMessages(ctx); out != nil {
@@ -1037,10 +1046,14 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		InjectInbound: cfg.InjectInbound,
 
 		// 工具注册表
-		Registry: cfg.Tools,
+		Registry:           cfg.Tools,
+		ContextEditHandler: cfg.ContextEditor,
 
 		// 流式设置继承
 		Stream: cfg.Stream,
+	}
+	if handler := tools.ContextEditHandlerFromContext(ctx); handler != nil {
+		tc.ContextEditHandler = handler
 	}
 
 	// 注入 SpawnAgent（包装为 SubAgentManager 接口）

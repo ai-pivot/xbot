@@ -207,6 +207,9 @@ const zhCN = {
     navNextUser: '下一个用户消息',
     navToBottom: '回到最下方',
     newContent: '新内容',
+    compactedContext: '上下文压缩',
+    compactedContextCount: '上下文压缩 · {{count}} 条消息',
+    compressionSummaryUnavailable: '暂无压缩摘要',
   },
   settings: {
     title: '设置',

@@ -30,7 +30,7 @@ import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import { groupSessions, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
 import { rememberRecentWorkDir } from '@/lib/recent-workdirs'
-import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus } from '@/types/shared'
+import type { ProgressEvent, SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus } from '@/types/shared'
 import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
 const STARRED_KEY = 'xbot-starred'
@@ -44,6 +44,27 @@ const TRANSIENT_SUBAGENT_TTL_MS = 10 * 60 * 1000
 interface AskUserEnvelope {
   type: string
   chat_id?: string
+}
+
+function askUserPromptFromProgress(progress: ProgressEvent | undefined, fallbackID: string): AskUserPrompt | null {
+  if (!progress) return null
+  const questions: AskUserQuestion[] = []
+  if (Array.isArray(progress.questions)) {
+    for (const raw of progress.questions) {
+      if (!raw || typeof raw !== 'object') continue
+      const value = raw as Record<string, unknown>
+      const question = typeof value.question === 'string' ? value.question : ''
+      if (!question) continue
+      const options = Array.isArray(value.options)
+        ? value.options.filter((option): option is string => typeof option === 'string')
+        : undefined
+      questions.push({ question, options })
+    }
+  }
+  const requestId = typeof progress.request_id === 'string' && progress.request_id
+    ? progress.request_id
+    : fallbackID
+  return { requestId, questions }
 }
 
 export interface SessionGroup {
@@ -792,6 +813,7 @@ export function useSessionStoreImpl(): SessionStore {
   const [error, setError] = useState<string | null>(null)
   // AskUser prompts keyed by "channel:chatID" — survives session switch.
   const [askUserPrompts, setAskUserPrompts] = useState<Map<string, AskUserPrompt>>(new Map())
+  const askUserGenerationRef = useRef(new Map<string, number>())
 
   // Re-read starred/category from localStorage when server sync updates values.
   useEffect(() => {
@@ -933,8 +955,33 @@ export function useSessionStoreImpl(): SessionStore {
 
   const setStatus = useCallback((selector: SessionSelector, status: SessionStatus) => {
     const running = status === 'running' || status === 'pending'
-    setSessions((prev) => updateSessionTree(prev, selector, (s) => ({ ...s, status, running })))
+    setSessions((prev) => {
+      const next = updateSessionTree(prev, selector, (s) => ({ ...s, status, running }))
+      sessionsRef.current = next
+      return next
+    })
   }, [])
+
+  const bumpAskUserGeneration = useCallback((key: string) => {
+    const generation = (askUserGenerationRef.current.get(key) ?? 0) + 1
+    askUserGenerationRef.current.set(key, generation)
+    return generation
+  }, [])
+
+  const removeAskUserPrompt = useCallback((key: string) => {
+    setAskUserPrompts((prev) => {
+      if (!prev.has(key)) return prev
+      const next = new Map(prev)
+      next.delete(key)
+      return next
+    })
+  }, [])
+
+  const clearAskUserPrompt = useCallback((channel: string, chatID: string) => {
+    const key = `${channel}:${chatID}`
+    bumpAskUserGeneration(key)
+    removeAskUserPrompt(key)
+  }, [bumpAskUserGeneration, removeAskUserPrompt])
 
   const applySubAgentLifecycle = useCallback((ev: SessionEvent, running: boolean) => {
     if (!ev.role && !parseAgentChatID(ev.chat_id || '')) return
@@ -1124,12 +1171,17 @@ export function useSessionStoreImpl(): SessionStore {
         case 'created':
           void refresh()
           break
+        case 'history_rewound':
+          executingSessionsRef.current.delete(sessionKey(selector))
+          clearAskUserPrompt(selector.channel, selector.chatID)
+          setStatus(selector, 'idle')
+          break
         default:
           break
       }
       void refresh()
     })
-  }, [ws, setStatus, applySubAgentLifecycle, refresh, addUnread, markRead])
+  }, [ws, setStatus, applySubAgentLifecycle, refresh, addUnread, markRead, clearAskUserPrompt])
 
   useEffect(() => {
     return () => {
@@ -1140,7 +1192,9 @@ export function useSessionStoreImpl(): SessionStore {
   // ask_user → waiting_input + store prompt for the session.
   useEffect(() => {
     return ws.onMessage((msg) => {
-      if (msg.type !== 'ask_user') return
+      if (msg.type !== 'ask_user' && msg.type !== 'resync_required' && msg.type !== 'history_gap') return
+      const needsAuthoritativeRestore = msg.type === 'resync_required' || msg.type === 'history_gap'
+      if (needsAuthoritativeRestore && (!msg.channel || !msg.chat_id)) return
       const explicitChatID = (msg as AskUserEnvelope).chat_id
       const fallback = activeSessionRef.current
       const chatID = explicitChatID ?? ws.chatID ?? fallback?.chatID
@@ -1148,32 +1202,39 @@ export function useSessionStoreImpl(): SessionStore {
         ?? (chatID === ws.chatID ? ws.channel : null)
         ?? (fallback && chatID === fallback.chatID ? fallback.channel : DEFAULT_CHANNEL)
       if (chatID) {
-        setStatus({ channel, chatID }, 'waiting_input')
-        // Store the prompt so it survives session switch.
-        const p = msg.progress
-        const questions: AskUserQuestion[] = []
-        if (p?.questions && Array.isArray(p.questions)) {
-          for (const q of p.questions) {
-            if (!q || typeof q !== 'object') continue
-            const o = q as Record<string, unknown>
-            const question = typeof o.question === 'string' ? o.question : ''
-            if (!question) continue
-            const options = Array.isArray(o.options)
-              ? o.options.filter((x): x is string => typeof x === 'string')
-              : undefined
-            questions.push({ question, options })
-          }
-        }
-        const requestId = (p?.request_id as string | undefined) ?? msg.id ?? String(Date.now())
         const key = `${channel}:${chatID}`
+        if (needsAuthoritativeRestore) {
+          const generation = bumpAskUserGeneration(key)
+          removeAskUserPrompt(key)
+          const fallbackStatus = executingSessionsRef.current.has(key) ? 'running' : 'idle'
+          setStatus({ channel, chatID }, fallbackStatus)
+          void ws.rpc<ProgressEvent | null>('get_pending_ask_user', { channel, chat_id: chatID })
+            .then((pending) => {
+              if (askUserGenerationRef.current.get(key) !== generation) return
+              const prompt = askUserPromptFromProgress(pending ?? undefined, String(Date.now()))
+              if (!prompt) return
+              setAskUserPrompts((prev) => {
+                const next = new Map(prev)
+                next.set(key, prompt)
+                return next
+              })
+              setStatus({ channel, chatID }, 'waiting_input')
+            })
+            .catch(() => {})
+          return
+        }
+        const prompt = askUserPromptFromProgress(msg.progress ?? undefined, msg.id ?? String(Date.now()))
+        if (!prompt) return
+        bumpAskUserGeneration(key)
+        setStatus({ channel, chatID }, 'waiting_input')
         setAskUserPrompts((prev) => {
           const next = new Map(prev)
-          next.set(key, { requestId, questions })
+          next.set(key, prompt)
           return next
         })
       }
     })
-  }, [ws, setStatus])
+  }, [ws, setStatus, bumpAskUserGeneration, removeAskUserPrompt])
 
   // Initial load.
   useEffect(() => {
@@ -1181,14 +1242,6 @@ export function useSessionStoreImpl(): SessionStore {
   }, [refresh])
 
   const sortedSessions = useMemo(() => sortSessions(sessions, starredIds), [sessions, starredIds])
-  const clearAskUserPrompt = useCallback((channel: string, chatID: string) => {
-    const key = `${channel}:${chatID}`
-    setAskUserPrompts((prev) => {
-      const next = new Map(prev)
-      next.delete(key)
-      return next
-    })
-  }, [])
 
   const groups = useMemo(() => groupSessions(sessions, category, starredIds), [sessions, category, starredIds])
   const activeSessionId = activeSession?.chatID ?? null

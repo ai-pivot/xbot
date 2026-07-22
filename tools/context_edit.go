@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -10,6 +11,25 @@ import (
 // ContextEditHandler 是 engine 层实现的消息编辑回调接口。
 type ContextEditHandler interface {
 	HandleRequest(action string, params map[string]any) (string, error)
+}
+
+type contextEditHandlerKey struct{}
+
+// WithContextEditHandler binds the editor for one agent Run to tool execution.
+func WithContextEditHandler(ctx context.Context, handler ContextEditHandler) context.Context {
+	if handler == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, contextEditHandlerKey{}, handler)
+}
+
+// ContextEditHandlerFromContext returns the editor bound to the current Run.
+func ContextEditHandlerFromContext(ctx context.Context) ContextEditHandler {
+	if ctx == nil {
+		return nil
+	}
+	handler, _ := ctx.Value(contextEditHandlerKey{}).(ContextEditHandler)
+	return handler
 }
 
 // ContextEditTool 允许 Agent 精确编辑上下文中的历史消息。
@@ -57,7 +77,15 @@ func (t *ContextEditTool) Parameters() []llm.ToolParam {
 }
 
 func (t *ContextEditTool) Execute(ctx *ToolContext, args string) (*ToolResult, error) {
-	if t.Handler == nil {
+	handler := t.Handler
+	if ctx != nil {
+		if ctx.ContextEditHandler != nil {
+			handler = ctx.ContextEditHandler
+		} else if contextual := ContextEditHandlerFromContext(ctx.Ctx); contextual != nil {
+			handler = contextual
+		}
+	}
+	if handler == nil {
 		return nil, fmt.Errorf("context edit handler not available")
 	}
 
@@ -71,7 +99,7 @@ func (t *ContextEditTool) Execute(ctx *ToolContext, args string) (*ToolResult, e
 		return nil, fmt.Errorf("action is required")
 	}
 
-	result, err := t.Handler.HandleRequest(action, raw)
+	result, err := handler.HandleRequest(action, raw)
 	if err != nil {
 		return nil, err
 	}

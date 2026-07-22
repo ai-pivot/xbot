@@ -4,27 +4,40 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"xbot/protocol"
 
 	tea "charm.land/bubbletea/v2"
-
-	log "xbot/logger"
 )
 
 type rewindItem struct {
-	MsgIndex int       // index in m.messages
-	Preview  string    // first line of the message content (for display)
-	Content  string    // full message content (for input box on select)
-	Time     time.Time // message timestamp (for DB truncation cutoff)
+	HistoryID int64
+	MsgIndex  int       // index in m.messages
+	Preview   string    // first line of the message content (for display)
+	Content   string    // full message content (for input box on select)
+	Time      time.Time // message timestamp for the panel label
 }
 
+type rewindWarningSync struct {
+	generation      uint64
+	targetHistoryID int64
+	awaitResult     bool
+	resetSeen       bool
+	resultSeen      bool
+	reloadSeen      bool
+	selectedContent string
+	checkpoint      *protocol.RewindResult
+	warning         string
+}
+
+const rewindFilesWarningPrefix = "History rewound; files were not fully restored: "
+
 // openRewindPanel collects user messages from history and opens the rewind overlay.
-// Messages before the most recent [Compacted context] marker are excluded —
-// they were replaced by compression and no longer exist in the session DB.
+// Compacted source messages remain visible and rewindable because append-only
+// history keeps every original message as a stable node.
 func (m *cliModel) openRewindPanel() {
 	var items []rewindItem
-	compressIdx := -1 // index in items where [Compacted context] appears
 	for i, msg := range m.messages {
-		if msg.role != "user" {
+		if msg.role != "user" || msg.displayOnly || (msg.recordType != "" && msg.recordType != "message") || msg.historyID == 0 {
 			continue
 		}
 		content := msg.content
@@ -37,19 +50,12 @@ func (m *cliModel) openRewindPanel() {
 			preview = string(runes[:57]) + "..."
 		}
 		items = append(items, rewindItem{
-			MsgIndex: i,
-			Preview:  preview,
-			Content:  content,
-			Time:     msg.timestamp,
+			HistoryID: msg.historyID,
+			MsgIndex:  i,
+			Preview:   preview,
+			Content:   content,
+			Time:      msg.timestamp,
 		})
-		if strings.HasPrefix(content, "[Compacted context]") {
-			compressIdx = len(items) - 1
-		}
-	}
-	// If compression happened, only allow rewinding to the compressed context
-	// or later — messages before it were deleted from the session DB.
-	if compressIdx > 0 {
-		items = items[compressIdx:]
 	}
 	if len(items) == 0 {
 		m.showTempStatus(m.locale.NoMessagesToDelete)
@@ -190,82 +196,128 @@ func (m *cliModel) handleRewindKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 		m.rewindCursor = len(m.rewindItems) - 1
 		return true, nil
 	case tea.KeyEnter:
-		m.applyRewind()
-		return true, nil
+		return true, m.applyRewind()
 	}
 	return true, nil // block all other keys
 }
 
-// applyRewind executes the rewind: truncate history at selected message,
-// run file checkpoint rollback, and place selected message content in input box.
-func (m *cliModel) applyRewind() {
+type cliRewindDoneMsg struct {
+	channelName     string
+	chatID          string
+	generation      uint64
+	targetHistoryID int64
+	selectedContent string
+	cutIdx          int
+	result          protocol.HistoryRewindResult
+	err             error
+}
+
+// applyRewind starts the remote rewind as a Bubble Tea command. No RPC runs on
+// the Update goroutine.
+func (m *cliModel) applyRewind() tea.Cmd {
 	if m.rewindCursor < 0 || m.rewindCursor >= len(m.rewindItems) {
 		m.closeRewindPanel()
-		return
+		return nil
 	}
 	item := m.rewindItems[m.rewindCursor]
-	selectedContent := item.Content
-	cutoff := item.Time
-
-	// Truncate UI messages: keep everything BEFORE the selected message
-	cutIdx := item.MsgIndex
-	m.messages = m.messages[:cutIdx]
-
-	// Truncate DB session messages (synchronous, by timestamp).
-	// Must be synchronous — Ctrl+Z calls os.Exit(0) which kills all goroutines.
-	// If we used async (go func()), the DELETE might not complete before exit,
-	// leaving the DB in an inconsistent state with modernc.org/sqlite WAL.
-	if m.channel != nil && m.channel.config.TrimHistoryFn != nil {
-		// Dynamic callback with current session's channel+chatID — works across
-		// session switches unlike the static trimHistoryFn which was captured
-		// at TUI startup with the initial chatID.
-		if err := m.channel.config.TrimHistoryFn(m.channelName, m.chatID, cutoff); err != nil {
-			log.WithError(err).Warn("Failed to trim session history after rewind")
-		}
-	} else if m.trimHistoryFn != nil {
-		log.WithFields(log.Fields{"cutIdx": cutIdx, "cutoff": cutoff, "totalMsgs": len(m.messages)}).Info("Rewind: truncating DB messages (legacy callback)")
-		if err := m.trimHistoryFn(cutoff); err != nil {
-			log.WithError(err).Warn("Failed to trim session history after rewind")
-		}
-	} else if cutoff.IsZero() {
-		log.Warn("Rewind: cutoff timestamp is zero, DB messages will NOT be truncated")
-	} else {
-		log.Warn("Rewind: trimHistoryFn is nil, DB messages will NOT be truncated")
+	// The server owns DB truncation, token reset, and file checkpoint rollback.
+	if m.channel == nil || m.channel.config == nil || m.channel.config.RewindHistoryFn == nil {
+		m.rewindSync = rewindWarningSync{}
+		m.showSystemMsg("Rewind failed: history service unavailable", feedbackError)
+		m.closeRewindPanel()
+		return nil
+	}
+	m.rewindGeneration++
+	generation := m.rewindGeneration
+	m.rewindPending = true
+	m.rewindPendingGen = generation
+	m.rewindSync = rewindWarningSync{
+		generation:      generation,
+		targetHistoryID: item.HistoryID,
+		awaitResult:     true,
+		selectedContent: item.Content,
 	}
 
-	// Reset cached token counts so maybeCompress doesn't use stale values
-	// from before the rewind and trigger an immediate (incorrect) compression.
-	if m.resetTokenStateFn != nil {
-		m.resetTokenStateFn()
-	}
-
-	// File rollback via checkpoint state
-	if m.checkpointState != nil && m.checkpointState.Store() != nil {
-		// Compute the absolute turn index for the selected user message.
-		// m.agentTurnID is the turn index of the most recent user message.
-		// Each rewindItem corresponds to one user turn (startAgentTurn increments
-		// agentTurnID by 1). The selected item at rewindCursor has turn index:
-		//   agentTurnID - (totalItems - 1 - rewindCursor)
-		// This correctly handles multiple rewind-send-cancel cycles where
-		// agentTurnID has grown beyond the number of visible user messages.
-		totalItems := len(m.rewindItems)
-		absTurnIdx := int(m.agentTurnID) - (totalItems - 1 - m.rewindCursor)
-		if absTurnIdx < 1 {
-			absTurnIdx = 1
+	rewindFn := m.channel.config.RewindHistoryFn
+	channelName, chatID := m.channelName, m.chatID
+	m.closeRewindPanel()
+	return func() tea.Msg {
+		result, err := rewindFn(channelName, chatID, item.HistoryID)
+		return cliRewindDoneMsg{
+			channelName: channelName, chatID: chatID, generation: generation,
+			targetHistoryID: item.HistoryID, selectedContent: item.Content,
+			cutIdx: item.MsgIndex, result: result, err: err,
 		}
-		result, _ := m.checkpointState.Store().Rewind(absTurnIdx)
-		m.rewindResult = &result
+	}
+}
+
+func (m *cliModel) handleRewindDoneMsg(done cliRewindDoneMsg) {
+	if done.channelName != m.channelName || done.chatID != m.chatID || m.rewindSync.generation != done.generation {
+		m.unlockRewind(done.generation)
+		return
+	}
+	if done.err != nil {
+		m.rewindSync.resultSeen = true
+		m.rewindSync.warning = fmt.Sprintf("History rewound, but file restore status is unknown: %v", done.err)
+		if m.rewindSync.resetSeen {
+			m.finishRewindAfterReload()
+			return
+		}
+		m.unlockRewind(done.generation)
+		m.showSystemMsg(fmt.Sprintf("Rewind failed: %v", done.err), feedbackError)
+		return
+	}
+	if !done.result.HistoryRewound {
+		if m.rewindSync.resetSeen {
+			m.rewindSync.resultSeen = true
+			m.rewindSync.warning = "History rewind was confirmed, but the RPC result was unavailable"
+			m.finishRewindAfterReload()
+			return
+		}
+		m.unlockRewind(done.generation)
+		m.rewindSync = rewindWarningSync{}
+		m.showSystemMsg("Rewind failed: history was not changed", feedbackError)
+		return
+	}
+	warning := ""
+	if !done.result.FilesRewound || done.result.CheckpointError != "" {
+		detail := done.result.CheckpointError
+		if detail == "" {
+			detail = "file checkpoint restore reported errors"
+		}
+		warning = rewindFilesWarningPrefix + detail
 	}
 
-	// Put selected message content into input box
-	m.textarea.SetValue(selectedContent)
-	m.textarea.CursorEnd()
-	m.textarea.Focus()
+	m.rewindSync.resultSeen = true
+	m.rewindSync.selectedContent = done.selectedContent
+	m.rewindSync.checkpoint = done.result.Checkpoint
+	m.rewindSync.warning = warning
+	m.finishRewindAfterReload()
+}
 
-	// Reset state
-	m.rewindMode = false
-	m.rewindItems = nil
-	m.rewindCursor = 0
+func (m *cliModel) unlockRewind(generation uint64) {
+	if generation != 0 && m.rewindPendingGen == generation {
+		m.rewindPending = false
+		m.rewindPendingGen = 0
+	}
+}
+
+func (m *cliModel) finishRewindAfterReload() {
+	sync := m.rewindSync
+	if sync.generation == 0 || !sync.resetSeen || !sync.reloadSeen || (sync.awaitResult && !sync.resultSeen) {
+		return
+	}
+	m.rewindResult = sync.checkpoint
+	if sync.warning != "" {
+		m.showSystemMsg(sync.warning, feedbackWarning)
+	}
+	if sync.selectedContent != "" {
+		m.textarea.SetValue(sync.selectedContent)
+		m.textarea.CursorEnd()
+		m.textarea.Focus()
+	}
+	m.unlockRewind(sync.generation)
+	m.rewindSync = rewindWarningSync{}
 	m.rc.valid = false
 	m.rc.history = ""
 	m.rc.histLines = nil

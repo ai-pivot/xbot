@@ -42,6 +42,7 @@ type ToolContext struct {
 	SendFunc                func(channel, chatID, content string, metadata ...map[string]string) error // 向 IM 渠道发送消息（不经过 Agent），返回错误
 	InjectInbound           func(channel, chatID, senderID, content string)                            // 注入入站消息，触发 Agent 完整处理循环
 	Registry                *Registry                                                                  // 工具注册表引用（用于动态注册工具）
+	ContextEditHandler      ContextEditHandler                                                         // 当前 Run 的上下文编辑器
 	InvalidateAllSessionMCP func()                                                                     // 使所有会话的 MCP 连接失效
 
 	// Letta memory fields (nil when memory provider is not letta)

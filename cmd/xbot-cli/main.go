@@ -19,8 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
-	"net/url"
 	"os"
 
 	"os/signal"
@@ -639,34 +637,6 @@ func isFirstRun() bool {
 		}
 	}
 	return true
-}
-
-// isLocalServer returns true if the server URL points to a local/loopback address.
-func isLocalServer(serverURL string) bool {
-	u, err := url.Parse(serverURL)
-	if err != nil {
-		return false
-	}
-	h := strings.Split(u.Host, ":")[0] // strip port
-	// Fast path: standard loopback addresses
-	if h == "127.0.0.1" || h == "localhost" || h == "::1" || h == "" {
-		return true
-	}
-	// Slow path: check if the host is a local network interface IP
-	ip := net.ParseIP(h)
-	if ip == nil {
-		return false
-	}
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return false
-	}
-	for _, addr := range addrs {
-		if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.Equal(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 // newCLIApp 执行公共初始化：加载配置、创建 Backend。
@@ -1579,7 +1549,6 @@ func main() {
 		}
 	}
 
-	// Agent session history: load from in-memory interactiveSubAgents (not DB).
 	// refreshAgentCache is declared here at function level (not inside an if block)
 	// so it's accessible from both the SessionsListRefresh callback and the remote
 	// client setup below. Assigned later with = (not :=).
@@ -1588,6 +1557,9 @@ func main() {
 		backend := app.client
 		cliCfg.GetActiveProgressFn = func(channelName, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent {
 			return backend.GetActiveProgress(channelName, chatID, fetch)
+		}
+		cliCfg.GetPendingAskUserFn = func(channelName, chatID string) *protocol.ProgressEvent {
+			return backend.GetPendingAskUser(channelName, chatID)
 		}
 		cliCfg.BindChatFn = func(chatID string) error {
 			return backend.BindChat(chatID)
@@ -1615,8 +1587,11 @@ func main() {
 				refreshAgentCache()
 			}
 		}
-		cliCfg.TrimHistoryFn = func(channelName, chatID string, cutoff time.Time) error {
-			return backend.TrimHistory(channelName, chatID, cutoff)
+		cliCfg.RewindHistoryFn = func(channelName, chatID string, historyID int64) (protocol.HistoryRewindResult, error) {
+			return backend.RewindHistory(channelName, chatID, historyID)
+		}
+		cliCfg.ContinueAgentFn = func(fullKey, content string) error {
+			return backend.ContinueInteractiveSession(fullKey, content)
 		}
 		cliCfg.SetCWDFn = func(channelName, chatID, dir string) error {
 			if err := backend.SetCWD(channelName, chatID, dir); err != nil {
@@ -1626,51 +1601,6 @@ func main() {
 				pluginWidgetSyncFn(chatID)
 			}
 			return nil
-		}
-		cliCfg.AgentSessionDumpFn = func(chatID string) ([]channel.HistoryMessage, error) {
-			// Try in-memory first (running sessions)
-			dump, ok := backend.GetAgentSessionDumpByFullKey(chatID)
-			if ok && len(dump.Messages) > 0 {
-				var msgs []channel.HistoryMessage
-				for _, m := range dump.Messages {
-					msgs = append(msgs, channel.HistoryMessage{
-						Role:    m.Role,
-						Content: m.Content,
-					})
-				}
-				if len(dump.IterationHistory) > 0 {
-					var iters []channel.HistoryIteration
-					for _, snap := range dump.IterationHistory {
-						var tools []protocol.ToolProgress
-						for _, t := range snap.Tools {
-							tools = append(tools, protocol.ToolProgress{
-								Name:      t.Name,
-								Label:     t.Label,
-								Status:    t.Status,
-								Elapsed:   t.ElapsedMS,
-								Iteration: snap.Iteration,
-								Summary:   t.Summary,
-							})
-						}
-						iters = append(iters, channel.HistoryIteration{
-							Iteration: snap.Iteration,
-							Content:   snap.Content,
-							Reasoning: snap.Reasoning,
-							Tools:     tools,
-						})
-					}
-					msgs = append(msgs, channel.HistoryMessage{
-						Role:       "tool_summary",
-						Iterations: iters,
-					})
-				}
-				return msgs, nil
-			}
-			// Fallback: load from DB (agent tenants have channel="agent", chatID=interactiveKey)
-			if cliCfg.DynamicHistoryLoader != nil {
-				return cliCfg.DynamicHistoryLoader("agent", chatID)
-			}
-			return nil, nil
 		}
 		// SubAgent LLM state for TUI status bar (model name, context limits, token usage)
 		cliCfg.AgentSessionLLMStateFn = func(chatID string) (string, string, int64, int64, float64, int64, int64) {
@@ -1798,13 +1728,6 @@ func main() {
 			func(taskID string) error { return app.client.KillBgTask(taskID) },
 			func() { app.client.CleanupCompletedBgTasks(cliCh.BgSessionKey()) },
 		)
-		// Inject TrimHistoryFn for Ctrl+K session truncation (RPC-backed, unified path)
-		cliCh.SetTrimHistoryFn(func(cutoff time.Time) error {
-			return app.client.TrimHistory("cli", cliCfg.ChatID, cutoff)
-		})
-		cliCh.SetResetTokenStateFn(func() {
-			app.client.ResetTokenState()
-		})
 	}
 
 	// Wire AI-Native TUI callback (both local and remote modes)
@@ -1948,7 +1871,8 @@ func main() {
 	// Initial restore: load history + active progress + todos atomically.
 	clipanic.Go("main.RestoreActiveProgress", func() {
 		progress := app.client.GetActiveProgress("cli", chatID, protocol.FetchAll()) // initial restore: full history
-		var todos []protocol.TodoItem
+		todos := app.client.GetTodos("cli", chatID)
+		pendingAskUser := app.client.GetPendingAskUser("cli", chatID)
 		if progress != nil {
 			log.WithFields(log.Fields{
 				"chatID":    chatID,
@@ -1964,34 +1888,12 @@ func main() {
 			log.WithError(err).Warn("RestoreActiveProgress: failed to load history")
 			return
 		}
-		cliCh.RestoreSession(history, progress, todos)
+		cliCh.RestoreSession(history, progress, todos, pendingAskUser)
 	})
 
-	// Remote-only: reconnect handler for WS connection drops.
+	// Remote-only connection state handling. RemoteTransport owns route restore
+	// and replay, so this layer must not re-bind the startup chat after a switch.
 	if app.client.IsRemote() {
-		app.client.Subscribe(protocol.EventPattern{Type: "reconnect"}, func(env protocol.EventEnvelope) {
-			defer clipanic.Recover("main.OnReconnect", nil, false)
-			_ = app.client.BindChat(chatID)
-			if isLocalServer(app.cfg.CLI.ServerURL) {
-				if cwd, err := os.Getwd(); err == nil {
-					_ = app.client.SetCWD("cli", chatID, cwd)
-				}
-			}
-			clipanic.Go("main.ReconnectRestore", func() {
-				progress := app.client.GetActiveProgress("cli", chatID, protocol.FetchAll()) // initial restore: full history
-				history, err := app.client.GetHistory("cli", chatID)
-				if err != nil {
-					log.WithError(err).Warn("ReconnectRestore: failed to load history")
-					return
-				}
-				cliCh.RestoreSession(history, progress, nil)
-				if progress != nil && progress.Phase != "done" {
-					cliCh.SetProcessing(true)
-				} else {
-					cliCh.SetProcessing(false)
-				}
-			})
-		})
 		// Connection state change handler for header bar indicator.
 		app.client.Subscribe(protocol.EventPattern{Type: "conn_state"}, func(env protocol.EventEnvelope) {
 			var ev protocol.ConnStateEvent

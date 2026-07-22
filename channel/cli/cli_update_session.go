@@ -56,7 +56,119 @@ func (m *cliModel) handleSessionStateMsg(msg cliSessionStateMsg) {
 	case "renamed":
 		// Session renamed via config tool or API — trigger cache refresh so sidebar updates immediately.
 		m.scheduleSessionsRefresh()
+	case "history_rewound":
+		if ev.Channel != m.channelName || ev.ChatID != m.chatID {
+			return
+		}
+		var rewindGeneration uint64
+		if m.rewindSync.generation != 0 && m.rewindSync.targetHistoryID == ev.TargetHistoryID {
+			rewindGeneration = m.rewindSync.generation
+			m.rewindPending = true
+			m.rewindPendingGen = rewindGeneration
+		} else {
+			m.rewindGeneration++
+			rewindGeneration = m.rewindGeneration
+			m.rewindPending = true
+			m.rewindPendingGen = rewindGeneration
+			m.rewindSync = rewindWarningSync{
+				generation:      rewindGeneration,
+				targetHistoryID: ev.TargetHistoryID,
+			}
+		}
+		if !m.rewindSync.resetSeen {
+			m.beginRewindReload(ev.TargetHistoryID, rewindGeneration)
+		}
+	case "resync_required":
+		if ev.Channel != m.channelName || ev.ChatID != m.chatID {
+			return
+		}
+		m.prepareAuthoritativeSessionReload()
+		if m.channel != nil && m.channel.config != nil {
+			m.pendingCmds = append(m.pendingCmds, m.authoritativeSessionReloadCmd())
+		}
 	}
+}
+
+func (m *cliModel) beginRewindReload(targetHistoryID int64, generation uint64) {
+	if generation == 0 || m.rewindSync.generation != generation || m.rewindSync.resetSeen {
+		return
+	}
+	m.rewindSync.targetHistoryID = targetHistoryID
+	m.rewindSync.resetSeen = true
+	m.clearPendingAskUserUI(m.chatID)
+	m.closeRewindPanel()
+	m.pendingUserMsg = nil
+	m.messages = make([]cliMessage, 0, cliMsgBufSize)
+	m.streamingMsgIdx = -1
+	m.progressState.current = nil
+	m.progressState.iterations = nil
+	m.progressState.lastIter = 0
+	m.progressState.lastSeq = 0
+	m.progressState.lastAppliedSeq = 0
+	m.progressState.lastStreamSeq = 0
+	m.progressState.lastReceivedSeq = 0
+	m.progressState.gapDetected = false
+	m.progressState.twActive = false
+	m.progressState.twVisible = 0
+	m.progressState.rwVisible = 0
+	m.progressState.rwCjkSkip = false
+	m.progressState.twCjkSkip = false
+	m.typing = false
+	m.typingStartTime = time.Time{}
+	m.replyProcessed = true
+	m.inputReady = false
+	m.lastTokenUsage = nil
+	m.historyMutationGeneration++
+	m.splashState.compReloading = true
+	m.invalidateAllCache(true)
+	if m.channel == nil || m.channel.config == nil || m.channel.config.DynamicHistoryLoader == nil {
+		m.splashState.compReloading = false
+		m.showSystemMsg("History rewound, but reload service is unavailable", feedbackError)
+		m.unlockRewind(generation)
+		m.rewindSync = rewindWarningSync{}
+		return
+	}
+	m.reloadMessagesFromSessionForRewind(true, generation)
+}
+
+func (m *cliModel) prepareAuthoritativeSessionReload() {
+	m.clearPendingAskUserUI(m.chatID)
+	m.closeRewindPanel()
+	if !m.rewindPending {
+		m.rewindSync = rewindWarningSync{}
+		m.rewindResult = nil
+	}
+	m.messages = make([]cliMessage, 0, cliMsgBufSize)
+	m.streamingMsgIdx = -1
+	m.progressState.current = nil
+	m.progressState.iterations = nil
+	m.progressState.lastIter = 0
+	m.progressState.lastSeq = 0
+	m.progressState.lastAppliedSeq = 0
+	m.progressState.lastStreamSeq = 0
+	m.progressState.lastReceivedSeq = 0
+	m.progressState.gapDetected = false
+	m.progressState.twActive = false
+	m.progressState.twVisible = 0
+	m.progressState.rwVisible = 0
+	m.progressState.rwCjkSkip = false
+	m.progressState.twCjkSkip = false
+	m.typing = false
+	m.typingStartTime = time.Time{}
+	m.replyProcessed = true
+	m.needFlushQueue = false
+	m.turnCancelled = false
+	m.inputReady = false
+	m.lastTokenUsage = nil
+	m.lastContent = ""
+	m.todos = nil
+	if m.todoManager != nil {
+		m.todoManager.SetTodos(m.sessionKey(), nil)
+	}
+	m.splashState.suLoading = true
+	m.splashState.suPhaseConfirmed = false
+	m.invalidateAllCache(true)
+	m.relayoutViewport()
 }
 
 // scheduleSessionsRefresh triggers an immediate session list cache refresh.
@@ -67,16 +179,19 @@ func (m *cliModel) scheduleSessionsRefresh() {
 	}
 }
 
-// msgIdentity is the unified dedup key for history messages.
-// Uses role + timestamp because persisted DB messages are uniquely
-// identified by their (role, timestamp) pair — timestamp has nanosecond
-// precision and is set at persist time. turnID is intentionally excluded:
-// protocol.HistoryMessage (the DB representation) has no turnID field, so
-// including it would make the same logical message dedup differently
-// depending on whether it came from DB history or an in-memory turn.
+// msgIdentity uses the stable DB node when available and retains the legacy
+// role+timestamp fallback for optimistic/in-memory messages.
 type msgIdentity struct {
+	historyID int64
 	role      string
 	timestamp time.Time
+}
+
+func cliMessageIdentity(msg cliMessage) msgIdentity {
+	if msg.historyID != 0 {
+		return msgIdentity{historyID: msg.historyID}
+	}
+	return msgIdentity{role: msg.role, timestamp: msg.timestamp}
 }
 
 // toCLIMessage converts a protocol.HistoryMessage into a cliMessage
@@ -84,11 +199,31 @@ type msgIdentity struct {
 // handleHistoryLoad, and handleHistoryReload to avoid copy-paste drift.
 func toCLIMessage(hm protocol.HistoryMessage) cliMessage {
 	cm := cliMessage{
-		role:      hm.Role,
-		content:   hm.Content,
-		timestamp: hm.Timestamp,
-		isPartial: false,
-		dirty:     true,
+		historyID:   hm.HistoryID,
+		recordType:  hm.RecordType,
+		compactedBy: hm.CompactedBy,
+		displayOnly: hm.DisplayOnly,
+		hidden:      hm.RecordType != "" && hm.RecordType != "message" && hm.RecordType != "compress",
+		role:        hm.Role,
+		content:     hm.Content,
+		reasoning:   hm.ReasoningContent,
+		timestamp:   hm.Timestamp,
+		isPartial:   false,
+		dirty:       true,
+	}
+	for _, call := range hm.ToolCalls {
+		label := call.Name
+		if call.Arguments != "" {
+			label += " " + call.Arguments
+		}
+		cm.tools = append(cm.tools, protocol.ToolProgress{
+			Name: call.Name, Label: label, Status: "history", Args: call.Arguments, Detail: call.ID,
+		})
+	}
+	if hm.Role == "tool" && (hm.ToolName != "" || hm.ToolCallID != "") {
+		cm.tools = append(cm.tools, protocol.ToolProgress{
+			Name: hm.ToolName, Label: hm.ToolName, Args: hm.ToolArguments, Detail: hm.ToolCallID,
+		})
 	}
 	if len(hm.Iterations) > 0 {
 		cm.iterations = make([]cliIterationSnapshot, len(hm.Iterations))
@@ -96,21 +231,40 @@ func toCLIMessage(hm protocol.HistoryMessage) cliMessage {
 			cm.iterations[i] = cliIterationSnapshot(hi)
 		}
 	}
+	// Empty assistant shells carry no visible history information. In particular,
+	// do not hide display-only messages that still contain reasoning, tools, or
+	// iteration snapshots: those are original append-only records too.
+	if hm.Role == "assistant" && hm.Content == "" && hm.ReasoningContent == "" && len(cm.tools) == 0 && len(cm.iterations) == 0 {
+		cm.hidden = true
+	}
 	return cm
 }
 
+// trailingContinuableAssistantIndex returns the assistant at the history tail.
+// A streaming reply may only continue that exact row; crossing any later row
+// would move the reply before an append-only history boundary.
+func trailingContinuableAssistantIndex(messages []cliMessage, end int) int {
+	if end <= 0 || end > len(messages) {
+		return -1
+	}
+	idx := end - 1
+	msg := messages[idx]
+	if msg.role != "assistant" || msg.hidden || msg.displayOnly || msg.content == "" || len(msg.tools) > 0 ||
+		(msg.recordType != "" && msg.recordType != "message") {
+		return -1
+	}
+	return idx
+}
+
 // dedupAppend appends incoming messages to existing, skipping any whose
-// msgIdentity (role + timestamp) already appears in existing. Returns the
-// resulting slice. Unifies the previously divergent dedup strategies in
-// handleSuHistoryLoad (role+"|"+timestamp) and handleHistoryLoad
-// (role+":"+turnID+":"+content) onto a single identity key.
+// identity already appears in existing.
 func dedupAppend(existing []cliMessage, incoming []cliMessage) []cliMessage {
 	seen := make(map[msgIdentity]bool, len(existing))
 	for _, m := range existing {
-		seen[msgIdentity{m.role, m.timestamp}] = true
+		seen[cliMessageIdentity(m)] = true
 	}
 	for _, cm := range incoming {
-		id := msgIdentity{cm.role, cm.timestamp}
+		id := cliMessageIdentity(cm)
 		if !seen[id] {
 			existing = append(existing, cm)
 			seen[id] = true
@@ -128,6 +282,14 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 	// guard is set by its own postRestoreSessionSetup call.
 	if msg.channelName != m.channelName || msg.chatID != m.chatID {
 		return nil
+	}
+	if msg.snapshotGeneration != 0 && msg.snapshotGeneration != m.sessionSnapshotGeneration {
+		return nil
+	}
+	if msg.mutationGuard && msg.mutationGeneration != m.historyMutationGeneration {
+		// A live event arrived after this DB snapshot started. That event is
+		// durable before publication, so retrying yields one coherent timeline.
+		return []tea.Cmd{m.loadSessionSnapshotCmd(msg.authoritative)}
 	}
 
 	// Only clear suLoading for the matching session.
@@ -155,7 +317,11 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		for _, hm := range msg.history {
 			incoming = append(incoming, toCLIMessage(hm))
 		}
-		m.messages = dedupAppend(m.messages, incoming)
+		if msg.authoritative {
+			m.messages = incoming
+		} else {
+			m.messages = dedupAppend(m.messages, incoming)
+		}
 		// Restore pending user message if it was sent but not yet persisted to DB.
 		// This handles the race where the user sends a message and quickly switches
 		// sessions before the agent's eager-save completes.
@@ -233,40 +399,16 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// merging its content into the streaming slot causes the compression
 		// indicator to render inside the previous assistant's content.
 		if msg.activeProgress.Phase != "compressing" {
-			// Find the last non-streaming assistant message from history
-			// (before the empty one created by startAgentTurn).
-			historyAssistantIdx := -1
 			streamIdx := m.streamingMsgIdx
-			for i := streamIdx - 1; i >= 0; i-- {
-				if m.messages[i].role == "assistant" {
-					historyAssistantIdx = i
-					break
-				}
-			}
-			// Guard: only merge if the assistant belongs to the CURRENT
-			// turn. If there's a user message between the found assistant
-			// and the streaming slot, the assistant is from a PREVIOUS
-			// turn — merging it would display the previous turn's content
-			// as the current streaming message (Bug: stale content on
-			// TUI restart when the agent is mid-turn but hasn't produced
-			// assistant text yet).
-			canMerge := historyAssistantIdx >= 0 && streamIdx >= 0
-			if canMerge {
-				for i := historyAssistantIdx + 1; i < streamIdx; i++ {
-					if m.messages[i].role == "user" {
-						canMerge = false
-						break
-					}
-				}
-			}
-			if canMerge {
-				// Replace startAgentTurn's empty message with the history
-				// assistant's content, keeping isPartial + turnID for live updates.
-				m.messages[streamIdx].content = m.messages[historyAssistantIdx].content
-				if len(m.messages[historyAssistantIdx].iterations) > 0 {
-					m.messages[streamIdx].iterations = m.messages[historyAssistantIdx].iterations
-				}
-				m.messages[streamIdx].dirty = true
+			historyAssistantIdx := trailingContinuableAssistantIndex(m.messages, streamIdx)
+			if historyAssistantIdx >= 0 {
+				// Replace startAgentTurn's empty shell with the full persisted node so
+				// history identity, reasoning, and relation metadata stay intact.
+				historyAssistant := m.messages[historyAssistantIdx]
+				historyAssistant.isPartial = true
+				historyAssistant.turnID = m.agentTurnID
+				historyAssistant.dirty = true
+				m.messages[streamIdx] = historyAssistant
 				// Remove the duplicate history assistant message.
 				m.messages = slices.Delete(m.messages, historyAssistantIdx, historyAssistantIdx+1)
 				// Adjust streamingMsgIdx after deletion.
@@ -275,26 +417,23 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 				}
 			} else if m.streamingMsgIdx < 0 {
 				// No startAgentTurn was called (m.typing was true from restoreSession).
-				// Find the last assistant from history and mark it as the streaming slot.
-				// Guard: skip if there's a user message after the assistant — that
-				// means the assistant is from a PREVIOUS turn, not the current one.
-				for i := len(m.messages) - 1; i >= 0; i-- {
-					if m.messages[i].role == "assistant" {
-						hasUserAfter := false
-						for j := i + 1; j < len(m.messages); j++ {
-							if m.messages[j].role == "user" {
-								hasUserAfter = true
-								break
-							}
-						}
-						if !hasUserAfter {
-							m.messages[i].isPartial = true
-							m.messages[i].dirty = true
-							m.messages[i].turnID = m.agentTurnID
-							m.streamingMsgIdx = i
-						}
-						break
-					}
+				// Only the actual history tail can be continued. Compression markers
+				// and other rows are ordering boundaries in append-only history.
+				if i := trailingContinuableAssistantIndex(m.messages, len(m.messages)); i >= 0 {
+					m.messages[i].isPartial = true
+					m.messages[i].dirty = true
+					m.messages[i].turnID = m.agentTurnID
+					m.streamingMsgIdx = i
+				} else {
+					m.messages = append(m.messages, cliMessage{
+						role:      "assistant",
+						content:   "",
+						timestamp: time.Now(),
+						isPartial: true,
+						dirty:     true,
+						turnID:    m.agentTurnID,
+					})
+					m.streamingMsgIdx = len(m.messages) - 1
 				}
 			}
 		} else if m.streamingMsgIdx < 0 {
@@ -407,25 +546,6 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// Server says session is idle — enable input.
 		m.inputReady = true
 
-		// Apply server-side todos from the RPC response, overwriting
-		// the local TodoManager cache. This ensures the first session
-		// switch after TUI startup shows fresh data from the server.
-		// nil means "RPC unavailable" (keep local cache).
-		// empty slice means "server has no todos" (clear local cache).
-		if msg.todos != nil {
-			if len(msg.todos) > 0 {
-				m.todos = make([]protocol.TodoItem, len(msg.todos))
-				copy(m.todos, msg.todos)
-				m.todosDoneCleared = false
-				m.persistTodosToManager()
-			} else {
-				m.todos = nil
-				if m.todoManager != nil {
-					m.todoManager.SetTodos(m.sessionKey(), nil)
-				}
-			}
-			m.relayoutViewport()
-		}
 		// If the restored session has queued messages, schedule a flush.
 		// postRestoreSessionSetup clears needFlushQueue for safety; this is the
 		// authoritative re-enable point after the RPC confirms the session is idle.
@@ -441,16 +561,40 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// Only reload history if it wasn't already provided in the message.
 		// When called from ReconnectRestore, msg.history is pre-populated
 		// by the async goroutine — no need for a second blocking RPC.
-		if loader := m.channel.config.DynamicHistoryLoader; loader != nil && len(msg.history) == 0 {
+		if loader := m.channel.config.DynamicHistoryLoader; loader != nil && len(msg.history) == 0 && !msg.authoritative {
 			ch, cid := m.channelName, m.chatID
+			m.historyReloadGeneration++
+			reloadGeneration := m.historyReloadGeneration
+			mutationGeneration := m.historyMutationGeneration
 			cmds = append(cmds, func() tea.Msg {
 				history, err := loader(ch, cid)
 				if err != nil {
-					return cliHistoryReloadMsg{channelName: ch, chatID: cid, err: err}
+					return cliHistoryReloadMsg{
+						channelName: ch, chatID: cid, err: err,
+						mutationGuard: true, mutationGeneration: mutationGeneration, reloadGeneration: reloadGeneration,
+					}
 				}
-				return cliHistoryReloadMsg{channelName: ch, chatID: cid, history: history}
+				return cliHistoryReloadMsg{
+					channelName: ch, chatID: cid, history: history,
+					mutationGuard: true, mutationGeneration: mutationGeneration, reloadGeneration: reloadGeneration,
+				}
 			})
 		}
+	}
+	// A provided TODO callback is authoritative even when it returns nil/empty.
+	// Apply it after progress restoration so it also wins for active turns.
+	if msg.todosKnown || msg.todos != nil {
+		if len(msg.todos) > 0 {
+			m.todos = append([]protocol.TodoItem(nil), msg.todos...)
+			m.todosDoneCleared = false
+			m.persistTodosToManager()
+		} else {
+			m.todos = nil
+			if m.todoManager != nil {
+				m.todoManager.SetTodos(m.sessionKey(), nil)
+			}
+		}
+		m.relayoutViewport()
 	}
 	// Fallback: restore lastTokenUsage from persisted token state when
 	// active progress didn't provide it (e.g. idle session, first switch
@@ -481,10 +625,13 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 	if msg.compressRatio > 0 {
 		m.cachedCompressRatio = msg.compressRatio
 	}
-	// Always check for pending AskUser questions after history load.
-	// This covers both active turns (agent paused waiting for user) and
-	// idle sessions (pending from a previous session that was never answered).
-	cmds = append(cmds, m.checkAndRestorePendingAskUser())
+	if msg.pendingAskUserKnown {
+		m.applyPendingAskUserSnapshot(msg.pendingAskUser)
+	} else {
+		// Local-only legacy clients have no server pending RPC. Keep the disk
+		// fallback for them; remote snapshots never trust the local cache.
+		cmds = append(cmds, m.checkAndRestorePendingAskUser())
+	}
 	return cmds
 }
 
@@ -493,16 +640,23 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 // may have replaced many old messages with a single [Compacted context] summary.
 func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	// Stale guard: discard results from a different session.
-	// MUST clear compReloading even on stale/error paths — HistoryCompacted
-	// set it to true, and if this reload is stale or errors, nothing else
-	// clears it. compReloading stuck true → auto-start blocked forever →
-	// TUI frozen (typing but no progress events create new turns).
 	if msg.channelName != m.channelName || msg.chatID != m.chatID {
-		m.splashState.compReloading = false
+		return
+	}
+	if msg.reloadGeneration != 0 && msg.reloadGeneration != m.historyReloadGeneration {
+		return
+	}
+	if msg.mutationGuard && msg.mutationGeneration != m.historyMutationGeneration {
+		m.reloadMessagesFromSessionForRewind(msg.forceFullRebuild, msg.rewindGeneration)
 		return
 	}
 	if msg.err != nil {
 		log.WithError(msg.err).Warn("Failed to reload history after compression")
+		if msg.rewindGeneration != 0 && m.rewindSync.generation == msg.rewindGeneration {
+			m.showSystemMsg(fmt.Sprintf("History rewound, but reload failed: %v", msg.err), feedbackError)
+			m.unlockRewind(msg.rewindGeneration)
+			m.rewindSync = rewindWarningSync{}
+		}
 		m.splashState.compReloading = false
 		return
 	}
@@ -530,22 +684,18 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	if msg.forceFullRebuild {
 		// Compression path: HistoryCompacted cleared all messages and did NOT
 		// create a streaming message (by design — prevents duplicates).
-		// DB history naturally contains the current turn's assistant (persisted
-		// before compression). Find it and mark as streaming target.
-		// This guarantees exactly ONE assistant per turn — no dedup needed.
+		// Reuse the current turn's persisted assistant only when it is the history
+		// tail. An append-only compression marker (or any other later row) is an
+		// ordering boundary, so the live reply must start after it.
 		if m.typing {
-			for i := len(newMessages) - 1; i >= 0; i-- {
-				if newMessages[i].role == "assistant" {
-					newMessages[i].isPartial = true
-					newMessages[i].turnID = m.agentTurnID
-					newMessages[i].dirty = true
-					restoredStreamingIdx = i
-					break
-				}
+			if i := trailingContinuableAssistantIndex(newMessages, len(newMessages)); i >= 0 {
+				newMessages[i].isPartial = true
+				newMessages[i].turnID = m.agentTurnID
+				newMessages[i].dirty = true
+				restoredStreamingIdx = i
 			}
-			// Edge case: DB has no assistant yet (compression before first
-			// iteration persisted). This is the ONLY path that creates a
-			// streaming assistant during compression reload.
+			// No continuable assistant at the history tail: create a distinct live
+			// slot after the boundary instead of overwriting an older assistant.
 			if restoredStreamingIdx < 0 {
 				newMessages = append(newMessages, cliMessage{
 					role:      "assistant",
@@ -579,6 +729,10 @@ func (m *cliModel) handleHistoryReload(msg cliHistoryReloadMsg) {
 	m.splashState.compReloading = false
 	if msg.forceFullRebuild {
 		m.messages = newMessages
+		if msg.rewindGeneration != 0 && m.rewindSync.generation == msg.rewindGeneration {
+			m.rewindSync.reloadSeen = true
+			m.finishRewindAfterReload()
+		}
 		m.invalidateAllCache(false)
 		// If engine is still running (typing=true), ensure a streaming message
 		// exists — compression may have cleared it. If typing=false, the turn

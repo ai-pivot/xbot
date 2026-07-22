@@ -193,7 +193,7 @@ export function dedupTools(tools: WebToolProgress[]): WebToolProgress[] {
  * 2. Messages with eventSeq: dedup by eventSeq (SSE sequence is globally unique).
  * 3. Messages with neither (history messages): never deduped — they have unique DB IDs.
  */
-export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number }>(
+export function dedupMessages<T extends { turnID: number; role: string; eventSeq?: number }>(
   messages: T[],
 ): T[] {
   const turnSeen = new Map<string, number>()
