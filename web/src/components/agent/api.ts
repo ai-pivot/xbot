@@ -66,7 +66,7 @@ export async function fetchHistory(_ws: WSConnection, session?: SessionSelector 
 }
 
 export async function fetchCwd(session?: SessionSelector | null): Promise<{ dir?: string }> {
-  const status = await postAPI<SessionStatusResponse<unknown, unknown>>('/api/session/status', sessionBody(session))
+  const status = await postAPI<{ cwd?: string }>('/api/session/status', sessionBody(session))
   return { dir: status.cwd }
 }
 
@@ -79,12 +79,12 @@ export async function setCwd(session: SessionSelector, dir: string): Promise<{ d
 }
 
 export async function fetchCronTasks<T>(session: SessionSelector): Promise<T[]> {
-  const data = await fetchSessionStatus<T, unknown>(session)
+  const data = await postAPI<{ tasks?: T[] }>('/api/cron/list', sessionBody(session))
   return data.tasks ?? []
 }
 
 export async function fetchBackgroundTasks<T>(session: SessionSelector): Promise<T[]> {
-  const data = await fetchSessionStatus<unknown, T>(session)
+  const data = await postAPI<{ background_tasks?: T[] }>('/api/tasks/list', sessionBody(session))
   return data.background_tasks ?? []
 }
 
@@ -120,19 +120,6 @@ export async function uploadFile(file: File): Promise<UploadResponse> {
   const data = await postAPI<UploadResponse>('/api/files/upload', form)
   if (!data.upload_key) throw new Error('upload response missing upload_key')
   return data
-}
-
-interface SessionStatusResponse<CronTask, BackgroundTask> {
-  tasks?: CronTask[]
-  background_tasks?: BackgroundTask[]
-  token_usage?: Record<string, unknown>
-  cwd?: string
-}
-
-export function fetchSessionStatus<CronTask = unknown, BackgroundTask = unknown>(
-  session: SessionSelector,
-): Promise<SessionStatusResponse<CronTask, BackgroundTask>> {
-  return postAPI('/api/session/status', sessionBody(session))
 }
 
 function sessionBody(session?: SessionSelector | null): { channel?: string; chat_id?: string } {

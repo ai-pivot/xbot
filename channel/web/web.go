@@ -578,6 +578,12 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/account/identities/list", wc.authenticatedPOST(wc.handleIdentitiesListPOST))
 	mux.HandleFunc("/api/account/identities/{id}/delete", wc.authenticatedPOST(wc.handleUnlinkIdentityPOST))
 
+	// Lightweight task list endpoints — split from /api/session/status so
+	// the frequently-polled status endpoint doesn't bundle large payloads
+	// (e.g. completed bg task output ~1MB).
+	mux.HandleFunc("/api/cron/list", wc.authenticatedPOST(wc.handleCronListPOST))
+	mux.HandleFunc("/api/tasks/list", wc.authenticatedPOST(wc.handleTasksListPOST))
+
 	mux.HandleFunc("/api/admin/users/list", wc.authenticatedPOST(wc.handleAdminUsersListPOST))
 	mux.HandleFunc("/api/admin/users/{id}/set-role", wc.authenticatedPOST(wc.handleAdminSetRole))
 
