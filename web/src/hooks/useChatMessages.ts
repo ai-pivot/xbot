@@ -63,12 +63,6 @@ export interface UseChatMessagesResult {
   initialProgress: HistProgress | null
   /** Whether the backend reports this session as actively processing. */
   processing: boolean
-  /** Optimistic: true immediately when user sends a message, cleared on
-   *  first progress event or error. Gives instant busy feedback. */
-  sending: boolean
-  /** Optimistic: true immediately when user cancels, cleared on session(idle)
-   *  or error. */
-  canceling: boolean
   /** The chat_id reported by the most recent history load (server's active chat). */
   resolvedChatID: string | null
   /** Reload history for the current chatID. */
@@ -269,12 +263,6 @@ export function useChatMessages({
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
   const [processing, setProcessing] = useState(false)
-  // Optimistic states for instant UI feedback on send/cancel.
-  // `sending` is set true immediately in sendMessage, cleared when the
-  // first progress event arrives or on error.
-  // `canceling` is set true immediately in cancel, cleared on session(idle).
-  const [sending, setSending] = useState(false)
-  const [canceling, setCanceling] = useState(false)
 
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
@@ -494,11 +482,7 @@ export function useChatMessages({
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
       const requestID = newMessageRequestID()
-      setSending(true)
-      setCanceling(false)
-      // Auto-clear sending after 5s — session(busy) should arrive within
       // a few hundred ms; if it doesn't, don't leave stuck in optimistic state.
-      setTimeout(() => setSending(false), 5000)
       const resetCommand = text === '/new' && !attachments?.uploadKeys.length
       let optimisticID: string | null = null
       if (!resetCommand) {
@@ -545,7 +529,6 @@ export function useChatMessages({
             return next
           })
         }
-        setSending(false)
         toast.error(error instanceof Error ? error.message : "message send failed")
       })
     },
@@ -553,15 +536,11 @@ export function useChatMessages({
   )
 
   const cancel = useCallback(() => {
-    setCanceling(true)
     void ws.send({ type: 'cancel', channel, chat_id: chatIDRef.current ?? undefined })
       .catch((error: unknown) => {
-        setCanceling(false)
         toast.error(error instanceof Error ? error.message : 'cancel failed')
       })
-    // Auto-clear canceling after 2s — the cancel either succeeds (session(idle)
     // arrives) or the agent was already idle. Don't leave the spinner stuck.
-    setTimeout(() => setCanceling(false), 2000)
   }, [ws, channel])
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
@@ -619,8 +598,6 @@ export function useChatMessages({
     error,
     initialProgress,
     processing,
-    sending,
-    canceling,
     resolvedChatID,
     reload,
     sendMessage,

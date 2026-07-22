@@ -34,7 +34,6 @@ import {
 import type { WSConnection } from '@/types/ws'
 import type {
   ProgressSnapshot,
-  ProgressEvent,
   WebIteration,
   ChatMessage,
   TodoItem,
@@ -45,7 +44,6 @@ import type { HistProgress } from '@/components/agent/api'
 import type { WSMessage } from '@/types/shared'
 import {
   clearProgressSnapshot,
-  progressSnapshotCache,
   sessionCacheKey,
 } from '@/lib/webCache'
 
@@ -168,10 +166,8 @@ export function useProgressStream({
     if (disabled) {
       return
     }
-    const cached = progressCacheKey ? progressSnapshotCache.get(progressCacheKey) : undefined
-    if (cached?.phase && cached.phase !== 'done') {
-      store.replace(historyProgressToLive(cached))
-    }
+    // No cache restore — history's active_progress is the single source.
+    // The server returns the complete progress snapshot including iterationHistory.
   }, [store, progressCacheKey, disabled])
 
   // Hydrate from history when initialProgress changes (after reload completes).
@@ -207,7 +203,6 @@ export function useProgressStream({
     // events), which would block the server's authoritative data and cause
     // incomplete iteration recovery on session switch.
     if (live.phase) {
-      if (progressCacheKey) progressSnapshotCache.set(progressCacheKey, initialProgress as ProgressEvent)
       store.replace(live)
     }
   }, [store, initialProgress, disabled, progressCacheKey])

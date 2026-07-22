@@ -176,16 +176,12 @@ export function AgentPanel({ params }: PanelProps) {
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
-  // Busy state is driven by sessionStore — the same source the sidebar uses.
-  // sessionStore.running is updated by SSE session(busy)/session(idle) events
-  // and is always correct. `chat.sending` provides optimistic feedback for
-  // the brief gap between clicking send and session(busy) arriving.
-  // chat.processing is NOT used — it's set by /api/history reload which is
-  // unreliable and can get stuck.
+  // Busy state is driven solely by sessionStore — the same source the sidebar
+  // uses. sessionStore.running is updated by SSE session(busy)/session(idle)
+  // events and is always correct. No optimistic states, no cache, no fragile
+  // isStreaming/processing checks.
   const currentSession = store.sessions.find((s) => sameSession(s, activeSession))
-  const sessionRunning = currentSession?.running ?? false
-  const busy = (sessionRunning || chat.sending) && !askUser.prompt
-  const isCanceling = chat.canceling
+  const busy = (currentSession?.running ?? false) && !askUser.prompt
 
   const llmSettings = useLLMSettings()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens
@@ -299,7 +295,6 @@ export function AgentPanel({ params }: PanelProps) {
         <MessageInput
           key={`${messageChannel}:${chatID ?? ''}`}
           busy={busy}
-          canceling={isCanceling}
           onSend={sendMessage}
           onCancel={chat.cancel}
           onRewindLatest={rewindLatest}
