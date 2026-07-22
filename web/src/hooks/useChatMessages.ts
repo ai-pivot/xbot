@@ -447,12 +447,6 @@ export function useChatMessages({
     const listenerCacheKey = activeMessageCacheKey
     const off = ws.onMessage((msg: WSMessage) => {
       if (activeMessageCacheKeyRef.current !== listenerCacheKey) return
-      // Clear optimistic canceling state when session(idle) arrives —
-      // the cancel succeeded and the agent is now idle.
-      if (msg.type === 'session' && msg.session?.action === 'idle') {
-        setCanceling(false)
-        setSending(false)
-      }
       if (!matchesChatID(msg, listenerChatID, channel)) return
       if (msg.type !== 'user_echo' && msg.type !== 'inject_user') return
       const content = msg.content ?? msg.original_content ?? ''
@@ -563,8 +557,11 @@ export function useChatMessages({
     void ws.send({ type: 'cancel', channel, chat_id: chatIDRef.current ?? undefined })
       .catch((error: unknown) => {
         setCanceling(false)
-        toast.error(error instanceof Error ? error.message : "cancel failed")
+        toast.error(error instanceof Error ? error.message : 'cancel failed')
       })
+    // Auto-clear canceling after 2s — the cancel either succeeds (session(idle)
+    // arrives) or the agent was already idle. Don't leave the spinner stuck.
+    setTimeout(() => setCanceling(false), 2000)
   }, [ws, channel])
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
