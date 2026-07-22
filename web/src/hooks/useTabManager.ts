@@ -180,8 +180,19 @@ export function useTabManager(): TabManager {
       taskChatID: input.type === 'background' ? input.data?.taskChatID : undefined,
     }
     // File/work tabs open in the same group as Agent, as a sibling tab
-    // (not a separate right-side column).
-    api.addPanel({ id: panelId, title: input.title, component: input.type, params })
+    // (not a separate right-side column). Agent panels use renderer 'always'
+    // to keep their virtual list (MessageList) mounted in the DOM — otherwise
+    // dockview detaches the content when inactive, collapsing the virtualizer's
+    // scroll element to 0 height and rendering 0 messages. Other panels (file,
+    // terminal, background) stay on the default 'onlyWhenVisible' so heavy
+    // components like Monaco editors are detached when not visible.
+    api.addPanel({
+      id: panelId,
+      title: input.title,
+      component: input.type,
+      params,
+      renderer: input.type === 'agent' ? 'always' : 'onlyWhenVisible',
+    })
     panelIdByTab.current.set(tabId, panelId)
     const panel = api.getPanel(panelId)
     if (panel) {
