@@ -197,7 +197,11 @@ export class SSEConnectionImpl implements WSConnection {
     this.source = null
     this.reconnecting = false
     this.eventsSinceOpen = 0
-    this.setConnected(false)
+    // Don't set connected=false — we're immediately reconnecting via connect().
+    // setConnected(false) causes ws identity to change, triggering a re-render
+    // flash across all hooks that depend on ws.connected (useSessionContext,
+    // useLLMSettings, etc.). The onerror handler will set connected=false if
+    // the reconnection fails.
     this.connect()
   }
 
