@@ -447,6 +447,12 @@ export function useChatMessages({
     const listenerCacheKey = activeMessageCacheKey
     const off = ws.onMessage((msg: WSMessage) => {
       if (activeMessageCacheKeyRef.current !== listenerCacheKey) return
+      // Clear optimistic canceling state when session(idle) arrives —
+      // the cancel succeeded and the agent is now idle.
+      if (msg.type === 'session' && msg.session?.action === 'idle') {
+        setCanceling(false)
+        setSending(false)
+      }
       if (!matchesChatID(msg, listenerChatID, channel)) return
       if (msg.type !== 'user_echo' && msg.type !== 'inject_user') return
       const content = msg.content ?? msg.original_content ?? ''
