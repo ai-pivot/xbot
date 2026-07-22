@@ -184,6 +184,7 @@ export function useProgressStream({
       if (hasVisibleProgress(store.getSnapshot())) store.reset()
       return
     }
+    console.log('[TODO-DEBUG] initialProgress hydration:', { phase: initialProgress.phase, todos: initialProgress.todos })
     if (initialProgress.phase === 'done') {
       // Turn ended. Clear progress but restore todos from server so they
       // survive session switch (todos persist across turns in the todoManager).
@@ -191,8 +192,10 @@ export function useProgressStream({
       finalizedRef.current = false
       if (hasVisibleProgress(store.getSnapshot())) store.reset()
       const todos = (initialProgress.todos ?? []) as TodoItem[]
+      console.log('[TODO-DEBUG] initialProgress done branch, restoring todos:', todos)
       // Always replace — empty array clears stale todos, non-empty restores.
       store.replace({ todos })
+      console.log('[TODO-DEBUG] initialProgress done branch, after replace snapshot.todos:', store.getSnapshot().todos)
       return
     }
     // Don't re-hydrate after finalization — the turn is over, and the
@@ -323,6 +326,7 @@ function handleProgressMessage(
     case 'sync_progress': {
       const p = msg.progress
       if (!p) return
+      console.log('[TODO-DEBUG] progress_structured arrived:', { phase: p.phase, seq: p.seq, todos: p.todos, hasTodos: Array.isArray(p.todos) ? p.todos.length : 'not-array' })
       if (p.phase === 'done') {
         // PhaseDone: reset immediately. The backend guarantees a `text` event
         // follows with the final assistant reply. No finalizing state needed.
@@ -338,11 +342,13 @@ function handleProgressMessage(
             done: Boolean(t.done),
           }))
         }
+        console.log('[TODO-DEBUG] PhaseDone branch, doneTodos:', doneTodos)
         store.setStructuredTools({
           eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
           phase: 'done',
           todos: doneTodos,
         })
+        console.log('[TODO-DEBUG] after PhaseDone setStructuredTools, snapshot todos:', store.getSnapshot().todos)
         return
       }
       // A non-done structured event indicates active work — reset the finalize
@@ -380,6 +386,7 @@ function handleProgressMessage(
           done: Boolean(t.done),
         }))
       }
+      console.log('[TODO-DEBUG] structured branch, parsed todos:', todos)
       const subAgents = Array.isArray(p.sub_agents)
         ? normalizeWebSubAgents(p.sub_agents as unknown[])
         : undefined
@@ -435,8 +442,16 @@ function handleProgressMessage(
       // Only fall back to parsedIterations when the snapshot has no iterations
       // (e.g. reconnect where no SSE events were received).
       const iterations = snap.iterationHistory.length > 0 ? snap.iterationHistory : parsedIterations
+      console.log('[TODO-DEBUG] text finalize, snap.todos before reset:', snap.todos)
       completeRef.current?.(finalText, iterations, msg.seq)
-      store.reset()
+      // store.reset() is now called inside onAssistantComplete's flushSync
+      // (via resetProgressRef) so that setMessages and store.reset() happen
+      // in the same synchronous render. Calling store.reset() here separately
+      // triggers a second useSyncExternalStore re-render where liveMessage
+      // disappears but the committed message hasn't been painted yet → flicker.
+      // Fallback: if onAssistantComplete didn't reset (e.g., not set), reset here.
+      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      console.log('[TODO-DEBUG] text finalize, after reset snapshot.todos:', store.getSnapshot().todos)
       return
     }
 
@@ -448,6 +463,7 @@ function handleProgressMessage(
 
     case 'session': {
       const action = msg.session?.action
+      console.log('[TODO-DEBUG] session event:', action, 'chat_id:', msg.session?.chat_id)
 
       if (action === 'busy') {
         if (finalizedRef) finalizedRef.current = false
@@ -455,6 +471,7 @@ function handleProgressMessage(
         // re-enters the same turn, and prior iterations must survive.
         // Only clear streaming fields, keep iterationHistory.
         store.resetStreamingState()
+        console.log('[TODO-DEBUG] after session(busy) resetStreamingState, snapshot.todos:', store.getSnapshot().todos)
         return
       }
 

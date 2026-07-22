@@ -523,6 +523,23 @@ describe('ProgressStore todos real-time update', () => {
     store.dispose()
   })
 
+  it('PhaseDone event applies its todos (TodoWrite-as-last-tool scenario)', () => {
+    const store = new ProgressStore()
+
+    // TodoWrite is often the last tool → its todos ride on the PhaseDone
+    // event. When the mid-busy push events are dropped (SSE backpressure /
+    // coalescing), PhaseDone is the only carrier. It MUST apply its todos.
+    store.setStructuredTools({
+      phase: 'done',
+      todos: [{ id: 1, text: 'task A', done: false }],
+    })
+    flushRaf()
+
+    expect(store.getSnapshot().todos).toHaveLength(1)
+    expect(store.getSnapshot().todos[0].text).toBe('task A')
+    store.dispose()
+  })
+
   it('empty todos array clears previous todos (todo_write([]))', () => {
     const store = new ProgressStore()
 

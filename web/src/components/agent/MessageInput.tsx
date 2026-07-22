@@ -216,6 +216,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
   return (
     <div className="border-t border-border bg-bg-primary px-3 py-2.5" style={{ paddingBottom: 'calc(0.625rem + var(--safe-area-bottom))' }}>
       {todoState ? <TodoPullOut todoState={todoState} /> : null}
+      {(() => { console.log('[TODO-DEBUG] MessageInput render, todoState:', todoState); return null })()}
 
       {/* Input container — single rounded box with chips, textarea, and inline buttons */}
       <div

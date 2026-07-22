@@ -148,8 +148,15 @@ export function AgentPanel({ params }: PanelProps) {
       // flushSync ensures setMessages flushes synchronously BEFORE store.reset()
       // clears the live streaming message. Without this, there's a frame where
       // liveMessage is null but the appended message hasn't rendered → flicker.
+      //
+      // CRITICAL: resetProgress must be called INSIDE flushSync so that
+      // setMessages and store.reset() happen in the same synchronous render.
+      // Calling store.reset() separately (in handleProgressMessage's text handler)
+      // triggers a second useSyncExternalStore re-render where liveMessage
+      // disappears but the committed message hasn't been painted yet → flicker.
       flushSync(() => {
         chat.appendAssistant(finalText, iterations)
+        resetProgressRef.current?.()
       })
       void chat.reload()
       void sessionContext.refresh()
@@ -174,6 +181,7 @@ export function AgentPanel({ params }: PanelProps) {
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
+  console.log('[TODO-DEBUG] AgentPanel render, progressSnapshot.todos:', progressSnapshot.todos, 'todoState:', todoState, 'total:', todoState.total)
   // Busy while streaming (live or hydrated from a resumed session) OR
   // backend reports processing (covers SSE reconnect gap).
   const busy = (isStreaming || chat.processing) && !askUser.prompt

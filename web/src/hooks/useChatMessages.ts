@@ -412,6 +412,13 @@ export function useChatMessages({
       }
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
+      // If same target and server returns fewer messages than we currently have
+      // (e.g. DB write delay after stream completion), keep current messages
+      // to avoid the assistant reply disappearing.
+      if (sameTarget && parsed.length < messagesRef.current.length && messagesRef.current.length > 0) {
+        // Skip update — current state is more complete than server snapshot.
+        return
+      }
       const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0) : parsed
       if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
       loadedMessageKeys.add(reloadKey)

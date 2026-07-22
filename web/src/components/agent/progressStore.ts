@@ -380,8 +380,21 @@ export class ProgressStore {
     // arrives after PhaseDone. The progress store should clear immediately
     // on PhaseDone — the final text is handled by onAssistantComplete.
     // No finalizing state, no timeout hack.
+    //
+    // TodoWrite is frequently the last tool in an iteration, so its updated
+    // todos ride on the PhaseDone event (especially when mid-busy push events
+    // are dropped by SSE backpressure/coalescing). reset() preserves
+    // current.todos, so we MUST write opts.todos onto current first — otherwise
+    // the PhaseDone todos are discarded and the list only reappears on the next
+    // history reload (idle), never during busy.
     if (opts.phase === 'done') {
+      console.log('[TODO-DEBUG] store.setStructuredTools PhaseDone branch, opts.todos:', opts.todos, 'current.todos before:', this.current.todos)
+      if (opts.todos !== undefined) {
+        this.current.todos = opts.todos
+      }
+      console.log('[TODO-DEBUG] store.setStructuredTools PhaseDone, current.todos after write:', this.current.todos)
       this.reset()
+      console.log('[TODO-DEBUG] store.setStructuredTools PhaseDone, after reset snapshot.todos:', this.snapshot.todos)
       return
     }
 
