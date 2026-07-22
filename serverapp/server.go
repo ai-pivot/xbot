@@ -1068,7 +1068,7 @@ func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
 			log.WithField("session", key).Warn("No user message found for pending resume, skipping")
 			continue
 		}
-		if err := webDB.AddPendingResume(channel, chatID, senderID, content); err != nil {
+		if err := webDB.AddPendingResume(channel, chatID, senderID); err != nil {
 			log.WithError(err).WithField("session", key).Warn("Failed to record pending resume")
 		} else {
 			log.WithField("session", key).Info("Recorded pending resume for graceful shutdown recovery")

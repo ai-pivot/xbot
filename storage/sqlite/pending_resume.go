@@ -12,17 +12,16 @@ type PendingResume struct {
 	Channel   string
 	ChatID    string
 	SenderID  string
-	Content   string // last user message content to re-inject
 	CreatedAt string
 }
 
 // AddPendingResume records a session for resumption on next startup.
-func (db *DB) AddPendingResume(channel, chatID, senderID, content string) error {
+func (db *DB) AddPendingResume(channel, chatID, senderID string) error {
 	conn := db.Conn()
 	_, err := conn.Exec(`
 		INSERT OR REPLACE INTO pending_resumes (channel, chat_id, sender_id, content, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, channel, chatID, senderID, content, time.Now().Format(time.RFC3339))
+		VALUES (?, ?, ?, '', ?)
+	`, channel, chatID, senderID, time.Now().Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("add pending resume: %w", err)
 	}
@@ -93,7 +92,7 @@ func (db *DB) HasAssistantReplyAfterLastUser(channel, chatID string) (bool, erro
 // ListPendingResumes returns all sessions marked for resumption.
 func (db *DB) ListPendingResumes() ([]PendingResume, error) {
 	conn := db.Conn()
-	rows, err := conn.Query(`SELECT channel, chat_id, sender_id, content, created_at FROM pending_resumes`)
+	rows, err := conn.Query(`SELECT channel, chat_id, sender_id, created_at FROM pending_resumes`)
 	if err != nil {
 		return nil, fmt.Errorf("list pending resumes: %w", err)
 	}
@@ -102,7 +101,7 @@ func (db *DB) ListPendingResumes() ([]PendingResume, error) {
 	var result []PendingResume
 	for rows.Next() {
 		var pr PendingResume
-		if err := rows.Scan(&pr.Channel, &pr.ChatID, &pr.SenderID, &pr.Content, &pr.CreatedAt); err != nil {
+		if err := rows.Scan(&pr.Channel, &pr.ChatID, &pr.SenderID, &pr.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan pending resume: %w", err)
 		}
 		result = append(result, pr)

@@ -204,7 +204,7 @@ type continueCmd struct{}
 func (c *continueCmd) Name() string        { return "/continue" }
 func (c *continueCmd) Aliases() []string   { return nil }
 func (c *continueCmd) Match(s string) bool { return strings.ToLower(s) == "/continue" }
-func (c *continueCmd) Concurrent() bool    { return false } // triggers Run
+func (c *continueCmd) Concurrent() bool    { return false } // serializes with the enqueued resume turn
 
 func (c *continueCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	db := a.multiSession.DB()

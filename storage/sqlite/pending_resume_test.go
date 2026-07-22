@@ -20,7 +20,7 @@ func TestPendingResume_CRUD(t *testing.T) {
 	}
 
 	// Add a pending resume
-	if err := db.AddPendingResume("web", "chat-1", "web-1", "hello world"); err != nil {
+	if err := db.AddPendingResume("web", "chat-1", "web-1"); err != nil {
 		t.Fatalf("AddPendingResume: %v", err)
 	}
 
@@ -32,12 +32,12 @@ func TestPendingResume_CRUD(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(list))
 	}
-	if list[0].Channel != "web" || list[0].ChatID != "chat-1" || list[0].Content != "hello world" || list[0].SenderID != "web-1" {
+	if list[0].Channel != "web" || list[0].ChatID != "chat-1" || list[0].SenderID != "web-1" {
 		t.Fatalf("unexpected entry: %+v", list[0])
 	}
 
 	// Upsert (same key) replaces
-	if err := db.AddPendingResume("web", "chat-1", "web-1", "updated content"); err != nil {
+	if err := db.AddPendingResume("web", "chat-1", "web-1"); err != nil {
 		t.Fatalf("AddPendingResume upsert: %v", err)
 	}
 	list, err = db.ListPendingResumes()
@@ -46,9 +46,6 @@ func TestPendingResume_CRUD(t *testing.T) {
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 entry after upsert, got %d", len(list))
-	}
-	if list[0].Content != "updated content" {
-		t.Fatalf("expected updated content, got %q", list[0].Content)
 	}
 
 	// Clear single
@@ -64,8 +61,8 @@ func TestPendingResume_CRUD(t *testing.T) {
 	}
 
 	// Clear multiple entries individually
-	db.AddPendingResume("web", "chat-1", "web-1", "msg1")
-	db.AddPendingResume("feishu", "chat-2", "ou_xxx", "msg2")
+	db.AddPendingResume("web", "chat-1", "web-1")
+	db.AddPendingResume("feishu", "chat-2", "ou_xxx")
 	if err := db.ClearPendingResume("web", "chat-1"); err != nil {
 		t.Fatalf("ClearPendingResume web: %v", err)
 	}
