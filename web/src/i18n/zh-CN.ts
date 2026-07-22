@@ -200,6 +200,8 @@ const zhCN = {
     rewindFailed: '回溯失败',
     noUserMessageToRewind: '没有可回溯的用户消息',
     clickEditButtonHint: '点击用户消息旁的编辑按钮进行回溯',
+    copyMarkdown: '复制 Markdown',
+    copyMarkdownDone: '已复制到剪贴板',
     completionHint: '↑↓ 选择，Tab 补全，Esc 关闭',
     completionNoResults: '无匹配结果',
     navToTop: '回到最上方',

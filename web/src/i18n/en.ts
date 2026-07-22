@@ -203,6 +203,8 @@ const en: Translations = {
     rewindFailed: 'Rewind failed',
     noUserMessageToRewind: 'No user message to rewind',
     clickEditButtonHint: 'Click the edit button next to a user message to rewind',
+    copyMarkdown: 'Copy Markdown',
+    copyMarkdownDone: 'Copied to clipboard',
     completionHint: '↑↓ navigate, Tab complete, Esc dismiss',
     completionNoResults: 'No matches',
     navToTop: 'Scroll to top',
