@@ -175,12 +175,14 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 	}
 
 	assistantMsg := llm.NewAssistantMessage(assistantContent)
+	assistantMsg.DisplayOnly = true
 	assistantMsg.ToolCalls = []llm.ToolCall{{
 		ID:        toolID,
 		Name:      toolName,
 		Arguments: "{}",
 	}}
 	toolMsg := llm.NewToolMessage(toolName, toolID, "{}", toolContent)
+	toolMsg.DisplayOnly = true
 	snapshot := IterationToolSnapshot{
 		Name:      toolName,
 		Label:     label,
@@ -197,12 +199,14 @@ func userCancelledSyntheticTool() (llm.ChatMessage, llm.ChatMessage, IterationTo
 	const content = "User cancelled this run with Ctrl+C. Treat the previous turn as interrupted. Do not continue unfinished actions unless the user asks to resume."
 
 	assistantMsg := llm.NewAssistantMessage("The user cancelled this run. I will record the interruption.")
+	assistantMsg.DisplayOnly = true
 	assistantMsg.ToolCalls = []llm.ToolCall{{
 		ID:        toolID,
 		Name:      toolName,
 		Arguments: "{}",
 	}}
 	toolMsg := llm.NewToolMessage(toolName, toolID, "{}", content)
+	toolMsg.DisplayOnly = true
 	snapshot := IterationToolSnapshot{
 		Name:    toolName,
 		Label:   "cancelled by user",

@@ -977,10 +977,18 @@ func Run(args []string) error {
 		go sendStartupNotify(disp, cfg)
 	}
 
+	// 恢复被 graceful shutdown 中断的 agent loop
+	resumePendingTurns(ag, webDB, sigCh)
+
 	// 等待退出信号
 	sig := <-sigCh
 	log.WithField("signal", sig.String()).Warn("Received shutdown signal")
 	fmt.Println("\nShutting down...")
+
+	// 收集正在运行的 agent loop，记录到 pending_resumes 以便重启后恢复。
+	// 必须在 cancel() 之前执行：cancel() 会终止所有 agent loop，
+	// cancel 之后再遍历 chatCancelCh 就取不到任何 key 了。
+	collectPendingResumes(ag, webDB)
 
 	// 先取消 context，让 agent.Run() 退出（其 defer 会清理 cron 和 cleanup routine）
 	cancel()
@@ -1031,6 +1039,93 @@ func Run(args []string) error {
 	disp.Stop()
 	log.Info("xbot stopped")
 	return nil
+}
+
+// collectPendingResumes records all active agent loops to pending_resumes table
+// before shutdown. Called BEFORE cancel() — after cancel, chatCancelCh is empty.
+func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
+	if ag == nil || webDB == nil {
+		return
+	}
+	keys := ag.ActiveSessionKeys()
+	if len(keys) == 0 {
+		return
+	}
+	for _, key := range keys {
+		// key format: "channel:chatID"
+		idx := strings.Index(key, ":")
+		if idx < 0 {
+			continue
+		}
+		channel := key[:idx]
+		chatID := key[idx+1:]
+		content, senderID, err := webDB.GetLastUserMessage(channel, chatID)
+		if err != nil {
+			log.WithError(err).WithField("session", key).Warn("Failed to get last user message for pending resume")
+			continue
+		}
+		if content == "" {
+			log.WithField("session", key).Warn("No user message found for pending resume, skipping")
+			continue
+		}
+		if err := webDB.AddPendingResume(channel, chatID, senderID); err != nil {
+			log.WithError(err).WithField("session", key).Warn("Failed to record pending resume")
+		} else {
+			log.WithField("session", key).Info("Recorded pending resume for graceful shutdown recovery")
+		}
+	}
+}
+
+// resumePendingTurns re-triggers agent turns for sessions that were
+// interrupted by graceful shutdown. Called after all channels start.
+// A short delay lets web clients reconnect before the turn fires.
+func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh chan os.Signal) {
+	if ag == nil || webDB == nil {
+		return
+	}
+	pending, err := webDB.ListPendingResumes()
+	if err != nil {
+		log.WithError(err).Warn("Failed to list pending resumes")
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+	// Delay to let web/feishu clients reconnect so resumed replies reach them.
+	// Use select instead of time.Sleep so a SIGTERM during the wait still
+	// triggers graceful shutdown instead of Go's default (immediate exit).
+	// If we consume the signal here, re-inject it so the outer handler
+	// (sig := <-sigCh) still receives it — otherwise the process hangs.
+	log.Info("Pending resumes found, waiting 3s for clients to reconnect...")
+	select {
+	case <-time.After(3 * time.Second):
+	case sig := <-sigCh:
+		log.WithField("signal", sig.String()).Info("Shutdown signal received during resume wait, skipping resume")
+		go func() { sigCh <- sig }()
+		return
+	}
+	for _, pr := range pending {
+		// Skip turns that already completed naturally between shutdown
+		// collection and cancel() — the turn finished and reply was persisted.
+		hasReply, err := webDB.HasAssistantReplyAfterLastUser(pr.Channel, pr.ChatID)
+		if err != nil {
+			log.WithError(err).WithField("session", pr.Channel+":"+pr.ChatID).Error("Failed to check assistant reply, keeping record for next restart")
+			continue
+		}
+		if hasReply {
+			log.WithField("session", pr.Channel+":"+pr.ChatID).Info("Turn already completed, skipping resume")
+			webDB.ClearPendingResume(pr.Channel, pr.ChatID)
+			continue
+		}
+		log.WithFields(log.Fields{
+			"channel": pr.Channel,
+			"chat_id": pr.ChatID,
+		}).Info("Resuming interrupted agent turn")
+		ag.InjectInboundResume(pr.Channel, pr.ChatID, pr.SenderID)
+		if err := webDB.ClearPendingResume(pr.Channel, pr.ChatID); err != nil {
+			log.WithError(err).Error("Failed to clear pending resume record after injection — residual record will self-heal on next restart if the turn completes")
+		}
+	}
 }
 
 // createLLM 根据配置创建 LLM 客户端（带重试、指数退避和随机抖动）

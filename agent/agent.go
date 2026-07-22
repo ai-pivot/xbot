@@ -890,6 +890,20 @@ func (a *Agent) IsProcessing(senderID string) bool {
 	return found
 }
 
+// ActiveSessionKeys returns all active "channel:chatID" keys from
+// chatCancelCh. Used by graceful shutdown to collect sessions whose
+// agent loops should be resumed on next startup.
+func (a *Agent) ActiveSessionKeys() []string {
+	var keys []string
+	a.chatCancelCh.Range(func(key, _ any) bool {
+		if k, ok := key.(string); ok {
+			keys = append(keys, k)
+		}
+		return true
+	})
+	return keys
+}
+
 // GetPendingAskUser returns the pending AskUser prompt for a chat, or nil.
 // Used by the web channel to resend ask_user on WS reconnect so refreshing
 // the page doesn't lose the prompt.
@@ -2894,10 +2908,17 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		}
 	}
 
+	// Resume turn: the user message is already in the DB (eager-saved before
+	// the original Run() started). InjectInboundResume sends an empty message
+	// with resume_turn metadata — Assemble skips appending a user message
+	// entirely (UserMessage is empty), so no duplicate to remove.
+	resumeTurn := msg.Metadata != nil && msg.Metadata["resume_turn"] == "true"
+
 	// 运行 Agent 循环（统一 Run）
 	// Eager-save user message BEFORE Run() so incrementally persisted assistant/tool
 	// messages appear after it in the DB. GetHistory uses user messages as turn boundaries.
-	if !askUserAnswered && (msg.Metadata == nil || msg.Metadata["user_msg_eager_saved"] != "true") {
+	// Skip for resume (already in DB) and AskUser (not a new user message).
+	if !askUserAnswered && !resumeTurn && (msg.Metadata == nil || msg.Metadata["user_msg_eager_saved"] != "true") {
 		userMsg := llm.NewUserMessage(msg.Content)
 		if !msg.Time.IsZero() {
 			userMsg.Timestamp = msg.Time
@@ -3115,6 +3136,11 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		msg.SenderID,
 		msg.ChatID,
 	)
+
+	// Resume turn: skip user message synthesis (already in DB history)
+	if msg.Metadata != nil && msg.Metadata["resume_turn"] == "true" {
+		mc.ResumeTurn = true
+	}
 
 	// 注入当前工作目录（CWD）到 prompt
 	// sandbox 模式下 CWD 已经是 sandbox 内路径，无 cd 时默认为 promptWorkDir
@@ -3396,6 +3422,18 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 // 用于 cron 调度和后台任务通知等内部系统消息。
 func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 	a.injectInboundWithMetadata(channel, chatID, senderID, content, nil)
+}
+
+// InjectInboundResume triggers a resume turn for a session interrupted by
+// graceful shutdown or /continue command. It injects an EMPTY message with
+// resume_turn metadata — the original user message is already in the DB.
+// processMessage detects resume_turn and passes empty UserMessage to
+// MessageContext, so Assemble skips appending a user message entirely.
+// No duplicate, no workaround.
+func (a *Agent) InjectInboundResume(channel, chatID, senderID string) {
+	a.injectInboundWithMetadata(channel, chatID, senderID, "", map[string]string{
+		"resume_turn": "true",
+	})
 }
 
 func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content string, metadata map[string]string) {

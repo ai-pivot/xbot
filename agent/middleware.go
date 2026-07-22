@@ -28,6 +28,11 @@ type MessageContext struct {
 	// UserMessage 最终发送给 LLM 的用户消息（中间件可修改）
 	UserMessage string
 
+	// ResumeTurn indicates this is a resume turn (graceful shutdown or
+	// /continue). The user message is already in history from DB —
+	// UserMessageMiddleware skips synthesis so Assemble's empty guard fires.
+	ResumeTurn bool
+
 	// History 对话历史
 	History []llm.ChatMessage
 
@@ -159,7 +164,11 @@ func (mc *MessageContext) Assemble() []llm.ChatMessage {
 	sysMsg.CacheHint = "static"
 	messages = append(messages, sysMsg)
 	messages = append(messages, mc.History...)
-	messages = append(messages, llm.NewUserMessage(mc.UserMessage))
+	// Only append the user message when there is one. resume_turn injects
+	// an empty message — the user message is already in history (from DB).
+	if mc.UserMessage != "" {
+		messages = append(messages, llm.NewUserMessage(mc.UserMessage))
+	}
 
 	// assert: 最终只能有一条 system（本 pipeline 生成），history 不得含 system（session 不持久化 system）
 	var systemCount int

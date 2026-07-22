@@ -252,6 +252,13 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v47: pending_resumes table for graceful shutdown agent loop resume.
+	if from < 47 {
+		if err := migrateV46ToV47(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v47: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1874,5 +1881,29 @@ func migrateV45ToV46(conn *sql.DB) error {
 	}
 
 	log.Info("Database migrated to v46: re-backfill user_id for rows added after v45")
+	return nil
+}
+
+// migrateV46ToV47 creates the pending_resumes table for graceful shutdown
+// agent loop resume. When xbot shuts down with active agent loops, the
+// affected sessions are recorded here and resumed on next startup.
+func migrateV46ToV47(conn *sql.DB) error {
+	if _, err := conn.Exec(`
+  CREATE TABLE IF NOT EXISTS pending_resumes (
+   channel TEXT NOT NULL,
+   chat_id TEXT NOT NULL,
+   sender_id TEXT NOT NULL,
+   content TEXT NOT NULL,
+   created_at TEXT NOT NULL,
+   PRIMARY KEY (channel, chat_id)
+  );`); err != nil {
+		return fmt.Errorf("create pending_resumes table: %w", err)
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 47"); err != nil {
+		return fmt.Errorf("migrate v47 update version: %w", err)
+	}
+
+	log.Info("Database migrated to v47: added pending_resumes table")
 	return nil
 }

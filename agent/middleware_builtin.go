@@ -520,6 +520,12 @@ func (m *UserMessageMiddleware) Name() string  { return "user_message" }
 func (m *UserMessageMiddleware) Priority() int { return 200 }
 
 func (m *UserMessageMiddleware) Process(mc *MessageContext) error {
+	// Resume turn: the user message is already in history from DB.
+	// Skip synthesis — Assemble's empty guard will skip appending.
+	if mc.ResumeTurn {
+		return nil
+	}
+
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
 
 	var userMsg string
