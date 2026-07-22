@@ -1047,6 +1047,9 @@ export function useSessionStoreImpl(): SessionStore {
       sessionsRef.current = nextSessions
       saveSessionTreeCache(nextSessions, flattenTreeAgents(nextSessions))
       setSessions(nextSessions)
+      // Clear ALL executing sessions — stale busy keys (from lost idle events)
+      // would force running in mergeStatus, overriding the server's correct state.
+      executingSessionsRef.current.clear()
       // Immediately query the server for the latest session status — the
       // local sessions list may be stale (e.g. a previous busy/idle event
       // failed to arrive). This ensures the sidebar and AgentPanel show the
