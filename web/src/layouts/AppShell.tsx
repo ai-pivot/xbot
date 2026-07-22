@@ -10,13 +10,14 @@
  * file browser / search / info / tasks panels, each switchable via its
  * own RightActivityBar (Spec 6).
  */
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 
 import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
+import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabManager } from '@/hooks/useTabManager'
@@ -24,11 +25,8 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 
-// Lazy-load heavy components not on the critical render path.
-// DockviewContainer pulls in dockview core + all panel components;
-// SettingsDialog is only needed when the user opens settings.
-const DockviewContainer = lazy(() =>
-  import('@/workspace/DockviewContainer').then(m => ({ default: m.DockviewContainer })))
+// SettingsDialog is only needed when the user opens settings — lazy-load it
+// so its code (form components, etc.) is not on the initial render path.
 const SettingsDialog = lazy(() =>
   import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
 
@@ -155,9 +153,7 @@ export function AppShell() {
       <RightSidebarControlContext.Provider value={{ openPanel }}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="h-full min-w-0 flex-1">
-          <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-text-muted">Loading…</div>}>
-            <DockviewContainer tabManager={tabManager} />
-          </Suspense>
+          <DockviewContainer tabManager={tabManager} />
         </main>
       </RightSidebarControlContext.Provider>
 
