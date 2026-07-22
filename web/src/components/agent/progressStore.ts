@@ -388,13 +388,10 @@ export class ProgressStore {
     // the PhaseDone todos are discarded and the list only reappears on the next
     // history reload (idle), never during busy.
     if (opts.phase === 'done') {
-      console.log('[TODO-DEBUG] store.setStructuredTools PhaseDone branch, opts.todos:', opts.todos, 'current.todos before:', this.current.todos)
       if (opts.todos !== undefined) {
         this.current.todos = opts.todos
       }
-      console.log('[TODO-DEBUG] store.setStructuredTools PhaseDone, current.todos after write:', this.current.todos)
       this.reset()
-      console.log('[TODO-DEBUG] store.setStructuredTools PhaseDone, after reset snapshot.todos:', this.snapshot.todos)
       return
     }
 

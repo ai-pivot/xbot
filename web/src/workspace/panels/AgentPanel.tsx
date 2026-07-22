@@ -142,23 +142,18 @@ export function AgentPanel({ params }: PanelProps) {
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
     onAssistantComplete: (finalText, iterations) => {
-      // Both main Agent and SubAgent panels append the final reply to the
-      // message list. SubAgent panels previously had onAssistantComplete=undefined,
-      // causing the final reply to never appear in the message list.
-      // flushSync ensures setMessages flushes synchronously BEFORE store.reset()
-      // clears the live streaming message. Without this, there's a frame where
+      // Append the final reply + reset progress in the same synchronous render.
+      // flushSync ensures setMessages flushes BEFORE store.reset() clears the
+      // live streaming message — without this, there's a frame where
       // liveMessage is null but the appended message hasn't rendered → flicker.
-      //
-      // CRITICAL: resetProgress must be called INSIDE flushSync so that
-      // setMessages and store.reset() happen in the same synchronous render.
-      // Calling store.reset() separately (in handleProgressMessage's text handler)
-      // triggers a second useSyncExternalStore re-render where liveMessage
-      // disappears but the committed message hasn't been painted yet → flicker.
       flushSync(() => {
         chat.appendAssistant(finalText, iterations)
         resetProgressRef.current?.()
       })
-      void chat.reload()
+      // Delay reload to give the DB time to persist the assistant message.
+      // Without this, reload fetches history that doesn't yet include the
+      // latest reply → setMessages overwrites the appended message → it vanishes.
+      setTimeout(() => void chat.reload(), 500)
       void sessionContext.refresh()
     },
     ws,
@@ -181,7 +176,6 @@ export function AgentPanel({ params }: PanelProps) {
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
-  console.log('[TODO-DEBUG] AgentPanel render, progressSnapshot.todos:', progressSnapshot.todos, 'todoState:', todoState, 'total:', todoState.total)
   // Busy while streaming (live or hydrated from a resumed session) OR
   // backend reports processing (covers SSE reconnect gap).
   const busy = (isStreaming || chat.processing) && !askUser.prompt
