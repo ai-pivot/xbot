@@ -326,9 +326,22 @@ function handleProgressMessage(
       if (p.phase === 'done') {
         // PhaseDone: reset immediately. The backend guarantees a `text` event
         // follows with the final assistant reply. No finalizing state needed.
+        // Parse todos from the done event — TodoWrite may have fired as the
+        // last tool in the iteration, and the PhaseDone event carries the
+        // updated todos. Without this, todos only appear on the NEXT busy
+        // event (next turn), not immediately.
+        let doneTodos: TodoItem[] | undefined
+        if (Array.isArray(p.todos) && p.todos.length > 0) {
+          doneTodos = p.todos.map((t) => ({
+            id: typeof t.id === 'number' ? t.id : 0,
+            text: typeof t.text === 'string' ? t.text : '',
+            done: Boolean(t.done),
+          }))
+        }
         store.setStructuredTools({
           eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
           phase: 'done',
+          todos: doneTodos,
         })
         return
       }
