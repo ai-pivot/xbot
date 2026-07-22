@@ -73,6 +73,9 @@ func NewTenantService(db *DB) *TenantService {
 // Uses INSERT OR IGNORE within a transaction to avoid TOCTOU race conditions.
 // The UNIQUE(channel, chat_id) constraint on the tenants table guarantees uniqueness.
 func (s *TenantService) GetOrCreateTenantID(channel, chatID string) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("tenant service not initialized")
+	}
 	conn := s.db.Conn()
 
 	tx, err := conn.Begin()
@@ -122,6 +125,9 @@ func (s *TenantService) GetOrCreateTenantID(channel, chatID string) (int64, erro
 
 // GetTenantInfo retrieves tenant information by ID
 func (s *TenantService) GetTenantInfo(tenantID int64) (channel, chatID string, err error) {
+	if s == nil || s.db == nil {
+		return "", "", fmt.Errorf("tenant service not initialized")
+	}
 	conn := s.db.Conn()
 	err = conn.QueryRow(
 		"SELECT channel, chat_id FROM tenants WHERE id = ?",
@@ -154,6 +160,9 @@ func (s *TenantService) DeleteTenant(tenantID int64) error {
 // GetTenantIDByChannelChatID looks up the tenant ID for (channel, chatID) without creating one.
 // Returns (0, nil) if not found.
 func (s *TenantService) GetTenantIDByChannelChatID(channel, chatID string) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("tenant service not initialized")
+	}
 	conn := s.db.Conn()
 	var tenantID int64
 	err := conn.QueryRow(
@@ -171,6 +180,9 @@ func (s *TenantService) GetTenantIDByChannelChatID(channel, chatID string) (int6
 
 // ListTenants returns all tenants with optional label from user_chats.
 func (s *TenantService) ListTenants() ([]TenantInfo, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("tenant service not initialized")
+	}
 	conn := s.db.Conn()
 	rows, err := conn.Query(
 		`SELECT t.id, t.channel, t.chat_id, COALESCE(c.label, '') as label,
@@ -294,6 +306,9 @@ ORDER BY id DESC LIMIT 1
 // GetTenantSubscription reads the session→subscription mapping from the tenants table.
 // Returns empty strings if no mapping exists.
 func (s *TenantService) GetTenantSubscription(channel, chatID string) (subscriptionID, model string, err error) {
+	if s == nil || s.db == nil {
+		return "", "", fmt.Errorf("tenant service not initialized")
+	}
 	conn := s.db.Conn()
 	err = conn.QueryRow(
 		"SELECT subscription_id, model FROM tenants WHERE channel = ? AND chat_id = ?",
@@ -331,6 +346,9 @@ func (s *TenantService) SetTenantRunner(channel, chatID, runnerID string) error 
 // GetTenantRunner reads the session→runner binding from the tenants table.
 // Returns empty string if no binding exists.
 func (s *TenantService) GetTenantRunner(channel, chatID string) (string, error) {
+	if s == nil || s.db == nil {
+		return "", fmt.Errorf("tenant service not initialized")
+	}
 	conn := s.db.Conn()
 	var runnerID string
 	err := conn.QueryRow(
