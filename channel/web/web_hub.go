@@ -121,22 +121,6 @@ func (h *Hub) subscribe(clientID, chatID string) bool {
 	return true
 }
 
-// subscribeSecondary adds an additional subscription for a client without
-// clearing existing subscriptions. Used to let SSE clients receive progress
-// events from the "web" routeKey (SendProgress always pushes to channel="web")
-// while their primary subscription is on a different channel (e.g. "cli").
-func (h *Hub) subscribeSecondary(clientID, routeKey string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.stopped || h.conns[clientID] == nil {
-		return
-	}
-	if h.subs[routeKey] == nil {
-		h.subs[routeKey] = make(map[string]bool)
-	}
-	h.subs[routeKey][clientID] = true
-}
-
 // sendToClient sends a message to all clients subscribed to a chatID.
 // If no clients are subscribed, buffers the message for later delivery.
 func (h *Hub) sendToClient(chatID string, msg protocol.WSMessage) bool {

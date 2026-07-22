@@ -716,13 +716,22 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 		return
 	}
 
+	// Derive the originating channel from payload.ChatID (qualified, e.g.
+	// "cli:/path:Agent-xxx"). This ensures progress events are pushed to the
+	// correct SSE routeKey — the SSE client subscribes to the session's
+	// actual channel, not a hardcoded "web".
+	channel := "web"
+	if idx := strings.Index(payload.ChatID, ":"); idx > 0 {
+		channel = payload.ChatID[:idx]
+	}
+
 	wsMsg := protocol.WSMessage{
 		Type:     protocol.MsgTypeProgress,
 		TS:       time.Now().Unix(),
 		Progress: payload,
 	}
 
-	if !wc.hub.sendToSession("web", chatID, wsMsg) {
+	if !wc.hub.sendToSession(channel, chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
 	}
 }
