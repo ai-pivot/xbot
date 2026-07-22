@@ -10,7 +10,7 @@
  * file browser / search / info / tasks panels, each switchable via its
  * own RightActivityBar (Spec 6).
  */
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
@@ -65,6 +65,10 @@ export function AppShell() {
   const openPanel = useCallback((panel: SidebarPanel) => {
     setActivePanel(panel)
   }, [])
+  // Memoize so the context value is stable — prevents DockviewContainer's
+  // ctxValue from changing on every AppShell render (e.g. sidebar toggle),
+  // which would force panel.update() on ALL dockview panels.
+  const rightSidebarControl = useMemo(() => ({ openPanel }), [openPanel])
 
   const onLeftResizeStart = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
@@ -150,7 +154,7 @@ export function AppShell() {
         </div>
       )}
 
-      <RightSidebarControlContext.Provider value={{ openPanel }}>
+      <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="h-full min-w-0 flex-1">
           <DockviewContainer tabManager={tabManager} />
