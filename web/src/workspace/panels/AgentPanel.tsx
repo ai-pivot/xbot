@@ -18,6 +18,7 @@ import { toast } from 'sonner'
 
 import { useAskUser } from '@/hooks/useAskUser'
 import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
+import { sameSession } from "@/lib/session-grouping"
 import { useCollapseLevel, useMergeTools } from '@/hooks/useCollapseLevel'
 import { useProgressStream } from '@/hooks/useProgressStream'
 import { useTodos } from '@/hooks/useTodos'
@@ -176,9 +177,13 @@ export function AgentPanel({ params }: PanelProps) {
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
-  // Busy while streaming (live or hydrated from a resumed session) OR
-  // backend reports processing (covers SSE reconnect gap).
-  const busy = (isStreaming || chat.processing) && !askUser.prompt
+  // Busy = actively streaming OR backend reports processing OR session store
+  // says running (covers the gap when switching to a busy tab before progress
+  // events arrive — the sidebar's running state is driven by session(busy)
+  // SSE events which fire immediately).
+  const currentSession = store.sessions.find((s) => sameSession(s, activeSession))
+  const sessionRunning = currentSession?.running ?? false
+  const busy = (isStreaming || chat.processing || sessionRunning) && !askUser.prompt
 
   const llmSettings = useLLMSettings()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens

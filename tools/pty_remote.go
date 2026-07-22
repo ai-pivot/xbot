@@ -110,7 +110,7 @@ func (rs *RemoteSandbox) PtyCreate(ctx context.Context, userID, streamID, shell,
 	rs.registerPtyStream(streamID, &ptyStream{})
 
 	env := []string{"TERM=xterm-256color"}
-	reqBody, _ := json.Marshal(runnerproto.PtyCreateRequest{
+	reqBody, err := json.Marshal(runnerproto.PtyCreateRequest{
 		StreamID: streamID,
 		Command:  shell,
 		Dir:      cwd,
@@ -118,6 +118,9 @@ func (rs *RemoteSandbox) PtyCreate(ctx context.Context, userID, streamID, shell,
 		Cols:     cols,
 		Rows:     rows,
 	})
+	if err != nil {
+		return fmt.Errorf("marshal pty_create request: %w", err)
+	}
 	msg := &RunnerMessage{
 		ID:     generateID(),
 		Type:   runnerproto.ProtoPtyCreate,
@@ -146,10 +149,13 @@ func (rs *RemoteSandbox) PtyStdin(userID, streamID string, data []byte) error {
 		return fmt.Errorf("runner disconnected: %w", err)
 	}
 
-	reqBody, _ := json.Marshal(runnerproto.PtyStdinRequest{
+	reqBody, err := json.Marshal(runnerproto.PtyStdinRequest{
 		StreamID: streamID,
 		Data:     base64.StdEncoding.EncodeToString(data),
 	})
+	if err != nil {
+		return fmt.Errorf("marshal pty_stdin request: %w", err)
+	}
 	msg := &RunnerMessage{
 		ID:     generateID(),
 		Type:   runnerproto.ProtoPtyStdin,
@@ -166,11 +172,14 @@ func (rs *RemoteSandbox) PtyResize(userID, streamID string, cols, rows uint16) e
 		return fmt.Errorf("runner disconnected: %w", err)
 	}
 
-	reqBody, _ := json.Marshal(runnerproto.PtyResizeRequest{
+	reqBody, err := json.Marshal(runnerproto.PtyResizeRequest{
 		StreamID: streamID,
 		Cols:     cols,
 		Rows:     rows,
 	})
+	if err != nil {
+		return fmt.Errorf("marshal pty_resize request: %w", err)
+	}
 	msg := &RunnerMessage{
 		ID:     generateID(),
 		Type:   runnerproto.ProtoPtyResize,
@@ -187,7 +196,10 @@ func (rs *RemoteSandbox) PtyClose(ctx context.Context, userID, streamID string) 
 		return nil // runner already gone
 	}
 
-	reqBody, _ := json.Marshal(runnerproto.PtyCloseRequest{StreamID: streamID})
+	reqBody, err := json.Marshal(runnerproto.PtyCloseRequest{StreamID: streamID})
+	if err != nil {
+		return fmt.Errorf("marshal pty_close request: %w", err)
+	}
 	msg := &RunnerMessage{
 		ID:     generateID(),
 		Type:   runnerproto.ProtoPtyClose,

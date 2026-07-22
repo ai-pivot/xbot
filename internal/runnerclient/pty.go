@@ -232,9 +232,15 @@ func (pm *ptyManager) buildCmd(req runnerproto.PtyCreateRequest) (*exec.Cmd, err
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	// Build environment: inherit parent + apply overrides.
-	env := append([]string{}, os.Environ()...)
-	env = append(env, "TERM=xterm-256color")
+	// Only pass safe environment variables — don't leak runner secrets into PTY.
+	env := []string{
+		"TERM=xterm-256color",
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"USER=" + os.Getenv("USER"),
+		"SHELL=" + os.Getenv("SHELL"),
+		"LANG=" + os.Getenv("LANG"),
+	}
 	env = append(env, req.Env...)
 	cmd.Env = env
 	return cmd, nil
@@ -255,11 +261,16 @@ func (pm *ptyManager) forwardOutput(streamID string, proc *ptyProcess) {
 					Data:     encoded,
 				}),
 			}
-			data, _ := json.Marshal(pushMsg)
+			data, mErr := json.Marshal(pushMsg)
+			if mErr != nil {
+				return
+			}
 			select {
 			case pm.writeCh <- WriteMsg{Data: data}:
 			case <-pm.writeDone:
 				return
+			default:
+				// Drop frame under extreme backpressure to prevent PTY read freeze.
 			}
 		}
 		if err != nil {
@@ -291,7 +302,10 @@ func (pm *ptyManager) waitExit(streamID string, proc *ptyProcess) {
 			Error:    errMsg,
 		}),
 	}
-	data, _ := json.Marshal(pushMsg)
+	data, mErr := json.Marshal(pushMsg)
+	if mErr != nil {
+		return
+	}
 	select {
 	case pm.writeCh <- WriteMsg{Data: data}:
 	case <-pm.writeDone:

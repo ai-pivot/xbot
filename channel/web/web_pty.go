@@ -76,7 +76,16 @@ func (b *localPtyBackend) Create(cwd string, cols, rows uint16) (string, error) 
 	}
 	cmd := exec.Command(shell)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	// Only pass safe environment variables — don't leak server secrets (DB
+	// passwords, API keys) into the PTY shell.
+	cmd.Env = []string{
+		"TERM=xterm-256color",
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"USER=" + os.Getenv("USER"),
+		"SHELL=" + os.Getenv("SHELL"),
+		"LANG=" + os.Getenv("LANG"),
+	}
 
 	ws := &pty.Winsize{Cols: cols, Rows: rows}
 	ptmx, err := pty.StartWithSize(cmd, ws)
@@ -662,9 +671,12 @@ func (wc *WebChannel) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 					sess.backend.WriteStdin(sess.streamID, decoded) //nolint:errcheck
 				}
 			case "resize":
-				cols := uint16(msg["cols"].(float64))
-				rows := uint16(msg["rows"].(float64))
-				sess.backend.Resize(sess.streamID, cols, rows) //nolint:errcheck
+				colsVal, ok := msg["cols"].(float64)
+				rowsVal, ok2 := msg["rows"].(float64)
+				if !ok || !ok2 {
+					continue
+				}
+				sess.backend.Resize(sess.streamID, uint16(colsVal), uint16(rowsVal)) //nolint:errcheck
 			case "close":
 				sess.backend.Close(sess.streamID) //nolint:errcheck
 				return

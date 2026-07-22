@@ -1123,7 +1123,11 @@ export function useSessionStoreImpl(): SessionStore {
           } else {
             setStatus(selector, 'idle')
           }
-          void refresh()
+          // Don't call refresh() here — it causes a race where the HTTP
+          // response (which may be stale) overwrites the SSE-driven status.
+          // TUI doesn't refresh on idle either; the sidebar state is
+          // driven entirely by SSE events. refresh() runs on initial load
+          // and session switch, which is sufficient for sync.
           break
         }
         case 'deleted':
