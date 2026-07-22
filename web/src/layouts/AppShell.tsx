@@ -46,6 +46,7 @@ export function AppShell() {
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsVersion, setSettingsVersion] = useState(0)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const leftDragging = useRef(false)
   const leftUserSized = useRef(localStorage.getItem(LEFT_WIDTH_KEY) !== null)
   const leftWidthRef = useRef(leftWidth)
@@ -124,22 +125,26 @@ export function AppShell() {
       <ActivityBar
         onOpenSettings={() => setSettingsOpen(true)}
         settingsVersion={settingsVersion}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
       />
 
-      {/* Left sidebar — session list (always visible) */}
-      <div
-        className="relative h-full shrink-0"
-        style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
-      >
-        <SessionSidebar tabManager={tabManager} />
+      {/* Left sidebar — session list (collapsible) */}
+      {!sidebarCollapsed && (
         <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sessions sidebar"
-          onPointerDown={onLeftResizeStart}
-          className="absolute right-0 top-0 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-app-accent/40"
-        />
-      </div>
+          className="relative h-full shrink-0"
+          style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
+        >
+          <SessionSidebar tabManager={tabManager} />
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sessions sidebar"
+            onPointerDown={onLeftResizeStart}
+            className="absolute right-0 top-0 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-app-accent/40"
+          />
+        </div>
+      )}
 
       <RightSidebarControlContext.Provider value={{ openPanel }}>
         {/* Workspace — always present (Agent tab lives here). */}

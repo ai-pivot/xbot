@@ -17,6 +17,7 @@ const zhCN = {
   },
   sidebar: {
     sessions: '会话',
+    toggle: '切换侧边栏',
     files: '文件',
     search: '搜索',
     diff: '差异',
@@ -155,6 +156,7 @@ const zhCN = {
   },
   agent: {
     inputPlaceholder: '给 Agent 发消息…（Ctrl+Enter 发送）',
+    inputPlaceholderEnter: '给 Agent 发消息…（Enter 发送）',
     send: '发送',
     attach: '附件',
     uploadFailed: '文件上传失败',
@@ -200,6 +202,8 @@ const zhCN = {
     rewindFailed: '回溯失败',
     noUserMessageToRewind: '没有可回溯的用户消息',
     clickEditButtonHint: '点击用户消息旁的编辑按钮进行回溯',
+    copyMarkdown: '复制 Markdown',
+    copyMarkdownDone: '已复制到剪贴板',
     completionHint: '↑↓ 选择，Tab 补全，Esc 关闭',
     completionNoResults: '无匹配结果',
     navToTop: '回到最上方',

@@ -13,7 +13,9 @@
  * of user's collapse setting. "all" (complete fold) is only for completed
  * messages. A shimmer "thinking" indicator appears at the bottom during streaming.
  */
-import { memo } from 'react'
+import { memo, useCallback } from 'react'
+import { Copy } from 'lucide-react'
+import { toast } from 'sonner'
 
 import { FoldedLine } from './FoldedLine'
 import { GenUIBlock } from './GenUIBlock'
@@ -79,6 +81,16 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     : ''
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
 
+  // Copy markdown content to clipboard
+  const handleCopy = useCallback(() => {
+    void navigator.clipboard.writeText(message.content).then(() => {
+      toast.success(t('agent.copyMarkdownDone'))
+    })
+  }, [message.content, t])
+
+  // Action bar shown only for completed (non-streaming) messages with content
+  const showActions = !isStreaming && (finalContent || message.content.trim()) && !message.displayOnly
+
   // 'all' level + committed: fold all intermediate content (iterations' thinking/O),
   // show only the last TEXT output. Last TEXT = message.content, or fall back to
   // the last iteration's thinking when content is empty.
@@ -101,7 +113,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     }
 
     return (
-      <div className="px-1">
+      <div className="group/msg px-1">
         {showSummary && (
           <FoldedLine
             title={t('agent.processed', { iterations: iterations.length, tools: totalTools })}
@@ -128,13 +140,14 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
             {t('agent.displayOnly')}
           </span>
         )}
+        {showActions && <AssistantActions onCopy={handleCopy} t={t} />}
       </div>
     )
   }
 
   // 'minimal'/'none' level or streaming: render full TurnBody.
   return (
-    <div className="px-1">
+    <div className="group/msg px-1">
       <TurnBody
         iterations={iterations}
         liveProgress={liveProgress}
@@ -159,6 +172,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       )}
       {/* Shimmer "thinking" indicator during streaming */}
       {showThinkingIndicator && <ShimmerThinking />}
+      {showActions && <AssistantActions onCopy={handleCopy} t={t} />}
     </div>
   )
 }
@@ -191,6 +205,25 @@ function showProgress(progress?: LiveProgress | null): boolean {
       progress.subAgents.length ||
       progress.reasoningStreamContent ||
       progress.iteration
+  )
+}
+
+/** Copy-MD action bar shown at the bottom-left of assistant messages. */
+function AssistantActions({ onCopy, t }: {
+  onCopy: () => void
+  t: (key: string) => string
+}) {
+  return (
+    <div className="mt-1 flex items-center gap-0.5">
+      <button
+        type="button"
+        onClick={onCopy}
+        title={t('agent.copyMarkdown')}
+        className="flex h-6 items-center gap-1 rounded px-1.5 text-text-muted transition-opacity hover:text-text-primary hover:bg-muted"
+      >
+        <Copy className="size-3.5" />
+      </button>
+    </div>
   )
 }
 

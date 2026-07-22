@@ -23,6 +23,7 @@ import {
   Settings,
   LayoutGrid,
   Plug,
+  PanelLeft,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { useI18n } from '@/providers/i18n'
@@ -50,6 +51,10 @@ interface ActivityBarProps {
   onOpenSettings: () => void
   /** Increments when settings dialog closes — triggers identity refresh. */
   settingsVersion?: number
+  /** Whether the session sidebar is collapsed. */
+  sidebarCollapsed?: boolean
+  /** Toggle session sidebar visibility. */
+  onToggleSidebar?: () => void
 }
 
 const CHANNEL_ICONS: Record<string, IconComponent> = {
@@ -63,7 +68,7 @@ const CHANNEL_ICONS: Record<string, IconComponent> = {
   gitlab: Plug,
 }
 
-export function ActivityBar({ onOpenSettings, settingsVersion = 0 }: ActivityBarProps) {
+export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollapsed = false, onToggleSidebar }: ActivityBarProps) {
   const { t } = useI18n()
   const { activeChannel, setActiveChannel } = useSessionStore()
   const [identities, setIdentities] = useState<IdentityEntry[]>([])
@@ -169,6 +174,25 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0 }: ActivityBar
       </nav>
 
       <div className="flex flex-col items-center gap-1">
+        {/* Sidebar toggle */}
+        {onToggleSidebar && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={t('sidebar.toggle')}
+                aria-pressed={sidebarCollapsed}
+                onClick={onToggleSidebar}
+                className="flex size-9 items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
+                style={{ color: sidebarCollapsed ? 'var(--accent)' : 'var(--text-secondary)' }}
+              >
+                <PanelLeft className="size-5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">{t('sidebar.toggle')}</TooltipContent>
+          </Tooltip>
+        )}
+
         {/* Settings — opens SettingsDialog Sheet (not a sidebar view). */}
         <Tooltip>
           <TooltipTrigger asChild>
