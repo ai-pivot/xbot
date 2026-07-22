@@ -1121,7 +1121,7 @@ func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh chan os.Signal)
 			"channel": pr.Channel,
 			"chat_id": pr.ChatID,
 		}).Info("Resuming interrupted agent turn")
-		ag.InjectInboundResume(pr.Channel, pr.ChatID, pr.SenderID, pr.Content)
+		ag.InjectInboundResume(pr.Channel, pr.ChatID, pr.SenderID)
 		if err := webDB.ClearPendingResume(pr.Channel, pr.ChatID); err != nil {
 			log.WithError(err).Error("Failed to clear pending resume record after injection — residual record will self-heal on next restart if the turn completes")
 		}

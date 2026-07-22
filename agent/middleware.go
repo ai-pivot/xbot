@@ -159,7 +159,11 @@ func (mc *MessageContext) Assemble() []llm.ChatMessage {
 	sysMsg.CacheHint = "static"
 	messages = append(messages, sysMsg)
 	messages = append(messages, mc.History...)
-	messages = append(messages, llm.NewUserMessage(mc.UserMessage))
+	// Only append the user message when there is one. resume_turn injects
+	// an empty message — the user message is already in history (from DB).
+	if mc.UserMessage != "" {
+		messages = append(messages, llm.NewUserMessage(mc.UserMessage))
+	}
 
 	// assert: 最终只能有一条 system（本 pipeline 生成），history 不得含 system（session 不持久化 system）
 	var systemCount int

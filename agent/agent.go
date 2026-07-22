@@ -2909,14 +2909,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 
 	// Resume turn: the user message is already in the DB (eager-saved before
-	// the original Run() started). Assemble appended a duplicate user message
-	// from msg.Content — remove it so LLM sees exactly what's in the DB.
+	// the original Run() started). InjectInboundResume sends an empty message
+	// with resume_turn metadata — Assemble skips appending a user message
+	// entirely (UserMessage is empty), so no duplicate to remove.
 	resumeTurn := msg.Metadata != nil && msg.Metadata["resume_turn"] == "true"
-	if resumeTurn {
-		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
-			messages = messages[:len(messages)-1]
-		}
-	}
 
 	// 运行 Agent 循环（统一 Run）
 	// Eager-save user message BEFORE Run() so incrementally persisted assistant/tool
@@ -3424,12 +3420,13 @@ func (a *Agent) injectInbound(channel, chatID, senderID, content string) {
 }
 
 // InjectInboundResume triggers a resume turn for a session interrupted by
-// graceful shutdown. It does NOT inject a new user message — the original
-// user message is already in the DB. The resume_turn metadata tells
-// processMessage to skip eager-save and remove the duplicate user message
-// that Assemble appends (since history from DB already contains it).
-func (a *Agent) InjectInboundResume(channel, chatID, senderID, content string) {
-	a.injectInboundWithMetadata(channel, chatID, senderID, content, map[string]string{
+// graceful shutdown or /continue command. It injects an EMPTY message with
+// resume_turn metadata — the original user message is already in the DB.
+// processMessage detects resume_turn and passes empty UserMessage to
+// MessageContext, so Assemble skips appending a user message entirely.
+// No duplicate, no workaround.
+func (a *Agent) InjectInboundResume(channel, chatID, senderID string) {
+	a.injectInboundWithMetadata(channel, chatID, senderID, "", map[string]string{
 		"resume_turn": "true",
 	})
 }

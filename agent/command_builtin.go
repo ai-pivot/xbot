@@ -222,8 +222,8 @@ func (c *continueCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "💡 上一轮对话已完成，无需继续。"}, nil
 	}
 
-	// Get the last user message content + sender
-	content, senderID, err := db.GetLastUserMessage(msg.Channel, msg.ChatID)
+	// Verify there IS a last user message to resume from.
+	content, _, err := db.GetLastUserMessage(msg.Channel, msg.ChatID)
 	if err != nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("⚠️ 获取历史失败: %v", err)}, nil
 	}
@@ -231,17 +231,15 @@ func (c *continueCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "💡 没有找到可继续的对话。"}, nil
 	}
 
-	// Inject resume turn — the user message is already in DB, so we use
-	// resume_turn metadata to skip eager-save and remove the duplicate
-	// that Assemble appends. The LLM sees exactly the DB state.
-	if senderID == "" {
-		senderID = msg.SenderID
-	}
+	// Inject resume turn with empty content — the user message is already
+	// in DB. resume_turn metadata tells processMessage to skip eager-save,
+	// and Assemble skips appending a user message (UserMessage is empty).
+	// LLM sees exactly the DB state — no duplicate, no workaround.
 	log.Ctx(ctx).WithFields(log.Fields{
 		"channel": msg.Channel,
 		"chat_id": msg.ChatID,
 	}).Info("User triggered /continue — resuming interrupted turn")
-	a.InjectInboundResume(msg.Channel, msg.ChatID, senderID, content)
+	a.InjectInboundResume(msg.Channel, msg.ChatID, msg.SenderID)
 	return nil, nil // no immediate reply — the resumed turn will produce one
 }
 

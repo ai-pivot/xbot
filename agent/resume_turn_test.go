@@ -7,24 +7,24 @@ import (
 	"xbot/llm"
 )
 
-// TestResumeTurn_RemovesDuplicateUserMessage verifies that when resume_turn
-// metadata is set, processMessage's Assemble output has the duplicate user
-// message (appended by Assemble from msg.Content) removed.
+// TestResumeTurn_EmptyUserMessageSkipsAssembleAppend verifies that when
+// resume_turn injects an empty message, Assemble does NOT append a user
+// message — the history from DB already contains it.
 //
-// This covers the core of the graceful shutdown resume feature: LLM sees
-// exactly what's in the DB (history already contains the user message),
-// no duplicate.
-func TestResumeTurn_RemovesDuplicateUserMessage(t *testing.T) {
+// This is the core of the graceful shutdown resume feature: LLM sees
+// exactly what's in the DB, no duplicate, no workaround.
+func TestResumeTurn_EmptyUserMessageSkipsAssembleAppend(t *testing.T) {
 	// Simulate history loaded from DB (already contains user message from
 	// the original turn that was interrupted by graceful shutdown).
 	history := []llm.ChatMessage{
 		llm.NewUserMessage("hello"), // already eager-saved before original Run()
 	}
 
-	// Assemble always appends the current msg.Content as a new user message.
+	// Resume turn: InjectInboundResume sends empty content.
+	// MessageContext receives empty UserMessage.
 	mc := NewMessageContext(
 		context.Background(),
-		"hello", // same content as the history user message
+		"", // empty — resume_turn, no new user message
 		history,
 		"web",
 		"/workspace",
@@ -34,38 +34,18 @@ func TestResumeTurn_RemovesDuplicateUserMessage(t *testing.T) {
 	)
 	messages := mc.Assemble()
 
-	// Assemble appended a duplicate user message — this is what resume_turn
-	// must strip.
+	// Assemble should NOT have appended a user message.
 	userCount := 0
 	for _, m := range messages {
 		if m.Role == "user" {
 			userCount++
 		}
 	}
-	if userCount != 2 {
-		t.Fatalf("expected 2 user messages (1 from history + 1 from Assemble), got %d", userCount)
-	}
-
-	// Simulate the resume_turn removal logic from processMessage:
-	// "if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
-	//    messages = messages[:len(messages)-1]
-	// }"
-	if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
-		messages = messages[:len(messages)-1]
-	}
-
-	// After removal: exactly 1 user message (from history), matching DB state.
-	userCount = 0
-	for _, m := range messages {
-		if m.Role == "user" {
-			userCount++
-		}
-	}
 	if userCount != 1 {
-		t.Fatalf("expected 1 user message after resume_turn removal, got %d", userCount)
+		t.Fatalf("expected 1 user message (from history only), got %d", userCount)
 	}
 
-	// The remaining user message is from history (content matches).
+	// The user message is from history (content matches).
 	foundUser := false
 	for _, m := range messages {
 		if m.Role == "user" && m.Content == "hello" {
@@ -74,6 +54,44 @@ func TestResumeTurn_RemovesDuplicateUserMessage(t *testing.T) {
 		}
 	}
 	if !foundUser {
-		t.Fatal("expected to find the history user message 'hello' after removal")
+		t.Fatal("expected to find the history user message 'hello'")
+	}
+}
+
+// TestNormalTurn_NonEmptyUserMessageAppended verifies that normal (non-resume)
+// turns still append the user message as expected.
+func TestNormalTurn_NonEmptyUserMessageAppended(t *testing.T) {
+	history := []llm.ChatMessage{
+		llm.NewAssistantMessage("previous reply"),
+	}
+
+	mc := NewMessageContext(
+		context.Background(),
+		"new question", // normal turn — user message present
+		history,
+		"web",
+		"/workspace",
+		"web-1",
+		"web-1",
+		"chat-1",
+	)
+	// Simulate the middleware step that copies UserContent → UserMessage.
+	mc.UserMessage = mc.UserContent
+	messages := mc.Assemble()
+
+	userCount := 0
+	for _, m := range messages {
+		if m.Role == "user" {
+			userCount++
+		}
+	}
+	if userCount != 1 {
+		t.Fatalf("expected 1 user message (from Assemble), got %d", userCount)
+	}
+
+	// Last message should be the user message.
+	last := messages[len(messages)-1]
+	if last.Role != "user" || last.Content != "new question" {
+		t.Fatalf("expected last message to be user 'new question', got %s: %q", last.Role, last.Content)
 	}
 }
