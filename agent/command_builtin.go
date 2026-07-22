@@ -197,6 +197,54 @@ func (c *compressCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 	return a.handleCompress(ctx, msg, tenantSession)
 }
 
+// --- /continue ---
+
+type continueCmd struct{}
+
+func (c *continueCmd) Name() string        { return "/continue" }
+func (c *continueCmd) Aliases() []string   { return nil }
+func (c *continueCmd) Match(s string) bool { return strings.ToLower(s) == "/continue" }
+func (c *continueCmd) Concurrent() bool    { return false } // triggers Run
+
+func (c *continueCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	db := a.multiSession.DB()
+	if db == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 数据库未连接"}, nil
+	}
+
+	// Check if the last user message already has an assistant reply.
+	// If it does, the turn completed — nothing to continue.
+	hasReply, err := db.HasAssistantReplyAfterLastUser(msg.Channel, msg.ChatID)
+	if err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("⚠️ 检查失败: %v", err)}, nil
+	}
+	if hasReply {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "💡 上一轮对话已完成，无需继续。"}, nil
+	}
+
+	// Get the last user message content + sender
+	content, senderID, err := db.GetLastUserMessage(msg.Channel, msg.ChatID)
+	if err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("⚠️ 获取历史失败: %v", err)}, nil
+	}
+	if content == "" {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "💡 没有找到可继续的对话。"}, nil
+	}
+
+	// Inject resume turn — the user message is already in DB, so we use
+	// resume_turn metadata to skip eager-save and remove the duplicate
+	// that Assemble appends. The LLM sees exactly the DB state.
+	if senderID == "" {
+		senderID = msg.SenderID
+	}
+	log.Ctx(ctx).WithFields(log.Fields{
+		"channel": msg.Channel,
+		"chat_id": msg.ChatID,
+	}).Info("User triggered /continue — resuming interrupted turn")
+	a.InjectInboundResume(msg.Channel, msg.ChatID, senderID, content)
+	return nil, nil // no immediate reply — the resumed turn will produce one
+}
+
 // --- /usage ---
 
 type usageCmd struct{}
@@ -499,6 +547,7 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&getLLMCmd{}, CommandInfo{Usage: "/llm", Description: "查看当前解析到的订阅与模型"})
 	r.Register(&listLLMsCmd{}, CommandInfo{Usage: "/llms", Description: "列出所有个人 LLM 订阅"})
 	r.Register(&compressCmd{}, CommandInfo{Usage: "/compress", Description: "手动触发上下文压缩"})
+	r.Register(&continueCmd{}, CommandInfo{Usage: "/continue", Description: "继续上一轮被中断的对话（基于 DB 断点恢复）"})
 	r.Register(&usageCmd{}, CommandInfo{Usage: "/usage", Description: "查看 token 用量统计"})
 	r.Register(&contextModeCmd{}, CommandInfo{Usage: "/context mode [phase1|none|default]", Description: "查看/切换压缩模式"}) // 先注册（更精确的匹配优先）
 	r.Register(&contextInfoCmd{}, CommandInfo{Usage: "/context", Description: "查看上下文统计"})                              // 后注册（更宽泛的匹配）
