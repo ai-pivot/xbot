@@ -1,21 +1,23 @@
 /**
- * registerSW — registers the service worker and auto-updates on new versions.
- * Does NOT depend on vite-plugin-pwa's registerSW.js (which Vite 8 doesn't
- * generate reliably). Instead uses the raw Service Worker API.
+ * registerSW — registers the service worker for PWA offline support.
  *
- * Also unregisters any stale service workers from previous PWA versions
- * (e.g. the old registerSW.js-based one) to break out of cached old HTML.
+ * Update strategy: silent background download, no auto-reload.
+ * - The browser checks for SW updates on navigation (built-in).
+ * - When a new SW is downloaded, it enters "waiting" state.
+ * - We notify the UI via a CustomEvent so a "Update" button can appear.
+ * - The user clicks "Update" → SKIP_WAITING → controllerchange → reload.
+ * - If the user ignores the prompt, the new SW activates automatically
+ *   on the NEXT page load (browser default with skipWaiting in sw.js).
+ *
+ * On localhost, any existing SW is unregistered (dev environment must not
+ * be intercepted by the SW's NavigationRoute).
  */
 export function registerSW() {
   if (!('serviceWorker' in navigator)) return
 
-  // Don't register SW on localhost / 127.0.0.1 — it causes navigation
-  // requests to hang because the SW's NavigationRoute intercepts them
-  // but the precache may not have the correct assets for a dev environment.
   const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
 
   window.addEventListener('load', () => {
-    // On localhost, unregister any existing SW to clean up stale caches.
     if (isLocalhost) {
       navigator.serviceWorker.getRegistrations().then((regs) => {
         regs.forEach((r) => r.unregister())
@@ -23,36 +25,24 @@ export function registerSW() {
       return
     }
 
-    // Production: register and auto-update.
-    navigator.serviceWorker.getRegistrations().then((regs) => {
-      const oldRegs = regs.filter((r) => !r.active?.scriptURL?.endsWith('/sw.js'))
-      if (oldRegs.length > 0) {
-        console.info('Unregistering stale service workers:', oldRegs.map((r) => r.scope))
+    navigator.serviceWorker.register('/sw.js', { scope: '/' }).then((reg) => {
+      // A SW may already be waiting (from a previous visit's background download).
+      if (reg.waiting) {
+        window.dispatchEvent(new CustomEvent('sw-update-available'))
       }
-      return Promise.all(oldRegs.map((r) => r.unregister()))
-    }).then(() => {
-      return navigator.serviceWorker.register('/sw.js', { scope: '/' })
-    }).then((reg) => {
-      setInterval(() => reg.update().catch(() => {}), 60_000)
 
+      // When the browser downloads a new SW in the background, notify the UI.
       reg.addEventListener('updatefound', () => {
         const newWorker = reg.installing
         if (!newWorker) return
         newWorker.addEventListener('statechange', () => {
           if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-            newWorker.postMessage({ type: 'SKIP_WAITING' })
+            window.dispatchEvent(new CustomEvent('sw-update-available'))
           }
         })
       })
-    }).catch((err) => {
-      console.warn('SW registration failed:', err)
-    })
-
-    let refreshing = false
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (refreshing) return
-      refreshing = true
-      window.location.reload()
+    }).catch(() => {
+      // SW registration failed — PWA features unavailable, app still works.
     })
   })
 }

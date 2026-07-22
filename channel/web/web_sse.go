@@ -88,6 +88,13 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	registered := wc.hub.addClient(client.id, client)
 	subscribed := registered && wc.hub.subscribe(client.id, routeKey)
+	// Also subscribe to the "web" routeKey so the SSE client receives progress
+	// events from SendProgress (which always pushes to channel="web").
+	// This is critical when a web user browses a CLI session: the SSE client
+	// subscribes with sel.Channel="cli" but progress events go to "web".
+	if registered && sel.Channel != "web" && sel.Channel != "" {
+		wc.hub.subscribeSecondary(client.id, sessionRouteKey("web", sel.ChatID))
+	}
 	wc.hub.seqMu.Unlock()
 	if !subscribed {
 		if registered {
@@ -176,6 +183,11 @@ func sseResumeCursor(r *http.Request) (uint64, bool, error) {
 
 func (wc *WebChannel) replaySSEEvents(sel SessionSelector, lastSeq uint64) []protocol.WSMessage {
 	events := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).eventsAfter(lastSeq)
+	// Also read from the "web" routeKey — SendProgress always pushes to
+	// channel="web" regardless of the originating session's channel.
+	if sel.Channel != "web" && sel.Channel != "" {
+		events = append(events, wc.getEventStream(sessionRouteKey("web", sel.ChatID)).eventsAfter(lastSeq)...)
+	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
 	return events
 }
@@ -348,6 +360,11 @@ func (wc *WebChannel) catchUpSSE(ctx context.Context, client *Client, initial []
 			return false, err
 		}
 		pending = append(pending, wc.getEventStream(sessionRouteKey(client.sessionChannel, client.chatID)).eventsAfter(client.lastSentSeq)...)
+		// Also read from the "web" routeKey — SendProgress always pushes to
+		// channel="web" regardless of the originating session's channel.
+		if client.sessionChannel != "web" && client.sessionChannel != "" {
+			pending = append(pending, wc.getEventStream(sessionRouteKey("web", client.chatID)).eventsAfter(client.lastSentSeq)...)
+		}
 		queued, closed := collectSSEBatch(client.sendCh)
 		pending = append(pending, queued...)
 		if len(pending) == 0 {

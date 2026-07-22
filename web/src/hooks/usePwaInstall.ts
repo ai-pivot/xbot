@@ -91,21 +91,19 @@ export function usePwaInstall() {
     return () => window.removeEventListener('beforeinstallprompt', handler)
   }, [])
 
+  // Listen for the global 'sw-update-available' event (dispatched by registerSW
+  // when a new SW finishes downloading in the background).
+  useEffect(() => {
+    const handler = () => setUpdateAvailable(true)
+    window.addEventListener('sw-update-available', handler)
+    return () => window.removeEventListener('sw-update-available', handler)
+  }, [])
+
+  // On mount, check if a SW is already waiting (downloaded in a previous visit).
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
     navigator.serviceWorker.getRegistration('/').then((reg) => {
-      if (!reg) return
-      const onUpdate = () => {
-        const newWorker = reg.installing
-        if (newWorker) {
-          newWorker.addEventListener('statechange', () => {
-            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-              setUpdateAvailable(true)
-            }
-          })
-        }
-      }
-      reg.addEventListener('updatefound', onUpdate)
+      if (reg?.waiting) setUpdateAvailable(true)
     }).catch(() => {})
   }, [])
 
@@ -136,12 +134,15 @@ export function usePwaInstall() {
     if (!('serviceWorker' in navigator)) return
     const reg = await navigator.serviceWorker.getRegistration('/')
     if (reg?.waiting) {
-      // Tell the waiting SW to skip waiting, then reload immediately.
-      // Don't wait for controllerchange — it may not fire reliably on iOS.
+      // User explicitly clicked "Update" — activate the waiting SW and reload.
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        window.location.reload()
+      }, { once: true })
       reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+    } else {
+      // No waiting SW — just reload to pick up any non-SW changes.
+      window.location.reload()
     }
-    // Always reload to pick up new assets.
-    window.location.reload()
   }
 
   return {

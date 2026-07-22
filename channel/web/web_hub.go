@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -64,6 +65,8 @@ func (h *Hub) removeClient(clientID string) {
 }
 
 // subscribe registers a client to receive messages for a given chatID.
+// Also subscribes to the "web" routeKey so the client receives progress
+// events from SendProgress (which always pushes to channel="web").
 // Idempotent — safe to call on every message from the client.
 // Removes any previous subscription for this client (single-chat-per-connection model).
 func (h *Hub) subscribe(clientID, chatID string) bool {
@@ -75,8 +78,14 @@ func (h *Hub) subscribe(clientID, chatID string) bool {
 	// Remove old subscription(s) for this client (single active chat per WS connection).
 	// Without this, the client accumulates subscriptions to multiple chatIDs and
 	// receives events from sessions the user has already switched away from.
+	// Exception: keep "web" routeKey subscriptions — they're secondary
+	// subs for receiving progress events (SendProgress always pushes to "web").
 	for cid, clients := range h.subs {
 		if cid != chatID && clients[clientID] {
+			// Don't remove the web routeKey — it's a shared secondary sub.
+			if strings.HasPrefix(cid, "web") && !strings.HasPrefix(chatID, "web") {
+				continue
+			}
 			delete(clients, clientID)
 			if len(clients) == 0 {
 				delete(h.subs, cid)
@@ -110,6 +119,22 @@ func (h *Hub) subscribe(clientID, chatID string) bool {
 	h.subs[chatID][clientID] = true
 	h.mu.Unlock()
 	return true
+}
+
+// subscribeSecondary adds an additional subscription for a client without
+// clearing existing subscriptions. Used to let SSE clients receive progress
+// events from the "web" routeKey (SendProgress always pushes to channel="web")
+// while their primary subscription is on a different channel (e.g. "cli").
+func (h *Hub) subscribeSecondary(clientID, routeKey string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stopped || h.conns[clientID] == nil {
+		return
+	}
+	if h.subs[routeKey] == nil {
+		h.subs[routeKey] = make(map[string]bool)
+	}
+	h.subs[routeKey][clientID] = true
 }
 
 // sendToClient sends a message to all clients subscribed to a chatID.
