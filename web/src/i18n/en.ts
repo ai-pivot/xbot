@@ -20,6 +20,7 @@ const en: Translations = {
   },
   sidebar: {
     sessions: 'Sessions',
+    toggle: 'Toggle sidebar',
     files: 'Files',
     search: 'Search',
     diff: 'Diff',

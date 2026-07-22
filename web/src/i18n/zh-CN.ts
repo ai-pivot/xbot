@@ -17,6 +17,7 @@ const zhCN = {
   },
   sidebar: {
     sessions: '会话',
+    toggle: '切换侧边栏',
     files: '文件',
     search: '搜索',
     diff: '差异',
