@@ -319,15 +319,13 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
       if (p.phase === 'done') {
-        // PhaseDone: reset immediately. The backend guarantees a `text` event
-        // follows with the final assistant reply. No finalizing state needed.
-        // Notify sessionStore to clear running — PhaseDone arrives via SSE
-        // and is faster than session(idle) (which fires after Run() fully exits).
+        // PhaseDone: notify sessionStore to clear running immediately.
+        // DON'T set phase='done' — that would null liveMessage (snap.phase
+        // === 'done' returns null), causing iterations to flash/disappear.
+        // Let the text event (normal end) or session(idle) defensive finalize
+        // (cancel) handle the cleanup via onAssistantComplete → appendAssistant.
         window.dispatchEvent(new CustomEvent('agent-idle'))
-        // Parse todos from the done event — TodoWrite may have fired as the
-        // last tool in the iteration, and the PhaseDone event carries the
-        // updated todos. Without this, todos only appear on the NEXT busy
-        // event (next turn), not immediately.
+        // Update todos if the PhaseDone event carries them.
         let doneTodos: TodoItem[] | undefined
         if (Array.isArray(p.todos) && p.todos.length > 0) {
           doneTodos = p.todos.map((t) => ({
@@ -336,11 +334,9 @@ function handleProgressMessage(
             done: Boolean(t.done),
           }))
         }
-        store.setStructuredTools({
-          eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
-          phase: 'done',
-          todos: doneTodos,
-        })
+        if (doneTodos) {
+          store.setStructuredTools({ eventSeq: typeof p.seq === 'number' ? p.seq : undefined, todos: doneTodos })
+        }
         return
       }
       // A non-done structured event indicates active work — reset the finalize
@@ -473,7 +469,11 @@ function handleProgressMessage(
       // finalize defensively. Skip if already finalized (text event arrived first).
       if (action === 'idle') {
         if (finalizedRef?.current) {
-          store.reset()
+          // Already finalized via text event — just clear streaming state.
+          // Don't reset() — that would clear iterationHistory and cause
+          // iterations to flash/disappear. resetStreamingState preserves
+          // iterationHistory and todos.
+          store.resetStreamingState()
           return
         }
         const snap = store.getSnapshot()
@@ -481,14 +481,14 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
-          // Call completeRef BEFORE store.reset() so onAssistantComplete can
-          // flushSync the append before liveMessage is cleared. Without this
-          // order, store.reset() synchronously nulls liveMessage while
-          // setMessages is still queued → flicker.
+          // Call completeRef BEFORE clearing streaming state so onAssistantComplete
+          // can flushSync the append before liveMessage is cleared.
           completeRef.current?.(text, iters, msg.seq)
-          store.reset()
+          // Use resetStreamingState (not reset) — preserves iterationHistory
+          // so cancel doesn't cause iterations to disappear and reappear.
+          store.resetStreamingState()
         } else {
-          store.reset()
+          store.resetStreamingState()
         }
       }
       return
