@@ -80,7 +80,7 @@ type ProgressEvent struct {
 	ActiveTools            []ToolProgress    `json:"active_tools,omitempty"`
 	CompletedTools         []ToolProgress    `json:"completed_tools,omitempty"`
 	SubAgents              []SubAgentInfo    `json:"sub_agents,omitempty"`
-	Todos                  []TodoItem        `json:"todos,omitempty"`
+	Todos                  []TodoItem        `json:"todos"`
 	TokenUsage             *TokenUsage       `json:"token_usage,omitempty"`
 	Questions              []AskUserQuestion `json:"questions,omitempty"`
 	RequestID              string            `json:"request_id,omitempty"`

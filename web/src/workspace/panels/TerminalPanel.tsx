@@ -3,8 +3,12 @@
  *
  * Mounts a Terminal instance on a container div, connects to the backend PTY
  * via TerminalWS, and handles resize/close/exit lifecycle.
+ *
+ * On mobile, an accessory bar above the soft keyboard provides arrow keys,
+ * Tab, Ctrl, Esc, and other control keys that are hard to type on a touch
+ * keyboard.
  */
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -13,19 +17,105 @@ import '@xterm/xterm/css/xterm.css'
 import { TerminalWS } from '@/lib/terminalWS'
 import { terminalStore } from '@/hooks/useTerminal'
 import { useDockviewContext } from '@/workspace/types'
+import { useIsMobile } from '@/hooks/useIsMobile'
+import { useKeyboardInset } from '@/hooks/useKeyboardInset'
 import type { PanelProps } from '@/workspace/panels/types'
+
+// ── Mobile accessory bar keys ─────────────────────────────────────────
+
+/** A key button for the mobile accessory bar. */
+interface AuxKey {
+  label: string
+  /** Data to send to the PTY. Empty for toggle keys (Ctrl). */
+  data: string
+  /** Whether this is a toggle key (stays active until tapped again). */
+  toggle?: boolean
+  /** Wider than a normal key (e.g. Ctrl toggle). */
+  wide?: boolean
+}
+
+/** Primary row: frequently used keys. */
+const PRIMARY_KEYS: AuxKey[] = [
+  { label: 'Esc', data: '\x1b' },
+  { label: 'Tab', data: '\t' },
+  { label: 'Ctrl', data: '', toggle: true, wide: true },
+  { label: '↑', data: '\x1b[A' },
+  { label: '↓', data: '\x1b[B' },
+  { label: '←', data: '\x1b[D' },
+  { label: '→', data: '\x1b[C' },
+]
+
+/** Secondary row: less common keys, shown when expanded. */
+const SECONDARY_KEYS: AuxKey[] = [
+  { label: 'Home', data: '\x1b[H' },
+  { label: 'End', data: '\x1b[F' },
+  { label: 'PgUp', data: '\x1b[5~' },
+  { label: 'PgDn', data: '\x1b[6~' },
+  { label: '|', data: '|' },
+  { label: '~', data: '~' },
+  { label: '/', data: '/' },
+  { label: '-', data: '-' },
+]
+
+/** Keys shown when Ctrl is active (common shell shortcuts). */
+const CTRL_KEYS: AuxKey[] = [
+  { label: 'C', data: '\x03' }, // SIGINT
+  { label: 'D', data: '\x04' }, // EOF
+  { label: 'L', data: '\x0c' }, // clear
+  { label: 'A', data: '\x01' }, // line start
+  { label: 'E', data: '\x05' }, // line end
+  { label: 'W', data: '\x17' }, // delete word
+  { label: 'R', data: '\x12' }, // reverse search
+  { label: 'Z', data: '\x1a' }, // suspend
+]
+
+// ── Component ──────────────────────────────────────────────────────────
 
 export function TerminalPanel({ params }: PanelProps) {
   const { i18n, theme: themeCtx } = useDockviewContext()
   const { t } = i18n
   const { theme } = themeCtx
+  const isMobile = useIsMobile()
+  const keyboardInset = useKeyboardInset()
+  const keyboardInsetRef = useRef(0)
+  keyboardInsetRef.current = keyboardInset
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const wsRef = useRef<TerminalWS | null>(null)
 
+  // Accessory bar state
+  const [showAux, setShowAux] = useState(true)
+  const [showExpanded, setShowExpanded] = useState(false)
+  const [ctrlActive, setCtrlActive] = useState(false)
+
   const terminalId = params.terminalId
   const session = terminalId ? terminalStore.getSession(terminalId) : null
   const tid = session?.tid
+
+  // Send data to the PTY via the WebSocket.
+  const sendToPty = useCallback((data: string) => {
+    if (!data) return
+    const ws = wsRef.current
+    if (!ws) return
+    const bytes = new TextEncoder().encode(data)
+    ws.sendStdin(bytes)
+  }, [])
+
+  // Handle a tap on an auxiliary key.
+  const handleAuxKey = useCallback((key: AuxKey) => {
+    if (key.toggle) {
+      setCtrlActive((v) => !v)
+      return
+    }
+    if (ctrlActive && /^[a-zA-Z]$/.test(key.label)) {
+      // Ctrl + letter → control character
+      sendToPty(String.fromCharCode(key.label.toUpperCase().charCodeAt(0) - 64))
+    } else {
+      sendToPty(key.data)
+    }
+    // Re-focus the terminal so the soft keyboard stays open.
+    termRef.current?.focus()
+  }, [ctrlActive, sendToPty])
 
   useEffect(() => {
     if (!containerRef.current || !tid || !terminalId) return
@@ -38,13 +128,13 @@ export function TerminalPanel({ params }: PanelProps) {
       scrollback: 10000,
       convertEol: true,
       theme: theme === 'dark' ? {
-        background: '#1e1e2e',
-        foreground: '#cdd6f4',
-        cursor: '#f5e0dc',
+        background: '#1e1e1e',
+        foreground: '#cccccc',
+        cursor: '#cccccc',
       } : {
         background: '#ffffff',
-        foreground: '#1e1e2e',
-        cursor: '#1e1e2e',
+        foreground: '#1e1e1e',
+        cursor: '#1e1e1e',
       },
     })
     const fitAddon = new FitAddon()
@@ -69,7 +159,6 @@ export function TerminalPanel({ params }: PanelProps) {
       },
       onOpen: () => {
         terminalStore.updateStatus(terminalId, 'connected')
-        // Send initial size
         fitAddon.fit()
         ws.resize(term.cols, term.rows)
       },
@@ -88,6 +177,10 @@ export function TerminalPanel({ params }: PanelProps) {
     // Watch container size → fitAddon
     const resizeObserver = new ResizeObserver(() => {
       try { fitAddon.fit() } catch { /* ignore */ }
+      // When the keyboard is open, scroll to show the cursor after resize.
+      if (keyboardInsetRef.current > 0) {
+        setTimeout(() => termRef.current?.scrollToBottom(), 50)
+      }
     })
     resizeObserver.observe(containerRef.current)
 
@@ -97,16 +190,13 @@ export function TerminalPanel({ params }: PanelProps) {
       inputResize.dispose()
       resizeObserver.disconnect()
 
-      // If the user explicitly closed this terminal (closing flag set by
-      // closeTerminal), send a WS close frame so the backend destroys the PTY
-      // and remove the session from the store. Otherwise just disconnect the
-      // WS — the terminal persists so a later panel remount can reconnect.
       const sess = terminalStore.getSession(terminalId)
       if (sess?.closing) {
         ws.close()
         terminalStore.remove(terminalId)
       } else {
         ws.disconnect()
+        terminalStore.clearTabId(terminalId)
       }
 
       wsRef.current = null
@@ -114,6 +204,16 @@ export function TerminalPanel({ params }: PanelProps) {
       termRef.current = null
     }
   }, [tid, terminalId, theme])
+
+  // When the keyboard opens, scroll the terminal to show the cursor.
+  useEffect(() => {
+    if (keyboardInset > 0) {
+      // Defer to next frame so the layout has settled before scrolling.
+      requestAnimationFrame(() => {
+        termRef.current?.scrollToBottom()
+      })
+    }
+  }, [keyboardInset])
 
   if (!tid || !terminalId) {
     return (
@@ -123,5 +223,140 @@ export function TerminalPanel({ params }: PanelProps) {
     )
   }
 
-  return <div ref={containerRef} className="h-full w-full overflow-hidden bg-black" />
+  // Determine which key set to show based on Ctrl state.
+  const activeKeys = ctrlActive ? CTRL_KEYS : showExpanded ? SECONDARY_KEYS : PRIMARY_KEYS
+
+  return (
+    <div className="flex h-full w-full flex-col overflow-hidden bg-bg-primary">
+      {/* Terminal area — add bottom padding when keyboard is open so text
+          isn't hidden behind the floating accessory bar. */}
+      <div
+        ref={containerRef}
+        className="min-h-0 flex-1 overflow-hidden"
+        style={keyboardInset > 0 ? { paddingBottom: '40px' } : undefined}
+      />
+
+      {/* Mobile accessory bar */}
+      {isMobile && showAux && (
+        <div
+          className="border-t border-border bg-bg-secondary"
+          style={
+            keyboardInset > 0
+              ? {
+                  position: 'fixed',
+                  left: 0,
+                  right: 0,
+                  bottom: `${keyboardInset}px`,
+                  zIndex: 50,
+                }
+              : undefined
+          }
+        >
+          {/* Key row */}
+          <div className="flex items-center gap-1 px-1 py-1.5 overflow-x-auto">
+            {/* When in Ctrl mode, show a back button to return to primary keys. */}
+            {ctrlActive && (
+              <div
+                role="button"
+                tabIndex={-1}
+                aria-label="Back"
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setCtrlActive(false)
+                }}
+                className="flex h-7 w-7 shrink-0 select-none items-center justify-center rounded text-text-muted"
+                style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+              >
+                <span className="text-xs">←</span>
+              </div>
+            )}
+
+            {/* Toggle button for the accessory bar itself (hidden in Ctrl mode) */}
+            {!ctrlActive && (
+              <div
+                role="button"
+                tabIndex={-1}
+                aria-label="Hide keyboard"
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setShowAux(false)
+                }}
+                className="flex h-7 w-7 shrink-0 select-none items-center justify-center rounded text-text-muted"
+                style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+              >
+                <span className="text-xs">▾</span>
+              </div>
+            )}
+
+            {activeKeys.map((key) => (
+              <div
+                key={key.label}
+                role="button"
+                tabIndex={-1}
+                aria-label={key.label}
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  handleAuxKey(key)
+                }}
+                className={
+                  'flex h-7 shrink-0 select-none items-center justify-center rounded text-xs font-medium transition-colors ' +
+                  (key.toggle && ctrlActive
+                    ? 'bg-accent text-white '
+                    : 'bg-bg-tertiary text-text-primary hover:bg-bg-tertiary/80 ') +
+                  (key.wide ? 'min-w-12 px-3 ' : 'min-w-7 px-1')
+                }
+                style={{
+                  touchAction: 'none',
+                  WebkitUserSelect: 'none',
+                  userSelect: 'none',
+                  ...(key.toggle && ctrlActive ? { backgroundColor: 'var(--accent)', color: 'white' } : {}),
+                }}
+              >
+                {key.toggle ? (ctrlActive ? 'Ctrl ✓' : key.label) : key.label}
+              </div>
+            ))}
+
+            {/* Expand/collapse secondary keys (only when not in Ctrl mode) */}
+            {!ctrlActive && (
+              <div
+                role="button"
+                tabIndex={-1}
+                aria-label={showExpanded ? 'Show less' : 'Show more'}
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setShowExpanded((v) => !v)
+                }}
+                className="flex h-7 w-7 shrink-0 select-none items-center justify-center rounded text-text-muted"
+                style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+              >
+                <span className="text-xs">{showExpanded ? '‹' : '›'}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Show button to re-open the accessory bar when hidden */}
+      {isMobile && !showAux && (
+        <div
+          role="button"
+          tabIndex={-1}
+          aria-label="Show keyboard"
+          onPointerDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setShowAux(true)
+          }}
+          className="flex h-7 shrink-0 select-none items-center justify-center border-t border-border bg-bg-secondary text-text-muted"
+          style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+        >
+          <span className="text-xs">▴ Keys</span>
+        </div>
+      )}
+    </div>
+  )
 }

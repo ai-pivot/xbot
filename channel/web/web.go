@@ -344,6 +344,9 @@ type WebChannel struct {
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 
+	// PTY manager for web terminals
+	ptyMgr *ptyManager
+
 	// Static files (external directory)
 	staticDir string
 
@@ -404,6 +407,7 @@ func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 		sessions:           make(map[string]sessionInfo),
 		db:                 cfg.DB,
 		stopCh:             make(chan struct{}),
+		ptyMgr:             newPtyManager(),
 		inboundRequests:    make(map[inboundRequestKey]*inboundRequestState),
 		userCurrentSession: make(map[string]SessionSelector),
 		singleUser:         cfg.SingleUser,
@@ -510,6 +514,9 @@ func (wc *WebChannel) Start() error {
 	wc.wg.Add(1)
 	go wc.sessionCleanup()
 
+	// Start PTY manager (idle reaper)
+	wc.ptyMgr.Start()
+
 	err = wc.server.Serve(wc.listener)
 	if err == http.ErrServerClosed {
 		return nil
@@ -547,6 +554,13 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/runners/{name}/delete", wc.authenticatedPOST(wc.handleRunnerDeletePOST))
 
 	mux.HandleFunc("/api/files/upload", wc.authenticatedPOST(wc.handleFileUpload))
+
+	// Terminal (PTY) endpoints
+	mux.HandleFunc("/api/terminal/create", wc.authenticatedPOST(wc.handleTerminalCreate))
+	mux.HandleFunc("/api/terminal/list", wc.authenticatedPOST(wc.handleTerminalList))
+	mux.HandleFunc("/api/terminal/{tid}/delete", wc.authenticatedPOST(wc.handleTerminalDelete))
+	mux.HandleFunc("/ws/terminal", wc.authMiddleware(wc.handleTerminalWS))
+
 	mux.HandleFunc("/api/fs/list", wc.authenticatedPOST(wc.handleFsListPOST))
 	mux.HandleFunc("/api/fs/read", wc.authenticatedPOST(wc.handleFsReadPOST))
 	mux.HandleFunc("/api/fs/raw", wc.authMiddleware(wc.handleFsRaw))
@@ -587,6 +601,7 @@ func (wc *WebChannel) Stop() {
 	close(wc.stopCh)
 
 	wc.hub.stopAll()
+	wc.ptyMgr.Stop()
 
 	if wc.server != nil {
 		ctx, cancel := func() (context.Context, context.CancelFunc) {
@@ -701,13 +716,22 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 		return
 	}
 
+	// Derive the originating channel from payload.ChatID (qualified, e.g.
+	// "cli:/path:Agent-xxx"). This ensures progress events are pushed to the
+	// correct SSE routeKey — the SSE client subscribes to the session's
+	// actual channel, not a hardcoded "web".
+	channel := "web"
+	if idx := strings.Index(payload.ChatID, ":"); idx > 0 {
+		channel = payload.ChatID[:idx]
+	}
+
 	wsMsg := protocol.WSMessage{
 		Type:     protocol.MsgTypeProgress,
 		TS:       time.Now().Unix(),
 		Progress: payload,
 	}
 
-	if !wc.hub.sendToSession("web", chatID, wsMsg) {
+	if !wc.hub.sendToSession(channel, chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
 	}
 }

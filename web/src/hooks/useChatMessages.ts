@@ -28,7 +28,7 @@ import {
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
 import { dedupMessages } from '@/components/agent/progressStore'
-import { getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
+import { getProgressGeneration, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
 import type { ChatMessage, WebIteration } from '@/types/shared'
@@ -61,6 +61,8 @@ export interface UseChatMessagesResult {
   error: string | null
   /** Active progress snapshot from history (for resuming a busy session). */
   initialProgress: HistProgress | null
+  /** Whether the backend reports this session as actively processing. */
+  processing: boolean
   /** The chat_id reported by the most recent history load (server's active chat). */
   resolvedChatID: string | null
   /** Reload history for the current chatID. */
@@ -166,17 +168,7 @@ interface AgentSessionDump {
   iterations?: unknown[]
 }
 
-const loadedMessageKeys = new Set<string>()
-const messageCacheSeq = new Map<string, number>()
-let globalReloadSeq = 0
 
-function commitMessageCache(key: string, rows: ChatMessage[], seq = ++globalReloadSeq): boolean {
-  const latest = messageCacheSeq.get(key) ?? 0
-  if (seq < latest) return false
-  messageCacheSeq.set(key, seq)
-  messagesCache.set(key, rows)
-  return true
-}
 
 function messageCacheKey(
   channel: string,
@@ -190,14 +182,6 @@ function messageCacheKey(
   return `${key}:${subAgentRole ?? ''}:${subAgentInstance ?? ''}:${agentChatID ?? ''}`
 }
 
-function shouldKeepVisibleRowsOnRefresh(
-  parsed: ChatMessage[],
-  sameTarget: boolean,
-  visibleRows: ChatMessage[],
-): boolean {
-  if (!sameTarget || parsed.length > 0 || visibleRows.length === 0) return false
-  return true
-}
 
 // reconcileHistoryWithLiveRows merges server history with live (unpersisted)
 // rows. A live row is kept only if its eventSeq is ABOVE the history
@@ -278,6 +262,7 @@ export function useChatMessages({
   const [error, setError] = useState<string | null>(null)
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
+  const [processing, setProcessing] = useState(false)
 
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
@@ -301,9 +286,6 @@ export function useChatMessages({
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
-  const cacheCurrentMessages = useCallback((rows: ChatMessage[]) => {
-    commitMessageCache(activeMessageCacheKeyRef.current, rows)
-  }, [])
 
   // Hold ws in a ref — its methods delegate to a stable MultiSSEManager instance,
   // so we don't need ws in the reload deps. Including ws would cause an infinite
@@ -319,7 +301,6 @@ export function useChatMessages({
     const destructiveMutationGen = destructiveMutationGenRef.current
     const progressCacheKey = chatID ? sessionCacheKey(channel, chatID) : null
     const progressGen = progressCacheKey ? getProgressGeneration(progressCacheKey) : null
-    const globalSeq = ++globalReloadSeq
     const requestIsSuperseded = () => gen !== reloadGenRef.current
     const requestHasMessageMutation = () => mutationGen !== messageMutationGenRef.current
     const requestHasDestructiveMutation = () => (
@@ -327,19 +308,14 @@ export function useChatMessages({
     )
     const reloadKey = activeMessageCacheKey
     const sameTarget = lastReloadKeyRef.current === reloadKey
-    const cachedRows = messagesCache.get(reloadKey)
+    // No cache read — always start fresh on session switch.
     if (!sameTarget) {
-      const next = cachedRows ?? []
-      messagesRef.current = next
-      setMessages(next)
+      messagesRef.current = []
+      setMessages([])
     }
-    const targetHasLoaded = loadedMessageKeys.has(reloadKey)
     const hasVisibleRows = sameTarget && messagesRef.current.length > 0
-    setLoading(!targetHasLoaded && !cachedRows && !hasVisibleRows)
+    setLoading(!hasVisibleRows)
     setError(null)
-    // Keep the current rows until the replacement history arrives. This avoids
-    // a visible empty "loading" flash during background refreshes and session
-    // switches; stale async results are still discarded by reloadGenRef.
     lastReloadKeyRef.current = reloadKey
     if (!sameTarget) setInitialProgress(null)
     try {
@@ -355,11 +331,10 @@ export function useChatMessages({
           const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
           const mutated = requestHasMessageMutation()
           const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
-          if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
-          loadedMessageKeys.add(reloadKey)
           messagesRef.current = next
           setMessages(next)
           setInitialProgress(null)
+      setProcessing(false)
           return
         }
       }
@@ -378,8 +353,6 @@ export function useChatMessages({
           const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
           const mutated = requestHasMessageMutation()
           const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
-          if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
-          loadedMessageKeys.add(reloadKey)
           messagesRef.current = next
           setMessages(next)
           setInitialProgress(null)
@@ -395,9 +368,6 @@ export function useChatMessages({
         const parsed = parseSubAgentMessages(Array.isArray(msgs) ? msgs : [])
         const mutated = requestHasMessageMutation()
         const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
-        if (shouldKeepVisibleRowsOnRefresh(next, sameTarget, messagesRef.current)) return
-        if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
-        loadedMessageKeys.add(reloadKey)
         messagesRef.current = next
         setMessages(next)
         setInitialProgress(null)
@@ -424,17 +394,18 @@ export function useChatMessages({
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
       const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0) : parsed
-      if (shouldKeepVisibleRowsOnRefresh(next, sameTarget, messagesRef.current)) return
-      if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return
-      loadedMessageKeys.add(reloadKey)
       messagesRef.current = next
       setMessages(next)
-      setInitialProgress(progressChanged || mutated ? null : (data.active_progress ?? null))
+      // Always restore active_progress — it contains the COMPLETE iterationHistory
+      // from the server. Don't skip it when progressChanged (SSE delta arrived
+      // during reload) — that's exactly when we need the full snapshot most,
+      // because the delta only has 0-1 iterations while the server has all.
+      setInitialProgress(data.active_progress ?? null)
       if (data.chat_id) setResolvedChatID(data.chat_id)
     } catch (e) {
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return
       setError(e instanceof Error ? e.message : String(e))
-      if (!sameTarget && !cachedRows && !requestHasMessageMutation()) {
+      if (!sameTarget && !requestHasMessageMutation()) {
         messagesRef.current = []
         setMessages([])
       }
@@ -500,12 +471,10 @@ export function useChatMessages({
           const copy = [...prev]
           copy[lastUserIdx] = newMsg
           messagesRef.current = copy
-          commitMessageCache(listenerCacheKey, copy)
           return copy
         }
         const next = [...prev, newMsg]
         messagesRef.current = next
-        commitMessageCache(listenerCacheKey, next)
         return next
       })
     })
@@ -517,6 +486,7 @@ export function useChatMessages({
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
       const requestID = newMessageRequestID()
+      // a few hundred ms; if it doesn't, don't leave stuck in optimistic state.
       const resetCommand = text === '/new' && !attachments?.uploadKeys.length
       let optimisticID: string | null = null
       if (!resetCommand) {
@@ -540,11 +510,9 @@ export function useChatMessages({
         setMessages((prev) => {
           const next = [...prev, newMsg]
           messagesRef.current = next
-          cacheCurrentMessages(next)
-          return next
+              return next
         })
       }
-      const sendCacheKey = activeMessageCacheKeyRef.current
       void ws.send({
         type: 'message',
         id: requestID,
@@ -558,22 +526,17 @@ export function useChatMessages({
       }).catch((error: unknown) => {
         if (optimisticID) {
           const failedID = optimisticID
-          const cached = messagesCache.get(sendCacheKey) ?? []
-          commitMessageCache(sendCacheKey, cached.filter((message) => message.id !== failedID))
-          if (activeMessageCacheKeyRef.current === sendCacheKey) {
-            messageMutationGenRef.current += 1
-            setMessages((prev) => {
-              const next = prev.filter((message) => message.id !== failedID)
-              messagesRef.current = next
-              commitMessageCache(sendCacheKey, next)
-              return next
-            })
-          }
+          messageMutationGenRef.current += 1
+          setMessages((prev) => {
+            const next = prev.filter((message) => message.id !== failedID)
+            messagesRef.current = next
+            return next
+          })
         }
-        toast.error(error instanceof Error ? error.message : 'message send failed')
+        toast.error(error instanceof Error ? error.message : "message send failed")
       })
     },
-    [ws, channel, cacheCurrentMessages],
+    [ws, channel],
   )
 
   const cancel = useCallback(() => {
@@ -581,6 +544,7 @@ export function useChatMessages({
       .catch((error: unknown) => {
         toast.error(error instanceof Error ? error.message : 'cancel failed')
       })
+    // arrives) or the agent was already idle. Don't leave the spinner stuck.
   }, [ws, channel])
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
@@ -608,10 +572,9 @@ export function useChatMessages({
     setMessages((prev) => {
       const next = dedupMessages([...prev, newMsg])
       messagesRef.current = next
-      cacheCurrentMessages(next)
       return next
     })
-  }, [cacheCurrentMessages])
+  }, [])
 
   const removeMessage = useCallback((id: string) => {
     messageMutationGenRef.current += 1
@@ -619,36 +582,26 @@ export function useChatMessages({
     setMessages((prev) => {
       const next = prev.filter((m) => m.id !== id)
       messagesRef.current = next
-      cacheCurrentMessages(next)
       return next
     })
-  }, [cacheCurrentMessages])
+  }, [])
 
   const clearMessages = useCallback(() => {
     messageMutationGenRef.current += 1
     destructiveMutationGenRef.current += 1
     messagesRef.current = []
     setMessages([])
-    const key = lastReloadKeyRef.current
-    if (key) loadedMessageKeys.add(key)
-    cacheCurrentMessages([])
     setInitialProgress(null)
-  }, [cacheCurrentMessages])
+  }, [])
 
-  // Effects hydrate the backing state, but render from the target cache key so
-  // a session transition can never expose the previous session for one frame.
-  const visibleMessages = lastReloadKeyRef.current === activeMessageCacheKey
-    ? messages
-    : (messagesCache.get(activeMessageCacheKey) ?? [])
-  const visibleInitialProgress = lastReloadKeyRef.current === activeMessageCacheKey
-    ? initialProgress
-    : null
-
+  // Render from local state directly — no cross-session cache logic.
+  // The panel always shows its own messages; reload fetches fresh history.
   return {
-    messages: visibleMessages,
+    messages,
     loading,
     error,
-    initialProgress: visibleInitialProgress,
+    initialProgress,
+    processing,
     resolvedChatID,
     reload,
     sendMessage,

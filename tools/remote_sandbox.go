@@ -80,6 +80,8 @@ type RemoteSandbox struct {
 	syncing              map[string]bool // userID → sync in progress (prevent concurrent syncs)
 	stdioMu              sync.Mutex
 	stdioStreams         map[string]*stdioStream // streamID → active stdio stream
+	ptyMu                sync.Mutex
+	ptyStreams           map[string]*ptyStream // streamID → active PTY stream
 	OnRunnerStatusChange func(userID, runnerName string, online bool)
 	OnSyncProgress       func(userID string, phase string, message string)
 }
@@ -376,8 +378,11 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			continue
 		}
-		// Handle stdio push messages (stdio_data, stdio_exit) before request matching.
+		// Handle push messages (stdio, pty) before request matching.
 		if rs.handleStdioPush(&resp) {
+			continue
+		}
+		if rs.handlePtyPush(&resp) {
 			continue
 		}
 		if resp.ID != "" {

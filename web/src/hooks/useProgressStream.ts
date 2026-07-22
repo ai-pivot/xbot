@@ -34,7 +34,6 @@ import {
 import type { WSConnection } from '@/types/ws'
 import type {
   ProgressSnapshot,
-  ProgressEvent,
   WebIteration,
   ChatMessage,
   TodoItem,
@@ -45,7 +44,6 @@ import type { HistProgress } from '@/components/agent/api'
 import type { WSMessage } from '@/types/shared'
 import {
   clearProgressSnapshot,
-  progressSnapshotCache,
   sessionCacheKey,
 } from '@/lib/webCache'
 
@@ -168,10 +166,8 @@ export function useProgressStream({
     if (disabled) {
       return
     }
-    const cached = progressCacheKey ? progressSnapshotCache.get(progressCacheKey) : undefined
-    if (cached?.phase && cached.phase !== 'done') {
-      store.replace(historyProgressToLive(cached))
-    }
+    // No cache restore — history's active_progress is the single source.
+    // The server returns the complete progress snapshot including iterationHistory.
   }, [store, progressCacheKey, disabled])
 
   // Hydrate from history when initialProgress changes (after reload completes).
@@ -191,9 +187,8 @@ export function useProgressStream({
       finalizedRef.current = false
       if (hasVisibleProgress(store.getSnapshot())) store.reset()
       const todos = (initialProgress.todos ?? []) as TodoItem[]
-      if (todos.length > 0) {
-        store.replace({ todos })
-      }
+      // Always replace — empty array clears stale todos, non-empty restores.
+      store.replace({ todos })
       return
     }
     // Don't re-hydrate after finalization — the turn is over, and the
@@ -208,7 +203,6 @@ export function useProgressStream({
     // events), which would block the server's authoritative data and cause
     // incomplete iteration recovery on session switch.
     if (live.phase) {
-      if (progressCacheKey) progressSnapshotCache.set(progressCacheKey, initialProgress as ProgressEvent)
       store.replace(live)
     }
   }, [store, initialProgress, disabled, progressCacheKey])
@@ -325,12 +319,24 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
       if (p.phase === 'done') {
-        // PhaseDone: reset immediately. The backend guarantees a `text` event
-        // follows with the final assistant reply. No finalizing state needed.
-        store.setStructuredTools({
-          eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
-          phase: 'done',
-        })
+        // PhaseDone: notify sessionStore to clear running immediately.
+        // DON'T set phase='done' — that would null liveMessage (snap.phase
+        // === 'done' returns null), causing iterations to flash/disappear.
+        // Let the text event (normal end) or session(idle) defensive finalize
+        // (cancel) handle the cleanup via onAssistantComplete → appendAssistant.
+        window.dispatchEvent(new CustomEvent('agent-idle'))
+        // Update todos if the PhaseDone event carries them.
+        let doneTodos: TodoItem[] | undefined
+        if (Array.isArray(p.todos) && p.todos.length > 0) {
+          doneTodos = p.todos.map((t) => ({
+            id: typeof t.id === 'number' ? t.id : 0,
+            text: typeof t.text === 'string' ? t.text : '',
+            done: Boolean(t.done),
+          }))
+        }
+        if (doneTodos) {
+          store.setStructuredTools({ eventSeq: typeof p.seq === 'number' ? p.seq : undefined, todos: doneTodos })
+        }
         return
       }
       // A non-done structured event indicates active work — reset the finalize
@@ -424,7 +430,13 @@ function handleProgressMessage(
       // (e.g. reconnect where no SSE events were received).
       const iterations = snap.iterationHistory.length > 0 ? snap.iterationHistory : parsedIterations
       completeRef.current?.(finalText, iterations, msg.seq)
-      store.reset()
+      // store.reset() is now called inside onAssistantComplete's flushSync
+      // (via resetProgressRef) so that setMessages and store.reset() happen
+      // in the same synchronous render. Calling store.reset() here separately
+      // triggers a second useSyncExternalStore re-render where liveMessage
+      // disappears but the committed message hasn't been painted yet → flicker.
+      // Fallback: if onAssistantComplete didn't reset (e.g., not set), reset here.
+      if (hasVisibleProgress(store.getSnapshot())) store.reset()
       return
     }
 
@@ -457,7 +469,11 @@ function handleProgressMessage(
       // finalize defensively. Skip if already finalized (text event arrived first).
       if (action === 'idle') {
         if (finalizedRef?.current) {
-          store.reset()
+          // Already finalized via text event — just clear streaming state.
+          // Don't reset() — that would clear iterationHistory and cause
+          // iterations to flash/disappear. resetStreamingState preserves
+          // iterationHistory and todos.
+          store.resetStreamingState()
           return
         }
         const snap = store.getSnapshot()
@@ -465,14 +481,14 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
-          // Call completeRef BEFORE store.reset() so onAssistantComplete can
-          // flushSync the append before liveMessage is cleared. Without this
-          // order, store.reset() synchronously nulls liveMessage while
-          // setMessages is still queued → flicker.
+          // Call completeRef BEFORE clearing streaming state so onAssistantComplete
+          // can flushSync the append before liveMessage is cleared.
           completeRef.current?.(text, iters, msg.seq)
-          store.reset()
+          // Use resetStreamingState (not reset) — preserves iterationHistory
+          // so cancel doesn't cause iterations to disappear and reappear.
+          store.resetStreamingState()
         } else {
-          store.reset()
+          store.resetStreamingState()
         }
       }
       return

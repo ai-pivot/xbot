@@ -355,8 +355,8 @@ func TestSSEStreamMergeStopsAtStatefulBoundary(t *testing.T) {
 func TestSSEStreamMergeIgnoresUnrelatedStructuredProgressBoundary(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	chatID := "web-1"
-	sourceA := "agent:worker-a"
-	sourceB := "agent:worker-b"
+	sourceA := "web:worker-a"
+	sourceB := "web:worker-b"
 	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sourceA, StreamContent: "worker A"})
 	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sourceB, Content: "worker B result"})
 	wc.SendProgress(chatID, &protocol.ProgressEvent{ChatID: sourceA, StreamTokens: 5})

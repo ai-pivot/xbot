@@ -54,6 +54,18 @@ function SheetContent({
   side?: "top" | "right" | "bottom" | "left"
   showCloseButton?: boolean
 }) {
+  // Safe-area padding at the SheetContent level — covers ALL sheets
+  // (settings, session drawer, etc.) so they respect the Dynamic Island /
+  // home indicator without each caller needing its own padding.
+  const safeAreaStyle: React.CSSProperties = {}
+  if (side === "left" || side === "right") {
+    safeAreaStyle.paddingTop = "var(--safe-area-top)"
+  }
+  if (side === "bottom") {
+    safeAreaStyle.paddingBottom = "var(--safe-area-bottom)"
+  }
+  const mergedStyle: React.CSSProperties = { ...safeAreaStyle, ...(props.style || {}) }
+
   return (
     <SheetPortal>
       <SheetOverlay />
@@ -72,10 +84,11 @@ function SheetContent({
           className
         )}
         {...props}
+        style={mergedStyle}
       >
         {children}
         {showCloseButton && (
-          <SheetPrimitive.Close className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary">
+          <SheetPrimitive.Close className="absolute right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary" style={{ top: 'calc(1rem + var(--safe-area-top))' }}>
             <XIcon className="size-4" />
             <span className="sr-only">Close</span>
           </SheetPrimitive.Close>

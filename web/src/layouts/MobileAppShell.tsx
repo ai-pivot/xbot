@@ -1,13 +1,16 @@
 import { useMemo, useState } from 'react'
-import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
+import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal } from 'lucide-react'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
+import { TerminalPanel } from '@/workspace/panels/TerminalPanel'
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
+import { TerminalList } from '@/components/sidebar/TerminalList'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { DockviewContext, type DockviewContextValue } from '@/workspace/types'
@@ -19,16 +22,18 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTabManager } from '@/hooks/useTabManager'
 import { useTheme } from '@/hooks/useTheme'
 import { useWSConnection } from '@/providers/WSProvider'
+import { useTerminal } from '@/hooks/useTerminal'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import type { PanelProps } from '@/workspace/panels/types'
 
-type MobileView = 'agent' | 'detail'
+type MobileView = 'agent' | 'detail' | 'terminal'
 
 const PANEL_BUTTONS: { panel: SidebarPanel; icon: typeof Files; labelKey: string }[] = [
   { panel: 'files', icon: Files, labelKey: 'sidebar.files' },
   { panel: 'search', icon: Search, labelKey: 'sidebar.search' },
   { panel: 'info', icon: Info, labelKey: 'sidebar.info' },
   { panel: 'tasks', icon: ListChecks, labelKey: 'sidebar.tasks' },
+  { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
 ]
 
 const mobilePanelProps: PanelProps = {
@@ -44,6 +49,23 @@ const mobilePanelProps: PanelProps = {
   containerApi: {} as PanelProps['containerApi'],
 }
 
+/** Construct PanelProps for a mobile terminal panel (no Dockview needed). */
+function mobileTerminalProps(terminalId: string): PanelProps {
+  return {
+    params: {
+      tabId: `mobile-terminal-${terminalId}`,
+      type: 'terminal',
+      title: 'Terminal',
+      icon: 'terminal',
+      closable: true,
+      active: true,
+      terminalId,
+    },
+    api: {} as PanelProps['api'],
+    containerApi: {} as PanelProps['containerApi'],
+  }
+}
+
 export function MobileAppShell() {
   const tabManager = useTabManager()
   const sessionStore = useSessionStore()
@@ -57,6 +79,12 @@ export function MobileAppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [view, setView] = useState<MobileView>('agent')
   const [activePanel, setActivePanel] = useState<SidebarPanel>('info')
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null)
+
+  const terminalManager = useTerminal(tabManager, (terminalId) => {
+    setActiveTerminalId(terminalId)
+    setView('terminal')
+  })
 
   const rightSidebar = useMemo(() => ({
     openPanel: (panel: SidebarPanel) => {
@@ -92,7 +120,7 @@ export function MobileAppShell() {
     <DockviewContext.Provider value={ctxValue}>
       <RightSidebarControlContext.Provider value={rightSidebar}>
         <div className="flex h-dvh w-full flex-col overflow-hidden bg-bg-primary text-text-primary">
-          <header className="flex h-12 shrink-0 items-center gap-1 border-b border-border px-2">
+          <header className="flex shrink-0 items-center gap-1 border-b border-border px-2" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(3rem + var(--safe-area-top))' }}>
             <Button type="button" variant="ghost" size="icon-sm" aria-label={t('sidebar.sessions')} onClick={() => setDrawerOpen(true)}>
               <Menu />
             </Button>
@@ -108,16 +136,37 @@ export function MobileAppShell() {
           <main className="min-h-0 flex-1 overflow-hidden">
             {view === 'agent' ? (
               <AgentPanel {...mobilePanelProps} />
+            ) : view === 'terminal' && activeTerminalId ? (
+              <div className="flex h-full flex-col">
+                <div className="flex shrink-0 items-center gap-2 border-b border-border px-2" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(2.5rem + var(--safe-area-top))' }}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Back"
+                    onClick={() => setView('detail')}
+                  >
+                    <ArrowLeft className="size-4" />
+                  </Button>
+                  <span className="text-sm font-medium">
+                    {terminalManager.terminals.find((t) => t.id === activeTerminalId)?.title ?? 'Terminal'}
+                  </span>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <TerminalPanel {...mobileTerminalProps(activeTerminalId)} />
+                </div>
+              </div>
             ) : (
               <MobileDetail
                 activePanel={activePanel}
                 onPanelChange={setActivePanel}
                 tabManager={tabManager}
+                terminalManager={terminalManager}
               />
             )}
           </main>
 
-          <nav className="grid h-14 shrink-0 grid-cols-2 border-t border-border bg-bg-secondary">
+          <nav className="grid shrink-0 grid-cols-2 border-t border-border bg-bg-secondary" style={{ paddingBottom: 'var(--safe-area-bottom)', height: 'calc(3.5rem + var(--safe-area-bottom))' }}>
             <button
               type="button"
               className="flex flex-col items-center justify-center gap-0.5 text-xs"
@@ -130,11 +179,11 @@ export function MobileAppShell() {
             <button
               type="button"
               className="flex flex-col items-center justify-center gap-0.5 text-xs"
-              style={{ color: view === 'detail' ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-              onClick={() => setView(view === 'detail' ? 'agent' : 'detail')}
+              style={{ color: view === 'detail' || view === 'terminal' ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+              onClick={() => setView('detail')}
             >
-              <Info className="size-5" />
-              <span>{view === 'detail' ? '返回' : '详细'}</span>
+              <SquareTerminal className="size-5" />
+              <span>工具</span>
             </button>
           </nav>
 
@@ -158,15 +207,17 @@ function MobileDetail({
   activePanel,
   onPanelChange,
   tabManager,
+  terminalManager,
 }: {
   activePanel: SidebarPanel
   onPanelChange: (panel: SidebarPanel) => void
   tabManager: ReturnType<typeof useTabManager>
+  terminalManager: ReturnType<typeof useTerminal>
 }) {
   const { t } = useI18n()
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
+      <div className="flex shrink-0 items-center gap-1 border-b border-border px-2" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(2.5rem + var(--safe-area-top))' }}>
         {PANEL_BUTTONS.map(({ panel, icon: Icon, labelKey }) => (
           <Button
             key={panel}
@@ -181,13 +232,13 @@ function MobileDetail({
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
-        {renderMobilePanel(activePanel, tabManager)}
+        {renderMobilePanel(activePanel, tabManager, terminalManager)}
       </div>
     </div>
   )
 }
 
-function renderMobilePanel(panel: SidebarPanel, tabManager: ReturnType<typeof useTabManager>) {
+function renderMobilePanel(panel: SidebarPanel, tabManager: ReturnType<typeof useTabManager>, terminalManager?: ReturnType<typeof useTerminal>) {
   switch (panel) {
     case 'files':
       return <FileExplorer tabManager={tabManager} />
@@ -197,5 +248,7 @@ function renderMobilePanel(panel: SidebarPanel, tabManager: ReturnType<typeof us
       return <SessionInfo tabManager={tabManager} />
     case 'tasks':
       return <TasksPanel tabManager={tabManager} />
+    case 'terminal':
+      return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
   }
 }

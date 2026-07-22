@@ -379,8 +379,18 @@ export class ProgressStore {
     // The backend guarantees that a `text` event (final assistant reply)
     // arrives after PhaseDone. The progress store should clear immediately
     // on PhaseDone — the final text is handled by onAssistantComplete.
-    // No finalizing state, no timeout hack.
+    // No finalizing state needed — the text event handles completion.
+    //
+    // TodoWrite is frequently the last tool in an iteration, so its updated
+    // todos ride on the PhaseDone event (especially when mid-busy push events
+    // are dropped by SSE backpressure/coalescing). reset() preserves
+    // current.todos, so we MUST write opts.todos onto current first — otherwise
+    // the PhaseDone todos are discarded and the list only reappears on the next
+    // history reload (idle), never during busy.
     if (opts.phase === 'done') {
+      if (opts.todos !== undefined) {
+        this.current.todos = opts.todos
+      }
       this.reset()
       return
     }
@@ -488,10 +498,10 @@ export class ProgressStore {
         draft.iterationHistory = appended
       }
 
-      // ── todos: carry-forward when not present (mirrors TUI cli_update_progress).
-      //  An empty/undefined todos means the event carries no todo data, not that
-      //  todos were deleted. Only update when a non-empty array is provided.
-      if (opts.todos && opts.todos.length > 0) {
+      // ── todos: always update when present (including empty arrays).
+      //  undefined = event carries no todo data → carry-forward.
+      //  [] = todo_write([]) explicitly cleared todos → update to empty.
+      if (opts.todos !== undefined) {
         draft.todos = opts.todos
       }
       if (opts.subAgents !== undefined) {
@@ -602,6 +612,8 @@ export class ProgressStore {
       lastIter: this.current.lastIter,
       lastReasoning: this.current.lastReasoning,
       todos: this.current.todos,
+      // TODO-DBG: log todos in snapshot
+      ...(this.current.todos.length > 0 ? { _todoDbg: this.current.todos.length } : {}),
       subAgents: this.current.subAgents,
       tokenUsage: this.current.tokenUsage,
     }

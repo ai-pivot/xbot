@@ -32,9 +32,10 @@ import { SettingsLLM } from './SettingsLLM'
 import { SettingsSection } from './SettingsSection'
 import { SettingsAccountLinking } from './SettingsAccountLinking'
 import { SettingsAdminUsers } from './SettingsAdminUsers'
+import { SettingsAbout } from './SettingsAbout'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 
-type Category = 'appearance' | 'interaction' | 'language' | 'llm' | 'account' | 'linking' | 'users'
+type Category = 'appearance' | 'interaction' | 'language' | 'llm' | 'account' | 'linking' | 'users' | 'about'
 
 interface SettingsDialogProps {
   open: boolean
@@ -98,6 +99,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     { key: 'account', labelKey: 'nav.account' },
     { key: 'linking', labelKey: 'nav.linking' },
     { key: 'users', labelKey: 'nav.users' },
+    { key: 'about', labelKey: 'nav.about' },
   ]
 
   return (
@@ -143,6 +145,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             ) : null}
             {active === 'linking' ? <SettingsAccountLinking /> : null}
             {active === 'users' ? <SettingsAdminUsers /> : null}
+            {active === 'about' ? <SettingsAbout /> : null}
           </div>
         </div>
       </SheetContent>

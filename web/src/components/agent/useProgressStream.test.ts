@@ -517,4 +517,37 @@ describe('useProgressStream event dispatch', () => {
     })
     expect(result.current.isStreaming).toBe(false)
   })
+
+  it('regression: todos survive busy→PhaseDone→text lifecycle', () => {
+    // Bug: PhaseDone discarded its todos (setStructuredTools early-returned on
+    // phase==='done'), so todos were lost at the turn boundary and only
+    // reappeared on the next history reload (idle) — never during busy.
+    const todos = [
+      { id: 1, text: 'task A', done: true },
+      { id: 2, text: 'task B', done: false },
+    ]
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+
+    // mid-busy structured event carries todos (TodoWrite just ran)
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 1, phase: 'tool_exec', iteration: 1, todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+
+    // PhaseDone carries todos too — must NOT be discarded
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 2, phase: 'done', todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+
+    // text finalize preserves todos
+    emitAndFlush({ type: 'text', content: 'reply', chat_id: 'c1' })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+  })
 })

@@ -18,6 +18,7 @@ import { toast } from 'sonner'
 
 import { useAskUser } from '@/hooks/useAskUser'
 import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
+import { sameSession } from "@/lib/session-grouping"
 import { useCollapseLevel, useMergeTools } from '@/hooks/useCollapseLevel'
 import { useProgressStream } from '@/hooks/useProgressStream'
 import { useTodos } from '@/hooks/useTodos'
@@ -142,16 +143,18 @@ export function AgentPanel({ params }: PanelProps) {
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
     onAssistantComplete: (finalText, iterations) => {
-      // Both main Agent and SubAgent panels append the final reply to the
-      // message list. SubAgent panels previously had onAssistantComplete=undefined,
-      // causing the final reply to never appear in the message list.
-      // flushSync ensures setMessages flushes synchronously BEFORE store.reset()
-      // clears the live streaming message. Without this, there's a frame where
+      // Append the final reply + reset progress in the same synchronous render.
+      // flushSync ensures setMessages flushes BEFORE store.reset() clears the
+      // live streaming message — without this, there's a frame where
       // liveMessage is null but the appended message hasn't rendered → flicker.
       flushSync(() => {
         chat.appendAssistant(finalText, iterations)
+        resetProgressRef.current?.()
       })
-      void chat.reload()
+      // No reload — appendAssistant already has the complete content + iterations.
+      // Reloading here causes a race: DB may not have persisted yet → server
+      // returns stale history → setMessages overwrites the appended message.
+      // The next session switch or manual refresh will sync from server.
       void sessionContext.refresh()
     },
     ws,
@@ -170,12 +173,15 @@ export function AgentPanel({ params }: PanelProps) {
   resetProgressRef.current = progress.resetProgress
   const progressSnapshot = progress.progressSnapshot
   const liveMessage = progress.liveMessage
-  const isStreaming = progress.isStreaming
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
-  // Busy while streaming (live or hydrated from a resumed session).
-  const busy = isStreaming && !askUser.prompt
+  // Busy state is driven solely by sessionStore — the same source the sidebar
+  // uses. sessionStore.running is updated by SSE session(busy)/session(idle)
+  // events and is always correct. No optimistic states, no cache, no fragile
+  // isStreaming/processing checks.
+  const currentSession = store.sessions.find((s) => sameSession(s, activeSession))
+  const busy = (currentSession?.running ?? false) && !askUser.prompt
 
   const llmSettings = useLLMSettings()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens
@@ -266,6 +272,7 @@ export function AgentPanel({ params }: PanelProps) {
         messages={chat.messages}
         liveMessage={liveMessage}
         liveProgress={liveMessage ? progressSnapshot : null}
+        busy={busy}
         collapseLevel={level}
         mergeTools={mergeTools}
         loading={chat.loading}

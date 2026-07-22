@@ -1604,11 +1604,9 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 		})
 	}
 	payload.SubAgents = resolveSubAgents(event)
-	if len(s.Todos) > 0 {
-		payload.Todos = make([]protocol.TodoItem, len(s.Todos))
-		for i, td := range s.Todos {
-			payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
-		}
+	payload.Todos = make([]protocol.TodoItem, len(s.Todos))
+	for i, td := range s.Todos {
+		payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
 	}
 	if s.TokenUsage != nil {
 		payload.TokenUsage = &protocol.TokenUsage{

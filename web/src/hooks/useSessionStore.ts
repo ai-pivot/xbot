@@ -827,7 +827,7 @@ export function useSessionStoreImpl(): SessionStore {
       if (initialLoad) addRunningSessionKeys(mainSessions, executingSessionsRef.current)
       const { sessions: markedSessions, active } = reconcileActiveSession(mainSessions, activeSessionRef.current)
       const withUnread = applyPersistedUnreadStatuses(markedSessions, new Set(unreadIdsRef.current), active)
-      const cachedSessions = mergeStatus(sessionsRef.current, withUnread)
+      const cachedSessions = mergeStatus(sessionsRef.current, withUnread, executingSessionsRef.current)
       sessionsRef.current = cachedSessions
       saveSessionTreeCache(cachedSessions, agents)
       setSessions((prev) => (sameSessionList(prev, cachedSessions) ? prev : cachedSessions))
@@ -841,14 +841,21 @@ export function useSessionStoreImpl(): SessionStore {
     }
   }, [])
 
-  /* Preserve live status/activeSessionId across refresh: a fresh fetch resets
-   * every row to 'idle', so carry over the inferred status keyed by chatID.
-   * SSE events (session busy/idle) are more real-time than refresh() — they
-   * must take priority over the server snapshot, which may be stale by the
-   * time the HTTP response arrives (e.g. plugin channel received a new
-   * webhook during the round-trip, making IsProcessingByChannel return true
-   * even though the SSE idle event already fired). */
-  function mergeStatus(prev: SessionInfo[], next: SessionInfo[]): SessionInfo[] {
+  /* Preserve live status across refresh: a fresh fetch resets every row to
+   * 'idle', so carry over the inferred status keyed by chatID.
+   *
+   * Running status is resolved from `executingSessionsRef` — the authoritative
+   * set of sessions that received SSE session(busy) without a matching
+   * session(idle). This avoids two bugs:
+   *   1. Stale idle carry-over: session goes busy (HTTP says running) but prev
+   *      still has idle → mergeStatus wrongly carried over idle.
+   *   2. Stale HTTP running: session just went idle (SSE idle fired, key removed
+   *      from executingSessionsRef) but HTTP still says running → we trust
+   *      executingSessionsRef (not running) over the stale HTTP response.
+   * For the brief window where HTTP is stale after idle, the next refresh
+   * cycle (≤2s) corrects it — much better than being stuck on idle when busy.
+   */
+  function mergeStatus(prev: SessionInfo[], next: SessionInfo[], executingKeys: Set<string>): SessionInfo[] {
     if (prev.length === 0) return next
     const statusBy = new Map<string, Pick<SessionInfo, 'status' | 'running'>>()
     const collect = (nodes: SessionInfo[]) => {
@@ -861,15 +868,18 @@ export function useSessionStoreImpl(): SessionStore {
       const carried = statusBy.get(sessionKey(node))
       const children = node.children?.map(apply)
       if (!carried) return { ...node, children }
+      // waiting_input / error / unread are set by SSE events (ask_user, etc.)
+      // and must survive refresh — HTTP doesn't know about these states.
       if (carried.status === 'waiting_input' || carried.status === 'error' || carried.status === 'unread') {
-        return { ...node, status: carried.status, running: carried.running ?? node.running, children }
+        return { ...node, status: carried.status, running: false, children }
       }
-      // SSE-driven running/idle takes priority over server snapshot.
-      // The server's IsProcessingByChannel may return true if a new message
-      // arrived during the HTTP round-trip — the subsequent session(busy)
-      // SSE event will correct this if needed.
-      if (carried.status === 'running' || carried.status === 'idle') {
-        return { ...node, status: carried.status, running: carried.running ?? node.running, children }
+      // Running status: executingSessionsRef is authoritative.
+      // If SSE busy was received (key in set), force running.
+      // If SSE idle was received (key not in set), don't carry over a stale
+      // idle from prev — trust the HTTP response which may now say running
+      // (the session went busy after the last SSE idle).
+      if (executingKeys.has(sessionKey(node))) {
+        return { ...node, status: 'running', running: true, children }
       }
       return { ...node, children }
     }
@@ -933,7 +943,13 @@ export function useSessionStoreImpl(): SessionStore {
 
   const setStatus = useCallback((selector: SessionSelector, status: SessionStatus) => {
     const running = status === 'running' || status === 'pending'
-    setSessions((prev) => updateSessionTree(prev, selector, (s) => ({ ...s, status, running })))
+    setSessions((prev) => {
+      const next = updateSessionTree(prev, selector, (s) => ({ ...s, status, running }))
+      // Keep sessionsRef in sync so mergeStatus in refresh() sees the latest
+      // SSE-driven status (e.g. 'idle') instead of a stale 'running'.
+      sessionsRef.current = next
+      return next
+    })
   }, [])
 
   const applySubAgentLifecycle = useCallback((ev: SessionEvent, running: boolean) => {
@@ -1031,8 +1047,16 @@ export function useSessionStoreImpl(): SessionStore {
       sessionsRef.current = nextSessions
       saveSessionTreeCache(nextSessions, flattenTreeAgents(nextSessions))
       setSessions(nextSessions)
+      // Clear ALL executing sessions — stale busy keys (from lost idle events)
+      // would force running in mergeStatus, overriding the server's correct state.
+      executingSessionsRef.current.clear()
+      // Immediately query the server for the latest session status — the
+      // local sessions list may be stale (e.g. a previous busy/idle event
+      // failed to arrive). This ensures the sidebar and AgentPanel show the
+      // correct running state right after switching.
+      void refresh()
     },
-    [markRead],
+    [markRead, refresh],
   )
 
   const renameSession = useCallback(async (id: string, channel: string, label: string): Promise<boolean> => {
@@ -1107,7 +1131,11 @@ export function useSessionStoreImpl(): SessionStore {
           } else {
             setStatus(selector, 'idle')
           }
-          void refresh()
+          // Don't call refresh() here — it causes a race where the HTTP
+          // response (which may be stale) overwrites the SSE-driven status.
+          // TUI doesn't refresh on idle either; the sidebar state is
+          // driven entirely by SSE events. refresh() runs on initial load
+          // and session switch, which is sufficient for sync.
           break
         }
         case 'deleted':
@@ -1127,9 +1155,22 @@ export function useSessionStoreImpl(): SessionStore {
         default:
           break
       }
-      void refresh()
     })
-  }, [ws, setStatus, applySubAgentLifecycle, refresh, addUnread, markRead])
+  }, [ws, setStatus, applySubAgentLifecycle, addUnread, markRead])
+
+  // PhaseDone arrives via SSE faster than session(idle) (which fires after
+  // Run() fully exits). Listen for it to clear running state immediately.
+  useEffect(() => {
+    const handler = () => {
+      const active = activeSessionRef.current
+      if (!active) return
+      const selector = { channel: active.channel || DEFAULT_CHANNEL, chatID: active.chatID }
+      executingSessionsRef.current.delete(sessionKey(selector))
+      setStatus(selector, 'idle')
+    }
+    window.addEventListener('agent-idle', handler)
+    return () => window.removeEventListener('agent-idle', handler)
+  }, [setStatus])
 
   useEffect(() => {
     return () => {

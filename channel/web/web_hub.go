@@ -64,6 +64,8 @@ func (h *Hub) removeClient(clientID string) {
 }
 
 // subscribe registers a client to receive messages for a given chatID.
+// Also subscribes to the "web" routeKey so the client receives progress
+// events from SendProgress (which always pushes to channel="web").
 // Idempotent — safe to call on every message from the client.
 // Removes any previous subscription for this client (single-chat-per-connection model).
 func (h *Hub) subscribe(clientID, chatID string) bool {

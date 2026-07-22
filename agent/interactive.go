@@ -343,11 +343,9 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 			})
 		}
-		if len(s.Todos) > 0 {
-			payload.Todos = make([]protocol.TodoItem, len(s.Todos))
-			for i, td := range s.Todos {
-				payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
-			}
+		payload.Todos = make([]protocol.TodoItem, len(s.Todos))
+		for i, td := range s.Todos {
+			payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
 		}
 		if s.TokenUsage != nil {
 			payload.TokenUsage = &protocol.TokenUsage{

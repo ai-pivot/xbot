@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, Square } from 'lucide-react'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -11,20 +14,83 @@ import type { BgTask } from '@/hooks/useTasks'
 const REFRESH_MS = 2_000
 
 export function BackgroundPanel({ params }: PanelProps) {
-  const { ws } = useDockviewContext()
+  const { ws, theme: themeCtx } = useDockviewContext()
+  const { theme } = themeCtx
   const [task, setTask] = useState<BgTask | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const outputRef = useRef<HTMLPreElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<Terminal | null>(null)
+  const lastLenRef = useRef(0)
   const followRef = useRef(true)
   const taskID = params.taskID ?? ''
   const channel = params.taskChannel || 'web'
   const chatID = params.taskChatID || ''
 
-  const output = task?.output || '(no output yet)'
+  const output = task?.output || ''
   const running = task?.status === 'running' || task?.status === 'started'
   const title = useMemo(() => params.command || task?.command || taskID || 'Background task', [params.command, task?.command, taskID])
 
+  // Create xterm instance once.
+  useEffect(() => {
+    if (!containerRef.current) return
+    const term = new Terminal({
+      fontSize: 13,
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      cursorBlink: false,
+      scrollback: 10000,
+      convertEol: false,
+      theme: theme === 'dark' ? {
+        background: '#1e1e2e',
+        foreground: '#cdd6f4',
+      } : {
+        background: '#ffffff',
+        foreground: '#1e1e2e',
+      },
+    })
+    const fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(containerRef.current)
+    fitAddon.fit()
+    termRef.current = term
+
+    const resizeObserver = new ResizeObserver(() => {
+      try { fitAddon.fit() } catch { /* ignore */ }
+    })
+    resizeObserver.observe(containerRef.current)
+
+    return () => {
+      resizeObserver.disconnect()
+      term.dispose()
+      termRef.current = null
+      lastLenRef.current = 0
+    }
+  }, [theme])
+
+  // Write output delta to xterm (handles \r, ANSI, cursor sequences correctly).
+  useEffect(() => {
+    const term = termRef.current
+    if (!term || !output) return
+    if (output.length > lastLenRef.current) {
+      term.write(output.slice(lastLenRef.current))
+      lastLenRef.current = output.length
+      if (followRef.current) {
+        term.scrollToBottom()
+      }
+    }
+  }, [output])
+
+  // Track scroll position.
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    const disp = term.onScroll(() => {
+      followRef.current = term.buffer.active.baseY + term.buffer.active.cursorY >= term.buffer.active.length - 2
+    })
+    return () => disp.dispose()
+  }, [])
+
+  // Poll task status.
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -51,14 +117,6 @@ export function BackgroundPanel({ params }: PanelProps) {
       window.clearInterval(timer)
     }
   }, [channel, chatID, taskID, ws])
-
-  useEffect(() => {
-    const el = outputRef.current
-    if (!el || !followRef.current) return
-    requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight
-    })
-  }, [output])
 
   const kill = async () => {
     if (!taskID) return
@@ -92,17 +150,7 @@ export function BackgroundPanel({ params }: PanelProps) {
           Loading...
         </div>
       ) : (
-        <pre
-          ref={outputRef}
-          onScroll={() => {
-            const el = outputRef.current
-            if (!el) return
-            followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
-          }}
-          className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-text-secondary"
-        >
-          {output}
-        </pre>
+        <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden bg-black/95" />
       )}
     </div>
   )

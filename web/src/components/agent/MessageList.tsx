@@ -18,6 +18,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from 'lucide-react'
 
 import { MessageItem } from './MessageItem'
+import { ShimmerThinking } from './ShimmerThinking'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -31,6 +32,9 @@ interface MessageListProps {
   liveMessage: ChatMessage | null
   /** Live progress snapshot handed only to the streaming row. */
   liveProgress: LiveProgress | null
+  /** Whether the agent is busy (thinking/processing) — shows placeholder when
+   *  no liveMessage yet (e.g. session just started, no iterations arrived). */
+  busy?: boolean
   collapseLevel: 'all' | 'minimal' | 'none'
   /** Whether to merge consecutive tools. Default true. */
   mergeTools?: boolean
@@ -70,6 +74,7 @@ export function MessageList({
   messages,
   liveMessage,
   liveProgress,
+  busy = false,
   collapseLevel,
   mergeTools = true,
   loading,
@@ -181,28 +186,35 @@ export function MessageList({
 
   const scheduleFollow = useCallback(() => {
     if (!stickToBottomRef.current || pendingFollowRafRef.current !== null) return
+    // Double RAF: first frame lets virtualizer update item sizes,
+    // second frame scrolls to the now-correct scrollHeight.
     pendingFollowRafRef.current = requestAnimationFrame(() => {
-      pendingFollowRafRef.current = null
-      if (!stickToBottomRef.current) return
-      const el = scrollRef.current
-      if (el) el.scrollTop = el.scrollHeight
+      pendingFollowRafRef.current = requestAnimationFrame(() => {
+        pendingFollowRafRef.current = null
+        if (!stickToBottomRef.current) return
+        const el = scrollRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      })
     })
   }, [])
 
   // ── Scroll event handler ──────────────────────────────────────────────────
+  // onScroll ONLY updates UI state (atTop, atBottom, visibleRange).
+  // It does NOT control stickToBottomRef — that is exclusively driven by
+  // user-input handlers (onWheel, onKeyDown, onPointer*, onTouch*).
+  //
+  // The previous implementation called pauseFollowing()/resumeFollowing()
+  // inside onScroll, which created a race: a 1px wheel-up would pause
+  // following, but onScroll immediately resumed it because the scroll was
+  // still within EDGE_EPSILON (2px) of the bottom. This caused the viewport
+  // to be yanked back to the bottom on the next content-growth frame.
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
     const atEnd = isAtBottom(el)
     const atStart = el.scrollTop <= EDGE_EPSILON
-    // Only setState when values actually change to avoid unnecessary re-renders
     setAtTop((prev) => (prev === atStart ? prev : atStart))
     setAtBottom((prev) => (prev === atEnd ? prev : atEnd))
-    // A scroll event alone does not prove user intent: content/virtualizer
-    // resizing can emit scroll while the old scrollTop temporarily trails the
-    // new scrollHeight. Only explicit input handlers pause follow mode.
-    if (atEnd) resumeFollowing()
-    // Update visible range for nav button state — only when range changes
     const items = virtualizer.getVirtualItems()
     if (items.length > 0) {
       const newStart = items[0].index
@@ -213,12 +225,23 @@ export function MessageList({
           : { start: newStart, end: newEnd },
       )
     }
-  }, [resumeFollowing, virtualizer])
+  }, [virtualizer])
+
+  // Check if we're at the bottom after a RAF (post-scroll) and resume following.
+  const checkBottomAndResume = useCallback(() => {
+    requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (el && isAtBottom(el)) resumeFollowing()
+    })
+  }, [resumeFollowing])
 
   // ── User scroll detection ─────────────────────────────────────────────────
+  // Wheel: always pause first (both directions). If scrolling DOWN and we
+  // end up at the bottom, resume following after the browser applies the scroll.
   const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    if (e.deltaY < 0) pauseFollowing()
-  }, [pauseFollowing])
+    pauseFollowing()
+    if (e.deltaY > 0) checkBottomAndResume()
+  }, [pauseFollowing, checkBottomAndResume])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'End') {
@@ -228,8 +251,11 @@ export function MessageList({
     }
     if (['ArrowUp', 'PageUp', 'Home'].includes(e.key) || (e.key === ' ' && e.shiftKey)) {
       pauseFollowing()
+    } else if (['ArrowDown', 'PageDown'].includes(e.key)) {
+      pauseFollowing()
+      checkBottomAndResume()
     }
-  }, [pauseFollowing, resumeFollowing, scheduleFollow])
+  }, [pauseFollowing, resumeFollowing, scheduleFollow, checkBottomAndResume])
 
   // Treat the live snapshot as the activity revision: any progress update while
   // paused is new content, even when it does not change the rendered height.
@@ -313,13 +339,19 @@ export function MessageList({
         onScroll={onScroll}
         onWheel={onWheel}
         onPointerDown={(e) => {
-          if (e.pointerType === 'mouse') pointerScrollingRef.current = true
+          if (e.pointerType === 'mouse') {
+            pointerScrollingRef.current = true
+            pauseFollowing()
+          }
         }}
         onPointerMove={(e) => {
           if (pointerScrollingRef.current && e.pointerType === 'mouse') pauseFollowing()
         }}
         onPointerUp={() => {
-          pointerScrollingRef.current = false
+          if (pointerScrollingRef.current) {
+            pointerScrollingRef.current = false
+            checkBottomAndResume()
+          }
         }}
         onPointerCancel={() => {
           pointerScrollingRef.current = false
@@ -336,6 +368,9 @@ export function MessageList({
         }}
         onTouchStart={() => {
           lastTouchYRef.current = null
+        }}
+        onTouchEnd={() => {
+          checkBottomAndResume()
         }}
         onKeyDown={onKeyDown}
         tabIndex={0}
@@ -398,6 +433,14 @@ export function MessageList({
                   </div>
                 )
               })}
+            </div>
+          )}
+          {/* Busy placeholder: when agent is thinking but no streaming
+              content has arrived yet (e.g. session just started, or
+              switched to a busy tab with no iterations). */}
+          {busy && !liveMessage && (
+            <div className="px-3 py-2">
+              <ShimmerThinking />
             </div>
           )}
           {footer}

@@ -21,9 +21,11 @@ import { FileExplorer } from './FileExplorer'
 import { FileSearch } from './FileSearch'
 import { SessionInfo } from './SessionInfo'
 import { TasksPanel } from './TasksPanel'
+import { TerminalList } from './TerminalList'
 import type { TabManager } from '@/hooks/useTabManager'
+import { useTerminal } from '@/hooks/useTerminal'
 
-export type SidebarPanel = 'files' | 'search' | 'info' | 'tasks'
+export type SidebarPanel = 'files' | 'search' | 'info' | 'tasks' | 'terminal'
 
 export interface RightSidebarProps {
   activePanel: SidebarPanel | null
@@ -39,6 +41,7 @@ export function RightSidebar({ activePanel, tabManager }: RightSidebarProps) {
   const [width, setWidth] = useState(() => adaptiveRightWidth())
   const dragging = useRef(false)
   const userSized = useRef(false)
+  const terminalManager = useTerminal(tabManager)
 
   // Pointer-based resize: hold the handle, move the pointer, clamp to bounds.
   const onPointerDown = useCallback((e: React.PointerEvent) => {
@@ -108,7 +111,7 @@ export function RightSidebar({ activePanel, tabManager }: RightSidebarProps) {
                 transition={{ duration: 0.15 }}
                 className="h-full"
               >
-                {renderPanel(panel, tabManager)}
+                {renderPanel(panel, tabManager, terminalManager)}
               </motion.div>
             </AnimatePresence>
           </div>
@@ -140,6 +143,7 @@ function clampRightWidth(width: number): number {
 function renderPanel(
   panel: SidebarPanel,
   tabManager: TabManager,
+  terminalManager?: ReturnType<typeof useTerminal>,
 ) {
   switch (panel) {
     case 'files':
@@ -150,6 +154,8 @@ function renderPanel(
       return <SessionInfo tabManager={tabManager} />
     case 'tasks':
       return <TasksPanel tabManager={tabManager} />
+    case 'terminal':
+      return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
   }
 }
 
@@ -163,5 +169,7 @@ function titleFor(panel: SidebarPanel, t: (k: string) => string): string {
       return t('sidebar.info')
     case 'tasks':
       return t('sidebar.tasks')
+    case 'terminal':
+      return t('sidebar.terminal')
   }
 }

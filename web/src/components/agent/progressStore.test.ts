@@ -459,3 +459,107 @@ describe('dedupMessages', () => {
     expect(result).toEqual(msgs)
   })
 })
+
+// ── Todo real-time update tests ──
+// Bug: todos only appear after busy→idle transition, not immediately when
+// the TodoWrite tool fires a progress_structured event.
+describe('ProgressStore todos real-time update', () => {
+  let rafSpy: ReturnType<typeof vi.spyOn>
+  let rafCallbacks: Array<() => void>
+
+  beforeEach(() => {
+    rafCallbacks = []
+    rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      rafCallbacks.push(cb as () => void)
+      return rafCallbacks.length
+    })
+  })
+  afterEach(() => rafSpy.mockRestore())
+
+  function flushRaf() {
+    rafCallbacks.splice(0, rafCallbacks.length).forEach((cb) => cb())
+  }
+
+  it('todos appear immediately after setStructuredTools (no flush needed between)', () => {
+    const store = new ProgressStore()
+
+    // Simulate: agent starts thinking (busy)
+    store.setStructuredTools({ phase: 'thinking', iteration: 1 })
+    flushRaf()
+    expect(store.getSnapshot().todos).toHaveLength(0)
+
+    // Simulate: TodoWrite fires → next progress_structured carries todos
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      todos: [
+        { id: 1, text: 'task A', done: false },
+        { id: 2, text: 'task B', done: false },
+      ],
+    })
+    flushRaf()
+
+    // Todos should be visible NOW, not after idle
+    expect(store.getSnapshot().todos).toHaveLength(2)
+    expect(store.getSnapshot().todos[0].text).toBe('task A')
+    store.dispose()
+  })
+
+  it('todos survive reset() — preserved across turn boundary', () => {
+    const store = new ProgressStore()
+
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      todos: [{ id: 1, text: 'task A', done: false }],
+    })
+    flushRaf()
+
+    // Turn ends → reset() clears streaming state but keeps todos
+    store.reset()
+    flushRaf()
+
+    expect(store.getSnapshot().todos).toHaveLength(1)
+    store.dispose()
+  })
+
+  it('PhaseDone event applies its todos (TodoWrite-as-last-tool scenario)', () => {
+    const store = new ProgressStore()
+
+    // TodoWrite is often the last tool → its todos ride on the PhaseDone
+    // event. When the mid-busy push events are dropped (SSE backpressure /
+    // coalescing), PhaseDone is the only carrier. It MUST apply its todos.
+    store.setStructuredTools({
+      phase: 'done',
+      todos: [{ id: 1, text: 'task A', done: false }],
+    })
+    flushRaf()
+
+    expect(store.getSnapshot().todos).toHaveLength(1)
+    expect(store.getSnapshot().todos[0].text).toBe('task A')
+    store.dispose()
+  })
+
+  it('empty todos array clears previous todos (todo_write([]))', () => {
+    const store = new ProgressStore()
+
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      todos: [{ id: 1, text: 'task A', done: false }],
+    })
+    flushRaf()
+    expect(store.getSnapshot().todos).toHaveLength(1)
+
+    // todo_write([]) → backend sends todos: []
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      todos: [],
+    })
+    flushRaf()
+
+    expect(store.getSnapshot().todos).toHaveLength(0)
+    store.dispose()
+  })
+})

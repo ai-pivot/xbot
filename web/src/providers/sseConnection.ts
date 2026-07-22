@@ -311,12 +311,25 @@ export class SSEConnectionImpl implements WSConnection {
           chat_id: chatID,
           progress: { phase: 'done' },
         })
+        // Also dispatch idle so the sidebar recovers from a stale busy state
+        // after an SSE reconnect gap.
+        this.dispatch({
+          type: 'session',
+          session: { channel, chat_id: chatID, action: 'idle' },
+        })
         return
       }
       this.dispatch({
         type: 'progress_structured',
         chat_id: chatID,
         progress,
+      })
+      // Dispatch busy so the sidebar shows running state after SSE reconnect.
+      // Without this, a busy event lost during the SSE gap leaves the sidebar
+      // stuck on idle until the next refresh.
+      this.dispatch({
+        type: 'session',
+        session: { channel, chat_id: chatID, action: 'busy' },
       })
     } catch {
       // The next native SSE reconnect or status poll gets another recovery chance.
