@@ -6,7 +6,7 @@
  * content equality.
  */
 import { describe, expect, it } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { MarkdownRenderer } from '@/components/agent/MarkdownRenderer'
@@ -29,7 +29,7 @@ describe('MarkdownRenderer', () => {
     expect(table!.querySelectorAll('tbody tr')).toHaveLength(1)
   })
 
-  it('renders a highlighted code block with a language label', () => {
+  it('renders a highlighted code block with a language label', async () => {
     const { container } = render(
       <MarkdownRenderer content={'```ts\nconst x: number = 1\n```'} />,
     )
@@ -37,9 +37,11 @@ describe('MarkdownRenderer', () => {
     expect(pre).not.toBeNull()
     // language label is rendered
     expect(container.textContent).toContain('ts')
-    // highlight.js emits token spans (hljs-* classes)
-    const code = pre!.querySelector('code')
-    expect(code?.className).toContain('hljs')
+    // highlight.js is async — wait for the hljs class to appear
+    await waitFor(() => {
+      const code = pre!.querySelector('code')
+      expect(code?.className).toContain('hljs')
+    })
   })
 
   it('renders inline code', () => {

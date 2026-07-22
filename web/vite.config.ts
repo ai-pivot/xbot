@@ -112,7 +112,7 @@ export default defineConfig({
             if (id.includes('/react-dom/') || id.includes('/react/')) return 'vendor-react'
             if (id.includes('/monaco-editor/')) return 'vendor-monaco'
             if (id.includes('/react-markdown/') || id.includes('/remark-gfm/')) return 'vendor-markdown'
-            if (id.includes('/highlight.js/') || id.includes('/lowlight/')) return 'vendor-highlight'
+            if (id.includes('/highlight.js/')) return 'vendor-highlight'
             if (id.includes('/katex/')) return 'vendor-katex'
           }
         },

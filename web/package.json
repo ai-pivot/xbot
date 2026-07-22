@@ -30,7 +30,6 @@
     "highlight.js": "^11.11.1",
     "i18next": "^26.3.3",
     "katex": "^0.16.47",
-    "lowlight": "^3.3.0",
     "lucide-react": "^1.24.0",
     "monaco-editor": "^0.55.1",
     "radix-ui": "^1.6.0",

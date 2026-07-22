@@ -3,7 +3,8 @@ import { ArrowLeft } from 'lucide-react'
 import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal } from 'lucide-react'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
-import { TerminalPanel } from '@/workspace/panels/TerminalPanel'
+const TerminalPanel = lazy(() =>
+  import('@/workspace/panels/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
@@ -155,7 +156,9 @@ export function MobileAppShell() {
                   </span>
                 </div>
                 <div className="min-h-0 flex-1">
-                  <TerminalPanel {...mobileTerminalProps(activeTerminalId)} />
+                  <Suspense fallback={null}>
+                    <TerminalPanel {...mobileTerminalProps(activeTerminalId)} />
+                  </Suspense>
                 </div>
               </div>
             ) : (
