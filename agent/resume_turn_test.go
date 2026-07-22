@@ -58,6 +58,52 @@ func TestResumeTurn_EmptyUserMessageSkipsAssembleAppend(t *testing.T) {
 	}
 }
 
+// TestResumeTurn_PipelineSkipsUserMessageSynthesis verifies that the real
+// pipeline (with UserMessageMiddleware) does NOT synthesize a bogus user
+// message when ResumeTurn is set. This catches the regression where
+// UserMessageMiddleware overwrites UserMessage with timestamp+guide text
+// even when UserContent is empty.
+func TestResumeTurn_PipelineSkipsUserMessageSynthesis(t *testing.T) {
+	loader := NewPromptLoader("")
+	pipeline := NewMessagePipeline(
+		NewSystemPromptMiddleware(loader, "flat"),
+		NewUserMessageMiddleware("flat"),
+	)
+
+	mc := &MessageContext{
+		Ctx:         context.Background(),
+		SystemParts: make(map[string]string),
+		UserContent: "", // empty — resume turn
+		History: []llm.ChatMessage{
+			llm.NewUserMessage("hello"), // from DB
+		},
+		Channel:    "web",
+		WorkDir:    "/workspace",
+		SenderName: "web-1",
+		Extra:      make(map[string]any),
+	}
+	mc.ResumeTurn = true
+
+	messages := pipeline.Run(mc)
+
+	// Should be: system + history (1 user) = 2 messages. NO appended user.
+	userCount := 0
+	for _, m := range messages {
+		if m.Role == "user" {
+			userCount++
+		}
+	}
+	if userCount != 1 {
+		t.Fatalf("expected 1 user message (from history), got %d — UserMessageMiddleware may have synthesized a bogus message", userCount)
+	}
+
+	// The single user message must be the real DB content, not synthesized.
+	userMsg := messages[len(messages)-1]
+	if userMsg.Role != "user" || userMsg.Content != "hello" {
+		t.Fatalf("expected last message to be history user 'hello', got %s: %q", userMsg.Role, userMsg.Content)
+	}
+}
+
 // TestNormalTurn_NonEmptyUserMessageAppended verifies that normal (non-resume)
 // turns still append the user message as expected.
 func TestNormalTurn_NonEmptyUserMessageAppended(t *testing.T) {

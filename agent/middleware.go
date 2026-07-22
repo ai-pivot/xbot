@@ -28,6 +28,11 @@ type MessageContext struct {
 	// UserMessage 最终发送给 LLM 的用户消息（中间件可修改）
 	UserMessage string
 
+	// ResumeTurn indicates this is a resume turn (graceful shutdown or
+	// /continue). The user message is already in history from DB —
+	// UserMessageMiddleware skips synthesis so Assemble's empty guard fires.
+	ResumeTurn bool
+
 	// History 对话历史
 	History []llm.ChatMessage
 

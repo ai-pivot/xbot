@@ -3137,6 +3137,11 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		msg.ChatID,
 	)
 
+	// Resume turn: skip user message synthesis (already in DB history)
+	if msg.Metadata != nil && msg.Metadata["resume_turn"] == "true" {
+		mc.ResumeTurn = true
+	}
+
 	// 注入当前工作目录（CWD）到 prompt
 	// sandbox 模式下 CWD 已经是 sandbox 内路径，无 cd 时默认为 promptWorkDir
 	mc.CWD = cwd
