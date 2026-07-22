@@ -275,7 +275,12 @@ export function useChatMessages({
   parentChatID,
   agentChatID,
 }: UseChatMessagesOptions): UseChatMessagesResult {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    // On remount (e.g. dockview tab switch), restore cached messages
+    // so the panel doesn't flash blank before reload completes.
+    const key = messageCacheKey(channel, chatID, subAgentRole, subAgentInstance, agentChatID)
+    return messagesCache.get(key) ?? []
+  })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
