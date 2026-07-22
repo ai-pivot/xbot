@@ -396,7 +396,11 @@ export function useChatMessages({
       const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0) : parsed
       messagesRef.current = next
       setMessages(next)
-      setInitialProgress(progressChanged || mutated ? null : (data.active_progress ?? null))
+      // Always restore active_progress — it contains the COMPLETE iterationHistory
+      // from the server. Don't skip it when progressChanged (SSE delta arrived
+      // during reload) — that's exactly when we need the full snapshot most,
+      // because the delta only has 0-1 iterations while the server has all.
+      setInitialProgress(data.active_progress ?? null)
       if (data.chat_id) setResolvedChatID(data.chat_id)
     } catch (e) {
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return
