@@ -178,12 +178,12 @@ export function AgentPanel({ params }: PanelProps) {
 
   const todoState = useTodos(progressSnapshot.todos)
   // Busy = actively streaming OR backend reports processing OR session store
-  // says running (covers the gap when switching to a busy tab before progress
-  // events arrive — the sidebar's running state is driven by session(busy)
-  // SSE events which fire immediately).
+  // says running OR optimistic sending state (instant feedback on send).
+  // Canceling overrides: shows "canceling" state instead of "thinking".
   const currentSession = store.sessions.find((s) => sameSession(s, activeSession))
   const sessionRunning = currentSession?.running ?? false
-  const busy = (isStreaming || chat.processing || sessionRunning) && !askUser.prompt
+  const busy = (isStreaming || chat.processing || sessionRunning || chat.sending) && !askUser.prompt
+  const isCanceling = chat.canceling
 
   const llmSettings = useLLMSettings()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens
@@ -274,6 +274,7 @@ export function AgentPanel({ params }: PanelProps) {
         messages={chat.messages}
         liveMessage={liveMessage}
         liveProgress={liveMessage ? progressSnapshot : null}
+        busy={busy}
         collapseLevel={level}
         mergeTools={mergeTools}
         loading={chat.loading}
@@ -296,6 +297,7 @@ export function AgentPanel({ params }: PanelProps) {
         <MessageInput
           key={`${messageChannel}:${chatID ?? ''}`}
           busy={busy}
+          canceling={isCanceling}
           onSend={sendMessage}
           onCancel={chat.cancel}
           onRewindLatest={rewindLatest}

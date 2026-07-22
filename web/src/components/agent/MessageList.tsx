@@ -18,6 +18,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from 'lucide-react'
 
 import { MessageItem } from './MessageItem'
+import { ShimmerThinking } from './ShimmerThinking'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -31,6 +32,9 @@ interface MessageListProps {
   liveMessage: ChatMessage | null
   /** Live progress snapshot handed only to the streaming row. */
   liveProgress: LiveProgress | null
+  /** Whether the agent is busy (thinking/processing) — shows placeholder when
+   *  no liveMessage yet (e.g. session just started, no iterations arrived). */
+  busy?: boolean
   collapseLevel: 'all' | 'minimal' | 'none'
   /** Whether to merge consecutive tools. Default true. */
   mergeTools?: boolean
@@ -70,6 +74,7 @@ export function MessageList({
   messages,
   liveMessage,
   liveProgress,
+  busy = false,
   collapseLevel,
   mergeTools = true,
   loading,
@@ -428,6 +433,14 @@ export function MessageList({
                   </div>
                 )
               })}
+            </div>
+          )}
+          {/* Busy placeholder: when agent is thinking but no streaming
+              content has arrived yet (e.g. session just started, or
+              switched to a busy tab with no iterations). */}
+          {busy && !liveMessage && (
+            <div className="px-3 py-2">
+              <ShimmerThinking />
             </div>
           )}
           {footer}

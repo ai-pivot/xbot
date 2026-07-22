@@ -63,6 +63,12 @@ export interface UseChatMessagesResult {
   initialProgress: HistProgress | null
   /** Whether the backend reports this session as actively processing. */
   processing: boolean
+  /** Optimistic: true immediately when user sends a message, cleared on
+   *  first progress event or error. Gives instant busy feedback. */
+  sending: boolean
+  /** Optimistic: true immediately when user cancels, cleared on session(idle)
+   *  or error. */
+  canceling: boolean
   /** The chat_id reported by the most recent history load (server's active chat). */
   resolvedChatID: string | null
   /** Reload history for the current chatID. */
@@ -263,6 +269,12 @@ export function useChatMessages({
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
   const [processing, setProcessing] = useState(false)
+  // Optimistic states for instant UI feedback on send/cancel.
+  // `sending` is set true immediately in sendMessage, cleared when the
+  // first progress event arrives or on error.
+  // `canceling` is set true immediately in cancel, cleared on session(idle).
+  const [sending, setSending] = useState(false)
+  const [canceling, setCanceling] = useState(false)
 
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
@@ -398,6 +410,8 @@ export function useChatMessages({
       setMessages(next)
       setInitialProgress(progressChanged || mutated ? null : (data.active_progress ?? null))
       setProcessing(Boolean(data.processing))
+      setSending(false)
+      setCanceling(false)
       if (data.chat_id) setResolvedChatID(data.chat_id)
     } catch (e) {
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return
@@ -483,6 +497,8 @@ export function useChatMessages({
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
       const requestID = newMessageRequestID()
+      setSending(true)
+      setCanceling(false)
       const resetCommand = text === '/new' && !attachments?.uploadKeys.length
       let optimisticID: string | null = null
       if (!resetCommand) {
@@ -529,16 +545,19 @@ export function useChatMessages({
             return next
           })
         }
-        toast.error(error instanceof Error ? error.message : 'message send failed')
+        setSending(false)
+        toast.error(error instanceof Error ? error.message : "message send failed")
       })
     },
     [ws, channel],
   )
 
   const cancel = useCallback(() => {
+    setCanceling(true)
     void ws.send({ type: 'cancel', channel, chat_id: chatIDRef.current ?? undefined })
       .catch((error: unknown) => {
-        toast.error(error instanceof Error ? error.message : 'cancel failed')
+        setCanceling(false)
+        toast.error(error instanceof Error ? error.message : "cancel failed")
       })
   }, [ws, channel])
 
@@ -597,6 +616,8 @@ export function useChatMessages({
     error,
     initialProgress,
     processing,
+    sending,
+    canceling,
     resolvedChatID,
     reload,
     sendMessage,

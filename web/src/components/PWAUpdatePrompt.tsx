@@ -41,6 +41,11 @@ export function registerSW() {
           }
         })
       })
+
+      // Proactively check for updates on every page load — the browser's
+      // built-in check only happens on navigation, so we force one here to
+      // catch updates deployed since the last visit.
+      reg.update().catch(() => {})
     }).catch(() => {
       // SW registration failed — PWA features unavailable, app still works.
     })
