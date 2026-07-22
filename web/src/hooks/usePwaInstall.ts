@@ -31,7 +31,6 @@ interface PwaDiagnostics {
 
 export function usePwaInstall() {
   const [promptEvent, setPromptEvent] = useState<BeforeInstallPromptEvent | null>(null)
-  const [error] = useState<string | null>(null)
   const [updateAvailable, setUpdateAvailable] = useState(false)
   const [diagnostics, setDiagnostics] = useState<PwaDiagnostics | null>(null)
   const isInstalled = useState(() =>
@@ -149,7 +148,6 @@ export function usePwaInstall() {
     canInstall: !!promptEvent && !isInstalled,
     isInstalled,
     install,
-    error,
     updateAvailable,
     checkForUpdate,
     refreshSW,

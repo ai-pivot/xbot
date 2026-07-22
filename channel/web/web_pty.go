@@ -541,7 +541,6 @@ func (wc *WebChannel) handleTerminalCreate(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	log.Infof("terminal/create: senderID=%s chatID=%s cwd=%s", senderID, req.ChatID, cwd)
 	tid, err := wc.ptyMgr.Create(senderID, req.ChatID, cwd, 80, 24)
 	if err != nil {
 		log.WithError(err).Warn("Failed to create PTY")
@@ -549,7 +548,6 @@ func (wc *WebChannel) handleTerminalCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	log.Infof("terminal/create: created tid=%s", tid)
 	writeJSON(w, http.StatusOK, terminalCreateResp{Tid: tid})
 }
 
@@ -559,7 +557,6 @@ func (wc *WebChannel) handleTerminalDelete(w http.ResponseWriter, r *http.Reques
 		jsonErrorResponse(w, http.StatusBadRequest, "tid is required")
 		return
 	}
-	log.Infof("terminal/delete: tid=%s", tid)
 	wc.ptyMgr.Delete(tid)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -616,13 +613,11 @@ func (wc *WebChannel) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Infof("terminal/ws: upgrading tid=%s", tid)
 	conn, err := terminalWSUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.WithError(err).Warn("Terminal WS upgrade failed")
 		return
 	}
-	log.Infof("terminal/ws: connected tid=%s", tid)
 
 	client := &ptyWSClient{
 		conn: conn,

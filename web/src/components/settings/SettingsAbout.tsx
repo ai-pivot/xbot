@@ -20,7 +20,7 @@ function DiagRow({ label, ok }: { label: string; ok: boolean }) {
 }
 
 export function SettingsAbout() {
-  const { canInstall, isInstalled, install, error, updateAvailable, checkForUpdate, refreshSW, diagnostics } = usePwaInstall()
+  const { canInstall, isInstalled, install, updateAvailable, checkForUpdate, refreshSW, diagnostics } = usePwaInstall()
   const [checking, setChecking] = useState(false)
 
   const handleUpdate = async () => {
@@ -93,9 +93,6 @@ export function SettingsAbout() {
                 请刷新页面或等待几秒后重试。
               </span>
             </div>
-            {error && (
-              <p className="text-text-muted" style={{ color: 'var(--status-error)' }}>错误: {error}</p>
-            )}
             {/* Diagnostics */}
             {diagnostics && (
               <div className="flex flex-col gap-1.5 border-t border-border pt-2">
