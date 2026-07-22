@@ -132,6 +132,12 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
 
     const options: DockviewComponentOptions = {
       theme: themeVisualStudio,
+      // 'always' keeps all panel content mounted in the DOM (hidden via
+      // visibility instead of detached). This prevents virtual lists (e.g.
+      // the message list) from collapsing to 0 height when their panel is
+      // inactive — which would cause them to render 0 items and appear empty
+      // when the user switches back to the tab.
+      defaultRenderer: 'always',
       createComponent: (opts) => new ReactContentRenderer(opts.name, ctxRef),
       createTabComponent: () => new ReactTabRenderer(ctxRef),
       // Without this, dockview falls back to its built-in DefaultTab which
