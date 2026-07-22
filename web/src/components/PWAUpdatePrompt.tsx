@@ -9,12 +9,21 @@
 export function registerSW() {
   if (!('serviceWorker' in navigator)) return
 
+  // Don't register SW on localhost / 127.0.0.1 — it causes navigation
+  // requests to hang because the SW's NavigationRoute intercepts them
+  // but the precache may not have the correct assets for a dev environment.
+  const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+
   window.addEventListener('load', () => {
-    // First, unregister ALL existing service workers. The old SW (from
-    // registerSW.js) caches the old index.html and blocks updates. By
-    // unregistering first, the browser fetches the live index.html which
-    // contains the new <script> tags. The new SW is registered immediately
-    // after to re-enable caching for future visits.
+    // On localhost, unregister any existing SW to clean up stale caches.
+    if (isLocalhost) {
+      navigator.serviceWorker.getRegistrations().then((regs) => {
+        regs.forEach((r) => r.unregister())
+      }).catch(() => {})
+      return
+    }
+
+    // Production: register and auto-update.
     navigator.serviceWorker.getRegistrations().then((regs) => {
       const oldRegs = regs.filter((r) => !r.active?.scriptURL?.endsWith('/sw.js'))
       if (oldRegs.length > 0) {
@@ -22,17 +31,14 @@ export function registerSW() {
       }
       return Promise.all(oldRegs.map((r) => r.unregister()))
     }).then(() => {
-      // Register the new SW.
       return navigator.serviceWorker.register('/sw.js', { scope: '/' })
     }).then((reg) => {
-      // Check for updates every 60s while the page is open.
       setInterval(() => reg.update().catch(() => {}), 60_000)
 
       reg.addEventListener('updatefound', () => {
         const newWorker = reg.installing
         if (!newWorker) return
         newWorker.addEventListener('statechange', () => {
-          // New SW installed → skip waiting → it activates → reload page.
           if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
             newWorker.postMessage({ type: 'SKIP_WAITING' })
           }
@@ -42,7 +48,6 @@ export function registerSW() {
       console.warn('SW registration failed:', err)
     })
 
-    // When the new SW takes control, reload to load the new cached assets.
     let refreshing = false
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (refreshing) return

@@ -722,6 +722,10 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 		Progress: payload,
 	}
 
+	if len(payload.Todos) > 0 {
+		log.Infof("SendProgress: chatID=%s todos=%d phase=%s iter=%d", chatID, len(payload.Todos), payload.Phase, payload.Iteration)
+	}
+
 	if !wc.hub.sendToSession("web", chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
 	}
