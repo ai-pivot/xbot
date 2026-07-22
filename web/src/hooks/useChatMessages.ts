@@ -409,9 +409,6 @@ export function useChatMessages({
       messagesRef.current = next
       setMessages(next)
       setInitialProgress(progressChanged || mutated ? null : (data.active_progress ?? null))
-      setProcessing(Boolean(data.processing))
-      setSending(false)
-      setCanceling(false)
       if (data.chat_id) setResolvedChatID(data.chat_id)
     } catch (e) {
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return
@@ -499,6 +496,9 @@ export function useChatMessages({
       const requestID = newMessageRequestID()
       setSending(true)
       setCanceling(false)
+      // Auto-clear sending after 5s — session(busy) should arrive within
+      // a few hundred ms; if it doesn't, don't leave stuck in optimistic state.
+      setTimeout(() => setSending(false), 5000)
       const resetCommand = text === '/new' && !attachments?.uploadKeys.length
       let optimisticID: string | null = null
       if (!resetCommand) {

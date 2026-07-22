@@ -173,16 +173,18 @@ export function AgentPanel({ params }: PanelProps) {
   resetProgressRef.current = progress.resetProgress
   const progressSnapshot = progress.progressSnapshot
   const liveMessage = progress.liveMessage
-  const isStreaming = progress.isStreaming
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
-  // Busy = actively streaming OR backend reports processing OR session store
-  // says running OR optimistic sending state (instant feedback on send).
-  // Canceling overrides: shows "canceling" state instead of "thinking".
+  // Busy state is driven by sessionStore — the same source the sidebar uses.
+  // sessionStore.running is updated by SSE session(busy)/session(idle) events
+  // and is always correct. `chat.sending` provides optimistic feedback for
+  // the brief gap between clicking send and session(busy) arriving.
+  // chat.processing is NOT used — it's set by /api/history reload which is
+  // unreliable and can get stuck.
   const currentSession = store.sessions.find((s) => sameSession(s, activeSession))
   const sessionRunning = currentSession?.running ?? false
-  const busy = (isStreaming || chat.processing || sessionRunning || chat.sending) && !askUser.prompt
+  const busy = (sessionRunning || chat.sending) && !askUser.prompt
   const isCanceling = chat.canceling
 
   const llmSettings = useLLMSettings()
