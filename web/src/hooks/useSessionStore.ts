@@ -1047,8 +1047,13 @@ export function useSessionStoreImpl(): SessionStore {
       sessionsRef.current = nextSessions
       saveSessionTreeCache(nextSessions, flattenTreeAgents(nextSessions))
       setSessions(nextSessions)
+      // Immediately query the server for the latest session status — the
+      // local sessions list may be stale (e.g. a previous busy/idle event
+      // failed to arrive). This ensures the sidebar and AgentPanel show the
+      // correct running state right after switching.
+      void refresh()
     },
-    [markRead],
+    [markRead, refresh],
   )
 
   const renameSession = useCallback(async (id: string, channel: string, label: string): Promise<boolean> => {
