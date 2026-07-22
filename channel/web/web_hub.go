@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -78,14 +77,8 @@ func (h *Hub) subscribe(clientID, chatID string) bool {
 	// Remove old subscription(s) for this client (single active chat per WS connection).
 	// Without this, the client accumulates subscriptions to multiple chatIDs and
 	// receives events from sessions the user has already switched away from.
-	// Exception: keep "web" routeKey subscriptions — they're secondary
-	// subs for receiving progress events (SendProgress always pushes to "web").
 	for cid, clients := range h.subs {
 		if cid != chatID && clients[clientID] {
-			// Don't remove the web routeKey — it's a shared secondary sub.
-			if strings.HasPrefix(cid, "web") && !strings.HasPrefix(chatID, "web") {
-				continue
-			}
 			delete(clients, clientID)
 			if len(clients) == 0 {
 				delete(h.subs, cid)

@@ -379,7 +379,7 @@ export class ProgressStore {
     // The backend guarantees that a `text` event (final assistant reply)
     // arrives after PhaseDone. The progress store should clear immediately
     // on PhaseDone — the final text is handled by onAssistantComplete.
-    // No finalizing state, no timeout hack.
+    // No finalizing state needed — the text event handles completion.
     //
     // TodoWrite is frequently the last tool in an iteration, so its updated
     // todos ride on the PhaseDone event (especially when mid-busy push events
