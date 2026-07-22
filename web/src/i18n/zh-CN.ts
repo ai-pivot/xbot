@@ -156,6 +156,7 @@ const zhCN = {
   },
   agent: {
     inputPlaceholder: '给 Agent 发消息…（Ctrl+Enter 发送）',
+    inputPlaceholderEnter: '给 Agent 发消息…（Enter 发送）',
     send: '发送',
     attach: '附件',
     uploadFailed: '文件上传失败',

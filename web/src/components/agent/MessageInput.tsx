@@ -245,7 +245,7 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             rows={2}
-            placeholder={t('agent.inputPlaceholder')}
+            placeholder={t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')}
             className={cn(
               'max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-0 py-1',
               'text-sm text-text-primary placeholder:text-text-muted',

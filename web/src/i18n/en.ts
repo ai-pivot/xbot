@@ -159,6 +159,7 @@ const en: Translations = {
   },
   agent: {
     inputPlaceholder: 'Message the Agent… (Ctrl+Enter to send)',
+    inputPlaceholderEnter: 'Message the Agent… (Enter to send)',
     send: 'Send',
     attach: 'Attach',
     uploadFailed: 'File upload failed',
