@@ -8,11 +8,12 @@
  * Includes a path bar at the top to navigate to any directory on the server.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronRight, ChevronDown, FolderOpen, Loader2, RotateCcw } from 'lucide-react'
+import { ChevronRight, ChevronDown, FolderOpen, FolderUp, Loader2, RotateCcw } from 'lucide-react'
 
 import { useI18n } from '@/providers/i18n'
 import { useCwd } from '@/providers/CwdProvider'
 import { useFileTree } from '@/hooks/useFileTree'
+import { insertIntoChat } from '@/lib/chatInputBridge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   ContextMenu,
@@ -105,6 +106,16 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
   }, [])
 
   const displayPath = browseRoot ?? cwd ?? ''
+  const canGoUp = parentPath(displayPath) !== displayPath
+
+  // Temporarily browse the parent directory (display-only — does NOT change
+  // the session CWD). browseRoot is separate from the session cwd.
+  const handleGoUp = useCallback(() => {
+    const parent = parentPath(displayPath)
+    if (parent === displayPath) return // already at filesystem root
+    invalidateFsCache()
+    setBrowseRoot(parent)
+  }, [displayPath])
 
   return (
     <div className="flex h-full flex-col">
@@ -129,6 +140,21 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
       ) : (
         <ScrollArea className="min-h-0 flex-1">
           <div className="py-1 text-sm">
+            {canGoUp && (
+              <button
+                type="button"
+                onClick={handleGoUp}
+                title={t('sidebar.goUp')}
+                className="flex w-full items-center gap-1 py-[3px] pr-2 text-left transition-colors hover:bg-bg-tertiary"
+                style={{ paddingLeft: 4 }}
+              >
+                <span className="flex size-4 shrink-0 items-center justify-center text-text-muted">
+                  <ChevronRight className="size-3.5" />
+                </span>
+                <FolderUp className="size-4 shrink-0 text-text-secondary" />
+                <span className="truncate text-text-secondary">..</span>
+              </button>
+            )}
             {tree.map((node) => (
               <FileTreeNode
                 key={node.path}
@@ -256,6 +282,9 @@ function FileTreeNode({ node, depth, expanded, onToggleDir, onOpenFile, expandin
         <ContextMenuContent>
           <ContextMenuItem onSelect={() => onOpenFile(node)}>
             {t('sidebar.openInTab')}
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => insertIntoChat(`@${node.path}`)}>
+            {t('sidebar.addToChat')}
           </ContextMenuItem>
           <ContextMenuItem
             onSelect={() => {
