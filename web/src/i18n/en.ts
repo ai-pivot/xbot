@@ -55,6 +55,7 @@ const en: Translations = {
     pathNotFound: 'Path does not exist',
     goUp: 'Go up one directory',
     searchPlaceholder: 'Search files…',
+    filterPlaceholder: 'Filter by name…',
     searchHint: 'Type to search files',
     noResults: 'No results',
     original: 'Original',

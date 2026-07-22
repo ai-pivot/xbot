@@ -52,6 +52,7 @@ const zhCN = {
     pathNotFound: '路径不存在',
     goUp: '上一级目录',
     searchPlaceholder: '搜索文件…',
+    filterPlaceholder: '按文件名过滤…',
     searchHint: '输入关键词搜索文件',
     noResults: '无匹配结果',
     original: '原始内容',
