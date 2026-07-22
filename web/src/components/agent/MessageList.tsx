@@ -198,10 +198,15 @@ export function MessageList({
     // Only setState when values actually change to avoid unnecessary re-renders
     setAtTop((prev) => (prev === atStart ? prev : atStart))
     setAtBottom((prev) => (prev === atEnd ? prev : atEnd))
-    // A scroll event alone does not prove user intent: content/virtualizer
-    // resizing can emit scroll while the old scrollTop temporarily trails the
-    // new scrollHeight. Only explicit input handlers pause follow mode.
-    if (atEnd) resumeFollowing()
+    // If the user is not at the bottom, they are reading — pause auto-follow
+    // immediately so streaming content doesn't yank the viewport. Previously
+    // only wheel/keydown paused follow; ResizeObserver-driven scheduleFollow
+    // could still fire between user scroll events, causing jitter.
+    if (atEnd) {
+      resumeFollowing()
+    } else {
+      pauseFollowing()
+    }
     // Update visible range for nav button state — only when range changes
     const items = virtualizer.getVirtualItems()
     if (items.length > 0) {
@@ -213,7 +218,7 @@ export function MessageList({
           : { start: newStart, end: newEnd },
       )
     }
-  }, [resumeFollowing, virtualizer])
+  }, [resumeFollowing, pauseFollowing, virtualizer])
 
   // ── User scroll detection ─────────────────────────────────────────────────
   const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
