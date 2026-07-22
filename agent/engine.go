@@ -1008,6 +1008,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		AgentID:        cfg.AgentID,
 		Channel:        cfg.Channel,
 		ChatID:         cfg.ChatID,
+		SessionKey:     cfg.SessionKey,
 		SenderID:       cfg.SenderID,
 		OriginUserID:   cfg.OriginUserID,
 		SenderName:     cfg.SenderName,

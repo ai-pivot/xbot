@@ -612,6 +612,8 @@ export class ProgressStore {
       lastIter: this.current.lastIter,
       lastReasoning: this.current.lastReasoning,
       todos: this.current.todos,
+      // TODO-DBG: log todos in snapshot
+      ...(this.current.todos.length > 0 ? { _todoDbg: this.current.todos.length } : {}),
       subAgents: this.current.subAgents,
       tokenUsage: this.current.tokenUsage,
     }

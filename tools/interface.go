@@ -52,6 +52,10 @@ type ToolContext struct {
 	RecallTimeRange vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
 	ToolIndexer     memory.ToolIndexer           // 工具索引服务（Letta 模式下可用）
 
+	// SessionKey is the authoritative session key (may differ from
+	// Channel:ChatID when physicalChannel overrides it). Used by TodoManager
+	// and other session-scoped state to match notifyProgress's sessionKey.
+	SessionKey string
 	// RootSessionKey 顶层 Agent 的 session key。
 	// SubAgent 场景下指向主 Agent 的 session（offload 文件存放在该 session 目录下），
 	// 主 Agent 场景下为空（与 SessionKey 相同）。
