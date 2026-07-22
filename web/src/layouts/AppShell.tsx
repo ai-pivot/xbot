@@ -10,14 +10,13 @@
  * file browser / search / info / tasks panels, each switchable via its
  * own RightActivityBar (Spec 6).
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
-import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
@@ -25,6 +24,11 @@ import { useTabManager } from '@/hooks/useTabManager'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
+
+// SettingsDialog is only needed when the user opens settings — lazy-load it
+// so its code (form components, etc.) is not on the initial render path.
+const SettingsDialog = lazy(() =>
+  import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
 
 const MIN_LEFT_WIDTH = 200
 const MAX_LEFT_WIDTH = 460
@@ -61,6 +65,10 @@ export function AppShell() {
   const openPanel = useCallback((panel: SidebarPanel) => {
     setActivePanel(panel)
   }, [])
+  // Memoize so the context value is stable — prevents DockviewContainer's
+  // ctxValue from changing on every AppShell render (e.g. sidebar toggle),
+  // which would force panel.update() on ALL dockview panels.
+  const rightSidebarControl = useMemo(() => ({ openPanel }), [openPanel])
 
   const onLeftResizeStart = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
@@ -146,7 +154,7 @@ export function AppShell() {
         </div>
       )}
 
-      <RightSidebarControlContext.Provider value={{ openPanel }}>
+      <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="h-full min-w-0 flex-1">
           <DockviewContainer tabManager={tabManager} />
@@ -163,13 +171,15 @@ export function AppShell() {
       <RightActivityBar activePanel={activePanel} onTogglePanel={togglePanel} />
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
-      <SettingsDialog
-        open={settingsOpen}
-        onOpenChange={(open) => {
-          setSettingsOpen(open)
-          if (!open) setSettingsVersion((v) => v + 1)
-        }}
-      />
+      <Suspense fallback={null}>
+        <SettingsDialog
+          open={settingsOpen}
+          onOpenChange={(open) => {
+            setSettingsOpen(open)
+            if (!open) setSettingsVersion((v) => v + 1)
+          }}
+        />
+      </Suspense>
     </div>
   )
 }

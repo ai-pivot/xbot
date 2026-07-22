@@ -101,9 +101,25 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
     /language-(\w+)/.exec(className ?? '')?.[1] ??
       (props as unknown as { 'data-language'?: string })['data-language'],
   )
+  const isInline = inline || (!lang && !text.includes('\n'))
+
+  // Async highlighting: render plain text first (instant LCP), then swap in
+  // highlighted HTML after highlight.js loads. This keeps highlight.js (~300KB)
+  // off the critical render path.
+  const [html, setHtml] = useState<string | null>(null)
+  useEffect(() => {
+    if (isInline) return
+    let cancelled = false
+    const run = async () => {
+      const result = (lang ? await highlightCode(text, lang) : null) ?? await highlightAuto(text)
+      if (!cancelled && result) setHtml(result)
+    }
+    void run()
+    return () => { cancelled = true }
+  }, [text, lang, isInline])
 
   // Inline code: short, no newline, no language fence.
-  if (inline || (!lang && !text.includes('\n'))) {
+  if (isInline) {
     return (
       <code
         className="rounded px-1.5 py-0.5 font-mono text-[0.85em]"
@@ -117,8 +133,6 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
       </code>
     )
   }
-
-  const html = (lang ? highlightCode(text, lang) : null) ?? highlightAuto(text)
 
   return (
     <div

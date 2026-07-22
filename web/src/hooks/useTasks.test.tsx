@@ -6,20 +6,33 @@ import type { WSConnection } from '@/types/ws'
 
 describe('useTasks', () => {
   it('drops stale task responses after switching sessions', async () => {
-    let resolveOld!: (value: { tasks: unknown[]; background_tasks: unknown[] }) => void
-    const oldStatus = new Promise<{ tasks: unknown[]; background_tasks: unknown[] }>((resolve) => { resolveOld = resolve })
+    let resolveOldCron!: (value: { tasks: unknown[] }) => void
+    let resolveOldBg!: (value: { background_tasks: unknown[] }) => void
+    const oldCron = new Promise<{ tasks: unknown[] }>((resolve) => { resolveOldCron = resolve })
+    const oldBg = new Promise<{ background_tasks: unknown[] }>((resolve) => { resolveOldBg = resolve })
     const rpc = vi.fn()
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
       const body = JSON.parse(String(init?.body ?? '{}')) as { chat_id?: string }
-      const data = body.chat_id === 'a'
-        ? await oldStatus
-        : {
-            tasks: [{ id: 'new-cron', message: 'new', channel: 'web', chatID: 'b' }],
-            background_tasks: [{ id: 'new-bg', command: 'new', status: 'running' }],
-          }
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
+      const isOld = body.chat_id === 'a'
+      if (url === '/api/cron/list') {
+        const data = isOld
+          ? await oldCron
+          : { tasks: [{ id: 'new-cron', message: 'new', channel: 'web', chatID: 'b' }] }
+        return new Response(JSON.stringify({ ok: true, data, error: null }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url === '/api/tasks/list') {
+        const data = isOld
+          ? await oldBg
+          : { background_tasks: [{ id: 'new-bg', command: 'new', status: 'running' }] }
+        return new Response(JSON.stringify({ ok: true, data, error: null }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ ok: true, data: null, error: null }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
       })
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -30,7 +43,7 @@ describe('useTasks', () => {
       { initialProps: { chatID: 'a' } },
     )
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/session/status', expect.objectContaining({
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/cron/list', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ channel: 'web', chat_id: 'a' }),
     })))
@@ -39,10 +52,8 @@ describe('useTasks', () => {
     expect(result.current.bgTasks.map((t) => t.id)).toEqual(['new-bg'])
 
     await act(async () => {
-      resolveOld({
-        tasks: [{ id: 'old-cron', message: 'old', channel: 'web', chatID: 'a' }],
-        background_tasks: [{ id: 'old-bg', command: 'old', status: 'running' }],
-      })
+      resolveOldCron({ tasks: [{ id: 'old-cron', message: 'old', channel: 'web', chatID: 'a' }] })
+      resolveOldBg({ background_tasks: [{ id: 'old-bg', command: 'old', status: 'running' }] })
       await Promise.resolve()
     })
 

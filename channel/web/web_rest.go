@@ -629,22 +629,10 @@ func (wc *WebChannel) handleSessionStatus(w http.ResponseWriter, r *http.Request
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	tasks := any([]any{})
-	if wc.callbacks.CronTasks != nil {
-		tasks, err = wc.callbacks.CronTasks(senderID, sel)
-		if err != nil {
-			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-	backgroundTasks := any([]any{})
-	if wc.callbacks.BackgroundTasks != nil {
-		backgroundTasks, err = wc.callbacks.BackgroundTasks(senderID, sel)
-		if err != nil {
-			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
+	// Status endpoint is lightweight: only token_usage + cwd.
+	// Cron tasks and background tasks have their own WS RPCs
+	// (list_cron_jobs, list_bg_tasks) to avoid bundling large payloads
+	// (e.g. completed bg task output ~1MB) into a frequently-polled endpoint.
 	cwd := ""
 	if wc.callbacks.GetCWD != nil {
 		cwd, err = wc.callbacks.GetCWD(senderID, sel)
@@ -654,11 +642,57 @@ func (wc *WebChannel) handleSessionStatus(w http.ResponseWriter, r *http.Request
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token_usage":      tokenUsage,
-		"tasks":            tasks,
-		"background_tasks": backgroundTasks,
-		"cwd":              cwd,
+		"token_usage": tokenUsage,
+		"cwd":         cwd,
 	})
+}
+
+// handleCronListPOST returns cron jobs for the session's canonical user.
+func (wc *WebChannel) handleCronListPOST(w http.ResponseWriter, r *http.Request) {
+	var body sessionBody
+	if err := decodeJSONBody(r, &body, true); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
+	if !ok {
+		return
+	}
+	tasks := any([]any{})
+	if wc.callbacks.CronTasks != nil {
+		var err error
+		tasks, err = wc.callbacks.CronTasks(senderID, sel)
+		if err != nil {
+			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+}
+
+// handleTasksListPOST returns background shell tasks for the session.
+func (wc *WebChannel) handleTasksListPOST(w http.ResponseWriter, r *http.Request) {
+	var body sessionBody
+	if err := decodeJSONBody(r, &body, true); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
+	if !ok {
+		return
+	}
+	backgroundTasks := any([]any{})
+	if wc.callbacks.BackgroundTasks != nil {
+		var err error
+		backgroundTasks, err = wc.callbacks.BackgroundTasks(senderID, sel)
+		if err != nil {
+			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"background_tasks": backgroundTasks})
 }
 
 func (wc *WebChannel) sessionTokenUsage(identity RPCIdentity, sel SessionSelector) (map[string]any, error) {

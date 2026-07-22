@@ -102,19 +102,17 @@ export default defineConfig({
   build: {
     // Raise chunk size warning limit. Monaco is a large single chunk (its
     // language workers are code-split, but the core + bundled language
-    // contributions land together in vendor-monaco); mermaid is similarly
-    // large. Both load lazily behind their panels, so this is acceptable.
+    // contributions land together in vendor-monaco). It loads lazily behind
+    // the FilePanel, so this is acceptable.
     chunkSizeWarningLimit: 5000,
     rollupOptions: {
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
             if (id.includes('/react-dom/') || id.includes('/react/')) return 'vendor-react'
-            if (id.includes('/@tiptap/') || id.includes('/tiptap-markdown/')) return 'vendor-tiptap'
             if (id.includes('/monaco-editor/')) return 'vendor-monaco'
             if (id.includes('/react-markdown/') || id.includes('/remark-gfm/')) return 'vendor-markdown'
-            if (id.includes('/highlight.js/') || id.includes('/lowlight/')) return 'vendor-highlight'
-            if (id.includes('/mermaid/')) return 'vendor-mermaid'
+            if (id.includes('/highlight.js/')) return 'vendor-highlight'
             if (id.includes('/katex/')) return 'vendor-katex'
           }
         },

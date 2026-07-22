@@ -9,13 +9,13 @@
  * KaTeX styles are imported here (once) so the rendered math is styled; links
  * open in a new tab. The container is scrollable by the panel, not internally.
  */
-import { memo, type ReactNode } from 'react'
+import { memo, useEffect, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
-import hljs from 'highlight.js'
 
+import { highlightCode as highlightCodeAsync, highlightAuto as highlightAutoAsync, normalizeLanguage } from '@/components/agent/highlight'
 import { joinPath } from '@/hooks/useFileSystem'
 
 import 'katex/dist/katex.min.css'
@@ -37,17 +37,23 @@ function extractLanguage(className?: string): string | null {
 }
 
 /** Highlight a fenced code block; returns HTML to render via dangerouslySetInnerHTML. */
-function highlightCode(code: string, lang: string | null): { html: string; __html: string } {
-  try {
-    if (lang && hljs.getLanguage(lang)) {
-      const res = hljs.highlight(code, { language: lang })
-      return { html: res.value, __html: res.value }
+/** Async code block: renders plain text first, highlights after highlight.js loads. */
+function FileCodeBlock({ text, lang }: { text: string; lang: string | null }) {
+  const [html, setHtml] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      const normalized = normalizeLanguage(lang ?? undefined)
+      const result = (normalized ? await highlightCodeAsync(text, normalized) : null) ?? await highlightAutoAsync(text)
+      if (!cancelled && result) setHtml(result)
     }
-  } catch {
-    /* fall through to auto */
+    void run()
+    return () => { cancelled = true }
+  }, [text, lang])
+  if (html) {
+    return <code className={`hljs language-${lang ?? 'auto'}`} dangerouslySetInnerHTML={{ __html: html }} />
   }
-  const auto = hljs.highlightAuto(code)
-  return { html: auto.value, __html: auto.value }
+  return <code className={`hljs language-${lang ?? 'auto'}`}>{text}</code>
 }
 
 /** True when this `code` node is a fenced block (has a language class or multiline). */
@@ -91,14 +97,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
             const text = String(children ?? '')
             if (isCodeBlock(className, children)) {
               const lang = extractLanguage(className)
-              const { __html } = highlightCode(text.replace(/\n$/, ''), lang)
-              return (
-                <code
-                  className={`hljs language-${lang ?? 'auto'}`}
-                  dangerouslySetInnerHTML={{ __html }}
-                  {...props}
-                />
-              )
+              return <FileCodeBlock text={text.replace(/\n$/, '')} lang={lang} />
             }
             return (
               <code className="md-inline-code" {...props}>

@@ -854,7 +854,7 @@ func TestRESTRPCPreservesAdminDispatch(t *testing.T) {
 	}
 }
 
-func TestRESTSessionStatusMergesTokenAndTasks(t *testing.T) {
+func TestRESTSessionStatusReturnsTokenUsageAndCWD(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	wc.SetCallbacks(WebCallbacks{
@@ -864,11 +864,8 @@ func TestRESTSessionStatusMergesTokenAndTasks(t *testing.T) {
 			}
 			return json.RawMessage(`{"available":true,"prompt_tokens":250,"completion_tokens":25,"max_context_tokens":1000,"usage_percent":25}`), nil
 		},
-		CronTasks: func(senderID string, sel SessionSelector) (any, error) {
-			return []map[string]any{{"id": "task-1"}}, nil
-		},
-		BackgroundTasks: func(senderID string, sel SessionSelector) (any, error) {
-			return []map[string]any{{"id": "bg-1"}}, nil
+		GetCWD: func(senderID string, sel SessionSelector) (string, error) {
+			return "/home/user", nil
 		},
 	})
 	recorder := httptest.NewRecorder()
@@ -878,8 +875,50 @@ func TestRESTSessionStatusMergesTokenAndTasks(t *testing.T) {
 	if usage["prompt_tokens"] != float64(250) || usage["max_tokens"] != float64(1000) || usage["usage_pct"] != float64(25) {
 		t.Fatalf("unexpected token usage: %#v", usage)
 	}
-	if len(data["tasks"].([]any)) != 1 || len(data["background_tasks"].([]any)) != 1 {
-		t.Fatalf("status did not merge tasks: %#v", data)
+	if data["cwd"] != "/home/user" {
+		t.Fatalf("unexpected cwd: %#v", data["cwd"])
+	}
+	// tasks and background_tasks are no longer bundled — they have
+	// their own endpoints (/api/cron/list, /api/tasks/list).
+	if _, ok := data["tasks"]; ok {
+		t.Fatalf("status should not include tasks: %#v", data)
+	}
+	if _, ok := data["background_tasks"]; ok {
+		t.Fatalf("status should not include background_tasks: %#v", data)
+	}
+}
+
+func TestRESTCronListReturnsTasks(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	wc.SetCallbacks(WebCallbacks{
+		CronTasks: func(senderID string, sel SessionSelector) (any, error) {
+			return []map[string]any{{"id": "task-1"}}, nil
+		},
+	})
+	recorder := httptest.NewRecorder()
+	wc.handleCronListPOST(recorder, authedAPIRequest(http.MethodPost, "/api/cron/list", []byte(`{"chat_id":"web-1"}`)))
+	_, data := decodeAPIResponse(t, recorder)
+	tasks := data["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 cron task, got %#v", tasks)
+	}
+}
+
+func TestRESTTasksListReturnsBackgroundTasks(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	wc.SetCallbacks(WebCallbacks{
+		BackgroundTasks: func(senderID string, sel SessionSelector) (any, error) {
+			return []map[string]any{{"id": "bg-1"}}, nil
+		},
+	})
+	recorder := httptest.NewRecorder()
+	wc.handleTasksListPOST(recorder, authedAPIRequest(http.MethodPost, "/api/tasks/list", []byte(`{"chat_id":"web-1"}`)))
+	_, data := decodeAPIResponse(t, recorder)
+	tasks := data["background_tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 background task, got %#v", tasks)
 	}
 }
 
