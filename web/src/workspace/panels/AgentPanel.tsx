@@ -150,10 +150,10 @@ export function AgentPanel({ params }: PanelProps) {
         chat.appendAssistant(finalText, iterations)
         resetProgressRef.current?.()
       })
-      // Delay reload to give the DB time to persist the assistant message.
-      // Without this, reload fetches history that doesn't yet include the
-      // latest reply → setMessages overwrites the appended message → it vanishes.
-      setTimeout(() => void chat.reload(), 500)
+      // No reload — appendAssistant already has the complete content + iterations.
+      // Reloading here causes a race: DB may not have persisted yet → server
+      // returns stale history → setMessages overwrites the appended message.
+      // The next session switch or manual refresh will sync from server.
       void sessionContext.refresh()
     },
     ws,
