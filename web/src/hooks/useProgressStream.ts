@@ -321,6 +321,9 @@ function handleProgressMessage(
       if (p.phase === 'done') {
         // PhaseDone: reset immediately. The backend guarantees a `text` event
         // follows with the final assistant reply. No finalizing state needed.
+        // Notify sessionStore to clear running — PhaseDone arrives via SSE
+        // and is faster than session(idle) (which fires after Run() fully exits).
+        window.dispatchEvent(new CustomEvent('agent-idle'))
         // Parse todos from the done event — TodoWrite may have fired as the
         // last tool in the iteration, and the PhaseDone event carries the
         // updated todos. Without this, todos only appear on the NEXT busy

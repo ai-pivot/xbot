@@ -1147,9 +1147,22 @@ export function useSessionStoreImpl(): SessionStore {
         default:
           break
       }
-      void refresh()
     })
-  }, [ws, setStatus, applySubAgentLifecycle, refresh, addUnread, markRead])
+  }, [ws, setStatus, applySubAgentLifecycle, addUnread, markRead])
+
+  // PhaseDone arrives via SSE faster than session(idle) (which fires after
+  // Run() fully exits). Listen for it to clear running state immediately.
+  useEffect(() => {
+    const handler = () => {
+      const active = activeSessionRef.current
+      if (!active) return
+      const selector = { channel: active.channel || DEFAULT_CHANNEL, chatID: active.chatID }
+      executingSessionsRef.current.delete(sessionKey(selector))
+      setStatus(selector, 'idle')
+    }
+    window.addEventListener('agent-idle', handler)
+    return () => window.removeEventListener('agent-idle', handler)
+  }, [setStatus])
 
   useEffect(() => {
     return () => {
