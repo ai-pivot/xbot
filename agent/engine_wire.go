@@ -1663,9 +1663,11 @@ func (a *Agent) buildProgressEventHandler(chatID, originatingChannel string) fun
 // Hub, which broadcasts to the same subscribers, so each subscriber receives
 // the event N times (where N = number of ProgressSender channels).
 //
-// RATE LIMITING: content/reasoning push throttled to ~16/sec (60ms interval)
-// via atomic CAS — matches typewriter tick (50ms) so typer always has fresh
-// content. Tool calls and token usage are low-frequency, not throttled.
+// RATE LIMITING: content/reasoning push is NOT throttled — every token
+// callback pushes immediately. The frontend typewriter (50ms tick) renders
+// at its own pace; coalescing of redundant snapshots happens at the SSE
+// delivery layer (sendCh batching + ring-buffer mergeStatelessEvent).
+// Tool calls and token usage are low-frequency, also not throttled.
 // All callbacks also write to atomic streamState for GetActiveProgress reconnect.
 func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
 	// Use ONLY the originating channel — its SendProgress broadcasts to ALL

@@ -499,7 +499,7 @@ func (wc *WebChannel) Start() error {
 
 	wc.server = &http.Server{
 		Addr:         addr,
-		Handler:      wc.securityHeadersMiddleware(mux),
+		Handler:      wc.securityHeadersMiddleware(gzipMiddleware(mux)),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
