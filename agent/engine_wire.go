@@ -244,10 +244,12 @@ func (a *Agent) buildMainRunConfig(
 		// channel-scoped tools registered under the physical channel.
 		sessionKey = physicalChannel + ":" + chatID
 		cfg.SessionKey = sessionKey
-		// Set RootSessionKey so offload_recall uses the same key as MaybeOffload.
-		// Without this, offload stores under "web:chatID" (physical) but recall
-		// falls back to "cli:chatID" (original channel) → "not found" error.
-		cfg.RootSessionKey = sessionKey
+		// RootSessionKey must use the CANONICAL session key (origin channel),
+		// NOT the physical channel. Offload data is session-scoped — it must
+		// be stored and recalled under the same key regardless of whether the
+		// session is accessed via web or CLI. Using the physical key would
+		// split offload data across web:/cli: directories for the same session.
+		cfg.RootSessionKey = qualifyChatID(channel, chatID)
 		// Rebuild ToolExecutor with the physical channel so tool EXECUTION
 		// also resolves channel-scoped tools correctly.
 		cfg.ToolExecutor = a.buildToolExecutor(ctx, channel, chatID, senderID, senderName, sandboxUserID, physicalChannel)
@@ -863,13 +865,14 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 		workingDir = a.workDir
 	}
 	cfg := &RunConfig{
-		AgentID:      "main",
-		Channel:      channel,
-		ChatID:       chatID,
-		SenderID:     senderID,      // 主 Agent: 直接调用者（用于消息路由）
-		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
-		SenderName:   senderName,
-		SendFunc:     a.sendMessage,
+		AgentID:        "main",
+		Channel:        channel,
+		ChatID:         chatID,
+		SenderID:       senderID,      // 主 Agent: 直接调用者（用于消息路由）
+		OriginUserID:   sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
+		SenderName:     senderName,
+		SendFunc:       a.sendMessage,
+		RootSessionKey: qualifyChatID(channel, chatID), // canonical session key for offload_recall
 
 		WorkingDir:             workingDir,
 		WorkspaceRoot:          workspaceRoot,
