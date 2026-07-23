@@ -459,6 +459,15 @@ function handleProgressMessage(
 
       if (action === 'busy') {
         if (finalizedRef) finalizedRef.current = false
+        // A synthetic session(busy) arrives on SSE reconnect / replay-gap
+        // recovery (sseConnection.restoreActiveProgress). If we're already
+        // mid-stream, resetting here wipes the cumulative streamContent,
+        // which causes the typewriter to restart from 0 ("来回 type").
+        // Only reset streaming state for a genuine new turn.
+        const snap = store.getSnapshot()
+        if (snap.streamContent || snap.reasoningStreamContent) {
+          return
+        }
         // Don't fully reset on session(busy) — the ask_user response path
         // re-enters the same turn, and prior iterations must survive.
         // Only clear streaming fields, keep iterationHistory.

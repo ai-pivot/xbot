@@ -84,6 +84,22 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.liveMessage?.content).toBe('Hello world')
   })
 
+  it('preserves in-flight stream content on a synthetic session(busy) recovery', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'Hello world' } })
+    expect(result.current.liveMessage?.content).toBe('Hello world')
+    expect(result.current.isStreaming).toBe(true)
+
+    // SSE reconnect recovery synthesizes a session(busy) — it must NOT wipe
+    // the cumulative streamContent (which would restart the typewriter from 0).
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+
+    expect(result.current.liveMessage?.content).toBe('Hello world')
+    expect(result.current.isStreaming).toBe(true)
+  })
+
   it('finalizes on text: calls onAssistantComplete and clears the stream', () => {
     const complete = vi.fn()
     const { result } = renderHook(() =>

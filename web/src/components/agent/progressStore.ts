@@ -295,23 +295,26 @@ export class ProgressStore {
     this.listeners.forEach((l) => l())
   }
 
-  /** Reset only streaming fields, preserving iterationHistory and todos.
-   *  Used when session(busy) fires after an ask_user response — the turn
-   *  continues and prior iterations must survive. */
+  /** Reset only streaming fields, preserving iterationHistory, todos,
+   *  AND in-flight stream text (streamContent/reasoningStreamContent/streaming).
+   *
+   *  streamContent/reasoningStreamContent are cumulative values that only grow
+   *  within a turn. Clearing them mid-turn (e.g. on a synthetic session(busy)
+   *  from SSE reconnect recovery) wipes the accumulated text, which causes the
+   *  typewriter to reset to 0 and re-type the entire message ("来回 type").
+   *  They are already cleared at genuine iteration boundaries
+   *  (setStructuredTools) and on full reset(). */
   resetStreamingState(): void {
     if (this.disposed) return
     this.mutate((draft) => {
-      draft.streamContent = ''
-      draft.reasoningStreamContent = ''
-      draft.content = ''
-      draft.streaming = false
       draft.phase = ''
       draft.streamingTools = []
       draft.activeTools = []
       draft.completedTools = []
       draft.genuiContent = ''
       draft.lastReasoning = ''
-      // Keep: iterationHistory, todos, subAgents, tokenUsage, iteration, lastIter
+      // Keep: iterationHistory, todos, subAgents, tokenUsage, iteration, lastIter,
+      //       streamContent, reasoningStreamContent, content, streaming
     })
   }
 

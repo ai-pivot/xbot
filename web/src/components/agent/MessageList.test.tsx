@@ -282,12 +282,10 @@ describe('MessageList virtualization', () => {
     await flushAnimationFrames()
     expect(scroller.scrollTop).toBe(scroller.scrollHeight)
 
-    // Content grows before ResizeObserver runs. The browser may emit scroll
-    // while scrollTop still points at the old bottom; this is layout movement,
-    // not user intent, so sticky mode must remain enabled.
-    const oldBottom = scroller.scrollHeight - scroller.clientHeight - 10
-    scroller.scrollTop = oldBottom
-    fireEvent.scroll(scroller)
+    // Content grows — the ResizeObserver triggers scheduleFollow, which writes
+    // scrollTop=scrollHeight. The browser may fire scroll while scrollTop is
+    // momentarily at the old position (before the write applies). Our own write
+    // is flagged so onScroll doesn't treat this as user intent and pause.
     rerender(
       <MessageList
         chatKey="web:chat-1"
@@ -303,6 +301,48 @@ describe('MessageList virtualization', () => {
     await flushAnimationFrames()
 
     expect(scroller.scrollTop).toBe(scroller.scrollHeight)
+  })
+
+  it('does not yank the viewport when content grows after a non-handler scroll up', async () => {
+    const { container, rerender } = renderMessageList(
+      <MessageList
+        chatKey="web:chat-1"
+        messages={makeMessages(20)}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement
+
+    await flushAnimationFrames()
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight)
+
+    // Scroll up via a path that does NOT fire wheel/pointer/touch handlers
+    // (e.g. scrollbar-drag on some browsers, or programmatic scroll).
+    const readPosition = scroller.scrollHeight - scroller.clientHeight - 200
+    scroller.scrollTop = readPosition
+    fireEvent.scroll(scroller)
+
+    // Content grows (e.g. streaming). The ResizeObserver must NOT yank the
+    // viewport to the bottom — the user is reading history.
+    rerender(
+      <MessageList
+        chatKey="web:chat-1"
+        messages={makeMessages(21)}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    act(() => RO.trigger(contentElement(container)))
+    await flushAnimationFrames()
+
+    expect(scroller.scrollTop).toBe(readPosition)
   })
 
   it('coalesces repeated content resizes into one bottom write per frame', async () => {

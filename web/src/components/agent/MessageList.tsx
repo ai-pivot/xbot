@@ -89,6 +89,11 @@ export function MessageList({
   const contentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const pendingFollowRafRef = useRef<number | null>(null)
+  // Marks scrolls caused by our own scheduleFollow (el.scrollTop = scrollHeight).
+  // Set before the write and cleared via queueMicrotask after — so the flag is
+  // only true during the synchronous scroll event our write dispatches, not
+  // across unrelated later scroll events.
+  const programmaticScrollRef = useRef(false)
   const lastChatKeyRef = useRef<string | null | undefined>(chatKey)
   const lastRowCountRef = useRef(0)
   const lastFollowResetTokenRef = useRef(followResetToken)
@@ -193,21 +198,30 @@ export function MessageList({
         pendingFollowRafRef.current = null
         if (!stickToBottomRef.current) return
         const el = scrollRef.current
-        if (el) el.scrollTop = el.scrollHeight
+        if (el) {
+          // Flag our own write so onScroll (fired synchronously by the
+          // scrollTop assignment) doesn't treat the momentary off-bottom
+          // as user intent and pause following. Cleared via microtask so it
+          // doesn't suppress a later genuine scroll event.
+          programmaticScrollRef.current = true
+          el.scrollTop = el.scrollHeight
+          queueMicrotask(() => { programmaticScrollRef.current = false })
+        }
       })
     })
   }, [])
 
   // ── Scroll event handler ──────────────────────────────────────────────────
-  // onScroll ONLY updates UI state (atTop, atBottom, visibleRange).
-  // It does NOT control stickToBottomRef — that is exclusively driven by
-  // user-input handlers (onWheel, onKeyDown, onPointer*, onTouch*).
+  // onScroll syncs stickToBottomRef with the true scroll position — this is
+  // the ONLY event that knows whether the user is actually at the bottom,
+  // including scroll paths that don't fire wheel/pointer/touch handlers
+  // (e.g. scrollbar-drag on some browsers, programmatic/external scroll).
   //
-  // The previous implementation called pauseFollowing()/resumeFollowing()
-  // inside onScroll, which created a race: a 1px wheel-up would pause
-  // following, but onScroll immediately resumed it because the scroll was
-  // still within EDGE_EPSILON (2px) of the bottom. This caused the viewport
-  // to be yanked back to the bottom on the next content-growth frame.
+  // A programmatic-scroll flag (programmaticScrollRef) distinguishes our own
+  // scheduleFollow write from genuine user scroll. Without it, content growth
+  // fires scheduleFollow → scrollTop=scrollHeight → onScroll fires while
+  // scrollTop is momentarily at the old position (before the browser applies
+  // the write) → a naive "not at bottom → pause" would kill following mid-stream.
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
@@ -215,6 +229,24 @@ export function MessageList({
     const atStart = el.scrollTop <= EDGE_EPSILON
     setAtTop((prev) => (prev === atStart ? prev : atStart))
     setAtBottom((prev) => (prev === atEnd ? prev : atEnd))
+    if (programmaticScrollRef.current) {
+      // Our own scheduleFollow write — the momentary off-bottom is layout
+      // movement, not user intent. Keep following (the flag is cleared by a
+      // microtask after this synchronous scroll event).
+      return
+    }
+    // Pause following on any scroll that leaves the bottom — this covers
+    // paths that don't fire wheel/pointer/touch handlers (scrollbar-drag on
+    // some browsers, programmatic/external scroll, virtualizer corrections).
+    // We do NOT resume here: the virtualizer's own scroll-correction can write
+    // scrollTop=scrollHeight in a RAF, which would falsely re-enable following
+    // while the user is still reading. Resuming is handled by checkBottomAndResume
+    // (a deferred RAF after user-driven input like wheel/touch) and by the nav
+    // buttons / End key.
+    if (!atEnd && stickToBottomRef.current) {
+      stickToBottomRef.current = false
+      cancelPendingFollow()
+    }
     const items = virtualizer.getVirtualItems()
     if (items.length > 0) {
       const newStart = items[0].index
@@ -225,7 +257,7 @@ export function MessageList({
           : { start: newStart, end: newEnd },
       )
     }
-  }, [virtualizer])
+  }, [virtualizer, cancelPendingFollow])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
@@ -292,7 +324,8 @@ export function MessageList({
     if (!el || rows.length === 0 || (!chatChanged && !initialLoad && !followReset && !newMessagesAdded)) return
     // If new messages were added (e.g. by background reload after assistant
     // completion), only follow if already sticky — don't yank the user down
-    // if they scrolled up.
+    // if they scrolled up. stickToBottomRef is synced by onScroll (the single
+    // source of truth for scroll position), so this check is reliable.
     if (newMessagesAdded && !stickToBottomRef.current) return
     resumeFollowing()
     scheduleFollow()
