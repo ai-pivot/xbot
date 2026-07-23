@@ -63,6 +63,10 @@ export interface SessionInfo {
   /** Current persisted working directory returned by the session API. */
   workDir?: string
   lastActive: string
+  /** RFC3339 creation timestamp from the backend. */
+  createdAt?: string
+  /** User-defined sort order (0 = unset, higher = later). Highest sort priority. */
+  sortOrder?: number
   preview: string
   status: SessionStatus
   isCurrent: boolean
@@ -378,6 +382,8 @@ export interface ChatMessage {
   displayOnly?: boolean
   /** True when loaded from persisted backend history, not an optimistic echo. */
   persisted?: boolean
+  /** True while the message is being sent (optimistic, before echo/busy). */
+  sending?: boolean
   /** SSE sequence for live committed rows, used to reconcile them with history. */
   eventSeq?: number
   /** Stable logical-send ID used to correlate optimistic rows with echoes. */

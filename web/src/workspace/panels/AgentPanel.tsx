@@ -102,6 +102,23 @@ export function AgentPanel({ params }: PanelProps) {
     parentChatID: params.parentChatID,
     agentChatID: params.agentChatID,
     liveEventsEnabled: shouldSubscribe,
+    onSendSuccess: () => {
+      // Optimistically mark the session as running so the UI enters busy
+      // immediately — don't wait for the SSE session(busy) event which may
+      // arrive late or get lost.
+      if (chatID) {
+        const selector = { channel: messageChannel, chatID }
+        store.setStatus(selector, 'running')
+      }
+    },
+    onCancelSuccess: () => {
+      // Optimistically mark the session as idle so the UI exits busy
+      // immediately — don't wait for the SSE session(idle) event.
+      if (chatID) {
+        const selector = { channel: messageChannel, chatID }
+        store.setStatus(selector, 'idle')
+      }
+    },
   })
   const reloadChat = chat.reload
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
@@ -143,18 +160,13 @@ export function AgentPanel({ params }: PanelProps) {
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
     onAssistantComplete: (finalText, iterations) => {
-      // Append the final reply + reset progress in the same synchronous render.
-      // flushSync ensures setMessages flushes BEFORE store.reset() clears the
-      // live streaming message — without this, there's a frame where
-      // liveMessage is null but the appended message hasn't rendered → flicker.
+      // Commit the message AND reset progress in the SAME synchronous render.
+      // This eliminates the intermediate frame where content moves from
+      // LiveIteration to MarkdownRenderer.
       flushSync(() => {
         chat.appendAssistant(finalText, iterations)
         resetProgressRef.current?.()
       })
-      // No reload — appendAssistant already has the complete content + iterations.
-      // Reloading here causes a race: DB may not have persisted yet → server
-      // returns stale history → setMessages overwrites the appended message.
-      // The next session switch or manual refresh will sync from server.
       void sessionContext.refresh()
     },
     ws,
@@ -173,6 +185,12 @@ export function AgentPanel({ params }: PanelProps) {
   resetProgressRef.current = progress.resetProgress
   const progressSnapshot = progress.progressSnapshot
   const liveMessage = progress.liveMessage
+  // Don't show liveMessage during initial loading — wait for history to load
+  // first, then show everything at once. Without this gate, SSE-delivered live
+  // progress appears before history (partial data), then flickers when history
+  // replaces the view. After loading, liveMessage is hydrated synchronously
+  // (useLayoutEffect + flushSync) so it appears in the same paint as history.
+  const visibleLiveMessage = chat.loading ? null : liveMessage
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
@@ -270,8 +288,8 @@ export function AgentPanel({ params }: PanelProps) {
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
         messages={chat.messages}
-        liveMessage={liveMessage}
-        liveProgress={liveMessage ? progressSnapshot : null}
+        liveMessage={visibleLiveMessage}
+        liveProgress={visibleLiveMessage ? progressSnapshot : null}
         busy={busy}
         collapseLevel={level}
         mergeTools={mergeTools}
@@ -295,6 +313,7 @@ export function AgentPanel({ params }: PanelProps) {
         <MessageInput
           key={`${messageChannel}:${chatID ?? ''}`}
           busy={busy}
+          cancelling={chat.cancelling}
           onSend={sendMessage}
           onCancel={chat.cancel}
           onRewindLatest={rewindLatest}

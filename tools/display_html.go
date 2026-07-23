@@ -85,6 +85,11 @@ func (t *DisplayHTMLTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 		return NewErrorResult(fmt.Sprintf("syntax error: %v. Please fix and retry.", err)), nil
 	}
 
+	// Check for empty render patterns — the component must produce visible content.
+	if isEmptyRender(code) {
+		return NewErrorResult("the App component renders nothing (returns null or an empty fragment). It must return visible JSX content."), nil
+	}
+
 	// Send the HTML to the web channel via SendFunc.
 	// The frontend picks this up as a "genui" message type.
 	if ctx.SendFunc != nil {
@@ -214,4 +219,27 @@ func validateSyntax(code string) error {
 		return fmt.Errorf("unclosed brackets (depth=%d) — check for missing ) ] }", depth)
 	}
 	return nil
+}
+
+// isEmptyRender checks if the code's App component returns nothing visible.
+// Catches: return null, return <></>, return undefined, return false.
+// This is a heuristic — it won't catch conditional null returns, but it
+// catches the common case where the LLM generates a stub that renders nothing.
+func isEmptyRender(code string) bool {
+	// Normalize: collapse whitespace around return keywords
+	lines := strings.Split(code, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Check for "return null", "return <></>", "return undefined", "return false"
+		if strings.HasPrefix(trimmed, "return ") {
+			ret := strings.TrimSpace(strings.TrimPrefix(trimmed, "return "))
+			// Remove trailing semicolon and closing parens
+			ret = strings.TrimRight(ret, ");")
+			ret = strings.TrimSpace(ret)
+			if ret == "null" || ret == "undefined" || ret == "false" || ret == "<></>" {
+				return true
+			}
+		}
+	}
+	return false
 }

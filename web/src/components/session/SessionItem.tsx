@@ -38,6 +38,9 @@ interface SessionItemProps {
   selected?: boolean
   /** Toggle selection (key, shiftKey) — shiftKey enables range select. */
   onToggleSelect?: (key: string, shiftKey: boolean) => void
+  /** Drag-and-drop reorder: called when this item is dragged over another. */
+  onDragStartItem?: (key: string) => void
+  onDropItem?: (targetKey: string) => void
 }
 
 const STATUS_COLOR: Record<SessionStatus, string> = {
@@ -63,6 +66,8 @@ export function SessionItem({
   multiSelectMode = false,
   selected = false,
   onToggleSelect,
+  onDragStartItem,
+  onDropItem,
 }: SessionItemProps) {
   const { t } = useI18n()
   const key = sessionKey(session)
@@ -79,6 +84,22 @@ export function SessionItem({
     <div
       role="button"
       tabIndex={0}
+      draggable={!isSubAgent && !multiSelectMode && !session.synthetic && !!onDragStartItem}
+      onDragStart={(e) => {
+        if (!onDragStartItem) return
+        onDragStartItem(key)
+        e.dataTransfer.effectAllowed = 'move'
+      }}
+      onDragOver={(e) => {
+        if (!onDropItem) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+      }}
+      onDrop={(e) => {
+        if (!onDropItem) return
+        e.preventDefault()
+        onDropItem(key)
+      }}
       onClick={(e) => {
         if (session.synthetic) return
         if (multiSelectMode && onToggleSelect && !isSubAgent) {
@@ -127,7 +148,7 @@ export function SessionItem({
         </span>
       ) : executing ? (
         <Loader2
-          className="size-3.5 shrink-0 animate-spin"
+          className="size-2.5 shrink-0 animate-spin"
           style={{ color: isSubAgent ? 'var(--accent)' : 'var(--status-running)' }}
           aria-label={t(`session.status.${session.status === 'pending' ? 'pending' : 'running'}`)}
         />

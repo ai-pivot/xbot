@@ -216,9 +216,17 @@ export function useProgressStream({
   }, [store])
 
   // Subscribe to SSE messages.
+  // ws is held in a ref — its onMessage delegates to a stable MultiSSEManager
+  // instance, so we don't need ws in the effect deps. Including ws would cause
+  // the handler to be unregistered and re-registered on every connection state
+  // change (connected/disconnected), creating a window where new SSE connections
+  // created by useActiveSSESubscription don't have the handler yet — missing
+  // progress_structured events (including TodoWrite updates).
+  const wsRef = useRef(ws)
+  wsRef.current = ws
   useEffect(() => {
     if (disabled) return
-    const offMessage = ws.onMessage((msg: WSMessage) => {
+    const offMessage = wsRef.current.onMessage((msg: WSMessage) => {
       // 3-layer chatID filtering.
       if (chatIDRef.current && !matchesChatID(msg, chatIDRef.current, channel)) {
         return
@@ -229,7 +237,7 @@ export function useProgressStream({
       handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef)
     })
     return offMessage
-  }, [ws, store, disabled, channel])
+  }, [store, disabled, channel])
 
   // Derive a transient streaming message from the snapshot. Only the snapshot's
   // streamContent/streaming drives this, so it updates at frame rate (not per token).
@@ -324,7 +332,9 @@ function handleProgressMessage(
         // === 'done' returns null), causing iterations to flash/disappear.
         // Let the text event (normal end) or session(idle) defensive finalize
         // (cancel) handle the cleanup via onAssistantComplete → appendAssistant.
-        window.dispatchEvent(new CustomEvent('agent-idle'))
+        window.dispatchEvent(new CustomEvent('agent-idle', {
+          detail: { chatID: p.chat_id ?? undefined, channel: undefined },
+        }))
         // Update todos if the PhaseDone event carries them.
         let doneTodos: TodoItem[] | undefined
         if (Array.isArray(p.todos) && p.todos.length > 0) {
@@ -430,13 +440,9 @@ function handleProgressMessage(
       // (e.g. reconnect where no SSE events were received).
       const iterations = snap.iterationHistory.length > 0 ? snap.iterationHistory : parsedIterations
       completeRef.current?.(finalText, iterations, msg.seq)
-      // store.reset() is now called inside onAssistantComplete's flushSync
-      // (via resetProgressRef) so that setMessages and store.reset() happen
-      // in the same synchronous render. Calling store.reset() here separately
-      // triggers a second useSyncExternalStore re-render where liveMessage
-      // disappears but the committed message hasn't been painted yet → flicker.
-      // Fallback: if onAssistantComplete didn't reset (e.g., not set), reset here.
-      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      // onAssistantComplete calls store.reset() synchronously inside flushSync.
+      // Fallback: if onAssistantComplete did not reset (e.g., not set), reset here.
+      if (hasVisibleProgress(store.getSnapshot()) && !finalizedRef?.current) store.reset()
       return
     }
 

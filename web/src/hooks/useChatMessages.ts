@@ -53,6 +53,10 @@ interface UseChatMessagesOptions {
   parentChatID?: string
   /** Full persisted agent tenant chatID for historical SubAgent tabs. */
   agentChatID?: string
+  /** Called when a message is successfully sent (for optimistic busy trigger). */
+  onSendSuccess?: () => void
+  /** Called when cancel is successfully sent (for optimistic idle trigger). */
+  onCancelSuccess?: () => void
 }
 
 export interface UseChatMessagesResult {
@@ -71,6 +75,8 @@ export interface UseChatMessagesResult {
   sendMessage: (content: string, attachments?: Attachments) => void
   /** Cancel the running agent (sends a `cancel` WS message). */
   cancel: () => void
+  /** True while cancel is in flight (shows spinner on cancel button). */
+  cancelling: boolean
   /** Upload a file; returns the server upload metadata for sending with a message. */
   upload: (file: File) => Promise<UploadResponse>
   /** Append a finalized assistant message (called by useProgressStream). */
@@ -256,6 +262,8 @@ export function useChatMessages({
   subAgentInstance,
   parentChatID,
   agentChatID,
+  onSendSuccess,
+  onCancelSuccess,
 }: UseChatMessagesOptions): UseChatMessagesResult {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
@@ -505,6 +513,7 @@ export function useChatMessages({
           turnID: 0,
           persisted: false,
           requestID,
+          sending: true,
         }
         messageMutationGenRef.current += 1
         setMessages((prev) => {
@@ -523,6 +532,27 @@ export function useChatMessages({
         file_names: attachments?.fileNames,
         file_sizes: attachments?.fileSizes,
         file_mimes: attachments?.fileMimes,
+      }).then((resp: unknown) => {
+        // API succeeded — the message is now persisted on the backend.
+        // Use the server-returned timestamp so rewind (which matches by
+        // timestamp) works correctly. Client and server clocks may differ.
+        const serverTs = (resp as { timestamp?: number } | null)?.timestamp
+        const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
+        if (optimisticID) {
+          const sentID = optimisticID
+          messageMutationGenRef.current += 1
+          setMessages((prev) => {
+            const next = prev.map((m) => m.id === sentID ? {
+              ...m,
+              sending: false,
+              persisted: true,
+              ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
+            } : m)
+            messagesRef.current = next
+            return next
+          })
+        }
+        onSendSuccess?.()
       }).catch((error: unknown) => {
         if (optimisticID) {
           const failedID = optimisticID
@@ -539,13 +569,20 @@ export function useChatMessages({
     [ws, channel],
   )
 
+  const [cancelling, setCancelling] = useState(false)
+
   const cancel = useCallback(() => {
+    setCancelling(true)
     void ws.send({ type: 'cancel', channel, chat_id: chatIDRef.current ?? undefined })
+      .then(() => {
+        setCancelling(false)
+        onCancelSuccess?.()
+      })
       .catch((error: unknown) => {
+        setCancelling(false)
         toast.error(error instanceof Error ? error.message : 'cancel failed')
       })
-    // arrives) or the agent was already idle. Don't leave the spinner stuck.
-  }, [ws, channel])
+  }, [ws, channel, onCancelSuccess])
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
@@ -555,8 +592,7 @@ export function useChatMessages({
     // Use the same id format as parseHistoryMessages (seq-${eventSeq}) so that
     // when reload returns and the server version replaces this optimistic row,
     // TanStack Virtual's getItemKey returns the same key — React reuses the
-    // existing component instead of unmounting/remounting (which causes the
-    // "last iteration disappears for a frame" flicker).
+    // existing component instead of unmounting/remounting.
     const id = eventSeq != null ? `seq-${eventSeq}` : `asst-${Date.now()}-${echoSeq++}`
     const newMsg: ChatMessage = {
       id,
@@ -606,6 +642,7 @@ export function useChatMessages({
     reload,
     sendMessage,
     cancel,
+    cancelling,
     upload,
     appendAssistant,
     removeMessage,

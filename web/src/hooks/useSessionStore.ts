@@ -73,12 +73,16 @@ export interface SessionStore {
   setCategory: (c: SessionCategory) => void
   setActiveChannel: (channel: string | null) => void
   markRead: (key: string) => void
+  /** Optimistically set a session's status (e.g. running after send). */
+  setStatus: (selector: SessionSelector, status: SessionStatus) => void
   refresh: () => Promise<void>
   toggleStar: (id: string) => void
   createSession: (label?: string, workPath?: string) => Promise<string | null>
   switchSession: (id: string, channel: string) => Promise<void>
   renameSession: (id: string, channel: string, label: string) => Promise<boolean>
   deleteSession: (id: string, channel: string) => Promise<boolean>
+  /** Batch-update sort_order for sessions (drag-and-drop reordering). */
+  reorderSessions: (channel: string, orderedIDs: string[]) => Promise<boolean>
   /** Clear the AskUser prompt for a session (after answer/cancel). */
   clearAskUserPrompt: (channel: string, chatID: string) => void
 }
@@ -181,6 +185,8 @@ interface RawChat {
   label: string
   work_dir?: string
   last_active: string
+  created_at?: string
+  sort_order?: number
   preview?: string
   is_current?: boolean
   type?: string
@@ -227,6 +233,8 @@ function toSessionInfo(c: RawChat, channel: string, children?: SessionInfo[]): S
     label,
     workDir: c.work_dir || undefined,
     lastActive: c.last_active,
+    createdAt: c.created_at,
+    sortOrder: c.sort_order,
     preview: c.preview || '',
     status: c.status || (c.running ? 'running' : 'idle'),
     isCurrent: !!c.is_current,
@@ -723,30 +731,6 @@ function markSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, i
   )
 }
 
-function removeSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, instance: string | undefined, parentID: string | undefined, fullKey?: string): SessionInfo[] {
-  const matches = subAgentLifecycleMatcher(role, instance, parentID, fullKey)
-  let changed = false
-  const visit = (items: SessionInfo[]): SessionInfo[] => {
-    const next: SessionInfo[] = []
-    for (const item of items) {
-      if (matches(item)) {
-        changed = true
-        continue
-      }
-      const children = item.children ? visit(item.children) : item.children
-      if (children !== item.children) {
-        changed = true
-        next.push({ ...item, children })
-      } else {
-        next.push(item)
-      }
-    }
-    return next
-  }
-  const next = visit(nodes)
-  return changed ? next : nodes
-}
-
 function addRunningSessionKeys(nodes: SessionInfo[], target: Set<string>): void {
   for (const node of nodes) {
     if (node.running || node.status === 'running' || node.status === 'pending') {
@@ -774,6 +758,11 @@ function applyPersistedUnreadStatuses(
 
 export function useSessionStoreImpl(): SessionStore {
   const ws = useWSConnection()
+  // Hold ws in a ref — its methods delegate to a stable MultiSSEManager,
+  // so we don't need ws in the effect deps. Including ws would cause
+  // handler re-registration on every connection state change.
+  const wsRef = useRef(ws)
+  wsRef.current = ws
   const [cachedTree] = useState(loadSessionTreeCache)
   const [sessions, setSessions] = useState<SessionInfo[]>(() => cachedTree?.sessions ?? [])
   const [subAgents, setSubAgents] = useState<SessionInfo[]>(() => cachedTree?.subAgents ?? [])
@@ -959,13 +948,19 @@ export function useSessionStoreImpl(): SessionStore {
       if (running) {
         transientSubAgentsRef.current.set(sessionKey(created), { session: created, updatedAt: Date.now() })
       } else {
-        transientSubAgentsRef.current.delete(sessionKey(created))
+        // Don't delete from transient map immediately — the backend may not
+        // have persisted the agent tenant yet. Let mergeTransientSubAgents'
+        // TTL (10min) handle cleanup. The refresh() after 500ms will pick up
+        // the persisted row from the DB, and markSubAgentLifecycle will set
+        // it to idle. This prevents the subagent from disappearing between
+        // subagent_stopped and DB persistence.
+        transientSubAgentsRef.current.set(sessionKey(created), { session: { ...created, running: false, status: 'idle' }, updatedAt: Date.now() })
       }
     }
     const merged = mergeTransientSubAgents(sessionsRef.current, transientSubAgentsRef.current, Date.now(), false)
     const mainSessions = running
       ? markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, true, ev.session_key)
-      : removeSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, ev.session_key)
+      : markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, false, ev.session_key)
     const agents = flattenTreeAgents(mainSessions)
     sessionsRef.current = mainSessions
     setSessions((prev) => (sameSessionList(prev, mainSessions) ? prev : mainSessions))
@@ -1070,6 +1065,22 @@ export function useSessionStoreImpl(): SessionStore {
     return true
   }, [refresh])
 
+  const reorderSessions = useCallback(async (channel: string, orderedIDs: string[]): Promise<boolean> => {
+    const orders: Record<string, number> = {}
+    orderedIDs.forEach((id, i) => { orders[id] = i + 1 })
+    try {
+      await postAPI('/api/chats/reorder', { channel, orders })
+    } catch {
+      return false
+    }
+    // Optimistically update sortOrder in local state.
+    setSessions((prev) => prev.map((s) => {
+      const idx = orderedIDs.indexOf(s.chatID)
+      return idx >= 0 ? { ...s, sortOrder: idx + 1 } : s
+    }))
+    return true
+  }, [])
+
   const deleteSession = useCallback(
     async (id: string, channel: string): Promise<boolean> => {
       try {
@@ -1102,7 +1113,7 @@ export function useSessionStoreImpl(): SessionStore {
 
   // session events: busy → running, idle → idle, deleted → remove, renamed → label
   useEffect(() => {
-    return ws.onSession((ev) => {
+    return wsRef.current.onSession((ev) => {
       const chatID = ev.chat_id
       if (!chatID) return
       const selector = { channel: ev.channel || DEFAULT_CHANNEL, chatID }
@@ -1156,12 +1167,22 @@ export function useSessionStoreImpl(): SessionStore {
           break
       }
     })
-  }, [ws, setStatus, applySubAgentLifecycle, addUnread, markRead])
+  }, [setStatus, applySubAgentLifecycle, addUnread, markRead])
 
   // PhaseDone arrives via SSE faster than session(idle) (which fires after
   // Run() fully exits). Listen for it to clear running state immediately.
+  // The event carries chatID+channel so it can clear the correct session
+  // even when the user has already switched to a different one.
   useEffect(() => {
-    const handler = () => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { chatID?: string; channel?: string } | undefined
+      if (detail?.chatID) {
+        const selector = { channel: detail.channel || DEFAULT_CHANNEL, chatID: detail.chatID }
+        executingSessionsRef.current.delete(sessionKey(selector))
+        setStatus(selector, 'idle')
+        return
+      }
+      // Fallback: clear the active session (legacy behavior)
       const active = activeSessionRef.current
       if (!active) return
       const selector = { channel: active.channel || DEFAULT_CHANNEL, chatID: active.chatID }
@@ -1180,13 +1201,13 @@ export function useSessionStoreImpl(): SessionStore {
 
   // ask_user → waiting_input + store prompt for the session.
   useEffect(() => {
-    return ws.onMessage((msg) => {
+    return wsRef.current.onMessage((msg) => {
       if (msg.type !== 'ask_user') return
       const explicitChatID = (msg as AskUserEnvelope).chat_id
       const fallback = activeSessionRef.current
-      const chatID = explicitChatID ?? ws.chatID ?? fallback?.chatID
+      const chatID = explicitChatID ?? wsRef.current.chatID ?? fallback?.chatID
       const channel = msg.channel
-        ?? (chatID === ws.chatID ? ws.channel : null)
+        ?? (chatID === wsRef.current.chatID ? wsRef.current.channel : null)
         ?? (fallback && chatID === fallback.chatID ? fallback.channel : DEFAULT_CHANNEL)
       if (chatID) {
         setStatus({ channel, chatID }, 'waiting_input')
@@ -1214,7 +1235,7 @@ export function useSessionStoreImpl(): SessionStore {
         })
       }
     })
-  }, [ws, setStatus])
+  }, [setStatus])
 
   // Initial load.
   useEffect(() => {
@@ -1251,15 +1272,17 @@ export function useSessionStoreImpl(): SessionStore {
     setCategory,
     setActiveChannel,
     markRead,
+    setStatus,
     refresh,
     toggleStar,
     createSession,
     switchSession,
     renameSession,
     deleteSession,
+    reorderSessions,
     clearAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, setActiveChannel, markRead, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession, clearAskUserPrompt])
+    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {

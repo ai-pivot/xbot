@@ -29,6 +29,9 @@ interface SessionGroupProps {
   multiSelectMode?: boolean
   selectedIds?: Set<string>
   onToggleSelect?: (key: string, shiftKey: boolean) => void
+  /** Drag-and-drop reorder. */
+  onDragStartItem?: (key: string) => void
+  onDropItem?: (targetKey: string) => void
 }
 
 export function SessionGroup({
@@ -45,6 +48,8 @@ export function SessionGroup({
   multiSelectMode = false,
   selectedIds,
   onToggleSelect,
+  onDragStartItem,
+  onDropItem,
 }: SessionGroupProps) {
   const { t } = useI18n()
   const [open, setOpen] = useState(true)
@@ -83,6 +88,8 @@ export function SessionGroup({
                 multiSelectMode={multiSelectMode}
                 selected={selectedIds?.has(sessionKey(s)) ?? false}
                 onToggleSelect={onToggleSelect}
+                onDragStartItem={onDragStartItem}
+                onDropItem={onDropItem}
               />
               {/* Render SubAgent children (indented) for this parent session */}
               {childrenForParent(s).filter(isVisibleSubAgent).map((sa) => (

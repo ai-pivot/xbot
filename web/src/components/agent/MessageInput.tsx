@@ -32,6 +32,8 @@ import type { TodoState } from '@/hooks/useTodos'
 interface MessageInputProps {
   /** True while the agent is producing output; shows the cancel button. */
   busy: boolean
+  /** True while cancel is in flight; shows spinner on cancel button. */
+  cancelling?: boolean
   /** Send a message, optionally with uploaded attachments. */
   onSend: (content: string, attachments?: Attachments) => void
   /** Cancel the running agent. */
@@ -64,7 +66,7 @@ interface PendingAttachment {
   mime: string
 }
 
-export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
+export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
@@ -313,9 +315,10 @@ export function MessageInput({ busy, onSend, onCancel, onRewindLatest, onOpenTas
                 size="icon-sm"
                 aria-label={t('common.cancel')}
                 onClick={onCancel}
+                disabled={cancelling}
                 className="size-7 rounded-md"
               >
-                <Square className="size-4" /> 
+                {cancelling ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
               </Button>
             ) : (
               <Button

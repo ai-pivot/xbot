@@ -31,6 +31,8 @@ type UserChatWithPreview struct {
 	LastActive time.Time `json:"last_active"`
 	Preview    string    `json:"preview"`
 	IsCurrent  bool      `json:"is_current"`
+	CreatedAt  time.Time `json:"created_at"`
+	SortOrder  int       `json:"sort_order"`
 }
 
 // ChatService manages user chatrooms (multi-chat support).
@@ -56,7 +58,7 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 	chatIDs := []string{senderID}
 
 	rows, err := conn.Query(
-		"SELECT chat_id, label FROM user_chats WHERE channel = ? AND sender_id = ?",
+		"SELECT chat_id, label, created_at, sort_order FROM user_chats WHERE channel = ? AND sender_id = ?",
 		channel, senderID,
 	)
 	if err != nil {
@@ -64,14 +66,21 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 	}
 	defer rows.Close()
 
-	labelMap := map[string]string{}
+	type chatMeta struct {
+		label     string
+		createdAt time.Time
+		sortOrder int
+	}
+	chatMap := map[string]chatMeta{}
 	for rows.Next() {
 		var cid, label string
-		if err := rows.Scan(&cid, &label); err != nil {
+		var createdAt time.Time
+		var sortOrder int
+		if err := rows.Scan(&cid, &label, &createdAt, &sortOrder); err != nil {
 			continue
 		}
 		chatIDs = append(chatIDs, cid)
-		labelMap[cid] = label
+		chatMap[cid] = chatMeta{label: label, createdAt: createdAt, sortOrder: sortOrder}
 	}
 
 	if len(chatIDs) == 0 {
@@ -130,7 +139,8 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 			preview = info.preview
 		}
 
-		label := labelMap[cid]
+		meta := chatMap[cid]
+		label := meta.label
 		if label == "" && cid == senderID {
 			label = "默认会话"
 		}
@@ -141,6 +151,8 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 			LastActive: lastActive,
 			Preview:    truncate(preview, 80),
 			IsCurrent:  cid == currentChatID,
+			CreatedAt:  meta.createdAt,
+			SortOrder:  meta.sortOrder,
 		})
 	}
 
@@ -201,6 +213,26 @@ func (s *ChatService) CreateChat(channel, senderID, label string) (string, error
 		"channel": channel, "sender": senderID, "chat_id": chatID, "label": label,
 	}).Info("Chat created")
 	return chatID, nil
+}
+
+// UpdateChatSortOrders batch-updates sort_order for multiple chats.
+// orders is a map of chatID → sort_order. Only web-channel chats are updated.
+func (s *ChatService) UpdateChatSortOrders(channel, senderID string, orders map[string]int) error {
+	conn := s.db.Conn()
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	for chatID, order := range orders {
+		if _, err := tx.Exec(
+			"UPDATE user_chats SET sort_order = ? WHERE channel = ? AND sender_id = ? AND chat_id = ?",
+			order, channel, senderID, chatID,
+		); err != nil {
+			return fmt.Errorf("update sort_order for %s: %w", chatID, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // DeleteChat removes a chatroom. Deletes the tenant and all associated data (cascading).

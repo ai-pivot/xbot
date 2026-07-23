@@ -12,24 +12,16 @@ import { toast } from 'sonner'
 // Register Service Worker (PWA auto-update).
 registerSW()
 
-// Show a toast when a new SW version is downloaded (like VSCode's "Restart to update").
-window.addEventListener('sw-update-available', () => {
-  toast.info('有新版本可用', {
+// When a new SW activates (skipWaiting is on), prompt the user to reload.
+// The event fires once per SW activation — no duplicate toasts.
+window.addEventListener('sw-updated', () => {
+  toast.info('应用已更新，刷新以加载新版本', {
     duration: Infinity,
     action: {
-      label: '更新',
+      label: '刷新',
       onClick: () => {
-        navigator.serviceWorker.getRegistration('/').then((reg) => {
-          if (reg?.waiting) {
-            reg.waiting.postMessage({ type: 'SKIP_WAITING' })
-          }
-          window.location.reload()
-        })
+        window.location.reload()
       },
-    },
-    cancel: {
-      label: '稍后',
-      onClick: () => {},
     },
   })
 })

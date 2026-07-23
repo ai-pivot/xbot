@@ -74,7 +74,14 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       progress.activeTools.some((tool) => isToolInProgress(tool.status)) ||
       progress.completedTools.some((tool) => isToolInProgress(tool.status))
     : false
-  const showThinkingIndicator = isStreaming && !progress?.streamContent && !hasReasoning && !hasToolInProgress
+  const hasAnyTools = progress
+    ? progress.streamingTools.length > 0 ||
+      progress.activeTools.length > 0 ||
+      progress.completedTools.length > 0
+    : false
+  // Shimmer only during pure thinking (no tools, no text, no reasoning).
+  // Showing it between tool completions causes flicker.
+  const showThinkingIndicator = isStreaming && !progress?.streamContent && !hasReasoning && !hasToolInProgress && !hasAnyTools
   const emptyResponse = isEmptyResponseContent(message.content)
   const finalContent = !emptyResponse && shouldRenderFinalContent(message.content, iterations)
     ? message.content
@@ -155,9 +162,11 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
         mergeTools={mergeTools}
       />
       {/* Final O: for committed messages, render message.content after iterations.
-          For streaming, the streamContent is already in LiveIteration. */}
+          For streaming, the streamContent is already in LiveIteration.
+          noDebounce disables the 150ms delay so committed content renders
+          immediately (no flicker at turn completion). */}
       {!isStreaming && finalContent && (
-        <MarkdownRenderer content={finalContent} />
+        <MarkdownRenderer content={finalContent} noDebounce />
       )}
       {!isStreaming && emptyResponseWarning && (
         <LLMEmptyResponseWarning text={emptyResponseWarning} />

@@ -123,16 +123,13 @@ describe('ReasoningBlock', () => {
     expect(screen.getAllByText(/Because the sky is blue/).length).toBeGreaterThan(0)
   })
 
-  it('shows a muted sweep without an extra pulse while streaming', () => {
-    const { container } = renderWithProviders(<ReasoningBlock content="thinking..." streaming />)
+  it('renders reasoning content without sweep text', () => {
+    const { container } = renderWithProviders(<ReasoningBlock content="thinking..." />)
     expect(screen.getAllByText(/thinking/i).length).toBeGreaterThan(0)
-    const sweep = container.querySelector<HTMLElement>('.sweep-text')
-    expect(sweep).not.toBeNull()
-    expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--text-muted)')
-    expect(container.querySelector('.animate-pulse')).toBeNull()
+    expect(container.querySelector('.sweep-text')).toBeNull()
   })
 
-  it('does not sweep completed reasoning', () => {
+  it('renders completed reasoning without sweep', () => {
     const { container } = renderWithProviders(<ReasoningBlock content="finished thought" />)
     expect(container.querySelector('.sweep-text')).toBeNull()
   })

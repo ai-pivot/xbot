@@ -128,7 +128,7 @@ export function AppShell() {
   if (isMobile) return <MobileAppShell />
 
   return (
-    <div className="flex h-dvh w-full overflow-hidden bg-bg-primary text-text-primary">
+    <div className="relative flex h-dvh w-full overflow-hidden bg-bg-primary text-text-primary">
       {/* Left ActivityBar */}
       <ActivityBar
         onOpenSettings={() => setSettingsOpen(true)}
@@ -156,12 +156,13 @@ export function AppShell() {
 
       <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
-        <main className="h-full min-w-0 flex-1">
+        <main className="relative h-full min-w-0 flex-1">
           <DockviewContainer tabManager={tabManager} />
         </main>
       </RightSidebarControlContext.Provider>
 
-      {/* Right sidebar — animated expand/collapse (Spec 6). */}
+      {/* Right sidebar overlays the workspace (like Settings dialog),
+          doesn't squeeze it. Outside main so it's not constrained by it. */}
       <RightSidebar
         activePanel={activePanel}
         tabManager={tabManager}

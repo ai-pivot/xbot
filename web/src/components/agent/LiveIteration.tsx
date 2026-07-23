@@ -17,11 +17,9 @@ import { GenUIBlock } from './GenUIBlock'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
-import { SweepText } from './SweepText'
 import { useI18n } from '@/providers/i18n'
 import { useTypewriter } from '@/hooks/useTypewriter'
 import { dedupTools } from './progressStore'
-import { isToolInProgress } from './statusVisual'
 import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
 
@@ -82,8 +80,6 @@ export const LiveIteration = memo(function LiveIteration({
     ...currentCompleted,
   ])
   const hasTools = allTools.length > 0
-  const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
-  const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress
 
   const hasGenUI = Boolean(progress.genuiContent)
 
@@ -94,20 +90,13 @@ export const LiveIteration = memo(function LiveIteration({
       {/* Streaming T — typewriter reveal + character count */}
       {hasReasoning && (
         <FoldedLine
-          title={reasoningInProgress ? (
-            <SweepText
-              text={t('agent.thinkingChars', { count: reasoningContent.length })}
-              color="var(--text-muted)"
-              className="text-xs"
-            />
-          ) : t('agent.thinkingChars', { count: reasoningContent.length })}
+          title={t('agent.thinkingChars', { count: reasoningContent.length })}
           defaultOpen={false}
         >
           <div className={rw.isTyping ? 'typewriter-fade' : 'typewriter-done'}>
             <ReasoningBlock
               content={displayReasoning}
               visibleChars={isLive ? rw.visibleChars : undefined}
-              streaming={false}
             />
           </div>
         </FoldedLine>

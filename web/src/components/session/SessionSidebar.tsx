@@ -332,6 +332,7 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
           onToggleStar={store.toggleStar}
           onRename={store.renameSession}
           onDelete={store.deleteSession}
+          onReorder={store.reorderSessions}
           multiSelectMode={multiSelectMode}
           selectedIds={selectedIds}
           onToggleSelect={handleToggleSelect}

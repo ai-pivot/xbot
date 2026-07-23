@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	log "xbot/logger"
 	"xbot/protocol"
@@ -208,10 +209,15 @@ func (h *Hub) deliverToSubscribersFiltered(
 				deliveryMsg = sequencedMsg
 			}
 		}
-		if !isStatefulMsg(deliveryMsg) && c.connType != clientConnTypeSSE {
-			// Stateless messages (stream_content, etc.) are superseded
-			// by newer ones of the same type — store only the latest per type
-			// in the stateless slot so writePump always sends the freshest snapshot.
+		if !isStatefulMsg(deliveryMsg) {
+			// Stateless messages (stream_content, sync_progress, runner_status)
+			// are full snapshots — only the latest matters. Store in the
+			// stateless slot so writePump/sseWriteLoop sends the freshest one.
+			//
+			// progress_structured is EXCLUDED from stateless: it carries
+			// carry-forward data (todos, iteration history) that must not be
+			// lost to latest-wins merging. It goes through sendCh instead,
+			// where each event is individually delivered to catchUpSSE.
 			c.storeStateless(&deliveryMsg)
 			sent = true
 		} else {
@@ -370,9 +376,9 @@ func (h *Hub) stopAll() {
 // receiving busy/idle for sessions the user hasn't opened.
 func (h *Hub) broadcastSessionState(channel, chatID string, msg protocol.WSMessage) {
 	h.seqMu.Lock()
-	defer h.seqMu.Unlock()
 	routeKey := sessionRouteKey(channel, chatID)
 	sequencedMsg := h.sequenceEventLocked(routeKey, msg)
+	h.seqMu.Unlock()
 
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.conns))
@@ -380,17 +386,32 @@ func (h *Hub) broadcastSessionState(channel, chatID string, msg protocol.WSMessa
 		clients = append(clients, c)
 	}
 	h.mu.RUnlock()
+
+	// Send to each client in parallel — a slow client must not block
+	// delivery to others. 100ms timeout per client: enough for a
+	// momentarily-full sendCh, short enough that N slow clients
+	// can't stall the broadcast (N×100ms worst case).
+	var wg sync.WaitGroup
 	for _, c := range clients {
 		deliveryMsg := msg
 		if !c.isCLI {
 			deliveryMsg = sequencedMsg
 		}
-		select {
-		case c.sendCh <- deliveryMsg:
-		default:
-			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastSessionState: sendCh full, skipping")
-		}
+		wg.Add(1)
+		go func(client *Client, dm protocol.WSMessage) {
+			defer wg.Done()
+			select {
+			case client.sendCh <- dm:
+			default:
+				select {
+				case client.sendCh <- dm:
+				case <-time.After(100 * time.Millisecond):
+					log.WithFields(log.Fields{"client_id": client.userID, "msg_type": msg.Type}).Warn("Hub.broadcastSessionState: sendCh full after 100ms timeout, dropping session state event")
+				}
+			}
+		}(c, deliveryMsg)
 	}
+	wg.Wait()
 }
 
 // broadcastToCLI sends a message only to CLI-type clients.
@@ -511,14 +532,11 @@ func isStatefulMsg(msg protocol.WSMessage) bool {
 		protocol.MsgTypeSyncProgress, protocol.MsgTypeRunnerStatus:
 		return false
 	case protocol.MsgTypeProgress:
-		if msg.Progress != nil {
-			p := msg.Progress
-			if p.Phase != "" || p.Iteration > 0 ||
-				len(p.IterationHistory) > 0 || p.HistoryCompacted {
-				return true
-			}
-		}
-		return false
+		// progress_structured is stateful — it carries carry-forward data
+		// (todos, iteration history) that must not be lost to stateless
+		// latest-wins merging. Each event is individually delivered via
+		// sendCh → catchUpSSE, preserving the full sequence.
+		return true
 	default:
 		return true
 	}

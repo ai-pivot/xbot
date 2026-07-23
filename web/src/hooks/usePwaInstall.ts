@@ -90,33 +90,39 @@ export function usePwaInstall() {
     return () => window.removeEventListener('beforeinstallprompt', handler)
   }, [])
 
-  // Listen for the global 'sw-update-available' event (dispatched by registerSW
-  // when a new SW finishes downloading in the background).
+  // Listen for the global 'sw-updated' event (dispatched by registerSW
+  // when a new SW has activated via skipWaiting).
   useEffect(() => {
     const handler = () => setUpdateAvailable(true)
-    window.addEventListener('sw-update-available', handler)
-    return () => window.removeEventListener('sw-update-available', handler)
-  }, [])
-
-  // On mount, check if a SW is already waiting (downloaded in a previous visit).
-  useEffect(() => {
-    if (!('serviceWorker' in navigator)) return
-    navigator.serviceWorker.getRegistration('/').then((reg) => {
-      if (reg?.waiting) setUpdateAvailable(true)
-    }).catch(() => {})
+    window.addEventListener('sw-updated', handler)
+    return () => window.removeEventListener('sw-updated', handler)
   }, [])
 
   // Manually check for SW updates (called by the update button).
+  // Returns true if an update was found and applied (reload needed).
   const checkForUpdate = async () => {
     if (!('serviceWorker' in navigator)) return false
     const reg = await navigator.serviceWorker.getRegistration('/')
     if (!reg) return false
-    await reg.update()
-    // If a waiting SW exists after update, mark as available.
-    if (reg.waiting) {
+    // Listen for controllerchange — if skipWaiting activates a new SW,
+    // the event fires and we know an update was applied.
+    let changed = false
+    const onChange = () => { changed = true }
+    navigator.serviceWorker.addEventListener('controllerchange', onChange, { once: true })
+    try {
+      await reg.update()
+      // Give the SW a moment to install + activate (skipWaiting is synchronous
+      // but activation is async).
+      await new Promise((r) => setTimeout(r, 500))
+    } finally {
+      navigator.serviceWorker.removeEventListener('controllerchange', onChange)
+    }
+    if (changed) {
       setUpdateAvailable(true)
       return true
     }
+    // No update found — clear the flag so the button resets.
+    setUpdateAvailable(false)
     return false
   }
 
@@ -130,16 +136,19 @@ export function usePwaInstall() {
   }
 
   const refreshSW = async () => {
-    if (!('serviceWorker' in navigator)) return
+    if (!('serviceWorker' in navigator)) {
+      window.location.reload()
+      return
+    }
     const reg = await navigator.serviceWorker.getRegistration('/')
     if (reg?.waiting) {
-      // User explicitly clicked "Update" — activate the waiting SW and reload.
+      // A waiting SW exists — activate it and reload on controllerchange.
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         window.location.reload()
       }, { once: true })
       reg.waiting.postMessage({ type: 'SKIP_WAITING' })
     } else {
-      // No waiting SW — just reload to pick up any non-SW changes.
+      // SW already activated (skipWaiting) — just reload to pick up new assets.
       window.location.reload()
     }
   }

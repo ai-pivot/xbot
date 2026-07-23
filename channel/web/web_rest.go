@@ -82,12 +82,16 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if request.ChatID != "" && request.Channel == "" {
 		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
-	sel, err := wc.dispatchUserMessage(r.Context(), identity, request)
+	sel, ts, err := wc.dispatchUserMessage(r.Context(), identity, request)
 	if err != nil {
 		writeInboundError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"chat_id": sel.ChatID, "channel": sel.Channel})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chat_id":   sel.ChatID,
+		"channel":   sel.Channel,
+		"timestamp": ts.UnixMilli(),
+	})
 }
 
 func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -528,6 +532,45 @@ func (wc *WebChannel) handleChatsListPOST(w http.ResponseWriter, r *http.Request
 
 func (wc *WebChannel) handleChatsCreatePOST(w http.ResponseWriter, r *http.Request) {
 	wc.handleChats(w, r)
+}
+
+func (wc *WebChannel) handleChatsReorderPOST(w http.ResponseWriter, r *http.Request) {
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		Channel string         `json:"channel,omitempty"`
+		Orders  map[string]int `json:"orders"`
+	}
+	if err := decodeJSONBody(r, &body, false); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(body.Orders) == 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "orders is required")
+		return
+	}
+	for chatID, order := range body.Orders {
+		if order < 0 {
+			jsonErrorResponse(w, http.StatusBadRequest, fmt.Sprintf("invalid sort_order %d for %s", order, chatID))
+			return
+		}
+	}
+	channel := body.Channel
+	if channel == "" {
+		channel = "web"
+	}
+	if wc.callbacks.ChatReorder == nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, "reorder not available")
+		return
+	}
+	if err := wc.callbacks.ChatReorder(senderID, channel, body.Orders); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (wc *WebChannel) handleChatSwitchPOST(w http.ResponseWriter, r *http.Request) {

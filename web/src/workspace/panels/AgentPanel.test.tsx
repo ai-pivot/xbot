@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => {
   }
   const context = {
     ws: { onSession: vi.fn(() => vi.fn()) },
-    sessionStore: { activeSession: { channel: 'web', chatID: 'chat-1' } },
+    sessionStore: { activeSession: { channel: 'web', chatID: 'chat-1' }, sessions: [] },
     rightSidebar: { openPanel: vi.fn() },
   }
   return { chat, context, order, rewindHistory: vi.fn() }

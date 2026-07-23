@@ -12,6 +12,13 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { useWSConnection } from '@/hooks/useWSConnection'
+
+/**
+ * Module-level event bus for thinking mode changes.
+ * When any useLLMSettings instance calls setThinkingMode, all other
+ * instances update their local state instantly — no API re-fetch needed.
+ */
+const thinkingModeBus = new EventTarget()
 import {
   listSubscriptions,
   addSubscription as apiAddSubscription,
@@ -57,6 +64,7 @@ const empty: LLMSettingsData = {
 
 export function useLLMSettings() {
   const conn = useWSConnection()
+  const connected = conn.connected
   const [data, setData] = useState<LLMSettingsData>(empty)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -67,7 +75,7 @@ export function useLLMSettings() {
     setLoading(true)
     setError(null)
     try {
-      if (!conn.connected) {
+      if (!connected) {
         setError('not_connected')
         setLoading(false)
         return
@@ -93,11 +101,22 @@ export function useLLMSettings() {
     } finally {
       setLoading(false)
     }
-  }, [conn])
+  }, [conn, connected])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  // Sync thinking mode across all useLLMSettings instances (e.g. settings
+  // dialog changes thinking mode → AgentPanel reflects it instantly).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const mode = (e as CustomEvent<string>).detail
+      setData((d) => ({ ...d, thinkingMode: mode }))
+    }
+    thinkingModeBus.addEventListener('thinking-mode-change', handler)
+    return () => thinkingModeBus.removeEventListener('thinking-mode-change', handler)
+  }, [])
 
   // ── Subscription CRUD ──
 
@@ -312,6 +331,8 @@ export function useLLMSettings() {
       try {
         await apiSetUserThinkingMode(conn, mode)
         setData((d) => ({ ...d, thinkingMode: mode }))
+        // Broadcast to all other useLLMSettings instances for instant sync.
+        thinkingModeBus.dispatchEvent(new CustomEvent('thinking-mode-change', { detail: mode }))
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))

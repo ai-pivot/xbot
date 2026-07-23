@@ -54,6 +54,7 @@ export const MessageItem = memo(function MessageItem({
         onStartEdit={onStartEdit}
         onEndEdit={onEndEdit}
         editDisabled={editDisabled}
+        sending={message.sending}
       />
     )
   }

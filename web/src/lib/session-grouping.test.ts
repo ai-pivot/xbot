@@ -21,6 +21,8 @@ function mk(p: Partial<SessionInfo> & { chatID: string }): SessionInfo {
     channel: p.channel ?? 'web',
     label: p.label ?? p.chatID,
     lastActive: p.lastActive ?? '2026-06-26T10:00:00Z',
+    createdAt: p.createdAt,
+    sortOrder: p.sortOrder,
     preview: p.preview ?? '',
     status: p.status ?? 'idle',
     isCurrent: p.isCurrent ?? false,
@@ -31,24 +33,49 @@ function mk(p: Partial<SessionInfo> & { chatID: string }): SessionInfo {
 }
 
 describe('sortSessions', () => {
-  it('puts starred first, then sorts lastActive desc within each tier', () => {
+  it('puts starred first, then sorts by createdAt asc within each tier', () => {
     const sessions = [
-      mk({ chatID: 'a', lastActive: '2026-06-26T08:00:00Z' }),
-      mk({ chatID: 'b', lastActive: '2026-06-26T09:00:00Z' }),
-      mk({ chatID: 'c', lastActive: '2026-06-26T07:00:00Z' }),
+      mk({ chatID: 'a', lastActive: '2026-06-26T08:00:00Z', createdAt: '2026-06-26T08:00:00Z' }),
+      mk({ chatID: 'b', lastActive: '2026-06-26T09:00:00Z', createdAt: '2026-06-26T09:00:00Z' }),
+      mk({ chatID: 'c', lastActive: '2026-06-26T07:00:00Z', createdAt: '2026-06-26T07:00:00Z' }),
     ]
     const sorted = sortSessions(sessions, [sessionKey(sessions[0])])
-    expect(sorted.map((s) => s.chatID)).toEqual(['a', 'b', 'c'])
+    // Starred 'a' first, then by createdAt asc: c (07:00) → b (09:00)
+    expect(sorted.map((s) => s.chatID)).toEqual(['a', 'c', 'b'])
   })
 
-  it('with no starred, sorts purely by lastActive desc', () => {
+  it('with no starred, sorts purely by createdAt asc', () => {
     const sessions = [
-      mk({ chatID: 'a', lastActive: '2026-06-01T00:00:00Z' }),
-      mk({ chatID: 'b', lastActive: '2026-06-02T00:00:00Z' }),
-      mk({ chatID: 'c', lastActive: '2026-05-30T00:00:00Z' }),
+      mk({ chatID: 'a', lastActive: '2026-06-01T00:00:00Z', createdAt: '2026-06-01T00:00:00Z' }),
+      mk({ chatID: 'b', lastActive: '2026-06-02T00:00:00Z', createdAt: '2026-06-02T00:00:00Z' }),
+      mk({ chatID: 'c', lastActive: '2026-05-30T00:00:00Z', createdAt: '2026-05-30T00:00:00Z' }),
     ]
     const sorted = sortSessions(sessions, [])
-    expect(sorted.map((s) => s.chatID)).toEqual(['b', 'a', 'c'])
+    // createdAt asc: c (05-30) → a (06-01) → b (06-02)
+    expect(sorted.map((s) => s.chatID)).toEqual(['c', 'a', 'b'])
+  })
+
+  it('sortOrder (custom) takes priority over createdAt', () => {
+    const sessions = [
+      mk({ chatID: 'a', createdAt: '2026-06-01T00:00:00Z', sortOrder: 3 }),
+      mk({ chatID: 'b', createdAt: '2026-06-02T00:00:00Z', sortOrder: 1 }),
+      mk({ chatID: 'c', createdAt: '2026-06-03T00:00:00Z', sortOrder: 2 }),
+    ]
+    const sorted = sortSessions(sessions, [])
+    // sortOrder asc: b (1) → c (2) → a (3)
+    expect(sorted.map((s) => s.chatID)).toEqual(['b', 'c', 'a'])
+  })
+
+  it('sortOrder=0 (unset) falls back to createdAt', () => {
+    const sessions = [
+      mk({ chatID: 'a', createdAt: '2026-06-02T00:00:00Z', sortOrder: 0 }),
+      mk({ chatID: 'b', createdAt: '2026-06-01T00:00:00Z', sortOrder: 0 }),
+      mk({ chatID: 'c', createdAt: '2026-06-03T00:00:00Z', sortOrder: 2 }),
+    ]
+    const sorted = sortSessions(sessions, [])
+    // c has sortOrder=2, a/b have 0 → c first (only one with >0), then a/b by createdAt
+    // Actually: only c has sortOrder>0, so c goes first, then a/b by createdAt
+    expect(sorted.map((s) => s.chatID)).toEqual(['c', 'b', 'a'])
   })
 })
 
