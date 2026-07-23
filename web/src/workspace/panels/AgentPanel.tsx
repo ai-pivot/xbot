@@ -144,10 +144,10 @@ export function AgentPanel({ params }: PanelProps) {
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
     onAssistantComplete: (finalText, iterations) => {
       // Commit the message AND reset progress in the SAME synchronous render.
-      // Pass liveMessage's id so the virtualizer sees the same key — prevents
-      // height reset to ESTIMATE (120px) which causes a scrollbar jump.
+      // This eliminates the intermediate frame where content moves from
+      // LiveIteration to MarkdownRenderer (which caused scrollbar jump).
       flushSync(() => {
-        chat.appendAssistant(finalText, iterations, undefined, liveMessage?.id)
+        chat.appendAssistant(finalText, iterations)
         resetProgressRef.current?.()
       })
       void sessionContext.refresh()

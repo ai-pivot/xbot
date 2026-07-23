@@ -66,11 +66,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   const liveProgress: LiveProgress | null = hasLiveProgress ? progress : null
 
   const isStreaming = message.isPartial || hasLiveProgress
-  // Just-committed optimistic messages (not yet persisted to DB) keep the
-  // 'minimal' level so thinking/tools don't suddenly fold when the turn ends.
-  // Once reloaded from DB (persisted=true), the user's collapse level applies.
-  const isOptimistic = !message.persisted && !message.isPartial
-  const effectiveLevel: CollapseLevel = (isStreaming || isOptimistic) ? 'minimal' : collapseLevel
+  const effectiveLevel: CollapseLevel = isStreaming ? 'minimal' : collapseLevel
 
   const hasReasoning = Boolean(progress?.reasoningStreamContent || progress?.lastReasoning)
   const hasToolInProgress = progress

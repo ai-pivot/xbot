@@ -74,7 +74,7 @@ export interface UseChatMessagesResult {
   /** Upload a file; returns the server upload metadata for sending with a message. */
   upload: (file: File) => Promise<UploadResponse>
   /** Append a finalized assistant message (called by useProgressStream). */
-  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number, id?: string) => void
+  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number) => void
   /** Remove the trailing assistant message by id (for cancellation cleanup). */
   removeMessage: (id: string) => void
   /** Clear committed messages immediately, used for TUI-style /new reset. */
@@ -549,16 +549,16 @@ export function useChatMessages({
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
-  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, id?: string) => {
+  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number) => {
     if (!content && !iterations.length) return
     messageMutationGenRef.current += 1
-    // Use the provided id (liveMessage's id) when available so the virtualizer
-    // sees the same key and doesn't reset the item height to ESTIMATE —
-    // preventing a scrollbar jump at turn completion.
-    // Fall back to seq-${eventSeq} to match DB history's id format for dedup.
-    const msgId = id ?? (eventSeq != null ? `seq-${eventSeq}` : `asst-${Date.now()}-${echoSeq++}`)
+    // Use the same id format as parseHistoryMessages (seq-${eventSeq}) so that
+    // when reload returns and the server version replaces this optimistic row,
+    // TanStack Virtual's getItemKey returns the same key — React reuses the
+    // existing component instead of unmounting/remounting.
+    const id = eventSeq != null ? `seq-${eventSeq}` : `asst-${Date.now()}-${echoSeq++}`
     const newMsg: ChatMessage = {
-      id: msgId,
+      id,
       role: 'assistant',
       content,
       iterations,
