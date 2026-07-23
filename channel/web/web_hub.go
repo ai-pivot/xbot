@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	log "xbot/logger"
 	"xbot/protocol"
@@ -208,10 +209,10 @@ func (h *Hub) deliverToSubscribersFiltered(
 				deliveryMsg = sequencedMsg
 			}
 		}
-		if !isStatefulMsg(deliveryMsg) && c.connType != clientConnTypeSSE {
-			// Stateless messages (stream_content, etc.) are superseded
-			// by newer ones of the same type — store only the latest per type
-			// in the stateless slot so writePump always sends the freshest snapshot.
+		if !isStatefulMsg(deliveryMsg) {
+			// Stateless messages (stream_content, progress_structured, etc.)
+			// are full snapshots — only the latest matters. Store in the
+			// stateless slot so writePump/sseWriteLoop sends the freshest one.
 			c.storeStateless(&deliveryMsg)
 			sent = true
 		} else {
@@ -385,10 +386,17 @@ func (h *Hub) broadcastSessionState(channel, chatID string, msg protocol.WSMessa
 		if !c.isCLI {
 			deliveryMsg = sequencedMsg
 		}
+		// Session state events (busy/idle/deleted/renamed) are critical —
+		// dropping them causes the sidebar to get stuck on busy. Use a
+		// blocking send with a short timeout instead of silent drop.
 		select {
 		case c.sendCh <- deliveryMsg:
 		default:
-			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastSessionState: sendCh full, skipping")
+			select {
+			case c.sendCh <- deliveryMsg:
+			case <-time.After(500 * time.Millisecond):
+				log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Warn("Hub.broadcastSessionState: sendCh full after 500ms timeout, dropping session state event")
+			}
 		}
 	}
 }
@@ -508,16 +516,11 @@ func newRingBuffer(size int) *ringBuffer {
 func isStatefulMsg(msg protocol.WSMessage) bool {
 	switch msg.Type {
 	case protocol.MsgTypeStreamContent,
-		protocol.MsgTypeSyncProgress, protocol.MsgTypeRunnerStatus:
-		return false
-	case protocol.MsgTypeProgress:
-		if msg.Progress != nil {
-			p := msg.Progress
-			if p.Phase != "" || p.Iteration > 0 ||
-				len(p.IterationHistory) > 0 || p.HistoryCompacted {
-				return true
-			}
-		}
+		protocol.MsgTypeSyncProgress, protocol.MsgTypeRunnerStatus,
+		protocol.MsgTypeProgress:
+		// Progress is a full snapshot — each event supersedes the previous.
+		// Stateless: only the latest is kept (stateless slot / ring buffer
+		// coalescing), never queued individually in sendCh.
 		return false
 	default:
 		return true

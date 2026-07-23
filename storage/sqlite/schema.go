@@ -188,6 +188,7 @@ CREATE TABLE user_chats (
     chat_id TEXT NOT NULL,
     label TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sort_order INTEGER DEFAULT 0,
     UNIQUE(channel, sender_id, chat_id)
 );
 CREATE INDEX idx_user_chats_sender ON user_chats(channel, sender_id);

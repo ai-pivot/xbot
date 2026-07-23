@@ -8,7 +8,7 @@
  *   - Each SessionItem owns its own context menu; rename & delete open
  *     dialogs managed here so a single dialog instance serves every row.
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
@@ -57,6 +57,8 @@ interface SessionListProps {
   multiSelectMode?: boolean
   selectedIds?: Set<string>
   onToggleSelect?: (key: string, shiftKey: boolean) => void
+  /** Drag-and-drop reorder. Called with the new chatID order. */
+  onReorder?: (channel: string, orderedIDs: string[]) => Promise<boolean>
 }
 
 type DialogState = { id: string; channel: string; label: string } | null
@@ -77,12 +79,14 @@ export function SessionList({
   multiSelectMode = false,
   selectedIds,
   onToggleSelect,
+  onReorder,
 }: SessionListProps) {
   const { t } = useI18n()
   const [rename, setRename] = useState<DialogState>(null)
   const [del, setDelete] = useState<DialogState>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  const draggedKeyRef = useRef<string | null>(null)
 
   const mainSessions = useMemo(() => sessions.filter((s) => !isSubAgentSession(s) && !s.synthetic), [sessions])
   const mainSortedSessions = useMemo(
@@ -125,6 +129,28 @@ export function SessionList({
 
   const selectChannel = (s: SessionInfo) => onSelect(s.chatID, s.channel)
 
+  // Drag-and-drop reorder handlers
+  const handleDragStart = (key: string) => { draggedKeyRef.current = key }
+  const handleDrop = (targetKey: string) => {
+    const draggedKey = draggedKeyRef.current
+    draggedKeyRef.current = null
+    if (!draggedKey || draggedKey === targetKey || !onReorder) return
+    // Reorder within the flat main sessions list.
+    const ordered = mainSortedSessions.map(sessionKey)
+    const fromIdx = ordered.indexOf(draggedKey)
+    const toIdx = ordered.indexOf(targetKey)
+    if (fromIdx < 0 || toIdx < 0) return
+    ordered.splice(fromIdx, 1)
+    ordered.splice(toIdx, 0, draggedKey)
+    // Map session keys back to chatIDs
+    const keyToID = new Map(mainSortedSessions.map((s) => [sessionKey(s), s.chatID]))
+    const orderedIDs = ordered.map((k) => keyToID.get(k)).filter((id): id is string => !!id)
+    // Use the first session's channel (all web sessions share it)
+    const channel = mainSortedSessions[0]?.channel || 'web'
+    void onReorder(channel, orderedIDs)
+  }
+  const dndProps = onReorder ? { onDragStartItem: handleDragStart, onDropItem: handleDrop } : {}
+
   const submitRename = async () => {
     if (!rename) return
     const label = renameDraft.trim()
@@ -164,6 +190,7 @@ export function SessionList({
                   multiSelectMode={multiSelectMode}
                   selected={selectedIds?.has(sessionKey(s)) ?? false}
                   onToggleSelect={onToggleSelect}
+                  {...dndProps}
                 />
                 {childrenForSearch(s).map((sa) => (
                   <SubAgentSearchItem
@@ -199,6 +226,7 @@ export function SessionList({
                 multiSelectMode={multiSelectMode}
                 selectedIds={selectedIds}
                 onToggleSelect={onToggleSelect}
+                {...dndProps}
               />
             ))}
           </div>

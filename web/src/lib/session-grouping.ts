@@ -132,7 +132,14 @@ function timeBucket(lastActive: string): TimeBucket {
 }
 
 /**
- * Sort a list of sessions: starred first (stable), then lastActive desc.
+ * Sort a list of sessions: starred first (stable), then sortOrder (custom,
+ * ascending — lower number = higher in list), then createdAt (ascending —
+ * older first). This ensures switching sessions never reorders the list.
+ *
+ * Sessions with sortOrder > 0 (manually reordered via drag-and-drop) come
+ * before sessions with sortOrder = 0 (never reordered). Within each group,
+ * sort by sortOrder ascending, or createdAt ascending as fallback.
+ *
  * `starredIds` is the set of starred chat ids (looked up by chatID).
  */
 export function sortSessions(sessions: SessionInfo[], starredIds: string[]): SessionInfo[] {
@@ -141,7 +148,18 @@ export function sortSessions(sessions: SessionInfo[], starredIds: string[]): Ses
     const sa = starred.has(sessionKey(a)) ? 1 : 0
     const sb = starred.has(sessionKey(b)) ? 1 : 0
     if (sa !== sb) return sb - sa
-    return (b.lastActive || '').localeCompare(a.lastActive || '')
+    const oa = a.sortOrder ?? 0
+    const ob = b.sortOrder ?? 0
+    if (oa > 0 && ob > 0) {
+      // Both have custom order — sort ascending (lower = higher in list)
+      if (oa !== ob) return oa - ob
+    } else if (oa > 0) {
+      return -1 // a has custom order, b doesn't → a first
+    } else if (ob > 0) {
+      return 1 // b has custom order, a doesn't → b first
+    }
+    // Neither has custom order → sort by createdAt ascending (oldest first)
+    return (a.createdAt || '').localeCompare(b.createdAt || '')
   })
 }
 

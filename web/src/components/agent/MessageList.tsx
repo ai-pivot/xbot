@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from 'lucide-react'
+import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucide-react'
 
 import { MessageItem } from './MessageItem'
 import { ShimmerThinking } from './ShimmerThinking'
@@ -378,8 +378,9 @@ export function MessageList({
         className="h-full overflow-y-auto overflow-x-hidden px-3 py-4"
       >
         {loading && rows.length === 0 && (
-          <div className="flex h-full items-center justify-center text-sm text-text-muted">
-            {t('agent.loading')}
+          <div className="flex h-full flex-col items-center justify-center gap-3">
+            <Loader2 className="size-5 animate-spin text-text-muted" />
+            <span className="text-xs text-text-muted">{t('agent.loading')}</span>
           </div>
         )}
         {error && (

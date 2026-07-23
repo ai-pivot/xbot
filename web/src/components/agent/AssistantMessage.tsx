@@ -66,7 +66,11 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   const liveProgress: LiveProgress | null = hasLiveProgress ? progress : null
 
   const isStreaming = message.isPartial || hasLiveProgress
-  const effectiveLevel: CollapseLevel = isStreaming ? 'minimal' : collapseLevel
+  // Just-committed optimistic messages (not yet persisted to DB) keep the
+  // 'minimal' level so thinking/tools don't suddenly fold when the turn ends.
+  // Once reloaded from DB (persisted=true), the user's collapse level applies.
+  const isOptimistic = !message.persisted && !message.isPartial
+  const effectiveLevel: CollapseLevel = (isStreaming || isOptimistic) ? 'minimal' : collapseLevel
 
   const hasReasoning = Boolean(progress?.reasoningStreamContent || progress?.lastReasoning)
   const hasToolInProgress = progress
@@ -74,7 +78,14 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       progress.activeTools.some((tool) => isToolInProgress(tool.status)) ||
       progress.completedTools.some((tool) => isToolInProgress(tool.status))
     : false
-  const showThinkingIndicator = isStreaming && !progress?.streamContent && !hasReasoning && !hasToolInProgress
+  const hasAnyTools = progress
+    ? progress.streamingTools.length > 0 ||
+      progress.activeTools.length > 0 ||
+      progress.completedTools.length > 0
+    : false
+  // Shimmer only during pure thinking (no tools, no text, no reasoning).
+  // Showing it between tool completions causes flicker.
+  const showThinkingIndicator = isStreaming && !progress?.streamContent && !hasReasoning && !hasToolInProgress && !hasAnyTools
   const emptyResponse = isEmptyResponseContent(message.content)
   const finalContent = !emptyResponse && shouldRenderFinalContent(message.content, iterations)
     ? message.content

@@ -45,6 +45,7 @@ function finiteNonNegative(value: number): number {
 
 export function useSessionContext(channel: string, chatID: string | null): SessionContextInfo {
   const ws = useWSConnection()
+  const connected = ws.connected
   const key = chatID ? `${channel}:${chatID}` : ''
   const [info, setInfo] = useState<SessionContextState>(() => emptyInfo(key, Boolean(chatID)))
   const loadSeq = useRef(0)
@@ -55,7 +56,7 @@ export function useSessionContext(channel: string, chatID: string | null): Sessi
       setInfo(emptyInfo('', false))
       return
     }
-    if (!ws.connected) {
+    if (!connected) {
       setInfo((previous) => previous.key === key
         ? { ...previous, loading: false }
         : emptyInfo(key, false))
@@ -99,7 +100,7 @@ export function useSessionContext(channel: string, chatID: string | null): Sessi
         error: error instanceof Error ? error.message : String(error),
       }))
     }
-  }, [ws, channel, chatID, key])
+  }, [ws, channel, chatID, key, connected])
 
   useEffect(() => {
     void load()

@@ -530,6 +530,39 @@ func (wc *WebChannel) handleChatsCreatePOST(w http.ResponseWriter, r *http.Reque
 	wc.handleChats(w, r)
 }
 
+func (wc *WebChannel) handleChatsReorderPOST(w http.ResponseWriter, r *http.Request) {
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		Channel string         `json:"channel,omitempty"`
+		Orders  map[string]int `json:"orders"`
+	}
+	if err := decodeJSONBody(r, &body, false); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(body.Orders) == 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "orders is required")
+		return
+	}
+	channel := body.Channel
+	if channel == "" {
+		channel = "web"
+	}
+	if wc.callbacks.ChatReorder == nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, "reorder not available")
+		return
+	}
+	if err := wc.callbacks.ChatReorder(senderID, channel, body.Orders); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (wc *WebChannel) handleChatSwitchPOST(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {

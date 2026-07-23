@@ -544,6 +544,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				LastActive: c.LastActive.Format(time.RFC3339),
 				Preview:    c.Preview,
 				IsCurrent:  c.IsCurrent,
+				CreatedAt:  c.CreatedAt.Format(time.RFC3339),
+				SortOrder:  c.SortOrder,
 			})
 			applyWebRunningStatus(ag, &mains[len(mains)-1])
 		}
@@ -660,6 +662,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		}
 		cs := sqlite.NewChatService(webDB)
 		return cs.RenameChat(channel, senderID, chatID, label)
+	}
+	callbacks.ChatReorder = func(senderID, channel string, orders map[string]int) error {
+		if webDB == nil {
+			return fmt.Errorf("database not available")
+		}
+		cs := sqlite.NewChatService(webDB)
+		return cs.UpdateChatSortOrders(channel, senderID, orders)
 	}
 	callbacks.LocalSessionExists = func(channel, chatID string) bool {
 		return channel == "cli" && cli.StoredSessionExists(chatID)

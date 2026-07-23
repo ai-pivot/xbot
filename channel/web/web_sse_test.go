@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -234,6 +235,7 @@ func TestSSEFreshHighWaterKeepsFullProgressAfterStreamPatch(t *testing.T) {
 	client := &Client{
 		connType:       clientConnTypeSSE,
 		sendCh:         make(chan protocol.WSMessage, 1),
+		statelessSig:   make(chan struct{}, 1),
 		done:           make(chan struct{}),
 		chatID:         chatID,
 		sessionChannel: "web",
@@ -251,12 +253,12 @@ func TestSSEFreshHighWaterKeepsFullProgressAfterStreamPatch(t *testing.T) {
 
 	wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 2)
 
-	msg := <-client.sendCh
-	if msg.Type != protocol.MsgTypeProgress || msg.Seq != 3 || msg.Progress == nil {
+	msg := drainProgress(t, client)
+	if len(msg) != 1 || msg[0].Seq != 3 || msg[0].Progress == nil {
 		t.Fatalf("full progress fallback = %#v", msg)
 	}
-	if msg.Progress.Phase != "tool_exec" || msg.Progress.Iteration != 2 || len(msg.Progress.ActiveTools) != 1 || len(msg.Progress.IterationHistory) != 1 {
-		t.Fatalf("full progress fields were lost: %#v", msg.Progress)
+	if msg[0].Progress.Phase != "tool_exec" || msg[0].Progress.Iteration != 2 || len(msg[0].Progress.ActiveTools) != 1 || len(msg[0].Progress.IterationHistory) != 1 {
+		t.Fatalf("full progress fields were lost: %#v", msg[0].Progress)
 	}
 	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
 	if len(events) != 3 || events[0].Type != protocol.MsgTypeProgress || events[1].Type != protocol.MsgTypeStreamContent {
@@ -1137,6 +1139,7 @@ func TestSSEProgressFallbackUsesEventPublishedBeforeSnapshotStore(t *testing.T) 
 	client := &Client{
 		connType:       clientConnTypeSSE,
 		sendCh:         make(chan protocol.WSMessage, 1),
+		statelessSig:   make(chan struct{}, 1),
 		done:           make(chan struct{}),
 		chatID:         chatID,
 		sessionChannel: "web",
@@ -1152,9 +1155,9 @@ func TestSSEProgressFallbackUsesEventPublishedBeforeSnapshotStore(t *testing.T) 
 
 	wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 1)
 
-	msg := <-client.sendCh
-	if msg.Seq != 2 || msg.Progress == nil || msg.Progress.Seq != 2 || msg.Progress.Phase != "new" {
-		t.Fatalf("progress fallback = %#v", msg)
+	msgs := drainProgress(t, client)
+	if len(msgs) != 1 || msgs[0].Seq != 2 || msgs[0].Progress == nil || msgs[0].Progress.Seq != 2 || msgs[0].Progress.Phase != "new" {
+		t.Fatalf("progress fallback = %#v", msgs)
 	}
 }
 
@@ -1162,8 +1165,8 @@ func TestSSEFallbackIsSharedBySubscribedClients(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	chatID := "web-1"
 	clients := []*Client{
-		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "sse-1", chatID: chatID, sessionChannel: "web"},
-		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "sse-2", chatID: chatID, sessionChannel: "web"},
+		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), statelessSig: make(chan struct{}, 1), done: make(chan struct{}), id: "sse-1", chatID: chatID, sessionChannel: "web"},
+		{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), statelessSig: make(chan struct{}, 1), done: make(chan struct{}), id: "sse-2", chatID: chatID, sessionChannel: "web"},
 	}
 	for _, client := range clients {
 		wc.hub.addClient(client.id, client)
@@ -1179,14 +1182,12 @@ func TestSSEFallbackIsSharedBySubscribedClients(t *testing.T) {
 	wc.publishSSEFallbacks(sel, 0)
 	wc.publishSSEFallbacks(sel, 0)
 	for _, client := range clients {
-		fallback := <-client.sendCh
-		if fallback.Type != protocol.MsgTypeProgress || fallback.Seq != 1 {
-			t.Fatalf("client %s fallback = %#v", client.id, fallback)
+		progress := drainProgress(t, client)
+		if len(progress) != 1 || progress[0].Type != protocol.MsgTypeProgress || progress[0].Seq != 1 {
+			t.Fatalf("client %s fallback = %#v", client.id, progress)
 		}
-		select {
-		case duplicate := <-client.sendCh:
-			t.Fatalf("client %s received duplicate fallback: %#v", client.id, duplicate)
-		default:
+		if extra := drainProgress(t, client); len(extra) > 0 {
+			t.Fatalf("client %s received duplicate fallback: %#v", client.id, extra)
 		}
 	}
 
@@ -1203,11 +1204,12 @@ func TestSSEFallbackCheckAndPublishIsAtomicWithLiveEvent(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	chatID := "web-1"
 	client := &Client{
-		connType: clientConnTypeSSE,
-		sendCh:   make(chan protocol.WSMessage, 4),
-		done:     make(chan struct{}),
-		id:       "sse-atomic",
-		chatID:   chatID,
+		connType:     clientConnTypeSSE,
+		sendCh:       make(chan protocol.WSMessage, 4),
+		statelessSig: make(chan struct{}, 1),
+		done:         make(chan struct{}),
+		id:           "sse-atomic",
+		chatID:       chatID,
 	}
 	wc.hub.addClient(client.id, client)
 	wc.hub.subscribe(client.id, chatID)
@@ -1257,8 +1259,20 @@ func TestSSEFallbackCheckAndPublishIsAtomicWithLiveEvent(t *testing.T) {
 		}
 	}
 
-	fallback := <-client.sendCh
-	live := <-client.sendCh
+	// Progress events are stateless (latest wins in the stateless slot), but
+	// both are retained in the eventStream for SSE replay. Verify via replay.
+	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
+	var progressEvents []protocol.WSMessage
+	for _, e := range events {
+		if e.Type == protocol.MsgTypeProgress {
+			progressEvents = append(progressEvents, e)
+		}
+	}
+	if len(progressEvents) != 2 {
+		t.Fatalf("expected 2 progress events in replay, got %d: %#v", len(progressEvents), progressEvents)
+	}
+	fallback := progressEvents[0]
+	live := progressEvents[1]
 	if fallback.Seq != 1 || fallback.Progress == nil || fallback.Progress.Phase != "fallback" {
 		t.Fatalf("fallback event = %#v", fallback)
 	}
@@ -1344,10 +1358,11 @@ func TestSSECatchesUpAfterSendChannelOverflow(t *testing.T) {
 func TestSSEContractEventsReceiveSequences(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	client := &Client{
-		connType: clientConnTypeSSE,
-		sendCh:   make(chan protocol.WSMessage, 16),
-		done:     make(chan struct{}),
-		id:       "sse-contract",
+		connType:     clientConnTypeSSE,
+		sendCh:       make(chan protocol.WSMessage, 16),
+		statelessSig: make(chan struct{}, 1),
+		done:         make(chan struct{}),
+		id:           "sse-contract",
 	}
 	wc.hub.addClient(client.id, client)
 	wc.hub.subscribe(client.id, "web-1")
@@ -1372,7 +1387,18 @@ func TestSSEContractEventsReceiveSequences(t *testing.T) {
 		if !wc.hub.sendToClient("web-1", outbound) {
 			t.Fatalf("message %q was not delivered", msgType)
 		}
-		msg := <-client.sendCh
+		// Progress, stream_content, sync_progress, runner_status are stateless
+		// (latest wins) — drain from the stateless slot. Others use sendCh.
+		var msg protocol.WSMessage
+		if !isStatefulMsg(outbound) || msgType == protocol.MsgTypeProgress {
+			msgs := drainStatelessMsgs(t, client)
+			if len(msgs) != 1 {
+				t.Fatalf("message %q: expected 1 stateless event, got %d", msgType, len(msgs))
+			}
+			msg = msgs[0]
+		} else {
+			msg = <-client.sendCh
+		}
 		wantSeq := uint64(i + 1)
 		if msg.Seq != wantSeq {
 			t.Fatalf("message %q seq = %d, want %d", msgType, msg.Seq, wantSeq)
@@ -1566,7 +1592,7 @@ func (w *deadlineBlockingResponseWriter) release() {
 
 func TestHubUsesSequencedCopyWithoutChangingCLIWSMessage(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
-	sseClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "sse"}
+	sseClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), statelessSig: make(chan struct{}, 1), done: make(chan struct{}), id: "sse"}
 	webSocketClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "web-ws"}
 	cliClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "cli-ws", isCLI: true}
 	for _, client := range []*Client{sseClient, webSocketClient, cliClient} {
@@ -1599,9 +1625,9 @@ func TestHubNormalizesSparseProgressOnlyForSSE(t *testing.T) {
 
 	wc.SendProgress(chatID, &protocol.ProgressEvent{StreamContent: "partial"})
 
-	sseMsg := <-sseClient.sendCh
-	if sseMsg.Type != protocol.MsgTypeStreamContent || sseMsg.Seq != 1 {
-		t.Fatalf("SSE sparse progress = %#v", sseMsg)
+	sseMsgs := drainStatelessMsgs(t, sseClient)
+	if len(sseMsgs) != 1 || sseMsgs[0].Type != protocol.MsgTypeStreamContent || sseMsgs[0].Seq != 1 {
+		t.Fatalf("SSE sparse progress = %#v", sseMsgs)
 	}
 	webMsgs := webSocketClient.drainStateless()
 	if len(webMsgs) != 1 || webMsgs[0].Type != protocol.MsgTypeProgress || webMsgs[0].Seq != 1 {
@@ -1926,6 +1952,35 @@ func loginTestWebUser(t *testing.T, serverURL, username string) *http.Cookie {
 	}
 	t.Fatalf("login %s returned no session cookie", username)
 	return nil
+}
+
+// drainStatelessMsgs drains the stateless slot and returns all messages,
+// sorted by seq. Use this instead of <-client.sendCh for stateless event
+// types (progress, stream_content, sync_progress, runner_status).
+func drainStatelessMsgs(t *testing.T, client *Client) []protocol.WSMessage {
+	t.Helper()
+	msgs := client.drainStateless()
+	out := make([]protocol.WSMessage, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, *m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out
+}
+
+// drainProgress drains the stateless slot and returns all progress messages,
+// sorted by seq. Use this instead of <-client.sendCh for progress events —
+// progress_structured is stateless (latest wins), delivered via statelessMap.
+func drainProgress(t *testing.T, client *Client) []protocol.WSMessage {
+	t.Helper()
+	all := drainStatelessMsgs(t, client)
+	var progress []protocol.WSMessage
+	for _, m := range all {
+		if m.Type == protocol.MsgTypeProgress {
+			progress = append(progress, m)
+		}
+	}
+	return progress
 }
 
 func openSSE(t *testing.T, serverURL string, cookie *http.Cookie, chatID, lastEventID string) *http.Response {

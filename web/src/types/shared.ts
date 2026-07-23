@@ -63,6 +63,10 @@ export interface SessionInfo {
   /** Current persisted working directory returned by the session API. */
   workDir?: string
   lastActive: string
+  /** RFC3339 creation timestamp from the backend. */
+  createdAt?: string
+  /** User-defined sort order (0 = unset, higher = later). Highest sort priority. */
+  sortOrder?: number
   preview: string
   status: SessionStatus
   isCurrent: boolean

@@ -143,18 +143,13 @@ export function AgentPanel({ params }: PanelProps) {
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
     onAssistantComplete: (finalText, iterations) => {
-      // Append the final reply + reset progress in the same synchronous render.
-      // flushSync ensures setMessages flushes BEFORE store.reset() clears the
-      // live streaming message — without this, there's a frame where
-      // liveMessage is null but the appended message hasn't rendered → flicker.
+      // Commit the message AND reset progress in the SAME synchronous render.
+      // Pass liveMessage's id so the virtualizer sees the same key — prevents
+      // height reset to ESTIMATE (120px) which causes a scrollbar jump.
       flushSync(() => {
-        chat.appendAssistant(finalText, iterations)
+        chat.appendAssistant(finalText, iterations, undefined, liveMessage?.id)
         resetProgressRef.current?.()
       })
-      // No reload — appendAssistant already has the complete content + iterations.
-      // Reloading here causes a race: DB may not have persisted yet → server
-      // returns stale history → setMessages overwrites the appended message.
-      // The next session switch or manual refresh will sync from server.
       void sessionContext.refresh()
     },
     ws,

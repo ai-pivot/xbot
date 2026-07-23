@@ -22,20 +22,25 @@ function DiagRow({ label, ok }: { label: string; ok: boolean }) {
 export function SettingsAbout() {
   const { canInstall, isInstalled, install, updateAvailable, checkForUpdate, refreshSW, diagnostics } = usePwaInstall()
   const [checking, setChecking] = useState(false)
+  const [upToDate, setUpToDate] = useState(false)
 
   const handleUpdate = async () => {
     if (updateAvailable) {
-      // Already know there's an update — apply it directly.
+      // New SW already activated — reload to pick up new cached assets.
+      await refreshSW()
+      return
+    }
+    // Check for updates manually.
+    setChecking(true)
+    setUpToDate(false)
+    const found = await checkForUpdate()
+    setChecking(false)
+    if (found) {
+      // checkForUpdate set updateAvailable=true and the SW activated.
+      // Reload to pick up new assets.
       await refreshSW()
     } else {
-      // Check for updates manually.
-      setChecking(true)
-      const found = await checkForUpdate()
-      setChecking(false)
-      if (!found) {
-        // No update — reload to pick up latest.
-        window.location.reload()
-      }
+      setUpToDate(true)
     }
   }
 
@@ -126,11 +131,16 @@ export function SettingsAbout() {
             className="w-fit gap-2"
           >
             <RefreshCw className={`size-4 ${checking ? 'animate-spin' : ''}`} />
-            {updateAvailable ? '有新版本，点击更新' : checking ? '检查更新中…' : '检查更新'}
+            {updateAvailable ? '有新版本，点击更新' : checking ? '检查更新中…' : upToDate ? '已是最新版本' : '检查更新'}
           </Button>
           {updateAvailable && (
             <span className="text-xs" style={{ color: 'var(--status-running)' }}>
               ● 有新版本可用
+            </span>
+          )}
+          {upToDate && !updateAvailable && (
+            <span className="text-xs" style={{ color: 'var(--status-running)' }}>
+              ● 已是最新版本
             </span>
           )}
         </div>

@@ -76,11 +76,17 @@ export class SSEConnectionImpl implements WSConnection {
     const hadCursor = hasLastSeq(cacheKey)
     const previousSeq = getLastSeq(cacheKey)
     setLastSeq(cacheKey, seq)
+    // Only restart if the source is OPEN (readyState === 1). If it's still
+    // CONNECTING (readyState === 0), the connecting EventSource already read
+    // the cursor from cache at connect() time — restarting would close it
+    // and create a duplicate connection. The cursor is already persisted;
+    // when events arrive, handleEvent updates lastSentSeq naturally.
     if (
       (!hadCursor || seq > previousSeq) &&
       this._chatID === chatID &&
       this._channel === channel &&
-      this.source
+      this.source &&
+      this.source.readyState === 1
     ) this.restartSource()
   }
 

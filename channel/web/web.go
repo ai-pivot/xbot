@@ -174,6 +174,8 @@ type WebCallbacks struct {
 	ChatDelete func(senderID, channel, chatID string) error
 	// ChatRename renames a chatroom.
 	ChatRename func(senderID, channel, chatID, label string) error
+	// ChatReorder updates sort_order for multiple chats (drag-and-drop reordering).
+	ChatReorder func(senderID, channel string, orders map[string]int) error
 	// LocalSessionExists reports whether a local session exists outside the database.
 	LocalSessionExists func(channel, chatID string) bool
 
@@ -242,6 +244,8 @@ type UserChatWithPreview struct {
 	LastActive    string                `json:"last_active"` // RFC3339
 	Preview       string                `json:"preview"`
 	IsCurrent     bool                  `json:"is_current"`
+	CreatedAt     string                `json:"created_at,omitempty"` // RFC3339
+	SortOrder     int                   `json:"sort_order,omitempty"`
 	Type          string                `json:"type,omitempty"` // "agent" for historical SubAgent tenant rows
 	FullKey       string                `json:"full_key,omitempty"`
 	Role          string                `json:"role,omitempty"`
@@ -499,7 +503,7 @@ func (wc *WebChannel) Start() error {
 
 	wc.server = &http.Server{
 		Addr:         addr,
-		Handler:      wc.securityHeadersMiddleware(mux),
+		Handler:      wc.requestTimingMiddleware(wc.securityHeadersMiddleware(mux)),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -568,6 +572,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/chats/list", wc.authenticatedPOST(wc.handleChatsListPOST))
 	mux.HandleFunc("/api/chats/create", wc.authenticatedPOST(wc.handleChatsCreatePOST))
+	mux.HandleFunc("/api/chats/reorder", wc.authenticatedPOST(wc.handleChatsReorderPOST))
 	mux.HandleFunc("/api/chats/{chatID}/switch", wc.authenticatedPOST(wc.handleChatSwitchPOST))
 	mux.HandleFunc("/api/chats/{chatID}/rename", wc.authenticatedPOST(wc.handleChatRename))
 	mux.HandleFunc("/api/chats/{chatID}/delete", wc.authenticatedPOST(wc.handleChatDeletePOST))
@@ -1549,6 +1554,40 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 // ---------------------------------------------------------------------------
 
 // securityHeadersMiddleware wraps an http.Handler with security response headers.
+// requestTimingMiddleware logs slow API requests (>200ms) for diagnostics.
+func (wc *WebChannel) requestTimingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip SSE (long-lived) and static files
+		path := r.URL.Path
+		if path == "/api/sse" || path == "/ws" || path == "/ws/terminal" || !strings.HasPrefix(path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		rw := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rw, r)
+		elapsed := time.Since(start)
+		if elapsed > 200*time.Millisecond {
+			log.WithFields(log.Fields{
+				"method":  r.Method,
+				"path":    path,
+				"status":  rw.status,
+				"elapsed": elapsed.String(),
+			}).Warn("Slow API request")
+		}
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
 func (wc *WebChannel) securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")

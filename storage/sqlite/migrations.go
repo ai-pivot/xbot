@@ -259,6 +259,13 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v48: add sort_order column to user_chats for drag-and-drop reordering.
+	if from < 48 {
+		if err := migrateV47ToV48(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v48: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1887,6 +1894,22 @@ func migrateV45ToV46(conn *sql.DB) error {
 // migrateV46ToV47 creates the pending_resumes table for graceful shutdown
 // agent loop resume. When xbot shuts down with active agent loops, the
 // affected sessions are recorded here and resumed on next startup.
+func migrateV47ToV48(conn *sql.DB) error {
+	if _, err := conn.Exec("ALTER TABLE user_chats ADD COLUMN sort_order INTEGER DEFAULT 0"); err != nil {
+		// Column may already exist (e.g. partial migration). Check and continue.
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("migrate v48 add sort_order: %w", err)
+		}
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 48"); err != nil {
+		return fmt.Errorf("migrate v48 update version: %w", err)
+	}
+
+	log.Info("Database migrated to v48: added sort_order column to user_chats")
+	return nil
+}
+
 func migrateV46ToV47(conn *sql.DB) error {
 	if _, err := conn.Exec(`
   CREATE TABLE IF NOT EXISTS pending_resumes (

@@ -17,7 +17,6 @@ import { memo, useState, type ReactNode } from 'react'
 import { AnimatedCollapse } from '@/components/ui/animated-collapse'
 import { ToolRender } from './ToolRender'
 import { getToolIcon } from './toolIcons'
-import { SweepText } from './SweepText'
 import { isToolInProgress } from './statusVisual'
 import type { CollapseLevel } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
@@ -77,9 +76,12 @@ function statusColorVar(status: ToolStatusColor): string {
   }
 }
 
-/** Get display name from tool label. */
+/** Get display name from tool label.
+ *  For generating tools, always use tool.name — the label is still streaming
+ *  (e.g. "思考中…" placeholder) and parsing it would cause name flicker. */
 function displayName(tool: WebToolProgress): string {
   const name = tool.name || 'tool'
+  if (tool.status === 'generating') return name
   const label = tool.label || name
   return label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
 }
@@ -111,15 +113,12 @@ function formatToolTitle(tool: WebToolProgress, sweepRunning = true): ReactNode 
   const color = statusColorVar(status)
   const param = toolParam(tool)
   const name = displayName(tool)
+  const showSweep = status === 'running' && sweepRunning && !isSubAgentTool(tool)
 
   return (
     <span className="flex items-center gap-1.5 min-w-0" style={{ color }}>
       <ToolIcon name={tool.name || 'tool'} status={status} />
-      {status === 'running' && sweepRunning && !isSubAgentTool(tool) ? (
-        <SweepText text={name} color={color} className="shrink-0 font-mono" />
-      ) : (
-        <span className="shrink-0 font-mono">{name}</span>
-      )}
+      <span className={`shrink-0 font-mono ${showSweep ? 'sweep-text-char' : ''}`}>{name}</span>
       {param && (
         <span className="font-mono truncate" style={{ color: 'var(--text-muted)' }}>{truncate(param, MAX_PARAM_LEN)}</span>
       )}
@@ -144,40 +143,20 @@ function formatMergedTitle(tools: WebToolProgress[], sweepRunning = true): React
     }
   }
 
-  const animatedText = groups
-    .filter((group) => !isSubAgentToolName(group.name))
-    .map((group) => `${group.name}${group.count > 1 ? ` ×${group.count}` : ''}`)
-    .join('  ')
-  const staticText = groups
-    .filter((group) => isSubAgentToolName(group.name))
-    .map((group) => `${group.name}${group.count > 1 ? ` ×${group.count}` : ''}`)
-    .join('  ')
+  const showSweep = status === 'running' && sweepRunning && groups.some((g) => !isSubAgentToolName(g.name))
 
   return (
-    <span className="flex flex-wrap items-center gap-2" style={{ color }}>
-      {status === 'running' && sweepRunning && animatedText ? (
-        <>
-          <span className="flex items-center gap-0.5">
-            {groups.map((group, index) => (
-              <ToolIcon key={`${group.name}-${index}`} name={group.name} status={status} />
-            ))}
+    <span className="flex flex-wrap items-center gap-1.5" style={{ color }}>
+      {groups.map((group, i) => {
+        const isSub = isSubAgentToolName(group.name)
+        const text = `${group.name}${group.count > 1 ? ` ×${group.count}` : ''}`
+        return (
+          <span key={`${group.name}-${i}`} className="flex items-center gap-0.5">
+            <ToolIcon name={group.name} status={status} />
+            <span className={`shrink-0 font-mono text-xs ${showSweep && !isSub ? 'sweep-text-char' : ''}`}>{text}</span>
           </span>
-          <SweepText
-            text={animatedText}
-            color={color}
-            className="shrink-0 font-mono text-xs"
-          />
-          {staticText && <span className="shrink-0 font-mono text-xs">{staticText}</span>}
-        </>
-      ) : groups.map((g, i) => (
-        <span key={`${g.name}-${i}`} className="flex items-center gap-0.5">
-          <ToolIcon name={g.name} status={status} />
-          <span className="shrink-0 font-mono text-xs">{g.name}</span>
-          {g.count > 1 ? (
-            <span className="shrink-0 text-[11px]" style={{ color }}>×{g.count}</span>
-          ) : null}
-        </span>
-      ))}
+        )
+      })}
     </span>
   )
 }
@@ -194,21 +173,14 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
   const status = singleStatus(tool)
   const color = statusColorVar(status)
   const dn = displayName(tool)
+  const showSweep = status === 'running' && !isSubAgentTool(tool)
 
   return (
     <div className="rounded-md border border-border/50 bg-bg-tertiary/30 p-2">
       {/* Card header: icon + name */}
       <div className="mb-1.5 flex items-center gap-1.5" style={{ color }}>
         <ToolIcon name={name} status={status} />
-        {status === 'running' && !isSubAgentTool(tool) ? (
-          <SweepText
-            text={dn}
-            color={color}
-            className="font-mono text-xs font-medium"
-          />
-        ) : (
-          <span className="font-mono text-xs font-medium">{dn}</span>
-        )}
+        <span className={`font-mono text-xs font-medium ${showSweep ? 'sweep-text-char' : ''}`}>{dn}</span>
       </div>
       {/* Tool input + output */}
       <ToolRender tool={tool} />

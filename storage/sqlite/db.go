@@ -15,14 +15,24 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps a SQLite database connection with schema management
+// DB wraps a SQLite database connection with schema management.
+// Uses WAL mode with a read-write pool (max 4 conns) for concurrent reads.
+// WAL allows one writer + multiple readers simultaneously, so API read
+// queries (session-tree, get_history, get_context_usage) don't block on
+// agent writes (IncrementalPersist, SaveState).
+//
+// busy_timeout is set via DSN (_pragma) so ALL connections in the pool
+// retry on SQLITE_BUSY, not just the first one. This is critical when
+// MaxOpenConns > 1 — without DSN-level pragma, only the first connection
+// gets busy_timeout, and concurrent writes on other connections fail
+// immediately with SQLITE_BUSY.
 type DB struct {
 	conn *sql.DB
 	path string
 	mu   sync.RWMutex
 }
 
-const schemaVersion = 47
+const schemaVersion = 48
 
 // Open opens or creates a SQLite database at the given path
 // If the database doesn't exist, it will be created with the required schema
@@ -35,14 +45,26 @@ func Open(path string) (*DB, error) {
 		}
 	}
 
-	conn, err := sql.Open("sqlite", path)
+	// Build DSN with pragmas that apply to ALL connections in the pool.
+	// _pragma is essential when MaxOpenConns > 1: it ensures every connection
+	// gets busy_timeout and journal_mode, not just the first one.
+	dsn := path
+	if path != ":memory:" {
+		dsn = "file:" + path + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+	}
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Set connection pool settings
-	conn.SetMaxOpenConns(1) // SQLite works best with a single connection
-	conn.SetMaxIdleConns(1)
+	// Set connection pool settings.
+	// WAL mode allows concurrent reads while a write is in progress.
+	// MaxOpenConns > 1 enables Go's connection pool to serve reads from
+	// idle connections even when one connection is mid-write.
+	// This prevents API read queries from blocking on agent DB writes.
+	conn.SetMaxOpenConns(4)
+	conn.SetMaxIdleConns(4)
+	conn.SetConnMaxLifetime(0)
 
 	// P-08 修复：启用 WAL 模式提升并发读性能和韧性
 	if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
