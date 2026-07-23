@@ -104,7 +104,7 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.isStreaming).toBe(false)
   })
 
-  it('clears terminal cache so A to B to A cannot restore completed progress', () => {
+  it('does not restore completed progress from a stale terminal cache snapshot', () => {
     const cacheKey = sessionCacheKey('web', 'c1')
     progressSnapshotCache.set(cacheKey, { phase: 'tool', completed_tools: [{ name: 'Read', status: 'done' }] })
     const complete = vi.fn()
@@ -115,7 +115,9 @@ describe('useProgressStream event dispatch', () => {
     act(() => {
       rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
     })
-    expect(result.current.isStreaming).toBe(true)
+    // Cache hydration was intentionally removed — history's active_progress is
+    // the single source. A stale cache entry must NOT restore live progress.
+    expect(result.current.isStreaming).toBe(false)
 
     emitAndFlush({ type: 'text', chat_id: 'c1', content: 'done' })
     expect(progressSnapshotCache.has(cacheKey)).toBe(false)
@@ -165,22 +167,23 @@ describe('useProgressStream event dispatch', () => {
     expect(complete.mock.calls.map((call) => call[0])).toEqual(['first', 'second'])
   })
 
-  it('clears live progress when recovery reports a terminal phase', () => {
+  it('keeps live progress until a terminal event clears it (recovery phase=done)', () => {
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
     )
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'stale' } })
     expect(result.current.isStreaming).toBe(true)
 
+    // phase=done alone does NOT clear the store — it dispatches agent-idle but
+    // preserves iterations to avoid a flash. The text or session(idle) event
+    // is responsible for finalization.
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
-
-    expect(result.current.liveMessage).toBeNull()
-    expect(result.current.isStreaming).toBe(false)
-    expect(result.current.progressSnapshot.phase).toBe('')
+    expect(result.current.liveMessage).not.toBeNull()
 
     emitAndFlush({ type: 'text', chat_id: 'c1', content: 'final' })
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
+    expect(result.current.progressSnapshot.phase).toBe('')
   })
 
   it('commits text once when phase done arrives before the final text and idle', () => {

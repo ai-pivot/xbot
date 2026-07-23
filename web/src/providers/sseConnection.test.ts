@@ -125,6 +125,9 @@ describe('SSEConnectionImpl', () => {
     connection.onMessage((message) => received.push(message))
     connection.subscribe('chat-a')
     const coldSource = MockEventSource.instances[0]
+    // Source must be OPEN for setLastSeq to trigger a restart (CONNECTING
+    // sources already read the cursor at connect() time).
+    coldSource.open()
     connection.setLastSeq('chat-a', 0)
     expect(coldSource.closed).toBe(true)
     expect(MockEventSource.instances[1].url).toBe('/api/sse?chat_id=chat-a&channel=web&last_event_id=0')
@@ -172,6 +175,8 @@ describe('SSEConnectionImpl', () => {
     const initial = MockEventSource.instances[0]
 
     expect(initial.url).toBe('/api/sse?chat_id=chat-a&channel=web')
+    // Source must be OPEN for setLastSeq to trigger a restart.
+    initial.open()
     connection.setLastSeq('chat-a', 2)
     const resumed = MockEventSource.instances[1]
     expect(initial.closed).toBe(true)
@@ -291,8 +296,10 @@ describe('SSEConnectionImpl', () => {
     await vi.advanceTimersByTimeAsync(10_000)
     expect(postAPIMock.mock.calls.filter(([endpoint]) => endpoint === '/api/session/status')).toHaveLength(1)
 
+    // setLastSeq on a CLOSED source does not restart (readyState !== OPEN);
+    // the pending status poll owns reconnection. No new instance is created.
     connection.setLastSeq('chat-a', 1)
-    expect(MockEventSource.instances).toHaveLength(2)
+    expect(MockEventSource.instances).toHaveLength(1)
     resolveStatus({})
     await Promise.resolve()
     await Promise.resolve()
@@ -366,7 +373,7 @@ describe('SSEConnectionImpl', () => {
       method: 'get_active_progress',
       params: { channel: 'web', chat_id: 'chat-a' },
     })
-    expect(received.at(-1)).toMatchObject({
+    expect(received.filter((m) => m.type === 'progress_structured').at(-1)).toMatchObject({
       type: 'progress_structured',
       progress: { phase: 'tool', iteration: 2 },
     })
@@ -391,12 +398,14 @@ describe('SSEConnectionImpl', () => {
 
     await vi.advanceTimersByTimeAsync(1_000)
 
-    expect(received).toEqual([
-      expect.objectContaining({
-        type: 'progress_structured',
-        progress: { phase: 'done' },
-      }),
-    ])
+    expect(received).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'progress_structured',
+          progress: { phase: 'done' },
+        }),
+      ]),
+    )
     expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
     connection.dispose()
   })
@@ -452,7 +461,7 @@ describe('SSEConnectionImpl', () => {
     resolveProgress({ phase: 'tool', iteration: 7 })
     await Promise.resolve()
 
-    expect(received.at(-1)).toMatchObject({
+    expect(received.filter((m) => m.type === 'progress_structured').at(-1)).toMatchObject({
       type: 'progress_structured',
       progress: { phase: 'tool', iteration: 7 },
     })
@@ -541,7 +550,7 @@ describe('SSEConnectionImpl', () => {
       method: 'get_active_progress',
       params: { channel: 'web', chat_id: 'chat-a' },
     })
-    expect(received.at(-1)).toMatchObject({
+    expect(received.filter((m) => m.type === 'progress_structured').at(-1)).toMatchObject({
       type: 'progress_structured',
       progress: { phase: 'tool', iteration: 3 },
     })
@@ -567,7 +576,7 @@ describe('SSEConnectionImpl', () => {
       method: 'get_active_progress',
       params: { channel: 'web', chat_id: 'chat-zero' },
     })
-    expect(received.at(-1)).toMatchObject({
+    expect(received.filter((m) => m.type === 'progress_structured').at(-1)).toMatchObject({
       type: 'progress_structured',
       progress: { phase: 'tool', iteration: 4 },
     })

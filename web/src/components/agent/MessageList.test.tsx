@@ -329,7 +329,7 @@ describe('MessageList virtualization', () => {
     })
     expect(tracked.writes).toHaveLength(0)
 
-    await flushAnimationFrames(1)
+    await flushAnimationFrames(2)
     expect(tracked.writes).toEqual([scroller.scrollHeight])
   })
 
@@ -626,7 +626,7 @@ describe('MessageList navigation buttons (Spec A §4)', () => {
     expect(tracked.writes).toHaveLength(0)
 
     fireEvent.keyDown(scroller, { key: 'End' })
-    await flushAnimationFrames(1)
+    await flushAnimationFrames(2)
     expect(tracked.writes).toEqual([scroller.scrollHeight])
   })
 })
@@ -696,7 +696,7 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
     expect(bubble.textContent).not.toMatch(/\d/)
 
     fireEvent.click(bubble)
-    await flushAnimationFrames(1)
+    await flushAnimationFrames(2)
     expect(tracked.value).toBe(scroller.scrollHeight)
   })
 

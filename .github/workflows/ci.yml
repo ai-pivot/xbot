@@ -118,7 +118,6 @@ jobs:
 
       - name: Test
         working-directory: web
-        continue-on-error: true # TODO: 28 pre-existing failures from "no cache" refactor — fix & remove this flag
         run: npm run test
 
       - name: Build

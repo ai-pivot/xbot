@@ -442,7 +442,9 @@ function handleProgressMessage(
       completeRef.current?.(finalText, iterations, msg.seq)
       // onAssistantComplete calls store.reset() synchronously inside flushSync.
       // Fallback: if onAssistantComplete did not reset (e.g., not set), reset here.
-      if (hasVisibleProgress(store.getSnapshot()) && !finalizedRef?.current) store.reset()
+      // The reset is idempotent — if onAssistantComplete already cleared the
+      // store, hasVisibleProgress returns false and no double-reset occurs.
+      if (hasVisibleProgress(store.getSnapshot())) store.reset()
       return
     }
 
@@ -490,9 +492,9 @@ function handleProgressMessage(
           // Call completeRef BEFORE clearing streaming state so onAssistantComplete
           // can flushSync the append before liveMessage is cleared.
           completeRef.current?.(text, iters, msg.seq)
-          // Use resetStreamingState (not reset) — preserves iterationHistory
-          // so cancel doesn't cause iterations to disappear and reappear.
-          store.resetStreamingState()
+          // Full reset — this is a defensive finalize (no text event arrived),
+          // so the session is ending. Clear all progress including iterationHistory.
+          store.reset()
         } else {
           store.resetStreamingState()
         }

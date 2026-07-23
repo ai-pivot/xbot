@@ -1559,8 +1559,12 @@ describe('normalizeSessionTree', () => {
       })
     })
 
-    expect(result.current.subAgents).toEqual([])
-    expect(result.current.sessions[0].children ?? []).toEqual([])
+    expect(result.current.subAgents[0]?.running).toBe(false)
+    expect(result.current.subAgents[0]?.status).toBe('idle')
+    // SubAgent is retained as idle (not removed) — it stays in the sidebar
+    // after completion. Removal is handled by the background tree refresh.
+    expect(result.current.sessions[0].children ?? []).toHaveLength(1)
+    expect(result.current.sessions[0].children?.[0]?.running).toBe(false)
   })
 
   it('uses session_key to stop only the matching SubAgent', async () => {
@@ -1616,7 +1620,11 @@ describe('normalizeSessionTree', () => {
       })
     })
 
-    expect(result.current.subAgents.map((agent) => agent.chatID)).toEqual([childB.chatID])
+    // childA is stopped via session_key → marked idle (not removed);
+    // childB remains running. Both stay in the list.
+    expect(result.current.subAgents.map((agent) => agent.chatID)).toEqual([childA.chatID, childB.chatID])
+    expect(result.current.subAgents.find((a) => a.chatID === childA.chatID)?.running).toBe(false)
+    expect(result.current.subAgents.find((a) => a.chatID === childB.chatID)?.running).toBe(true)
     unmount()
   })
 

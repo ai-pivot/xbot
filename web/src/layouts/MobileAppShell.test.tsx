@@ -68,6 +68,17 @@ vi.mock('@/hooks/useTabManager', () => ({
   }),
 }))
 
+vi.mock('@/hooks/useTerminal', () => ({
+  useTerminal: () => ({
+    terminals: [],
+    activeTerminalId: null,
+    createTerminal: vi.fn(),
+    killTerminal: vi.fn(),
+    write: vi.fn(),
+    setActiveTerminal: vi.fn(),
+  }),
+}))
+
 vi.mock('@/hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'dark', accentColor: '#3388BB', setAccentColor: vi.fn(), mdTheme: 'vscode-dark', setMdTheme: vi.fn() }),
 }))
@@ -96,11 +107,14 @@ describe('MobileAppShell', () => {
     expect(screen.getByText('Mobile Chat')).toBeInTheDocument()
     expect(screen.getByText('agent-panel')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('详细'))
+    // Switch to the detail/panel view via the bottom nav "工具" button
+    fireEvent.click(screen.getByText('工具'))
+    // Panel buttons use i18n labels (English in test env navigator.language)
+    fireEvent.click(screen.getByLabelText('Info'))
     expect(screen.getByText('info-panel')).toBeInTheDocument()
-    expect(screen.getByText('返回')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('返回'))
+    // Return to the agent view via the bottom nav "会话" button
+    fireEvent.click(screen.getByText('会话'))
     expect(screen.getByText('agent-panel')).toBeInTheDocument()
   })
 

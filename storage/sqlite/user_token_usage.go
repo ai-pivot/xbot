@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,13 @@ type DailyTokenUsage struct {
 // UserTokenUsageService manages per-user token usage persistence.
 type UserTokenUsageService struct {
 	db *DB
+	// writeMu serializes RecordUsage transactions. SQLite WAL allows one
+	// writer at a time; concurrent BEGIN ... COMMIT from multiple goroutines
+	// can hit SQLITE_BUSY on the write-lock acquisition path that
+	// busy_timeout does not cover (modernc prepareV2 path). Token usage
+	// writes are infrequent, so serializing them is negligible overhead
+	// and eliminates lost updates under concurrency.
+	writeMu sync.Mutex
 }
 
 // NewUserTokenUsageService creates a new service.
@@ -110,6 +118,9 @@ func (s *UserTokenUsageService) addCachedTokensColumn(conn *sql.DB) error {
 // Uses INSERT ... ON CONFLICT DO UPDATE with additive semantics — safe under SQLite WAL
 // with busy_timeout even when multiple processes/goroutines write concurrently.
 func (s *UserTokenUsageService) RecordUsage(conn *sql.DB, senderID, model string, inputTokens, outputTokens, cachedTokens int, conversationCount, llmCallCount int) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	today := time.Now().Format("2006-01-02")
 	totalTokens := inputTokens + outputTokens
 
