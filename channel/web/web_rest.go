@@ -552,6 +552,12 @@ func (wc *WebChannel) handleChatsReorderPOST(w http.ResponseWriter, r *http.Requ
 		jsonErrorResponse(w, http.StatusBadRequest, "orders is required")
 		return
 	}
+	for chatID, order := range body.Orders {
+		if order < 0 {
+			jsonErrorResponse(w, http.StatusBadRequest, fmt.Sprintf("invalid sort_order %d for %s", order, chatID))
+			return
+		}
+	}
 	channel := body.Channel
 	if channel == "" {
 		channel = "web"

@@ -163,9 +163,10 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       />
       {/* Final O: for committed messages, render message.content after iterations.
           For streaming, the streamContent is already in LiveIteration.
-          streaming=true disables debounce so committed content renders immediately. */}
+          noDebounce disables the 150ms delay so committed content renders
+          immediately (no flicker at turn completion). */}
       {!isStreaming && finalContent && (
-        <MarkdownRenderer content={finalContent} streaming />
+        <MarkdownRenderer content={finalContent} noDebounce />
       )}
       {!isStreaming && emptyResponseWarning && (
         <LLMEmptyResponseWarning text={emptyResponseWarning} />

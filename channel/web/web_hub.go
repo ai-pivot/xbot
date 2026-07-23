@@ -376,9 +376,9 @@ func (h *Hub) stopAll() {
 // receiving busy/idle for sessions the user hasn't opened.
 func (h *Hub) broadcastSessionState(channel, chatID string, msg protocol.WSMessage) {
 	h.seqMu.Lock()
-	defer h.seqMu.Unlock()
 	routeKey := sessionRouteKey(channel, chatID)
 	sequencedMsg := h.sequenceEventLocked(routeKey, msg)
+	h.seqMu.Unlock()
 
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.conns))
@@ -386,24 +386,32 @@ func (h *Hub) broadcastSessionState(channel, chatID string, msg protocol.WSMessa
 		clients = append(clients, c)
 	}
 	h.mu.RUnlock()
+
+	// Send to each client in parallel — a slow client must not block
+	// delivery to others. 100ms timeout per client: enough for a
+	// momentarily-full sendCh, short enough that N slow clients
+	// can't stall the broadcast (N×100ms worst case).
+	var wg sync.WaitGroup
 	for _, c := range clients {
 		deliveryMsg := msg
 		if !c.isCLI {
 			deliveryMsg = sequencedMsg
 		}
-		// Session state events (busy/idle/deleted/renamed) are critical —
-		// dropping them causes the sidebar to get stuck on busy. Use a
-		// blocking send with a short timeout instead of silent drop.
-		select {
-		case c.sendCh <- deliveryMsg:
-		default:
+		wg.Add(1)
+		go func(client *Client, dm protocol.WSMessage) {
+			defer wg.Done()
 			select {
-			case c.sendCh <- deliveryMsg:
-			case <-time.After(500 * time.Millisecond):
-				log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Warn("Hub.broadcastSessionState: sendCh full after 500ms timeout, dropping session state event")
+			case client.sendCh <- dm:
+			default:
+				select {
+				case client.sendCh <- dm:
+				case <-time.After(100 * time.Millisecond):
+					log.WithFields(log.Fields{"client_id": client.userID, "msg_type": msg.Type}).Warn("Hub.broadcastSessionState: sendCh full after 100ms timeout, dropping session state event")
+				}
 			}
-		}
+		}(c, deliveryMsg)
 	}
+	wg.Wait()
 }
 
 // broadcastToCLI sends a message only to CLI-type clients.

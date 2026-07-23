@@ -32,6 +32,9 @@ interface MarkdownRendererProps {
   className?: string
   /** True while the source is live; keeps the rendered markdown current. */
   streaming?: boolean
+  /** Skip debounce and render immediately. Used by committed messages
+   *  that don't need the streaming debounce delay. */
+  noDebounce?: boolean
   /** Number of source characters to reveal without re-parsing markdown. */
   visibleChars?: number
 }
@@ -255,9 +258,10 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   className,
   streaming = false,
+  noDebounce = false,
   visibleChars,
 }: MarkdownRendererProps) {
-  const debouncedContent = useDebouncedValue(content, 150, !streaming)
+  const debouncedContent = useDebouncedValue(content, 150, !streaming && !noDebounce)
   const rootRef = useRef<HTMLDivElement>(null)
   // Cache of full text per Text node. Keyed by node identity — valid only
   // within a single ParsedMarkdown render (React reuses nodes when content
@@ -316,5 +320,5 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   )
 }, (prev, next) => (
   prev.content === next.content && prev.className === next.className &&
-  prev.streaming === next.streaming && prev.visibleChars === next.visibleChars
+  prev.streaming === next.streaming && prev.noDebounce === next.noDebounce && prev.visibleChars === next.visibleChars
 ))

@@ -66,22 +66,21 @@ func Open(path string) (*DB, error) {
 	conn.SetMaxIdleConns(4)
 	conn.SetConnMaxLifetime(0)
 
-	// P-08 修复：启用 WAL 模式提升并发读性能和韧性
-	if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("set WAL mode: %w", err)
-	}
-	// 设置 busy_timeout 为 5 秒，避免 "database is locked" 错误
-	if _, err := conn.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("set busy_timeout: %w", err)
-	}
-	// 启用外键约束：确保 ON DELETE CASCADE 生效。
-	// SQLite 默认关闭外键约束，导致 DeleteTenant 时关联数据不被级联删除，
-	// 造成 session_messages 等表大量孤儿数据膨胀。
-	if _, err := conn.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	// For non-:memory: databases, WAL/busy_timeout/foreign_keys are already
+	// set via DSN _pragma. For :memory: (tests), set them here as fallback.
+	if path == ":memory:" {
+		if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("set WAL mode: %w", err)
+		}
+		if _, err := conn.Exec("PRAGMA busy_timeout=10000"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("set busy_timeout: %w", err)
+		}
+		if _, err := conn.Exec("PRAGMA foreign_keys=ON"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("enable foreign keys: %w", err)
+		}
 	}
 
 	db := &DB{
