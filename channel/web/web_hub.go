@@ -210,9 +210,14 @@ func (h *Hub) deliverToSubscribersFiltered(
 			}
 		}
 		if !isStatefulMsg(deliveryMsg) {
-			// Stateless messages (stream_content, progress_structured, etc.)
+			// Stateless messages (stream_content, sync_progress, runner_status)
 			// are full snapshots — only the latest matters. Store in the
 			// stateless slot so writePump/sseWriteLoop sends the freshest one.
+			//
+			// progress_structured is EXCLUDED from stateless: it carries
+			// carry-forward data (todos, iteration history) that must not be
+			// lost to latest-wins merging. It goes through sendCh instead,
+			// where each event is individually delivered to catchUpSSE.
 			c.storeStateless(&deliveryMsg)
 			sent = true
 		} else {
@@ -516,12 +521,14 @@ func newRingBuffer(size int) *ringBuffer {
 func isStatefulMsg(msg protocol.WSMessage) bool {
 	switch msg.Type {
 	case protocol.MsgTypeStreamContent,
-		protocol.MsgTypeSyncProgress, protocol.MsgTypeRunnerStatus,
-		protocol.MsgTypeProgress:
-		// Progress is a full snapshot — each event supersedes the previous.
-		// Stateless: only the latest is kept (stateless slot / ring buffer
-		// coalescing), never queued individually in sendCh.
+		protocol.MsgTypeSyncProgress, protocol.MsgTypeRunnerStatus:
 		return false
+	case protocol.MsgTypeProgress:
+		// progress_structured is stateful — it carries carry-forward data
+		// (todos, iteration history) that must not be lost to stateless
+		// latest-wins merging. Each event is individually delivered via
+		// sendCh → catchUpSSE, preserving the full sequence.
+		return true
 	default:
 		return true
 	}

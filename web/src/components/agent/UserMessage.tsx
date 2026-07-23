@@ -13,7 +13,7 @@
  *   - Edit container inherits the display height as min-height to prevent jitter
  */
 import { memo, useEffect, useRef, useState } from 'react'
-import { Check, Pencil, X } from 'lucide-react'
+import { Check, Loader2, Pencil, X } from 'lucide-react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { Button } from '@/components/ui/button'
@@ -33,6 +33,8 @@ interface UserMessageProps {
   onEndEdit?: () => void
   /** Whether editing is disabled (another message is being edited). */
   editDisabled?: boolean
+  /** True while the message is being sent (shows a spinner). */
+  sending?: boolean
 }
 
 export const UserMessage = memo(function UserMessage({
@@ -42,6 +44,7 @@ export const UserMessage = memo(function UserMessage({
   onStartEdit,
   onEndEdit,
   editDisabled = false,
+  sending = false,
 }: UserMessageProps) {
   const { t } = useI18n()
   const { mode: sendKeyMode } = useSendKeyMode()
@@ -162,6 +165,12 @@ export const UserMessage = memo(function UserMessage({
           className="rounded-2xl rounded-br-sm bg-accent/15 px-3.5 py-2 text-text-primary"
         >
           <MarkdownRenderer content={content || ' '} />
+          {sending && (
+            <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-muted">
+              <Loader2 className="size-3 animate-spin" />
+              <span>{t('agent.sending')}</span>
+            </div>
+          )}
         </div>
         {onRewind && onStartEdit && (
           <Button

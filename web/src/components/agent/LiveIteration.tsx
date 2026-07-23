@@ -97,7 +97,6 @@ export const LiveIteration = memo(function LiveIteration({
             <ReasoningBlock
               content={displayReasoning}
               visibleChars={isLive ? rw.visibleChars : undefined}
-              streaming={isLive}
             />
           </div>
         </FoldedLine>

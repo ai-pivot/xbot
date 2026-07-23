@@ -82,12 +82,16 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if request.ChatID != "" && request.Channel == "" {
 		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
-	sel, err := wc.dispatchUserMessage(r.Context(), identity, request)
+	sel, ts, err := wc.dispatchUserMessage(r.Context(), identity, request)
 	if err != nil {
 		writeInboundError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"chat_id": sel.ChatID, "channel": sel.Channel})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chat_id":   sel.ChatID,
+		"channel":   sel.Channel,
+		"timestamp": ts.UnixMilli(),
+	})
 }
 
 func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {

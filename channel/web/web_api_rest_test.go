@@ -570,7 +570,7 @@ func TestRESTMessageCancellationAfterHandoffPreservesIdempotency(t *testing.T) {
 	}
 	resultCh := make(chan dispatchResult, 1)
 	go func() {
-		sel, err := wc.dispatchUserMessage(ctx, identity, message)
+		sel, _, err := wc.dispatchUserMessage(ctx, identity, message)
 		resultCh <- dispatchResult{sel: sel, err: err}
 	}()
 
@@ -581,7 +581,7 @@ func TestRESTMessageCancellationAfterHandoffPreservesIdempotency(t *testing.T) {
 	if result.err != nil || result.sel.ChatID != "web-1" {
 		t.Fatalf("dispatch after handoff cancellation = (%#v, %v)", result.sel, result.err)
 	}
-	if _, err := wc.dispatchUserMessage(context.Background(), identity, message); err != nil {
+	if _, _, err := wc.dispatchUserMessage(context.Background(), identity, message); err != nil {
 		t.Fatalf("same-ID retry after cancelled response: %v", err)
 	}
 	select {

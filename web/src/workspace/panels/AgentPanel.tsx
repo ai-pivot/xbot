@@ -102,6 +102,23 @@ export function AgentPanel({ params }: PanelProps) {
     parentChatID: params.parentChatID,
     agentChatID: params.agentChatID,
     liveEventsEnabled: shouldSubscribe,
+    onSendSuccess: () => {
+      // Optimistically mark the session as running so the UI enters busy
+      // immediately — don't wait for the SSE session(busy) event which may
+      // arrive late or get lost.
+      if (chatID) {
+        const selector = { channel: messageChannel, chatID }
+        store.setStatus(selector, 'running')
+      }
+    },
+    onCancelSuccess: () => {
+      // Optimistically mark the session as idle so the UI exits busy
+      // immediately — don't wait for the SSE session(idle) event.
+      if (chatID) {
+        const selector = { channel: messageChannel, chatID }
+        store.setStatus(selector, 'idle')
+      }
+    },
   })
   const reloadChat = chat.reload
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
@@ -145,7 +162,7 @@ export function AgentPanel({ params }: PanelProps) {
     onAssistantComplete: (finalText, iterations) => {
       // Commit the message AND reset progress in the SAME synchronous render.
       // This eliminates the intermediate frame where content moves from
-      // LiveIteration to MarkdownRenderer (which caused scrollbar jump).
+      // LiveIteration to MarkdownRenderer.
       flushSync(() => {
         chat.appendAssistant(finalText, iterations)
         resetProgressRef.current?.()
@@ -296,6 +313,7 @@ export function AgentPanel({ params }: PanelProps) {
         <MessageInput
           key={`${messageChannel}:${chatID ?? ''}`}
           busy={busy}
+          cancelling={chat.cancelling}
           onSend={sendMessage}
           onCancel={chat.cancel}
           onRewindLatest={rewindLatest}

@@ -1387,10 +1387,10 @@ func TestSSEContractEventsReceiveSequences(t *testing.T) {
 		if !wc.hub.sendToClient("web-1", outbound) {
 			t.Fatalf("message %q was not delivered", msgType)
 		}
-		// Progress, stream_content, sync_progress, runner_status are stateless
-		// (latest wins) — drain from the stateless slot. Others use sendCh.
+		// stream_content, sync_progress, runner_status are stateless (slot);
+		// progress_structured is stateful (sendCh); others are stateful.
 		var msg protocol.WSMessage
-		if !isStatefulMsg(outbound) || msgType == protocol.MsgTypeProgress {
+		if !isStatefulMsg(outbound) {
 			msgs := drainStatelessMsgs(t, client)
 			if len(msgs) != 1 {
 				t.Fatalf("message %q: expected 1 stateless event, got %d", msgType, len(msgs))
@@ -1592,7 +1592,7 @@ func (w *deadlineBlockingResponseWriter) release() {
 
 func TestHubUsesSequencedCopyWithoutChangingCLIWSMessage(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
-	sseClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), statelessSig: make(chan struct{}, 1), done: make(chan struct{}), id: "sse"}
+	sseClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), statelessSig: make(chan struct{}, 1), done: make(chan struct{}), id: "sse"}
 	webSocketClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "web-ws"}
 	cliClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "cli-ws", isCLI: true}
 	for _, client := range []*Client{sseClient, webSocketClient, cliClient} {
@@ -1615,9 +1615,9 @@ func TestHubUsesSequencedCopyWithoutChangingCLIWSMessage(t *testing.T) {
 func TestHubNormalizesSparseProgressOnlyForSSE(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	chatID := "shared-chat"
-	sseClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "sse"}
-	webSocketClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "web-ws", statelessSig: make(chan struct{}, 1)}
-	cliClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "cli-ws", isCLI: true, statelessSig: make(chan struct{}, 1)}
+	sseClient := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 4), statelessSig: make(chan struct{}, 1), done: make(chan struct{}), id: "sse"}
+	webSocketClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "web-ws", statelessSig: make(chan struct{}, 1)}
+	cliClient := &Client{connType: clientConnTypeWS, sendCh: make(chan protocol.WSMessage, 4), done: make(chan struct{}), id: "cli-ws", isCLI: true, statelessSig: make(chan struct{}, 1)}
 	for _, client := range []*Client{sseClient, webSocketClient, cliClient} {
 		wc.hub.addClient(client.id, client)
 		wc.hub.subscribe(client.id, chatID)
@@ -1625,17 +1625,36 @@ func TestHubNormalizesSparseProgressOnlyForSSE(t *testing.T) {
 
 	wc.SendProgress(chatID, &protocol.ProgressEvent{StreamContent: "partial"})
 
+	// SSE: stream-only progress is normalized to stream_content (stateless).
 	sseMsgs := drainStatelessMsgs(t, sseClient)
 	if len(sseMsgs) != 1 || sseMsgs[0].Type != protocol.MsgTypeStreamContent || sseMsgs[0].Seq != 1 {
 		t.Fatalf("SSE sparse progress = %#v", sseMsgs)
 	}
+	// WS clients receive the original progress type. Sparse progress (no
+	// Phase/Iteration) is stateless → stateless slot. Structured progress
+	// is stateful → sendCh. Stream-only sparse progress is stateless here.
 	webMsgs := webSocketClient.drainStateless()
 	if len(webMsgs) != 1 || webMsgs[0].Type != protocol.MsgTypeProgress || webMsgs[0].Seq != 1 {
-		t.Fatalf("browser WS sparse progress = %#v", webMsgs)
+		// Could be in sendCh if stateful
+		if len(webSocketClient.sendCh) > 0 {
+			m := <-webSocketClient.sendCh
+			if m.Type != protocol.MsgTypeProgress || m.Seq != 1 {
+				t.Fatalf("browser WS sparse progress = %#v", m)
+			}
+		} else {
+			t.Fatalf("browser WS sparse progress = nil (stateless=%v, sendCh=%d)", webMsgs, len(webSocketClient.sendCh))
+		}
 	}
 	cliMsgs := cliClient.drainStateless()
 	if len(cliMsgs) != 1 || cliMsgs[0].Type != protocol.MsgTypeProgress || cliMsgs[0].Seq != 0 {
-		t.Fatalf("CLI WS sparse progress = %#v", cliMsgs)
+		if len(cliClient.sendCh) > 0 {
+			m := <-cliClient.sendCh
+			if m.Type != protocol.MsgTypeProgress || m.Seq != 0 {
+				t.Fatalf("CLI WS sparse progress = %#v", m)
+			}
+		} else {
+			t.Fatalf("CLI WS sparse progress = nil")
+		}
 	}
 }
 
@@ -1954,23 +1973,25 @@ func loginTestWebUser(t *testing.T, serverURL, username string) *http.Cookie {
 	return nil
 }
 
-// drainStatelessMsgs drains the stateless slot and returns all messages,
-// sorted by seq. Use this instead of <-client.sendCh for stateless event
-// types (progress, stream_content, sync_progress, runner_status).
+// drainStatelessMsgs drains the stateless slot AND sendCh, returning all
+// messages sorted by seq. progress_structured is stateful (sendCh),
+// stream_content is stateless (slot) — this helper covers both.
 func drainStatelessMsgs(t *testing.T, client *Client) []protocol.WSMessage {
 	t.Helper()
 	msgs := client.drainStateless()
-	out := make([]protocol.WSMessage, 0, len(msgs))
+	out := make([]protocol.WSMessage, 0, len(msgs)+len(client.sendCh))
 	for _, m := range msgs {
 		out = append(out, *m)
+	}
+	for len(client.sendCh) > 0 {
+		out = append(out, <-client.sendCh)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
 	return out
 }
 
-// drainProgress drains the stateless slot and returns all progress messages,
-// sorted by seq. Use this instead of <-client.sendCh for progress events —
-// progress_structured is stateless (latest wins), delivered via statelessMap.
+// drainProgress drains both stateless slot and sendCh, returning all progress
+// messages sorted by seq.
 func drainProgress(t *testing.T, client *Client) []protocol.WSMessage {
 	t.Helper()
 	all := drainStatelessMsgs(t, client)

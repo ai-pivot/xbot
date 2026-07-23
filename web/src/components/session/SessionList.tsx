@@ -88,9 +88,9 @@ export function SessionList({
   const [busy, setBusy] = useState(false)
   const draggedKeyRef = useRef<string | null>(null)
 
-  const mainSessions = useMemo(() => sessions.filter((s) => !isSubAgentSession(s) && !s.synthetic), [sessions])
+  const mainSessions = useMemo(() => sessions.filter((s) => !isSubAgentSession(s) && (!s.synthetic || (s.children || []).some(c => c.running || c.status === 'running' || c.status === 'pending' || c.status === 'waiting_input'))), [sessions])
   const mainSortedSessions = useMemo(
-    () => sortedSessions.filter((s) => !isSubAgentSession(s) && !s.synthetic),
+    () => sortedSessions.filter((s) => !isSubAgentSession(s) && (!s.synthetic || (s.children || []).some(c => c.running || c.status === 'running' || c.status === 'pending' || c.status === 'waiting_input'))),
     [sortedSessions],
   )
   const mainGroups = useMemo(

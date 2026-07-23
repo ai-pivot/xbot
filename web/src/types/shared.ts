@@ -382,6 +382,8 @@ export interface ChatMessage {
   displayOnly?: boolean
   /** True when loaded from persisted backend history, not an optimistic echo. */
   persisted?: boolean
+  /** True while the message is being sent (optimistic, before echo/busy). */
+  sending?: boolean
   /** SSE sequence for live committed rows, used to reconcile them with history. */
   eventSeq?: number
   /** Stable logical-send ID used to correlate optimistic rows with echoes. */

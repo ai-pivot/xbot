@@ -162,9 +162,10 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
         mergeTools={mergeTools}
       />
       {/* Final O: for committed messages, render message.content after iterations.
-          For streaming, the streamContent is already in LiveIteration. */}
+          For streaming, the streamContent is already in LiveIteration.
+          streaming=true disables debounce so committed content renders immediately. */}
       {!isStreaming && finalContent && (
-        <MarkdownRenderer content={finalContent} />
+        <MarkdownRenderer content={finalContent} streaming />
       )}
       {!isStreaming && emptyResponseWarning && (
         <LLMEmptyResponseWarning text={emptyResponseWarning} />

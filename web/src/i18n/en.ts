@@ -174,6 +174,7 @@ const en: Translations = {
     displayOnly: 'display only',
     emptyConversation: 'Send a message below to start a conversation.',
     loading: 'Loading…',
+    sending: 'Sending…',
     iterations: 'Iterations',
     tools: 'tools',
     iteration: 'Iteration',

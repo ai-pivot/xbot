@@ -73,6 +73,8 @@ export interface SessionStore {
   setCategory: (c: SessionCategory) => void
   setActiveChannel: (channel: string | null) => void
   markRead: (key: string) => void
+  /** Optimistically set a session's status (e.g. running after send). */
+  setStatus: (selector: SessionSelector, status: SessionStatus) => void
   refresh: () => Promise<void>
   toggleStar: (id: string) => void
   createSession: (label?: string, workPath?: string) => Promise<string | null>
@@ -729,30 +731,6 @@ function markSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, i
   )
 }
 
-function removeSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, instance: string | undefined, parentID: string | undefined, fullKey?: string): SessionInfo[] {
-  const matches = subAgentLifecycleMatcher(role, instance, parentID, fullKey)
-  let changed = false
-  const visit = (items: SessionInfo[]): SessionInfo[] => {
-    const next: SessionInfo[] = []
-    for (const item of items) {
-      if (matches(item)) {
-        changed = true
-        continue
-      }
-      const children = item.children ? visit(item.children) : item.children
-      if (children !== item.children) {
-        changed = true
-        next.push({ ...item, children })
-      } else {
-        next.push(item)
-      }
-    }
-    return next
-  }
-  const next = visit(nodes)
-  return changed ? next : nodes
-}
-
 function addRunningSessionKeys(nodes: SessionInfo[], target: Set<string>): void {
   for (const node of nodes) {
     if (node.running || node.status === 'running' || node.status === 'pending') {
@@ -970,13 +948,19 @@ export function useSessionStoreImpl(): SessionStore {
       if (running) {
         transientSubAgentsRef.current.set(sessionKey(created), { session: created, updatedAt: Date.now() })
       } else {
-        transientSubAgentsRef.current.delete(sessionKey(created))
+        // Don't delete from transient map immediately — the backend may not
+        // have persisted the agent tenant yet. Let mergeTransientSubAgents'
+        // TTL (10min) handle cleanup. The refresh() after 500ms will pick up
+        // the persisted row from the DB, and markSubAgentLifecycle will set
+        // it to idle. This prevents the subagent from disappearing between
+        // subagent_stopped and DB persistence.
+        transientSubAgentsRef.current.set(sessionKey(created), { session: { ...created, running: false, status: 'idle' }, updatedAt: Date.now() })
       }
     }
     const merged = mergeTransientSubAgents(sessionsRef.current, transientSubAgentsRef.current, Date.now(), false)
     const mainSessions = running
       ? markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, true, ev.session_key)
-      : removeSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, ev.session_key)
+      : markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, false, ev.session_key)
     const agents = flattenTreeAgents(mainSessions)
     sessionsRef.current = mainSessions
     setSessions((prev) => (sameSessionList(prev, mainSessions) ? prev : mainSessions))
@@ -1288,6 +1272,7 @@ export function useSessionStoreImpl(): SessionStore {
     setCategory,
     setActiveChannel,
     markRead,
+    setStatus,
     refresh,
     toggleStar,
     createSession,
@@ -1297,7 +1282,7 @@ export function useSessionStoreImpl(): SessionStore {
     reorderSessions,
     clearAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, setActiveChannel, markRead, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
+    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {

@@ -27,6 +27,7 @@ const inboundRequestRetention = 10 * time.Minute
 type inboundRequestState struct {
 	done        chan struct{}
 	sel         SessionSelector
+	ts          time.Time
 	err         error
 	completedAt time.Time
 }
@@ -105,14 +106,14 @@ func (wc *WebChannel) resolveInboundSession(ctx context.Context, identity inboun
 	return sel, nil
 }
 
-func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundIdentity, msg protocol.WSClientMessage) (SessionSelector, error) {
+func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundIdentity, msg protocol.WSClientMessage) (SessionSelector, time.Time, error) {
 	if strings.TrimSpace(msg.Content) == "" && len(msg.UploadKeys) == 0 {
-		return SessionSelector{}, errEmptyMessage
+		return SessionSelector{}, time.Time{}, errEmptyMessage
 	}
 
 	sel, err := wc.resolveInboundSession(ctx, identity, msg.Channel, msg.ChatID)
 	if err != nil {
-		return SessionSelector{}, err
+		return SessionSelector{}, time.Time{}, err
 	}
 	msg.ID = strings.TrimSpace(msg.ID)
 	if msg.ID == "" {
@@ -124,12 +125,13 @@ func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundI
 		chatID:    sel.ChatID,
 		requestID: msg.ID,
 	}
-	return wc.dispatchUserMessageOnce(ctx, key, func() (SessionSelector, error) {
+	sel2, ts, err := wc.dispatchUserMessageOnce(ctx, key, func() (SessionSelector, time.Time, error) {
 		return wc.dispatchResolvedUserMessage(ctx, identity, sel, msg)
 	})
+	return sel2, ts, err
 }
 
-func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity inboundIdentity, sel SessionSelector, msg protocol.WSClientMessage) (SessionSelector, error) {
+func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity inboundIdentity, sel SessionSelector, msg protocol.WSClientMessage) (SessionSelector, time.Time, error) {
 
 	originalContent := msg.Content
 	content := wc.expandUploadKeys(msg)
@@ -176,7 +178,7 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 		Metadata:   metadata,
 	})
 	if err != nil {
-		return sel, err
+		return sel, time.Time{}, err
 	}
 
 	// The agent persists accepted user messages before running the turn. Echo
@@ -191,10 +193,10 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 			TS:              receivedAt.Unix(),
 		})
 	}
-	return sel, nil
+	return sel, receivedAt, nil
 }
 
-func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRequestKey, fn func() (SessionSelector, error)) (SessionSelector, error) {
+func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRequestKey, fn func() (SessionSelector, time.Time, error)) (SessionSelector, time.Time, error) {
 	now := time.Now()
 	wc.inboundRequestsMu.Lock()
 	for existingKey, state := range wc.inboundRequests {
@@ -206,18 +208,19 @@ func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRe
 		wc.inboundRequestsMu.Unlock()
 		select {
 		case <-state.done:
-			return state.sel, state.err
+			return state.sel, state.ts, state.err
 		case <-ctx.Done():
-			return SessionSelector{}, ctx.Err()
+			return SessionSelector{}, time.Time{}, ctx.Err()
 		}
 	}
 	state := &inboundRequestState{done: make(chan struct{})}
 	wc.inboundRequests[key] = state
 	wc.inboundRequestsMu.Unlock()
 
-	sel, err := fn()
+	sel, ts, err := fn()
 	wc.inboundRequestsMu.Lock()
 	state.sel = sel
+	state.ts = ts
 	state.err = err
 	state.completedAt = time.Now()
 	if err != nil {
@@ -225,7 +228,7 @@ func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRe
 	}
 	close(state.done)
 	wc.inboundRequestsMu.Unlock()
-	return sel, err
+	return sel, ts, err
 }
 
 func (wc *WebChannel) expandUploadKeys(msg protocol.WSClientMessage) string {

@@ -76,6 +76,7 @@ vi.mock('@/hooks/useSessionStore', () => ({
     deleteSession: vi.fn(),
     clearAskUserPrompt: vi.fn(),
     reorderSessions: vi.fn(),
+    setStatus: vi.fn(),
   }),
 }))
 

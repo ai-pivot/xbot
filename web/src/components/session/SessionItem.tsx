@@ -148,7 +148,7 @@ export function SessionItem({
         </span>
       ) : executing ? (
         <Loader2
-          className="size-3.5 shrink-0 animate-spin"
+          className="size-2.5 shrink-0 animate-spin"
           style={{ color: isSubAgent ? 'var(--accent)' : 'var(--status-running)' }}
           aria-label={t(`session.status.${session.status === 'pending' ? 'pending' : 'running'}`)}
         />

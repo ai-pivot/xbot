@@ -1017,42 +1017,25 @@ func TestHubStatelessMixedTypes(t *testing.T) {
 	hub.addClient(client.id, client)
 	hub.subscribe(client.id, chatID)
 
-	// Send stream_content + stream-only progress for the same source —
-	// both are stateless, should keep latest of each.
-	// Structured progress events (with Phase/Iteration/IterationHistory)
-	// are stateful and go through sendCh, not storeStateless.
+	// stream_content is stateless (latest wins); progress_structured is
+	// stateful (goes through sendCh). Only stream_content should be in
+	// the stateless slot.
 	source := "cli:/home/user/test"
 	hub.sendToClient(chatID, protocol.WSMessage{
 		Type:     protocol.MsgTypeStreamContent,
 		Progress: &protocol.ProgressEvent{ChatID: source, StreamContent: "old-stream"},
 	})
 	hub.sendToClient(chatID, protocol.WSMessage{
-		Type:     protocol.MsgTypeProgress,
-		Progress: &protocol.ProgressEvent{ChatID: source, StreamContent: "progress-stream"},
-	})
-	hub.sendToClient(chatID, protocol.WSMessage{
 		Type:     protocol.MsgTypeStreamContent,
 		Progress: &protocol.ProgressEvent{ChatID: source, StreamContent: "new-stream"},
 	})
-	hub.sendToClient(chatID, protocol.WSMessage{
-		Type:     protocol.MsgTypeProgress,
-		Progress: &protocol.ProgressEvent{ChatID: source, StreamContent: "progress-stream-new"},
-	})
 
 	msgs := client.drainStateless()
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 stateless messages (one per type), got %d", len(msgs))
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 stateless message (stream_content only), got %d", len(msgs))
 	}
-
-	byType := make(map[string]*protocol.ProgressEvent)
-	for _, m := range msgs {
-		byType[m.Type] = m.Progress
-	}
-	if byType[protocol.MsgTypeStreamContent].StreamContent != "new-stream" {
-		t.Errorf("stream_content: expected 'new-stream', got '%s'", byType[protocol.MsgTypeStreamContent].StreamContent)
-	}
-	if byType[protocol.MsgTypeProgress].StreamContent != "progress-stream-new" {
-		t.Errorf("progress: expected 'progress-stream-new', got '%s'", byType[protocol.MsgTypeProgress].StreamContent)
+	if msgs[0].Type != protocol.MsgTypeStreamContent || msgs[0].Progress.StreamContent != "new-stream" {
+		t.Errorf("stream_content: expected 'new-stream', got '%s'", msgs[0].Progress.StreamContent)
 	}
 }
 
@@ -1344,10 +1327,10 @@ func TestShouldEagerSaveUserMessageSkipsCommands(t *testing.T) {
 
 // REGRESSION: Structured progress events must not be overwritten by storeStateless.
 
-func TestRegression_ProgressIsAlwaysStateless(t *testing.T) {
-	// Progress (progress_structured) is always stateless — each event is a
-	// full snapshot that supersedes the previous. This prevents sendCh from
-	// filling up with redundant snapshots when many clients subscribe.
+func TestRegression_ProgressIsStateful(t *testing.T) {
+	// progress_structured is stateful — it carries carry-forward data
+	// (todos, iteration history) that must not be lost to stateless
+	// latest-wins merging. Each event goes through sendCh individually.
 	tests := []struct {
 		name string
 		msg  protocol.WSMessage
@@ -1361,14 +1344,21 @@ func TestRegression_ProgressIsAlwaysStateless(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isStatefulMsg(tt.msg); got {
-				t.Errorf("isStatefulMsg() = %v, want false (progress is always stateless)", got)
+			isStream := tt.msg.Type == protocol.MsgTypeStreamContent
+			isProgress := tt.msg.Type == protocol.MsgTypeProgress
+			wantStateless := isStream && !isProgress
+			got := !isStatefulMsg(tt.msg)
+			if got != wantStateless {
+				t.Errorf("isStatefulMsg() stateless=%v, want %v", got, wantStateless)
 			}
 		})
 	}
 }
 
-func TestRegression_ProgressIsStatelessLatestWins(t *testing.T) {
+func TestRegression_ProgressIsStatefulInSendCh(t *testing.T) {
+	// progress_structured is stateful — each event goes through sendCh
+	// individually (not stateless latest-wins). All 3 events should be
+	// in sendCh, not the stateless slot.
 	hub := newHub()
 	chatID := "/test"
 	source := "cli:/test"
@@ -1385,12 +1375,18 @@ func TestRegression_ProgressIsStatelessLatestWins(t *testing.T) {
 	hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{ChatID: source, Phase: "thinking", Iteration: 1, IterationHistory: []protocol.ProgressEvent{delta}}})
 	hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeProgress, Progress: &protocol.ProgressEvent{ChatID: source, Phase: "done", Iteration: 1}})
 
-	// Progress is stateless (latest wins) — only the latest snapshot is kept.
+	// All 3 progress events should be in sendCh (stateful path).
 	msgs := client.drainStateless()
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 stateless message (latest wins), got %d", len(msgs))
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 stateless messages, got %d", len(msgs))
 	}
-	if msgs[0].Progress == nil || msgs[0].Progress.Phase != "done" || msgs[0].Progress.Iteration != 1 {
-		t.Fatalf("latest progress = %#v", msgs[0].Progress)
+	// Drain sendCh and verify all 3 events.
+	var got []protocol.WSMessage
+	for len(client.sendCh) > 0 {
+		msgs := <-client.sendCh
+		got = append(got, msgs)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 stateful messages in sendCh, got %d", len(got))
 	}
 }
