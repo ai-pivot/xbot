@@ -173,6 +173,12 @@ export function AgentPanel({ params }: PanelProps) {
   resetProgressRef.current = progress.resetProgress
   const progressSnapshot = progress.progressSnapshot
   const liveMessage = progress.liveMessage
+  // Don't show liveMessage during initial loading — wait for history to load
+  // first, then show everything at once. Without this gate, SSE-delivered live
+  // progress appears before history (partial data), then flickers when history
+  // replaces the view. After loading, liveMessage is hydrated synchronously
+  // (useLayoutEffect + flushSync) so it appears in the same paint as history.
+  const visibleLiveMessage = chat.loading ? null : liveMessage
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
@@ -270,8 +276,8 @@ export function AgentPanel({ params }: PanelProps) {
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
         messages={chat.messages}
-        liveMessage={liveMessage}
-        liveProgress={liveMessage ? progressSnapshot : null}
+        liveMessage={visibleLiveMessage}
+        liveProgress={visibleLiveMessage ? progressSnapshot : null}
         busy={busy}
         collapseLevel={level}
         mergeTools={mergeTools}
