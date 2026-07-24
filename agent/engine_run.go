@@ -391,13 +391,17 @@ func (s *runState) buildOutput(ob *channel.OutboundMsg) *RunOutput {
 // beginIteration updates state at the start of each loop iteration.
 func (s *runState) beginIteration(i int) {
 	s.localIterCount++
-	s.subAgentNodes = nil
+	// NOTE: subAgentNodes and SubAgents are NOT cleared here — they carry
+	// forward across iterations (like todos). Clearing them causes
+	// resolveSubAgents to fall back to text-based string matching, which is
+	// fragile and pollutes on similar-looking content. SubAgents are
+	// updated incrementally by SubAgent progress callbacks and cleared on
+	// turn end (PhaseDone / store.reset).
 	if s.structuredProgress != nil {
 		s.structuredProgress.Iteration = i
 		s.structuredProgress.Phase = PhaseThinking
 		s.structuredProgress.ActiveTools = nil
 		s.structuredProgress.CompletedTools = nil
-		s.structuredProgress.SubAgents = nil
 		s.structuredProgress.Content = ""
 		s.structuredProgress.ReasoningContent = ""
 	}
