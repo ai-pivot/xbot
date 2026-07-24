@@ -43,9 +43,16 @@ async function setupMock(page: Page) {
 
 let seqCounter = 0
 
+/** Type for the global SSE mock state injected via addInitScript. */
+interface SSEMockState {
+  __sseListeners: Record<string, Set<(ev: MessageEvent) => void>>
+  __sseSeq: number
+}
+
 async function emitSSE(page: Page, type: string, data: Record<string, unknown>) {
   await page.evaluate(({ type, data, seq }) => {
-    const listeners = (window as any).__sseListeners
+    const w = window as unknown as SSEMockState
+    const listeners = w.__sseListeners
     if (!listeners) return
     const handlers = listeners[type] as Set<(ev: MessageEvent) => void> | undefined
     if (!handlers) return
@@ -55,7 +62,7 @@ async function emitSSE(page: Page, type: string, data: Record<string, unknown>) 
 }
 
 test.describe('Streaming scroll jitter', () => {
-  test.beforeEach(async ({}) => {
+  test.beforeEach(() => {
     seqCounter = 0
   })
 
@@ -65,7 +72,8 @@ test.describe('Streaming scroll jitter', () => {
     // Replace EventSource with a controllable mock
     await page.addInitScript(() => {
       const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
-      ;(window as any).__sseListeners = listeners
+      const w = window as unknown as SSEMockState
+      w.__sseListeners = listeners
       class MockEventSource {
         readyState = 1 // OPEN
         onopen: ((ev: Event) => void) | null = null
@@ -84,7 +92,7 @@ test.describe('Streaming scroll jitter', () => {
           for (const key of Object.keys(listeners)) listeners[key].clear()
         }
       }
-      ;(window as any).EventSource = MockEventSource
+      ;(window as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource
     })
 
     await setupMock(page)
@@ -145,10 +153,11 @@ test.describe('Streaming scroll jitter', () => {
             { length: line + 1 },
             (_, i) => `Line ${i}. This is streaming content that grows to simulate LLM output. `,
           ).join('\n')
-          const listeners = (window as any).__sseListeners
+          const w = window as unknown as SSEMockState
+          const listeners = w.__sseListeners
           const handlers = listeners?.['stream_content'] as Set<(ev: MessageEvent) => void> | undefined
           if (handlers) {
-            const seq = (window as any).__sseSeq = ((window as any).__sseSeq || 2) + 1
+            const seq = w.__sseSeq = (w.__sseSeq || 2) + 1
             const ev = new MessageEvent('stream_content', {
               data: JSON.stringify({ type: 'stream_content', seq, progress: { stream_content: content, chat_id: 'web:chat-1', streaming: true } }),
             })
@@ -182,7 +191,7 @@ test.describe('Streaming scroll jitter', () => {
     // ── Analysis ──
     // 1. scrollHeight should NEVER decrease (content only grows)
     let heightDecreases = 0
-    let heightDecreaseDetails: string[] = []
+    const heightDecreaseDetails: string[] = []
     for (let i = 1; i < samples.length; i++) {
       if (samples[i].scrollHeight < samples[i - 1].scrollHeight - 1) {
         heightDecreases++
