@@ -56,6 +56,8 @@ interface UseProgressStreamOptions {
   onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => void
   /** Called when a bg notification / cron triggers a new turn — displays the injected user message. */
   onInjectUserMessage?: (content: string, turnID: number, isNotification: boolean) => void
+  /** Called when turn_started arrives — the frontend should enter busy mode. */
+  onTurnStarted?: (turnID: number, trigger: string) => void
   /** Called when the server signals HistoryCompacted (reset + reload). */
   onHistoryCompacted?: () => void
   /** Called when the server signals a slash-command session reset (/new). */
@@ -118,6 +120,7 @@ export function useProgressStream({
   onAssistantComplete,
   onHistoryCompacted,
   onInjectUserMessage,
+  onTurnStarted,
   onSessionReset,
   initialProgress,
   ws,
@@ -139,6 +142,8 @@ export function useProgressStream({
   resetRef.current = onSessionReset
   const injectRef = useRef(onInjectUserMessage)
   injectRef.current = onInjectUserMessage
+  const turnStartedRef = useRef(onTurnStarted)
+  turnStartedRef.current = onTurnStarted
 
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
@@ -247,7 +252,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef)
     })
     return offMessage
   }, [store, disabled, channel])
@@ -308,6 +313,7 @@ function handleProgressMessage(
   finalizedRef?: React.MutableRefObject<boolean>,
   phaseDoneRef?: React.MutableRefObject<boolean>,
   injectRef?: React.MutableRefObject<UseProgressStreamOptions['onInjectUserMessage']>,
+  turnStartedRef?: React.MutableRefObject<UseProgressStreamOptions['onTurnStarted']>,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -373,6 +379,12 @@ function handleProgressMessage(
         const ts = p.turn_start
         if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
           injectRef?.current?.(ts.content, p.turn_id, ts.trigger === 'notification')
+        }
+        // Signal the frontend to enter busy mode. This is critical for
+        // notification/resume turns where session(busy) may be lost or delayed
+        // (SSE coalescing) — without this, the input box stays in send mode.
+        if (p.turn_id) {
+          turnStartedRef?.current?.(p.turn_id, ts?.trigger ?? 'user')
         }
         // Reset finalize guards for the new turn.
         if (finalizedRef) finalizedRef.current = false

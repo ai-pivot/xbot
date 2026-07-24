@@ -172,6 +172,14 @@ export function AgentPanel({ params }: PanelProps) {
     onInjectUserMessage: (content, turnID, isNotification) => {
       chat.injectUserMessage(content, turnID, isNotification)
     },
+    onTurnStarted: (_turnID, _trigger) => {
+      // Optimistically mark the session as running so the input box switches
+      // to cancel mode immediately. session(busy) may be lost or delayed by
+      // SSE coalescing — turn_started is the earliest reliable signal.
+      if (chatID) {
+        store.setStatus({ channel: messageChannel, chatID }, 'running')
+      }
+    },
     ws,
     onHistoryCompacted: isSubAgent ? undefined : () => {
       void chat.reload()
