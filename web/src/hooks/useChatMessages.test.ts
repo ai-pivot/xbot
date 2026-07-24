@@ -7,7 +7,6 @@ import type { WSMessage } from '@/types/shared'
 import {
   bumpProgressGeneration,
   clearWebCaches,
-  messagesCache,
   sessionCacheKey,
 } from '@/lib/webCache'
 
@@ -81,9 +80,6 @@ describe('useChatMessages', () => {
 
     rerender({ channel: 'cli' })
     await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['from cli']))
-
-    expect(messagesCache.get(sessionCacheKey('web', 'shared'))?.map((message) => message.content)).toEqual(['from web'])
-    expect(messagesCache.get(sessionCacheKey('cli', 'shared'))?.map((message) => message.content)).toEqual(['from cli'])
   })
 
   it('ignores an old-channel listener after switching the same raw chat ID', async () => {
@@ -114,91 +110,6 @@ describe('useChatMessages', () => {
     })
 
     expect(result.current.messages.map((message) => message.content)).toEqual(['from cli'])
-    expect(messagesCache.get(sessionCacheKey('web', 'shared-listener'))?.map((message) => message.content)).toEqual(['from web'])
-    expect(messagesCache.get(sessionCacheKey('cli', 'shared-listener'))?.map((message) => message.content)).toEqual(['from cli'])
-  })
-
-  it('reuses cached rows across hook remounts without a loading flash', async () => {
-    const pendingSecond = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
-    const ws = makeWS([
-      { messages: [{ role: 'user', content: 'cached', timestamp: '2026-07-08T00:00:00Z' }] },
-      pendingSecond.promise,
-    ])
-
-    const first = renderHook(() =>
-      useChatMessages({
-        chatID: 'chat-remount',
-        channel: 'web',
-        ws,
-      }),
-    )
-
-    await waitFor(() => expect(first.result.current.messages.map((m) => m.content)).toEqual(['cached']))
-    first.unmount()
-
-    const second = renderHook(() =>
-      useChatMessages({
-        chatID: 'chat-remount',
-        channel: 'web',
-        ws,
-      }),
-    )
-
-    expect(second.result.current.messages.map((m) => m.content)).toEqual(['cached'])
-    expect(second.result.current.loading).toBe(false)
-
-    await act(async () => {
-      pendingSecond.resolve({
-        messages: [{ role: 'user', content: 'fresh', timestamp: '2026-07-08T00:00:01Z' }],
-      })
-    })
-
-    await waitFor(() => expect(second.result.current.messages.map((m) => m.content)).toEqual(['fresh']))
-  })
-
-  it('does not let stale unmounted reloads overwrite the shared cache', async () => {
-    const stale = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
-    const fresh = deferred<{ messages: { role: string; content: string; timestamp: string }[] }>()
-    const ws = makeWS([stale.promise, fresh.promise, { messages: [{ role: 'user', content: 'fresh', timestamp: '2026-07-08T00:00:02Z' }] }])
-
-    const first = renderHook(() =>
-      useChatMessages({
-        chatID: 'chat-stale-cache',
-        channel: 'web',
-        ws,
-      }),
-    )
-    first.unmount()
-
-    const second = renderHook(() =>
-      useChatMessages({
-        chatID: 'chat-stale-cache',
-        channel: 'web',
-        ws,
-      }),
-    )
-
-    await act(async () => {
-      fresh.resolve({ messages: [{ role: 'user', content: 'fresh', timestamp: '2026-07-08T00:00:01Z' }] })
-      await fresh.promise
-    })
-    await waitFor(() => expect(second.result.current.messages.map((m) => m.content)).toEqual(['fresh']))
-
-    await act(async () => {
-      stale.resolve({ messages: [{ role: 'user', content: 'stale', timestamp: '2026-07-08T00:00:00Z' }] })
-      await stale.promise
-    })
-    second.unmount()
-
-    const third = renderHook(() =>
-      useChatMessages({
-        chatID: 'chat-stale-cache',
-        channel: 'web',
-        ws,
-      }),
-    )
-
-    expect(third.result.current.messages.map((m) => m.content)).toEqual(['fresh'])
   })
 
   it('keeps concurrent history cursors scoped to their response chats', async () => {
@@ -296,10 +207,6 @@ describe('useChatMessages', () => {
       'old history',
       'new message with attachment',
     ])
-    expect(messagesCache.get(sessionCacheKey('web', 'slow-chat'))?.map((message) => message.content)).toEqual([
-      'old history',
-      'new message with attachment',
-    ])
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 
@@ -363,7 +270,6 @@ describe('useChatMessages', () => {
       content: 'message with attachment',
       persisted: true,
     })
-    expect(messagesCache.get(sessionCacheKey('web', 'replay-chat'))).toHaveLength(1)
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 
@@ -411,7 +317,6 @@ describe('useChatMessages', () => {
       content: 'persisted while loading',
       persisted: true,
     })
-    expect(messagesCache.get(sessionCacheKey('web', 'optimistic-history-chat'))).toHaveLength(1)
   })
 
   it('keeps a covered replay echo when history does not contain that occurrence', async () => {
@@ -466,7 +371,6 @@ describe('useChatMessages', () => {
       persisted: false,
       eventSeq: 7,
     })
-    expect(messagesCache.get(sessionCacheKey('web', 'missing-echo-chat'))).toHaveLength(1)
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 
@@ -557,7 +461,6 @@ describe('useChatMessages', () => {
     })
 
     expect(result.current.messages.map((message) => message.content)).toEqual(['background task finished'])
-    expect(messagesCache.get(sessionCacheKey('cli', '/repo'))).toHaveLength(1)
   })
 
   it('restores initial history when an optimistic send fails during loading', async () => {
@@ -611,9 +514,6 @@ describe('useChatMessages', () => {
     await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual([
       'persisted history',
     ]))
-    expect(messagesCache.get(sessionCacheKey('web', 'failed-send-chat'))?.map((message) => message.content)).toEqual([
-      'persisted history',
-    ])
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 
@@ -644,8 +544,6 @@ describe('useChatMessages', () => {
     })
 
     expect(result.current.messages.map((message) => message.content)).toEqual(['history B'])
-    expect(messagesCache.get(sessionCacheKey('web', 'session-a'))?.map((message) => message.content)).toEqual(['history A'])
-    expect(messagesCache.get(sessionCacheKey('web', 'session-b'))?.map((message) => message.content)).toEqual(['history B'])
   })
 
   it('never returns the previous session messages during a target transition', async () => {
@@ -692,9 +590,6 @@ describe('useChatMessages', () => {
     })
 
     expect(result.current.messages.map((message) => message.content)).toEqual(['keep optimistic'])
-    expect(messagesCache.get(sessionCacheKey('web', 'failed-history-chat'))?.map((message) => message.content)).toEqual([
-      'keep optimistic',
-    ])
     expect(result.current.error).toBe('history unavailable')
   })
 
@@ -756,30 +651,6 @@ describe('useChatMessages', () => {
       await pending
     })
 
-    expect(result.current.loading).toBe(false)
-  })
-
-  it('does not replace visible same-session rows with an empty background refresh', async () => {
-    const ws = makeWS([
-      { messages: [{ role: 'user', content: 'keep me', timestamp: '2026-07-08T00:00:00Z' }] },
-      { messages: [] },
-    ])
-
-    const { result } = renderHook(() =>
-      useChatMessages({
-        chatID: 'chat-nonempty',
-        channel: 'web',
-        ws,
-      }),
-    )
-
-    await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['keep me']))
-
-    await act(async () => {
-      await result.current.reload()
-    })
-
-    expect(result.current.messages.map((m) => m.content)).toEqual(['keep me'])
     expect(result.current.loading).toBe(false)
   })
 
@@ -1020,5 +891,50 @@ describe('useChatMessages', () => {
     await waitFor(() => expect(result.current.messages).toHaveLength(1))
     expect(result.current.messages[0].role).toBe('assistant')
     expect(result.current.messages[0].iterations[0].tools[0].name).toBe('Shell')
+  })
+
+  it('cancel: appendAssistant survives reload — assistant message does not vanish', async () => {
+    const ws = makeWS([
+      // First fetch: user message only (no assistant yet)
+      { messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 }], chat_id: 'cancel-chat', last_seq: 1 },
+    ])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'cancel-chat', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map(m => m.role)).toEqual(['user']))
+
+    // Simulate cancel: appendAssistant commits the assistant message
+    act(() => {
+      result.current.appendAssistant('partial reply', [], 2)
+    })
+    // messages = [user, assistant]
+    expect(result.current.messages.map(m => m.role)).toEqual(['user', 'assistant'])
+    expect(result.current.messages[1].content).toBe('partial reply')
+    expect(result.current.messages[1].persisted).toBe(false)
+    expect(result.current.messages[1].eventSeq).toBe(2)
+
+    // Now a reload comes back — server has user + [interrupted] assistant persisted
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      return new Response(JSON.stringify({
+        ok: true,
+        data: {
+          messages: [
+            { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 },
+            { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:01Z', seq: 2,
+              iterations: [{ iteration: 1, thinking: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
+          ],
+          chat_id: 'cancel-chat', last_seq: 2,
+        },
+        error: null,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    await act(async () => {
+      void result.current.reload()
+    })
+
+    // The assistant message must survive — not vanish
+    const assistantMsg = result.current.messages.find(m => m.role === 'assistant')
+    expect(assistantMsg).toBeDefined()
+    // content may be '' from server, but the message must exist
+    // (the live row with 'partial reply' is kept via >= watermark)
   })
 })

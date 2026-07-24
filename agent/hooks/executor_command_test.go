@@ -311,7 +311,10 @@ func TestCommandExecutor_SuccessWithUpdatedInput(t *testing.T) {
 
 func hookEcho(s string) string {
 	if runtime.GOOS == "windows" {
-		return "Write-Output " + powershellQuote(s)
+		// Drain stdin first — PowerShell -Command doesn't read stdin, but the
+		// exec.Cmd pipe stays open until the process exits. Without draining,
+		// the process waits for stdin to close → context deadline exceeded.
+		return "[Console]::In.ReadToEnd() | Out-Null; Write-Output " + powershellQuote(s)
 	}
 	return "printf '%s\\n' " + posixQuote(s)
 }

@@ -317,6 +317,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.GetCWD = func(senderID string, sel web.SessionSelector) (string, error) {
 		return webSessionCWD(ag, sel.Channel, sel.ChatID), nil
 	}
+	callbacks.GetTodos = func(senderID string, sel web.SessionSelector) ([]protocol.TodoItem, error) {
+		return ag.GetTodos(sel.Channel, sel.ChatID), nil
+	}
 	callbacks.SetCWD = func(senderID string, sel web.SessionSelector, dir string) error {
 		return ag.SetCWD(sel.Channel, sel.ChatID, dir)
 	}
@@ -725,6 +728,13 @@ func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
 		if sess, ok := ag.MultiSession().GetSession(channelName, chatID); ok && sess != nil {
 			dir = sess.GetCurrentDir()
 		}
+	}
+	// Final fallback: use the server's workDir. This ensures new web sessions
+	// (which have no persisted CWD) start in the project root, not the home
+	// directory. Without this, CwdProvider returns "" → frontend shows ~,
+	// and the agent can't find AGENTS.md.
+	if dir == "" && ag != nil {
+		dir = ag.WorkDir()
 	}
 	return dir
 }

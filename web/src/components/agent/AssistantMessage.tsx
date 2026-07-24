@@ -14,7 +14,7 @@
  * messages. A shimmer "thinking" indicator appears at the bottom during streaming.
  */
 import { memo, useCallback } from 'react'
-import { Copy } from 'lucide-react'
+import { Copy, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { FoldedLine } from './FoldedLine'
@@ -80,8 +80,14 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       progress.completedTools.length > 0
     : false
   // Shimmer only during pure thinking (no tools, no text, no reasoning).
-  // Showing it between tool completions causes flicker.
-  const showThinkingIndicator = isStreaming && !progress?.streamContent && !hasReasoning && !hasToolInProgress && !hasAnyTools
+  // The phase guard prevents a delivery-race flicker: when the LLM returns
+  // tool_calls, recordAssistantMsg pushes Phase=tool_exec BEFORE
+  // initToolProgress populates ActiveTools. If this structured event arrives
+  // before the stream_content event (stateless, different Hub path), the
+  // snapshot briefly has no tools — but phase=tool_exec tells us tools are
+  // coming, so we must NOT show the thinking placeholder.
+  const isThinkingPhase = !progress || progress.phase === '' || progress.phase === 'thinking'
+  const showThinkingIndicator = isStreaming && isThinkingPhase && !progress?.streamContent && !hasReasoning && !hasToolInProgress && !hasAnyTools
   const emptyResponse = isEmptyResponseContent(message.content)
   const finalContent = !emptyResponse && shouldRenderFinalContent(message.content, iterations)
     ? message.content
@@ -155,6 +161,12 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // 'minimal'/'none' level or streaming: render full TurnBody.
   return (
     <div className="group/msg px-1">
+      {isStreaming && liveProgress?.phase === 'compressing' && (
+        <div className="mb-2 flex items-center gap-2 text-xs text-text-muted">
+          <Loader2 className="size-3.5 animate-spin" />
+          <span>{t('agent.compressing')}</span>
+        </div>
+      )}
       <TurnBody
         iterations={iterations}
         liveProgress={liveProgress}

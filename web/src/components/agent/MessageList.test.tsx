@@ -282,12 +282,10 @@ describe('MessageList virtualization', () => {
     await flushAnimationFrames()
     expect(scroller.scrollTop).toBe(scroller.scrollHeight)
 
-    // Content grows before ResizeObserver runs. The browser may emit scroll
-    // while scrollTop still points at the old bottom; this is layout movement,
-    // not user intent, so sticky mode must remain enabled.
-    const oldBottom = scroller.scrollHeight - scroller.clientHeight - 10
-    scroller.scrollTop = oldBottom
-    fireEvent.scroll(scroller)
+    // Content grows — the ResizeObserver triggers scheduleFollow, which writes
+    // scrollTop=scrollHeight. The browser may fire scroll while scrollTop is
+    // momentarily at the old position (before the write applies). Our own write
+    // is flagged so onScroll doesn't treat this as user intent and pause.
     rerender(
       <MessageList
         chatKey="web:chat-1"
@@ -305,7 +303,49 @@ describe('MessageList virtualization', () => {
     expect(scroller.scrollTop).toBe(scroller.scrollHeight)
   })
 
-  it('coalesces repeated content resizes into one bottom write per frame', async () => {
+  it('does not yank the viewport when content grows after the user wheels up', async () => {
+    const { container, rerender } = renderMessageList(
+      <MessageList
+        chatKey="web:chat-1"
+        messages={makeMessages(20)}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement
+
+    await flushAnimationFrames()
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight)
+
+    // User wheels up — this pauses following via the wheel handler
+    fireEvent.wheel(scroller, { deltaY: -10 })
+    const readPosition = scroller.scrollHeight - scroller.clientHeight - 200
+    scroller.scrollTop = readPosition
+    fireEvent.scroll(scroller)
+
+    // Content grows (e.g. streaming). The ResizeObserver must NOT yank the
+    // viewport to the bottom — the user is reading history.
+    rerender(
+      <MessageList
+        chatKey="web:chat-1"
+        messages={makeMessages(21)}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    act(() => RO.trigger(contentElement(container)))
+    await flushAnimationFrames()
+
+    expect(scroller.scrollTop).toBe(readPosition)
+  })
+
+  it('synchronously scrolls to bottom on each content resize', async () => {
     const { container } = renderMessageList(
       <MessageList
         chatKey="web:chat-1"
@@ -321,16 +361,17 @@ describe('MessageList virtualization', () => {
     await flushAnimationFrames()
     const tracked = trackScrollTop(scroller, scroller.scrollHeight - scroller.clientHeight)
 
+    // ResizeObserver now scrolls synchronously (no RAF) to handle virtualizer
+    // scroll corrections. Each trigger immediately writes scrollTop.
     act(() => {
       const content = contentElement(container)
       RO.trigger(content)
       RO.trigger(content)
       RO.trigger(content)
     })
-    expect(tracked.writes).toHaveLength(0)
-
-    await flushAnimationFrames(1)
-    expect(tracked.writes).toEqual([scroller.scrollHeight])
+    // At least one write happened synchronously
+    expect(tracked.writes.length).toBeGreaterThanOrEqual(1)
+    expect(tracked.value).toBe(scroller.scrollHeight)
   })
 
   it('pauses following when the user explicitly wheels upward', async () => {
@@ -369,7 +410,7 @@ describe('MessageList virtualization', () => {
     expect(tracked.value).toBe(scroller.scrollHeight - scroller.clientHeight - 10)
   })
 
-  it('cancels a queued follow scroll when the user scrolls up', async () => {
+  it('cancels a queued follow scroll when the user wheels up', async () => {
     const { container } = renderMessageList(
       <MessageList
         chatKey="web:chat-1"
@@ -383,16 +424,19 @@ describe('MessageList virtualization', () => {
     )
     const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement
     await flushAnimationFrames()
-    const tracked = trackScrollTop(scroller, scroller.scrollHeight - scroller.clientHeight)
 
-    act(() => RO.trigger(contentElement(container)))
+    // User wheels up — pauses following
     fireEvent.wheel(scroller, { deltaY: -10 })
-    tracked.setSilently(scroller.scrollHeight - scroller.clientHeight - 10)
+    const readPosition = scroller.scrollHeight - scroller.clientHeight - 10
+    scroller.scrollTop = readPosition
     fireEvent.scroll(scroller)
+
+    // Now trigger ResizeObserver — should NOT scroll (stick=false from wheel)
+    act(() => RO.trigger(contentElement(container)))
     await flushAnimationFrames(1)
 
-    expect(tracked.writes).toHaveLength(0)
-    expect(tracked.value).toBe(scroller.scrollHeight - scroller.clientHeight - 10)
+    // scrollTop should stay at readPosition, not jump to bottom
+    expect(scroller.scrollTop).toBe(readPosition)
   })
 
   it('resumes following when followResetToken changes', async () => {
@@ -626,7 +670,7 @@ describe('MessageList navigation buttons (Spec A §4)', () => {
     expect(tracked.writes).toHaveLength(0)
 
     fireEvent.keyDown(scroller, { key: 'End' })
-    await flushAnimationFrames(1)
+    await flushAnimationFrames(2)
     expect(tracked.writes).toEqual([scroller.scrollHeight])
   })
 })
@@ -696,7 +740,7 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
     expect(bubble.textContent).not.toMatch(/\d/)
 
     fireEvent.click(bubble)
-    await flushAnimationFrames(1)
+    await flushAnimationFrames(2)
     expect(tracked.value).toBe(scroller.scrollHeight)
   })
 

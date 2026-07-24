@@ -1546,16 +1546,12 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 // It prefers the structured SubAgents field (reliable), falling back to
 // text-based ExtractSubAgentTree only if structured data is unavailable.
 func resolveSubAgents(event *ProgressEvent) []protocol.SubAgentInfo {
-	// Prefer structured data (no fragile text parsing)
+	// Structured data only — no text-based string matching (fragile, pollutes
+	// on similar-looking content). SubAgents are carried forward across
+	// iterations (not cleared in beginIteration), so structured data is always
+	// available when subagents are running.
 	if event.Structured != nil && len(event.Structured.SubAgents) > 0 {
 		return convertCLISubAgentTree(event.Structured.SubAgents)
-	}
-	// Fallback: text-based parsing for backward compatibility
-	if len(event.Lines) > 0 {
-		subAgents := ExtractSubAgentTree(event.Lines)
-		if len(subAgents) > 0 {
-			return convertCLISubAgentTree(subAgents)
-		}
 	}
 	return nil
 }

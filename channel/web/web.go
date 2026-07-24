@@ -118,6 +118,8 @@ type WebCallbacks struct {
 	RewindHistory func(senderID string, sel SessionSelector, cutoff time.Time) (RewindHistoryResult, error)
 	// GetCWD returns the current directory for a Web-accessible session.
 	GetCWD func(senderID string, sel SessionSelector) (string, error)
+	// GetTodos returns the current TODO list for a Web-accessible session.
+	GetTodos func(senderID string, sel SessionSelector) ([]protocol.TodoItem, error)
 	// SetCWD sets the current directory for a Web-accessible session.
 	SetCWD func(senderID string, sel SessionSelector, dir string) error
 	// BackgroundTasks returns background shell tasks for a Web-accessible session.
@@ -653,6 +655,7 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 		Channel:         msg.Channel,
 		ChatID:          msg.ChatID,
 		SessionReset:    msg.Metadata != nil && msg.Metadata["session_reset"] == "true",
+		Cancelled:       msg.Metadata != nil && msg.Metadata["cancelled"] == "true",
 		// Only forward frontend-relevant metadata keys — avoid leaking internal
 		// keys like feishu_user_id, request_id, cancelled, etc.
 	}
@@ -744,6 +747,24 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 
 	if !wc.hub.sendToSession(channel, chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
+	}
+}
+
+// InjectUserMessage implements channel.UserMessageInjector.
+// Called by agent.injectCLIUserMessage when bg task / cron notifications are
+// drained and injected as user messages. Without this, web clients never
+// receive the notification's user message — only the agent's reply.
+// chatID is in "channel:chatID" format (from qualifyChatID).
+func (wc *WebChannel) InjectUserMessage(chatID, content string) {
+	stripped := stripChannelPrefix(chatID)
+	wsMsg := protocol.WSMessage{
+		Type:    protocol.MsgTypeInjectUser,
+		TS:      time.Now().Unix(),
+		ChatID:  chatID, // full qualified format for frontend matching
+		Content: content,
+	}
+	if !wc.hub.sendToSession("web", stripped, wsMsg) {
+		log.WithField("chat_id", chatID).Debug("Web client offline, inject_user buffered")
 	}
 }
 

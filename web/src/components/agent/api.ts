@@ -8,7 +8,7 @@
  * LLM subscription/model RPCs (Spec D) go through WSConnection.rpc → POST /api/rpc.
  */
 import type { WSConnection } from '@/types/ws'
-import type { ContextUsage, ModelEntry, PerModelConfig, SessionSelector, Subscription } from '@/types/shared'
+import type { ContextUsage, ModelEntry, PerModelConfig, SessionSelector, Subscription, TodoItem } from '@/types/shared'
 import { postAPI } from '@/lib/api'
 
 /** History message row (protocol.HistoryMessage). */
@@ -65,9 +65,9 @@ export async function fetchHistory(_ws: WSConnection, session?: SessionSelector 
   return postAPI<HistoryResponse>('/api/history', sessionBody(session))
 }
 
-export async function fetchCwd(session?: SessionSelector | null): Promise<{ dir?: string }> {
-  const status = await postAPI<{ cwd?: string }>('/api/session/status', sessionBody(session))
-  return { dir: status.cwd }
+export async function fetchCwd(session?: SessionSelector | null): Promise<{ dir?: string; todos?: TodoItem[] }> {
+  const status = await postAPI<{ cwd?: string; todos?: TodoItem[] }>('/api/session/status', sessionBody(session))
+  return { dir: status.cwd, todos: status.todos }
 }
 
 export async function setCwd(session: SessionSelector, dir: string): Promise<{ dir?: string }> {

@@ -138,6 +138,13 @@ export function useProgressStream({
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
   const finalizedRef = useRef(false)
+  // Set when PhaseDone is received. Prevents session(idle) from defensively
+  // finalizing — PhaseDone means the turn ended, and the text event (normal
+  // or cancel ack) is the authoritative finalizer. Without this, if
+  // session(idle) arrives before text(cancelled), the defensive finalize
+  // commits stale streamContent that the backend already persisted to DB →
+  // duplicate message on history reload.
+  const phaseDoneRef = useRef(false)
   const prevProgressCacheKeyRef = useRef<string | null>(null)
 
   // Track chatID inside the handlers via ref so we don't tear down the store on
@@ -155,6 +162,7 @@ export function useProgressStream({
   // Switch immediately to this chat's in-memory snapshot while history refreshes.
   useLayoutEffect(() => {
     finalizedRef.current = false
+    phaseDoneRef.current = false
     // Full reset on chatID change (including todos — different session).
     // On non-chatID triggers (disabled toggle), preserve todos via reset().
     if (progressCacheKey !== prevProgressCacheKeyRef.current) {
@@ -234,7 +242,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef)
     })
     return offMessage
   }, [store, disabled, channel])
@@ -264,6 +272,7 @@ export function useProgressStream({
     isStreaming: hasVisibleProgress(progressSnapshot),
     resetProgress: () => {
       finalizedRef.current = true
+      phaseDoneRef.current = false
       store.reset()
     },
   }
@@ -292,13 +301,17 @@ function handleProgressMessage(
   compactedRef: React.MutableRefObject<UseProgressStreamOptions['onHistoryCompacted']>,
   resetRef: React.MutableRefObject<UseProgressStreamOptions['onSessionReset']>,
   finalizedRef?: React.MutableRefObject<boolean>,
+  phaseDoneRef?: React.MutableRefObject<boolean>,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
-      // NOTE: finalizedRef is NOT reset here. It is only reset when a new turn
-      // begins (session(busy)). Resetting on stream_content causes the guard
-      // to be cleared after a text event finalizes, so a subsequent
-      // session(idle) event triggers a duplicate onAssistantComplete call.
+      // Reset finalizedRef here — stream_content is the first sign that the
+      // LLM is actively generating for this turn. This is safer than resetting
+      // on session(busy), which can arrive from SSE reconnect recovery
+      // (restoreActiveProgress) and would allow stale text events to be
+      // re-processed, causing duplicate messages.
+      if (finalizedRef) finalizedRef.current = false
+      if (phaseDoneRef) phaseDoneRef.current = false
 
       // stream_content carries content deltas in progress.stream_content /
       // progress.reasoning_stream_content (channel/web/web.go SendStreamContent).
@@ -327,11 +340,14 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
       if (p.phase === 'done') {
-        // PhaseDone: notify sessionStore to clear running immediately.
-        // DON'T set phase='done' — that would null liveMessage (snap.phase
-        // === 'done' returns null), causing iterations to flash/disappear.
-        // Let the text event (normal end) or session(idle) defensive finalize
-        // (cancel) handle the cleanup via onAssistantComplete → appendAssistant.
+        // PhaseDone: the turn is over. Mark it so session(idle) doesn't
+        // defensively finalize — the text event (normal or cancel ack) is
+        // the authoritative finalizer.
+        if (phaseDoneRef) phaseDoneRef.current = true
+        // PhaseDone: the turn is over. Clear in-flight tool state
+        // (activeTools/completedTools/streamingTools) so no tool appears
+        // "running" after the turn ends. Preserve iterationHistory and
+        // streamContent — the text event or cancel ack will read them.
         window.dispatchEvent(new CustomEvent('agent-idle', {
           detail: { chatID: p.chat_id ?? undefined, channel: undefined },
         }))
@@ -346,13 +362,18 @@ function handleProgressMessage(
         }
         if (doneTodos) {
           store.setStructuredTools({ eventSeq: typeof p.seq === 'number' ? p.seq : undefined, todos: doneTodos })
+        } else {
+          // No todos to update — still clear in-flight tools.
+          store.resetStreamingState()
         }
         return
       }
-      // A non-done structured event indicates active work — reset the finalize
-      // guard so a subsequent text event can complete. This covers turns where
-      // progress_structured arrives before session(busy).
-      if (finalizedRef) finalizedRef.current = false
+      // Do NOT reset finalizedRef here. A non-done structured event may be a
+      // stale replay from a cancelled/ended turn (SSE reconnect recovery). 
+      // Resetting would allow a subsequent session(idle) to re-finalize and
+      // append stale content as a duplicate message. finalizedRef is reset
+      // only on stream_content (genuine new LLM output) or session(busy) on a
+      // clean store (genuine new turn).
       if (p.history_compacted) {
         store.reset()
         compactedRef.current?.()
@@ -423,6 +444,42 @@ function handleProgressMessage(
         resetRef.current?.()
         return
       }
+      // Cancel ack: the turn was cancelled. The live store already has the
+      // rendered content + iterations (built incrementally via SSE). We do
+      // NOT reset the store or fetch server data — the user already sees the
+      // content, we just commit it as a regular message + append
+      // user_cancelled so the iteration is preserved as-is.
+      //
+      // PhaseDone may have fired before this (clearing activeTools but the
+      // text/cancel ack carries progress_history with the full iteration
+      // history including user_cancelled). We use the server's
+      // progress_history as the source — it's authoritative and includes
+      // user_cancelled. If the live store still has data (PhaseDone didn't
+      // fire), we merge: server iterations + any live-only iterations.
+      if (msg.cancelled) {
+        if (finalizedRef) finalizedRef.current = true
+        const parsedIterations = parseWebIterations(msg.progress_history)
+        const snap = store.getSnapshot()
+        const liveIters = snap.iterationHistory
+        // Merge: server iterations (authoritative, has user_cancelled) +
+        // any live-only iterations not in server data.
+        const serverIterNums = new Set(parsedIterations.map((i) => i.iteration))
+        const liveOnly = liveIters.filter((i) => !serverIterNums.has(i.iteration))
+        const iters = [...parsedIterations, ...liveOnly]
+        const text = snap.streamContent || snap.content || ''
+        if (text || iters.length > 0) {
+          completeRef.current?.(text, iters, msg.seq)
+          if (hasVisibleProgress(store.getSnapshot())) store.reset()
+        } else if (hasVisibleProgress(snap)) {
+          store.reset()
+        }
+        // Dispatch agent-idle so useSessionStore clears the busy state even
+        // if the session(idle) SSE event was dropped (sendCh full / network).
+        window.dispatchEvent(new CustomEvent('agent-idle', {
+          detail: { chatID: msg.chat_id ?? undefined, channel: msg.channel ?? undefined },
+        }))
+        return
+      }
       // Final assistant message: commit then clear the live stream.
       // Guard against duplicate onAssistantComplete within the same turn
       // (e.g. text + session(idle) arriving before RAF flushes).
@@ -442,7 +499,15 @@ function handleProgressMessage(
       completeRef.current?.(finalText, iterations, msg.seq)
       // onAssistantComplete calls store.reset() synchronously inside flushSync.
       // Fallback: if onAssistantComplete did not reset (e.g., not set), reset here.
-      if (hasVisibleProgress(store.getSnapshot()) && !finalizedRef?.current) store.reset()
+      // The reset is idempotent — if onAssistantComplete already cleared the
+      // store, hasVisibleProgress returns false and no double-reset occurs.
+      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      // Dispatch agent-idle so useSessionStore clears the busy state.
+      // PhaseDone normally handles this, but bang commands and slash commands
+      // bypass Run() and never send PhaseDone.
+      window.dispatchEvent(new CustomEvent('agent-idle', {
+        detail: { chatID: msg.chat_id ?? undefined, channel: msg.channel ?? undefined },
+      }))
       return
     }
 
@@ -456,10 +521,22 @@ function handleProgressMessage(
       const action = msg.session?.action
 
       if (action === 'busy') {
-        if (finalizedRef) finalizedRef.current = false
-        // Don't fully reset on session(busy) — the ask_user response path
-        // re-enters the same turn, and prior iterations must survive.
-        // Only clear streaming fields, keep iterationHistory.
+        const snap = store.getSnapshot()
+        // If we're already mid-stream, don't disrupt — a synthetic busy from
+        // recovery must not wipe cumulative streamContent (causes typer restart).
+        if (snap.streamContent || snap.reasoningStreamContent) {
+          return
+        }
+        // On a clean store (no visible progress), this is a genuine new turn.
+        // Reset the finalize guard so a subsequent text event can complete.
+        // This is safe because a clean store means no in-flight content to
+        // protect — a recovery busy on a clean store is indistinguishable
+        // from a genuine new turn, and both should allow finalization.
+        if (!hasVisibleProgress(snap)) {
+          if (finalizedRef) finalizedRef.current = false
+          return
+        }
+        // Dirty store with no stream content — clear stale tool state.
         store.resetStreamingState()
         return
       }
@@ -471,15 +548,24 @@ function handleProgressMessage(
         return
       }
 
-      // On idle, if we had accumulated stream content without a closing text,
-      // finalize defensively. Skip if already finalized (text event arrived first).
+      // On idle, the turn is OVER. Clear all progress state.
+      // If finalizedRef=true, onAssistantComplete already committed the content
+      // via flushSync (appendAssistant + resetProgress). The store's
+      // iterationHistory is now redundant — the committed message has its own
+      // copy. A full reset() clears activeTools/completedTools/streamingTools
+      // and iterationHistory, making liveMessage null (clean transition to
+      // the committed row).
+      // If finalizedRef=false AND phaseDoneRef=false (defensive finalize — no
+      // text event arrived), commit the accumulated content first, then reset.
+      // If phaseDoneRef=true, the turn ended via PhaseDone — the text event
+      // (normal or cancel ack) is the authoritative finalizer. Skip defensive
+      // finalize to avoid committing content the backend already persisted.
       if (action === 'idle') {
-        if (finalizedRef?.current) {
-          // Already finalized via text event — just clear streaming state.
-          // Don't reset() — that would clear iterationHistory and cause
-          // iterations to flash/disappear. resetStreamingState preserves
-          // iterationHistory and todos.
-          store.resetStreamingState()
+        if (finalizedRef?.current || phaseDoneRef?.current) {
+          if (hasVisibleProgress(store.getSnapshot())) {
+            store.reset()
+          }
+          if (phaseDoneRef) phaseDoneRef.current = false
           return
         }
         const snap = store.getSnapshot()
@@ -487,14 +573,8 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
-          // Call completeRef BEFORE clearing streaming state so onAssistantComplete
-          // can flushSync the append before liveMessage is cleared.
           completeRef.current?.(text, iters, msg.seq)
-          // Use resetStreamingState (not reset) — preserves iterationHistory
-          // so cancel doesn't cause iterations to disappear and reappear.
-          store.resetStreamingState()
-        } else {
-          store.resetStreamingState()
+          store.reset()
         }
       }
       return

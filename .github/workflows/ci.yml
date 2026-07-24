@@ -118,10 +118,45 @@ jobs:
 
       - name: Test
         working-directory: web
-        continue-on-error: true # TODO: 28 pre-existing failures from "no cache" refactor — fix & remove this flag
         run: npm run test
 
       - name: Build
         working-directory: web
         run: npm run build
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        working-directory: web
+        env:
+          CI: "true"
+        # Only run scroll.spec.ts (uses page.route() mock backend — no real server needed).
+        # Other E2E tests (login, chat, right-sidebar) require a real backend.
+        run: npx playwright test e2e/scroll.spec.ts --project=chromium --reporter=line
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: web/test-results/
+          retention-days: 7
 

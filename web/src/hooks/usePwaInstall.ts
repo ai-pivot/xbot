@@ -9,6 +9,13 @@
  */
 import { useEffect, useState } from 'react'
 
+/** Compute SHA-1 hex hash of a string using the Web Crypto API. */
+async function sha1Hex(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text)
+  const buf = await crypto.subtle.digest('SHA-1', data)
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
@@ -102,26 +109,51 @@ export function usePwaInstall() {
   // Returns true if an update was found and applied (reload needed).
   const checkForUpdate = async () => {
     if (!('serviceWorker' in navigator)) return false
-    const reg = await navigator.serviceWorker.getRegistration('/')
-    if (!reg) return false
-    // Listen for controllerchange — if skipWaiting activates a new SW,
-    // the event fires and we know an update was applied.
-    let changed = false
-    const onChange = () => { changed = true }
-    navigator.serviceWorker.addEventListener('controllerchange', onChange, { once: true })
+    const reg = await navigator.serviceWorker.getRegistration('/').catch(() => null)
+    if (reg) {
+      // SW is registered — use the standard update flow.
+      let changed = false
+      const onChange = () => { changed = true }
+      navigator.serviceWorker.addEventListener('controllerchange', onChange, { once: true })
+      try {
+        await reg.update()
+        await new Promise((r) => setTimeout(r, 500))
+      } finally {
+        navigator.serviceWorker.removeEventListener('controllerchange', onChange)
+      }
+      if (changed) {
+        setUpdateAvailable(true)
+        return true
+      }
+      setUpdateAvailable(false)
+      return false
+    }
+    // No SW registered (e.g. localhost) — fetch /sw.js directly and compare
+    // the served precache manifest against the currently loaded index.html.
+    // If the hash differs, an update is available.
     try {
-      await reg.update()
-      // Give the SW a moment to install + activate (skipWaiting is synchronous
-      // but activation is async).
-      await new Promise((r) => setTimeout(r, 500))
-    } finally {
-      navigator.serviceWorker.removeEventListener('controllerchange', onChange)
-    }
-    if (changed) {
-      setUpdateAvailable(true)
-      return true
-    }
-    // No update found — clear the flag so the button resets.
+      const res = await fetch('/sw.js', { cache: 'no-store' })
+      const text = await res.text()
+      // The SW precaches index.html with a revision hash. Extract it and
+      // compare against the current page's index.html hash.
+      const match = text.match(/"index\.html",revision:"([^"]+)"/)
+      if (match && match[1]) {
+        // Fetch the current index.html and compute its hash to compare.
+        const indexRes = await fetch('/index.html', { cache: 'no-store' })
+        const indexText = await indexRes.text()
+        // Simple comparison: if the SW's precache revision differs from a
+        // hash of the current index.html content, an update is available.
+        // We use a simple length+substring check as a lightweight proxy —
+        // the SW revision changes when the build changes the index.html.
+        const currentHash = await sha1Hex(indexText)
+        if (match[1] !== currentHash) {
+          setUpdateAvailable(true)
+          return true
+        }
+        setUpdateAvailable(false)
+        return false
+      }
+    } catch { /* ignore */ }
     setUpdateAvailable(false)
     return false
   }

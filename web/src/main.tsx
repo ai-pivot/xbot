@@ -9,6 +9,13 @@ import { I18nProvider } from '@/providers/i18n'
 import { registerSW } from '@/components/PWAUpdatePrompt'
 import { toast } from 'sonner'
 
+// Disable browser scroll restoration — the app manages scroll position
+// (virtualizer + scheduleFollow). Browser restoration fights our scroll,
+// causing the view to jump from bottom to a stale mid-page position on refresh.
+if ('scrollRestoration' in history) {
+  history.scrollRestoration = 'manual'
+}
+
 // Register Service Worker (PWA auto-update).
 registerSW()
 

@@ -89,6 +89,15 @@ export function MessageList({
   const contentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const pendingFollowRafRef = useRef<number | null>(null)
+  // Generation counter — each scheduleFollow call increments this. The
+  // tryScroll loop checks it to know if it's the latest follow (cancel
+  // old loops when a new scheduleFollow supersedes them).
+  const followGenRef = useRef(0)
+  // Marks scrolls caused by our own scheduleFollow (el.scrollTop = scrollHeight).
+  // Set before the write and cleared via queueMicrotask after — so the flag is
+  // only true during the synchronous scroll event our write dispatches, not
+  // across unrelated later scroll events.
+  const programmaticScrollRef = useRef(false)
   const lastChatKeyRef = useRef<string | null | undefined>(chatKey)
   const lastRowCountRef = useRef(0)
   const lastFollowResetTokenRef = useRef(followResetToken)
@@ -185,29 +194,45 @@ export function MessageList({
   }, [])
 
   const scheduleFollow = useCallback(() => {
-    if (!stickToBottomRef.current || pendingFollowRafRef.current !== null) return
-    // Double RAF: first frame lets virtualizer update item sizes,
-    // second frame scrolls to the now-correct scrollHeight.
+    if (!stickToBottomRef.current) return
+    // Coalesce: if a follow is already pending, don't cancel it — just mark
+    // that a new follow was requested. The pending RAF will check the latest
+    // scrollHeight. Cancelling starves the RAF when ResizeObserver fires rapidly.
+    if (pendingFollowRafRef.current !== null) return
+    setHasNewContent(false)
+    const gen = ++followGenRef.current
     pendingFollowRafRef.current = requestAnimationFrame(() => {
-      pendingFollowRafRef.current = requestAnimationFrame(() => {
-        pendingFollowRafRef.current = null
-        if (!stickToBottomRef.current) return
-        const el = scrollRef.current
-        if (el) el.scrollTop = el.scrollHeight
-      })
+      pendingFollowRafRef.current = null
+      if (!stickToBottomRef.current || gen !== followGenRef.current) return
+      const el = scrollRef.current
+      if (el) {
+        let attempts = 0
+        const tryScroll = () => {
+          if (!stickToBottomRef.current || gen !== followGenRef.current || ++attempts > 15) return
+          programmaticScrollRef.current = true
+          const prev = el.scrollHeight
+          el.scrollTop = el.scrollHeight
+          queueMicrotask(() => { programmaticScrollRef.current = false })
+          requestAnimationFrame(() => {
+            if (stickToBottomRef.current && gen === followGenRef.current && el.scrollHeight > prev) tryScroll()
+          })
+        }
+        tryScroll()
+      }
     })
   }, [])
 
   // ── Scroll event handler ──────────────────────────────────────────────────
-  // onScroll ONLY updates UI state (atTop, atBottom, visibleRange).
-  // It does NOT control stickToBottomRef — that is exclusively driven by
-  // user-input handlers (onWheel, onKeyDown, onPointer*, onTouch*).
+  // onScroll syncs stickToBottomRef with the true scroll position — this is
+  // the ONLY event that knows whether the user is actually at the bottom,
+  // including scroll paths that don't fire wheel/pointer/touch handlers
+  // (e.g. scrollbar-drag on some browsers, programmatic/external scroll).
   //
-  // The previous implementation called pauseFollowing()/resumeFollowing()
-  // inside onScroll, which created a race: a 1px wheel-up would pause
-  // following, but onScroll immediately resumed it because the scroll was
-  // still within EDGE_EPSILON (2px) of the bottom. This caused the viewport
-  // to be yanked back to the bottom on the next content-growth frame.
+  // A programmatic-scroll flag (programmaticScrollRef) distinguishes our own
+  // scheduleFollow write from genuine user scroll. Without it, content growth
+  // fires scheduleFollow → scrollTop=scrollHeight → onScroll fires while
+  // scrollTop is momentarily at the old position (before the browser applies
+  // the write) → a naive "not at bottom → pause" would kill following mid-stream.
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
@@ -215,6 +240,15 @@ export function MessageList({
     const atStart = el.scrollTop <= EDGE_EPSILON
     setAtTop((prev) => (prev === atStart ? prev : atStart))
     setAtBottom((prev) => (prev === atEnd ? prev : atEnd))
+    if (programmaticScrollRef.current) {
+      return
+    }
+    // Do NOT set stickToBottomRef=false here. The virtualizer performs scroll
+    // corrections during lazy measurement — it adjusts scrollTop to maintain
+    // visual stability, which fires onScroll. If we set stick=false here, the
+    // ResizeObserver callback (which re-scrolls to bottom) would be skipped,
+    // leaving the viewport stuck mid-page. stick=false is set ONLY by user
+    // input handlers (wheel/pointer/touch/keydown) — genuine user scroll.
     const items = virtualizer.getVirtualItems()
     if (items.length > 0) {
       const newStart = items[0].index
@@ -225,7 +259,7 @@ export function MessageList({
           : { start: newStart, end: newEnd },
       )
     }
-  }, [virtualizer])
+  }, [virtualizer, cancelPendingFollow])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
@@ -259,17 +293,74 @@ export function MessageList({
 
   // Treat the live snapshot as the activity revision: any progress update while
   // paused is new content, even when it does not change the rendered height.
+  // Only show "new content" when NOT following the bottom — if we're already
+  // at the bottom, there's nothing the user needs to scroll to.
+  // When following (stick=true) but not actually at the bottom (diff > 2px),
+  // force-scroll to bottom — this is a safety net for cases where ResizeObserver
+  // didn't fire (e.g. virtualizer corrected scrollHeight without resizing content).
+  //
+  // When NOT following (stick=false), the virtualizer may still perform scroll
+  // correction (adjusting scrollTop to maintain visual stability when content
+  // grows near the viewport). We capture the scrollTop BEFORE the render and
+  // restore it AFTER, so the user's viewport stays fixed.
+  const savedScrollTopRef = useRef<number | null>(null)
   useEffect(() => {
-    if (!stickToBottomRef.current) setHasNewContent(true)
+    if (!stickToBottomRef.current) {
+      // Capture current scrollTop before the virtualizer re-renders and
+      // potentially adjusts it. We'll restore it in a useLayoutEffect.
+      const el = scrollRef.current
+      if (el) savedScrollTopRef.current = el.scrollTop
+      setHasNewContent(true)
+      return
+    }
+    // stick=true — ensure we're actually at the bottom
+    const el = scrollRef.current
+    if (el && el.scrollHeight - el.clientHeight - el.scrollTop > 2) {
+      programmaticScrollRef.current = true
+      el.scrollTop = el.scrollHeight
+      queueMicrotask(() => { programmaticScrollRef.current = false })
+    }
   }, [rows.length, liveProgress, hasFooter])
+
+  // Restore scrollTop after the virtualizer's scroll correction, when stick=false.
+  // The virtualizer corrects scrollTop via ResizeObserver, which fires AFTER
+  // useLayoutEffect but BEFORE requestAnimationFrame. So we use rAF to
+  // restore — it runs after ResizeObserver (undoing the correction) but
+  // before paint (no visible flicker).
+  useEffect(() => {
+    if (savedScrollTopRef.current === null || stickToBottomRef.current) return
+    const saved = savedScrollTopRef.current
+    savedScrollTopRef.current = null
+    const raf = requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (el && Math.abs(el.scrollTop - saved) > 2) {
+        programmaticScrollRef.current = true
+        el.scrollTop = saved
+        queueMicrotask(() => { programmaticScrollRef.current = false })
+      }
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [rows.length, liveProgress])
 
   // ── ResizeObserver: follow bottom when sticky ─────────────────────────────
   useEffect(() => {
     const scrollElement = scrollRef.current
     const content = contentRef.current
     if (!scrollElement || !content || typeof ResizeObserver === 'undefined') return
+    // ResizeObserver fires during the browser's pre-paint phase (same as
+    // useLayoutEffect), so synchronous scrolling here has no visual flicker.
+    // This is critical for the virtualizer: it fires many ResizeObserver
+    // callbacks during lazy measurement, and each one must immediately correct
+    // scrollTop to the new scrollHeight. Using RAF (scheduleFollow) here causes
+    // an active loop: the RAF cancels/reschedules faster than it can execute.
     const observer = new ResizeObserver(() => {
-      if (stickToBottomRef.current) scheduleFollow()
+      if (!stickToBottomRef.current) return
+      const el = scrollRef.current
+      if (el) {
+        programmaticScrollRef.current = true
+        el.scrollTop = el.scrollHeight
+        queueMicrotask(() => { programmaticScrollRef.current = false })
+      }
     })
     observer.observe(scrollElement)
     observer.observe(content)
@@ -277,7 +368,7 @@ export function MessageList({
       observer.disconnect()
       cancelPendingFollow()
     }
-  }, [cancelPendingFollow, scheduleFollow])
+  }, [cancelPendingFollow])
 
   // ── Chat switch or new messages: follow bottom when sticky ────────────────
   useLayoutEffect(() => {
@@ -290,13 +381,13 @@ export function MessageList({
     lastRowCountRef.current = rows.length
     lastFollowResetTokenRef.current = followResetToken
     if (!el || rows.length === 0 || (!chatChanged && !initialLoad && !followReset && !newMessagesAdded)) return
-    // If new messages were added (e.g. by background reload after assistant
-    // completion), only follow if already sticky — don't yank the user down
-    // if they scrolled up.
     if (newMessagesAdded && !stickToBottomRef.current) return
     resumeFollowing()
     scheduleFollow()
-  }, [chatKey, followResetToken, rows.length, resumeFollowing, scheduleFollow])
+  }, [chatKey, followResetToken, rows.length, resumeFollowing, scheduleFollow, virtualizer, loading])
+
+  // ── Loading→false: scroll to bottom after history is fully loaded ──────────
+  // (Removed polling — was not effective. Investigating root cause.)
 
   // ── Navigation helpers ────────────────────────────────────────────────────
   const scrollToTop = useCallback(() => {
@@ -438,10 +529,18 @@ export function MessageList({
           )}
           {/* Busy placeholder: when agent is thinking but no streaming
               content has arrived yet (e.g. session just started, or
-              switched to a busy tab with no iterations). */}
-          {busy && !liveMessage && (
+              switched to a busy tab with no iterations). Hidden during
+              loading — the Loader2 spinner handles that state. */}
+          {busy && !liveMessage && !loading && (
             <div className="px-3 py-2">
-              <ShimmerThinking />
+              {liveProgress?.phase === 'compressing' ? (
+                <div className="flex items-center gap-2 text-xs text-text-muted">
+                  <Loader2 className="size-3.5 animate-spin" />
+                  <span>{t('agent.compressing')}</span>
+                </div>
+              ) : (
+                <ShimmerThinking />
+              )}
             </div>
           )}
           {footer}

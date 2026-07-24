@@ -172,6 +172,7 @@ const zhCN = {
     emptyConversation: '在下方发送消息开始对话。',
     loading: '加载中…',
     sending: '发送中…',
+    compressing: '正在压缩上下文…',
     iterations: '迭代历史',
     tools: '工具',
     iteration: '迭代',

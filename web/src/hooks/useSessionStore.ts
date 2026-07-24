@@ -812,15 +812,16 @@ export function useSessionStoreImpl(): SessionStore {
       const data = await postAPI<ListSessionTreeResponse>('/api/session-tree')
       if (seq !== refreshSeqRef.current) return
       const normalized = normalizeCanonicalSessionTree(data.sessions || [], data.orphan_subagents || [])
-      const { mainSessions, agents } = mergeTransientSubAgents(normalized.mainSessions, transientSubAgentsRef.current)
+      const { mainSessions } = mergeTransientSubAgents(normalized.mainSessions, transientSubAgentsRef.current)
       if (initialLoad) addRunningSessionKeys(mainSessions, executingSessionsRef.current)
       const { sessions: markedSessions, active } = reconcileActiveSession(mainSessions, activeSessionRef.current)
       const withUnread = applyPersistedUnreadStatuses(markedSessions, new Set(unreadIdsRef.current), active)
       const cachedSessions = mergeStatus(sessionsRef.current, withUnread, executingSessionsRef.current)
       sessionsRef.current = cachedSessions
-      saveSessionTreeCache(cachedSessions, agents)
+      const cachedAgents = flattenTreeAgents(cachedSessions)
+      saveSessionTreeCache(cachedSessions, cachedAgents)
       setSessions((prev) => (sameSessionList(prev, cachedSessions) ? prev : cachedSessions))
-      setSubAgents((prev) => (sameSessionList(prev, agents) ? prev : agents))
+      setSubAgents((prev) => (sameSessionList(prev, cachedAgents) ? prev : cachedAgents))
       if (active) setActiveSession(active)
     } catch (e) {
       if (seq !== refreshSeqRef.current) return
@@ -862,12 +863,20 @@ export function useSessionStoreImpl(): SessionStore {
       if (carried.status === 'waiting_input' || carried.status === 'error' || carried.status === 'unread') {
         return { ...node, status: carried.status, running: false, children }
       }
-      // Running status: executingSessionsRef is authoritative.
+      // Running status: executingSessionsRef is authoritative for main sessions.
       // If SSE busy was received (key in set), force running.
       // If SSE idle was received (key not in set), don't carry over a stale
       // idle from prev — trust the HTTP response which may now say running
       // (the session went busy after the last SSE idle).
       if (executingKeys.has(sessionKey(node))) {
+        return { ...node, status: 'running', running: true, children }
+      }
+      // SubAgents: the backend's IsProcessingByChannel checks chatCancelCh,
+      // but one-shot SubAgents don't register there. So the HTTP response
+      // may report running=false even while the SubAgent is actively running.
+      // Carry over the SSE-driven running state from prev (set by
+      // applySubAgentLifecycle via subagent_started).
+      if (node.type === 'agent' && carried.running === true) {
         return { ...node, status: 'running', running: true, children }
       }
       return { ...node, children }

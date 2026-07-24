@@ -163,6 +163,7 @@ export interface WSMessage {
   sender_name?: string
   chat_type?: string
   session_reset?: boolean
+  cancelled?: boolean
   metadata?: Record<string, string>
   result?: unknown
   error?: string

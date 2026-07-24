@@ -38,6 +38,21 @@ import type { ProgressEvent } from '@/types/shared'
 type Listener = () => void
 type Mutator = (draft: ProgressSnapshot) => void
 
+/**
+ * Append new iterations (Delta Push: 0-1 entries) to iterationHistory,
+ * deduplicating by iteration number. Creates a new array reference so
+ * immer detects the change (push on draft arrays can be unreliable when
+ * the source is a shared constant like EMPTY_PROGRESS_SNAPSHOT).
+ */
+function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
+  const newIters = incoming.filter(
+    (iter) => !draft.iterationHistory.some((i) => i.iteration === iter.iteration),
+  )
+  if (newIters.length > 0) {
+    draft.iterationHistory = [...draft.iterationHistory, ...newIters]
+  }
+}
+
 // ── exported helpers (used by useProgressStream) ──────────────────────────
 
 /** Detect a stream-only event: no phase/iteration, has stream fields. */
@@ -295,23 +310,26 @@ export class ProgressStore {
     this.listeners.forEach((l) => l())
   }
 
-  /** Reset only streaming fields, preserving iterationHistory and todos.
-   *  Used when session(busy) fires after an ask_user response — the turn
-   *  continues and prior iterations must survive. */
+  /** Reset only streaming fields, preserving iterationHistory, todos,
+   *  AND in-flight stream text (streamContent/reasoningStreamContent/streaming).
+   *
+   *  streamContent/reasoningStreamContent are cumulative values that only grow
+   *  within a turn. Clearing them mid-turn (e.g. on a synthetic session(busy)
+   *  from SSE reconnect recovery) wipes the accumulated text, which causes the
+   *  typewriter to reset to 0 and re-type the entire message ("来回 type").
+   *  They are already cleared at genuine iteration boundaries
+   *  (setStructuredTools) and on full reset(). */
   resetStreamingState(): void {
     if (this.disposed) return
     this.mutate((draft) => {
-      draft.streamContent = ''
-      draft.reasoningStreamContent = ''
-      draft.content = ''
-      draft.streaming = false
       draft.phase = ''
       draft.streamingTools = []
       draft.activeTools = []
       draft.completedTools = []
       draft.genuiContent = ''
       draft.lastReasoning = ''
-      // Keep: iterationHistory, todos, subAgents, tokenUsage, iteration, lastIter
+      // Keep: iterationHistory, todos, subAgents, tokenUsage, iteration, lastIter,
+      //       streamContent, reasoningStreamContent, content, streaming
     })
   }
 
@@ -397,8 +415,20 @@ export class ProgressStore {
 
     // ProgressEvent.Seq is the semantic log ID assigned before channel fan-out.
     // Replayed/duplicate events at or below the installed snapshot watermark
-    // are no-ops. Transport envelope seq remains independent.
-    if (opts.eventSeq !== undefined && opts.eventSeq <= this.current.eventSeq) return
+    // are no-ops — EXCEPT for iterationHistory. Recovery events (from
+    // restoreActiveProgress) carry the same seq as the last event (they
+    // come from lastProgressSnapshot), so the seq check would drop them
+    // entirely — including their iterationHistory. We must still append
+    // any new iterations before returning, otherwise lost iterations
+    // (from dropped delta events) are permanently lost.
+    if (opts.eventSeq !== undefined && opts.eventSeq <= this.current.eventSeq) {
+      if (opts.iterationHistory && opts.iterationHistory.length > 0) {
+        this.mutate((draft) => {
+          appendIterations(draft, opts.iterationHistory!)
+        })
+      }
+      return
+    }
 
     this.mutate((draft) => {
       if (opts.eventSeq !== undefined) draft.eventSeq = opts.eventSeq
@@ -487,15 +517,7 @@ export class ProgressStore {
       // completed iterations (0-1 entries). Must append with dedup by
       // iteration number, NOT replace. Replacing loses all prior iterations.
       if (opts.iterationHistory && opts.iterationHistory.length > 0) {
-        const existing = new Set(draft.iterationHistory.map((i) => i.iteration))
-        const appended = [...draft.iterationHistory]
-        for (const iter of opts.iterationHistory) {
-          if (!existing.has(iter.iteration)) {
-            appended.push(iter)
-            existing.add(iter.iteration)
-          }
-        }
-        draft.iterationHistory = appended
+        appendIterations(draft, opts.iterationHistory)
       }
 
       // ── todos: always update when present (including empty arrays).
@@ -548,18 +570,10 @@ export class ProgressStore {
       }
       // Merge iterationHistory by iteration number (union)
       if (next.iterationHistory) {
-        const existing = new Set(draft.iterationHistory.map((i) => i.iteration))
-        const merged = [...draft.iterationHistory]
-        for (const iter of next.iterationHistory) {
-          if (!existing.has(iter.iteration)) {
-            merged.push(iter)
-            existing.add(iter.iteration)
-          }
-        }
-        draft.iterationHistory = merged
+        appendIterations(draft, next.iterationHistory)
         // Recompute lastIter from merged history so the delta push protocol
         // continues correctly (next SSE event knows which iterations exist).
-        const maxIter = merged.reduce((max, i) => Math.max(max, i.iteration), -1)
+        const maxIter = draft.iterationHistory.reduce((max, i) => Math.max(max, i.iteration), -1)
         if (maxIter > draft.lastIter) draft.lastIter = maxIter
       }
       // Assign remaining fields, but NEVER downgrade client-side tracking:
