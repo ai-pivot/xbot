@@ -193,6 +193,8 @@ describe('useProgressStream event dispatch', () => {
     )
 
     emitAndFlush({ type: 'text', chat_id: 'c1', content: 'first' })
+    // session(busy) on a clean store resets finalizedRef for the new turn
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
     emitAndFlush({
       type: 'progress_structured',
       chat_id: 'c1',

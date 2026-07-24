@@ -351,10 +351,12 @@ function handleProgressMessage(
         }
         return
       }
-      // A non-done structured event indicates active work — reset the finalize
-      // guard so a subsequent text event can complete. This covers turns where
-      // progress_structured arrives before session(busy).
-      if (finalizedRef) finalizedRef.current = false
+      // Do NOT reset finalizedRef here. A non-done structured event may be a
+      // stale replay from a cancelled/ended turn (SSE reconnect recovery). 
+      // Resetting would allow a subsequent session(idle) to re-finalize and
+      // append stale content as a duplicate message. finalizedRef is reset
+      // only on stream_content (genuine new LLM output) or session(busy) on a
+      // clean store (genuine new turn).
       if (p.history_compacted) {
         store.reset()
         compactedRef.current?.()
@@ -431,6 +433,11 @@ function handleProgressMessage(
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
         if (hasVisibleProgress(store.getSnapshot())) store.reset()
+        // Dispatch agent-idle so useSessionStore clears the busy state even
+        // if the session(idle) SSE event was dropped (sendCh full / network).
+        window.dispatchEvent(new CustomEvent('agent-idle', {
+          detail: { chatID: msg.chat_id ?? undefined, channel: msg.channel ?? undefined },
+        }))
         return
       }
       // Final assistant message: commit then clear the live stream.
@@ -468,23 +475,23 @@ function handleProgressMessage(
       const action = msg.session?.action
 
       if (action === 'busy') {
-        // Do NOT reset finalizedRef here. session(busy) can arrive from SSE
-        // reconnect recovery (restoreActiveProgress), and resetting would
-        // allow stale text/progress events to be re-processed as a new
-        // finalization — causing duplicate messages. finalizedRef is reset
-        // on stream_content instead (the first sign of genuine LLM output).
         const snap = store.getSnapshot()
         // If we're already mid-stream, don't disrupt — a synthetic busy from
         // recovery must not wipe cumulative streamContent (causes typer restart).
         if (snap.streamContent || snap.reasoningStreamContent) {
           return
         }
-        // Skip resetStreamingState when the store has no visible progress —
-        // calling it on an already-clean store creates a new snapshot reference
-        // that triggers unnecessary re-renders (flicker on send/cancel).
-        if (hasVisibleProgress(snap)) {
-          store.resetStreamingState()
+        // On a clean store (no visible progress), this is a genuine new turn.
+        // Reset the finalize guard so a subsequent text event can complete.
+        // This is safe because a clean store means no in-flight content to
+        // protect — a recovery busy on a clean store is indistinguishable
+        // from a genuine new turn, and both should allow finalization.
+        if (!hasVisibleProgress(snap)) {
+          if (finalizedRef) finalizedRef.current = false
+          return
         }
+        // Dirty store with no stream content — clear stale tool state.
+        store.resetStreamingState()
         return
       }
 
@@ -495,15 +502,16 @@ function handleProgressMessage(
         return
       }
 
-      // On idle, if we had accumulated stream content without a closing text,
-      // finalize defensively. Skip if already finalized (text event arrived first).
+      // On idle, the turn is OVER. This is the authoritative end-of-turn signal.
+      // Always do a full reset — there is no reason to preserve streaming state
+      // or activeTools after the session goes idle. If content was worth keeping,
+      // the text event already committed it via onAssistantComplete.
       if (action === 'idle') {
         if (finalizedRef?.current) {
-          // Already finalized via text event — clear streaming state only if
-          // there's something to clear. Calling resetStreamingState on an
-          // already-clean store creates a new snapshot reference → flicker.
+          // Already finalized via text event — full reset clears any residual
+          // activeTools/streamingTools that the text handler didn't touch.
           if (hasVisibleProgress(store.getSnapshot())) {
-            store.resetStreamingState()
+            store.reset()
           }
           return
         }
@@ -512,8 +520,8 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
-          // Call completeRef BEFORE clearing streaming state so onAssistantComplete
-          // can flushSync the append before liveMessage is cleared.
+          // Call completeRef BEFORE clearing so onAssistantComplete can flushSync
+          // the append before liveMessage is cleared.
           completeRef.current?.(text, iters, msg.seq)
           // Full reset — this is a defensive finalize (no text event arrived),
           // so the session is ending. Clear all progress including iterationHistory.
