@@ -1493,6 +1493,169 @@ describe('normalizeSessionTree', () => {
     expect(result.current.sessions[0].children?.map((s) => s.chatID)).toEqual(['cli:/repo:Agent-main/review'])
   })
 
+  it('keeps a running SubAgent visible across refresh when backend has not persisted it', async () => {
+    // One-shot SubAgents are destroyed (interactiveSubAgents deleted + DB CASCADE)
+    // immediately on completion. The 500ms canonical refresh may therefore return
+    // a tree that does NOT contain the SubAgent. The transient entry must survive
+    // so the running SubAgent stays visible in the sidebar.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              {
+                chat_id: 'web-chat-1',
+                channel: 'web',
+                label: 'My Chat',
+                last_active: '2026-07-08T00:00:00Z',
+              },
+            ],
+            chats: [
+              {
+                chat_id: 'web-chat-1',
+                channel: 'web',
+                label: 'My Chat',
+                last_active: '2026-07-08T00:00:00Z',
+              },
+            ],
+            orphan_subagents: [],
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID)).toEqual(['web-chat-1'])
+    })
+
+    // SubAgent starts (web channel, UUID chat_id, with session_key — the real one-shot path)
+    vi.useFakeTimers()
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_started',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        session_key: 'web:web-chat-1/explore:oneshot-1',
+        role: 'explore',
+        instance: 'oneshot-1',
+        parent_id: 'web-chat-1',
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // Transient SubAgent should be visible immediately
+    expect(result.current.subAgents).toHaveLength(1)
+    expect(result.current.subAgents[0]?.running).toBe(true)
+    expect(result.current.sessions[0].children).toHaveLength(1)
+    expect(result.current.sessions[0].children?.[0].running).toBe(true)
+
+    // 500ms canonical refresh fires — backend tree does NOT contain the SubAgent
+    // (one-shot destroyed, tenant not yet persisted). The transient must survive.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+
+    // BUG: SubAgent disappears after refresh because mergeStatus doesn't carry
+    // over running status for SubAgents (they're not in executingSessionsRef).
+    expect(result.current.subAgents).toHaveLength(1)
+    expect(result.current.subAgents[0]?.running).toBe(true)
+  })
+
+  it('keeps a running SubAgent visible when canonical refresh reports it as idle', async () => {
+    // The backend's IsProcessingByChannel checks chatCancelCh — but one-shot
+    // SubAgents don't register there. So /api/session-tree may return the
+    // SubAgent row with running=false even while it's actively running.
+    // mergeStatus must carry over the SSE-driven running=true.
+    let includeChild = false
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              {
+                chat_id: 'web-chat-1',
+                channel: 'web',
+                label: 'My Chat',
+                last_active: '2026-07-08T00:00:00Z',
+                children: includeChild ? [
+                  {
+                    chat_id: 'web:web-chat-1/explore:oneshot-1',
+                    full_key: 'web:web-chat-1/explore:oneshot-1',
+                    channel: 'agent',
+                    type: 'agent',
+                    label: 'explore',
+                    role: 'explore',
+                    instance: 'oneshot-1',
+                    parent_channel: 'web',
+                    parent_chat_id: 'web-chat-1',
+                    running: false,
+                    last_active: '2026-07-08T00:00:01Z',
+                  },
+                ] : undefined,
+              },
+            ],
+            chats: [
+              {
+                chat_id: 'web-chat-1',
+                channel: 'web',
+                label: 'My Chat',
+                last_active: '2026-07-08T00:00:00Z',
+              },
+            ],
+            orphan_subagents: [],
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID)).toEqual(['web-chat-1'])
+    })
+
+    vi.useFakeTimers()
+    // SubAgent starts
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_started',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        session_key: 'web:web-chat-1/explore:oneshot-1',
+        role: 'explore',
+        instance: 'oneshot-1',
+        parent_id: 'web-chat-1',
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(result.current.subAgents[0]?.running).toBe(true)
+
+    // Refresh returns the SubAgent with running=false (backend can't detect
+    // one-shot SubAgent processing via IsProcessingByChannel)
+    includeChild = true
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+
+    // BUG: mergeStatus doesn't carry running for SubAgents not in executingSessionsRef
+    expect(result.current.subAgents[0]?.running).toBe(true)
+    expect(result.current.sessions[0].children?.[0]?.running).toBe(true)
+  })
+
   it('updates existing SubAgent running state immediately on lifecycle events', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
