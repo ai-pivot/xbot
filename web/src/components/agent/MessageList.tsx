@@ -476,8 +476,9 @@ export function MessageList({
           )}
           {/* Busy placeholder: when agent is thinking but no streaming
               content has arrived yet (e.g. session just started, or
-              switched to a busy tab with no iterations). */}
-          {busy && !liveMessage && (
+              switched to a busy tab with no iterations). Hidden during
+              loading — the Loader2 spinner handles that state. */}
+          {busy && !liveMessage && !loading && (
             <div className="px-3 py-2">
               <ShimmerThinking />
             </div>
