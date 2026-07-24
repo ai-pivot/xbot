@@ -148,7 +148,9 @@ jobs:
         working-directory: web
         env:
           CI: "true"
-        run: npx playwright test --project=chromium --reporter=line
+        # Only run scroll.spec.ts (uses page.route() mock backend — no real server needed).
+        # Other E2E tests (login, chat, right-sidebar) require a real backend.
+        run: npx playwright test e2e/scroll.spec.ts --project=chromium --reporter=line
 
       - name: Upload test results
         if: always()
