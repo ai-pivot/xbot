@@ -2662,14 +2662,22 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			defer func() {
 				wasCancelled = a.finishActiveCancelState(cancelKey, reqCtx, reqCancel)
 
-				// Emit session idle event for instant sidebar push.
-				a.emitSessionState(protocol.SessionEvent{
-					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
-				})
-				key := qualifyChatID(msg.Channel, msg.ChatID)
-				a.lastProgressSnapshot.Delete(key)
-				a.iterationHistories.Delete(key)
-				<-sem // 释放槽位
+				// WaitingUser: the turn is PAUSED, not ended. Do NOT emit
+				// session(idle) — the frontend's session(idle) handler triggers
+				// a defensive finalize that clears iterationHistory, causing all
+				// iterations from before the AskUser call to disappear. Also
+				// preserve lastProgressSnapshot + iterationHistories so SSE
+				// reconnect can recover the in-flight turn.
+				isWaitingUser := response != nil && response.WaitingUser
+				if !isWaitingUser {
+					a.emitSessionState(protocol.SessionEvent{
+						Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+					})
+					key := qualifyChatID(msg.Channel, msg.ChatID)
+					a.lastProgressSnapshot.Delete(key)
+					a.iterationHistories.Delete(key)
+				}
+				<-sem // 释放槽位（WaitingUser 也需要释放，让 answer 能获取）
 			}()
 
 			// 沙箱正在 export+import 时，拒绝该用户所有请求
@@ -2780,6 +2788,14 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		// This is the CRITICAL ordering: all response sends happen BEFORE this point,
 		// so injectCLIUserMessage in drainAndProcessNotifications cannot race with
 		// the turn's reply on asyncCh.
+		//
+		// WaitingUser: the turn is PAUSED (waiting for user input), not ended.
+		// Keep busy=true so chatWorker doesn't drain notifications while the
+		// AskUser panel is showing. The answer message will be dequeued next
+		// and processed as a continuation of this turn.
+		if response != nil && response.WaitingUser {
+			continue
+		}
 		ss.clearDrainedThisRun()
 		ss.busy.Store(false)
 		a.drainAndProcessNotifications(chatKey)
