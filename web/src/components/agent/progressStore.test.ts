@@ -563,3 +563,86 @@ describe('ProgressStore todos real-time update', () => {
     store.dispose()
   })
 })
+
+// ── Iteration history preservation under packet loss ──
+describe('ProgressStore: iterationHistory preserved on stale events', () => {
+  let rafCbs: Array<() => void>
+  let rafSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    rafCbs = []
+    rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      rafCbs.push(cb as () => void)
+      return rafCbs.length
+    })
+  })
+  afterEach(() => {
+    rafSpy.mockRestore()
+    rafCbs.splice(0)
+  })
+
+  function flushRaf() {
+    rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+  }
+
+  it('appends iterationHistory from stale (low-seq) recovery events', () => {
+    const store = new ProgressStore()
+
+    // seq 1: iter 1 starts
+    store.setStructuredTools({ eventSeq: 1, iteration: 1, phase: 'tool_exec',
+      activeTools: [tool({ name: 'Read', status: 'running', iteration: 1 })] })
+    flushRaf()
+
+    // seq 3: iter 2 starts (seq 2 was dropped — no delta for iter 1)
+    store.setStructuredTools({ eventSeq: 3, iteration: 2, phase: 'tool_exec',
+      activeTools: [tool({ name: 'Shell', status: 'running', iteration: 2 })] })
+    flushRaf()
+
+    // Recovery: same seq=3 event carrying iter 1 history
+    // (restoreActiveProgress returns the last snapshot's seq)
+    store.setStructuredTools({ eventSeq: 3, iteration: 2, phase: 'tool_exec',
+      iterationHistory: [{ iteration: 1, thinking: '', reasoning: '', tools: [tool({ name: 'Read', status: 'done', iteration: 1 })], toolCount: 1 }] })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iterationHistory).toHaveLength(1)
+    expect(snap.iterationHistory[0].iteration).toBe(1)
+  })
+
+  it('does NOT duplicate iterations when recovery event repeats', () => {
+    const store = new ProgressStore()
+
+    // Normal: iter 1 delta arrives
+    store.setStructuredTools({ eventSeq: 1, iteration: 1, phase: 'tool_exec',
+      iterationHistory: [{ iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }] })
+    flushRaf()
+
+    // Stale recovery: same seq=1 event repeats with same iter 1
+    store.setStructuredTools({ eventSeq: 1, iteration: 1, phase: 'tool_exec',
+      iterationHistory: [{ iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }] })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iterationHistory).toHaveLength(1) // no duplicate
+  })
+
+  it('does NOT update phase/tools on stale event (only appends iterations)', () => {
+    const store = new ProgressStore()
+
+    // seq 2: iter 1, tools running
+    store.setStructuredTools({ eventSeq: 2, iteration: 1, phase: 'tool_exec',
+      activeTools: [tool({ name: 'Read', status: 'running', iteration: 1 })] })
+    flushRaf()
+    expect(store.getSnapshot().activeTools).toHaveLength(1)
+
+    // Stale seq=1 event tries to set different phase + empty tools
+    store.setStructuredTools({ eventSeq: 1, iteration: 1, phase: 'thinking',
+      activeTools: [] })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    // Phase/tools NOT overwritten by stale event
+    expect(snap.phase).toBe('tool_exec')
+    expect(snap.activeTools).toHaveLength(1)
+  })
+})

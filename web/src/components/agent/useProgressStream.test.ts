@@ -754,3 +754,96 @@ describe('bang command: text without PhaseDone clears busy', () => {
     window.removeEventListener('agent-idle', idleSpy)
   })
 })
+
+describe('busy: no iteration lost under packet loss', () => {
+  it('preserves iteration 1 when its progress_structured delta is dropped', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Iteration 1: tool running (no iteration_history yet — delta comes later)
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: {
+      phase: 'tool_exec', iteration: 1,
+      active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+    } })
+    // SIMULATE PACKET LOSS: the event that would carry iter 1's delta is dropped
+
+    // Iteration 2 starts — carries iter 1 as a delta
+    emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
+      phase: 'tool_exec', iteration: 2,
+      active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }],
+      iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
+    } })
+
+    // iter 1 must survive in iterationHistory
+    const iter1 = result.current.progressSnapshot.iterationHistory.find(i => i.iteration === 1)
+    expect(iter1).toBeDefined()
+    expect(iter1?.tools[0]?.name).toBe('Read')
+  })
+
+  it('preserves all iterations when multiple delta events are dropped', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Iteration 1
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: {
+      phase: 'tool_exec', iteration: 1,
+      active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+    } })
+    // Delta for iter 1 DROPPED
+
+    // Iteration 2 (carries iter 1 delta)
+    emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
+      phase: 'tool_exec', iteration: 2,
+      active_tools: [{ name: 'Grep', status: 'running', iteration: 2 }],
+      iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
+    } })
+    // Delta for iter 2 DROPPED
+
+    // Iteration 3 (carries iter 2 delta — server sends only 0-1 entries)
+    emitAndFlush({ type: 'progress_structured', seq: 5, progress: {
+      phase: 'tool_exec', iteration: 3,
+      active_tools: [{ name: 'Shell', status: 'running', iteration: 3 }],
+      iteration_history: [{ iteration: 2, thinking: '', reasoning: '', tools: [{ name: 'Grep', status: 'done', iteration: 2 }], toolCount: 1 }],
+    } })
+
+    const iters = result.current.progressSnapshot.iterationHistory.map(i => i.iteration).sort()
+    // Both iter 1 and iter 2 must be present
+    expect(iters).toContain(1)
+    expect(iters).toContain(2)
+  })
+
+  it('recovers lost iteration via restoreActiveProgress (same seq, full history)', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    // seq 1: iter 1 tool running
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: {
+      phase: 'tool_exec', iteration: 1,
+      active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+    } })
+    // seq 2: DROPPED (would have carried iter 1's completed_tools + delta)
+
+    // seq 3: iter 2 starts (NO delta — server only sends 0-1 entries)
+    emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
+      phase: 'tool_exec', iteration: 2,
+      active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }],
+    } })
+
+    // seq gap detected → restoreActiveProgress fires → fetches get_active_progress
+    // The backend returns seq=3 (same as last event) WITH full iteration_history
+    // (from a.iterationHistories, which has iter 1 even though the delta was dropped)
+    emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
+      phase: 'tool_exec', iteration: 2,
+      active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }],
+      iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
+    } })
+
+    const snap = result.current.progressSnapshot
+    // iter 1 MUST be recovered — the eventSeq check must NOT drop iterationHistory
+    expect(snap.iterationHistory.find(i => i.iteration === 1)).toBeDefined()
+    expect(snap.iterationHistory.find(i => i.iteration === 1)?.tools[0]?.name).toBe('Read')
+  })
+})

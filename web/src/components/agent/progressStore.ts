@@ -400,8 +400,28 @@ export class ProgressStore {
 
     // ProgressEvent.Seq is the semantic log ID assigned before channel fan-out.
     // Replayed/duplicate events at or below the installed snapshot watermark
-    // are no-ops. Transport envelope seq remains independent.
-    if (opts.eventSeq !== undefined && opts.eventSeq <= this.current.eventSeq) return
+    // are no-ops — EXCEPT for iterationHistory. Recovery events (from
+    // restoreActiveProgress) carry the same seq as the last event (they
+    // come from lastProgressSnapshot), so the seq check would drop them
+    // entirely — including their iterationHistory. We must still append
+    // any new iterations before returning, otherwise lost iterations
+    // (from dropped delta events) are permanently lost.
+    if (opts.eventSeq !== undefined && opts.eventSeq <= this.current.eventSeq) {
+      if (opts.iterationHistory && opts.iterationHistory.length > 0) {
+        this.mutate((draft) => {
+          const existing = new Set(draft.iterationHistory.map((i) => i.iteration))
+          const appended = [...draft.iterationHistory]
+          for (const iter of opts.iterationHistory!) {
+            if (!existing.has(iter.iteration)) {
+              appended.push(iter)
+              existing.add(iter.iteration)
+            }
+          }
+          draft.iterationHistory = appended
+        })
+      }
+      return
+    }
 
     this.mutate((draft) => {
       if (opts.eventSeq !== undefined) draft.eventSeq = opts.eventSeq
