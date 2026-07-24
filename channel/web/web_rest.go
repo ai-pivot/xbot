@@ -684,9 +684,18 @@ func (wc *WebChannel) handleSessionStatus(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	todos := []protocol.TodoItem{}
+	if wc.callbacks.GetTodos != nil {
+		todos, err = wc.callbacks.GetTodos(senderID, sel)
+		if err != nil {
+			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token_usage": tokenUsage,
 		"cwd":         cwd,
+		"todos":       todos,
 	})
 }
 

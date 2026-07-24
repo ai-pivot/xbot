@@ -317,6 +317,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.GetCWD = func(senderID string, sel web.SessionSelector) (string, error) {
 		return webSessionCWD(ag, sel.Channel, sel.ChatID), nil
 	}
+	callbacks.GetTodos = func(senderID string, sel web.SessionSelector) ([]protocol.TodoItem, error) {
+		return ag.GetTodos(sel.Channel, sel.ChatID), nil
+	}
 	callbacks.SetCWD = func(senderID string, sel web.SessionSelector, dir string) error {
 		return ag.SetCWD(sel.Channel, sel.ChatID, dir)
 	}

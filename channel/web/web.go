@@ -118,6 +118,8 @@ type WebCallbacks struct {
 	RewindHistory func(senderID string, sel SessionSelector, cutoff time.Time) (RewindHistoryResult, error)
 	// GetCWD returns the current directory for a Web-accessible session.
 	GetCWD func(senderID string, sel SessionSelector) (string, error)
+	// GetTodos returns the current TODO list for a Web-accessible session.
+	GetTodos func(senderID string, sel SessionSelector) ([]protocol.TodoItem, error)
 	// SetCWD sets the current directory for a Web-accessible session.
 	SetCWD func(senderID string, sel SessionSelector, dir string) error
 	// BackgroundTasks returns background shell tasks for a Web-accessible session.
