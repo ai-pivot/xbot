@@ -597,3 +597,32 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.progressSnapshot.todos).toHaveLength(2)
   })
 })
+
+describe('cancel: no duplicate message', () => {
+  it('session(idle) before cancel ack does NOT call onAssistantComplete', () => {
+    const complete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // LLM generated content
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: '已修复并部署' } })
+    expect(result.current.liveMessage?.content).toBe('已修复并部署')
+
+    // PhaseDone (progressFinalizer) — preserves streamContent
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+
+    // session(idle) arrives BEFORE text(cancelled=true)
+    emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
+
+    // BUG: defensive finalize commits the content — but this is a cancelled
+    // turn, the backend already persisted it to DB. History reload will show
+    // it again → duplicate.
+    expect(complete).not.toHaveBeenCalled()
+
+    // Cancel ack arrives
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+    expect(complete).not.toHaveBeenCalled()
+    expect(result.current.liveMessage).toBeNull()
+  })
+})

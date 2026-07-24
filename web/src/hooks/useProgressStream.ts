@@ -138,6 +138,13 @@ export function useProgressStream({
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
   const finalizedRef = useRef(false)
+  // Set when PhaseDone is received. Prevents session(idle) from defensively
+  // finalizing — PhaseDone means the turn ended, and the text event (normal
+  // or cancel ack) is the authoritative finalizer. Without this, if
+  // session(idle) arrives before text(cancelled), the defensive finalize
+  // commits stale streamContent that the backend already persisted to DB →
+  // duplicate message on history reload.
+  const phaseDoneRef = useRef(false)
   const prevProgressCacheKeyRef = useRef<string | null>(null)
 
   // Track chatID inside the handlers via ref so we don't tear down the store on
@@ -155,6 +162,7 @@ export function useProgressStream({
   // Switch immediately to this chat's in-memory snapshot while history refreshes.
   useLayoutEffect(() => {
     finalizedRef.current = false
+    phaseDoneRef.current = false
     // Full reset on chatID change (including todos — different session).
     // On non-chatID triggers (disabled toggle), preserve todos via reset().
     if (progressCacheKey !== prevProgressCacheKeyRef.current) {
@@ -234,7 +242,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef)
     })
     return offMessage
   }, [store, disabled, channel])
@@ -264,6 +272,7 @@ export function useProgressStream({
     isStreaming: hasVisibleProgress(progressSnapshot),
     resetProgress: () => {
       finalizedRef.current = true
+      phaseDoneRef.current = false
       store.reset()
     },
   }
@@ -292,6 +301,7 @@ function handleProgressMessage(
   compactedRef: React.MutableRefObject<UseProgressStreamOptions['onHistoryCompacted']>,
   resetRef: React.MutableRefObject<UseProgressStreamOptions['onSessionReset']>,
   finalizedRef?: React.MutableRefObject<boolean>,
+  phaseDoneRef?: React.MutableRefObject<boolean>,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -301,6 +311,7 @@ function handleProgressMessage(
       // (restoreActiveProgress) and would allow stale text events to be
       // re-processed, causing duplicate messages.
       if (finalizedRef) finalizedRef.current = false
+      if (phaseDoneRef) phaseDoneRef.current = false
 
       // stream_content carries content deltas in progress.stream_content /
       // progress.reasoning_stream_content (channel/web/web.go SendStreamContent).
@@ -329,6 +340,10 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
       if (p.phase === 'done') {
+        // PhaseDone: the turn is over. Mark it so session(idle) doesn't
+        // defensively finalize — the text event (normal or cancel ack) is
+        // the authoritative finalizer.
+        if (phaseDoneRef) phaseDoneRef.current = true
         // PhaseDone: the turn is over. Clear in-flight tool state
         // (activeTools/completedTools/streamingTools) so no tool appears
         // "running" after the turn ends. Preserve iterationHistory and
@@ -511,13 +526,17 @@ function handleProgressMessage(
       // copy. A full reset() clears activeTools/completedTools/streamingTools
       // and iterationHistory, making liveMessage null (clean transition to
       // the committed row).
-      // If finalizedRef=false (defensive finalize — no text event arrived),
-      // commit the accumulated content first, then reset.
+      // If finalizedRef=false AND phaseDoneRef=false (defensive finalize — no
+      // text event arrived), commit the accumulated content first, then reset.
+      // If phaseDoneRef=true, the turn ended via PhaseDone — the text event
+      // (normal or cancel ack) is the authoritative finalizer. Skip defensive
+      // finalize to avoid committing content the backend already persisted.
       if (action === 'idle') {
-        if (finalizedRef?.current) {
+        if (finalizedRef?.current || phaseDoneRef?.current) {
           if (hasVisibleProgress(store.getSnapshot())) {
             store.reset()
           }
+          if (phaseDoneRef) phaseDoneRef.current = false
           return
         }
         const snap = store.getSnapshot()
