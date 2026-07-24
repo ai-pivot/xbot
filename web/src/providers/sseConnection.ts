@@ -52,6 +52,12 @@ export class SSEConnectionImpl implements WSConnection {
   private sessionVersion = 0
   private progressVersion = 0
   private recoveryRequestVersion = 0
+  // Prevents concurrent restoreActiveProgress calls and the self-perpetuating
+  // loop: restoreActiveProgress dispatches a progress_structured event that may
+  // carry a seq gap, which would trigger restoreActiveProgress again → infinite
+  // RPC storm. Only one recovery is in-flight at a time; subsequent gap
+  // detections are no-ops while it runs.
+  private recoveryInProgress = false
 
   private messageHandlers = new Set<Handler<WSMessage>>()
   private sessionHandlers = new Set<Handler<SessionEvent>>()
@@ -298,6 +304,8 @@ export class SSEConnectionImpl implements WSConnection {
   }
 
   private async restoreActiveProgress(channel: string, chatID: string): Promise<void> {
+    if (this.recoveryInProgress) return
+    this.recoveryInProgress = true
     const sessionVersion = this.sessionVersion
     const progressVersion = this.progressVersion
     const recoveryRequestVersion = ++this.recoveryRequestVersion
@@ -343,6 +351,8 @@ export class SSEConnectionImpl implements WSConnection {
       })
     } catch {
       // The next native SSE reconnect or status poll gets another recovery chance.
+    } finally {
+      this.recoveryInProgress = false
     }
   }
 

@@ -487,13 +487,12 @@ describe('SSEConnectionImpl', () => {
 
     source.emit('runner_status', { type: 'runner_status', seq: 4 })
     source.emit('card', { type: 'card', seq: 7 })
-    expect(resolvers).toHaveLength(2)
+    // Only the first gap triggers restoreActiveProgress — the recoveryInProgress
+    // guard prevents a second concurrent call. The first resolver is the only
+    // one that will fire.
+    expect(resolvers).toHaveLength(1)
 
-    resolvers[0]({ phase: 'tool', iteration: 1 })
-    await Promise.resolve()
-    expect(received.filter((message) => message.type === 'progress_structured')).toEqual([])
-
-    resolvers[1]({ phase: 'tool', iteration: 2 })
+    resolvers[0]({ phase: 'tool', iteration: 2 })
     await Promise.resolve()
     expect(received.filter((message) => message.type === 'progress_structured')).toEqual([
       expect.objectContaining({ progress: { phase: 'tool', iteration: 2 } }),

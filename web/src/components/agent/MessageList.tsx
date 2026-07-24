@@ -191,23 +191,20 @@ export function MessageList({
 
   const scheduleFollow = useCallback(() => {
     if (!stickToBottomRef.current || pendingFollowRafRef.current !== null) return
-    // Double RAF: first frame lets virtualizer update item sizes,
-    // second frame scrolls to the now-correct scrollHeight.
+    // Use the virtualizer's scrollToIndex for the last item — this is
+    // measurement-safe (the virtualizer knows its own item positions) and
+    // doesn't depend on scrollHeight being fully resolved. A follow-up RAF
+    // then writes scrollTop = scrollHeight as a final correction in case
+    // the last item's measured height shifted the total.
     pendingFollowRafRef.current = requestAnimationFrame(() => {
-      pendingFollowRafRef.current = requestAnimationFrame(() => {
-        pendingFollowRafRef.current = null
-        if (!stickToBottomRef.current) return
-        const el = scrollRef.current
-        if (el) {
-          // Flag our own write so onScroll (fired synchronously by the
-          // scrollTop assignment) doesn't treat the momentary off-bottom
-          // as user intent and pause following. Cleared via microtask so it
-          // doesn't suppress a later genuine scroll event.
-          programmaticScrollRef.current = true
-          el.scrollTop = el.scrollHeight
-          queueMicrotask(() => { programmaticScrollRef.current = false })
-        }
-      })
+      pendingFollowRafRef.current = null
+      if (!stickToBottomRef.current) return
+      const el = scrollRef.current
+      if (el) {
+        programmaticScrollRef.current = true
+        el.scrollTop = el.scrollHeight
+        queueMicrotask(() => { programmaticScrollRef.current = false })
+      }
     })
   }, [])
 
@@ -328,8 +325,16 @@ export function MessageList({
     // source of truth for scroll position), so this check is reliable.
     if (newMessagesAdded && !stickToBottomRef.current) return
     resumeFollowing()
+    // On chat switch/initial load, the virtualizer hasn't measured items yet.
+    // scrollToIndex(lastIndex, align:'end') is measurement-safe — it positions
+    // the last item at the bottom of the viewport regardless of scrollHeight.
+    // scheduleFollow then does a scrollHeight correction in the next RAF once
+    // heights have settled (handles content that grows after measurement).
+    if (chatChanged || initialLoad || followReset) {
+      virtualizer.scrollToIndex(rows.length - 1, { align: 'end' })
+    }
     scheduleFollow()
-  }, [chatKey, followResetToken, rows.length, resumeFollowing, scheduleFollow])
+  }, [chatKey, followResetToken, rows.length, resumeFollowing, scheduleFollow, virtualizer])
 
   // ── Navigation helpers ────────────────────────────────────────────────────
   const scrollToTop = useCallback(() => {
