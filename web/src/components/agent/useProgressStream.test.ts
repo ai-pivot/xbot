@@ -598,6 +598,48 @@ describe('useProgressStream event dispatch', () => {
   })
 })
 
+describe('cancel ack: server progress_history with user_cancelled', () => {
+  it('passes server progress_history iterations (includes user_cancelled) to onAssistantComplete', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Live store has some iterations from streaming
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial' } })
+    emitAndFlush({
+      type: 'progress_structured', progress: {
+        phase: 'tool_exec', iteration: 1,
+        completed_tools: [{ name: 'Read', status: 'done' }],
+      },
+    })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+
+    // Cancel ack WITH server progress_history (includes user_cancelled tool)
+    const serverHistory = JSON.stringify([{
+      iteration: 1,
+      thinking: 'partial',
+      tools: [
+        { name: 'Read', status: 'done', summary: 'read file' },
+        { name: 'user_cancelled', status: 'done', summary: 'cancelled by user' },
+      ],
+      toolCount: 2,
+    }])
+
+    emitAndFlush({
+      type: 'text', chat_id: 'c1', content: '', cancelled: true,
+      progress_history: serverHistory,
+    })
+
+    // onAssistantComplete should receive the SERVER's iterations (with user_cancelled)
+    expect(complete).toHaveBeenCalledTimes(1)
+    const [, iterations] = complete.mock.calls[0]
+    expect(iterations).toHaveLength(1)
+    expect(iterations[0].tools).toHaveLength(2)
+    expect(iterations[0].tools.map((t: { name: string }) => t.name)).toContain('user_cancelled')
+  })
+})
+
 describe('cancel: no duplicate message', () => {
   it('session(idle) before cancel ack does NOT call onAssistantComplete', () => {
     const complete = vi.fn()

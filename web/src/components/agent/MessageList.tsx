@@ -323,16 +323,23 @@ export function MessageList({
   }, [rows.length, liveProgress, hasFooter])
 
   // Restore scrollTop after the virtualizer's scroll correction, when stick=false.
-  useLayoutEffect(() => {
-    if (savedScrollTopRef.current !== null && !stickToBottomRef.current) {
+  // The virtualizer corrects scrollTop via ResizeObserver, which fires AFTER
+  // useLayoutEffect but BEFORE requestAnimationFrame. So we use rAF to
+  // restore — it runs after ResizeObserver (undoing the correction) but
+  // before paint (no visible flicker).
+  useEffect(() => {
+    if (savedScrollTopRef.current === null || stickToBottomRef.current) return
+    const saved = savedScrollTopRef.current
+    savedScrollTopRef.current = null
+    const raf = requestAnimationFrame(() => {
       const el = scrollRef.current
-      if (el && Math.abs(el.scrollTop - savedScrollTopRef.current) > 2) {
+      if (el && Math.abs(el.scrollTop - saved) > 2) {
         programmaticScrollRef.current = true
-        el.scrollTop = savedScrollTopRef.current
+        el.scrollTop = saved
         queueMicrotask(() => { programmaticScrollRef.current = false })
       }
-      savedScrollTopRef.current = null
-    }
+    })
+    return () => cancelAnimationFrame(raf)
   }, [rows.length, liveProgress])
 
   // ── ResizeObserver: follow bottom when sticky ─────────────────────────────

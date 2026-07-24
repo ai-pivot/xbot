@@ -445,27 +445,28 @@ function handleProgressMessage(
         return
       }
       // Cancel ack: the backend sends a text event with cancelled=true and
-      // empty content to signal turn end. Commit accumulated content +
-      // iterations so the last iteration doesn't vanish. The backend already
-      // persisted to DB (handleCancelledRun), so a history reload will
-      // replace with the authoritative version.
+      // empty content to signal turn end. The backend persisted the full
+      // iteration history (including user_cancelled tool) to DB and carries
+      // it in progress_history metadata. We parse it and pass to
+      // onAssistantComplete so the committed message shows the server's
+      // authoritative iterations (with user_cancelled), not the live store's
+      // potentially-incomplete copy.
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
+        // Parse server's progress_history (includes user_cancelled tool)
+        const parsedIterations = parseWebIterations(msg.progress_history)
         const snap = store.getSnapshot()
-        if (hasVisibleProgress(snap)) {
-          const text = snap.streamContent || snap.content || ''
-          const iters = snap.iterationHistory
-          if (text || iters.length > 0) {
-            // Commit partial content + iterations so they survive as a
-            // committed message. onAssistantComplete → resetProgress clears
-            // the store, but the committed message retains its own copy.
-            completeRef.current?.(text, iters, msg.seq)
-            // Fallback: if onAssistantComplete did not reset (e.g., not set),
-            // reset here to clear the live overlay.
-            if (hasVisibleProgress(store.getSnapshot())) store.reset()
-          } else {
-            store.reset()
-          }
+        // Prefer server iterations (authoritative, includes user_cancelled).
+        // Fall back to live store iterations if server didn't send any.
+        const iters = parsedIterations.length > 0
+          ? parsedIterations
+          : snap.iterationHistory
+        const text = snap.streamContent || snap.content || ''
+        if (text || iters.length > 0) {
+          completeRef.current?.(text, iters, msg.seq)
+          if (hasVisibleProgress(store.getSnapshot())) store.reset()
+        } else if (hasVisibleProgress(snap)) {
+          store.reset()
         }
         // Dispatch agent-idle so useSessionStore clears the busy state even
         // if the session(idle) SSE event was dropped (sendCh full / network).
