@@ -9,6 +9,13 @@
  */
 import { useEffect, useState } from 'react'
 
+/** Compute SHA-1 hex hash of a string using the Web Crypto API. */
+async function sha1Hex(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text)
+  const buf = await crypto.subtle.digest('SHA-1', data)
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
@@ -128,11 +135,22 @@ export function usePwaInstall() {
       const res = await fetch('/sw.js', { cache: 'no-store' })
       const text = await res.text()
       // The SW precaches index.html with a revision hash. Extract it and
-      // compare against the current page's script hash.
+      // compare against the current page's index.html hash.
       const match = text.match(/"index\.html",revision:"([^"]+)"/)
       if (match && match[1]) {
-        // If we can't compare precisely, return false (no update detected).
-        // The user can always hard-refresh (Ctrl+Shift+R) to get the latest.
+        // Fetch the current index.html and compute its hash to compare.
+        const indexRes = await fetch('/index.html', { cache: 'no-store' })
+        const indexText = await indexRes.text()
+        // Simple comparison: if the SW's precache revision differs from a
+        // hash of the current index.html content, an update is available.
+        // We use a simple length+substring check as a lightweight proxy —
+        // the SW revision changes when the build changes the index.html.
+        const currentHash = await sha1Hex(indexText)
+        if (match[1] !== currentHash) {
+          setUpdateAvailable(true)
+          return true
+        }
+        setUpdateAvailable(false)
         return false
       }
     } catch { /* ignore */ }

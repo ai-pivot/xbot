@@ -208,7 +208,7 @@ export function MessageList({
       if (el) {
         let attempts = 0
         const tryScroll = () => {
-          if (!stickToBottomRef.current || gen !== followGenRef.current || attempts++ > 15) return
+          if (!stickToBottomRef.current || gen !== followGenRef.current || ++attempts > 15) return
           programmaticScrollRef.current = true
           const prev = el.scrollHeight
           el.scrollTop = el.scrollHeight

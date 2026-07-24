@@ -156,7 +156,7 @@ function formatMergedTitle(tools: WebToolProgress[], sweepRunning = true): React
     .join('  ')
 
   return (
-    <span className="flex flex-wrap items-center gap-2" style={{ color }}>
+    <span className="flex flex-wrap items-center gap-1.5" style={{ color }}>
       {status === 'running' && sweepRunning && animatedText ? (
         <>
           <span className="flex items-center gap-0.5">
