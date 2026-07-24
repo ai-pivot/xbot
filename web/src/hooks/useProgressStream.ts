@@ -502,16 +502,17 @@ function handleProgressMessage(
         return
       }
 
-      // On idle, the turn is OVER. This is the authoritative end-of-turn signal.
-      // Always do a full reset — there is no reason to preserve streaming state
-      // or activeTools after the session goes idle. If content was worth keeping,
-      // the text event already committed it via onAssistantComplete.
+      // On idle, the turn is OVER. Clear streaming state but PRESERVE
+      // iterationHistory — completed iterations must never disappear.
+      // They are rendered by TurnBody until the next history reload replaces
+      // the committed message with its DB-persisted version.
       if (action === 'idle') {
         if (finalizedRef?.current) {
-          // Already finalized via text event — full reset clears any residual
-          // activeTools/streamingTools that the text handler didn't touch.
+          // Already finalized via text event — clear streaming state, but
+          // preserve iterationHistory so completed iterations stay visible
+          // until the committed message replaces the live overlay.
           if (hasVisibleProgress(store.getSnapshot())) {
-            store.reset()
+            store.resetStreamingState()
           }
           return
         }
@@ -523,9 +524,10 @@ function handleProgressMessage(
           // Call completeRef BEFORE clearing so onAssistantComplete can flushSync
           // the append before liveMessage is cleared.
           completeRef.current?.(text, iters, msg.seq)
-          // Full reset — this is a defensive finalize (no text event arrived),
-          // so the session is ending. Clear all progress including iterationHistory.
-          store.reset()
+          // Defensive finalize: use resetStreamingState to preserve
+          // iterationHistory. The committed message from onAssistantComplete
+          // will render these iterations until history reload.
+          store.resetStreamingState()
         }
         // No else: if store is already clean, skip — no mutation, no flicker.
       }
