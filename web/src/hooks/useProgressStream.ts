@@ -444,37 +444,34 @@ function handleProgressMessage(
         resetRef.current?.()
         return
       }
-      // Cancel ack: the backend sends a text event with cancelled=true.
-      // The server's progress_history may be incomplete (the current iteration
-      // isn't snapshotted until executeToolCalls finishes). The live store HAS
-      // the current iteration (built incrementally via SSE). We append
-      // user_cancelled to the live store's current iteration, then commit via
-      // onAssistantComplete — no reload, no reset, no flicker.
+      // Cancel ack: the turn was cancelled. The live store already has the
+      // rendered content + iterations (built incrementally via SSE). We do
+      // NOT reset the store or fetch server data — the user already sees the
+      // content, we just commit it as a regular message + append
+      // user_cancelled so the iteration is preserved as-is.
+      //
+      // PhaseDone may have fired before this (clearing activeTools but the
+      // text/cancel ack carries progress_history with the full iteration
+      // history including user_cancelled). We use the server's
+      // progress_history as the source — it's authoritative and includes
+      // user_cancelled. If the live store still has data (PhaseDone didn't
+      // fire), we merge: server iterations + any live-only iterations.
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
+        const parsedIterations = parseWebIterations(msg.progress_history)
         const snap = store.getSnapshot()
-        if (hasVisibleProgress(snap)) {
-          // Append user_cancelled tool to the last iteration (or create one)
-          const iters = snap.iterationHistory.length > 0
-            ? [...snap.iterationHistory]
-            : [{ iteration: snap.iteration || 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }]
-          const lastIter = { ...iters[iters.length - 1] }
-          lastIter.tools = [...(lastIter.tools ?? []), {
-            name: 'user_cancelled',
-            label: 'user_cancelled',
-            status: 'done',
-            elapsedMs: 0,
-            summary: 'Cancelled by user',
-            detail: '',
-            args: '',
-            iteration: lastIter.iteration,
-            toolHints: '',
-          }]
-          lastIter.toolCount = lastIter.tools.length
-          iters[iters.length - 1] = lastIter
-          const text = snap.streamContent || snap.content || ''
+        const liveIters = snap.iterationHistory
+        // Merge: server iterations (authoritative, has user_cancelled) +
+        // any live-only iterations not in server data.
+        const serverIterNums = new Set(parsedIterations.map((i) => i.iteration))
+        const liveOnly = liveIters.filter((i) => !serverIterNums.has(i.iteration))
+        const iters = [...parsedIterations, ...liveOnly]
+        const text = snap.streamContent || snap.content || ''
+        if (text || iters.length > 0) {
           completeRef.current?.(text, iters, msg.seq)
           if (hasVisibleProgress(store.getSnapshot())) store.reset()
+        } else if (hasVisibleProgress(snap)) {
+          store.reset()
         }
         // Dispatch agent-idle so useSessionStore clears the busy state even
         // if the session(idle) SSE event was dropped (sendCh full / network).

@@ -598,73 +598,64 @@ describe('useProgressStream event dispatch', () => {
   })
 })
 
-describe('cancel ack: commits live store + user_cancelled, no reload', () => {
-  it('appends user_cancelled to last iteration and commits via onAssistantComplete', () => {
+describe('cancel ack: commits via onAssistantComplete with server data', () => {
+  it('commits server progress_history (includes user_cancelled) on cancel', () => {
     const complete = vi.fn()
-    const cancelled = vi.fn()
     const { result } = renderHook(() =>
       useProgressStream({
         chatID: 'c1',
         onAssistantComplete: complete,
-
         ws: currentWS as unknown as WSConnection,
       }),
     )
 
-    // Build up progress with iterations (current iteration NOT snapshotted by backend)
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial reply' } })
-    emitAndFlush({
-      type: 'progress_structured', progress: {
-        phase: 'tool_exec', iteration: 1,
-        active_tools: [{ name: 'Read', status: 'running' }],
-        iteration_history: [{ iteration: 1, thinking: 'thinking', reasoning: '', tools: [], toolCount: 0 }],
-      },
-    })
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
 
-    // Cancel ack
-    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+    // Cancel ack with server progress_history (includes user_cancelled)
+    const serverHistory = JSON.stringify([{
+      iteration: 1,
+      tools: [
+        { name: 'Read', status: 'done', summary: 'read file' },
+        { name: 'user_cancelled', status: 'done', summary: 'cancelled by user' },
+      ],
+    }])
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
 
-    // onAssistantComplete called with live store content + iterations + user_cancelled
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete).toHaveBeenCalledWith('partial reply', expect.any(Array), undefined)
     const [, iterations] = complete.mock.calls[0]
     expect(iterations).toHaveLength(1)
-    expect(iterations[0].tools.map((t: { name: string }) => t.name)).toContain('user_cancelled')
-
-    // onCancelled (reload) should NOT be called — no reload needed
-    expect(cancelled).not.toHaveBeenCalled()
-
-    // Store cleared (live overlay gone, committed message takes over)
+    const allTools = iterations[0].tools.map((t: { name: string }) => t.name)
+    expect(allTools).toContain('user_cancelled')
     expect(result.current.liveMessage).toBeNull()
   })
 
-  it('creates a new iteration with user_cancelled when live store has no iterations', () => {
+  it('merges live-only iterations with server data', () => {
     const complete = vi.fn()
-    const cancelled = vi.fn()
-    const { result } = renderHook(() =>
-      useProgressStream({
-        chatID: 'c1',
-        onAssistantComplete: complete,
-
-        ws: currentWS as unknown as WSConnection,
-      }),
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
     )
 
-    // Only streaming, no iterations yet
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'hello' } })
-    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+    emitAndFlush({ type: 'progress_structured', progress: {
+      phase: 'tool_exec', iteration: 2,
+      iteration_history: [
+        { iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 },
+        { iteration: 2, thinking: '', reasoning: '', tools: [{ name: 'Grep', status: 'done' }], toolCount: 1 },
+      ],
+    } })
 
-    // Cancel ack
-    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+    const serverHistory = JSON.stringify([{
+      iteration: 2,
+      tools: [{ name: 'Grep', status: 'done' }, { name: 'user_cancelled', status: 'done' }],
+    }])
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
 
-    // Should still commit with user_cancelled
     expect(complete).toHaveBeenCalledTimes(1)
     const [, iterations] = complete.mock.calls[0]
-    expect(iterations).toHaveLength(1)
-    expect(iterations[0].tools.map((t: { name: string }) => t.name)).toContain('user_cancelled')
-    expect(cancelled).not.toHaveBeenCalled()
-    expect(result.current.liveMessage).toBeNull()
+    const iterNums = iterations.map((i: { iteration: number }) => i.iteration).sort()
+    expect(iterNums).toContain(1)
+    expect(iterNums).toContain(2)
   })
 })
 
@@ -698,35 +689,25 @@ describe('cancel: no duplicate message', () => {
 })
 
 describe('cancel: iteration preservation', () => {
-  it('commits live store + user_cancelled on cancel ack (no reload, no vanish)', () => {
+  it('commits server progress_history + live content on cancel (no vanish)', () => {
     const complete = vi.fn()
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
     )
 
-    // Build up progress with iterations
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial reply' } })
-    emitAndFlush({
-      type: 'progress_structured', progress: {
-        phase: 'tool_exec', iteration: 1,
-        active_tools: [{ name: 'Read', status: 'running' }],
-        iteration_history: [{ iteration: 1, thinking: 'thinking', reasoning: '', tools: [], toolCount: 0 }],
-      },
-    })
-
-    // PhaseDone (progressFinalizer)
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
 
-    // Cancel ack
-    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+    const serverHistory = JSON.stringify([{
+      iteration: 1,
+      tools: [{ name: 'Read', status: 'done' }, { name: 'user_cancelled', status: 'done' }],
+    }])
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
 
-    // onAssistantComplete called with live store content + iterations (including user_cancelled)
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete).toHaveBeenCalledWith('partial reply', expect.any(Array), undefined)
-    const [, iterations] = complete.mock.calls[0]
+    const [content, iterations] = complete.mock.calls[0]
+    expect(content).toBe('partial reply')
     expect(iterations[0].tools.map((t: { name: string }) => t.name)).toContain('user_cancelled')
-
-    // Store cleared (live overlay gone, committed message takes over)
     expect(result.current.liveMessage).toBeNull()
   })
 })
