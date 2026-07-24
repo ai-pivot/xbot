@@ -1118,6 +1118,14 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 				tc.CurrentDir = abs
 			}
 		}
+		// Persist the resolved CWD to the session so that:
+		// 1. Progress events carry the correct CWD (engine_run.go reads GetCurrentDir)
+		// 2. webSessionCWD returns it via GetSession().GetCurrentDir()
+		// 3. Subsequent turns load it via loadPersistedCWD
+		// This is a no-op if the CWD was already persisted (SetCurrentDir is idempotent).
+		if tc.CurrentDir != "" && tc.CurrentDir != cfg.Session.GetCurrentDir() {
+			cfg.Session.SetCurrentDir(tc.CurrentDir)
+		}
 		tc.SetCurrentDir = func(dir string) {
 			cfg.Session.SetCurrentDir(dir)
 			if cfg.RefreshPluginWorkDir != nil {

@@ -721,6 +721,10 @@ func (a *Agent) SettingsService() *SettingsService {
 // MultiSession returns the Agent's MultiTenantSession (for external injection of callbacks).
 func (a *Agent) MultiSession() *session.MultiTenantSession { return a.multiSession }
 
+// WorkDir returns the Agent's configured working directory. Used as a
+// fallback for web sessions that have no persisted CWD.
+func (a *Agent) WorkDir() string { return a.workDir }
+
 // SetIdentityResolver injects the canonical user identity resolver.
 func (a *Agent) SetIdentityResolver(r *IdentityResolver) {
 	if a.userSys == nil {

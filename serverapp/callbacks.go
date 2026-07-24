@@ -726,6 +726,13 @@ func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
 			dir = sess.GetCurrentDir()
 		}
 	}
+	// Final fallback: use the server's workDir. This ensures new web sessions
+	// (which have no persisted CWD) start in the project root, not the home
+	// directory. Without this, CwdProvider returns "" → frontend shows ~,
+	// and the agent can't find AGENTS.md.
+	if dir == "" && ag != nil {
+		dir = ag.WorkDir()
+	}
 	return dir
 }
 
