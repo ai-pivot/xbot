@@ -329,11 +329,10 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
       if (p.phase === 'done') {
-        // PhaseDone: notify sessionStore to clear running immediately.
-        // DON'T set phase='done' — that would null liveMessage (snap.phase
-        // === 'done' returns null), causing iterations to flash/disappear.
-        // Let the text event (normal end) or session(idle) defensive finalize
-        // (cancel) handle the cleanup via onAssistantComplete → appendAssistant.
+        // PhaseDone: the turn is over. Clear in-flight tool state
+        // (activeTools/completedTools/streamingTools) so no tool appears
+        // "running" after the turn ends. Preserve iterationHistory and
+        // streamContent — the text event or cancel ack will read them.
         window.dispatchEvent(new CustomEvent('agent-idle', {
           detail: { chatID: p.chat_id ?? undefined, channel: undefined },
         }))
@@ -348,6 +347,9 @@ function handleProgressMessage(
         }
         if (doneTodos) {
           store.setStructuredTools({ eventSeq: typeof p.seq === 'number' ? p.seq : undefined, todos: doneTodos })
+        } else {
+          // No todos to update — still clear in-flight tools.
+          store.resetStreamingState()
         }
         return
       }

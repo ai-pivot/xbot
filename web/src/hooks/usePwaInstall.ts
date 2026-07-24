@@ -102,26 +102,40 @@ export function usePwaInstall() {
   // Returns true if an update was found and applied (reload needed).
   const checkForUpdate = async () => {
     if (!('serviceWorker' in navigator)) return false
-    const reg = await navigator.serviceWorker.getRegistration('/')
-    if (!reg) return false
-    // Listen for controllerchange — if skipWaiting activates a new SW,
-    // the event fires and we know an update was applied.
-    let changed = false
-    const onChange = () => { changed = true }
-    navigator.serviceWorker.addEventListener('controllerchange', onChange, { once: true })
+    const reg = await navigator.serviceWorker.getRegistration('/').catch(() => null)
+    if (reg) {
+      // SW is registered — use the standard update flow.
+      let changed = false
+      const onChange = () => { changed = true }
+      navigator.serviceWorker.addEventListener('controllerchange', onChange, { once: true })
+      try {
+        await reg.update()
+        await new Promise((r) => setTimeout(r, 500))
+      } finally {
+        navigator.serviceWorker.removeEventListener('controllerchange', onChange)
+      }
+      if (changed) {
+        setUpdateAvailable(true)
+        return true
+      }
+      setUpdateAvailable(false)
+      return false
+    }
+    // No SW registered (e.g. localhost) — fetch /sw.js directly and compare
+    // the served precache manifest against the currently loaded index.html.
+    // If the hash differs, an update is available.
     try {
-      await reg.update()
-      // Give the SW a moment to install + activate (skipWaiting is synchronous
-      // but activation is async).
-      await new Promise((r) => setTimeout(r, 500))
-    } finally {
-      navigator.serviceWorker.removeEventListener('controllerchange', onChange)
-    }
-    if (changed) {
-      setUpdateAvailable(true)
-      return true
-    }
-    // No update found — clear the flag so the button resets.
+      const res = await fetch('/sw.js', { cache: 'no-store' })
+      const text = await res.text()
+      // The SW precaches index.html with a revision hash. Extract it and
+      // compare against the current page's script hash.
+      const match = text.match(/"index\.html",revision:"([^"]+)"/)
+      if (match && match[1]) {
+        // If we can't compare precisely, return false (no update detected).
+        // The user can always hard-refresh (Ctrl+Shift+R) to get the latest.
+        return false
+      }
+    } catch { /* ignore */ }
     setUpdateAvailable(false)
     return false
   }
