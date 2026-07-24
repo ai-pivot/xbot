@@ -232,4 +232,93 @@ test.describe('Streaming scroll jitter', () => {
 
     await page.close()
   })
+
+  test('scrollTop stays fixed near top when visible items resize during streaming', async ({ browser }) => {
+    const page = await browser.newPage()
+    await page.setViewportSize({ width: 1280, height: 720 })
+
+    // Replace EventSource with a controllable mock
+    await page.addInitScript(() => {
+      const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+      const w = window as unknown as SSEMockState
+      w.__sseListeners = listeners
+      class MockEventSource {
+        readyState = 1
+        onopen: ((ev: Event) => void) | null = null
+        onerror: ((ev: Event) => void) | null = null
+        constructor(public url: string) { setTimeout(() => this.onopen?.(new Event('open')), 0) }
+        addEventListener(type: string, handler: (ev: MessageEvent) => void) {
+          if (!listeners[type]) listeners[type] = new Set(); listeners[type].add(handler)
+        }
+        removeEventListener(type: string, handler: (ev: MessageEvent) => void) { listeners[type]?.delete(handler) }
+        close() { for (const key of Object.keys(listeners)) listeners[key].clear() }
+      }
+      ;(window as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource
+    })
+
+    await setupMock(page)
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+
+    // Wait for messages to load (100 messages → scrollHeight >> viewport)
+    await page.waitForFunction(() => document.body.textContent?.includes('Message 99'), { timeout: 10000 })
+    await page.waitForTimeout(500)
+
+    // ── Scroll to the top (user reading history at the beginning) ──
+    // Home key → onKeyDown → pauseFollowing() → stickToBottomRef = false
+    const scrollContainer = page.locator('[data-message-list-content]').locator('..')
+    await scrollContainer.focus()
+    await page.keyboard.press('Home')
+    await page.waitForTimeout(300)
+
+    // ── Scroll down slightly (50px) — user is near the top but not at scrollTop=0 ──
+    // This sets stickToBottomRef=false (via onWheel → pauseFollowing).
+    // scrollTop is now ~50, so the first item (item.start=0) satisfies the
+    // virtualizer's default condition `item.start < scrollTop` (0 < 50 = TRUE).
+    // The item's bottom (item.end ≈ 250) is still IN the viewport.
+    await page.mouse.wheel(0, 50)
+    await page.waitForTimeout(300)
+
+    const scrollTopBefore = await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('div'))
+      const sc = els.find(d => { const s = getComputedStyle(d); return (s.overflowY === 'auto' || s.overflowY === 'scroll') && d.querySelector('[data-index]') !== null }) as HTMLElement
+      return sc ? Math.round(sc.scrollTop) : null
+    })
+    // User should be near the top, with a small scrollTop
+    expect(scrollTopBefore!).toBeGreaterThan(5)
+    expect(scrollTopBefore!).toBeLessThan(200)
+
+    // ── Trigger re-measurement of visible items (simulates async rendering) ──
+    // Resize the viewport width → text re-wraps → visible item heights change →
+    // virtualizer's ResizeObserver fires → resizeItem. With the default
+    // condition `item.start < scrollTop`, the first item (start=0 < scrollTop=50)
+    // triggers a correction → scrollTop changes → viewport jumps (THE BUG).
+    await page.setViewportSize({ width: 900, height: 720 })
+    await page.waitForTimeout(500)
+
+    // Also simulate streaming (content grows at the bottom — shouldn't affect top)
+    await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
+    await emitSSE(page, 'stream_content', { type: 'stream_content', progress: { stream_content: 'Streaming at bottom...', chat_id: 'web:chat-1', streaming: true } })
+    await page.waitForTimeout(300)
+
+    const scrollTopAfter = await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('div'))
+      const sc = els.find(d => { const s = getComputedStyle(d); return (s.overflowY === 'auto' || s.overflowY === 'scroll') && d.querySelector('[data-index]') !== null }) as HTMLElement
+      return sc ? Math.round(sc.scrollTop) : null
+    })
+
+    console.log('scrollTop before:', scrollTopBefore)
+    console.log('scrollTop after:', scrollTopAfter)
+    console.log('delta:', (scrollTopAfter ?? 0) - (scrollTopBefore ?? 0))
+
+    // scrollTop must NOT have changed — user is near the top, no scroll operation.
+    // The virtualizer must NOT correct scrollTop for items that are partially or
+    // fully in the viewport (item.start < scrollTop is too aggressive; should be
+    // item.end < scrollTop — only correct for items entirely above the viewport).
+    expect(Math.abs((scrollTopAfter ?? 0) - (scrollTopBefore ?? 0))).toBeLessThan(5)
+
+    await page.close()
+  })
 })

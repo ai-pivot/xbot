@@ -177,6 +177,25 @@ export function MessageList({
     getItemKey: (index) => rows[index]?.id ?? `row-${index}`,
   })
 
+  // Workaround: virtual-core checks `this.shouldAdjustScrollPositionOnItemSizeChange`
+  // (direct instance property) in resizeItem, but setOptions only stores it in
+  // `this.options` — the option is never actually applied. Assign it directly.
+  // Custom condition: only correct scrollTop when the resized item is ENTIRELY
+  // above the viewport (item.end < scrollTop). The default condition
+  // (item.start < scrollTop) also fires for items partially in the viewport —
+  // when such an item changes size (code highlighting, image loading, markdown
+  // settling), the correction moves the user's viewport even though they
+  // didn't scroll. Using item.end ensures only items fully above the viewport
+  // trigger correction, keeping visible items stable.
+  useLayoutEffect(() => {
+    const v = virtualizer as unknown as {
+      shouldAdjustScrollPositionOnItemSizeChange?: (item: { start: number; end: number }, delta: number, instance: { scrollOffset: number | null }) => boolean
+    }
+    v.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+      return item.end < (instance.scrollOffset ?? 0)
+    }
+  }, [virtualizer])
+
   const cancelPendingFollow = useCallback(() => {
     if (pendingFollowRafRef.current === null) return
     cancelAnimationFrame(pendingFollowRafRef.current)
