@@ -14,7 +14,7 @@
  * messages. A shimmer "thinking" indicator appears at the bottom during streaming.
  */
 import { memo, useCallback } from 'react'
-import { Copy } from 'lucide-react'
+import { Copy, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { FoldedLine } from './FoldedLine'
@@ -161,6 +161,12 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // 'minimal'/'none' level or streaming: render full TurnBody.
   return (
     <div className="group/msg px-1">
+      {isStreaming && liveProgress?.phase === 'compressing' && (
+        <div className="mb-2 flex items-center gap-2 text-xs text-text-muted">
+          <Loader2 className="size-3.5 animate-spin" />
+          <span>{t('agent.compressing')}</span>
+        </div>
+      )}
       <TurnBody
         iterations={iterations}
         liveProgress={liveProgress}
