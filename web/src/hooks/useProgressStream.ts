@@ -295,10 +295,12 @@ function handleProgressMessage(
 ): void {
   switch (msg.type) {
     case 'stream_content': {
-      // NOTE: finalizedRef is NOT reset here. It is only reset when a new turn
-      // begins (session(busy)). Resetting on stream_content causes the guard
-      // to be cleared after a text event finalizes, so a subsequent
-      // session(idle) event triggers a duplicate onAssistantComplete call.
+      // Reset finalizedRef here — stream_content is the first sign that the
+      // LLM is actively generating for this turn. This is safer than resetting
+      // on session(busy), which can arrive from SSE reconnect recovery
+      // (restoreActiveProgress) and would allow stale text events to be
+      // re-processed, causing duplicate messages.
+      if (finalizedRef) finalizedRef.current = false
 
       // stream_content carries content deltas in progress.stream_content /
       // progress.reasoning_stream_content (channel/web/web.go SendStreamContent).
@@ -423,6 +425,14 @@ function handleProgressMessage(
         resetRef.current?.()
         return
       }
+      // Cancel ack: the backend sends a text event with cancelled=true and
+      // empty content to signal turn end. Skip onAssistantComplete — there is
+      // no final reply to commit. Just clean up the store.
+      if (msg.cancelled) {
+        if (finalizedRef) finalizedRef.current = true
+        if (hasVisibleProgress(store.getSnapshot())) store.reset()
+        return
+      }
       // Final assistant message: commit then clear the live stream.
       // Guard against duplicate onAssistantComplete within the same turn
       // (e.g. text + session(idle) arriving before RAF flushes).
@@ -458,20 +468,23 @@ function handleProgressMessage(
       const action = msg.session?.action
 
       if (action === 'busy') {
-        if (finalizedRef) finalizedRef.current = false
-        // A synthetic session(busy) arrives on SSE reconnect / replay-gap
-        // recovery (sseConnection.restoreActiveProgress). If we're already
-        // mid-stream, resetting here wipes the cumulative streamContent,
-        // which causes the typewriter to restart from 0 ("来回 type").
-        // Only reset streaming state for a genuine new turn.
+        // Do NOT reset finalizedRef here. session(busy) can arrive from SSE
+        // reconnect recovery (restoreActiveProgress), and resetting would
+        // allow stale text/progress events to be re-processed as a new
+        // finalization — causing duplicate messages. finalizedRef is reset
+        // on stream_content instead (the first sign of genuine LLM output).
         const snap = store.getSnapshot()
+        // If we're already mid-stream, don't disrupt — a synthetic busy from
+        // recovery must not wipe cumulative streamContent (causes typer restart).
         if (snap.streamContent || snap.reasoningStreamContent) {
           return
         }
-        // Don't fully reset on session(busy) — the ask_user response path
-        // re-enters the same turn, and prior iterations must survive.
-        // Only clear streaming fields, keep iterationHistory.
-        store.resetStreamingState()
+        // Skip resetStreamingState when the store has no visible progress —
+        // calling it on an already-clean store creates a new snapshot reference
+        // that triggers unnecessary re-renders (flicker on send/cancel).
+        if (hasVisibleProgress(snap)) {
+          store.resetStreamingState()
+        }
         return
       }
 
@@ -486,11 +499,12 @@ function handleProgressMessage(
       // finalize defensively. Skip if already finalized (text event arrived first).
       if (action === 'idle') {
         if (finalizedRef?.current) {
-          // Already finalized via text event — just clear streaming state.
-          // Don't reset() — that would clear iterationHistory and cause
-          // iterations to flash/disappear. resetStreamingState preserves
-          // iterationHistory and todos.
-          store.resetStreamingState()
+          // Already finalized via text event — clear streaming state only if
+          // there's something to clear. Calling resetStreamingState on an
+          // already-clean store creates a new snapshot reference → flicker.
+          if (hasVisibleProgress(store.getSnapshot())) {
+            store.resetStreamingState()
+          }
           return
         }
         const snap = store.getSnapshot()
@@ -504,9 +518,8 @@ function handleProgressMessage(
           // Full reset — this is a defensive finalize (no text event arrived),
           // so the session is ending. Clear all progress including iterationHistory.
           store.reset()
-        } else {
-          store.resetStreamingState()
         }
+        // No else: if store is already clean, skip — no mutation, no flicker.
       }
       return
     }

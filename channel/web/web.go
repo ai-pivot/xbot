@@ -653,6 +653,7 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 		Channel:         msg.Channel,
 		ChatID:          msg.ChatID,
 		SessionReset:    msg.Metadata != nil && msg.Metadata["session_reset"] == "true",
+		Cancelled:       msg.Metadata != nil && msg.Metadata["cancelled"] == "true",
 		// Only forward frontend-relevant metadata keys — avoid leaking internal
 		// keys like feishu_user_id, request_id, cancelled, etc.
 	}

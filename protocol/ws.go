@@ -85,6 +85,7 @@ type WSMessage struct {
 	SenderName      string             `json:"sender_name,omitempty"`
 	ChatType        string             `json:"chat_type,omitempty"`
 	SessionReset    bool               `json:"session_reset,omitempty"`
+	Cancelled       bool               `json:"cancelled,omitempty"` // true = turn was cancelled by user
 	Metadata        map[string]string  `json:"metadata,omitempty"`
 	Result          json.RawMessage    `json:"result,omitempty"`
 	Error           string             `json:"error,omitempty"`

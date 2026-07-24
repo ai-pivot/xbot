@@ -100,6 +100,31 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.isStreaming).toBe(true)
   })
 
+  it('cancel ack (text with cancelled=true) does not call onAssistantComplete', () => {
+    const complete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+    // Simulate a normal turn completion first
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'prev reply' } })
+    emitAndFlush({ type: 'text', seq: 10, content: 'prev reply' })
+    expect(complete).toHaveBeenCalledTimes(1)
+
+    // User sends a new message then cancels before stream content arrives.
+    // session(busy) must NOT reset finalizedRef (only stream_content does).
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    // Cancel ack: text event with cancelled=true and empty content
+    emitAndFlush({ type: 'text', seq: 20, content: '', cancelled: true })
+    // onAssistantComplete must NOT be called again — no duplicate message
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(result.current.liveMessage).toBeNull()
+    expect(result.current.isStreaming).toBe(false)
+
+    // session(idle) must not trigger defensive finalize either
+    emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
+    expect(complete).toHaveBeenCalledTimes(1)
+  })
+
   it('finalizes on text: calls onAssistantComplete and clears the stream', () => {
     const complete = vi.fn()
     const { result } = renderHook(() =>
