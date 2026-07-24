@@ -134,6 +134,7 @@ export type WSMessageType =
   | 'runner_status'
   | 'sync_progress'
   | 'genui'
+  | 'replay_gap'
   | '__pong__'
 
 /** Client operations mapped to REST endpoints by the connection adapter. */
@@ -164,6 +165,8 @@ export interface WSMessage {
   chat_type?: string
   session_reset?: boolean
   cancelled?: boolean
+  /** TurnID from the backend — associates this reply with its user message. */
+  turn_id?: number
   metadata?: Record<string, string>
   result?: unknown
   error?: string
@@ -229,7 +232,19 @@ export interface ProgressEvent {
   todos?: TodoItem[]
   /** Structured SubAgent progress tree (mirrors Go protocol.SubAgentInfo). */
   sub_agents?: unknown[]
+  /** TurnID from the backend — uniquely identifies the agent turn. */
+  turn_id?: number
+  /** Turn start info (only on phase=turn_started events). */
+  turn_start?: TurnStartInfo
   [key: string]: unknown
+}
+
+/** Turn start info (mirrors Go protocol.TurnStartInfo). */
+export interface TurnStartInfo {
+  trigger?: 'user' | 'notification' | 'resume'
+  content?: string
+  request_id?: string
+  sender_name?: string
 }
 
 /** Session event (mirrors Go protocol/events.go SessionEvent). */
@@ -385,6 +400,8 @@ export interface ChatMessage {
   persisted?: boolean
   /** True while the message is being sent (optimistic, before echo/busy). */
   sending?: boolean
+  /** True when injected by bg notification (not typed by user). Renders 🔔 badge. */
+  isNotification?: boolean
   /** SSE sequence for live committed rows, used to reconcile them with history. */
   eventSeq?: number
   /** Stable logical-send ID used to correlate optimistic rows with echoes. */

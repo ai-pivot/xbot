@@ -246,9 +246,20 @@ type cliModel struct {
 	turnAutoStarted  bool              // true when turn was started by progress auto-start (no user message yet).
 	// handleInjectedUserMsg checks this to claim the auto-started turn
 	// instead of queuing (which would create a second assistant).
-	cancelTargetTurnID uint64 // turnID being cancelled; guards stale cancel ack from modifying wrong message
-	cancelAckProcessed bool   // true after first cancel ack handled; guards stale second cancel ack (Bug #2: async goroutine race)
-	idleTickCounter    int    // counts 100ms ticks in idle state; placeholder rotates every 30
+	// turnStartedProcessed tracks whether the backend's turn_started event
+	// for the current turn has been received. Set false by startAgentTurn,
+	// set true by handleTurnStarted. Distinguishes "first turn_started for
+	// this turn (adopt TurnID)" from "turn_started for N+1 before N's reply
+	// (finalize N, start N+1)".
+	turnStartedProcessed bool
+	cancelTargetTurnID   uint64 // turnID being cancelled; guards stale cancel ack from modifying wrong message
+	cancelAckProcessed   bool   // true after first cancel ack handled; guards stale second cancel ack (Bug #2: async goroutine race)
+	idleTickCounter      int    // counts 100ms ticks in idle state; placeholder rotates every 30
+
+	// --- Turn/Iteration consistency tracking ---
+	// lastReceivedTurnID tracks the most recent TurnID received via turn_started.
+	// Used to assert TurnID is strictly monotonic per session.
+	lastReceivedTurnID uint64
 
 	// --- Mouse support ---
 	mouseZones mouseZoneBuilder // zone tracker for mouse hit testing (rebuilt each View())
@@ -312,6 +323,10 @@ type cliMessage struct {
 	isPartial bool
 	// --- turn identification for deterministic rendering ---
 	turnID uint64 // agentTurnID when this message was created (0 = not agent-generated)
+	// isNotification marks user messages injected by bg notifications (not
+	// typed by the user). Rendered with a 🔔 badge + muted style so the user
+	// can distinguish system-injected messages from their own input.
+	isNotification bool
 	// --- thinking/reasoning content (displayed in a collapsible box) ---
 	reasoning string // raw reasoning text (stored when message is finalized)
 	// --- §1 增量渲染 ---

@@ -105,6 +105,12 @@ type RunConfig struct {
 	// Used by GetAgentSessionDump for TUI status bar display.
 	SubID string
 
+	// TurnID uniquely identifies this agent turn. Assigned by chatProcessLoop
+	// (per-session monotonic counter) and propagated to StructuredProgress so
+	// every progress event carries it. The frontend matches user messages to
+	// assistant responses by TurnID. 0 = untracked (SubAgent, tests).
+	TurnID uint64
+
 	// ProgressNotifier 进度通知回调（text-based, 用于通知父 Agent）。
 	// autoNotify 由 ProgressNotifier 或 ProgressEventHandler 的存在决定，
 	// 两者独立：ProgressNotifier 不再是 ProgressEventHandler 的门控条件。

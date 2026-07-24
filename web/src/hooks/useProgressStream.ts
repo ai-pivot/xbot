@@ -53,7 +53,9 @@ interface UseProgressStreamOptions {
   /** Channel this stream tracks. Progress events may qualify chat_id as channel:chatID. */
   channel?: string
   /** Called with the finalized assistant text when a `text` event arrives. */
-  onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number) => void
+  onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => void
+  /** Called when a bg notification / cron triggers a new turn — displays the injected user message. */
+  onInjectUserMessage?: (content: string, turnID: number, isNotification: boolean) => void
   /** Called when the server signals HistoryCompacted (reset + reload). */
   onHistoryCompacted?: () => void
   /** Called when the server signals a slash-command session reset (/new). */
@@ -115,6 +117,7 @@ export function useProgressStream({
   channel = 'web',
   onAssistantComplete,
   onHistoryCompacted,
+  onInjectUserMessage,
   onSessionReset,
   initialProgress,
   ws,
@@ -134,6 +137,8 @@ export function useProgressStream({
   compactedRef.current = onHistoryCompacted
   const resetRef = useRef(onSessionReset)
   resetRef.current = onSessionReset
+  const injectRef = useRef(onInjectUserMessage)
+  injectRef.current = onInjectUserMessage
 
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
@@ -242,7 +247,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef)
     })
     return offMessage
   }, [store, disabled, channel])
@@ -302,6 +307,7 @@ function handleProgressMessage(
   resetRef: React.MutableRefObject<UseProgressStreamOptions['onSessionReset']>,
   finalizedRef?: React.MutableRefObject<boolean>,
   phaseDoneRef?: React.MutableRefObject<boolean>,
+  injectRef?: React.MutableRefObject<UseProgressStreamOptions['onInjectUserMessage']>,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -339,6 +345,40 @@ function handleProgressMessage(
     case 'sync_progress': {
       const p = msg.progress
       if (!p) return
+      // turn_started: a new agent turn is beginning. This replaces the old
+      // inject_user side-channel — the notification user message is delivered
+      // atomically with the TurnID through the progress stream.
+      if (p.phase === 'turn_started') {
+        // ── Consistency check: TurnID must be strictly monotonic ──
+        if (store.lastTurnID > 0 && p.turn_id && p.turn_id > 0) {
+          if (p.turn_id <= store.lastTurnID) {
+            console.error('[TURN_ID_INVARIANT_VIOLATION] TurnID must be strictly increasing', {
+              prev: store.lastTurnID,
+              next: p.turn_id,
+              delta: p.turn_id - store.lastTurnID,
+              chatID: p.chat_id,
+              trigger: p.turn_start?.trigger,
+            })
+          } else if (p.turn_id !== store.lastTurnID + 1) {
+            console.warn('[TURN_ID_GAP] TurnID jumped — intermediate turn(s) may have been lost', {
+              prev: store.lastTurnID,
+              next: p.turn_id,
+              gap: p.turn_id - store.lastTurnID - 1,
+              chatID: p.chat_id,
+            })
+          }
+        }
+        store.lastTurnID = p.turn_id ?? 0
+        store.lastIter = -1 // reset iteration tracking for the new turn
+        const ts = p.turn_start
+        if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
+          injectRef?.current?.(ts.content, p.turn_id, ts.trigger === 'notification')
+        }
+        // Reset finalize guards for the new turn.
+        if (finalizedRef) finalizedRef.current = false
+        if (phaseDoneRef) phaseDoneRef.current = false
+        return
+      }
       if (p.phase === 'done') {
         // PhaseDone: the turn is over. Mark it so session(idle) doesn't
         // defensively finalize — the text event (normal or cancel ack) is
@@ -420,6 +460,36 @@ function handleProgressMessage(
         }
       }
 
+      // ── Consistency check: iteration must advance by exactly 1 within a turn ──
+      if (iteration !== undefined && iteration >= 0) {
+        if (store.lastIter >= 0 && iteration < store.lastIter) {
+          console.error('[ITER_ID_INVARIANT_VIOLATION] iteration went backwards', {
+            prev: store.lastIter,
+            next: iteration,
+            turnID: store.lastTurnID,
+            chatID: p.chat_id,
+            phase,
+          })
+        } else if (store.lastIter >= 0 && iteration !== store.lastIter + 1 && iteration > store.lastIter) {
+          console.warn('[ITER_ID_GAP] iteration jumped — intermediate iteration(s) may have been lost', {
+            prev: store.lastIter,
+            next: iteration,
+            gap: iteration - store.lastIter - 1,
+            turnID: store.lastTurnID,
+            chatID: p.chat_id,
+          })
+        }
+        if (iteration > store.lastIter) {
+          store.lastIter = iteration
+        }
+      }
+      // Track TurnID from structured events (covers SSE reconnect recovery via
+      // restoreActiveProgress, which dispatches a snapshot with TurnID but not
+      // turn_started phase). Without this, lastTurnID stays stale after reconnect.
+      if (p.turn_id && p.turn_id > 0 && p.turn_id !== store.lastTurnID) {
+        store.lastTurnID = p.turn_id
+      }
+
       // Apply structured event with carry-forward (stream-only fields preserved)
       store.setStructuredTools({
         eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
@@ -468,7 +538,7 @@ function handleProgressMessage(
         const iters = [...parsedIterations, ...liveOnly]
         const text = snap.streamContent || snap.content || ''
         if (text || iters.length > 0) {
-          completeRef.current?.(text, iters, msg.seq)
+          completeRef.current?.(text, iters, msg.seq, msg.turn_id)
           if (hasVisibleProgress(store.getSnapshot())) store.reset()
         } else if (hasVisibleProgress(snap)) {
           store.reset()
@@ -496,7 +566,7 @@ function handleProgressMessage(
       // Only fall back to parsedIterations when the snapshot has no iterations
       // (e.g. reconnect where no SSE events were received).
       const iterations = snap.iterationHistory.length > 0 ? snap.iterationHistory : parsedIterations
-      completeRef.current?.(finalText, iterations, msg.seq)
+      completeRef.current?.(finalText, iterations, msg.seq, msg.turn_id)
       // onAssistantComplete calls store.reset() synchronously inside flushSync.
       // Fallback: if onAssistantComplete did not reset (e.g., not set), reset here.
       // The reset is idempotent — if onAssistantComplete already cleared the
@@ -573,7 +643,7 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
-          completeRef.current?.(text, iters, msg.seq)
+          completeRef.current?.(text, iters, msg.seq, msg.turn_id)
           store.reset()
         }
       }

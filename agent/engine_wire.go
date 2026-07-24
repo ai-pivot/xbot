@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -233,6 +234,15 @@ func (a *Agent) buildMainRunConfig(
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(ctx, channel, chatID, senderID, messages, senderName, sandboxUserID)
 
+	// TurnID is assigned by chatProcessLoop (per-session monotonic counter) and
+	// carried via msg.Metadata. Propagate to RunConfig so every progress event
+	// and the final reply carry it for frontend association.
+	if raw := msg.Metadata["turn_id"]; raw != "" {
+		if tid, err := strconv.ParseUint(raw, 10, 64); err == nil {
+			cfg.TurnID = tid
+		}
+	}
+
 	// physical_channel: the channel the user is actually connected through.
 	// When a web user browses a CLI-created session, msg.Channel is "cli"
 	// (the session's origin channel), but the user is on "web". Channel-scoped
@@ -391,7 +401,7 @@ func (a *Agent) buildMainRunConfig(
 		if a.channelFinder != nil {
 			var progressSeq atomic.Uint64
 			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq)
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID)
 		}
 	}
 
@@ -1587,6 +1597,7 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 		ChatID: progressKey, Phase: string(s.Phase), Seq: s.Seq,
 		Iteration: s.Iteration, Content: s.Content, Reasoning: s.ReasoningContent,
 		HistoryCompacted: s.HistoryCompacted, CWD: s.CWD,
+		TurnID: s.TurnID,
 	}
 	for _, t := range s.ActiveTools {
 		payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
@@ -1665,7 +1676,7 @@ func (a *Agent) buildProgressEventHandler(chatID, originatingChannel string) fun
 // delivery layer (sendCh batching + ring-buffer mergeStatelessEvent).
 // Tool calls and token usage are low-frequency, also not throttled.
 // All callbacks also write to atomic streamState for GetActiveProgress reconnect.
-func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
+func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64, turnID uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
 	// Use ONLY the originating channel — its SendProgress broadcasts to ALL
 	// Hub subscribers (including other channels' clients via shared Hub).
 	var sender channelpkg.ProgressSender
@@ -1701,6 +1712,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		})
 		broadcastProgress(&protocol.ProgressEvent{
 			ChatID:        progressKey,
+			TurnID:        turnID,
 			StreamContent: content,
 		})
 	}
@@ -1710,6 +1722,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		})
 		broadcastProgress(&protocol.ProgressEvent{
 			ChatID:                 progressKey,
+			TurnID:                 turnID,
 			ReasoningStreamContent: content,
 		})
 	}
@@ -1746,6 +1759,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		seq := progressSeq.Add(1)
 		payload := &protocol.ProgressEvent{
 			ChatID:         progressKey,
+			TurnID:         turnID,
 			Seq:            seq,
 			StreamingTools: tools,
 		}
@@ -1764,6 +1778,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		seq := progressSeq.Add(1)
 		broadcastProgress(&protocol.ProgressEvent{
 			ChatID:       progressKey,
+			TurnID:       turnID,
 			Seq:          seq,
 			StreamTokens: usage.CompletionTokens,
 		})

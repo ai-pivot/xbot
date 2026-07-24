@@ -299,17 +299,13 @@ export function MessageList({
   // force-scroll to bottom — this is a safety net for cases where ResizeObserver
   // didn't fire (e.g. virtualizer corrected scrollHeight without resizing content).
   //
-  // When NOT following (stick=false), the virtualizer may still perform scroll
-  // correction (adjusting scrollTop to maintain visual stability when content
-  // grows near the viewport). We capture the scrollTop BEFORE the render and
-  // restore it AFTER, so the user's viewport stays fixed.
-  const savedScrollTopRef = useRef<number | null>(null)
+  // When NOT following (stick=false), we do NOT capture/restore scrollTop.
+  // The virtualizer's own scroll correction (via its internal ResizeObserver)
+  // keeps visible items stable when sizes change — it fires after useEffect
+  // but before paint. A RAF restore would UNDO that correction, causing the
+  // viewport to jump (jitter). The virtualizer's correction is authoritative.
   useEffect(() => {
     if (!stickToBottomRef.current) {
-      // Capture current scrollTop before the virtualizer re-renders and
-      // potentially adjusts it. We'll restore it in a useLayoutEffect.
-      const el = scrollRef.current
-      if (el) savedScrollTopRef.current = el.scrollTop
       setHasNewContent(true)
       return
     }
@@ -321,26 +317,6 @@ export function MessageList({
       queueMicrotask(() => { programmaticScrollRef.current = false })
     }
   }, [rows.length, liveProgress, hasFooter])
-
-  // Restore scrollTop after the virtualizer's scroll correction, when stick=false.
-  // The virtualizer corrects scrollTop via ResizeObserver, which fires AFTER
-  // useLayoutEffect but BEFORE requestAnimationFrame. So we use rAF to
-  // restore — it runs after ResizeObserver (undoing the correction) but
-  // before paint (no visible flicker).
-  useEffect(() => {
-    if (savedScrollTopRef.current === null || stickToBottomRef.current) return
-    const saved = savedScrollTopRef.current
-    savedScrollTopRef.current = null
-    const raf = requestAnimationFrame(() => {
-      const el = scrollRef.current
-      if (el && Math.abs(el.scrollTop - saved) > 2) {
-        programmaticScrollRef.current = true
-        el.scrollTop = saved
-        queueMicrotask(() => { programmaticScrollRef.current = false })
-      }
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [rows.length, liveProgress])
 
   // ── ResizeObserver: follow bottom when sticky ─────────────────────────────
   useEffect(() => {

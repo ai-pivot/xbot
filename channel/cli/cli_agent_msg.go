@@ -60,7 +60,14 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 		}).Error("handleAgentMessage: ChatID empty — filter bypassed, risk of cross-session contamination")
 	}
 
-	turnID := m.agentTurnID // capture at entry for stale-signal guard
+	// Use the backend-assigned TurnID from the reply to match the correct
+	// streaming message — this survives cross-goroutine races where a newer
+	// turn_started may have already changed m.agentTurnID. Falls back to
+	// m.agentTurnID for SubAgent/legacy paths (TurnID=0).
+	turnID := msg.TurnID
+	if turnID == 0 {
+		turnID = m.agentTurnID
+	}
 	content := msg.Content
 
 	// Cancel ack handling: when a Run is cancelled, the agent sends outbound
@@ -290,8 +297,13 @@ func (m *cliModel) handleAgentMessage(msg ch.OutboundMsg) {
 				}
 			}
 		}
-		// 重置流式状态
-		m.streamingMsgIdx = -1
+		// 重置流式状态 — but ONLY if this reply was for the current turn.
+		// A late reply for a previous turn (cross-goroutine race: turn_started
+		// for N+1 arrived before N's reply) must NOT clear the streaming slot —
+		// the current turn's streaming message is still active.
+		if turnID == m.agentTurnID {
+			m.streamingMsgIdx = -1
+		}
 		// Capture reasoning from progress before it might be cleared.
 		// Do NOT clear m.progressState.current here — progress is only cleared by endAgentTurn.
 		// Intermediate text messages (e.g. thinking content) arrive while the agent

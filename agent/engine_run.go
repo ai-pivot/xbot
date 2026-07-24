@@ -146,6 +146,7 @@ func (s *runState) initProgress() {
 			ActiveTools:    nil,
 			CompletedTools: nil,
 			CWD:            s.cfg.InitialCWD,
+			TurnID:         s.cfg.TurnID,
 		}
 		// Seed token usage from DB-restored values so the first progress
 		// event carries real data instead of nil. Without this, the CLI
@@ -391,6 +392,28 @@ func (s *runState) buildOutput(ob *channel.OutboundMsg) *RunOutput {
 // beginIteration updates state at the start of each loop iteration.
 func (s *runState) beginIteration(i int) {
 	s.localIterCount++
+	// Consistency check: iteration number must be strictly sequential (0, 1, 2, ...).
+	// A gap or regression indicates a bug in the Run loop or retry logic.
+	if s.structuredProgress != nil && s.structuredProgress.Iteration >= 0 && i > 0 {
+		if i < s.structuredProgress.Iteration {
+			log.WithFields(log.Fields{
+				"chat_id":    s.cfg.ChatID,
+				"turn_id":    s.cfg.TurnID,
+				"prev_iter":  s.structuredProgress.Iteration,
+				"new_iter":   i,
+				"local_iter": s.localIterCount,
+			}).Error("ITER_ID_INVARIANT_VIOLATION: iteration went backwards — progress events will be out of order")
+		} else if i != s.structuredProgress.Iteration+1 {
+			log.WithFields(log.Fields{
+				"chat_id":    s.cfg.ChatID,
+				"turn_id":    s.cfg.TurnID,
+				"prev_iter":  s.structuredProgress.Iteration,
+				"new_iter":   i,
+				"gap":        i - s.structuredProgress.Iteration - 1,
+				"local_iter": s.localIterCount,
+			}).Warn("ITER_ID_GAP: iteration number jumped — intermediate iteration(s) may have been lost")
+		}
+	}
 	// NOTE: subAgentNodes and SubAgents are NOT cleared here — they carry
 	// forward across iterations (like todos). Clearing them causes
 	// resolveSubAgents to fall back to text-based string matching, which is
