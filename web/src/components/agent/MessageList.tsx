@@ -298,8 +298,18 @@ export function MessageList({
   // When following (stick=true) but not actually at the bottom (diff > 2px),
   // force-scroll to bottom — this is a safety net for cases where ResizeObserver
   // didn't fire (e.g. virtualizer corrected scrollHeight without resizing content).
+  //
+  // When NOT following (stick=false), the virtualizer may still perform scroll
+  // correction (adjusting scrollTop to maintain visual stability when content
+  // grows near the viewport). We capture the scrollTop BEFORE the render and
+  // restore it AFTER, so the user's viewport stays fixed.
+  const savedScrollTopRef = useRef<number | null>(null)
   useEffect(() => {
     if (!stickToBottomRef.current) {
+      // Capture current scrollTop before the virtualizer re-renders and
+      // potentially adjusts it. We'll restore it in a useLayoutEffect.
+      const el = scrollRef.current
+      if (el) savedScrollTopRef.current = el.scrollTop
       setHasNewContent(true)
       return
     }
@@ -311,6 +321,19 @@ export function MessageList({
       queueMicrotask(() => { programmaticScrollRef.current = false })
     }
   }, [rows.length, liveProgress, hasFooter])
+
+  // Restore scrollTop after the virtualizer's scroll correction, when stick=false.
+  useLayoutEffect(() => {
+    if (savedScrollTopRef.current !== null && !stickToBottomRef.current) {
+      const el = scrollRef.current
+      if (el && Math.abs(el.scrollTop - savedScrollTopRef.current) > 2) {
+        programmaticScrollRef.current = true
+        el.scrollTop = savedScrollTopRef.current
+        queueMicrotask(() => { programmaticScrollRef.current = false })
+      }
+      savedScrollTopRef.current = null
+    }
+  }, [rows.length, liveProgress])
 
   // ── ResizeObserver: follow bottom when sticky ─────────────────────────────
   useEffect(() => {
