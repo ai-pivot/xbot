@@ -191,23 +191,27 @@ export function MessageList({
 
   const scheduleFollow = useCallback(() => {
     if (!stickToBottomRef.current || pendingFollowRafRef.current !== null) return
-    // Clear "new content" bubble — we're actively following the bottom.
     setHasNewContent(false)
     pendingFollowRafRef.current = requestAnimationFrame(() => {
       pendingFollowRafRef.current = null
       if (!stickToBottomRef.current) return
       const el = scrollRef.current
       if (el) {
+        // scrollToIndex with align:'end' positions the last item's bottom
+        // edge at the viewport bottom — this accounts for per-item padding
+        // (py-1.5) that scrollHeight-based scrolling misses.
+        if (rows.length > 0) {
+          virtualizer.scrollToIndex(rows.length - 1, { align: 'end' })
+        }
+        // Then scrollHeight correction for content outside the virtualizer
+        // (ShimmerThinking, footer). Second RAF re-scrolls if it grew.
         programmaticScrollRef.current = true
-        const firstScrollHeight = el.scrollHeight
-        el.scrollTop = firstScrollHeight
+        const firstHeight = el.scrollHeight
+        el.scrollTop = el.scrollHeight
         queueMicrotask(() => { programmaticScrollRef.current = false })
-        // Second RAF: elements below the virtualizer's measured area
-        // (ShimmerThinking busy placeholder, footer) may not be reflected in
-        // scrollHeight on the first frame. Re-scroll only if it grew.
         requestAnimationFrame(() => {
           if (!stickToBottomRef.current) return
-          if (el.scrollHeight > firstScrollHeight) {
+          if (el.scrollHeight > firstHeight) {
             programmaticScrollRef.current = true
             el.scrollTop = el.scrollHeight
             queueMicrotask(() => { programmaticScrollRef.current = false })
@@ -215,7 +219,7 @@ export function MessageList({
         })
       }
     })
-  }, [])
+  }, [rows.length, virtualizer])
 
   // ── Scroll event handler ──────────────────────────────────────────────────
   // onScroll syncs stickToBottomRef with the true scroll position — this is
