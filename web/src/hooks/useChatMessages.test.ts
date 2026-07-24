@@ -892,4 +892,49 @@ describe('useChatMessages', () => {
     expect(result.current.messages[0].role).toBe('assistant')
     expect(result.current.messages[0].iterations[0].tools[0].name).toBe('Shell')
   })
+
+  it('cancel: appendAssistant survives reload — assistant message does not vanish', async () => {
+    const ws = makeWS([
+      // First fetch: user message only (no assistant yet)
+      { messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 }], chat_id: 'cancel-chat', last_seq: 1 },
+    ])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'cancel-chat', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map(m => m.role)).toEqual(['user']))
+
+    // Simulate cancel: appendAssistant commits the assistant message
+    act(() => {
+      result.current.appendAssistant('partial reply', [], 2)
+    })
+    // messages = [user, assistant]
+    expect(result.current.messages.map(m => m.role)).toEqual(['user', 'assistant'])
+    expect(result.current.messages[1].content).toBe('partial reply')
+    expect(result.current.messages[1].persisted).toBe(false)
+    expect(result.current.messages[1].eventSeq).toBe(2)
+
+    // Now a reload comes back — server has user + [interrupted] assistant persisted
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      return new Response(JSON.stringify({
+        ok: true,
+        data: {
+          messages: [
+            { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 },
+            { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:01Z', seq: 2,
+              iterations: [{ iteration: 1, thinking: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
+          ],
+          chat_id: 'cancel-chat', last_seq: 2,
+        },
+        error: null,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    await act(async () => {
+      void result.current.reload()
+    })
+
+    // The assistant message must survive — not vanish
+    const assistantMsg = result.current.messages.find(m => m.role === 'assistant')
+    expect(assistantMsg).toBeDefined()
+    // content may be '' from server, but the message must exist
+    // (the live row with 'partial reply' is kept via >= watermark)
+  })
 })

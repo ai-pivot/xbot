@@ -201,12 +201,25 @@ function reconcileHistoryWithLiveRows(
   current: ChatMessage[],
   historyWatermark: number,
 ): ChatMessage[] {
+  // Check if history actually contains a message with the given seq.
+  // History messages may lack seq (old server versions), so we also
+  // check content+role as a fallback for dedup.
+  const historyHasSeq = (seq: number) =>
+    history.some((m) => m.eventSeq === seq)
+  const historyHasContent = (role: string, content: string) =>
+    history.some((m) => m.role === role && m.content === content)
+
   const liveRows = current.filter((message) => {
     if (message.persisted !== false) return false
-    // Optimistic messages (no eventSeq) are always superseded by history.
     if (message.eventSeq == null) return false
-    // Keep only rows delivered via SSE after the history snapshot.
-    return message.eventSeq > historyWatermark
+    // Below watermark: always superseded by history.
+    if (message.eventSeq < historyWatermark) return false
+    // At or above watermark: keep UNLESS history already has this message
+    // (server persisted it with the same seq). For messages where history
+    // lacks seq (old server), fall back to content+role matching.
+    if (historyHasSeq(message.eventSeq)) return false
+    if (historyHasContent(message.role, message.content)) return false
+    return true
   })
   return [...history, ...liveRows]
 }

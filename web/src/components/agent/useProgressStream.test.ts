@@ -847,3 +847,44 @@ describe('busy: no iteration lost under packet loss', () => {
     expect(snap.iterationHistory.find(i => i.iteration === 1)?.tools[0]?.name).toBe('Read')
   })
 })
+
+describe('cancel: assistant message must not vanish', () => {
+  it('commits non-empty content + iterations on cancel (no empty assistant)', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // session(busy) → stream_content → progress_structured → PhaseDone → cancel
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'I am working on' } })
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: {
+      phase: 'tool_exec', iteration: 1,
+      active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+    } })
+    emitAndFlush({ type: 'progress_structured', seq: 2, progress: { phase: 'done' } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+
+    // onAssistantComplete MUST be called with non-empty content
+    expect(complete).toHaveBeenCalledTimes(1)
+    const [content] = complete.mock.calls[0]
+    expect(content).not.toBe('')
+    expect(content).toBe('I am working on')
+  })
+
+  it('does NOT commit an empty assistant message when cancel has no content', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Cancel immediately — no stream content, no iterations
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: { phase: 'done' } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+
+    // onAssistantComplete should NOT be called — there's nothing to commit
+    // (empty content + no iterations = no visible assistant message)
+    expect(complete).not.toHaveBeenCalled()
+  })
+})
