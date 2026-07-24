@@ -482,6 +482,7 @@
 .sweep-text-char {
   display: inline-block;
   animation: sweepText 1.5s ease-in-out infinite;
+  will-change: opacity;
 }
 
 /* ── Fold/expand animation ───────────────────────────────────────────────────
@@ -555,12 +556,14 @@
 .tool-status-running {
   background-color: var(--status-running);
   animation: pulse-blue 1.5s ease-in-out infinite;
+  will-change: opacity, transform;
 }
 
 .tool-status-generating {
   background-color: var(--status-running);
   opacity: 0.5;
   animation: blink-blue 1s ease-in-out infinite;
+  will-change: opacity;
 }
 
 .tool-status-done {
@@ -651,6 +654,7 @@
   margin-left: 2px;
   background-color: var(--accent);
   animation: streaming-cursor-blink 1s ease-in-out infinite;
+  will-change: opacity;
 }
 
 /* ── Typewriter fade-in effect ──────────────────────────────────────────────
@@ -670,6 +674,18 @@
   mask-image: none;
   -webkit-mask-image: none;
 }
+
+/* ── Compositor promotion for infinite CSS animations ──────────────────────────
+ * Without will-change, Chrome runs these animations on the main thread,
+ * forcing ScheduleStyleRecalculation on EVERY frame — even during idle
+ * scroll. This causes a style-recalc storm (164 frames × recalc) that freezes
+ * the UI. will-change promotes the element to its own compositor layer so the
+ * animation runs off the main thread.
+ *
+ * animate-spin (Tailwind) on SVG <svg> elements is especially prone to this:
+ * Chrome does not auto-promote SVG transform animations without will-change.
+ */
+.animate-spin { will-change: transform; }
 
 @media (prefers-reduced-motion: reduce) {
   .sweep-text-char,
