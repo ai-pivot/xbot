@@ -169,12 +169,6 @@ export function AgentPanel({ params }: PanelProps) {
       })
       void sessionContext.refresh()
     },
-    onCancelled: isSubAgent ? undefined : () => {
-      // Reload from DB — the authoritative version includes user_cancelled
-      // and the full iteration history (including the interrupted iteration).
-      void chat.reload()
-      void sessionContext.refresh()
-    },
     ws,
     onHistoryCompacted: isSubAgent ? undefined : () => {
       void chat.reload()

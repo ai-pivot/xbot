@@ -54,9 +54,6 @@ interface UseProgressStreamOptions {
   channel?: string
   /** Called with the finalized assistant text when a `text` event arrives. */
   onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number) => void
-  /** Called when the turn is cancelled. Should reload history from DB
-   *  (the authoritative version includes user_cancelled + full iterations). */
-  onCancelled?: () => void
   /** Called when the server signals HistoryCompacted (reset + reload). */
   onHistoryCompacted?: () => void
   /** Called when the server signals a slash-command session reset (/new). */
@@ -117,7 +114,6 @@ export function useProgressStream({
   chatID,
   channel = 'web',
   onAssistantComplete,
-  onCancelled,
   onHistoryCompacted,
   onSessionReset,
   initialProgress,
@@ -134,8 +130,6 @@ export function useProgressStream({
   // whenever the parent re-renders.
   const completeRef = useRef(onAssistantComplete)
   completeRef.current = onAssistantComplete
-  const cancelledRef = useRef(onCancelled)
-  cancelledRef.current = onCancelled
   const compactedRef = useRef(onHistoryCompacted)
   compactedRef.current = onHistoryCompacted
   const resetRef = useRef(onSessionReset)
@@ -248,7 +242,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, cancelledRef, compactedRef, resetRef, finalizedRef, phaseDoneRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef)
     })
     return offMessage
   }, [store, disabled, channel])
@@ -304,7 +298,6 @@ function handleProgressMessage(
   msg: WSMessage,
   store: ProgressStore,
   completeRef: React.MutableRefObject<UseProgressStreamOptions['onAssistantComplete']>,
-  cancelledRef: React.MutableRefObject<UseProgressStreamOptions['onCancelled']>,
   compactedRef: React.MutableRefObject<UseProgressStreamOptions['onHistoryCompacted']>,
   resetRef: React.MutableRefObject<UseProgressStreamOptions['onSessionReset']>,
   finalizedRef?: React.MutableRefObject<boolean>,
@@ -452,18 +445,37 @@ function handleProgressMessage(
         return
       }
       // Cancel ack: the backend sends a text event with cancelled=true.
-      // Do NOT use onAssistantComplete — the server's progress_history may be
-      // incomplete (the current iteration isn't snapshotted until
-      // executeToolCalls finishes, and iterationHistories only has completed
-      // iterations). The live store's iterations are complete but lack
-      // user_cancelled. Instead, trigger a full history reload — the DB has
-      // the authoritative version (user_cancelled + ALL iterations including
-      // the interrupted one, persisted by handleCancelledRun).
+      // The server's progress_history may be incomplete (the current iteration
+      // isn't snapshotted until executeToolCalls finishes). The live store HAS
+      // the current iteration (built incrementally via SSE). We append
+      // user_cancelled to the live store's current iteration, then commit via
+      // onAssistantComplete — no reload, no reset, no flicker.
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
-        store.reset()
-        // Trigger reload — fetches authoritative version from DB
-        cancelledRef.current?.()
+        const snap = store.getSnapshot()
+        if (hasVisibleProgress(snap)) {
+          // Append user_cancelled tool to the last iteration (or create one)
+          const iters = snap.iterationHistory.length > 0
+            ? [...snap.iterationHistory]
+            : [{ iteration: snap.iteration || 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }]
+          const lastIter = { ...iters[iters.length - 1] }
+          lastIter.tools = [...(lastIter.tools ?? []), {
+            name: 'user_cancelled',
+            label: 'user_cancelled',
+            status: 'done',
+            elapsedMs: 0,
+            summary: 'Cancelled by user',
+            detail: '',
+            args: '',
+            iteration: lastIter.iteration,
+            toolHints: '',
+          }]
+          lastIter.toolCount = lastIter.tools.length
+          iters[iters.length - 1] = lastIter
+          const text = snap.streamContent || snap.content || ''
+          completeRef.current?.(text, iters, msg.seq)
+          if (hasVisibleProgress(store.getSnapshot())) store.reset()
+        }
         // Dispatch agent-idle so useSessionStore clears the busy state even
         // if the session(idle) SSE event was dropped (sendCh full / network).
         window.dispatchEvent(new CustomEvent('agent-idle', {
