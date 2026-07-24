@@ -5,8 +5,9 @@
  * activate automatically. We listen for `controllerchange` to know when a
  * new SW has taken over, then show a toast prompting the user to reload.
  *
- * On localhost, any existing SW is unregistered (dev environment must not
- * be intercepted by the SW's NavigationRoute).
+ * On localhost, the SW is still registered (needed for update detection and
+ * the About panel's "check for updates" button). updateViaCache:'none' ensures
+ * the SW script itself is always fetched fresh — no stale HTTP cache.
  */
 export function registerSW() {
   if (!('serviceWorker' in navigator)) return
@@ -14,14 +15,10 @@ export function registerSW() {
   const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
 
   window.addEventListener('load', () => {
-    if (isLocalhost) {
-      navigator.serviceWorker.getRegistrations().then((regs) => {
-        regs.forEach((r) => r.unregister())
-      }).catch(() => {})
-      return
-    }
-
-    navigator.serviceWorker.register('/sw.js', { scope: '/' }).then((reg) => {
+    navigator.serviceWorker.register('/sw.js', {
+      scope: '/',
+      updateViaCache: isLocalhost ? 'none' : 'all',
+    }).then((reg) => {
       // Proactively check for updates on every page load — the browser's
       // built-in check only happens on navigation, so we force one here to
       // catch updates deployed since the last visit. With skipWaiting:true,
