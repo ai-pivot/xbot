@@ -445,11 +445,28 @@ function handleProgressMessage(
         return
       }
       // Cancel ack: the backend sends a text event with cancelled=true and
-      // empty content to signal turn end. Skip onAssistantComplete — there is
-      // no final reply to commit. Just clean up the store.
+      // empty content to signal turn end. Commit accumulated content +
+      // iterations so the last iteration doesn't vanish. The backend already
+      // persisted to DB (handleCancelledRun), so a history reload will
+      // replace with the authoritative version.
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
-        if (hasVisibleProgress(store.getSnapshot())) store.reset()
+        const snap = store.getSnapshot()
+        if (hasVisibleProgress(snap)) {
+          const text = snap.streamContent || snap.content || ''
+          const iters = snap.iterationHistory
+          if (text || iters.length > 0) {
+            // Commit partial content + iterations so they survive as a
+            // committed message. onAssistantComplete → resetProgress clears
+            // the store, but the committed message retains its own copy.
+            completeRef.current?.(text, iters, msg.seq)
+            // Fallback: if onAssistantComplete did not reset (e.g., not set),
+            // reset here to clear the live overlay.
+            if (hasVisibleProgress(store.getSnapshot())) store.reset()
+          } else {
+            store.reset()
+          }
+        }
         // Dispatch agent-idle so useSessionStore clears the busy state even
         // if the session(idle) SSE event was dropped (sendCh full / network).
         window.dispatchEvent(new CustomEvent('agent-idle', {
@@ -479,6 +496,12 @@ function handleProgressMessage(
       // The reset is idempotent — if onAssistantComplete already cleared the
       // store, hasVisibleProgress returns false and no double-reset occurs.
       if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      // Dispatch agent-idle so useSessionStore clears the busy state.
+      // PhaseDone normally handles this, but bang commands and slash commands
+      // bypass Run() and never send PhaseDone.
+      window.dispatchEvent(new CustomEvent('agent-idle', {
+        detail: { chatID: msg.chat_id ?? undefined, channel: msg.channel ?? undefined },
+      }))
       return
     }
 

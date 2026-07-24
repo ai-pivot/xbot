@@ -626,3 +626,58 @@ describe('cancel: no duplicate message', () => {
     expect(result.current.liveMessage).toBeNull()
   })
 })
+
+describe('cancel: iteration preservation', () => {
+  it('commits accumulated content + iterations on cancel ack (does not vanish)', () => {
+    const complete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Build up progress with iterations
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial reply' } })
+    emitAndFlush({
+      type: 'progress_structured', progress: {
+        phase: 'tool_exec', iteration: 1,
+        active_tools: [{ name: 'Read', status: 'running' }],
+        iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }],
+      },
+    })
+
+    // PhaseDone (progressFinalizer)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+
+    // Cancel ack
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+
+    // onAssistantComplete should be called with accumulated content + iterations
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete).toHaveBeenCalledWith('partial reply', expect.any(Array), undefined)
+    // Store should be cleared (liveMessage gone, committed message takes over)
+    expect(result.current.liveMessage).toBeNull()
+  })
+})
+
+describe('bang command: text without PhaseDone clears busy', () => {
+  it('dispatches agent-idle when text event arrives without PhaseDone', () => {
+    const complete = vi.fn()
+    const idleSpy = vi.fn()
+    window.addEventListener('agent-idle', idleSpy)
+
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Bang command: session(busy) → text → session(idle)
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'bang output' })
+
+    // onAssistantComplete should be called with the bang output
+    expect(complete).toHaveBeenCalledWith('bang output', [], undefined)
+
+    // agent-idle should be dispatched (clears busy even without PhaseDone)
+    expect(idleSpy).toHaveBeenCalled()
+
+    window.removeEventListener('agent-idle', idleSpy)
+  })
+})
