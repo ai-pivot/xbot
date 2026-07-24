@@ -80,8 +80,14 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       progress.completedTools.length > 0
     : false
   // Shimmer only during pure thinking (no tools, no text, no reasoning).
-  // Showing it between tool completions causes flicker.
-  const showThinkingIndicator = isStreaming && !progress?.streamContent && !hasReasoning && !hasToolInProgress && !hasAnyTools
+  // The phase guard prevents a delivery-race flicker: when the LLM returns
+  // tool_calls, recordAssistantMsg pushes Phase=tool_exec BEFORE
+  // initToolProgress populates ActiveTools. If this structured event arrives
+  // before the stream_content event (stateless, different Hub path), the
+  // snapshot briefly has no tools — but phase=tool_exec tells us tools are
+  // coming, so we must NOT show the thinking placeholder.
+  const isThinkingPhase = !progress || progress.phase === '' || progress.phase === 'thinking'
+  const showThinkingIndicator = isStreaming && isThinkingPhase && !progress?.streamContent && !hasReasoning && !hasToolInProgress && !hasAnyTools
   const emptyResponse = isEmptyResponseContent(message.content)
   const finalContent = !emptyResponse && shouldRenderFinalContent(message.content, iterations)
     ? message.content

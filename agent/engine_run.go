@@ -855,6 +855,15 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 
 	// Push progress so CLI can display reasoning immediately after LLM completes,
 	// rather than waiting for the next notifyProgress call (e.g. executeToolCalls).
+	// CRITICAL: if the LLM returned tool_calls, set Phase=tool_exec BEFORE pushing.
+	// Without this, the structured event carries Phase=thinking with no tools
+	// (ActiveTools is still nil — initToolProgress hasn't run yet). The frontend
+	// sees an empty snapshot (no tools, no text, no reasoning) during the window
+	// between this push and initToolProgress, causing ShimmerThinking ("思考中...")
+	// to flash over the generating tool indicator.
+	if s.structuredProgress != nil && response.HasToolCalls() {
+		s.structuredProgress.Phase = PhaseToolExec
+	}
 	if s.autoNotify {
 		s.notifyProgress("")
 	}
