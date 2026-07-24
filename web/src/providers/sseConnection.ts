@@ -239,7 +239,20 @@ export class SSEConnectionImpl implements WSConnection {
         return
       }
       if (seq > previousSeq + 1) {
-        replayGap = true
+        // Only trigger recovery for stateful events. Stateless events
+        // (stream_content, sync_progress, runner_status) are coalesced by the
+        // Hub — the server assigns a seq to each event but only delivers the
+        // latest. A seq gap on a stateless event is normal coalescing
+        // (intermediate values were merged), NOT a lost event. Triggering
+        // restoreActiveProgress here caused an RPC storm: LLM streams at
+        // ~20 tokens/sec, each coalesced stream_content triggered a
+        // get_active_progress RPC.
+        const isStateless = msg.type === 'stream_content'
+          || msg.type === 'sync_progress'
+          || msg.type === 'runner_status'
+        if (!isStateless) {
+          replayGap = true
+        }
       }
       msg.seq = seq
       setLastSeq(cacheKey, seq)

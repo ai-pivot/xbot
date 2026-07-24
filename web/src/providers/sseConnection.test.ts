@@ -455,7 +455,7 @@ describe('SSEConnectionImpl', () => {
     const source = MockEventSource.instances[0]
     source.open()
 
-    source.emit('runner_status', { type: 'runner_status', seq: 4 })
+    source.emit('text', { type: 'text', seq: 4, content: 'gap event' })
     source.emit('card', { type: 'card', seq: 5 })
     source.emit('session', { type: 'session', seq: 6, session: { action: 'renamed', chat_id: 'chat-a' } })
     resolveProgress({ phase: 'tool', iteration: 7 })
