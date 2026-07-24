@@ -191,19 +191,28 @@ export function MessageList({
 
   const scheduleFollow = useCallback(() => {
     if (!stickToBottomRef.current || pendingFollowRafRef.current !== null) return
-    // Use the virtualizer's scrollToIndex for the last item — this is
-    // measurement-safe (the virtualizer knows its own item positions) and
-    // doesn't depend on scrollHeight being fully resolved. A follow-up RAF
-    // then writes scrollTop = scrollHeight as a final correction in case
-    // the last item's measured height shifted the total.
+    // Clear "new content" bubble — we're actively following the bottom.
+    setHasNewContent(false)
     pendingFollowRafRef.current = requestAnimationFrame(() => {
       pendingFollowRafRef.current = null
       if (!stickToBottomRef.current) return
       const el = scrollRef.current
       if (el) {
         programmaticScrollRef.current = true
-        el.scrollTop = el.scrollHeight
+        const firstScrollHeight = el.scrollHeight
+        el.scrollTop = firstScrollHeight
         queueMicrotask(() => { programmaticScrollRef.current = false })
+        // Second RAF: elements below the virtualizer's measured area
+        // (ShimmerThinking busy placeholder, footer) may not be reflected in
+        // scrollHeight on the first frame. Re-scroll only if it grew.
+        requestAnimationFrame(() => {
+          if (!stickToBottomRef.current) return
+          if (el.scrollHeight > firstScrollHeight) {
+            programmaticScrollRef.current = true
+            el.scrollTop = el.scrollHeight
+            queueMicrotask(() => { programmaticScrollRef.current = false })
+          }
+        })
       }
     })
   }, [])
@@ -288,6 +297,8 @@ export function MessageList({
 
   // Treat the live snapshot as the activity revision: any progress update while
   // paused is new content, even when it does not change the rendered height.
+  // Only show "new content" when NOT following the bottom — if we're already
+  // at the bottom, there's nothing the user needs to scroll to.
   useEffect(() => {
     if (!stickToBottomRef.current) setHasNewContent(true)
   }, [rows.length, liveProgress, hasFooter])

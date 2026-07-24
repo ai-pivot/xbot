@@ -502,17 +502,19 @@ function handleProgressMessage(
         return
       }
 
-      // On idle, the turn is OVER. Clear streaming state but PRESERVE
-      // iterationHistory — completed iterations must never disappear.
-      // They are rendered by TurnBody until the next history reload replaces
-      // the committed message with its DB-persisted version.
+      // On idle, the turn is OVER. Clear all progress state.
+      // If finalizedRef=true, onAssistantComplete already committed the content
+      // via flushSync (appendAssistant + resetProgress). The store's
+      // iterationHistory is now redundant — the committed message has its own
+      // copy. A full reset() clears activeTools/completedTools/streamingTools
+      // and iterationHistory, making liveMessage null (clean transition to
+      // the committed row).
+      // If finalizedRef=false (defensive finalize — no text event arrived),
+      // commit the accumulated content first, then reset.
       if (action === 'idle') {
         if (finalizedRef?.current) {
-          // Already finalized via text event — clear streaming state, but
-          // preserve iterationHistory so completed iterations stay visible
-          // until the committed message replaces the live overlay.
           if (hasVisibleProgress(store.getSnapshot())) {
-            store.resetStreamingState()
+            store.reset()
           }
           return
         }
@@ -521,15 +523,9 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
-          // Call completeRef BEFORE clearing so onAssistantComplete can flushSync
-          // the append before liveMessage is cleared.
           completeRef.current?.(text, iters, msg.seq)
-          // Defensive finalize: use resetStreamingState to preserve
-          // iterationHistory. The committed message from onAssistantComplete
-          // will render these iterations until history reload.
-          store.resetStreamingState()
+          store.reset()
         }
-        // No else: if store is already clean, skip — no mutation, no flicker.
       }
       return
     }
