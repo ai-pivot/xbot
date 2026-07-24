@@ -295,8 +295,21 @@ export function MessageList({
   // paused is new content, even when it does not change the rendered height.
   // Only show "new content" when NOT following the bottom — if we're already
   // at the bottom, there's nothing the user needs to scroll to.
+  // When following (stick=true) but not actually at the bottom (diff > 2px),
+  // force-scroll to bottom — this is a safety net for cases where ResizeObserver
+  // didn't fire (e.g. virtualizer corrected scrollHeight without resizing content).
   useEffect(() => {
-    if (!stickToBottomRef.current) setHasNewContent(true)
+    if (!stickToBottomRef.current) {
+      setHasNewContent(true)
+      return
+    }
+    // stick=true — ensure we're actually at the bottom
+    const el = scrollRef.current
+    if (el && el.scrollHeight - el.clientHeight - el.scrollTop > 2) {
+      programmaticScrollRef.current = true
+      el.scrollTop = el.scrollHeight
+      queueMicrotask(() => { programmaticScrollRef.current = false })
+    }
   }, [rows.length, liveProgress, hasFooter])
 
   // ── ResizeObserver: follow bottom when sticky ─────────────────────────────

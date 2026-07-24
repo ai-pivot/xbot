@@ -748,6 +748,24 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 	}
 }
 
+// InjectUserMessage implements channel.UserMessageInjector.
+// Called by agent.injectCLIUserMessage when bg task / cron notifications are
+// drained and injected as user messages. Without this, web clients never
+// receive the notification's user message — only the agent's reply.
+// chatID is in "channel:chatID" format (from qualifyChatID).
+func (wc *WebChannel) InjectUserMessage(chatID, content string) {
+	stripped := stripChannelPrefix(chatID)
+	wsMsg := protocol.WSMessage{
+		Type:    protocol.MsgTypeInjectUser,
+		TS:      time.Now().Unix(),
+		ChatID:  chatID, // full qualified format for frontend matching
+		Content: content,
+	}
+	if !wc.hub.sendToSession("web", stripped, wsMsg) {
+		log.WithField("chat_id", chatID).Debug("Web client offline, inject_user buffered")
+	}
+}
+
 // SendStreamContent sends streaming LLM content to a specific client.
 // Used by CLI RemoteBackend connections to push token-by-token streaming.
 func (wc *WebChannel) SendStreamContent(chatID, content, reasoning string) {
