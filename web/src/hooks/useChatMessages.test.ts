@@ -24,6 +24,8 @@ function makeWS(responses: unknown[]): WSConnection {
     send: vi.fn(async () => undefined),
     setLastSeq: vi.fn(),
     onMessage: vi.fn(() => vi.fn()),
+    onConnectionChange: vi.fn(() => vi.fn()),
+    connected: false,
   } as unknown as WSConnection
 }
 
@@ -936,5 +938,40 @@ describe('useChatMessages', () => {
     expect(assistantMsg).toBeDefined()
     // content may be '' from server, but the message must exist
     // (the live row with 'partial reply' is kept via >= watermark)
+  })
+
+  it('reloads messages from DB when replay_gap is dispatched (real data loss)', async () => {
+    let messageHandler: ((message: WSMessage) => void) | null = null
+    let call = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      call++
+      const data = call === 1
+        ? { messages: [{ role: 'user', content: 'initial', timestamp: '2026-07-08T00:00:00Z' }] }
+        : { messages: [
+            { role: 'user', content: 'initial', timestamp: '2026-07-08T00:00:00Z' },
+            { role: 'assistant', content: 'reply after gap', timestamp: '2026-07-08T00:00:02Z' },
+          ] }
+      return new Response(JSON.stringify({ ok: true, data, error: null }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+    const ws = {
+      rpc: vi.fn(),
+      send: vi.fn(async () => undefined),
+      setLastSeq: vi.fn(),
+      onMessage: vi.fn((handler: (m: WSMessage) => void) => { messageHandler = handler; return vi.fn() }),
+    } as unknown as WSConnection
+
+    const { result } = renderHook(() =>
+      useChatMessages({ chatID: 'chat-gap', channel: 'web', ws }),
+    )
+    await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['initial']))
+
+    // Simulate replay_gap dispatch (TurnID changed during SSE gap → real data loss)
+    act(() => messageHandler?.({ type: 'replay_gap', chat_id: 'web:chat-gap' }))
+
+    await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual([
+      'initial', 'reply after gap',
+    ]))
   })
 })

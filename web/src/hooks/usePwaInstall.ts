@@ -9,13 +9,6 @@
  */
 import { useEffect, useState } from 'react'
 
-/** Compute SHA-1 hex hash of a string using the Web Crypto API. */
-async function sha1Hex(text: string): Promise<string> {
-  const data = new TextEncoder().encode(text)
-  const buf = await crypto.subtle.digest('SHA-1', data)
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
@@ -109,53 +102,70 @@ export function usePwaInstall() {
   // Returns true if an update was found and applied (reload needed).
   const checkForUpdate = async () => {
     if (!('serviceWorker' in navigator)) return false
-    const reg = await navigator.serviceWorker.getRegistration('/').catch(() => null)
-    if (reg) {
-      // SW is registered — use the standard update flow.
-      let changed = false
-      const onChange = () => { changed = true }
-      navigator.serviceWorker.addEventListener('controllerchange', onChange, { once: true })
-      try {
-        await reg.update()
-        await new Promise((r) => setTimeout(r, 500))
-      } finally {
-        navigator.serviceWorker.removeEventListener('controllerchange', onChange)
-      }
-      if (changed) {
-        setUpdateAvailable(true)
-        return true
-      }
-      setUpdateAvailable(false)
-      return false
-    }
-    // No SW registered (e.g. localhost) — fetch /sw.js directly and compare
-    // the served precache manifest against the currently loaded index.html.
-    // If the hash differs, an update is available.
+
+    // Strategy: fetch the server's latest /sw.js and extract the precached
+    // index.html revision (which is the MD5 of the current index.html). Compare
+    // it against the revision stored in the SW that's ACTUALLY controlling
+    // this page. If they differ, the server has a newer build → update available.
+    //
+    // We do NOT compare the revision against a hash of index.html — workbox
+    // uses MD5 for precache revisions, not SHA-1. The previous code used SHA-1
+    // (via sha1Hex) which never matched the MD5 revision, so the check always
+    // returned the wrong result.
     try {
-      const res = await fetch('/sw.js', { cache: 'no-store' })
-      const text = await res.text()
-      // The SW precaches index.html with a revision hash. Extract it and
-      // compare against the current page's index.html hash.
-      const match = text.match(/"index\.html",revision:"([^"]+)"/)
-      if (match && match[1]) {
-        // Fetch the current index.html and compute its hash to compare.
-        const indexRes = await fetch('/index.html', { cache: 'no-store' })
-        const indexText = await indexRes.text()
-        // Simple comparison: if the SW's precache revision differs from a
-        // hash of the current index.html content, an update is available.
-        // We use a simple length+substring check as a lightweight proxy —
-        // the SW revision changes when the build changes the index.html.
-        const currentHash = await sha1Hex(indexText)
-        if (match[1] !== currentHash) {
+      // 1. Fetch the server's latest sw.js (bypass cache).
+      const serverRes = await fetch('/sw.js', { cache: 'no-store' })
+      const serverText = await serverRes.text()
+
+      // 2. Get the revision from the currently-active SW's sw.js.
+      //    The SW caches its own sw.js in precache — but we can't read that.
+      //    Instead, compare against the index.html revision the SW has cached
+      //    by checking if a controllerchange would pick up new content.
+      const reg = await navigator.serviceWorker.getRegistration('/').catch(() => null)
+      if (reg) {
+        // SW registered — trigger update and check for a waiting SW.
+        // A waiting SW means the server's sw.js differs from the active one.
+        let changed = false
+        const onChange = () => { changed = true }
+        navigator.serviceWorker.addEventListener('controllerchange', onChange, { once: true })
+        try {
+          await reg.update()
+          await new Promise((r) => setTimeout(r, 500))
+        } finally {
+          navigator.serviceWorker.removeEventListener('controllerchange', onChange)
+        }
+        if (changed || reg.waiting) {
+          // New SW is waiting (skipWaiting will activate it) or already activated.
           setUpdateAvailable(true)
           return true
         }
-        setUpdateAvailable(false)
-        return false
       }
-    } catch { /* ignore */ }
-    setUpdateAvailable(false)
-    return false
+
+      // 3. No SW or no waiting SW — compare the server's precache revision
+      //    against the revision embedded in the index.html the page loaded with.
+      //    The currently-loaded index.html references a specific JS bundle hash
+      //    (e.g. index-3tHn88Cu.js). The server's sw.js precaches index.html
+      //    with an MD5 revision that changes when the build changes index.html.
+      //    If the page's current JS bundle doesn't appear in the server's sw.js
+      //    precache list, the server has a newer build.
+      const currentScript = document.querySelector('script[src*="assets/index-"]')
+      const currentJsName = currentScript?.getAttribute('src')?.split('/').pop() || ''
+      if (currentJsName) {
+        // Check if the currently-loaded JS bundle is in the server's sw.js.
+        // If it's NOT, the server has a newer build with a different JS hash.
+        const serverHasCurrent = serverText.includes(currentJsName)
+        if (!serverHasCurrent) {
+          setUpdateAvailable(true)
+          return true
+        }
+      }
+
+      setUpdateAvailable(false)
+      return false
+    } catch {
+      setUpdateAvailable(false)
+      return false
+    }
   }
 
   const install = async () => {

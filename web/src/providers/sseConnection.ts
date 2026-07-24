@@ -322,6 +322,9 @@ export class SSEConnectionImpl implements WSConnection {
     const sessionVersion = this.sessionVersion
     const progressVersion = this.progressVersion
     const recoveryRequestVersion = ++this.recoveryRequestVersion
+    const cacheKey = sessionCacheKey(channel, chatID)
+    // Snapshot the cached progress BEFORE recovery to detect TurnID changes.
+    const cachedProgress = cacheKey ? progressSnapshotCache.get(cacheKey) : undefined
     try {
       const progress = await this.rpc<ProgressEvent | null>('get_active_progress', {
         channel,
@@ -334,8 +337,22 @@ export class SSEConnectionImpl implements WSConnection {
         this.progressVersion !== progressVersion ||
         this.recoveryRequestVersion !== recoveryRequestVersion
       ) return
-      bumpProgressGeneration(sessionCacheKey(channel, chatID))
+      bumpProgressGeneration(cacheKey)
       this.progressVersion += 1
+
+      // ── Detect real data loss: TurnID changed or turn ended during gap ──
+      // SSE event gaps are normal (stateless coalescing, buffer drops), but
+      // TurnID changes or turn-end-during-gap mean committed messages (reply,
+      // notification) were lost. Signal useChatMessages to reload from DB.
+      const turnIDChanged = cachedProgress && progress &&
+        typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
+        cachedProgress.turn_id !== progress.turn_id
+      const turnEndedDuringGap = cachedProgress && cachedProgress.phase !== 'done' &&
+        (!progress || progress.phase === 'done')
+      if (turnIDChanged || turnEndedDuringGap) {
+        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
+      }
+
       if (!progress || progress.phase === 'done') {
         this.dispatch({
           type: 'progress_structured',

@@ -252,6 +252,18 @@ type bgSessionState struct {
 	notifyCh chan struct{} // buffered(1): signal that bgRunPending has new items
 	busy     atomic.Bool   // true while chatProcessLoop is processing a turn
 
+	// activeTurnID is the TurnID of the currently-processing turn. Set by
+	// chatProcessLoop when it generates a new TurnID; read by sendMessage to
+	// stamp the TurnID on the reply OutboundMsg. chatProcessLoop is serial per
+	// session, so there is no concurrent write — but sendMessage may be called
+	// from the Run's goroutine (ProgressNotifier), hence atomic.
+	activeTurnID atomic.Uint64
+	turnIDSeq    atomic.Uint64 // per-session monotonic TurnID counter
+	// lastTurnID tracks the most recently assigned TurnID for monotonicity
+	// assertions. Must be strictly increasing; a regression or non-increment
+	// indicates a turn lifecycle bug.
+	lastTurnID atomic.Uint64
+
 	// drainedThisRun tracks notifications consumed by DrainBgNotifications
 	// during the current Run. If the Run is cancelled, pending notifications
 	// are recorded in the interrupted turn and this tracking is cleared so the
@@ -269,6 +281,18 @@ func (ss *bgSessionState) clearDrainedThisRun() {
 	ss.drainedThisRunMu.Lock()
 	ss.drainedThisRun = nil
 	ss.drainedThisRunMu.Unlock()
+}
+
+// nextTurnID atomically increments and returns the next per-session TurnID.
+// Called by chatProcessLoop when dequeuing a message. Thread-safe via atomic.
+func (ss *bgSessionState) nextTurnID() uint64 {
+	return ss.turnIDSeq.Add(1)
+}
+
+// setActiveTurn records the TurnID of the currently-processing turn so that
+// sendMessage can stamp it on the reply OutboundMsg.
+func (ss *bgSessionState) setActiveTurn(id uint64) {
+	ss.activeTurnID.Store(id)
 }
 
 // Agent 核心 Agent 引擎
@@ -2126,28 +2150,6 @@ func qualifyChatID(channel, chatID string) string {
 	return channel + ":" + chatID
 }
 
-// injectCLIUserMessage sends a user message to the CLI channel if available.
-// Used by background notification handlers to display messages in the CLI UI.
-// Supports all three CLI channel types via UserMessageInjector interface:
-// CLIChannel (local), RemoteCLIChannel (websocket), ChannelCliChannel (in-process server).
-func (a *Agent) injectCLIUserMessage(channelName, chatID, content string) {
-	if a.channelFinder == nil {
-		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channelFinder is nil, skipping")
-		return
-	}
-	ch, ok := a.channelFinder(channelName)
-	if !ok {
-		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Warn("injectCLIUserMessage: channel not found via channelFinder")
-		return
-	}
-	injector, ok := ch.(channel.UserMessageInjector)
-	if !ok {
-		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID}).Debug("injectCLIUserMessage: channel does not implement UserMessageInjector")
-		return
-	}
-	injector.InjectUserMessage(qualifyChatID(channelName, chatID), content)
-}
-
 // ensureCheckpointStore creates a per-session CheckpointStore if one doesn't
 // already exist for this session key, updates the shared CheckpointState to
 // point at it, and wires the CheckpointState into the CLI channel.
@@ -2577,6 +2579,37 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			}
 		}
 
+		// Generate per-session TurnID and emit turn_started so the frontend can
+		// associate this turn's user message with its response — eliminating
+		// arrival-order races between bg notifications and user-typed messages.
+		turnID := ss.nextTurnID()
+		ss.setActiveTurn(turnID)
+		// Consistency check: TurnID must be strictly monotonic per session.
+		// A gap or regression indicates a bug in the turn lifecycle.
+		if prev := ss.lastTurnID.Load(); prev > 0 {
+			if turnID <= prev {
+				log.WithFields(log.Fields{
+					"session_key":  chatKey,
+					"prev_turn_id": prev,
+					"new_turn_id":  turnID,
+					"delta":        int64(turnID) - int64(prev),
+				}).Error("TURN_ID_INVARIANT_VIOLATION: TurnID must be strictly increasing — got non-increasing value")
+			} else if turnID != prev+1 {
+				log.WithFields(log.Fields{
+					"session_key":  chatKey,
+					"prev_turn_id": prev,
+					"new_turn_id":  turnID,
+					"gap":          turnID - prev - 1,
+				}).Warn("TURN_ID_GAP: TurnID jumped — intermediate turn(s) may have been lost")
+			}
+		}
+		ss.lastTurnID.Store(turnID)
+		if msg.Metadata == nil {
+			msg.Metadata = map[string]string{}
+		}
+		msg.Metadata["turn_id"] = strconv.FormatUint(turnID, 10)
+		a.emitTurnStarted(msg, turnID)
+
 		sem := a.getSemaphoreForMessage(msg)
 
 		select {
@@ -2629,14 +2662,22 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			defer func() {
 				wasCancelled = a.finishActiveCancelState(cancelKey, reqCtx, reqCancel)
 
-				// Emit session idle event for instant sidebar push.
-				a.emitSessionState(protocol.SessionEvent{
-					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
-				})
-				key := qualifyChatID(msg.Channel, msg.ChatID)
-				a.lastProgressSnapshot.Delete(key)
-				a.iterationHistories.Delete(key)
-				<-sem // 释放槽位
+				// WaitingUser: the turn is PAUSED, not ended. Do NOT emit
+				// session(idle) — the frontend's session(idle) handler triggers
+				// a defensive finalize that clears iterationHistory, causing all
+				// iterations from before the AskUser call to disappear. Also
+				// preserve lastProgressSnapshot + iterationHistories so SSE
+				// reconnect can recover the in-flight turn.
+				isWaitingUser := response != nil && response.WaitingUser
+				if !isWaitingUser {
+					a.emitSessionState(protocol.SessionEvent{
+						Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+					})
+					key := qualifyChatID(msg.Channel, msg.ChatID)
+					a.lastProgressSnapshot.Delete(key)
+					a.iterationHistories.Delete(key)
+				}
+				<-sem // 释放槽位（WaitingUser 也需要释放，让 answer 能获取）
 			}()
 
 			// 沙箱正在 export+import 时，拒绝该用户所有请求
@@ -2747,6 +2788,14 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		// This is the CRITICAL ordering: all response sends happen BEFORE this point,
 		// so injectCLIUserMessage in drainAndProcessNotifications cannot race with
 		// the turn's reply on asyncCh.
+		//
+		// WaitingUser: the turn is PAUSED (waiting for user input), not ended.
+		// Keep busy=true so chatWorker doesn't drain notifications while the
+		// AskUser panel is showing. The answer message will be dequeued next
+		// and processed as a continuation of this turn.
+		if response != nil && response.WaitingUser {
+			continue
+		}
 		ss.clearDrainedThisRun()
 		ss.busy.Store(false)
 		a.drainAndProcessNotifications(chatKey)
@@ -3273,6 +3322,65 @@ func (a *Agent) ResolveTool(sessionKey string, tenantID int64, name string) (too
 	return nil, false
 }
 
+// getActiveTurnID returns the TurnID of the currently-processing turn for the
+// given session key, or 0 if no turn is active (e.g. SubAgent, test).
+func (a *Agent) getActiveTurnID(sessionKey string) uint64 {
+	if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+		return state.(*bgSessionState).activeTurnID.Load()
+	}
+	return 0
+}
+
+// emitTurnStarted announces a new agent turn via the unified progress stream.
+// This replaces the old InjectUserMessage side-channel: the notification user
+// message is now delivered atomically with the TurnID through the same channel
+// as all other progress events, eliminating cross-goroutine arrival-order races.
+//
+// trigger: "user" (user-typed), "notification" (bg task/cron), "resume".
+// content: the user message text (non-empty only for notification/resume).
+func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
+	progressKey := qualifyChatID(msg.Channel, msg.ChatID)
+
+	trigger := "user"
+	content := ""
+	if msg.Metadata != nil {
+		if msg.Metadata[bgNotificationMetadataKey] == "true" {
+			trigger = "notification"
+			content = msg.Content
+		} else if msg.Metadata["resume_turn"] == "true" {
+			trigger = "resume"
+		}
+	}
+
+	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
+	seq := seqPtr.(*atomic.Uint64).Add(1)
+
+	payload := &protocol.ProgressEvent{
+		ChatID: progressKey,
+		Phase:  "turn_started",
+		Seq:    seq,
+		TurnID: turnID,
+		TurnStart: &protocol.TurnStartInfo{
+			Trigger:    trigger,
+			Content:    content,
+			RequestID:  msg.RequestID,
+			SenderName: msg.SenderName,
+		},
+	}
+
+	if a.channelRange != nil {
+		a.channelRange(func(_ string, ch channel.Channel) bool {
+			if sender, ok := ch.(channel.ProgressSender); ok {
+				sender.SendProgress(msg.ChatID, cloneProgressEvent(payload))
+			}
+			return true
+		})
+	}
+
+	// Store snapshot for mid-session reconnect.
+	a.lastProgressSnapshot.Store(progressKey, payload)
+}
+
 // emitBuiltinProgress sends a progress event for builtin commands (/compress, /new)
 // that bypass engine.Run. It follows the same channel-agnostic fan-out and
 // snapshot contract as buildProgressEventHandler.
@@ -3288,6 +3396,7 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 		ChatID:    progressKey,
 		Phase:     string(phase),
 		Seq:       seq,
+		TurnID:    a.getActiveTurnID(progressKey),
 		Iteration: 0,
 	}
 
@@ -3325,6 +3434,7 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 		ChatID:           progressKey,
 		Phase:            string(PhaseDone),
 		Seq:              seq,
+		TurnID:           a.getActiveTurnID(progressKey),
 		TokenUsage:       tokenUsage,
 		HistoryCompacted: historyCompacted,
 	}
@@ -3365,6 +3475,10 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 	if msg.Metadata == nil {
 		msg.Metadata = make(map[string]string)
 	}
+
+	// Stamp the active turn's TurnID so the frontend can associate this reply
+	// with the correct user message (by TurnID, not arrival order).
+	msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
 
 	isFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
 
@@ -3520,7 +3634,10 @@ func (a *Agent) bgNotifyLoop() {
 // cliInjectedUserMsg, so no user message appears — only the progress auto-start
 // fires, which lacks the user message in m.messages.
 func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content string) {
-	a.injectCLIUserMessage(channelName, chatID, content)
+	// Display is handled by emitTurnStarted in chatProcessLoop — the notification
+	// user message is delivered atomically with the TurnID via the unified progress
+	// stream, eliminating the cross-goroutine race between InjectUserMessage
+	// (caller's goroutine) and the turn's reply (handleOutbound goroutine).
 	a.injectInboundWithMetadata(channelName, chatID, senderID, content, map[string]string{
 		bgNotificationMetadataKey: "true",
 	})

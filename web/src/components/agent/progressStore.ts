@@ -256,6 +256,10 @@ export class ProgressStore {
   private rafHandle: number | null = null
   private dirty = false
   private disposed = false
+  /** Tracks the last seen TurnID for monotonicity assertions. 0 = untracked. */
+  lastTurnID = 0
+  /** Tracks the last seen iteration number within the current turn for continuity assertions. */
+  lastIter = -1
 
   /** Subscribe to snapshot changes; returns an unsubscribe function. */
   subscribe = (listener: Listener): (() => void) => {
@@ -289,6 +293,8 @@ export class ProgressStore {
     // window where liveMessage is still non-null after reset.
     this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT, todos }
     this.dirty = false
+    this.lastIter = -1
+    // lastTurnID is NOT reset here — it tracks across turns for monotonicity.
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null
@@ -303,6 +309,8 @@ export class ProgressStore {
     this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
     this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
     this.dirty = false
+    this.lastTurnID = 0
+    this.lastIter = -1
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null

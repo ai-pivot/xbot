@@ -159,15 +159,26 @@ export function AgentPanel({ params }: PanelProps) {
     chatID: progressChatID,
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
-    onAssistantComplete: (finalText, iterations) => {
+    onAssistantComplete: (finalText, iterations, _eventSeq, turnID) => {
       // Commit the message AND reset progress in the SAME synchronous render.
       // This eliminates the intermediate frame where content moves from
       // LiveIteration to MarkdownRenderer.
       flushSync(() => {
-        chat.appendAssistant(finalText, iterations)
+        chat.appendAssistant(finalText, iterations, _eventSeq, turnID)
         resetProgressRef.current?.()
       })
       void sessionContext.refresh()
+    },
+    onInjectUserMessage: (content, turnID, isNotification) => {
+      chat.injectUserMessage(content, turnID, isNotification)
+    },
+    onTurnStarted: (_turnID, _trigger) => {
+      // Optimistically mark the session as running so the input box switches
+      // to cancel mode immediately. session(busy) may be lost or delayed by
+      // SSE coalescing — turn_started is the earliest reliable signal.
+      if (chatID) {
+        store.setStatus({ channel: messageChannel, chatID }, 'running')
+      }
     },
     ws,
     onHistoryCompacted: isSubAgent ? undefined : () => {

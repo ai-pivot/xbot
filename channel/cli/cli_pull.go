@@ -161,6 +161,20 @@ func (m *cliModel) applyProgressSnapshot(snapshot *protocol.ProgressEvent) {
 
 	m.progressState.current = snapshot
 	if snapshot.Iteration > m.progressState.lastIter {
+		// ── Consistency check: iteration must advance by exactly 1 ──
+		// Within a single turn, iterations are 0, 1, 2, ... A gap means an
+		// iteration's progress events were lost (asyncCh full / coalescing);
+		// a regression means events arrived out of order.
+		if m.progressState.lastIter >= 0 && snapshot.Iteration != m.progressState.lastIter+1 {
+			log.WithFields(log.Fields{
+				"chat_id":   m.chatID,
+				"turn_id":   m.agentTurnID,
+				"prev_iter": m.progressState.lastIter,
+				"new_iter":  snapshot.Iteration,
+				"gap":       snapshot.Iteration - m.progressState.lastIter - 1,
+				"phase":     snapshot.Phase,
+			}).Warn("ITER_ID_GAP (TUI): iteration jumped — intermediate iteration(s) may have been lost")
+		}
 		m.progressState.lastIter = snapshot.Iteration
 		m.progressState.iterStart = time.Now()
 	}

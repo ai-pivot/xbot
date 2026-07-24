@@ -102,6 +102,26 @@ type ProgressEvent struct {
 	IterationHistory []ProgressEvent `json:"iteration_history,omitempty"`
 	HistoryCompacted bool            `json:"history_compacted,omitempty"`
 	CWD              string          `json:"cwd,omitempty"`
+
+	// TurnID uniquely identifies the agent turn that produced this event.
+	// Assigned by chatProcessLoop (per-session monotonic counter) and carried
+	// through RunConfig → StructuredProgress → every progress event. The
+	// frontend uses TurnID to associate a user message with its assistant
+	// response, eliminating arrival-order races (especially between
+	// bg-notification-injected user messages and user-typed messages).
+	TurnID    uint64         `json:"turn_id,omitempty"`
+	TurnStart *TurnStartInfo `json:"turn_start,omitempty"` // only on turn_started events
+}
+
+// TurnStartInfo carries the user message that triggered a turn. Only set when
+// Phase == "turn_started". This replaces the old InjectUserMessage side-channel:
+// the notification user message is now delivered atomically with the TurnID
+// through the unified progress stream.
+type TurnStartInfo struct {
+	Trigger    string `json:"trigger"`              // "user" | "notification" | "resume"
+	Content    string `json:"content,omitempty"`    // user message text (for notification display)
+	RequestID  string `json:"request_id,omitempty"` // for user-typed: match optimistic message
+	SenderName string `json:"sender_name,omitempty"`
 }
 
 func (ProgressEvent) EventType() string { return "progress" }

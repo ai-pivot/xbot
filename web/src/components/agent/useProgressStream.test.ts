@@ -140,7 +140,7 @@ describe('useProgressStream event dispatch', () => {
       progress_history: '[{"iteration":1,"tools":[{"name":"Read","status":"done"}]}]',
     })
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), 42)
+    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), 42, undefined)
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
   })
@@ -240,7 +240,7 @@ describe('useProgressStream event dispatch', () => {
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
 
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), undefined)
+    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), undefined, undefined)
   })
 
   it('handles session_reset text without appending assistant content', () => {
@@ -305,7 +305,7 @@ describe('useProgressStream event dispatch', () => {
 
     expect(complete).toHaveBeenCalledWith('', expect.arrayContaining([
       expect.objectContaining({ iteration: 1 }),
-    ]), undefined)
+    ]), undefined, undefined)
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -316,7 +316,7 @@ describe('useProgressStream event dispatch', () => {
     )
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'streamed' } })
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
-    expect(complete).toHaveBeenCalledWith('streamed', expect.any(Array), undefined)
+    expect(complete).toHaveBeenCalledWith('streamed', expect.any(Array), undefined, undefined)
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -343,7 +343,7 @@ describe('useProgressStream event dispatch', () => {
 
     expect(complete).toHaveBeenCalledWith('', expect.arrayContaining([
       expect.objectContaining({ iteration: 1 }),
-    ]), undefined)
+    ]), undefined, undefined)
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
   })
@@ -727,7 +727,7 @@ describe('bang command: text without PhaseDone clears busy', () => {
     emitAndFlush({ type: 'text', chat_id: 'c1', content: 'bang output' })
 
     // onAssistantComplete should be called with the bang output
-    expect(complete).toHaveBeenCalledWith('bang output', [], undefined)
+    expect(complete).toHaveBeenCalledWith('bang output', [], undefined, undefined)
 
     // agent-idle should be dispatched (clears busy even without PhaseDone)
     expect(idleSpy).toHaveBeenCalled()
@@ -867,5 +867,72 @@ describe('cancel: assistant message must not vanish', () => {
     // onAssistantComplete should NOT be called — there's nothing to commit
     // (empty content + no iterations = no visible assistant message)
     expect(complete).not.toHaveBeenCalled()
+  })
+
+  // ── Turn-ID / Iteration-ID continuity assertions ──
+
+  it('warns on TurnID regression (backwards)', () => {
+    const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    // First turn: TurnID=5
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 5, chat_id: 'web:c1' } })
+    // Second turn: TurnID=3 (REGRESSION)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 3, chat_id: 'web:c1' } })
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('TURN_ID_INVARIANT_VIOLATION'),
+      expect.objectContaining({ prev: 5, next: 3 }),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('warns on TurnID gap (skipped number)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 5, chat_id: 'web:c1' } })
+    // Gap: 5 → 8 (skipped 6, 7)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 8, chat_id: 'web:c1' } })
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('TURN_ID_GAP'),
+      expect.objectContaining({ prev: 5, next: 8, gap: 2 }),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('warns on iteration gap within a turn', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    // Start turn
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    // Iteration 0
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 0, chat_id: 'web:c1' } })
+    // Iteration 2 (GAP — skipped 1)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 2, chat_id: 'web:c1' } })
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('ITER_ID_GAP'),
+      expect.objectContaining({ prev: 0, next: 2, gap: 1 }),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('does NOT warn on normal sequential iteration advance (0 → 1 → 2)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 0, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 2, chat_id: 'web:c1' } })
+    expect(warnSpy).not.toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+    errorSpy.mockRestore()
   })
 })
