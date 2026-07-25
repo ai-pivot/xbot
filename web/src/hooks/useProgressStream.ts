@@ -321,7 +321,12 @@ function handleProgressMessage(
       // discard late stream_content — it reopens the store and re-displays
       // generating tools / streaming text that the user already saw cancelled.
       if (finalizedRef?.current) return
-      if (phaseDoneRef) phaseDoneRef.current = false
+      // If PhaseDone already fired, the turn is ending — the text event or
+      // cancel ack will arrive next with the final content. Late stream_content
+      // is stale and would re-set streamingTools, causing iteration duplication
+      // (the generating tool renders alongside the same iteration's "done" entry
+      // in iterationHistory).
+      if (phaseDoneRef?.current) return
 
       // stream_content carries content deltas in progress.stream_content /
       // progress.reasoning_stream_content (channel/web/web.go SendStreamContent).
@@ -612,7 +617,11 @@ function handleProgressMessage(
         // wipe activeTools via resetStreamingState(). This happens on page
         // refresh when the agent is mid-tool-execution: history hydrates
         // activeTools, then session(busy) arrives and would clear them.
+        // BUT: clear stale streamingTools (generating tools from the previous
+        // turn) to prevent iteration duplication — the generating tool would
+        // render alongside the same iteration's "done" entry in iterationHistory.
         if (snap.activeTools.length > 0) {
+          store.setStreamOnlyFields({ streamingTools: [] })
           return
         }
         // On a clean store (no visible progress), this is a genuine new turn.
