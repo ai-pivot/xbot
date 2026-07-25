@@ -189,10 +189,24 @@ export function usePwaInstall() {
         window.location.reload()
       }, { once: true })
       reg.waiting.postMessage({ type: 'SKIP_WAITING' })
-    } else {
-      // SW already activated (skipWaiting) — just reload to pick up new assets.
-      window.location.reload()
+      return
     }
+    // With skipWaiting=true, the new SW activates immediately and there's
+    // never a waiting state. But the NavigationRoute (createHandlerBoundToURL)
+    // serves the OLD cached index.html on reload — the precache from the
+    // previous SW hasn't been replaced yet. We must unregister the SW and
+    // clear ALL caches so the reload fetches fresh assets from the server.
+    try {
+      if (reg) {
+        await reg.unregister()
+      }
+      const cacheNames = await caches.keys()
+      await Promise.all(cacheNames.map((name) => caches.delete(name)))
+    } catch {
+      // ignore — reload anyway
+    }
+    // Force a hard reload (bypass browser HTTP cache too)
+    window.location.reload()
   }
 
   return {
