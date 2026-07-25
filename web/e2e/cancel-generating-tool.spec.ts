@@ -151,15 +151,23 @@ test.describe('Cancel clears generating tool', () => {
     })
     await page.waitForTimeout(500)
 
-    // ── Verify: generating tool should be GONE ──
-    // Even with a late stream_content, the generating tool should NOT render
-    // because the turn was cancelled (finalizedRef should stay true).
-    const hasToolAfterCancel = await page.evaluate(() =>
-      document.body.textContent?.includes('Shell') ?? false)
-    console.log('After cancel - tool still visible:', hasToolAfterCancel)
+    // ── Verify: generating tool should disappear (not real content) ──
+    const result = await page.evaluate(() => {
+      const body = document.body.textContent || ''
+      return {
+        hasShell: body.includes('Shell'),
+        hasContent: body.includes('Let me run a command to check the build'),
+        bodyLen: body.length,
+        bodyPreview: body.slice(0, 500),
+      }
+    })
+    console.log('After cancel result:', JSON.stringify(result))
 
-    // THE BUG: "Shell" generating tool is still rendering after cancel
-    expect(hasToolAfterCancel).toBe(false)
+    // Generating tool disappears (it's not real content — never completed)
+    expect(result.hasShell).toBe(false)
+    // Content stays visible (frozen) — check a prefix since the typewriter
+    // may not have fully revealed all characters at the time of cancel.
+    expect(result.bodyPreview).toContain('Let me run a command')
 
     await page.close()
   })

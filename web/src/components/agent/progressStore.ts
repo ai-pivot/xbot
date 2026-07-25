@@ -341,6 +341,24 @@ export class ProgressStore {
     })
   }
 
+  /** Freeze streaming — stop typewriter and animations, but keep ALL content
+   *  visible as-is. Used on cancel: the user sees exactly what was on screen
+   *  at the moment of cancel, with no re-render, no disappearance, no animation.
+   *  The frozen state persists until the next turn's turn_started clears it.
+   *
+   *  Sets phase='frozen' so liveMessage stays visible (phase='done' would hide
+   *  it via the liveMessage useMemo, phase='' would disable liveProgress).
+   *  Clears streamingTools (generating tools are NOT real content — they
+   *  represent in-flight tool calls that never completed). */
+  freeze(): void {
+    if (this.disposed) return
+    this.mutate((draft) => {
+      draft.streaming = false
+      draft.phase = 'frozen'
+      draft.streamingTools = []
+    })
+  }
+
   /** Set streamed assistant text (cumulative value from stream_content events). */
   appendStreamContent(delta: string): void {
     if (!delta) return

@@ -170,9 +170,9 @@ export function AgentPanel({ params }: PanelProps) {
       void sessionContext.refresh()
     },
     onCancelComplete: () => {
-      // Cancel: keep the streamed content as-is — no re-render, no reload,
-      // no animation. Only reset the live progress store.
-      resetProgressRef.current?.()
+      // Cancel: freeze() in useProgressStream already stopped streaming
+      // animations while keeping content visible. Nothing else to do —
+      // no reset (content would disappear), no reload, no re-render.
     },
     onInjectUserMessage: (content, turnID, isNotification) => {
       chat.injectUserMessage(content, turnID, isNotification)

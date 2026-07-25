@@ -626,9 +626,11 @@ describe('cancel ack: commits via onAssistantComplete with server data', () => {
 
     // Cancel should NOT call onAssistantComplete — no re-render
     expect(complete).not.toHaveBeenCalled()
-    // Cancel should call onCancelComplete (resetProgress only)
+    // Cancel should call onCancelComplete (freeze, no re-render)
     expect(cancelComplete).toHaveBeenCalledTimes(1)
-    expect(result.current.liveMessage).toBeNull()
+    // Content stays visible (frozen, not reset) — no vanish
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.liveMessage?.content).toBe('partial reply')
   })
 
   it('cancel does NOT merge live-only iterations (no commit)', () => {
@@ -708,7 +710,9 @@ describe('cancel: iteration preservation', () => {
     // Cancel should NOT call onAssistantComplete (no re-render)
     expect(complete).not.toHaveBeenCalled()
     expect(cancelComplete).toHaveBeenCalledTimes(1)
-    expect(result.current.liveMessage).toBeNull()
+    // Content stays visible (frozen, not reset) — no vanish
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.liveMessage?.content).toBe('partial reply')
   })
 })
 

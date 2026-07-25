@@ -387,6 +387,12 @@ function handleProgressMessage(
         }
         store.lastTurnID = p.turn_id ?? 0
         store.lastIter = -1 // reset iteration tracking for the new turn
+        // Reset the store for the new turn — clears any frozen content from
+        // the previous turn (e.g., cancelled turn's live message that was
+        // kept visible via freeze()). Without this, the frozen content would
+        // persist into the new turn because session(busy) skips reset when
+        // streamContent is non-empty.
+        store.reset()
         const ts = p.turn_start
         if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
           injectRef?.current?.(ts.content, p.turn_id, ts.trigger === 'notification')
@@ -552,13 +558,12 @@ function handleProgressMessage(
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
         if (phaseDoneRef) phaseDoneRef.current = false
-        // Cancel: keep the streamed content as-is — do NOT commit a new
-        // assistant message (that would re-render with animation). Only
-        // reset the live progress store so the liveMessage disappears and
-        // the committed message (if any) takes over.
-        if (hasVisibleProgress(store.getSnapshot())) {
-          store.reset()
-        }
+        // Cancel: FREEZE the live content as-is — stop typewriter and streaming
+        // animations, but keep ALL content visible. Do NOT reset the store
+        // (content would disappear = jitter) and do NOT commit a new message
+        // (would re-render with animation = jitter). The live message stays
+        // frozen until the next turn's turn_started clears it.
+        store.freeze()
         cancelCompleteRef?.current?.()
         // Dispatch agent-idle so useSessionStore clears the busy state even
         // if the session(idle) SSE event was dropped (sendCh full / network).

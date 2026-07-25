@@ -119,25 +119,22 @@ test.describe('Cancel does not re-render', () => {
     })
     await page.waitForTimeout(500)
 
-    // ── Verify: NO committed assistant message should exist ──
-    // The cancel ack should NOT call appendAssistant. The streamed content
-    // was in the live store, which was reset — no message committed.
-    const assistantCount = await page.evaluate(() => {
-      // Count elements that look like committed assistant messages
-      // (not live messages which have id containing "live-")
-      const all = document.querySelectorAll('[data-index]')
-      let count = 0
-      for (const el of all) {
-        const text = el.textContent || ''
-        if (text.includes('thinking about this')) count++
-      }
-      return count
-    })
-    console.log('Assistant messages with content after cancel:', assistantCount)
+    // ── Verify: streamed content STAYS visible (frozen, not disappeared) ──
+    const contentVisible = await page.evaluate(() =>
+      document.body.textContent?.includes('I am thinking about this') ?? false)
+    console.log('Content visible after cancel:', contentVisible)
 
-    // THE BUG: cancel committed a new assistant message (count=1).
-    // Fix: cancel does NOT commit — count should be 0.
-    expect(assistantCount).toBe(0)
+    // THE BUG: content disappeared (store.reset() cleared it).
+    // Fix: store.freeze() keeps content visible, only stops animations.
+    expect(contentVisible).toBe(true)
+
+    // ── Verify: no streaming animation (typewriter stopped) ──
+    const hasStreamingAnim = await page.evaluate(() =>
+      document.querySelector('.streaming-content, .typewriter-fade') !== null)
+    console.log('Streaming animation still active:', hasStreamingAnim)
+
+    // Animations should be stopped (streaming=false)
+    expect(hasStreamingAnim).toBe(false)
 
     await page.close()
   })
