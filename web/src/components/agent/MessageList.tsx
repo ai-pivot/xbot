@@ -144,7 +144,11 @@ export function MessageList({
       return deduped
     }
     // Active turn: last persisted assistant is the in-flight streaming slot.
-    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial) {
+    // Only treat it as the streaming slot if it's actually partial
+    // (isPartial=true). A committed (isPartial=false) assistant message must
+    // NOT be overridden by liveProgress — that wipes its content when a new
+    // turn starts after a notification turn.
+    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial && lastDeduped.isPartial) {
       return deduped
     }
     return [...deduped, liveMessage]
@@ -154,7 +158,8 @@ export function MessageList({
   const liveId = liveMessage
     ? (messages.length > 0 &&
        messages[messages.length - 1].role === 'assistant' &&
-       liveMessage.isPartial
+       liveMessage.isPartial &&
+       messages[messages.length - 1].isPartial
         ? messages[messages.length - 1].id
         : liveMessage.id)
     : null
