@@ -28,9 +28,9 @@ import { useWSConnection } from '@/hooks/useWSConnection'
 import { postAPI } from '@/lib/api'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import { groupSessions, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
-import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
+import { clearSessionCaches, loadSessionTreeCache, progressSnapshotCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
 import { rememberRecentWorkDir } from '@/lib/recent-workdirs'
-import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus, TodoItem } from '@/types/shared'
+import type { ProgressEvent, SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus, TodoItem } from '@/types/shared'
 import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
 const STARRED_KEY = 'xbot-starred'
@@ -1035,8 +1035,9 @@ export function useSessionStoreImpl(): SessionStore {
         const oldCacheKey = sessionCacheKey(activeSessionRef.current.channel, activeSessionRef.current.chatID)
         clearSessionCaches(oldCacheKey)
       }
+      let switchResponse: SwitchChatResponse = {}
       try {
-        await postAPI<SwitchChatResponse>(
+        switchResponse = await postAPI<SwitchChatResponse>(
           `/api/chats/${encodeURIComponent(id)}/switch`,
           { channel: useChannel },
         )
@@ -1055,6 +1056,18 @@ export function useSessionStoreImpl(): SessionStore {
       // Clear ALL executing sessions — stale busy keys (from lost idle events)
       // would force running in mergeStatus, overriding the server's correct state.
       executingSessionsRef.current.clear()
+      // Restore todos from the switch response so the TODO list appears
+      // immediately after switching — before /api/history's active_progress
+      // arrives. Write to progressSnapshotCache as a "done" snapshot with todos;
+      // useProgressStream's hydrate effect picks it up on the next render.
+      if (switchResponse.todos && switchResponse.todos.length > 0) {
+        const cacheKey = sessionCacheKey(useChannel, id)
+        progressSnapshotCache.set(cacheKey, {
+          phase: 'done',
+          seq: 0,
+          todos: switchResponse.todos,
+        } as ProgressEvent)
+      }
       // Immediately query the server for the latest session status — the
       // local sessions list may be stale (e.g. a previous busy/idle event
       // failed to arrive). This ensures the sidebar and AgentPanel show the
