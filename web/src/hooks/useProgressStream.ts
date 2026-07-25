@@ -609,6 +609,14 @@ function handleProgressMessage(
         if (snap.streamContent || snap.reasoningStreamContent) {
           return
         }
+        // If we have active tools (in-flight tool execution), don't disrupt —
+        // a synthetic busy from SSE reconnect (restoreActiveProgress) must not
+        // wipe activeTools via resetStreamingState(). This happens on page
+        // refresh when the agent is mid-tool-execution: history hydrates
+        // activeTools, then session(busy) arrives and would clear them.
+        if (snap.activeTools.length > 0) {
+          return
+        }
         // On a clean store (no visible progress), this is a genuine new turn.
         // Reset the finalize guard so a subsequent text event can complete.
         // This is safe because a clean store means no in-flight content to
@@ -618,7 +626,8 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = false
           return
         }
-        // Dirty store with no stream content — clear stale tool state.
+        // Dirty store with no stream content and no active tools — clear
+        // stale tool state (e.g. completed tools from a previous turn).
         store.resetStreamingState()
         return
       }
