@@ -471,9 +471,14 @@ function handleProgressMessage(
           .filter(Boolean) as WebIteration[]
       }
 
-      // TODO list (from TodoWrite tool, carry-forward when absent)
+      // TODO list (from TodoWrite tool)
+      // p.todos is the raw array from the server. We must distinguish:
+      //  - Array with items → map to TodoItem[]
+      //  - Empty array [] → explicitly cleared by todo_write([]) → pass []
+      //    so setStructuredTools updates draft.todos = []
+      //  - undefined/null → not present in event → carry-forward (undefined)
       let todos: TodoItem[] | undefined
-      if (Array.isArray(p.todos) && p.todos.length > 0) {
+      if (Array.isArray(p.todos)) {
         todos = p.todos.map((t) => ({
           id: typeof t.id === 'number' ? t.id : 0,
           text: typeof t.text === 'string' ? t.text : '',
