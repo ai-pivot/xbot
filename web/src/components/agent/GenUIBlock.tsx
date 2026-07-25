@@ -195,7 +195,13 @@ export function GenUIBlock({ code, chatId, uiSource, streaming = false, onAction
     doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
-<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}*{box-sizing:border-box}</style>
+<style>
+html,body{margin:0;padding:0;background:#fff;overflow:hidden;max-width:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+*{box-sizing:border-box}
+/* Prevent any content from escaping the iframe bounds */
+body>*{max-width:100%;overflow-wrap:break-word;word-break:break-word}
+</style>
 </head><body></body></html>`)
     doc.close()
 
@@ -312,7 +318,7 @@ ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
       ref={iframeRef}
       className="w-full rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden transition-[height] duration-150 ease-out"
       style={{ height: iframeHeight > 0 ? `${iframeHeight}px` : '120px', backgroundColor: '#fff' }}
-      sandbox="allow-scripts allow-same-origin"
+      sandbox="allow-scripts"
       title="GenUI Preview"
     />
   )
