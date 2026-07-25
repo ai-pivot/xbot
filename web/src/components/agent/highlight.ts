@@ -80,45 +80,112 @@ async function loadHljs(): Promise<typeof HLJSApi> {
     const [
       { default: hljs },
       { default: bash },
+      { default: c },
+      { default: cpp },
+      { default: csharp },
+      { default: css },
+      { default: diff },
+      { default: dockerfile },
       { default: go },
+      { default: ini },
+      { default: java },
       { default: javascript },
       { default: json },
+      { default: kotlin },
+      { default: lua },
       { default: markdown },
+      { default: perl },
+      { default: php },
       { default: python },
+      { default: ruby },
+      { default: rust },
       { default: shell },
       { default: sql },
+      { default: swift },
       { default: typescript },
       { default: xml },
       { default: yaml },
     ] = await Promise.all([
       import('highlight.js/lib/core'),
       import('highlight.js/lib/languages/bash'),
+      import('highlight.js/lib/languages/c'),
+      import('highlight.js/lib/languages/cpp'),
+      import('highlight.js/lib/languages/csharp'),
+      import('highlight.js/lib/languages/css'),
+      import('highlight.js/lib/languages/diff'),
+      import('highlight.js/lib/languages/dockerfile'),
       import('highlight.js/lib/languages/go'),
+      import('highlight.js/lib/languages/ini'),
+      import('highlight.js/lib/languages/java'),
       import('highlight.js/lib/languages/javascript'),
       import('highlight.js/lib/languages/json'),
+      import('highlight.js/lib/languages/kotlin'),
+      import('highlight.js/lib/languages/lua'),
       import('highlight.js/lib/languages/markdown'),
+      import('highlight.js/lib/languages/perl'),
+      import('highlight.js/lib/languages/php'),
       import('highlight.js/lib/languages/python'),
+      import('highlight.js/lib/languages/ruby'),
+      import('highlight.js/lib/languages/rust'),
       import('highlight.js/lib/languages/shell'),
       import('highlight.js/lib/languages/sql'),
+      import('highlight.js/lib/languages/swift'),
       import('highlight.js/lib/languages/typescript'),
       import('highlight.js/lib/languages/xml'),
       import('highlight.js/lib/languages/yaml'),
     ])
     hljs.registerLanguage('bash', bash)
     hljs.registerLanguage('sh', shell)
+    hljs.registerLanguage('c', c)
+    hljs.registerLanguage('h', c)
+    hljs.registerLanguage('cpp', cpp)
+    hljs.registerLanguage('c++', cpp)
+    hljs.registerLanguage('hpp', cpp)
+    hljs.registerLanguage('cc', cpp)
+    hljs.registerLanguage('cxx', cpp)
+    hljs.registerLanguage('csharp', csharp)
+    hljs.registerLanguage('cs', csharp)
+    hljs.registerLanguage('css', css)
+    hljs.registerLanguage('scss', css)
+    hljs.registerLanguage('diff', diff)
+    hljs.registerLanguage('patch', diff)
+    hljs.registerLanguage('dockerfile', dockerfile)
+    hljs.registerLanguage('docker', dockerfile)
     hljs.registerLanguage('go', go)
+    hljs.registerLanguage('golang', go)
+    hljs.registerLanguage('ini', ini)
+    hljs.registerLanguage('conf', ini)
+    hljs.registerLanguage('config', ini)
+    hljs.registerLanguage('java', java)
     hljs.registerLanguage('javascript', javascript)
     hljs.registerLanguage('js', javascript)
+    hljs.registerLanguage('jsx', javascript)
     hljs.registerLanguage('json', json)
+    hljs.registerLanguage('jsonc', json)
+    hljs.registerLanguage('kotlin', kotlin)
+    hljs.registerLanguage('kt', kotlin)
+    hljs.registerLanguage('lua', lua)
     hljs.registerLanguage('markdown', markdown)
+    hljs.registerLanguage('md', markdown)
+    hljs.registerLanguage('perl', perl)
+    hljs.registerLanguage('pl', perl)
+    hljs.registerLanguage('php', php)
     hljs.registerLanguage('python', python)
     hljs.registerLanguage('py', python)
+    hljs.registerLanguage('ruby', ruby)
+    hljs.registerLanguage('rb', ruby)
+    hljs.registerLanguage('rust', rust)
+    hljs.registerLanguage('rs', rust)
     hljs.registerLanguage('shell', shell)
     hljs.registerLanguage('sql', sql)
+    hljs.registerLanguage('swift', swift)
     hljs.registerLanguage('typescript', typescript)
     hljs.registerLanguage('ts', typescript)
+    hljs.registerLanguage('tsx', typescript)
     hljs.registerLanguage('xml', xml)
     hljs.registerLanguage('html', xml)
+    hljs.registerLanguage('xhtml', xml)
+    hljs.registerLanguage('svg', xml)
     hljs.registerLanguage('yaml', yaml)
     hljs.registerLanguage('yml', yaml)
     hljs.registerAliases(['go'], { languageName: 'go' })
@@ -190,18 +257,21 @@ export function highlightSync(code: string, language: string | undefined): strin
     const cached = cacheGet(cacheKey)
     if (cached !== undefined) return cached
     try {
-      if (!hljs.getLanguage(lang)) {
-        cacheSet(cacheKey, null)
-        return null
+      if (hljs.getLanguage(lang)) {
+        const result = hljs.highlight(code, { language: lang }).value
+        cacheSet(cacheKey, result)
+        return result
       }
-      const result = hljs.highlight(code, { language: lang }).value
-      cacheSet(cacheKey, result)
-      return result
+      // Language not registered → fall through to auto-highlight below.
+      // DO NOT cache null here — auto-highlight has its own cache key.
     } catch {
-      return null
+      // highlight threw → fall through to auto-highlight
     }
   }
-  // Auto-highlight when no language given
+  // Auto-highlight: when no language given, or the requested language
+  // is not registered (e.g. "rust" before it was added, or an obscure
+  // language). This ensures ALL code blocks get syntax colors — never
+  // plain white text.
   const autoKey = `auto::${code}`
   const autoCached = cacheGet(autoKey)
   if (autoCached !== undefined) return autoCached

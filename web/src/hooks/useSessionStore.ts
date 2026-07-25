@@ -30,7 +30,7 @@ import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import { groupSessions, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
 import { rememberRecentWorkDir } from '@/lib/recent-workdirs'
-import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus } from '@/types/shared'
+import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus, TodoItem } from '@/types/shared'
 import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
 const STARRED_KEY = 'xbot-starred'
@@ -208,6 +208,7 @@ interface CreateChatResponse {
 interface SwitchChatResponse {
   chat_id?: string
   channel?: string
+  todos?: TodoItem[]
 }
 interface TransientSubAgent {
   session: SessionInfo

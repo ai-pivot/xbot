@@ -1196,7 +1196,15 @@ func (wc *WebChannel) handleChatSwitch(w http.ResponseWriter, r *http.Request) {
 	wc.userCurrentSession[senderID] = SessionSelector{Channel: channel, ChatID: chatID}
 	wc.userCurrentSessionMu.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chat_id": chatID, "channel": channel})
+	// Return todos so the frontend can restore the TODO list immediately on
+	// session switch — without this, switching to a session that used TodoWrite
+	// shows no todos until the next TodoWrite call or page refresh.
+	todos := []protocol.TodoItem{}
+	if wc.callbacks.GetTodos != nil {
+		todos, _ = wc.callbacks.GetTodos(senderID, SessionSelector{Channel: channel, ChatID: chatID})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chat_id": chatID, "channel": channel, "todos": todos})
 }
 
 // handleChatDelete handles DELETE /api/chats/{chatID} — delete a chatroom.
