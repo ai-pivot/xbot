@@ -169,6 +169,11 @@ export function AgentPanel({ params }: PanelProps) {
       })
       void sessionContext.refresh()
     },
+    onCancelComplete: () => {
+      // Cancel: keep the streamed content as-is — no re-render, no reload,
+      // no animation. Only reset the live progress store.
+      resetProgressRef.current?.()
+    },
     onInjectUserMessage: (content, turnID, isNotification) => {
       chat.injectUserMessage(content, turnID, isNotification)
     },

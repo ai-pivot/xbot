@@ -54,6 +54,10 @@ interface UseProgressStreamOptions {
   channel?: string
   /** Called with the finalized assistant text when a `text` event arrives. */
   onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => void
+  /** Called when the turn is cancelled (cancel ack). Should NOT re-render the
+   *  message list — the user already sees the streamed content as-is.
+   *  Only reset the live progress store. */
+  onCancelComplete?: () => void
   /** Called when a bg notification / cron triggers a new turn — displays the injected user message. */
   onInjectUserMessage?: (content: string, turnID: number, isNotification: boolean) => void
   /** Called when turn_started arrives — the frontend should enter busy mode. */
@@ -118,6 +122,7 @@ export function useProgressStream({
   chatID,
   channel = 'web',
   onAssistantComplete,
+  onCancelComplete,
   onHistoryCompacted,
   onInjectUserMessage,
   onTurnStarted,
@@ -136,6 +141,8 @@ export function useProgressStream({
   // whenever the parent re-renders.
   const completeRef = useRef(onAssistantComplete)
   completeRef.current = onAssistantComplete
+  const cancelCompleteRef = useRef(onCancelComplete)
+  cancelCompleteRef.current = onCancelComplete
   const compactedRef = useRef(onHistoryCompacted)
   compactedRef.current = onHistoryCompacted
   const resetRef = useRef(onSessionReset)
@@ -252,7 +259,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef)
     })
     return offMessage
   }, [store, disabled, channel])
@@ -314,6 +321,7 @@ function handleProgressMessage(
   phaseDoneRef?: React.MutableRefObject<boolean>,
   injectRef?: React.MutableRefObject<UseProgressStreamOptions['onInjectUserMessage']>,
   turnStartedRef?: React.MutableRefObject<UseProgressStreamOptions['onTurnStarted']>,
+  cancelCompleteRef?: React.MutableRefObject<UseProgressStreamOptions['onCancelComplete']>,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -543,21 +551,15 @@ function handleProgressMessage(
       // fire), we merge: server iterations + any live-only iterations.
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
-        const parsedIterations = parseWebIterations(msg.progress_history)
-        const snap = store.getSnapshot()
-        const liveIters = snap.iterationHistory
-        // Merge: server iterations (authoritative, has user_cancelled) +
-        // any live-only iterations not in server data.
-        const serverIterNums = new Set(parsedIterations.map((i) => i.iteration))
-        const liveOnly = liveIters.filter((i) => !serverIterNums.has(i.iteration))
-        const iters = [...parsedIterations, ...liveOnly]
-        const text = snap.streamContent || snap.content || ''
-        if (text || iters.length > 0) {
-          completeRef.current?.(text, iters, msg.seq, msg.turn_id)
-          if (hasVisibleProgress(store.getSnapshot())) store.reset()
-        } else if (hasVisibleProgress(snap)) {
+        if (phaseDoneRef) phaseDoneRef.current = false
+        // Cancel: keep the streamed content as-is — do NOT commit a new
+        // assistant message (that would re-render with animation). Only
+        // reset the live progress store so the liveMessage disappears and
+        // the committed message (if any) takes over.
+        if (hasVisibleProgress(store.getSnapshot())) {
           store.reset()
         }
+        cancelCompleteRef?.current?.()
         // Dispatch agent-idle so useSessionStore clears the busy state even
         // if the session(idle) SSE event was dropped (sendCh full / network).
         window.dispatchEvent(new CustomEvent('agent-idle', {
