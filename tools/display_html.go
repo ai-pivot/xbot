@@ -114,11 +114,18 @@ func (t *DisplayHTMLTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 		}
 	}
 
+	// Store the full code in the result so it persists in iteration history.
+	// The frontend's AssistantMessage extracts display_html code from tool
+	// args (live) or summary (history). Without this, committed messages
+	// lose the GenUI code and fall back to showing a codeblock.
 	summary := fmt.Sprintf("🎨 UI rendered (%d chars)", len(code))
 	if sourceRef != "" {
 		summary += fmt.Sprintf(". Source: %s", sourceRef)
 	}
-	return NewResult(summary), nil
+	return &ToolResult{
+		Summary: summary,
+		Detail:  code, // Full TSX code — preserved in iteration history for GenUI rendering
+	}, nil
 }
 
 func stripMarkdownFences(code string) string {

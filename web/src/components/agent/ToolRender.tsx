@@ -250,7 +250,7 @@ function GlobRender({ tool, summary }: { tool: WebToolProgress; summary: string 
 
 function DisplayHTMLRender({ tool }: { tool: WebToolProgress }) {
   const args = parseArgs(tool)
-  const code = args?.code as string | undefined
+  const code = (args?.code as string) || tool.detail || ''
   if (!code) {
     return <ToolCallBlock tool={tool} />
   }

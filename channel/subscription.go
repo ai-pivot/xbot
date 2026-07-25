@@ -51,6 +51,7 @@ type iterToolSnap struct {
 	ElapsedMS int64  `json:"elapsed_ms"`
 	Summary   string `json:"summary,omitempty"`
 	Args      string `json:"args,omitempty"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 // truncateLabel safely truncates a string to maxRunes.
@@ -258,6 +259,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 								Iteration: snap.Iteration,
 								Summary:   t.Summary,
 								Args:      t.Args,
+								Detail:    t.Detail,
 							}
 						}
 						iters = append(iters, HistoryIteration{

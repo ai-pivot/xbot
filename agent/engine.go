@@ -408,6 +408,7 @@ type IterationToolSnapshot struct {
 	ElapsedMS int64  `json:"elapsed_ms,omitempty"`
 	Summary   string `json:"summary,omitempty"`
 	Args      string `json:"args,omitempty"`
+	Detail    string `json:"detail,omitempty"` // full tool detail (e.g. display_html code)
 }
 
 // readArgsHasOffsetOrLimit checks whether a Read tool call's JSON arguments contain
