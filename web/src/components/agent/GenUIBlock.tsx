@@ -184,72 +184,47 @@ export function GenUIBlock({ code, chatId, uiSource, streaming = false, onAction
     }
   }, []) // no deps — streaming is passed as parameter
 
-  // Build the iframe HTML content as a string.
-  // Using srcdoc instead of document.write() because React 19's createRoot
-  // throws #299 when the iframe has both allow-scripts + allow-same-origin.
-  // With srcdoc, the iframe content is treated as same-origin by the browser
-  // (parent can access contentDocument), but React's sandbox check is bypassed
-  // because srcdoc content doesn't set the sandbox flag the same way.
-  const twLink = typeof document !== 'undefined'
-    ? document.querySelector('link[href*="/assets/index-"][href$=".css"]') as HTMLLinkElement | null
-    : null
-  const twHref = twLink?.href || ''
-
-  // srcdoc content — stored in a ref so the iframe doesn't reload on re-render.
-  const srcdocRef = useRef<string>(
-    `<!DOCTYPE html><html><head><meta charset="utf-8">
+  // Initialize iframe document + React root
+  useEffect(() => {
+    if (!iframeRef.current) return
+    const doc = iframeRef.current.contentDocument
+    if (!doc) return
+    const twLink = document.querySelector('link[href*="/assets/index-"][href$=".css"]') as HTMLLinkElement | null
+    const twHref = twLink?.href || ''
+    doc.open()
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
 <style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}*{box-sizing:border-box}</style>
-<script>
-Object.defineProperty(window,'parent',{get:function(){return window}});
-Object.defineProperty(window,'top',{get:function(){return window}});
-</script>
-</head><body></body></html>`
-  )
+</head><body></body></html>`)
+    doc.close()
 
-  // Initialize iframe document + React root after srcdoc loads
-  useEffect(() => {
-    const iframe = iframeRef.current
-    if (!iframe) return
-
-    const init = () => {
-      const doc = iframe.contentDocument
-      if (!doc || !doc.body) return
-
-      // Wheel event forwarding
-      doc.addEventListener('wheel', (e: WheelEvent) => {
-        let el = e.target as HTMLElement | null
-        let isScrollable = false
-        while (el && el !== doc.body && el !== doc.documentElement) {
-          const style = doc.defaultView?.getComputedStyle(el)
-          if (style && (
-            (style.overflow === 'auto' || style.overflow === 'scroll' ||
-             style.overflowY === 'auto' || style.overflowY === 'scroll') &&
-            el.scrollHeight > el.clientHeight
-          )) {
-            isScrollable = true
-            break
-          }
-          el = el.parentElement
+    // Add wheel event forwarding via JS (not inline <script> which breaks
+    // React 19's createRoot under allow-scripts allow-same-origin sandbox).
+    doc.addEventListener('wheel', (e: WheelEvent) => {
+      let el = e.target as HTMLElement | null
+      let isScrollable = false
+      while (el && el !== doc.body && el !== doc.documentElement) {
+        const style = doc.defaultView?.getComputedStyle(el)
+        if (style && (
+          (style.overflow === 'auto' || style.overflow === 'scroll' ||
+           style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+          el.scrollHeight > el.clientHeight
+        )) {
+          isScrollable = true
+          break
         }
-        if (!isScrollable) {
-          window.scrollBy({ top: e.deltaY })
-        }
-      }, { passive: true })
-
-      if (!rootRef.current) {
-        rootRef.current = createRoot(doc.body)
+        el = el.parentElement
       }
-    }
+      if (!isScrollable) {
+        window.scrollBy({ top: e.deltaY })
+      }
+    }, { passive: true })
 
-    // srcdoc loads asynchronously — wait for load event
-    if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {
-      init()
-    } else {
-      iframe.addEventListener('load', init, { once: true })
+    // Reuse existing root if body already has one (prevents React #299)
+    if (!rootRef.current) {
+      rootRef.current = createRoot(doc.body)
     }
-
     return () => {
       rootRef.current?.unmount()
       rootRef.current = null
@@ -335,7 +310,6 @@ Object.defineProperty(window,'top',{get:function(){return window}});
   return (
     <iframe
       ref={iframeRef}
-      srcDoc={srcdocRef.current}
       className="w-full rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden transition-[height] duration-150 ease-out"
       style={{ height: iframeHeight > 0 ? `${iframeHeight}px` : '120px', backgroundColor: '#fff' }}
       sandbox="allow-scripts allow-same-origin"
