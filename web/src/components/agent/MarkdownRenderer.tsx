@@ -129,7 +129,6 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
   )
 
   // Kick off hljs load on first block render (no-op if already loaded/loading).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (!isInline) ensureHljsLoaded() }, [])
 
   // Inline code: short, no newline, no language fence.

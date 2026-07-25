@@ -15,20 +15,6 @@ interface SSEMockState {
   __sseListeners: Record<string, Set<(ev: MessageEvent) => void>>
 }
 
-let seqCounter = 0
-
-async function emitSSE(page: Page, type: string, data: Record<string, unknown>) {
-  await page.evaluate(({ type, data, seq }) => {
-    const w = window as unknown as SSEMockState
-    const listeners = w.__sseListeners
-    if (!listeners) return
-    const handlers = listeners[type] as Set<(ev: MessageEvent) => void> | undefined
-    if (!handlers) return
-    const ev = new MessageEvent(type, { data: JSON.stringify({ ...data, seq }) })
-    handlers.forEach((h) => h(ev))
-  }, { type, data, seq: ++seqCounter })
-}
-
 // Track which chat the /api/history mock returns
 let currentChatID = 'chat-1'
 let todosForChat: Record<string, unknown[]> = {}
@@ -82,7 +68,6 @@ async function setupMock(page: Page) {
 
 test.describe('Session switch restores todos', () => {
   test.beforeEach(() => {
-    seqCounter = 0
     currentChatID = 'chat-1'
     todosForChat = {
       'chat-1': [],
