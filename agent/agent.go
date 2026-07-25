@@ -3349,6 +3349,12 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 			content = msg.Content
 		} else if msg.Metadata["resume_turn"] == "true" {
 			trigger = "resume"
+		} else if msg.Metadata["ask_user_answered"] == "true" {
+			// AskUser answer is a CONTINUATION of the same turn, not a new turn.
+			// Use trigger="resume" so the frontend preserves iterationHistory
+			// from before the AskUser call — the answer's Run continues the
+			// same logical turn.
+			trigger = "resume"
 		}
 	}
 

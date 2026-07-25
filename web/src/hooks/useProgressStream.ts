@@ -386,14 +386,18 @@ function handleProgressMessage(
           }
         }
         store.lastTurnID = p.turn_id ?? 0
-        store.lastIter = -1 // reset iteration tracking for the new turn
-        // Reset the store for the new turn — clears any frozen content from
-        // the previous turn (e.g., cancelled turn's live message that was
-        // kept visible via freeze()). Without this, the frozen content would
-        // persist into the new turn because session(busy) skips reset when
-        // streamContent is non-empty.
-        store.reset()
         const ts = p.turn_start
+        // For "resume" trigger (AskUser answer), preserve iterationHistory —
+        // the answer is a CONTINUATION of the same turn, not a new turn.
+        // Only clear streaming state (streamContent, activeTools, etc.) so
+        // the new iteration starts clean, but previous iterations survive.
+        // For "user"/"notification" triggers, full reset (new turn).
+        if (ts?.trigger === 'resume') {
+          store.resetStreamingState()
+        } else {
+          store.reset()
+          store.lastIter = -1
+        }
         if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
           injectRef?.current?.(ts.content, p.turn_id, ts.trigger === 'notification')
         }
