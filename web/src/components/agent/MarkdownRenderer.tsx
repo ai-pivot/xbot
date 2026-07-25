@@ -25,6 +25,7 @@ import { Check, Copy } from 'lucide-react'
 
 import { highlightAuto, highlightCode, normalizeLanguage } from './highlight'
 import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
+import { useIsTouch } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
 
 interface MarkdownRendererProps {
@@ -61,6 +62,7 @@ function useDebouncedValue<T>(value: T, delay: number, enabled: boolean): T {
  */
 function CopyButton({ getText }: { getText: () => string }) {
   const [copied, setCopied] = useState(false)
+  const isTouch = useIsTouch()
   const onClick = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(getText())
@@ -76,7 +78,10 @@ function CopyButton({ getText }: { getText: () => string }) {
       type="button"
       aria-label="Copy code"
       onClick={onClick}
-      className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md opacity-0 transition-opacity hover:text-text-primary group-hover/code:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+      className={cn(
+        'absolute right-2 top-2 flex size-7 items-center justify-center rounded-md transition-opacity hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none',
+        isTouch ? 'opacity-60' : 'opacity-0 group-hover/code:opacity-100',
+      )}
       style={{
         backgroundColor: 'color-mix(in srgb, var(--md-code-bg) 80%, var(--md-code-border))',
         color: 'var(--md-code-lang-text)',

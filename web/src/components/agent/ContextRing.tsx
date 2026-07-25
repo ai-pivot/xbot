@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { useI18n } from '@/providers/i18n'
 
 interface ContextRingProps {

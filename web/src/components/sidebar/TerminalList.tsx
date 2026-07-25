@@ -13,8 +13,10 @@
  */
 import { Plus, SquareTerminal, Trash2, Loader2, Circle } from 'lucide-react'
 
+import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useIsTouch } from '@/hooks/useIsMobile'
 import type { TerminalManager } from '@/hooks/useTerminal'
 import type { TerminalSession, TerminalStatus } from '@/types/terminal'
 
@@ -86,6 +88,7 @@ interface TerminalRowProps {
 
 function TerminalRow({ term, onFocus, onClose }: TerminalRowProps) {
   const { t } = useI18n()
+  const isTouch = useIsTouch()
   const statusLabel = statusText(term.status, t)
   const color = STATUS_COLOR[term.status]
 
@@ -129,7 +132,10 @@ function TerminalRow({ term, onFocus, onClose }: TerminalRowProps) {
                 e.stopPropagation()
                 onClose()
               }}
-              className="flex size-5 shrink-0 items-center justify-center rounded-sm text-text-secondary opacity-0 transition-opacity hover:bg-bg-secondary hover:text-error group-hover:opacity-100 focus-visible:opacity-100"
+              className={cn(
+                'flex size-5 shrink-0 items-center justify-center rounded-sm text-text-secondary transition-opacity hover:bg-bg-secondary hover:text-error',
+                isTouch ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+              )}
             >
               <Trash2 className="size-3.5" />
             </button>

@@ -14,6 +14,7 @@ import { X, Bot, FileText, SquareTerminal, ListVideo } from 'lucide-react'
 import type { DockviewPanelApi } from 'dockview'
 import type { PanelParams } from '@/types/tab'
 import { cn } from '@/lib/utils'
+import { useIsTouch } from '@/hooks/useIsMobile'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -39,6 +40,7 @@ export interface TabHeaderProps {
 }
 
 export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps) {
+  const isTouch = useIsTouch()
   const Icon = (params.icon ? ICONS[params.icon] : null) ?? TYPE_ICONS[params.type]
   const fullTitle = params.type === 'file' ? (params.filePath || params.title) : params.title
 
@@ -86,7 +88,7 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
             'ml-0.5 flex size-[18px] shrink-0 items-center justify-center rounded-sm text-text-secondary',
             'transition-[color,background-color,opacity] duration-100 hover:bg-accent/15 hover:text-text-primary',
             'focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent',
-            isActive ? 'opacity-60 hover:opacity-100' : 'opacity-0 group-hover:opacity-60',
+            isActive || isTouch ? 'opacity-60 hover:opacity-100' : 'opacity-0 group-hover:opacity-60',
           )}
           onClick={(e) => {
             e.stopPropagation()
