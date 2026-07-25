@@ -6,8 +6,17 @@
  * bundle — code blocks render as plain text first (instant LCP), then get
  * highlighted after the lazy chunk loads.
  *
+ * Synchronous API: once highlight.js is loaded (first code block triggers the
+ * dynamic import), all subsequent highlights are SYNCHRONOUS via
+ * `highlightSync()`. This lets CodeBlock compute the highlighted HTML during
+ * render (useMemo) instead of a post-render useEffect — the highlight result
+ * is part of the same React render pass as the markdown parse, sharing the
+ * streaming debounce + typewriter clip optimizations.
+ *
  * Falls back to plain text when the language is unknown or highlighting throws.
  */
+
+import { useSyncExternalStore } from 'react'
 
 /** Normalize a fenced-block info string ("ts", "typescript", "  ts x") to a language id. */
 export function normalizeLanguage(lang: string | undefined): string | undefined {
@@ -46,6 +55,23 @@ import type HLJSApi from 'highlight.js/lib/core'
 
 let hljsInstance: typeof HLJSApi | null = null
 let loadPromise: Promise<typeof HLJSApi> | null = null
+
+/** Kick off the dynamic import of highlight.js (fire-and-forget).
+ *  Called on first code block render so the chunk starts loading immediately.
+ *  Subsequent calls are no-ops if already loaded or loading.
+ *  Notifies subscribers when loading completes (for useSyncExternalStore). */
+export function ensureHljsLoaded(): void {
+  if (hljsInstance || loadPromise) return
+  loadPromise = loadHljs().then((hljs) => {
+    notifyHljsReady()
+    return hljs
+  })
+}
+
+/** Synchronously get the hljs instance, or null if not yet loaded. */
+export function getHljsSync(): typeof HLJSApi | null {
+  return hljsInstance
+}
 
 async function loadHljs(): Promise<typeof HLJSApi> {
   if (hljsInstance) return hljsInstance
@@ -104,7 +130,7 @@ async function loadHljs(): Promise<typeof HLJSApi> {
 
 /**
  * Highlight `code` for `language`, returning an HTML string of <span> tokens.
- * Returns null when the language is unknown so the caller can render plain text.
+ * Returns null when the language is unknown or highlighting throws.
  *
  * Async: the first call triggers a dynamic import of highlight.js. Subsequent
  * calls use the cached module instance.
@@ -142,3 +168,79 @@ export async function highlightAuto(code: string): Promise<string | null> {
     return null
   }
 }
+
+/**
+ * Synchronous highlight: returns highlighted HTML string, or null if hljs
+ * is not yet loaded (first render) or the language is unknown.
+ *
+ * After the first code block triggers `ensureHljsLoaded()`, the dynamic
+ * import resolves and `hljsInstance` is set. All subsequent calls return
+ * synchronously from the cache or by running hljs.highlight() — no async
+ * gap, no post-render useEffect, no "plain text → highlighted" flash.
+ *
+ * The result is cached (same LRU as the async path) so re-renders during
+ * typewriter clip are instant cache hits.
+ */
+export function highlightSync(code: string, language: string | undefined): string | null {
+  const hljs = hljsInstance
+  if (!hljs) return null
+  const lang = normalizeLanguage(language)
+  if (lang) {
+    const cacheKey = `${lang}::${code}`
+    const cached = cacheGet(cacheKey)
+    if (cached !== undefined) return cached
+    try {
+      if (!hljs.getLanguage(lang)) {
+        cacheSet(cacheKey, null)
+        return null
+      }
+      const result = hljs.highlight(code, { language: lang }).value
+      cacheSet(cacheKey, result)
+      return result
+    } catch {
+      return null
+    }
+  }
+  // Auto-highlight when no language given
+  const autoKey = `auto::${code}`
+  const autoCached = cacheGet(autoKey)
+  if (autoCached !== undefined) return autoCached
+  try {
+    const result = hljs.highlightAuto(code)
+    cacheSet(autoKey, result.value)
+    return result.value
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Returns the highlight.js load status. Used by CodeBlock to know when
+ * hljs becomes available so it can re-render with highlighting.
+ */
+export function isHljsLoaded(): boolean {
+  return hljsInstance !== null
+}
+
+// ── External store for hljs load status ──
+// useSyncExternalStore lets CodeBlock re-render when hljs finishes loading
+// without wrapping the entire app in a provider.
+const hljsListeners = new Set<() => void>()
+
+function notifyHljsReady() {
+  hljsListeners.forEach((fn) => fn())
+}
+
+/** React hook: subscribes to hljs load status via useSyncExternalStore.
+ *  Returns true once highlight.js is loaded and ready for synchronous use. */
+export function useHljsReady(): boolean {
+  return useSyncExternalStore(
+    (callback) => {
+      hljsListeners.add(callback)
+      return () => { hljsListeners.delete(callback) }
+    },
+    () => hljsInstance !== null,
+    () => false, // SSR: assume not loaded
+  )
+}
+

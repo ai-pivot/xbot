@@ -15,7 +15,7 @@
  * not set, but raw HTML nodes are not present from remark output), and we only
  * pass through highlight.js token spans we generated ourselves.
  */
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentPropsWithoutRef } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -23,7 +23,7 @@ import rehypeKatex from 'rehype-katex'
 import type { PluggableList } from 'unified'
 import { Check, Copy } from 'lucide-react'
 
-import { highlightAuto, highlightCode, normalizeLanguage } from './highlight'
+import { highlightSync, normalizeLanguage, ensureHljsLoaded, useHljsReady } from './highlight'
 import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
@@ -111,20 +111,26 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
   )
   const isInline = inline || (!lang && !text.includes('\n'))
 
-  // Async highlighting: render plain text first (instant LCP), then swap in
-  // highlighted HTML after highlight.js loads. This keeps highlight.js (~300KB)
-  // off the critical render path.
-  const [html, setHtml] = useState<string | null>(null)
-  useEffect(() => {
-    if (isInline) return
-    let cancelled = false
-    const run = async () => {
-      const result = (lang ? await highlightCode(text, lang) : null) ?? await highlightAuto(text)
-      if (!cancelled && result) setHtml(result)
-    }
-    void run()
-    return () => { cancelled = true }
-  }, [text, lang, isInline])
+  // Synchronous highlighting: compute the highlighted HTML during render
+  // (via useMemo), not in a post-render useEffect. This shares the streaming
+  // debounce + typewriter clip optimizations — no "plain text → highlighted"
+  // flash on every content change or re-render.
+  //
+  // First render: hljs not yet loaded → ensureHljsLoaded() kicks off the
+  // dynamic import (fire-and-forget). useHljsReady() subscribes to the load
+  // status so the component re-renders when hljs becomes available — then
+  // highlightSync() returns immediately (synchronous, no async gap).
+  const hljsReady = useHljsReady()
+  const html = useMemo(
+    () => (isInline ? null : highlightSync(text, lang)),
+    // Re-compute when text/lang changes, or when hljs finishes loading
+    // (transitions from plain-text → highlighted on the first code block).
+    [text, lang, isInline, hljsReady],
+  )
+
+  // Kick off hljs load on first block render (no-op if already loaded/loading).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!isInline) ensureHljsLoaded() }, [])
 
   // Inline code: short, no newline, no language fence.
   if (isInline) {
