@@ -614,6 +614,15 @@ function handleProgressMessage(
 
       if (action === 'busy') {
         const snap = store.getSnapshot()
+        // A new busy event means the turn is (re)starting. Reset the finalize
+        // guards so stream_content events are NOT blocked. Without this, after
+        // a PhaseDone (phaseDoneRef=true) or cancel (finalizedRef=true), all
+        // subsequent stream_content events are silently dropped — the UI
+        // freezes ("busy 时不更新"). With the new backend, turn_started handles
+        // this; with the old backend (no turn_started), session(busy) is the
+        // only reset point.
+        if (finalizedRef) finalizedRef.current = false
+        if (phaseDoneRef) phaseDoneRef.current = false
         // If we're already mid-stream, don't disrupt — a synthetic busy from
         // recovery must not wipe cumulative streamContent (causes typer restart).
         if (snap.streamContent || snap.reasoningStreamContent) {
