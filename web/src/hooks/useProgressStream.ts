@@ -317,12 +317,10 @@ function handleProgressMessage(
 ): void {
   switch (msg.type) {
     case 'stream_content': {
-      // Reset finalizedRef here — stream_content is the first sign that the
-      // LLM is actively generating for this turn. This is safer than resetting
-      // on session(busy), which can arrive from SSE reconnect recovery
-      // (restoreActiveProgress) and would allow stale text events to be
-      // re-processed, causing duplicate messages.
-      if (finalizedRef) finalizedRef.current = false
+      // If the turn is already finalized (cancel ack or text event arrived),
+      // discard late stream_content — it reopens the store and re-displays
+      // generating tools / streaming text that the user already saw cancelled.
+      if (finalizedRef?.current) return
       if (phaseDoneRef) phaseDoneRef.current = false
 
       // stream_content carries content deltas in progress.stream_content /
