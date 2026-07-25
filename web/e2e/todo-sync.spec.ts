@@ -80,16 +80,6 @@ async function setupMock(page: Page) {
   })
 }
 
-async function getTodoCount(page: Page): Promise<number> {
-  return page.evaluate(() => {
-    // Count TODO items in ContextBar or TodoPullOut
-    const text = document.body.textContent || ''
-    // Count "○" (undo) and "✓" (done) markers, or look for todo text
-    const todoElements = document.querySelectorAll('[class*="todo"], [class*="Todo"]')
-    return todoElements.length
-  })
-}
-
 async function hasTodoText(page: Page, text: string): Promise<boolean> {
   return page.evaluate((t) => {
     return (document.body.textContent || '').includes(t)
@@ -175,7 +165,7 @@ test.describe('TODO sync', () => {
 
     // chat-1 has todos in active_progress; chat-2 also has todos
     const chat2Todos = [{ id: 10, text: 'Task A', done: false }]
-    let currentHistoryTodos = TEST_TODOS
+    const currentHistoryTodos = TEST_TODOS
     await page.route('**/api/history', (r) => {
       const body = r.request().postDataJSON()
       const chatID = body?.chat_id || 'chat-1'
