@@ -44,6 +44,7 @@ import type { HistProgress } from '@/components/agent/api'
 import type { WSMessage } from '@/types/shared'
 import {
   clearProgressSnapshot,
+  progressSnapshotCache,
   sessionCacheKey,
 } from '@/lib/webCache'
 
@@ -185,14 +186,26 @@ export function useProgressStream({
     if (progressCacheKey !== prevProgressCacheKeyRef.current) {
       prevProgressCacheKeyRef.current = progressCacheKey
       store.fullReset()
+      // Restore todos from progressSnapshotCache — switchSession writes
+      // the /switch response todos here so they appear immediately,
+      // before /api/history's active_progress arrives (which may return
+      // null if the backend's snapshot was already cleaned up).
+      if (progressCacheKey) {
+        const cached = progressSnapshotCache.get(progressCacheKey)
+        if (cached?.todos && cached.todos.length > 0) {
+          store.replace({ todos: cached.todos.map((t) => ({
+            id: typeof t.id === 'number' ? t.id : 0,
+            text: typeof t.text === 'string' ? t.text : '',
+            done: Boolean(t.done),
+          })) })
+        }
+      }
     } else {
       store.reset()
     }
     if (disabled) {
       return
     }
-    // No cache restore — history's active_progress is the single source.
-    // The server returns the complete progress snapshot including iterationHistory.
   }, [store, progressCacheKey, disabled])
 
   // Hydrate from history when initialProgress changes (after reload completes).
