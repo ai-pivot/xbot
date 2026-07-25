@@ -451,6 +451,30 @@ export class ProgressStore {
       if (opts.iterationHistory && opts.iterationHistory.length > 0) {
         this.mutate((draft) => {
           appendIterations(draft, opts.iterationHistory!)
+          // Recovery snapshot (from restoreActiveProgress) is authoritative —
+          // also update structured fields so the current iteration's tools,
+          // phase, and content are restored. Without this, only iterationHistory
+          // is appended but the current iteration's activeTools/completedTools
+          // remain stale (from the last live event before disconnect), causing
+          // the current iteration to show incomplete tool state.
+          if (opts.phase !== undefined) {
+            draft.phase = opts.phase
+            draft.streaming = opts.phase !== 'done'
+          }
+          if (opts.iteration !== undefined) draft.iteration = opts.iteration
+          if (opts.activeTools) draft.activeTools = dedupTools(opts.activeTools)
+          if (opts.completedTools) {
+            const currentIter = opts.iteration ?? draft.iteration
+            const filtered = currentIter > 0
+              ? opts.completedTools.filter((t) => t.iteration === undefined || t.iteration === currentIter)
+              : opts.completedTools
+            draft.completedTools = dedupTools(filtered)
+          }
+          if (opts.content !== undefined) draft.content = opts.content
+          if (opts.reasoning) draft.lastReasoning = opts.reasoning
+          if (opts.todos !== undefined) draft.todos = opts.todos
+          if (opts.subAgents !== undefined) draft.subAgents = mergeSubAgentTrees(draft.subAgents, opts.subAgents)
+          if (opts.tokenUsage !== undefined && opts.tokenUsage !== null) draft.tokenUsage = opts.tokenUsage
         })
       }
       return

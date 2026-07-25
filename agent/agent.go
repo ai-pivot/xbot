@@ -2582,7 +2582,21 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		// Generate per-session TurnID and emit turn_started so the frontend can
 		// associate this turn's user message with its response — eliminating
 		// arrival-order races between bg notifications and user-typed messages.
-		turnID := ss.nextTurnID()
+		//
+		// AskUser answer: this is a CONTINUATION of the same turn, not a new turn.
+		// Reuse the active TurnID (set by the original turn's nextTurnID call).
+		// This prevents TurnID regression (prev=N, next=N) and ensures the
+		// frontend's turn_started handler preserves iterationHistory.
+		askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
+		var turnID uint64
+		if askUserAnswered {
+			turnID = ss.activeTurnID.Load()
+			if turnID == 0 {
+				turnID = ss.nextTurnID()
+			}
+		} else {
+			turnID = ss.nextTurnID()
+		}
 		ss.setActiveTurn(turnID)
 		// Consistency check: TurnID must be strictly monotonic per session.
 		// A gap or regression indicates a bug in the turn lifecycle.

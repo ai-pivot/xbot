@@ -367,7 +367,9 @@ function handleProgressMessage(
       // atomically with the TurnID through the progress stream.
       if (p.phase === 'turn_started') {
         // ── Consistency check: TurnID must be strictly monotonic ──
-        if (store.lastTurnID > 0 && p.turn_id && p.turn_id > 0) {
+        // AskUser answer (trigger=resume) reuses the same TurnID as the original
+        // turn — turnID == lastTurnID is expected and NOT a violation.
+        if (store.lastTurnID > 0 && p.turn_id && p.turn_id > 0 && p.turn_id !== store.lastTurnID) {
           if (p.turn_id <= store.lastTurnID) {
             console.error('[TURN_ID_INVARIANT_VIOLATION] TurnID must be strictly increasing', {
               prev: store.lastTurnID,

@@ -204,7 +204,9 @@ func (m *cliModel) handleTurnStarted(ev *protocol.ProgressEvent) {
 	ts := ev.TurnStart
 
 	// ── Consistency check: TurnID must be strictly monotonic per session ──
-	if m.lastReceivedTurnID > 0 {
+	// AskUser answer (trigger=resume) reuses the same TurnID as the original
+	// turn — turnID == lastReceivedTurnID is expected and NOT a violation.
+	if m.lastReceivedTurnID > 0 && turnID != m.lastReceivedTurnID {
 		if turnID <= m.lastReceivedTurnID {
 			log.WithFields(log.Fields{
 				"prev_turn_id": m.lastReceivedTurnID,
