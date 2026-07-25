@@ -272,7 +272,50 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   noDebounce = false,
   visibleChars,
 }: MarkdownRendererProps) {
-  const debouncedContent = useDebouncedValue(content, 150, !streaming && !noDebounce)
+  // ── Typewriter-gated re-parse ──
+  // During streaming, the typewriter reveals content at gap/3 per 50ms tick.
+  // Re-parsing markdown on every SSE chunk is wasteful — the user can't see
+  // content beyond visibleChars yet. We hold the parsed content steady until
+  // the typewriter catches up to (or past) the end of the currently-parsed
+  // content. Only then do we advance to the latest content and re-parse.
+  //
+  // This makes md re-parse frequency = typewriter catch-up frequency (a few
+  // times per second at most), NOT SSE chunk frequency (~50ms). The typewriter's
+  // adaptive gap/3 speed ensures re-parse frequency scales with content growth
+  // — fast SSE → larger gap → faster catch-up → slightly more frequent re-parses,
+  // but still far less than per-chunk.
+  //
+  // parsedContentRef tracks what ParsedMarkdown actually rendered. We compare
+  // visibleChars (from the parent's useTypewriter) against the rune length of
+  // parsedContent to decide whether to advance.
+  const parsedContentRef = useRef(content)
+  const isStreamingMode = streaming && visibleChars !== undefined
+
+  // Decide what content ParsedMarkdown should render this frame.
+  // - Non-streaming: always use the latest (debounced) content.
+  // - Streaming + content shrank (new iteration reset): advance immediately.
+  // - Streaming + typer hasn't caught up: keep the old parsed content
+  //   (parsedContentRef). The typer keeps clipping the existing DOM.
+  // - Streaming + typer caught up: advance to latest content + re-parse.
+  const latestContent = useDebouncedValue(content, 150, !streaming && !noDebounce)
+  if (isStreamingMode) {
+    // Content shrank (new iteration / store reset) → must advance immediately
+    // so the old content doesn't linger.
+    if (content.length < parsedContentRef.current.length) {
+      parsedContentRef.current = latestContent
+    } else {
+      const parsedRunes = Array.from(parsedContentRef.current)
+      if (visibleChars >= parsedRunes.length) {
+        // Typer has caught up to the end of parsed content → advance.
+        parsedContentRef.current = latestContent
+      }
+      // else: typer still catching up → keep old parsed content, typer clips.
+    }
+  } else {
+    parsedContentRef.current = latestContent
+  }
+  const debouncedContent = parsedContentRef.current
+
   const rootRef = useRef<HTMLDivElement>(null)
   // Cache of full text per Text node. Keyed by node identity — valid only
   // within a single ParsedMarkdown render (React reuses nodes when content
@@ -329,7 +372,20 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       <ParsedMarkdown key={debouncedContent} content={debouncedContent} />
     </div>
   )
-}, (prev, next) => (
-  prev.content === next.content && prev.className === next.className &&
-  prev.streaming === next.streaming && prev.noDebounce === next.noDebounce && prev.visibleChars === next.visibleChars
-))
+}, (prev, next) => {
+  // During streaming, `content` changes on every SSE chunk but we must NOT
+  // block the re-render — the component needs to run the parsedContentRef
+  // gate check (visibleChars >= parsed length?) to decide whether to advance.
+  // If we short-circuit on content equality, the gate never runs and the
+  // typer can't trigger a re-parse when it catches up.
+  if (prev.streaming && next.streaming && prev.visibleChars !== undefined && next.visibleChars !== undefined) {
+    // Only visibleChars changed (typer tick) — allow render so the
+    // useLayoutEffect can clip. The parsedContentRef won't advance (visible
+    // hasn't caught up yet), so no re-parse — just a clip.
+    if (prev.content === next.content && prev.className === next.className && prev.noDebounce === next.noDebounce) {
+      return false // allow render (visibleChars changed)
+    }
+  }
+  return prev.content === next.content && prev.className === next.className &&
+    prev.streaming === next.streaming && prev.noDebounce === next.noDebounce && prev.visibleChars === next.visibleChars
+})
