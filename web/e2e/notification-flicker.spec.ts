@@ -54,21 +54,6 @@ async function setupMock(page: Page) {
   await page.route('**/api/rpc', (r) => r.fulfill({ json: { ok: true, data: null } }))
 }
 
-/** Count iterations visible in the DOM (FoldedToolGroup or iteration markers). */
-async function countIterations(page: Page): Promise<number> {
-  return page.evaluate(() => {
-    // Count iteration blocks — each iteration renders as a FoldedLine with
-    // "processed" or tool group text. Count distinct tool names as a proxy.
-    const body = document.body.textContent || ''
-    const toolNames = ['Read', 'Grep', 'Shell', 'Glob', 'Write']
-    let count = 0
-    for (const name of toolNames) {
-      if (body.includes(name)) count++
-    }
-    return count
-  })
-}
-
 async function hasContent(page: Page, text: string): Promise<boolean> {
   return page.evaluate((t) => (document.body.textContent || '').includes(t), text)
 }
