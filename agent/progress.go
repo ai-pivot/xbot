@@ -45,6 +45,11 @@ type StructuredProgress struct {
 	// SubAgents carries the structured SubAgent tree directly, avoiding
 	// the fragile text-based parsing in ExtractSubAgentTree.
 	SubAgents []SubAgentNode
+
+	// TurnID uniquely identifies the agent turn. Propagated from RunConfig.TurnID
+	// in initProgress, then copied to every protocol.ProgressEvent via
+	// buildProgressPayload. 0 = untracked (SubAgent).
+	TurnID uint64
 }
 
 func (p *StructuredProgress) Clone() *StructuredProgress {

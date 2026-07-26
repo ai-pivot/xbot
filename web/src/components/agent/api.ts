@@ -17,6 +17,10 @@ export interface HistMsg {
   content: string
   timestamp?: string
   iterations?: unknown[]
+  /** TurnID of the turn that produced this message. 0 = untracked (old data
+   *  before v50 migration). Used by MessageList to dedup committed history
+   *  against the live store's active turn. */
+  turn_id?: number
   /** SSE sequence number (present when the message was delivered via SSE
    *  before being persisted to DB). Used as a stable dedup key — no string
    *  matching needed. */
@@ -35,6 +39,8 @@ export interface HistProgress {
   completed_tools?: unknown[]
   sub_agents?: unknown[]
   stream_content?: string
+  /** TurnID of the active turn (for stale-data detection in hydrate). */
+  turn_id?: number
   /** Total wall-clock of the active turn (ms). */
   elapsed_wall?: number
   iteration_history?: unknown[]

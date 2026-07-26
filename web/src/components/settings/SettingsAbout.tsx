@@ -23,10 +23,13 @@ export function SettingsAbout() {
   const { canInstall, isInstalled, install, updateAvailable, checkForUpdate, refreshSW, diagnostics } = usePwaInstall()
   const [checking, setChecking] = useState(false)
   const [upToDate, setUpToDate] = useState(false)
+  const [reloading, setReloading] = useState(false)
 
   const handleUpdate = async () => {
     if (updateAvailable) {
       // New SW already activated — reload to pick up new cached assets.
+      // Set reloading state immediately so the button shows feedback.
+      setReloading(true)
       await refreshSW()
       return
     }
@@ -37,7 +40,7 @@ export function SettingsAbout() {
     setChecking(false)
     if (found) {
       // checkForUpdate set updateAvailable=true and the SW activated.
-      // Reload to pick up new assets.
+      setReloading(true)
       await refreshSW()
     } else {
       setUpToDate(true)
@@ -127,11 +130,11 @@ export function SettingsAbout() {
             type="button"
             variant={updateAvailable ? 'default' : 'outline'}
             onClick={() => void handleUpdate()}
-            disabled={checking}
+            disabled={checking || reloading}
             className="w-fit gap-2"
           >
-            <RefreshCw className={`size-4 ${checking ? 'animate-spin' : ''}`} />
-            {updateAvailable ? '有新版本，点击更新' : checking ? '检查更新中…' : upToDate ? '已是最新版本' : '检查更新'}
+            <RefreshCw className={`size-4 ${checking || reloading ? 'animate-spin' : ''}`} />
+            {reloading ? '正在刷新…' : updateAvailable ? '有新版本，点击更新' : checking ? '检查更新中…' : upToDate ? '已是最新版本' : '检查更新'}
           </Button>
           {updateAvailable && (
             <span className="text-xs" style={{ color: 'var(--status-running)' }}>

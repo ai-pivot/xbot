@@ -25,9 +25,13 @@ IMPORTANT: Commands are executed non-interactively with a timeout. Do NOT run in
 
 PROCESS CLEANUP: Non-background commands are killed (including all child processes) when they return. Do NOT use nohup, disown, or trailing & — they create orphaned processes that waste resources and cause confusion. If a command needs to outlive the tool call, use "background": true instead.
 
-BACKGROUND MODE: Set "background": true to run long-running commands (dev servers, build processes) without blocking. Returns a task ID immediately. The agent continues working while the command runs in the background. When the command finishes, its output is automatically injected into the conversation. To check progress, use task_status — but do NOT poll it repeatedly. If status is "running", do other work or sleep 3+ seconds before checking again.
+BACKGROUND MODE: Set "background": true to run long-running commands (dev servers, build processes) without blocking. Returns a task ID immediately. The agent continues working while the command runs in the background. When the command finishes, its output is automatically injected into the conversation. To check progress, use task_status. If status is "running", use task_wait to block until completion, or continue with other work.
 
-AUTO-BACKGROUND: If a command times out, it is automatically converted to a background task so no work is lost. The agent receives the task ID and can continue. Same polling rule applies: do NOT call task_status in rapid succession.
+AUTO-BACKGROUND: If a command times out, it is automatically converted to a background task so no work is lost. The agent receives the task ID and can continue. Use task_wait to wait for completion, or continue with other work.
+
+Example — poll a health endpoint until ready:
+  {"command": "for i in $(seq 1 60); do curl -sf http://localhost:8080/health && exit 0; sleep 2; done; exit 1", "background": true}
+Then use task_wait to block until the endpoint is up.
 
 Parameters (JSON):
   - command: string, the command to execute
@@ -234,7 +238,7 @@ func (t *ShellTool) executeBackground(
 		"Background task started [id: %s]\nCommand: %s\n\n"+
 			"The task is running in the background. You can continue working.\n"+
 			"When it completes, the output will be automatically injected into the conversation.\n"+
-			"- Use task_status to check current progress (but do NOT poll — if running, wait or do other work first)\n"+
+			"- Use task_wait to block until completion, or task_status to check progress\n"+
 			"- Use task_kill to terminate the task",
 		task.ID, task.Command,
 	)
@@ -327,7 +331,7 @@ func (t *ShellTool) executeForeground(
 				"[TIMEOUT after %s] Command timed out. Auto-promoted to background task [id: %s]\n"+
 					"Partial output before timeout:\n%s\n\n"+
 					"The command continues running in the background. Its output will be injected when done.\n"+
-					"- Use task_status to check progress (but do NOT poll — if running, wait or do other work first)\n"+
+					"- Use task_wait to block until completion, or task_status to check progress\n"+
 					"- Use task_kill to terminate",
 				timeout, task.ID, output,
 			)

@@ -41,3 +41,26 @@ func TestMaybeMaskObservations_NoTokenDataDoesNotMask(t *testing.T) {
 		}
 	}
 }
+
+func TestBeginIterationClearsSubAgentNodes(t *testing.T) {
+	state := &runState{
+		structuredProgress: &StructuredProgress{
+			Iteration: 0,
+			Phase:     PhaseDone,
+		},
+		subAgentNodes: []SubAgentNode{
+			{Role: "explore", Instance: "oneshot-1", Status: "running"},
+		},
+	}
+
+	// SubAgent completed in iteration 0. beginIteration(1) must clear it —
+	// carrying it forward causes the "explore card that never disappears" bug.
+	state.beginIteration(1)
+
+	if len(state.subAgentNodes) != 0 {
+		t.Fatalf("expected subAgentNodes cleared at iteration boundary, got %d nodes", len(state.subAgentNodes))
+	}
+	if len(state.structuredProgress.SubAgents) != 0 {
+		t.Fatalf("expected structuredProgress.SubAgents cleared, got %d", len(state.structuredProgress.SubAgents))
+	}
+}

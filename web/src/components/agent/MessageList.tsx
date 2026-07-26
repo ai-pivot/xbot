@@ -143,19 +143,32 @@ export function MessageList({
         lastDeduped.eventSeq === liveMessage.eventSeq) {
       return deduped
     }
-    // Active turn: last persisted assistant is the in-flight streaming slot.
-    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial) {
+    // When the last message is an assistant from the SAME turn as the live
+    // progress, pass liveProgress to it (don't append a separate liveMessage
+    // row). This covers two scenarios:
+    //  1. Locally-committed message (appendAssistant): matched by turnID
+    //  2. DB-committed message (IncrementalPersist → reload): matched by
+    //     turnID — the DB message carries turn_id (v50 migration), and the
+    //     live store's snapshot carries the same turn_id from structured events.
+    // Without this, both the committed message and liveMessage render —
+    // duplicating the same turn's content + tools.
+    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial &&
+        (lastDeduped.isPartial ||
+         (liveMessage.turnID > 0 && lastDeduped.turnID === liveMessage.turnID))) {
       return deduped
     }
     return [...deduped, liveMessage]
   }, [messages, liveMessage])
   // liveId points to the row that receives liveProgress. When the last
-  // history assistant is the active turn, it IS the streaming slot.
+  // history assistant is the streaming slot — in-flight partial (isPartial)
+  // or same turnID — liveProgress goes to it. Otherwise, liveMessage gets
+  // its own row.
+  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
   const liveId = liveMessage
-    ? (messages.length > 0 &&
-       messages[messages.length - 1].role === 'assistant' &&
-       liveMessage.isPartial
-        ? messages[messages.length - 1].id
+    ? (lastMsg && lastMsg.role === 'assistant' && liveMessage.isPartial &&
+       (lastMsg.isPartial ||
+        (liveMessage.turnID > 0 && lastMsg.turnID === liveMessage.turnID))
+        ? lastMsg.id
         : liveMessage.id)
     : null
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
@@ -176,6 +189,25 @@ export function MessageList({
     overscan: 8,
     getItemKey: (index) => rows[index]?.id ?? `row-${index}`,
   })
+
+  // Workaround: virtual-core checks `this.shouldAdjustScrollPositionOnItemSizeChange`
+  // (direct instance property) in resizeItem, but setOptions only stores it in
+  // `this.options` — the option is never actually applied. Assign it directly.
+  // Custom condition: only correct scrollTop when the resized item is ENTIRELY
+  // above the viewport (item.end < scrollTop). The default condition
+  // (item.start < scrollTop) also fires for items partially in the viewport —
+  // when such an item changes size (code highlighting, image loading, markdown
+  // settling), the correction moves the user's viewport even though they
+  // didn't scroll. Using item.end ensures only items fully above the viewport
+  // trigger correction, keeping visible items stable.
+  useLayoutEffect(() => {
+    const v = virtualizer as unknown as {
+      shouldAdjustScrollPositionOnItemSizeChange?: (item: { start: number; end: number }, delta: number, instance: { scrollOffset: number | null }) => boolean
+    }
+    v.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+      return item.end < (instance.scrollOffset ?? 0)
+    }
+  }, [virtualizer])
 
   const cancelPendingFollow = useCallback(() => {
     if (pendingFollowRafRef.current === null) return
@@ -299,17 +331,13 @@ export function MessageList({
   // force-scroll to bottom — this is a safety net for cases where ResizeObserver
   // didn't fire (e.g. virtualizer corrected scrollHeight without resizing content).
   //
-  // When NOT following (stick=false), the virtualizer may still perform scroll
-  // correction (adjusting scrollTop to maintain visual stability when content
-  // grows near the viewport). We capture the scrollTop BEFORE the render and
-  // restore it AFTER, so the user's viewport stays fixed.
-  const savedScrollTopRef = useRef<number | null>(null)
+  // When NOT following (stick=false), we do NOT capture/restore scrollTop.
+  // The virtualizer's own scroll correction (via its internal ResizeObserver)
+  // keeps visible items stable when sizes change — it fires after useEffect
+  // but before paint. A RAF restore would UNDO that correction, causing the
+  // viewport to jump (jitter). The virtualizer's correction is authoritative.
   useEffect(() => {
     if (!stickToBottomRef.current) {
-      // Capture current scrollTop before the virtualizer re-renders and
-      // potentially adjusts it. We'll restore it in a useLayoutEffect.
-      const el = scrollRef.current
-      if (el) savedScrollTopRef.current = el.scrollTop
       setHasNewContent(true)
       return
     }
@@ -321,26 +349,6 @@ export function MessageList({
       queueMicrotask(() => { programmaticScrollRef.current = false })
     }
   }, [rows.length, liveProgress, hasFooter])
-
-  // Restore scrollTop after the virtualizer's scroll correction, when stick=false.
-  // The virtualizer corrects scrollTop via ResizeObserver, which fires AFTER
-  // useLayoutEffect but BEFORE requestAnimationFrame. So we use rAF to
-  // restore — it runs after ResizeObserver (undoing the correction) but
-  // before paint (no visible flicker).
-  useEffect(() => {
-    if (savedScrollTopRef.current === null || stickToBottomRef.current) return
-    const saved = savedScrollTopRef.current
-    savedScrollTopRef.current = null
-    const raf = requestAnimationFrame(() => {
-      const el = scrollRef.current
-      if (el && Math.abs(el.scrollTop - saved) > 2) {
-        programmaticScrollRef.current = true
-        el.scrollTop = saved
-        queueMicrotask(() => { programmaticScrollRef.current = false })
-      }
-    })
-    return () => cancelAnimationFrame(raf)
-  }, [rows.length, liveProgress])
 
   // ── ResizeObserver: follow bottom when sticky ─────────────────────────────
   useEffect(() => {
@@ -510,6 +518,9 @@ export function MessageList({
                       transform: `translateY(${item.start}px)`,
                     }}
                     className="py-1.5"
+                    data-turn-id={row.turnID || undefined}
+                    data-message-id={row.id}
+                    data-role={row.role}
                   >
                     <MessageItem
                       message={row}

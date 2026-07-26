@@ -146,6 +146,7 @@ func (s *runState) initProgress() {
 			ActiveTools:    nil,
 			CompletedTools: nil,
 			CWD:            s.cfg.InitialCWD,
+			TurnID:         s.cfg.TurnID,
 		}
 		// Seed token usage from DB-restored values so the first progress
 		// event carries real data instead of nil. Without this, the CLI
@@ -391,12 +392,28 @@ func (s *runState) buildOutput(ob *channel.OutboundMsg) *RunOutput {
 // beginIteration updates state at the start of each loop iteration.
 func (s *runState) beginIteration(i int) {
 	s.localIterCount++
-	// NOTE: subAgentNodes and SubAgents are NOT cleared here — they carry
-	// forward across iterations (like todos). Clearing them causes
-	// resolveSubAgents to fall back to text-based string matching, which is
-	// fragile and pollutes on similar-looking content. SubAgents are
-	// updated incrementally by SubAgent progress callbacks and cleared on
-	// turn end (PhaseDone / store.reset).
+	// Consistency check: iteration number must be strictly sequential (0, 1, 2, ...).
+	// A gap or regression indicates a bug in the Run loop or retry logic.
+	if s.structuredProgress != nil && s.structuredProgress.Iteration >= 0 && i > 0 {
+		if i < s.structuredProgress.Iteration {
+			log.WithFields(log.Fields{
+				"chat_id":    s.cfg.ChatID,
+				"turn_id":    s.cfg.TurnID,
+				"prev_iter":  s.structuredProgress.Iteration,
+				"new_iter":   i,
+				"local_iter": s.localIterCount,
+			}).Error("ITER_ID_INVARIANT_VIOLATION: iteration went backwards — progress events will be out of order")
+		} else if i != s.structuredProgress.Iteration+1 {
+			log.WithFields(log.Fields{
+				"chat_id":    s.cfg.ChatID,
+				"turn_id":    s.cfg.TurnID,
+				"prev_iter":  s.structuredProgress.Iteration,
+				"new_iter":   i,
+				"gap":        i - s.structuredProgress.Iteration - 1,
+				"local_iter": s.localIterCount,
+			}).Warn("ITER_ID_GAP: iteration number jumped — intermediate iteration(s) may have been lost")
+		}
+	}
 	if s.structuredProgress != nil {
 		s.structuredProgress.Iteration = i
 		s.structuredProgress.Phase = PhaseThinking
@@ -404,7 +421,15 @@ func (s *runState) beginIteration(i int) {
 		s.structuredProgress.CompletedTools = nil
 		s.structuredProgress.Content = ""
 		s.structuredProgress.ReasoningContent = ""
+		s.structuredProgress.SubAgents = nil
 	}
+	// Clear subAgentNodes at iteration boundary. SubAgents are one-shot tools
+	// that complete synchronously within execOneTool — by the time the next
+	// iteration begins, they are done. Carrying them forward causes completed
+	// SubAgents to persist as "running" in every subsequent progress event
+	// (the "explore card that never disappears" bug). resolveSubAgents returns
+	// nil when SubAgents is empty — there is no text-based fallback.
+	s.subAgentNodes = nil
 	if s.structuredProgress != nil && s.cfg.TodoManager != nil && s.sessionKey != "" {
 		todos := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
 		if len(todos) > 0 {
@@ -877,6 +902,7 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 		Content:          strings.TrimRight(response.Content, " \t"),
 		ReasoningContent: response.ReasoningContent,
 		ToolCalls:        response.ToolCalls,
+		TurnID:           s.cfg.TurnID,
 	}
 	s.messages = s.syncMessages(append(s.messages, assistantMsg))
 }
@@ -1570,6 +1596,7 @@ func (s *runState) injectSyntheticToolPair(
 			Name:      toolName,
 			Arguments: "{}", // must be valid JSON; empty string "" causes 400 on strict backends (e.g. SGLang)
 		}},
+		TurnID: s.cfg.TurnID,
 	}
 
 	content := toolContent

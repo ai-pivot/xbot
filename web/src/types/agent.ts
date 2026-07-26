@@ -138,6 +138,7 @@ export const EMPTY_LIVE_PROGRESS: LiveProgress = {
   todos: [],
   subAgents: [],
   tokenUsage: null,
+  turnID: 0,
 }
 
 /** Status badge kind for a tool, derived from its status string. */

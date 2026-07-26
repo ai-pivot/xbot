@@ -347,8 +347,9 @@ type WebChannel struct {
 	db *sql.DB
 
 	// Lifecycle
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 
 	// PTY manager for web terminals
 	ptyMgr *ptyManager
@@ -610,22 +611,24 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 // Stop 停止 Web 渠道
 func (wc *WebChannel) Stop() {
-	log.Info("Web channel stopping...")
-	close(wc.stopCh)
+	wc.stopOnce.Do(func() {
+		log.Info("Web channel stopping...")
+		close(wc.stopCh)
 
-	wc.hub.stopAll()
-	wc.ptyMgr.Stop()
+		wc.hub.stopAll()
+		wc.ptyMgr.Stop()
 
-	if wc.server != nil {
-		ctx, cancel := func() (context.Context, context.CancelFunc) {
-			return context.WithTimeout(context.Background(), 5*time.Second)
-		}()
-		_ = wc.server.Shutdown(ctx)
-		cancel()
-	}
+		if wc.server != nil {
+			ctx, cancel := func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 5*time.Second)
+			}()
+			_ = wc.server.Shutdown(ctx)
+			cancel()
+		}
 
-	wc.wg.Wait()
-	log.Info("Web channel stopped")
+		wc.wg.Wait()
+		log.Info("Web channel stopped")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +657,7 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 		ProgressHistory: msg.Metadata["progress_history"],
 		Channel:         msg.Channel,
 		ChatID:          msg.ChatID,
+		TurnID:          msg.TurnID,
 		SessionReset:    msg.Metadata != nil && msg.Metadata["session_reset"] == "true",
 		Cancelled:       msg.Metadata != nil && msg.Metadata["cancelled"] == "true",
 		// Only forward frontend-relevant metadata keys — avoid leaking internal
@@ -1714,9 +1718,13 @@ func (wc *WebChannel) sessionCleanup() {
 }
 
 func shouldEagerSaveUserMessage(channel, trimmedContent string) bool {
-	if channel == "cli" {
-		return false
-	}
+	// Eager-save for ALL channels — including "cli" (remote CLI sessions
+	// viewed via web). The web layer resolves the correct business tenant
+	// (channel + chat_id) from the message, so eagerSaveUserMsg persists to
+	// the same tenant that processMessage uses. Without eager-save for cli,
+	// turn_started fires BEFORE processMessage's AddMessage → reload() in
+	// the frontend fetches /api/history before the user msg is persisted →
+	// message disappears on refresh.
 	return trimmedContent == "" || (trimmedContent[0] != '!' && trimmedContent[0] != '/')
 }
 

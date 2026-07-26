@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/context-menu'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
+import { useIsTouch } from '@/hooks/useIsMobile'
 import { parseAgentChatID, sessionKey } from '@/lib/session-grouping'
 import type { SessionInfo, SessionStatus } from '@/types/shared'
 
@@ -70,6 +71,7 @@ export function SessionItem({
   onDropItem,
 }: SessionItemProps) {
   const { t } = useI18n()
+  const isTouch = useIsTouch()
   const key = sessionKey(session)
   const title = isSubAgent ? subAgentTitle(session) : (session.label || session.chatID)
   const executing = session.running === true || session.status === 'running' || session.status === 'pending'
@@ -179,7 +181,7 @@ export function SessionItem({
           }}
           className={cn(
             'shrink-0 rounded p-0.5 transition-opacity',
-            starred ? 'opacity-100' : 'opacity-0 group-hover:opacity-60',
+            starred ? 'opacity-100' : isTouch ? 'opacity-60' : 'opacity-0 group-hover:opacity-60',
           )}
           style={starred ? { color: '#e6a700' } : { color: 'var(--text-muted)' }}
         >

@@ -27,7 +27,7 @@ import {
   type UploadResponse,
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
-import { dedupMessages } from '@/components/agent/progressStore'
+import { dedupMessages, assertIterationContinuity } from '@/components/agent/progressStore'
 import { getProgressGeneration, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
@@ -80,11 +80,15 @@ export interface UseChatMessagesResult {
   /** Upload a file; returns the server upload metadata for sending with a message. */
   upload: (file: File) => Promise<UploadResponse>
   /** Append a finalized assistant message (called by useProgressStream). */
-  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number) => void
+  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => void
+  /** Inject a user message from a bg notification/cron (called by useProgressStream). */
+  injectUserMessage: (content: string, turnID: number, isNotification: boolean) => void
   /** Remove the trailing assistant message by id (for cancellation cleanup). */
   removeMessage: (id: string) => void
   /** Clear committed messages immediately, used for TUI-style /new reset. */
   clearMessages: () => void
+  /** Mark a destructive mutation — next reload discards live rows. */
+  markDestructiveMutation: () => void
 }
 
 /** File references resolved from an upload, ready to attach to a message. */
@@ -124,6 +128,12 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       ? (m.iterations.map(normalizeWebIteration).filter(Boolean) as WebIteration[])
       : []
 
+    // Detect non-sequential iteration numbers (e.g. 1 → 148 gap) — indicates
+    // lost iteration history, typically from a backend restart + cancel.
+    if (iterations.length > 1) {
+      assertIterationContinuity(iterations)
+    }
+
     const content = m.content ?? ''
 
     // Broader empty filter: skip assistant messages with no content AND no
@@ -143,7 +153,7 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       iterations,
       timestamp: m.timestamp ?? '',
       isPartial: false,
-      turnID: 0,
+      turnID: typeof m.turn_id === 'number' ? m.turn_id : 0,
       displayOnly: false,
       persisted: true,
       eventSeq: m.seq,
@@ -457,6 +467,12 @@ export function useChatMessages({
     const listenerCacheKey = activeMessageCacheKey
     const off = ws.onMessage((msg: WSMessage) => {
       if (activeMessageCacheKeyRef.current !== listenerCacheKey) return
+      // replay_gap: SSE reconnect detected real data loss (TurnID changed or
+      // turn ended during gap). Reload from DB to pick up lost committed messages.
+      if (msg.type === 'replay_gap') {
+        void reload()
+        return
+      }
       if (!matchesChatID(msg, listenerChatID, channel)) return
       if (msg.type !== 'user_echo' && msg.type !== 'inject_user') return
       const content = msg.content ?? msg.original_content ?? ''
@@ -599,7 +615,7 @@ export function useChatMessages({
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
-  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number) => {
+  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => {
     if (!content && !iterations.length) return
     messageMutationGenRef.current += 1
     // Use the same id format as parseHistoryMessages (seq-${eventSeq}) so that
@@ -614,12 +630,37 @@ export function useChatMessages({
       iterations,
       timestamp: new Date().toISOString(),
       isPartial: false,
-      turnID: 0,
+      turnID: turnID ?? 0,
       persisted: false,
       eventSeq,
     }
     setMessages((prev) => {
       const next = dedupMessages([...prev, newMsg])
+      messagesRef.current = next
+      return next
+    })
+  }, [])
+
+  // injectUserMessage: display a bg-notification/cron user message.
+  // Called by useProgressStream when a turn_started event with trigger
+  // "notification" or "resume" arrives. The message is tagged with the
+  // backend TurnID so the assistant response can be associated correctly.
+  const injectUserMessage = useCallback((content: string, turnID: number, isNotification: boolean) => {
+    messageMutationGenRef.current += 1
+    const id = `notif-${turnID}-${echoSeq++}`
+    const newMsg: ChatMessage = {
+      id,
+      role: 'user',
+      content,
+      iterations: [],
+      timestamp: new Date().toISOString(),
+      isPartial: false,
+      turnID,
+      isNotification,
+      persisted: false,
+    }
+    setMessages((prev) => {
+      const next = [...prev, newMsg]
       messagesRef.current = next
       return next
     })
@@ -643,6 +684,21 @@ export function useChatMessages({
     setInitialProgress(null)
   }, [])
 
+  const markDestructiveMutation = useCallback(() => {
+    messageMutationGenRef.current += 1
+    destructiveMutationGenRef.current += 1
+  }, [])
+
+  // ── SSE replay gap → reload message list ──
+  // When SSE disconnects and reconnects, the existing seq-gap detection in
+  // sseConnection calls restoreActiveProgress. If that recovery detects a real
+  // data loss (TurnID changed or turn ended during the gap), it dispatches a
+  // `replay_gap` message. Only THEN do we reload — SSE event gaps are normal
+  // (stateless coalescing, buffer drops), but TurnID/IterationID jumps indicate
+  // committed messages (reply, notification) were lost and must be refetched.
+  // Integrated into the user_echo listener to avoid registering a second
+  // onMessage handler (which would interfere with test handler capture).
+
   // Render from local state directly — no cross-session cache logic.
   // The panel always shows its own messages; reload fetches fresh history.
   return {
@@ -658,8 +714,10 @@ export function useChatMessages({
     cancelling,
     upload,
     appendAssistant,
+    injectUserMessage,
     removeMessage,
     clearMessages,
+    markDestructiveMutation,
   }
 }
 

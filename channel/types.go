@@ -31,6 +31,12 @@ type OutboundMsg struct {
 	Media       []string          `json:"media,omitempty"`
 	Error       error             `json:"-"`
 
+	// TurnID identifies the agent turn that produced this reply. Set by
+	// sendMessage from the active turn's TurnID. The frontend uses it to
+	// associate the reply with the correct user message (by TurnID, not
+	// arrival order). 0 = untracked (SubAgent, legacy).
+	TurnID uint64 `json:"-"`
+
 	// Ctx carries the caller's context for cancellation propagation.
 	// Used by AgentChannel.Send to respect caller cancellation (e.g. Ctrl+C).
 	// Ignored by other Channel implementations. Not serialized.

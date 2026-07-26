@@ -35,6 +35,8 @@ interface UserMessageProps {
   editDisabled?: boolean
   /** True while the message is being sent (shows a spinner). */
   sending?: boolean
+  /** True when injected by bg notification (renders 🔔 badge + muted style). */
+  isNotification?: boolean
 }
 
 export const UserMessage = memo(function UserMessage({
@@ -45,6 +47,7 @@ export const UserMessage = memo(function UserMessage({
   onEndEdit,
   editDisabled = false,
   sending = false,
+  isNotification = false,
 }: UserMessageProps) {
   const { t } = useI18n()
   const { mode: sendKeyMode } = useSendKeyMode()
@@ -160,9 +163,16 @@ export const UserMessage = memo(function UserMessage({
   return (
     <div className="flex justify-end px-1">
       <div className="flex max-w-[85%] flex-col items-end gap-1">
+        {isNotification && (
+          <span className="text-xs text-text-muted">🔔 Notification</span>
+        )}
         <div
           ref={displayRef}
-          className="rounded-2xl rounded-br-sm bg-accent/15 px-3.5 py-2 text-text-primary"
+          className={
+            isNotification
+              ? 'rounded-2xl rounded-br-sm border border-border bg-bg-secondary px-3.5 py-2 text-text-muted'
+              : 'rounded-2xl rounded-br-sm bg-accent/15 px-3.5 py-2 text-text-primary'
+          }
         >
           <MarkdownRenderer content={content || ' '} />
           {sending && (

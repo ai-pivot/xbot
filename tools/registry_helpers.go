@@ -250,6 +250,7 @@ func DefaultRegistry(memoryProvider string) *Registry {
 	r.RegisterCore(&TaskStatusTool{})
 	r.RegisterCore(&TaskKillTool{})
 	r.RegisterCore(&TaskReadTool{})
+	r.RegisterCore(&TaskWaitTool{})
 	// CronTool 需要依赖注入，需在 agent 初始化后单独注册
 	// DownloadFileTool 和 WebSearchTool 需要凭证注入，在 main.go 中注册
 	// WebSearch: always available (requires TAVILY_API_KEY)

@@ -33,6 +33,7 @@ function makeSnapshot(overrides: Partial<ProgressSnapshot> = {}): ProgressSnapsh
     todos: [],
     subAgents: [],
     tokenUsage: null,
+    turnID: 0,
     ...overrides,
   }
 }

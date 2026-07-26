@@ -44,6 +44,7 @@ import type { HistProgress } from '@/components/agent/api'
 import type { WSMessage } from '@/types/shared'
 import {
   clearProgressSnapshot,
+  progressSnapshotCache,
   sessionCacheKey,
 } from '@/lib/webCache'
 
@@ -53,7 +54,15 @@ interface UseProgressStreamOptions {
   /** Channel this stream tracks. Progress events may qualify chat_id as channel:chatID. */
   channel?: string
   /** Called with the finalized assistant text when a `text` event arrives. */
-  onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number) => void
+  onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => void
+  /** Called when the turn is cancelled (cancel ack). Should NOT re-render the
+   *  message list — the user already sees the streamed content as-is.
+   *  Only reset the live progress store. */
+  onCancelComplete?: () => void
+  /** Called when a bg notification / cron triggers a new turn — displays the injected user message. */
+  onInjectUserMessage?: (content: string, turnID: number, isNotification: boolean) => void
+  /** Called when turn_started arrives — the frontend should enter busy mode. */
+  onTurnStarted?: (turnID: number, trigger: string) => void
   /** Called when the server signals HistoryCompacted (reset + reload). */
   onHistoryCompacted?: () => void
   /** Called when the server signals a slash-command session reset (/new). */
@@ -114,7 +123,10 @@ export function useProgressStream({
   chatID,
   channel = 'web',
   onAssistantComplete,
+  onCancelComplete,
   onHistoryCompacted,
+  onInjectUserMessage,
+  onTurnStarted,
   onSessionReset,
   initialProgress,
   ws,
@@ -130,10 +142,16 @@ export function useProgressStream({
   // whenever the parent re-renders.
   const completeRef = useRef(onAssistantComplete)
   completeRef.current = onAssistantComplete
+  const cancelCompleteRef = useRef(onCancelComplete)
+  cancelCompleteRef.current = onCancelComplete
   const compactedRef = useRef(onHistoryCompacted)
   compactedRef.current = onHistoryCompacted
   const resetRef = useRef(onSessionReset)
   resetRef.current = onSessionReset
+  const injectRef = useRef(onInjectUserMessage)
+  injectRef.current = onInjectUserMessage
+  const turnStartedRef = useRef(onTurnStarted)
+  turnStartedRef.current = onTurnStarted
 
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
@@ -168,14 +186,26 @@ export function useProgressStream({
     if (progressCacheKey !== prevProgressCacheKeyRef.current) {
       prevProgressCacheKeyRef.current = progressCacheKey
       store.fullReset()
+      // Restore todos from progressSnapshotCache — switchSession writes
+      // the /switch response todos here so they appear immediately,
+      // before /api/history's active_progress arrives (which may return
+      // null if the backend's snapshot was already cleaned up).
+      if (progressCacheKey) {
+        const cached = progressSnapshotCache.get(progressCacheKey)
+        if (cached?.todos && cached.todos.length > 0) {
+          store.replace({ todos: cached.todos.map((t) => ({
+            id: typeof t.id === 'number' ? t.id : 0,
+            text: typeof t.text === 'string' ? t.text : '',
+            done: Boolean(t.done),
+          })) })
+        }
+      }
     } else {
       store.reset()
     }
     if (disabled) {
       return
     }
-    // No cache restore — history's active_progress is the single source.
-    // The server returns the complete progress snapshot including iterationHistory.
   }, [store, progressCacheKey, disabled])
 
   // Hydrate from history when initialProgress changes (after reload completes).
@@ -195,8 +225,13 @@ export function useProgressStream({
       finalizedRef.current = false
       if (hasVisibleProgress(store.getSnapshot())) store.reset()
       const todos = (initialProgress.todos ?? []) as TodoItem[]
-      // Always replace — empty array clears stale todos, non-empty restores.
-      store.replace({ todos })
+      // Only replace todos if the server returned non-empty todos.
+      // If server returned empty [], preserve existing todos (from /switch
+      // response cache) — the server may not have todos in active_progress
+      // when phase='done' (snapshot already cleaned up).
+      if (todos.length > 0) {
+        store.replace({ todos })
+      }
       return
     }
     // Don't re-hydrate after finalization — the turn is over, and the
@@ -204,6 +239,13 @@ export function useProgressStream({
     // hydrate if we haven't started receiving live events for this turn
     // (finalizedRef is false AND store is empty = fresh load/reconnect).
     if (finalizedRef.current) return
+    // After turn_started set store.lastTurnID, a reload's active_progress may
+    // still carry the PREVIOUS turn's data (server hasn't cleaned up yet).
+    // Hydrating with it would re-introduce old iterationHistory → cross-turn
+    // leak (new turn's iterations append to old). Skip if TurnID mismatches.
+    if (store.lastTurnID > 0 && initialProgress.turn_id !== store.lastTurnID) {
+      return
+    }
     const live = historyProgressToLive(initialProgress)
     // initialProgress comes from the server's authoritative active_progress
     // (fetched via reload). Always replace — the cache-restored snapshot
@@ -212,6 +254,11 @@ export function useProgressStream({
     // incomplete iteration recovery on session switch.
     if (live.phase) {
       store.replace(live)
+      // Ensure turnID is tracked for same-turn dedup (MessageList uses
+      // liveMessage.turnID to match committed history messages).
+      if (live.turnID > 0) {
+        store.lastTurnID = live.turnID
+      }
     }
   }, [store, initialProgress, disabled, progressCacheKey])
 
@@ -242,7 +289,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef)
     })
     return offMessage
   }, [store, disabled, channel])
@@ -252,8 +299,6 @@ export function useProgressStream({
   const liveMessage = useMemo<ChatMessage | null>(() => {
     const snap = progressSnapshot
     if (!hasVisibleProgress(snap)) return null
-    // Phase="done" means the turn is over. Don't create a liveMessage —
-    // the committed history row should render without a stale live overlay.
     if (snap.phase === 'done') return null
     return {
       id: `live-${chatID ?? 'unknown'}`,
@@ -262,7 +307,7 @@ export function useProgressStream({
       iterations: snap.iterationHistory,
       timestamp: new Date().toISOString(),
       isPartial: true,
-      turnID: 0,
+      turnID: snap.turnID || store.lastTurnID,
     }
   }, [progressSnapshot, chatID])
 
@@ -302,16 +347,22 @@ function handleProgressMessage(
   resetRef: React.MutableRefObject<UseProgressStreamOptions['onSessionReset']>,
   finalizedRef?: React.MutableRefObject<boolean>,
   phaseDoneRef?: React.MutableRefObject<boolean>,
+  injectRef?: React.MutableRefObject<UseProgressStreamOptions['onInjectUserMessage']>,
+  turnStartedRef?: React.MutableRefObject<UseProgressStreamOptions['onTurnStarted']>,
+  cancelCompleteRef?: React.MutableRefObject<UseProgressStreamOptions['onCancelComplete']>,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
-      // Reset finalizedRef here — stream_content is the first sign that the
-      // LLM is actively generating for this turn. This is safer than resetting
-      // on session(busy), which can arrive from SSE reconnect recovery
-      // (restoreActiveProgress) and would allow stale text events to be
-      // re-processed, causing duplicate messages.
-      if (finalizedRef) finalizedRef.current = false
-      if (phaseDoneRef) phaseDoneRef.current = false
+      // If the turn is already finalized (cancel ack or text event arrived),
+      // discard late stream_content — it reopens the store and re-displays
+      // generating tools / streaming text that the user already saw cancelled.
+      if (finalizedRef?.current) return
+      // If PhaseDone already fired, the turn is ending — the text event or
+      // cancel ack will arrive next with the final content. Late stream_content
+      // is stale and would re-set streamingTools, causing iteration duplication
+      // (the generating tool renders alongside the same iteration's "done" entry
+      // in iterationHistory).
+      if (phaseDoneRef?.current) return
 
       // stream_content carries content deltas in progress.stream_content /
       // progress.reasoning_stream_content (channel/web/web.go SendStreamContent).
@@ -339,19 +390,72 @@ function handleProgressMessage(
     case 'sync_progress': {
       const p = msg.progress
       if (!p) return
+      // turn_started: a new agent turn is beginning. This replaces the old
+      // inject_user side-channel — the notification user message is delivered
+      // atomically with the TurnID through the progress stream.
+      if (p.phase === 'turn_started') {
+        // ── Consistency check: TurnID must be strictly monotonic ──
+        // AskUser answer (trigger=resume) reuses the same TurnID as the original
+        // turn — turnID == lastTurnID is expected and NOT a violation.
+        if (store.lastTurnID > 0 && p.turn_id && p.turn_id > 0 && p.turn_id !== store.lastTurnID) {
+          if (p.turn_id <= store.lastTurnID) {
+            console.error('[TURN_ID_INVARIANT_VIOLATION] TurnID must be strictly increasing', {
+              prev: store.lastTurnID,
+              next: p.turn_id,
+              delta: p.turn_id - store.lastTurnID,
+              chatID: p.chat_id,
+              trigger: p.turn_start?.trigger,
+            })
+          } else if (p.turn_id !== store.lastTurnID + 1) {
+            console.warn('[TURN_ID_GAP] TurnID jumped — intermediate turn(s) may have been lost', {
+              prev: store.lastTurnID,
+              next: p.turn_id,
+              gap: p.turn_id - store.lastTurnID - 1,
+              chatID: p.chat_id,
+            })
+          }
+        }
+        store.lastTurnID = p.turn_id ?? 0
+        const ts = p.turn_start
+        // For "resume" trigger (AskUser answer), preserve iterationHistory —
+        // the answer is a CONTINUATION of the same turn, not a new turn.
+        // Only clear streaming state (streamContent, activeTools, etc.) so
+        // the new iteration starts clean, but previous iterations survive.
+        // For "user"/"notification" triggers, full reset (new turn).
+        if (ts?.trigger === 'resume') {
+          store.resetStreamingState()
+        } else {
+          store.reset()
+          store.lastIter = -1
+        }
+        if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
+          injectRef?.current?.(ts.content, p.turn_id, ts.trigger === 'notification')
+        }
+        // Signal the frontend to enter busy mode. This is critical for
+        // notification/resume turns where session(busy) may be lost or delayed
+        // (SSE coalescing) — without this, the input box stays in send mode.
+        if (p.turn_id) {
+          turnStartedRef?.current?.(p.turn_id, ts?.trigger ?? 'user')
+          store.lastTurnID = p.turn_id
+        }
+        // Reset finalize guards for the new turn.
+        if (finalizedRef) finalizedRef.current = false
+        if (phaseDoneRef) phaseDoneRef.current = false
+        return
+      }
       if (p.phase === 'done') {
         // PhaseDone: the turn is over. Mark it so session(idle) doesn't
         // defensively finalize — the text event (normal or cancel ack) is
         // the authoritative finalizer.
         if (phaseDoneRef) phaseDoneRef.current = true
-        // PhaseDone: the turn is over. Clear in-flight tool state
-        // (activeTools/completedTools/streamingTools) so no tool appears
-        // "running" after the turn ends. Preserve iterationHistory and
-        // streamContent — the text event or cancel ack will read them.
+        // Dispatch agent-idle so the sidebar clears the busy indicator.
         window.dispatchEvent(new CustomEvent('agent-idle', {
           detail: { chatID: p.chat_id ?? undefined, channel: undefined },
         }))
-        // Update todos if the PhaseDone event carries them.
+        // Update todos if the PhaseDone event carries them. Do NOT clear
+        // tools here — clearing causes a 4-5s gap where tools disappear
+        // between PhaseDone and the text event. The text event (or cancel
+        // ack) calls store.reset() which clears everything atomically.
         let doneTodos: TodoItem[] | undefined
         if (Array.isArray(p.todos) && p.todos.length > 0) {
           doneTodos = p.todos.map((t) => ({
@@ -362,9 +466,6 @@ function handleProgressMessage(
         }
         if (doneTodos) {
           store.setStructuredTools({ eventSeq: typeof p.seq === 'number' ? p.seq : undefined, todos: doneTodos })
-        } else {
-          // No todos to update — still clear in-flight tools.
-          store.resetStreamingState()
         }
         return
       }
@@ -396,9 +497,14 @@ function handleProgressMessage(
           .filter(Boolean) as WebIteration[]
       }
 
-      // TODO list (from TodoWrite tool, carry-forward when absent)
+      // TODO list (from TodoWrite tool)
+      // p.todos is the raw array from the server. We must distinguish:
+      //  - Array with items → map to TodoItem[]
+      //  - Empty array [] → explicitly cleared by todo_write([]) → pass []
+      //    so setStructuredTools updates draft.todos = []
+      //  - undefined/null → not present in event → carry-forward (undefined)
       let todos: TodoItem[] | undefined
-      if (Array.isArray(p.todos) && p.todos.length > 0) {
+      if (Array.isArray(p.todos)) {
         todos = p.todos.map((t) => ({
           id: typeof t.id === 'number' ? t.id : 0,
           text: typeof t.text === 'string' ? t.text : '',
@@ -420,6 +526,42 @@ function handleProgressMessage(
         }
       }
 
+      // ── Consistency check: iteration must advance by exactly 1 within a turn ──
+      if (iteration !== undefined && iteration >= 0) {
+        if (store.lastIter >= 0 && iteration < store.lastIter) {
+          console.error('[ITER_ID_INVARIANT_VIOLATION] iteration went backwards', {
+            prev: store.lastIter,
+            next: iteration,
+            turnID: store.lastTurnID,
+            chatID: p.chat_id,
+            phase,
+          })
+        } else if (store.lastIter >= 0 && iteration !== store.lastIter + 1 && iteration > store.lastIter) {
+          console.warn('[ITER_ID_GAP] iteration jumped — intermediate iteration(s) may have been lost', {
+            prev: store.lastIter,
+            next: iteration,
+            gap: iteration - store.lastIter - 1,
+            turnID: store.lastTurnID,
+            chatID: p.chat_id,
+          })
+        }
+        if (iteration > store.lastIter) {
+          store.lastIter = iteration
+        }
+      }
+      // Track TurnID from structured events (covers SSE reconnect recovery via
+      // restoreActiveProgress, which dispatches a snapshot with TurnID but not
+      // turn_started phase). Without this, lastTurnID stays stale after reconnect.
+      if (p.turn_id && p.turn_id > 0 && p.turn_id !== store.lastTurnID) {
+        // Fallback: turn_started was lost (SSE drop). Clear stale data so the
+        // new turn's iterations don't append to the old turn's iterationHistory.
+        // (turn_started normally handles this, but SSE can coalesce/drop it.)
+        if (store.lastTurnID > 0 && hasVisibleProgress(store.getSnapshot())) {
+          store.reset()
+        }
+        store.lastTurnID = p.turn_id
+      }
+
       // Apply structured event with carry-forward (stream-only fields preserved)
       store.setStructuredTools({
         eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
@@ -433,6 +575,7 @@ function handleProgressMessage(
         todos,
         subAgents,
         tokenUsage,
+        turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : undefined,
       })
       return
     }
@@ -458,21 +601,31 @@ function handleProgressMessage(
       // fire), we merge: server iterations + any live-only iterations.
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
-        const parsedIterations = parseWebIterations(msg.progress_history)
+        if (phaseDoneRef) phaseDoneRef.current = false
+        // Cancel: commit the live content as a regular message (same as
+        // normal text event), then reset the store. This avoids the
+        // PhaseDone → liveMessage=null gap (iterations vanish between
+        // PhaseDone and cancel ack). The committed message carries the
+        // iterations from progress_history, so they survive permanently.
+        //
+        // We DON'T trigger reload — the message is committed locally,
+        // not fetched from server. The next reload (session switch) will
+        // fetch the same data from /api/history (cancelMsg has Detail).
         const snap = store.getSnapshot()
         const liveIters = snap.iterationHistory
-        // Merge: server iterations (authoritative, has user_cancelled) +
-        // any live-only iterations not in server data.
+        const parsedIterations = parseWebIterations(msg.progress_history)
         const serverIterNums = new Set(parsedIterations.map((i) => i.iteration))
         const liveOnly = liveIters.filter((i) => !serverIterNums.has(i.iteration))
         const iters = [...parsedIterations, ...liveOnly]
+        // Use streamContent as final text (the partially-streamed response)
         const text = snap.streamContent || snap.content || ''
+        // Only commit if there's something to show (content or iterations)
         if (text || iters.length > 0) {
-          completeRef.current?.(text, iters, msg.seq)
-          if (hasVisibleProgress(store.getSnapshot())) store.reset()
-        } else if (hasVisibleProgress(snap)) {
-          store.reset()
+          completeRef.current?.(text, iters, msg.seq, msg.turn_id)
         }
+        // onAssistantComplete calls store.reset() inside flushSync.
+        if (hasVisibleProgress(store.getSnapshot())) store.reset()
+        cancelCompleteRef?.current?.()
         // Dispatch agent-idle so useSessionStore clears the busy state even
         // if the session(idle) SSE event was dropped (sendCh full / network).
         window.dispatchEvent(new CustomEvent('agent-idle', {
@@ -496,7 +649,7 @@ function handleProgressMessage(
       // Only fall back to parsedIterations when the snapshot has no iterations
       // (e.g. reconnect where no SSE events were received).
       const iterations = snap.iterationHistory.length > 0 ? snap.iterationHistory : parsedIterations
-      completeRef.current?.(finalText, iterations, msg.seq)
+      completeRef.current?.(finalText, iterations, msg.seq, msg.turn_id)
       // onAssistantComplete calls store.reset() synchronously inside flushSync.
       // Fallback: if onAssistantComplete did not reset (e.g., not set), reset here.
       // The reset is idempotent — if onAssistantComplete already cleared the
@@ -522,9 +675,30 @@ function handleProgressMessage(
 
       if (action === 'busy') {
         const snap = store.getSnapshot()
+        // A new busy event means the turn is (re)starting. Reset the finalize
+        // guards so stream_content events are NOT blocked. Without this, after
+        // a PhaseDone (phaseDoneRef=true) or cancel (finalizedRef=true), all
+        // subsequent stream_content events are silently dropped — the UI
+        // freezes ("busy 时不更新"). With the new backend, turn_started handles
+        // this; with the old backend (no turn_started), session(busy) is the
+        // only reset point.
+        if (finalizedRef) finalizedRef.current = false
+        if (phaseDoneRef) phaseDoneRef.current = false
         // If we're already mid-stream, don't disrupt — a synthetic busy from
         // recovery must not wipe cumulative streamContent (causes typer restart).
         if (snap.streamContent || snap.reasoningStreamContent) {
+          return
+        }
+        // If we have active tools (in-flight tool execution), don't disrupt —
+        // a synthetic busy from SSE reconnect (restoreActiveProgress) must not
+        // wipe activeTools via resetStreamingState(). This happens on page
+        // refresh when the agent is mid-tool-execution: history hydrates
+        // activeTools, then session(busy) arrives and would clear them.
+        // BUT: clear stale streamingTools (generating tools from the previous
+        // turn) to prevent iteration duplication — the generating tool would
+        // render alongside the same iteration's "done" entry in iterationHistory.
+        if (snap.activeTools.length > 0) {
+          store.setStreamOnlyFields({ streamingTools: [] })
           return
         }
         // On a clean store (no visible progress), this is a genuine new turn.
@@ -536,7 +710,8 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = false
           return
         }
-        // Dirty store with no stream content — clear stale tool state.
+        // Dirty store with no stream content and no active tools — clear
+        // stale tool state (e.g. completed tools from a previous turn).
         store.resetStreamingState()
         return
       }
@@ -562,6 +737,20 @@ function handleProgressMessage(
       // finalize to avoid committing content the backend already persisted.
       if (action === 'idle') {
         if (finalizedRef?.current || phaseDoneRef?.current) {
+          // If the store is frozen (cancel), DON'T reset — frozen content
+          // must stay visible. Only reset for normal finalize (text event
+          // committed the message, store content is now redundant).
+          if (store.getSnapshot().phase === 'frozen') {
+            if (phaseDoneRef) phaseDoneRef.current = false
+            return
+          }
+          // If PhaseDone fired but no text event yet (cancel ack pending),
+          // DON'T reset — the cancel ack needs store.streamContent to commit.
+          // Only reset if finalizedRef=true (text event already committed).
+          if (phaseDoneRef?.current && !finalizedRef?.current) {
+            // PhaseDone without text — wait for text/cancel ack
+            return
+          }
           if (hasVisibleProgress(store.getSnapshot())) {
             store.reset()
           }
@@ -573,7 +762,7 @@ function handleProgressMessage(
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
           const iters = snap.iterationHistory
-          completeRef.current?.(text, iters, msg.seq)
+          completeRef.current?.(text, iters, msg.seq, msg.turn_id)
           store.reset()
         }
       }

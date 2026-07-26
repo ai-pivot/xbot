@@ -70,7 +70,15 @@ func (m *cliModel) renderMessage(msg *cliMessage) string {
 		dotSep := s.UserDotSep.Width(chatUsableWidth).Align(lipgloss.Right).Render("···")
 		sb.WriteString(dotSep)
 		sb.WriteString("\n")
-		label := userLabelStyle.Render("You")
+		// Notification messages (bg task/cron) get a 🔔 label + muted style so
+		// the user can distinguish system-injected messages from their own input.
+		labelText := "You"
+		labelStyle := userLabelStyle
+		if msg.isNotification {
+			labelText = "🔔 Notify"
+			labelStyle = s.TextMutedSt
+		}
+		label := labelStyle.Render(labelText)
 		header := s.UserHeader.Width(chatUsableWidth).Align(lipgloss.Right).Render(fmt.Sprintf("%s %s", timeStr, label))
 		sb.WriteString(header)
 		sb.WriteString("\n")

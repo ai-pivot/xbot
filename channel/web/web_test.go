@@ -31,6 +31,10 @@ func newTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Close the temp file handle immediately — sqlite.Open will open its own.
+	// On Windows, an open file handle locks the file, preventing os.Remove
+	// cleanup and causing accumulation that can deadlock the SQLite driver.
+	f.Close()
 	t.Cleanup(func() { os.Remove(f.Name()) })
 
 	db, err := sqlite.Open(f.Name())
@@ -49,6 +53,10 @@ func newTestWebChannel(t *testing.T, db *sql.DB) (*WebChannel, *bus.MessageBus) 
 		Port: 0, // random port
 		DB:   db,
 	}, msgBus)
+	// Register cleanup so SSE client goroutines and hub connections are
+	// stopped after each test. Without this, SSE connections accumulate
+	// across tests — on Windows this deadlocks the SQLite driver.
+	t.Cleanup(wc.Stop)
 
 	return wc, msgBus
 }
@@ -1311,7 +1319,7 @@ func TestShouldEagerSaveUserMessageSkipsCommands(t *testing.T) {
 	}{
 		{name: "web normal", channel: "web", content: "hello", want: true},
 		{name: "web empty", channel: "web", content: "", want: true},
-		{name: "cli normal", channel: "cli", content: "hello", want: false},
+		{name: "cli normal", channel: "cli", content: "hello", want: true},
 		{name: "bang command", channel: "web", content: "!pwd", want: false},
 		{name: "slash new", channel: "web", content: "/new", want: false},
 		{name: "slash rewind", channel: "web", content: "/rewind", want: false},

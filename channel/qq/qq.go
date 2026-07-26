@@ -177,6 +177,11 @@ func NewQQChannel(cfg QQConfig, msgBus *bus.MessageBus) *QQChannel {
 
 func (q *QQChannel) Name() string { return "qq" }
 
+// PreReplyNotify implements channel.PreReplyNotifier. QQ has no streaming
+// and sends progress as separate messages, so it needs text-based ack and
+// progress messages.
+func (q *QQChannel) PreReplyNotify() bool { return true }
+
 // ---------------------------------------------------------------------------
 // Start / Stop
 // ---------------------------------------------------------------------------

@@ -88,6 +88,7 @@ func (m *cliModel) startAgentTurn() {
 	// or by endAgentTurn for the matching turnID (normal cancel completion path).
 
 	m.turnAutoStarted = false
+	m.turnStartedProcessed = false
 
 	// NOTE: Callers are responsible for ensuring the tick chain starts:
 	//   - Inside Bubble Tea Update: return tickCmd() in the cmd chain

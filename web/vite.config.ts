@@ -41,9 +41,13 @@ export default defineConfig({
         // Precache up to 8MB (monaco/katex/highlight are large but cacheable)
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [
-          // API requests: network-first, fall back to cache for offline reads
+          // API requests: network-first, fall back to cache for offline reads.
+          // Exclude /api/sse — SSE is a streaming response that never
+          // completes normally; caching it throws "Cache.put() network error"
+          // when the connection drops (which is normal for long-lived SSE).
           {
-            urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
+            urlPattern: ({ url }) =>
+              url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sse'),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',
@@ -81,6 +85,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    setupFiles: ['src/test-setup.ts'],
   },
   server: {
     host: '0.0.0.0',

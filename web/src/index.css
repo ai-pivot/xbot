@@ -15,6 +15,19 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
+ * Touch device support: on devices without hover capability (phones, tablets),
+ * `opacity-0 group-hover:opacity-*` elements never become visible because
+ * there is no hover state. This rule forces them visible on touch devices so
+ * action buttons (delete, edit, star, copy, close) are always tappable.
+ */
+@media (hover: none) {
+  .group:hover .opacity-0,
+  .group\/code:hover .opacity-0 {
+    opacity: 0.6 !important;
+  }
+}
+
+/*
  * Design tokens — VSCode-style palette (Spec 1 设计系统基础).
  *
  * Two layers of variables:
