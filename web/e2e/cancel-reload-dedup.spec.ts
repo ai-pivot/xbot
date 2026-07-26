@@ -84,9 +84,9 @@ test.describe('No duplicate after cancel + reload', () => {
   test('cancelled turn from history renders once, not twice', async ({ browser }) => {
     const page = await browser.newPage()
     await page.addInitScript(() => {
-      const l: Record<string, Set<(e: MessageEvent) => void>> = {}; (window as any).__sseListeners = l
+      const l: Record<string, Set<(e: MessageEvent) => void>> = {}; (window as unknown as Record<string, unknown>).__sseListeners = l
       class M { readyState=1; onopen:((e:Event)=>void)|null=null; onerror:((e:Event)=>void)|null=null; constructor(public u:string){setTimeout(()=>this.onopen?.(new Event('open')),0)} addEventListener(t:string,h:(e:MessageEvent)=>void){if(!l[t])l[t]=new Set();l[t].add(h)} removeEventListener(){} close(){} }
-      ;(window as any).EventSource = M
+      ;(window as unknown as Record<string, unknown>).EventSource = M
     })
     await setupMock(page, cancelledTurnHistory)
     await page.goto(`${BASE}/login`)
@@ -119,15 +119,12 @@ test.describe('No duplicate after cancel + reload', () => {
   test('cancel ack commits message, then reload does not duplicate', async ({ browser }) => {
     const page = await browser.newPage()
     await page.addInitScript(() => {
-      const l: Record<string, Set<(e: MessageEvent) => void>> = {}; (window as any).__sseListeners = l
+      const l: Record<string, Set<(e: MessageEvent) => void>> = {}; (window as unknown as Record<string, unknown>).__sseListeners = l
       class M { readyState=1; onopen:((e:Event)=>void)|null=null; onerror:((e:Event)=>void)|null=null; constructor(public u:string){setTimeout(()=>this.onopen?.(new Event('open')),0)} addEventListener(t:string,h:(e:MessageEvent)=>void){if(!l[t])l[t]=new Set();l[t].add(h)} removeEventListener(){} close(){} }
-      ;(window as any).EventSource = M
+      ;(window as unknown as Record<string, unknown>).EventSource = M
     })
 
-    // Track reload count — each /api/history call
-    let historyCallCount = 0
     await page.route('**/api/history', (r) => {
-      historyCallCount++
       r.fulfill({ json: { ok: true, data: { messages: cancelledTurnHistory, chat_id: 'chat-1', last_seq: 0, active_progress: null } } })
     })
     await page.route('**/api/settings', (r) => r.fulfill({ json: { ok: true, data: {} } }))

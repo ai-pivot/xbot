@@ -6,20 +6,6 @@ interface SSEMockState {
   __sseListeners: Record<string, Set<(ev: MessageEvent) => void>>
 }
 
-let seqCounter = 0
-
-async function emitSSE(page: Page, type: string, data: Record<string, unknown>) {
-  await page.evaluate(({ type, data, seq }) => {
-    const w = window as unknown as SSEMockState
-    const listeners = w.__sseListeners
-    if (!listeners) return
-    const handlers = listeners[type] as Set<(ev: MessageEvent) => void> | undefined
-    if (!handlers) return
-    const ev = new MessageEvent(type, { data: JSON.stringify({ ...data, seq }) })
-    handlers.forEach((h) => h(ev))
-  }, { type, data, seq: ++seqCounter })
-}
-
 async function setupMock(page: Page, historyResponse: unknown) {
   await page.route('**/api/settings', (r) => r.fulfill({ json: { ok: true, data: {} } }))
   await page.route('**/api/auth/config', (r) => r.fulfill({ json: { ok: true, data: { invite_only: false } } }))
@@ -67,7 +53,7 @@ async function countAssistantRows(page: Page): Promise<number> {
 }
 
 test.describe('Live message does not duplicate committed history', () => {
-  test.beforeEach(() => { seqCounter = 0 })
+  test.beforeEach(() => {})
 
   test('DB-committed message from same turn (turn_id match) does NOT duplicate', async ({ browser }) => {
     const page = await browser.newPage()

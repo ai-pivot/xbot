@@ -46,9 +46,9 @@ test.describe('Cancel + reconnect iteration bugs', () => {
   test('cancel preserves iterations (exact backend sequence, no PhaseDone)', async ({ browser }) => {
     const page = await browser.newPage()
     await page.addInitScript(() => {
-      const l: Record<string, Set<(e: MessageEvent) => void>> = {}; (window as any).__sseListeners = l
+      const l: Record<string, Set<(e: MessageEvent) => void>> = {}; (window as unknown as Record<string, unknown>).__sseListeners = l
       class M { readyState = 1; onopen: ((e: Event) => void) | null = null; onerror: ((e: Event) => void) | null = null; constructor(public u: string) { setTimeout(() => this.onopen?.(new Event('open')), 0) } addEventListener(t: string, h: (e: MessageEvent) => void) { if (!l[t]) l[t] = new Set(); l[t].add(h) } removeEventListener() {} close() {} }
-      ;(window as any).EventSource = M
+      ;(window as unknown as Record<string, unknown>).EventSource = M
     })
     await setupMock(page)
     await page.goto(`${BASE}/login`); await page.locator('input').first().fill('test'); await page.locator('input[type=password]').fill('test'); await page.locator('button[type=submit]').click()
@@ -95,9 +95,9 @@ test.describe('Cancel + reconnect iteration bugs', () => {
   test('SSE reconnect restores iterations (not stuck)', async ({ browser }) => {
     const page = await browser.newPage()
     await page.addInitScript(() => {
-      const l: Record<string, Set<(e: MessageEvent) => void>> = {}; (window as any).__sseListeners = l
+      const l: Record<string, Set<(e: MessageEvent) => void>> = {}; (window as unknown as Record<string, unknown>).__sseListeners = l
       class M { readyState = 1; onopen: ((e: Event) => void) | null = null; onerror: ((e: Event) => void) | null = null; constructor(public u: string) { setTimeout(() => this.onopen?.(new Event('open')), 0) } addEventListener(t: string, h: (e: MessageEvent) => void) { if (!l[t]) l[t] = new Set(); l[t].add(h) } removeEventListener() {} close() {} }
-      ;(window as any).EventSource = M
+      ;(window as unknown as Record<string, unknown>).EventSource = M
     })
 
     // Mock RPC: get_active_progress returns the snapshot
