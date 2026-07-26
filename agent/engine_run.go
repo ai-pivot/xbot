@@ -414,12 +414,6 @@ func (s *runState) beginIteration(i int) {
 			}).Warn("ITER_ID_GAP: iteration number jumped — intermediate iteration(s) may have been lost")
 		}
 	}
-	// NOTE: subAgentNodes and SubAgents are NOT cleared here — they carry
-	// forward across iterations (like todos). Clearing them causes
-	// resolveSubAgents to fall back to text-based string matching, which is
-	// fragile and pollutes on similar-looking content. SubAgents are
-	// updated incrementally by SubAgent progress callbacks and cleared on
-	// turn end (PhaseDone / store.reset).
 	if s.structuredProgress != nil {
 		s.structuredProgress.Iteration = i
 		s.structuredProgress.Phase = PhaseThinking
@@ -427,7 +421,15 @@ func (s *runState) beginIteration(i int) {
 		s.structuredProgress.CompletedTools = nil
 		s.structuredProgress.Content = ""
 		s.structuredProgress.ReasoningContent = ""
+		s.structuredProgress.SubAgents = nil
 	}
+	// Clear subAgentNodes at iteration boundary. SubAgents are one-shot tools
+	// that complete synchronously within execOneTool — by the time the next
+	// iteration begins, they are done. Carrying them forward causes completed
+	// SubAgents to persist as "running" in every subsequent progress event
+	// (the "explore card that never disappears" bug). resolveSubAgents returns
+	// nil when SubAgents is empty — there is no text-based fallback.
+	s.subAgentNodes = nil
 	if s.structuredProgress != nil && s.cfg.TodoManager != nil && s.sessionKey != "" {
 		todos := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
 		if len(todos) > 0 {
@@ -900,6 +902,7 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 		Content:          strings.TrimRight(response.Content, " \t"),
 		ReasoningContent: response.ReasoningContent,
 		ToolCalls:        response.ToolCalls,
+		TurnID:           s.cfg.TurnID,
 	}
 	s.messages = s.syncMessages(append(s.messages, assistantMsg))
 }
@@ -1593,6 +1596,7 @@ func (s *runState) injectSyntheticToolPair(
 			Name:      toolName,
 			Arguments: "{}", // must be valid JSON; empty string "" causes 400 on strict backends (e.g. SGLang)
 		}},
+		TurnID: s.cfg.TurnID,
 	}
 
 	content := toolContent

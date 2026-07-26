@@ -1311,7 +1311,7 @@ func TestShouldEagerSaveUserMessageSkipsCommands(t *testing.T) {
 	}{
 		{name: "web normal", channel: "web", content: "hello", want: true},
 		{name: "web empty", channel: "web", content: "", want: true},
-		{name: "cli normal", channel: "cli", content: "hello", want: false},
+		{name: "cli normal", channel: "cli", content: "hello", want: true},
 		{name: "bang command", channel: "web", content: "!pwd", want: false},
 		{name: "slash new", channel: "web", content: "/new", want: false},
 		{name: "slash rewind", channel: "web", content: "/rewind", want: false},

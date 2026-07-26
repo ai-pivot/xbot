@@ -2143,6 +2143,24 @@ func (a *Agent) resetSessionState(key string) {
 	a.sessionFinalSent.Delete(key)
 }
 
+// wantsPreReplyNotify returns true if the given channel requires text-based ack
+// and progress messages (e.g. Feishu, QQ). Channels with structured progress
+// (Web, CLI via ProgressSender) return false — they receive progress through
+// SendProgress events and don't need ack messages.
+//
+// This is the single channel-capability check that replaces hardcoded channel
+// name comparisons (e.g. `msg.Channel != "cli"`) in the core loop. The core
+// code stays channel-agnostic: each channel declares its own behavior by
+// implementing (or not) channel.PreReplyNotifier.
+func (a *Agent) wantsPreReplyNotify(channelName string) bool {
+	ch, ok := a.channelFinder(channelName)
+	if !ok {
+		return false
+	}
+	pn, ok := ch.(channel.PreReplyNotifier)
+	return ok && pn.PreReplyNotify()
+}
+
 // qualifyChatID combines channel name and chatID into the "channel:chatID" format
 // used by TUI session filtering (handleInjectedUserMsg). All inject paths must
 // use this helper instead of inline string concatenation.
@@ -2600,15 +2618,17 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 		ss.setActiveTurn(turnID)
 		// Consistency check: TurnID must be strictly monotonic per session.
 		// A gap or regression indicates a bug in the turn lifecycle.
+		// AskUser answer reuses the same TurnID (turnID == prev) — this is
+		// expected, not a regression. Only turnID < prev is a real violation.
 		if prev := ss.lastTurnID.Load(); prev > 0 {
-			if turnID <= prev {
+			if turnID < prev {
 				log.WithFields(log.Fields{
 					"session_key":  chatKey,
 					"prev_turn_id": prev,
 					"new_turn_id":  turnID,
 					"delta":        int64(turnID) - int64(prev),
 				}).Error("TURN_ID_INVARIANT_VIOLATION: TurnID must be strictly increasing — got non-increasing value")
-			} else if turnID != prev+1 {
+			} else if turnID > prev && turnID != prev+1 {
 				log.WithFields(log.Fields{
 					"session_key":  chatKey,
 					"prev_turn_id": prev,
@@ -2929,7 +2949,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		return a.handleCardResponse(ctx, msg, tenantSession)
 	}
 
-	preReplyNotify := bus.ShouldPreReplyNotify(msg.Metadata) && msg.Channel != "cli"
+	// Channel-capability check: does this channel need text-based ack/progress?
+	// (Feishu/QQ do; Web/CLI have structured progress via SendProgress events.)
+	// Per-message opt-out via ReplyPolicyOptional (e.g. Feishu @all, NapCat).
+	preReplyNotify := a.wantsPreReplyNotify(msg.Channel) && bus.ShouldPreReplyNotify(msg.Metadata)
 	replyPolicy := bus.InboundReplyPolicy(msg.Metadata)
 
 	// 立即发送随机确认回复

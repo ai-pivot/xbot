@@ -170,9 +170,14 @@ export function AgentPanel({ params }: PanelProps) {
       void sessionContext.refresh()
     },
     onCancelComplete: () => {
-      // Cancel: freeze() in useProgressStream already stopped streaming
-      // animations while keeping content visible. Nothing else to do —
-      // no reset (content would disappear), no reload, no re-render.
+      // Cancel: onAssistantComplete already committed the message + reset
+      // the store via flushSync. Mark a destructive mutation so the next
+      // reload (session switch / refresh) DISCARDS the locally-committed
+      // message and replaces it with the server's version — the server has
+      // the same data (cancelMsg has Detail with progress_history). Without
+      // this, the locally-committed message and the DB version coexist →
+      // duplicate rendering.
+      chat.markDestructiveMutation?.()
     },
     onInjectUserMessage: (content, turnID, isNotification) => {
       chat.injectUserMessage(content, turnID, isNotification)

@@ -266,6 +266,28 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v49: fix cancelled-turn messages that were incorrectly marked display_only=1.
+	// These messages carry Detail (iteration history) that GetAllMessages must
+	// return so ConvertMessagesToHistory can parse them. With display_only=1,
+	// the detail is lost and the UI renders duplicate/merged turns.
+	if from < 49 {
+		if err := migrateV48ToV49(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v49: %w", err)
+		}
+	}
+
+	// v50: add turn_id column to session_messages for turn-scoped dedup.
+	// IncrementalPersist writes mid-turn messages; reload fetches them as
+	// committed history while the live store still has the same turn's
+	// progress. Without turn_id, the frontend can't tell if a committed
+	// message is from the current turn (suppress liveMessage) or a previous
+	// turn (show both). This caused the "history and live duplicate" bug.
+	if from < 50 {
+		if err := migrateV49ToV50(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v50: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1907,6 +1929,46 @@ func migrateV47ToV48(conn *sql.DB) error {
 	}
 
 	log.Info("Database migrated to v48: added sort_order column to user_chats")
+	return nil
+}
+
+func migrateV48ToV49(conn *sql.DB) error {
+	// Fix cancelled-turn messages that were incorrectly marked display_only=1.
+	// handleCancelledRun persisted the [interrupted] assistant message with
+	// DisplayOnly=true, but it carries Detail (iteration history) that
+	// GetAllMessages must return for ConvertMessagesToHistory to work.
+	// Without it, cancelled turns lose their iteration history and render
+	// as duplicate/merged tool blocks.
+	result, err := conn.Exec(`
+		UPDATE session_messages
+		SET display_only = 0
+		WHERE role = 'assistant'
+		  AND content = '[interrupted]'
+		  AND detail IS NOT NULL AND detail != ''
+		  AND display_only = 1
+	`)
+	if err != nil {
+		return fmt.Errorf("migrate v49 fix display_only: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	log.WithField("rows_affected", rows).Info("Database migrated to v49: fixed cancelled-turn display_only flag")
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 49"); err != nil {
+		return fmt.Errorf("migrate v49 update version: %w", err)
+	}
+	return nil
+}
+
+func migrateV49ToV50(conn *sql.DB) error {
+	if _, err := conn.Exec("ALTER TABLE session_messages ADD COLUMN turn_id INTEGER DEFAULT 0"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("migrate v50 add turn_id: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 50"); err != nil {
+		return fmt.Errorf("migrate v50 update version: %w", err)
+	}
+	log.Info("Database migrated to v50: added turn_id column to session_messages")
 	return nil
 }
 

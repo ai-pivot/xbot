@@ -50,6 +50,30 @@ function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
   )
   if (newIters.length > 0) {
     draft.iterationHistory = [...draft.iterationHistory, ...newIters]
+    assertIterationContinuity(draft.iterationHistory)
+  }
+}
+
+/**
+ * Assert that iteration numbers are strictly sequential (1, 2, 3, ...).
+ * A gap (e.g. 1 → 148) indicates a bug — typically iteration history was lost
+ * during a backend restart + cancel, or the DB Detail was incomplete.
+ * Non-blocking: logs a console.error with diagnostic context.
+ */
+export function assertIterationContinuity(iters: WebIteration[]) {
+  if (iters.length < 2) return
+  for (let i = 1; i < iters.length; i++) {
+    const prev = iters[i - 1].iteration
+    const curr = iters[i].iteration
+    if (curr !== prev + 1) {
+      console.error(
+        `[ITERATION_GAP] Iteration continuity broken: ${prev} → ${curr} (expected ${prev + 1}). ` +
+          `Total iterations: ${iters.length}. ` +
+          `This indicates lost iteration history — check backend restart + cancel handling.`,
+        { iterations: iters.map((it) => it.iteration) },
+      )
+      break // report first gap only
+    }
   }
 }
 
@@ -346,10 +370,9 @@ export class ProgressStore {
    *  at the moment of cancel, with no re-render, no disappearance, no animation.
    *  The frozen state persists until the next turn's turn_started clears it.
    *
-   *  Sets phase='frozen' so liveMessage stays visible (phase='done' would hide
-   *  it via the liveMessage useMemo, phase='' would disable liveProgress).
-   *  Clears streamingTools (generating tools are NOT real content — they
-   *  represent in-flight tool calls that never completed). */
+   *  Synchronously flushes the snapshot (like reset()) so session(idle) can
+   *  immediately read phase='frozen' and skip the reset that would clear
+   *  the frozen content. */
   freeze(): void {
     if (this.disposed) return
     this.mutate((draft) => {
@@ -357,6 +380,14 @@ export class ProgressStore {
       draft.phase = 'frozen'
       draft.streamingTools = []
     })
+    // Synchronously update snapshot so getSnapshot() returns 'frozen' immediately
+    this.snapshot = { ...this.current }
+    this.dirty = false
+    if (this.rafHandle !== null) {
+      cancelAnimationFrame(this.rafHandle)
+      this.rafHandle = null
+    }
+    this.listeners.forEach((l) => l())
   }
 
   /** Set streamed assistant text (cumulative value from stream_content events). */
@@ -418,6 +449,7 @@ export class ProgressStore {
     todos?: TodoItem[]
     subAgents?: WebSubAgentProgress[]
     tokenUsage?: TokenUsageInfo | null
+    turnID?: number
   }): void {
     // ── PhaseDone → immediate reset ──
     // The backend guarantees that a `text` event (final assistant reply)
@@ -482,6 +514,7 @@ export class ProgressStore {
 
     this.mutate((draft) => {
       if (opts.eventSeq !== undefined) draft.eventSeq = opts.eventSeq
+      if (opts.turnID !== undefined && opts.turnID > 0) draft.turnID = opts.turnID
       // ── semantic log watermark ──
       // IterationHistory from the backend is the only authoritative completed-
       // iteration log for every channel. The client must never synthesize a
@@ -567,7 +600,15 @@ export class ProgressStore {
       // completed iterations (0-1 entries). Must append with dedup by
       // iteration number, NOT replace. Replacing loses all prior iterations.
       if (opts.iterationHistory && opts.iterationHistory.length > 0) {
+        const before = draft.iterationHistory.length
         appendIterations(draft, opts.iterationHistory)
+        // If a new completed iteration was added, its tools are now in
+        // iterationHistory (rendered via TurnBody). Clear completedTools
+        // so LiveIteration doesn't render them again alongside the
+        // iterationHistory entry — prevents tool doubling.
+        if (draft.iterationHistory.length > before) {
+          draft.completedTools = []
+        }
       }
 
       // ── todos: always update when present (including empty arrays).
@@ -576,8 +617,16 @@ export class ProgressStore {
       if (opts.todos !== undefined) {
         draft.todos = opts.todos
       }
+      // subAgents: merge when non-empty, REPLACE when empty array (new iteration
+      // cleared them). mergeSubAgentTrees would keep stale subAgents from a
+      // previous iteration forever — the new iteration's SubAgent calls will
+      // populate fresh nodes, but old ones must be cleared first.
       if (opts.subAgents !== undefined) {
-        draft.subAgents = mergeSubAgentTrees(draft.subAgents, opts.subAgents)
+        if (opts.subAgents.length === 0) {
+          draft.subAgents = []
+        } else {
+          draft.subAgents = mergeSubAgentTrees(draft.subAgents, opts.subAgents)
+        }
       }
 
       // ── tokenUsage: carry-forward when not present (mirrors TUI behavior).
@@ -621,6 +670,20 @@ export class ProgressStore {
       // Merge iterationHistory by iteration number (union)
       if (next.iterationHistory) {
         appendIterations(draft, next.iterationHistory)
+        // On hydrate, completed_tools from active_progress may include tools
+        // from completed iterations that are now in iterationHistory. Exclude
+        // them — they're rendered via TurnBody, not LiveIteration.
+        const completedIterToolKeys = new Set<string>()
+        for (const iter of draft.iterationHistory) {
+          for (const tool of iter.tools ?? []) {
+            completedIterToolKeys.add(`${tool.name}\x00${tool.label}`)
+          }
+        }
+        if (completedIterToolKeys.size > 0) {
+          draft.completedTools = draft.completedTools.filter(
+            (t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`),
+          )
+        }
         // Recompute lastIter from merged history so the delta push protocol
         // continues correctly (next SSE event knows which iterations exist).
         const maxIter = draft.iterationHistory.reduce((max, i) => Math.max(max, i.iteration), -1)

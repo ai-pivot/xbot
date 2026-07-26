@@ -20,17 +20,32 @@ if ('scrollRestoration' in history) {
 registerSW()
 
 // When a new SW activates (skipWaiting is on), prompt the user to reload.
-// The event fires once per SW activation — no duplicate toasts.
+// Apple-style: non-intrusive toast with a prominent "刷新" action.
+// Auto-dismisses after 15s if the user ignores it — the update will still
+// apply on the next page load (the new SW is already controlling).
+//
+// Dedup: swNotifiedKey tracks the SW scriptURL (changes per build) so the
+// toast fires only once per SW version. On reload the module re-evaluates
+// and swNotifiedKey resets to '' — but the SW is already the new version,
+// so no spurious re-toast.
+let swNotifiedKey = ''
 window.addEventListener('sw-updated', () => {
-  toast.info('应用已更新，刷新以加载新版本', {
-    duration: Infinity,
-    action: {
-      label: '刷新',
-      onClick: () => {
-        window.location.reload()
+  // Read the current SW's script URL — it changes with each build.
+  // Use it as a per-version dedup key so we don't re-toast for the same SW.
+  navigator.serviceWorker?.getRegistration?.('/').then((reg) => {
+    const swUrl = reg?.active?.scriptURL || ''
+    if (swUrl === swNotifiedKey) return // already notified for this SW version
+    swNotifiedKey = swUrl
+    toast.success('发现新版本', {
+      duration: 15000,
+      action: {
+        label: '刷新',
+        onClick: () => {
+          window.location.reload()
+        },
       },
-    },
-  })
+    })
+  }).catch(() => {})
 })
 
 createRoot(document.getElementById('root')!).render(

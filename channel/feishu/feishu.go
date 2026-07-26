@@ -233,6 +233,12 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 
 func (f *FeishuChannel) Name() string { return "feishu" }
 
+// PreReplyNotify implements channel.PreReplyNotifier. Feishu has no streaming
+// and patches the existing message with progress content, so it needs text-based
+// ack and progress messages. Individual messages can opt out via ReplyPolicyOptional
+// (e.g. @all mentions).
+func (f *FeishuChannel) PreReplyNotify() bool { return true }
+
 // ChannelSystemParts 返回飞书渠道的特化 prompt。
 // 由 main.go 中的适配器调用，注入到 agent 中间件 pipeline。
 func (f *FeishuChannel) ChannelSystemParts(ctx context.Context, chatID, senderID string) map[string]string {

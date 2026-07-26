@@ -1715,9 +1715,13 @@ func (wc *WebChannel) sessionCleanup() {
 }
 
 func shouldEagerSaveUserMessage(channel, trimmedContent string) bool {
-	if channel == "cli" {
-		return false
-	}
+	// Eager-save for ALL channels — including "cli" (remote CLI sessions
+	// viewed via web). The web layer resolves the correct business tenant
+	// (channel + chat_id) from the message, so eagerSaveUserMsg persists to
+	// the same tenant that processMessage uses. Without eager-save for cli,
+	// turn_started fires BEFORE processMessage's AddMessage → reload() in
+	// the frontend fetches /api/history before the user msg is persisted →
+	// message disappears on refresh.
 	return trimmedContent == "" || (trimmedContent[0] != '!' && trimmedContent[0] != '/')
 }
 

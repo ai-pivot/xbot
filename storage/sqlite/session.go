@@ -59,13 +59,13 @@ func (s *SessionService) AddMessage(tenantID int64, msg llm.ChatMessage) error {
 
 	_, err = conn.Exec(`
 			INSERT INTO session_messages
-			(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, display_only, reasoning_content, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, display_only, reasoning_content, created_at, turn_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 		tenantID, msg.Role, msg.Content,
 		msg.ToolCallID, msg.ToolName, msg.ToolArguments,
 		toolCallsJSON, msg.Detail, displayOnly, msg.ReasoningContent,
-		ts.Format(time.RFC3339),
+		ts.Format(time.RFC3339), msg.TurnID,
 	)
 	if err != nil {
 		return fmt.Errorf("insert session message: %w", err)
@@ -470,14 +470,20 @@ func (s *SessionService) scanMessages(rows *sql.Rows) ([]llm.ChatMessage, error)
 		var toolCallsJSON, detailJSON sql.NullString
 		var toolCallID, toolName, toolArguments, reasoningContent sql.NullString
 		var createdAt string
+		var turnID sql.NullInt64
 
 		err := rows.Scan(
 			&msg.Role, &msg.Content,
 			&toolCallID, &toolName, &toolArguments,
 			&toolCallsJSON, &detailJSON, &reasoningContent, &createdAt,
+			&turnID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
+		}
+
+		if turnID.Valid {
+			msg.TurnID = uint64(turnID.Int64)
 		}
 
 		if toolCallID.Valid {

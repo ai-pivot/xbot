@@ -240,6 +240,8 @@ func (a *Agent) buildMainRunConfig(
 	if raw := msg.Metadata["turn_id"]; raw != "" {
 		if tid, err := strconv.ParseUint(raw, 10, 64); err == nil {
 			cfg.TurnID = tid
+		} else {
+			log.WithFields(log.Fields{"raw": raw}).Warn("buildMainRunConfig: failed to parse turn_id from metadata")
 		}
 	}
 
@@ -323,23 +325,10 @@ func (a *Agent) buildMainRunConfig(
 	// OAuth 处理
 	cfg.OAuthHandler = a.buildOAuthHandler(channel, chatID, senderID, sessionKey)
 
-	// A non-nil notifier enables the structured progress finalizer for every
-	// channel. Optional text notifications are an independent transport concern.
-	if autoNotify {
-		cfg.ProgressNotifier = func(lines []string, _ string) {
-			if len(lines) > 0 {
-				if err := a.sendMessage(channel, chatID, lines[0]); err != nil {
-					log.Warn("Failed to send progress: ", err)
-				}
-			}
-		}
-	} else {
-		cfg.ProgressNotifier = func(lines []string, _ string) {}
-	}
-
 	// Structured progress has one channel-agnostic snapshot/log producer.
 	// Every ProgressSender receives the exact same protocol event; channel
 	// transports only handle delivery and never derive semantic history.
+	// Set up BEFORE ProgressNotifier so we can detect structured availability.
 	if handler := a.buildProgressEventHandler(chatID, channel); handler != nil {
 		done := ctx.Done()
 		cfg.ProgressEventHandler = func(ev *ProgressEvent) {
@@ -355,6 +344,26 @@ func (a *Agent) buildMainRunConfig(
 			}
 			handler(ev)
 		}
+	}
+
+	// ProgressNotifier sends text-based progress as a regular message. This is
+	// ONLY for channels without structured progress (e.g. Feishu, which patches
+	// the existing message with progress content). Channels WITH structured
+	// progress (CLI, Web) receive progress via progress_structured events —
+	// sending text messages here pollutes their message stream with progress
+	// rendering artifacts ("> ✅ Shell:", "> 🎭 上下文较大", "> 💭 思考中...").
+	// A non-nil notifier keeps autoNotify=true so notifyProgress still runs and
+	// feeds progressLines to the structured path.
+	if autoNotify && cfg.ProgressEventHandler == nil {
+		cfg.ProgressNotifier = func(lines []string, _ string) {
+			if len(lines) > 0 {
+				if err := a.sendMessage(channel, chatID, lines[0]); err != nil {
+					log.Warn("Failed to send progress: ", err)
+				}
+			}
+		}
+	} else {
+		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	}
 
 	// 注入 ContextManager
@@ -1347,10 +1356,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 				})
 			}
 		}
-	} else if originChannel != "" && originChatID != "" && originChannel != "cli" {
-		// 非 CLI 渠道（飞书、Web 等）：发送 text-based progress 到聊天窗口。
-		// CLI 模式下由 wireSubAgentProgress 的 StructuredProgress 处理，
-		// 不需要 sendMessage（否则会把工具行渲染成主 session 的 assistant 消息）。
+	} else if originChannel != "" && originChatID != "" && a.wantsPreReplyNotify(originChannel) {
+		// Channels without structured progress (Feishu, QQ): send text-based
+		// SubAgent progress to the chat window. Channels with structured progress
+		// (Web, CLI) handle SubAgent progress via ProgressSender events.
 		rn := roleName
 		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
@@ -1364,9 +1373,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 				}
 			}
 		}
-	} else if originChannel == "cli" {
-		// CLI 渠道 + 无父 callback：设置 dummy notifier 使 autoNotify=true，
-		// 这样 wireSubAgentProgress 设置的 ProgressEventHandler 才会被调用。
+	} else {
+		// Channels with structured progress (Web, CLI): set a dummy notifier so
+		// autoNotify=true, which enables wireSubAgentProgress's ProgressEventHandler
+		// to fire. The dummy itself sends nothing.
 		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	}
 
@@ -1556,10 +1566,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 // It prefers the structured SubAgents field (reliable), falling back to
 // text-based ExtractSubAgentTree only if structured data is unavailable.
 func resolveSubAgents(event *ProgressEvent) []protocol.SubAgentInfo {
-	// Structured data only — no text-based string matching (fragile, pollutes
-	// on similar-looking content). SubAgents are carried forward across
-	// iterations (not cleared in beginIteration), so structured data is always
-	// available when subagents are running.
+	// Structured data only — no text-based string matching. SubAgents are
+	// cleared at iteration boundary in beginIteration (they're one-shot tools
+	// that complete synchronously within the iteration). When nil, returns nil
+	// — no fallback.
 	if event.Structured != nil && len(event.Structured.SubAgents) > 0 {
 		return convertCLISubAgentTree(event.Structured.SubAgents)
 	}

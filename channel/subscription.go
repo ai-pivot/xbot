@@ -194,6 +194,10 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	// tool_summary messages with zero timestamps, causing dedup to drop all
 	// but the first.
 	var lastAssistantTS time.Time
+	// pendingTurnID tracks the TurnID of the last assistant message with tool_calls.
+	// flushPending() uses it to stamp the generated HistoryMessage so the frontend
+	// can match it against the live store's TurnID (same-turn dedup).
+	var pendingTurnID uint64
 	// syntheticIdx provides monotonically-increasing nanosecond offsets to
 	// guarantee unique timestamps for consecutive flushPending() calls when
 	// no real assistant timestamp is available (e.g. all turns interrupted).
@@ -214,6 +218,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				Content:    "",
 				Timestamp:  ts,
 				Iterations: pendingIters,
+				TurnID:     pendingTurnID,
 			})
 			pendingIters = nil
 		}
@@ -279,6 +284,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 								Role:       "assistant",
 								Content:    m.Content,
 								Timestamp:  m.Timestamp,
+								TurnID:     m.TurnID,
 								Iterations: iters,
 							})
 						} else {
@@ -288,6 +294,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 								Role:       "assistant",
 								Content:    "",
 								Timestamp:  m.Timestamp,
+								TurnID:     m.TurnID,
 								Iterations: iters,
 							})
 						}
@@ -296,6 +303,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 							Role:      "assistant",
 							Content:   m.Content,
 							Timestamp: m.Timestamp,
+							TurnID:    m.TurnID,
 						})
 					}
 				}
@@ -304,6 +312,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				// Accumulate into pending — don't flush yet.
 				finishCurIter()
 				curIterIdx++
+				pendingTurnID = m.TurnID
 				curIterThinking = m.Content
 				curIterReasoning = m.ReasoningContent
 				for _, tc := range m.ToolCalls {
@@ -332,11 +341,13 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 					history[len(history)-1].Content == "" && len(history[len(history)-1].Iterations) > 0 {
 					history[len(history)-1].Content = m.Content
 					history[len(history)-1].Timestamp = m.Timestamp
+					history[len(history)-1].TurnID = m.TurnID
 				} else {
 					hm := HistoryMessage{
 						Role:      "assistant",
 						Content:   m.Content,
 						Timestamp: m.Timestamp,
+						TurnID:    m.TurnID,
 					}
 					// For turns with no tools, Detail is not set (snapshotCompletedIteration
 					// is only called from executeToolCalls). ReasoningContent is on the

@@ -361,45 +361,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	// so web UI can restore it on page refresh without showing "loading".
 	// Serialize iteration history once and reuse to avoid duplicate JSON marshal
 	var iterationHistoryJSON string
-	iterHistory := out.IterationHistory
-
-	// Fallback: when Run() returned before creating iteration snapshots
-	// (e.g. ctx cancelled mid-tool-call), use in-memory iteration histories
-	// accumulated by recordIterationSnapshot during progress handling.
-	if len(iterHistory) == 0 {
-		key := qualifyChatID(msg.Channel, msg.ChatID)
-		if histPtr, ok := a.iterationHistories.Load(key); ok {
-			hist := histPtr.(*[]protocol.ProgressEvent)
-			if len(*hist) > 0 {
-				iterHistory = make([]IterationSnapshot, len(*hist))
-				for i, ev := range *hist {
-					iterHistory[i] = IterationSnapshot{
-						Iteration: ev.Iteration,
-						Content:   ev.Content,
-						Reasoning: ev.Reasoning,
-					}
-					for _, t := range ev.CompletedTools {
-						iterHistory[i].Tools = append(iterHistory[i].Tools, IterationToolSnapshot{
-							Name:      t.Name,
-							Label:     t.Label,
-							Status:    t.Status,
-							ElapsedMS: t.Elapsed,
-							Summary:   t.Summary,
-						})
-					}
-					for _, t := range ev.ActiveTools {
-						iterHistory[i].Tools = append(iterHistory[i].Tools, IterationToolSnapshot{
-							Name:      t.Name,
-							Label:     t.Label,
-							Status:    t.Status,
-							ElapsedMS: t.Elapsed,
-							Summary:   t.Summary,
-						})
-					}
-				}
-			}
-		}
-	}
+	iterHistory := a.mergeIterationHistory(msg.Channel, msg.ChatID, out.IterationHistory)
 
 	appendCancelToolSnapshot := func(snapshot IterationToolSnapshot) {
 		if len(iterHistory) == 0 {
@@ -440,7 +402,13 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	}
 	if len(iterHistory) > 0 {
 		cancelMsg := llm.NewAssistantMessage("[interrupted]")
-		cancelMsg.DisplayOnly = true
+		// NOT DisplayOnly — this message carries Detail (iteration history)
+		// that GetAllMessages must return so ConvertMessagesToHistory can
+		// parse it. With DisplayOnly=true, GetAllMessages filters it out,
+		// the detail is lost, and ConvertMessagesToHistory falls back to
+		// ToolCalls-only mode — losing final content and merging turns.
+		// The "[interrupted]" content is handled by ConvertMessagesToHistory
+		// which renders it with empty content (isInterrupted check at line 276).
 		if iterationHistoryJSON != "" {
 			cancelMsg.Detail = iterationHistoryJSON
 		}
@@ -564,8 +532,9 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// Persist the final assistant reply
 	assistantMsg := llm.NewAssistantMessage(finalContent)
 	assistantMsg.ReasoningContent = out.ReasoningContent
-	if len(out.IterationHistory) > 0 {
-		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+	iterHistory := a.mergeIterationHistory(msg.Channel, msg.ChatID, out.IterationHistory)
+	if len(iterHistory) > 0 {
+		if jsonBytes, err := json.Marshal(iterHistory); err == nil {
 			assistantMsg.Detail = string(jsonBytes)
 		}
 	}

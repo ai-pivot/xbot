@@ -349,6 +349,11 @@ export interface ProgressSnapshot {
   subAgents: WebSubAgentProgress[]
   /** Token usage from the last LLM API response (mirrors protocol.TokenUsage). */
   tokenUsage: TokenUsageInfo | null
+  /** TurnID of the active turn (0 = untracked). Used by liveMessage to match
+   *  committed history messages from the same turn, preventing duplicate
+   *  rendering when IncrementalPersist commits mid-turn messages that reload
+   *  fetches as history while the live store still has the same data. */
+  turnID: number
 }
 
 /** Token usage info (mirrors protocol.TokenUsage). */
@@ -377,6 +382,7 @@ export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
   todos: [],
   subAgents: [],
   tokenUsage: null,
+  turnID: 0,
 }
 
 /** Chat message role. */

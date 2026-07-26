@@ -24,3 +24,20 @@ type UserMessageInjector interface {
 type SessionStateSender interface {
 	SendSessionState(ev protocol.SessionEvent)
 }
+
+// PreReplyNotifier is implemented by channels that require text-based ack
+// and progress messages before the final LLM reply. These channels lack
+// streaming/structured progress (e.g. Feishu patches the existing message
+// with progress content, QQ sends progress as separate messages).
+//
+// Channels with structured progress (Web, CLI via ProgressSender) do NOT
+// implement this — they receive progress through SendProgress events and
+// don't need ack messages.
+//
+// The agent uses this capability to decide whether to send ack messages and
+// text-based progress, keeping the core loop channel-agnostic. Individual
+// messages can still opt out via ReplyPolicyOptional metadata (e.g. Feishu
+// @all mentions, NapCat which doesn't support patching).
+type PreReplyNotifier interface {
+	PreReplyNotify() bool
+}

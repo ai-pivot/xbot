@@ -182,12 +182,20 @@ export function usePwaInstall() {
       window.location.reload()
       return
     }
-    const reg = await navigator.serviceWorker.getRegistration('/')
+    const reg = await navigator.serviceWorker.getRegistration('/').catch(() => null)
     if (reg?.waiting) {
       // A waiting SW exists — activate it and reload on controllerchange.
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
+      // Set up a timeout fallback: if controllerchange doesn't fire within 3s
+      // (e.g. SW crashed during activation), force a reload anyway so the
+      // user is never left hanging with a non-responsive button.
+      let reloaded = false
+      const doReload = () => {
+        if (reloaded) return
+        reloaded = true
         window.location.reload()
-      }, { once: true })
+      }
+      navigator.serviceWorker.addEventListener('controllerchange', doReload, { once: true })
+      setTimeout(doReload, 3000)
       reg.waiting.postMessage({ type: 'SKIP_WAITING' })
       return
     }
@@ -208,6 +216,40 @@ export function usePwaInstall() {
     // Force a hard reload (bypass browser HTTP cache too)
     window.location.reload()
   }
+
+  // Auto-detect SW updates (Apple-style: check on load + when tab regains focus).
+  // When a new SW activates via skipWaiting, set updateAvailable so the UI
+  // can prompt the user — no manual "check for updates" needed.
+  // Dedup: track the SW version (scriptURL) so we only notify once per version.
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+
+    let lastSwUrl = ''
+
+    const handler = () => {
+      navigator.serviceWorker.getRegistration('/').then((reg) => {
+        const swUrl = reg?.active?.scriptURL || ''
+        if (swUrl && swUrl !== lastSwUrl) {
+          lastSwUrl = swUrl
+          setUpdateAvailable(true)
+        }
+      }).catch(() => {})
+    }
+    navigator.serviceWorker.addEventListener('controllerchange', handler)
+
+    // Check for updates when the tab regains focus (user switches back).
+    const onFocus = () => {
+      navigator.serviceWorker.getRegistration('/').then((reg) => {
+        reg?.update().catch(() => {})
+      }).catch(() => {})
+    }
+    window.addEventListener('focus', onFocus)
+
+    return () => {
+      navigator.serviceWorker.removeEventListener('controllerchange', handler)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [])
 
   return {
     canInstall: !!promptEvent && !isInstalled,

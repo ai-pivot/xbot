@@ -76,11 +76,22 @@ export const LiveIteration = memo(function LiveIteration({
   const currentCompleted = progress.completedTools.filter(
     (t) => !t.iteration || t.iteration > maxCompletedIter,
   )
+  // Exclude tools already rendered in completed iterations (via TurnBody's
+  // iterationHistory). Stale activeTools from a completed iteration persist
+  // because the backend clears ActiveTools (nil→omitted by omitempty) so the
+  // frontend keeps the previous event's value. Without this, the same tool
+  // renders twice: once via iterationHistory, once via LiveIteration.
+  const completedIterToolKeys = new Set<string>()
+  for (const iter of progress.iterationHistory) {
+    for (const tool of iter.tools) {
+      completedIterToolKeys.add(`${tool.name}\x00${tool.label}`)
+    }
+  }
   const allTools = dedupTools([
     ...progress.streamingTools,
     ...progress.activeTools,
     ...currentCompleted,
-  ])
+  ]).filter((t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`))
   const hasTools = allTools.length > 0
   const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
   const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress

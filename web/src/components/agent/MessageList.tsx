@@ -143,24 +143,32 @@ export function MessageList({
         lastDeduped.eventSeq === liveMessage.eventSeq) {
       return deduped
     }
-    // Active turn: last persisted assistant is the in-flight streaming slot.
-    // Only treat it as the streaming slot if it's actually partial
-    // (isPartial=true). A committed (isPartial=false) assistant message must
-    // NOT be overridden by liveProgress — that wipes its content when a new
-    // turn starts after a notification turn.
-    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial && lastDeduped.isPartial) {
+    // When the last message is an assistant from the SAME turn as the live
+    // progress, pass liveProgress to it (don't append a separate liveMessage
+    // row). This covers two scenarios:
+    //  1. Locally-committed message (appendAssistant): matched by turnID
+    //  2. DB-committed message (IncrementalPersist → reload): matched by
+    //     turnID — the DB message carries turn_id (v50 migration), and the
+    //     live store's snapshot carries the same turn_id from structured events.
+    // Without this, both the committed message and liveMessage render —
+    // duplicating the same turn's content + tools.
+    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial &&
+        (lastDeduped.isPartial ||
+         (liveMessage.turnID > 0 && lastDeduped.turnID === liveMessage.turnID))) {
       return deduped
     }
     return [...deduped, liveMessage]
   }, [messages, liveMessage])
   // liveId points to the row that receives liveProgress. When the last
-  // history assistant is the active turn, it IS the streaming slot.
+  // history assistant is the streaming slot — in-flight partial (isPartial)
+  // or same turnID — liveProgress goes to it. Otherwise, liveMessage gets
+  // its own row.
+  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
   const liveId = liveMessage
-    ? (messages.length > 0 &&
-       messages[messages.length - 1].role === 'assistant' &&
-       liveMessage.isPartial &&
-       messages[messages.length - 1].isPartial
-        ? messages[messages.length - 1].id
+    ? (lastMsg && lastMsg.role === 'assistant' && liveMessage.isPartial &&
+       (lastMsg.isPartial ||
+        (liveMessage.turnID > 0 && lastMsg.turnID === liveMessage.turnID))
+        ? lastMsg.id
         : liveMessage.id)
     : null
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
@@ -510,6 +518,9 @@ export function MessageList({
                       transform: `translateY(${item.start}px)`,
                     }}
                     className="py-1.5"
+                    data-turn-id={row.turnID || undefined}
+                    data-message-id={row.id}
+                    data-role={row.role}
                   >
                     <MessageItem
                       message={row}

@@ -141,6 +141,7 @@ type HistoryMessage struct {
 	Role       string             `json:"role"`
 	Content    string             `json:"content"`
 	Timestamp  time.Time          `json:"timestamp"`
+	TurnID     uint64             `json:"turn_id,omitempty"`
 	Iterations []HistoryIteration `json:"iterations,omitempty"`
 }
 

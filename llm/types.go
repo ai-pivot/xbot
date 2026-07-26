@@ -28,6 +28,7 @@ type ChatMessage struct {
 	Detail           string     `json:"-"`                           // 工具结果详情（如 diff），不参与 LLM 上下文，仅持久化和前端展示
 	Timestamp        time.Time  `json:"-"`                           // 消息时间戳，不参与 LLM 上下文
 	DisplayOnly      bool       `json:"-"`                           // 仅展示消息（如 cron 结果），不参与 LLM 上下文
+	TurnID           uint64     `json:"-"`                           // Agent turn that produced this message (for dedup)
 
 	// CacheHint 提示 LLM 层此消息的缓存特性。
 	// "static" — 跨请求不变的静态内容（system prompt 基础模板等）

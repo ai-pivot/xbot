@@ -9,6 +9,7 @@
 - Config: `~/.xbot/config.json`, env var overrides
 - Subscriptions: `~/.xbot/config.json` (CLI) or DB `user_llm_subscriptions` (Server) — the single source of truth for LLM config
 - Pre-commit: gofmt → golangci-lint → go build → go test
+- **禁止 AI agent 自行重启 xbot server**：`kill`/`pkill` xbot 进程、`nohup` 重新启动 server 等操作会中断用户正在进行的会话。除非用户明确要求重启，否则只 build 二进制 + 前端部署，由用户自行重启。前端改动 `vite build` 后 `cp dist/*` 部署即可，无需重启 server。
 - Issue templates: `.github/ISSUE_TEMPLATE/` — YAML forms (`*.yml`) for web UI, Markdown templates (`*.md`) for CLI/AI use with `gh issue create --template`. AI agents MUST read and fill the `.md` templates (not `.yml`) since YAML Issue Forms are web-UI-only and cannot be submitted via `gh issue create --body`.
 
 ## Knowledge Files

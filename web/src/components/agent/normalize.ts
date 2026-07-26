@@ -144,5 +144,6 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     todos: (p.todos ?? []) as TodoItem[],
     subAgents: normalizeWebSubAgents(p.sub_agents),
     tokenUsage: null,
+    turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : 0,
   }
 }

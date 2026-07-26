@@ -27,7 +27,7 @@ import {
   type UploadResponse,
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
-import { dedupMessages } from '@/components/agent/progressStore'
+import { dedupMessages, assertIterationContinuity } from '@/components/agent/progressStore'
 import { getProgressGeneration, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
@@ -87,6 +87,8 @@ export interface UseChatMessagesResult {
   removeMessage: (id: string) => void
   /** Clear committed messages immediately, used for TUI-style /new reset. */
   clearMessages: () => void
+  /** Mark a destructive mutation — next reload discards live rows. */
+  markDestructiveMutation: () => void
 }
 
 /** File references resolved from an upload, ready to attach to a message. */
@@ -126,6 +128,12 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       ? (m.iterations.map(normalizeWebIteration).filter(Boolean) as WebIteration[])
       : []
 
+    // Detect non-sequential iteration numbers (e.g. 1 → 148 gap) — indicates
+    // lost iteration history, typically from a backend restart + cancel.
+    if (iterations.length > 1) {
+      assertIterationContinuity(iterations)
+    }
+
     const content = m.content ?? ''
 
     // Broader empty filter: skip assistant messages with no content AND no
@@ -145,7 +153,7 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       iterations,
       timestamp: m.timestamp ?? '',
       isPartial: false,
-      turnID: 0,
+      turnID: typeof m.turn_id === 'number' ? m.turn_id : 0,
       displayOnly: false,
       persisted: true,
       eventSeq: m.seq,
@@ -676,6 +684,11 @@ export function useChatMessages({
     setInitialProgress(null)
   }, [])
 
+  const markDestructiveMutation = useCallback(() => {
+    messageMutationGenRef.current += 1
+    destructiveMutationGenRef.current += 1
+  }, [])
+
   // ── SSE replay gap → reload message list ──
   // When SSE disconnects and reconnects, the existing seq-gap detection in
   // sseConnection calls restoreActiveProgress. If that recovery detects a real
@@ -704,6 +717,7 @@ export function useChatMessages({
     injectUserMessage,
     removeMessage,
     clearMessages,
+    markDestructiveMutation,
   }
 }
 
