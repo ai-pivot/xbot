@@ -743,6 +743,7 @@ export class ProgressStore {
       ...(this.current.todos.length > 0 ? { _todoDbg: this.current.todos.length } : {}),
       subAgents: this.current.subAgents,
       tokenUsage: this.current.tokenUsage,
+      turnID: this.current.turnID,
     }
     this.listeners.forEach((l) => l())
   }
