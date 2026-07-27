@@ -3104,14 +3104,13 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// initialization, and MCP configuration — all synchronous and collectively
 	// can take several seconds. Without this check, cancel during first-message
 	// setup would silently wait until Run's first iteration to take effect.
+	//
+	// Delegate to handleCancelledRun so the [interrupted] message is persisted
+	// with user_cancelled and progress_history — a bare OutboundMsg would leave
+	// the frontend without user_cancelled and without a committed message.
 	if ctx.Err() != nil {
 		log.Ctx(ctx).Info("processMessage: ctx cancelled during setup, skipping Run")
-		return &channel.OutboundMsg{
-			Channel:  msg.Channel,
-			ChatID:   msg.ChatID,
-			Content:  "",
-			Metadata: map[string]string{"cancelled": "true"},
-		}, nil
+		return a.handleCancelledRun(ctx, msg, &RunOutput{}, tenantSession)
 	}
 
 	out := Run(ctx, cfg)
