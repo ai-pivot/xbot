@@ -88,17 +88,17 @@ type cliModel struct {
 	userScrolledUp bool
 
 	// --- Agent state ---
-	agentTurnID       uint64                       // monotonically increasing turn counter
-	typing            bool                         // agent 是否正在回复
-	replyProcessed    bool                         // true = reply (or cancel ack) has been fully processed for current turn
-	typingStartTime   time.Time                    // 本次处理开始时间
-	inputReady        bool                         // 输入就绪状态（agent 回复期间禁止发送）
-	sendInboundFn     func(ch.InboundMsg) bool     // forward to server via backend.SendInbound
-	tempStatus        string                       // 临时状态提示（自动过期）
-	pendingCmds       []tea.Cmd                    // commands queued by helpers (auto-drained in Update)
-	shouldQuit        bool                         // Smart quit: quit after current operation completes
-	trimHistoryFn     func(int64) error             // /rewind: delete DB messages at or after message id
-	resetTokenStateFn func()                       // /rewind: clear stale prompt/completion token counts
+	agentTurnID       uint64                   // monotonically increasing turn counter
+	typing            bool                     // agent 是否正在回复
+	replyProcessed    bool                     // true = reply (or cancel ack) has been fully processed for current turn
+	typingStartTime   time.Time                // 本次处理开始时间
+	inputReady        bool                     // 输入就绪状态（agent 回复期间禁止发送）
+	sendInboundFn     func(ch.InboundMsg) bool // forward to server via backend.SendInbound
+	tempStatus        string                   // 临时状态提示（自动过期）
+	pendingCmds       []tea.Cmd                // commands queued by helpers (auto-drained in Update)
+	shouldQuit        bool                     // Smart quit: quit after current operation completes
+	trimHistoryFn     func(int64) error        // /rewind: delete DB messages at or after message id
+	resetTokenStateFn func()                   // /rewind: clear stale prompt/completion token counts
 
 	// --- Message queue (typing 期间排队的消息) ---
 	messageQueue   []queuedMsg // 排队等待发送的消息（绑定 chatID 防止跨 session 误投）

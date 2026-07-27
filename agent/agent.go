@@ -3435,10 +3435,10 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64, userMsgDB
 		TurnID: turnID,
 		TurnStart: &protocol.TurnStartInfo{
 			Trigger:       trigger,
-			Content:        content,
-			RequestID:      msg.RequestID,
-			SenderName:     msg.SenderName,
-			UserMessageID:  userMsgDBID,
+			Content:       content,
+			RequestID:     msg.RequestID,
+			SenderName:    msg.SenderName,
+			UserMessageID: userMsgDBID,
 		},
 	}
 
