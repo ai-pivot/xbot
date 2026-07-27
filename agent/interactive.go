@@ -259,69 +259,6 @@ func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *prot
 	}
 }
 
-// mergeIterationHistory combines run-local snapshots with global iteration
-// histories (restored after restart). After a mid-iteration backend restart,
-// run-local snapshots (s.iterationSnapshots) only contain post-restart
-// iterations; the global map (a.iterationHistories) has the complete set
-// restored from active_progress. Without this merge, only post-restart
-// iterations are persisted to DB Detail — pre-restart iterations are lost.
-func (a *Agent) mergeIterationHistory(channel, chatID string, local []IterationSnapshot) []IterationSnapshot {
-	key := qualifyChatID(channel, chatID)
-	histPtr, ok := a.iterationHistories.Load(key)
-	if !ok {
-		return local
-	}
-	global := *histPtr.(*[]protocol.ProgressEvent)
-	if len(global) <= len(local) {
-		// Global has no more data than local — normal case (no restart).
-		return local
-	}
-	// Restart case: global has more entries (pre-restart) than local (post-restart).
-	// Merge: prefer local (richer detail) for matching iterations, fill gaps from global.
-	localByIter := make(map[int]IterationSnapshot, len(local))
-	for _, s := range local {
-		localByIter[s.Iteration] = s
-	}
-	merged := make([]IterationSnapshot, 0, len(global))
-	for _, ev := range global {
-		if s, ok := localByIter[ev.Iteration]; ok {
-			merged = append(merged, s)
-		} else {
-			merged = append(merged, progressEventToSnapshot(ev))
-		}
-	}
-	return merged
-}
-
-// progressEventToSnapshot converts a protocol.ProgressEvent to an IterationSnapshot.
-// Used by mergeIterationHistory to fill gaps from global iteration histories.
-func progressEventToSnapshot(ev protocol.ProgressEvent) IterationSnapshot {
-	s := IterationSnapshot{
-		Iteration: ev.Iteration,
-		Content:   ev.Content,
-		Reasoning: ev.Reasoning,
-	}
-	for _, t := range ev.CompletedTools {
-		s.Tools = append(s.Tools, IterationToolSnapshot{
-			Name:      t.Name,
-			Label:     t.Label,
-			Status:    t.Status,
-			ElapsedMS: t.Elapsed,
-			Summary:   t.Summary,
-		})
-	}
-	for _, t := range ev.ActiveTools {
-		s.Tools = append(s.Tools, IterationToolSnapshot{
-			Name:      t.Name,
-			Label:     t.Label,
-			Status:    t.Status,
-			ElapsedMS: t.Elapsed,
-			Summary:   t.Summary,
-		})
-	}
-	return s
-}
-
 // attachIterationDelta records the previous iteration (if iteration advanced) and
 // attaches ONLY the newly completed iteration to the payload — not the full
 // cumulative history. The TUI appends this delta to its local iteration list.

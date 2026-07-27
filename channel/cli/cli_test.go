@@ -1838,6 +1838,66 @@ func TestConvert_MultipleTurns(t *testing.T) {
 	}
 }
 
+func TestConvert_AskUserDuplication(t *testing.T) {
+	// Bug: after AskUser, the first Run's iterations were persisted to a
+	// separate histMsg (empty content, Detail). Then mergeIterationHistory
+	// included those SAME iterations in the final reply's Detail.
+	// ConvertMessagesToHistory produced TWO messages with overlapping
+	// iterations → duplication.
+	//
+	// Fix: handleRunOutput uses out.IterationHistory directly (current Run only),
+	// not mergeIterationHistory. The final reply's Detail only has the second
+	// Run's iterations. The first Run's iterations are in the histMsg.
+	//
+	// Expected message sequence after fix:
+	//   user → assistant(Detail: iter 1 from first Run) [histMsg, content=""]
+	//        → user [AskUser answer]
+	//        → assistant(Detail: iter 2 from second Run) [final reply, content="done!"]
+	//
+	// No iteration overlap between the two assistant messages.
+
+	// First Run's iterations (before AskUser) — in histMsg
+	firstRunDetail := makeDetail([]iterSnapshot{
+		{Iteration: 1, Content: "think1", Tools: []iterToolSnap{{Name: "Read", Label: "Read f", Status: "done", ElapsedMS: 100}}},
+	})
+
+	// Second Run's iterations (after AskUser answer) — in final reply
+	// FIX: only the second Run's iterations, NOT merged with first Run
+	secondRunDetail := makeDetail([]iterSnapshot{
+		{Iteration: 1, Content: "think2", Tools: []iterToolSnap{{Name: "Shell", Label: "Shell ls", Status: "done", ElapsedMS: 200}}},
+	})
+
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "do something"},
+		// histMsg from WaitingUser: empty content, Detail has first Run's iterations
+		{Role: "assistant", Content: "", Detail: firstRunDetail},
+		// AskUser answer
+		{Role: "user", Content: "yes"},
+		// Final reply: Detail has ONLY second Run's iterations (no overlap)
+		{Role: "assistant", Content: "done!", Detail: secondRunDetail},
+	}
+	history := channel.ConvertMessagesToHistory(msgs)
+
+	// Verify: no iteration duplication across assistant messages
+	totalIters := 0
+	for _, h := range history {
+		if h.Role == "assistant" {
+			totalIters += len(h.Iterations)
+		}
+	}
+	if totalIters != 2 {
+		t.Errorf("expected 2 total iterations (1 per Run, no duplication), got %d", totalIters)
+		for i, h := range history {
+			if h.Role == "assistant" {
+				t.Logf("  assistant[%d]: %d iterations, content=%q", i, len(h.Iterations), h.Content)
+				for _, iter := range h.Iterations {
+					t.Logf("    iter %d: %d tools", iter.Iteration, len(iter.Tools))
+				}
+			}
+		}
+	}
+}
+
 func TestConvert_NoToolCalls(t *testing.T) {
 	// Simple conversation without tool calls
 	msgs := []llm.ChatMessage{
