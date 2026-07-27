@@ -78,7 +78,7 @@ func reconstructIterationsFromMessages(msgs []llm.ChatMessage) []IterationSnapsh
 					})
 				}
 			} else if m.Content != "" {
-				// Final reply (no tool_calls) — skip, it's handled by handleRunOutput.
+				// Final reply (no tool_calls) — flush previous iteration, skip this message.
 				flushIter()
 			}
 		}

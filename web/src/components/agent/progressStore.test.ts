@@ -649,8 +649,13 @@ describe('ProgressStore: iterationHistory preserved on stale events', () => {
   it('does NOT reset on stale PhaseDone from a previous turn (SSE replay)', () => {
     // BUG: switching to a busy session hydrates the store from initialProgress
     // (seq=8, activeTools=[Shell]). Then SSE replay delivers a stale PhaseDone
-    // (seq=5) from the PREVIOUS turn. The phase==='done' check fired BEFORE
-    // the eventSeq stale check, resetting the store and clearing activeTools.
+    // (seq=5) from the PREVIOUS turn.
+    //
+    // In production, useProgressStream intercepts phase==='done' BEFORE calling
+    // setStructuredTools — it only forwards {eventSeq, todos}, never phase.
+    // The stale guard in useProgressStream skips stale PhaseDone entirely.
+    // This test verifies the STORE level: a stale event (seq <= current) with
+    // todos only (no phase) does NOT reset the store.
     const store = new ProgressStore()
 
     // Hydrate from initialProgress (simulates history API active_progress)
@@ -664,12 +669,14 @@ describe('ProgressStore: iterationHistory preserved on stale events', () => {
     flushRaf()
     expect(store.getSnapshot().activeTools).toHaveLength(1)
 
-    // Stale PhaseDone from previous turn arrives via SSE replay (seq=5 < 8)
-    store.setStructuredTools({ eventSeq: 5, phase: 'done' })
+    // Stale event from previous turn arrives (seq=5 < 8).
+    // Production path: useProgressStream forwards only {eventSeq, todos} for
+    // PhaseDone — no phase field. The stale guard must preserve activeTools.
+    store.setStructuredTools({ eventSeq: 5, todos: [] })
     flushRaf()
 
     const snap = store.getSnapshot()
-    // Store must NOT be reset — the PhaseDone is from a stale (previous) turn
+    // Store must NOT be reset — the event is stale (previous turn)
     expect(snap.phase).toBe('tool_exec')
     expect(snap.activeTools).toHaveLength(1)
     expect(snap.activeTools[0].name).toBe('Shell')

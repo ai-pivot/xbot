@@ -446,6 +446,26 @@ function handleProgressMessage(
         // PhaseDone: the turn is over. Mark it so session(idle) doesn't
         // defensively finalize — the text event (normal or cancel ack) is
         // the authoritative finalizer.
+        //
+        // Stale PhaseDone guard: when switching to a busy session, the store
+        // is hydrated from initialProgress (e.g. seq=8 with activeTools).
+        // SSE replay may then deliver a stale PhaseDone (seq=5) from the
+        // PREVIOUS turn. Without this guard, phaseDoneRef is set to true and
+        // agent-idle is dispatched — clearing the busy state and making the
+        // running tool disappear. Skip stale PhaseDone entirely (only
+        // preserve todos if present).
+        const seq = typeof p.seq === 'number' ? p.seq : undefined
+        if (seq !== undefined && seq > 0 && seq <= store.getSnapshot().eventSeq) {
+          // Stale PhaseDone — preserve todos only, skip everything else.
+          if (Array.isArray(p.todos) && p.todos.length > 0) {
+            store.setStructuredTools({ eventSeq: seq, todos: p.todos.map((t) => ({
+              id: typeof t.id === 'number' ? t.id : 0,
+              text: typeof t.text === 'string' ? t.text : '',
+              done: Boolean(t.done),
+            })) })
+          }
+          return
+        }
         if (phaseDoneRef) phaseDoneRef.current = true
         // Dispatch agent-idle so the sidebar clears the busy indicator.
         window.dispatchEvent(new CustomEvent('agent-idle', {
