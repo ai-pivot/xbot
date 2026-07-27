@@ -62,7 +62,7 @@ interface UseProgressStreamOptions {
   /** Called when a bg notification / cron triggers a new turn — displays the injected user message. */
   onInjectUserMessage?: (content: string, turnID: number, isNotification: boolean) => void
   /** Called when turn_started arrives — the frontend should enter busy mode. */
-  onTurnStarted?: (turnID: number, trigger: string, userMessageID?: number) => void
+  onTurnStarted?: (turnID: number, trigger: string, userMessageID?: number, requestID?: string) => void
   /** Called when the server signals HistoryCompacted (reset + reload). */
   onHistoryCompacted?: () => void
   /** Called when the server signals a slash-command session reset (/new). */
@@ -434,7 +434,7 @@ function handleProgressMessage(
         // notification/resume turns where session(busy) may be lost or delayed
         // (SSE coalescing) — without this, the input box stays in send mode.
         if (p.turn_id) {
-          turnStartedRef?.current?.(p.turn_id, ts?.trigger ?? 'user', ts?.user_message_id)
+          turnStartedRef?.current?.(p.turn_id, ts?.trigger ?? 'user', ts?.user_message_id, ts?.request_id)
           store.lastTurnID = p.turn_id
         }
         // Reset finalize guards for the new turn.

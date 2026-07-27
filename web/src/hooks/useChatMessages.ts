@@ -89,8 +89,10 @@ export interface UseChatMessagesResult {
   clearMessages: () => void
   /** Mark a destructive mutation — next reload discards live rows. */
   markDestructiveMutation: () => void
-  /** Stamp the DB message id onto the last optimistic user message (from turn_started). */
-  stampUserMessageID: (dbID: number) => void
+  /** Stamp the DB message id onto an optimistic user message (from turn_started).
+   *  Matches by requestID (user-typed) or turnID (notification) to avoid race
+   *  conditions when multiple turns overlap. */
+  stampUserMessageID: (dbID: number, turnID?: number, requestID?: string) => void
 }
 
 /** File references resolved from an upload, ready to attach to a message. */
@@ -700,18 +702,38 @@ export function useChatMessages({
     destructiveMutationGenRef.current += 1
   }, [])
 
-  // Stamp the DB message id onto the last optimistic user message so rewind
-  // works without a page refresh. Called from turn_started after the backend
+  // Stamp the DB message id onto an optimistic user message so rewind works
+  // without a page refresh. Called from turn_started after the backend
   // persists the user message.
-  const stampUserMessageID = useCallback((dbID: number) => {
+  //
+  // Matching strategy (avoids race conditions when turns overlap):
+  // 1. requestID: exact match for user-typed messages (optimistic msg has
+  //    requestID set, TurnStartInfo carries the same value).
+  // 2. turnID > 0: exact match for notification messages (injectUserMessage
+  //    already stamped turnID on the message before stampUserMessageID runs).
+  // 3. Fallback: first user message without dbID (safety net for edge cases).
+  //
+  // Also stamps turnID onto the matched message (optimistic msgs start at 0).
+  const stampUserMessageID = useCallback((dbID: number, turnID?: number, requestID?: string) => {
     messageMutationGenRef.current += 1
     setMessages((prev) => {
-      // Find the last user message that doesn't yet have a dbID
-      const idx = [...prev].reverse().findIndex((m) => m.role === 'user' && !m.dbID)
+      let idx = -1
+      // Priority 1: match by requestID (user-typed messages)
+      if (requestID) {
+        idx = prev.findIndex((m) => m.role === 'user' && !m.dbID && m.requestID === requestID)
+      }
+      // Priority 2: match by turnID (notification messages — injectUserMessage
+      // already set turnID)
+      if (idx === -1 && turnID != null && turnID > 0) {
+        idx = prev.findIndex((m) => m.role === 'user' && !m.dbID && m.turnID === turnID)
+      }
+      // Fallback: first user message without dbID
+      if (idx === -1) {
+        idx = prev.findIndex((m) => m.role === 'user' && !m.dbID)
+      }
       if (idx === -1) return prev
-      const realIdx = prev.length - 1 - idx
       const next = [...prev]
-      next[realIdx] = { ...next[realIdx], dbID: dbID, id: `db-${dbID}` }
+      next[idx] = { ...next[idx], dbID, id: `db-${dbID}`, turnID: turnID ?? next[idx].turnID }
       messagesRef.current = next
       return next
     })
