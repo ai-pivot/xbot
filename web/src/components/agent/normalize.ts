@@ -122,16 +122,49 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     return { ...EMPTY_PROGRESS_SNAPSHOT, todos }
   }
   const active = normalizeWebTools(p.active_tools)
-  const completed = normalizeWebTools(p.completed_tools)
+  let completed = normalizeWebTools(p.completed_tools)
   const iterHistory = (p.iteration_history ?? [])
     .map(normalizeWebIteration)
     .filter(Boolean) as WebIteration[]
+
+  // ── Iteration boundary guard ──
+  // When GetActiveProgress is called after snapshotCompletedIteration but
+  // before prepareForIteration, the snapshot carries the PREVIOUS iteration's
+  // Content and CompletedTools (not yet cleared). If activeTools is empty but
+  // completedTools is non-empty, the snapshot is at this boundary.
+  //
+  // Without this guard, LiveIteration renders the stale Content and
+  // CompletedTools as if they belong to the current (in-flight) iteration,
+  // duplicating them alongside the iterationHistory entry.
+  //
+  // Fix: if iterationHistory already has an entry for this iteration, the
+  // stale data is a duplicate — clear it. If not, add a synthetic entry so
+  // TurnBody renders it, then clear from the live snapshot.
+  let content = p.content ?? ''
+  if (active.length === 0 && completed.length > 0) {
+    const snapshotIter = typeof p.iteration === 'number' ? p.iteration : 0
+    const hasIterInHistory = iterHistory.some((i) => i.iteration === snapshotIter)
+    if (!hasIterInHistory) {
+      // Not in iterationHistory — add a synthetic entry so the data isn't lost
+      iterHistory.push({
+        iteration: snapshotIter,
+        thinking: content,
+        reasoning: '',
+        tools: completed,
+        toolCount: completed.length,
+      })
+    }
+    // Clear from live snapshot — they belong to the completed iteration
+    content = ''
+    completed = []
+  }
+
   return {
     eventSeq: typeof p.seq === 'number' ? p.seq : 0,
     phase: p.phase,
     iteration: typeof p.iteration === 'number' ? p.iteration : 0,
     streamContent: p.stream_content ?? '',
-    content: p.content ?? '',
+    content,
     reasoningStreamContent: '',
     streaming: true,
     activeTools: active,
