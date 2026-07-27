@@ -273,7 +273,9 @@ func (a *Agent) attachIterationDelta(key string, nextIteration int, payload *pro
 		return
 	}
 	delta := a.recordIterationSnapshot(key, func(prev *protocol.ProgressEvent) bool {
-		return nextIteration > prev.Iteration && prev.Iteration >= 0
+		// 1-based: prev.Iteration=0 means "uninitialized" (first event hasn't
+		// been stored yet). nextIteration >= 1 is the first real iteration.
+		return nextIteration > prev.Iteration && prev.Iteration >= 1
 	})
 	if delta != nil {
 		payload.IterationHistory = []protocol.ProgressEvent{*delta}

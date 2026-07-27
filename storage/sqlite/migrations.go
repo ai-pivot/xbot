@@ -288,6 +288,16 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v51: upgrade Detail JSON iteration numbers from 0-based to 1-based.
+	// The engine's Run loop now uses 1-based iteration numbers (first = 1).
+	// Old Detail JSON had 0-based numbers (first = 0). This migration rewrites
+	// all Detail JSON to be 1-based, ensuring consistency across old and new data.
+	if from < 51 {
+		if err := migrateV50ToV51(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v51: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -1969,6 +1979,81 @@ func migrateV49ToV50(conn *sql.DB) error {
 		return fmt.Errorf("migrate v50 update version: %w", err)
 	}
 	log.Info("Database migrated to v50: added turn_id column to session_messages")
+	return nil
+}
+
+// migrateV50ToV51 upgrades Detail JSON iteration numbers from 0-based to 1-based.
+//
+// Before v51, the engine's Run loop used 0-based iteration numbers (first = 0).
+// Detail JSON in session_messages stored these as-is: [{"iteration":0,...}, {"iteration":1,...}].
+// After v51, the engine uses 1-based numbers (first = 1). Old Detail JSON must be
+// rewritten to match, otherwise ConvertMessagesToHistory renders old data with
+// off-by-one iteration numbers.
+//
+// Strategy: Go-based row-by-row rewrite (safer than SQL JSON ops). For each
+// Detail JSON, force iteration numbers to be 1-based sequential (1, 2, 3, ...).
+// This is safe because:
+//   - Well-formed Detail JSON already has sequential numbers — we just shift them.
+//   - Malformed Detail (non-sequential) gets normalized to sequential.
+//   - Empty/single-entry Detail is trivially correct.
+func migrateV50ToV51(conn *sql.DB) error {
+	type iterSnap struct {
+		Iteration int             `json:"iteration"`
+		Content   string          `json:"content,omitempty"`
+		Reasoning string          `json:"reasoning,omitempty"`
+		Tools     json.RawMessage `json:"tools"`
+	}
+
+	rows, err := conn.Query("SELECT id, detail FROM session_messages WHERE detail IS NOT NULL AND detail != ''")
+	if err != nil {
+		return fmt.Errorf("migrate v51 query: %w", err)
+	}
+	defer rows.Close()
+
+	type update struct {
+		id     int64
+		detail string
+	}
+	var updates []update
+
+	for rows.Next() {
+		var id int64
+		var detail string
+		if err := rows.Scan(&id, &detail); err != nil {
+			continue
+		}
+		var snaps []iterSnap
+		if err := json.Unmarshal([]byte(detail), &snaps); err != nil {
+			continue // skip malformed JSON
+		}
+		changed := false
+		for i := range snaps {
+			if snaps[i].Iteration != i+1 {
+				changed = true
+			}
+			snaps[i].Iteration = i + 1 // force 1-based sequential
+		}
+		if !changed {
+			continue
+		}
+		data, err := json.Marshal(snaps)
+		if err != nil {
+			continue
+		}
+		updates = append(updates, update{id: id, detail: string(data)})
+	}
+	rows.Close()
+
+	for _, u := range updates {
+		if _, err := conn.Exec("UPDATE session_messages SET detail = ? WHERE id = ?", u.detail, u.id); err != nil {
+			log.WithError(err).WithField("id", u.id).Warn("migrate v51: failed to update detail JSON")
+		}
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 51"); err != nil {
+		return fmt.Errorf("migrate v51 update version: %w", err)
+	}
+	log.WithField("updated_rows", len(updates)).Info("Database migrated to v51: upgraded Detail JSON iteration numbers to 1-based")
 	return nil
 }
 

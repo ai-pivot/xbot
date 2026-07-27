@@ -462,6 +462,28 @@ ORDER BY id DESC LIMIT 1
 	return 0, nil
 }
 
+// GetMaxTurnID returns the highest turn_id for a tenant's messages.
+// Used by chatProcessLoop to restore the per-session turn ID counter
+// after a server restart, ensuring turn_id remains globally monotonic.
+// Returns 0 if no messages have a turn_id (new or legacy sessions).
+func (s *SessionService) GetMaxTurnID(tenantID int64) (uint64, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+	var maxTurnID sql.NullInt64
+	err = conn.QueryRow(
+		"SELECT MAX(turn_id) FROM session_messages WHERE tenant_id = ?", tenantID,
+	).Scan(&maxTurnID)
+	if err != nil {
+		return 0, fmt.Errorf("get max turn_id: %w", err)
+	}
+	if maxTurnID.Valid {
+		return uint64(maxTurnID.Int64), nil
+	}
+	return 0, nil
+}
+
 // scanMessages scans message rows from a query result
 func (s *SessionService) scanMessages(rows *sql.Rows) ([]llm.ChatMessage, error) {
 	var messages []llm.ChatMessage

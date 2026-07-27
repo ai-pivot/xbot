@@ -545,7 +545,13 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		"chat_id":  s.cfg.ChatID,
 		"max_iter": s.maxIter,
 	}).Debug("Run loop starting")
-	for i := 0; i < s.maxIter; i++ {
+	// Iteration numbers are 1-based: the first iteration is 1, not 0.
+	// This is the single source of truth — every downstream consumer
+	// (Detail JSON, SSE progress events, snapshotCompletedIteration,
+	// ConvertMessagesToHistory, reconstructIterationsFromMessages) uses
+	// the same 1-based numbering. 0 is reserved for "uninitialized"
+	// (structuredProgress.Iteration starts at 0 before beginIteration(1)).
+	for i := 1; i <= s.maxIter; i++ {
 		log.Ctx(ctx).WithField("iteration", i).Debug("Run loop iteration start")
 		// Check for cancellation before starting each iteration
 		select {

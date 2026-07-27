@@ -425,7 +425,7 @@ function handleProgressMessage(
           store.resetStreamingState()
         } else {
           store.reset()
-          store.lastIter = -1
+          store.lastIter = 0
         }
         if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
           injectRef?.current?.(ts.content, p.turn_id, ts.trigger === 'notification')
@@ -526,8 +526,9 @@ function handleProgressMessage(
       }
 
       // ── Consistency check: iteration must advance by exactly 1 within a turn ──
-      if (iteration !== undefined && iteration >= 0) {
-        if (store.lastIter >= 0 && iteration < store.lastIter) {
+      // Iterations are 1-based: 0 = uninitialized, 1 = first iteration.
+      if (iteration !== undefined && iteration >= 1) {
+        if (store.lastIter >= 1 && iteration < store.lastIter) {
           console.error('[ITER_ID_INVARIANT_VIOLATION] iteration went backwards', {
             prev: store.lastIter,
             next: iteration,
@@ -535,7 +536,7 @@ function handleProgressMessage(
             chatID: p.chat_id,
             phase,
           })
-        } else if (store.lastIter >= 0 && iteration !== store.lastIter + 1 && iteration > store.lastIter) {
+        } else if (store.lastIter >= 1 && iteration !== store.lastIter + 1 && iteration > store.lastIter) {
           console.warn('[ITER_ID_GAP] iteration jumped — intermediate iteration(s) may have been lost', {
             prev: store.lastIter,
             next: iteration,

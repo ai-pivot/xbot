@@ -382,7 +382,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 					// ChatMessage but would be lost without wrapping it in an iteration.
 					if m.ReasoningContent != "" {
 						hm.Iterations = []HistoryIteration{{
-							Iteration: 0,
+							Iteration: 1, // 1-based, consistent with engine
 							Reasoning: m.ReasoningContent,
 						}}
 					}

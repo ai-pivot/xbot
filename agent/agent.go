@@ -2570,6 +2570,24 @@ func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
 // After each turn completes (response sent), drains pending bg notifications
 // at a safe point where injectCLIUserMessage cannot race with the turn's reply.
 func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan bus.InboundMessage, ss *bgSessionState) {
+	// Restore the per-session turn ID counter from DB so it stays globally
+	// monotonic across server restarts. Without this, the counter resets to 0
+	// and the next turn gets turn_id=1, colliding with a pre-restart turn.
+	if a.multiSession != nil {
+		parts := strings.SplitN(chatKey, ":", 2)
+		if len(parts) == 2 {
+			if sess, err := a.multiSession.GetOrCreateSession(parts[0], parts[1]); err == nil {
+				if maxTurnID, err := sess.GetMaxTurnID(); err == nil && maxTurnID > 0 {
+					ss.turnIDSeq.Store(maxTurnID)
+					log.WithFields(log.Fields{
+						"chat_key":    chatKey,
+						"max_turn_id": maxTurnID,
+					}).Info("Restored turn ID counter from DB")
+				}
+			}
+		}
+	}
+
 	var idleTimer *time.Timer
 	defer func() {
 		if idleTimer != nil {

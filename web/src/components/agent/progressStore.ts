@@ -282,8 +282,9 @@ export class ProgressStore {
   private disposed = false
   /** Tracks the last seen TurnID for monotonicity assertions. 0 = untracked. */
   lastTurnID = 0
-  /** Tracks the last seen iteration number within the current turn for continuity assertions. */
-  lastIter = -1
+  /** Tracks the last seen iteration number within the current turn for continuity assertions.
+   *  0 = uninitialized (no iteration seen yet). Iterations are 1-based. */
+  lastIter = 0
 
   /** Subscribe to snapshot changes; returns an unsubscribe function. */
   subscribe = (listener: Listener): (() => void) => {
@@ -317,7 +318,7 @@ export class ProgressStore {
     // window where liveMessage is still non-null after reset.
     this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT, todos }
     this.dirty = false
-    this.lastIter = -1
+    this.lastIter = 0
     // lastTurnID is NOT reset here — it tracks across turns for monotonicity.
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
@@ -334,7 +335,7 @@ export class ProgressStore {
     this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
     this.dirty = false
     this.lastTurnID = 0
-    this.lastIter = -1
+    this.lastIter = 0
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null
@@ -529,7 +530,7 @@ export class ProgressStore {
       // the installed snapshot and replayed delta can overlap, and local
       // snapshotting would render the same tool group twice.
       if (opts.iteration !== undefined && opts.iteration > draft.lastIter) {
-        const hadPreviousIteration = draft.lastIter >= 0
+        const hadPreviousIteration = draft.lastIter >= 1
         draft.lastIter = opts.iteration
         // Clear stream/structured fields from the previous iteration so the
         // new iteration starts clean. The completed iteration itself arrives
@@ -691,7 +692,7 @@ export class ProgressStore {
         }
         // Recompute lastIter from merged history so the delta push protocol
         // continues correctly (next SSE event knows which iterations exist).
-        const maxIter = draft.iterationHistory.reduce((max, i) => Math.max(max, i.iteration), -1)
+        const maxIter = draft.iterationHistory.reduce((max, i) => Math.max(max, i.iteration), 0)
         if (maxIter > draft.lastIter) draft.lastIter = maxIter
       }
       // Assign remaining fields, but NEVER downgrade client-side tracking:

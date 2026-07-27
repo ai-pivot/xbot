@@ -118,8 +118,16 @@ func (s *TenantSession) SaveContextTokens(promptTokens int64) error {
 
 // GetLastContextTokens returns the context_tokens of the most recent user message.
 // Used by rewind to restore accurate token state.
+// GetLastContextTokens returns the context_tokens from the most recent
+// non-display-only user message, used to restore the token tracker.
 func (s *TenantSession) GetLastContextTokens() (int64, error) {
 	return s.sessionSvc.GetLastUserMessageContextTokens(s.tenantID)
+}
+
+// GetMaxTurnID returns the highest turn_id for this tenant's messages.
+// Used to restore the per-session turn ID counter after a server restart.
+func (s *TenantSession) GetMaxTurnID() (uint64, error) {
+	return s.sessionSvc.GetMaxTurnID(s.tenantID)
 }
 
 // MemoryService returns the underlying SQLite memory service for this tenant.

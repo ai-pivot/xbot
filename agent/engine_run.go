@@ -392,9 +392,10 @@ func (s *runState) buildOutput(ob *channel.OutboundMsg) *RunOutput {
 // beginIteration updates state at the start of each loop iteration.
 func (s *runState) beginIteration(i int) {
 	s.localIterCount++
-	// Consistency check: iteration number must be strictly sequential (0, 1, 2, ...).
-	// A gap or regression indicates a bug in the Run loop or retry logic.
-	if s.structuredProgress != nil && s.structuredProgress.Iteration >= 0 && i > 0 {
+	// Consistency check: iteration must be strictly sequential (1, 2, 3, ...).
+	// 1-based: the first iteration is 1. structuredProgress.Iteration starts
+	// at 0 (uninitialized) before beginIteration(1) sets it to 1.
+	if s.structuredProgress != nil && s.structuredProgress.Iteration >= 1 && i > 1 {
 		if i < s.structuredProgress.Iteration {
 			log.WithFields(log.Fields{
 				"chat_id":    s.cfg.ChatID,
@@ -444,7 +445,7 @@ func (s *runState) beginIteration(i int) {
 // notifyThinking sends the thinking progress notification.
 func (s *runState) notifyThinking(iteration int) {
 	if s.autoNotify {
-		if iteration == 0 {
+		if iteration == 1 {
 			s.notifyProgress("💭")
 		} else {
 			s.notifyProgress("> 💭 思考中...")

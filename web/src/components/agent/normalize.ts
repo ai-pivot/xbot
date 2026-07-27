@@ -161,7 +161,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     iterationHistory: iterHistory,
     streamingTools: [],
     genuiContent: '',
-    lastIter: -1, // -1 = no iteration seen yet; allows iteration 0 to be accepted
+    lastIter: 0, // 0 = uninitialized; iterations are 1-based
     lastReasoning: '',
     todos: (p.todos ?? []) as TodoItem[],
     subAgents: normalizeWebSubAgents(p.sub_agents),
