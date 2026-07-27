@@ -24,25 +24,6 @@ const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
  * onSendSuccess (which fires after the POST resolves, leaving a window).
  */
 
-interface SSEMockState {
-  __sseListeners: Record<string, Set<(ev: MessageEvent) => void>>
-  __sseSeq: number
-}
-
-let seqCounter = 0
-
-async function emitSSE(page: Page, type: string, data: Record<string, unknown>) {
-  await page.evaluate(({ type, data, seq }) => {
-    const w = window as unknown as SSEMockState
-    const listeners = w.__sseListeners
-    if (!listeners) return
-    const handlers = listeners[type] as Set<(ev: MessageEvent) => void> | undefined
-    if (!handlers) return
-    const ev = new MessageEvent(type, { data: JSON.stringify({ ...data, seq }) })
-    handlers.forEach((h) => h(ev))
-  }, { type, data, seq: ++seqCounter })
-}
-
 async function setupMock(page: Page) {
   await page.route('**/api/settings', (r) => r.fulfill({ json: { ok: true, data: {} } }))
   await page.route('**/api/auth/config', (r) => r.fulfill({ json: { ok: true, data: { invite_only: false } } }))
@@ -86,25 +67,18 @@ async function getInputMode(page: Page): Promise<{ hasSend: boolean; hasCancel: 
 }
 
 test.describe('Optimistic busy on message send', () => {
-  test.beforeEach(() => { seqCounter = 0 })
-
   test('input enters busy mode immediately after sending a message (before SSE busy)', async ({ browser }) => {
     const page = await browser.newPage()
 
     await page.addInitScript(() => {
-      const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
-      const w = window as unknown as SSEMockState
-      w.__sseListeners = listeners
       class MockEventSource {
         readyState = 1
         onopen: ((ev: Event) => void) | null = null
         onerror: ((ev: Event) => void) | null = null
         constructor(public url: string) { setTimeout(() => this.onopen?.(new Event('open')), 0) }
-        addEventListener(type: string, handler: (ev: MessageEvent) => void) {
-          if (!listeners[type]) listeners[type] = new Set(); listeners[type].add(handler)
-        }
-        removeEventListener(type: string, handler: (ev: MessageEvent) => void) { listeners[type]?.delete(handler) }
-        close() { for (const key of Object.keys(listeners)) listeners[key].clear() }
+        addEventListener() {}
+        removeEventListener() {}
+        close() {}
       }
       ;(window as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource
     })
