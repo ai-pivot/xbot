@@ -89,6 +89,8 @@ export interface UseChatMessagesResult {
   clearMessages: () => void
   /** Mark a destructive mutation — next reload discards live rows. */
   markDestructiveMutation: () => void
+  /** Stamp the DB message id onto the last optimistic user message (from turn_started). */
+  stampUserMessageID: (dbID: number) => void
 }
 
 /** File references resolved from an upload, ready to attach to a message. */
