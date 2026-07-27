@@ -325,8 +325,7 @@ export function useProgressStream({
 
 function hasVisibleProgress(snap: ProgressSnapshot): boolean {
   return Boolean(
-    snap.streaming ||
-      snap.streamContent ||
+    snap.streamContent ||
       snap.content ||
       snap.reasoningStreamContent ||
       snap.activeTools.length ||
@@ -426,7 +425,7 @@ function handleProgressMessage(
           store.resetStreamingState()
         } else {
           store.reset()
-          store.lastIter = -1
+          store.lastIter = 0
         }
         if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
           injectRef?.current?.(ts.content, p.turn_id, ts.trigger === 'notification')
@@ -447,6 +446,26 @@ function handleProgressMessage(
         // PhaseDone: the turn is over. Mark it so session(idle) doesn't
         // defensively finalize — the text event (normal or cancel ack) is
         // the authoritative finalizer.
+        //
+        // Stale PhaseDone guard: when switching to a busy session, the store
+        // is hydrated from initialProgress (e.g. seq=8 with activeTools).
+        // SSE replay may then deliver a stale PhaseDone (seq=5) from the
+        // PREVIOUS turn. Without this guard, phaseDoneRef is set to true and
+        // agent-idle is dispatched — clearing the busy state and making the
+        // running tool disappear. Skip stale PhaseDone entirely (only
+        // preserve todos if present).
+        const seq = typeof p.seq === 'number' ? p.seq : undefined
+        if (seq !== undefined && seq > 0 && seq <= store.getSnapshot().eventSeq) {
+          // Stale PhaseDone — preserve todos only, skip everything else.
+          if (Array.isArray(p.todos) && p.todos.length > 0) {
+            store.setStructuredTools({ eventSeq: seq, todos: p.todos.map((t) => ({
+              id: typeof t.id === 'number' ? t.id : 0,
+              text: typeof t.text === 'string' ? t.text : '',
+              done: Boolean(t.done),
+            })) })
+          }
+          return
+        }
         if (phaseDoneRef) phaseDoneRef.current = true
         // Dispatch agent-idle so the sidebar clears the busy indicator.
         window.dispatchEvent(new CustomEvent('agent-idle', {
@@ -527,8 +546,9 @@ function handleProgressMessage(
       }
 
       // ── Consistency check: iteration must advance by exactly 1 within a turn ──
-      if (iteration !== undefined && iteration >= 0) {
-        if (store.lastIter >= 0 && iteration < store.lastIter) {
+      // Iterations are 1-based: 0 = uninitialized, 1 = first iteration.
+      if (iteration !== undefined && iteration >= 1) {
+        if (store.lastIter >= 1 && iteration < store.lastIter) {
           console.error('[ITER_ID_INVARIANT_VIOLATION] iteration went backwards', {
             prev: store.lastIter,
             next: iteration,
@@ -536,7 +556,7 @@ function handleProgressMessage(
             chatID: p.chat_id,
             phase,
           })
-        } else if (store.lastIter >= 0 && iteration !== store.lastIter + 1 && iteration > store.lastIter) {
+        } else if (store.lastIter >= 1 && iteration !== store.lastIter + 1 && iteration > store.lastIter) {
           console.warn('[ITER_ID_GAP] iteration jumped — intermediate iteration(s) may have been lost', {
             prev: store.lastIter,
             next: iteration,

@@ -336,4 +336,55 @@ test.describe('TODO sync', () => {
     expect(await hasTodoText(page, 'PersistMe')).toBe(true)
     await page.close()
   })
+
+  test('todos survive text event (full turn lifecycle)', async ({ browser }) => {
+    const page = await browser.newPage()
+    await page.addInitScript(() => {
+      const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+      const w = window as unknown as SSEMockState
+      w.__sseListeners = listeners
+      class M { readyState=1; onopen:((e:Event)=>void)|null=null; onerror:((e:Event)=>void)|null=null; constructor(public url:string){setTimeout(()=>this.onopen?.(new Event('open')),0)} addEventListener(t:string,h:(e:MessageEvent)=>void){if(!listeners[t])listeners[t]=new Set();listeners[t].add(h)} removeEventListener(){} close(){} }
+      ;(window as unknown as { EventSource: typeof M }).EventSource = M
+    })
+    await setupMock(page)
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+    await page.waitForTimeout(2000)
+
+    // Full turn: busy → thinking(iter=1) with todos → PhaseDone with todos → text → idle
+    await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: { phase: 'thinking', iteration: 1, seq: 1, turn_id: 1, chat_id: 'web:chat-1',
+        todos: [{ id: 1, text: 'Task A', done: false }, { id: 2, text: 'Task B', done: true }] },
+    })
+    await page.waitForTimeout(300)
+    expect(await hasTodoText(page, 'Task A')).toBe(true)
+
+    // PhaseDone with updated todos
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: { phase: 'done', iteration: 1, seq: 2, turn_id: 1, chat_id: 'web:chat-1',
+        todos: [{ id: 1, text: 'Task A', done: true }, { id: 2, text: 'Task B', done: true }] },
+    })
+    await page.waitForTimeout(200)
+
+    // text event (final reply) — this triggers onAssistantComplete → store.reset()
+    await emitSSE(page, 'text', {
+      type: 'text', content: 'Done!', seq: 3, turn_id: 1, chat_id: 'chat-1',
+      progress_history: JSON.stringify([]),
+    })
+    await page.waitForTimeout(200)
+
+    // session(idle)
+    await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
+    await page.waitForTimeout(500)
+
+    // THE BUG: todos disappear after text event + idle
+    expect(await hasTodoText(page, 'Task A')).toBe(true)
+    expect(await hasTodoText(page, 'Task B')).toBe(true)
+    await page.close()
+  })
 })

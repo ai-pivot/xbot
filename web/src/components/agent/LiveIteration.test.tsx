@@ -134,4 +134,51 @@ describe('LiveIteration — typewriter cursor', () => {
     // Should render nothing meaningful (empty)
     expect(container.querySelector('.streaming-content')).toBeNull()
   })
+
+  it('does NOT filter out running activeTools that share name+label with a completed iteration', () => {
+    // BUG: LiveIteration filtered ALL tools (including activeTools) by name+label
+    // against iterationHistory. If the same tool (e.g. Shell) appeared in both a
+    // completed iteration and the current running iteration, the running tool was
+    // filtered out — making it disappear from the UI.
+    const snapshot = makeSnapshot({
+      streaming: true,
+      phase: 'tool_exec',
+      iteration: 2,
+      // Iteration 1 is completed — has Shell(done)
+      iterationHistory: [{
+        iteration: 1,
+        thinking: '',
+        reasoning: '',
+        tools: [{
+          name: 'Shell',
+          label: 'Shell echo hello',
+          status: 'done',
+          elapsedMs: 100,
+          summary: '',
+          detail: '',
+          args: '',
+          toolHints: '',
+        }],
+        toolCount: 1,
+      }],
+      // Current iteration 2 — Shell is running (same name+label!)
+      activeTools: [{
+        name: 'Shell',
+        label: 'Shell echo hello',
+        status: 'running',
+        elapsedMs: 0,
+        summary: '',
+        detail: '',
+        args: '',
+        toolHints: '',
+        iteration: 2,
+      }],
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
+    // The running Shell must NOT be filtered out — it renders with a SweepText
+    // (the animated "running" indicator). Check for the tool name + sweep.
+    expect(container.textContent).toContain('Shell')
+    // SweepText is shown when a tool is running (status === 'running')
+    expect(container.querySelector('.sweep-text')).not.toBeNull()
+  })
 })

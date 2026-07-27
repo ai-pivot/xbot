@@ -133,7 +133,7 @@ export const EMPTY_LIVE_PROGRESS: LiveProgress = {
   iterationHistory: [],
   streamingTools: [],
   genuiContent: '',
-  lastIter: -1,
+  lastIter: 0,
   lastReasoning: '',
   todos: [],
   subAgents: [],

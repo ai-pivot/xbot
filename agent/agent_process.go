@@ -360,8 +360,23 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	// Save iteration history as an assistant message with detail,
 	// so web UI can restore it on page refresh without showing "loading".
 	// Serialize iteration history once and reuse to avoid duplicate JSON marshal
+	// Use out.IterationHistory directly (run-local snapshots from THIS Run only) —
+	// see handleRunOutput for why mergeIterationHistory must not be used here.
 	var iterationHistoryJSON string
-	iterHistory := a.mergeIterationHistory(msg.Channel, msg.ChatID, out.IterationHistory)
+	iterHistory := out.IterationHistory
+
+	// Restart recovery: after a graceful-shutdown restart, the resumed Run's
+	// iterationSnapshots is empty (the pre-restart iterations were in-memory
+	// only). When the user cancels the resumed Run, out.IterationHistory is
+	// empty. Without reconstruction, the [interrupted] Detail only has
+	// user_cancelled — all real iterations are lost. ConvertMessagesToHistory
+	// has a defense-in-depth merge, but reconstructing here ensures the Detail
+	// has the full iteration history (with content/reasoning from tool_calls).
+	if len(iterHistory) == 0 && tenantSession != nil {
+		if dbMsgs, err := tenantSession.GetMessages(); err == nil {
+			iterHistory = reconstructIterationsFromMessages(dbMsgs)
+		}
+	}
 
 	appendCancelToolSnapshot := func(snapshot IterationToolSnapshot) {
 		if len(iterHistory) == 0 {
@@ -529,10 +544,20 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		return nil, nil
 	}
 
-	// Persist the final assistant reply
+	// Persist the final assistant reply.
+	// Use out.IterationHistory directly (run-local snapshots from THIS Run only).
+	// Do NOT use mergeIterationHistory — it merges a.iterationHistories (in-memory,
+	// persists across Runs in the same turn). In the AskUser continuation case,
+	// the first Run's iterations are already persisted to a histMsg at
+	// WaitingUser time. Merging them again here duplicates them in the final
+	// reply's Detail → ConvertMessagesToHistory renders the same iterations
+	// twice (once in histMsg, once in final reply).
+	// The restart case (a.iterationHistories restored from active_progress)
+	// does not apply: a.iterationHistories is in-memory only, not restored from
+	// DB on restart, so mergeIterationHistory was always a no-op there.
 	assistantMsg := llm.NewAssistantMessage(finalContent)
 	assistantMsg.ReasoningContent = out.ReasoningContent
-	iterHistory := a.mergeIterationHistory(msg.Channel, msg.ChatID, out.IterationHistory)
+	iterHistory := out.IterationHistory
 	if len(iterHistory) > 0 {
 		if jsonBytes, err := json.Marshal(iterHistory); err == nil {
 			assistantMsg.Detail = string(jsonBytes)

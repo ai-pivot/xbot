@@ -468,6 +468,30 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.liveMessage).toBeNull()
   })
 
+  it('liveMessage is null when initialProgress has phase=running but no active_tools (thinking indicator should show via busy placeholder)', () => {
+    // BUG: switching to a busy session where the snapshot has no active_tools
+    // (captured between iterations or during thinking). historyProgressToLive
+    // sets streaming=true, which made hasVisibleProgress return true → liveMessage
+    // non-null but empty → suppresses the "思考中…" busy placeholder.
+    const { result } = renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        initialProgress: {
+          phase: 'running',
+          iteration: 2,
+          seq: 5,
+          // NO active_tools, NO stream_content — agent is between iterations
+        },
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+    act(() => {
+      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+    })
+    // liveMessage must be null so MessageList's busy placeholder shows "思考中…"
+    expect(result.current.liveMessage).toBeNull()
+  })
+
   it('updates tools/reasoning/iteration from progress_structured', () => {
     const { result } = renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }))
     emitAndFlush({
@@ -918,27 +942,27 @@ describe('cancel: assistant message must not vanish', () => {
     )
     // Start turn
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
-    // Iteration 0
-    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 0, chat_id: 'web:c1' } })
-    // Iteration 2 (GAP — skipped 1)
-    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 2, chat_id: 'web:c1' } })
+    // Iteration 1 (1-based)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 1, chat_id: 'web:c1' } })
+    // Iteration 3 (GAP — skipped 2)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 3, chat_id: 'web:c1' } })
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('ITER_ID_GAP'),
-      expect.objectContaining({ prev: 0, next: 2, gap: 1 }),
+      expect.objectContaining({ prev: 1, next: 3, gap: 1 }),
     )
     warnSpy.mockRestore()
   })
 
-  it('does NOT warn on normal sequential iteration advance (0 → 1 → 2)', () => {
+  it('does NOT warn on normal sequential iteration advance (1 → 2 → 3)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     renderHook(() =>
       useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
     )
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
-    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 0, chat_id: 'web:c1' } })
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 1, chat_id: 'web:c1' } })
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 2, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 3, chat_id: 'web:c1' } })
     expect(warnSpy).not.toHaveBeenCalled()
     expect(errorSpy).not.toHaveBeenCalled()
     warnSpy.mockRestore()

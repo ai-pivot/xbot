@@ -377,7 +377,7 @@ export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
   iterationHistory: [],
   streamingTools: [],
   genuiContent: '',
-  lastIter: -1,
+  lastIter: 0,
   lastReasoning: '',
   todos: [],
   subAgents: [],

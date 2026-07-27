@@ -940,6 +940,52 @@ describe('useChatMessages', () => {
     // (the live row with 'partial reply' is kept via >= watermark)
   })
 
+  it('cancel: appendAssistant with turnID does NOT duplicate after reload', async () => {
+    // Bug: after cancel, appendAssistant creates seq-N (turnID=3, persisted=false).
+    // markDestructiveMutation → next reload uses reconcileHistoryWithLiveRows.
+    // DB returns hist-N (turnID=3, content="" from [interrupted]).
+    // Old code kept BOTH because content/eventSeq didn't match.
+    // Fix: dedup by turnID:role — the DB message has the same turnID.
+    const ws = makeWS([
+      { messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 }], chat_id: 'dup-chat', last_seq: 1 },
+    ])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'dup-chat', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map(m => m.role)).toEqual(['user']))
+
+    // Simulate cancel: appendAssistant with turnID=3
+    act(() => {
+      result.current.appendAssistant('partial reply', [], 2, 3)
+    })
+    result.current.markDestructiveMutation()
+
+    // Reload returns the [interrupted] message with same turnID=3
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      return new Response(JSON.stringify({
+        ok: true,
+        data: {
+          messages: [
+            { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 },
+            { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:01Z', seq: 2, turn_id: 3,
+              iterations: [{ iteration: 1, thinking: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
+          ],
+          chat_id: 'dup-chat', last_seq: 2,
+        },
+        error: null,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    await act(async () => {
+      void result.current.reload()
+    })
+
+    // MUST have exactly ONE assistant message (no duplication)
+    const assistantMsgs = result.current.messages.filter(m => m.role === 'assistant')
+    expect(assistantMsgs).toHaveLength(1)
+    // The DB version (with iterations) should win
+    expect(assistantMsgs[0].persisted).toBe(true)
+    expect(assistantMsgs[0].iterations).toHaveLength(1)
+  })
+
   it('reloads messages from DB when replay_gap is dispatched (real data loss)', async () => {
     let messageHandler: ((message: WSMessage) => void) | null = null
     let call = 0

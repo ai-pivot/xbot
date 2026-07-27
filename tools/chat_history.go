@@ -143,7 +143,9 @@ func (t *ChatHistoryTool) Name() string {
 
 func (t *ChatHistoryTool) Description() string {
 	return `Query recent chat message history in the current group/conversation.
-IMPORTANT: Only use this tool when you need to understand recent context or conversation flow that is not in your immediate memory.
+
+Use this tool SPARINGLY — only when you genuinely cannot recall what was recently discussed and it is NOT available in the conversation context (e.g., after a page refresh with no compacted summary). Do NOT use this tool after /compress — the compacted context summary already contains the relevant history. Do NOT use this tool as a routine first step before responding.
+
 Parameters (JSON):
   - limit: integer, optional, number of recent messages to retrieve (defaults to 10, max 50)
 Example: {"limit": 10}`

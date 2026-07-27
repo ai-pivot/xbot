@@ -282,8 +282,9 @@ export class ProgressStore {
   private disposed = false
   /** Tracks the last seen TurnID for monotonicity assertions. 0 = untracked. */
   lastTurnID = 0
-  /** Tracks the last seen iteration number within the current turn for continuity assertions. */
-  lastIter = -1
+  /** Tracks the last seen iteration number within the current turn for continuity assertions.
+   *  0 = uninitialized (no iteration seen yet). Iterations are 1-based. */
+  lastIter = 0
 
   /** Subscribe to snapshot changes; returns an unsubscribe function. */
   subscribe = (listener: Listener): (() => void) => {
@@ -317,7 +318,7 @@ export class ProgressStore {
     // window where liveMessage is still non-null after reset.
     this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT, todos }
     this.dirty = false
-    this.lastIter = -1
+    this.lastIter = 0
     // lastTurnID is NOT reset here — it tracks across turns for monotonicity.
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
@@ -334,7 +335,7 @@ export class ProgressStore {
     this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
     this.dirty = false
     this.lastTurnID = 0
-    this.lastIter = -1
+    this.lastIter = 0
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null
@@ -451,26 +452,6 @@ export class ProgressStore {
     tokenUsage?: TokenUsageInfo | null
     turnID?: number
   }): void {
-    // ── PhaseDone → immediate reset ──
-    // The backend guarantees that a `text` event (final assistant reply)
-    // arrives after PhaseDone. The progress store should clear immediately
-    // on PhaseDone — the final text is handled by onAssistantComplete.
-    // No finalizing state needed — the text event handles completion.
-    //
-    // TodoWrite is frequently the last tool in an iteration, so its updated
-    // todos ride on the PhaseDone event (especially when mid-busy push events
-    // are dropped by SSE backpressure/coalescing). reset() preserves
-    // current.todos, so we MUST write opts.todos onto current first — otherwise
-    // the PhaseDone todos are discarded and the list only reappears on the next
-    // history reload (idle), never during busy.
-    if (opts.phase === 'done') {
-      if (opts.todos !== undefined) {
-        this.current.todos = opts.todos
-      }
-      this.reset()
-      return
-    }
-
     // ProgressEvent.Seq is the semantic log ID assigned before channel fan-out.
     // Replayed/duplicate events at or below the installed snapshot watermark
     // are no-ops — EXCEPT for iterationHistory. Recovery events (from
@@ -479,7 +460,14 @@ export class ProgressStore {
     // entirely — including their iterationHistory. We must still append
     // any new iterations before returning, otherwise lost iterations
     // (from dropped delta events) are permanently lost.
+    //
+    // Note: phase==='done' is handled by useProgressStream BEFORE calling
+    // setStructuredTools (it only forwards eventSeq + todos, never phase).
+    // So opts.phase === 'done' is never true here — no dead branch needed.
     if (opts.eventSeq !== undefined && opts.eventSeq <= this.current.eventSeq) {
+      if (opts.todos !== undefined) {
+        this.current.todos = opts.todos
+      }
       if (opts.iterationHistory && opts.iterationHistory.length > 0) {
         this.mutate((draft) => {
           appendIterations(draft, opts.iterationHistory!)
@@ -522,7 +510,7 @@ export class ProgressStore {
       // the installed snapshot and replayed delta can overlap, and local
       // snapshotting would render the same tool group twice.
       if (opts.iteration !== undefined && opts.iteration > draft.lastIter) {
-        const hadPreviousIteration = draft.lastIter >= 0
+        const hadPreviousIteration = draft.lastIter >= 1
         draft.lastIter = opts.iteration
         // Clear stream/structured fields from the previous iteration so the
         // new iteration starts clean. The completed iteration itself arrives
@@ -672,21 +660,19 @@ export class ProgressStore {
         appendIterations(draft, next.iterationHistory)
         // On hydrate, completed_tools from active_progress may include tools
         // from completed iterations that are now in iterationHistory. Exclude
-        // them — they're rendered via TurnBody, not LiveIteration.
-        const completedIterToolKeys = new Set<string>()
+        // them by iteration number — they're rendered via TurnBody, not LiveIteration.
+        const completedIterSet = new Set<number>()
         for (const iter of draft.iterationHistory) {
-          for (const tool of iter.tools ?? []) {
-            completedIterToolKeys.add(`${tool.name}\x00${tool.label}`)
-          }
+          completedIterSet.add(iter.iteration)
         }
-        if (completedIterToolKeys.size > 0) {
+        if (completedIterSet.size > 0) {
           draft.completedTools = draft.completedTools.filter(
-            (t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`),
+            (t) => !t.iteration || !completedIterSet.has(t.iteration),
           )
         }
         // Recompute lastIter from merged history so the delta push protocol
         // continues correctly (next SSE event knows which iterations exist).
-        const maxIter = draft.iterationHistory.reduce((max, i) => Math.max(max, i.iteration), -1)
+        const maxIter = draft.iterationHistory.reduce((max, i) => Math.max(max, i.iteration), 0)
         if (maxIter > draft.lastIter) draft.lastIter = maxIter
       }
       // Assign remaining fields, but NEVER downgrade client-side tracking:

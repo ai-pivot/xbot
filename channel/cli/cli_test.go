@@ -1838,6 +1838,141 @@ func TestConvert_MultipleTurns(t *testing.T) {
 	}
 }
 
+func TestConvert_AskUserDuplication(t *testing.T) {
+	// Bug: after AskUser, the first Run's iterations were persisted to a
+	// separate histMsg (empty content, Detail). Then mergeIterationHistory
+	// included those SAME iterations in the final reply's Detail.
+	// ConvertMessagesToHistory produced TWO messages with overlapping
+	// iterations → duplication.
+	//
+	// Fix: handleRunOutput uses out.IterationHistory directly (current Run only),
+	// not mergeIterationHistory. The final reply's Detail only has the second
+	// Run's iterations. The first Run's iterations are in the histMsg.
+	//
+	// Expected message sequence after fix:
+	//   user → assistant(Detail: iter 1 from first Run) [histMsg, content=""]
+	//        → user [AskUser answer]
+	//        → assistant(Detail: iter 2 from second Run) [final reply, content="done!"]
+	//
+	// No iteration overlap between the two assistant messages.
+
+	// First Run's iterations (before AskUser) — in histMsg
+	firstRunDetail := makeDetail([]iterSnapshot{
+		{Iteration: 1, Content: "think1", Tools: []iterToolSnap{{Name: "Read", Label: "Read f", Status: "done", ElapsedMS: 100}}},
+	})
+
+	// Second Run's iterations (after AskUser answer) — in final reply
+	// FIX: only the second Run's iterations, NOT merged with first Run
+	secondRunDetail := makeDetail([]iterSnapshot{
+		{Iteration: 1, Content: "think2", Tools: []iterToolSnap{{Name: "Shell", Label: "Shell ls", Status: "done", ElapsedMS: 200}}},
+	})
+
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "do something"},
+		// histMsg from WaitingUser: empty content, Detail has first Run's iterations
+		{Role: "assistant", Content: "", Detail: firstRunDetail},
+		// AskUser answer
+		{Role: "user", Content: "yes"},
+		// Final reply: Detail has ONLY second Run's iterations (no overlap)
+		{Role: "assistant", Content: "done!", Detail: secondRunDetail},
+	}
+	history := channel.ConvertMessagesToHistory(msgs)
+
+	// Verify: no iteration duplication across assistant messages
+	totalIters := 0
+	for _, h := range history {
+		if h.Role == "assistant" {
+			totalIters += len(h.Iterations)
+		}
+	}
+	if totalIters != 2 {
+		t.Errorf("expected 2 total iterations (1 per Run, no duplication), got %d", totalIters)
+		for i, h := range history {
+			if h.Role == "assistant" {
+				t.Logf("  assistant[%d]: %d iterations, content=%q", i, len(h.Iterations), h.Content)
+				for _, iter := range h.Iterations {
+					t.Logf("    iter %d: %d tools", iter.Iteration, len(iter.Tools))
+				}
+			}
+		}
+	}
+}
+
+func TestConvert_RestartCancelPreservesIterations(t *testing.T) {
+	// Bug: after server restart, the resumed Run has empty iterationSnapshots.
+	// handleCancelledRun creates [interrupted] with Detail = only user_cancelled.
+	// ConvertMessagesToHistory discards the accumulated tool_calls-based
+	// iterations (pendingIters = nil) and replaces them with the Detail
+	// iterations (only user_cancelled). Result: ALL real iterations disappear.
+	//
+	// Fix: ConvertMessagesToHistory merges pendingIters with Detail when
+	// Detail has fewer iterations (restart case). handleCancelledRun also
+	// reconstructs iterations from DB messages when out.IterationHistory is
+	// empty (root cause fix).
+
+	// Simulate the BUGGY Detail: only user_cancelled, no real iterations
+	cancelDetail := makeDetail([]iterSnapshot{
+		{Iteration: 1, Tools: []iterToolSnap{{Name: "user_cancelled", Status: "done"}}},
+	})
+
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "do something"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Read", Arguments: "{}"}}},
+		{Role: "tool", ToolCallID: "c1", ToolName: "Read", ToolArguments: "{}", Content: "file"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c2", Name: "Grep", Arguments: "{}"}}},
+		{Role: "tool", ToolCallID: "c2", ToolName: "Grep", ToolArguments: "{}", Content: "results"},
+		{Role: "assistant", Content: "[interrupted]", Detail: cancelDetail},
+	}
+	history := channel.ConvertMessagesToHistory(msgs)
+
+	// Find the assistant message with iterations
+	var assistantMsg *channel.HistoryMessage
+	for i := range history {
+		if history[i].Role == "assistant" && len(history[i].Iterations) > 0 {
+			assistantMsg = &history[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("no assistant message with iterations found")
+	}
+
+	// Should have 2 iterations (Read + Grep from tool_calls) + user_cancelled.
+	// BUG: only 1 iteration (user_cancelled) — real iterations discarded.
+	totalTools := 0
+	hasRead := false
+	hasGrep := false
+	hasCancelled := false
+	for _, iter := range assistantMsg.Iterations {
+		for _, tool := range iter.Tools {
+			totalTools++
+			switch tool.Name {
+			case "Read":
+				hasRead = true
+			case "Grep":
+				hasGrep = true
+			case "user_cancelled":
+				hasCancelled = true
+			}
+		}
+	}
+
+	if !hasRead || !hasGrep {
+		t.Errorf("expected Read and Grep tools to be preserved, got read=%v grep=%v (total tools=%d)",
+			hasRead, hasGrep, totalTools)
+		for i, iter := range assistantMsg.Iterations {
+			toolNames := []string{}
+			for _, tool := range iter.Tools {
+				toolNames = append(toolNames, tool.Name)
+			}
+			t.Logf("  iter %d: tools=%v", i, toolNames)
+		}
+	}
+	if !hasCancelled {
+		t.Error("expected user_cancelled tool to be present")
+	}
+}
+
 func TestConvert_NoToolCalls(t *testing.T) {
 	// Simple conversation without tool calls
 	msgs := []llm.ChatMessage{

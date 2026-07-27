@@ -122,16 +122,38 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     return { ...EMPTY_PROGRESS_SNAPSHOT, todos }
   }
   const active = normalizeWebTools(p.active_tools)
-  const completed = normalizeWebTools(p.completed_tools)
+  let completed = normalizeWebTools(p.completed_tools)
   const iterHistory = (p.iteration_history ?? [])
     .map(normalizeWebIteration)
     .filter(Boolean) as WebIteration[]
+
+  // ── Iteration boundary guard ──
+  // When GetActiveProgress is called after snapshotCompletedIteration but
+  // before prepareForIteration, the snapshot carries the PREVIOUS iteration's
+  // Content and CompletedTools (not yet cleared). If activeTools is empty but
+  // completedTools is non-empty, the snapshot is at this boundary.
+  //
+  // Without this guard, LiveIteration renders the stale Content and
+  // CompletedTools as if they belong to the current (in-flight) iteration,
+  // duplicating them alongside the iterationHistory entry.
+  //
+  // Fix: clear content and completedTools from the live snapshot. Do NOT add
+  // a synthetic entry to iterationHistory — it would be appended at the END
+  // of the array (which is the BEGINNING if the store is empty), causing the
+  // content to appear BEFORE earlier iterations' tools. The delta protocol
+  // will deliver the correct data in order when the next iteration starts.
+  let content = p.content ?? ''
+  if (active.length === 0 && completed.length > 0) {
+    content = ''
+    completed = []
+  }
+
   return {
     eventSeq: typeof p.seq === 'number' ? p.seq : 0,
     phase: p.phase,
     iteration: typeof p.iteration === 'number' ? p.iteration : 0,
     streamContent: p.stream_content ?? '',
-    content: p.content ?? '',
+    content,
     reasoningStreamContent: '',
     streaming: true,
     activeTools: active,
@@ -139,7 +161,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     iterationHistory: iterHistory,
     streamingTools: [],
     genuiContent: '',
-    lastIter: -1, // -1 = no iteration seen yet; allows iteration 0 to be accepted
+    lastIter: 0, // 0 = uninitialized; iterations are 1-based
     lastReasoning: '',
     todos: (p.todos ?? []) as TodoItem[],
     subAgents: normalizeWebSubAgents(p.sub_agents),

@@ -211,24 +211,32 @@ function reconcileHistoryWithLiveRows(
   current: ChatMessage[],
   historyWatermark: number,
 ): ChatMessage[] {
-  // Check if history actually contains a message with the given seq.
-  // History messages may lack seq (old server versions), so we also
-  // check content+role as a fallback for dedup.
-  const historyHasSeq = (seq: number) =>
-    history.some((m) => m.eventSeq === seq)
-  const historyHasContent = (role: string, content: string) =>
-    history.some((m) => m.role === role && m.content === content)
+  // Build lookup sets from history for O(1) dedup checks.
+  const historyTurnRoles = new Set<string>()
+  const historyContentKeys = new Set<string>()
+  for (const m of history) {
+    if (m.turnID > 0) {
+      historyTurnRoles.add(`${m.turnID}:${m.role}`)
+    }
+    // Content+role fallback for messages without turnID (user_echo, etc.)
+    if (m.content) {
+      historyContentKeys.add(`${m.role}:${m.content}`)
+    }
+  }
 
   const liveRows = current.filter((message) => {
     if (message.persisted !== false) return false
     if (message.eventSeq == null) return false
     // Below watermark: always superseded by history.
     if (message.eventSeq < historyWatermark) return false
-    // At or above watermark: keep UNLESS history already has this message
-    // (server persisted it with the same seq). For messages where history
-    // lacks seq (old server), fall back to content+role matching.
-    if (historyHasSeq(message.eventSeq)) return false
-    if (historyHasContent(message.role, message.content)) return false
+    // Same turnID:role already in history — drop the live row.
+    // This is the PRIMARY dedup for cancel acks and final replies: the
+    // locally-committed message (streaming content) and the DB message
+    // ([interrupted] or normal reply) share the same turnID but have
+    // different content/eventSeq, so content matching alone fails.
+    if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
+    // Content+role fallback for messages without turnID (user_echo).
+    if (message.turnID === 0 && message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
     return true
   })
   return [...history, ...liveRows]
