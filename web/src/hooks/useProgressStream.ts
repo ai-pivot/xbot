@@ -325,8 +325,7 @@ export function useProgressStream({
 
 function hasVisibleProgress(snap: ProgressSnapshot): boolean {
   return Boolean(
-    snap.streaming ||
-      snap.streamContent ||
+    snap.streamContent ||
       snap.content ||
       snap.reasoningStreamContent ||
       snap.activeTools.length ||

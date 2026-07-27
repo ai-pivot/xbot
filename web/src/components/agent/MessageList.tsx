@@ -540,9 +540,10 @@ export function MessageList({
           )}
           {/* Busy placeholder: when agent is thinking but no streaming
               content has arrived yet (e.g. session just started, or
-              switched to a busy tab with no iterations). Hidden during
-              loading — the Loader2 spinner handles that state. */}
-          {busy && !liveMessage && !loading && (
+              switched to a busy tab with no iterations). Shown during
+              loading when rows exist (the spinner handles the empty case),
+              so the user always sees feedback on a busy session. */}
+          {busy && !liveMessage && !(loading && rows.length === 0) && (
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">

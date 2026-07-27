@@ -62,9 +62,9 @@ export const LiveIteration = memo(function LiveIteration({
   const displayReasoning = reasoningContent
 
   // Merge all tool groups, using the shared dedupTools (generating skips dedup).
-  // Filter completedTools to exclude tools from COMPLETED iterations — those
-  // are already rendered by TurnBody via iterationHistory. Only keep tools
-  // from the current (in-flight) iteration.
+  // Filter activeTools AND completedTools by iteration number — only keep tools
+  // from the current (in-flight) iteration. Tools from completed iterations are
+  // already rendered by TurnBody via iterationHistory.
   //
   // We determine "completed" by comparing against the max iteration in
   // iterationHistory. Tools with iteration <= maxCompletedIter are already
@@ -73,25 +73,33 @@ export const LiveIteration = memo(function LiveIteration({
   const maxCompletedIter = progress.iterationHistory.length > 0
     ? Math.max(...progress.iterationHistory.map((i) => i.iteration))
     : -1
+  // Filter activeTools by iteration — stale activeTools from a completed
+  // iteration persist because the backend clears ActiveTools (nil→omitted by
+  // omitempty) so the frontend keeps the previous event's value.
+  const currentActive = progress.activeTools.filter(
+    (t) => !t.iteration || t.iteration > maxCompletedIter,
+  )
   const currentCompleted = progress.completedTools.filter(
     (t) => !t.iteration || t.iteration > maxCompletedIter,
   )
-  // Exclude tools already rendered in completed iterations (via TurnBody's
-  // iterationHistory). Stale activeTools from a completed iteration persist
-  // because the backend clears ActiveTools (nil→omitted by omitempty) so the
-  // frontend keeps the previous event's value. Without this, the same tool
-  // renders twice: once via iterationHistory, once via LiveIteration.
+  // Exclude stale completedTools already rendered in completed iterations
+  // (by name+label). This filter does NOT apply to activeTools — a running
+  // tool in the current iteration must NOT be filtered out just because a
+  // tool with the same name+label exists in a completed iteration.
   const completedIterToolKeys = new Set<string>()
   for (const iter of progress.iterationHistory) {
     for (const tool of iter.tools) {
       completedIterToolKeys.add(`${tool.name}\x00${tool.label}`)
     }
   }
+  const filteredCompleted = currentCompleted.filter(
+    (t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`),
+  )
   const allTools = dedupTools([
     ...progress.streamingTools,
-    ...progress.activeTools,
-    ...currentCompleted,
-  ]).filter((t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`))
+    ...currentActive,
+    ...filteredCompleted,
+  ])
   const hasTools = allTools.length > 0
   const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
   const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress

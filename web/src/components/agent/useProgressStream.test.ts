@@ -468,6 +468,30 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.liveMessage).toBeNull()
   })
 
+  it('liveMessage is null when initialProgress has phase=running but no active_tools (thinking indicator should show via busy placeholder)', () => {
+    // BUG: switching to a busy session where the snapshot has no active_tools
+    // (captured between iterations or during thinking). historyProgressToLive
+    // sets streaming=true, which made hasVisibleProgress return true → liveMessage
+    // non-null but empty → suppresses the "思考中…" busy placeholder.
+    const { result } = renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        initialProgress: {
+          phase: 'running',
+          iteration: 2,
+          seq: 5,
+          // NO active_tools, NO stream_content — agent is between iterations
+        },
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+    act(() => {
+      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+    })
+    // liveMessage must be null so MessageList's busy placeholder shows "思考中…"
+    expect(result.current.liveMessage).toBeNull()
+  })
+
   it('updates tools/reasoning/iteration from progress_structured', () => {
     const { result } = renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }))
     emitAndFlush({

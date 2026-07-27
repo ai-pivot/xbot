@@ -451,35 +451,22 @@ export class ProgressStore {
     tokenUsage?: TokenUsageInfo | null
     turnID?: number
   }): void {
-    // ── PhaseDone → immediate reset ──
-    // The backend guarantees that a `text` event (final assistant reply)
-    // arrives after PhaseDone. The progress store should clear immediately
-    // on PhaseDone — the final text is handled by onAssistantComplete.
-    // No finalizing state needed — the text event handles completion.
-    //
-    // TodoWrite is frequently the last tool in an iteration, so its updated
-    // todos ride on the PhaseDone event (especially when mid-busy push events
-    // are dropped by SSE backpressure/coalescing). reset() preserves
-    // current.todos, so we MUST write opts.todos onto current first — otherwise
-    // the PhaseDone todos are discarded and the list only reappears on the next
-    // history reload (idle), never during busy.
-    if (opts.phase === 'done') {
-      if (opts.todos !== undefined) {
-        this.current.todos = opts.todos
-      }
-      this.reset()
-      return
-    }
-
-    // ProgressEvent.Seq is the semantic log ID assigned before channel fan-out.
-    // Replayed/duplicate events at or below the installed snapshot watermark
-    // are no-ops — EXCEPT for iterationHistory. Recovery events (from
-    // restoreActiveProgress) carry the same seq as the last event (they
-    // come from lastProgressSnapshot), so the seq check would drop them
-    // entirely — including their iterationHistory. We must still append
-    // any new iterations before returning, otherwise lost iterations
-    // (from dropped delta events) are permanently lost.
+    // ── Stale event guard (seq watermark) ──
+    // MUST run before the PhaseDone check below. When switching to a busy
+    // session, the store is hydrated from initialProgress (e.g. seq=8 with
+    // activeTools). SSE replay then delivers a stale PhaseDone (seq=5) from
+    // the PREVIOUS turn. Without this guard, the phase==='done' check fires
+    // first and resets the store — clearing the activeTools that were just
+    // hydrated, making the running tool disappear.
     if (opts.eventSeq !== undefined && opts.eventSeq <= this.current.eventSeq) {
+      // Stale PhaseDone: only preserve todos (PhaseDone may carry updated
+      // todos from TodoWrite), do NOT reset the store.
+      if (opts.phase === 'done') {
+        if (opts.todos !== undefined) {
+          this.current.todos = opts.todos
+        }
+        return
+      }
       if (opts.iterationHistory && opts.iterationHistory.length > 0) {
         this.mutate((draft) => {
           appendIterations(draft, opts.iterationHistory!)
@@ -509,6 +496,26 @@ export class ProgressStore {
           if (opts.tokenUsage !== undefined && opts.tokenUsage !== null) draft.tokenUsage = opts.tokenUsage
         })
       }
+      return
+    }
+
+    // ── PhaseDone → immediate reset ──
+    // The backend guarantees that a `text` event (final assistant reply)
+    // arrives after PhaseDone. The progress store should clear immediately
+    // on PhaseDone — the final text is handled by onAssistantComplete.
+    // No finalizing state needed — the text event handles completion.
+    //
+    // TodoWrite is frequently the last tool in an iteration, so its updated
+    // todos ride on the PhaseDone event (especially when mid-busy push events
+    // are dropped by SSE backpressure/coalescing). reset() preserves
+    // current.todos, so we MUST write opts.todos onto current first — otherwise
+    // the PhaseDone todos are discarded and the list only reappears on the next
+    // history reload (idle), never during busy.
+    if (opts.phase === 'done') {
+      if (opts.todos !== undefined) {
+        this.current.todos = opts.todos
+      }
+      this.reset()
       return
     }
 
@@ -672,16 +679,14 @@ export class ProgressStore {
         appendIterations(draft, next.iterationHistory)
         // On hydrate, completed_tools from active_progress may include tools
         // from completed iterations that are now in iterationHistory. Exclude
-        // them — they're rendered via TurnBody, not LiveIteration.
-        const completedIterToolKeys = new Set<string>()
+        // them by iteration number — they're rendered via TurnBody, not LiveIteration.
+        const completedIterSet = new Set<number>()
         for (const iter of draft.iterationHistory) {
-          for (const tool of iter.tools ?? []) {
-            completedIterToolKeys.add(`${tool.name}\x00${tool.label}`)
-          }
+          completedIterSet.add(iter.iteration)
         }
-        if (completedIterToolKeys.size > 0) {
+        if (completedIterSet.size > 0) {
           draft.completedTools = draft.completedTools.filter(
-            (t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`),
+            (t) => !t.iteration || !completedIterSet.has(t.iteration),
           )
         }
         // Recompute lastIter from merged history so the delta push protocol

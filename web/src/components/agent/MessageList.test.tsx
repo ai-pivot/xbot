@@ -555,6 +555,29 @@ describe('MessageList virtualization', () => {
     expect(container.textContent).toContain('history 500')
   })
 
+  it('shows thinking indicator during loading when busy and there are existing messages', () => {
+    // BUG: switching to a busy session hides liveMessage (visibleLiveMessage
+    // gate) AND suppresses the busy placeholder (!loading). Result: nothing
+    // shows — no tool, no "思考中…". Fix: show the placeholder during loading
+    // when rows.length > 0 (the spinner only handles the empty-state case).
+    const messages: ChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'hello', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0 },
+      { id: 'a1', role: 'assistant', content: 'hi', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0 },
+    ]
+    const { container } = renderWithProviders(
+      <MessageList
+        messages={messages}
+        liveMessage={null}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={true}
+        error={null}
+        busy={true}
+      />,
+    )
+    expect(container.textContent).toContain('thinking')
+  })
+
   it('finds the latest compact marker for rewind eligibility', () => {
     const messages: ChatMessage[] = [
       { id: 'u-old', role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0 },
