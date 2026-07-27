@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"xbot/bus"
 	"xbot/channel"
@@ -728,8 +727,8 @@ func (c *Client) GetHistory(channelName, chatID string) ([]protocol.HistoryMessa
 	return r, c.call(MethodGetHistory, getHistoryReq{Channel: channelName, ChatID: chatID}, &r)
 }
 
-func (c *Client) TrimHistory(ch, chatID string, cutoff time.Time) error {
-	return c.call(MethodTrimHistory, trimHistoryReq{Channel: ch, ChatID: chatID, Cutoff: cutoff.Unix()}, nil)
+func (c *Client) TrimHistory(ch, chatID string, messageID int64) error {
+	return c.call(MethodTrimHistory, trimHistoryReq{Channel: ch, ChatID: chatID, MessageID: messageID}, nil)
 }
 
 // ---------------------------------------------------------------------------

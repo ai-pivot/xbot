@@ -11,10 +11,11 @@ import (
 )
 
 type rewindItem struct {
-	MsgIndex int       // index in m.messages
-	Preview  string    // first line of the message content (for display)
-	Content  string    // full message content (for input box on select)
-	Time     time.Time // message timestamp (for DB truncation cutoff)
+	MsgIndex int    // index in m.messages
+	Preview  string // first line of the message content (for display)
+	Content  string // full message content (for input box on select)
+	DBID     int64  // DB auto-increment id (for DB truncation)
+	Time     time.Time
 }
 
 // openRewindPanel collects user messages from history and opens the rewind overlay.
@@ -40,6 +41,7 @@ func (m *cliModel) openRewindPanel() {
 			MsgIndex: i,
 			Preview:  preview,
 			Content:  content,
+			DBID:     msg.dbID,
 			Time:     msg.timestamp,
 		})
 		if strings.HasPrefix(content, "[Compacted context]") {
@@ -205,13 +207,13 @@ func (m *cliModel) applyRewind() {
 	}
 	item := m.rewindItems[m.rewindCursor]
 	selectedContent := item.Content
-	cutoff := item.Time
+	dbID := item.DBID
 
 	// Truncate UI messages: keep everything BEFORE the selected message
 	cutIdx := item.MsgIndex
 	m.messages = m.messages[:cutIdx]
 
-	// Truncate DB session messages (synchronous, by timestamp).
+	// Truncate DB session messages (synchronous, by message id).
 	// Must be synchronous — Ctrl+Z calls os.Exit(0) which kills all goroutines.
 	// If we used async (go func()), the DELETE might not complete before exit,
 	// leaving the DB in an inconsistent state with modernc.org/sqlite WAL.
@@ -219,16 +221,16 @@ func (m *cliModel) applyRewind() {
 		// Dynamic callback with current session's channel+chatID — works across
 		// session switches unlike the static trimHistoryFn which was captured
 		// at TUI startup with the initial chatID.
-		if err := m.channel.config.TrimHistoryFn(m.channelName, m.chatID, cutoff); err != nil {
+		if err := m.channel.config.TrimHistoryFn(m.channelName, m.chatID, dbID); err != nil {
 			log.WithError(err).Warn("Failed to trim session history after rewind")
 		}
 	} else if m.trimHistoryFn != nil {
-		log.WithFields(log.Fields{"cutIdx": cutIdx, "cutoff": cutoff, "totalMsgs": len(m.messages)}).Info("Rewind: truncating DB messages (legacy callback)")
-		if err := m.trimHistoryFn(cutoff); err != nil {
+		log.WithFields(log.Fields{"cutIdx": cutIdx, "dbID": dbID, "totalMsgs": len(m.messages)}).Info("Rewind: truncating DB messages (legacy callback)")
+		if err := m.trimHistoryFn(dbID); err != nil {
 			log.WithError(err).Warn("Failed to trim session history after rewind")
 		}
-	} else if cutoff.IsZero() {
-		log.Warn("Rewind: cutoff timestamp is zero, DB messages will NOT be truncated")
+	} else if dbID == 0 {
+		log.Warn("Rewind: message DB id is zero, DB messages will NOT be truncated")
 	} else {
 		log.Warn("Rewind: trimHistoryFn is nil, DB messages will NOT be truncated")
 	}

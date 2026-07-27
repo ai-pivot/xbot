@@ -907,3 +907,29 @@ func (m *MultiTenantSession) TrimHistory(channel, chatID string, cutoff time.Tim
 	}
 	return nil
 }
+
+// TrimHistoryFromMessageID truncates DB history at the given message id (inclusive).
+// This is the id-based replacement for TrimHistory — uses the DB primary key for
+// exact truncation, eliminating timestamp precision issues.
+func (m *MultiTenantSession) TrimHistoryFromMessageID(channel, chatID string, messageID int64) error {
+	if messageID <= 0 {
+		return nil
+	}
+	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
+	if err != nil {
+		return fmt.Errorf("get tenant: %w", err)
+	}
+	_, err = m.sessionSvc.PurgeFromMessageID(tenantID, messageID)
+	if err != nil {
+		return err
+	}
+	lastCtx, err := m.sessionSvc.GetLastUserMessageContextTokens(tenantID)
+	if err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to get context tokens after trim, using 0")
+		lastCtx = 0
+	}
+	if err := m.memorySvc.SetTokenState(context.Background(), tenantID, lastCtx, 0); err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to restore token state after trim")
+	}
+	return nil
+}

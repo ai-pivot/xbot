@@ -115,7 +115,7 @@ type WebCallbacks struct {
 	// HistorySnapshot returns a Web-only history snapshot with runtime state.
 	HistorySnapshot func(senderID string, sel SessionSelector) (HistorySnapshot, error)
 	// RewindHistory rewinds a Web-accessible session to a selected user message.
-	RewindHistory func(senderID string, sel SessionSelector, cutoff time.Time) (RewindHistoryResult, error)
+	RewindHistory func(senderID string, sel SessionSelector, messageID int64) (RewindHistoryResult, error)
 	// GetCWD returns the current directory for a Web-accessible session.
 	GetCWD func(senderID string, sel SessionSelector) (string, error)
 	// GetTodos returns the current TODO list for a Web-accessible session.

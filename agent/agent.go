@@ -2660,7 +2660,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			msg.Metadata = map[string]string{}
 		}
 		msg.Metadata["turn_id"] = strconv.FormatUint(turnID, 10)
-		a.emitTurnStarted(msg, turnID)
 
 		sem := a.getSemaphoreForMessage(msg)
 
@@ -3026,19 +3025,33 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// Eager-save user message BEFORE Run() so incrementally persisted assistant/tool
 	// messages appear after it in the DB. GetHistory uses user messages as turn boundaries.
 	// Skip for resume (already in DB) and AskUser (not a new user message).
+	var userMsgDBID int64
 	if !askUserAnswered && !resumeTurn && (msg.Metadata == nil || msg.Metadata["user_msg_eager_saved"] != "true") {
 		userMsg := llm.NewUserMessage(msg.Content)
 		if !msg.Time.IsZero() {
 			userMsg.Timestamp = msg.Time
 		}
-		if err := tenantSession.AddMessage(userMsg); err != nil {
+		if id, err := tenantSession.AddMessageWithID(userMsg); err != nil {
 			log.Ctx(ctx).WithError(err).WithFields(log.Fields{
 				"channel": msg.Channel,
 				"chat_id": msg.ChatID,
 				"sender":  msg.SenderID,
 				"content": msg.Content,
 			}).Warn("Failed to eager-save user message")
+		} else {
+			userMsgDBID = id
 		}
+	}
+
+	// Emit turn_started AFTER the user message is persisted so the DB id is
+	// available. The frontend uses it to update the optimistic message's dbID,
+	// enabling rewind without a page refresh.
+	turnIDStr := ""
+	if msg.Metadata != nil {
+		turnIDStr = msg.Metadata["turn_id"]
+	}
+	if tid, err := strconv.ParseUint(turnIDStr, 10, 64); err == nil && tid > 0 {
+		a.emitTurnStarted(msg, tid, userMsgDBID)
 	}
 
 	cfg := a.buildMainRunConfig(ctx, msg, messages, tenantSession, preReplyNotify)
@@ -3392,7 +3405,7 @@ func (a *Agent) getActiveTurnID(sessionKey string) uint64 {
 //
 // trigger: "user" (user-typed), "notification" (bg task/cron), "resume".
 // content: the user message text (non-empty only for notification/resume).
-func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
+func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64, userMsgDBID int64) {
 	progressKey := qualifyChatID(msg.Channel, msg.ChatID)
 
 	trigger := "user"
@@ -3421,10 +3434,11 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 		Seq:    seq,
 		TurnID: turnID,
 		TurnStart: &protocol.TurnStartInfo{
-			Trigger:    trigger,
-			Content:    content,
-			RequestID:  msg.RequestID,
-			SenderName: msg.SenderName,
+			Trigger:       trigger,
+			Content:        content,
+			RequestID:      msg.RequestID,
+			SenderName:     msg.SenderName,
+			UserMessageID:  userMsgDBID,
 		},
 	}
 

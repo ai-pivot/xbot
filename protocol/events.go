@@ -118,10 +118,11 @@ type ProgressEvent struct {
 // the notification user message is now delivered atomically with the TurnID
 // through the unified progress stream.
 type TurnStartInfo struct {
-	Trigger    string `json:"trigger"`              // "user" | "notification" | "resume"
-	Content    string `json:"content,omitempty"`    // user message text (for notification display)
-	RequestID  string `json:"request_id,omitempty"` // for user-typed: match optimistic message
-	SenderName string `json:"sender_name,omitempty"`
+	Trigger       string `json:"trigger"`                    // "user" | "notification" | "resume"
+	Content       string `json:"content,omitempty"`          // user message text (for notification display)
+	RequestID     string `json:"request_id,omitempty"`        // for user-typed: match optimistic message
+	SenderName    string `json:"sender_name,omitempty"`
+	UserMessageID int64  `json:"user_message_id,omitempty"`   // DB id of the persisted user message (for rewind)
 }
 
 func (ProgressEvent) EventType() string { return "progress" }
@@ -138,6 +139,7 @@ type HistoryIteration struct {
 
 // HistoryMessage represents a message in session history.
 type HistoryMessage struct {
+	ID         int64              `json:"id,omitempty"`
 	Role       string             `json:"role"`
 	Content    string             `json:"content"`
 	Timestamp  time.Time          `json:"timestamp"`

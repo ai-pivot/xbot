@@ -1096,20 +1096,16 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		return map[string]int64{"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens}, nil
 	})
 	t["trim_history"] = rpc1void(func(ctx context.Context, p struct {
-		Channel string `json:"channel"`
-		ChatID  string `json:"chat_id"`
-		Cutoff  int64  `json:"cutoff"`
+		Channel   string `json:"channel"`
+		ChatID    string `json:"chat_id"`
+		MessageID int64  `json:"message_id"`
 	}) error {
 		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
 			return err
 		}
 		p.Channel, p.ChatID = channelName, chatID
-		var cutoff time.Time
-		if p.Cutoff > 0 {
-			cutoff = time.Unix(p.Cutoff, 0)
-		}
-		return h.Ag.MultiSession().TrimHistory(p.Channel, p.ChatID, cutoff)
+		return h.Ag.MultiSession().TrimHistoryFromMessageID(p.Channel, p.ChatID, p.MessageID)
 	})
 
 	// ── Status ──

@@ -36,6 +36,11 @@ func (s *TenantSession) AddMessage(msg llm.ChatMessage) error {
 	return s.sessionSvc.AddMessage(s.tenantID, msg)
 }
 
+// AddMessageWithID adds a message and returns the DB auto-increment id.
+func (s *TenantSession) AddMessageWithID(msg llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AddMessageWithID(s.tenantID, msg)
+}
+
 // ReplaceToolMessage updates the most recent matching tool-role message.
 // Empty toolName/toolCallID act as wildcards (match any).
 func (s *TenantSession) ReplaceToolMessage(toolName, toolCallID, content string) error {

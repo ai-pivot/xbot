@@ -147,7 +147,7 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
     }
 
     normalized.push({
-      id: m.seq != null ? `seq-${m.seq}` : `hist-${i}`,
+      id: m.id != null ? `db-${m.id}` : (m.seq != null ? `seq-${m.seq}` : `hist-${i}`),
       role: m.role,
       content,
       iterations,
@@ -157,6 +157,7 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       displayOnly: false,
       persisted: true,
       eventSeq: m.seq,
+      dbID: m.id,
     })
   }
 
@@ -697,6 +698,23 @@ export function useChatMessages({
     destructiveMutationGenRef.current += 1
   }, [])
 
+  // Stamp the DB message id onto the last optimistic user message so rewind
+  // works without a page refresh. Called from turn_started after the backend
+  // persists the user message.
+  const stampUserMessageID = useCallback((dbID: number) => {
+    messageMutationGenRef.current += 1
+    setMessages((prev) => {
+      // Find the last user message that doesn't yet have a dbID
+      const idx = [...prev].reverse().findIndex((m) => m.role === 'user' && !m.dbID)
+      if (idx === -1) return prev
+      const realIdx = prev.length - 1 - idx
+      const next = [...prev]
+      next[realIdx] = { ...next[realIdx], dbID: dbID, id: `db-${dbID}` }
+      messagesRef.current = next
+      return next
+    })
+  }, [])
+
   // ── SSE replay gap → reload message list ──
   // When SSE disconnects and reconnects, the existing seq-gap detection in
   // sseConnection calls restoreActiveProgress. If that recovery detects a real
@@ -726,6 +744,7 @@ export function useChatMessages({
     removeMessage,
     clearMessages,
     markDestructiveMutation,
+    stampUserMessageID,
   }
 }
 

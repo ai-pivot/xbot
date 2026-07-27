@@ -686,9 +686,9 @@ func (m *cliModel) executeRewind() (bool, tea.Model, tea.Cmd) {
 	// Truncate local messages — same as panel rewind path (cli_panel.go).
 	cutIdx := item.MsgIndex
 	m.messages = m.messages[:cutIdx]
-	// Truncate DB messages (synchronous).
+	// Truncate DB messages (synchronous, by message id).
 	if m.trimHistoryFn != nil {
-		if err := m.trimHistoryFn(item.Time); err != nil {
+		if err := m.trimHistoryFn(item.DBID); err != nil {
 			m.showSystemMsg(fmt.Sprintf("❌ Rewind failed: %v", err), feedbackError)
 		} else {
 			if m.resetTokenStateFn != nil {

@@ -315,9 +315,9 @@ type getContextUsageReq struct {
 }
 
 type trimHistoryReq struct {
-	Channel string `json:"channel"`
-	ChatID  string `json:"chat_id"`
-	Cutoff  int64  `json:"cutoff"` // unix timestamp
+	Channel   string `json:"channel"`
+	ChatID    string `json:"chat_id"`
+	MessageID int64  `json:"message_id"`
 }
 
 // --- Channel Config ---

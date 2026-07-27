@@ -245,6 +245,7 @@ export interface TurnStartInfo {
   content?: string
   request_id?: string
   sender_name?: string
+  user_message_id?: number
 }
 
 /** Session event (mirrors Go protocol/events.go SessionEvent). */
@@ -412,6 +413,8 @@ export interface ChatMessage {
   eventSeq?: number
   /** Stable logical-send ID used to correlate optimistic rows with echoes. */
   requestID?: string
+  /** DB auto-increment id from session_messages table. Used for rewind. */
+  dbID?: number
 }
 
 /* ---------------------------------------------------------------------------

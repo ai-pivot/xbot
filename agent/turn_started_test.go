@@ -74,7 +74,7 @@ func TestEmitTurnStarted_Notification(t *testing.T) {
 		Metadata: map[string]string{bgNotificationMetadataKey: "true"},
 	}
 
-	a.emitTurnStarted(msg, 42)
+	a.emitTurnStarted(msg, 42, 0)
 
 	events := mockCh.getEvents()
 	if len(events) != 1 {
@@ -120,7 +120,7 @@ func TestEmitTurnStarted_UserTrigger(t *testing.T) {
 		RequestID: "req-1",
 	}
 
-	a.emitTurnStarted(msg, 7)
+	a.emitTurnStarted(msg, 7, 0)
 
 	events := mockCh.getEvents()
 	if len(events) != 1 {

@@ -1615,8 +1615,8 @@ func main() {
 				refreshAgentCache()
 			}
 		}
-		cliCfg.TrimHistoryFn = func(channelName, chatID string, cutoff time.Time) error {
-			return backend.TrimHistory(channelName, chatID, cutoff)
+		cliCfg.TrimHistoryFn = func(channelName, chatID string, messageID int64) error {
+			return backend.TrimHistory(channelName, chatID, messageID)
 		}
 		cliCfg.SetCWDFn = func(channelName, chatID, dir string) error {
 			if err := backend.SetCWD(channelName, chatID, dir); err != nil {
@@ -1799,8 +1799,8 @@ func main() {
 			func() { app.client.CleanupCompletedBgTasks(cliCh.BgSessionKey()) },
 		)
 		// Inject TrimHistoryFn for Ctrl+K session truncation (RPC-backed, unified path)
-		cliCh.SetTrimHistoryFn(func(cutoff time.Time) error {
-			return app.client.TrimHistory("cli", cliCfg.ChatID, cutoff)
+		cliCh.SetTrimHistoryFn(func(messageID int64) error {
+			return app.client.TrimHistory("cli", cliCfg.ChatID, messageID)
 		})
 		cliCh.SetResetTokenStateFn(func() {
 			app.client.ResetTokenState()

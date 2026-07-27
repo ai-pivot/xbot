@@ -311,8 +311,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			Channel:        sel.Channel,
 		}, nil
 	}
-	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, cutoff time.Time) (web.RewindHistoryResult, error) {
-		return rewindWebHistory(ag, sel.Channel, sel.ChatID, cutoff)
+	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, messageID int64) (web.RewindHistoryResult, error) {
+		return rewindWebHistory(ag, sel.Channel, sel.ChatID, messageID)
 	}
 	callbacks.GetCWD = func(senderID string, sel web.SessionSelector) (string, error) {
 		return webSessionCWD(ag, sel.Channel, sel.ChatID), nil
@@ -739,9 +739,12 @@ func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
 	return dir
 }
 
-func rewindWebHistory(ag *agent.Agent, channelName, chatID string, cutoff time.Time) (web.RewindHistoryResult, error) {
+func rewindWebHistory(ag *agent.Agent, channelName, chatID string, messageID int64) (web.RewindHistoryResult, error) {
 	if ag == nil || ag.MultiSession() == nil {
 		return web.RewindHistoryResult{}, fmt.Errorf("multi-session not available")
+	}
+	if messageID <= 0 {
+		return web.RewindHistoryResult{}, fmt.Errorf("invalid message id")
 	}
 	sess, err := ag.MultiSession().GetOrCreateSession(channelName, chatID)
 	if err != nil {
@@ -767,11 +770,7 @@ func rewindWebHistory(ag *agent.Agent, channelName, chatID string, cutoff time.T
 			continue
 		}
 		selectedEligibleOrdinal++
-		if msg.Timestamp.Equal(cutoff) || msg.Timestamp.After(cutoff) {
-			if !msg.Timestamp.Equal(cutoff) {
-				selectedEligibleOrdinal--
-				break
-			}
+		if msg.ID == messageID {
 			draft = msg.Content
 			break
 		}
@@ -785,7 +784,7 @@ func rewindWebHistory(ag *agent.Agent, channelName, chatID string, cutoff time.T
 	} else {
 		checkpoint = result
 	}
-	if err := ag.MultiSession().TrimHistory(channelName, chatID, cutoff); err != nil {
+	if err := ag.MultiSession().TrimHistoryFromMessageID(channelName, chatID, messageID); err != nil {
 		return web.RewindHistoryResult{}, err
 	}
 	return web.RewindHistoryResult{Draft: draft, RewindResult: checkpoint}, nil

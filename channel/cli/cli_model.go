@@ -97,7 +97,7 @@ type cliModel struct {
 	tempStatus        string                       // 临时状态提示（自动过期）
 	pendingCmds       []tea.Cmd                    // commands queued by helpers (auto-drained in Update)
 	shouldQuit        bool                         // Smart quit: quit after current operation completes
-	trimHistoryFn     func(cutoff time.Time) error // /rewind: delete DB messages at or after cutoff timestamp
+	trimHistoryFn     func(int64) error             // /rewind: delete DB messages at or after message id
 	resetTokenStateFn func()                       // /rewind: clear stale prompt/completion token counts
 
 	// --- Message queue (typing 期间排队的消息) ---
@@ -320,6 +320,7 @@ type cliMessage struct {
 	role      string
 	content   string
 	timestamp time.Time
+	dbID      int64 // DB auto-increment id (0 for in-memory messages); used by rewind
 	isPartial bool
 	// --- turn identification for deterministic rendering ---
 	turnID uint64 // agentTurnID when this message was created (0 = not agent-generated)

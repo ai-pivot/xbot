@@ -4,7 +4,7 @@ package sqlite
 
 // SessionMessageSelectCols lists the non-system columns read from session_messages
 // by GetAllMessages, GetHistory, and related queries.
-const sessionMessageSelectCols = "role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at, turn_id"
+const sessionMessageSelectCols = "id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, reasoning_content, created_at, turn_id"
 
 // UserLLMSubscriptionSelectCols lists the columns read from user_llm_subscriptions
 // by List, ListAll, Get, GetSystemSubscription, and related queries.
