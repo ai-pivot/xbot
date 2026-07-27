@@ -244,7 +244,6 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				// Detail has authoritative iteration history. Discard pending iters
 				// from intermediate assistant messages — they lack elapsed/label data.
 				finishCurIter()
-				pendingIters = nil
 
 				var snaps []iterSnapshot
 				if jsonErr := json.Unmarshal([]byte(m.Detail), &snaps); jsonErr == nil {
@@ -274,6 +273,35 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 							Tools:     toolList,
 						})
 					}
+
+					// Restart recovery: if Detail has fewer iterations than the
+					// accumulated pendingIters (from tool_calls), the Detail only
+					// has the cancel tool (out.IterationHistory was empty because
+					// the resumed Run hadn't completed any iterations). Use the
+					// pendingIters (which have the real iterations from tool_calls)
+					// and append the cancel tools from Detail to the last iteration.
+					if len(iters) < len(pendingIters) {
+						if len(pendingIters) > 0 {
+							last := &pendingIters[len(pendingIters)-1]
+							for _, snap := range snaps {
+								for _, t := range snap.Tools {
+									label := t.Label
+									if label == "" {
+										label = t.Name
+									}
+									last.Tools = append(last.Tools, protocol.ToolProgress{
+										Name:      t.Name,
+										Label:     label,
+										Status:    t.Status,
+										Iteration: last.Iteration,
+									})
+								}
+							}
+						}
+						iters = pendingIters
+					}
+					pendingIters = nil
+
 					if len(iters) > 0 {
 						// [interrupted] messages carry cancelled-turn iteration history
 						// with full elapsed data. Use empty Content so the UI shows

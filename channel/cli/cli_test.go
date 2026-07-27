@@ -1898,6 +1898,81 @@ func TestConvert_AskUserDuplication(t *testing.T) {
 	}
 }
 
+func TestConvert_RestartCancelPreservesIterations(t *testing.T) {
+	// Bug: after server restart, the resumed Run has empty iterationSnapshots.
+	// handleCancelledRun creates [interrupted] with Detail = only user_cancelled.
+	// ConvertMessagesToHistory discards the accumulated tool_calls-based
+	// iterations (pendingIters = nil) and replaces them with the Detail
+	// iterations (only user_cancelled). Result: ALL real iterations disappear.
+	//
+	// Fix: ConvertMessagesToHistory merges pendingIters with Detail when
+	// Detail has fewer iterations (restart case). handleCancelledRun also
+	// reconstructs iterations from DB messages when out.IterationHistory is
+	// empty (root cause fix).
+
+	// Simulate the BUGGY Detail: only user_cancelled, no real iterations
+	cancelDetail := makeDetail([]iterSnapshot{
+		{Iteration: 1, Tools: []iterToolSnap{{Name: "user_cancelled", Status: "done"}}},
+	})
+
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "do something"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Read", Arguments: "{}"}}},
+		{Role: "tool", ToolCallID: "c1", ToolName: "Read", ToolArguments: "{}", Content: "file"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c2", Name: "Grep", Arguments: "{}"}}},
+		{Role: "tool", ToolCallID: "c2", ToolName: "Grep", ToolArguments: "{}", Content: "results"},
+		{Role: "assistant", Content: "[interrupted]", Detail: cancelDetail},
+	}
+	history := channel.ConvertMessagesToHistory(msgs)
+
+	// Find the assistant message with iterations
+	var assistantMsg *channel.HistoryMessage
+	for i := range history {
+		if history[i].Role == "assistant" && len(history[i].Iterations) > 0 {
+			assistantMsg = &history[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("no assistant message with iterations found")
+	}
+
+	// Should have 2 iterations (Read + Grep from tool_calls) + user_cancelled.
+	// BUG: only 1 iteration (user_cancelled) — real iterations discarded.
+	totalTools := 0
+	hasRead := false
+	hasGrep := false
+	hasCancelled := false
+	for _, iter := range assistantMsg.Iterations {
+		for _, tool := range iter.Tools {
+			totalTools++
+			switch tool.Name {
+			case "Read":
+				hasRead = true
+			case "Grep":
+				hasGrep = true
+			case "user_cancelled":
+				hasCancelled = true
+			}
+		}
+	}
+
+	if !hasRead || !hasGrep {
+		t.Errorf("expected Read and Grep tools to be preserved, got read=%v grep=%v (total tools=%d)",
+			hasRead, hasGrep, totalTools)
+		for i, iter := range assistantMsg.Iterations {
+			toolNames := []string{}
+			for _, tool := range iter.Tools {
+				toolNames = append(toolNames, tool.Name)
+			}
+			t.Logf("  iter %d: tools=%v", i, toolNames)
+		}
+	}
+	if !hasCancelled {
+		t.Error("expected user_cancelled tool to be present")
+	}
+}
+
 func TestConvert_NoToolCalls(t *testing.T) {
 	// Simple conversation without tool calls
 	msgs := []llm.ChatMessage{

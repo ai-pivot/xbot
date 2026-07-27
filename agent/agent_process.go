@@ -365,6 +365,19 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	var iterationHistoryJSON string
 	iterHistory := out.IterationHistory
 
+	// Restart recovery: after a graceful-shutdown restart, the resumed Run's
+	// iterationSnapshots is empty (the pre-restart iterations were in-memory
+	// only). When the user cancels the resumed Run, out.IterationHistory is
+	// empty. Without reconstruction, the [interrupted] Detail only has
+	// user_cancelled — all real iterations are lost. ConvertMessagesToHistory
+	// has a defense-in-depth merge, but reconstructing here ensures the Detail
+	// has the full iteration history (with content/reasoning from tool_calls).
+	if len(iterHistory) == 0 && tenantSession != nil {
+		if dbMsgs, err := tenantSession.GetMessages(); err == nil {
+			iterHistory = reconstructIterationsFromMessages(dbMsgs)
+		}
+	}
+
 	appendCancelToolSnapshot := func(snapshot IterationToolSnapshot) {
 		if len(iterHistory) == 0 {
 			iterHistory = []IterationSnapshot{{Iteration: 1}}
