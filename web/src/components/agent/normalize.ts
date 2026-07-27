@@ -137,24 +137,13 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
   // CompletedTools as if they belong to the current (in-flight) iteration,
   // duplicating them alongside the iterationHistory entry.
   //
-  // Fix: if iterationHistory already has an entry for this iteration, the
-  // stale data is a duplicate — clear it. If not, add a synthetic entry so
-  // TurnBody renders it, then clear from the live snapshot.
+  // Fix: clear content and completedTools from the live snapshot. Do NOT add
+  // a synthetic entry to iterationHistory — it would be appended at the END
+  // of the array (which is the BEGINNING if the store is empty), causing the
+  // content to appear BEFORE earlier iterations' tools. The delta protocol
+  // will deliver the correct data in order when the next iteration starts.
   let content = p.content ?? ''
   if (active.length === 0 && completed.length > 0) {
-    const snapshotIter = typeof p.iteration === 'number' ? p.iteration : 0
-    const hasIterInHistory = iterHistory.some((i) => i.iteration === snapshotIter)
-    if (!hasIterInHistory) {
-      // Not in iterationHistory — add a synthetic entry so the data isn't lost
-      iterHistory.push({
-        iteration: snapshotIter,
-        thinking: content,
-        reasoning: '',
-        tools: completed,
-        toolCount: completed.length,
-      })
-    }
-    // Clear from live snapshot — they belong to the completed iteration
     content = ''
     completed = []
   }
