@@ -1487,7 +1487,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			// stored under business tenant (channel=cli, chat_id=<abs cwd>) inside agent.processMessage().
 			trimmed := strings.TrimSpace(content)
 			if shouldEagerSaveUserMessage(msgChannel, trimmed) {
-				if err := eagerSaveUserMsg(wc.db, msgChannel, msgChatID, content); err != nil {
+				if _, err := eagerSaveUserMsg(wc.db, msgChannel, msgChatID, content); err != nil {
 					log.WithError(err).Warn("Failed to eager-save user message")
 				}
 				metadata["user_msg_eager_saved"] = "true"
@@ -1731,10 +1731,13 @@ func shouldEagerSaveUserMessage(channel, trimmedContent string) bool {
 // isImageExt returns true if the file extension is a common image format.
 // eagerSaveUserMsg persists a user message to session_messages immediately
 // so that a page-refresh can recover it while the backend is still processing.
-func eagerSaveUserMsg(db *sql.DB, channel, chatID, content string) error {
+// eagerSaveUserMsg persists a user message to session_messages immediately
+// and returns the DB auto-increment id. If the message is deduped (identical
+// content within 2s), returns the existing message's id.
+func eagerSaveUserMsg(db *sql.DB, channel, chatID, content string) (int64, error) {
 	tx, err := db.Begin()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer tx.Rollback()
 
@@ -1743,14 +1746,14 @@ func eagerSaveUserMsg(db *sql.DB, channel, chatID, content string) error {
 	_, err = tx.Exec(`INSERT OR IGNORE INTO tenants (channel, chat_id, created_at, last_active_at) VALUES (?, ?, ?, ?)`,
 		channel, chatID, now, now)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	var tenantID int64
 	if err := tx.QueryRow(
 		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", channel, chatID,
 	).Scan(&tenantID); err != nil {
-		return err
+		return 0, err
 	}
 	// Dedup by checking if the very last message for this tenant is an identical
 	// user message saved within the last 2 seconds (handles page-refresh double-submit).
@@ -1760,7 +1763,7 @@ func eagerSaveUserMsg(db *sql.DB, channel, chatID, content string) error {
 	// while datetime(?, '-2 seconds') returns UTC without timezone (e.g. '2026-05-24 05:59:58').
 	// Raw string comparison of 'T' > ' ' makes the check always TRUE, breaking the 2s window
 	// and deduping ALL duplicate-content messages regardless of time gap.
-	_, err = tx.Exec(`INSERT INTO session_messages (tenant_id, role, content, created_at)
+	result, err := tx.Exec(`INSERT INTO session_messages (tenant_id, role, content, created_at)
 	SELECT ?, 'user', ?, ?
 	WHERE NOT EXISTS (
 	SELECT 1 FROM session_messages
@@ -1769,9 +1772,24 @@ func eagerSaveUserMsg(db *sql.DB, channel, chatID, content string) error {
 	LIMIT 1
 	)`, tenantID, content, now, tenantID, content, now)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return tx.Commit()
+
+	// If the INSERT was deduped (0 rows affected), fetch the existing message's id.
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		var existingID int64
+		if err := tx.QueryRow(
+			`SELECT id FROM session_messages WHERE tenant_id = ? AND role = 'user' AND content = ? ORDER BY id DESC LIMIT 1`,
+			tenantID, content,
+		).Scan(&existingID); err != nil {
+			return 0, err
+		}
+		return existingID, tx.Commit()
+	}
+
+	id, _ := result.LastInsertId()
+	return id, tx.Commit()
 }
 
 // ---------------------------------------------------------------------------

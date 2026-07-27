@@ -245,7 +245,6 @@ export interface TurnStartInfo {
   content?: string
   request_id?: string
   sender_name?: string
-  user_message_id?: number
 }
 
 /** Session event (mirrors Go protocol/events.go SessionEvent). */

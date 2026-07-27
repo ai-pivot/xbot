@@ -182,19 +182,12 @@ export function AgentPanel({ params }: PanelProps) {
     onInjectUserMessage: (content, turnID, isNotification) => {
       chat.injectUserMessage(content, turnID, isNotification)
     },
-    onTurnStarted: (turnID, _trigger, userMessageID, requestID) => {
+    onTurnStarted: (_turnID, _trigger) => {
       // Optimistically mark the session as running so the input box switches
       // to cancel mode immediately. session(busy) may be lost or delayed by
       // SSE coalescing — turn_started is the earliest reliable signal.
       if (chatID) {
         store.setStatus({ channel: messageChannel, chatID }, 'running')
-      }
-      // Stamp the DB message id onto the optimistic user message so rewind
-      // works without a page refresh. Match by requestID (user-typed) or
-      // turnID (notification) to avoid race conditions when multiple turns
-      // overlap.
-      if (userMessageID) {
-        chat.stampUserMessageID(userMessageID, turnID, requestID)
       }
     },
     ws,

@@ -89,10 +89,6 @@ export interface UseChatMessagesResult {
   clearMessages: () => void
   /** Mark a destructive mutation — next reload discards live rows. */
   markDestructiveMutation: () => void
-  /** Stamp the DB message id onto an optimistic user message (from turn_started).
-   *  Matches by requestID (user-typed) or turnID (notification) to avoid race
-   *  conditions when multiple turns overlap. */
-  stampUserMessageID: (dbID: number, turnID?: number, requestID?: string) => void
 }
 
 /** File references resolved from an upload, ready to attach to a message. */
@@ -574,11 +570,12 @@ export function useChatMessages({
         file_names: attachments?.fileNames,
         file_sizes: attachments?.fileSizes,
         file_mimes: attachments?.fileMimes,
-      }).then((resp: unknown) => {
+      }).then((resp) => {
         // API succeeded — the message is now persisted on the backend.
-        // Use the server-returned timestamp so rewind (which matches by
-        // timestamp) works correctly. Client and server clocks may differ.
-        const serverTs = (resp as { timestamp?: number } | null)?.timestamp
+        // Use the server-returned message_id (DB auto-increment) so rewind
+        // works immediately without a page refresh. Also sync timestamp.
+        const msgID = resp?.message_id
+        const serverTs = resp?.timestamp
         const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
         if (optimisticID) {
           const sentID = optimisticID
@@ -588,6 +585,7 @@ export function useChatMessages({
               ...m,
               sending: false,
               persisted: true,
+              ...(msgID ? { dbID: msgID, id: `db-${msgID}` } : {}),
               ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
             } : m)
             messagesRef.current = next
@@ -702,43 +700,6 @@ export function useChatMessages({
     destructiveMutationGenRef.current += 1
   }, [])
 
-  // Stamp the DB message id onto an optimistic user message so rewind works
-  // without a page refresh. Called from turn_started after the backend
-  // persists the user message.
-  //
-  // Matching strategy (avoids race conditions when turns overlap):
-  // 1. requestID: exact match for user-typed messages (optimistic msg has
-  //    requestID set, TurnStartInfo carries the same value).
-  // 2. turnID > 0: exact match for notification messages (injectUserMessage
-  //    already stamped turnID on the message before stampUserMessageID runs).
-  // 3. Fallback: first user message without dbID (safety net for edge cases).
-  //
-  // Also stamps turnID onto the matched message (optimistic msgs start at 0).
-  const stampUserMessageID = useCallback((dbID: number, turnID?: number, requestID?: string) => {
-    messageMutationGenRef.current += 1
-    setMessages((prev) => {
-      let idx = -1
-      // Priority 1: match by requestID (user-typed messages)
-      if (requestID) {
-        idx = prev.findIndex((m) => m.role === 'user' && !m.dbID && m.requestID === requestID)
-      }
-      // Priority 2: match by turnID (notification messages — injectUserMessage
-      // already set turnID)
-      if (idx === -1 && turnID != null && turnID > 0) {
-        idx = prev.findIndex((m) => m.role === 'user' && !m.dbID && m.turnID === turnID)
-      }
-      // Fallback: first user message without dbID
-      if (idx === -1) {
-        idx = prev.findIndex((m) => m.role === 'user' && !m.dbID)
-      }
-      if (idx === -1) return prev
-      const next = [...prev]
-      next[idx] = { ...next[idx], dbID, id: `db-${dbID}`, turnID: turnID ?? next[idx].turnID }
-      messagesRef.current = next
-      return next
-    })
-  }, [])
-
   // ── SSE replay gap → reload message list ──
   // When SSE disconnects and reconnects, the existing seq-gap detection in
   // sseConnection calls restoreActiveProgress. If that recovery detects a real
@@ -768,7 +729,6 @@ export function useChatMessages({
     removeMessage,
     clearMessages,
     markDestructiveMutation,
-    stampUserMessageID,
   }
 }
 

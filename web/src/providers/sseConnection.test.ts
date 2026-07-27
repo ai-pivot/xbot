@@ -241,7 +241,7 @@ describe('SSEConnectionImpl', () => {
 
     const sending = connection.send({ type: 'message', chat_id: 'chat-a', content: 'hello' })
     await vi.runAllTimersAsync()
-    await expect(sending).resolves.toBeUndefined()
+    await expect(sending).resolves.toEqual({})
 
     expect(postAPIMock).toHaveBeenCalledTimes(3)
     expect(postAPIMock).toHaveBeenLastCalledWith('/api/message', expect.objectContaining({

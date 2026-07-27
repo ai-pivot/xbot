@@ -10,11 +10,19 @@ import type {
   WSMessage,
 } from './shared'
 
+/** Response from POST /api/message — includes the DB id of the persisted user message. */
+export interface SendMessageResponse {
+  chat_id?: string
+  channel?: string
+  message_id?: number
+  timestamp?: number
+}
+
 export interface WSConnection {
   /** True while the active session's SSE stream is open. */
   connected: boolean
   /** Map a client operation to its REST endpoint. */
-  send: (msg: WSClientMessage) => Promise<void>
+  send: (msg: WSClientMessage) => Promise<SendMessageResponse | void>
   /** Open one EventSource for a business chatID, closing the previous stream. */
   subscribe: (chatID: string, channel?: string) => void
   /** Close the active EventSource. */
