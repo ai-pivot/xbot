@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,6 +140,15 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 	withPhysicalChannel(metadata, identity.IsCLI)
 	if identity.FeishuUserID != "" {
 		metadata["feishu_user_id"] = identity.FeishuUserID
+	}
+	// Inject canonical user identity for agent layer.
+	// Without this, ResolveUserContext re-resolves via (msg.Channel, senderID),
+	// which misses when browsing a CLI session cross-channel (msg.Channel=="cli"
+	// but the web user identity is registered under channel=="web") → userID=0
+	// fallback → wrong LLM/subscription/settings + role downgrade.
+	if identity.CanonicalUserID > 0 {
+		metadata["user_id"] = strconv.FormatInt(identity.CanonicalUserID, 10)
+		metadata["user_role"] = identity.CanonicalRole
 	}
 
 	msgSenderID := identity.SenderID

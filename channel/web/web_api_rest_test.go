@@ -395,6 +395,30 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	}
 }
 
+func TestRESTMessageInjectsCanonicalIdentity(t *testing.T) {
+	db := newTestDB(t)
+	msgBus := bus.NewMessageBus()
+	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
+	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	// IdentityResolver resolves the web sender to canonical userID=42, role=admin.
+	wc.SetCallbacks(WebCallbacks{
+		IdentityResolver: fixedIdentityResolver{userID: 42, role: "admin"},
+	})
+
+	recorder := httptest.NewRecorder()
+	wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", []byte(`{"content":"hello"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("message status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	message := <-msgBus.Inbound
+	if message.Metadata["user_id"] != "42" || message.Metadata["user_role"] != "admin" {
+		t.Fatalf("canonical identity not injected into metadata: %#v", message.Metadata)
+	}
+}
+
 func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
