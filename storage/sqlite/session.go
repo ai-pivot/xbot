@@ -121,13 +121,11 @@ func (s *SessionService) GetAllMessages(tenantID int64) ([]llm.ChatMessage, erro
 	return replay.Messages, nil
 }
 
-// GetMessagesCount returns the number of messages for a tenant
+// GetMessagesCount returns the number of active messages for a tenant.
+// Uses a checkpoint-aware SQL count instead of full Replay() to avoid
+// deserializing all control records just to count messages.
 func (s *SessionService) GetMessagesCount(tenantID int64) (int, error) {
-	replay, err := s.Replay(tenantID)
-	if err != nil {
-		return 0, err
-	}
-	return len(replay.Messages), nil
+	return s.countActiveMessages(tenantID, false)
 }
 
 // GetUserMessageCount returns the number of user-role messages for a tenant.
@@ -135,17 +133,7 @@ func (s *SessionService) GetMessagesCount(tenantID int64) (int, error) {
 // (which include tool calls, assistant iterations, etc.).
 // Excludes display_only messages (cron results).
 func (s *SessionService) GetUserMessageCount(tenantID int64) (int, error) {
-	replay, err := s.Replay(tenantID)
-	if err != nil {
-		return 0, err
-	}
-	count := 0
-	for _, msg := range replay.Messages {
-		if msg.Role == "user" {
-			count++
-		}
-	}
-	return count, nil
+	return s.countActiveMessages(tenantID, true)
 }
 
 // Clear removes all messages for a tenant

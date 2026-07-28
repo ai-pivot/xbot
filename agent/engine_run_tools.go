@@ -448,8 +448,8 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 		mutations := make([]sqlite.MaskMutation, 0, len(maskedEntries))
 		for _, entry := range maskedEntries {
 			if entry.MessageIndex < 0 || entry.MessageIndex >= len(s.messages) || s.messages[entry.MessageIndex].ID == 0 {
-				log.Ctx(ctx).WithField("raw_idx", entry.MessageIndex).Warn("Mask skipped because target has no persisted history_id")
-				return
+				log.Ctx(ctx).WithField("raw_idx", entry.MessageIndex).Warn("Mask skipped: target has no persisted history_id")
+				continue
 			}
 			occurrence := 0
 			for i := 0; i < entry.MessageIndex; i++ {
@@ -459,9 +459,11 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 			}
 			mutations = append(mutations, sqlite.MaskMutation{TargetHistoryID: s.messages[entry.MessageIndex].ID, TargetOccurrence: occurrence, Content: entry.Content})
 		}
-		if err := s.cfg.Session.AppendMasks(mutations); err != nil {
-			log.Ctx(ctx).WithError(err).Error("Failed to append mask history; keeping original context")
-			return
+		if len(mutations) > 0 {
+			if err := s.cfg.Session.AppendMasks(mutations); err != nil {
+				log.Ctx(ctx).WithError(err).Error("Failed to append mask history; keeping original context")
+				return
+			}
 		}
 	}
 	s.messages = s.syncMessages(masked)

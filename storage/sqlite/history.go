@@ -1094,6 +1094,84 @@ func activeMessageIndex(messages []llm.ChatMessage, historyID int64) int {
 	return -1
 }
 
+// countActiveMessages returns the count of active messages for a tenant
+// without performing a full Replay(). It finds the latest checkpoint
+// (compress/prune), counts the snapshot messages from it, then counts
+// message records appended after the checkpoint. If no checkpoint exists,
+// it counts all message records directly.
+//
+// userOnly: if true, count only user-role messages; otherwise count all
+// non-display-only messages.
+func (s *SessionService) countActiveMessages(tenantID int64, userOnly bool) (int, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+
+	// Find the latest valid checkpoint.
+	checkpoint, found, err := latestCheckpointWith(conn, tenantID)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	if found {
+		// Count messages in the checkpoint snapshot.
+		var snapshot ContextSnapshot
+		if json.Unmarshal(checkpoint.Data, &snapshot) == nil {
+			for _, msg := range snapshot.Messages {
+				if msg.DisplayOnly {
+					continue
+				}
+				if userOnly && msg.Role != "user" {
+					continue
+				}
+				count++
+			}
+		}
+		// Count message records appended after the checkpoint.
+		row := conn.QueryRow(`
+			SELECT COUNT(*) FROM session_messages
+			WHERE tenant_id = ? AND record_type = 'message'
+			  AND COALESCE(display_only, 0) = 0
+			  AND id > ?
+		`, tenantID, checkpoint.HistoryID)
+		var afterCount int
+		if err := row.Scan(&afterCount); err != nil {
+			return 0, fmt.Errorf("count messages after checkpoint: %w", err)
+		}
+		count += afterCount
+	} else {
+		// No checkpoint — count all message records.
+		row := conn.QueryRow(`
+			SELECT COUNT(*) FROM session_messages
+			WHERE tenant_id = ? AND record_type = 'message'
+			  AND COALESCE(display_only, 0) = 0
+		`, tenantID)
+		if err := row.Scan(&count); err != nil {
+			return 0, fmt.Errorf("count messages: %w", err)
+		}
+		if userOnly {
+			// Re-count filtering by role — no checkpoint so all are raw records.
+			row := conn.QueryRow(`
+				SELECT COUNT(*) FROM session_messages
+				WHERE tenant_id = ? AND record_type = 'message'
+				  AND COALESCE(display_only, 0) = 0
+				  AND role = 'user'
+			`, tenantID)
+			if err := row.Scan(&count); err != nil {
+				return 0, fmt.Errorf("count user messages: %w", err)
+			}
+		}
+	}
+
+	return count, nil
+}
+
 func activeMessageIndexOccurrence(messages []llm.ChatMessage, historyID int64, occurrence int) int {
 	seen := 0
 	for i := range messages {
