@@ -451,6 +451,7 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 				}
 			}
 			history = append(history, HistoryMessage{
+				ID:               record.HistoryID,
 				HistoryID:        record.HistoryID,
 				Role:             message.Role,
 				Content:          message.Content,
@@ -471,7 +472,7 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 			continue
 		}
 		control := HistoryMessage{
-			HistoryID: record.HistoryID, Role: "control", Timestamp: record.CreatedAt, RecordType: string(record.Type),
+			ID: record.HistoryID, HistoryID: record.HistoryID, Role: "control", Timestamp: record.CreatedAt, RecordType: string(record.Type),
 			TargetHistoryID: record.TargetHistoryID, CompactedBy: record.CompactedBy,
 		}
 		control.Role = "system"

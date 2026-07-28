@@ -62,37 +62,8 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-function annotateSource(msg: WSMessage, channel: string, chatID: string): WSMessage {
-  return {
-    ...msg,
-    channel: msg.channel ?? channel,
-    chat_id: msg.chat_id ?? chatID,
-    session: msg.session
-      ? {
-          ...msg.session,
-          channel: msg.session.channel ?? channel,
-          chat_id: msg.session.chat_id ?? chatID,
-        }
-      : msg.session,
-    progress: msg.progress
-      ? {
-          ...msg.progress,
-          chat_id: msg.progress.chat_id ?? chatID,
-        }
-      : msg.progress,
-  }
-}
-
-/** Emit a message as SSEConnection would and flush the throttled store notify. */
-function emitAndFlush(msg: WSMessage, sourceChannel = 'web', sourceChatID = 'c1') {
-  act(() => {
-    currentWS.emit(annotateSource(msg, sourceChannel, sourceChatID))
-    const cbs = rafCbs.splice(0, rafCbs.length)
-    cbs.forEach((cb) => cb())
-  })
-}
-
-function emitRawAndFlush(msg: WSMessage) {
+/** Emit a WS message and flush the store's throttled notify within one act. */
+function emitAndFlush(msg: WSMessage) {
   act(() => {
     currentWS.emit(msg)
     const cbs = rafCbs.splice(0, rafCbs.length)
@@ -113,6 +84,49 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.liveMessage?.content).toBe('Hello world')
   })
 
+  it('preserves in-flight stream content on a synthetic session(busy) recovery', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'Hello world' } })
+    expect(result.current.liveMessage?.content).toBe('Hello world')
+    expect(result.current.isStreaming).toBe(true)
+
+    // SSE reconnect recovery synthesizes a session(busy) — it must NOT wipe
+    // the cumulative streamContent (which would restart the typewriter from 0).
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+
+    expect(result.current.liveMessage?.content).toBe('Hello world')
+    expect(result.current.isStreaming).toBe(true)
+  })
+
+  it('cancel ack after turn completion does not commit duplicate', () => {
+    const complete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+    // Simulate a normal turn completion first
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'prev reply' } })
+    emitAndFlush({ type: 'text', seq: 10, content: 'prev reply' })
+    expect(complete).toHaveBeenCalledTimes(1)
+
+    // User sends a new message then cancels before stream content arrives.
+    // session(busy) must NOT reset finalizedRef (only stream_content does).
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    // Cancel ack: text event with cancelled=true and empty content
+    // finalizedRef is still true from turn 1's text event → cancel ack
+    // sees finalizedRef=true → returns early (line 608) → no duplicate commit
+    emitAndFlush({ type: 'text', seq: 20, content: '', cancelled: true })
+    // onAssistantComplete must NOT be called again — no duplicate message
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(result.current.liveMessage).toBeNull()
+    expect(result.current.isStreaming).toBe(false)
+
+    // session(idle) must not trigger defensive finalize either
+    emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
+    expect(complete).toHaveBeenCalledTimes(1)
+  })
+
   it('finalizes on text: calls onAssistantComplete and clears the stream', () => {
     const complete = vi.fn()
     const { result } = renderHook(() =>
@@ -128,12 +142,12 @@ describe('useProgressStream event dispatch', () => {
       progress_history: '[{"iteration":1,"tools":[{"name":"Read","status":"done"}]}]',
     })
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), 42)
+    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), 42, undefined)
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
   })
 
-  it('clears terminal cache so A to B to A cannot restore completed progress', () => {
+  it('does not restore completed progress from a stale terminal cache snapshot', () => {
     const cacheKey = sessionCacheKey('web', 'c1')
     progressSnapshotCache.set(cacheKey, { phase: 'tool', completed_tools: [{ name: 'Read', status: 'done' }] })
     const complete = vi.fn()
@@ -144,7 +158,9 @@ describe('useProgressStream event dispatch', () => {
     act(() => {
       rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
     })
-    expect(result.current.isStreaming).toBe(true)
+    // Cache hydration was intentionally removed — history's active_progress is
+    // the single source. A stale cache entry must NOT restore live progress.
+    expect(result.current.isStreaming).toBe(false)
 
     emitAndFlush({ type: 'text', chat_id: 'c1', content: 'done' })
     expect(progressSnapshotCache.has(cacheKey)).toBe(false)
@@ -179,6 +195,8 @@ describe('useProgressStream event dispatch', () => {
     )
 
     emitAndFlush({ type: 'text', chat_id: 'c1', content: 'first' })
+    // session(busy) on a clean store resets finalizedRef for the new turn
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
     emitAndFlush({
       type: 'progress_structured',
       chat_id: 'c1',
@@ -194,22 +212,23 @@ describe('useProgressStream event dispatch', () => {
     expect(complete.mock.calls.map((call) => call[0])).toEqual(['first', 'second'])
   })
 
-  it('clears live progress when recovery reports a terminal phase', () => {
+  it('keeps live progress until a terminal event clears it (recovery phase=done)', () => {
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
     )
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'stale' } })
     expect(result.current.isStreaming).toBe(true)
 
+    // phase=done alone does NOT clear the store — it dispatches agent-idle but
+    // preserves iterations to avoid a flash. The text or session(idle) event
+    // is responsible for finalization.
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
-
-    expect(result.current.liveMessage).toBeNull()
-    expect(result.current.isStreaming).toBe(false)
-    expect(result.current.progressSnapshot.phase).toBe('')
+    expect(result.current.liveMessage).not.toBeNull()
 
     emitAndFlush({ type: 'text', chat_id: 'c1', content: 'final' })
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
+    expect(result.current.progressSnapshot.phase).toBe('')
   })
 
   it('commits text once when phase done arrives before the final text and idle', () => {
@@ -223,41 +242,7 @@ describe('useProgressStream event dispatch', () => {
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
 
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), undefined)
-  })
-
-  it('accepts the final text after an authoritative resync reset', () => {
-    const complete = vi.fn()
-    renderHook(() =>
-      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
-    )
-
-    emitAndFlush({ type: 'text', content: 'previous turn' })
-    emitAndFlush({ type: 'resync_required' })
-    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
-    emitAndFlush({ type: 'text', content: 'recovered final' })
-    emitAndFlush({ type: 'session', session: { action: 'idle' } })
-
-    expect(complete).toHaveBeenCalledTimes(2)
-    expect(complete.mock.calls.map((call) => call[0])).toEqual(['previous turn', 'recovered final'])
-  })
-
-  it('accepts one final text after history rewind without a busy event', () => {
-    const complete = vi.fn()
-    renderHook(() =>
-      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
-    )
-
-    emitAndFlush({
-      type: 'session',
-      session: { action: 'history_rewound', channel: 'web', chat_id: 'c1', target_history_id: 42 },
-    })
-    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
-    emitAndFlush({ type: 'text', content: 'replacement answer' })
-    emitAndFlush({ type: 'session', session: { action: 'idle' } })
-
-    expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete).toHaveBeenCalledWith('replacement answer', expect.any(Array), undefined)
+    expect(complete).toHaveBeenCalledWith('final answer', expect.any(Array), undefined, undefined)
   })
 
   it('handles session_reset text without appending assistant content', () => {
@@ -322,7 +307,7 @@ describe('useProgressStream event dispatch', () => {
 
     expect(complete).toHaveBeenCalledWith('', expect.arrayContaining([
       expect.objectContaining({ iteration: 1 }),
-    ]), undefined)
+    ]), undefined, undefined)
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -333,7 +318,7 @@ describe('useProgressStream event dispatch', () => {
     )
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'streamed' } })
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
-    expect(complete).toHaveBeenCalledWith('streamed', expect.any(Array), undefined)
+    expect(complete).toHaveBeenCalledWith('streamed', expect.any(Array), undefined, undefined)
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -360,7 +345,7 @@ describe('useProgressStream event dispatch', () => {
 
     expect(complete).toHaveBeenCalledWith('', expect.arrayContaining([
       expect.objectContaining({ iteration: 1 }),
-    ]), undefined)
+    ]), undefined, undefined)
     expect(result.current.liveMessage).toBeNull()
     expect(result.current.isStreaming).toBe(false)
   })
@@ -377,135 +362,13 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.liveMessage?.content).toBe('ours')
   })
 
-  it('clears progress and reloads only for an exact history_rewound session', () => {
-    const rewound = vi.fn()
-    const { result } = renderHook(() =>
-      useProgressStream({
-        chatID: 'c1',
-        channel: 'web',
-        onHistoryRewound: rewound,
-        ws: currentWS as unknown as WSConnection,
-      }),
-    )
-    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'ours' } })
-    emitAndFlush({
-      type: 'session',
-      session: { action: 'history_rewound', channel: 'cli', chat_id: 'c1', target_history_id: 40 },
-    })
-    expect(rewound).not.toHaveBeenCalled()
-    expect(result.current.liveMessage?.content).toBe('ours')
-
-    emitAndFlush({
-      type: 'session',
-      seq: 8,
-      session: { action: 'history_rewound', channel: 'web', chat_id: 'c1', target_history_id: 42 },
-    })
-    expect(rewound).toHaveBeenCalledWith(42, 8)
-    expect(result.current.liveMessage).toBeNull()
-  })
-
-  it('rejects every global event while no exact chat is selected', () => {
-    const complete = vi.fn()
-    const rewound = vi.fn()
-    const { result } = renderHook(() =>
-      useProgressStream({
-        chatID: null,
-        onAssistantComplete: complete,
-        onHistoryRewound: rewound,
-        ws: currentWS as unknown as WSConnection,
-      }),
-    )
-
-    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'foreign' } }, 'web', 'other')
-    emitAndFlush({ type: 'text', content: 'foreign final' }, 'web', 'other')
-    emitAndFlush({
-      type: 'session',
-      session: { action: 'history_rewound', target_history_id: 9 },
-    }, 'web', 'other')
-
-    expect(complete).not.toHaveBeenCalled()
-    expect(rewound).not.toHaveBeenCalled()
-    expect(result.current.liveMessage).toBeNull()
-  })
-
-  it('enters a visible busy state before the first progress payload', () => {
-    const { result } = renderHook(() =>
-      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
-    )
-
-    emitAndFlush({ type: 'session', session: { action: 'busy' } })
-
-    expect(result.current.isStreaming).toBe(true)
-    expect(result.current.liveMessage).not.toBeNull()
-    expect(result.current.progressSnapshot.phase).toBe('busy')
-  })
-
-  it('rejects session events without a source identity', () => {
-    const rewound = vi.fn()
-    renderHook(() =>
-      useProgressStream({
-        chatID: 'c1',
-        channel: 'web',
-        onHistoryRewound: rewound,
-        ws: currentWS as unknown as WSConnection,
-      }),
-    )
-
-    emitRawAndFlush({
-      type: 'session',
-      session: { action: 'history_rewound', target_history_id: 42 },
-    })
-
-    expect(rewound).not.toHaveBeenCalled()
-  })
-
-  it('isolates text and reset events for the same raw chat ID across channels', () => {
-    const webComplete = vi.fn()
-    const cliComplete = vi.fn()
-    const webReset = vi.fn()
-    const cliReset = vi.fn()
-    renderHook(() =>
-      useProgressStream({
-        chatID: 'shared',
-        channel: 'web',
-        onAssistantComplete: webComplete,
-        onSessionReset: webReset,
-        ws: currentWS as unknown as WSConnection,
-      }),
-    )
-    renderHook(() =>
-      useProgressStream({
-        chatID: 'shared',
-        channel: 'cli',
-        onAssistantComplete: cliComplete,
-        onSessionReset: cliReset,
-        ws: currentWS as unknown as WSConnection,
-      }),
-    )
-
-    emitAndFlush({ type: 'text', content: 'web reply' }, 'web', 'shared')
-    expect(webComplete).toHaveBeenCalledWith('web reply', expect.any(Array), undefined)
-    expect(cliComplete).not.toHaveBeenCalled()
-
-    emitAndFlush(
-      { type: 'text', content: 'reset', metadata: { session_reset: 'true' } },
-      'cli',
-      'shared',
-    )
-    expect(cliReset).toHaveBeenCalledTimes(1)
-    expect(webReset).not.toHaveBeenCalled()
-  })
-
-  it('ignores stream_content from a different source chat', () => {
+  it('ignores stream_content from a different chat (top-level chat_id filter)', () => {
     const { result } = renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }))
-    emitAndFlush(
-      {
-        type: 'stream_content',
-        progress: { stream_content: 'not ours' },
-      },
-      'web',
-      'other',
-    )
+    emitAndFlush({
+      type: 'stream_content',
+      chat_id: 'other',
+      progress: { stream_content: 'not ours' },
+    })
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -517,10 +380,6 @@ describe('useProgressStream event dispatch', () => {
           phase: 'thinking',
           iteration: 3,
           stream_content: 'resumed stream',
-          reasoning: 'last reasoning',
-          reasoning_stream_content: 'live reasoning',
-          token_usage: { prompt_tokens: 120, completion_tokens: 8, total_tokens: 128 },
-          streaming_tools: [{ name: 'Write', status: 'generating' }],
           active_tools: [{ name: 'Shell', status: 'running' }],
           completed_tools: [{ name: 'Read', status: 'done', summary: 'ok' }],
           // active_progress iteration_history uses the slim histIterSnapshot
@@ -556,58 +415,6 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.progressSnapshot.iterationHistory[0].tools[0].name).toBe('Grep')
     expect(result.current.progressSnapshot.subAgents[0].role).toBe('review')
     expect(result.current.progressSnapshot.subAgents[0].children?.[0].role).toBe('fix')
-    expect(result.current.progressSnapshot.reasoningStreamContent).toBe('live reasoning')
-    expect(result.current.progressSnapshot.lastReasoning).toBe('last reasoning')
-    expect(result.current.progressSnapshot.streamingTools[0].name).toBe('Write')
-    expect(result.current.progressSnapshot.tokenUsage).toEqual({
-      promptTokens: 120,
-      completionTokens: 8,
-      totalTokens: 128,
-    })
-  })
-
-  it('reopens finalization when active progress is hydrated for a later turn', () => {
-    const complete = vi.fn()
-    const { rerender } = renderHook(
-      ({ initialProgress }) => useProgressStream({
-        chatID: 'c1',
-        initialProgress,
-        onAssistantComplete: complete,
-        ws: currentWS as unknown as WSConnection,
-      }),
-      { initialProps: { initialProgress: null as ProgressEvent | null } },
-    )
-
-    emitAndFlush({ type: 'text', content: 'first' })
-    emitAndFlush({ type: 'session', session: { action: 'busy' } })
-    rerender({ initialProgress: { phase: 'processing', stream_content: 'resumed' } })
-    act(() => {
-      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
-    })
-    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
-    emitAndFlush({ type: 'text', content: 'second' })
-
-    expect(complete.mock.calls.map((call) => call[0])).toEqual(['first', 'second'])
-  })
-
-  it('does not resurrect stale active progress after finalization', () => {
-    const { result, rerender } = renderHook(
-      ({ initialProgress }) => useProgressStream({
-        chatID: 'c1',
-        initialProgress,
-        ws: currentWS as unknown as WSConnection,
-      }),
-      { initialProps: { initialProgress: null as ProgressEvent | null } },
-    )
-
-    emitAndFlush({ type: 'text', content: 'final' })
-    rerender({ initialProgress: { phase: 'processing', stream_content: 'stale' } })
-    act(() => {
-      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
-    })
-
-    expect(result.current.isStreaming).toBe(false)
-    expect(result.current.liveMessage).toBeNull()
   })
 
   it('installs a busy snapshot watermark and ignores replayed semantic logs', () => {
@@ -658,6 +465,30 @@ describe('useProgressStream event dispatch', () => {
       }),
     )
     expect(result.current.isStreaming).toBe(false)
+    expect(result.current.liveMessage).toBeNull()
+  })
+
+  it('liveMessage is null when initialProgress has phase=running but no active_tools (thinking indicator should show via busy placeholder)', () => {
+    // BUG: switching to a busy session where the snapshot has no active_tools
+    // (captured between iterations or during thinking). historyProgressToLive
+    // sets streaming=true, which made hasVisibleProgress return true → liveMessage
+    // non-null but empty → suppresses the "思考中…" busy placeholder.
+    const { result } = renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        initialProgress: {
+          phase: 'running',
+          iteration: 2,
+          seq: 5,
+          // NO active_tools, NO stream_content — agent is between iterations
+        },
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+    act(() => {
+      rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+    })
+    // liveMessage must be null so MessageList's busy placeholder shows "思考中…"
     expect(result.current.liveMessage).toBeNull()
   })
 
@@ -759,45 +590,382 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.isStreaming).toBe(false)
   })
 
-  it('cancel: preserves already-rendered content and appends user_cancelled tool', () => {
+  it('regression: todos survive busy→PhaseDone→text lifecycle', () => {
+    // Bug: PhaseDone discarded its todos (setStructuredTools early-returned on
+    // phase==='done'), so todos were lost at the turn boundary and only
+    // reappeared on the next history reload (idle) — never during busy.
+    const todos = [
+      { id: 1, text: 'task A', done: true },
+      { id: 2, text: 'task B', done: false },
+    ]
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+
+    // mid-busy structured event carries todos (TodoWrite just ran)
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 1, phase: 'tool_exec', iteration: 1, todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+
+    // PhaseDone carries todos too — must NOT be discarded
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 2, phase: 'done', todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+
+    // text finalize preserves todos
+    emitAndFlush({ type: 'text', content: 'reply', chat_id: 'c1' })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+  })
+})
+
+describe('cancel ack: commits via onAssistantComplete with server data', () => {
+  it('cancel DOES call onAssistantComplete with server iterations', () => {
+    const complete = vi.fn()
+    const cancelComplete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        onAssistantComplete: complete,
+        onCancelComplete: cancelComplete,
+        ws: currentWS as unknown as WSConnection,
+      }),
+    )
+
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial reply' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+
+    // Cancel ack with server progress_history (includes user_cancelled)
+    const serverHistory = JSON.stringify([{
+      iteration: 1,
+      tools: [
+        { name: 'Read', status: 'done', summary: 'read file' },
+        { name: 'user_cancelled', status: 'done', summary: 'cancelled by user' },
+      ],
+    }])
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
+
+    // Cancel DOES call onAssistantComplete (commits the message)
+    expect(complete).toHaveBeenCalledTimes(1)
+    const [content, iterations] = complete.mock.calls[0]
+    expect(content).toBe('partial reply') // streamContent as final text
+    expect(iterations).toHaveLength(1)
+    const allTools = iterations[0].tools.map((t: { name: string }) => t.name)
+    expect(allTools).toContain('user_cancelled')
+    // Store is reset after commit
+    expect(result.current.liveMessage).toBeNull()
+    expect(cancelComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancel merges live-only iterations with server data', () => {
+    const complete = vi.fn()
+    const cancelComplete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, onCancelComplete: cancelComplete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'hello' } })
+    emitAndFlush({ type: 'progress_structured', progress: {
+      phase: 'tool_exec', iteration: 2,
+      iteration_history: [
+        { iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 },
+        { iteration: 2, thinking: '', reasoning: '', tools: [{ name: 'Grep', status: 'done' }], toolCount: 1 },
+      ],
+    } })
+
+    const serverHistory = JSON.stringify([{
+      iteration: 2,
+      tools: [{ name: 'Grep', status: 'done' }, { name: 'user_cancelled', status: 'done' }],
+    }])
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
+
+    // Cancel DOES call onAssistantComplete with merged iterations
+    expect(complete).toHaveBeenCalledTimes(1)
+    const [, iterations] = complete.mock.calls[0]
+    const iterNums = iterations.map((i: { iteration: number }) => i.iteration).sort()
+    expect(iterNums).toContain(1) // live-only
+    expect(iterNums).toContain(2) // from server
+  })
+})
+
+describe('cancel: no duplicate message', () => {
+  it('session(idle) before cancel ack does NOT call onAssistantComplete', () => {
     const complete = vi.fn()
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
     )
 
-    // Simulate streaming content that the user already sees
-    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'I was writing this' } })
-    expect(result.current.liveMessage?.content).toBe('I was writing this')
+    // LLM generated content
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: '已修复并部署' } })
+    expect(result.current.liveMessage?.content).toBe('已修复并部署')
 
-    // Cancel: backend sends content="" with cancelled=true
+    // PhaseDone (progressFinalizer) — preserves streamContent
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+
+    // session(idle) arrives BEFORE text(cancelled=true)
+    emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
+
+    // Defensive finalize should NOT commit — PhaseDone already fired (phaseDoneRef=true)
+    // The cancel ack is the authoritative finalizer.
+    expect(complete).not.toHaveBeenCalled()
+
+    // Cancel ack arrives — NOW commit
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
-
-    // onAssistantComplete must be called with the PRESERVED streaming content
     expect(complete).toHaveBeenCalledTimes(1)
-    const [finalText, iterations] = complete.mock.calls[0]
-    expect(finalText).toBe('I was writing this') // NOT empty
-    // Must include user_cancelled tool
-    const allTools = iterations.flatMap((it: { tools: { name: string }[] }) => it.tools)
-    expect(allTools.some((t: { name: string }) => t.name === 'user_cancelled')).toBe(true)
-    // Store is cleared after finalize
-    expect(result.current.isStreaming).toBe(false)
     expect(result.current.liveMessage).toBeNull()
   })
+})
 
-  it('cancel with no streaming content still gets user_cancelled tool', () => {
+describe('cancel: iteration preservation', () => {
+  it('cancel commits content + iterations (no vanish)', () => {
+    const complete = vi.fn()
+    const cancelComplete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, onCancelComplete: cancelComplete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial reply' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
+
+    const serverHistory = JSON.stringify([{
+      iteration: 1,
+      tools: [{ name: 'Read', status: 'done' }, { name: 'user_cancelled', status: 'done' }],
+    }])
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
+
+    // Cancel DOES call onAssistantComplete — commits the message
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(cancelComplete).toHaveBeenCalledTimes(1)
+    // Store is reset after commit — liveMessage is null
+    expect(result.current.liveMessage).toBeNull()
+  })
+})
+
+describe('bang command: text without PhaseDone clears busy', () => {
+  it('dispatches agent-idle when text event arrives without PhaseDone', () => {
+    const complete = vi.fn()
+    const idleSpy = vi.fn()
+    window.addEventListener('agent-idle', idleSpy)
+
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Bang command: session(busy) → text → session(idle)
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'bang output' })
+
+    // onAssistantComplete should be called with the bang output
+    expect(complete).toHaveBeenCalledWith('bang output', [], undefined, undefined)
+
+    // agent-idle should be dispatched (clears busy even without PhaseDone)
+    expect(idleSpy).toHaveBeenCalled()
+
+    window.removeEventListener('agent-idle', idleSpy)
+  })
+})
+
+describe('busy: no iteration lost under packet loss', () => {
+  it('preserves iteration 1 when its progress_structured delta is dropped', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Iteration 1: tool running (no iteration_history yet — delta comes later)
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: {
+      phase: 'tool_exec', iteration: 1,
+      active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+    } })
+    // SIMULATE PACKET LOSS: the event that would carry iter 1's delta is dropped
+
+    // Iteration 2 starts — carries iter 1 as a delta
+    emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
+      phase: 'tool_exec', iteration: 2,
+      active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }],
+      iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
+    } })
+
+    // iter 1 must survive in iterationHistory
+    const iter1 = result.current.progressSnapshot.iterationHistory.find(i => i.iteration === 1)
+    expect(iter1).toBeDefined()
+    expect(iter1?.tools[0]?.name).toBe('Read')
+  })
+
+  it('preserves all iterations when multiple delta events are dropped', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Iteration 1
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: {
+      phase: 'tool_exec', iteration: 1,
+      active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+    } })
+    // Delta for iter 1 DROPPED
+
+    // Iteration 2 (carries iter 1 delta)
+    emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
+      phase: 'tool_exec', iteration: 2,
+      active_tools: [{ name: 'Grep', status: 'running', iteration: 2 }],
+      iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
+    } })
+    // Delta for iter 2 DROPPED
+
+    // Iteration 3 (carries iter 2 delta — server sends only 0-1 entries)
+    emitAndFlush({ type: 'progress_structured', seq: 5, progress: {
+      phase: 'tool_exec', iteration: 3,
+      active_tools: [{ name: 'Shell', status: 'running', iteration: 3 }],
+      iteration_history: [{ iteration: 2, thinking: '', reasoning: '', tools: [{ name: 'Grep', status: 'done', iteration: 2 }], toolCount: 1 }],
+    } })
+
+    const iters = result.current.progressSnapshot.iterationHistory.map(i => i.iteration).sort()
+    // Both iter 1 and iter 2 must be present
+    expect(iters).toContain(1)
+    expect(iters).toContain(2)
+  })
+
+  it('recovers lost iteration via restoreActiveProgress (same seq, full history)', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    // seq 1: iter 1 tool running
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: {
+      phase: 'tool_exec', iteration: 1,
+      active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+    } })
+    // seq 2: DROPPED (would have carried iter 1's completed_tools + delta)
+
+    // seq 3: iter 2 starts (NO delta — server only sends 0-1 entries)
+    emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
+      phase: 'tool_exec', iteration: 2,
+      active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }],
+    } })
+
+    // seq gap detected → restoreActiveProgress fires → fetches get_active_progress
+    // The backend returns seq=3 (same as last event) WITH full iteration_history
+    // (from a.iterationHistories, which has iter 1 even though the delta was dropped)
+    emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
+      phase: 'tool_exec', iteration: 2,
+      active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }],
+      iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
+    } })
+
+    const snap = result.current.progressSnapshot
+    // iter 1 MUST be recovered — the eventSeq check must NOT drop iterationHistory
+    expect(snap.iterationHistory.find(i => i.iteration === 1)).toBeDefined()
+    expect(snap.iterationHistory.find(i => i.iteration === 1)?.tools[0]?.name).toBe('Read')
+  })
+})
+
+describe('cancel: assistant message must not vanish', () => {
+  it('cancel commits content with non-empty stream', () => {
+    const complete = vi.fn()
+    const cancelComplete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, onCancelComplete: cancelComplete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // session(busy) → stream_content → progress_structured → PhaseDone → cancel
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'I am working on' } })
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: {
+      phase: 'tool_exec', iteration: 1,
+      active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+    } })
+    emitAndFlush({ type: 'progress_structured', seq: 2, progress: { phase: 'done' } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+
+    // Cancel DOES call onAssistantComplete — commits the content
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(cancelComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT commit when cancel has no content AND no iterations', () => {
     const complete = vi.fn()
     renderHook(() =>
       useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
     )
 
-    // Cancel with no prior streaming (agent was mid-tool, no text yet)
-    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 1 } })
+    // Cancel immediately — no stream content, no iterations
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({ type: 'progress_structured', seq: 1, progress: { phase: 'done' } })
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
 
-    expect(complete).toHaveBeenCalledTimes(1)
-    const [finalText, iterations] = complete.mock.calls[0]
-    expect(finalText).toBe('') // no content was rendered
-    const allTools = iterations.flatMap((it: { tools: { name: string }[] }) => it.tools)
-    expect(allTools.some((t: { name: string }) => t.name === 'user_cancelled')).toBe(true)
+    // onAssistantComplete should NOT be called — there's nothing to commit
+    // (empty content + no iterations = no visible assistant message)
+    expect(complete).not.toHaveBeenCalled()
+  })
+
+  // ── Turn-ID / Iteration-ID continuity assertions ──
+
+  it('warns on TurnID regression (backwards)', () => {
+    const warnSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    // First turn: TurnID=5
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 5, chat_id: 'web:c1' } })
+    // Second turn: TurnID=3 (REGRESSION)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 3, chat_id: 'web:c1' } })
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('TURN_ID_INVARIANT_VIOLATION'),
+      expect.objectContaining({ prev: 5, next: 3 }),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('warns on TurnID gap (skipped number)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 5, chat_id: 'web:c1' } })
+    // Gap: 5 → 8 (skipped 6, 7)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 8, chat_id: 'web:c1' } })
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('TURN_ID_GAP'),
+      expect.objectContaining({ prev: 5, next: 8, gap: 2 }),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('warns on iteration gap within a turn', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    // Start turn
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    // Iteration 1 (1-based)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 1, chat_id: 'web:c1' } })
+    // Iteration 3 (GAP — skipped 2)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 3, chat_id: 'web:c1' } })
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('ITER_ID_GAP'),
+      expect.objectContaining({ prev: 1, next: 3, gap: 1 }),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('does NOT warn on normal sequential iteration advance (1 → 2 → 3)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 2, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 3, chat_id: 'web:c1' } })
+    expect(warnSpy).not.toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+    errorSpy.mockRestore()
   })
 })

@@ -34,15 +34,17 @@ describe('SubAgentProgressTree', () => {
     expect(container.textContent).toContain('searching codebase')
   })
 
-  it('does not render a completed top-level SubAgent twice', () => {
+  it('does not render top-level done nodes (shown in FoldedToolGroup instead)', () => {
     const nodes: WebSubAgentProgress[] = [
       { role: 'dev-node', instance: 'fix-1', status: 'done', desc: 'completed task' },
     ]
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
+    // Top-level done/error nodes are filtered out — completed SubAgents are
+    // rendered by FoldedToolGroup as tool-call rows to avoid duplication.
     expect(container.firstChild).toBeNull()
   })
 
-  it('does not render a failed top-level SubAgent twice', () => {
+  it('does not render top-level error nodes', () => {
     const nodes: WebSubAgentProgress[] = [
       { role: 'reviewer', instance: 'cr-1', status: 'error', desc: 'failed' },
     ]
@@ -75,16 +77,16 @@ describe('SubAgentProgressTree', () => {
     expect(container.querySelector('.animate-pulse')).toBeNull()
   })
 
-  it('renders only active top-level nodes', () => {
+  it('renders multiple top-level nodes', () => {
     const nodes: WebSubAgentProgress[] = [
       { role: 'explore', instance: 'a', status: 'running', desc: 'search A' },
-      { role: 'explore', instance: 'b', status: 'done', desc: 'search B' },
+      { role: 'explore', instance: 'b', status: 'running', desc: 'search B' },
     ]
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
     expect(container.textContent).toContain('explore:a')
+    expect(container.textContent).toContain('explore:b')
     expect(container.textContent).toContain('search A')
-    expect(container.textContent).not.toContain('explore:b')
-    expect(container.textContent).not.toContain('search B')
+    expect(container.textContent).toContain('search B')
   })
 
   it('renders node without instance', () => {

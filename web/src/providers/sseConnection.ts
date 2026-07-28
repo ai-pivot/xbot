@@ -15,7 +15,7 @@ import type {
   WSClientMessage,
   WSMessage,
 } from '@/types/shared'
-import type { WSConnection } from '@/types/ws'
+import type { WSConnection, SendMessageResponse } from '@/types/ws'
 
 const STATUS_POLL_MS = 5_000
 const REPLAY_GRACE_MS = 1_000
@@ -33,7 +33,6 @@ export const SSE_EVENT_TYPES = [
   'session',
   'runner_status',
   'sync_progress',
-  'resync_required',
 ] as const
 
 type Handler<T> = (payload: T) => void
@@ -53,6 +52,12 @@ export class SSEConnectionImpl implements WSConnection {
   private sessionVersion = 0
   private progressVersion = 0
   private recoveryRequestVersion = 0
+  // Prevents concurrent restoreActiveProgress calls and the self-perpetuating
+  // loop: restoreActiveProgress dispatches a progress_structured event that may
+  // carry a seq gap, which would trigger restoreActiveProgress again → infinite
+  // RPC storm. Only one recovery is in-flight at a time; subsequent gap
+  // detections are no-ops while it runs.
+  private recoveryInProgress = false
 
   private messageHandlers = new Set<Handler<WSMessage>>()
   private sessionHandlers = new Set<Handler<SessionEvent>>()
@@ -77,19 +82,24 @@ export class SSEConnectionImpl implements WSConnection {
     const hadCursor = hasLastSeq(cacheKey)
     const previousSeq = getLastSeq(cacheKey)
     setLastSeq(cacheKey, seq)
+    // Only restart if the source is OPEN (readyState === 1). If it's still
+    // CONNECTING (readyState === 0), the connecting EventSource already read
+    // the cursor from cache at connect() time — restarting would close it
+    // and create a duplicate connection. The cursor is already persisted;
+    // when events arrive, handleEvent updates lastSentSeq naturally.
     if (
       (!hadCursor || seq > previousSeq) &&
       this._chatID === chatID &&
       this._channel === channel &&
-      this.source
+      this.source &&
+      this.source.readyState === 1
     ) this.restartSource()
   }
 
-  async send(msg: WSClientMessage): Promise<void> {
+  async send(msg: WSClientMessage): Promise<SendMessageResponse | void> {
     switch (msg.type) {
       case 'message':
-        await this.sendMessageWithRetry(msg)
-        return
+        return this.sendMessageWithRetry(msg)
       case 'cancel':
         await postAPI('/api/cancel', sessionBody(msg))
         return
@@ -170,7 +180,7 @@ export class SSEConnectionImpl implements WSConnection {
     for (const eventType of SSE_EVENT_TYPES) {
       source.addEventListener(eventType, (event) => {
         if (this.source !== source) return
-        this.handleEvent(eventType, event as MessageEvent<string>, channel, chatID)
+        this.handleEvent(eventType, event as MessageEvent<string>)
       })
     }
     source.onopen = () => {
@@ -198,11 +208,15 @@ export class SSEConnectionImpl implements WSConnection {
     this.source = null
     this.reconnecting = false
     this.eventsSinceOpen = 0
-    this.setConnected(false)
+    // Don't set connected=false — we're immediately reconnecting via connect().
+    // setConnected(false) causes ws identity to change, triggering a re-render
+    // flash across all hooks that depend on ws.connected (useSessionContext,
+    // useLLMSettings, etc.). The onerror handler will set connected=false if
+    // the reconnection fails.
     this.connect()
   }
 
-  private handleEvent(eventType: string, event: MessageEvent<string>, sourceChannel: string, sourceChatID: string): void {
+  private handleEvent(eventType: string, event: MessageEvent<string>): void {
     let msg: WSMessage
     try {
       msg = JSON.parse(event.data) as WSMessage
@@ -210,19 +224,11 @@ export class SSEConnectionImpl implements WSConnection {
       return
     }
     msg.type = eventType
-    annotateSourceIdentity(msg, sourceChannel, sourceChatID)
-    const unsequencedResync =
-      msg.type === 'resync_required' && !(typeof msg.seq === 'number' && msg.seq > 0)
-    const seq = unsequencedResync ? 0 : (msg.seq ?? parseSequence(event.lastEventId))
+    const seq = msg.seq ?? parseSequence(event.lastEventId)
     const chatID = this._chatID
     const channel = this._channel
     const cacheKey = chatID ? sessionCacheKey(channel, chatID) : null
     let replayGap = false
-    let gapFromSeq = 0
-    if (cacheKey && unsequencedResync) {
-      resetLastSeq(cacheKey)
-      setLastSeq(cacheKey, parseSequence(msg.metadata?.baseline_seq ?? ''))
-    }
     if (cacheKey && seq > 0) {
       let previousSeq = getLastSeq(cacheKey)
       if (seq < previousSeq) {
@@ -231,9 +237,21 @@ export class SSEConnectionImpl implements WSConnection {
       } else if (seq === previousSeq) {
         return
       }
-      if (seq > previousSeq + 1 && msg.type !== 'resync_required') {
-        replayGap = true
-        gapFromSeq = previousSeq
+      if (seq > previousSeq + 1) {
+        // Only trigger recovery for stateful events. Stateless events
+        // (stream_content, sync_progress, runner_status) are coalesced by the
+        // Hub — the server assigns a seq to each event but only delivers the
+        // latest. A seq gap on a stateless event is normal coalescing
+        // (intermediate values were merged), NOT a lost event. Triggering
+        // restoreActiveProgress here caused an RPC storm: LLM streams at
+        // ~20 tokens/sec, each coalesced stream_content triggered a
+        // get_active_progress RPC.
+        const isStateless = msg.type === 'stream_content'
+          || msg.type === 'sync_progress'
+          || msg.type === 'runner_status'
+        if (!isStateless) {
+          replayGap = true
+        }
       }
       msg.seq = seq
       setLastSeq(cacheKey, seq)
@@ -244,18 +262,7 @@ export class SSEConnectionImpl implements WSConnection {
       bumpProgressGeneration(cacheKey)
     }
     this.dispatch(msg)
-    if (chatID && replayGap) {
-      this.dispatch({
-        type: 'history_gap',
-        channel,
-        chat_id: chatID,
-        metadata: {
-          from_seq: String(gapFromSeq),
-          to_seq: String(seq),
-        },
-      })
-      void this.restoreActiveProgress(channel, chatID)
-    }
+    if (chatID && replayGap) void this.restoreActiveProgress(channel, chatID)
   }
 
   private dispatch(msg: WSMessage): void {
@@ -276,7 +283,7 @@ export class SSEConnectionImpl implements WSConnection {
     this.messageHandlers.forEach((handler) => handler(msg))
   }
 
-  private async sendMessageWithRetry(msg: WSClientMessage): Promise<void> {
+  private async sendMessageWithRetry(msg: WSClientMessage): Promise<SendMessageResponse> {
     const requestID = msg.id || newMessageRequestID()
     const body = {
       id: requestID,
@@ -290,13 +297,14 @@ export class SSEConnectionImpl implements WSConnection {
     }
     for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt += 1) {
       try {
-        await postAPI('/api/message', body)
-        return
+        const result = await postAPI<SendMessageResponse>('/api/message', body)
+        return result
       } catch (error) {
         if (attempt === SEND_RETRY_DELAYS_MS.length) throw error
         await delay(SEND_RETRY_DELAYS_MS[attempt])
       }
     }
+    throw new Error('send: exhausted retries') // unreachable — loop always returns or throws
   }
 
   private scheduleReplayFallback(source: EventSource, channel: string, chatID: string): void {
@@ -309,9 +317,14 @@ export class SSEConnectionImpl implements WSConnection {
   }
 
   private async restoreActiveProgress(channel: string, chatID: string): Promise<void> {
+    if (this.recoveryInProgress) return
+    this.recoveryInProgress = true
     const sessionVersion = this.sessionVersion
     const progressVersion = this.progressVersion
     const recoveryRequestVersion = ++this.recoveryRequestVersion
+    const cacheKey = sessionCacheKey(channel, chatID)
+    // Snapshot the cached progress BEFORE recovery to detect TurnID changes.
+    const cachedProgress = cacheKey ? progressSnapshotCache.get(cacheKey) : undefined
     try {
       const progress = await this.rpc<ProgressEvent | null>('get_active_progress', {
         channel,
@@ -324,25 +337,52 @@ export class SSEConnectionImpl implements WSConnection {
         this.progressVersion !== progressVersion ||
         this.recoveryRequestVersion !== recoveryRequestVersion
       ) return
-      bumpProgressGeneration(sessionCacheKey(channel, chatID))
+      bumpProgressGeneration(cacheKey)
       this.progressVersion += 1
+
+      // ── Detect real data loss: TurnID changed or turn ended during gap ──
+      // SSE event gaps are normal (stateless coalescing, buffer drops), but
+      // TurnID changes or turn-end-during-gap mean committed messages (reply,
+      // notification) were lost. Signal useChatMessages to reload from DB.
+      const turnIDChanged = cachedProgress && progress &&
+        typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
+        cachedProgress.turn_id !== progress.turn_id
+      const turnEndedDuringGap = cachedProgress && cachedProgress.phase !== 'done' &&
+        (!progress || progress.phase === 'done')
+      if (turnIDChanged || turnEndedDuringGap) {
+        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
+      }
+
       if (!progress || progress.phase === 'done') {
         this.dispatch({
           type: 'progress_structured',
-          channel,
           chat_id: chatID,
-          progress: { phase: 'done', chat_id: chatID },
+          progress: { phase: 'done' },
+        })
+        // Also dispatch idle so the sidebar recovers from a stale busy state
+        // after an SSE reconnect gap.
+        this.dispatch({
+          type: 'session',
+          session: { channel, chat_id: chatID, action: 'idle' },
         })
         return
       }
       this.dispatch({
         type: 'progress_structured',
-        channel,
         chat_id: chatID,
-        progress: { ...progress, chat_id: progress.chat_id ?? chatID },
+        progress,
+      })
+      // Dispatch busy so the sidebar shows running state after SSE reconnect.
+      // Without this, a busy event lost during the SSE gap leaves the sidebar
+      // stuck on idle until the next refresh.
+      this.dispatch({
+        type: 'session',
+        session: { channel, chat_id: chatID, action: 'busy' },
       })
     } catch {
       // The next native SSE reconnect or status poll gets another recovery chance.
+    } finally {
+      this.recoveryInProgress = false
     }
   }
 
@@ -428,8 +468,8 @@ export class SSEConnectionImpl implements WSConnection {
  * MultiSSEManager creates one SSEConnectionImpl per (chatID, channel) pair.
  * All SSE connections share the same message/session/progress/connection
  * handlers, so consumers that call `ws.onMessage()` receive events from all
- * connections. Each connection annotates events with its source identity, and
- * consumers require an exact channel+chat match.
+ * connections. Event routing is done via the existing `matchesChatID` 3-layer
+ * filter in useProgressStream.
  *
  * The "primary" connection (legacy `subscribe`/`disconnect`/`chatID`/`channel`)
  * is kept for backward compatibility — used by useSessionStore for ask_user
@@ -437,11 +477,7 @@ export class SSEConnectionImpl implements WSConnection {
  */
 export class MultiSSEManager implements WSConnection {
   private primary: SSEConnectionImpl
-  private extra = new Map<string, { connection: SSEConnectionImpl; refs: number }>()
-  private subscriptions = new Map<string, { kind: 'primary' | 'extra'; key: string }>()
-  private primaryRefs = 0
-  private subscriptionSeq = 0
-  private legacyPrimaryActive = false
+  private extra = new Map<string, SSEConnectionImpl>()
   private disposed = false
 
   // Track registered handlers so new connections can be subscribed to them.
@@ -452,7 +488,6 @@ export class MultiSSEManager implements WSConnection {
 
   constructor() {
     this.primary = new SSEConnectionImpl()
-    this.attachConnection(this.primary, true)
   }
 
   get connected(): boolean {
@@ -469,17 +504,11 @@ export class MultiSSEManager implements WSConnection {
 
   /** Legacy single-subscribe — delegates to the primary connection. */
   subscribe(chatID: string, channel = 'web'): void {
-    if (this.primaryRefs > 0 && (this.primary.chatID !== chatID || this.primary.channel !== channel)) {
-      this.migratePrimarySubscriptions()
-    }
-    this.legacyPrimaryActive = true
     this.primary.subscribe(chatID, channel)
   }
 
   /** Legacy single-disconnect — delegates to the primary connection. */
   disconnect(): void {
-    this.legacyPrimaryActive = false
-    if (this.primaryRefs > 0) this.migratePrimarySubscriptions()
     this.primary.disconnect()
   }
 
@@ -491,50 +520,53 @@ export class MultiSSEManager implements WSConnection {
    */
   addSubscription(chatID: string, channel: string): string {
     if (this.disposed) return ''
-    const token = `subscription-${++this.subscriptionSeq}`
-    const key = `${channel}:${chatID}`
 
     // If the primary connection is idle (no chatID), use it as the primary sub.
     if (!this.primary.chatID && !this.primary.channel) {
       this.primary.subscribe(chatID, channel)
-      this.primaryRefs += 1
-      this.subscriptions.set(token, { kind: 'primary', key })
-      return token
+      return 'primary'
     }
 
-    // If the primary already targets this pair, share it with reference counting.
+    // If the primary already targets this pair, return it.
     if (this.primary.chatID === chatID && this.primary.channel === channel) {
-      this.primaryRefs += 1
-      this.subscriptions.set(token, { kind: 'primary', key })
-      return token
+      return 'primary'
     }
 
-    const entry = this.ensureExtraConnection(key, channel, chatID)
-    entry.refs += 1
-    this.subscriptions.set(token, { kind: 'extra', key })
-    return token
+    // Check if an extra connection already exists for this pair.
+    const key = `${channel}:${chatID}`
+    if (this.extra.has(key)) {
+      return key
+    }
+
+    // Create a new SSE connection for this pair.
+    const conn = new SSEConnectionImpl()
+    // Subscribe the new connection to all existing handlers before connecting.
+    for (const h of this.messageHandlers) conn.onMessage(h)
+    for (const h of this.sessionHandlers) conn.onSession(h)
+    for (const h of this.progressHandlers) conn.onProgress(h)
+    for (const h of this.connHandlers) conn.onConnectionChange(h)
+    conn.subscribe(chatID, channel)
+    this.extra.set(key, conn)
+    return key
   }
 
   /** Remove a persistent SSE subscription by its ID. */
   removeSubscription(id: string): void {
-    const subscription = this.subscriptions.get(id)
-    if (!subscription) return
-    this.subscriptions.delete(id)
-    if (subscription.kind === 'primary') {
-      this.primaryRefs = Math.max(0, this.primaryRefs - 1)
-      if (this.primaryRefs === 0 && !this.legacyPrimaryActive) this.primary.disconnect()
+    if (id === 'primary') {
+      // Disconnect the primary connection back to idle state so it can be
+      // reused by the next addSubscription call. Without this, the primary
+      // SSE connection stays open after the panel closes, leaking resources.
+      this.primary.disconnect()
       return
     }
-    const entry = this.extra.get(subscription.key)
-    if (!entry) return
-    entry.refs = Math.max(0, entry.refs - 1)
-    if (entry.refs === 0) {
-      entry.connection.dispose()
-      this.extra.delete(subscription.key)
+    const conn = this.extra.get(id)
+    if (conn) {
+      conn.dispose()
+      this.extra.delete(id)
     }
   }
 
-  async send(msg: WSClientMessage): Promise<void> {
+  async send(msg: WSClientMessage): Promise<SendMessageResponse | void> {
     return this.primary.send(msg)
   }
 
@@ -543,104 +575,77 @@ export class MultiSSEManager implements WSConnection {
   }
 
   setLastSeq(chatID: string, seq: number, channel?: string): void {
-    const targetChannel = channel ?? this.primary.channel ?? 'web'
-    if (this.primary.chatID === chatID && this.primary.channel === targetChannel) {
-      this.primary.setLastSeq(chatID, seq, targetChannel)
-      return
-    }
-    const target = this.extra.get(`${targetChannel}:${chatID}`)?.connection
-    if (target) {
-      target.setLastSeq(chatID, seq, targetChannel)
-      return
-    }
-    this.primary.setLastSeq(chatID, seq, targetChannel)
+    this.primary.setLastSeq(chatID, seq, channel)
   }
 
   onMessage = (handler: Handler<WSMessage>): (() => void) => {
     this.messageHandlers.add(handler)
-    return () => this.messageHandlers.delete(handler)
+    const unsubPrimary = this.primary.onMessage(handler)
+    const unsubs: (() => void)[] = [unsubPrimary]
+    for (const conn of this.extra.values()) {
+      unsubs.push(conn.onMessage(handler))
+    }
+    return () => {
+      this.messageHandlers.delete(handler)
+      unsubs.forEach((u) => u())
+    }
   }
 
   onSession = (handler: Handler<SessionEvent>): (() => void) => {
     this.sessionHandlers.add(handler)
-    return () => this.sessionHandlers.delete(handler)
+    const unsubPrimary = this.primary.onSession(handler)
+    const unsubs: (() => void)[] = [unsubPrimary]
+    for (const conn of this.extra.values()) {
+      unsubs.push(conn.onSession(handler))
+    }
+    return () => {
+      this.sessionHandlers.delete(handler)
+      unsubs.forEach((u) => u())
+    }
   }
 
   onProgress = (handler: Handler<ProgressEvent>): (() => void) => {
     this.progressHandlers.add(handler)
-    return () => this.progressHandlers.delete(handler)
+    const unsubPrimary = this.primary.onProgress(handler)
+    const unsubs: (() => void)[] = [unsubPrimary]
+    for (const conn of this.extra.values()) {
+      unsubs.push(conn.onProgress(handler))
+    }
+    return () => {
+      this.progressHandlers.delete(handler)
+      unsubs.forEach((u) => u())
+    }
   }
 
   onConnectionChange = (handler: Handler<boolean>): (() => void) => {
     this.connHandlers.add(handler)
-    return () => this.connHandlers.delete(handler)
+    // Only route the primary connection's state to consumers.
+    // Extra connections (per-panel SSE) should not trigger global UI
+    // disconnect/reconnect overlays — only the primary matters.
+    const unsubPrimary = this.primary.onConnectionChange(handler)
+    return () => {
+      this.connHandlers.delete(handler)
+      unsubPrimary()
+    }
   }
 
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     this.primary.dispose()
-    for (const entry of this.extra.values()) {
-      entry.connection.dispose()
+    for (const conn of this.extra.values()) {
+      conn.dispose()
     }
     this.extra.clear()
     this.messageHandlers.clear()
     this.sessionHandlers.clear()
     this.progressHandlers.clear()
     this.connHandlers.clear()
-    this.subscriptions.clear()
-    this.primaryRefs = 0
-  }
-
-  private attachConnection(connection: SSEConnectionImpl, includeConnectionState: boolean): void {
-    connection.onMessage((message) => this.messageHandlers.forEach((handler) => handler(message)))
-    connection.onSession((event) => this.sessionHandlers.forEach((handler) => handler(event)))
-    connection.onProgress((event) => this.progressHandlers.forEach((handler) => handler(event)))
-    if (includeConnectionState) {
-      connection.onConnectionChange((connected) => this.connHandlers.forEach((handler) => handler(connected)))
-    }
-  }
-
-  private ensureExtraConnection(key: string, channel: string, chatID: string): { connection: SSEConnectionImpl; refs: number } {
-    const existing = this.extra.get(key)
-    if (existing) return existing
-    const connection = new SSEConnectionImpl()
-    this.attachConnection(connection, false)
-    connection.subscribe(chatID, channel)
-    const entry = { connection, refs: 0 }
-    this.extra.set(key, entry)
-    return entry
-  }
-
-  private migratePrimarySubscriptions(): void {
-    const chatID = this.primary.chatID
-    const channel = this.primary.channel
-    if (!chatID || !channel || this.primaryRefs === 0) return
-    const key = `${channel}:${chatID}`
-    const entry = this.ensureExtraConnection(key, channel, chatID)
-    entry.refs += this.primaryRefs
-    for (const subscription of this.subscriptions.values()) {
-      if (subscription.kind === 'primary') subscription.kind = 'extra'
-    }
-    this.primaryRefs = 0
-    this.primary.disconnect()
   }
 }
 
 function sessionBody(msg: WSClientMessage): { channel?: string; chat_id?: string } {
   return { channel: msg.channel, chat_id: msg.chat_id }
-}
-
-function annotateSourceIdentity(msg: WSMessage, channel: string, chatID: string): void {
-  msg.channel ??= channel
-  msg.chat_id ??= chatID
-  if (msg.session) {
-    msg.session.channel ??= channel
-    msg.session.chat_id ??= chatID
-  }
-  if (msg.progress) {
-    msg.progress.chat_id ??= chatID
-  }
 }
 
 function parseSequence(raw: string): number {
@@ -658,7 +663,6 @@ function newMessageRequestID(): string {
 }
 
 function isProgressLifecycleEvent(msg: WSMessage): boolean {
-  if (msg.type === 'resync_required') return true
   if (
     msg.type === 'stream_content' ||
     msg.type === 'progress_structured' ||
@@ -666,13 +670,12 @@ function isProgressLifecycleEvent(msg: WSMessage): boolean {
     msg.type === 'text'
   ) return true
   if (msg.type !== 'session') return false
-  return ['busy', 'idle', 'deleted', 'HistoryCompacted', 'history_rewound'].includes(msg.session?.action ?? '')
+  return ['busy', 'idle', 'deleted', 'HistoryCompacted'].includes(msg.session?.action ?? '')
 }
 
 function isTerminalProgressEvent(msg: WSMessage): boolean {
-  if (msg.type === 'resync_required') return true
   if (msg.type === 'text') return true
   if (msg.progress?.phase === 'done') return true
   if (msg.type !== 'session') return false
-  return ['busy', 'idle', 'deleted', 'HistoryCompacted', 'history_rewound'].includes(msg.session?.action ?? '')
+  return ['busy', 'idle', 'deleted', 'HistoryCompacted'].includes(msg.session?.action ?? '')
 }

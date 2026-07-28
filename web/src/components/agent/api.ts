@@ -14,7 +14,7 @@ import { postAPI } from '@/lib/api'
 /** History message row (protocol.HistoryMessage). */
 export interface HistMsg {
   history_id?: number
-  role: 'user' | 'assistant' | 'system' | 'tool' | 'control'
+  role: string
   content: string
   reasoning_content?: string
   tool_call_id?: string

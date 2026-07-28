@@ -9,18 +9,17 @@ import {
   SESSION_TREE_CACHE_KEY,
   sessionCacheKey,
 } from '@/lib/webCache'
-import type { ProgressEvent, SessionInfo, WSMessage } from '@/types/shared'
+import type { SessionInfo, WSMessage } from '@/types/shared'
 
 let sessionHandler: ((event: { channel?: string; chat_id?: string; session_key?: string; action?: string; role?: string; instance?: string; parent_id?: string }) => void) | null = null
 let messageHandler: ((event: WSMessage) => void) | null = null
-const wsRPCMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hooks/useWSConnection', () => ({
   useWSConnection: () => ({
     connected: true,
     subscribe: vi.fn(),
     disconnect: vi.fn(),
-    rpc: wsRPCMock,
+    rpc: vi.fn(),
     onSession: vi.fn((handler) => {
       sessionHandler = handler
       return vi.fn()
@@ -62,8 +61,6 @@ vi.mock('@/lib/api', () => ({
 beforeEach(() => {
   sessionHandler = null
   messageHandler = null
-  wsRPCMock.mockReset()
-  wsRPCMock.mockResolvedValue(null)
   const store = new Map<string, string>()
   vi.stubGlobal('localStorage', {
     getItem: vi.fn((key: string) => store.get(key) ?? null),
@@ -83,30 +80,6 @@ afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
 })
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((res) => {
-    resolve = res
-  })
-  return { promise, resolve }
-}
-
-function stubSessionFetch(sessions: Array<Record<string, unknown>>) {
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input)
-    if (url === '/api/chats') {
-      return {
-        ok: true,
-        json: async () => ({ ok: true, sessions }),
-      } as Response
-    }
-    if (url === '/api/subagents') {
-      return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
-    }
-    throw new Error(`unexpected fetch: ${url}`)
-  }))
-}
 
 describe('normalizeSessionTree', () => {
   it('keeps canonical session trees as backend-authored children only', () => {
@@ -661,203 +634,6 @@ describe('normalizeSessionTree', () => {
       requestId: 'request-1',
       questions: [{ question: 'Continue?', options: ['yes', 'no'] }],
     })
-    act(() => {
-      messageHandler?.({
-        type: 'ask_user',
-        channel: 'web',
-        chat_id: '/repo',
-        progress: {
-          request_id: 'request-web',
-          questions: [{ question: 'Other channel?' }],
-        },
-      })
-    })
-
-    await act(async () => {
-      messageHandler?.({ type: 'resync_required', channel: 'cli', chat_id: '/repo' })
-      await Promise.resolve()
-    })
-    expect(result.current.askUserPrompts.has('cli:/repo')).toBe(false)
-    expect(result.current.askUserPrompts.has('web:/repo')).toBe(true)
-    expect(result.current.sessions[0].status).toBe('idle')
-
-    act(() => {
-      messageHandler?.({
-        type: 'ask_user',
-        channel: 'cli',
-        chat_id: '/repo',
-        progress: {
-          request_id: 'request-2',
-          questions: [{ question: 'Recovered prompt?' }],
-        },
-      })
-    })
-    expect(result.current.askUserPrompts.get('cli:/repo')?.requestId).toBe('request-2')
-    expect(result.current.sessions[0].status).toBe('waiting_input')
-
-    act(() => {
-      sessionHandler?.({
-        action: 'history_rewound',
-        channel: 'cli',
-        chat_id: '/repo',
-      })
-    })
-
-    expect(result.current.sessions[0].status).toBe('idle')
-    expect(result.current.askUserPrompts.has('cli:/repo')).toBe(false)
-    expect(result.current.askUserPrompts.has('web:/repo')).toBe(true)
-  })
-
-  it('restores a pending AskUser prompt after an exact-session resync', async () => {
-    stubSessionFetch([{
-      chat_id: 'chat-1',
-      channel: 'web',
-      label: 'chat-1',
-      last_active: '2026-07-08T00:00:00Z',
-      is_current: true,
-    }])
-    wsRPCMock.mockResolvedValueOnce({
-      request_id: 'pending-1',
-      questions: [{ question: 'Continue?', options: ['yes', 'no'] }],
-    })
-    const { result } = renderHook(() => useSessionStoreImpl())
-    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
-
-    act(() => {
-      messageHandler?.({ type: 'resync_required', channel: 'web', chat_id: 'chat-1' })
-    })
-
-    await waitFor(() => expect(result.current.askUserPrompts.get('web:chat-1')).toEqual({
-      requestId: 'pending-1',
-      questions: [{ question: 'Continue?', options: ['yes', 'no'] }],
-    }))
-    expect(wsRPCMock).toHaveBeenCalledWith('get_pending_ask_user', { channel: 'web', chat_id: 'chat-1' })
-    expect(result.current.sessions[0].status).toBe('waiting_input')
-  })
-
-  it('uses history_gap recovery to authoritatively clear a stale AskUser prompt', async () => {
-    stubSessionFetch([{
-      chat_id: 'chat-1',
-      channel: 'web',
-      label: 'chat-1',
-      last_active: '2026-07-08T00:00:00Z',
-      is_current: true,
-    }])
-    wsRPCMock.mockResolvedValueOnce(null)
-    const { result } = renderHook(() => useSessionStoreImpl())
-    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
-    act(() => {
-      messageHandler?.({
-        type: 'ask_user',
-        channel: 'web',
-        chat_id: 'chat-1',
-        progress: { request_id: 'stale', questions: [{ question: 'Stale?' }] },
-      })
-    })
-    expect(result.current.sessions[0].status).toBe('waiting_input')
-
-    act(() => {
-      messageHandler?.({ type: 'history_gap', channel: 'web', chat_id: 'chat-1' })
-    })
-
-    await waitFor(() => expect(result.current.askUserPrompts.has('web:chat-1')).toBe(false))
-    expect(wsRPCMock).toHaveBeenCalledWith('get_pending_ask_user', { channel: 'web', chat_id: 'chat-1' })
-    expect(result.current.sessions[0].status).toBe('idle')
-  })
-
-  it('does not let a pending resync overwrite a newer live AskUser prompt', async () => {
-    stubSessionFetch([{
-      chat_id: 'chat-1',
-      channel: 'web',
-      label: 'chat-1',
-      last_active: '2026-07-08T00:00:00Z',
-      is_current: true,
-    }])
-    const pending = deferred<ProgressEvent | null>()
-    wsRPCMock.mockReturnValueOnce(pending.promise)
-    const { result } = renderHook(() => useSessionStoreImpl())
-    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
-    act(() => {
-      messageHandler?.({ type: 'resync_required', channel: 'web', chat_id: 'chat-1' })
-      messageHandler?.({
-        type: 'ask_user',
-        channel: 'web',
-        chat_id: 'chat-1',
-        progress: { request_id: 'live', questions: [{ question: 'Newest?' }] },
-      })
-    })
-
-    await act(async () => {
-      pending.resolve({ request_id: 'stale', questions: [{ question: 'Old?' }] })
-      await pending.promise
-    })
-
-    expect(result.current.askUserPrompts.get('web:chat-1')).toEqual({
-      requestId: 'live',
-      questions: [{ question: 'Newest?' }],
-    })
-  })
-
-  it('does not reopen an AskUser prompt cleared while resync is pending', async () => {
-    stubSessionFetch([{
-      chat_id: 'chat-1',
-      channel: 'web',
-      label: 'chat-1',
-      last_active: '2026-07-08T00:00:00Z',
-      is_current: true,
-    }])
-    const pending = deferred<ProgressEvent | null>()
-    wsRPCMock.mockReturnValueOnce(pending.promise)
-    const { result } = renderHook(() => useSessionStoreImpl())
-    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
-    act(() => {
-      messageHandler?.({ type: 'resync_required', channel: 'web', chat_id: 'chat-1' })
-      result.current.clearAskUserPrompt('web', 'chat-1')
-    })
-
-    await act(async () => {
-      pending.resolve({ request_id: 'stale', questions: [{ question: 'Old?' }] })
-      await pending.promise
-    })
-
-    expect(result.current.askUserPrompts.has('web:chat-1')).toBe(false)
-  })
-
-  it('isolates AskUser recovery by channel for matching raw chat IDs', async () => {
-    stubSessionFetch([
-      {
-        chat_id: 'shared',
-        channel: 'web',
-        label: 'web',
-        last_active: '2026-07-08T00:00:00Z',
-        is_current: true,
-      },
-      {
-        chat_id: 'shared',
-        channel: 'cli',
-        label: 'cli',
-        last_active: '2026-07-08T00:00:01Z',
-      },
-    ])
-    wsRPCMock.mockResolvedValueOnce(null)
-    const { result } = renderHook(() => useSessionStoreImpl())
-    await waitFor(() => expect(result.current.sessions).toHaveLength(2))
-    act(() => {
-      messageHandler?.({
-        type: 'ask_user',
-        channel: 'web',
-        chat_id: 'shared',
-        progress: { request_id: 'web-prompt', questions: [{ question: 'Web?' }] },
-      })
-      messageHandler?.({ type: 'history_gap', channel: 'cli', chat_id: 'shared' })
-    })
-
-    await waitFor(() => expect(wsRPCMock).toHaveBeenCalledWith(
-      'get_pending_ask_user',
-      { channel: 'cli', chat_id: 'shared' },
-    ))
-    expect(result.current.askUserPrompts.get('web:shared')?.requestId).toBe('web-prompt')
-    expect(result.current.askUserPrompts.has('cli:shared')).toBe(false)
   })
 
   it('sends the selected channel when renaming and deleting matching chat IDs', async () => {
@@ -1717,6 +1493,169 @@ describe('normalizeSessionTree', () => {
     expect(result.current.sessions[0].children?.map((s) => s.chatID)).toEqual(['cli:/repo:Agent-main/review'])
   })
 
+  it('keeps a running SubAgent visible across refresh when backend has not persisted it', async () => {
+    // One-shot SubAgents are destroyed (interactiveSubAgents deleted + DB CASCADE)
+    // immediately on completion. The 500ms canonical refresh may therefore return
+    // a tree that does NOT contain the SubAgent. The transient entry must survive
+    // so the running SubAgent stays visible in the sidebar.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              {
+                chat_id: 'web-chat-1',
+                channel: 'web',
+                label: 'My Chat',
+                last_active: '2026-07-08T00:00:00Z',
+              },
+            ],
+            chats: [
+              {
+                chat_id: 'web-chat-1',
+                channel: 'web',
+                label: 'My Chat',
+                last_active: '2026-07-08T00:00:00Z',
+              },
+            ],
+            orphan_subagents: [],
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID)).toEqual(['web-chat-1'])
+    })
+
+    // SubAgent starts (web channel, UUID chat_id, with session_key — the real one-shot path)
+    vi.useFakeTimers()
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_started',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        session_key: 'web:web-chat-1/explore:oneshot-1',
+        role: 'explore',
+        instance: 'oneshot-1',
+        parent_id: 'web-chat-1',
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // Transient SubAgent should be visible immediately
+    expect(result.current.subAgents).toHaveLength(1)
+    expect(result.current.subAgents[0]?.running).toBe(true)
+    expect(result.current.sessions[0].children).toHaveLength(1)
+    expect(result.current.sessions[0].children?.[0].running).toBe(true)
+
+    // 500ms canonical refresh fires — backend tree does NOT contain the SubAgent
+    // (one-shot destroyed, tenant not yet persisted). The transient must survive.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+
+    // BUG: SubAgent disappears after refresh because mergeStatus doesn't carry
+    // over running status for SubAgents (they're not in executingSessionsRef).
+    expect(result.current.subAgents).toHaveLength(1)
+    expect(result.current.subAgents[0]?.running).toBe(true)
+  })
+
+  it('keeps a running SubAgent visible when canonical refresh reports it as idle', async () => {
+    // The backend's IsProcessingByChannel checks chatCancelCh — but one-shot
+    // SubAgents don't register there. So /api/session-tree may return the
+    // SubAgent row with running=false even while it's actively running.
+    // mergeStatus must carry over the SSE-driven running=true.
+    let includeChild = false
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              {
+                chat_id: 'web-chat-1',
+                channel: 'web',
+                label: 'My Chat',
+                last_active: '2026-07-08T00:00:00Z',
+                children: includeChild ? [
+                  {
+                    chat_id: 'web:web-chat-1/explore:oneshot-1',
+                    full_key: 'web:web-chat-1/explore:oneshot-1',
+                    channel: 'agent',
+                    type: 'agent',
+                    label: 'explore',
+                    role: 'explore',
+                    instance: 'oneshot-1',
+                    parent_channel: 'web',
+                    parent_chat_id: 'web-chat-1',
+                    running: false,
+                    last_active: '2026-07-08T00:00:01Z',
+                  },
+                ] : undefined,
+              },
+            ],
+            chats: [
+              {
+                chat_id: 'web-chat-1',
+                channel: 'web',
+                label: 'My Chat',
+                last_active: '2026-07-08T00:00:00Z',
+              },
+            ],
+            orphan_subagents: [],
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID)).toEqual(['web-chat-1'])
+    })
+
+    vi.useFakeTimers()
+    // SubAgent starts
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_started',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        session_key: 'web:web-chat-1/explore:oneshot-1',
+        role: 'explore',
+        instance: 'oneshot-1',
+        parent_id: 'web-chat-1',
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(result.current.subAgents[0]?.running).toBe(true)
+
+    // Refresh returns the SubAgent with running=false (backend can't detect
+    // one-shot SubAgent processing via IsProcessingByChannel)
+    includeChild = true
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+
+    // BUG: mergeStatus doesn't carry running for SubAgents not in executingSessionsRef
+    expect(result.current.subAgents[0]?.running).toBe(true)
+    expect(result.current.sessions[0].children?.[0]?.running).toBe(true)
+  })
+
   it('updates existing SubAgent running state immediately on lifecycle events', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -1783,8 +1722,12 @@ describe('normalizeSessionTree', () => {
       })
     })
 
-    expect(result.current.subAgents).toEqual([])
-    expect(result.current.sessions[0].children ?? []).toEqual([])
+    expect(result.current.subAgents[0]?.running).toBe(false)
+    expect(result.current.subAgents[0]?.status).toBe('idle')
+    // SubAgent is retained as idle (not removed) — it stays in the sidebar
+    // after completion. Removal is handled by the background tree refresh.
+    expect(result.current.sessions[0].children ?? []).toHaveLength(1)
+    expect(result.current.sessions[0].children?.[0]?.running).toBe(false)
   })
 
   it('uses session_key to stop only the matching SubAgent', async () => {
@@ -1840,7 +1783,11 @@ describe('normalizeSessionTree', () => {
       })
     })
 
-    expect(result.current.subAgents.map((agent) => agent.chatID)).toEqual([childB.chatID])
+    // childA is stopped via session_key → marked idle (not removed);
+    // childB remains running. Both stay in the list.
+    expect(result.current.subAgents.map((agent) => agent.chatID)).toEqual([childA.chatID, childB.chatID])
+    expect(result.current.subAgents.find((a) => a.chatID === childA.chatID)?.running).toBe(false)
+    expect(result.current.subAgents.find((a) => a.chatID === childB.chatID)?.running).toBe(true)
     unmount()
   })
 
