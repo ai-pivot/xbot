@@ -101,8 +101,10 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     })
   }, [message.content, t])
 
-  // Action bar shown only for completed (non-streaming) messages with content
-  const showActions = !isStreaming && (finalContent || message.content.trim()) && !message.displayOnly
+  // Action bar shown only for completed (non-streaming) messages with
+  // non-duplicate final content. When shouldRenderFinalContent returns false,
+  // the content is an iteration's thinking duplicate — no copy button.
+  const showActions = !isStreaming && !!finalContent && !message.displayOnly
 
   // 'all' level + committed: fold all intermediate content (iterations' thinking/O),
   // show only the last TEXT output. Last TEXT = message.content, or fall back to
