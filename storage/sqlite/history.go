@@ -184,10 +184,10 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 	result, err := execer.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-		 detail, display_only, reasoning_content, record_type, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?)
+		 detail, display_only, reasoning_content, record_type, created_at, turn_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?)
 	`, tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName, msg.ToolArguments,
-		toolCallsJSON, msg.Detail, displayOnly, msg.ReasoningContent, ts.Format(time.RFC3339))
+		toolCallsJSON, msg.Detail, displayOnly, msg.ReasoningContent, ts.Format(time.RFC3339), msg.TurnID)
 	if err != nil {
 		return 0, fmt.Errorf("insert session message: %w", err)
 	}
@@ -218,24 +218,20 @@ func (s *SessionService) AppendMessages(tenantID int64, messages []llm.ChatMessa
 	lock := s.db.historyLock(tenantID)
 	lock.Lock()
 	defer lock.Unlock()
-	conn, err := s.conn()
+	var ids []int64
+	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		ids = make([]int64, len(messages))
+		for i, msg := range messages {
+			id, err := appendMessageWith(store, tenantID, msg)
+			if err != nil {
+				return fmt.Errorf("append message batch item %d: %w", i, err)
+			}
+			ids[i] = id
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	tx, err := conn.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("begin message batch: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	ids := make([]int64, len(messages))
-	for i, msg := range messages {
-		ids[i], err = appendMessageWith(tx, tenantID, msg)
-		if err != nil {
-			return nil, fmt.Errorf("append message batch item %d: %w", i, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit message batch: %w", err)
 	}
 	return ids, nil
 }
@@ -258,29 +254,26 @@ func (s *SessionService) AppendMessagesAndAskQuestion(tenantID int64, messages [
 	if toolIndex < 0 {
 		return nil, 0, fmt.Errorf("append AskUser question: message batch has no AskUser tool result")
 	}
-	conn, err := s.conn()
-	if err != nil {
-		return nil, 0, err
-	}
-	tx, err := conn.Begin()
-	if err != nil {
-		return nil, 0, fmt.Errorf("begin AskUser message batch: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	ids := make([]int64, len(messages))
-	for i, msg := range messages {
-		ids[i], err = appendMessageWith(tx, tenantID, msg)
-		if err != nil {
-			return nil, 0, fmt.Errorf("append AskUser message batch item %d: %w", i, err)
+	var ids []int64
+	var questionID int64
+	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		ids = make([]int64, len(messages))
+		for i, msg := range messages {
+			id, err := appendMessageWith(store, tenantID, msg)
+			if err != nil {
+				return fmt.Errorf("append AskUser message batch item %d: %w", i, err)
+			}
+			ids[i] = id
 		}
-	}
-	questionID, err := appendAskQuestionWith(tx, tenantID, ids[toolIndex], metadata)
+		qID, err := appendAskQuestionWith(store, tenantID, ids[toolIndex], metadata)
+		if err != nil {
+			return err
+		}
+		questionID = qID
+		return nil
+	})
 	if err != nil {
 		return nil, 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, 0, fmt.Errorf("commit AskUser message batch: %w", err)
 	}
 	return ids, questionID, nil
 }

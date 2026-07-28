@@ -2,9 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"time"
 
 	"xbot/llm"
 	log "xbot/logger"
@@ -37,46 +35,10 @@ func (s *SessionService) AddMessage(tenantID int64, msg llm.ChatMessage) error {
 }
 
 // AddMessageWithID adds a message and returns the auto-increment id from the DB.
+// Delegates to AppendMessage which acquires the striped historyLock, ensuring
+// append-only mutations are serialized per tenant.
 func (s *SessionService) AddMessageWithID(tenantID int64, msg llm.ChatMessage) (int64, error) {
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-
-	var toolCallsJSON sql.NullString
-	if len(msg.ToolCalls) > 0 {
-		data, err := json.Marshal(msg.ToolCalls)
-		if err != nil {
-			return 0, fmt.Errorf("marshal tool_calls: %w", err)
-		}
-		toolCallsJSON = sql.NullString{String: string(data), Valid: true}
-	}
-
-	ts := msg.Timestamp
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-
-	displayOnly := 0
-	if msg.DisplayOnly {
-		displayOnly = 1
-	}
-
-	result, err := conn.Exec(`
-			INSERT INTO session_messages
-			(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail, display_only, reasoning_content, created_at, turn_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`,
-		tenantID, msg.Role, msg.Content,
-		msg.ToolCallID, msg.ToolName, msg.ToolArguments,
-		toolCallsJSON, msg.Detail, displayOnly, msg.ReasoningContent,
-		ts.Format(time.RFC3339), msg.TurnID,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("insert session message: %w", err)
-	}
-	id, _ := result.LastInsertId()
-	return id, nil
+	return s.AppendMessage(tenantID, msg)
 }
 
 // ReplaceToolMessage updates the most recent matching tool-role message.
