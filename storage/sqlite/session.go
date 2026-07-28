@@ -296,44 +296,7 @@ func (s *SessionService) PurgeOldMessages(tenantID int64, keepCount int) (int64,
 	return rows, nil
 }
 
-// PurgeNewerThanOrEqual deletes all messages for a tenant with created_at >= the given timestamp.
-// Used by Ctrl+K rewind to truncate DB history to match UI truncation.
-// Uses ">=" (not ">") so the selected rewind message is also removed — the UI already
-// places its content into the input box for re-editing, so keeping it in DB would cause
-// a duplicate on re-send.
-func (s *SessionService) PurgeNewerThanOrEqual(tenantID int64, cutoff time.Time) (int64, error) {
-	if cutoff.IsZero() {
-		return 0, nil
-	}
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-	// IMPORTANT: created_at is stored as RFC3339 TEXT (e.g. "2026-04-14T20:34:25+08:00").
-	// We must compare against the same string format — passing time.Time directly causes
-	// modernc.org/sqlite to serialize it differently (e.g. "2026-04-14 20:34:25+08:00"),
-	// which breaks lexicographic comparison and deletes ALL messages.
-	cutoffStr := cutoff.Format(time.RFC3339)
-	result, err := conn.Exec(
-		"DELETE FROM session_messages WHERE tenant_id = ? AND created_at >= ?",
-		tenantID, cutoffStr,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("purge newer or equal: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	log.WithFields(log.Fields{
-		"tenant_id": tenantID,
-		"purged":    rows,
-		"cutoff":    cutoff.Format(time.RFC3339),
-	}).Info("Session messages purged (newer or equal)")
-	return rows, nil
-}
-
 // PurgeFromMessageID deletes all messages for a tenant with id >= the given message id.
-// This is the id-based replacement for PurgeNewerThanOrEqual — uses the DB auto-increment
-// primary key for exact, precision-independent truncation. The selected message (and
-// everything after it) is removed; the UI already placed its content into the input box.
 func (s *SessionService) PurgeFromMessageID(tenantID, messageID int64) (int64, error) {
 	if messageID <= 0 {
 		return 0, nil
@@ -355,38 +318,6 @@ func (s *SessionService) PurgeFromMessageID(tenantID, messageID int64) (int64, e
 		"purged":     rows,
 		"message_id": messageID,
 	}).Info("Session messages purged (from message id)")
-	return rows, nil
-}
-
-// PurgeNewerThan deletes all messages for a tenant with created_at after the given timestamp.
-// Used by Ctrl+K rewind to truncate DB history to match UI truncation.
-// NOTE: Prefer PurgeNewerThanOrEqual for rewind to avoid duplicate user messages on re-send.
-func (s *SessionService) PurgeNewerThan(tenantID int64, cutoff time.Time) (int64, error) {
-	if cutoff.IsZero() {
-		return 0, nil
-	}
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-	// IMPORTANT: created_at is stored as RFC3339 TEXT (e.g. "2026-04-14T20:34:25+08:00").
-	// We must compare against the same string format — passing time.Time directly causes
-	// modernc.org/sqlite to serialize it differently (e.g. "2026-04-14 20:34:25+08:00"),
-	// which breaks lexicographic comparison and deletes ALL messages.
-	cutoffStr := cutoff.Format(time.RFC3339)
-	result, err := conn.Exec(
-		"DELETE FROM session_messages WHERE tenant_id = ? AND created_at > ?",
-		tenantID, cutoffStr,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("purge newer than: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	log.WithFields(log.Fields{
-		"tenant_id": tenantID,
-		"purged":    rows,
-		"cutoff":    cutoff.Format(time.RFC3339),
-	}).Info("Session messages purged (newer than)")
 	return rows, nil
 }
 

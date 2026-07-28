@@ -68,9 +68,11 @@ func (m *cliModel) scheduleSessionsRefresh() {
 }
 
 // msgIdentity is the unified dedup key for history messages.
-// Uses role + dbID (DB auto-increment id) for persisted messages.
-// Falls back to role + timestamp for in-memory messages (dbID == 0) that
-// haven't been persisted yet (e.g. live streaming messages).
+// Struct equality is conjunctive (all fields must match): two messages are
+// the same iff role AND dbID AND timestamp are all equal. For persisted DB
+// messages, dbID (auto-increment) is the primary distinguisher — same dbID
+// guarantees same timestamp. For in-memory messages (dbID == 0, e.g. live
+// streaming), the comparison degrades to role + timestamp only.
 type msgIdentity struct {
 	role      string
 	dbID      int64
