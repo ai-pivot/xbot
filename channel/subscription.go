@@ -523,7 +523,8 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 					}
 					tools[j] = protocol.ToolProgress{
 						Name: tool.Name, Label: label, Status: tool.Status,
-						Elapsed: tool.ElapsedMS, Iteration: snapshot.Iteration, Summary: tool.Summary,
+						Elapsed: tool.ElapsedMS, Iteration: snapshot.Iteration,
+						Summary: tool.Summary, Args: tool.Args, Detail: tool.Detail,
 					}
 				}
 				iterations[i] = HistoryIteration{
