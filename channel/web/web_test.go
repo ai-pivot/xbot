@@ -104,7 +104,7 @@ func loginTestAdmin(t *testing.T, serverURL string) *http.Cookie {
 
 func makeWSConnection(t *testing.T, serverURL, cookie string) *websocket.Conn {
 	t.Helper()
-	dialer := websocket.Dialer{}
+	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	header := http.Header{}
 	if cookie != "" {
 		header.Set("Cookie", cookie)
@@ -272,7 +272,7 @@ func TestWebSocketAuth(t *testing.T) {
 	server := startTestServer(t, wc)
 
 	// No cookie → 401
-	dialer := websocket.Dialer{}
+	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	wsURL := strings.Replace(server.URL, "http://", "ws://", 1)
 	_, resp, err := dialer.Dial(wsURL+"/ws", nil)
 	if err == nil {
@@ -773,6 +773,7 @@ func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{Host: "127.0.0.1", Port: 0, DB: db, AdminToken: "test-token"}, msgBus)
 	wc.SetCallbacks(WebCallbacks{IdentityResolver: fixedIdentityResolver{userID: 1, role: "admin"}})
 	wc.SetOSSProvider(fixedOSSProvider{})
+	t.Cleanup(wc.Stop) // stop hub + background goroutines to avoid connection leaks on Windows
 	server := startTestServer(t, wc)
 	chatID := "/repo/upload"
 
@@ -786,7 +787,7 @@ func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 	wc.hub.addClient(webObserver.id, webObserver)
 	wc.hub.subscribe(webObserver.id, sessionRouteKey("web", chatID))
 
-	dialer := websocket.Dialer{}
+	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second} // prevent infinite hang if server isn't ready
 	wsURL := strings.Replace(server.URL, "http://", "ws://", 1) + "/ws?client_type=cli&token=test-token"
 	conn, resp, err := dialer.Dial(wsURL, nil)
 	if err != nil {
@@ -802,7 +803,7 @@ func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var syncAck protocol.WSMessage
 	if err := conn.ReadJSON(&syncAck); err != nil || syncAck.Type != protocol.MsgTypeSync {
 		t.Fatalf("remote CLI subscribe ack = %#v, err=%v", syncAck, err)
@@ -818,6 +819,7 @@ func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) // fresh deadline for echo read
 	var echo protocol.WSMessage
 	if err := conn.ReadJSON(&echo); err != nil {
 		t.Fatal(err)
@@ -835,7 +837,7 @@ func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 		if inbound.Channel != "cli" || inbound.ChatID != chatID || !strings.Contains(inbound.Content, "report.txt") {
 			t.Fatalf("remote CLI upload inbound = %#v", inbound)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("remote CLI upload was not handed to the Agent bus")
 	}
 }
