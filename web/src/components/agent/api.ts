@@ -14,8 +14,6 @@ import { postAPI } from '@/lib/api'
 /** History message row (protocol.HistoryMessage). */
 export interface HistMsg {
   history_id?: number
-  /** Optional transport sequence for non-persisted/replayed rows. */
-  seq?: number
   role: 'user' | 'assistant' | 'system' | 'tool' | 'control'
   content: string
   reasoning_content?: string

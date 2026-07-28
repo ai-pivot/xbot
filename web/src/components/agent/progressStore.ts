@@ -590,6 +590,7 @@ export class ProgressStore {
       genuiContent: this.current.genuiContent,
       lastIter: this.current.lastIter,
       lastReasoning: this.current.lastReasoning,
+      turnID: this.current.turnID,
       todos: this.current.todos,
       subAgents: this.current.subAgents,
       tokenUsage: this.current.tokenUsage,

@@ -99,6 +99,7 @@ export interface SessionStore {
   switchSession: (id: string, channel: string) => Promise<void>
   renameSession: (id: string, channel: string, label: string) => Promise<boolean>
   deleteSession: (id: string, channel: string) => Promise<boolean>
+  reorderSessions: (channel: string, orderedIDs: string[]) => Promise<boolean>
   /** Clear the AskUser prompt for a session (after answer/cancel). */
   clearAskUserPrompt: (channel: string, chatID: string) => void
 }
@@ -1067,6 +1068,21 @@ export function useSessionStoreImpl(): SessionStore {
     return true
   }, [refresh])
 
+  const reorderSessions = useCallback(async (channel: string, orderedIDs: string[]): Promise<boolean> => {
+    const orders: Record<string, number> = {}
+    orderedIDs.forEach((id, i) => { orders[id] = i + 1 })
+    try {
+      await postAPI('/api/chats/reorder', { channel, orders })
+    } catch {
+      return false
+    }
+    setSessions((prev) => prev.map((s) => {
+      const idx = orderedIDs.indexOf(s.chatID)
+      return idx >= 0 ? { ...s, sortOrder: idx + 1 } : s
+    }))
+    return true
+  }, [])
+
   const deleteSession = useCallback(
     async (id: string, channel: string): Promise<boolean> => {
       try {
@@ -1243,6 +1259,7 @@ export function useSessionStoreImpl(): SessionStore {
     switchSession,
     renameSession,
     deleteSession,
+    reorderSessions,
     clearAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
     askUserPrompts, setCategory, setActiveChannel, markRead, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession, clearAskUserPrompt])

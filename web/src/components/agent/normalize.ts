@@ -148,6 +148,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     genuiContent: '',
     lastIter: typeof p.iteration === 'number' ? p.iteration : -1,
     lastReasoning: p.reasoning ?? '',
+    turnID: p.turn_id ?? 0,
     todos: (p.todos ?? []) as TodoItem[],
     subAgents: normalizeWebSubAgents(p.sub_agents),
     tokenUsage,
