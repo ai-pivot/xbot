@@ -32,10 +32,14 @@ CREATE TABLE session_messages (
 	    detail TEXT,
 	    display_only INTEGER DEFAULT 0,
 	    context_tokens INTEGER DEFAULT 0,
+	    record_type TEXT NOT NULL DEFAULT 'message',
+	    target_history_id INTEGER,
+	    record_data TEXT,
 	    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
 	);
 CREATE INDEX idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
+CREATE INDEX idx_session_messages_tenant_history ON session_messages(tenant_id, id);
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,

@@ -8,7 +8,6 @@ import (
 
 	"xbot/llm"
 	log "xbot/logger"
-	"xbot/storage/internal"
 )
 
 // SessionService handles session message operations
@@ -89,31 +88,34 @@ func (s *SessionService) AddMessageWithID(tenantID int64, msg llm.ChatMessage) (
 //
 // Returns sql.ErrNoRows if no matching message exists.
 func (s *SessionService) ReplaceToolMessage(tenantID int64, toolName, toolCallID, content string) error {
-	conn, err := s.conn()
-	if err != nil {
-		return err
-	}
-	res, err := conn.Exec(`
-		UPDATE session_messages SET content = ?
-		WHERE id = (
-			SELECT id FROM session_messages
-			WHERE tenant_id = ? AND role = 'tool'
-			  AND (? = '' OR tool_name = ?)
-			  AND (? = '' OR tool_call_id = ?)
-			ORDER BY id DESC LIMIT 1
-		)
-	`, content, tenantID, toolName, toolName, toolCallID, toolCallID)
-	if err != nil {
-		return err
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	return s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		if toolName == "AskUser" {
+			_, err := validateAndAppendAskAnswerWith(store, tenantID, content)
+			return err
+		}
+		replay, err := replayWith(store, tenantID)
+		if err != nil {
+			return err
+		}
+		for i := len(replay.Messages) - 1; i >= 0; i-- {
+			msg := replay.Messages[i]
+			if msg.Role == "tool" && (toolName == "" || msg.ToolName == toolName) && (toolCallID == "" || msg.ToolCallID == toolCallID) {
+				msg.Content = content
+				occurrence := 0
+				for j := 0; j < i; j++ {
+					if replay.Messages[j].ID == msg.ID {
+						occurrence++
+					}
+				}
+				_, err := appendControlWith(store, tenantID, HistoryRecordContextEdit, msg.ID, MessageMutations{Mutations: []MessageMutation{{TargetHistoryID: msg.ID, TargetOccurrence: occurrence, Message: msg}}})
+				return err
+			}
+		}
 		return sql.ErrNoRows
-	}
-	return nil
+	})
 }
 
 // GetHistory retrieves the most recent messages for a tenant.
@@ -121,48 +123,24 @@ func (s *SessionService) ReplaceToolMessage(tenantID int64, toolName, toolCallID
 // Tool messages between them are included to maintain context continuity.
 // display_only messages (e.g. cron results) are excluded from LLM context.
 func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessage, error) {
-	conn, err := s.conn()
+	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return nil, err
 	}
-
-	// Find the boundary: the Nth user message from the end (0-indexed offset = limit - 1).
-	// This way the window is measured in user-message turns, not raw row count,
-	// so multi-iteration assistant messages don't squeeze out real conversation history.
-	// Exclude display_only messages from boundary calculation.
-	var boundaryID sql.NullInt64
-	err = conn.QueryRow(`
-		SELECT id FROM session_messages
-		WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0
-		ORDER BY id DESC
-		LIMIT 1 OFFSET ?
-	`, tenantID, limit-1).Scan(&boundaryID)
-	if err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("query history boundary: %w", err)
+	if limit <= 0 {
+		return nil, nil
 	}
-
-	var rows *sql.Rows
-	if boundaryID.Valid {
-		rows, err = conn.Query(`
-			SELECT `+sessionMessageSelectCols+`
-				FROM session_messages
-				WHERE tenant_id = ? AND id >= ? AND COALESCE(display_only, 0) = 0
-				ORDER BY id ASC
-			`, tenantID, boundaryID.Int64)
-	} else {
-		rows, err = conn.Query(`
-				SELECT `+sessionMessageSelectCols+`
-				FROM session_messages
-				WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0
-				ORDER BY id ASC
-			`, tenantID)
+	start, users := 0, 0
+	for i := len(replay.Messages) - 1; i >= 0; i-- {
+		if replay.Messages[i].Role == "user" {
+			users++
+			if users == limit {
+				start = i
+				break
+			}
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("query session history: %w", err)
-	}
-	defer rows.Close()
-
-	return s.scanMessages(rows)
+	return append([]llm.ChatMessage(nil), replay.Messages[start:]...), nil
 }
 
 // GetAllMessages retrieves all non-display-only messages for a tenant.
@@ -174,39 +152,20 @@ func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessag
 // into the user's long-term memory summary. If future features need to retrieve cron
 // execution history, a dedicated query (without the display_only filter) should be added.
 func (s *SessionService) GetAllMessages(tenantID int64) ([]llm.ChatMessage, error) {
-	conn, err := s.conn()
+	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := conn.Query(`
-		SELECT `+sessionMessageSelectCols+`
-		FROM session_messages
-		WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0
-		ORDER BY id ASC
-	`, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("query all session messages: %w", err)
-	}
-	defer rows.Close()
-
-	return s.scanMessages(rows)
+	return replay.Messages, nil
 }
 
 // GetMessagesCount returns the number of messages for a tenant
 func (s *SessionService) GetMessagesCount(tenantID int64) (int, error) {
-	conn, err := s.conn()
+	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return 0, err
 	}
-	var count int
-	err = conn.QueryRow(
-		"SELECT COUNT(*) FROM session_messages WHERE tenant_id = ?",
-		tenantID,
-	).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count messages: %w", err)
-	}
-	return count, nil
+	return len(replay.Messages), nil
 }
 
 // GetUserMessageCount returns the number of user-role messages for a tenant.
@@ -214,23 +173,24 @@ func (s *SessionService) GetMessagesCount(tenantID int64) (int, error) {
 // (which include tool calls, assistant iterations, etc.).
 // Excludes display_only messages (cron results).
 func (s *SessionService) GetUserMessageCount(tenantID int64) (int, error) {
-	conn, err := s.conn()
+	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return 0, err
 	}
-	var count int
-	err = conn.QueryRow(
-		"SELECT COUNT(*) FROM session_messages WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0",
-		tenantID,
-	).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count user messages: %w", err)
+	count := 0
+	for _, msg := range replay.Messages {
+		if msg.Role == "user" {
+			count++
+		}
 	}
 	return count, nil
 }
 
 // Clear removes all messages for a tenant
 func (s *SessionService) Clear(tenantID int64) error {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	conn, err := s.conn()
 	if err != nil {
 		return err
@@ -247,139 +207,55 @@ func (s *SessionService) Clear(tenantID int64) error {
 	return nil
 }
 
-// PurgeOldMessages deletes messages older than the most recent `keepCount` messages for a tenant.
-// This is used after compression to remove messages that have already been summarized.
+// PurgeOldMessages is retained for compatibility. Compression is append-only and
+// must never physically delete its source messages.
 func (s *SessionService) PurgeOldMessages(tenantID int64, keepCount int) (int64, error) {
-	if keepCount <= 0 {
-		return 0, nil
-	}
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-
-	// Find the ID of the message at position `keepCount` from the end (i.e., the oldest message to keep).
-	// Messages with ID < cutoff will be deleted.
-	var cutoffID sql.NullInt64
-	err = conn.QueryRow(`
-		SELECT id FROM session_messages
-		WHERE tenant_id = ?
-		ORDER BY id DESC
-		LIMIT 1
-		OFFSET ?
-	`, tenantID, keepCount).Scan(&cutoffID)
-	if err == sql.ErrNoRows {
-		// Fewer messages than keepCount, nothing to purge
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("find purge cutoff: %w", err)
-	}
-
-	if !cutoffID.Valid {
-		return 0, nil
-	}
-
-	result, err := conn.Exec("DELETE FROM session_messages WHERE tenant_id = ? AND id < ?", tenantID, cutoffID.Int64)
-	if err != nil {
-		return 0, fmt.Errorf("purge old messages: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	if rows > 0 {
-		log.WithFields(log.Fields{
-			"tenant_id": tenantID,
-			"purged":    rows,
-			"kept":      keepCount,
-			"cutoff_id": cutoffID.Int64,
-		}).Info("Purged old messages after compression")
-	}
-	return rows, nil
-}
-
-// PurgeFromMessageID deletes all messages for a tenant with id >= the given message id.
-func (s *SessionService) PurgeFromMessageID(tenantID, messageID int64) (int64, error) {
-	if messageID <= 0 {
-		return 0, nil
-	}
-	conn, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
-	result, err := conn.Exec(
-		"DELETE FROM session_messages WHERE tenant_id = ? AND id >= ?",
-		tenantID, messageID,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("purge from message id: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	log.WithFields(log.Fields{
-		"tenant_id":  tenantID,
-		"purged":     rows,
-		"message_id": messageID,
-	}).Info("Session messages purged (from message id)")
-	return rows, nil
+	// Append-only history: compression writes a snapshot record instead of
+	// physically deleting source messages. Retained as a no-op for API compat.
+	return 0, nil
 }
 
 // UpdateMessageContent updates the content of the Nth message (0-indexed) for a tenant.
 // Used by observation masking to persist masked content back to session.
 func (s *SessionService) UpdateMessageContent(tenantID int64, messageIndex int, content string) error {
-	conn, err := s.conn()
-	if err != nil {
-		return err
-	}
-	result, err := conn.Exec(`
-		UPDATE session_messages SET content = ?
-		WHERE tenant_id = ? AND id = (
-			SELECT id FROM session_messages
-			WHERE tenant_id = ?
-			ORDER BY id ASC
-			LIMIT 1
-			OFFSET ?
-		)
-	`, content, tenantID, tenantID, messageIndex)
-	if err != nil {
-		return fmt.Errorf("update message content at index %d: %w", messageIndex, err)
-	}
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("no message found at index %d for tenant %d", messageIndex, tenantID)
-	}
-	return nil
+	return s.UpdateMessageContentNonDisplayOnly(tenantID, messageIndex, content)
 }
 
 // UpdateMessageContentNonDisplayOnly updates the content of the Nth non-display-only message (0-indexed) for a tenant.
 // The index corresponds to the ordering used by GetAllMessages (which excludes display_only messages).
 // Used by context_edit persistence to sync in-memory edits back to the database.
 func (s *SessionService) UpdateMessageContentNonDisplayOnly(tenantID int64, messageIndex int, content string) error {
-	conn, err := s.conn()
-	if err != nil {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	return s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		replay, err := replayWith(store, tenantID)
+		if err != nil {
+			return err
+		}
+		if messageIndex < 0 || messageIndex >= len(replay.Messages) {
+			return fmt.Errorf("no non-display-only message found at index %d for tenant %d", messageIndex, tenantID)
+		}
+		msg := replay.Messages[messageIndex]
+		msg.Content = content
+		occurrence := 0
+		for i := 0; i < messageIndex; i++ {
+			if replay.Messages[i].ID == msg.ID {
+				occurrence++
+			}
+		}
+		_, err = appendControlWith(store, tenantID, HistoryRecordContextEdit, msg.ID, MessageMutations{Mutations: []MessageMutation{{TargetHistoryID: msg.ID, TargetOccurrence: occurrence, Message: msg}}})
 		return err
-	}
-	result, err := conn.Exec(`
-		UPDATE session_messages SET content = ?
-		WHERE tenant_id = ? AND id = (
-			SELECT id FROM session_messages
-			WHERE tenant_id = ? AND COALESCE(display_only, 0) = 0
-			ORDER BY id ASC
-			LIMIT 1
-			OFFSET ?
-		)
-	`, content, tenantID, tenantID, messageIndex)
-	if err != nil {
-		return fmt.Errorf("update non-display-only message content at index %d: %w", messageIndex, err)
-	}
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("no non-display-only message found at index %d for tenant %d", messageIndex, tenantID)
-	}
-	return nil
+	})
 }
 
 // UpdateUserMessageContextTokens sets the context_tokens field on the most recent
 // user-role message for a tenant. This records the exact API prompt_tokens at the
 // time that user message was sent, enabling precise token accounting for rewind.
 func (s *SessionService) UpdateUserMessageContextTokens(tenantID int64, promptTokens int64) error {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	conn, err := s.conn()
 	if err != nil {
 		return err
@@ -406,6 +282,9 @@ ORDER BY id DESC LIMIT 1
 // non-display-only user message for a tenant. Used by rewind to restore accurate
 // token state. Returns (0, nil) if no user message or context_tokens is 0.
 func (s *SessionService) GetLastUserMessageContextTokens(tenantID int64) (int64, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
 	conn, err := s.conn()
 	if err != nil {
 		return 0, err
@@ -448,60 +327,4 @@ func (s *SessionService) GetMaxTurnID(tenantID int64) (uint64, error) {
 		return uint64(maxTurnID.Int64), nil
 	}
 	return 0, nil
-}
-
-// scanMessages scans message rows from a query result
-func (s *SessionService) scanMessages(rows *sql.Rows) ([]llm.ChatMessage, error) {
-	var messages []llm.ChatMessage
-	for rows.Next() {
-		var msg llm.ChatMessage
-		var toolCallsJSON, detailJSON sql.NullString
-		var toolCallID, toolName, toolArguments, reasoningContent sql.NullString
-		var createdAt string
-		var turnID sql.NullInt64
-
-		err := rows.Scan(
-			&msg.ID,
-			&msg.Role, &msg.Content,
-			&toolCallID, &toolName, &toolArguments,
-			&toolCallsJSON, &detailJSON, &reasoningContent, &createdAt,
-			&turnID,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scan message: %w", err)
-		}
-
-		if turnID.Valid {
-			msg.TurnID = uint64(turnID.Int64)
-		}
-
-		if toolCallID.Valid {
-			msg.ToolCallID = toolCallID.String
-		}
-		if toolName.Valid {
-			msg.ToolName = toolName.String
-		}
-		if toolArguments.Valid {
-			msg.ToolArguments = toolArguments.String
-		}
-		if detailJSON.Valid {
-			msg.Detail = detailJSON.String
-		}
-		if toolCallsJSON.Valid {
-			if err := json.Unmarshal([]byte(toolCallsJSON.String), &msg.ToolCalls); err != nil {
-				log.WithError(err).Warn("Failed to unmarshal tool_calls, skipping")
-			}
-		}
-		if reasoningContent.Valid {
-			msg.ReasoningContent = reasoningContent.String
-		}
-
-		msg.Timestamp = internal.ParseTimestamp(createdAt)
-
-		messages = append(messages, msg)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate messages: %w", err)
-	}
-	return messages, nil
 }

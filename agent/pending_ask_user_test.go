@@ -7,6 +7,7 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/llm"
 	"xbot/protocol"
 	"xbot/tools"
 )
@@ -22,6 +23,12 @@ func TestHandleRunOutputPreservesRequestIDFromRealAskUserMetadata(t *testing.T) 
 	}
 
 	a := &Agent{}
+	_, sess := newAgentHistorySession(t)
+	// AppendAskQuestion requires a preceding AskUser tool result in history.
+	toolMsg := llm.NewToolMessage("AskUser", toolResult.Metadata["request_id"], "", toolResult.Summary)
+	if err := sess.AddMessage(toolMsg); err != nil {
+		t.Fatal(err)
+	}
 	outbound, err := a.handleRunOutput(
 		context.Background(),
 		bus.InboundMessage{Channel: "web", ChatID: "chat-1"},
@@ -29,7 +36,7 @@ func TestHandleRunOutputPreservesRequestIDFromRealAskUserMetadata(t *testing.T) 
 			WaitingUser: toolResult.WaitingUser,
 			Metadata:    toolResult.Metadata,
 		}},
-		nil,
+		sess,
 		"",
 	)
 	if err != nil {
@@ -146,13 +153,20 @@ func TestWithPendingAskUserReturnsDetachedSnapshot(t *testing.T) {
 		Questions: []protocol.AskUserQuestion{{Question: "Original", Options: []string{"yes"}}},
 	})
 
-	if ok := a.WithPendingAskUser("web", "chat-1", func(pending *protocol.ProgressEvent) bool {
+	if ok := a.WithPendingAskUser("web", "chat-1", func(*protocol.ProgressEvent) bool {
+		return true
+	}); ok {
+		t.Fatal("WithPendingAskUser crossed the qualified channel boundary")
+	}
+	a.ClearPendingAskUser("web", "chat-1")
+
+	if ok := a.WithPendingAskUser("cli", "chat-1", func(pending *protocol.ProgressEvent) bool {
 		pending.RequestID = "changed"
 		pending.Questions[0].Question = "Changed"
 		pending.Questions[0].Options[0] = "no"
 		return true
 	}); !ok {
-		t.Fatal("WithPendingAskUser did not find chat by channel fallback")
+		t.Fatal("WithPendingAskUser did not find the qualified session")
 	}
 
 	pending := a.GetPendingAskUser("cli", "chat-1")

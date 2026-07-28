@@ -7,7 +7,7 @@
  *   - Textarea defaults to two rows height, auto-grows to max 200px
  *   - Attach button (left) + Send/Cancel button (right) inside the container
  *
- * Multi-line textarea (send key configurable via Settings), a file-attach button (uploads
+ * Multi-line textarea (Ctrl/Cmd+Enter to send), a file-attach button (uploads
  * via POST /api/files/upload and stashes the returned key to attach to the next
  * message), and a cancel button shown while the agent is busy (sends a WS
  * `cancel`). Pending uploads show as chips inside the container.
@@ -20,10 +20,8 @@ import { Button } from '@/components/ui/button'
 import { useI18n } from '@/providers/i18n'
 import { useCwd } from '@/providers/CwdProvider'
 import { useWSConnection } from '@/hooks/useWSConnection'
-import { useSendKeyMode, isSendKey } from '@/hooks/useSendKeyMode'
 import type { Attachments } from '@/hooks/useChatMessages'
 import { cn } from '@/lib/utils'
-import { setChatInsertHandler } from '@/lib/chatInputBridge'
 import { TodoPullOut } from './TodoPullOut'
 import { CompletionPopup } from './CompletionPopup'
 import { useCompletion } from '@/hooks/useCompletion'
@@ -32,8 +30,8 @@ import type { TodoState } from '@/hooks/useTodos'
 interface MessageInputProps {
   /** True while the agent is producing output; shows the cancel button. */
   busy: boolean
-  /** True while cancel is in flight; shows spinner on cancel button. */
-  cancelling?: boolean
+  /** Disable composer mutation while a destructive history operation runs. */
+  disabled?: boolean
   /** Send a message, optionally with uploaded attachments. */
   onSend: (content: string, attachments?: Attachments) => void
   /** Cancel the running agent. */
@@ -43,7 +41,7 @@ interface MessageInputProps {
   /** Open the right Tasks panel for the current session. */
   onOpenTasks?: () => void
   /** Upload a file; resolves with server metadata. */
-  onUpload: (file: File) => Promise<{
+  onUpload?: (file: File) => Promise<{
     upload_key?: string
     name?: string
     size?: number
@@ -66,11 +64,10 @@ interface PendingAttachment {
   mime: string
 }
 
-export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
+export function MessageInput({ busy, disabled = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
-  const { mode: sendKeyMode } = useSendKeyMode()
   const draftStorageKey = sessionKey ? `xbot:draft:${sessionKey}` : null
   const [value, setValue] = useState(() => {
     if (draft !== undefined) return draft
@@ -107,29 +104,6 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`
   }, [])
 
-  // Bridge: let the file explorer inject a file path into this input.
-  // Appends the text on a new line (if non-empty) and focuses the textarea.
-  useEffect(() => {
-    const insertHandler = (text: string) => {
-      setValue((prev) => {
-        if (!prev) return text
-        return prev.endsWith('\n') ? prev + text : prev + '\n' + text
-      })
-      scheduleTextareaResize(() => {
-        resize()
-        const el = textareaRef.current
-        if (el) {
-          el.focus()
-          // Move caret to end so the user can keep typing.
-          const len = el.value.length
-          el.setSelectionRange(len, len)
-        }
-      })
-    }
-    setChatInsertHandler(insertHandler)
-    return () => setChatInsertHandler(null)
-  }, [resize])
-
   useEffect(() => {
     if (draft === undefined) return
     setValue(draft)
@@ -141,6 +115,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   }, [draft, onDraftConsumed, resize])
 
   const submit = useCallback(() => {
+    if (disabled) return
     const text = value.trim()
     if (!text && pending.length === 0) return
     if (text === '/rewind' && pending.length === 0 && onRewindLatest) {
@@ -177,12 +152,12 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     setValue('')
     setPending([])
     scheduleTextareaResize(resize)
-  }, [busy, value, pending, onCancel, onRewindLatest, onOpenTasks, onSend, resize])
+  }, [busy, disabled, value, pending, onCancel, onRewindLatest, onOpenTasks, onSend, resize])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Let completion handle navigation keys first
     if (completion.handleKeyDown(e)) return
-    if (isSendKey(e, sendKeyMode)) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       submit()
     }
@@ -190,7 +165,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
 
   const onPickFiles = useCallback(
     async (files: FileList | null) => {
-      if (!files || files.length === 0) return
+      if (disabled || !onUpload || !files || files.length === 0) return
       setUploading(true)
       try {
         const added: PendingAttachment[] = []
@@ -210,13 +185,13 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
         setUploading(false)
       }
     },
-    [onUpload, t],
+    [disabled, onUpload, t],
   )
 
-  const canSend = value.trim().length > 0 || pending.length > 0
+  const canSend = !disabled && (value.trim().length > 0 || pending.length > 0)
 
   return (
-    <div className="border-t border-border bg-bg-primary px-3 py-2.5" style={{ paddingBottom: 'calc(0.625rem + var(--safe-area-bottom))' }}>
+    <div className="border-t border-border bg-bg-primary px-3 py-2.5">
       {todoState ? <TodoPullOut todoState={todoState} /> : null}
 
       {/* Input container — single rounded box with chips, textarea, and inline buttons */}
@@ -241,6 +216,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 <button
                   type="button"
                   aria-label="remove"
+                  disabled={disabled}
                   onClick={() => setPending((prev) => prev.filter((_, idx) => idx !== i))}
                   className="text-text-muted hover:text-text-primary"
                 >
@@ -263,6 +239,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           <textarea
             ref={textareaRef}
             value={value}
+            disabled={disabled}
             onChange={(e) => {
               setValue(e.target.value)
               resize()
@@ -271,7 +248,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             rows={2}
-            placeholder={t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')}
+            placeholder={t('agent.inputPlaceholder')}
             className={cn(
               'max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-0 py-1',
               'text-sm text-text-primary placeholder:text-text-muted',
@@ -283,27 +260,31 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
         {/* Bottom row: attach button (left) + send/cancel button (right) */}
         <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
           <div className="flex items-center gap-1">
-            <input
-              ref={fileRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                onPickFiles(e.target.files)
-                e.target.value = ''
-              }}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={t('agent.attach')}
-              disabled={uploading}
-              onClick={() => fileRef.current?.click()}
-              className={cn('size-7 rounded-md', uploading && 'opacity-40')}
-            >
-              {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
-            </Button>
+            {onUpload ? (
+              <>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    onPickFiles(e.target.files)
+                    e.target.value = ''
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t('agent.attach')}
+                  disabled={uploading || disabled}
+                  onClick={() => fileRef.current?.click()}
+                  className={cn('size-7 rounded-md', uploading && 'opacity-40')}
+                >
+                  {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
+                </Button>
+              </>
+            ) : null}
           </div>
 
           <div className="flex min-w-0 items-center gap-1">
@@ -315,10 +296,9 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 size="icon-sm"
                 aria-label={t('common.cancel')}
                 onClick={onCancel}
-                disabled={cancelling}
                 className="size-7 rounded-md"
               >
-                {cancelling ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
+                <Square className="size-4" />
               </Button>
             ) : (
               <Button

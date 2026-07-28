@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -186,5 +187,127 @@ func TestReconnectProgressPhase(t *testing.T) {
 	p := &protocol.ProgressEvent{Phase: "done"}
 	if p.Phase != "done" {
 		t.Fatal("unexpected phase")
+	}
+}
+
+func TestRemoteTransportReconnectResumesWhenInitialSyncIsLost(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	var connectionCount atomic.Int32
+	subscriptions := make(chan protocol.WSClientMessage, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		connection := connectionCount.Add(1)
+		var subscription protocol.WSClientMessage
+		if err := conn.ReadJSON(&subscription); err != nil {
+			return
+		}
+		subscriptions <- subscription
+		if connection == 1 {
+			// Simulate the server receiving subscribe while its sync ack is lost.
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	transport := NewRemoteTransport(RemoteTransportConfig{
+		ServerURL: strings.Replace(server.URL, "http://", "ws://", 1),
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	defer transport.Stop()
+	if err := transport.connect(ctx); err != nil {
+		t.Fatalf("initial connect: %v", err)
+	}
+	if err := transport.BindChat("chat-a"); err != nil {
+		t.Fatalf("bind chat: %v", err)
+	}
+	first := <-subscriptions
+	if first.Resume || first.LastSeq != 0 {
+		t.Fatalf("initial subscription = %#v", first)
+	}
+
+	if err := transport.connect(ctx); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	second := <-subscriptions
+	if !second.Resume || second.LastSeq != 0 || second.Channel != "cli" || second.ChatID != "chat-a" {
+		t.Fatalf("reconnect subscription = %#v", second)
+	}
+}
+
+func TestRemoteTransportReplayCursorIsRouteScoped(t *testing.T) {
+	transport := NewRemoteTransport(RemoteTransportConfig{})
+	routeA := remoteRoute{channel: "cli", chatID: "chat-a"}
+	routeB := remoteRoute{channel: "cli", chatID: "chat-b"}
+
+	transport.recordRouteCursor(protocol.WSMessage{
+		Type: protocol.MsgTypeText, Seq: 9, RouteChannel: routeA.channel, RouteChatID: routeA.chatID,
+	})
+	transport.recordRouteCursor(protocol.WSMessage{
+		Type: protocol.MsgTypeText, Seq: 3, RouteChannel: routeB.channel, RouteChatID: routeB.chatID,
+	})
+
+	subA := transport.subscriptionForRoute(routeA)
+	subB := transport.subscriptionForRoute(routeB)
+	if !subA.Resume || subA.LastSeq != 9 || subA.Channel != "cli" || subA.ChatID != "chat-a" {
+		t.Fatalf("route A subscription = %#v", subA)
+	}
+	if !subB.Resume || subB.LastSeq != 3 || subB.Channel != "cli" || subB.ChatID != "chat-b" {
+		t.Fatalf("route B subscription = %#v", subB)
+	}
+
+	transport.recordRouteCursor(protocol.WSMessage{
+		Type: protocol.MsgTypeSync, RouteChannel: "cli", RouteChatID: "empty-route",
+	})
+	empty := transport.subscriptionForRoute(remoteRoute{channel: "cli", chatID: "empty-route"})
+	if !empty.Resume || empty.LastSeq != 0 {
+		t.Fatalf("zero high-water acknowledgement was not retained: %#v", empty)
+	}
+}
+
+func TestRemoteTransportUnqualifiedEventUsesActiveRouteOnly(t *testing.T) {
+	transport := NewRemoteTransport(RemoteTransportConfig{})
+	routeA := remoteRoute{channel: "cli", chatID: "chat-a"}
+	routeB := remoteRoute{channel: "cli", chatID: "chat-b"}
+	transport.routeMu.Lock()
+	transport.activeRoute = routeB
+	transport.routeSeq[routeA] = 12
+	transport.routeMu.Unlock()
+
+	transport.recordRouteCursor(protocol.WSMessage{Type: protocol.MsgTypeText, Seq: 4})
+	if got := transport.subscriptionForRoute(routeA).LastSeq; got != 12 {
+		t.Fatalf("inactive route cursor changed to %d", got)
+	}
+	if got := transport.subscriptionForRoute(routeB); !got.Resume || got.LastSeq != 4 {
+		t.Fatalf("active route cursor = %#v", got)
+	}
+}
+
+func TestRemoteTransportSyncAuthoritativelyResetsRouteCursor(t *testing.T) {
+	transport := NewRemoteTransport(RemoteTransportConfig{})
+	route := remoteRoute{channel: "cli", chatID: "chat-a"}
+	transport.recordRouteCursor(protocol.WSMessage{
+		Type: protocol.MsgTypeText, Seq: 100, RouteChannel: route.channel, RouteChatID: route.chatID,
+	})
+	transport.recordRouteCursor(protocol.WSMessage{
+		Type: protocol.MsgTypeSync, Seq: 0, RouteChannel: route.channel, RouteChatID: route.chatID,
+	})
+	if got := transport.subscriptionForRoute(route); !got.Resume || got.LastSeq != 0 {
+		t.Fatalf("cursor after lower sync = %#v", got)
+	}
+
+	transport.recordRouteCursor(protocol.WSMessage{
+		Type: protocol.MsgTypeText, Seq: 4, RouteChannel: route.channel, RouteChatID: route.chatID,
+	})
+	transport.recordRouteCursor(protocol.WSMessage{
+		Type: protocol.MsgTypeText, Seq: 3, RouteChannel: route.channel, RouteChatID: route.chatID,
+	})
+	if got := transport.subscriptionForRoute(route).LastSeq; got != 4 {
+		t.Fatalf("ordinary event lowered cursor to %d", got)
 	}
 }

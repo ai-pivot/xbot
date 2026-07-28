@@ -82,12 +82,19 @@ func (wc *WebChannel) inboundIdentityFromRequest(r *http.Request) inboundIdentit
 	if identity.SenderName == "" {
 		identity.SenderName = identity.SenderID
 	}
-	if wc.callbacks.IdentityResolver != nil {
+	if userID, role, ok := canonicalIdentityFromContext(r.Context()); ok {
+		identity.CanonicalUserID = userID
+		identity.CanonicalRole = role
+	} else if wc.callbacks.IdentityResolver != nil {
 		resolveChannel := "web"
 		if identity.FeishuUserID != "" {
 			resolveChannel = "feishu"
 		}
-		identity.CanonicalUserID, identity.CanonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, identity.SenderID)
+		resolveID := identity.SenderID
+		if identity.FeishuUserID != "" {
+			resolveID = identity.FeishuUserID
+		}
+		identity.CanonicalUserID, identity.CanonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, resolveID)
 	}
 	// In single-user mode, all users share one identity and are treated as admin.
 	if wc.singleUser {
@@ -101,7 +108,22 @@ func (wc *WebChannel) resolveInboundSession(ctx context.Context, identity inboun
 	if channelName != "" && chatID != "" {
 		sel = SessionSelector{Channel: channelName, ChatID: chatID}
 	}
-	if !identity.IsCLI && !wc.canAccessSession(ctx, identity.WebUserID, identity.SenderID, sel.Channel, sel.ChatID) {
+	access := sessionAccessIdentity{
+		senderID:        identity.SenderID,
+		webUserID:       identity.WebUserID,
+		canonicalUserID: identity.CanonicalUserID,
+		canonicalRole:   identity.CanonicalRole,
+	}
+	if identity.IsCLI && sel.Channel == "cli" {
+		if _, agentShaped := parseWebAgentTenantChatID(sel.ChatID); agentShaped {
+			return SessionSelector{}, fmt.Errorf("access denied")
+		}
+	}
+	allowed := wc.canAccessSessionAs(access, sel.Channel, sel.ChatID)
+	if !allowed && identity.IsCLI && sel.Channel == "cli" {
+		allowed = wc.claimCLIClientSession(sel.ChatID, identity.CanonicalUserID)
+	}
+	if !allowed {
 		return SessionSelector{}, fmt.Errorf("access denied")
 	}
 	return sel, nil
@@ -172,18 +194,11 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 	}
 	receivedAt := time.Now()
 
-	// Eager-save user message to DB synchronously so we can return the DB id
-	// in the HTTP response. The agent loop skips re-saving via metadata flag.
+	// History persistence is Agent-owned after session operation-gate
+	// admission. The transport must not pre-write the user message; the
+	// agent loop persists it eagerly before running the turn. The REST
+	// response therefore returns message_id=0 (the DB id is not yet known).
 	var msgDBID int64
-	trimmed := strings.TrimSpace(content)
-	if wc.db != nil && shouldEagerSaveUserMessage(sel.Channel, trimmed) {
-		if id, err := eagerSaveUserMsg(wc.db, sel.Channel, sel.ChatID, content); err != nil {
-			log.WithError(err).Warn("Failed to eager-save user message")
-		} else {
-			msgDBID = id
-			metadata["user_msg_eager_saved"] = "true"
-		}
-	}
 
 	err := wc.enqueueInbound(ctx, bus.InboundMessage{
 		Channel:    sel.Channel,

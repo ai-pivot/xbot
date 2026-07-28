@@ -17,6 +17,18 @@ vi.mock('@/providers/CwdProvider', () => ({
 }))
 
 describe('MessageInput', () => {
+  it('hides file attachments when the session only supports text continuations', () => {
+    renderWithProviders(
+      <MessageInput
+        busy={false}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByLabelText(/attach/i)).not.toBeInTheDocument()
+  })
+
   it('maps /rewind to the Web rewind action instead of sending it as a message', () => {
     const onSend = vi.fn()
     const onRewindLatest = vi.fn()
@@ -141,5 +153,25 @@ describe('MessageInput', () => {
     fireEvent.click(screen.getByLabelText(/send/i))
 
     expect(onSend).toHaveBeenCalledWith('/new', undefined)
+  })
+
+  it('disables draft mutation and send while history is being rewound', () => {
+    const onSend = vi.fn()
+    renderWithProviders(
+      <MessageInput
+        busy={false}
+        disabled
+        onSend={onSend}
+        onCancel={vi.fn()}
+        onUpload={vi.fn()}
+      />,
+    )
+
+    const textbox = screen.getByRole('textbox')
+    expect(textbox).toBeDisabled()
+    fireEvent.change(textbox, { target: { value: 'must not send' } })
+    fireEvent.keyDown(textbox, { key: 'Enter', ctrlKey: true })
+    expect(onSend).not.toHaveBeenCalled()
+    expect(screen.getByLabelText(/send/i)).toBeDisabled()
   })
 })

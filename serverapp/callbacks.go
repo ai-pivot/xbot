@@ -293,7 +293,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		msgs, err := sess.GetMessages()
+		records, err := sess.GetFullHistory()
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
@@ -304,15 +304,15 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			progress = nil
 		}
 		return web.HistorySnapshot{
-			Messages:       channel.ConvertMessagesToHistory(msgs),
+			Messages:       channel.ConvertHistoryRecords(records),
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,
 			Channel:        sel.Channel,
 		}, nil
 	}
-	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, messageID int64) (web.RewindHistoryResult, error) {
-		return rewindWebHistory(ag, sel.Channel, sel.ChatID, messageID)
+	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, historyID int64) (web.RewindHistoryResult, error) {
+		return rewindWebHistory(ag, sel.Channel, sel.ChatID, historyID)
 	}
 	callbacks.GetCWD = func(senderID string, sel web.SessionSelector) (string, error) {
 		return webSessionCWD(ag, sel.Channel, sel.ChatID), nil
@@ -623,12 +623,12 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		applyWebRunningStatuses(ag, subagents)
 		return buildSessionTree(mains, subagents), nil
 	}
-	callbacks.ChatCreate = func(senderID, label string) (string, error) {
+	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64) (string, error) {
 		if webDB == nil {
 			return "", fmt.Errorf("database not available")
 		}
 		cs := sqlite.NewChatService(webDB)
-		return cs.CreateChat("web", senderID, label)
+		return cs.CreateChatOwned("web", senderID, label, canonicalUserID)
 	}
 	callbacks.ChatDelete = func(senderID, channel, chatID string) error {
 		if webDB == nil {
@@ -739,55 +739,15 @@ func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
 	return dir
 }
 
-func rewindWebHistory(ag *agent.Agent, channelName, chatID string, messageID int64) (web.RewindHistoryResult, error) {
+func rewindWebHistory(ag *agent.Agent, channelName, chatID string, historyID int64) (web.RewindHistoryResult, error) {
 	if ag == nil || ag.MultiSession() == nil {
 		return web.RewindHistoryResult{}, fmt.Errorf("multi-session not available")
 	}
-	if messageID <= 0 {
-		return web.RewindHistoryResult{}, fmt.Errorf("invalid message id")
-	}
-	sess, err := ag.MultiSession().GetOrCreateSession(channelName, chatID)
+	result, err := ag.RewindHistory(channelName, chatID, historyID)
 	if err != nil {
 		return web.RewindHistoryResult{}, err
 	}
-	msgs, err := sess.GetMessages()
-	if err != nil {
-		return web.RewindHistoryResult{}, err
-	}
-	history := channel.ConvertMessagesToHistory(msgs)
-	compactCutoff := -1
-	selectedEligibleOrdinal := 0
-	draft := ""
-	for i, msg := range history {
-		if msg.Role != "user" {
-			continue
-		}
-		if strings.HasPrefix(strings.TrimSpace(msg.Content), "[Compacted context]") {
-			compactCutoff = i
-			selectedEligibleOrdinal = 0
-		}
-		if compactCutoff >= 0 && i < compactCutoff {
-			continue
-		}
-		selectedEligibleOrdinal++
-		if msg.ID == messageID {
-			draft = msg.Content
-			break
-		}
-	}
-	if draft == "" {
-		return web.RewindHistoryResult{}, fmt.Errorf("rewind target not found")
-	}
-	var checkpoint *protocol.RewindResult
-	if result, err := ag.RewindCheckpoint(channelName, chatID, selectedEligibleOrdinal); err != nil {
-		log.WithError(err).Warn("rewind checkpoint failed")
-	} else {
-		checkpoint = result
-	}
-	if err := ag.MultiSession().TrimHistoryFromMessageID(channelName, chatID, messageID); err != nil {
-		return web.RewindHistoryResult{}, err
-	}
-	return web.RewindHistoryResult{Draft: draft, RewindResult: checkpoint}, nil
+	return web.RewindHistoryResult{HistoryRewindResult: result}, nil
 }
 
 type webBgTaskJSON struct {

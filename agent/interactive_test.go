@@ -2,10 +2,83 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"xbot/bus"
 )
+
+func TestContinueInteractiveSessionUsesCanonicalFullKey(t *testing.T) {
+	const fullKey = "agent:web:chat-1/review:1/fix:2"
+	ia := &interactiveAgent{
+		roleName: "fix",
+		instance: "2",
+		running:  true,
+		cfg:      &RunConfig{},
+	}
+	a := &Agent{}
+	a.interactiveSubAgents.Store(fullKey, ia)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- a.ContinueInteractiveSession(context.Background(), fullKey, "continue here", "web-user")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	var pending []pendingUserMsg
+	for time.Now().Before(deadline) {
+		pending = ia.drainPendingMessages()
+		if len(pending) > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(pending) != 1 || pending[0].content != "continue here" {
+		t.Fatalf("pending continuation = %+v", pending)
+	}
+	pending[0].replyCh <- nil
+	if err := <-done; err != nil {
+		t.Fatalf("continue interactive session: %v", err)
+	}
+}
+
+func TestContinueInteractiveSessionRequiresActiveObject(t *testing.T) {
+	err := (&Agent{}).ContinueInteractiveSession(context.Background(), "web:chat-1/review:1", "continue", "web-user")
+	if err == nil || !strings.Contains(err.Error(), "no active interactive session") {
+		t.Fatalf("missing interactive session error = %v", err)
+	}
+}
+
+func TestContinueInteractiveSessionReturnsQueuedDeliveryFailure(t *testing.T) {
+	const fullKey = "web:chat-1/review:1"
+	ia := &interactiveAgent{roleName: "review", instance: "1", running: true, cfg: &RunConfig{}}
+	a := &Agent{}
+	a.interactiveSubAgents.Store(fullKey, ia)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- a.ContinueInteractiveSession(context.Background(), fullKey, "continue", "web-user")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	var pending []pendingUserMsg
+	for time.Now().Before(deadline) {
+		pending = ia.drainPendingMessages()
+		if len(pending) > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending continuation = %+v", pending)
+	}
+	pending[0].replyCh <- errors.New("history was rewound")
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "history was rewound") {
+		t.Fatalf("queued delivery error = %v", err)
+	}
+}
 
 func TestInteractiveKey(t *testing.T) {
 	tests := []struct {

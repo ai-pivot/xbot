@@ -19,16 +19,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
-import {
-  fetchHistory,
-  uploadFile,
-  type HistMsg,
-  type HistProgress,
-  type UploadResponse,
-} from '@/components/agent/api'
+import { continueInteractiveSession, fetchHistory, uploadFile, type HistMsg, type HistProgress, type UploadResponse } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
-import { dedupMessages, assertIterationContinuity } from '@/components/agent/progressStore'
-import { getProgressGeneration, sessionCacheKey } from '@/lib/webCache'
+import { dedupMessages } from '@/components/agent/progressStore'
+import { getProgressGeneration, getWebCacheEpoch, messagesCache, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
 import type { ChatMessage, WebIteration } from '@/types/shared'
@@ -45,50 +39,34 @@ interface UseChatMessagesOptions {
   ws: WSConnection
   /** Whether this panel should consume live WS events. History RPC loading remains enabled separately. */
   liveEventsEnabled?: boolean
-  /** SubAgent role — when set, loads SubAgent messages via get_session_messages RPC. */
-  subAgentRole?: string
-  /** SubAgent instance ID (required when subAgentRole is set). */
-  subAgentInstance?: string
-  /** Parent chatID for SubAgent message loading. */
-  parentChatID?: string
-  /** Full persisted agent tenant chatID for historical SubAgent tabs. */
-  agentChatID?: string
-  /** Called when a message is successfully sent (for optimistic busy trigger). */
-  onSendSuccess?: () => void
-  /** Called when cancel is successfully sent (for optimistic idle trigger). */
-  onCancelSuccess?: () => void
+  /** Restore caller-owned draft state when an interactive continuation fails. */
+  onSendError?: (content: string, error: unknown) => void
 }
 
 export interface UseChatMessagesResult {
   messages: ChatMessage[]
   loading: boolean
   error: string | null
+  /** Authoritative active-run flag returned with the history snapshot. */
+  processing: boolean
   /** Active progress snapshot from history (for resuming a busy session). */
   initialProgress: HistProgress | null
-  /** Whether the backend reports this session as actively processing. */
-  processing: boolean
   /** The chat_id reported by the most recent history load (server's active chat). */
   resolvedChatID: string | null
   /** Reload history for the current chatID. */
-  reload: () => Promise<void>
+  reload: () => Promise<boolean>
   /** Send a user message (+ optional uploaded file references). */
   sendMessage: (content: string, attachments?: Attachments) => void
   /** Cancel the running agent (sends a `cancel` WS message). */
   cancel: () => void
-  /** True while cancel is in flight (shows spinner on cancel button). */
-  cancelling: boolean
   /** Upload a file; returns the server upload metadata for sending with a message. */
   upload: (file: File) => Promise<UploadResponse>
   /** Append a finalized assistant message (called by useProgressStream). */
-  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => void
-  /** Inject a user message from a bg notification/cron (called by useProgressStream). */
-  injectUserMessage: (content: string, turnID: number, isNotification: boolean) => void
+  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number) => void
   /** Remove the trailing assistant message by id (for cancellation cleanup). */
   removeMessage: (id: string) => void
   /** Clear committed messages immediately, used for TUI-style /new reset. */
   clearMessages: () => void
-  /** Mark a destructive mutation — next reload discards live rows. */
-  markDestructiveMutation: () => void
 }
 
 /** File references resolved from an upload, ready to attach to a message. */
@@ -102,19 +80,9 @@ export interface Attachments {
 /**
  * Parse raw history rows into ChatMessage[], porting master's defensive logic:
  *
- * 1. Skip display_only messages (cron results, [interrupted] markers).
- * 2. Parse `detail` JSON into WebIteration[] for each message.
- * 3. Tool_calls fallback: if NO message in the entire history has a non-empty
- *    detail, synthesize iteration history from tool_calls — preserves tool
- *    visibility for cancelled/unsaved runs (master ChatPage.tsx:607-623).
- * 4. Compression tool summary stripping: clear content of assistant messages
- *    that are >500 chars, start with `- **ToolName**:`, and have no
- *    tool_calls/detail — these are LLM-context compression artifacts (master
- *    ChatPage.tsx:638-646).
- * 5. Broader empty filter: skip assistant messages with no content AND no
- *    iterations (master ChatPage.tsx:654).
- * 6. Merge consecutive tool_calls-only fallback messages into one message
- *    with sequential iteration numbers (master ChatPage.tsx:656-663).
+ * Preserve the server's append-only order and relationship metadata. Message
+ * and compression rows are filtered for display by MessageList; display_only
+ * remains metadata so those user rows cannot be rewound.
  */
 function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
   // Normalize each row from the WS RPC format (protocol.HistoryMessage).
@@ -124,40 +92,40 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
     const m = rows[i]
 
     // Iterations come pre-parsed from the WS RPC (protocol.HistoryIteration[]).
-    const iterations: WebIteration[] = Array.isArray(m.iterations)
-      ? (m.iterations.map(normalizeWebIteration).filter(Boolean) as WebIteration[])
-      : []
-
-    // Detect non-sequential iteration numbers (e.g. 1 → 148 gap) — indicates
-    // lost iteration history, typically from a backend restart + cancel.
-    if (iterations.length > 1) {
-      assertIterationContinuity(iterations)
-    }
+    const iterations: WebIteration[] = Array.isArray(m.iterations) ? (m.iterations.map(normalizeWebIteration).filter(Boolean) as WebIteration[]) : []
 
     const content = m.content ?? ''
 
-    // Broader empty filter: skip assistant messages with no content AND no
-    // iterations (catches all empty shells).
-    if (
-      m.role === 'assistant' &&
-      (!content || content.trim() === '') &&
-      iterations.length === 0
-    ) {
-      continue
-    }
-
     normalized.push({
-      id: m.id != null ? `db-${m.id}` : (m.seq != null ? `seq-${m.seq}` : `hist-${i}`),
-      role: m.role,
+      id: m.history_id
+        ? `hist-${m.history_id}`
+        : m.seq != null
+          ? `seq-${m.seq}`
+          : `hist-${i}`,
+      historyID: m.history_id,
+      role: m.role === 'control' ? 'system' : m.role,
       content,
+      reasoningContent: m.reasoning_content,
+      toolCallID: m.tool_call_id,
+      toolName: m.tool_name,
+      toolArguments: m.tool_arguments,
+      toolCalls: m.tool_calls,
       iterations,
       timestamp: m.timestamp ?? '',
       isPartial: false,
-      turnID: typeof m.turn_id === 'number' ? m.turn_id : 0,
-      displayOnly: false,
+      turnID: 0,
+      displayOnly: m.display_only ?? false,
       persisted: true,
       eventSeq: m.seq,
-      dbID: m.id,
+      recordType: m.record_type,
+      compactedBy: m.compacted_by,
+      compression: m.compression
+        ? {
+            startHistoryID: m.compression.start_history_id,
+            endHistoryID: m.compression.end_history_id,
+            sourceHistoryIDs: m.compression.source_history_ids,
+          }
+        : undefined,
     })
   }
 
@@ -174,114 +142,50 @@ function newMessageRequestID(): string {
   return id ? id.replaceAll('-', '') : `web-${Date.now()}-${echoSeq++}`
 }
 
-/** SubAgent message from get_session_messages RPC (agent.SessionMessage). */
-interface SubAgentMsg {
-  role: string
-  content: string
-}
+const loadedMessageKeys = new Set<string>()
+const messageCacheSeq = new Map<string, number>()
+let globalReloadSeq = 0
+let messageModuleCacheEpoch = getWebCacheEpoch()
 
-interface AgentSessionDump {
-  messages?: SubAgentMsg[]
-  iterations?: unknown[]
-}
-
-
-
-function messageCacheKey(
-  channel: string,
-  chatID: string | null,
-  subAgentRole?: string,
-  subAgentInstance?: string,
-  agentChatID?: string,
-): string {
-  const key = sessionCacheKey(channel, chatID ?? 'current')
-  if (!subAgentRole && !agentChatID) return key
-  return `${key}:${subAgentRole ?? ''}:${subAgentInstance ?? ''}:${agentChatID ?? ''}`
-}
-
-
-// reconcileHistoryWithLiveRows merges server history with live (unpersisted)
-// rows. A live row is kept only if its eventSeq is ABOVE the history
-// watermark (last_seq) — meaning it was delivered via SSE after the history
-// snapshot was taken, so it's not yet in history. Rows at or below the
-// watermark are already covered by history. Rows without an eventSeq
-// (optimistic user messages from sendMessage) are always dropped — the
-// server persists them before/during the turn.
-function reconcileHistoryWithLiveRows(
-  history: ChatMessage[],
-  current: ChatMessage[],
-  historyWatermark: number,
-): ChatMessage[] {
-  // Build lookup sets from history for O(1) dedup checks.
-  const historyTurnRoles = new Set<string>()
-  const historyContentKeys = new Set<string>()
-  for (const m of history) {
-    if (m.turnID > 0) {
-      historyTurnRoles.add(`${m.turnID}:${m.role}`)
-    }
-    // Content+role fallback for messages without turnID (user_echo, etc.)
-    if (m.content) {
-      historyContentKeys.add(`${m.role}:${m.content}`)
-    }
+function syncMessageModuleCacheEpoch(): number {
+  const current = getWebCacheEpoch()
+  if (current !== messageModuleCacheEpoch) {
+    loadedMessageKeys.clear()
+    messageCacheSeq.clear()
+    messageModuleCacheEpoch = current
   }
+  return current
+}
 
+function commitMessageCache(key: string, rows: ChatMessage[], seq = ++globalReloadSeq): boolean {
+  const latest = messageCacheSeq.get(key) ?? 0
+  if (seq < latest) return false
+  messageCacheSeq.set(key, seq)
+  messagesCache.set(key, rows)
+  return true
+}
+
+function messageCacheKey(channel: string, chatID: string | null): string {
+  return sessionCacheKey(channel, chatID ?? 'current')
+}
+
+function reconcileHistoryWithLiveRows(history: ChatMessage[], current: ChatMessage[]): ChatMessage[] {
+  const matchedHistoryRows = new Set<number>()
   const liveRows = current.filter((message) => {
     if (message.persisted !== false) return false
-    if (message.eventSeq == null) return false
-    // Below watermark: always superseded by history.
-    if (message.eventSeq < historyWatermark) return false
-    // Same turnID:role already in history — drop the live row.
-    // This is the PRIMARY dedup for cancel acks and final replies: the
-    // locally-committed message (streaming content) and the DB message
-    // ([interrupted] or normal reply) share the same turnID but have
-    // different content/eventSeq, so content matching alone fails.
-    if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
-    // Content+role fallback for messages without turnID (user_echo).
-    if (message.turnID === 0 && message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
-    return true
+    const match = history.findIndex((persisted, index) => !matchedHistoryRows.has(index) && sameMessageOccurrence(persisted, message))
+    if (match < 0) return true
+    matchedHistoryRows.add(match)
+    return false
   })
   return [...history, ...liveRows]
 }
 
-/** Parse SubAgent messages (simple role/content) into ChatMessage[]. */
-function parseSubAgentMessages(rows: SubAgentMsg[], rawIterations?: unknown[]): ChatMessage[] {
-  const iterations = Array.isArray(rawIterations)
-    ? (rawIterations.map(normalizeWebIteration).filter(Boolean) as WebIteration[])
-    : []
-  const messages: ChatMessage[] = rows
-    .filter((m) => m.content && m.content.trim())
-    .map((m, i) => ({
-      id: `sub-${i}`,
-      role: (m.role === 'user' ? 'user' : 'assistant') as ChatMessage['role'],
-      content: m.content,
-      iterations: [],
-      timestamp: '',
-      isPartial: false,
-      turnID: 0,
-      displayOnly: false,
-      persisted: true,
-    }))
-  if (iterations.length === 0) return messages
-  const lastAssistant = messages.findLastIndex((m) => m.role === 'assistant')
-  if (lastAssistant >= 0) {
-    const next = [...messages]
-    next[lastAssistant] = { ...next[lastAssistant], iterations }
-    return next
-  }
-  return [
-    ...messages,
-    {
-      id: 'sub-iterations',
-      role: 'assistant',
-      content: '',
-      iterations,
-      timestamp: '',
-      isPartial: false,
-      turnID: 0,
-      displayOnly: false,
-      persisted: true,
-    },
-  ]
+function sameMessageOccurrence(persisted: ChatMessage, live: ChatMessage): boolean {
+  if (persisted.role !== live.role || persisted.content !== live.content) return false
+  const persistedAt = Date.parse(persisted.timestamp)
+  const liveAt = Date.parse(live.timestamp)
+  return Number.isFinite(persistedAt) && Number.isFinite(liveAt) && Math.abs(persistedAt - liveAt) <= 5_000
 }
 
 export function useChatMessages({
@@ -290,32 +194,22 @@ export function useChatMessages({
   enabled = true,
   ws,
   liveEventsEnabled = true,
-  subAgentRole,
-  subAgentInstance,
-  parentChatID,
-  agentChatID,
-  onSendSuccess,
-  onCancelSuccess,
+  onSendError,
 }: UseChatMessagesOptions): UseChatMessagesResult {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [processing, setProcessing] = useState(false)
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
-  const [processing, setProcessing] = useState(false)
 
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
-  const activeMessageCacheKey = messageCacheKey(
-    channel,
-    chatID,
-    subAgentRole,
-    subAgentInstance,
-    agentChatID,
-  )
+  const activeMessageCacheKey = messageCacheKey(channel, chatID)
   const activeMessageCacheKeyRef = useRef(activeMessageCacheKey)
   activeMessageCacheKeyRef.current = activeMessageCacheKey
   const lastReloadKeyRef = useRef<string | null>(null)
+  const mountedRef = useRef(true)
 
   // Generation counter to discard stale async fetches when the user rapidly
   // switches sessions (prevents session A's history from overwriting session
@@ -326,6 +220,10 @@ export function useChatMessages({
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
+  const cacheCurrentMessages = useCallback((rows: ChatMessage[]) => {
+    syncMessageModuleCacheEpoch()
+    commitMessageCache(activeMessageCacheKeyRef.current, rows)
+  }, [])
 
   // Hold ws in a ref — its methods delegate to a stable MultiSSEManager instance,
   // so we don't need ws in the reload deps. Including ws would cause an infinite
@@ -334,88 +232,49 @@ export function useChatMessages({
   const wsRef = useRef(ws)
   wsRef.current = ws
 
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      reloadGenRef.current += 1
+    }
+  }, [])
+
   const reload = useCallback(async () => {
+    if (!mountedRef.current) return false
     const w = wsRef.current
+    const cacheEpoch = syncMessageModuleCacheEpoch()
     const gen = ++reloadGenRef.current
     const mutationGen = messageMutationGenRef.current
     const destructiveMutationGen = destructiveMutationGenRef.current
     const progressCacheKey = chatID ? sessionCacheKey(channel, chatID) : null
     const progressGen = progressCacheKey ? getProgressGeneration(progressCacheKey) : null
-    const requestIsSuperseded = () => gen !== reloadGenRef.current
+    const globalSeq = ++globalReloadSeq
+    const requestIsSuperseded = () => !mountedRef.current || gen !== reloadGenRef.current || cacheEpoch !== getWebCacheEpoch()
     const requestHasMessageMutation = () => mutationGen !== messageMutationGenRef.current
-    const requestHasDestructiveMutation = () => (
-      destructiveMutationGen !== destructiveMutationGenRef.current
-    )
+    const requestHasDestructiveMutation = () => destructiveMutationGen !== destructiveMutationGenRef.current
     const reloadKey = activeMessageCacheKey
     const sameTarget = lastReloadKeyRef.current === reloadKey
-    // No cache read — always start fresh on session switch.
+    const cachedRows = messagesCache.get(reloadKey)
     if (!sameTarget) {
-      messagesRef.current = []
-      setMessages([])
+      const next = cachedRows ?? []
+      messagesRef.current = next
+      setMessages(next)
     }
+    const targetHasLoaded = loadedMessageKeys.has(reloadKey)
     const hasVisibleRows = sameTarget && messagesRef.current.length > 0
-    setLoading(!hasVisibleRows)
+    setLoading(!targetHasLoaded && !cachedRows && !hasVisibleRows)
     setError(null)
+    // Keep the current rows until the replacement history arrives. This avoids
+    // a visible empty "loading" flash during background refreshes and session
+    // switches; stale async results are still discarded by reloadGenRef.
     lastReloadKeyRef.current = reloadKey
     if (!sameTarget) setInitialProgress(null)
+    if (!sameTarget) setProcessing(false)
     try {
-      // Live SubAgent mode: TUI renders from the in-memory agent session dump.
-      if (agentChatID) {
-        const dump = await w.rpc<AgentSessionDump>('get_agent_session_dump_by_full_key', {
-          full_key: agentChatID,
-        })
-        if (requestIsSuperseded() || requestHasDestructiveMutation()) return
-        const dumpMessages = Array.isArray(dump?.messages) ? dump.messages : []
-        const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
-        if (dumpMessages.length > 0 || dumpIterations.length > 0) {
-          const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
-          const mutated = requestHasMessageMutation()
-          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
-          messagesRef.current = next
-          setMessages(next)
-          setInitialProgress(null)
-      setProcessing(false)
-          return
-        }
-      }
-      // Live SubAgent mode: same runtime tuple as TUI.
-      if (subAgentRole && parentChatID && !agentChatID) {
-        const dump = await w.rpc<AgentSessionDump>('get_agent_session_dump', {
-          channel,
-          chat_id: parentChatID,
-          role: subAgentRole,
-          instance: subAgentInstance ?? '',
-        })
-        if (requestIsSuperseded() || requestHasDestructiveMutation()) return
-        const dumpMessages = Array.isArray(dump?.messages) ? dump.messages : []
-        const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
-        if (dumpMessages.length > 0 || dumpIterations.length > 0) {
-          const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
-          const mutated = requestHasMessageMutation()
-          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
-          messagesRef.current = next
-          setMessages(next)
-          setInitialProgress(null)
-          return
-        }
-        const msgs = await w.rpc<SubAgentMsg[]>('get_session_messages', {
-          channel,
-          chat_id: parentChatID,
-          role: subAgentRole,
-          instance: subAgentInstance ?? '',
-        })
-        if (requestIsSuperseded() || requestHasDestructiveMutation()) return
-        const parsed = parseSubAgentMessages(Array.isArray(msgs) ? msgs : [])
-        const mutated = requestHasMessageMutation()
-        const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
-        messagesRef.current = next
-        setMessages(next)
-        setInitialProgress(null)
-        return
-      }
-      // Normal mode: load via Web history snapshot (full history + progress).
+      // All sessions, including Agent children, use the canonical history API.
       const data = await fetchHistory(w, chatID ? { channel, chatID } : null)
-      if (requestIsSuperseded() || requestHasDestructiveMutation()) return
+      if (requestIsSuperseded() || requestHasDestructiveMutation()) return false
       const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
       const cursorChatID = data.chat_id ?? chatID
@@ -433,27 +292,29 @@ export function useChatMessages({
       }
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
-      const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0) : parsed
+      const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current) : parsed
+      if (!commitMessageCache(reloadKey, next, mutated ? ++globalReloadSeq : globalSeq)) return false
+      loadedMessageKeys.add(reloadKey)
       messagesRef.current = next
       setMessages(next)
-      // Always restore active_progress — it contains the COMPLETE iterationHistory
-      // from the server. Don't skip it when progressChanged (SSE delta arrived
-      // during reload) — that's exactly when we need the full snapshot most,
-      // because the delta only has 0-1 iterations while the server has all.
-      setInitialProgress(data.active_progress ?? null)
+      setInitialProgress(progressChanged || mutated ? null : (data.active_progress ?? null))
+      setProcessing(progressChanged ? false : data.processing === true)
       if (data.chat_id) setResolvedChatID(data.chat_id)
+      return true
     } catch (e) {
-      if (requestIsSuperseded() || requestHasDestructiveMutation()) return
+      if (requestIsSuperseded() || requestHasDestructiveMutation()) return false
       setError(e instanceof Error ? e.message : String(e))
-      if (!sameTarget && !requestHasMessageMutation()) {
+      if (!sameTarget && !cachedRows && !requestHasMessageMutation()) {
         messagesRef.current = []
         setMessages([])
       }
       setInitialProgress(null)
+      setProcessing(false)
+      return false
     } finally {
-      if (gen === reloadGenRef.current) setLoading(false)
+      if (mountedRef.current && cacheEpoch === getWebCacheEpoch() && gen === reloadGenRef.current) setLoading(false)
     }
-  }, [channel, chatID, subAgentRole, subAgentInstance, parentChatID, agentChatID, activeMessageCacheKey])
+  }, [channel, chatID, activeMessageCacheKey])
 
   // Load history when the chatID changes (or on first enable).
   useLayoutEffect(() => {
@@ -474,15 +335,15 @@ export function useChatMessages({
     if (!chatID) return
     const listenerChatID = chatID
     const listenerCacheKey = activeMessageCacheKey
+    const listenerCacheEpoch = syncMessageModuleCacheEpoch()
     const off = ws.onMessage((msg: WSMessage) => {
+      if (!mountedRef.current || listenerCacheEpoch !== getWebCacheEpoch()) return
       if (activeMessageCacheKeyRef.current !== listenerCacheKey) return
-      // replay_gap: SSE reconnect detected real data loss (TurnID changed or
-      // turn ended during gap). Reload from DB to pick up lost committed messages.
-      if (msg.type === 'replay_gap') {
+      if (!matchesChatID(msg, listenerChatID, channel)) return
+      if (msg.type === 'history_gap' || msg.type === 'resync_required') {
         void reload()
         return
       }
-      if (!matchesChatID(msg, listenerChatID, channel)) return
       if (msg.type !== 'user_echo' && msg.type !== 'inject_user') return
       const content = msg.content ?? msg.original_content ?? ''
       if (!content) return
@@ -495,12 +356,15 @@ export function useChatMessages({
         messageMutationGenRef.current += 1
         // A replayed echo finds the already-replaced row by requestID, so it
         // updates in place instead of appending a duplicate.
-        const lastUserIdx = msg.type === 'user_echo' ? prev.findLastIndex((m) => {
-          if (requestID) return m.requestID === requestID
-          if (!m.id.startsWith('user-') || m.content !== msg.original_content) return false
-          const match = m.id.match(/^user-(\d+)-/)
-          return Boolean(match && now - parseInt(match[1], 10) < 5000)
-        }) : -1
+        const lastUserIdx =
+          msg.type === 'user_echo'
+            ? prev.findLastIndex((m) => {
+                if (requestID) return m.requestID === requestID
+                if (!m.id.startsWith('user-') || m.content !== msg.original_content) return false
+                const match = m.id.match(/^user-(\d+)-/)
+                return Boolean(match && now - parseInt(match[1], 10) < 5000)
+              })
+            : -1
         const newMsg: ChatMessage = {
           id,
           role: 'user',
@@ -517,22 +381,28 @@ export function useChatMessages({
           const copy = [...prev]
           copy[lastUserIdx] = newMsg
           messagesRef.current = copy
+          commitMessageCache(listenerCacheKey, copy)
           return copy
         }
         const next = [...prev, newMsg]
         messagesRef.current = next
+        commitMessageCache(listenerCacheKey, next)
         return next
       })
     })
     return off
-  }, [ws, chatID, channel, activeMessageCacheKey, liveEventsEnabled])
+  }, [ws, chatID, channel, activeMessageCacheKey, liveEventsEnabled, reload])
 
   const sendMessage = useCallback(
     (content: string, attachments?: Attachments) => {
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
+      if (channel === 'agent' && attachments?.uploadKeys.length) {
+        toast.error('Interactive Agent continuations do not support attachments')
+        return
+      }
       const requestID = newMessageRequestID()
-      // a few hundred ms; if it doesn't, don't leave stuck in optimistic state.
+      const sendCacheEpoch = syncMessageModuleCacheEpoch()
       const resetCommand = text === '/new' && !attachments?.uploadKeys.length
       let optimisticID: string | null = null
       if (!resetCommand) {
@@ -551,184 +421,146 @@ export function useChatMessages({
           turnID: 0,
           persisted: false,
           requestID,
-          sending: true,
         }
         messageMutationGenRef.current += 1
         setMessages((prev) => {
           const next = [...prev, newMsg]
           messagesRef.current = next
-              return next
+          cacheCurrentMessages(next)
+          return next
         })
       }
-      void ws.send({
-        type: 'message',
-        id: requestID,
-        channel,
-        chat_id: chatIDRef.current ?? undefined,
-        content: text,
-        upload_keys: attachments?.uploadKeys,
-        file_names: attachments?.fileNames,
-        file_sizes: attachments?.fileSizes,
-        file_mimes: attachments?.fileMimes,
-      }).then((resp) => {
-        // API succeeded — the message is now persisted on the backend.
-        // Use the server-returned message_id (DB auto-increment) so rewind
-        // works immediately without a page refresh. Also sync timestamp.
-        const msgID = resp?.message_id
-        const serverTs = resp?.timestamp
-        const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
-        if (optimisticID) {
-          const sentID = optimisticID
-          messageMutationGenRef.current += 1
-          setMessages((prev) => {
-            const next = prev.map((m) => m.id === sentID ? {
-              ...m,
-              sending: false,
-              persisted: true,
-              ...(msgID ? { dbID: msgID, id: `db-${msgID}` } : {}),
-              ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
-            } : m)
-            messagesRef.current = next
-            return next
-          })
-        }
-        onSendSuccess?.()
-      }).catch((error: unknown) => {
+      const sendCacheKey = activeMessageCacheKeyRef.current
+      const targetChatID = chatIDRef.current
+      const sendPromise =
+        channel === 'agent'
+          ? targetChatID
+            ? continueInteractiveSession(ws, targetChatID, text)
+            : Promise.reject(new Error('interactive Agent session is unavailable'))
+          : ws.send({
+              type: 'message',
+              id: requestID,
+              channel,
+              chat_id: targetChatID ?? undefined,
+              content: text,
+              upload_keys: attachments?.uploadKeys,
+              file_names: attachments?.fileNames,
+              file_sizes: attachments?.fileSizes,
+              file_mimes: attachments?.fileMimes,
+            })
+      void sendPromise.catch((error: unknown) => {
+        if (!mountedRef.current || sendCacheEpoch !== getWebCacheEpoch()) return
         if (optimisticID) {
           const failedID = optimisticID
-          messageMutationGenRef.current += 1
-          setMessages((prev) => {
-            const next = prev.filter((message) => message.id !== failedID)
-            messagesRef.current = next
-            return next
-          })
+          const cached = messagesCache.get(sendCacheKey) ?? []
+          commitMessageCache(
+            sendCacheKey,
+            cached.filter((message) => message.id !== failedID),
+          )
+          if (activeMessageCacheKeyRef.current === sendCacheKey) {
+            messageMutationGenRef.current += 1
+            setMessages((prev) => {
+              const next = prev.filter((message) => message.id !== failedID)
+              messagesRef.current = next
+              commitMessageCache(sendCacheKey, next)
+              return next
+            })
+          }
         }
-        toast.error(error instanceof Error ? error.message : "message send failed")
+        onSendError?.(text, error)
+        toast.error(error instanceof Error ? error.message : 'message send failed')
       })
     },
-    [ws, channel],
+    [ws, channel, cacheCurrentMessages, onSendError],
   )
 
-  const [cancelling, setCancelling] = useState(false)
-
   const cancel = useCallback(() => {
-    setCancelling(true)
-    void ws.send({ type: 'cancel', channel, chat_id: chatIDRef.current ?? undefined })
-      .then(() => {
-        setCancelling(false)
-        onCancelSuccess?.()
+    void ws
+      .send({
+        type: 'cancel',
+        channel,
+        chat_id: chatIDRef.current ?? undefined,
       })
       .catch((error: unknown) => {
-        setCancelling(false)
         toast.error(error instanceof Error ? error.message : 'cancel failed')
       })
-  }, [ws, channel, onCancelSuccess])
+  }, [ws, channel])
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
-  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => {
-    if (!content && !iterations.length) return
-    messageMutationGenRef.current += 1
-    // Use the same id format as parseHistoryMessages (seq-${eventSeq}) so that
-    // when reload returns and the server version replaces this optimistic row,
-    // TanStack Virtual's getItemKey returns the same key — React reuses the
-    // existing component instead of unmounting/remounting.
-    const id = eventSeq != null ? `seq-${eventSeq}` : `asst-${Date.now()}-${echoSeq++}`
-    const newMsg: ChatMessage = {
-      id,
-      role: 'assistant',
-      content,
-      iterations,
-      timestamp: new Date().toISOString(),
-      isPartial: false,
-      turnID: turnID ?? 0,
-      persisted: false,
-      eventSeq,
-    }
-    setMessages((prev) => {
-      const next = dedupMessages([...prev, newMsg])
-      messagesRef.current = next
-      return next
-    })
-  }, [])
+  const appendAssistant = useCallback(
+    (content: string, iterations: WebIteration[], eventSeq?: number) => {
+      if (!mountedRef.current || (!content && !iterations.length)) return
+      messageMutationGenRef.current += 1
+      // Match parseHistoryMessages so history replacement reuses the same row.
+      const id = eventSeq != null ? `seq-${eventSeq}` : `asst-${Date.now()}-${echoSeq++}`
+      const newMsg: ChatMessage = {
+        id,
+        role: 'assistant',
+        content,
+        iterations,
+        timestamp: new Date().toISOString(),
+        isPartial: false,
+        turnID: 0,
+        persisted: false,
+        eventSeq,
+      }
+      setMessages((prev) => {
+        const next = dedupMessages([...prev, newMsg])
+        messagesRef.current = next
+        cacheCurrentMessages(next)
+        return next
+      })
+    },
+    [cacheCurrentMessages],
+  )
 
-  // injectUserMessage: display a bg-notification/cron user message.
-  // Called by useProgressStream when a turn_started event with trigger
-  // "notification" or "resume" arrives. The message is tagged with the
-  // backend TurnID so the assistant response can be associated correctly.
-  const injectUserMessage = useCallback((content: string, turnID: number, isNotification: boolean) => {
-    messageMutationGenRef.current += 1
-    const id = `notif-${turnID}-${echoSeq++}`
-    const newMsg: ChatMessage = {
-      id,
-      role: 'user',
-      content,
-      iterations: [],
-      timestamp: new Date().toISOString(),
-      isPartial: false,
-      turnID,
-      isNotification,
-      persisted: false,
-    }
-    setMessages((prev) => {
-      const next = [...prev, newMsg]
-      messagesRef.current = next
-      return next
-    })
-  }, [])
-
-  const removeMessage = useCallback((id: string) => {
-    messageMutationGenRef.current += 1
-    destructiveMutationGenRef.current += 1
-    setMessages((prev) => {
-      const next = prev.filter((m) => m.id !== id)
-      messagesRef.current = next
-      return next
-    })
-  }, [])
+  const removeMessage = useCallback(
+    (id: string) => {
+      messageMutationGenRef.current += 1
+      destructiveMutationGenRef.current += 1
+      setMessages((prev) => {
+        const next = prev.filter((m) => m.id !== id)
+        messagesRef.current = next
+        cacheCurrentMessages(next)
+        return next
+      })
+    },
+    [cacheCurrentMessages],
+  )
 
   const clearMessages = useCallback(() => {
     messageMutationGenRef.current += 1
     destructiveMutationGenRef.current += 1
     messagesRef.current = []
     setMessages([])
+    const key = lastReloadKeyRef.current
+    if (key) loadedMessageKeys.add(key)
+    cacheCurrentMessages([])
     setInitialProgress(null)
-  }, [])
+    setProcessing(false)
+  }, [cacheCurrentMessages])
 
-  const markDestructiveMutation = useCallback(() => {
-    messageMutationGenRef.current += 1
-    destructiveMutationGenRef.current += 1
-  }, [])
+  // Effects hydrate the backing state, but render from the target cache key so
+  // a session transition can never expose the previous session for one frame.
+  const visibleMessages = lastReloadKeyRef.current === activeMessageCacheKey ? messages : (messagesCache.get(activeMessageCacheKey) ?? [])
+  const visibleInitialProgress = lastReloadKeyRef.current === activeMessageCacheKey ? initialProgress : null
+  const visibleProcessing = lastReloadKeyRef.current === activeMessageCacheKey ? processing : false
 
-  // ── SSE replay gap → reload message list ──
-  // When SSE disconnects and reconnects, the existing seq-gap detection in
-  // sseConnection calls restoreActiveProgress. If that recovery detects a real
-  // data loss (TurnID changed or turn ended during the gap), it dispatches a
-  // `replay_gap` message. Only THEN do we reload — SSE event gaps are normal
-  // (stateless coalescing, buffer drops), but TurnID/IterationID jumps indicate
-  // committed messages (reply, notification) were lost and must be refetched.
-  // Integrated into the user_echo listener to avoid registering a second
-  // onMessage handler (which would interfere with test handler capture).
-
-  // Render from local state directly — no cross-session cache logic.
-  // The panel always shows its own messages; reload fetches fresh history.
   return {
-    messages,
+    messages: visibleMessages,
     loading,
     error,
-    initialProgress,
-    processing,
+    processing: visibleProcessing,
+    initialProgress: visibleInitialProgress,
     resolvedChatID,
     reload,
     sendMessage,
     cancel,
-    cancelling,
     upload,
     appendAssistant,
-    injectUserMessage,
     removeMessage,
     clearMessages,
-    markDestructiveMutation,
   }
 }
 

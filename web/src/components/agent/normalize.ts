@@ -11,7 +11,7 @@ import {
   normalizeWebTools,
 } from '@/components/agent/progressStore'
 import type { HistProgress } from '@/components/agent/api'
-import type { WebIteration, WebToolProgress, ProgressSnapshot, TodoItem } from '@/types/shared'
+import type { WebIteration, WebToolProgress, ProgressSnapshot, TodoItem, TokenUsageInfo } from '@/types/shared'
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { IterationSnapshot, IterationTool, ToolProgress } from '@/types/agent'
 
@@ -122,50 +122,34 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     return { ...EMPTY_PROGRESS_SNAPSHOT, todos }
   }
   const active = normalizeWebTools(p.active_tools)
-  let completed = normalizeWebTools(p.completed_tools)
+  const completed = normalizeWebTools(p.completed_tools)
   const iterHistory = (p.iteration_history ?? [])
     .map(normalizeWebIteration)
     .filter(Boolean) as WebIteration[]
-
-  // ── Iteration boundary guard ──
-  // When GetActiveProgress is called after snapshotCompletedIteration but
-  // before prepareForIteration, the snapshot carries the PREVIOUS iteration's
-  // Content and CompletedTools (not yet cleared). If activeTools is empty but
-  // completedTools is non-empty, the snapshot is at this boundary.
-  //
-  // Without this guard, LiveIteration renders the stale Content and
-  // CompletedTools as if they belong to the current (in-flight) iteration,
-  // duplicating them alongside the iterationHistory entry.
-  //
-  // Fix: clear content and completedTools from the live snapshot. Do NOT add
-  // a synthetic entry to iterationHistory — it would be appended at the END
-  // of the array (which is the BEGINNING if the store is empty), causing the
-  // content to appear BEFORE earlier iterations' tools. The delta protocol
-  // will deliver the correct data in order when the next iteration starts.
-  let content = p.content ?? ''
-  if (active.length === 0 && completed.length > 0) {
-    content = ''
-    completed = []
-  }
-
+  const tokenUsage: TokenUsageInfo | null = p.token_usage
+    ? {
+        promptTokens: p.token_usage.prompt_tokens ?? 0,
+        completionTokens: p.token_usage.completion_tokens ?? 0,
+        totalTokens: p.token_usage.total_tokens ?? 0,
+      }
+    : null
   return {
     eventSeq: typeof p.seq === 'number' ? p.seq : 0,
     phase: p.phase,
     iteration: typeof p.iteration === 'number' ? p.iteration : 0,
     streamContent: p.stream_content ?? '',
-    content,
-    reasoningStreamContent: '',
+    content: p.content ?? '',
+    reasoningStreamContent: p.reasoning_stream_content ?? '',
     streaming: true,
     activeTools: active,
     completedTools: completed,
     iterationHistory: iterHistory,
-    streamingTools: [],
+    streamingTools: normalizeWebTools(p.streaming_tools),
     genuiContent: '',
-    lastIter: 0, // 0 = uninitialized; iterations are 1-based
-    lastReasoning: '',
+    lastIter: typeof p.iteration === 'number' ? p.iteration : -1,
+    lastReasoning: p.reasoning ?? '',
     todos: (p.todos ?? []) as TodoItem[],
     subAgents: normalizeWebSubAgents(p.sub_agents),
-    tokenUsage: null,
-    turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : 0,
+    tokenUsage,
   }
 }

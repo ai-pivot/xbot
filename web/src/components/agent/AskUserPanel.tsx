@@ -21,9 +21,10 @@ interface AskUserPanelProps {
   prompt: AskUserPrompt
   onRespond: (answers: Record<string, string>) => void
   onCancel: () => void
+  disabled?: boolean
 }
 
-export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps) {
+export function AskUserPanel({ prompt, onRespond, onCancel, disabled = false }: AskUserPanelProps) {
   const { t } = useI18n()
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [textInputs, setTextInputs] = useState<Record<string, string>>({})
@@ -39,6 +40,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
   }
 
   const submit = () => {
+    if (disabled) return
     const merged: Record<string, string> = { ...answers }
     for (const [k, v] of Object.entries(textInputs)) {
       if (v.trim()) merged[k] = v.trim()
@@ -72,6 +74,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                     <button
                       key={opt}
                       type="button"
+                      disabled={disabled}
                       onClick={() => setOption(i, opt)}
                       className={cn(
                         'rounded-md border px-3 py-1.5 text-sm transition-colors',
@@ -88,11 +91,12 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
             ) : (
               <Input
                 value={textInputs[String(i)] ?? ''}
+                disabled={disabled}
                 onChange={(e) =>
                   setTextInputs((prev) => ({ ...prev, [String(i)]: e.target.value }))
                 }
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey && allAnswered) {
+                  if (e.key === 'Enter' && !e.shiftKey && allAnswered && !disabled) {
                     e.preventDefault()
                     submit()
                   }
@@ -105,10 +109,10 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
         ))}
       </div>
       <div className="mt-4 flex justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={onCancel}>
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={disabled}>
           {t('common.cancel')}
         </Button>
-        <Button size="sm" onClick={submit} disabled={!allAnswered}>
+        <Button size="sm" onClick={submit} disabled={disabled || !allAnswered}>
           {t('agent.askUserSubmit')}
         </Button>
       </div>

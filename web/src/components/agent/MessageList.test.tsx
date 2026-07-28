@@ -13,7 +13,8 @@ import { describe, expect, it } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
-import { canRewindMessage, isCompactMarker, latestCompactBoundaryIndex, MessageList } from '@/components/agent/MessageList'
+import { appendLiveMessage, canRewindMessage, CompressionBlock, MessageList, visibleHistoryRows } from '@/components/agent/MessageList'
+import { MessageItem } from '@/components/agent/MessageItem'
 import { EMPTY_LIVE_PROGRESS } from '@/types/agent'
 import type { ChatMessage } from '@/types/agent'
 import { I18nProvider } from '@/providers/i18n'
@@ -243,6 +244,16 @@ describe('MessageList virtualization', () => {
     ).not.toThrow()
   })
 
+  it('keeps a live occurrence when its content equals the previous assistant message', () => {
+    const committed: ChatMessage = {
+      id: 'committed', role: 'assistant', content: 'same answer', iterations: [], timestamp: '', isPartial: false, turnID: 0,
+    }
+    const live: ChatMessage = {
+      id: 'live', role: 'assistant', content: 'same answer', iterations: [], timestamp: '', isPartial: true, turnID: 0,
+    }
+    expect(appendLiveMessage([committed], live)).toEqual([committed, live])
+  })
+
   it('scrolls to bottom on initial load', async () => {
     const { container } = renderWithProviders(
       <MessageList
@@ -282,52 +293,12 @@ describe('MessageList virtualization', () => {
     await flushAnimationFrames()
     expect(scroller.scrollTop).toBe(scroller.scrollHeight)
 
-    // Content grows — the ResizeObserver triggers scheduleFollow, which writes
-    // scrollTop=scrollHeight. The browser may fire scroll while scrollTop is
-    // momentarily at the old position (before the write applies). Our own write
-    // is flagged so onScroll doesn't treat this as user intent and pause.
-    rerender(
-      <MessageList
-        chatKey="web:chat-1"
-        messages={makeMessages(21)}
-        liveMessage={null}
-        liveProgress={null}
-        collapseLevel="all"
-        loading={false}
-        error={null}
-      />,
-    )
-    act(() => RO.trigger(contentElement(container)))
-    await flushAnimationFrames()
-
-    expect(scroller.scrollTop).toBe(scroller.scrollHeight)
-  })
-
-  it('does not yank the viewport when content grows after the user wheels up', async () => {
-    const { container, rerender } = renderMessageList(
-      <MessageList
-        chatKey="web:chat-1"
-        messages={makeMessages(20)}
-        liveMessage={null}
-        liveProgress={null}
-        collapseLevel="all"
-        loading={false}
-        error={null}
-      />,
-    )
-    const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement
-
-    await flushAnimationFrames()
-    expect(scroller.scrollTop).toBe(scroller.scrollHeight)
-
-    // User wheels up — this pauses following via the wheel handler
-    fireEvent.wheel(scroller, { deltaY: -10 })
-    const readPosition = scroller.scrollHeight - scroller.clientHeight - 200
-    scroller.scrollTop = readPosition
+    // Content grows before ResizeObserver runs. The browser may emit scroll
+    // while scrollTop still points at the old bottom; this is layout movement,
+    // not user intent, so sticky mode must remain enabled.
+    const oldBottom = scroller.scrollHeight - scroller.clientHeight - 10
+    scroller.scrollTop = oldBottom
     fireEvent.scroll(scroller)
-
-    // Content grows (e.g. streaming). The ResizeObserver must NOT yank the
-    // viewport to the bottom — the user is reading history.
     rerender(
       <MessageList
         chatKey="web:chat-1"
@@ -342,10 +313,10 @@ describe('MessageList virtualization', () => {
     act(() => RO.trigger(contentElement(container)))
     await flushAnimationFrames()
 
-    expect(scroller.scrollTop).toBe(readPosition)
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight)
   })
 
-  it('synchronously scrolls to bottom on each content resize', async () => {
+  it('coalesces repeated content resizes into one bottom write per frame', async () => {
     const { container } = renderMessageList(
       <MessageList
         chatKey="web:chat-1"
@@ -361,17 +332,16 @@ describe('MessageList virtualization', () => {
     await flushAnimationFrames()
     const tracked = trackScrollTop(scroller, scroller.scrollHeight - scroller.clientHeight)
 
-    // ResizeObserver now scrolls synchronously (no RAF) to handle virtualizer
-    // scroll corrections. Each trigger immediately writes scrollTop.
     act(() => {
       const content = contentElement(container)
       RO.trigger(content)
       RO.trigger(content)
       RO.trigger(content)
     })
-    // At least one write happened synchronously
-    expect(tracked.writes.length).toBeGreaterThanOrEqual(1)
-    expect(tracked.value).toBe(scroller.scrollHeight)
+    expect(tracked.writes).toHaveLength(0)
+
+    await flushAnimationFrames(1)
+    expect(tracked.writes).toEqual([scroller.scrollHeight])
   })
 
   it('pauses following when the user explicitly wheels upward', async () => {
@@ -410,7 +380,7 @@ describe('MessageList virtualization', () => {
     expect(tracked.value).toBe(scroller.scrollHeight - scroller.clientHeight - 10)
   })
 
-  it('cancels a queued follow scroll when the user wheels up', async () => {
+  it('cancels a queued follow scroll when the user scrolls up', async () => {
     const { container } = renderMessageList(
       <MessageList
         chatKey="web:chat-1"
@@ -424,19 +394,16 @@ describe('MessageList virtualization', () => {
     )
     const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement
     await flushAnimationFrames()
+    const tracked = trackScrollTop(scroller, scroller.scrollHeight - scroller.clientHeight)
 
-    // User wheels up — pauses following
-    fireEvent.wheel(scroller, { deltaY: -10 })
-    const readPosition = scroller.scrollHeight - scroller.clientHeight - 10
-    scroller.scrollTop = readPosition
-    fireEvent.scroll(scroller)
-
-    // Now trigger ResizeObserver — should NOT scroll (stick=false from wheel)
     act(() => RO.trigger(contentElement(container)))
+    fireEvent.wheel(scroller, { deltaY: -10 })
+    tracked.setSilently(scroller.scrollHeight - scroller.clientHeight - 10)
+    fireEvent.scroll(scroller)
     await flushAnimationFrames(1)
 
-    // scrollTop should stay at readPosition, not jump to bottom
-    expect(scroller.scrollTop).toBe(readPosition)
+    expect(tracked.writes).toHaveLength(0)
+    expect(tracked.value).toBe(scroller.scrollHeight - scroller.clientHeight - 10)
   })
 
   it('resumes following when followResetToken changes', async () => {
@@ -555,52 +522,66 @@ describe('MessageList virtualization', () => {
     expect(container.textContent).toContain('history 500')
   })
 
-  it('shows thinking indicator during loading when busy and there are existing messages', () => {
-    // BUG: switching to a busy session hides liveMessage (visibleLiveMessage
-    // gate) AND suppresses the busy placeholder (!loading). Result: nothing
-    // shows — no tool, no "思考中…". Fix: show the placeholder during loading
-    // when rows.length > 0 (the spinner only handles the empty-state case).
+  it('keeps compacted persisted user messages rewindable', () => {
     const messages: ChatMessage[] = [
-      { id: 'u1', role: 'user', content: 'hello', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0 },
-      { id: 'a1', role: 'assistant', content: 'hi', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0 },
+      { id: 'u-old', historyID: 1, recordType: 'message', compactedBy: 3, role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'compact', historyID: 3, recordType: 'compress', role: 'system', content: '[Compacted context]\nsummary', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'u-new', historyID: 4, recordType: 'message', role: 'user', content: 'new', iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: true },
     ]
-    const { container } = renderWithProviders(
-      <MessageList
-        messages={messages}
-        liveMessage={null}
-        liveProgress={null}
-        collapseLevel="all"
-        loading={true}
-        error={null}
-        busy={true}
-      />,
+
+    expect(messages.map(canRewindMessage)).toEqual([true, false, true])
+  })
+
+  it('keeps compacted sources and compression markers as separate chronological rows', () => {
+    const messages: ChatMessage[] = [
+      { id: 'hist-1', historyID: 1, recordType: 'message', compactedBy: 3, role: 'user', content: 'original question', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'hist-2', historyID: 2, recordType: 'message', compactedBy: 3, role: 'assistant', content: 'original answer', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'hist-3', historyID: 3, recordType: 'compress', role: 'system', content: '[Compacted context]\nsummary', compression: { sourceHistoryIDs: [1, 2] }, iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: true },
+      { id: 'hist-4', historyID: 4, recordType: 'mask', role: 'system', content: 'internal', iterations: [], timestamp: '2026-07-08T00:00:03Z', isPartial: false, turnID: 0, persisted: true },
+    ]
+    expect(visibleHistoryRows(messages).map((message) => message.id)).toEqual(['hist-1', 'hist-2', 'hist-3'])
+  })
+
+  it('keeps raw tool rows and tool-call assistants visible', () => {
+    const messages: ChatMessage[] = [
+      { id: 'assistant-tool', historyID: 1, recordType: 'message', role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'Read', arguments: '{}' }], iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
+      { id: 'tool', historyID: 2, recordType: 'message', role: 'tool', content: 'result', toolCallID: 'call-1', iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
+      { id: 'empty-shell', historyID: 3, recordType: 'message', role: 'assistant', content: '', iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
+    ]
+
+    expect(visibleHistoryRows(messages).map((message) => message.id)).toEqual(['assistant-tool', 'tool'])
+  })
+
+  it('renders raw tool calls and results with tool semantics', () => {
+    const messages: ChatMessage[] = [
+      { id: 'assistant-tool', historyID: 1, recordType: 'message', role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'Read', arguments: '{"path":"README.md"}' }], iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
+      { id: 'tool', historyID: 2, recordType: 'message', role: 'tool', content: 'file contents', toolCallID: 'call-1', toolName: 'Read result', iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true },
+    ]
+    const { container } = renderMessageList(
+      <>
+        {messages.map((message) => (
+          <MessageItem key={message.id} message={message} collapseLevel="all" />
+        ))}
+      </>,
     )
-    expect(container.textContent).toContain('thinking')
+
+    expect(container.textContent).toContain('Read')
+    expect(container.textContent).toContain('{"path":"README.md"}')
+    expect(container.textContent).toContain('Read result')
+    expect(container.textContent).toContain('file contents')
+    expect(container.textContent).not.toContain('Empty assistant message')
   })
 
-  it('finds the latest compact marker for rewind eligibility', () => {
-    const messages: ChatMessage[] = [
-      { id: 'u-old', role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0 },
-      { id: 'compact', role: 'user', content: '[Compacted context]', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0 },
-      { id: 'u-new', role: 'user', content: 'new', iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0 },
-    ]
-    expect(latestCompactBoundaryIndex(messages)).toBe(1)
-  })
-
-  it('uses TUI-style compact marker prefix matching', () => {
-    expect(isCompactMarker({ role: 'user', content: '[Compacted context]\nsummary' })).toBe(true)
-    expect(isCompactMarker({ role: 'user', content: 'prefix [Compacted context]' })).toBe(false)
-  })
-
-  it('allows rewind only for persisted user messages after the latest compact boundary', () => {
-    const messages: ChatMessage[] = [
-      { id: 'u-old', role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0, persisted: true },
-      { id: 'compact', role: 'user', content: '[Compacted context]\nsummary', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0, persisted: true },
-      { id: 'u-new', role: 'user', content: 'new', iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: true },
-    ]
-    const boundary = latestCompactBoundaryIndex(messages)
-
-    expect(messages.map((m, i) => canRewindMessage(m, i, boundary))).toEqual([false, false, true])
+  it('shows only the compression summary inside an expanded marker', () => {
+    const marker: ChatMessage = {
+      id: 'hist-3', historyID: 3, recordType: 'compress', role: 'system',
+      content: '[Compacted context]\nsummary only', compression: { sourceHistoryIDs: [1, 2] },
+      iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: true,
+    }
+    const { getByText, queryByText } = renderMessageList(<CompressionBlock marker={marker} />)
+    fireEvent.click(getByText('Compacted context · 2 messages'))
+    expect(getByText('summary only')).toBeInTheDocument()
+    expect(queryByText('original question')).not.toBeInTheDocument()
   })
 
   it('does not show rewind for optimistic user messages', () => {
@@ -608,7 +589,15 @@ describe('MessageList virtualization', () => {
       { id: 'user-1', role: 'user', content: 'new', iterations: [], timestamp: '2026-07-08T00:00:02Z', isPartial: false, turnID: 0, persisted: false },
     ]
 
-    expect(canRewindMessage(messages[0], 0, -1)).toBe(false)
+    expect(canRewindMessage(messages[0])).toBe(false)
+  })
+
+  it('does not rewind a user-shaped internal control', () => {
+    const control: ChatMessage = {
+      id: 'control', historyID: 7, recordType: 'context_edit', role: 'user', content: 'hidden',
+      iterations: [], timestamp: '', isPartial: false, turnID: 0, persisted: true,
+    }
+    expect(canRewindMessage(control)).toBe(false)
   })
 })
 
@@ -693,7 +682,7 @@ describe('MessageList navigation buttons (Spec A §4)', () => {
     expect(tracked.writes).toHaveLength(0)
 
     fireEvent.keyDown(scroller, { key: 'End' })
-    await flushAnimationFrames(2)
+    await flushAnimationFrames(1)
     expect(tracked.writes).toEqual([scroller.scrollHeight])
   })
 })
@@ -763,7 +752,7 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
     expect(bubble.textContent).not.toMatch(/\d/)
 
     fireEvent.click(bubble)
-    await flushAnimationFrames(2)
+    await flushAnimationFrames(1)
     expect(tracked.value).toBe(scroller.scrollHeight)
   })
 

@@ -129,7 +129,13 @@ func (c *RemoteCLIChannel) SendProgress(chatID string, payload *protocol.Progres
 
 // SendSessionState sends a session state change event to remote CLI clients via the Hub.
 func (c *RemoteCLIChannel) SendSessionState(ev protocol.SessionEvent) {
-	c.hub.broadcastSessionState(ev.Channel, ev.ChatID, ch.CliMsg.BuildSessionStateMsg(ev))
+	// Session.Channel remains business metadata for the TUI. Transport routing
+	// follows the remote CLI's BindChat subscription, including Agent full keys.
+	msg := ch.CliMsg.BuildSessionStateMsg(ev)
+	c.hub.broadcastSessionState("cli", ev.ChatID, msg)
+	if ev.Channel == "cli" && isSubAgentLifecycle(ev) {
+		c.hub.broadcastSessionState("agent", ev.SessionKey, msg)
+	}
 }
 
 // SendStreamContent sends streaming LLM content to remote CLI clients via the Hub.
@@ -146,22 +152,19 @@ func (c *RemoteCLIChannel) SendStreamContent(chatID, content, reasoning string) 
 //
 // Performs incremental updates: only sends to chatIDs whose zones actually changed.
 func (c *RemoteCLIChannel) PushPluginWidgetsPerSession(renderFn func(chatID string) map[string]string) {
-	// Collect subscribed chatIDs
+	// Collect raw chat IDs from channel-qualified CLI subscriptions.
 	c.hub.mu.RLock()
 	chatIDs := make([]string, 0, len(c.hub.subs))
-	for chatID := range c.hub.subs {
+	for routeKey := range c.hub.subs {
+		channelName, chatID, ok := parseSessionRouteKey(routeKey)
+		if !ok || channelName != "cli" {
+			continue
+		}
 		chatIDs = append(chatIDs, chatID)
 	}
 	c.hub.mu.RUnlock()
 
 	for _, chatID := range chatIDs {
-		// Skip non-session chatIDs (e.g. "admin" from web-layer p2p routing).
-		// CLI sessions use absolute paths as chatID; web-layer uses userID.
-		// Pushing to web chatIDs sends stale content to wrong windows.
-		if !strings.HasPrefix(chatID, "/") {
-			continue
-		}
-
 		zones := renderFn(chatID)
 
 		// Incremental: skip if nothing changed for this chatID

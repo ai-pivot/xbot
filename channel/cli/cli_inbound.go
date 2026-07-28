@@ -161,6 +161,24 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 
 	// 解析 @ 文件引用，提取文件路径
 	media := parseFileReferences(content)
+	isAgentContinuation := m.channelName == "agent"
+	var continuationCmd tea.Cmd
+	if isAgentContinuation {
+		if m.channel == nil || m.channel.config.ContinueAgentFn == nil {
+			m.showSystemMsg("Send failed: interactive Agent continuation is unavailable", feedbackError)
+			return nil
+		}
+		continueFn := m.channel.config.ContinueAgentFn
+		channelName, chatID := m.channelName, m.chatID
+		continuationCmd = func() tea.Msg {
+			return cliAgentContinueAcceptedMsg{
+				channelName: channelName,
+				chatID:      chatID,
+				content:     content,
+				err:         continueFn(chatID, content),
+			}
+		}
+	}
 
 	m.finalizeStaleStreamingBeforeNewUserMessage()
 
@@ -192,13 +210,15 @@ func (m *cliModel) sendMessage(content string) tea.Cmd {
 	m.userScrolledUp = false
 
 	// 发送到消息总线
-	msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
-	msg.Media = media
-	if !m.sendInbound(msg) {
-		return nil // send failed — connState already set to disconnected by sendInbound
+	if !isAgentContinuation {
+		msg := m.newInbound(content, nil) // ReplyPolicyAuto (default)
+		msg.Media = media
+		if !m.sendInbound(msg) {
+			return nil // send failed — connState already set to disconnected by sendInbound
+		}
 	}
 	m.startAgentTurn()
-	return nil
+	return continuationCmd
 }
 
 // parseFileReferences 从用户消息中提取 @path 文件引用。

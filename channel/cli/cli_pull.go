@@ -392,6 +392,7 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 			} else {
 				m.messages = append(m.messages, asstMsg)
 			}
+			m.historyMutationGeneration++
 			m.rc.valid = false
 			m.relayoutViewport()
 		}

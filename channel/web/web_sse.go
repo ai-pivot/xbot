@@ -80,6 +80,7 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// event is either below the fresh baseline or delivered after subscription.
 	wc.hub.seqMu.Lock()
 	streamLastSeq := wc.getEventStream(routeKey).lastSeq()
+	forceResync := hasResumeCursor && lastSeq > 0 && lastSeq >= streamLastSeq
 	if !hasResumeCursor {
 		client.lastSentSeq = streamLastSeq
 	} else if client.lastSentSeq > streamLastSeq {
@@ -119,7 +120,11 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// A fresh EventSource has no reconnect cursor until it receives an id field.
 	// Publish the selected high-water mark even when no business event is ready.
-	if !hasResumeCursor {
+	if forceResync {
+		if err := writeSSEResyncRequired(client, sel); err != nil {
+			return
+		}
+	} else if !hasResumeCursor {
 		if err := writeSSECursor(client, client.lastSentSeq); err != nil {
 			return
 		}
@@ -175,9 +180,14 @@ func sseResumeCursor(r *http.Request) (uint64, bool, error) {
 }
 
 func (wc *WebChannel) replaySSEEvents(sel SessionSelector, lastSeq uint64) []protocol.WSMessage {
-	events := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).eventsAfter(lastSeq)
-	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
+	events, _ := wc.replaySSEWindow(sel, lastSeq)
 	return events
+}
+
+func (wc *WebChannel) replaySSEWindow(sel SessionSelector, lastSeq uint64) ([]protocol.WSMessage, uint64) {
+	events, evictedThrough := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).replayAfter(lastSeq)
+	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
+	return events, evictedThrough
 }
 
 func (wc *WebChannel) publishSSEFallbacks(sel SessionSelector, lastSeq uint64) {
@@ -212,6 +222,11 @@ func (wc *WebChannel) publishSSEFallbackIfMissing(sel SessionSelector, lastSeq u
 		if containsSSEEvent(events, msg.Type, requestID) {
 			return protocol.WSMessage{}, false
 		}
+		// A destructive reset ends the old replay epoch. Never synthesize a
+		// snapshot or pending prompt from the deleted branch across that barrier.
+		if containsSSEReplayBarrier(events) {
+			return protocol.WSMessage{}, false
+		}
 		switch msg.Type {
 		case protocol.MsgTypeProgress:
 			progress, ok := selectSSEProgressFallback(msg.Progress, wc.replaySSEEvents(sel, 0))
@@ -236,6 +251,12 @@ func selectSSEProgressFallback(snapshot *protocol.ProgressEvent, events []protoc
 	var stateSeq uint64
 	var latestProgress *protocol.WSMessage
 	for _, event := range events {
+		if isSSEReplayBarrier(event) {
+			state = "reset"
+			stateSeq = event.Seq
+			latestProgress = nil
+			continue
+		}
 		if event.Type == protocol.MsgTypeProgress && event.Progress != nil {
 			eventCopy := event
 			latestProgress = &eventCopy
@@ -248,7 +269,7 @@ func selectSSEProgressFallback(snapshot *protocol.ProgressEvent, events []protoc
 			}
 		}
 	}
-	if state == "idle" || state == "busy" && (latestProgress == nil || latestProgress.Seq < stateSeq) {
+	if state == "idle" || (state == "busy" || state == "reset") && (latestProgress == nil || latestProgress.Seq < stateSeq) {
 		return nil, false
 	}
 	if latestProgress != nil && snapshot.Seq != latestProgress.Progress.Seq {
@@ -256,6 +277,19 @@ func selectSSEProgressFallback(snapshot *protocol.ProgressEvent, events []protoc
 		return &progressCopy, true
 	}
 	return snapshot, true
+}
+
+func containsSSEReplayBarrier(events []protocol.WSMessage) bool {
+	for _, event := range events {
+		if isSSEReplayBarrier(event) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSSEReplayBarrier(event protocol.WSMessage) bool {
+	return event.SessionReset || event.Type == protocol.MsgTypeSession && event.Session != nil && event.Session.Action == "history_rewound"
 }
 
 func containsSSEEvent(events []protocol.WSMessage, msgType, requestID string) bool {
@@ -347,7 +381,19 @@ func (wc *WebChannel) catchUpSSE(ctx context.Context, client *Client, initial []
 		if err := sseContextError(ctx, client); err != nil {
 			return false, err
 		}
-		pending = append(pending, wc.getEventStream(sessionRouteKey(client.sessionChannel, client.chatID)).eventsAfter(client.lastSentSeq)...)
+		sel := SessionSelector{Channel: client.sessionChannel, ChatID: client.chatID}
+		events, evictedThrough := wc.replaySSEWindow(sel, client.lastSentSeq)
+		if evictedThrough > client.lastSentSeq {
+			pending = append(pending, protocol.WSMessage{
+				Type:         protocol.MsgTypeResyncRequired,
+				Seq:          evictedThrough,
+				Channel:      sel.Channel,
+				ChatID:       sel.ChatID,
+				RouteChannel: sel.Channel,
+				RouteChatID:  sel.ChatID,
+			})
+		}
+		pending = append(pending, events...)
 		queued, closed := collectSSEBatch(client.sendCh)
 		pending = append(pending, queued...)
 		if len(pending) == 0 {
@@ -465,6 +511,29 @@ func writeSSECursor(client *Client, seq uint64) error {
 	defer clearSSEWriteDeadline(client)
 	if _, err := fmt.Fprintf(client.w, "id:%d\n\n", seq); err != nil {
 		return fmt.Errorf("write SSE cursor: %w", err)
+	}
+	return flushSSE(client)
+}
+
+func writeSSEResyncRequired(client *Client, sel SessionSelector) error {
+	msg := protocol.WSMessage{
+		Type:         protocol.MsgTypeResyncRequired,
+		Channel:      sel.Channel,
+		ChatID:       sel.ChatID,
+		RouteChannel: sel.Channel,
+		RouteChatID:  sel.ChatID,
+		Metadata: map[string]string{
+			"baseline_seq": strconv.FormatUint(client.lastSentSeq, 10),
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal SSE resync control: %w", err)
+	}
+	armSSEWriteDeadline(client)
+	defer clearSSEWriteDeadline(client)
+	if _, err := fmt.Fprintf(client.w, "id:%d\nevent:%s\ndata:%s\n\n", client.lastSentSeq, msg.Type, data); err != nil {
+		return fmt.Errorf("write SSE resync control: %w", err)
 	}
 	return flushSSE(client)
 }

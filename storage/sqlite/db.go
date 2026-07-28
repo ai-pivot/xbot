@@ -27,12 +27,14 @@ import (
 // gets busy_timeout, and concurrent writes on other connections fail
 // immediately with SQLITE_BUSY.
 type DB struct {
-	conn *sql.DB
-	path string
-	mu   sync.RWMutex
+	conn         *sql.DB
+	path         string
+	mu           sync.RWMutex
+	historyLocks [historyLockStripes]sync.Mutex
 }
 
-const schemaVersion = 51
+const schemaVersion = 52
+const historyLockStripes = 64
 
 // Open opens or creates a SQLite database at the given path
 // If the database doesn't exist, it will be created with the required schema
@@ -96,6 +98,14 @@ func Open(path string) (*DB, error) {
 
 	log.WithField("path", path).Info("SQLite database opened")
 	return db, nil
+}
+
+// historyLock serializes compound history operations using a bounded striped
+// lock table. Different tenants normally proceed independently, while the
+// fixed stripe count avoids retaining one mutex for every historical tenant.
+func (db *DB) historyLock(tenantID int64) *sync.Mutex {
+	stripe := uint64(tenantID) % uint64(len(db.historyLocks))
+	return &db.historyLocks[stripe]
 }
 
 // Close closes the database connection

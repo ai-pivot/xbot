@@ -15,10 +15,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp } from 'lucide-react'
 
+import { MarkdownRenderer } from './MarkdownRenderer'
 import { MessageItem } from './MessageItem'
-import { ShimmerThinking } from './ShimmerThinking'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -32,9 +32,6 @@ interface MessageListProps {
   liveMessage: ChatMessage | null
   /** Live progress snapshot handed only to the streaming row. */
   liveProgress: LiveProgress | null
-  /** Whether the agent is busy (thinking/processing) — shows placeholder when
-   *  no liveMessage yet (e.g. session just started, no iterations arrived). */
-  busy?: boolean
   collapseLevel: 'all' | 'minimal' | 'none'
   /** Whether to merge consecutive tools. Default true. */
   mergeTools?: boolean
@@ -55,17 +52,23 @@ interface MessageListProps {
 const ESTIMATE = 120
 const EDGE_EPSILON = 2
 
-export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
-  let idx = -1
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i]
-    if (isCompactMarker(row)) idx = i
-  }
-  return idx
+export function visibleHistoryRows(messages: ChatMessage[]): ChatMessage[] {
+  return messages.filter((message) => (
+    (!message.recordType || message.recordType === 'message' || message.recordType === 'compress') &&
+    !isEmptyAssistantShell(message)
+  ))
 }
 
-export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boolean {
-  return row.role === 'user' && row.content.trimStart().startsWith('[Compacted context]')
+export function appendLiveMessage(messages: ChatMessage[], liveMessage: ChatMessage | null): ChatMessage[] {
+  return liveMessage ? [...messages, liveMessage] : messages
+}
+
+function isEmptyAssistantShell(message: ChatMessage): boolean {
+  return message.role === 'assistant' &&
+    message.content.trim() === '' &&
+    (message.reasoningContent?.trim() ?? '') === '' &&
+    (message.toolCalls?.length ?? 0) === 0 &&
+    message.iterations.length === 0
 }
 
 export function MessageList({
@@ -74,7 +77,6 @@ export function MessageList({
   messages,
   liveMessage,
   liveProgress,
-  busy = false,
   collapseLevel,
   mergeTools = true,
   loading,
@@ -89,15 +91,6 @@ export function MessageList({
   const contentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const pendingFollowRafRef = useRef<number | null>(null)
-  // Generation counter — each scheduleFollow call increments this. The
-  // tryScroll loop checks it to know if it's the latest follow (cancel
-  // old loops when a new scheduleFollow supersedes them).
-  const followGenRef = useRef(0)
-  // Marks scrolls caused by our own scheduleFollow (el.scrollTop = scrollHeight).
-  // Set before the write and cleared via queueMicrotask after — so the flag is
-  // only true during the synchronous scroll event our write dispatches, not
-  // across unrelated later scroll events.
-  const programmaticScrollRef = useRef(false)
   const lastChatKeyRef = useRef<string | null | undefined>(chatKey)
   const lastRowCountRef = useRef(0)
   const lastFollowResetTokenRef = useRef(followResetToken)
@@ -112,72 +105,21 @@ export function MessageList({
 
   const { t } = useI18n()
 
-  // Combined row list: committed messages + optional live streaming row.
-  //
-  // ALWAYS remove intermediate assistant messages after the last user message.
-  // ConvertMessagesToHistory can split one turn into multiple assistant
-  // messages (when a Content assistant appears between ToolCalls). Without
-  // this, both assistants render the same tools — once from DB iterations
-  // and once from the progress snapshot — causing duplicates.
-  // Only the LAST assistant after the last user message is kept; all earlier
-  // ones are absorbed (their tools are in the snapshot or in the last
-  // assistant's iterations).
-  const rows = useMemo<ChatMessage[]>(() => {
-    // Remove intermediate assistant messages after the last user message.
-    // Only apply when the last message is an assistant (active turn) —
-    // if the last message is a user message, ALL previous assistants are
-    // from completed turns and must be preserved.
-    const last = messages[messages.length - 1]
-    const deduped = [...messages]
-    if (last && last.role === 'assistant') {
-      for (let i = deduped.length - 2; i >= 0; i--) {
-        if (deduped[i].role === 'user') break
-        if (deduped[i].role === 'assistant') deduped.splice(i, 1)
-      }
-    }
+  // Combined row list: committed messages + optional live streaming row. Equal
+  // content is never deduped because each append-only occurrence is meaningful.
+  const visibleMessages = useMemo(() => visibleHistoryRows(messages), [messages])
 
-    if (!liveMessage) return deduped
-    const lastDeduped = deduped[deduped.length - 1]
-    if (lastDeduped && lastDeduped.role === 'assistant' &&
-        lastDeduped.eventSeq != null && liveMessage.eventSeq != null &&
-        lastDeduped.eventSeq === liveMessage.eventSeq) {
-      return deduped
-    }
-    // When the last message is an assistant from the SAME turn as the live
-    // progress, pass liveProgress to it (don't append a separate liveMessage
-    // row). This covers two scenarios:
-    //  1. Locally-committed message (appendAssistant): matched by turnID
-    //  2. DB-committed message (IncrementalPersist → reload): matched by
-    //     turnID — the DB message carries turn_id (v50 migration), and the
-    //     live store's snapshot carries the same turn_id from structured events.
-    // Without this, both the committed message and liveMessage render —
-    // duplicating the same turn's content + tools.
-    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial &&
-        (lastDeduped.isPartial ||
-         (liveMessage.turnID > 0 && lastDeduped.turnID === liveMessage.turnID))) {
-      return deduped
-    }
-    return [...deduped, liveMessage]
-  }, [messages, liveMessage])
-  // liveId points to the row that receives liveProgress. When the last
-  // history assistant is the streaming slot — in-flight partial (isPartial)
-  // or same turnID — liveProgress goes to it. Otherwise, liveMessage gets
-  // its own row.
-  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
-  const liveId = liveMessage
-    ? (lastMsg && lastMsg.role === 'assistant' && liveMessage.isPartial &&
-       (lastMsg.isPartial ||
-        (liveMessage.turnID > 0 && lastMsg.turnID === liveMessage.turnID))
-        ? lastMsg.id
-        : liveMessage.id)
-    : null
-  const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
+  const rows = useMemo<ChatMessage[]>(
+    () => appendLiveMessage(visibleMessages, liveMessage),
+    [visibleMessages, liveMessage],
+  )
+  const liveId = liveMessage?.id ?? null
   const hasFooter = footer !== null && footer !== undefined
 
   // User message indices for navigation
   const userMessageIndices = useMemo(
-    () => rows.map((r, i) => (r.role === 'user' ? i : -1)).filter((i) => i >= 0),
-    [rows],
+    () => visibleMessages.map((r, i) => (r.role === 'user' ? i : -1)).filter((i) => i >= 0),
+    [visibleMessages],
   )
 
   // TanStack Virtual
@@ -189,25 +131,6 @@ export function MessageList({
     overscan: 8,
     getItemKey: (index) => rows[index]?.id ?? `row-${index}`,
   })
-
-  // Workaround: virtual-core checks `this.shouldAdjustScrollPositionOnItemSizeChange`
-  // (direct instance property) in resizeItem, but setOptions only stores it in
-  // `this.options` — the option is never actually applied. Assign it directly.
-  // Custom condition: only correct scrollTop when the resized item is ENTIRELY
-  // above the viewport (item.end < scrollTop). The default condition
-  // (item.start < scrollTop) also fires for items partially in the viewport —
-  // when such an item changes size (code highlighting, image loading, markdown
-  // settling), the correction moves the user's viewport even though they
-  // didn't scroll. Using item.end ensures only items fully above the viewport
-  // trigger correction, keeping visible items stable.
-  useLayoutEffect(() => {
-    const v = virtualizer as unknown as {
-      shouldAdjustScrollPositionOnItemSizeChange?: (item: { start: number; end: number }, delta: number, instance: { scrollOffset: number | null }) => boolean
-    }
-    v.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
-      return item.end < (instance.scrollOffset ?? 0)
-    }
-  }, [virtualizer])
 
   const cancelPendingFollow = useCallback(() => {
     if (pendingFollowRafRef.current === null) return
@@ -226,61 +149,29 @@ export function MessageList({
   }, [])
 
   const scheduleFollow = useCallback(() => {
-    if (!stickToBottomRef.current) return
-    // Coalesce: if a follow is already pending, don't cancel it — just mark
-    // that a new follow was requested. The pending RAF will check the latest
-    // scrollHeight. Cancelling starves the RAF when ResizeObserver fires rapidly.
-    if (pendingFollowRafRef.current !== null) return
-    setHasNewContent(false)
-    const gen = ++followGenRef.current
+    if (!stickToBottomRef.current || pendingFollowRafRef.current !== null) return
     pendingFollowRafRef.current = requestAnimationFrame(() => {
       pendingFollowRafRef.current = null
-      if (!stickToBottomRef.current || gen !== followGenRef.current) return
+      if (!stickToBottomRef.current) return
       const el = scrollRef.current
-      if (el) {
-        let attempts = 0
-        const tryScroll = () => {
-          if (!stickToBottomRef.current || gen !== followGenRef.current || ++attempts > 15) return
-          programmaticScrollRef.current = true
-          const prev = el.scrollHeight
-          el.scrollTop = el.scrollHeight
-          queueMicrotask(() => { programmaticScrollRef.current = false })
-          requestAnimationFrame(() => {
-            if (stickToBottomRef.current && gen === followGenRef.current && el.scrollHeight > prev) tryScroll()
-          })
-        }
-        tryScroll()
-      }
+      if (el) el.scrollTop = el.scrollHeight
     })
   }, [])
 
   // ── Scroll event handler ──────────────────────────────────────────────────
-  // onScroll syncs stickToBottomRef with the true scroll position — this is
-  // the ONLY event that knows whether the user is actually at the bottom,
-  // including scroll paths that don't fire wheel/pointer/touch handlers
-  // (e.g. scrollbar-drag on some browsers, programmatic/external scroll).
-  //
-  // A programmatic-scroll flag (programmaticScrollRef) distinguishes our own
-  // scheduleFollow write from genuine user scroll. Without it, content growth
-  // fires scheduleFollow → scrollTop=scrollHeight → onScroll fires while
-  // scrollTop is momentarily at the old position (before the browser applies
-  // the write) → a naive "not at bottom → pause" would kill following mid-stream.
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
     const atEnd = isAtBottom(el)
     const atStart = el.scrollTop <= EDGE_EPSILON
+    // Only setState when values actually change to avoid unnecessary re-renders
     setAtTop((prev) => (prev === atStart ? prev : atStart))
     setAtBottom((prev) => (prev === atEnd ? prev : atEnd))
-    if (programmaticScrollRef.current) {
-      return
-    }
-    // Do NOT set stickToBottomRef=false here. The virtualizer performs scroll
-    // corrections during lazy measurement — it adjusts scrollTop to maintain
-    // visual stability, which fires onScroll. If we set stick=false here, the
-    // ResizeObserver callback (which re-scrolls to bottom) would be skipped,
-    // leaving the viewport stuck mid-page. stick=false is set ONLY by user
-    // input handlers (wheel/pointer/touch/keydown) — genuine user scroll.
+    // A scroll event alone does not prove user intent: content/virtualizer
+    // resizing can emit scroll while the old scrollTop temporarily trails the
+    // new scrollHeight. Only explicit input handlers pause follow mode.
+    if (atEnd) resumeFollowing()
+    // Update visible range for nav button state — only when range changes
     const items = virtualizer.getVirtualItems()
     if (items.length > 0) {
       const newStart = items[0].index
@@ -291,23 +182,12 @@ export function MessageList({
           : { start: newStart, end: newEnd },
       )
     }
-  }, [virtualizer, cancelPendingFollow])
-
-  // Check if we're at the bottom after a RAF (post-scroll) and resume following.
-  const checkBottomAndResume = useCallback(() => {
-    requestAnimationFrame(() => {
-      const el = scrollRef.current
-      if (el && isAtBottom(el)) resumeFollowing()
-    })
-  }, [resumeFollowing])
+  }, [resumeFollowing, virtualizer])
 
   // ── User scroll detection ─────────────────────────────────────────────────
-  // Wheel: always pause first (both directions). If scrolling DOWN and we
-  // end up at the bottom, resume following after the browser applies the scroll.
   const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    pauseFollowing()
-    if (e.deltaY > 0) checkBottomAndResume()
-  }, [pauseFollowing, checkBottomAndResume])
+    if (e.deltaY < 0) pauseFollowing()
+  }, [pauseFollowing])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'End') {
@@ -317,37 +197,13 @@ export function MessageList({
     }
     if (['ArrowUp', 'PageUp', 'Home'].includes(e.key) || (e.key === ' ' && e.shiftKey)) {
       pauseFollowing()
-    } else if (['ArrowDown', 'PageDown'].includes(e.key)) {
-      pauseFollowing()
-      checkBottomAndResume()
     }
-  }, [pauseFollowing, resumeFollowing, scheduleFollow, checkBottomAndResume])
+  }, [pauseFollowing, resumeFollowing, scheduleFollow])
 
   // Treat the live snapshot as the activity revision: any progress update while
   // paused is new content, even when it does not change the rendered height.
-  // Only show "new content" when NOT following the bottom — if we're already
-  // at the bottom, there's nothing the user needs to scroll to.
-  // When following (stick=true) but not actually at the bottom (diff > 2px),
-  // force-scroll to bottom — this is a safety net for cases where ResizeObserver
-  // didn't fire (e.g. virtualizer corrected scrollHeight without resizing content).
-  //
-  // When NOT following (stick=false), we do NOT capture/restore scrollTop.
-  // The virtualizer's own scroll correction (via its internal ResizeObserver)
-  // keeps visible items stable when sizes change — it fires after useEffect
-  // but before paint. A RAF restore would UNDO that correction, causing the
-  // viewport to jump (jitter). The virtualizer's correction is authoritative.
   useEffect(() => {
-    if (!stickToBottomRef.current) {
-      setHasNewContent(true)
-      return
-    }
-    // stick=true — ensure we're actually at the bottom
-    const el = scrollRef.current
-    if (el && el.scrollHeight - el.clientHeight - el.scrollTop > 2) {
-      programmaticScrollRef.current = true
-      el.scrollTop = el.scrollHeight
-      queueMicrotask(() => { programmaticScrollRef.current = false })
-    }
+    if (!stickToBottomRef.current) setHasNewContent(true)
   }, [rows.length, liveProgress, hasFooter])
 
   // ── ResizeObserver: follow bottom when sticky ─────────────────────────────
@@ -355,20 +211,8 @@ export function MessageList({
     const scrollElement = scrollRef.current
     const content = contentRef.current
     if (!scrollElement || !content || typeof ResizeObserver === 'undefined') return
-    // ResizeObserver fires during the browser's pre-paint phase (same as
-    // useLayoutEffect), so synchronous scrolling here has no visual flicker.
-    // This is critical for the virtualizer: it fires many ResizeObserver
-    // callbacks during lazy measurement, and each one must immediately correct
-    // scrollTop to the new scrollHeight. Using RAF (scheduleFollow) here causes
-    // an active loop: the RAF cancels/reschedules faster than it can execute.
     const observer = new ResizeObserver(() => {
-      if (!stickToBottomRef.current) return
-      const el = scrollRef.current
-      if (el) {
-        programmaticScrollRef.current = true
-        el.scrollTop = el.scrollHeight
-        queueMicrotask(() => { programmaticScrollRef.current = false })
-      }
+      if (stickToBottomRef.current) scheduleFollow()
     })
     observer.observe(scrollElement)
     observer.observe(content)
@@ -376,7 +220,7 @@ export function MessageList({
       observer.disconnect()
       cancelPendingFollow()
     }
-  }, [cancelPendingFollow])
+  }, [cancelPendingFollow, scheduleFollow])
 
   // ── Chat switch or new messages: follow bottom when sticky ────────────────
   useLayoutEffect(() => {
@@ -389,13 +233,13 @@ export function MessageList({
     lastRowCountRef.current = rows.length
     lastFollowResetTokenRef.current = followResetToken
     if (!el || rows.length === 0 || (!chatChanged && !initialLoad && !followReset && !newMessagesAdded)) return
+    // If new messages were added (e.g. by background reload after assistant
+    // completion), only follow if already sticky — don't yank the user down
+    // if they scrolled up.
     if (newMessagesAdded && !stickToBottomRef.current) return
     resumeFollowing()
     scheduleFollow()
-  }, [chatKey, followResetToken, rows.length, resumeFollowing, scheduleFollow, virtualizer, loading])
-
-  // ── Loading→false: scroll to bottom after history is fully loaded ──────────
-  // (Removed polling — was not effective. Investigating root cause.)
+  }, [chatKey, followResetToken, rows.length, resumeFollowing, scheduleFollow])
 
   // ── Navigation helpers ────────────────────────────────────────────────────
   const scrollToTop = useCallback(() => {
@@ -438,19 +282,13 @@ export function MessageList({
         onScroll={onScroll}
         onWheel={onWheel}
         onPointerDown={(e) => {
-          if (e.pointerType === 'mouse') {
-            pointerScrollingRef.current = true
-            pauseFollowing()
-          }
+          if (e.pointerType === 'mouse') pointerScrollingRef.current = true
         }}
         onPointerMove={(e) => {
           if (pointerScrollingRef.current && e.pointerType === 'mouse') pauseFollowing()
         }}
         onPointerUp={() => {
-          if (pointerScrollingRef.current) {
-            pointerScrollingRef.current = false
-            checkBottomAndResume()
-          }
+          pointerScrollingRef.current = false
         }}
         onPointerCancel={() => {
           pointerScrollingRef.current = false
@@ -468,18 +306,14 @@ export function MessageList({
         onTouchStart={() => {
           lastTouchYRef.current = null
         }}
-        onTouchEnd={() => {
-          checkBottomAndResume()
-        }}
         onKeyDown={onKeyDown}
         tabIndex={0}
         style={{ overflowAnchor: 'none' }}
-        className="h-full overflow-y-auto overflow-x-hidden px-3 py-4 contain-content"
+        className="h-full overflow-y-auto overflow-x-hidden px-3 py-4"
       >
         {loading && rows.length === 0 && (
-          <div className="flex h-full flex-col items-center justify-center gap-3">
-            <Loader2 className="size-5 animate-spin text-text-muted" />
-            <span className="text-xs text-text-muted">{t('agent.loading')}</span>
+          <div className="flex h-full items-center justify-center text-sm text-text-muted">
+            {t('agent.loading')}
           </div>
         )}
         {error && (
@@ -502,7 +336,7 @@ export function MessageList({
               {virtualizer.getVirtualItems().map((item) => {
                 const row = rows[item.index]
                 if (!row) return null
-                const canRewind = canRewindMessage(row, item.index, compactBoundaryIndex)
+                const canRewind = canRewindMessage(row)
                 const isEditing = editingMessageId === row.id
                 const editDisabled = editingMessageId !== null && editingMessageId !== row.id
                 return (
@@ -518,41 +352,25 @@ export function MessageList({
                       transform: `translateY(${item.start}px)`,
                     }}
                     className="py-1.5"
-                    data-turn-id={row.turnID || undefined}
-                    data-message-id={row.id}
-                    data-role={row.role}
                   >
-                    <MessageItem
-                      message={row}
-                      liveProgress={row.id === liveId ? liveProgress : null}
-                      collapseLevel={collapseLevel}
-                      mergeTools={mergeTools}
-                      onRewind={canRewind && onRewind ? (editedContent: string) => onRewind(editedContent, row) : undefined}
-                      isEditing={isEditing}
-                      onStartEdit={canRewind && onStartEdit ? () => onStartEdit(row.id) : undefined}
-                      onEndEdit={onEndEdit}
-                      editDisabled={editDisabled}
-                    />
+                    {row.recordType === 'compress' ? (
+                      <CompressionBlock marker={row} />
+                    ) : (
+                      <MessageItem
+                        message={row}
+                        liveProgress={row.id === liveId ? liveProgress : null}
+                        collapseLevel={collapseLevel}
+                        mergeTools={mergeTools}
+                        onRewind={canRewind && onRewind ? (editedContent: string) => onRewind(editedContent, row) : undefined}
+                        isEditing={isEditing}
+                        onStartEdit={canRewind && onStartEdit ? () => onStartEdit(row.id) : undefined}
+                        onEndEdit={onEndEdit}
+                        editDisabled={editDisabled}
+                      />
+                    )}
                   </div>
                 )
               })}
-            </div>
-          )}
-          {/* Busy placeholder: when agent is thinking but no streaming
-              content has arrived yet (e.g. session just started, or
-              switched to a busy tab with no iterations). Shown during
-              loading when rows exist (the spinner handles the empty case),
-              so the user always sees feedback on a busy session. */}
-          {busy && !liveMessage && !(loading && rows.length === 0) && (
-            <div className="px-3 py-2">
-              {liveProgress?.phase === 'compressing' ? (
-                <div className="flex items-center gap-2 text-xs text-text-muted">
-                  <Loader2 className="size-3.5 animate-spin" />
-                  <span>{t('agent.compressing')}</span>
-                </div>
-              ) : (
-                <ShimmerThinking />
-              )}
             </div>
           )}
           {footer}
@@ -639,18 +457,38 @@ function NavButton({
   )
 }
 
-export function canRewindMessage(
-  row: ChatMessage,
-  index: number,
-  compactBoundaryIndex: number,
-): boolean {
-  return row.role === 'user' &&
-    !!row.timestamp &&
-    row.persisted === true &&
-    index > compactBoundaryIndex &&
-    !isCompactMarker(row)
+export function canRewindMessage(row: ChatMessage): boolean {
+  return row.role === 'user' && !row.displayOnly && row.recordType === 'message' &&
+    typeof row.historyID === 'number' && row.historyID > 0 && row.persisted === true
 }
 
 function isAtBottom(el: HTMLDivElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= EDGE_EPSILON
+}
+
+export function CompressionBlock({
+  marker,
+}: {
+  marker: ChatMessage
+}) {
+  const { t } = useI18n()
+  const sourceCount = marker.compression?.sourceHistoryIDs?.length ?? 0
+  const summary = compressionSummary(marker.content)
+  const title = sourceCount > 0
+    ? t('agent.compactedContextCount', { count: sourceCount })
+    : t('agent.compactedContext')
+  return (
+    <details className="border-l-2 border-border bg-bg-secondary/40 px-3 text-sm text-text-secondary">
+      <summary className="cursor-pointer py-2 font-medium text-text-secondary">
+        {title}
+      </summary>
+      <div className="border-t border-border/50 py-3 text-text-muted">
+        <MarkdownRenderer content={summary || t('agent.compressionSummaryUnavailable')} />
+      </div>
+    </details>
+  )
+}
+
+function compressionSummary(content: string): string {
+  return content.replace(/^\s*\[Compacted context\]\s*/i, '').trim()
 }

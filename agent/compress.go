@@ -12,6 +12,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
@@ -265,26 +266,8 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		}
 	}
 
-	if err := tenantSession.Clear(); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to clear session for compression")
-		newTokenCount := len(result.LLMView) * 200
-		compressTokenUsage = &protocol.TokenUsage{PromptTokens: int64(newTokenCount)}
-		return &channel.OutboundMsg{
-			Channel: msg.Channel,
-			ChatID:  msg.ChatID,
-			Content: fmt.Sprintf("上下文压缩完成 (内存): %d 条 → %d 条 (LLM %d 条, Session %d 条)", tokenCount/200, newTokenCount/200, len(result.LLMView), len(result.SessionView)),
-		}, nil
-	}
-	allOk := true
-	for _, msg := range result.SessionView {
-		if err := assertNoSystemPersist(msg); err != nil {
-			continue
-		}
-		if err := tenantSession.AddMessage(msg); err != nil {
-			log.Ctx(ctx).WithError(err).Error("Partial write during compression, session may be corrupted")
-			allOk = false
-			break
-		}
+	if _, err := tenantSession.AppendContextSnapshot(sqlite.HistoryRecordCompress, result.LLMView); err != nil {
+		return nil, fmt.Errorf("append compression history: %w", err)
 	}
 
 	// Use CompressedTokens for accuracy (same as auto-compress path).
@@ -311,17 +294,10 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	// Set the token usage for the deferred PhaseDone so the CLI context bar updates.
 	compressTokenUsage = &protocol.TokenUsage{PromptTokens: newTokenCount}
 
-	if allOk {
-		return &channel.OutboundMsg{
-			Channel: msg.Channel,
-			ChatID:  msg.ChatID,
-			Content: fmt.Sprintf("上下文压缩完成: %d 条 → %d 条 (LLM %d 条, Session %d 条)", tokenCount/200, newTokenCount/200, len(result.LLMView), len(result.SessionView)),
-		}, nil
-	}
 	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
-		Content: fmt.Sprintf("上下文压缩完成 (内存): %d 条 → %d 条 (LLM %d 条, Session %d 条)", tokenCount/200, newTokenCount/200, len(result.LLMView), len(result.SessionView)),
+		Content: fmt.Sprintf("上下文压缩完成: %d 条 → %d 条 (LLM %d 条, Session %d 条)", tokenCount/200, newTokenCount/200, len(result.LLMView), len(result.SessionView)),
 	}, nil
 }
 

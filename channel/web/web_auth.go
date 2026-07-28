@@ -381,13 +381,28 @@ func (wc *WebChannel) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		senderID := "web-" + strconv.Itoa(si.userID)
+		identityChannel := "web"
 		// If linked to Feishu account, use Feishu identity for all operations.
 		// This ensures web users share session/persona/workspace/skills/agents with their Feishu account.
 		if si.feishuUserID != "" {
 			senderID = si.feishuUserID
+			identityChannel = "feishu"
+		}
+		var canonicalUserID int64
+		var canonicalRole string
+		if wc.callbacks.IdentityResolver != nil {
+			canonicalUserID, canonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(identityChannel, senderID)
+			if wc.singleUser {
+				canonicalRole = "admin"
+			}
 		}
 		ctx := contextWithSenderID(r.Context(), senderID)
 		ctx = contextWithUserID(ctx, si.userID)
+		if wc.callbacks.IdentityResolver != nil {
+			ctx = contextWithCanonicalIdentity(ctx, canonicalUserID, canonicalRole)
+		} else if wc.singleUser {
+			ctx = contextWithCanonicalIdentity(ctx, 0, "admin")
+		}
 		ctx = context.WithValue(ctx, webSessionKey, *si)
 		next(w, r.WithContext(ctx))
 	}
@@ -633,9 +648,11 @@ func (wc *WebChannel) isSecureCookie() bool {
 type contextKey string
 
 const (
-	senderIDKey   contextKey = "sender_id"
-	userIDKey     contextKey = "user_id"
-	webSessionKey contextKey = "web_session"
+	senderIDKey        contextKey = "sender_id"
+	userIDKey          contextKey = "user_id"
+	webSessionKey      contextKey = "web_session"
+	canonicalUserIDKey contextKey = "canonical_user_id"
+	canonicalRoleKey   contextKey = "canonical_role"
 )
 
 func contextWithSenderID(ctx context.Context, id string) context.Context {
@@ -658,6 +675,17 @@ func userIDFromContext(ctx context.Context) int {
 		return id
 	}
 	return 0
+}
+
+func contextWithCanonicalIdentity(ctx context.Context, userID int64, role string) context.Context {
+	ctx = context.WithValue(ctx, canonicalUserIDKey, userID)
+	return context.WithValue(ctx, canonicalRoleKey, role)
+}
+
+func canonicalIdentityFromContext(ctx context.Context) (int64, string, bool) {
+	userID, userOK := ctx.Value(canonicalUserIDKey).(int64)
+	role, roleOK := ctx.Value(canonicalRoleKey).(string)
+	return userID, role, userOK || roleOK
 }
 
 func webSessionFromContext(ctx context.Context) (sessionInfo, bool) {
