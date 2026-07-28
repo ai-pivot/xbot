@@ -624,8 +624,8 @@ describe('useProgressStream event dispatch', () => {
   })
 })
 
-describe('cancel ack: commits via onAssistantComplete with server data', () => {
-  it('cancel DOES call onAssistantComplete with server iterations', () => {
+describe('cancel ack: preserves live state without commit', () => {
+  it('cancel does NOT call onAssistantComplete — keeps live progress as-is', () => {
     const complete = vi.fn()
     const cancelComplete = vi.fn()
     const { result } = renderHook(() =>
@@ -638,9 +638,11 @@ describe('cancel ack: commits via onAssistantComplete with server data', () => {
     )
 
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial reply' } })
+    expect(result.current.liveMessage?.content).toBe('partial reply')
+
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
 
-    // Cancel ack with server progress_history (includes user_cancelled)
+    // Cancel ack with server progress_history
     const serverHistory = JSON.stringify([{
       iteration: 1,
       tools: [
@@ -650,46 +652,11 @@ describe('cancel ack: commits via onAssistantComplete with server data', () => {
     }])
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
 
-    // Cancel DOES call onAssistantComplete (commits the message)
-    expect(complete).toHaveBeenCalledTimes(1)
-    const [content, iterations] = complete.mock.calls[0]
-    expect(content).toBe('partial reply') // streamContent as final text
-    expect(iterations).toHaveLength(1)
-    const allTools = iterations[0].tools.map((t: { name: string }) => t.name)
-    expect(allTools).toContain('user_cancelled')
-    // Store is reset after commit
-    expect(result.current.liveMessage).toBeNull()
+    // Cancel does NOT commit — the live progress stays as-is
+    expect(complete).not.toHaveBeenCalled()
     expect(cancelComplete).toHaveBeenCalledTimes(1)
-  })
-
-  it('cancel merges live-only iterations with server data', () => {
-    const complete = vi.fn()
-    const cancelComplete = vi.fn()
-    renderHook(() =>
-      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, onCancelComplete: cancelComplete, ws: currentWS as unknown as WSConnection }),
-    )
-
-    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'hello' } })
-    emitAndFlush({ type: 'progress_structured', progress: {
-      phase: 'tool_exec', iteration: 2,
-      iteration_history: [
-        { iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 },
-        { iteration: 2, thinking: '', reasoning: '', tools: [{ name: 'Grep', status: 'done' }], toolCount: 1 },
-      ],
-    } })
-
-    const serverHistory = JSON.stringify([{
-      iteration: 2,
-      tools: [{ name: 'Grep', status: 'done' }, { name: 'user_cancelled', status: 'done' }],
-    }])
-    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
-
-    // Cancel DOES call onAssistantComplete with merged iterations
-    expect(complete).toHaveBeenCalledTimes(1)
-    const [, iterations] = complete.mock.calls[0]
-    const iterNums = iterations.map((i: { iteration: number }) => i.iteration).sort()
-    expect(iterNums).toContain(1) // live-only
-    expect(iterNums).toContain(2) // from server
+    // Store is NOT reset — liveMessage content preserved
+    expect(result.current.progressSnapshot.streamContent).toBe('partial reply')
   })
 })
 
@@ -711,18 +678,16 @@ describe('cancel: no duplicate message', () => {
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
 
     // Defensive finalize should NOT commit — PhaseDone already fired (phaseDoneRef=true)
-    // The cancel ack is the authoritative finalizer.
     expect(complete).not.toHaveBeenCalled()
 
-    // Cancel ack arrives — NOW commit
+    // Cancel ack arrives — does NOT commit, keeps live state
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
-    expect(complete).toHaveBeenCalledTimes(1)
-    expect(result.current.liveMessage).toBeNull()
+    expect(complete).not.toHaveBeenCalled()
   })
 })
 
 describe('cancel: iteration preservation', () => {
-  it('cancel commits content + iterations (no vanish)', () => {
+  it('cancel preserves live state (no reset, no commit)', () => {
     const complete = vi.fn()
     const cancelComplete = vi.fn()
     const { result } = renderHook(() =>
@@ -738,11 +703,11 @@ describe('cancel: iteration preservation', () => {
     }])
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
 
-    // Cancel DOES call onAssistantComplete — commits the message
-    expect(complete).toHaveBeenCalledTimes(1)
+    // Cancel does NOT commit and does NOT reset
+    expect(complete).not.toHaveBeenCalled()
     expect(cancelComplete).toHaveBeenCalledTimes(1)
-    // Store is reset after commit — liveMessage is null
-    expect(result.current.liveMessage).toBeNull()
+    // Store is preserved — streamContent stays
+    expect(result.current.progressSnapshot.streamContent).toBe('partial reply')
   })
 })
 
@@ -864,10 +829,10 @@ describe('busy: no iteration lost under packet loss', () => {
 })
 
 describe('cancel: assistant message must not vanish', () => {
-  it('cancel commits content with non-empty stream', () => {
+  it('cancel preserves live content without committing', () => {
     const complete = vi.fn()
     const cancelComplete = vi.fn()
-    renderHook(() =>
+    const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', onAssistantComplete: complete, onCancelComplete: cancelComplete, ws: currentWS as unknown as WSConnection }),
     )
 
@@ -881,9 +846,11 @@ describe('cancel: assistant message must not vanish', () => {
     emitAndFlush({ type: 'progress_structured', seq: 2, progress: { phase: 'done' } })
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
 
-    // Cancel DOES call onAssistantComplete — commits the content
-    expect(complete).toHaveBeenCalledTimes(1)
+    // Cancel does NOT commit — live progress is preserved as-is
+    expect(complete).not.toHaveBeenCalled()
     expect(cancelComplete).toHaveBeenCalledTimes(1)
+    // Stream content is still visible
+    expect(result.current.progressSnapshot.streamContent).toBe('I am working on')
   })
 
   it('does NOT commit when cancel has no content AND no iterations', () => {
@@ -897,8 +864,7 @@ describe('cancel: assistant message must not vanish', () => {
     emitAndFlush({ type: 'progress_structured', seq: 1, progress: { phase: 'done' } })
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
 
-    // onAssistantComplete should NOT be called — there's nothing to commit
-    // (empty content + no iterations = no visible assistant message)
+    // onAssistantComplete should NOT be called
     expect(complete).not.toHaveBeenCalled()
   })
 

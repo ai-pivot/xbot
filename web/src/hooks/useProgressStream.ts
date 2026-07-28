@@ -607,44 +607,16 @@ function handleProgressMessage(
         resetRef.current?.()
         return
       }
-      // Cancel ack: the turn was cancelled. The live store already has the
-      // rendered content + iterations (built incrementally via SSE). We do
-      // NOT reset the store or fetch server data — the user already sees the
-      // content, we just commit it as a regular message + append
-      // user_cancelled so the iteration is preserved as-is.
-      //
-      // PhaseDone may have fired before this (clearing activeTools but the
-      // text/cancel ack carries progress_history with the full iteration
-      // history including user_cancelled). We use the server's
-      // progress_history as the source — it's authoritative and includes
-      // user_cancelled. If the live store still has data (PhaseDone didn't
-      // fire), we merge: server iterations + any live-only iterations.
+      // Cancel ack: the turn was cancelled. Keep the live progress as-is —
+      // whatever the user sees at cancel time stays. Do NOT reset the store
+      // or commit a new message. The live message (with active tools, stream
+      // content) remains visible. The persisted [interrupted] message (with
+      // Detail + user_cancelled) will be fetched on the next history reload
+      // (session switch or page refresh).
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
-        if (phaseDoneRef) phaseDoneRef.current = false
-        // Cancel: commit the live content as a regular message (same as
-        // normal text event), then reset the store. This avoids the
-        // PhaseDone → liveMessage=null gap (iterations vanish between
-        // PhaseDone and cancel ack). The committed message carries the
-        // iterations from progress_history, so they survive permanently.
-        //
-        // We DON'T trigger reload — the message is committed locally,
-        // not fetched from server. The next reload (session switch) will
-        // fetch the same data from /api/history (cancelMsg has Detail).
-        const snap = store.getSnapshot()
-        const liveIters = snap.iterationHistory
-        const parsedIterations = parseWebIterations(msg.progress_history)
-        const serverIterNums = new Set(parsedIterations.map((i) => i.iteration))
-        const liveOnly = liveIters.filter((i) => !serverIterNums.has(i.iteration))
-        const iters = [...parsedIterations, ...liveOnly]
-        // Use streamContent as final text (the partially-streamed response)
-        const text = snap.streamContent || snap.content || ''
-        // Only commit if there's something to show (content or iterations)
-        if (text || iters.length > 0) {
-          completeRef.current?.(text, iters, msg.seq, msg.turn_id)
-        }
-        // onAssistantComplete calls store.reset() inside flushSync.
-        if (hasVisibleProgress(store.getSnapshot())) store.reset()
+        if (phaseDoneRef) phaseDoneRef.current = true
+        // Don't reset the store — preserve the active iteration as-is.
         cancelCompleteRef?.current?.()
         // Dispatch agent-idle so useSessionStore clears the busy state even
         // if the session(idle) SSE event was dropped (sendCh full / network).
