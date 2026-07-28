@@ -2218,6 +2218,7 @@ func setupLogger(cfg config.LogConfig, xbotHome string) error {
 		LogDir:   logDir,
 		MaxAge:   7,
 		FileOnly: true,
+		BaseName: "xbot-cli",
 	})
 }
 
