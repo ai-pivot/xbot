@@ -37,12 +37,12 @@ func TestConvertHistoryRecordsReturnsOneRowPerMessageAndCompression(t *testing.T
 		{HistoryID: 7, Type: sqlite.HistoryRecordMessage, Message: llm.ChatMessage{ID: 7, Role: "user", Content: "follow-up", Timestamp: time.Unix(7, 0)}, CompactedBy: 8},
 	}
 	history := ConvertHistoryRecords(records)
-	// Tool-role messages are skipped (their results are embedded in the
-	// preceding assistant's iterations). 7 records → 6 output rows (tool excluded).
-	if len(history) != 6 {
+	// Tool-role messages and display_only messages are skipped.
+	// 7 records → 5 output rows (tool #3 and display_only #4 excluded).
+	if len(history) != 5 {
 		t.Fatalf("history=%+v", history)
 	}
-	wantIDs := []int64{1, 2, 4, 5, 7, 8}
+	wantIDs := []int64{1, 2, 5, 7, 8}
 	for i, wantID := range wantIDs {
 		if history[i].HistoryID != wantID {
 			t.Fatalf("history IDs=%v, want %v", historyIDs(history), wantIDs)
@@ -55,11 +55,8 @@ func TestConvertHistoryRecordsReturnsOneRowPerMessageAndCompression(t *testing.T
 	if assistant.Role != "assistant" || assistant.ReasoningContent != "thinking" || len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "call-1" || len(assistant.Iterations) != 1 {
 		t.Fatalf("assistant tool call=%+v", assistant)
 	}
-	emptyAssistant := history[2]
-	if emptyAssistant.Role != "assistant" || emptyAssistant.Content != "" || !emptyAssistant.DisplayOnly || len(emptyAssistant.Iterations) != 1 {
-		t.Fatalf("display-only assistant=%+v", emptyAssistant)
-	}
-	markers := []HistoryMessage{history[3], history[5]}
+	// display_only assistant (ID=4) is skipped — next row is compress marker.
+	markers := []HistoryMessage{history[2], history[4]}
 	if markers[0].RecordType != "compress" || markers[0].CompactedBy != 8 || markers[0].Compression == nil || markers[0].Compression.StartHistoryID != 1 {
 		t.Fatalf("first compression marker=%+v", markers[0])
 	}
@@ -70,12 +67,11 @@ func TestConvertHistoryRecordsReturnsOneRowPerMessageAndCompression(t *testing.T
 	for _, row := range history {
 		returned[row.HistoryID] = true
 	}
-	// Compression source IDs may include tool rows that were skipped from output.
-	// Only check that non-tool source IDs are returned.
+	// Compression source IDs may include tool/display_only rows that were skipped.
 	for _, marker := range markers {
 		for _, sourceID := range marker.Compression.SourceHistoryIDs {
-			// Source ID 3 is a tool message — skipped from output. Accept it.
-			if sourceID == 3 {
+			// Source IDs 3 (tool) and 4 (display_only) are skipped from output.
+			if sourceID == 3 || sourceID == 4 {
 				continue
 			}
 			if !returned[sourceID] {
@@ -94,9 +90,9 @@ func TestConvertHistoryRecordsReturnsOneRowPerMessageAndCompression(t *testing.T
 	if wireRows[1]["reasoning_content"] != "thinking" || len(wireRows[1]["tool_calls"].([]any)) != 1 {
 		t.Fatalf("assistant wire row=%v", wireRows[1])
 	}
-	// Tool-role messages are skipped from output — wireRows[2] should be the
-	// display-only assistant (was wireRows[3] when tool messages were included).
-	if wireRows[2]["display_only"] != true {
+	// display_only and tool messages are skipped — wireRows[2] should be
+	// the first compression marker.
+	if wireRows[2]["record_type"] != "compress" {
 		t.Fatalf("raw message wire rows=%v", wireRows[2:4])
 	}
 }

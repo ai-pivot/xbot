@@ -451,6 +451,16 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 				continue
 			}
 
+			// Skip display_only messages: these are synthetic tool pairs
+			// (background notifications, user_cancelled) and intermediate
+			// iteration snapshots. Replay() also filters them out (line 891).
+			// Including them causes the frontend to render synthetic text
+			// like "A background task has completed..." as final assistant
+			// content with copy buttons.
+			if message.DisplayOnly {
+				continue
+			}
+
 			timestamp := message.Timestamp
 			if timestamp.IsZero() {
 				timestamp = record.CreatedAt
