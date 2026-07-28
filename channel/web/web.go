@@ -860,6 +860,14 @@ func (wc *WebChannel) wsUpgrader() *websocket.Upgrader {
 }
 
 func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
+	// Track this handler in wg so Stop()'s wg.Wait() blocks until handleWS
+	// returns. Without this, wg.Add(1) happens too late (line ~955, after
+	// auth/upgrade/hub registration) — Stop() can call wg.Wait() while the
+	// counter is still 0, return immediately, then handleWS calls wg.Add(1)
+	// → "Add after Wait" data race.
+	wc.wg.Add(1)
+	defer wc.wg.Done()
+
 	var senderID, username string
 	var si *sessionInfo
 
