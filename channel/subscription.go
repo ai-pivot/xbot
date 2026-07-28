@@ -482,6 +482,7 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 				ToolArguments:    message.ToolArguments,
 				ToolCalls:        toolCalls,
 				Timestamp:        timestamp,
+				TurnID:           message.TurnID,
 				Iterations:       rawMessageIterations(message, toolResults),
 				RecordType:       string(sqlite.HistoryRecordMessage),
 				CompactedBy:      record.CompactedBy,
