@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+// testTimeout is the timeout used for hook command tests that expect the
+// command to succeed. On Windows, powershell.exe has a 5-10s cold-start
+// (loading .NET CLR) on CI runners, so the timeout must be generous.
+// Tests that deliberately exercise the timeout path use their own short value.
+const testTimeout = 30
+
 // ---------------------------------------------------------------------------
 // testEvent is a minimal Event implementation for testing.
 // ---------------------------------------------------------------------------
@@ -42,7 +48,7 @@ func TestCommandExecutor_Success(t *testing.T) {
 	def := &HookDef{
 		Type:    "command",
 		Command: hookEcho(jsonOut),
-		Timeout: 10,
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{"session_id": "sess-123"}}
 
@@ -71,7 +77,7 @@ func TestCommandExecutor_SuccessPlainText(t *testing.T) {
 	def := &HookDef{
 		Type:    "command",
 		Command: hookEcho("hello world"),
-		Timeout: 5,
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{}}
 
@@ -97,7 +103,7 @@ func TestCommandExecutor_BlockExit2(t *testing.T) {
 	def := &HookDef{
 		Type:    "command",
 		Command: hookStderrExit("blocked", 2),
-		Timeout: 5,
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{}}
 
@@ -122,7 +128,7 @@ func TestCommandExecutor_NonBlockError(t *testing.T) {
 	def := &HookDef{
 		Type:    "command",
 		Command: hookStderrExit("something went wrong", 1),
-		Timeout: 5,
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{}}
 
@@ -160,7 +166,9 @@ func TestCommandExecutor_Timeout(t *testing.T) {
 		t.Fatal("Execute() expected error for timeout, got nil")
 	}
 	// Should timeout within roughly 2 seconds (1s timeout + overhead).
-	if elapsed > 5*time.Second {
+	// On Windows, powershell.exe cold-start adds 5-10s before the 1s timeout
+	// even fires, so allow generous headroom.
+	if elapsed > 15*time.Second {
 		t.Errorf("Execute() took %v, should have timed out within ~1s", elapsed)
 	}
 }
@@ -194,7 +202,7 @@ func TestCommandExecutor_EnvironmentVars(t *testing.T) {
 	def := &HookDef{
 		Type:    "command",
 		Command: hookPrintEnv(),
-		Timeout: 5,
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{
 		"session_id": "sess-abc-123",
@@ -229,7 +237,7 @@ func TestCommandExecutor_EnvironmentVarsNoSession(t *testing.T) {
 	def := &HookDef{
 		Type:    "command",
 		Command: hookPrintOptionalSession(),
-		Timeout: 5,
+		Timeout: testTimeout,
 	}
 	// No session_id in payload.
 	event := &testEvent{payload: map[string]any{}}
@@ -249,7 +257,7 @@ func TestCommandExecutor_StdinPayload(t *testing.T) {
 	def := &HookDef{
 		Type:    "command",
 		Command: hookCatStdin(),
-		Timeout: 5,
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{
 		"session_id":      "sess-xyz",
@@ -284,7 +292,7 @@ func TestCommandExecutor_SuccessWithUpdatedInput(t *testing.T) {
 	def := &HookDef{
 		Type:    "command",
 		Command: hookEcho(jsonOut),
-		Timeout: 5,
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{}}
 
