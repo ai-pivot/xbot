@@ -879,24 +879,20 @@ func (m *MultiTenantSession) GetMemoryStats(ctx context.Context, channel, chatID
 	return stats
 }
 
-// TrimHistory deletes messages newer than or equal to the given cutoff timestamp
-// for the tenant identified by channel and chatID, and clears the cached token
-// state so maybeCompress doesn't use stale values from before the rewind.
-func (m *MultiTenantSession) TrimHistory(channel, chatID string, cutoff time.Time) error {
-	if cutoff.IsZero() {
+// TrimHistoryFromMessageID truncates DB history at the given message id (inclusive).
+// Uses the DB auto-increment primary key for exact, precision-independent truncation.
+func (m *MultiTenantSession) TrimHistoryFromMessageID(channel, chatID string, messageID int64) error {
+	if messageID <= 0 {
 		return nil
 	}
 	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
 	if err != nil {
 		return fmt.Errorf("get tenant: %w", err)
 	}
-	_, err = m.sessionSvc.PurgeNewerThanOrEqual(tenantID, cutoff)
+	_, err = m.sessionSvc.PurgeFromMessageID(tenantID, messageID)
 	if err != nil {
 		return err
 	}
-	// Restore token state from the last remaining user message's context_tokens.
-	// This avoids triggering incorrect compression after rewind.
-	// Falls back to 0 if no user message remains (full rewind to empty session).
 	lastCtx, err := m.sessionSvc.GetLastUserMessageContextTokens(tenantID)
 	if err != nil {
 		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to get context tokens after trim, using 0")

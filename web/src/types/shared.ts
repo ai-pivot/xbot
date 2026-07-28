@@ -412,6 +412,8 @@ export interface ChatMessage {
   eventSeq?: number
   /** Stable logical-send ID used to correlate optimistic rows with echoes. */
   requestID?: string
+  /** DB auto-increment id from session_messages table. Used for rewind. */
+  dbID?: number
 }
 
 /* ---------------------------------------------------------------------------

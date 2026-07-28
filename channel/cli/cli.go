@@ -840,9 +840,9 @@ func (c *CLIChannel) RestoreSession(history []ch.HistoryMessage, activeProgress 
 }
 
 // SetTrimHistoryFn sets the callback for /rewind DB truncation.
-// cutoff is the timestamp threshold — all DB messages with created_at < cutoff will be deleted.
+// messageID is the DB id threshold — all DB messages with id >= messageID will be deleted.
 // If the model hasn't been created yet, the callback is cached and applied later.
-func (c *CLIChannel) SetTrimHistoryFn(fn func(cutoff time.Time) error) {
+func (c *CLIChannel) SetTrimHistoryFn(fn func(messageID int64) error) {
 	c.programMu.Lock()
 	defer c.programMu.Unlock()
 	if c.model != nil {

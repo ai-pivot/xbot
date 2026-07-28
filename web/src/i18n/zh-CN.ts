@@ -205,6 +205,7 @@ const zhCN = {
     cancelEdit: '取消',
     rewindComplete: '回溯完成',
     rewindFailed: '回溯失败',
+    rewindUnavailable: '该消息尚未持久化，无法回溯',
     noUserMessageToRewind: '没有可回溯的用户消息',
     clickEditButtonHint: '点击用户消息旁的编辑按钮进行回溯',
     copyMarkdown: '复制 Markdown',

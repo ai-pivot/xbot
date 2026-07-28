@@ -138,6 +138,7 @@ type HistoryIteration struct {
 
 // HistoryMessage represents a message in session history.
 type HistoryMessage struct {
+	ID         int64              `json:"id,omitempty"`
 	Role       string             `json:"role"`
 	Content    string             `json:"content"`
 	Timestamp  time.Time          `json:"timestamp"`

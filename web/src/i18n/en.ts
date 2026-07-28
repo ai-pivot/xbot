@@ -208,6 +208,7 @@ const en: Translations = {
     cancelEdit: 'Cancel',
     rewindComplete: 'Rewind complete',
     rewindFailed: 'Rewind failed',
+    rewindUnavailable: 'This message has not been persisted yet and cannot be rewound',
     noUserMessageToRewind: 'No user message to rewind',
     clickEditButtonHint: 'Click the edit button next to a user message to rewind',
     copyMarkdown: 'Copy Markdown',

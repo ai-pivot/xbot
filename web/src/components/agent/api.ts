@@ -16,6 +16,7 @@ export interface HistMsg {
   role: 'user' | 'assistant'
   content: string
   timestamp?: string
+  id?: number
   iterations?: unknown[]
   /** TurnID of the turn that produced this message. 0 = untracked (old data
    *  before v50 migration). Used by MessageList to dedup committed history
@@ -111,11 +112,11 @@ export async function fetchSessionSubscription(session: SessionSelector): Promis
   })
 }
 
-export async function rewindHistory<T>(session: SessionSelector, cutoffMS: number): Promise<T> {
+export async function rewindHistory<T>(session: SessionSelector, messageID: number): Promise<T> {
   return postAPI<T>('/api/history/rewind', {
     channel: session.channel,
     chat_id: session.chatID,
-    cutoff_ms: cutoffMS,
+    message_id: messageID,
   })
 }
 

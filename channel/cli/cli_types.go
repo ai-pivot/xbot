@@ -398,7 +398,7 @@ type CLIChannelConfig struct {
 	GetActiveProgressFn    func(channelName, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent                                                                       // 获取目标 session 的活跃进度（增量拉取：只返回 iteration > fromIter 的历史）
 	GetTodosFn             func(channelName, chatID string) []protocol.TodoItem                                                                                                         // 获取目标 session 的服务端 TODO 列表（session switch 覆盖本地缓存用）
 	GetTokenStateFn        func(channelName, chatID string) (promptTokens, completionTokens int64)                                                                                      // 获取目标 session 的最后 token 状态（session switch 恢复 context bar 用）
-	TrimHistoryFn          func(channelName, chatID string, cutoff time.Time) error                                                                                                     // rewind 回退时删除 DB 消息（channel+chatID 动态传入，支持多 session）
+	TrimHistoryFn          func(channelName, chatID string, messageID int64) error                                                                                                      // rewind 回退时删除 DB 消息（channel+chatID 动态传入，支持多 session）
 	ChannelConfigGetFn     func() (map[string]map[string]string, error)                                                                                                                 // 获取频道配置（用于 /channel 面板）
 	ChannelConfigSetFn     func(channel string, values map[string]string) error                                                                                                         // 保存频道配置（用于 /channel 面板）
 	CreateWebUserFn        func(username string) (password string, err error)                                                                                                           // 创建 Web 用户（admin only，返回自动生成的密码）
@@ -465,7 +465,7 @@ type AllSessionInfo struct {
 // Flushed to model fields in a single applyPending() call inside Start().
 type cliPending struct {
 	// Function callbacks
-	trimHistoryFn     func(time.Time) error
+	trimHistoryFn     func(int64) error
 	resetTokenStateFn func()
 	sendInboundFn     func(ch.InboundMsg) bool
 	bgTaskCountFn     func() int

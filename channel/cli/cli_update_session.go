@@ -68,14 +68,14 @@ func (m *cliModel) scheduleSessionsRefresh() {
 }
 
 // msgIdentity is the unified dedup key for history messages.
-// Uses role + timestamp because persisted DB messages are uniquely
-// identified by their (role, timestamp) pair — timestamp has nanosecond
-// precision and is set at persist time. turnID is intentionally excluded:
-// protocol.HistoryMessage (the DB representation) has no turnID field, so
-// including it would make the same logical message dedup differently
-// depending on whether it came from DB history or an in-memory turn.
+// Struct equality is conjunctive (all fields must match): two messages are
+// the same iff role AND dbID AND timestamp are all equal. For persisted DB
+// messages, dbID (auto-increment) is the primary distinguisher — same dbID
+// guarantees same timestamp. For in-memory messages (dbID == 0, e.g. live
+// streaming), the comparison degrades to role + timestamp only.
 type msgIdentity struct {
 	role      string
+	dbID      int64
 	timestamp time.Time
 }
 
@@ -87,6 +87,7 @@ func toCLIMessage(hm protocol.HistoryMessage) cliMessage {
 		role:      hm.Role,
 		content:   hm.Content,
 		timestamp: hm.Timestamp,
+		dbID:      hm.ID,
 		isPartial: false,
 		dirty:     true,
 	}
@@ -107,10 +108,10 @@ func toCLIMessage(hm protocol.HistoryMessage) cliMessage {
 func dedupAppend(existing []cliMessage, incoming []cliMessage) []cliMessage {
 	seen := make(map[msgIdentity]bool, len(existing))
 	for _, m := range existing {
-		seen[msgIdentity{m.role, m.timestamp}] = true
+		seen[msgIdentity{m.role, m.dbID, m.timestamp}] = true
 	}
 	for _, cm := range incoming {
-		id := msgIdentity{cm.role, cm.timestamp}
+		id := msgIdentity{cm.role, cm.dbID, cm.timestamp}
 		if !seen[id] {
 			existing = append(existing, cm)
 			seen[id] = true

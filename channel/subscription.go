@@ -309,6 +309,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
 						if m.Content != "" && !isInterrupted {
 							history = append(history, HistoryMessage{
+								ID:         m.ID,
 								Role:       "assistant",
 								Content:    m.Content,
 								Timestamp:  m.Timestamp,
@@ -319,6 +320,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 							// Detail has iterations but no displayable content
 							// (intermediate assistant, cancelled turn, or [interrupted] marker).
 							history = append(history, HistoryMessage{
+								ID:         m.ID,
 								Role:       "assistant",
 								Content:    "",
 								Timestamp:  m.Timestamp,
@@ -328,6 +330,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						}
 					} else if m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]") {
 						history = append(history, HistoryMessage{
+							ID:        m.ID,
 							Role:      "assistant",
 							Content:   m.Content,
 							Timestamp: m.Timestamp,
@@ -372,6 +375,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 					history[len(history)-1].TurnID = m.TurnID
 				} else {
 					hm := HistoryMessage{
+						ID:        m.ID,
 						Role:      "assistant",
 						Content:   m.Content,
 						Timestamp: m.Timestamp,
@@ -398,6 +402,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			lastAssistantTS = time.Time{}
 			if m.Content != "" {
 				history = append(history, HistoryMessage{
+					ID:        m.ID,
 					Role:      m.Role,
 					Content:   m.Content,
 					Timestamp: m.Timestamp,

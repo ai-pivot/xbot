@@ -254,14 +254,16 @@ export function AgentPanel({ params }: PanelProps) {
     sendMessageRef.current(content, attachments)
   }, [])
 
-  // Rewind via inline edit: rewind to the message's timestamp, then send
+  // Rewind via inline edit: rewind to the message's DB id, then send
   // the edited content as a new message.
   const rewindTo = useCallback(async (editedContent: string, originalMessage: ChatMessage) => {
-    if (!chatID || isSubAgent || !originalMessage.timestamp) return
-    const cutoff = Date.parse(originalMessage.timestamp)
-    if (!Number.isFinite(cutoff) || cutoff <= 0) return
+    if (!chatID || isSubAgent) return
+    if (!originalMessage.dbID) {
+      toast.error(t('agent.rewindUnavailable'))
+      return
+    }
     try {
-      await rewindHistory<RewindHistoryResponse>({ channel: messageChannel, chatID }, cutoff)
+      await rewindHistory<RewindHistoryResponse>({ channel: messageChannel, chatID }, originalMessage.dbID)
       // Exit edit mode
       setEditingMessageId(null)
       // Rewind is destructive: clear the visible/cache rows before reload so

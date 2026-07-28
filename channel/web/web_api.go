@@ -105,16 +105,16 @@ func (wc *WebChannel) handleHistoryRewind(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var body struct {
-		Channel  string `json:"channel"`
-		ChatID   string `json:"chat_id"`
-		CutoffMS int64  `json:"cutoff_ms"`
+		Channel   string `json:"channel"`
+		ChatID    string `json:"chat_id"`
+		MessageID int64  `json:"message_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if body.CutoffMS <= 0 {
-		jsonErrorResponse(w, http.StatusBadRequest, "cutoff_ms is required")
+	if body.MessageID <= 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "message_id is required")
 		return
 	}
 	sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
@@ -125,7 +125,7 @@ func (wc *WebChannel) handleHistoryRewind(w http.ResponseWriter, r *http.Request
 		jsonErrorResponse(w, http.StatusNotImplemented, "rewind not available")
 		return
 	}
-	result, err := wc.callbacks.RewindHistory(senderID, sel, time.UnixMilli(body.CutoffMS))
+	result, err := wc.callbacks.RewindHistory(senderID, sel, body.MessageID)
 	if err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, err.Error())
 		return

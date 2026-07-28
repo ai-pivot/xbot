@@ -70,10 +70,11 @@ vi.mock('@/components/agent/MessageList', () => ({
     <button
       type="button"
       onClick={() => props.onRewind?.('edited message', {
-        id: 'target',
+        id: 'db-42',
         role: 'user',
         content: 'original message',
         timestamp: '2026-07-08T00:00:01Z',
+        dbID: 42,
         persisted: true,
       })}
     >
@@ -104,7 +105,7 @@ describe('AgentPanel rewind', () => {
     await waitFor(() => expect(mocks.chat.sendMessage).toHaveBeenCalledWith('edited message', undefined))
     expect(mocks.rewindHistory).toHaveBeenCalledWith(
       { channel: 'web', chatID: 'chat-1' },
-      Date.parse('2026-07-08T00:00:01Z'),
+      42,
     )
     expect(mocks.order).toEqual(['clear', 'reload', 'send'])
   })

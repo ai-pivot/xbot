@@ -15,7 +15,7 @@ import type {
   WSClientMessage,
   WSMessage,
 } from '@/types/shared'
-import type { WSConnection } from '@/types/ws'
+import type { WSConnection, SendMessageResponse } from '@/types/ws'
 
 const STATUS_POLL_MS = 5_000
 const REPLAY_GRACE_MS = 1_000
@@ -96,11 +96,10 @@ export class SSEConnectionImpl implements WSConnection {
     ) this.restartSource()
   }
 
-  async send(msg: WSClientMessage): Promise<void> {
+  async send(msg: WSClientMessage): Promise<SendMessageResponse | void> {
     switch (msg.type) {
       case 'message':
-        await this.sendMessageWithRetry(msg)
-        return
+        return this.sendMessageWithRetry(msg)
       case 'cancel':
         await postAPI('/api/cancel', sessionBody(msg))
         return
@@ -284,7 +283,7 @@ export class SSEConnectionImpl implements WSConnection {
     this.messageHandlers.forEach((handler) => handler(msg))
   }
 
-  private async sendMessageWithRetry(msg: WSClientMessage): Promise<void> {
+  private async sendMessageWithRetry(msg: WSClientMessage): Promise<SendMessageResponse> {
     const requestID = msg.id || newMessageRequestID()
     const body = {
       id: requestID,
@@ -298,13 +297,14 @@ export class SSEConnectionImpl implements WSConnection {
     }
     for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt += 1) {
       try {
-        await postAPI('/api/message', body)
-        return
+        const result = await postAPI<SendMessageResponse>('/api/message', body)
+        return result
       } catch (error) {
         if (attempt === SEND_RETRY_DELAYS_MS.length) throw error
         await delay(SEND_RETRY_DELAYS_MS[attempt])
       }
     }
+    throw new Error('send: exhausted retries') // unreachable — loop always returns or throws
   }
 
   private scheduleReplayFallback(source: EventSource, channel: string, chatID: string): void {
@@ -566,7 +566,7 @@ export class MultiSSEManager implements WSConnection {
     }
   }
 
-  async send(msg: WSClientMessage): Promise<void> {
+  async send(msg: WSClientMessage): Promise<SendMessageResponse | void> {
     return this.primary.send(msg)
   }
 

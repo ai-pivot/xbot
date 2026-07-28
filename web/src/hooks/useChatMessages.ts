@@ -147,7 +147,7 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
     }
 
     normalized.push({
-      id: m.seq != null ? `seq-${m.seq}` : `hist-${i}`,
+      id: m.id != null ? `db-${m.id}` : (m.seq != null ? `seq-${m.seq}` : `hist-${i}`),
       role: m.role,
       content,
       iterations,
@@ -157,6 +157,7 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       displayOnly: false,
       persisted: true,
       eventSeq: m.seq,
+      dbID: m.id,
     })
   }
 
@@ -569,11 +570,12 @@ export function useChatMessages({
         file_names: attachments?.fileNames,
         file_sizes: attachments?.fileSizes,
         file_mimes: attachments?.fileMimes,
-      }).then((resp: unknown) => {
+      }).then((resp) => {
         // API succeeded — the message is now persisted on the backend.
-        // Use the server-returned timestamp so rewind (which matches by
-        // timestamp) works correctly. Client and server clocks may differ.
-        const serverTs = (resp as { timestamp?: number } | null)?.timestamp
+        // Use the server-returned message_id (DB auto-increment) so rewind
+        // works immediately without a page refresh. Also sync timestamp.
+        const msgID = resp?.message_id
+        const serverTs = resp?.timestamp
         const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
         if (optimisticID) {
           const sentID = optimisticID
@@ -583,6 +585,7 @@ export function useChatMessages({
               ...m,
               sending: false,
               persisted: true,
+              ...(msgID ? { dbID: msgID, id: `db-${msgID}` } : {}),
               ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
             } : m)
             messagesRef.current = next
