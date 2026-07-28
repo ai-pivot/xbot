@@ -440,6 +440,17 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 	for _, record := range ordered {
 		if record.Type == sqlite.HistoryRecordMessage {
 			message := record.Message
+
+			// Skip tool-role messages: their results are already embedded in
+			// the preceding assistant message's Detail/iterations. Emitting
+			// them as separate HistoryMessage rows causes the frontend to
+			// render them as assistant messages (with copy buttons) and leak
+			// raw tool output. This mirrors master's ConvertMessagesToHistory
+			// which does `case "tool": continue`.
+			if message.Role == "tool" {
+				continue
+			}
+
 			timestamp := message.Timestamp
 			if timestamp.IsZero() {
 				timestamp = record.CreatedAt
