@@ -758,4 +758,46 @@ describe('useProgressStream event dispatch', () => {
     })
     expect(result.current.isStreaming).toBe(false)
   })
+
+  it('cancel: preserves already-rendered content and appends user_cancelled tool', () => {
+    const complete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Simulate streaming content that the user already sees
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'I was writing this' } })
+    expect(result.current.liveMessage?.content).toBe('I was writing this')
+
+    // Cancel: backend sends content="" with cancelled=true
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+
+    // onAssistantComplete must be called with the PRESERVED streaming content
+    expect(complete).toHaveBeenCalledTimes(1)
+    const [finalText, iterations] = complete.mock.calls[0]
+    expect(finalText).toBe('I was writing this') // NOT empty
+    // Must include user_cancelled tool
+    const allTools = iterations.flatMap((it: { tools: { name: string }[] }) => it.tools)
+    expect(allTools.some((t: { name: string }) => t.name === 'user_cancelled')).toBe(true)
+    // Store is cleared after finalize
+    expect(result.current.isStreaming).toBe(false)
+    expect(result.current.liveMessage).toBeNull()
+  })
+
+  it('cancel with no streaming content still gets user_cancelled tool', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Cancel with no prior streaming (agent was mid-tool, no text yet)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 1 } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    const [finalText, iterations] = complete.mock.calls[0]
+    expect(finalText).toBe('') // no content was rendered
+    const allTools = iterations.flatMap((it: { tools: { name: string }[] }) => it.tools)
+    expect(allTools.some((t: { name: string }) => t.name === 'user_cancelled')).toBe(true)
+  })
 })

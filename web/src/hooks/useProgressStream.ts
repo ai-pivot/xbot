@@ -36,6 +36,7 @@ import type {
   ProgressSnapshot,
   ProgressEvent,
   WebIteration,
+  WebToolProgress,
   ChatMessage,
   TodoItem,
   TokenUsageInfo,
@@ -415,9 +416,24 @@ function handleProgressMessage(
       // Cross-reconnect replay is handled by dedupMessages in appendAssistant.
       if (finalizedRef?.current) return
       if (finalizedRef) finalizedRef.current = true
-      const finalText = msg.content ?? ''
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
+
+      // Cancel: the backend sends content="" with cancelled=true. The
+      // already-rendered streaming content (snap.streamContent) must be
+      // preserved as-is — the user saw it, it should stay. We also append
+      // a user_cancelled tool so the UI shows the cancel marker.
+      if (msg.cancelled || msg.metadata?.cancelled === 'true') {
+        const cancelText = snap.streamContent || snap.content || msg.content || ''
+        const cancelIterations = snap.iterationHistory.length > 0
+          ? appendUserCancelledTool(snap.iterationHistory)
+          : appendUserCancelledTool(parsedIterations)
+        completeRef.current?.(cancelText, cancelIterations, msg.seq)
+        store.reset()
+        return
+      }
+
+      const finalText = msg.content ?? ''
       // Prefer the live snapshot's iterationHistory — it was built incrementally
       // via SSE and already contains all completed iterations. Using the
       // server's parsedIterations instead would replace the data source, causing
@@ -497,6 +513,41 @@ function handleProgressMessage(
     default:
       return
   }
+}
+
+/** Append a `user_cancelled` tool to the last iteration (or create a new
+ * iteration if none exist). This mirrors the backend's
+ * `userCancelledSyntheticTool` so the web UI shows a cancel marker
+ * without changing already-rendered content. */
+function appendUserCancelledTool(iterations: WebIteration[]): WebIteration[] {
+  if (iterations.length === 0) {
+    return [{
+      iteration: 1,
+      thinking: '',
+      reasoning: '',
+      tools: [userCancelledTool],
+      toolCount: 1,
+    }]
+  }
+  const result = iterations.map((it) => ({ ...it, tools: [...it.tools] }))
+  const last = result[result.length - 1]
+  // Avoid duplicate if progress_history already carried user_cancelled.
+  if (!last.tools.some((t) => t.name === 'user_cancelled')) {
+    last.tools.push(userCancelledTool)
+    last.toolCount = last.tools.length
+  }
+  return result
+}
+
+const userCancelledTool: WebToolProgress = {
+  name: 'user_cancelled',
+  label: 'cancelled by user',
+  status: 'done',
+  elapsedMs: 0,
+  summary: 'User cancelled this run.',
+  detail: '',
+  args: '',
+  toolHints: '',
 }
 
 function isTerminalProgressMessage(msg: WSMessage): boolean {
