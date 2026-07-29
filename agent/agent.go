@@ -2909,6 +2909,17 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			if wasCancelled && ctx.Err() == nil {
 				// 请求被用户 /cancel 取消（而非全局 ctx 关闭）
 				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).Info("Request cancelled by user")
+				// Persist ask_answer to invalidate the pending ask_question record.
+				// Without this, Replay() finds an unanswered ask_question on reload
+				// and restores the AskUser prompt — the user sees it again after
+				// refresh even though they cancelled.
+				if pending := a.GetPendingAskUser(msg.Channel, msg.ChatID); pending != nil {
+					if sess, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID); err == nil {
+						if _, err := sess.AppendAskAnswer("[cancelled]"); err != nil {
+							log.WithError(err).Warn("Failed to append ask_answer for cancelled AskUser")
+						}
+					}
+				}
 				a.ClearPendingAskUser(msg.Channel, msg.ChatID)
 				// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
 				// Always include cancelled metadata so CLI can distinguish cancel acks

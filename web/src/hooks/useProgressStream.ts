@@ -649,12 +649,19 @@ function handleProgressMessage(
       // merge it here, the committed message loses all reasoning.
       const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
       let mergedIterations = iterations
-      if (liveReasoning && iterations.length > 0) {
-        const lastIter = iterations[iterations.length - 1]
-        if (!lastIter.reasoning) {
-          mergedIterations = iterations.map((it, i) =>
-            i === iterations.length - 1 ? { ...it, reasoning: liveReasoning } : it
-          )
+      if (liveReasoning) {
+        if (mergedIterations.length === 0) {
+          // No iterations at all — create a synthetic one to carry the reasoning.
+          mergedIterations = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
+        } else {
+          const lastIter = mergedIterations[mergedIterations.length - 1]
+          // Always use live streamed reasoning if it's longer than what the
+          // structured event provided (or if the iteration's reasoning is empty).
+          if (liveReasoning.length > (lastIter.reasoning || '').length) {
+            mergedIterations = mergedIterations.map((it, i) =>
+              i === mergedIterations.length - 1 ? { ...it, reasoning: liveReasoning } : it
+            )
+          }
         }
       }
       completeRef.current?.(finalText, mergedIterations, msg.seq, msg.turn_id)
@@ -771,10 +778,14 @@ function handleProgressMessage(
           const text = snap.streamContent
           const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
           let iters = snap.iterationHistory
-          if (liveReasoning && iters.length > 0 && !iters[iters.length - 1].reasoning) {
-            iters = iters.map((it, i) =>
-              i === iters.length - 1 ? { ...it, reasoning: liveReasoning } : it
-            )
+          if (liveReasoning) {
+            if (iters.length === 0) {
+              iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
+            } else if (liveReasoning.length > (iters[iters.length - 1].reasoning || '').length) {
+              iters = iters.map((it, i) =>
+                i === iters.length - 1 ? { ...it, reasoning: liveReasoning } : it
+              )
+            }
           }
           completeRef.current?.(text, iters, msg.seq, msg.turn_id)
           store.reset()
