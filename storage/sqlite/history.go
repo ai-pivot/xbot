@@ -666,7 +666,7 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID int64, d
 	query := `
 		SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
 		       role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail,
-		       reasoning_content, display_only, created_at
+		       reasoning_content, display_only, created_at, turn_id
 		FROM session_messages WHERE tenant_id = ?`
 	args := []any{tenantID}
 	if fromHistoryID > 0 {
@@ -685,9 +685,10 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID int64, d
 		var rawData, role, content, createdAt string
 		var toolCallID, toolName, toolArguments, toolCallsJSON, detail, reasoning sql.NullString
 		var displayOnly int
+		var turnID sql.NullInt64
 		if err := rows.Scan(&record.HistoryID, &record.Type, &record.TargetHistoryID, &rawData,
 			&role, &content, &toolCallID, &toolName, &toolArguments, &toolCallsJSON, &detail,
-			&reasoning, &displayOnly, &createdAt); err != nil {
+			&reasoning, &displayOnly, &createdAt, &turnID); err != nil {
 			return nil, fmt.Errorf("scan history record: %w", err)
 		}
 		record.CreatedAt = internal.ParseTimestamp(createdAt)
@@ -695,6 +696,9 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID int64, d
 		if record.Type == HistoryRecordMessage {
 			record.Message = llm.ChatMessage{ID: record.HistoryID, Role: role, Content: content,
 				DisplayOnly: displayOnly != 0, Timestamp: record.CreatedAt}
+			if turnID.Valid {
+				record.Message.TurnID = uint64(turnID.Int64)
+			}
 			if toolCallID.Valid {
 				record.Message.ToolCallID = toolCallID.String
 			}
