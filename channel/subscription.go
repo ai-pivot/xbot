@@ -471,11 +471,21 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 					ID: call.ID, Name: call.Name, Arguments: call.Arguments,
 				}
 			}
+			// Intermediate assistant with ToolCalls but no Detail: content is
+			// the LLM's narration, not the final reply. rawMessageIterations
+			// puts it in the iteration's Content (thinking). Set message
+			// content empty to prevent shouldRenderFinalContent from treating
+			// it as the final reply (which would add a copy button).
+			emitContent := message.Content
+			iters := rawMessageIterations(message, toolResults)
+			if len(iters) > 0 && message.Detail == "" && len(message.ToolCalls) > 0 {
+				emitContent = ""
+			}
 			history = append(history, HistoryMessage{
 				ID:               record.HistoryID,
 				HistoryID:        record.HistoryID,
 				Role:             message.Role,
-				Content:          message.Content,
+				Content:          emitContent,
 				ReasoningContent: message.ReasoningContent,
 				ToolCallID:       message.ToolCallID,
 				ToolName:         message.ToolName,
@@ -483,7 +493,7 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 				ToolCalls:        toolCalls,
 				Timestamp:        timestamp,
 				TurnID:           message.TurnID,
-				Iterations:       rawMessageIterations(message, toolResults),
+				Iterations:       iters,
 				RecordType:       string(sqlite.HistoryRecordMessage),
 				CompactedBy:      record.CompactedBy,
 				DisplayOnly:      message.DisplayOnly,
@@ -560,5 +570,9 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 			Status: status, Iteration: 1,
 		}
 	}
-	return []HistoryIteration{{Iteration: 1, Reasoning: message.ReasoningContent, Tools: tools}}
+	// The intermediate assistant's Content is the LLM's narration ("两端就绪 ✅..."),
+	// NOT the final reply. Put it in the iteration's Content (frontend maps to
+	// thinking) so it renders inside the iteration fold, not as message.content
+	// (which would get a copy button via shouldRenderFinalContent).
+	return []HistoryIteration{{Iteration: 1, Content: message.Content, Reasoning: message.ReasoningContent, Tools: tools}}
 }
