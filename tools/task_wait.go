@@ -46,14 +46,20 @@ func (t *TaskWaitTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 		return nil, err
 	}
 
+	// Fast path: check if already done. Status() returns a pointer to the
+	// task in the map — if it's done, return immediately without waiting.
 	task, err := toolCtx.BgTaskManager.Status(params.TaskID)
 	if err != nil {
 		return nil, err
 	}
-
-	// Already completed — return immediately.
 	if task.Status != BgTaskRunning {
 		return NewResult(formatTask(task)), nil
+	}
+
+	// Get the done channel — closed when the task finishes.
+	doneCh, err := toolCtx.BgTaskManager.WaitDone(params.TaskID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Determine timeout (default 60s, max 300s).
@@ -65,34 +71,24 @@ func (t *TaskWaitTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 		timeoutSec = 300
 	}
 
-	// Poll loop: check every 1s, stop on completion / timeout / cancel.
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
 	timer := time.NewTimer(time.Duration(timeoutSec) * time.Second)
 	defer timer.Stop()
 
-	for {
-		select {
-		case <-toolCtx.Ctx.Done():
-			// Agent cancelled (Ctrl+C). Return current status.
-			task, _ = toolCtx.BgTaskManager.Status(params.TaskID)
-			return NewResult(fmt.Sprintf("Wait interrupted.\n\n%s", formatTask(task))), nil
+	select {
+	case <-toolCtx.Ctx.Done():
+		// Agent cancelled (Ctrl+C). Return current status.
+		task, _ = toolCtx.BgTaskManager.Status(params.TaskID)
+		return NewResult(fmt.Sprintf("Wait interrupted.\n\n%s", formatTask(task))), nil
 
-		case <-timer.C:
-			// Timeout — task still running.
-			task, _ = toolCtx.BgTaskManager.Status(params.TaskID)
-			return NewResult(fmt.Sprintf("Timed out after %ds — task is still running.\n\n%s", timeoutSec, formatTask(task))), nil
+	case <-timer.C:
+		// Timeout — task still running.
+		task, _ = toolCtx.BgTaskManager.Status(params.TaskID)
+		return NewResult(fmt.Sprintf("Timed out after %ds — task is still running.\n\n%s", timeoutSec, formatTask(task))), nil
 
-		case <-ticker.C:
-			// Check if the task has finished.
-			updated, err := toolCtx.BgTaskManager.Status(params.TaskID)
-			if err != nil {
-				return nil, err
-			}
-			if updated.Status != BgTaskRunning {
-				return NewResult(formatTask(updated)), nil
-			}
-		}
+	case <-doneCh:
+		// Task finished — return final status.
+		task, _ = toolCtx.BgTaskManager.Status(params.TaskID)
+		return NewResult(formatTask(task)), nil
 	}
 }
 
