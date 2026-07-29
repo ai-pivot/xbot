@@ -293,7 +293,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		records, err := sess.GetFullHistory()
+		msgs, err := sess.GetMessages()
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
@@ -304,7 +304,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			progress = nil
 		}
 		return web.HistorySnapshot{
-			Messages:       channel.ConvertHistoryRecords(records),
+			Messages:       channel.ConvertMessagesToHistory(msgs),
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,

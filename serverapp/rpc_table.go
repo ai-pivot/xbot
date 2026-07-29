@@ -1144,11 +1144,11 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			if err != nil {
 				return nil, err
 			}
-			records, err := sess.GetFullHistory()
+			msgs, err := sess.GetMessages()
 			if err != nil {
 				return nil, err
 			}
-			return channel.ConvertHistoryRecords(records), nil
+			return channel.ConvertMessagesToHistory(msgs), nil
 		}()
 		if err != nil {
 			return nil, err
