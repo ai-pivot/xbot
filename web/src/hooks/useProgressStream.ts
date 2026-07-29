@@ -641,7 +641,23 @@ function handleProgressMessage(
       // Only fall back to parsedIterations when the snapshot has no iterations
       // (e.g. reconnect where no SSE events were received).
       const iterations = snap.iterationHistory.length > 0 ? snap.iterationHistory : parsedIterations
-      completeRef.current?.(finalText, iterations, msg.seq, msg.turn_id)
+      // Merge live reasoningStreamContent into the last iteration's reasoning.
+      // The streamed reasoning (from reasoning_stream_content events) is in
+      // snap.reasoningStreamContent, but the iteration snapshot's reasoning
+      // field may be empty (structured events don't always carry reasoning).
+      // After store.reset(), reasoningStreamContent is gone — if we don't
+      // merge it here, the committed message loses all reasoning.
+      const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
+      let mergedIterations = iterations
+      if (liveReasoning && iterations.length > 0) {
+        const lastIter = iterations[iterations.length - 1]
+        if (!lastIter.reasoning) {
+          mergedIterations = iterations.map((it, i) =>
+            i === iterations.length - 1 ? { ...it, reasoning: liveReasoning } : it
+          )
+        }
+      }
+      completeRef.current?.(finalText, mergedIterations, msg.seq, msg.turn_id)
       // onAssistantComplete calls store.reset() synchronously inside flushSync.
       // Fallback: if onAssistantComplete did not reset (e.g., not set), reset here.
       // The reset is idempotent — if onAssistantComplete already cleared the
@@ -753,7 +769,13 @@ function handleProgressMessage(
         if (hasVisibleProgress(snap)) {
           if (finalizedRef) finalizedRef.current = true
           const text = snap.streamContent
-          const iters = snap.iterationHistory
+          const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
+          let iters = snap.iterationHistory
+          if (liveReasoning && iters.length > 0 && !iters[iters.length - 1].reasoning) {
+            iters = iters.map((it, i) =>
+              i === iters.length - 1 ? { ...it, reasoning: liveReasoning } : it
+            )
+          }
           completeRef.current?.(text, iters, msg.seq, msg.turn_id)
           store.reset()
         }
