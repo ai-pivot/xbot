@@ -3084,7 +3084,18 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			tenantOwner = uid
 		}
 	}
-	tenantSession, err := a.multiSession.GetOrCreateSessionWithOwner(msg.Channel, msg.ChatID, tenantOwner)
+
+	// Background notifications are internal system messages injected into an
+	// existing session. They must NOT trigger owner verification — the senderID
+	// (from cron job / bg task) may differ from the session's canonical owner
+	// (e.g. CLI path vs user ID), causing ErrTenantOwnerConflict.
+	var tenantSession *session.TenantSession
+	var err error
+	if msg.Metadata != nil && msg.Metadata[bgNotificationMetadataKey] == "true" {
+		tenantSession, err = a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
+	} else {
+		tenantSession, err = a.multiSession.GetOrCreateSessionWithOwner(msg.Channel, msg.ChatID, tenantOwner)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get/create tenant session: %w", err)
 	}
