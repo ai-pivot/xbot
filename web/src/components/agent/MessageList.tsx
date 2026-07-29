@@ -39,6 +39,12 @@ interface MessageListProps {
   /** Whether to merge consecutive tools. Default true. */
   mergeTools?: boolean
   loading: boolean
+  /** True while loading older messages (scroll-up pagination). */
+  loadingMore?: boolean
+  /** True if there are older messages available to load. */
+  hasMore?: boolean
+  /** Called when the user scrolls to the top — load older messages. */
+  onLoadMore?: () => Promise<boolean>
   error: string | null
   /** Rewind callback — receives the edited content string. */
   onRewind?: (editedContent: string, originalMessage: ChatMessage) => void
@@ -78,6 +84,9 @@ export function MessageList({
   collapseLevel,
   mergeTools = true,
   loading,
+  loadingMore = false,
+  hasMore = false,
+  onLoadMore,
   error,
   onRewind,
   editingMessageId,
@@ -292,6 +301,12 @@ export function MessageList({
       )
     }
   }, [virtualizer, cancelPendingFollow])
+
+  // Scroll-to-top: load older messages.
+  useEffect(() => {
+    if (!atTop || !hasMore || loadingMore) return
+    void onLoadMore?.()
+  }, [atTop, hasMore, loadingMore, onLoadMore])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {

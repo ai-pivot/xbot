@@ -89,6 +89,12 @@ export interface UseChatMessagesResult {
   clearMessages: () => void
   /** Mark a destructive mutation — next reload discards live rows. */
   markDestructiveMutation: () => void
+  /** Load older messages (scroll-up pagination). Returns false when no more. */
+  loadMore: () => Promise<boolean>
+  /** True if there are older messages available to load. */
+  hasMore: boolean
+  /** True while loadMore is fetching. */
+  loadingMore: boolean
 }
 
 /** File references resolved from an upload, ready to attach to a message. */
@@ -303,6 +309,9 @@ export function useChatMessages({
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
   const [processing, setProcessing] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const oldestIdRef = useRef<number | null>(null)
 
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
@@ -413,8 +422,8 @@ export function useChatMessages({
         setInitialProgress(null)
         return
       }
-      // Normal mode: load via Web history snapshot (full history + progress).
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null)
+      // Normal mode: load via Web history snapshot (paginated: last 30 turns).
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 30 })
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return
       const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
@@ -436,6 +445,9 @@ export function useChatMessages({
       const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0) : parsed
       messagesRef.current = next
       setMessages(next)
+      // Track pagination cursor.
+      setHasMore(Boolean(data.has_more))
+      oldestIdRef.current = data.oldest_id ?? null
       // Always restore active_progress — it contains the COMPLETE iterationHistory
       // from the server. Don't skip it when progressChanged (SSE delta arrived
       // during reload) — that's exactly when we need the full snapshot most,
@@ -454,6 +466,35 @@ export function useChatMessages({
       if (gen === reloadGenRef.current) setLoading(false)
     }
   }, [channel, chatID, subAgentRole, subAgentInstance, parentChatID, agentChatID, activeMessageCacheKey])
+
+  // Load older messages (scroll-up pagination).
+  const loadMore = useCallback(async (): Promise<boolean> => {
+    if (loadingMore || !hasMore || !oldestIdRef.current) return false
+    const w = wsRef.current
+    if (!w) return false
+    setLoadingMore(true)
+    try {
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 30, beforeId: oldestIdRef.current })
+      const rows = data.messages ?? []
+      if (rows.length === 0) {
+        setHasMore(false)
+        return false
+      }
+      const parsed = parseHistoryMessages(rows)
+      // Prepend: older messages go before existing ones.
+      const prev = messagesRef.current
+      const next = [...parsed, ...prev]
+      messagesRef.current = next
+      setMessages(next)
+      setHasMore(Boolean(data.has_more))
+      oldestIdRef.current = data.oldest_id ?? null
+      return true
+    } catch {
+      return false
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [loadingMore, hasMore, channel, chatID])
 
   // Load history when the chatID changes (or on first enable).
   useLayoutEffect(() => {
@@ -729,6 +770,9 @@ export function useChatMessages({
     removeMessage,
     clearMessages,
     markDestructiveMutation,
+    loadMore,
+    hasMore,
+    loadingMore,
   }
 }
 

@@ -113,7 +113,9 @@ type WebCallbacks struct {
 	// happen after it returns. fn must not mutate pending AskUser state.
 	WithPendingAskUser func(channel, chatID string, fn func(*protocol.ProgressEvent) bool) bool
 	// HistorySnapshot returns a Web-only history snapshot with runtime state.
-	HistorySnapshot func(senderID string, sel SessionSelector) (HistorySnapshot, error)
+	// limit = max user turns to return (0 = return all).
+	// beforeID = return messages with id < beforeID (0 = most recent).
+	HistorySnapshot func(senderID string, sel SessionSelector, limit int, beforeID int64) (HistorySnapshot, error)
 	// RewindHistory rewinds a Web-accessible session to a selected user message.
 	RewindHistory func(senderID string, sel SessionSelector, historyID int64) (RewindHistoryResult, error)
 	// GetCWD returns the current directory for a Web-accessible session.
@@ -283,6 +285,8 @@ type HistorySnapshot struct {
 	LastSeq        uint64                    `json:"last_seq,omitempty"`
 	ChatID         string                    `json:"chat_id,omitempty"`
 	Channel        string                    `json:"channel,omitempty"`
+	HasMore        bool                      `json:"has_more,omitempty"`
+	OldestID       int64                     `json:"oldest_id,omitempty"`
 }
 
 // RewindHistoryResult is the Web-only /api/history/rewind response payload.

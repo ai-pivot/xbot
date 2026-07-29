@@ -31,13 +31,18 @@ export async function postAPI<T>(
   body: unknown = {},
   options: PostAPIOptions = {},
 ): Promise<T> {
-  const isForm = body instanceof FormData
+  // GET requests: if the endpoint already has query params (contains "?"),
+  // treat as GET with no body.
+  const isGET = endpoint.includes('?') && body === null
+  const isForm = !isGET && body instanceof FormData
   const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: isForm
+    method: isGET ? 'GET' : 'POST',
+    headers: isGET
       ? { Accept: 'application/json' }
-      : { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: isForm ? body : JSON.stringify(body),
+      : isForm
+        ? { Accept: 'application/json' }
+        : { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: isGET ? undefined : isForm ? body : JSON.stringify(body),
     signal: options.signal,
   })
 

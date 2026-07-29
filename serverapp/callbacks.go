@@ -280,7 +280,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return ag.GetPendingAskUser(channel, chatID)
 	}
 	callbacks.WithPendingAskUser = ag.WithPendingAskUser
-	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector) (web.HistorySnapshot, error) {
+	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector, limit int, beforeID int64) (web.HistorySnapshot, error) {
 		if ag.MultiSession() == nil {
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
 		}
@@ -293,15 +293,35 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		msgs, err := sess.GetMessages()
+		// Paginated history: GetHistoryBefore returns up to `limit` user turns
+		// before beforeID. On initial load (beforeID=0) returns most recent.
+		msgs, err := sess.GetHistoryBefore(beforeID, limit)
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		progress := ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll()) // -1 = include iteration 0
-		// Don't discard progress with todos even when phase=done — the
-		// client needs todos to restore the TODO list on session switch.
-		if progress != nil && progress.Phase == "done" && len(progress.Todos) == 0 {
-			progress = nil
+		// Determine has_more: compare total active message count vs returned.
+		total, _ := sess.Len()
+		hasMore := false
+		oldestID := int64(0)
+		if len(msgs) > 0 {
+			oldestID = msgs[0].ID
+			// If the returned messages start after the first message in
+			// the session, there are older messages to load.
+			// Compare total count vs returned: if total > len(msgs), there
+			// are older messages (or we returned a subset).
+			if total > len(msgs) {
+				hasMore = true
+			}
+		}
+		// Only include active_progress on initial load (beforeID == 0).
+		// On scroll-up load (beforeID > 0), skip it — the live progress
+		// hasn't changed and we don't want to re-trigger progress restoration.
+		var progress *protocol.ProgressEvent
+		if beforeID == 0 {
+			progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll())
+			if progress != nil && progress.Phase == "done" && len(progress.Todos) == 0 {
+				progress = nil
+			}
 		}
 		return web.HistorySnapshot{
 			Messages:       channel.ConvertMessagesToHistory(msgs),
@@ -309,6 +329,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,
 			Channel:        sel.Channel,
+			HasMore:        hasMore,
+			OldestID:       oldestID,
 		}, nil
 	}
 	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, historyID int64) (web.RewindHistoryResult, error) {

@@ -84,7 +84,16 @@ func (s *SessionService) ReplaceToolMessage(tenantID int64, toolName, toolCallID
 // limit specifies the minimum number of user/assistant messages to return.
 // Tool messages between them are included to maintain context continuity.
 // display_only messages (e.g. cron results) are excluded from LLM context.
+// GetHistory returns the last `limit` user turns (plus their associated
+// messages). If beforeID > 0, returns messages with id < beforeID only.
 func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessage, error) {
+	return s.GetHistoryBefore(tenantID, 0, limit)
+}
+
+// GetHistoryBefore returns up to `limit` user turns that occur before
+// beforeID. If beforeID <= 0, returns the most recent `limit` turns.
+// The result is chronologically ordered (oldest first).
+func (s *SessionService) GetHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
 	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return nil, err
@@ -92,9 +101,26 @@ func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessag
 	if limit <= 0 {
 		return nil, nil
 	}
+	msgs := replay.Messages
+	// If beforeID specified, slice to only messages with id < beforeID.
+	if beforeID > 0 {
+		cut := len(msgs)
+		for i, m := range msgs {
+			if m.ID >= beforeID {
+				cut = i
+				break
+			}
+		}
+		msgs = msgs[:cut]
+		if len(msgs) == 0 {
+			return nil, nil
+		}
+	}
+	// Walk backwards counting user turns; start is the first message of the
+	// window. This naturally groups user+assistant+tool into a turn.
 	start, users := 0, 0
-	for i := len(replay.Messages) - 1; i >= 0; i-- {
-		if replay.Messages[i].Role == "user" {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
 			users++
 			if users == limit {
 				start = i
@@ -102,7 +128,7 @@ func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessag
 			}
 		}
 	}
-	return append([]llm.ChatMessage(nil), replay.Messages[start:]...), nil
+	return append([]llm.ChatMessage(nil), msgs[start:]...), nil
 }
 
 // GetAllMessages retrieves all non-display-only messages for a tenant.

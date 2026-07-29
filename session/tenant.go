@@ -100,6 +100,11 @@ func (s *TenantSession) GetHistory(maxMessages int) ([]llm.ChatMessage, error) {
 	return s.sessionSvc.GetHistory(s.tenantID, maxMessages)
 }
 
+// GetHistoryBefore returns up to maxMessages user turns before beforeID.
+func (s *TenantSession) GetHistoryBefore(beforeID int64, maxMessages int) ([]llm.ChatMessage, error) {
+	return s.sessionSvc.GetHistoryBefore(s.tenantID, beforeID, maxMessages)
+}
+
 // GetMessages retrieves all messages for this tenant
 func (s *TenantSession) GetMessages() ([]llm.ChatMessage, error) {
 	return s.sessionSvc.GetAllMessages(s.tenantID)

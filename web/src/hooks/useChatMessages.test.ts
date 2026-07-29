@@ -119,9 +119,11 @@ describe('useChatMessages', () => {
       'cursor-a': deferred<{ messages: never[]; chat_id: string; last_seq: number }>(),
       'cursor-b': deferred<{ messages: never[]; chat_id: string; last_seq: number }>(),
     }
-    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const request = JSON.parse(String(init?.body)) as { chat_id: keyof typeof histories }
-      const data = await histories[request.chat_id].promise
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      const params = new URLSearchParams(url.split('?')[1] ?? '')
+      const chat_id = params.get('chat_id') as keyof typeof histories
+      const data = await histories[chat_id].promise
       return new Response(JSON.stringify({ ok: true, data, error: null }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },

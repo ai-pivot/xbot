@@ -317,6 +317,9 @@ export function AgentPanel({ params }: PanelProps) {
         collapseLevel={level}
         mergeTools={mergeTools}
         loading={chat.loading}
+        loadingMore={chat.loadingMore}
+        hasMore={chat.hasMore}
+        onLoadMore={chat.loadMore}
         error={chat.error}
         onRewind={isSubAgent || busy ? undefined : rewindTo}
         editingMessageId={editingMessageId}

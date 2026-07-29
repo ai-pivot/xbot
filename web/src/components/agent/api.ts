@@ -53,6 +53,8 @@ export interface HistoryResponse {
   last_seq?: number
   chat_id?: string
   channel?: string
+  has_more?: boolean
+  oldest_id?: number
 }
 
 /** Upload response (channel/web/web_file.go handleCloudUpload). */
@@ -63,9 +65,16 @@ export interface UploadResponse {
   mime?: string
 }
 
-/** Fetch conversation history through the Web-only snapshot API. */
-export async function fetchHistory(_ws: WSConnection, session?: SessionSelector | null): Promise<HistoryResponse> {
-  return postAPI<HistoryResponse>('/api/history', sessionBody(session))
+/** Fetch conversation history through the Web-only snapshot API.
+ *  limit: max user turns (default 30, server-side default).
+ *  beforeId: pagination cursor — return messages older than this id. */
+export async function fetchHistory(_ws: WSConnection, session?: SessionSelector | null, opts?: { limit?: number; beforeId?: number }): Promise<HistoryResponse> {
+  const params = new URLSearchParams()
+  if (session?.channel) params.set('channel', session.channel)
+  if (session?.chatID) params.set('chat_id', session.chatID)
+  if (opts?.limit) params.set('limit', String(opts.limit))
+  if (opts?.beforeId) params.set('before_id', String(opts.beforeId))
+  return postAPI<HistoryResponse>(`/api/history?${params.toString()}`, null)
 }
 
 export async function fetchCwd(session?: SessionSelector | null): Promise<{ dir?: string; todos?: TodoItem[] }> {

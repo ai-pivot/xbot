@@ -68,6 +68,21 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Parse pagination params. limit = max user turns (default 30).
+	// before_id = return messages older than this id (for scroll-up load).
+	limit := 30
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	var beforeID int64
+	if b := r.URL.Query().Get("before_id"); b != "" {
+		if id, err := strconv.ParseInt(b, 10, 64); err == nil && id > 0 {
+			beforeID = id
+		}
+	}
+
 	// Capture the replay boundary before the snapshot. Events sequenced while
 	// the snapshot is being built remain above this cursor and are replayable.
 	lastSeq := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
@@ -75,7 +90,7 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel})
 		return
 	}
-	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel)
+	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel, limit, beforeID)
 	if err != nil {
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
@@ -91,6 +106,8 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 		"last_seq":        snapshot.LastSeq,
 		"chat_id":         snapshot.ChatID,
 		"channel":         snapshot.Channel,
+		"has_more":        snapshot.HasMore,
+		"oldest_id":       snapshot.OldestID,
 	})
 }
 
