@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"xbot/bus"
 	"xbot/channel"
@@ -447,6 +448,14 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	}
 	if len(iterHistory) > 0 {
 		cancelMsg := llm.NewAssistantMessage("[interrupted]")
+		// Set TurnID from the active turn so the frontend can dedup
+		// the live progress (same-turn match in appendLiveMessage).
+		// handleCancelledRun is called from chatProcessLoop which has
+		// already set the active turn. msg.Metadata["turn_id"] is set
+		// by chatProcessLoop at line 2825.
+		if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
+			cancelMsg.TurnID = tid
+		}
 		// NOT DisplayOnly — this message carries Detail (iteration history)
 		// that GetAllMessages must return so ConvertMessagesToHistory can
 		// parse it. With DisplayOnly=true, GetAllMessages filters it out,
