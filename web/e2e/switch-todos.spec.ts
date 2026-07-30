@@ -36,7 +36,7 @@ async function setupMock(page: Page) {
       orphan_subagents: [],
     } },
   }))
-  await page.route('**/api/history', (r) => {
+  await page.route('**/api/history*', (r) => {
     const body = r.request().postDataJSON()
     const chatID = body?.chat_id || currentChatID
     const todos = todosForChat[chatID] || []

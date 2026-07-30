@@ -53,7 +53,7 @@ async function setupMockBackend(page: import('@playwright/test').Page) {
       },
     }),
   )
-  await page.route('**/api/history', (route) =>
+  await page.route('**/api/history*', (route) =>
     route.fulfill({
       json: {
         ok: true,
