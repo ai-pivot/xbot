@@ -559,7 +559,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/cancel", wc.authenticatedPOST(wc.handleCancel))
 	mux.HandleFunc("/api/ask_user/respond", wc.authenticatedPOST(wc.handleAskUserRespond))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
-	mux.HandleFunc("/api/history", wc.authenticatedPOST(wc.handleHistoryPOST))
+	mux.HandleFunc("/api/history", wc.authenticatedPOST(wc.handleHistory))
 	mux.HandleFunc("/api/history/rewind", wc.authenticatedPOST(wc.handleHistoryRewind))
 	mux.HandleFunc("/api/search", wc.authenticatedPOST(wc.handleSearchPOST))
 
