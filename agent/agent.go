@@ -1319,6 +1319,15 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		return
 	}
 	if a.clearPendingAskUser(msg.Channel, msg.ChatID) {
+		// Persist ask_answer to invalidate the pending ask_question record.
+		// Without this, Replay() finds an unanswered ask_question on reload
+		// and restores the AskUser prompt — the user sees it again after
+		// refresh even though they cancelled.
+		if sess, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID); err == nil {
+			if _, err := sess.AppendAskAnswer("[cancelled]"); err != nil {
+				log.WithError(err).Warn("Failed to append ask_answer for cancelled AskUser")
+			}
+		}
 		a.pendingCancel.Delete(cancelKey)
 		a.cancelStateMu.Unlock()
 		a.sendPendingAskUserCancelAck(msg)
