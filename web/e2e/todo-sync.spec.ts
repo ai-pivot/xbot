@@ -46,7 +46,7 @@ async function setupMock(page: Page) {
       orphan_subagents: [],
     } },
   }))
-  await page.route('**/api/history*', (r) => {
+  await page.route('**/api/history', (r) => {
     const body = r.request().postDataJSON()
     const chatID = body?.chat_id || 'chat-1'
     r.fulfill({
@@ -166,7 +166,7 @@ test.describe('TODO sync', () => {
     // chat-1 has todos in active_progress; chat-2 also has todos
     const chat2Todos = [{ id: 10, text: 'Task A', done: false }]
     const currentHistoryTodos = TEST_TODOS
-    await page.route('**/api/history*', (r) => {
+    await page.route('**/api/history', (r) => {
       const body = r.request().postDataJSON()
       const chatID = body?.chat_id || 'chat-1'
       const todos = chatID === 'chat-2' ? chat2Todos : currentHistoryTodos

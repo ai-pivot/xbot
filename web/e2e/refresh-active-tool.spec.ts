@@ -52,7 +52,7 @@ async function setupMock(page: Page, activeProgress: Record<string, unknown> | n
       orphan_subagents: [],
     } },
   }))
-  await page.route('**/api/history*', (r) => r.fulfill({
+  await page.route('**/api/history', (r) => r.fulfill({
     json: { ok: true, data: { messages: mockMessages(2), chat_id: 'chat-1', last_seq: 10, active_progress: activeProgress } },
   }))
   await page.route('**/api/session/status', (r) => r.fulfill({ json: { ok: true, data: { cwd: '/tmp' } } }))

@@ -31,7 +31,7 @@ async function setupMock(page: Page) {
       chats: [], orphan_subagents: [],
     } },
   }))
-  await page.route('**/api/history*', (r) => r.fulfill({
+  await page.route('**/api/history', (r) => r.fulfill({
     json: { ok: true, data: { messages: [], chat_id: 'chat-1', last_seq: 0, active_progress: null } },
   }))
   await page.route('**/api/session/status', (r) => r.fulfill({ json: { ok: true, data: { cwd: '/tmp' } } }))
@@ -114,7 +114,7 @@ test.describe('Cancel + reconnect iteration bugs', () => {
       if (body?.method === 'get_active_progress') { r.fulfill({ json: { ok: true, data: activeSnapshot } }) }
       else { r.fulfill({ json: { ok: true, data: null } }) }
     })
-    await page.route('**/api/history*', (r) => r.fulfill({
+    await page.route('**/api/history', (r) => r.fulfill({
       json: { ok: true, data: { messages: [], chat_id: 'chat-1', last_seq: 0, active_progress: activeSnapshot } },
     }))
     await setupMock(page)

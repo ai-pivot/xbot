@@ -122,7 +122,7 @@ test.describe('Iteration sequence integrity', () => {
 
   test('normal streaming: iterations 0→1→2 sequential, thinking shows, no duplicate', async ({ browser }) => {
     const page = await initPage(browser)
-    await page.route('**/api/history*', (r) => r.fulfill({
+    await page.route('**/api/history', (r) => r.fulfill({
       json: { ok: true, data: { messages: [], chat_id: 'chat-1', last_seq: 0, active_progress: null } },
     }))
     await setupMock(page)
@@ -216,7 +216,7 @@ test.describe('Iteration sequence integrity', () => {
       ],
     }
 
-    await page.route('**/api/history*', (r) => {
+    await page.route('**/api/history', (r) => {
       const body = r.request().postDataJSON()
       const chatID = body?.chat_id || 'chat-1'
       const ap = chatID === 'chat-1' ? activeProgress : null
@@ -257,7 +257,7 @@ test.describe('Iteration sequence integrity', () => {
 
   test('cancel mid-turn: iterations preserved (frozen), no duplicate', async ({ browser }) => {
     const page = await initPage(browser)
-    await page.route('**/api/history*', (r) => r.fulfill({
+    await page.route('**/api/history', (r) => r.fulfill({
       json: { ok: true, data: { messages: [], chat_id: 'chat-1', last_seq: 0, active_progress: null } },
     }))
     await setupMock(page)
@@ -312,7 +312,7 @@ test.describe('Iteration sequence integrity', () => {
 
   test('subagent progress does not leak to next iteration', async ({ browser }) => {
     const page = await initPage(browser)
-    await page.route('**/api/history*', (r) => r.fulfill({
+    await page.route('**/api/history', (r) => r.fulfill({
       json: { ok: true, data: { messages: [], chat_id: 'chat-1', last_seq: 0, active_progress: null } },
     }))
     await setupMock(page)
@@ -366,7 +366,7 @@ test.describe('Iteration sequence integrity', () => {
     const page = await initPage(browser)
     const todos = [{ id: 1, text: 'Task A', done: false }, { id: 2, text: 'Task B', done: true }]
 
-    await page.route('**/api/history*', (r) => {
+    await page.route('**/api/history', (r) => {
       const body = r.request().postDataJSON()
       const chatID = body?.chat_id || 'chat-1'
       const ap = chatID === 'chat-1' ? { phase: 'done', todos, seq: 0 } : null
@@ -406,7 +406,7 @@ test.describe('Iteration sequence integrity', () => {
 
   test('tool generating shows during stream_content', async ({ browser }) => {
     const page = await initPage(browser)
-    await page.route('**/api/history*', (r) => r.fulfill({
+    await page.route('**/api/history', (r) => r.fulfill({
       json: { ok: true, data: { messages: [], chat_id: 'chat-1', last_seq: 0, active_progress: null } },
     }))
     await setupMock(page)

@@ -61,17 +61,6 @@ type sessionBody struct {
 	ChatID  string `json:"chat_id,omitempty"`
 }
 
-func sessionQuery(body sessionBody) url.Values {
-	query := make(url.Values)
-	if body.Channel != "" {
-		query.Set("channel", body.Channel)
-	}
-	if body.ChatID != "" {
-		query.Set("chat_id", body.ChatID)
-	}
-	return query
-}
-
 func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 	var request protocol.WSClientMessage
 	if err := decodeJSONBody(r, &request, false); err != nil {
@@ -331,12 +320,31 @@ func restRPCErrorStatus(err error) int {
 }
 
 func (wc *WebChannel) handleHistoryPOST(w http.ResponseWriter, r *http.Request) {
-	var body sessionBody
+	var body struct {
+		Channel  string `json:"channel"`
+		ChatID   string `json:"chat_id"`
+		Limit    int    `json:"limit"`
+		BeforeID int64  `json:"before_id"`
+	}
 	if err := decodeJSONBody(r, &body, true); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	wc.handleHistory(w, legacyRequest(r, http.MethodGet, sessionQuery(body), nil))
+	// Build query params from body for handleHistory
+	q := url.Values{}
+	if body.Channel != "" {
+		q.Set("channel", body.Channel)
+	}
+	if body.ChatID != "" {
+		q.Set("chat_id", body.ChatID)
+	}
+	if body.Limit > 0 {
+		q.Set("limit", strconv.Itoa(body.Limit))
+	}
+	if body.BeforeID > 0 {
+		q.Set("before_id", strconv.FormatInt(body.BeforeID, 10))
+	}
+	wc.handleHistory(w, legacyRequest(r, http.MethodGet, q, nil))
 }
 
 func (wc *WebChannel) handleSearchPOST(w http.ResponseWriter, r *http.Request) {

@@ -47,7 +47,7 @@ async function setupMock(page: import('@playwright/test').Page) {
   await page.route('**/api/auth/config', r => r.fulfill({ json: { ok: true, data: { invite_only: false } } }))
   await page.route('**/api/auth/login', r => r.fulfill({ json: { ok: true, data: { user_id: 'test' } } }))
   await page.route('**/api/session-tree', r => r.fulfill({ json: { ok: true, data: { sessions: [{ chat_id: 'chat-1', channel: 'web', label: 'Test', last_active: new Date().toISOString() }], chats: [{ chat_id: 'chat-1', channel: 'web', label: 'Test', last_active: new Date().toISOString() }], orphan_subagents: [] } } }))
-  await page.route('**/api/history*', r => r.fulfill({ json: { ok: true, data: { messages: mockMessages(150), chat_id: 'chat-1', last_seq: 150, active_progress: null } } }))
+  await page.route('**/api/history', r => r.fulfill({ json: { ok: true, data: { messages: mockMessages(150), chat_id: 'chat-1', last_seq: 150, active_progress: null } } }))
   await page.route('**/api/session/status', r => r.fulfill({ json: { ok: true, data: { cwd: '/tmp' } } }))
   await page.route('**/api/sse**', r => r.fulfill({ status: 200, contentType: 'text/event-stream', body: createSSEStream() }))
   await page.route('**/api/rpc', r => r.fulfill({ json: { ok: true, data: null } }))

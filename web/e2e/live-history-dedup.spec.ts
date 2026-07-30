@@ -17,7 +17,7 @@ async function setupMock(page: Page, historyResponse: unknown) {
       orphan_subagents: [],
     } },
   }))
-  await page.route('**/api/history*', (r) => r.fulfill({ json: { ok: true, data: historyResponse } }))
+  await page.route('**/api/history', (r) => r.fulfill({ json: { ok: true, data: historyResponse } }))
   await page.route('**/api/session/status', (r) => r.fulfill({ json: { ok: true, data: { cwd: '/tmp' } } }))
   await page.route('**/api/sse**', (r) => r.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }))
   await page.route('**/api/rpc', (r) => r.fulfill({ json: { ok: true, data: null } }))

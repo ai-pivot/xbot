@@ -66,7 +66,7 @@ async function setupMock(page: Page, history: unknown[]) {
       chats: [], orphan_subagents: [],
     } },
   }))
-  await page.route('**/api/history*', (r) => {
+  await page.route('**/api/history', (r) => {
     const body = r.request().postDataJSON()
     const chatID = body?.chat_id || 'chat-1'
     const msgs = chatID === 'chat-1' ? history : []
@@ -124,7 +124,7 @@ test.describe('No duplicate after cancel + reload', () => {
       ;(window as unknown as Record<string, unknown>).EventSource = M
     })
 
-    await page.route('**/api/history*', (r) => {
+    await page.route('**/api/history', (r) => {
       r.fulfill({ json: { ok: true, data: { messages: cancelledTurnHistory, chat_id: 'chat-1', last_seq: 0, active_progress: null } } })
     })
     await page.route('**/api/settings', (r) => r.fulfill({ json: { ok: true, data: {} } }))

@@ -1023,7 +1023,7 @@ func TestRESTHistoryCursorPrecedesInterleavedEvent(t *testing.T) {
 	})
 
 	recorder := httptest.NewRecorder()
-	wc.handleHistory(recorder, authedAPIRequest(http.MethodGet, "/api/history?channel=web&chat_id=web-1", nil))
+	wc.handleHistory(recorder, authedAPIRequest(http.MethodPost, "/api/history", []byte(`{"channel":"web","chat_id":"web-1"}`)))
 	_, data := decodeAPIResponse(t, recorder)
 	if recorder.Code != http.StatusOK || data["last_seq"] != float64(0) {
 		t.Fatalf("history status=%d data=%#v", recorder.Code, data)
@@ -1103,7 +1103,7 @@ func TestRESTHistoryInfersCurrentOwnedAgentChannelFromChatID(t *testing.T) {
 		},
 	})
 	recorder := httptest.NewRecorder()
-	request := authedAPIRequestFor(http.MethodGet, "/api/history?chat_id="+url.QueryEscape(chatID), nil, "web-2", 2)
+	request := authedAPIRequestFor(http.MethodPost, "/api/history", []byte(`{"chat_id":"`+chatID+`"}`), "web-2", 2)
 	wc.handleHistory(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("history status = %d: %s", recorder.Code, recorder.Body.String())

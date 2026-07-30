@@ -49,14 +49,11 @@ func (wc *WebChannel) inferAPISessionChannel(senderID, chatID string) string {
 	return "web"
 }
 
-func (wc *WebChannel) apiSessionFromQuery(w http.ResponseWriter, r *http.Request, senderID string) (SessionSelector, bool) {
-	return wc.resolveAPISession(w, r, senderID, r.URL.Query().Get("channel"), r.URL.Query().Get("chat_id"))
-}
-
 // handleHistory handles GET /api/history for Web session snapshots.
+// handleHistory handles POST /api/history for Web session snapshots.
+// Parameters (channel, chat_id, limit, before_id) are in the JSON body.
 func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
-	// Accept both GET (paginated, query params) and POST (legacy, body params).
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+	if r.Method != http.MethodPost {
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -65,79 +62,30 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	// For POST, parse channel/chat_id/limit/before_id from JSON body.
-	// For GET, they come from URL query params (handled below).
-	if r.Method == http.MethodPost {
-		var body struct {
-			Channel  string `json:"channel"`
-			ChatID   string `json:"chat_id"`
-			Limit    int    `json:"limit"`
-			BeforeID int64  `json:"before_id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.Channel != "" && body.ChatID != "" {
-			sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
-			if !ok {
-				return
-			}
-			limit := 30
-			if body.Limit > 0 {
-				limit = body.Limit
-			}
-			lastSeq := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
-			if wc.callbacks.HistorySnapshot == nil {
-				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel})
-				return
-			}
-			snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel, limit, body.BeforeID)
-			if err != nil {
-				jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			snapshot.ChatID = sel.ChatID
-			snapshot.Channel = sel.Channel
-			snapshot.LastSeq = lastSeq
-			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":              true,
-				"messages":        snapshot.Messages,
-				"processing":      snapshot.Processing,
-				"active_progress": snapshot.ActiveProgress,
-				"last_seq":        snapshot.LastSeq,
-				"chat_id":         snapshot.ChatID,
-				"channel":         snapshot.Channel,
-				"has_more":        snapshot.HasMore,
-				"oldest_id":       snapshot.OldestID,
-			})
-			return
-		}
-		// Fall through to GET-style query param parsing if body parse fails.
+	var body struct {
+		Channel  string `json:"channel"`
+		ChatID   string `json:"chat_id"`
+		Limit    int    `json:"limit"`
+		BeforeID int64  `json:"before_id"`
 	}
-	sel, ok := wc.apiSessionFromQuery(w, r, senderID)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
 	if !ok {
 		return
 	}
-	// Parse pagination params. limit = max user turns (default 30).
-	// before_id = return messages older than this id (for scroll-up load).
 	limit := 30
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if n, err := strconv.Atoi(l); err == nil && n > 0 {
-			limit = n
-		}
+	if body.Limit > 0 {
+		limit = body.Limit
 	}
-	var beforeID int64
-	if b := r.URL.Query().Get("before_id"); b != "" {
-		if id, err := strconv.ParseInt(b, 10, 64); err == nil && id > 0 {
-			beforeID = id
-		}
-	}
-
-	// Capture the replay boundary before the snapshot. Events sequenced while
-	// the snapshot is being built remain above this cursor and are replayable.
 	lastSeq := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
 	if wc.callbacks.HistorySnapshot == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel})
 		return
 	}
-	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel, limit, beforeID)
+	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel, limit, body.BeforeID)
 	if err != nil {
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
