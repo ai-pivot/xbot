@@ -380,6 +380,21 @@ export class ProgressStore {
       draft.streaming = false
       draft.phase = 'frozen'
       draft.streamingTools = []
+      // Mark all in-progress tools as error (cancelled)
+      const markError = (tools: WebToolProgress[]) => {
+        for (const t of tools) {
+          if (t.status === 'running' || t.status === 'generating' || t.status === 'pending') {
+            t.status = 'error'
+          }
+        }
+      }
+      markError(draft.activeTools)
+      markError(draft.completedTools)
+      markError(draft.streamingTools)
+      // Also mark in-progress tools inside iteration history
+      for (const iter of draft.iterationHistory) {
+        markError(iter.tools)
+      }
     })
     // Synchronously update snapshot so getSnapshot() returns 'frozen' immediately
     this.snapshot = { ...this.current }

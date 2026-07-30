@@ -616,7 +616,8 @@ function handleProgressMessage(
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
         if (phaseDoneRef) phaseDoneRef.current = true
-        // Don't reset the store — preserve the active iteration as-is.
+        // Freeze: mark all in-progress tools as error, stop streaming/reasoning animations.
+        store.freeze()
         cancelCompleteRef?.current?.()
         // Dispatch agent-idle so useSessionStore clears the busy state even
         // if the session(idle) SSE event was dropped (sendCh full / network).
