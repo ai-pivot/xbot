@@ -2,6 +2,7 @@ package vectordb
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/gob"
 	"os"
 	"path/filepath"
@@ -11,8 +12,18 @@ import (
 	chromem "github.com/philippgille/chromem-go"
 )
 
-func encodeGob(doc chromem.Document) ([]byte, error) {
+func encodeGob(doc chromem.Document, compress bool) ([]byte, error) {
 	var buf bytes.Buffer
+	if compress {
+		gzw := gzip.NewWriter(&buf)
+		if err := gob.NewEncoder(gzw).Encode(doc); err != nil {
+			return nil, err
+		}
+		if err := gzw.Close(); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+	}
 	err := gob.NewEncoder(&buf).Encode(doc)
 	return buf.Bytes(), err
 }
@@ -171,6 +182,15 @@ func TestBM25Search_Limit(t *testing.T) {
 }
 
 func TestBM25LoadFromDir(t *testing.T) {
+	testBM25LoadFromDir(t, false) // uncompressed .gob
+}
+
+func TestBM25LoadFromDir_Compressed(t *testing.T) {
+	testBM25LoadFromDir(t, true) // gzip-compressed .gob.gz
+}
+
+func testBM25LoadFromDir(t *testing.T, compress bool) {
+	t.Helper()
 	dir := t.TempDir()
 
 	// Create chromem-go documents and persist as gob files.
@@ -180,10 +200,14 @@ func TestBM25LoadFromDir(t *testing.T) {
 		{ID: "ccc", Content: "ssh-xbot systemd service", Metadata: map[string]string{"created_at": time.Now().Format(time.RFC3339)}},
 	}
 	for _, doc := range docs {
-		path := filepath.Join(dir, hash2hex(doc.ID)+".gob")
-		data, err := encodeGob(doc)
+		ext := ".gob"
+		if compress {
+			ext = ".gob.gz"
+		}
+		path := filepath.Join(dir, hash2hex(doc.ID)+ext)
+		data, err := encodeGob(doc, compress)
 		if err != nil {
-			t.Fatalf("encode gob: %v", err)
+			t.Fatalf("encode gob (compress=%v): %v", compress, err)
 		}
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatalf("write file: %v", err)
@@ -192,7 +216,7 @@ func TestBM25LoadFromDir(t *testing.T) {
 
 	idx := NewBM25Index()
 	if err := idx.LoadFromDir(dir); err != nil {
-		t.Fatalf("LoadFromDir: %v", err)
+		t.Fatalf("LoadFromDir (compress=%v): %v", compress, err)
 	}
 	if idx.Count() != 3 {
 		t.Fatalf("expected 3 docs, got %d", idx.Count())

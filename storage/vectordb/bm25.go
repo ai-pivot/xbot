@@ -1,6 +1,8 @@
 package vectordb
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/gob"
@@ -25,6 +27,21 @@ import (
 func hash2hex(name string) string {
 	hash := sha256.Sum256([]byte(name))
 	return hex.EncodeToString(hash[:4])
+}
+
+// decodeGzippedGob decodes gzip-compressed gob data into the target.
+// This handles chromem-go's compress=true mode (files with .gob.gz extension).
+func decodeGzippedGob(data []byte, target any) error {
+	gzr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
+	}
+	defer gzr.Close()
+	dec := gob.NewDecoder(gzr)
+	if err := dec.Decode(target); err != nil {
+		return fmt.Errorf("gob decode: %w", err)
+	}
+	return nil
 }
 
 // --- Tokenization ---
@@ -259,10 +276,17 @@ func (idx *BM25Index) LoadFromDir(dir string) error {
 			continue
 		}
 		name := entry.Name()
-		if name == "00000000.gob" {
+		if name == "00000000.gob" || name == "00000000.gob.gz" {
 			continue // collection metadata, skip
 		}
-		if !strings.HasSuffix(name, ".gob") {
+
+		var isGzipped bool
+		switch {
+		case strings.HasSuffix(name, ".gob"):
+			isGzipped = false
+		case strings.HasSuffix(name, ".gob.gz"):
+			isGzipped = true
+		default:
 			continue
 		}
 
@@ -274,9 +298,16 @@ func (idx *BM25Index) LoadFromDir(dir string) error {
 		}
 
 		var doc chromem.Document
-		if err := gob.NewDecoder(strings.NewReader(string(data))).Decode(&doc); err != nil {
-			log.WithError(err).WithField("file", path).Warn("BM25: failed to decode gob file, skipping")
-			continue
+		if isGzipped {
+			if err := decodeGzippedGob(data, &doc); err != nil {
+				log.WithError(err).WithField("file", path).Warn("BM25: failed to decode gzipped gob file, skipping")
+				continue
+			}
+		} else {
+			if err := gob.NewDecoder(strings.NewReader(string(data))).Decode(&doc); err != nil {
+				log.WithError(err).WithField("file", path).Warn("BM25: failed to decode gob file, skipping")
+				continue
+			}
 		}
 
 		if doc.ID == "" || doc.Content == "" {
