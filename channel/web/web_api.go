@@ -55,7 +55,8 @@ func (wc *WebChannel) apiSessionFromQuery(w http.ResponseWriter, r *http.Request
 
 // handleHistory handles GET /api/history for Web session snapshots.
 func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	// Accept both GET (paginated, query params) and POST (legacy, body params).
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -63,6 +64,52 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if senderID == "" {
 		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
 		return
+	}
+	// For POST, parse channel/chat_id/limit/before_id from JSON body.
+	// For GET, they come from URL query params (handled below).
+	if r.Method == http.MethodPost {
+		var body struct {
+			Channel  string `json:"channel"`
+			ChatID   string `json:"chat_id"`
+			Limit    int    `json:"limit"`
+			BeforeID int64  `json:"before_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.Channel != "" && body.ChatID != "" {
+			sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
+			if !ok {
+				return
+			}
+			limit := 30
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+			lastSeq := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
+			if wc.callbacks.HistorySnapshot == nil {
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel})
+				return
+			}
+			snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel, limit, body.BeforeID)
+			if err != nil {
+				jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			snapshot.ChatID = sel.ChatID
+			snapshot.Channel = sel.Channel
+			snapshot.LastSeq = lastSeq
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":              true,
+				"messages":        snapshot.Messages,
+				"processing":      snapshot.Processing,
+				"active_progress": snapshot.ActiveProgress,
+				"last_seq":        snapshot.LastSeq,
+				"chat_id":         snapshot.ChatID,
+				"channel":         snapshot.Channel,
+				"has_more":        snapshot.HasMore,
+				"oldest_id":       snapshot.OldestID,
+			})
+			return
+		}
+		// Fall through to GET-style query param parsing if body parse fails.
 	}
 	sel, ok := wc.apiSessionFromQuery(w, r, senderID)
 	if !ok {
