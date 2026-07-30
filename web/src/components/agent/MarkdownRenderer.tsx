@@ -126,14 +126,6 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
   // MermaidDiagram mount and render the complete diagram exactly once.
   const streaming = useContext(StreamingContext)
 
-  // Mermaid diagrams: render to SVG instead of syntax-highlighted source.
-  if (lang === 'mermaid') {
-    const source = text.replace(/\n$/, '')
-    return streaming
-      ? <MermaidSourceBlock source={source} />
-      : <MermaidDiagram source={source} />
-  }
-
   // Synchronous highlighting: compute the highlighted HTML during render
   // (via useMemo), not in a post-render useEffect. This shares the streaming
   // debounce + typewriter clip optimizations — no "plain text → highlighted"
@@ -153,6 +145,15 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
 
   // Kick off hljs load on first block render (no-op if already loaded/loading).
   useEffect(() => { if (!isInline) ensureHljsLoaded() }, [])
+
+  // Mermaid diagrams: render to SVG instead of syntax-highlighted source.
+  // All hooks above must run unconditionally before any early return.
+  if (lang === 'mermaid') {
+    const source = text.replace(/\n$/, '')
+    return streaming
+      ? <MermaidSourceBlock source={source} />
+      : <MermaidDiagram source={source} />
+  }
 
   // Inline code: short, no newline, no language fence.
   if (isInline) {
