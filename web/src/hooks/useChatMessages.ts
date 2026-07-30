@@ -556,7 +556,7 @@ export function useChatMessages({
         }
         if (lastUserIdx >= 0) {
           const copy = [...prev]
-          copy[lastUserIdx] = newMsg
+          copy[lastUserIdx] = { ...newMsg, sending: false }
           messagesRef.current = copy
           return copy
         }
