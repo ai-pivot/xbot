@@ -710,6 +710,7 @@ export function useChatMessages({
       turnID,
       isNotification,
       persisted: false,
+      eventSeq: -1, // marker: dedup against history by turnID:role in reconcile
     }
     setMessages((prev) => {
       const next = [...prev, newMsg]

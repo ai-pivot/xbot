@@ -509,6 +509,32 @@ export function MessageList({
         )}
 
         <div ref={contentRef} data-message-list-content className="w-full">
+          {/* Scroll-to-top sentinel: triggers loadMore via IntersectionObserver */}
+          {hasMore && (
+            <div
+              ref={(el) => {
+                if (!el) return
+                const observer = new IntersectionObserver(
+                  (entries) => {
+                    if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
+                      void onLoadMore?.()
+                    }
+                  },
+                  { root: scrollRef.current, threshold: 0 },
+                )
+                observer.observe(el)
+                // Cleanup on unmount/re-render
+                return () => observer.disconnect()
+              }}
+              className="flex justify-center py-2"
+            >
+              {loadingMore ? (
+                <Loader2 className="size-4 animate-spin text-text-muted" />
+              ) : (
+                <span className="text-xs text-text-muted">↑ 滚动加载更多</span>
+              )}
+            </div>
+          )}
           {rows.length > 0 && (
             <div
               style={{ height: `${virtualizer.getTotalSize()}px` }}
