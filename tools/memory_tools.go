@@ -7,6 +7,7 @@ import (
 
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/storage/vectordb"
 )
 
 // --- Core Memory Append ---
@@ -284,20 +285,27 @@ func (t *ArchivalMemoryInsertTool) Execute(ctx *ToolContext, input string) (*Too
 
 // --- Archival Memory Search ---
 
-// ArchivalMemorySearchTool searches archival memory using semantic similarity.
+// ArchivalMemorySearchTool searches archival memory using semantic similarity
+// and optional BM25 keyword matching for hybrid retrieval.
 type ArchivalMemorySearchTool struct{}
 
 func (t *ArchivalMemorySearchTool) Name() string { return "archival_memory_search" }
 func (t *ArchivalMemorySearchTool) Description() string {
-	return "Search archival memory using semantic similarity (vector search). Returns the most relevant archived passages with timestamps. Use the returned timestamps with recall_memory_search to retrieve surrounding conversation context."
+	return "Search archival memory using semantic similarity (vector search) with optional BM25 keyword matching. Returns the most relevant archived passages with timestamps. Use the returned timestamps with recall_memory_search to retrieve surrounding conversation context. For exact keyword queries (file paths, project names, error codes), pass the keyword parameter for hybrid vector+BM25 retrieval with better recall."
 }
 func (t *ArchivalMemorySearchTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{
 			Name:        "query",
 			Type:        "string",
-			Description: "The search query",
+			Description: "The search query (natural language, used for vector search)",
 			Required:    true,
+		},
+		{
+			Name:        "keyword",
+			Type:        "string",
+			Description: "Optional keyword for BM25 search. When provided, combines vector + keyword search for better recall on exact terms (file paths, project names, error codes).",
+			Required:    false,
 		},
 		{
 			Name:        "limit",
@@ -309,8 +317,9 @@ func (t *ArchivalMemorySearchTool) Parameters() []llm.ToolParam {
 }
 
 type archivalSearchArgs struct {
-	Query string `json:"query"`
-	Limit int    `json:"limit"`
+	Query   string `json:"query"`
+	Keyword string `json:"keyword"`
+	Limit   int    `json:"limit"`
 }
 
 func (t *ArchivalMemorySearchTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
@@ -333,16 +342,22 @@ func (t *ArchivalMemorySearchTool) Execute(ctx *ToolContext, input string) (*Too
 
 	var sb strings.Builder
 
-	// Vector similarity search via chromem-go
-	entries, err := archivalSvc.Search(ctx.Ctx, tenantID, args.Query, args.Limit)
+	// Use hybrid search when keyword is provided, otherwise vector-only.
+	entries, err := archivalSvc.SearchWithOptions(ctx.Ctx, tenantID, args.Query, args.Limit, vectordb.SearchOptions{
+		Keyword: args.Keyword,
+	})
 	if err != nil {
-		log.WithError(err).Warn("Archival vector search failed")
+		log.WithError(err).Warn("Archival search failed")
 	}
 
 	if len(entries) > 0 {
 		sb.WriteString("## Archival Memory Results\n")
 		for i, entry := range entries {
-			fmt.Fprintf(&sb, "%d. [id=%s, %s, sim=%.2f] %s\n", i+1, entry.ID[:8], entry.CreatedAt.Format("2006-01-02 15:04"), entry.Similarity, entry.Content)
+			idDisplay := entry.ID
+			if len(idDisplay) > 8 {
+				idDisplay = idDisplay[:8]
+			}
+			fmt.Fprintf(&sb, "%d. [id=%s, %s, score=%.4f] %s\n", i+1, idDisplay, entry.CreatedAt.Format("2006-01-02 15:04"), entry.Similarity, entry.Content)
 		}
 	} else {
 		sb.WriteString("No archival memory entries found.\n")

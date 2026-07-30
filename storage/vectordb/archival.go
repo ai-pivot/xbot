@@ -184,6 +184,9 @@ type ArchivalService struct {
 	db            *chromem.DB
 	embeddingFunc chromem.EmbeddingFunc
 	embeddingLimitConfig
+	persistDir  string         // archival root directory path
+	bm25Indexes sync.Map        // tenantID → *BM25Index (lazy-load)
+	searcher    *HybridSearcher // search orchestrator
 }
 
 // NewArchivalService creates an archival service backed by chromem-go.
@@ -206,7 +209,18 @@ func NewArchivalService(persistDir string, embeddingFunc chromem.EmbeddingFunc, 
 		db:                   db,
 		embeddingFunc:        embeddingFunc,
 		embeddingLimitConfig: cfg,
+		persistDir:           persistDir,
 	}
+
+	// Build hybrid searcher: vector + BM25 → RRF → temporal.
+	s.searcher = NewHybridSearcher(
+		[]Retriever{
+			&VectorRetriever{svc: s},
+			&BM25Retriever{svc: s},
+		},
+		&RRFFuser{K: 60},
+		&TemporalRanker{Weight: 0.3, HalfLife: 30 * 24 * time.Hour},
+	)
 
 	log.WithFields(log.Fields{
 		"persist_dir":    persistDir,
@@ -399,6 +413,11 @@ func (s *ArchivalService) Insert(ctx context.Context, tenantID int64, content st
 		return "", fmt.Errorf("add document: %w", err)
 	}
 
+	// Sync BM25 index: add to in-memory index.
+	if idx, _ := s.getOrCreateBM25Index(tenantID); idx != nil {
+		idx.Add(id, content, ts)
+	}
+
 	log.WithFields(log.Fields{
 		"tenant_id":  tenantID,
 		"id":         id,
@@ -410,7 +429,14 @@ func (s *ArchivalService) Insert(ctx context.Context, tenantID int64, content st
 }
 
 // Search performs semantic similarity search over archival entries for a tenant.
+// This is a backward-compatible wrapper that uses vector-only search with temporal weighting.
 func (s *ArchivalService) Search(ctx context.Context, tenantID int64, query string, limit int) ([]ArchivalEntry, error) {
+	return s.SearchWithOptions(ctx, tenantID, query, limit, DefaultSearchOptions)
+}
+
+// vectorSearch is the pure vector retrieval implementation (no BM25, no fusion).
+// It is called by VectorRetriever.Search.
+func (s *ArchivalService) vectorSearch(ctx context.Context, tenantID int64, query string, limit int) ([]ArchivalEntry, error) {
 	if s.embeddingFunc == nil {
 		return nil, fmt.Errorf("archival search requires embedding configuration (set LLM_EMBEDDING_MODEL)")
 	}
@@ -461,7 +487,14 @@ func (s *ArchivalService) Delete(ctx context.Context, tenantID int64, entryID st
 	if err != nil {
 		return fmt.Errorf("get collection: %w", err)
 	}
-	return coll.Delete(ctx, nil, nil, entryID)
+	if err := coll.Delete(ctx, nil, nil, entryID); err != nil {
+		return err
+	}
+	// Sync BM25 index: remove from in-memory index.
+	if idx, _ := s.getOrCreateBM25Index(tenantID); idx != nil {
+		idx.Remove(entryID)
+	}
+	return nil
 }
 
 // ClearAll removes all archival entries for a tenant by deleting the collection.
@@ -474,6 +507,8 @@ func (s *ArchivalService) ClearAll(ctx context.Context, tenantID int64) error {
 	if err := s.db.DeleteCollection(name); err != nil {
 		return fmt.Errorf("drop collection %s: %w", name, err)
 	}
+	// Sync BM25 index: remove from cache.
+	s.bm25Indexes.Delete(tenantID)
 	log.WithField("tenant_id", tenantID).Info("Archival memory cleared")
 	return nil
 }
@@ -544,6 +579,52 @@ func (s *ArchivalService) Count(tenantID int64) (int, error) {
 		return 0, nil
 	}
 	return coll.Count(), nil
+}
+
+// --- VectorRetriever ---
+
+// VectorRetriever implements the Retriever interface using chromem-go vector search.
+type VectorRetriever struct {
+	svc *ArchivalService
+}
+
+func (r *VectorRetriever) Name() string { return "vector" }
+
+func (r *VectorRetriever) Search(ctx context.Context, tenantID int64, req SearchRequest) ([]ArchivalEntry, error) {
+	return r.svc.vectorSearch(ctx, tenantID, req.Query, req.Limit)
+}
+
+// --- SearchWithOptions ---
+
+// SearchWithOptions performs hybrid search (vector + optional BM25) with temporal weighting.
+// When opts.Keyword is empty, only vector search is used.
+func (s *ArchivalService) SearchWithOptions(ctx context.Context, tenantID int64, query string, limit int, opts SearchOptions) ([]ArchivalEntry, error) {
+	return s.searcher.Search(ctx, tenantID, SearchRequest{
+		Query:   query,
+		Keyword: opts.Keyword,
+		Limit:   limit,
+	})
+}
+
+// --- BM25 index management ---
+
+// getOrCreateBM25Index returns the BM25 index for a tenant, loading it from
+// chromem-go's gob files on first access (lazy-load).
+func (s *ArchivalService) getOrCreateBM25Index(tenantID int64) (*BM25Index, error) {
+	key := tenantID
+	if v, ok := s.bm25Indexes.Load(key); ok {
+		return v.(*BM25Index), nil
+	}
+
+	idx := NewBM25Index()
+	collName := s.collectionName(tenantID)
+	collDir := filepath.Join(s.persistDir, hash2hex(collName))
+	if err := idx.LoadFromDir(collDir); err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("Failed to load BM25 index from disk")
+	}
+
+	actual, _ := s.bm25Indexes.LoadOrStore(key, idx)
+	return actual.(*BM25Index), nil
 }
 
 // ToolIndexService provides tool indexing using a separate collection.
