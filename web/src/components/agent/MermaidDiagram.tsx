@@ -21,7 +21,6 @@
  * is settled, so it renders once — no per-tick re-render storm.
  */
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { Mermaid } from 'mermaid'
 import { Check, Copy } from 'lucide-react'
 
 import { useTheme } from '@/hooks/useTheme'
@@ -33,11 +32,17 @@ export interface MermaidDiagramProps {
   source: string
 }
 
+// Type of the mermaid default export — resolved at compile time via
+// `typeof import(...)`, no runtime import emitted.  This avoids the
+// `import type { Mermaid }` pitfall where `typeof Mermaid` is illegal
+// (type-only binding used in a value position, TS2693).
+type MermaidAPI = (typeof import('mermaid'))['default']
+
 // ── Module-scope mermaid singleton ──────────────────────────────────────────
 // The dynamic import is cached so all diagrams share one load. Mirrors the
 // highlight.js lazy-load pattern in highlight.ts (useSyncExternalStore).
-let mermaidModule: typeof Mermaid | null = null
-let loadPromise: Promise<typeof Mermaid> | null = null
+let mermaidModule: MermaidAPI | null = null
+let loadPromise: Promise<MermaidAPI> | null = null
 const readyListeners = new Set<() => void>()
 
 /** Kick off the dynamic import of mermaid (fire-and-forget, cached). */
