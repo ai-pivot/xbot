@@ -44,15 +44,24 @@ type MermaidAPI = (typeof import('mermaid'))['default']
 // highlight.js lazy-load pattern in highlight.ts (useSyncExternalStore).
 let mermaidModule: MermaidAPI | null = null
 let loadPromise: Promise<MermaidAPI> | null = null
+let loadError: unknown = null
 const readyListeners = new Set<() => void>()
 
-/** Kick off the dynamic import of mermaid (fire-and-forget, cached). */
+/** Kick off the dynamic import of mermaid (fire-and-forget, cached).
+ *  On failure: clears loadPromise (so callers can retry), records the error,
+ *  and notifies subscribers — the component then falls back to source display
+ *  instead of spinning "Rendering diagram…" forever. */
 export function ensureMermaidLoaded(): void {
   if (mermaidModule || loadPromise) return
   loadPromise = import('mermaid').then((m) => {
     mermaidModule = m.default
     readyListeners.forEach((fn) => fn())
     return mermaidModule
+  }).catch((e) => {
+    loadPromise = null // allow retry on next call
+    loadError = e
+    readyListeners.forEach((fn) => fn())
+    throw e
   })
 }
 
@@ -61,13 +70,18 @@ function subscribeReady(fn: () => void): () => void {
   return () => { readyListeners.delete(fn) }
 }
 
-function getReadySnapshot(): boolean {
-  return mermaidModule !== null
+/** Snapshot: null = still loading, true = ready, false = load failed. */
+type LoadStatus = 'loading' | 'ready' | 'failed'
+
+function getReadySnapshot(): LoadStatus {
+  if (mermaidModule) return 'ready'
+  if (loadError) return 'failed'
+  return 'loading'
 }
 
-/** Re-render hook: returns true once mermaid has finished loading. */
-function useMermaidReady(): boolean {
-  return useSyncExternalStore(subscribeReady, getReadySnapshot, () => false)
+/** Re-render hook: returns the current load status. */
+function useMermaidStatus(): LoadStatus {
+  return useSyncExternalStore(subscribeReady, getReadySnapshot, () => 'loading')
 }
 
 // Monotonic id counter so each diagram gets a unique render target.
@@ -76,10 +90,21 @@ let idSeq = 0
 export const MermaidDiagram = memo(function MermaidDiagram({ source }: MermaidDiagramProps) {
   const { theme, accentColor } = useTheme()
   const isDark = theme === 'dark'
-  const ready = useMermaidReady()
+  const status = useMermaidStatus()
   const [svg, setSvg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const idRef = useRef(`mmd-${idSeq++}`)
+
+  // Lazy id assignment — only on first mount, not every render (avoids
+  // incrementing the module-level counter as a render-phase side effect).
+  const idRef = useRef<string | null>(null)
+  if (idRef.current === null) idRef.current = `mmd-${idSeq++}`
+
+  // Monotonic render sequence — guards against stale async renders: if
+  // source/theme changes while a render is in flight, the old result is
+  // discarded. On unmount, the ref is set to Infinity so any in-flight
+  // promise becomes permanently stale.
+  const renderSeq = useRef(0)
+
   const [fullscreen, setFullscreen] = useState(false)
 
   // Esc closes the fullscreen overlay; also block body scroll while open.
@@ -97,10 +122,15 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: MermaidDi
   // Kick off the dynamic import on first mount (no-op if already loading).
   useEffect(() => { ensureMermaidLoaded() }, [])
 
+  // Unmount: invalidate all in-flight renders so no stale setSvg/setError
+  // fires on an unmounted component.
+  useEffect(() => () => { renderSeq.current = Infinity }, [])
+
   const render = useCallback(async () => {
+    const seq = ++renderSeq.current
     try {
       const mer = mermaidModule
-      if (!mer) return // not loaded yet — will retry when ready flips
+      if (!mer) return // not loaded yet — will retry when status flips
       // Re-initialise on every render so theme + accent are always current.
       mer.initialize({
         startOnLoad: false,
@@ -128,7 +158,8 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: MermaidDi
               background: 'transparent',
             },
       })
-      const { svg: rendered } = await mer.render(idRef.current, source)
+      const { svg: rendered } = await mer.render(idRef.current!, source)
+      if (seq !== renderSeq.current) return // stale render — discard
       // Mermaid injects an inline `style="max-width: <px>"` that clamps small
       // diagrams to their natural width, preventing them from filling the
       // container. Strip it so the SVG scales responsively via CSS (w-full).
@@ -136,6 +167,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: MermaidDi
       setSvg(responsive)
       setError(null)
     } catch (e) {
+      if (seq !== renderSeq.current) return // stale render — discard
       // mermaid.render throws on invalid syntax. Clean up any leftover error
       // overlay mermaid may have injected into the DOM, then fall back.
       document.querySelectorAll(`#${idRef.current}`).forEach((el) => el.remove())
@@ -144,9 +176,15 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: MermaidDi
   }, [source, isDark, accentColor])
 
   useEffect(() => {
-    if (!ready) return
+    if (status !== 'ready') return
     void render()
-  }, [render, ready])
+  }, [render, status])
+
+  // Load failed (network error / missing chunk) — fall back to source
+  // display instead of spinning "Rendering diagram…" forever.
+  if (status === 'failed') {
+    return <MermaidSourceBlock source={source} />
+  }
 
   // Loading placeholder — shown before mermaid is available or while rendering.
   if (!svg && !error) {
