@@ -103,6 +103,35 @@ test.describe('Mermaid diagram rendering', () => {
     await expect(container.locator('svg:not(.lucide)')).toBeVisible({ timeout: 10_000 })
   })
 
+  test('fullscreen button opens overlay and Esc closes it', async ({ page }) => {
+    const messages = [{
+      role: 'assistant',
+      content: '```mermaid\n' + VALID_MERMAID + '\n```',
+      seq: 1,
+      turn_id: 1,
+      timestamp: new Date().toISOString(),
+    }]
+    await setupMock(page, messages)
+    await loginAndNavigate(page)
+
+    // Wait for the diagram to render.
+    const container = page.locator('.mermaid-container')
+    await expect(container.locator('svg:not(.lucide)')).toBeVisible({ timeout: 15_000 })
+
+    // Click the fullscreen button.
+    await page.locator('button[aria-label="Fullscreen diagram"]').click()
+
+    // The fullscreen overlay should appear (portal to document.body, fixed inset-0).
+    const overlay = page.locator('.fixed.inset-0')
+    await expect(overlay).toBeVisible({ timeout: 5_000 })
+    // The overlay should contain a copy of the SVG.
+    await expect(overlay.locator('svg:not(.lucide)')).toBeVisible({ timeout: 5_000 })
+
+    // Press Esc to close.
+    await page.keyboard.press('Escape')
+    await expect(overlay).toHaveCount(0)
+  })
+
   test('invalid mermaid falls back to source display, not blank', async ({ page }) => {
     const messages = [{
       role: 'assistant',

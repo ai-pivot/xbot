@@ -21,7 +21,8 @@
  * is settled, so it renders once — no per-tick re-render storm.
  */
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Check, Copy } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Check, Copy, Maximize2, X } from 'lucide-react'
 
 import { useTheme } from '@/hooks/useTheme'
 import { useIsTouch } from '@/hooks/useIsMobile'
@@ -79,6 +80,19 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: MermaidDi
   const [svg, setSvg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const idRef = useRef(`mmd-${idSeq++}`)
+  const [fullscreen, setFullscreen] = useState(false)
+
+  // Esc closes the fullscreen overlay; also block body scroll while open.
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false) }
+    document.addEventListener('keydown', onKey)
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = ''
+    }
+  }, [fullscreen])
 
   // Kick off the dynamic import on first mount (no-op if already loading).
   useEffect(() => { ensureMermaidLoaded() }, [])
@@ -152,20 +166,26 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: MermaidDi
   }
 
   return (
-    <div
-      className="mermaid-container group/code relative my-2 flex justify-center overflow-x-auto rounded-md"
-      style={{ border: '1px solid var(--md-code-border)', backgroundColor: 'var(--md-code-bg)' }}
-    >
-      <CopyButton getText={() => source} />
-      {/* dangerouslySetInnerHTML: mermaid.render returns SVG we generated
-          ourselves with securityLevel: 'strict' (no inline scripts/handlers).
-          The inline max-width is stripped above so the SVG is fully responsive:
-          small diagrams expand to fill the container, large diagrams scroll. */}
+    <>
       <div
-        className="w-full max-w-full p-3 [&>svg]:w-full [&>svg]:h-auto [&>svg]:max-w-none"
-        dangerouslySetInnerHTML={{ __html: svg ?? '' }}
-      />
-    </div>
+        className="mermaid-container group/code relative my-2 flex justify-center overflow-x-auto rounded-md"
+        style={{ border: '1px solid var(--md-code-border)', backgroundColor: 'var(--md-code-bg)' }}
+      >
+        <CopyButton getText={() => source} />
+        <MaximizeButton onClick={() => setFullscreen(true)} />
+        {/* dangerouslySetInnerHTML: mermaid.render returns SVG we generated
+            ourselves with securityLevel: 'strict' (no inline scripts/handlers).
+            The inline max-width is stripped above so the SVG is fully responsive:
+            small diagrams expand to fill the container, large diagrams scroll. */}
+        <div
+          className="w-full max-w-full p-3 [&>svg]:w-full [&>svg]:h-auto [&>svg]:max-w-none"
+          dangerouslySetInnerHTML={{ __html: svg ?? '' }}
+        />
+      </div>
+      {fullscreen && (
+        <FullscreenOverlay svg={svg ?? ''} onClose={() => setFullscreen(false)} />
+      )}
+    </>
   )
 })
 
@@ -227,5 +247,65 @@ function CopyButton({ getText }: { getText: () => string }) {
     >
       {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
     </button>
+  )
+}
+
+/** Maximize button — opens the diagram in a fullscreen overlay. */
+function MaximizeButton({ onClick }: { onClick: () => void }) {
+  const isTouch = useIsTouch()
+  return (
+    <button
+      type="button"
+      aria-label="Fullscreen diagram"
+      onClick={onClick}
+      className={cn(
+        'absolute right-10 top-2 z-10 flex size-7 items-center justify-center rounded-md transition-opacity hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none',
+        isTouch ? 'opacity-60' : 'opacity-0 group-hover/code:opacity-100',
+      )}
+      style={{
+        backgroundColor: 'color-mix(in srgb, var(--md-code-bg) 80%, var(--md-code-border))',
+        color: 'var(--md-code-lang-text)',
+      }}
+    >
+      <Maximize2 className="size-3.5" />
+    </button>
+  )
+}
+
+/**
+ * Fullscreen overlay — renders the SVG via a portal at document.body so it
+ * escapes any ancestor overflow/transform. The SVG is scrollable (both axes)
+ * and centered; click backdrop or Esc to close.
+ */
+function FullscreenOverlay({ svg, onClose }: { svg: string; onClose: () => void }) {
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const onBackdropClick = useCallback((e: React.MouseEvent) => {
+    if (e.target === overlayRef.current) onClose()
+  }, [onClose])
+
+  return createPortal(
+    <div
+      ref={overlayRef}
+      onClick={onBackdropClick}
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-8"
+      style={{ backgroundColor: 'rgba(0, 0, 0, 0.8)' }}
+    >
+      <button
+        type="button"
+        aria-label="Close fullscreen"
+        onClick={onClose}
+        className="absolute right-4 top-4 z-10 flex size-9 items-center justify-center rounded-full transition-colors hover:bg-white/10"
+        style={{ color: '#fff' }}
+      >
+        <X className="size-5" />
+      </button>
+      <div
+        className="flex max-h-full max-w-full items-center justify-center overflow-auto rounded-lg p-4"
+        style={{ backgroundColor: 'var(--md-code-bg, #1e1e1e)' }}
+      >
+        <div dangerouslySetInnerHTML={{ __html: svg }} />
+      </div>
+    </div>,
+    document.body,
   )
 }
