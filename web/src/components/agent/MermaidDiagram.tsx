@@ -115,7 +115,11 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: MermaidDi
             },
       })
       const { svg: rendered } = await mer.render(idRef.current, source)
-      setSvg(rendered)
+      // Mermaid injects an inline `style="max-width: <px>"` that clamps small
+      // diagrams to their natural width, preventing them from filling the
+      // container. Strip it so the SVG scales responsively via CSS (w-full).
+      const responsive = rendered.replace(/style="[^"]*max-width:[^"]*"/g, 'style=""')
+      setSvg(responsive)
       setError(null)
     } catch (e) {
       // mermaid.render throws on invalid syntax. Clean up any leftover error
@@ -154,9 +158,11 @@ export const MermaidDiagram = memo(function MermaidDiagram({ source }: MermaidDi
     >
       <CopyButton getText={() => source} />
       {/* dangerouslySetInnerHTML: mermaid.render returns SVG we generated
-          ourselves with securityLevel: 'strict' (no inline scripts/handlers). */}
+          ourselves with securityLevel: 'strict' (no inline scripts/handlers).
+          The inline max-width is stripped above so the SVG is fully responsive:
+          small diagrams expand to fill the container, large diagrams scroll. */}
       <div
-        className="w-full max-w-full p-3 [&>svg]:max-w-full [&>svg]:h-auto"
+        className="w-full max-w-full p-3 [&>svg]:w-full [&>svg]:h-auto [&>svg]:max-w-none"
         dangerouslySetInnerHTML={{ __html: svg ?? '' }}
       />
     </div>
