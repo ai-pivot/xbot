@@ -146,7 +146,11 @@ func main() {
 		}
 		delay := backoff(attempt)
 		log.Printf("Connection lost: %v  — reconnecting in %v (attempt %d)", err, delay, attempt)
-		time.Sleep(delay)
+		select {
+		case <-stopCh:
+			return
+		case <-time.After(delay):
+		}
 	}
 }
 

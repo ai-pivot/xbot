@@ -46,6 +46,10 @@ type rpcResponse struct {
 type RemoteTransport struct {
 	baseTransport
 
+	// eventBase, when set, overrides baseTransport for local event dispatch.
+	// This bridges events from the transport to Client's subscriber base.
+	eventBase *baseTransport
+
 	serverURL string
 	token     string
 
@@ -59,9 +63,12 @@ type RemoteTransport struct {
 	// before reconnect spawns a new one, preventing goroutine leaks.
 	readPumpWg sync.WaitGroup
 
-	// Event seq tracking — tracks the highest seq from server events
-	// so that on reconnect we send last_seq and only replay missed events.
-	lastSeq atomic.Uint64
+	// Event replay cursors are scoped by the server transport route. A remote
+	// CLI connection can switch sessions, and each route has an independent
+	// monotonic sequence.
+	routeMu     sync.Mutex
+	activeRoute remoteRoute
+	routeSeq    map[remoteRoute]uint64
 
 	// Reconnect
 	reconnectCh chan struct{}
@@ -82,6 +89,11 @@ type RemoteTransport struct {
 	eventCh chan protocol.WSMessage
 }
 
+type remoteRoute struct {
+	channel string
+	chatID  string
+}
+
 // RemoteTransportConfig holds the configuration for connecting to a remote server.
 type RemoteTransportConfig struct {
 	ServerURL string // e.g. "ws://localhost:8080" or "wss://example.com"
@@ -98,6 +110,7 @@ func NewRemoteTransport(cfg RemoteTransportConfig) *RemoteTransport {
 		reconnectCh:   make(chan struct{}, 1),
 		pending:       make(map[string]chan *rpcResponse),
 		eventCh:       make(chan protocol.WSMessage, 256),
+		routeSeq:      make(map[remoteRoute]uint64),
 	}
 }
 
@@ -245,20 +258,18 @@ func (t *RemoteTransport) Run(ctx context.Context) error {
 
 // SendMessage sends a user message to the remote server via WebSocket.
 func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
+	var writeErr error
 	t.connMu.Lock()
-	defer t.connMu.Unlock()
 	if t.conn == nil {
+		t.connMu.Unlock()
 		return fmt.Errorf("not connected to server")
 	}
-	// Set write deadline to avoid blocking indefinitely on dead connections.
 	t.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	defer t.conn.SetWriteDeadline(time.Time{}) // reset
-
+	defer t.conn.SetWriteDeadline(time.Time{})
 	msgType := "message"
 	if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 		msgType = "cancel"
 	}
-
 	outMsg := protocol.WSClientMessage{
 		Type:       msgType,
 		Content:    msg.Content,
@@ -268,7 +279,22 @@ func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
 		SenderName: msg.SenderName,
 		ChatType:   msg.ChatType,
 	}
-	return t.conn.WriteJSON(outMsg)
+	writeErr = t.conn.WriteJSON(outMsg)
+	if writeErr != nil {
+		// Closing unblocks the read pump before the connection pointer is lost.
+		_ = t.conn.Close()
+		t.conn = nil
+	}
+	t.connMu.Unlock()
+
+	if writeErr != nil {
+		select {
+		case t.reconnectCh <- struct{}{}:
+		default:
+		}
+		t.setConnState("disconnected")
+	}
+	return writeErr
 }
 
 // BindChat registers this connection to receive events for chatID.
@@ -276,15 +302,27 @@ func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
 func (t *RemoteTransport) BindChat(chatID string) error {
 	t.connMu.Lock()
 	defer t.connMu.Unlock()
+	route := remoteRoute{channel: "cli", chatID: chatID}
+	t.routeMu.Lock()
+	t.activeRoute = route
+	t.routeMu.Unlock()
 	if t.conn == nil {
 		return fmt.Errorf("not connected to server")
 	}
-	subMsg := protocol.WSClientMessage{Type: protocol.MsgTypeSubscribe, ChatID: chatID}
+	subMsg := t.subscriptionForRoute(route)
 	t.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	defer t.conn.SetWriteDeadline(time.Time{})
 	if err := t.conn.WriteJSON(subMsg); err != nil {
 		return fmt.Errorf("subscribe: %w", err)
 	}
+	// A successfully written subscription may reach the server even when its
+	// sync acknowledgement is lost. Retain a zero cursor so reconnect requests
+	// replay from the beginning instead of creating a fresh subscription.
+	t.routeMu.Lock()
+	if _, ok := t.routeSeq[route]; !ok {
+		t.routeSeq[route] = 0
+	}
+	t.routeMu.Unlock()
 	return nil
 }
 
@@ -295,6 +333,24 @@ func (t *RemoteTransport) ConnState() string {
 	return t.connState
 }
 
+// ShareEventBase sets the baseTransport used for local event dispatch.
+// When set, emitLocal uses this instead of the embedded baseTransport,
+// bridging events from the transport to Client's subscriber base.
+func (t *RemoteTransport) ShareEventBase(base *baseTransport) {
+	t.eventBase = base
+}
+
+// emitLocal dispatches a transport event to the correct subscriber base.
+// Uses the shared eventBase when available, otherwise falls back to the
+// embedded baseTransport.
+func (t *RemoteTransport) emitLocal(ctx context.Context, event protocol.TransportEvent) {
+	if t.eventBase != nil {
+		t.eventBase.emit(ctx, event)
+	} else {
+		t.emit(ctx, event)
+	}
+}
+
 // setConnState updates connState and emits a protocol event if state changed.
 func (t *RemoteTransport) setConnState(state string) {
 	t.connMu.Lock()
@@ -302,7 +358,7 @@ func (t *RemoteTransport) setConnState(state string) {
 	t.connState = state
 	t.connMu.Unlock()
 	if prev != state {
-		t.emit(context.Background(), protocol.ConnStateEvent{State: state})
+		t.emitLocal(context.Background(), protocol.ConnStateEvent{State: state})
 	}
 }
 
@@ -364,7 +420,10 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 	}
 	u.RawQuery = q.Encode()
 	wsURL := u.String()
-	log.WithField("url", wsURL).Info("Connecting to remote xbot server...")
+	logURL := *u
+	logURL.User = nil
+	logURL.RawQuery = ""
+	log.WithField("url", logURL.String()).Info("Connecting to remote xbot server...")
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
@@ -380,24 +439,21 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 	// Initial read deadline — if no data (including pongs) in 120s, connection is dead.
 	conn.SetReadDeadline(time.Now().Add(120 * time.Second))
 
-	// Atomically replace connection and send sync message to avoid
-	// racing with concurrent writes from other goroutines.
+	// Atomically replace the connection and restore the active route before
+	// releasing connMu. No replay is requested until a route has been bound.
 	t.connMu.Lock()
 	old := t.conn
 	t.conn = conn
-
-	// Send sync message so server replays missed events from eventStream buffer.
-	// This enables mid-turn reconnect: a new CLI terminal sees recent progress/stream
-	// events without waiting for the 2s timeout fallback.
-	syncMsg := struct {
-		Type    string `json:"type"`
-		LastSeq uint64 `json:"last_seq"`
-	}{
-		Type:    protocol.MsgTypeSync,
-		LastSeq: t.lastSeq.Load(),
-	}
-	if err := conn.WriteJSON(syncMsg); err != nil {
-		log.WithError(err).Warn("Failed to send sync message")
+	t.routeMu.Lock()
+	route := t.activeRoute
+	t.routeMu.Unlock()
+	if route.chatID != "" {
+		if err := conn.WriteJSON(t.subscriptionForRoute(route)); err != nil {
+			t.conn = nil
+			t.connMu.Unlock()
+			_ = conn.Close()
+			return fmt.Errorf("restore subscription: %w", err)
+		}
 	}
 	t.connMu.Unlock()
 	if old != nil {
@@ -409,6 +465,19 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 	t.setConnState("connected")
 
 	return nil
+}
+
+func (t *RemoteTransport) subscriptionForRoute(route remoteRoute) protocol.WSClientMessage {
+	t.routeMu.Lock()
+	lastSeq, resume := t.routeSeq[route]
+	t.routeMu.Unlock()
+	return protocol.WSClientMessage{
+		Type:    protocol.MsgTypeSubscribe,
+		Channel: route.channel,
+		ChatID:  route.chatID,
+		LastSeq: lastSeq,
+		Resume:  resume,
+	}
 }
 
 // readPump reads messages from the WebSocket connection and dispatches them.
@@ -448,14 +517,26 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 			t.rpcMu.Unlock()
 			// Clear conn so subsequent Call() returns immediately instead of
 			// blocking for 30s on a dead connection (freezes BubbleTea event loop).
+			// Only clear if this readPump still owns the connection — connect()
+			// may have replaced t.conn with a new one while we were waiting.
+			// Relies on identity comparison (t.conn == conn): connect() MUST
+			// create a new *websocket.Conn object each time. Connection pool
+			// reuse would break this guard and cause the new connection to be
+			// cleared by a stale readPump.
+			var emitDisconnected bool
 			t.connMu.Lock()
-			t.conn = nil
-			t.connMu.Unlock()
-			select {
-			case t.reconnectCh <- struct{}{}:
-			default:
+			if t.conn == conn {
+				t.conn = nil
+				select {
+				case t.reconnectCh <- struct{}{}:
+				default:
+				}
+				emitDisconnected = true
 			}
-			t.setConnState("disconnected")
+			t.connMu.Unlock()
+			if emitDisconnected {
+				t.setConnState("disconnected")
+			}
 			return
 		}
 		var msg protocol.WSMessage
@@ -463,32 +544,49 @@ func (t *RemoteTransport) readPump(ctx context.Context) {
 			log.WithError(err).Debug("Invalid WS message from server")
 			continue
 		}
-		// Track highest seq for reconnect sync.
-		if msg.Seq > 0 {
-			for {
-				old := t.lastSeq.Load()
-				if msg.Seq <= old || t.lastSeq.CompareAndSwap(old, msg.Seq) {
-					break
-				}
-			}
-		}
-
 		// RPC responses are handled inline (match pending callers).
 		// TUI control requests need WS write-back, handled inline.
 		// All other events are forwarded to Client.eventLoop via eventCh.
 		switch msg.Type {
 		case protocol.MsgTypeRPCResponse:
 			t.handleRPCResponse(&msg)
+		case protocol.MsgTypeSync:
+			t.recordRouteCursor(msg)
 		case protocol.MsgTypeTUIControlReq:
 			t.handleTUIControlRequest(ctx, &msg)
 		default:
 			select {
 			case t.eventCh <- msg:
+				t.recordRouteCursor(msg)
 			case <-ctx.Done():
 				return
 			}
 		}
 	}
+}
+
+func (t *RemoteTransport) recordRouteCursor(msg protocol.WSMessage) {
+	if msg.Seq == 0 && msg.Type != protocol.MsgTypeSync {
+		return
+	}
+	route := remoteRoute{channel: msg.RouteChannel, chatID: msg.RouteChatID}
+	if route.channel == "" || route.chatID == "" {
+		t.routeMu.Lock()
+		route = t.activeRoute
+		t.routeMu.Unlock()
+	}
+	if route.channel == "" || route.chatID == "" {
+		return
+	}
+	t.routeMu.Lock()
+	if msg.Type == protocol.MsgTypeSync {
+		// Sync is the server's authoritative high-water mark. It may decrease
+		// after a server restart or replay-stream reset.
+		t.routeSeq[route] = msg.Seq
+	} else if previous, ok := t.routeSeq[route]; !ok || msg.Seq > previous {
+		t.routeSeq[route] = msg.Seq
+	}
+	t.routeMu.Unlock()
 }
 
 // handleTUIControlRequest processes a server-initiated TUI control request.
@@ -549,14 +647,27 @@ func (t *RemoteTransport) pingLoop(ctx context.Context) {
 }
 
 // sendPing sends a WebSocket ping frame to the server.
+// On write failure, it triggers a reconnect — the connection is dead even
+// if readPump hasn't detected it yet (e.g. server died without closing TCP).
 func (t *RemoteTransport) sendPing() {
+	var pingFailed bool
 	t.connMu.Lock()
-	defer t.connMu.Unlock()
-	if t.conn == nil {
-		return
+	if t.conn != nil {
+		if err := t.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+			log.WithError(err).Warn("WS ping failed, connection dead")
+			_ = t.conn.Close()
+			t.conn = nil
+			pingFailed = true
+		}
 	}
-	if err := t.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
-		log.WithError(err).Warn("WS ping failed")
+	t.connMu.Unlock()
+
+	if pingFailed {
+		select {
+		case t.reconnectCh <- struct{}{}:
+		default:
+		}
+		t.setConnState("disconnected")
 	}
 }
 
@@ -596,25 +707,23 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 					log.WithError(err).Warn("Reconnect failed")
 					// Notify user after every 3 failures via emit.
 					if consecutiveFailures%3 == 0 {
-						t.emit(ctx, protocol.OutboundEvent{
+						t.emitLocal(ctx, protocol.OutboundEvent{
 							Channel: "cli",
 							ChatID:  "remote",
 							Content: fmt.Sprintf("Connection lost, reconnecting (attempt %d)...", consecutiveFailures),
 						})
 					}
-					// Exponential backoff capped at 30s, never give up.
-					delay = delay * 2
-					if delay > 30*time.Second {
-						delay = 30 * time.Second
-					}
+					// Retry every second.
+					delay = time.Second
 					continue
 				}
 				log.Info("Reconnected to server")
 				consecutiveFailures = 0
-				// Emit protocol reconnect event
-				t.emit(ctx, protocol.ReconnectEvent{})
+				// Start readPump BEFORE emitting ReconnectEvent, so the new
+				// reader is ready to receive RPC responses (BindChat etc.).
 				t.readPumpWg.Add(1)
 				go t.readPump(ctx)
+				t.emitLocal(ctx, protocol.ReconnectEvent{})
 				break
 			}
 		}

@@ -1,0 +1,2043 @@
+package feishu
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+
+	log "xbot/logger"
+
+	ch "xbot/channel"
+	"xbot/protocol"
+	"xbot/tools"
+)
+
+const settingsCardActionPrefix = "settings_"
+
+// SettingsCardOpts carries optional state for building the settings card (e.g. pagination).
+type SettingsCardOpts struct {
+	// RunnerConnectBanner, if set, shows a one-shot markdown block with the xbot-runner shell command (after create / token generate).
+	RunnerConnectBanner string
+}
+
+// BuildSettingsCard constructs an interactive Feishu card JSON for settings.
+func (f *FeishuChannel) BuildSettingsCard(ctx context.Context, senderID, chatID, tab string, opts ...SettingsCardOpts) (map[string]any, error) {
+	var o SettingsCardOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+
+	switch tab {
+	case "general", "metrics", "danger":
+	default:
+		tab = "general"
+	}
+
+	log.WithField("tab", tab).Info("BuildSettingsCard start")
+
+	elements := buildTabButtons(tab)
+	elements = append(elements, map[string]any{"tag": "hr"})
+
+	switch tab {
+	case "general":
+		elements = append(elements, f.buildGeneralTabContent(senderID, o)...)
+	case "metrics":
+		elements = append(elements, f.buildMetricsTabContent()...)
+	case "danger":
+		elements = append(elements, f.buildDangerTabContent(ctx, senderID, chatID)...)
+	}
+
+	card := map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+			"update_multi":     true,
+		},
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag":     "plain_text",
+				"content": "⚙️ 设置",
+			},
+			"template": "indigo",
+		},
+		"body": map[string]any{
+			"elements": elements,
+		},
+	}
+
+	return card, nil
+}
+
+// HandleSettingsAction processes settings card callback actions.
+func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map[string]any, senderID, chatID, messageID string) (map[string]any, error) {
+	actionDataJSON, _ := actionData["action_data"].(string)
+	if actionDataJSON == "" {
+		return nil, fmt.Errorf("missing action_data")
+	}
+
+	parsed := parseActionData(actionDataJSON)
+	if parsed == nil {
+		return nil, fmt.Errorf("invalid action_data format")
+	}
+
+	action := parsed["action"]
+	log.WithFields(log.Fields{
+		"action":    action,
+		"sender_id": senderID,
+	}).Info("HandleSettingsAction routing")
+
+	switch action {
+	case "settings_tab":
+		return f.BuildSettingsCard(ctx, senderID, chatID, parsed["tab"])
+
+	case "settings_select_submit":
+		// Form submit button was clicked. Each form has a unique select name
+		// (distinct from the form name — Feishu rejects duplicate names).
+		// Map form_name → select_name to read the selected value.
+		formName := parsed["form_name"]
+		if formName == "" {
+			return nil, fmt.Errorf("missing form_name")
+		}
+		// Special case: the tier form has 3 selects and needs a different
+		// handler that reads all 3 values from form_value.
+		if formName == "tier_form" {
+			parsed["action"] = "settings_set_all_tiers"
+			delete(parsed, "form_name")
+			newActionData := map[string]any{
+				"action_data": mustMapToJSON(parsed),
+			}
+			for k, v := range actionData {
+				if _, exists := newActionData[k]; !exists {
+					newActionData[k] = v
+				}
+			}
+			return f.HandleSettingsAction(ctx, newActionData, senderID, chatID, messageID)
+		}
+		// form_name → select_name mapping (names MUST differ to avoid
+		// Feishu "name duplicate" error 11310).
+		selectName := ""
+		var delegateAction string
+		switch formName {
+		case "model_select_form":
+			selectName = "model_select"
+			delegateAction = "settings_set_model"
+		case "thinking_mode_form":
+			selectName = "thinking_mode_select"
+			delegateAction = "settings_set_thinking_mode"
+		default:
+			return nil, fmt.Errorf("unknown select form: %s", formName)
+		}
+		selectedValue := formStr(actionData, selectName)
+		if selectedValue == "" {
+			// Nothing selected; re-render whichever card the form lives on.
+			if formName == "model_select_form" {
+				return f.BuildModelsCard(ctx, senderID)
+			}
+			return f.BuildSettingsCard(ctx, senderID, chatID, "general")
+		}
+		parsed["action"] = delegateAction
+		delete(parsed, "form_name")
+		newActionData := map[string]any{
+			"action_data":     mustMapToJSON(parsed),
+			"selected_option": selectedValue,
+		}
+		for k, v := range actionData {
+			if _, exists := newActionData[k]; !exists {
+				newActionData[k] = v
+			}
+		}
+		return f.HandleSettingsAction(ctx, newActionData, senderID, chatID, messageID)
+
+	case "settings_set_model":
+		// Option value is strictly encoded as "subID|model". Per project
+		// policy we MUST NOT resolve subscription from model name alone — so
+		// a value without the "|" separator is treated as corrupt data and
+		// rejected, rather than falling back to model-only resolution.
+		subID, model := "", ""
+		if opt, ok := actionData["selected_option"].(string); ok && opt != "" {
+			if idx := strings.Index(opt, "|"); idx >= 0 {
+				subID = opt[:idx]
+				model = opt[idx+1:]
+			}
+		}
+		if subID == "" || model == "" {
+			return nil, fmt.Errorf("模型选择数据损坏：缺少 subID 或 model（应编码为 subID|model）")
+		}
+		if f.settingsCallbacks.LLMSet != nil {
+			if err := f.settingsCallbacks.LLMSet(senderID, subID, model); err != nil {
+				return nil, fmt.Errorf("设置模型失败: %v", err)
+			}
+		}
+		return f.BuildModelsCard(ctx, senderID)
+
+	case "settings_set_max_context":
+		maxCtxStr := parsed["max_context"]
+		if maxCtxStr == "" {
+			maxCtxStr = formStr(actionData, "max_context_k")
+		}
+		if maxCtxStr == "" {
+			return nil, fmt.Errorf("missing max_context")
+		}
+		maxCtxK, err := strconv.Atoi(maxCtxStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid max_context: %v", err)
+		}
+		if maxCtxK < 0 {
+			return nil, fmt.Errorf("max_context must be >= 0")
+		}
+		maxCtx := maxCtxK * 1000
+		// sub_id/model are embedded in the form's action_data at build time
+		// (from the current model selector entry). When present, the callback
+		// writes per-(subID, model) config; when absent, it falls back to the
+		// session-resolved default model.
+		subID := parsed["sub_id"]
+		model := parsed["model"]
+		if f.settingsCallbacks.LLMSetMaxContext != nil {
+			if err := f.settingsCallbacks.LLMSetMaxContext(senderID, subID, model, maxCtx); err != nil {
+				return nil, fmt.Errorf("设置 max_context 失败: %v", err)
+			}
+		}
+		return f.BuildModelsCard(ctx, senderID)
+
+	case "settings_set_max_output_tokens":
+		maxOutStr := parsed["max_output_tokens"]
+		if maxOutStr == "" {
+			maxOutStr = formStr(actionData, "max_output_k")
+		}
+		if maxOutStr == "" {
+			return nil, fmt.Errorf("missing max_output_tokens")
+		}
+		maxOutK, err := strconv.Atoi(maxOutStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid max_output_tokens: %v", err)
+		}
+		if maxOutK < 0 {
+			return nil, fmt.Errorf("max_output_tokens must be >= 0")
+		}
+		maxOut := maxOutK * 1000
+		// sub_id/model are embedded in the form's action_data at build time
+		// (same as settings_set_max_context).
+		subID := parsed["sub_id"]
+		model := parsed["model"]
+		if f.settingsCallbacks.LLMSetMaxOutputTokens != nil {
+			if err := f.settingsCallbacks.LLMSetMaxOutputTokens(senderID, subID, model, maxOut); err != nil {
+				return nil, fmt.Errorf("设置 max_output_tokens 失败: %v", err)
+			}
+		}
+		return f.BuildModelsCard(ctx, senderID)
+
+	case "settings_set_thinking_mode":
+		mode := parsed["mode"]
+		if mode == "" {
+			if opt, ok := actionData["selected_option"].(string); ok {
+				mode = opt
+			}
+		}
+		if mode == "" {
+			return nil, fmt.Errorf("missing mode")
+		}
+		if f.settingsCallbacks.LLMSetThinkingMode != nil {
+			if err := f.settingsCallbacks.LLMSetThinkingMode(senderID, mode); err != nil {
+				return nil, fmt.Errorf("设置思考模式失败: %v", err)
+			}
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
+
+	case "settings_set_all_tiers":
+		// Tier form has 3 selects (vanguard/balance/swift). Each select value
+		// is encoded as "subID|model" (same as the model selector). Read each
+		// from form_value and apply via LLMSetModelTier. Empty values are
+		// skipped (user may have left a tier unset).
+		if f.settingsCallbacks.LLMSetModelTier != nil {
+			for _, tier := range []string{"vanguard", "balance", "swift"} {
+				name := "tier_" + tier + "_select"
+				val := formStr(actionData, name)
+				if val == "" {
+					continue
+				}
+				// Parse "subID|model" encoding
+				subID, model := "", ""
+				if idx := strings.Index(val, "|"); idx >= 0 {
+					subID = val[:idx]
+					model = val[idx+1:]
+				} else {
+					// Legacy plain model name (no subID)
+					model = val
+				}
+				if model == "" {
+					continue
+				}
+				if err := f.settingsCallbacks.LLMSetModelTier(senderID, tier, subID, model); err != nil {
+					return nil, fmt.Errorf("设置 %s tier 失败: %v", tier, err)
+				}
+			}
+		}
+		return f.BuildModelsCard(ctx, senderID)
+
+	case "settings_toggle_subscription":
+		subID := parsed["subscription_id"]
+		if subID == "" {
+			return nil, fmt.Errorf("missing subscription_id")
+		}
+		enabledStr := parsed["enabled"]
+		enabled := enabledStr == "true"
+		if f.settingsCallbacks.LLMSetSubscriptionEnabled != nil {
+			if err := f.settingsCallbacks.LLMSetSubscriptionEnabled(subID, enabled); err != nil {
+				return nil, fmt.Errorf("切换订阅状态失败: %v", err)
+			}
+		}
+		return f.BuildLLMsCard(ctx, senderID)
+
+	case "settings_edit_subscription":
+		subID := parsed["subscription_id"]
+		if subID == "" {
+			return nil, fmt.Errorf("missing subscription_id")
+		}
+		return f.buildEditSubscriptionCard(senderID, subID)
+
+	case "settings_submit_edit_subscription":
+		subID := parsed["subscription_id"]
+		provider, apiType := ch.SelectValueToProvider(formStr(actionData, "provider"))
+		baseURL := formStr(actionData, "base_url")
+		apiKey := formStr(actionData, "api_key")
+		name := formStr(actionData, "name")
+		if name == "" {
+			name = provider
+		}
+		if provider == "" || baseURL == "" {
+			return nil, fmt.Errorf("请填写完整配置（Provider、API 地址）")
+		}
+		if f.settingsCallbacks.LLMUpdateSubscription != nil {
+			if err := f.settingsCallbacks.LLMUpdateSubscription(subID, &ch.Subscription{
+				Name:     name,
+				Provider: provider,
+				APIType:  apiType,
+				BaseURL:  baseURL,
+				APIKey:   apiKey,
+			}); err != nil {
+				return nil, fmt.Errorf("更新订阅失败: %v", err)
+			}
+		}
+		return f.BuildLLMsCard(ctx, senderID)
+
+	case "settings_delete_subscription":
+		subID := parsed["subscription_id"]
+		if subID == "" {
+			return nil, fmt.Errorf("missing subscription_id")
+		}
+		if f.settingsCallbacks.LLMRemoveSubscription != nil {
+			if err := f.settingsCallbacks.LLMRemoveSubscription(subID); err != nil {
+				return nil, fmt.Errorf("删除订阅失败: %v", err)
+			}
+		}
+		return f.BuildLLMsCard(ctx, senderID)
+
+	case "settings_add_subscription":
+		// Build a form card for adding a new subscription
+		return f.buildAddSubscriptionCard(senderID)
+
+	case "settings_submit_subscription":
+		provider, apiType := ch.SelectValueToProvider(formStr(actionData, "provider"))
+		baseURL := formStr(actionData, "base_url")
+		apiKey := formStr(actionData, "api_key")
+		name := formStr(actionData, "name")
+		if name == "" {
+			name = provider
+		}
+		if provider == "" || baseURL == "" || apiKey == "" {
+			return nil, fmt.Errorf("请填写完整配置（Provider、API 地址、API Key）")
+		}
+		if f.settingsCallbacks.LLMAddSubscription != nil {
+			if err := f.settingsCallbacks.LLMAddSubscription(senderID, &ch.Subscription{
+				Name:     name,
+				Provider: provider,
+				APIType:  apiType,
+				BaseURL:  baseURL,
+				APIKey:   apiKey,
+			}); err != nil {
+				return nil, fmt.Errorf("添加订阅失败: %v", err)
+			}
+		}
+		return f.BuildLLMsCard(ctx, senderID)
+
+	case "settings_sandbox_cleanup":
+		if f.settingsCallbacks.SandboxCleanupTrigger == nil {
+			return nil, fmt.Errorf("沙箱持久化功能未启用")
+		}
+		if f.settingsCallbacks.SandboxIsExporting != nil && f.settingsCallbacks.SandboxIsExporting(senderID) {
+			return nil, fmt.Errorf("沙箱正在持久化中，请稍候")
+		}
+		if err := f.settingsCallbacks.SandboxCleanupTrigger(senderID); err != nil {
+			return nil, fmt.Errorf("沙箱持久化失败: %v", err)
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
+
+	case "settings_generate_token":
+		if f.settingsCallbacks.RunnerTokenGenerate == nil {
+			return nil, fmt.Errorf("per-user runner token 功能未启用")
+		}
+		mode := formStr(actionData, "runner_mode")
+		if mode == "" {
+			mode = parsed["runner_mode"]
+		}
+		if mode == "" {
+			mode = "native"
+		}
+		var dockerImage, workspace string
+		if mode == "docker" {
+			dockerImage = formStr(actionData, "tok_docker_image")
+			workspace = formStr(actionData, "tok_docker_ws")
+		} else {
+			workspace = formStr(actionData, "tok_native_ws")
+		}
+		if workspace == "" {
+			workspace = "/workspace"
+		}
+		cmd, err := f.settingsCallbacks.RunnerTokenGenerate(senderID, mode, dockerImage, workspace)
+		if err != nil {
+			return nil, fmt.Errorf("生成 token 失败: %v", err)
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general", SettingsCardOpts{RunnerConnectBanner: cmd})
+
+	case "settings_revoke_token":
+		if f.settingsCallbacks.RunnerTokenRevoke == nil {
+			return nil, fmt.Errorf("per-user runner token 功能未启用")
+		}
+		if err := f.settingsCallbacks.RunnerTokenRevoke(senderID); err != nil {
+			return nil, fmt.Errorf("撤销 token 失败: %v", err)
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
+
+	// ── Multi-Runner management actions ──
+	case "settings_runner_set_active":
+		if f.settingsCallbacks.RunnerSetActive == nil {
+			return nil, fmt.Errorf("runner 管理功能未启用")
+		}
+		runnerName := parsed["runner_name"]
+		if runnerName == "" {
+			return nil, fmt.Errorf("缺少 runner 名称")
+		}
+		if err := f.settingsCallbacks.RunnerSetActive(senderID, runnerName); err != nil {
+			return nil, fmt.Errorf("切换 runner 失败: %v", err)
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
+
+	case "settings_runner_delete":
+		if f.settingsCallbacks.RunnerDelete == nil {
+			return nil, fmt.Errorf("runner 管理功能未启用")
+		}
+		runnerName := parsed["runner_name"]
+		if runnerName == "" {
+			return nil, fmt.Errorf("缺少 runner 名称")
+		}
+		if runnerName == tools.BuiltinDockerRunnerName {
+			return nil, fmt.Errorf("内置 Docker Sandbox 不可删除")
+		}
+		if err := f.settingsCallbacks.RunnerDelete(senderID, runnerName); err != nil {
+			return nil, fmt.Errorf("删除 runner 失败: %v", err)
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
+
+	case "settings_runner_create":
+		if f.settingsCallbacks.RunnerCreate == nil {
+			return nil, fmt.Errorf("runner 管理功能未启用")
+		}
+		// Feishu requires input "name" unique across the entire card; native/docker use separate field names.
+		var runnerName, workspace, mode, dockerImage string
+		if n := formStr(actionData, "mr_native_name"); n != "" {
+			runnerName = n
+			workspace = formStr(actionData, "mr_native_workspace")
+			mode = "native"
+		} else if n := formStr(actionData, "mr_docker_name"); n != "" {
+			runnerName = n
+			dockerImage = formStr(actionData, "mr_docker_image")
+			workspace = formStr(actionData, "mr_docker_workspace")
+			mode = "docker"
+		} else {
+			return nil, fmt.Errorf("请填写 runner 名称")
+		}
+		if mode != "docker" {
+			dockerImage = ""
+		}
+		cmd, err := f.settingsCallbacks.RunnerCreate(senderID, runnerName, mode, dockerImage, workspace, tools.RunnerLLMSettings{})
+		if err != nil {
+			return nil, fmt.Errorf("创建 runner 失败: %v", err)
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general", SettingsCardOpts{RunnerConnectBanner: cmd})
+
+	case "settings_feishu_web_link":
+		username := formStr(actionData, "web_username")
+		password := formStr(actionData, "web_password")
+		if username == "" || password == "" {
+			return nil, fmt.Errorf("请填写用户名和密码")
+		}
+		if f.settingsCallbacks.FeishuWebLink == nil {
+			return nil, fmt.Errorf("web linking not enabled")
+		}
+		if _, err := f.settingsCallbacks.FeishuWebLink(senderID, username, password); err != nil {
+			return nil, fmt.Errorf("关联失败: %v", err)
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
+
+	case "settings_feishu_web_unlink":
+		if f.settingsCallbacks.FeishuWebUnlink == nil {
+			return nil, fmt.Errorf("web linking not enabled")
+		}
+		if err := f.settingsCallbacks.FeishuWebUnlink(senderID); err != nil {
+			return nil, fmt.Errorf("取消关联失败: %v", err)
+		}
+		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
+
+	// ── Danger zone: step 1 → show confirmation card ──
+	case "danger_clear_session", "danger_clear_core_persona", "danger_clear_core_human",
+		"danger_clear_core_working", "danger_clear_core_all", "danger_clear_long_term",
+		"danger_clear_event_history", "danger_clear_archival", "danger_reset_all":
+		confirmStr := dangerConfirmString(action)
+		label := dangerTargetLabel(action)
+		return buildDangerConfirmCard(label, confirmStr, action), nil
+
+	// ── Danger zone: step 2 → execute after user confirmation ──
+	case "danger_confirm":
+		userInput := formStr(actionData, "confirm_input")
+		target := formStr(actionData, "target_action")
+		// Server-side validation: never trust client-supplied expect_input
+		expected := dangerConfirmString(target)
+		if userInput != expected {
+			return buildDangerResultCard("❌ 确认文字不匹配，操作已取消。"), nil
+		}
+		if f.settingsCallbacks.MemoryClear != nil {
+			if err := f.settingsCallbacks.MemoryClear(senderID, chatID, target); err != nil {
+				return buildDangerResultCard(fmt.Sprintf("❌ 清空失败：%v", err)), nil
+			}
+		}
+		label := dangerTargetLabel(target)
+		return buildDangerResultCard(fmt.Sprintf("✅ 已清空：%s", label)), nil
+
+	default:
+		return nil, fmt.Errorf("unknown settings action: %s", action)
+	}
+}
+
+// --- Tab content builders ---
+
+func buildTabButtons(currentTab string) []map[string]any {
+	tabs := []struct {
+		key   string
+		label string
+	}{
+		{"general", "🎯 通用"},
+		{"metrics", "📊 指标"},
+		{"danger", "⚠️ 危险区"},
+	}
+
+	var buttons []map[string]any
+	for _, t := range tabs {
+		btnType := "default"
+		if t.key == currentTab {
+			btnType = "primary"
+		}
+		buttons = append(buttons, map[string]any{
+			"tag": "button",
+			"text": map[string]any{
+				"tag":     "plain_text",
+				"content": t.label,
+			},
+			"type": btnType,
+			"value": map[string]string{
+				"action_data": mustMapToJSON(map[string]string{
+					"action": "settings_tab",
+					"tab":    t.key,
+				}),
+			},
+		})
+	}
+
+	return []map[string]any{wrapButtonsInColumns(buttons)}
+}
+
+func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOpts) []map[string]any {
+	var elements []map[string]any
+
+	// ── Multi-Runner Management Section ──
+	if f.settingsCallbacks.RunnerList != nil {
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": "**🖥️ 工作环境**",
+		})
+
+		if strings.TrimSpace(o.RunnerConnectBanner) != "" {
+			elements = append(elements, map[string]any{
+				"tag":     "markdown",
+				"content": fmt.Sprintf("✅ **连接命令**（在本地终端执行）：\n```\n%s\n```", strings.TrimSpace(o.RunnerConnectBanner)),
+			})
+		}
+
+		runners, err := f.settingsCallbacks.RunnerList(senderID)
+		if err != nil || len(runners) == 0 {
+			elements = append(elements, map[string]any{
+				"tag":     "markdown",
+				"content": "尚未添加工作环境。点击下方按钮添加 Runner。",
+			})
+		} else {
+			// Get active runner name
+			activeName := ""
+			if f.settingsCallbacks.RunnerGetActive != nil {
+				if name, err := f.settingsCallbacks.RunnerGetActive(senderID); err == nil {
+					activeName = name
+				}
+			}
+
+			for _, r := range runners {
+				isBuiltin := r.Name == tools.BuiltinDockerRunnerName
+				statusIcon := "🟢"
+				if !r.Online {
+					statusIcon = "⚫"
+				}
+				activeTag := ""
+				if r.Name == activeName {
+					activeTag = " ← 活跃"
+				}
+				displayName := r.Name
+				if isBuiltin {
+					displayName = "Docker Sandbox (内置)"
+				}
+				modeTag := "原生"
+				if r.Mode == "docker" {
+					modeTag = "🐳 Docker"
+				}
+				wsTag := ""
+				if r.Workspace != "" {
+					wsTag = fmt.Sprintf(" · %s", r.Workspace)
+				}
+				if isBuiltin && r.DockerImage != "" {
+					wsTag = fmt.Sprintf(" · %s", r.DockerImage)
+				}
+				elements = append(elements, map[string]any{
+					"tag":     "markdown",
+					"content": fmt.Sprintf("%s **%s**%s (%s%s)", statusIcon, displayName, activeTag, modeTag, wsTag),
+				})
+
+				// Buttons: set active + delete (builtin docker cannot be deleted)
+				var btns []map[string]any
+				if r.Name != activeName {
+					btns = append(btns, map[string]any{
+						"tag":  "button",
+						"text": map[string]any{"tag": "plain_text", "content": "切换"},
+						"type": "primary",
+						"value": map[string]string{
+							"action_data": mustMapToJSON(map[string]string{
+								"action":      "settings_runner_set_active",
+								"runner_name": r.Name,
+							}),
+						},
+					})
+				}
+				if !isBuiltin {
+					btns = append(btns, map[string]any{
+						"tag":  "button",
+						"text": map[string]any{"tag": "plain_text", "content": "🗑️ 删除"},
+						"type": "danger",
+						"value": map[string]string{
+							"action_data": mustMapToJSON(map[string]string{
+								"action":      "settings_runner_delete",
+								"runner_name": r.Name,
+							}),
+						},
+					})
+				}
+				if len(btns) > 0 {
+					elements = append(elements, wrapButtonsInColumns(btns))
+				}
+			}
+		}
+
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": "添加 Runner：任选其一提交。**原生**无镜像字段；**Docker** 需填写镜像。",
+		})
+
+		formNative := []map[string]any{
+			{
+				"tag":  "input",
+				"name": "mr_native_name",
+				"label": map[string]any{
+					"tag":     "plain_text",
+					"content": "Runner 名称",
+				},
+				"placeholder": map[string]any{
+					"tag":     "plain_text",
+					"content": "例如：MacBook Pro",
+				},
+			},
+			{
+				"tag":  "input",
+				"name": "mr_native_workspace",
+				"label": map[string]any{
+					"tag":     "plain_text",
+					"content": "工作目录",
+				},
+				"placeholder": map[string]any{
+					"tag":     "plain_text",
+					"content": "/workspace",
+				},
+			},
+			{
+				"tag":         "button",
+				"name":        "runner_create_native_submit",
+				"text":        map[string]any{"tag": "plain_text", "content": "✨ 添加原生 Runner"},
+				"type":        "primary",
+				"action_type": "form_submit",
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action":      "settings_runner_create",
+						"runner_mode": "native",
+					}),
+				},
+			},
+		}
+		elements = append(elements, map[string]any{
+			"tag":      "form",
+			"name":     "runner_create_form_native",
+			"elements": formNative,
+		})
+
+		formDocker := []map[string]any{
+			{
+				"tag":  "input",
+				"name": "mr_docker_name",
+				"label": map[string]any{
+					"tag":     "plain_text",
+					"content": "Runner 名称",
+				},
+				"placeholder": map[string]any{
+					"tag":     "plain_text",
+					"content": "例如：docker-dev",
+				},
+			},
+			{
+				"tag":  "input",
+				"name": "mr_docker_image",
+				"label": map[string]any{
+					"tag":     "plain_text",
+					"content": "Docker 镜像",
+				},
+				"placeholder": map[string]any{
+					"tag":     "plain_text",
+					"content": "ubuntu:22.04",
+				},
+			},
+			{
+				"tag":  "input",
+				"name": "mr_docker_workspace",
+				"label": map[string]any{
+					"tag":     "plain_text",
+					"content": "工作目录",
+				},
+				"placeholder": map[string]any{
+					"tag":     "plain_text",
+					"content": "/workspace",
+				},
+			},
+			{
+				"tag":         "button",
+				"name":        "runner_create_docker_submit",
+				"text":        map[string]any{"tag": "plain_text", "content": "✨ 添加 Docker Runner"},
+				"type":        "primary",
+				"action_type": "form_submit",
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action":      "settings_runner_create",
+						"runner_mode": "docker",
+					}),
+				},
+			},
+		}
+		elements = append(elements, map[string]any{
+			"tag":      "form",
+			"name":     "runner_create_form_docker",
+			"elements": formDocker,
+		})
+
+		elements = append(elements, map[string]any{"tag": "hr"})
+	} else {
+		// ── Legacy: fallback to old single-token runner ──
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": "**远程 Runner**",
+		})
+
+		if f.settingsCallbacks.RunnerTokenGet != nil {
+			connectCmd := f.settingsCallbacks.RunnerTokenGet(senderID)
+			if connectCmd != "" {
+				elements = append(elements, map[string]any{
+					"tag":     "markdown",
+					"content": fmt.Sprintf("在本地机器上运行以下命令连接远程沙箱：\n```\n%s\n```", connectCmd),
+				})
+				elements = append(elements, wrapButtonsInColumns([]map[string]any{
+					{
+						"tag":  "button",
+						"text": map[string]any{"tag": "plain_text", "content": "🔄 重新生成"},
+						"type": "danger",
+						"value": map[string]string{
+							"action_data": mustMapToJSON(map[string]string{
+								"action": "settings_generate_token",
+							}),
+						},
+					},
+					{
+						"tag":  "button",
+						"text": map[string]any{"tag": "plain_text", "content": "🗑️ 撤销"},
+						"type": "danger",
+						"value": map[string]string{
+							"action_data": mustMapToJSON(map[string]string{
+								"action": "settings_revoke_token",
+							}),
+						},
+					},
+				}))
+			} else {
+				// No token — show generation forms (legacy): native vs docker
+				elements = append(elements, map[string]any{
+					"tag":     "markdown",
+					"content": "生成连接命令：**原生**仅工作目录；**Docker** 需填写镜像。",
+				})
+				formLegacyNative := []map[string]any{
+					{
+						"tag":  "input",
+						"name": "tok_native_ws",
+						"label": map[string]any{
+							"tag":     "plain_text",
+							"content": "工作目录",
+						},
+						"placeholder": map[string]any{
+							"tag":     "plain_text",
+							"content": "/workspace",
+						},
+					},
+					{
+						"tag":         "button",
+						"name":        "token_submit_native",
+						"text":        map[string]any{"tag": "plain_text", "content": "生成原生连接命令"},
+						"type":        "primary",
+						"action_type": "form_submit",
+						"value": map[string]string{
+							"action_data": mustMapToJSON(map[string]string{
+								"action":      "settings_generate_token",
+								"runner_mode": "native",
+							}),
+						},
+					},
+				}
+				elements = append(elements, map[string]any{
+					"tag":      "form",
+					"name":     "runner_token_form_native",
+					"elements": formLegacyNative,
+				})
+				formLegacyDocker := []map[string]any{
+					{
+						"tag":  "input",
+						"name": "tok_docker_image",
+						"label": map[string]any{
+							"tag":     "plain_text",
+							"content": "Docker 镜像",
+						},
+						"placeholder": map[string]any{
+							"tag":     "plain_text",
+							"content": "xbot-sandbox:latest",
+						},
+					},
+					{
+						"tag":  "input",
+						"name": "tok_docker_ws",
+						"label": map[string]any{
+							"tag":     "plain_text",
+							"content": "工作目录",
+						},
+						"placeholder": map[string]any{
+							"tag":     "plain_text",
+							"content": "/workspace",
+						},
+					},
+					{
+						"tag":         "button",
+						"name":        "token_submit_docker",
+						"text":        map[string]any{"tag": "plain_text", "content": "生成 Docker 连接命令"},
+						"type":        "primary",
+						"action_type": "form_submit",
+						"value": map[string]string{
+							"action_data": mustMapToJSON(map[string]string{
+								"action":      "settings_generate_token",
+								"runner_mode": "docker",
+							}),
+						},
+					},
+				}
+				elements = append(elements, map[string]any{
+					"tag":      "form",
+					"name":     "runner_token_form_docker",
+					"elements": formLegacyDocker,
+				})
+			}
+		} else if f.settingsCallbacks.RunnerConnectCmdGet != nil {
+			connectCmd := f.settingsCallbacks.RunnerConnectCmdGet(senderID)
+			if connectCmd != "" {
+				elements = append(elements, map[string]any{
+					"tag":     "markdown",
+					"content": fmt.Sprintf("在本地机器上运行以下命令连接远程沙箱：\n```\n%s\n```", connectCmd),
+				})
+			} else {
+				elements = append(elements, map[string]any{
+					"tag":     "markdown",
+					"content": "远程 Runner 功能未启用，请设置 `SANDBOX_AUTH_TOKEN`。",
+				})
+			}
+		}
+
+		elements = append(elements, map[string]any{"tag": "hr"})
+	}
+
+	// ── Feishu ↔ Web Account Linking Section ──
+	if f.settingsCallbacks.FeishuWebGetLinked != nil {
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": "**🔗 Web 账户关联**",
+		})
+
+		linkedUser, linked := f.settingsCallbacks.FeishuWebGetLinked(senderID)
+		if linked {
+			elements = append(elements, map[string]any{
+				"tag":     "markdown",
+				"content": fmt.Sprintf("已关联 Web 账户：**%s**", linkedUser),
+			})
+			elements = append(elements, wrapButtonsInColumns([]map[string]any{
+				{
+					"tag":  "button",
+					"text": map[string]any{"tag": "plain_text", "content": "取消关联"},
+					"type": "danger",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action": "settings_feishu_web_unlink",
+						}),
+					},
+				},
+			}))
+		} else {
+			elements = append(elements, map[string]any{
+				"tag":     "markdown",
+				"content": "关联 Web 账户后，可使用飞书身份登录 Web 端。",
+			})
+			formWebLink := []map[string]any{
+				{
+					"tag":  "input",
+					"name": "web_username",
+					"label": map[string]any{
+						"tag":     "plain_text",
+						"content": "用户名",
+					},
+					"placeholder": map[string]any{
+						"tag":     "plain_text",
+						"content": "输入 Web 用户名",
+					},
+				},
+				{
+					"tag":  "input",
+					"name": "web_password",
+					"label": map[string]any{
+						"tag":     "plain_text",
+						"content": "密码",
+					},
+					"placeholder": map[string]any{
+						"tag":     "plain_text",
+						"content": "输入密码",
+					},
+				},
+				{
+					"tag":         "button",
+					"name":        "web_link_submit",
+					"text":        map[string]any{"tag": "plain_text", "content": "关联账户"},
+					"type":        "primary",
+					"action_type": "form_submit",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action": "settings_feishu_web_link",
+						}),
+					},
+				},
+			}
+			elements = append(elements, map[string]any{
+				"tag":      "form",
+				"name":     "feishu_web_link_form",
+				"elements": formWebLink,
+			})
+		}
+
+		elements = append(elements, map[string]any{"tag": "hr"})
+	}
+
+	// --- Thinking mode (global user preference) ---
+	currentThinkingMode := ""
+	thinkingModeDisplay := "auto"
+	if f.settingsCallbacks.LLMGetThinkingMode != nil {
+		currentThinkingMode = f.settingsCallbacks.LLMGetThinkingMode(senderID)
+	}
+	if currentThinkingMode != "" {
+		thinkingModeDisplay = thinkingModeLabel(currentThinkingMode)
+	}
+
+	elements = append(elements, buildSelectFormRow(
+		"思考模式",
+		thinkingModeDisplay,
+		"thinking_mode_form",
+		func() map[string]any {
+			ctrl := map[string]any{
+				"tag":         "select_static",
+				"name":        "thinking_mode_select",
+				"placeholder": map[string]any{"tag": "plain_text", "content": "选择思考模式..."},
+				"options":     thinkingModeOptions(),
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action": "settings_set_thinking_mode",
+					}),
+				},
+			}
+			if currentThinkingMode != "" {
+				for _, opt := range thinkingModeOptions() {
+					if opt["value"] == currentThinkingMode {
+						ctrl["initial_option"] = currentThinkingMode
+						break
+					}
+				}
+			}
+			return ctrl
+		}(),
+	)...)
+
+	return elements
+}
+
+// buildAddSubscriptionCard builds a form card for adding a new subscription.
+func (f *FeishuChannel) buildAddSubscriptionCard(senderID string) (map[string]any, error) {
+	formElements := []map[string]any{
+		{
+			"tag":  "input",
+			"name": "name",
+			"label": map[string]any{
+				"tag":     "plain_text",
+				"content": "订阅名称（可选）",
+			},
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "例: My GPT-4o",
+			},
+		},
+		{
+			"tag":  "select_static",
+			"name": "provider",
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "选择 Provider",
+			},
+			"options": []map[string]any{
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Complete（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Responses"}, "value": "openai_responses"},
+				{"text": map[string]any{"tag": "plain_text", "content": "Anthropic"}, "value": "anthropic"},
+			},
+		},
+		{
+			"tag":  "input",
+			"name": "base_url",
+			"label": map[string]any{
+				"tag":     "plain_text",
+				"content": "API 地址",
+			},
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "https://api.openai.com/v1",
+			},
+		},
+		{
+			"tag":  "input",
+			"name": "api_key",
+			"label": map[string]any{
+				"tag":     "plain_text",
+				"content": "API Key",
+			},
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "sk-...",
+			},
+		},
+		{
+			"tag":         "button",
+			"name":        "sub_submit",
+			"text":        map[string]any{"tag": "plain_text", "content": "保存订阅"},
+			"type":        "primary",
+			"action_type": "form_submit",
+			"value": map[string]string{
+				"action_data": mustMapToJSON(map[string]string{
+					"action": "settings_submit_subscription",
+				}),
+			},
+		},
+	}
+
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+		},
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag":     "plain_text",
+				"content": "➕ 添加订阅",
+			},
+		},
+		"body": map[string]any{
+			"elements": []map[string]any{
+				{
+					"tag":     "markdown",
+					"content": "填写 LLM 订阅信息。添加后可在设置页切换活跃订阅。",
+				},
+				{
+					"tag":      "form",
+					"name":     "add_subscription_form",
+					"elements": formElements,
+				},
+			},
+		},
+	}, nil
+}
+
+// buildEditSubscriptionCard builds the edit subscription form with current values.
+func (f *FeishuChannel) buildEditSubscriptionCard(senderID, subID string) (map[string]any, error) {
+	// Get current subscription data
+	var currentName, currentProvider, currentBaseURL, currentAPIType string
+	if f.settingsCallbacks.LLMListSubscriptions != nil {
+		subs, _ := f.settingsCallbacks.LLMListSubscriptions(senderID)
+		for _, s := range subs {
+			if s.ID == subID {
+				currentName = s.Name
+				currentProvider = s.Provider
+				currentBaseURL = s.BaseURL
+				currentAPIType = s.APIType
+				break
+			}
+		}
+	}
+
+	// Fetch available models for the dropdown — NO LONGER NEEDED here.
+	// Model selection lives in the /models card. The edit form is credentials-only
+	// (name, provider, base_url, api_key), matching the project policy that
+	// subscription edit panels are credentials-only.
+
+	formElements := []map[string]any{
+		{
+			"tag":  "input",
+			"name": "name",
+			"label": map[string]any{
+				"tag":     "plain_text",
+				"content": "订阅名称",
+			},
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "例如：工作账号、个人测试",
+			},
+			"default_value": currentName,
+		},
+		{
+			"tag":  "select_static",
+			"name": "provider",
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "选择 Provider",
+			},
+			"initial_option": ch.ProviderToSelectValue(currentProvider, currentAPIType),
+			"options": []map[string]any{
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Complete（含兼容 API）"}, "value": "openai"},
+				{"text": map[string]any{"tag": "plain_text", "content": "OpenAI Responses"}, "value": "openai_responses"},
+				{"text": map[string]any{"tag": "plain_text", "content": "Anthropic"}, "value": "anthropic"},
+			},
+		},
+		{
+			"tag":  "input",
+			"name": "base_url",
+			"label": map[string]any{
+				"tag":     "plain_text",
+				"content": "API 地址",
+			},
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "https://api.openai.com/v1",
+			},
+			"default_value": currentBaseURL,
+		},
+		{
+			"tag":  "input",
+			"name": "api_key",
+			"label": map[string]any{
+				"tag":     "plain_text",
+				"content": "API Key（留空则保持不变）",
+			},
+			"placeholder": map[string]any{
+				"tag":     "plain_text",
+				"content": "sk-...",
+			},
+		},
+		{
+			"tag":         "button",
+			"name":        "sub_edit_submit",
+			"text":        map[string]any{"tag": "plain_text", "content": "保存修改"},
+			"type":        "primary",
+			"action_type": "form_submit",
+			"value": map[string]string{
+				"action_data": mustMapToJSON(map[string]string{
+					"action":          "settings_submit_edit_subscription",
+					"subscription_id": subID,
+				}),
+			},
+		},
+	}
+
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+		},
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag":     "plain_text",
+				"content": "✏️ 编辑订阅",
+			},
+		},
+		"body": map[string]any{
+			"elements": []map[string]any{
+				{
+					"tag":     "markdown",
+					"content": "修改订阅配置。API Key 留空则保持原值不变。",
+				},
+				{
+					"tag":      "form",
+					"name":     "edit_subscription_form",
+					"elements": formElements,
+				},
+			},
+		},
+	}, nil
+}
+
+// BuildModelsCard constructs a standalone interactive card for model management
+// (model switch + max_context + max_output + tier settings + subscription management).
+// Separated from settings card to stay under Feishu's ~50 element limit.
+// Triggered by the /models text command.
+func (f *FeishuChannel) BuildModelsCard(ctx context.Context, senderID string) (map[string]any, error) {
+	content, err := f.buildModelsCardContent(ctx, senderID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+			"update_multi":     true,
+		},
+		"header": map[string]any{
+			"title":    map[string]any{"tag": "plain_text", "content": "🤖 模型管理"},
+			"template": "blue",
+		},
+		"body": map[string]any{
+			"elements": content,
+		},
+	}, nil
+}
+
+// buildModelsCardContent builds the body elements for the models card.
+// Extracted from the old buildModelTabContent — model-related items only.
+// Thinking mode and concurrency live in settings card (general tab).
+func (f *FeishuChannel) buildModelsCardContent(ctx context.Context, senderID string) ([]map[string]any, error) {
+	var elements []map[string]any
+
+	// --- Quick model switch (all subscriptions' models) ---
+	var entries []protocol.ModelEntry
+	currentEntry := protocol.ModelEntry{}
+	if f.settingsCallbacks.LLMList != nil {
+		entries, currentEntry = f.settingsCallbacks.LLMList(senderID)
+	}
+
+	maxModels := 30
+	if len(entries) > maxModels {
+		entries = entries[:maxModels]
+	}
+
+	// Always render the model selector. When the API model list is empty
+	// (e.g. async loading not complete), include the current model so the
+	// dropdown is never blank.
+	if len(entries) == 0 && currentEntry.Model != "" {
+		entries = append(entries, currentEntry)
+	}
+	if len(entries) > 0 {
+		var options []map[string]any
+		for _, e := range entries {
+			val := e.SubID + "|" + e.Model
+			display := e.Model
+			if e.SubName != "" {
+				display = e.Model + " (" + e.SubName + ")"
+			}
+			options = append(options, map[string]any{
+				"text":  map[string]any{"tag": "plain_text", "content": display},
+				"value": val,
+			})
+		}
+
+		selectControl := map[string]any{
+			"tag":         "select_static",
+			"name":        "model_select",
+			"placeholder": map[string]any{"tag": "plain_text", "content": "切换模型..."},
+			"options":     options,
+			"value": map[string]string{
+				"action_data": mustMapToJSON(map[string]string{
+					"action": "settings_set_model",
+				}),
+			},
+		}
+		initialVal := currentEntry.SubID + "|" + currentEntry.Model
+		for _, o := range options {
+			if o["value"] == initialVal {
+				selectControl["initial_option"] = initialVal
+				break
+			}
+		}
+
+		elements = append(elements, buildSelectFormRow(
+			"**当前模型**",
+			currentEntry.Model,
+			"model_select_form",
+			selectControl,
+		)...)
+	}
+
+	// Max context (unit: k, stored as k*1000)
+	currentMaxContext := 0
+	maxContextDisplay := "默认"
+	if f.settingsCallbacks.LLMGetMaxContext != nil {
+		currentMaxContext = f.settingsCallbacks.LLMGetMaxContext(senderID, currentEntry.SubID, currentEntry.Model)
+	}
+	if currentMaxContext > 0 {
+		maxContextDisplay = fmt.Sprintf("%dk", currentMaxContext/1000)
+	}
+
+	elements = append(elements, map[string]any{
+		"tag":     "markdown",
+		"content": fmt.Sprintf("**最大上下文 (k)**　当前: %s", maxContextDisplay),
+	})
+	elements = append(elements, map[string]any{
+		"tag":  "form",
+		"name": "max_context_form",
+		"elements": []map[string]any{
+			{
+				"tag":         "input",
+				"name":        "max_context_k",
+				"label":       map[string]any{"tag": "plain_text", "content": "上下文长度 (k)"},
+				"placeholder": map[string]any{"tag": "plain_text", "content": "如 400 = 400k"},
+			},
+			{
+				"tag":         "button",
+				"name":        "max_context_submit",
+				"text":        map[string]any{"tag": "plain_text", "content": "保存"},
+				"type":        "primary",
+				"action_type": "form_submit",
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action": "settings_set_max_context",
+						"sub_id": currentEntry.SubID,
+						"model":  currentEntry.Model,
+					}),
+				},
+			},
+		},
+	})
+
+	// Max output tokens (unit: k, stored as k*1000)
+	currentMaxOutputTokens := 0
+	maxOutputDisplay := "默认"
+	if f.settingsCallbacks.LLMGetMaxOutputTokens != nil {
+		currentMaxOutputTokens = f.settingsCallbacks.LLMGetMaxOutputTokens(senderID, currentEntry.SubID, currentEntry.Model)
+	}
+	if currentMaxOutputTokens > 0 {
+		maxOutputDisplay = fmt.Sprintf("%dk", currentMaxOutputTokens/1000)
+	}
+
+	elements = append(elements, map[string]any{
+		"tag":     "markdown",
+		"content": fmt.Sprintf("**最大输出 Token (k)**　当前: %s", maxOutputDisplay),
+	})
+	elements = append(elements, map[string]any{
+		"tag":  "form",
+		"name": "max_output_form",
+		"elements": []map[string]any{
+			{
+				"tag":         "input",
+				"name":        "max_output_k",
+				"label":       map[string]any{"tag": "plain_text", "content": "最大输出 (k)"},
+				"placeholder": map[string]any{"tag": "plain_text", "content": "如 16 = 16k，0 = 默认"},
+			},
+			{
+				"tag":         "button",
+				"name":        "max_output_submit",
+				"text":        map[string]any{"tag": "plain_text", "content": "保存"},
+				"type":        "primary",
+				"action_type": "form_submit",
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action": "settings_set_max_output_tokens",
+						"sub_id": currentEntry.SubID,
+						"model":  currentEntry.Model,
+					}),
+				},
+			},
+		},
+	})
+
+	// --- Model tier section (single form with 3 selects) ---
+	// Previously 3 independent forms (15+ elements) hit Feishu's ~50 element
+	// limit (error 11310). Consolidated to 1 form with 3 selects + 1 submit
+	// to stay well under the limit. The handler reads all 3 select values
+	// from form_value on a single submit.
+	elements = append(elements, map[string]any{"tag": "hr"})
+	elements = append(elements, map[string]any{
+		"tag":     "markdown",
+		"content": "**模型等级 (SubAgent)** — 全局设置，跨订阅生效",
+	})
+	// Collect model entries from ALL subscriptions for tier selectors.
+	// Uses the same ModelEntry type as the model selector so tier options
+	// carry (subID, model) — not bare model names.
+	var allEntries []protocol.ModelEntry
+	if f.settingsCallbacks.LLMListAllModels != nil {
+		allEntries = f.settingsCallbacks.LLMListAllModels(senderID)
+	}
+	maxTierModels := 15
+	if len(allEntries) > maxTierModels {
+		allEntries = allEntries[:maxTierModels]
+	}
+	// Single form containing 3 selects + 1 submit button.
+	var tierFormElements []map[string]any
+	for _, tier := range []struct {
+		key, label string
+	}{
+		{"vanguard", "Vanguard（强）"},
+		{"balance", "Balance（中）"},
+		{"swift", "Swift（弱）"},
+	} {
+		var currentSubID, currentModel string
+		if f.settingsCallbacks.LLMGetModelTier != nil {
+			currentSubID, currentModel = f.settingsCallbacks.LLMGetModelTier(senderID, tier.key)
+		}
+		// Build options: always include the current (subID, model) first,
+		// then all global entries. Dedup by "subID|model" key.
+		// Value encoded as "subID|model" (same as model selector).
+		// Display as "model (subname)" for clarity.
+		tierOptions := []map[string]any{}
+		seenTier := make(map[string]bool)
+		// Helper to add an option
+		addOption := func(subID, model, subName string) {
+			key := subID + "|" + model
+			if seenTier[key] {
+				return
+			}
+			seenTier[key] = true
+			display := model
+			if subName != "" {
+				display = model + " (" + subName + ")"
+			}
+			tierOptions = append(tierOptions, map[string]any{
+				"text":  map[string]any{"tag": "plain_text", "content": display},
+				"value": key,
+			})
+		}
+		// Current tier value first (may be legacy plain model name with no subID)
+		if currentModel != "" {
+			addOption(currentSubID, currentModel, "")
+		}
+		for _, e := range allEntries {
+			addOption(e.SubID, e.Model, e.SubName)
+		}
+		// Avoid empty options — Feishu rejects select_static with null/empty options.
+		if len(tierOptions) == 0 {
+			tierOptions = append(tierOptions, map[string]any{
+				"text":  map[string]any{"tag": "plain_text", "content": "暂无可用模型"},
+				"value": "",
+			})
+		}
+		tierCtrl := map[string]any{
+			"tag":         "select_static",
+			"name":        "tier_" + tier.key + "_select",
+			"placeholder": map[string]any{"tag": "plain_text", "content": tier.label + " — 选择模型..."},
+			"options":     tierOptions,
+		}
+		// Only set initial_option if it matches an option value.
+		if currentModel != "" {
+			currentKey := currentSubID + "|" + currentModel
+			if currentSubID == "" {
+				// Legacy: try matching by model-only (value without "|")
+				for _, opt := range tierOptions {
+					if opt["value"] == currentModel || strings.HasSuffix(opt["value"].(string), "|"+currentModel) {
+						tierCtrl["initial_option"] = opt["value"]
+						break
+					}
+				}
+			} else {
+				for _, opt := range tierOptions {
+					if opt["value"] == currentKey {
+						tierCtrl["initial_option"] = currentKey
+						break
+					}
+				}
+			}
+		}
+		tierFormElements = append(tierFormElements, tierCtrl)
+	}
+	// Single submit button saves all 3 tier settings together.
+	tierFormElements = append(tierFormElements, map[string]any{
+		"tag":         "button",
+		"name":        "tier_form_submit",
+		"text":        map[string]any{"tag": "plain_text", "content": "保存 Tier 设置"},
+		"type":        "primary",
+		"action_type": "form_submit",
+		"value": map[string]string{
+			"action_data": mustMapToJSON(map[string]string{
+				"action":    "settings_select_submit",
+				"form_name": "tier_form",
+			}),
+		},
+	})
+	elements = append(elements, map[string]any{
+		"tag":      "form",
+		"name":     "tier_form",
+		"elements": tierFormElements,
+	})
+
+	return elements, nil
+}
+
+// BuildLLMsCard constructs a standalone card for subscription management
+// (list, add, edit, delete, enable/disable). Triggered by /llms command.
+func (f *FeishuChannel) BuildLLMsCard(ctx context.Context, senderID string) (map[string]any, error) {
+	content, err := f.buildLLMsCardContent(senderID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"wide_screen_mode": true,
+			"update_multi":     true,
+		},
+		"header": map[string]any{
+			"title":    map[string]any{"tag": "plain_text", "content": "🔗 订阅管理"},
+			"template": "green",
+		},
+		"body": map[string]any{
+			"elements": content,
+		},
+	}, nil
+}
+
+// buildLLMsCardContent builds the body elements for the LLMs (subscription) card.
+// Subscriptions are listed with enable/disable, edit, delete buttons.
+// System subscriptions (is_system) are read-only — only shown with a 🔒 badge.
+func (f *FeishuChannel) buildLLMsCardContent(senderID string) ([]map[string]any, error) {
+	var elements []map[string]any
+
+	if f.settingsCallbacks.LLMListSubscriptions == nil {
+		return elements, nil
+	}
+
+	subs, err := f.settingsCallbacks.LLMListSubscriptions(senderID)
+	if err != nil {
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": fmt.Sprintf("⚠️ 加载订阅失败: %v", err),
+		})
+		return elements, nil
+	}
+
+	if len(subs) == 0 {
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": "暂无订阅。点击下方按钮添加。",
+		})
+	} else {
+		for _, sub := range subs {
+			// System subscription: read-only badge, no action buttons
+			if sub.IsSystem {
+				label := fmt.Sprintf("🔒 %s — %s (%s)", sub.Name, sub.Provider, sub.Model)
+				elements = append(elements, buildItemRow(label, "", []map[string]any{
+					{
+						"tag":  "button",
+						"text": map[string]any{"tag": "plain_text", "content": "系统内置"},
+						"type": "default",
+					},
+				}...))
+				if sub.BaseURL != "" {
+					elements = append(elements, map[string]any{
+						"tag":     "markdown",
+						"content": "　　" + sub.BaseURL,
+					})
+				}
+				continue
+			}
+
+			// Enabled/disabled indicator
+			statusMark := "✅ "
+			if !sub.Enabled {
+				statusMark = "⏸️ "
+			}
+			label := fmt.Sprintf("%s%s — %s (%s)", statusMark, sub.Name, sub.Provider, sub.Model)
+
+			var btns []map[string]any
+
+			// Enable/disable toggle button
+			if sub.Enabled {
+				btns = append(btns, map[string]any{
+					"tag":  "button",
+					"text": map[string]any{"tag": "plain_text", "content": "禁用"},
+					"type": "default",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action":          "settings_toggle_subscription",
+							"subscription_id": sub.ID,
+							"enabled":         "false",
+						}),
+					},
+				})
+			} else {
+				btns = append(btns, map[string]any{
+					"tag":  "button",
+					"text": map[string]any{"tag": "plain_text", "content": "启用"},
+					"type": "primary",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action":          "settings_toggle_subscription",
+							"subscription_id": sub.ID,
+							"enabled":         "true",
+						}),
+					},
+				})
+			}
+
+			btns = append(btns, map[string]any{
+				"tag":  "button",
+				"text": map[string]any{"tag": "plain_text", "content": "编辑"},
+				"type": "default",
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action":          "settings_edit_subscription",
+						"subscription_id": sub.ID,
+					}),
+				},
+			})
+			btns = append(btns, map[string]any{
+				"tag":  "button",
+				"text": map[string]any{"tag": "plain_text", "content": "删除"},
+				"type": "danger",
+				"value": map[string]string{
+					"action_data": mustMapToJSON(map[string]string{
+						"action":          "settings_delete_subscription",
+						"subscription_id": sub.ID,
+					}),
+				},
+			})
+			elements = append(elements, buildItemRow(label, "", btns...))
+			if sub.BaseURL != "" {
+				elements = append(elements, map[string]any{
+					"tag":     "markdown",
+					"content": "　　" + sub.BaseURL,
+				})
+			}
+		}
+	}
+
+	// Add subscription button
+	elements = append(elements, map[string]any{
+		"tag": "button",
+		"text": map[string]any{
+			"tag":     "plain_text",
+			"content": "➕ 添加订阅",
+		},
+		"type": "default",
+		"value": map[string]string{
+			"action_data": mustMapToJSON(map[string]string{
+				"action": "settings_add_subscription",
+			}),
+		},
+	})
+
+	return elements, nil
+}
+
+// --- Danger zone helpers ---
+
+// dangerTargetLabel returns the human-readable label for a danger action.
+func dangerTargetLabel(action string) string {
+	labels := map[string]string{
+		"danger_clear_session":       "会话历史",
+		"danger_clear_core_persona":  "Core Memory (persona)",
+		"danger_clear_core_human":    "Core Memory (human)",
+		"danger_clear_core_working":  "Core Memory (working_context)",
+		"danger_clear_core_all":      "Core Memory (全部)",
+		"danger_clear_long_term":     "长期记忆",
+		"danger_clear_event_history": "事件历史",
+		"danger_clear_archival":      "归档记忆（向量数据库）",
+		"danger_reset_all":           "全部记忆",
+	}
+	if label, ok := labels[action]; ok {
+		return label
+	}
+	return action
+}
+
+// dangerConfirmString returns the string the user must type to confirm.
+func dangerConfirmString(action string) string {
+	strs := map[string]string{
+		"danger_clear_session":       "DELETE-SESSION",
+		"danger_clear_core_persona":  "DELETE-PERSONA",
+		"danger_clear_core_human":    "DELETE-HUMAN",
+		"danger_clear_core_working":  "DELETE-WORKING",
+		"danger_clear_core_all":      "DELETE-CORE-MEMORY",
+		"danger_clear_long_term":     "DELETE-LONG-TERM",
+		"danger_clear_event_history": "DELETE-HISTORY",
+		"danger_clear_archival":      "DELETE-ARCHIVAL",
+		"danger_reset_all":           "RESET-ALL-MEMORY",
+	}
+	if s, ok := strs[action]; ok {
+		return s
+	}
+	return "CONFIRM-DELETE"
+}
+
+// buildDangerTabContent builds the danger zone tab with memory stats and clear buttons.
+func (f *FeishuChannel) buildDangerTabContent(ctx context.Context, senderID, chatID string) []map[string]any {
+	var elements []map[string]any
+
+	elements = append(elements, map[string]any{
+		"tag":     "markdown",
+		"content": "**⚠️ 危险区**\n以下操作不可恢复，请谨慎操作。",
+	})
+	elements = append(elements, map[string]any{"tag": "hr"})
+
+	stats := map[string]string{}
+	if f.settingsCallbacks.MemoryGetStats != nil {
+		stats = f.settingsCallbacks.MemoryGetStats(senderID, chatID)
+	}
+
+	type dangerItem struct {
+		action string
+		label  string
+		stat   string
+	}
+	items := []dangerItem{
+		{"danger_clear_session", "会话历史", stats["session"]},
+		{"danger_clear_core_persona", "Core Memory: persona", stats["persona"]},
+		{"danger_clear_core_human", "Core Memory: human", stats["human"]},
+		{"danger_clear_core_working", "Core Memory: working_context", stats["working_context"]},
+		{"danger_clear_core_all", "Core Memory: 全部", ""},
+		{"danger_clear_long_term", "长期记忆", stats["long_term"]},
+		{"danger_clear_event_history", "事件历史", stats["event_history"]},
+		{"danger_clear_archival", "归档记忆（向量数据库）", stats["archival"]},
+	}
+
+	for _, item := range items {
+		text := fmt.Sprintf("🗑️ 清空 %s", item.label)
+		if item.stat != "" {
+			text += fmt.Sprintf("（%s）", item.stat)
+		}
+		elements = append(elements, map[string]any{
+			"tag":  "button",
+			"text": map[string]any{"tag": "plain_text", "content": text},
+			"type": "danger",
+			"value": map[string]string{
+				"action_data": mustMapToJSON(map[string]string{"action": item.action}),
+			},
+		})
+	}
+
+	elements = append(elements, map[string]any{"tag": "hr"})
+	elements = append(elements, map[string]any{
+		"tag":     "markdown",
+		"content": "**🔴 一键重置全部**\n清空以上所有记忆数据。",
+	})
+	elements = append(elements, map[string]any{
+		"tag":  "button",
+		"text": map[string]any{"tag": "plain_text", "content": "🔴 重置全部记忆"},
+		"type": "danger",
+		"value": map[string]string{
+			"action_data": mustMapToJSON(map[string]string{"action": "danger_reset_all"}),
+		},
+	})
+
+	return elements
+}
+
+// buildDangerConfirmCard builds a confirmation card requiring user to type a confirm string.
+func buildDangerConfirmCard(targetLabel, confirmString, targetAction string) map[string]any {
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{"wide_screen_mode": true},
+		"header": map[string]any{
+			"title":    map[string]any{"tag": "plain_text", "content": "⚠️ 确认清空"},
+			"template": "red",
+		},
+		"body": map[string]any{
+			"elements": []map[string]any{
+				{
+					"tag":     "markdown",
+					"content": fmt.Sprintf("**确认清空：%s**\n\n此操作不可恢复。请在下方输入框中输入以下文字确认：\n\n`%s`", targetLabel, confirmString),
+				},
+				{"tag": "hr"},
+				{
+					"tag":  "form",
+					"name": "danger_confirm_form",
+					"elements": []map[string]any{
+						{
+							"tag":   "input",
+							"name":  "confirm_input",
+							"label": map[string]any{"tag": "plain_text", "content": "确认文字"},
+							"placeholder": map[string]any{
+								"tag":     "plain_text",
+								"content": confirmString,
+							},
+						},
+						{
+							"tag":         "button",
+							"name":        "danger_confirm_cancel",
+							"text":        map[string]any{"tag": "plain_text", "content": "取消"},
+							"type":        "default",
+							"action_type": "form_reset",
+						},
+						{
+							"tag":         "button",
+							"name":        "danger_confirm_submit",
+							"text":        map[string]any{"tag": "plain_text", "content": "🔴 确认清空"},
+							"type":        "danger",
+							"action_type": "form_submit",
+							"value": map[string]string{
+								"action_data": mustMapToJSON(map[string]string{
+									"action":        "danger_confirm",
+									"target_action": targetAction,
+									// expect_input removed: server validates via dangerConfirmString(target_action)
+								}),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// buildDangerResultCard builds a result card after danger zone action.
+func buildDangerResultCard(message string) map[string]any {
+	return map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{"wide_screen_mode": true},
+		"header": map[string]any{
+			"title":    map[string]any{"tag": "plain_text", "content": "记忆管理"},
+			"template": "red",
+		},
+		"body": map[string]any{
+			"elements": []map[string]any{
+				{
+					"tag":     "markdown",
+					"content": message,
+				},
+			},
+		},
+	}
+}
+
+// buildItemRow creates a column_set row with a label on the left and buttons on the right.
+func buildItemRow(name, status string, buttons ...map[string]any) map[string]any {
+	leftText := "• " + name
+	if status != "" {
+		leftText += "　" + status
+	}
+	return map[string]any{
+		"tag":                "column_set",
+		"flex_mode":          "none",
+		"horizontal_spacing": "default",
+		"columns": []map[string]any{
+			{
+				"tag":            "column",
+				"width":          "weighted",
+				"weight":         2,
+				"vertical_align": "center",
+				"elements": []map[string]any{
+					{"tag": "markdown", "content": leftText},
+				},
+			},
+			{
+				"tag":            "column",
+				"width":          "weighted",
+				"weight":         1,
+				"vertical_align": "center",
+				"elements": []map[string]any{
+					{
+						"tag":      "interactive_container",
+						"elements": buttons,
+					},
+				},
+			},
+		},
+	}
+}
+
+// --- Layout helpers ---
+
+// buildSelectFormRow wraps a select_static component inside a form.
+// Feishu requires: (1) select_static MUST be inside a form to trigger callbacks,
+// (2) every form MUST have a submit button (action_type: form_submit).
+// Without the submit button, Feishu silently rejects the entire card update,
+// making the containing tab unreachable.
+func buildSelectFormRow(label, currentDisplay, formName string, selectControl map[string]any) []map[string]any {
+	leftContent := label
+	if currentDisplay != "" {
+		leftContent = fmt.Sprintf("%s　**%s**", label, currentDisplay)
+	}
+	return []map[string]any{
+		{
+			"tag":     "markdown",
+			"content": leftContent,
+		},
+		{
+			"tag":  "form",
+			"name": formName,
+			"elements": []map[string]any{
+				selectControl,
+				{
+					"tag":         "button",
+					"name":        formName + "_submit",
+					"text":        map[string]any{"tag": "plain_text", "content": "确认"},
+					"type":        "primary",
+					"action_type": "form_submit",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action":    "settings_select_submit",
+							"form_name": formName,
+						}),
+					},
+				},
+			},
+		},
+	}
+}
+
+func wrapButtonsInColumns(buttons []map[string]any) map[string]any {
+	return map[string]any{
+		"tag":                "column_set",
+		"flex_mode":          "none",
+		"horizontal_spacing": "default",
+		"columns": []map[string]any{
+			{
+				"tag":    "column",
+				"width":  "weighted",
+				"weight": 1,
+				"elements": []map[string]any{
+					{
+						"tag":      "interactive_container",
+						"elements": buttons,
+					},
+				},
+			},
+		},
+	}
+}
+
+// --- Thinking mode helpers ---
+
+var thinkingModeLabelMap = map[string]string{
+	"":        "auto（自动）",
+	"enabled": "enabled（开启）",
+	`{"type":"enabled","clear_thinking":false}`: "enabled + preserved（保留推理）",
+	"disabled": "disabled（关闭）",
+	"adaptive": "adaptive（自适应）",
+}
+
+func thinkingModeLabel(mode string) string {
+	if l, ok := thinkingModeLabelMap[mode]; ok {
+		return l
+	}
+	return mode
+}
+
+func thinkingModeOptions() []map[string]any {
+	return []map[string]any{
+		{"text": map[string]any{"tag": "plain_text", "content": "auto（自动）"}, "value": "auto"},
+		{"text": map[string]any{"tag": "plain_text", "content": "enabled（开启）"}, "value": "enabled"},
+		{"text": map[string]any{"tag": "plain_text", "content": "enabled + preserved（保留推理）"}, "value": `{"type":"enabled","clear_thinking":false}`},
+		{"text": map[string]any{"tag": "plain_text", "content": "disabled（关闭）"}, "value": "disabled"},
+		{"text": map[string]any{"tag": "plain_text", "content": "adaptive（自适应）"}, "value": "adaptive"},
+	}
+}
+
+// --- Parsing helpers ---
+
+func mustMapToJSON(m map[string]string) string {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+func parseActionData(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var result map[string]string
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil
+	}
+	return result
+}
+
+func parseActionDataFromMap(actionData map[string]any) map[string]string {
+	raw, ok := actionData["action_data"].(string)
+	if !ok {
+		return nil
+	}
+	return parseActionData(raw)
+}
+
+func formStr(actionData map[string]any, key string) string {
+	if v, ok := actionData[key].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// buildMetricsTabContent builds the metrics dashboard tab.
+func (f *FeishuChannel) buildMetricsTabContent() []map[string]any {
+	var elements []map[string]any
+
+	if f.settingsCallbacks.MetricsGet == nil {
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": "_指标功能未启用_",
+		})
+		return elements
+	}
+
+	metricsText := f.settingsCallbacks.MetricsGet()
+	if metricsText == "" {
+		metricsText = "暂无指标数据"
+	}
+
+	elements = append(elements, map[string]any{
+		"tag":     "markdown",
+		"content": metricsText,
+	})
+
+	return elements
+}

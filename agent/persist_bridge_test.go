@@ -212,12 +212,12 @@ func TestRewriteAfterCompress_NilSession(t *testing.T) {
 		{Role: "user", Content: "compressed summary"},
 	}
 
-	ok, err := b.RewriteAfterCompress(sessionView, 10)
+	historyID, err := b.RewriteAfterCompress(sessionView, 10)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
-	if !ok {
-		t.Error("expected ok=true for nil session")
+	if historyID != 0 {
+		t.Errorf("expected zero history ID for nil session, got %d", historyID)
 	}
 	// Count should NOT be updated when session is nil (no-op)
 	if b.LastPersistedCount() != 3 {
@@ -228,12 +228,12 @@ func TestRewriteAfterCompress_NilSession(t *testing.T) {
 func TestRewriteAfterCompress_NilSession_EmptyView(t *testing.T) {
 	b := NewPersistenceBridge(nil, 5)
 
-	ok, err := b.RewriteAfterCompress(nil, 10)
+	historyID, err := b.RewriteAfterCompress(nil, 10)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
-	if !ok {
-		t.Error("expected ok=true for nil session with empty view")
+	if historyID != 0 {
+		t.Errorf("expected zero history ID for nil session, got %d", historyID)
 	}
 	// Count must NOT be updated when session is nil
 	if b.LastPersistedCount() != 5 {
@@ -250,12 +250,12 @@ func TestRewriteAfterCompress_NilSession_WithMixedMessages(t *testing.T) {
 		{Role: "assistant", Content: "response"},
 	}
 
-	ok, err := b.RewriteAfterCompress(sessionView, 8)
+	historyID, err := b.RewriteAfterCompress(sessionView, 8)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
-	if !ok {
-		t.Error("expected ok=true for nil session with mixed messages")
+	if historyID != 0 {
+		t.Errorf("expected zero history ID for nil session, got %d", historyID)
 	}
 	// Count must NOT be updated — nil session means no persistence happened
 	if b.LastPersistedCount() != 2 {
@@ -270,12 +270,12 @@ func TestRewriteAfterCompress_NilSession_ZeroMsgCount(t *testing.T) {
 		{Role: "user", Content: "hello"},
 	}
 
-	ok, err := b.RewriteAfterCompress(sessionView, 0)
+	historyID, err := b.RewriteAfterCompress(sessionView, 0)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
-	if !ok {
-		t.Error("expected ok=true for nil session")
+	if historyID != 0 {
+		t.Errorf("expected zero history ID for nil session, got %d", historyID)
 	}
 	if b.LastPersistedCount() != 0 {
 		t.Errorf("expected count unchanged at 0, got %d", b.LastPersistedCount())
@@ -289,12 +289,12 @@ func TestRewriteAfterCompress_NilSession_LargeMsgCount(t *testing.T) {
 		{Role: "user", Content: "summary"},
 	}
 
-	ok, err := b.RewriteAfterCompress(sessionView, 500)
+	historyID, err := b.RewriteAfterCompress(sessionView, 500)
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
-	if !ok {
-		t.Error("expected ok=true for nil session")
+	if historyID != 0 {
+		t.Errorf("expected zero history ID for nil session, got %d", historyID)
 	}
 	// Count should NOT jump to 500 — nil session means nothing was written
 	if b.LastPersistedCount() != 100 {

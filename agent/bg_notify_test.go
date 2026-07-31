@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -70,9 +71,7 @@ func TestDrainAndProcessNotifications_Synchronous(t *testing.T) {
 		t.Fatal("timed out waiting for notification from NotifyCh")
 	}
 
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, notif)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotification(notif)
 
 	a.drainAndProcessNotifications("cli:test-chat")
 
@@ -88,9 +87,7 @@ func TestDrainAndProcessNotifications_Synchronous(t *testing.T) {
 		t.Fatal("drainAndProcessNotifications should have synchronously injected notification into bus.Inbound")
 	}
 
-	a.bgRunPendingMu.Lock()
-	remaining := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	remaining := a.pendingBgNotifications("cli:test-chat")
 	if len(remaining) != 0 {
 		t.Errorf("bgRunPending should be empty after draining matching session, got %d items", len(remaining))
 	}
@@ -132,9 +129,7 @@ func TestDrainAndProcessNotifications_CrossSessionIsolation(t *testing.T) {
 	}
 
 	// Buffer both
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, notifs...)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotifications(notifs)
 
 	// Drain only chat-a's notifications
 	a.drainAndProcessNotifications("cli:chat-a")
@@ -153,10 +148,7 @@ func TestDrainAndProcessNotifications_CrossSessionIsolation(t *testing.T) {
 		}
 	}
 
-	// chat-b's notification should still be in bgRunPending
-	a.bgRunPendingMu.Lock()
-	remaining := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	remaining := a.pendingBgNotifications("cli:chat-b")
 	if len(remaining) != 1 {
 		t.Fatalf("bgRunPending should have exactly 1 item (chat-b's), got %d", len(remaining))
 	}
@@ -209,9 +201,7 @@ func TestBgNotifyLoop_AlwaysBuffers_NoIdlePath(t *testing.T) {
 	}
 
 	// Verify notification is in bgRunPending (not processed directly)
-	a.bgRunPendingMu.Lock()
-	pending := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	pending := a.pendingBgNotifications(chatKey)
 
 	if len(pending) == 0 {
 		t.Fatal("bgRunPending should have the notification — bgNotifyLoop must ALWAYS buffer, never process directly")
@@ -360,9 +350,7 @@ func TestDrainAndProcessNotifications_ConcurrentSafety(t *testing.T) {
 	}
 
 	// Buffer all at once
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, notifs...)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotifications(notifs)
 
 	// Drain concurrently from two goroutines (simulating chatProcessLoop + chatWorker race)
 	var wg sync.WaitGroup
@@ -377,26 +365,26 @@ func TestDrainAndProcessNotifications_ConcurrentSafety(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// Count messages in bus.Inbound — should be exactly 10 (no duplicates, no losses)
+	// Count messages in bus.Inbound — should be exactly 1 (batched, no duplicates, no losses)
 	count := 0
 	timeout := time.After(2 * time.Second)
-	for count < 10 {
+	for count < 1 {
 		select {
 		case <-a.bus.Inbound:
 			count++
 		case <-timeout:
-			t.Fatalf("expected 10 messages in bus.Inbound, got %d (duplicates or losses)", count)
+			t.Fatalf("expected 1 batched message in bus.Inbound, got %d (duplicates or losses)", count)
 		}
 	}
 
 	// Check no more messages (no duplicates)
 	select {
 	case <-a.bus.Inbound:
-		t.Fatal("should not have more than 10 messages — possible duplicate")
+		t.Fatal("should not have more than 1 message — possible duplicate")
 	default:
 	}
 
-	t.Logf("SUCCESS: exactly 10 of 10 notifications processed (no duplicates, no losses)")
+	t.Logf("SUCCESS: exactly 1 batched message for 10 notifications (no duplicates, no losses)")
 }
 
 // TestDrainAndProcessNotifications_AfterResponseSent verifies the KEY INVARIANT:
@@ -439,9 +427,7 @@ func TestDrainAndProcessNotifications_AfterResponseSent(t *testing.T) {
 		return 0, nil
 	})
 	notif := <-mgr.NotifyCh
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, notif)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotification(notif)
 
 	// Simulate chatProcessLoop turn
 	ss.busy.Store(true)
@@ -484,10 +470,14 @@ func TestDrainAndProcessNotifications_AfterResponseSent(t *testing.T) {
 	}
 }
 
-// TestBgNotifyLoop_NoDirectProcessing verifies that bgNotifyLoop
-// never sends to bus.Inbound directly — it only buffers.
-// This is the KEY architectural invariant of the redesign.
-func TestBgNotifyLoop_NoDirectProcessing(t *testing.T) {
+// TestBgNotifyLoop_NoDirectProcessing_WithActiveSession verifies that bgNotifyLoop
+// does NOT send to bus.Inbound directly when the session has an active chatWorker.
+// Instead, it only buffers and signals notifyCh. This avoids the race between
+// injectCLIUserMessage and the agent's reply on asyncCh.
+//
+// NOTE: When no chatWorker exists (unregistered session), bgNotifyLoop DOES process
+// directly — see TestBgNotifyLoop_CronFired_NoSession_ProcessesDirectly.
+func TestBgNotifyLoop_NoDirectProcessing_WithActiveSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -498,29 +488,35 @@ func TestBgNotifyLoop_NoDirectProcessing(t *testing.T) {
 		bgTaskMgr: mgr,
 	}
 
+	chatKey := "cli:active-session"
+
+	// Register a bgSessionState (simulates active chatWorker)
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(chatKey, ss)
+	defer a.bgSessionStates.Delete(chatKey)
+
 	// Start bgNotifyLoop
 	go a.bgNotifyLoop()
 
-	// Start 5 tasks for an UNREGISTERED session (no bgSessionState)
+	// Start 5 tasks for the REGISTERED session
 	for i := 0; i < 5; i++ {
-		_ = mgr.Start("cli:unregistered", "user-1", "echo test", func(ctx context.Context, outputBuf func(string)) (int, error) {
+		_ = mgr.Start(chatKey, "user-1", "echo test", func(ctx context.Context, outputBuf func(string)) (int, error) {
 			outputBuf("output")
 			return 0, nil
 		})
 	}
 
-	// Wait for bgNotifyLoop to read and buffer all 5 notifications
+	// Wait for bgNotifyLoop to read, buffer, and signal all 5 notifications
 	requireEventual(t, 5*time.Second, 10*time.Millisecond, func() error {
-		a.bgRunPendingMu.Lock()
-		n := len(a.bgRunPending)
-		a.bgRunPendingMu.Unlock()
+		pending := a.pendingBgNotifications(chatKey)
+		n := len(pending)
 		if n < 5 {
 			return fmt.Errorf("bgRunPending has %d/5 notifications", n)
 		}
 		return nil
 	})
 
-	// Check bus.Inbound — should be EMPTY (no direct processing)
+	// Check bus.Inbound — should be EMPTY (no direct processing for active session)
 	var unexpectedMsgs int
 	for {
 		select {
@@ -533,10 +529,10 @@ func TestBgNotifyLoop_NoDirectProcessing(t *testing.T) {
 done:
 
 	if unexpectedMsgs > 0 {
-		t.Fatalf("bgNotifyLoop should NEVER send to bus.Inbound directly, but sent %d messages — idle path leak!", unexpectedMsgs)
+		t.Fatalf("bgNotifyLoop should NEVER send to bus.Inbound directly for active session, but sent %d messages — idle path leak!", unexpectedMsgs)
 	}
 
-	t.Logf("SUCCESS: 5 notifications buffered, %d directly processed (want 0)", unexpectedMsgs)
+	t.Logf("SUCCESS: 5 notifications buffered for active session, %d directly processed (want 0)", unexpectedMsgs)
 }
 
 func requireEventual(t *testing.T, timeout, interval time.Duration, check func() error) {
@@ -574,9 +570,7 @@ func TestDrainAndProcessNotifications_CronFired(t *testing.T) {
 		Sid:     "user-1",
 		Message: "check server status",
 	}
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, cronNotif)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotification(cronNotif)
 
 	a.drainAndProcessNotifications("cli:test-chat")
 
@@ -597,9 +591,7 @@ func TestDrainAndProcessNotifications_CronFired(t *testing.T) {
 	}
 
 	// Verify nothing left in bgRunPending
-	a.bgRunPendingMu.Lock()
-	remaining := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	remaining := a.pendingBgNotifications("cli:test-chat")
 	if len(remaining) != 0 {
 		t.Errorf("bgRunPending should be empty after draining, got %d items", len(remaining))
 	}
@@ -644,9 +636,7 @@ func TestBgNotifyLoop_CronFired_BuffersAndSignals(t *testing.T) {
 	}
 
 	// Verify notification is in bgRunPending (not processed directly)
-	a.bgRunPendingMu.Lock()
-	pending := a.bgRunPending
-	a.bgRunPendingMu.Unlock()
+	pending := a.pendingBgNotifications(chatKey)
 
 	if len(pending) == 0 {
 		t.Fatal("bgRunPending should have the CronFired notification")
@@ -709,42 +699,151 @@ func TestDrainAndProcessNotifications_MixedTypes(t *testing.T) {
 		Sid:     "user-1",
 		Message: "check health",
 	}
-	a.bgRunPendingMu.Lock()
-	a.bgRunPending = append(a.bgRunPending, bgNotif, cronNotif)
-	a.bgRunPendingMu.Unlock()
+	a.enqueueBgNotifications([]tools.BgNotification{bgNotif, cronNotif})
 
 	a.drainAndProcessNotifications(chatKey)
 
-	// Should receive 2 messages in bus.Inbound
+	// Should receive 1 batched message in bus.Inbound (bg task + cron merged)
 	var msgs []bus.InboundMessage
 	timeout := time.After(2 * time.Second)
-	for len(msgs) < 2 {
+	for len(msgs) < 1 {
 		select {
 		case msg := <-a.bus.Inbound:
 			msgs = append(msgs, msg)
 		case <-timeout:
-			t.Fatalf("expected 2 messages in bus.Inbound, got %d", len(msgs))
+			t.Fatalf("expected 1 batched message in bus.Inbound, got %d", len(msgs))
 		}
 	}
 
-	// One should be a cron message (⏰ prefix), one should be a bg task message
-	hasCron := false
-	hasBgTask := false
-	for _, msg := range msgs {
-		if containsPrefix(msg.Content, "⏰") {
-			hasCron = true
-		} else {
-			hasBgTask = true
-		}
-	}
+	// The single message should contain both cron (⏰) and bg task content
+	hasCron := strings.Contains(msgs[0].Content, "⏰")
+	hasBgTask := strings.Contains(msgs[0].Content, "[System Notification]")
 	if !hasCron {
-		t.Error("expected one message with ⏰ prefix (cron)")
+		t.Error("expected batched message to contain ⏰ prefix (cron)")
 	}
 	if !hasBgTask {
-		t.Error("expected one message without ⏰ prefix (bg task)")
+		t.Error("expected batched message to contain [System Notification] (bg task)")
 	}
 
-	t.Logf("SUCCESS: both bg task and CronFired notifications processed in mixed drain")
+	t.Logf("SUCCESS: bg task and CronFired merged into 1 batched message")
+}
+
+// TestBgNotifyLoop_CronFired_NoSession_ProcessesDirectly is the regression test for
+// the bug where cron triggers after service restart never fired until the user sent
+// the first message. The root cause: bgNotifyLoop only signaled sessions registered
+// in bgSessionStates, but those are created lazily by chatWorker (on first inbound
+// message). After restart with no active session, cron notifications accumulated in
+// bgRunPending with nobody to drain them.
+//
+// This test verifies that when no chatWorker exists for a session, bgNotifyLoop
+// processes notifications directly via drainAndProcessNotifications, injecting the
+// cron message into bus.Inbound without waiting for a user message.
+func TestBgNotifyLoop_CronFired_NoSession_ProcessesDirectly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr := tools.NewBackgroundTaskManager()
+	a := &Agent{
+		bus:       bus.NewMessageBus(),
+		agentCtx:  ctx,
+		bgTaskMgr: mgr,
+	}
+
+	chatKey := "cli:restart-test-chat"
+
+	// CRITICAL: do NOT register a bgSessionState — simulates restart state
+	// where no chatWorker has been created yet.
+
+	// Start bgNotifyLoop
+	go a.bgNotifyLoop()
+	defer func() {
+		cancel() // stop bgNotifyLoop
+	}()
+
+	// Send a CronFired — should be processed directly since no chatWorker exists
+	mgr.SendCronFired(&tools.CronFired{
+		Key:     chatKey,
+		Sid:     "user-1",
+		Message: "scheduled backup",
+	})
+
+	// The notification should appear in bus.Inbound (processed directly, not
+	// just buffered). Wait up to 5s for the async processing.
+	select {
+	case msg := <-a.bus.Inbound:
+		if msg.Channel != "cli" {
+			t.Errorf("Channel = %q, want %q", msg.Channel, "cli")
+		}
+		if msg.ChatID != "restart-test-chat" {
+			t.Errorf("ChatID = %q, want %q", msg.ChatID, "restart-test-chat")
+		}
+		if !containsPrefix(msg.Content, "⏰") {
+			t.Errorf("Content should have ⏰ prefix for cron, got: %s", msg.Content)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out — CronFired was not processed directly when no session exists " +
+			"(bgNotifyLoop should drain immediately for sessions without chatWorker)")
+	}
+
+	// bgRunPending should be empty — drainAndProcessNotifications consumed it
+	a.bgRunPendingMu.Lock()
+	remaining := len(a.bgRunPending)
+	a.bgRunPendingMu.Unlock()
+	if remaining != 0 {
+		t.Errorf("bgRunPending should be empty after direct processing, got %d items", remaining)
+	}
+
+	t.Logf("SUCCESS: CronFired processed directly without an active chatWorker")
+}
+
+// TestBgNotifyLoop_CronFired_NoSession_MultipleNotifications verifies that multiple
+// cron triggers for a session without chatWorker are all processed, not just the first.
+func TestBgNotifyLoop_CronFired_NoSession_MultipleNotifications(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr := tools.NewBackgroundTaskManager()
+	a := &Agent{
+		bus:       bus.NewMessageBus(),
+		agentCtx:  ctx,
+		bgTaskMgr: mgr,
+	}
+
+	chatKey := "cli:multi-restart-chat"
+
+	go a.bgNotifyLoop()
+	defer cancel()
+
+	// Send 3 cron notifications
+	for i := 0; i < 3; i++ {
+		mgr.SendCronFired(&tools.CronFired{
+			Key:     chatKey,
+			Sid:     "user-1",
+			Message: fmt.Sprintf("task %d", i),
+		})
+	}
+
+	// All 3 should be processed and appear in bus.Inbound
+	timeout := time.After(5 * time.Second)
+	count := 0
+	for count < 3 {
+		select {
+		case <-a.bus.Inbound:
+			count++
+		case <-timeout:
+			t.Fatalf("expected 3 messages in bus.Inbound, got %d", count)
+		}
+	}
+
+	// bgRunPending should be empty
+	a.bgRunPendingMu.Lock()
+	remaining := len(a.bgRunPending)
+	a.bgRunPendingMu.Unlock()
+	if remaining != 0 {
+		t.Errorf("bgRunPending should be empty, got %d items", remaining)
+	}
+
+	t.Logf("SUCCESS: all 3 CronFired notifications processed without chatWorker")
 }
 
 // containsPrefix checks if s starts with the given prefix string.

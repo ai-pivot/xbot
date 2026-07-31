@@ -60,6 +60,8 @@ type RunConfig struct {
 	SenderName   string
 	FeishuUserID string // 非空表示通过飞书身份登录 web（用于 runner 路由）
 	TenantID     int64  // 当前租户 ID（用于 per-tenant 工具可见性）
+	UserID       int64  // Canonical user ID (from IdentityResolver, 0 in standalone mode)
+	Role         string // User role ("admin" | "user", from IdentityResolver)
 
 	// === 工作区 & 沙箱 ===
 	WorkingDir          string   // Agent 工作目录（宿主机）
@@ -72,7 +74,8 @@ type RunConfig struct {
 	DataDir             string        // 数据持久化目录
 	SandboxEnabled      bool          // 是否启用命令沙箱
 	PreferredSandbox    string        // 沙箱类型（docker 优先）
-	Sandbox             tools.Sandbox // Sandbox 实例引用（V4 新增）
+	Sandbox             tools.Sandbox // 当前解析的 Sandbox（每次工具执行前从 SandboxRouter 重新解析）
+	SandboxRouter       tools.Sandbox // 原始 SandboxRouter 引用（用于每次工具执行时重新解析 session 级 runner 绑定）
 	SandboxMode         string        // 实际沙箱模式："none", "docker", "remote"
 	InitialCWD          string        // 初始当前工作目录（宿主机路径，用于 SubAgent 继承父 Agent 的 CWD）
 	InitialGroupID      string        // 群组 ID（SubAgent 继承，用于 SendMessage 跨群校验）
@@ -96,6 +99,17 @@ type RunConfig struct {
 	// SubAgent 场景下指向主 Agent 的 session key，用于 offload_recall 等需要访问父 session 数据的场景。
 	// 主 Agent 场景下为空（与 SessionKey 相同）。
 	RootSessionKey string
+
+	// SubID is the subscription ID used to build the LLM client.
+	// For SubAgents, this is the subscription that owns cfg.Model.
+	// Used by GetAgentSessionDump for TUI status bar display.
+	SubID string
+
+	// TurnID uniquely identifies this agent turn. Assigned by chatProcessLoop
+	// (per-session monotonic counter) and propagated to StructuredProgress so
+	// every progress event carries it. The frontend matches user messages to
+	// assistant responses by TurnID. 0 = untracked (SubAgent, tests).
+	TurnID uint64
 
 	// ProgressNotifier 进度通知回调（text-based, 用于通知父 Agent）。
 	// autoNotify 由 ProgressNotifier 或 ProgressEventHandler 的存在决定，
@@ -137,11 +151,6 @@ type RunConfig struct {
 	// SubAgent 使用 nil（defaultToolExecutor 从 cfg.Tools 查找并执行）。
 	ToolExecutor func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error)
 
-	// ToolTimeout is deprecated and no longer used for wrapping tool contexts.
-	// Individual tools (e.g. Shell) manage their own timeouts.
-	// Engine only passes through the parent context (user Ctrl+C cancels it).
-	ToolTimeout time.Duration
-
 	// EnableReadWriteSplit 启用读写分离并行执行（默认 false = 全部串行）
 	EnableReadWriteSplit bool
 
@@ -160,8 +169,9 @@ type RunConfig struct {
 	// Used by the engine to read plugin-generated tool hints after PostToolUse hooks.
 	PluginManager *plugin.PluginManager
 
-	// SettingsSvc provides access to user settings (nil = settings not available).
-	SettingsSvc *SettingsService
+	// PermUsers is the resolved permission control config (from UserContext).
+	// Used by visibleToolDefs in the engine loop to avoid direct settingsSvc access.
+	PermUsers *PermUsersConfig
 
 	// TUICtrlFn is called by tui_control tool to operate TUI (CLI channel only).
 	TUICtrlFn func(action string, params map[string]string) (map[string]string, error)
@@ -182,6 +192,17 @@ type RunConfig struct {
 
 	// ListLLMSubs returns all LLM subscriptions for the current user.
 	ListLLMSubs func(channel, senderID string) []tools.SubscriptionInfo
+
+	// UpdateActiveSubFn updates the active subscription for the current user.
+	// Used by config tool's set action for subscription-scoped keys (llm_model, llm_provider, etc.).
+	// Takes the target field key and new value, returns the old value.
+	// Implementation routes to subscription manager (user_llm_subscriptions DB).
+	UpdateActiveSubFn func(key, value string) (string, error)
+
+	// GetActiveSubFieldFn reads a single field from the active subscription.
+	// Used by config tool's get action for subscription-scoped keys.
+	// Returns the field value (empty string if not set or no active subscription).
+	GetActiveSubFieldFn func(key string) (string, error)
 
 	// OffloadStore Layer 1 offload store（nil = 不启用）
 	OffloadStore *OffloadStore
@@ -206,6 +227,11 @@ type RunConfig struct {
 	// as tool results into the current Run loop.
 	// Returns nil when no notifications are pending. Called on each iteration.
 	DrainBgNotifications func() []tools.BgNotification
+
+	// AcknowledgeBgNotifications confirms that the first count notifications
+	// returned by DrainBgNotifications were durably persisted or intentionally
+	// discarded. A failed injection must not acknowledge its notification.
+	AcknowledgeBgNotifications func(count int)
 
 	// LLMSemAcquire is called before each LLM call to acquire a per-tenant
 	// concurrency slot. Returns a release function that must be called after
@@ -266,6 +292,19 @@ type RunConfig struct {
 	// reasoning delta during LLM streaming. Nil by default (no reasoning streaming).
 	StreamReasoningFunc func(content string)
 
+	// StreamToolCallFunc is called with the current snapshot of tool call deltas
+	// whenever a new tool name arrives in the stream (before arguments finish).
+	// This enables early tool detection — the UI can show "✦ Read generating…"
+	// immediately when the tool name is known, similar to Cursor.
+	// Nil by default (no early tool detection).
+	StreamToolCallFunc func(toolCalls []llm.ToolCallDelta)
+
+	// StreamUsageFunc is called with incremental token usage during LLM streaming.
+	// Anthropic provides output_tokens in message_delta events during streaming;
+	// OpenAI/DeepSeek only provide usage at stream end. When available, the TUI
+	// shows real-time token count (e.g. "42 tokens") instead of char count.
+	StreamUsageFunc func(usage *llm.TokenUsage)
+
 	// ProgressSeq is a per-Run monotonic counter shared between notifyProgress
 	// and stream callbacks. Created by buildRunConfig, consumed by runState.
 	ProgressSeq *atomic.Uint64
@@ -296,6 +335,19 @@ type InteractiveCallbacks struct {
 	UnloadFn    func(ctx context.Context, roleName, instance string) error
 	InterruptFn func(ctx context.Context, roleName, instance string) error
 	InspectFn   func(ctx context.Context, roleName, instance string, tail int) (string, error)
+	// ListActiveFn returns status of all active interactive SubAgents for the
+	// current session. Used by BuildSystemReminder to inject SubAgent state
+	// into the system prompt. Nil for SubAgents (they don't manage children).
+	ListActiveFn func(channel, chatID string) []SubAgentStatus
+}
+
+// SubAgentStatus is a lightweight snapshot of an interactive SubAgent's state,
+// used for system reminder injection so the parent agent knows which SubAgents
+// are currently busy or idle.
+type SubAgentStatus struct {
+	Role     string `json:"role"`
+	Instance string `json:"instance"`
+	Running  bool   `json:"running"`
 }
 
 // ToolContextExtras Letta 记忆相关的 ToolContext 扩展字段。
@@ -348,7 +400,7 @@ type RunOutput struct {
 // IterationSnapshot captures the tool summary of a completed iteration.
 type IterationSnapshot struct {
 	Iteration int                     `json:"iteration"`
-	Thinking  string                  `json:"thinking,omitempty"`
+	Content   string                  `json:"content,omitempty"`
 	Reasoning string                  `json:"reasoning,omitempty"`
 	Tools     []IterationToolSnapshot `json:"tools"`
 }
@@ -360,6 +412,8 @@ type IterationToolSnapshot struct {
 	Status    string `json:"status"` // done | error
 	ElapsedMS int64  `json:"elapsed_ms,omitempty"`
 	Summary   string `json:"summary,omitempty"`
+	Args      string `json:"args,omitempty"`
+	Detail    string `json:"detail,omitempty"` // full tool detail (e.g. display_html code)
 }
 
 // readArgsHasOffsetOrLimit checks whether a Read tool call's JSON arguments contain
@@ -390,19 +444,19 @@ func readArgsHasOffsetOrLimit(argsJSON string) bool {
 // which retries the entire stream cycle (connection + event collection), not just
 // the SSE connection. This ensures mid-stream errors (disconnects, server 5xx
 // during generation) are also retried with exponential backoff.
-func generateResponse(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string, stream bool, streamContentFn func(string), streamReasoningFn func(string)) (*llm.LLMResponse, error) {
+func generateResponse(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string, stream bool, streamContentFn func(string), streamReasoningFn func(string), streamToolCallFn func([]llm.ToolCallDelta), streamUsageFn func(*llm.TokenUsage)) (*llm.LLMResponse, error) {
 	if stream {
 		if sc, ok := client.(llm.StreamingLLM); ok {
 			// Prefer the retry-enabled full stream cycle when available.
 			if rl, ok := client.(*llm.RetryLLM); ok {
-				return rl.GenerateStreamAndCollect(ctx, model, messages, tools, thinkingMode, streamContentFn, streamReasoningFn)
+				return rl.GenerateStreamAndCollect(ctx, model, messages, tools, thinkingMode, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
 			}
 			eventCh, err := sc.GenerateStream(ctx, model, messages, tools, thinkingMode)
 			if err != nil {
 				return nil, err
 			}
-			if streamContentFn != nil || streamReasoningFn != nil {
-				return llm.CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn)
+			if streamContentFn != nil || streamReasoningFn != nil || streamToolCallFn != nil || streamUsageFn != nil {
+				return llm.CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
 			}
 			return llm.CollectStream(ctx, eventCh)
 		}
@@ -421,6 +475,19 @@ func generateResponse(ctx context.Context, client llm.LLM, model string, message
 //   - SubAgent: ToolExecutor=simpleExecutor, ProgressNotifier=nil, ContextManager=independent_phase1, ...
 func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	s := newRunState(cfg)
+
+	// Inject mutable SessionContext into context so plugin hooks can read
+	// current model/token data. Updated after each LLM call and compression.
+	maxCtx := 0
+	if cfg.ContextManagerConfig != nil {
+		maxCtx = cfg.ContextManagerConfig.MaxContextTokens
+	}
+	sessionCtx := &hooks.SessionContext{
+		Model:      cfg.Model,
+		MaxContext: int64(maxCtx),
+	}
+	ctx = hooks.WithSessionContext(ctx, sessionCtx)
+	s.sessionCtx = sessionCtx
 
 	// Cleanup completed TODOs on exit
 	defer s.cleanupTodos()
@@ -444,9 +511,6 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 
 	// Setup dynamic context injector for CWD change detection
 	s.initDynamicInjector()
-
-	// Advance round counter for tool activation cleanup
-	s.tickSession()
 
 	// Wrap context with LLM retry notification
 	retryNotifyCtx := s.setupRetryNotify(ctx)
@@ -486,7 +550,13 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		"chat_id":  s.cfg.ChatID,
 		"max_iter": s.maxIter,
 	}).Debug("Run loop starting")
-	for i := 0; i < s.maxIter; i++ {
+	// Iteration numbers are 1-based: the first iteration is 1, not 0.
+	// This is the single source of truth — every downstream consumer
+	// (Detail JSON, SSE progress events, snapshotCompletedIteration,
+	// ConvertMessagesToHistory, reconstructIterationsFromMessages) uses
+	// the same 1-based numbering. 0 is reserved for "uninitialized"
+	// (structuredProgress.Iteration starts at 0 before beginIteration(1)).
+	for i := 1; i <= s.maxIter; i++ {
 		log.Ctx(ctx).WithField("iteration", i).Debug("Run loop iteration start")
 		// Check for cancellation before starting each iteration
 		select {
@@ -502,7 +572,11 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		}
 
 		s.beginIteration(i)
-		s.maybeCompress(ctx)
+		if err := s.maybeCompress(ctx); err != nil {
+			out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
+			out.Error = fmt.Errorf("persist context compression: %w", err)
+			return out
+		}
 		s.notifyThinking(i)
 
 		if out := s.assertSystemMessages(ctx); out != nil {
@@ -537,6 +611,12 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 			continue
 		}
 		if out != nil {
+			// PreTurnEnd: bg notifications or hook handlers may request
+			// continuation by injecting synthetic tool results, converting
+			// this text-only response into a non-final iteration.
+			if s.maybeContinueTurn(ctx, response, i) {
+				continue
+			}
 			return out
 		}
 
@@ -691,7 +771,7 @@ func executeWithHooks(
 // Used for SubAgent and other scenarios that don't need session MCP / activation checks.
 func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 	return func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
-		tool, ok := cfg.Tools.GetForTenant(tc.Name, cfg.TenantID)
+		tool, ok := cfg.Tools.GetForSession(tc.Name, cfg.TenantID, cfg.SessionKey)
 		if !ok {
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}
@@ -716,12 +796,17 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 			}
 		}
 
+		// Re-resolve sandbox per tool call — picks up runner switches immediately
+		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
+			cfg.Sandbox = router.SandboxForSession(
+				cfg.Channel+":"+cfg.ChatID,
+				cfg.OriginUserID,
+			)
+		}
+
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
-		if cfg.SettingsSvc != nil {
-			permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
-			if permUsers != nil {
-				toolExecCtx = tools.WithPermUsers(toolExecCtx, permUsers.DefaultUser, permUsers.PrivilegedUser)
-			}
+		if cfg.PermUsers != nil {
+			toolExecCtx = tools.WithPermUsers(toolExecCtx, cfg.PermUsers.DefaultUser, cfg.PermUsers.PrivilegedUser)
 		}
 		toolCtx := buildToolContext(toolExecCtx, cfg)
 
@@ -945,9 +1030,12 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		AgentID:        cfg.AgentID,
 		Channel:        cfg.Channel,
 		ChatID:         cfg.ChatID,
+		SessionKey:     cfg.SessionKey,
 		SenderID:       cfg.SenderID,
 		OriginUserID:   cfg.OriginUserID,
 		SenderName:     cfg.SenderName,
+		UserID:         cfg.UserID,
+		Role:           cfg.Role,
 		SendFunc:       cfg.SendFunc,
 		RootSessionKey: cfg.RootSessionKey,
 
@@ -972,10 +1060,14 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		InjectInbound: cfg.InjectInbound,
 
 		// 工具注册表
-		Registry: cfg.Tools,
+		Registry:           cfg.Tools,
+		ContextEditHandler: cfg.ContextEditor,
 
 		// 流式设置继承
 		Stream: cfg.Stream,
+	}
+	if handler := tools.ContextEditHandlerFromContext(ctx); handler != nil {
+		tc.ContextEditHandler = handler
 	}
 
 	// 注入 SpawnAgent（包装为 SubAgentManager 接口）
@@ -1052,6 +1144,14 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 				tc.CurrentDir = abs
 			}
 		}
+		// Persist the resolved CWD to the session so that:
+		// 1. Progress events carry the correct CWD (engine_run.go reads GetCurrentDir)
+		// 2. webSessionCWD returns it via GetSession().GetCurrentDir()
+		// 3. Subsequent turns load it via loadPersistedCWD
+		// This is a no-op if the CWD was already persisted (SetCurrentDir is idempotent).
+		if tc.CurrentDir != "" && tc.CurrentDir != cfg.Session.GetCurrentDir() {
+			cfg.Session.SetCurrentDir(tc.CurrentDir)
+		}
 		tc.SetCurrentDir = func(dir string) {
 			cfg.Session.SetCurrentDir(dir)
 			if cfg.RefreshPluginWorkDir != nil {
@@ -1108,31 +1208,49 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		hm := cfg.HookManager
 		tc.HooksReloader = hm.ReloadConfig
 	}
-	// Config read/write: from SettingsSvc (works everywhere: local + remote via RPC)
-	if cfg.SettingsSvc != nil {
-		svc := cfg.SettingsSvc
+	// Config read/write: routes to correct backend.
+	// All user-system access goes through UserContext — no direct SettingsSvc/LLMFactory.
+	uc := UserContextFromContext(ctx)
+	if uc != nil && uc.SettingsSvc != nil {
+		svc := uc.SettingsSvc
 		tc.ConfigGet = func(key string) (string, error) {
+			// Subscription-scoped keys: read from active subscription
+			if channel.IsSubscriptionScopedSettingKey(key) {
+				if cfg.GetActiveSubFieldFn != nil {
+					if v, err := cfg.GetActiveSubFieldFn(key); err == nil && v != "" {
+						return v, nil
+					}
+				}
+				return "", nil
+			}
+			// SourceConfigJSON / SourceLLMConfig: read from config.json
+			if def, ok := channel.GetSettingDef(key); ok {
+				if def.Source == channel.SourceConfigJSON || def.Source == channel.SourceLLMConfig {
+					return channel.ConfigValueBySource(key, def.Source), nil
+				}
+			}
+			// SourceUserDB: read from user_settings DB
 			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
 				if v, ok := vals[key]; ok && v != "" {
 					return v, nil
 				}
 			}
-			// Fallback: try config.json for SourceConfigJSON / SourceLLMConfig keys.
-			// Also fallback for SourceUserDB keys that may have a default in config.json
-			// (e.g. tavily_api_key can be set globally in config.json as a default).
-			if def, ok := channel.GetSettingDef(key); ok {
-				if def.Source == channel.SourceConfigJSON || def.Source == channel.SourceLLMConfig {
-					return channel.ConfigValueBySource(key, def.Source), nil
-				}
-				// For SourceUserDB keys, try config.json fallback (global defaults)
-				if cfgVal := channel.ConfigValueBySource(key, channel.SourceConfigJSON); cfgVal != "" {
-					return cfgVal, nil
-				}
+			// Fallback: config.json for user-scoped keys with global defaults
+			if cfgVal := channel.ConfigValueBySource(key, channel.SourceConfigJSON); cfgVal != "" {
+				return cfgVal, nil
 			}
-			return "", fmt.Errorf("config: key %q not found", key)
+			return "", nil
 		}
 		tc.ConfigSet = func(key, value string) (string, error) {
+			// Subscription-scoped keys: write to active subscription via subscription manager
+			if channel.IsSubscriptionScopedSettingKey(key) {
+				if cfg.UpdateActiveSubFn == nil {
+					return "", fmt.Errorf("config: subscription manager not available")
+				}
+				return cfg.UpdateActiveSubFn(key, value)
+			}
+			// All other keys: write to user_settings DB
 			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err != nil {
 				return "", err
@@ -1158,8 +1276,8 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		// SourceConfigJSON and SourceLLMConfig values come from config.json
 		// (set by configValueBySource) and must not be overwritten by stale DB data.
 		// For SourceUserDB items without a DB value, try config.json as fallback.
-		if cfg.SettingsSvc != nil {
-			vals, err := cfg.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
+		if uc != nil && uc.SettingsSvc != nil {
+			vals, err := uc.SettingsSvc.GetSettings(cfg.Channel, cfg.OriginUserID)
 			if err == nil {
 				for i := range items {
 					if items[i].Source == "user_db" {
@@ -1182,9 +1300,8 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	// they connect via local TUI or remote TUI with admin token.
 	if cfg.Channel == "cli" && cfg.OriginUserID == "cli_user" {
 		tc.OriginUserIsAdmin = true
-	} else if cfg.SettingsSvc != nil {
-		permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
-		tc.OriginUserIsAdmin = permUsers != nil && cfg.OriginUserID == permUsers.PrivilegedUser
+	} else if cfg.PermUsers != nil {
+		tc.OriginUserIsAdmin = cfg.OriginUserID == cfg.PermUsers.PrivilegedUser
 	}
 	tc.IsGlobalKey = channel.IsGlobalScopedSettingKey
 
@@ -1194,6 +1311,55 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 			return cfg.ListLLMSubs(cfg.Channel, cfg.OriginUserID)
 		}
 		return nil
+	}
+
+	// Inject runner CRUD callbacks (for config tool).
+	// Runner management requires a database — if not configured, callbacks return errors.
+	if db := tools.GetRunnerTokenDB(); db != nil {
+		store := tools.NewRunnerTokenStore(db)
+		originUserID := cfg.OriginUserID
+		tc.RunnerCreate = func(name, mode, dockerImage, workspace, llmProvider, llmAPIKey, llmModel, llmBaseURL string) (string, error) {
+			llm := tools.RunnerLLMSettings{
+				Provider: llmProvider,
+				APIKey:   llmAPIKey,
+				Model:    llmModel,
+				BaseURL:  llmBaseURL,
+			}
+			// Ensure remote sandbox is listening before creating a runner
+			sb := tools.GetSandbox()
+			if router, ok := sb.(*tools.SandboxRouter); ok {
+				router.EnsureRemote()
+			}
+			token, _, err := store.CreateRunner(originUserID, name, mode, dockerImage, workspace, llm)
+			return token, err
+		}
+		tc.RunnerList = func() ([]tools.RunnerInfo, error) {
+			runners, err := store.ListRunners(originUserID)
+			if err != nil {
+				return nil, err
+			}
+			// Populate online status (same as server-side populateRunnerOnlineStatus)
+			if sb := tools.GetSandbox(); sb != nil {
+				if router, ok := sb.(*tools.SandboxRouter); ok {
+					for i := range runners {
+						runners[i].Online = router.IsRunnerOnline(originUserID, runners[i].Name)
+					}
+				}
+			}
+			return runners, nil
+		}
+		tc.RunnerDelete = func(name string) error {
+			return store.DeleteRunner(originUserID, name)
+		}
+		tc.RunnerGetActive = func() (string, error) {
+			return store.GetActiveRunner(originUserID)
+		}
+		tc.RunnerSetActive = func(name string) error {
+			return store.SetActiveRunner(originUserID, name)
+		}
+		tc.RunnerRename = func(oldName, newName string) error {
+			return store.RenameRunner(originUserID, oldName, newName)
+		}
 	}
 
 	return tc

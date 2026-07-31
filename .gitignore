@@ -74,10 +74,11 @@ cron.json
 .tmp
 .npm
 /runner
+!/runner/
 *.service
 /xbot-runner
 /xbot
-xbot-cli
+/xbot-cli
 docker-compose.yml
 agents/explore.md
 
@@ -98,3 +99,9 @@ web/*.jpg
 web/*.jpeg
 
 .xbot-worktrees/
+
+# Static binaries
+/xbot-cli-static
+/xbot-cli-static-riscv64
+.superpowers/
+core.*

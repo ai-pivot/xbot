@@ -7,6 +7,28 @@ import (
 	"time"
 )
 
+// snapshotToolCalls returns an ordered copy of the accumulated tool call deltas.
+// Used by the onToolCall streaming callback to notify UI of tool names as
+// soon as they arrive (before arguments finish streaming).
+func snapshotToolCalls(toolCalls map[int]*ToolCallDelta) []ToolCallDelta {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	maxIdx := -1
+	for idx := range toolCalls {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	result := make([]ToolCallDelta, 0, maxIdx+1)
+	for i := 0; i <= maxIdx; i++ {
+		if tc, ok := toolCalls[i]; ok {
+			result = append(result, *tc)
+		}
+	}
+	return result
+}
+
 // orderedToolCalls converts the map-based tool call accumulation into an
 // ordered slice, sorted by stream index.
 func orderedToolCalls(toolCalls map[int]*ToolCallDelta) []ToolCall {
@@ -54,19 +76,23 @@ func safeCallback(ctx context.Context, f func(string), s string) {
 // It handles content, reasoning content, tool calls (accumulating deltas by index), usage, and finish reason.
 // Returns an error if the stream emits an EventError or if ctx is cancelled during collection.
 func CollectStream(ctx context.Context, eventCh <-chan StreamEvent) (*LLMResponse, error) {
-	return CollectStreamWithCallback(ctx, eventCh, nil, nil)
+	return CollectStreamWithCallback(ctx, eventCh, nil, nil, nil, nil)
 }
 
 // CollectStreamWithCallback is like CollectStream but calls onContent with the
 // accumulated text content after each EventContent delta. Optionally calls
 // onReasoning with accumulated reasoning content after each EventReasoningContent
-// delta (for real-time thinking/reasoning display). EventError handling
+// delta (for real-time thinking/reasoning display). Optionally calls onToolCall
+// with the current snapshot of tool calls whenever a new tool name arrives in
+// the stream — this enables early tool detection (showing "generating tool X"
+// before arguments finish streaming, similar to Cursor). EventError handling
 // is identical to CollectStream (returns partial content).
-func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, onContent func(content string), onReasoning func(content string)) (*LLMResponse, error) {
+func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, onContent func(content string), onReasoning func(content string), onToolCall func(toolCalls []ToolCallDelta), onUsage func(usage *TokenUsage)) (*LLMResponse, error) {
 	var resp LLMResponse
 	var content strings.Builder
 	var reasoningContent strings.Builder
 	toolCalls := make(map[int]*ToolCallDelta) // index → accumulated delta
+	var gotDone bool                          // tracks whether EventDone was explicitly received
 
 	// Idle timeout: if no chunk arrives for this duration, the stream is considered
 	// hung and we return an error. This replaces the old approach of using ctx deadline
@@ -106,6 +132,16 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 
 		case ev, ok := <-eventCh:
 			if !ok {
+				// If EventDone was never received, the stream was likely
+				// truncated by a proxy or network issue (clean TCP close
+				// without proper SSE termination). Return an error so the
+				// retry layer can attempt to recover.
+				if !gotDone {
+					resp.Content = content.String()
+					resp.ReasoningContent = reasoningContent.String()
+					resp.ToolCalls = orderedToolCalls(toolCalls)
+					return &resp, fmt.Errorf("stream ended without EventDone (possible truncation)")
+				}
 				// Channel closed normally — stream completed.
 				resp.Content = content.String()
 				resp.ReasoningContent = reasoningContent.String()
@@ -152,11 +188,40 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 					tc.Name = ev.ToolCall.Name
 				}
 				tc.Arguments += ev.ToolCall.Arguments
+				// Fire callback on every tool call event (name arrival + argument
+				// progress). Originally fired only on name arrival for early tool
+				// detection. Now also fires on argument deltas so the UI can show
+				// real-time argument generation progress (e.g. "42 chars").
+				// The TUI's ~100ms tick rate naturally coalesces high-frequency
+				// deltas — no explicit throttle needed here.
+				if onToolCall != nil {
+					func() {
+						defer func() { recover() }()
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+						onToolCall(snapshotToolCalls(toolCalls))
+					}()
+				}
 			case EventUsage:
 				if ev.Usage != nil {
 					resp.Usage = *ev.Usage
+					if onUsage != nil {
+						func() {
+							defer func() { recover() }()
+							select {
+							case <-ctx.Done():
+								return
+							default:
+							}
+							onUsage(ev.Usage)
+						}()
+					}
 				}
 			case EventDone:
+				gotDone = true
 				if ev.FinishReason != "" {
 					resp.FinishReason = ev.FinishReason
 				}

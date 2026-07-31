@@ -560,7 +560,7 @@ func TestSandboxForUser_ActiveRunner_NotSet_Fallback(t *testing.T) {
 }
 
 func TestSandboxForUser_ActiveRunner_NonExistent_Fallback(t *testing.T) {
-	// 用户设置了不存在的 runner name → fallback 到 remote/docker
+	// 用户设置了不存在的 runner name → 回退到本地（不 fallback 到其他 runner，避免数据泄露）
 	db := newTestDB(t)
 	store := NewRunnerTokenStore(db)
 	if err := store.SetActiveRunner("userA", "nonexistent-runner"); err != nil {
@@ -571,8 +571,9 @@ func TestSandboxForUser_ActiveRunner_NonExistent_Fallback(t *testing.T) {
 	r.SetTokenStore(store)
 
 	sb := r.SandboxForUser("userA")
-	if sb.Name() != "remote" {
-		t.Errorf("SandboxForUser(userA) = %q, want %q (fallback when active_runner doesn't match)", sb.Name(), "remote")
+	// active_runner explicitly set to an offline runner → must NOT silently route to a different one
+	if sb.Name() != "none" {
+		t.Errorf("SandboxForUser(userA) = %q, want %q (explicit active_runner offline → local, not some other remote)", sb.Name(), "none")
 	}
 }
 

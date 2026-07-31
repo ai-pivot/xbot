@@ -28,8 +28,11 @@ type PermUsersPair struct {
 }
 
 // isPermControlActiveFromCtx checks if permission control is active from context.
-// Returns false when no perm users are configured (both empty).
+// Returns false when no perm users are configured (both empty) or context is nil.
 func isPermControlActiveFromCtx(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
 	defaultUser, privilegedUser := PermUsersFromContext(ctx)
 	return defaultUser != "" || privilegedUser != ""
 }

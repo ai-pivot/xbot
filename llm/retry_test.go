@@ -50,7 +50,7 @@ func TestIsRetryableError(t *testing.T) {
 
 		// 普通错误 — 不重试
 		{"generic error", errors.New("something went wrong"), false},
-		{"EOF", errors.New("unexpected EOF"), false},
+		{"EOF", errors.New("unexpected EOF"), true}, // unexpected EOF = network truncation, retryable
 
 		// B-05 修复：Anthropic SDK 错误格式: `anthropic API error: status=NNN, body=...`
 		{"429 Anthropic", errors.New("anthropic API error: status=429, body={\"type\":\"error\"}"), true},
@@ -578,7 +578,7 @@ func TestRetryLLM_GenerateStreamAndCollect_SuccessFirstTry(t *testing.T) {
 	inner := newFailMidStreamLLM(0, "")
 	r := NewRetryLLM(inner, DefaultRetryConfig())
 
-	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestRetryLLM_GenerateStreamAndCollect_StreamErrorRetryThenSuccess(t *testin
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
 
-	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -608,12 +608,49 @@ func TestRetryLLM_GenerateStreamAndCollect_StreamErrorRetryThenSuccess(t *testin
 	}
 }
 
+func TestRetryLLM_GenerateStreamAndCollect_StreamTruncationRetry(t *testing.T) {
+	// Stream truncation (no finish_reason) should be retryable.
+	// First attempt truncates, second succeeds.
+	inner := newFailMidStreamLLM(1, "stream ended without finish_reason (possible truncation)")
+	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "stream-ok" {
+		t.Errorf("content = %q, want %q", resp.Content, "stream-ok")
+	}
+	if inner.streamAttempts.Load() != 2 {
+		t.Errorf("streamAttempts = %d, want 2 (truncation should retry)", inner.streamAttempts.Load())
+	}
+}
+
+func TestRetryLLM_GenerateStreamAndCollect_UnexpectedEOFRetry(t *testing.T) {
+	// unexpected EOF (proxy closed connection mid-stream) should be retryable.
+	inner := newFailMidStreamLLM(1, "unexpected EOF")
+	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "stream-ok" {
+		t.Errorf("content = %q, want %q", resp.Content, "stream-ok")
+	}
+	if inner.streamAttempts.Load() != 2 {
+		t.Errorf("streamAttempts = %d, want 2 (unexpected EOF should retry)", inner.streamAttempts.Load())
+	}
+}
+
 func TestRetryLLM_GenerateStreamAndCollect_Exhausted(t *testing.T) {
 	inner := newFailMidStreamLLM(100, "status code: 500 Internal Server Error")
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
 
-	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -629,7 +666,7 @@ func TestRetryLLM_GenerateStreamAndCollect_NonRetryableStreamError(t *testing.T)
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
 
-	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	_, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -647,7 +684,7 @@ func TestRetryLLM_GenerateStreamAndCollect_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 立即取消
 
-	_, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil)
+	_, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -673,7 +710,7 @@ func TestRetryLLM_GenerateStreamAndCollect_NotifiesOnRetry(t *testing.T) {
 		}{attempt, max, err})
 	})
 
-	resp, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil)
+	resp, err := r.GenerateStreamAndCollect(ctx, "test", nil, nil, "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -704,6 +741,8 @@ func TestRetryLLM_GenerateStreamAndCollect_WithCallbacks(t *testing.T) {
 	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "",
 		func(s string) { contentCalls = append(contentCalls, s) },
 		func(s string) { reasoningCalls = append(reasoningCalls, s) },
+		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -723,7 +762,7 @@ func TestRetryLLM_GenerateStreamAndCollect_NetworkErrorRetry(t *testing.T) {
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
 
-	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil)
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

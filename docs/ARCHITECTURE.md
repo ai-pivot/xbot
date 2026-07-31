@@ -362,7 +362,6 @@ Layer 4: ContextEdit → 精确删除/裁剪/替换
 | `shared_registry` | Skill/Agent 市场 |
 | `web_users` | Web 用户认证 |
 | `user_settings` | 用户设置 |
-| `user_llm_configs` | 用户自定义 LLM 配置 |
 | `user_token_usage` | 用户 Token 使用量统计 |
 | `schema_version` | Schema 版本 |
 
@@ -497,7 +496,7 @@ func XbotHome() string {
 ### 6.3 运行时配置
 
 - **用户设置**: `user_settings` 表，Web/飞书设置面板修改
-- **用户 LLM**: `user_llm_configs` 表，支持 per-user 自定义 LLM provider/model
+- **用户 LLM**: `user_llm_subscriptions` + `subscription_models` 表，支持 per-user 多订阅 + 逐模型配置
 - **Context 模式**: 可运行时热切换（`SetContextMode`）
 - **MaxConcurrency**: 可运行时调整（settings 面板）
 

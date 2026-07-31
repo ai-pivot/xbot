@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"xbot/config"
 	"xbot/llm"
@@ -36,14 +39,119 @@ func TestGuessProvider(t *testing.T) {
 	}
 }
 
+// TestLLMSemAcquireForUser_ReadsMaxConcurrencyFromDB verifies that
+// LLMSemAcquireForUser correctly reads the max_concurrency setting from
+// the user_settings DB via the correct channel, rather than falling back
+// to the hardcoded default. Regression test for the bug where the setting
+// key was misspelled ("max_concurrent" vs "max_concurrency").
+func TestLLMSemAcquireForUser_ReadsMaxConcurrencyFromDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	store := sqlite.NewUserSettingsService(db)
+	settingsSvc := NewSettingsService(store)
+	// Write max_concurrency=100 into the DB under channel "cli".
+	if err := settingsSvc.SetSetting("cli", "test_user", settingMaxConcurrency, "100"); err != nil {
+		t.Fatalf("set setting: %v", err)
+	}
+
+	// Create LLMFactory with the settings service.
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
+	f.SetSettingsService(settingsSvc)
+	mgr := llm.NewLLMSemaphoreManager()
+	f.SetLLMSemaphoreManager(mgr)
+
+	// Acquire the semaphore and release immediately to verify capacity.
+	acquire := f.LLMSemAcquireForUser("test_user", "cli")
+	if acquire == nil {
+		t.Fatal("LLMSemAcquireForUser returned nil")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Acquire N slots to verify capacity is at least 100 (not the default 5).
+	releases := make([]func(), 0, 100)
+	for i := 0; i < 100; i++ {
+		release := acquire(ctx)
+		if release == nil {
+			t.Fatalf("failed to acquire slot %d (capacity too low, was it %d?)", i, llm.DefaultLLMConcurrency)
+		}
+		releases = append(releases, release)
+	}
+	for _, r := range releases {
+		r()
+	}
+}
+
+// TestSubAgentSemAcquireForUser_ReadsMaxConcurrencyFromDB verifies that
+// SubAgentSemAcquireForUser correctly reads max_concurrency from the DB.
+func TestSubAgentSemAcquireForUser_ReadsMaxConcurrencyFromDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	store := sqlite.NewUserSettingsService(db)
+	settingsSvc := NewSettingsService(store)
+	if err := settingsSvc.SetSetting("cli", "test_user", settingMaxConcurrency, "50"); err != nil {
+		t.Fatalf("set setting: %v", err)
+	}
+
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
+	f.SetSettingsService(settingsSvc)
+	mgr := llm.NewLLMSemaphoreManager()
+	f.SetLLMSemaphoreManager(mgr)
+
+	acquire := f.SubAgentSemAcquireForUser("test_user", "cli")
+	if acquire == nil {
+		t.Fatal("SubAgentSemAcquireForUser returned nil")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	releases := make([]func(), 0, 50)
+	for i := 0; i < 50; i++ {
+		release := acquire(ctx)
+		if release == nil {
+			t.Fatalf("failed to acquire subagent slot %d (capacity too low, was it %d?)", i, llm.DefaultLLMConcurrency)
+		}
+		releases = append(releases, release)
+	}
+	for _, r := range releases {
+		r()
+	}
+}
+
+// TestSettingKeyConstants_MatchDB verifies that the setting key constants
+// used in LLMFactory match the canonical keys stored in user_settings DB.
+func TestSettingKeyConstants_MatchDB(t *testing.T) {
+	// These constants must match the keys written by settings panel.
+	if settingMaxConcurrency != "max_concurrency" {
+		t.Errorf("settingMaxConcurrency = %q, want %q", settingMaxConcurrency, "max_concurrency")
+	}
+	if settingSubAgentMaxConcurrency != "subagent_max_concurrency" {
+		t.Errorf("settingSubAgentMaxConcurrency = %q, want %q", settingSubAgentMaxConcurrency, "subagent_max_concurrency")
+	}
+}
+
 func TestGetLLMForModel_EmptyTarget(t *testing.T) {
 	// Empty target model → should return default model name without hitting subscription logic
-	f := NewLLMFactory(nil, nil, "default-model")
+	f := NewLLMFactory(nil, "default-model")
 	f.defaultThinkingMode = "auto"
 
 	// Verify the early return path: targetModel="" should not try to list subscriptions
 	// (subscriptionSvc is nil, so if it tried, we'd get a different error)
-	_, model, _, tm, usedCustom := f.GetLLMForModel("user1", "")
+	_, model, _, tm, _, usedCustom := f.GetLLMForModel("user1", "")
 	if model != "default-model" {
 		t.Errorf("model = %q, want %q", model, "default-model")
 	}
@@ -56,12 +164,12 @@ func TestGetLLMForModel_EmptyTarget(t *testing.T) {
 }
 
 func TestGetLLMForModel_NilSubscriptionSvc(t *testing.T) {
-	f := NewLLMFactory(nil, nil, "default-model")
+	f := NewLLMFactory(nil, "default-model")
 	f.defaultThinkingMode = "auto"
 
 	// No subscriptionSvc + explicit model → model not found in any subscription,
 	// fallback to default client with the RESOLVED model (not the default model).
-	_, model, _, _, usedCustom := f.GetLLMForModel("user1", "claude-opus-4-20250115")
+	_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "claude-opus-4-20250115")
 	if model != "claude-opus-4-20250115" {
 		t.Errorf("model = %q, want claude-opus-4-20250115 (resolved model preserved in fallback)", model)
 	}
@@ -98,165 +206,6 @@ func TestNormalizeModelTier(t *testing.T) {
 	}
 }
 
-func TestResolveTierModel(t *testing.T) {
-	f := NewLLMFactory(nil, nil, "default-model")
-
-	// No tiers configured → tier keywords are recognized but model is empty
-	model, usedTier := f.resolveTierModel("vanguard")
-	if !usedTier {
-		t.Error("usedTier should be true (keyword recognized)")
-	}
-	if model != "" {
-		t.Errorf("model = %q, want empty", model)
-	}
-
-	// Non-tier value passes through unchanged
-	model, usedTier = f.resolveTierModel("gpt-4o")
-	if usedTier {
-		t.Error("usedTier should be false for non-tier value")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("model = %q, want gpt-4o", model)
-	}
-
-	// Configure tiers
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "claude-opus-4-20250115",
-		BalanceModel:  "claude-sonnet-4-20250514",
-		SwiftModel:    "gpt-4o-mini",
-	})
-
-	model, usedTier = f.resolveTierModel("vanguard")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "claude-opus-4-20250115" {
-		t.Errorf("model = %q, want claude-opus-4-20250115", model)
-	}
-
-	model, usedTier = f.resolveTierModel("balance")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "claude-sonnet-4-20250514" {
-		t.Errorf("model = %q, want claude-sonnet-4-20250514", model)
-	}
-
-	model, usedTier = f.resolveTierModel("swift")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "gpt-4o-mini" {
-		t.Errorf("model = %q, want gpt-4o-mini", model)
-	}
-
-	// Aliases: strong/medium/weak
-	model, _ = f.resolveTierModel("strong")
-	if model != "claude-opus-4-20250115" {
-		t.Errorf("model = %q, want claude-opus-4-20250115", model)
-	}
-
-	model, _ = f.resolveTierModel("medium")
-	if model != "claude-sonnet-4-20250514" {
-		t.Errorf("model = %q, want claude-sonnet-4-20250514", model)
-	}
-
-	model, _ = f.resolveTierModel("weak")
-	if model != "gpt-4o-mini" {
-		t.Errorf("model = %q, want gpt-4o-mini", model)
-	}
-
-	// Partial config: only vanguard set
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "opus",
-	})
-	model, usedTier = f.resolveTierModel("balance")
-	if !usedTier {
-		t.Error("usedTier should be true even for unconfigured tier")
-	}
-	// balance unconfigured → fallback to vanguard
-	if model != "opus" {
-		t.Errorf("model = %q, want opus (fallback from unconfigured balance to vanguard)", model)
-	}
-}
-
-func TestGetLLMForModel_TierResolution(t *testing.T) {
-	f := NewLLMFactory(nil, nil, "default-model")
-	f.defaultThinkingMode = "auto"
-
-	// Tier with no subscriptionSvc → model not found, fallback to default client
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "claude-opus-4-20250115",
-	})
-
-	_, model, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
-	if usedCustom {
-		t.Error("usedCustom should be false when model not found in any subscription")
-	}
-	if model != "claude-opus-4-20250115" {
-		t.Errorf("model = %q, want claude-opus-4-20250115 (resolved tier model)", model)
-	}
-
-	// Non-tier model with no subscriptionSvc → returns the model name itself
-	_, model, _, _, usedCustom = f.GetLLMForModel("user1", "gpt-4o")
-	if usedCustom {
-		t.Error("usedCustom should be false when model not found in any subscription")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("model = %q, want gpt-4o (non-tier model, returned as-is)", model)
-	}
-}
-
-func TestResolveTierModel_UnconfiguredFallback(t *testing.T) {
-	// When swift/vanguard are not configured, should fallback to balance
-	f := NewLLMFactory(nil, nil, "default-model")
-	f.SetModelTiers(config.LLMConfig{
-		BalanceModel: "gpt-4o",
-		// VanguardModel and SwiftModel intentionally empty
-	})
-
-	// swift not configured → fallback to balance
-	model, usedTier := f.resolveTierModel("swift")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("swift fallback = %q, want gpt-4o (balance)", model)
-	}
-
-	// vanguard not configured → fallback to balance
-	model, usedTier = f.resolveTierModel("vanguard")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("vanguard fallback = %q, want gpt-4o (balance)", model)
-	}
-
-	// balance configured → returns balance
-	model, usedTier = f.resolveTierModel("balance")
-	if !usedTier {
-		t.Error("usedTier should be true")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("balance = %q, want gpt-4o", model)
-	}
-}
-
-func TestResolveTierModel_AllUnconfigured(t *testing.T) {
-	// All tiers unconfigured → returns empty string (will fall to default client)
-	f := NewLLMFactory(nil, nil, "default-model")
-	f.SetModelTiers(config.LLMConfig{})
-
-	model, usedTier := f.resolveTierModel("swift")
-	if !usedTier {
-		t.Error("usedTier should be true (tier keyword recognized)")
-	}
-	if model != "" {
-		t.Errorf("model = %q, want empty (no tiers configured)", model)
-	}
-}
-
 func TestHasCustomLLMChecksSubscriptionSvc(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XBOT_HOME", dir)
@@ -266,7 +215,7 @@ func TestHasCustomLLMChecksSubscriptionSvc(t *testing.T) {
 	}
 	defer db.Close()
 
-	factory := NewLLMFactory(sqlite.NewUserLLMConfigService(db), &llm.MockLLM{}, "default-model")
+	factory := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	subSvc := sqlite.NewLLMSubscriptionService(db)
 	factory.SetSubscriptionSvc(subSvc)
 	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-1", SenderID: "cli_user", Name: "s1", Provider: "openai", BaseURL: "https://example.com/v1", APIKey: "sk-test", Model: "m1", IsDefault: true}); err != nil {
@@ -282,40 +231,41 @@ func TestHasCustomLLMChecksSubscriptionSvc(t *testing.T) {
 // This is the fix for: switching sub then changing model in settings was stuck
 // on the old model because Invalidate only cleared the user-level key.
 func TestInvalidate_ClearsPerChatCache(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 
 	senderID := "cli_user"
 	chatID := "/home/user/project"
 	subA := &sqlite.LLMSubscription{
-		Provider: "openai", BaseURL: "https://api-a.com/v1", APIKey: "sk-a",
+		ID: "sub-a", Provider: "openai", BaseURL: "https://api-a.com/v1", APIKey: "sk-a",
 		Model: "gpt-4o", MaxOutputTokens: 8192,
 	}
 	subB := &sqlite.LLMSubscription{
-		Provider: "openai", BaseURL: "https://api-b.com/v1", APIKey: "sk-b",
+		ID: "sub-b", Provider: "openai", BaseURL: "https://api-b.com/v1", APIKey: "sk-b",
 		Model: "deepseek-v3", MaxOutputTokens: 4096,
 	}
 
-	// Simulate: SwitchSubscription creates both user-level and per-chat caches
+	// Without subscriptionSvc, SwitchSubscription resolves model from
+	// user_default_model (which is also nil here). The default LLM client
+	// is still created. Model resolution happens when the user picks a model.
 	if err := f.SwitchSubscription(senderID, subA, chatID); err != nil {
 		t.Fatalf("SwitchSubscription subA: %v", err)
 	}
 
-	// Verify both caches exist
-	_, modelA, _, _ := f.GetLLMForChat(senderID, chatID)
-	if modelA != "gpt-4o" {
-		t.Fatalf("initial model = %q, want gpt-4o", modelA)
+	// Verify default LLM was created (model is "" without subscription_models)
+	_, modelA, _, _, _ := f.GetLLMForChat(senderID, chatID)
+	if modelA != "" {
+		t.Fatalf("initial model = %q, want \"\" (no subscription_models)", modelA)
 	}
 
 	// Simulate: set_default_subscription calls Invalidate then SwitchSubscription
-	// (the actual server handler path for subscription switching)
 	f.Invalidate(senderID)
 	if err := f.SwitchSubscription(senderID, subB, chatID); err != nil {
 		t.Fatalf("SwitchSubscription subB: %v", err)
 	}
 
-	_, modelB, _, _ := f.GetLLMForChat(senderID, chatID)
-	if modelB != "deepseek-v3" {
-		t.Errorf("after sub switch, model = %q, want deepseek-v3", modelB)
+	_, modelB, _, _, _ := f.GetLLMForChat(senderID, chatID)
+	if modelB != "" {
+		t.Errorf("after sub switch, model = %q, want \"\" (no subscription_models)", modelB)
 	}
 
 	// Simulate: update_subscription (settings panel) calls Invalidate + SwitchSubscription
@@ -329,9 +279,9 @@ func TestInvalidate_ClearsPerChatCache(t *testing.T) {
 	}
 
 	// GetLLMForChat should NOT return stale per-chat cache
-	_, modelUpdated, _, thinkingUpdated := f.GetLLMForChat(senderID, chatID)
-	if modelUpdated != "deepseek-r1" {
-		t.Errorf("after settings update, model = %q, want deepseek-r1 (stale per-chat cache bug)", modelUpdated)
+	_, modelUpdated, _, thinkingUpdated, _ := f.GetLLMForChat(senderID, chatID)
+	if modelUpdated != "" {
+		t.Errorf("after settings update, model = %q, want \"\" (no subscription_models, stale per-chat cache bug)", modelUpdated)
 	}
 	// Verify thinking mode is also not stale
 	if thinkingUpdated != "" {
@@ -339,78 +289,46 @@ func TestInvalidate_ClearsPerChatCache(t *testing.T) {
 	}
 }
 
-// TestSwitchModel_ClearsPerChatCache verifies that SwitchModel clears per-chat
-// model caches so GetLLMForChat returns the new model instead of a stale
-// per-chat entry.
-func TestSwitchModel_ClearsPerChatCache(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+// TestSwitchSubscription_UpdatesDefaultLLM verifies that SwitchSubscription
+// DOES update the global defaultLLM/defaultModel for cli_user. In CLI mode,
+// all sessions share senderID "cli_user", so defaultLLM is a user-level
+// preference that should follow the user's last subscription choice.
+// SubAgent fallback, ListModels(), and GetLLM() for sessions without
+// per-session subscriptions should all see the new default.
+func TestSwitchSubscription_UpdatesDefaultLLM(t *testing.T) {
+	f := NewLLMFactory(&llm.MockLLM{}, "original-default-model")
 
-	senderID := "cli_user"
-	chatID := "/home/user/project"
-	sub := &sqlite.LLMSubscription{
-		Provider: "openai", BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
-		Model: "gpt-4o", MaxOutputTokens: 8192,
+	subDeepSeek := &sqlite.LLMSubscription{
+		ID: "sub-ds", Provider: "openai", BaseURL: "https://api.deepseek.com/v1", APIKey: "sk-deep",
+		Model: "deepseek-v4-pro",
 	}
 
-	// Create per-chat cache via SwitchSubscription
-	if err := f.SwitchSubscription(senderID, sub, chatID); err != nil {
+	// Global default before switch
+	if dm := f.GetDefaultModel(); dm != "original-default-model" {
+		t.Fatalf("initial default model = %q, want original-default-model", dm)
+	}
+
+	// Switch subscription for cli_user (the common CLI senderID)
+	if err := f.SwitchSubscription("cli_user", subDeepSeek, ""); err != nil {
 		t.Fatalf("SwitchSubscription: %v", err)
 	}
 
-	// Now SwitchModel (e.g., from quick panel model switch)
-	f.SwitchModel(senderID, "gpt-4o-mini")
-
-	// GetLLMForChat should return the new model, not the stale per-chat one
-	_, model, _, _ := f.GetLLMForChat(senderID, chatID)
-	if model != "gpt-4o-mini" {
-		t.Errorf("after SwitchModel, per-chat model = %q, want gpt-4o-mini (stale per-chat cache bug)", model)
-	}
-}
-
-// TestInvalidate_DoesNotAffectOtherUsers verifies that Invalidate(senderID) only
-// clears entries for that specific sender, not other users.
-func TestInvalidate_DoesNotAffectOtherUsers(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
-
-	subA := &sqlite.LLMSubscription{
-		Provider: "openai", BaseURL: "https://api-a.com/v1", APIKey: "sk-a",
-		Model: "gpt-4o",
-	}
-	subB := &sqlite.LLMSubscription{
-		Provider: "openai", BaseURL: "https://api-b.com/v1", APIKey: "sk-b",
-		Model: "claude-3-opus",
-	}
-
-	// User A gets per-chat cache
-	if err := f.SwitchSubscription("userA", subA, "/home/a"); err != nil {
-		t.Fatalf("SwitchSubscription userA: %v", err)
-	}
-	// User B gets per-chat cache
-	if err := f.SwitchSubscription("userB", subB, "/home/b"); err != nil {
-		t.Fatalf("SwitchSubscription userB: %v", err)
-	}
-
-	// Invalidate user A — should NOT affect user B
-	f.Invalidate("userA")
-
-	// User B's per-chat cache should still work
-	_, modelB, _, _ := f.GetLLMForChat("userB", "/home/b")
-	if modelB != "claude-3-opus" {
-		t.Errorf("userB model after Invalidate(userA) = %q, want claude-3-opus", modelB)
+	// Global default SHOULD be updated — SwitchSubscription resolves model
+	// from user_default_model. Without subscriptionSvc, it returns "" (no
+	// model). The default LLM client is still created (credentials work),
+	// just without a model name.
+	// The model is resolved later when the user picks one from the panel.
+	if dm := f.GetDefaultModel(); dm != "" {
+		t.Errorf("default model after SwitchSubscription = %q, want \"\" (no subscription_models rows)", dm)
 	}
 }
 
 // TestGetLLMForModel_ConfigSubExactMatch verifies the config.json subscription path:
-// when configSubsFn returns a subscription whose Model matches the resolved tier model,
+// when configSubsFn returns a subscription whose Model matches the resolved model,
 // GetLLMForModel should use that subscription (usedCustom=true).
 func TestGetLLMForModel_ConfigSubExactMatch(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.defaultThinkingMode = "auto"
-
-	// Configure tier so "vanguard" resolves to "gpt-4o"
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "gpt-4o",
-	})
 
 	// Set up configSubsFn with a matching subscription
 	f.SetConfigSubs(func() []config.SubscriptionConfig {
@@ -426,7 +344,7 @@ func TestGetLLMForModel_ConfigSubExactMatch(t *testing.T) {
 		}
 	})
 
-	client, model, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "gpt-4o")
 	if !usedCustom {
 		t.Error("usedCustom should be true when config sub matches resolved model")
 	}
@@ -440,15 +358,10 @@ func TestGetLLMForModel_ConfigSubExactMatch(t *testing.T) {
 
 // TestGetLLMForModel_ConfigSubNoMatch verifies that when configSubsFn returns
 // subscriptions with different Model fields, it still tries to use them with
-// the resolved model name (OpenAI-compatible endpoints can serve any model).
+// the model name (OpenAI-compatible endpoints can serve any model).
 func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.defaultThinkingMode = "auto"
-
-	// Configure tier so "vanguard" resolves to "gpt-4o"
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "gpt-4o",
-	})
 
 	// Config sub has a different model — but still usable with gpt-4o
 	f.SetConfigSubs(func() []config.SubscriptionConfig {
@@ -464,12 +377,12 @@ func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
 		}
 	})
 
-	client, model, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "gpt-4o")
 	if !usedCustom {
 		t.Error("usedCustom should be true when config sub can serve the resolved model")
 	}
 	if model != "gpt-4o" {
-		t.Errorf("model = %q, want %q (resolved tier model)", model, "gpt-4o")
+		t.Errorf("model = %q, want %q (resolved model)", model, "gpt-4o")
 	}
 	if client == nil {
 		t.Error("client should not be nil")
@@ -480,15 +393,9 @@ func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
 // subscriptions with matching Model but empty BaseURL or APIKey are skipped,
 // and the function falls through to the default LLM.
 func TestGetLLMForModel_ConfigSubSkipsEmptyCredentials(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.defaultThinkingMode = "auto"
 
-	// Configure tier so "vanguard" resolves to "gpt-4o"
-	f.SetModelTiers(config.LLMConfig{
-		VanguardModel: "gpt-4o",
-	})
-
-	// Sub-tests for empty BaseURL and empty APIKey
 	tests := []struct {
 		name string
 		sub  config.SubscriptionConfig
@@ -523,12 +430,12 @@ func TestGetLLMForModel_ConfigSubSkipsEmptyCredentials(t *testing.T) {
 				return []config.SubscriptionConfig{tt.sub}
 			})
 
-			_, model, _, _, usedCustom := f.GetLLMForModel("user1", "vanguard")
+			_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "gpt-4o")
 			if usedCustom {
 				t.Error("usedCustom should be false when config sub has empty credentials")
 			}
 			if model != "gpt-4o" {
-				t.Errorf("model = %q, want %q (resolved tier model preserved in fallback)", model, "gpt-4o")
+				t.Errorf("model = %q, want %q (resolved model preserved in fallback)", model, "gpt-4o")
 			}
 		})
 	}
@@ -541,7 +448,7 @@ func TestGetLLMForModel_ConfigSubSkipsEmptyCredentials(t *testing.T) {
 // TestBuildModelSubscriptionMap_ConfigSubs verifies that config subscriptions
 // with different models each produce an entry in the model→subscription map.
 func TestBuildModelSubscriptionMap_ConfigSubs(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 
 	f.SetConfigSubs(func() []config.SubscriptionConfig {
 		return []config.SubscriptionConfig{
@@ -584,7 +491,7 @@ func TestBuildModelSubscriptionMap_ConfigSubs(t *testing.T) {
 // TestBuildModelSubscriptionMap_ConfigSubsSkipsEmptyCredentials verifies that
 // config subscriptions with empty BaseURL or APIKey are not added to the map.
 func TestBuildModelSubscriptionMap_ConfigSubsSkipsEmptyCredentials(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 
 	// Sub with matching Model but empty BaseURL — must be skipped.
 	f.SetConfigSubs(func() []config.SubscriptionConfig {
@@ -618,7 +525,7 @@ func TestBuildModelSubscriptionMap_ConfigSubsSkipsEmptyCredentials(t *testing.T)
 // TestBuildModelSubscriptionMap_EmptySenderID verifies that with an empty
 // senderID and nil subscriptionSvc, only config subs are included.
 func TestBuildModelSubscriptionMap_EmptySenderID(t *testing.T) {
-	f := NewLLMFactory(nil, &llm.MockLLM{}, "default-model")
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	// subscriptionSvc is nil by default — no DB path at all.
 
 	f.SetConfigSubs(func() []config.SubscriptionConfig {

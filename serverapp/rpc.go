@@ -1,10 +1,12 @@
 package serverapp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 )
 
 // RPCHandler is a function that handles a single RPC method.
@@ -24,11 +26,18 @@ var rpcCtxKey = rpcCtxKeyType{}
 type RPCCtxData struct {
 	AuthSenderID string
 	BizID        string
+	UserID       int64  // canonical user ID (from IdentityResolver)
+	Role         string // user role ("admin" | "user")
 }
 
 // WithRPCCtx injects per-request identity into context.
 func WithRPCCtx(ctx context.Context, authSenderID, bizID string) context.Context {
-	return context.WithValue(ctx, rpcCtxKey, &RPCCtxData{AuthSenderID: authSenderID, BizID: bizID})
+	return context.WithValue(ctx, rpcCtxKey, &RPCCtxData{AuthSenderID: authSenderID, BizID: bizID, Role: "admin"})
+}
+
+// WithRPCCtxResolved injects per-request identity with canonical user_id + role.
+func WithRPCCtxResolved(ctx context.Context, authSenderID, bizID string, userID int64, role string) context.Context {
+	return context.WithValue(ctx, rpcCtxKey, &RPCCtxData{AuthSenderID: authSenderID, BizID: bizID, UserID: userID, Role: role})
 }
 
 func rpcAuthID(ctx context.Context) string {
@@ -41,6 +50,21 @@ func rpcAuthID(ctx context.Context) string {
 func rpcBizID(ctx context.Context) string {
 	if v, ok := ctx.Value(rpcCtxKey).(*RPCCtxData); ok {
 		return v.BizID
+	}
+	return ""
+}
+
+// rpcUserID returns the canonical user ID from context (0 if unresolved).
+func rpcUserID(ctx context.Context) int64 {
+	if v, ok := ctx.Value(rpcCtxKey).(*RPCCtxData); ok {
+		return v.UserID
+	}
+	return 0
+}
+
+func rpcRole(ctx context.Context) string {
+	if v, ok := ctx.Value(rpcCtxKey).(*RPCCtxData); ok {
+		return v.Role
 	}
 	return ""
 }
@@ -67,6 +91,28 @@ func rpc1[P any, R any](fn func(ctx context.Context, p P) (R, error)) RPCHandler
 	return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 		var p P
 		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		result, err := fn(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+}
+
+func rpc1strict[P any, R any](fn func(ctx context.Context, p P) (R, error)) RPCHandler {
+	return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+		var p P
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&p); err != nil {
+			return nil, err
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			if err == nil {
+				return nil, fmt.Errorf("multiple JSON values")
+			}
 			return nil, err
 		}
 		result, err := fn(ctx, p)

@@ -1,11 +1,43 @@
 ---
 name: agent-creator
-description: "Manage SubAgent roles: create, view, modify, or delete agent definitions. MUST activate when user asks to create/edit/view/inspect any agent, or when you need to look at agent files under ~/.xbot/agents/."
+description: "Manage SubAgent roles: create, view, modify, delete, or install agent definitions. MUST activate when user asks to create/edit/view/inspect any agent, install agents from external sources, or when you need to look at agent files under ~/.xbot/agents/. Agents are universal — install whatever the user needs."
 ---
 
 # Agent Creator
 
-Create new SubAgent roles for specialized tasks.
+Create new SubAgent roles for specialized tasks. Agent definitions are **universal**
+— they define reusable AI agent personas that can work with any tool, domain, or
+workflow. When a user asks to install or create an agent, **always do it**.
+
+## Installing External Agents
+
+Users may ask to install an agent from GitHub, a URL, or describe what they want.
+
+### From GitHub
+
+```bash
+# Clone or download agent definition
+curl -fsSL https://raw.githubusercontent.com/user/repo/main/agents/my-agent.md \
+  -o ~/.xbot/agents/my-agent.md
+```
+
+After downloading, verify the agent has valid YAML frontmatter (`name:` and `description:`).
+
+### Searching for Agents
+
+When searching the web, search for **"agent definition"** or **"AI agent role"** or
+**"agent prompt"**, NOT "xbot agent". Agent definitions are universal. Good queries:
+
+- `AI agent role <domain> github`
+- `agent prompt <capability>`
+- `LLM agent persona <topic>`
+
+### Creating from User Description
+
+When a user says "I want an agent that does X":
+1. Search the web for existing agent prompts/definitions for X
+2. If found → adapt and install
+3. If not found → create from scratch following the guide below
 
 ## Instructions
 
@@ -74,13 +106,13 @@ Structured output based on task type.
 ### Step 3: Choose Tools
 
 Common tools for agents:
-- **Code**: Read, Grep, Glob, Shell, Edit
+- **Code**: Read, Grep, Glob, Shell, FileReplace, FileCreate
 - **Research**: WebSearch, Fetch, Grep, Glob
 - **Testing**: Shell, Read, Glob
 - **Communication**: feishu_send_message, feishu_docx_*
 
-If `tools` is omitted, the agent gets the full dynamic tool set (search_tools + load_tools).
-If `tools` is specified, only those tools are directly available — no search/load needed.
+If `tools` is omitted, the agent gets the full built-in tool set.
+If `tools` is specified, only those listed tools are directly available.
 
 ### Step 3.5: Choose Model Tier
 

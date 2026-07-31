@@ -1,0 +1,263 @@
+/**
+ * usePwaInstall — exposes PWA install/update state + diagnostics.
+ *
+ * - `canInstall`: true when beforeinstallprompt has fired.
+ * - `isInstalled`: true when running in standalone mode.
+ * - `install()`: triggers the native install prompt.
+ * - `updateAvailable` + `refreshSW()`: checks for SW updates and reloads.
+ * - `diagnostics`: real-time PWA installability criteria for display.
+ */
+import { useEffect, useState } from 'react'
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
+}
+
+interface PwaDiagnostics {
+  hasSW: boolean
+  swUrl: string | null
+  hasManifest: boolean
+  manifestDisplay: string
+  iconCount: number
+  has192Icon: boolean
+  has512Icon: boolean
+  isHttps: boolean
+  isStandalone: boolean
+  browserName: string
+  isSafari: boolean
+  isIOS: boolean
+}
+
+export function usePwaInstall() {
+  const [promptEvent, setPromptEvent] = useState<BeforeInstallPromptEvent | null>(null)
+  const [updateAvailable, setUpdateAvailable] = useState(false)
+  const [diagnostics, setDiagnostics] = useState<PwaDiagnostics | null>(null)
+  const isInstalled = useState(() =>
+    window.matchMedia('(display-mode: standalone)').matches ||
+    (window.navigator as unknown as { standalone?: boolean }).standalone === true,
+  )[0]
+
+  // Collect PWA diagnostics.
+  useEffect(() => {
+    let cancelled = false
+    async function collect() {
+      const ua = navigator.userAgent
+      const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+      const isSafari = /^((?!chrome|android|crios|fxios).)*safari/i.test(ua)
+      let browserName = 'Unknown'
+      if (/Chrome\/(\d+)/.test(ua) && !/Edg|OPR/.test(ua)) browserName = `Chrome ${RegExp.$1}`
+      else if (/Edg\/(\d+)/.test(ua)) browserName = `Edge ${RegExp.$1}`
+      else if (isSafari) browserName = isIOS ? 'Safari (iOS)' : 'Safari'
+      else if (/Firefox\/(\d+)/.test(ua)) browserName = `Firefox ${RegExp.$1}`
+
+      const reg = await navigator.serviceWorker?.getRegistration?.('/').catch(() => null)
+      let manifest: Record<string, unknown> | null = null
+      try {
+        manifest = await fetch('/manifest.webmanifest').then(r => r.json())
+      } catch { /* ignore */ }
+
+      const icons = (manifest?.icons as Array<{ sizes?: string }>) || []
+      const sizes = icons.map(i => i.sizes || '')
+
+      if (!cancelled) {
+        setDiagnostics({
+          hasSW: !!reg?.active,
+          swUrl: reg?.active?.scriptURL || null,
+          hasManifest: !!manifest,
+          manifestDisplay: (manifest?.display as string) || 'none',
+          iconCount: icons.length,
+          has192Icon: sizes.some(s => s.includes('192')),
+          has512Icon: sizes.some(s => s.includes('512')),
+          isHttps: location.protocol === 'https:' || location.hostname === 'localhost',
+          isStandalone: window.matchMedia('(display-mode: standalone)').matches,
+          browserName,
+          isSafari,
+          isIOS,
+        })
+      }
+    }
+    void collect()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      e.preventDefault()
+      setPromptEvent(e as BeforeInstallPromptEvent)
+    }
+    window.addEventListener('beforeinstallprompt', handler)
+    return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
+
+  // Listen for the global 'sw-updated' event (dispatched by registerSW
+  // when a new SW has activated via skipWaiting).
+  useEffect(() => {
+    const handler = () => setUpdateAvailable(true)
+    window.addEventListener('sw-updated', handler)
+    return () => window.removeEventListener('sw-updated', handler)
+  }, [])
+
+  // Manually check for SW updates (called by the update button).
+  // Returns true if an update was found and applied (reload needed).
+  const checkForUpdate = async () => {
+    if (!('serviceWorker' in navigator)) return false
+
+    // Strategy: fetch the server's latest /sw.js and extract the precached
+    // index.html revision (which is the MD5 of the current index.html). Compare
+    // it against the revision stored in the SW that's ACTUALLY controlling
+    // this page. If they differ, the server has a newer build → update available.
+    //
+    // We do NOT compare the revision against a hash of index.html — workbox
+    // uses MD5 for precache revisions, not SHA-1. The previous code used SHA-1
+    // (via sha1Hex) which never matched the MD5 revision, so the check always
+    // returned the wrong result.
+    try {
+      // 1. Fetch the server's latest sw.js (bypass cache).
+      const serverRes = await fetch('/sw.js', { cache: 'no-store' })
+      const serverText = await serverRes.text()
+
+      // 2. Get the revision from the currently-active SW's sw.js.
+      //    The SW caches its own sw.js in precache — but we can't read that.
+      //    Instead, compare against the index.html revision the SW has cached
+      //    by checking if a controllerchange would pick up new content.
+      const reg = await navigator.serviceWorker.getRegistration('/').catch(() => null)
+      if (reg) {
+        // SW registered — trigger update and check for a waiting SW.
+        // A waiting SW means the server's sw.js differs from the active one.
+        let changed = false
+        const onChange = () => { changed = true }
+        navigator.serviceWorker.addEventListener('controllerchange', onChange, { once: true })
+        try {
+          await reg.update()
+          await new Promise((r) => setTimeout(r, 500))
+        } finally {
+          navigator.serviceWorker.removeEventListener('controllerchange', onChange)
+        }
+        if (changed || reg.waiting) {
+          // New SW is waiting (skipWaiting will activate it) or already activated.
+          setUpdateAvailable(true)
+          return true
+        }
+      }
+
+      // 3. No SW or no waiting SW — compare the server's precache revision
+      //    against the revision embedded in the index.html the page loaded with.
+      //    The currently-loaded index.html references a specific JS bundle hash
+      //    (e.g. index-3tHn88Cu.js). The server's sw.js precaches index.html
+      //    with an MD5 revision that changes when the build changes index.html.
+      //    If the page's current JS bundle doesn't appear in the server's sw.js
+      //    precache list, the server has a newer build.
+      const currentScript = document.querySelector('script[src*="assets/index-"]')
+      const currentJsName = currentScript?.getAttribute('src')?.split('/').pop() || ''
+      if (currentJsName) {
+        // Check if the currently-loaded JS bundle is in the server's sw.js.
+        // If it's NOT, the server has a newer build with a different JS hash.
+        const serverHasCurrent = serverText.includes(currentJsName)
+        if (!serverHasCurrent) {
+          setUpdateAvailable(true)
+          return true
+        }
+      }
+
+      setUpdateAvailable(false)
+      return false
+    } catch {
+      setUpdateAvailable(false)
+      return false
+    }
+  }
+
+  const install = async () => {
+    if (!promptEvent) return
+    await promptEvent.prompt()
+    const choice = await promptEvent.userChoice
+    if (choice.outcome === 'accepted') {
+      setPromptEvent(null)
+    }
+  }
+
+  const refreshSW = async () => {
+    if (!('serviceWorker' in navigator)) {
+      window.location.reload()
+      return
+    }
+    const reg = await navigator.serviceWorker.getRegistration('/').catch(() => null)
+    if (reg?.waiting) {
+      // A waiting SW exists — activate it and reload on controllerchange.
+      // Set up a timeout fallback: if controllerchange doesn't fire within 3s
+      // (e.g. SW crashed during activation), force a reload anyway so the
+      // user is never left hanging with a non-responsive button.
+      let reloaded = false
+      const doReload = () => {
+        if (reloaded) return
+        reloaded = true
+        window.location.reload()
+      }
+      navigator.serviceWorker.addEventListener('controllerchange', doReload, { once: true })
+      setTimeout(doReload, 3000)
+      reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+      return
+    }
+    // With skipWaiting=true, the new SW activates immediately and there's
+    // never a waiting state. But the NavigationRoute (createHandlerBoundToURL)
+    // serves the OLD cached index.html on reload — the precache from the
+    // previous SW hasn't been replaced yet. We must unregister the SW and
+    // clear ALL caches so the reload fetches fresh assets from the server.
+    try {
+      if (reg) {
+        await reg.unregister()
+      }
+      const cacheNames = await caches.keys()
+      await Promise.all(cacheNames.map((name) => caches.delete(name)))
+    } catch {
+      // ignore — reload anyway
+    }
+    // Force a hard reload (bypass browser HTTP cache too)
+    window.location.reload()
+  }
+
+  // Auto-detect SW updates (Apple-style: check on load + when tab regains focus).
+  // When a new SW activates via skipWaiting, set updateAvailable so the UI
+  // can prompt the user — no manual "check for updates" needed.
+  // Dedup: track the SW version (scriptURL) so we only notify once per version.
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+
+    let lastSwUrl = ''
+
+    const handler = () => {
+      navigator.serviceWorker.getRegistration('/').then((reg) => {
+        const swUrl = reg?.active?.scriptURL || ''
+        if (swUrl && swUrl !== lastSwUrl) {
+          lastSwUrl = swUrl
+          setUpdateAvailable(true)
+        }
+      }).catch(() => {})
+    }
+    navigator.serviceWorker.addEventListener('controllerchange', handler)
+
+    // Check for updates when the tab regains focus (user switches back).
+    const onFocus = () => {
+      navigator.serviceWorker.getRegistration('/').then((reg) => {
+        reg?.update().catch(() => {})
+      }).catch(() => {})
+    }
+    window.addEventListener('focus', onFocus)
+
+    return () => {
+      navigator.serviceWorker.removeEventListener('controllerchange', handler)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [])
+
+  return {
+    canInstall: !!promptEvent && !isInstalled,
+    isInstalled,
+    install,
+    updateAvailable,
+    checkForUpdate,
+    refreshSW,
+    diagnostics,
+  }
+}

@@ -60,6 +60,7 @@ const (
 	EventPostCompact        = "PostCompact"
 	EventCronFired          = "CronFired"
 	EventWebhookReceived    = "WebhookReceived"
+	EventPreTurnEnd         = "PreTurnEnd"
 )
 
 // ---------------------------------------------------------------------------
@@ -475,5 +476,31 @@ func (e *WebhookReceivedEvent) Payload() map[string]any {
 	m["hook_event_name"] = e.EventName()
 	m["trigger_id"] = e.TriggerID
 	m["payload"] = e.Payload_
+	return m
+}
+
+// ---------------------------------------------------------------------------
+// 18. PreTurnEndEvent
+// ---------------------------------------------------------------------------
+
+// PreTurnEndEvent fires when the LLM returns a text-only response (no tool calls)
+// that would normally end the turn. Handlers can set Continue=true with a Reason
+// to prevent turn end — a synthetic tool result with content=Reason is injected,
+// and the agent loop continues for another iteration.
+//
+// This is the extension point for features that need to keep the agent running:
+// bg notification drain, /goal continuation, plugin-based quality gates, etc.
+type PreTurnEndEvent struct {
+	BasePayload
+	Continue bool   `json:"-"` // handler sets true to prevent turn end
+	Reason   string `json:"-"` // injected as tool result content when Continue=true
+}
+
+func (e *PreTurnEndEvent) EventName() string         { return EventPreTurnEnd }
+func (e *PreTurnEndEvent) ToolName() string          { return "" }
+func (e *PreTurnEndEvent) ToolInput() map[string]any { return nil }
+func (e *PreTurnEndEvent) Payload() map[string]any {
+	m := baseToMap(e.BasePayload)
+	m["hook_event_name"] = e.EventName()
 	return m
 }

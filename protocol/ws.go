@@ -8,20 +8,28 @@ import "encoding/json"
 
 // Server → Client message types
 const (
-	MsgTypeText          = "text"
-	MsgTypeProgress      = "progress_structured"
-	MsgTypeStreamContent = "stream_content"
-	MsgTypeRPCResponse   = "rpc_response"
-	MsgTypeAskUser       = "ask_user"
-	MsgTypeCard          = "card"
-	MsgTypeUserEcho      = "user_echo"
-	MsgTypeInjectUser    = "inject_user"
-	MsgTypePluginWidgets = "plugin_widgets"
-	MsgTypeTUIControlReq = "tui_control_req"
-	MsgTypeRunnerStatus  = "runner_status"
-	MsgTypeSyncProgress  = "sync_progress"
-	MsgTypeSession       = "session"
-	MsgTypePong          = "__pong__"
+	MsgTypeText           = "text"
+	MsgTypeProgress       = "progress_structured"
+	MsgTypeStreamContent  = "stream_content"
+	MsgTypeRPCResponse    = "rpc_response"
+	MsgTypeAskUser        = "ask_user"
+	MsgTypeCard           = "card"
+	MsgTypeUserEcho       = "user_echo"
+	MsgTypeInjectUser     = "inject_user"
+	MsgTypePluginWidgets  = "plugin_widgets"
+	MsgTypeTUIControlReq  = "tui_control_req"
+	MsgTypeRunnerStatus   = "runner_status"
+	MsgTypeSyncProgress   = "sync_progress"
+	MsgTypeSession        = "session"
+	MsgTypeGenUI          = "genui"
+	MsgTypeResyncRequired = "resync_required"
+	MsgTypePong           = "__pong__"
+
+	// Channel Plugin → xbot: tool declaration
+	MsgTypeChannelTools = "channel_tools"
+
+	// Channel Plugin → xbot: prompt declaration
+	MsgTypeChannelPrompt = "channel_prompt"
 )
 
 // Client → Server message types
@@ -74,10 +82,14 @@ type WSMessage struct {
 	ProgressHistory string             `json:"progress_history,omitempty"`
 	Channel         string             `json:"channel,omitempty"`
 	ChatID          string             `json:"chat_id,omitempty"`
+	RouteChannel    string             `json:"route_channel,omitempty"`
+	RouteChatID     string             `json:"route_chat_id,omitempty"`
 	SenderID        string             `json:"sender_id,omitempty"`
 	SenderName      string             `json:"sender_name,omitempty"`
 	ChatType        string             `json:"chat_type,omitempty"`
 	SessionReset    bool               `json:"session_reset,omitempty"`
+	Cancelled       bool               `json:"cancelled,omitempty"` // true = turn was cancelled by user
+	TurnID          uint64             `json:"turn_id,omitempty"`   // associates reply with user message by turn
 	Metadata        map[string]string  `json:"metadata,omitempty"`
 	Result          json.RawMessage    `json:"result,omitempty"`
 	Error           string             `json:"error,omitempty"`
@@ -116,6 +128,8 @@ type WSClientMessage struct {
 	SenderID   string             `json:"sender_id,omitempty"`
 	SenderName string             `json:"sender_name,omitempty"`
 	ChatType   string             `json:"chat_type,omitempty"`
+	LastSeq    uint64             `json:"last_seq,omitempty"`
+	Resume     bool               `json:"resume,omitempty"`
 	ID         string             `json:"id,omitempty"`
 	Method     string             `json:"method,omitempty"`
 	Params     json.RawMessage    `json:"params,omitempty"`

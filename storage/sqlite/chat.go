@@ -3,12 +3,16 @@ package sqlite
 import (
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	log "xbot/logger"
 )
+
+var ErrChatNotFound = errors.New("chat not found")
 
 // UserChat represents a chatroom owned by a user.
 type UserChat struct {
@@ -27,23 +31,26 @@ type UserChatWithPreview struct {
 	LastActive time.Time `json:"last_active"`
 	Preview    string    `json:"preview"`
 	IsCurrent  bool      `json:"is_current"`
+	CreatedAt  time.Time `json:"created_at"`
+	SortOrder  int       `json:"sort_order"`
 }
 
 // ChatService manages user chatrooms (multi-chat support).
 type ChatService struct {
-	conn *sql.DB
+	db *DB
 }
 
 // NewChatService creates a new ChatService.
-func NewChatService(conn *sql.DB) *ChatService {
-	return &ChatService{conn: conn}
+func NewChatService(db *DB) *ChatService {
+	return &ChatService{db: db}
 }
 
 // ListUserChats returns all chatrooms for a user in a given channel.
 // Includes the default chat (chatID=senderID) even if not in user_chats table.
 // If currentChatID is non-empty, marks that chat as current.
+// Uses a single SQL query with LEFT JOIN to avoid N+1 per-chatID queries.
 func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]UserChatWithPreview, error) {
-	conn := s.conn
+	conn := s.db.Conn()
 
 	// Collect all chat IDs for this user:
 	// 1. Default chat (chat_id = senderID)
@@ -51,7 +58,7 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 	chatIDs := []string{senderID}
 
 	rows, err := conn.Query(
-		"SELECT chat_id, label FROM user_chats WHERE channel = ? AND sender_id = ?",
+		"SELECT chat_id, label, created_at, sort_order FROM user_chats WHERE channel = ? AND sender_id = ?",
 		channel, senderID,
 	)
 	if err != nil {
@@ -59,42 +66,81 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 	}
 	defer rows.Close()
 
-	labelMap := map[string]string{}
+	type chatMeta struct {
+		label     string
+		createdAt time.Time
+		sortOrder int
+	}
+	chatMap := map[string]chatMeta{}
 	for rows.Next() {
 		var cid, label string
-		if err := rows.Scan(&cid, &label); err != nil {
+		var createdAt time.Time
+		var sortOrder int
+		if err := rows.Scan(&cid, &label, &createdAt, &sortOrder); err != nil {
 			continue
 		}
 		chatIDs = append(chatIDs, cid)
-		labelMap[cid] = label
+		chatMap[cid] = chatMeta{label: label, createdAt: createdAt, sortOrder: sortOrder}
 	}
 
-	// Build result with tenant metadata
+	if len(chatIDs) == 0 {
+		return nil, nil
+	}
+
+	// Single query: LEFT JOIN tenants + latest session message preview for all chatIDs.
+	placeholders := make([]string, len(chatIDs))
+	args := make([]any, 0, len(chatIDs)+1)
+	args = append(args, channel)
+	for i, cid := range chatIDs {
+		placeholders[i] = "?"
+		args = append(args, cid)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT t.chat_id, t.last_active_at,
+			(SELECT sm.content FROM session_messages sm
+			 WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
+			 ORDER BY sm.id DESC LIMIT 1) AS preview
+		FROM tenants t
+		WHERE t.channel = ? AND t.chat_id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	rows2, err := conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query tenant metadata: %w", err)
+	}
+	defer rows2.Close()
+
+	tenantInfo := map[string]struct {
+		lastActive time.Time
+		preview    string
+	}{}
+	for rows2.Next() {
+		var cid string
+		var lastActive time.Time
+		var preview sql.NullString
+		if err := rows2.Scan(&cid, &lastActive, &preview); err != nil {
+			continue
+		}
+		tenantInfo[cid] = struct {
+			lastActive time.Time
+			preview    string
+		}{lastActive: lastActive, preview: preview.String}
+	}
+
+	// Build result preserving chatIDs order
 	var result []UserChatWithPreview
 	for _, cid := range chatIDs {
-		var lastActive time.Time
-		var preview string
-		var tenantID int64
-
-		err := conn.QueryRow(
-			"SELECT id, last_active_at FROM tenants WHERE channel = ? AND chat_id = ?",
-			channel, cid,
-		).Scan(&tenantID, &lastActive)
-
-		if err == sql.ErrNoRows {
-			// Tenant doesn't exist yet (new chat, no messages)
-			lastActive = time.Time{}
-		} else if err != nil {
-			lastActive = time.Time{}
-		} else {
-			// Get last message preview
-			_ = conn.QueryRow(`
-				SELECT content FROM session_messages
-				WHERE tenant_id = ? AND role IN ('user', 'assistant')
-				ORDER BY id DESC LIMIT 1`, tenantID).Scan(&preview)
+		info, hasTenant := tenantInfo[cid]
+		lastActive := time.Time{}
+		preview := ""
+		if hasTenant {
+			lastActive = info.lastActive
+			preview = info.preview
 		}
 
-		label := labelMap[cid]
+		meta := chatMap[cid]
+		label := meta.label
 		if label == "" && cid == senderID {
 			label = "默认会话"
 		}
@@ -105,6 +151,8 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 			LastActive: lastActive,
 			Preview:    truncate(preview, 80),
 			IsCurrent:  cid == currentChatID,
+			CreatedAt:  meta.createdAt,
+			SortOrder:  meta.sortOrder,
 		})
 	}
 
@@ -113,7 +161,26 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 
 // CreateChat creates a new chatroom for a user. Returns the new chatID.
 func (s *ChatService) CreateChat(channel, senderID, label string) (string, error) {
-	conn := s.conn
+	conn := s.db.Conn()
+	userID, err := canonicalUserID(conn, channel, senderID)
+	if err != nil {
+		return "", fmt.Errorf("resolve chat owner: %w", err)
+	}
+	return s.createChat(channel, senderID, label, userID)
+}
+
+// CreateChatOwned creates a chat using the canonical identity resolved at the
+// authenticated channel boundary. This is required when a linked identity uses
+// Web transport with a non-Web sender ID.
+func (s *ChatService) CreateChatOwned(channel, senderID, label string, canonicalUserID int64) (string, error) {
+	if canonicalUserID <= 0 {
+		return s.CreateChat(channel, senderID, label)
+	}
+	return s.createChat(channel, senderID, label, canonicalUserID)
+}
+
+func (s *ChatService) createChat(channel, senderID, label string, userID int64) (string, error) {
+	conn := s.db.Conn()
 
 	// Generate a unique chat ID
 	var chatID string
@@ -150,8 +217,8 @@ func (s *ChatService) CreateChat(channel, senderID, label string) (string, error
 	}
 
 	_, err := conn.Exec(
-		"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
-		channel, senderID, chatID, label,
+		"INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id) VALUES (?, ?, ?, ?, ?)",
+		channel, senderID, chatID, label, userID,
 	)
 	if err != nil {
 		return "", fmt.Errorf("create chat: %w", err)
@@ -163,10 +230,30 @@ func (s *ChatService) CreateChat(channel, senderID, label string) (string, error
 	return chatID, nil
 }
 
+// UpdateChatSortOrders batch-updates sort_order for multiple chats.
+// orders is a map of chatID → sort_order. Only web-channel chats are updated.
+func (s *ChatService) UpdateChatSortOrders(channel, senderID string, orders map[string]int) error {
+	conn := s.db.Conn()
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	for chatID, order := range orders {
+		if _, err := tx.Exec(
+			"UPDATE user_chats SET sort_order = ? WHERE channel = ? AND sender_id = ? AND chat_id = ?",
+			order, channel, senderID, chatID,
+		); err != nil {
+			return fmt.Errorf("update sort_order for %s: %w", chatID, err)
+		}
+	}
+	return tx.Commit()
+}
+
 // DeleteChat removes a chatroom. Deletes the tenant and all associated data (cascading).
 func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 
-	conn := s.conn
+	conn := s.db.Conn()
 
 	// Verify ownership via user_chats table
 	var count int
@@ -178,15 +265,15 @@ func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 		return fmt.Errorf("check chat ownership: %w", err)
 	}
 
-	if count > 0 {
-		// Delete from user_chats (web sessions use this table)
-		_, err = conn.Exec(
-			"DELETE FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?",
-			channel, senderID, chatID,
-		)
-		if err != nil {
-			return fmt.Errorf("delete chat record: %w", err)
-		}
+	// A session can acquire labels from more than one authenticated surface
+	// (for example cli_user plus an admin Web identity). Delete them together
+	// so a later session with the same key cannot inherit stale metadata.
+	_, err = conn.Exec(
+		"DELETE FROM user_chats WHERE channel = ? AND chat_id = ?",
+		channel, chatID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete chat record: %w", err)
 	}
 
 	// Delete tenant (cascades to session_messages, memory, etc.) regardless of user_chats.
@@ -201,7 +288,7 @@ func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 && count == 0 {
-		return fmt.Errorf("chat not found")
+		return ErrChatNotFound
 	}
 
 	log.WithFields(log.Fields{
@@ -212,21 +299,15 @@ func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 
 // RenameChat updates the label of a chatroom.
 func (s *ChatService) RenameChat(channel, senderID, chatID, label string) error {
-	if chatID == senderID {
-		// Default chat: insert or update in user_chats
-		conn := s.conn
-		_, err := conn.Exec(`
-			INSERT INTO user_chats (channel, sender_id, chat_id, label)
-			VALUES (?, ?, ?, ?)
-			ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
-			channel, senderID, chatID, label, label,
-		)
-		return err
-	}
-
-	_, err := s.conn.Exec(
-		"UPDATE user_chats SET label = ? WHERE channel = ? AND sender_id = ? AND chat_id = ?",
-		label, channel, senderID, chatID,
+	// Upsert: try UPDATE first (any channel), then INSERT if no row exists.
+	// This handles renaming CLI/feishu sessions from the Web UI, where the
+	// caller passes channel="web" but the session lives under a different channel.
+	conn := s.db.Conn()
+	_, err := conn.Exec(`
+		INSERT INTO user_chats (channel, sender_id, chat_id, label)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
+		channel, senderID, chatID, label, label,
 	)
 	return err
 }
@@ -265,7 +346,7 @@ func truncate(s string, maxRunes int) string {
 // Returns ("", nil) if no owner found (session not in DB).
 func (s *ChatService) GetSenderForChat(channel, chatID string) (string, error) {
 	var senderID string
-	err := s.conn.QueryRow(
+	err := s.db.Conn().QueryRow(
 		"SELECT sender_id FROM user_chats WHERE channel = ? AND chat_id = ? LIMIT 1",
 		channel, chatID,
 	).Scan(&senderID)

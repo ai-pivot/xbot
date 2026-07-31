@@ -30,15 +30,20 @@ type ToolProgress struct {
 	Args      string    `json:"args,omitempty"`
 	ToolHints string    `json:"tool_hints,omitempty"`
 	StartedAt time.Time `json:"started_at,omitempty"`
+	// GenChars is the accumulated argument character count for generating tools
+	// (Status="generating"). Populated from streaming tool call deltas — shows
+	// real-time progress of argument generation (e.g. "42 chars").
+	GenChars int `json:"gen_chars,omitempty"`
 }
 
 // SubAgentInfo represents a sub-agent's structured progress status.
 type SubAgentInfo struct {
-	Role     string         `json:"role"`
-	Instance string         `json:"instance,omitempty"`
-	Status   string         `json:"status"`
-	Desc     string         `json:"desc,omitempty"`
-	Children []SubAgentInfo `json:"children,omitempty"`
+	Role       string         `json:"role"`
+	Instance   string         `json:"instance,omitempty"`
+	SessionKey string         `json:"session_key,omitempty"`
+	Status     string         `json:"status"`
+	Desc       string         `json:"desc,omitempty"`
+	Children   []SubAgentInfo `json:"children,omitempty"`
 }
 
 // TokenUsage represents a token usage snapshot.
@@ -74,17 +79,49 @@ type ProgressEvent struct {
 	Phase                  string            `json:"phase,omitempty"`
 	ActiveTools            []ToolProgress    `json:"active_tools,omitempty"`
 	CompletedTools         []ToolProgress    `json:"completed_tools,omitempty"`
-	Thinking               string            `json:"thinking,omitempty"`
 	SubAgents              []SubAgentInfo    `json:"sub_agents,omitempty"`
-	Todos                  []TodoItem        `json:"todos,omitempty"`
+	Todos                  []TodoItem        `json:"todos"`
 	TokenUsage             *TokenUsage       `json:"token_usage,omitempty"`
 	Questions              []AskUserQuestion `json:"questions,omitempty"`
 	RequestID              string            `json:"request_id,omitempty"`
 	StreamContent          string            `json:"stream_content,omitempty"`
 	ReasoningStreamContent string            `json:"reasoning_stream_content,omitempty"`
-	IterationHistory       []ProgressEvent   `json:"iteration_history,omitempty"`
-	HistoryCompacted       bool              `json:"history_compacted,omitempty"`
-	CWD                    string            `json:"cwd,omitempty"`
+	// GenUIContent carries streaming HTML from display_html tool arguments.
+	// Stream-only field like StreamContent — must NOT enter structured snapshots.
+	GenUIContent string `json:"genui_content,omitempty"`
+	// StreamingTools carries tool names detected during LLM streaming,
+	// before arguments finish generating. Each entry has Status="generating".
+	// This is a stream-only field (like StreamContent) — it must NOT enter
+	// snapshotIterationChange or any structured snapshot path.
+	StreamingTools []ToolProgress `json:"streaming_tools,omitempty"`
+	// StreamTokens carries incremental completion token count during LLM streaming.
+	// Populated from Anthropic's message_delta usage events (OpenAI/DeepSeek only
+	// provide usage at stream end). When >0, TUI displays token count instead of
+	// char count for streaming progress.
+	StreamTokens     int64           `json:"stream_tokens,omitempty"`
+	IterationHistory []ProgressEvent `json:"iteration_history,omitempty"`
+	HistoryCompacted bool            `json:"history_compacted,omitempty"`
+	CWD              string          `json:"cwd,omitempty"`
+
+	// TurnID uniquely identifies the agent turn that produced this event.
+	// Assigned by chatProcessLoop (per-session monotonic counter) and carried
+	// through RunConfig → StructuredProgress → every progress event. The
+	// frontend uses TurnID to associate a user message with its assistant
+	// response, eliminating arrival-order races (especially between
+	// bg-notification-injected user messages and user-typed messages).
+	TurnID    uint64         `json:"turn_id,omitempty"`
+	TurnStart *TurnStartInfo `json:"turn_start,omitempty"` // only on turn_started events
+}
+
+// TurnStartInfo carries the user message that triggered a turn. Only set when
+// Phase == "turn_started". This replaces the old InjectUserMessage side-channel:
+// the notification user message is now delivered atomically with the TurnID
+// through the unified progress stream.
+type TurnStartInfo struct {
+	Trigger    string `json:"trigger"`              // "user" | "notification" | "resume"
+	Content    string `json:"content,omitempty"`    // user message text (for notification display)
+	RequestID  string `json:"request_id,omitempty"` // for user-typed: match optimistic message
+	SenderName string `json:"sender_name,omitempty"`
 }
 
 func (ProgressEvent) EventType() string { return "progress" }
@@ -93,18 +130,48 @@ func (ProgressEvent) EventVersion() int { return 1 }
 // HistoryIteration represents a completed iteration in history.
 type HistoryIteration struct {
 	Iteration   int            `json:"iteration"`
-	Thinking    string         `json:"thinking,omitempty"`
+	Content     string         `json:"content,omitempty"`
 	Reasoning   string         `json:"reasoning,omitempty"`
 	Tools       []ToolProgress `json:"tools,omitempty"`
 	ElapsedWall int64          `json:"elapsed_wall"`
 }
 
+// HistoryToolCall preserves the raw assistant tool-call relation in the
+// append-only history projection.
+type HistoryToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 // HistoryMessage represents a message in session history.
 type HistoryMessage struct {
-	Role       string             `json:"role"`
-	Content    string             `json:"content"`
-	Timestamp  time.Time          `json:"timestamp"`
-	Iterations []HistoryIteration `json:"iterations,omitempty"`
+	ID               int64               `json:"id,omitempty"`         // DB auto-increment id (stable history node)
+	HistoryID        int64               `json:"history_id,omitempty"` // alias of ID for append-only rewind (kept for client compat)
+	Role             string              `json:"role"`
+	Content          string              `json:"content"`
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ToolCallID       string              `json:"tool_call_id,omitempty"`
+	ToolName         string              `json:"tool_name,omitempty"`
+	ToolArguments    string              `json:"tool_arguments,omitempty"`
+	ToolCalls        []HistoryToolCall   `json:"tool_calls,omitempty"`
+	Timestamp        time.Time           `json:"timestamp"`
+	TurnID           uint64              `json:"turn_id,omitempty"`
+	Iterations       []HistoryIteration  `json:"iterations,omitempty"`
+	RecordType       string              `json:"record_type,omitempty"`
+	TargetHistoryID  int64               `json:"target_history_id,omitempty"`
+	CompactedBy      int64               `json:"compacted_by,omitempty"`
+	Compression      *HistoryCompression `json:"compression,omitempty"`
+	DisplayOnly      bool                `json:"display_only,omitempty"`
+}
+
+// HistoryCompression describes the original DB nodes replaced by one
+// append-only compression record. SourceHistoryIDs remain in the same history
+// response so clients can expand them or rewind to an original user turn.
+type HistoryCompression struct {
+	StartHistoryID   int64   `json:"start_history_id,omitempty"`
+	EndHistoryID     int64   `json:"end_history_id,omitempty"`
+	SourceHistoryIDs []int64 `json:"source_history_ids,omitempty"`
 }
 
 // Subscription represents an LLM subscription for display/selection.
@@ -118,14 +185,62 @@ type Subscription struct {
 	MaxOutputTokens int                       `json:"max_output_tokens,omitempty"`
 	MaxContext      int                       `json:"max_context,omitempty"` // subscription-level max context (0 = use default)
 	ThinkingMode    string                    `json:"thinking_mode,omitempty"`
+	APIType         string                    `json:"api_type,omitempty"` // "chat_completions" (default) | "responses"
 	PerModelConfigs map[string]PerModelConfig `json:"per_model_configs,omitempty"`
 	Active          bool                      `json:"active"`
+	// Enabled is the subscription-level enabled flag (v40). A disabled subscription
+	// stops contributing models to the picker; credentials are preserved. Populated
+	// from user_llm_subscriptions.enabled by listSubscriptions/mergeSubscriptionModels.
+	Enabled bool `json:"enabled,omitempty"`
+	// IsSystem marks the shared system subscription (v44): reconciled from
+	// config/env at boot, read-only, and the lowest-priority default/fallback.
+	// The UI uses this to render a lock badge and disable edit/disable/delete.
+	IsSystem bool `json:"is_system,omitempty"`
 }
 
 // PerModelConfig stores per-model token overrides within a subscription.
 type PerModelConfig struct {
-	MaxOutputTokens int `json:"max_output_tokens,omitempty"` // 0 = use subscription default
-	MaxContext      int `json:"max_context,omitempty"`       // 0 = use subscription default
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // 0 = use subscription default
+	MaxContext      int    `json:"max_context,omitempty"`       // 0 = use subscription default
+	APIType         string `json:"api_type,omitempty"`          // "" = use subscription default
+	// Enabled is a read-side projection of subscription_models.enabled, populated by
+	// mergeSubscriptionModels so the UI can show/toggle per-model enabled state. It is
+	// NOT authoritative on writes — enabled is managed by the set_model_enabled RPC.
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+// ContextUsage is the authoritative context snapshot for one session.
+// UsagePercent is nil until the model API has returned an exact prompt token
+// count. It is intentionally not capped at 100.
+type ContextUsage struct {
+	Available        bool     `json:"available"`
+	PromptTokens     int64    `json:"prompt_tokens"`
+	CompletionTokens int64    `json:"completion_tokens"`
+	MaxContextTokens int      `json:"max_context_tokens"`
+	UsagePercent     *float64 `json:"usage_percent"`
+	Model            string   `json:"model"`
+	SubscriptionID   string   `json:"subscription_id"`
+	SubscriptionName string   `json:"subscription_name"`
+}
+
+// ModelEntry is a selectable model paired with the subscription that provides it.
+// Used by the model picker (ListAllModelEntries) so the UI can show "订阅名 · 模型名"
+// and disambiguate models served by different subscriptions. System-default models
+// (not owned by any user subscription) carry empty SubID/SubName.
+//
+// The list is DB-driven: it unions sub.CachedModels (fetched) + sub.Model +
+// subscription_models rows (manually added / param overrides). Status reflects
+// per-(SubID,Model) availability:
+//   - "normal": present in CachedModels (or it's sub.Model) and enabled → fetched & usable
+//   - "offline": has a subscription_models record but NOT fetched, and enabled →
+//     manually added; still selectable (anything not disabled is selectable)
+//   - "disabled": subscription_models.enabled=0 → rendered greyed, not selectable;
+//     press ctrl+e to re-enable
+type ModelEntry struct {
+	SubID   string `json:"sub_id,omitempty"`
+	SubName string `json:"sub_name,omitempty"`
+	Model   string `json:"model"`
+	Status  string `json:"status"` // normal | offline | disabled
 }
 
 type OutboundEvent struct {
@@ -190,15 +305,17 @@ func (AskUserEvent) EventVersion() int { return 1 }
 // Covers busy/idle transitions, session lifecycle (create/delete/rename),
 // and SubAgent lifecycle (started/stopped).
 // Action values: "busy", "idle", "created", "deleted", "renamed",
-// "subagent_started", "subagent_stopped".
+// "subagent_started", "subagent_stopped", "history_rewound".
 type SessionEvent struct {
-	Channel  string `json:"channel"`
-	ChatID   string `json:"chat_id"`
-	Action   string `json:"action"`
-	Label    string `json:"label,omitempty"`
-	Role     string `json:"role,omitempty"`
-	Instance string `json:"instance,omitempty"`
-	ParentID string `json:"parent_id,omitempty"`
+	Channel         string `json:"channel"`
+	ChatID          string `json:"chat_id"`
+	Action          string `json:"action"`
+	Label           string `json:"label,omitempty"`
+	Role            string `json:"role,omitempty"`
+	Instance        string `json:"instance,omitempty"`
+	SessionKey      string `json:"session_key,omitempty"`
+	ParentID        string `json:"parent_id,omitempty"`
+	TargetHistoryID int64  `json:"target_history_id,omitempty"`
 }
 
 func (SessionEvent) EventType() string { return "session" }

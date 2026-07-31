@@ -85,7 +85,7 @@ func NewAnthropicLLM(cfg AnthropicConfig) *AnthropicLLM {
 
 // ListModels 返回可用模型列表
 // Anthropic has no /v1/models API, so we only return the configured model.
-// This prevents Ctrl+N from cycling through fake hardcoded model names.
+// This prevents the model picker from listing fake hardcoded model names.
 func (a *AnthropicLLM) ListModels() []string {
 	if a.defaultModel != "" {
 		return []string{a.defaultModel}
@@ -416,17 +416,11 @@ func (a *AnthropicLLM) Generate(ctx context.Context, model string, messages []Ch
 	startTime := time.Now()
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
-		log.Ctx(ctx).WithError(err).WithField("provider", "anthropic").Error("[LLM] Request failed")
 		return nil, fmt.Errorf("anthropic API request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		log.Ctx(ctx).WithFields(log.Fields{
-			"provider":    "anthropic",
-			"status_code": resp.StatusCode,
-			"body":        string(bodyBytes),
-		}).Error("[LLM] API error")
 		return nil, fmt.Errorf("anthropic API error: status=%d, body=%s", resp.StatusCode, string(bodyBytes))
 	}
 	var apiResp anthropicResp
@@ -532,17 +526,11 @@ func (a *AnthropicLLM) GenerateStream(ctx context.Context, model string, message
 	startTime := time.Now()
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
-		log.Ctx(ctx).WithError(err).WithField("provider", "anthropic").Error("[LLM] Request failed")
 		return nil, fmt.Errorf("anthropic streaming API request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		log.Ctx(ctx).WithFields(log.Fields{
-			"provider":    "anthropic",
-			"status_code": resp.StatusCode,
-			"body":        string(bodyBytes),
-		}).Error("[LLM] API error")
 		return nil, fmt.Errorf("anthropic API error: status=%d, body=%s", resp.StatusCode, string(bodyBytes))
 	}
 	eventChan := make(chan StreamEvent, 100)
@@ -592,6 +580,7 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 	var lastUsage *TokenUsage
 	lastFinishReason := FinishReasonStop
 	doneSent := false
+	hasContent := false // track whether any content/tool_call was received
 	for {
 		select {
 		case <-ctx.Done():
@@ -603,7 +592,13 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 		if err != nil {
 			if err == io.EOF {
 				if !doneSent {
-					eventChan <- StreamEvent{Type: EventDone}
+					if hasContent {
+						// Received content but never got message_stop event —
+						// stream was likely truncated by proxy/network.
+						eventChan <- StreamEvent{Type: EventError, Error: "stream ended without message_stop (possible truncation)"}
+					} else {
+						eventChan <- StreamEvent{Type: EventDone}
+					}
 				}
 				return
 			}
@@ -662,6 +657,7 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 			if ev.ContentBlock != nil {
 				switch ev.ContentBlock.Type {
 				case "tool_use":
+					hasContent = true
 					tc := &ToolCall{
 						ID:        ev.ContentBlock.ID,
 						Name:      ev.ContentBlock.Name,
@@ -696,13 +692,15 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 				continue
 			}
 			if delta.Type == "text_delta" && delta.Text != "" {
+				hasContent = true
 				eventChan <- StreamEvent{Type: EventContent, Content: delta.Text}
 			}
 			if delta.Type == "thinking_delta" && delta.Thinking != "" {
-				// Anthropic extended thinking delta
+				hasContent = true
 				eventChan <- StreamEvent{Type: EventReasoningContent, ReasoningContent: delta.Thinking}
 			}
 			if delta.Type == "input_json_delta" && delta.PartialJSON != "" {
+				hasContent = true
 				if tc, ok := toolCallsByIndex[ev.Index]; ok {
 					tc.Arguments += delta.PartialJSON
 					eventChan <- StreamEvent{

@@ -19,8 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
-	"net/url"
 	"os"
 
 	"os/signal"
@@ -34,6 +32,7 @@ import (
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/cli"
 	"xbot/clipanic"
 	"xbot/config"
 	"xbot/llm"
@@ -181,6 +180,22 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 		if sub.ThinkingMode != "" {
 			vals["thinking_mode"] = sub.ThinkingMode
 		}
+		// max_context_tokens from subscription's PerModelConfigs.
+		// Must mirror the settings panel read path (cli_settings.go).
+		// Without this, refreshRemoteValuesCache leaves max_context_tokens empty,
+		// and the fallback below fills it with config.DefaultMaxContextTokens (200000),
+		// which then overwrites cachedMaxContextTokens via reloadSettingsCaches →
+		// resolveMaxContext → GetCurrentValues.
+		if _, ok := vals["max_context_tokens"]; !ok {
+			model := sub.Model
+			if model != "" {
+				if pmc, ok := sub.PerModelConfigs[model]; ok && pmc.MaxContext > 0 {
+					vals["max_context_tokens"] = fmt.Sprintf("%d", pmc.MaxContext)
+				} else if sub.MaxContext > 0 {
+					vals["max_context_tokens"] = fmt.Sprintf("%d", sub.MaxContext)
+				}
+			}
+		}
 	}
 	vals["context_mode"] = app.client.GetContextMode()
 	// ScopeGlobal keys: always override DB values with config (single source of truth).
@@ -259,21 +274,8 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 		}
 	}
 
-	// Sync tier model mappings via RPC so SubAgent model resolution
-	// works correctly (tier models are user-scoped, persisted in DB).
+	// Sync model contexts via RPC.
 	if app.client != nil {
-		llmCfg := app.cfg.LLM // start from current config
-		if v, ok := vals["vanguard_model"]; ok {
-			llmCfg.VanguardModel = v
-		}
-		if v, ok := vals["balance_model"]; ok {
-			llmCfg.BalanceModel = v
-		}
-		if v, ok := vals["swift_model"]; ok {
-			llmCfg.SwiftModel = v
-		}
-		app.cfg.LLM = llmCfg
-		app.client.SetModelTiers(llmCfg)
 		app.client.SetModelContexts(app.cfg.Agent.ModelContexts)
 	}
 }
@@ -292,25 +294,12 @@ func saveCLIConfig(cfg *config.Config) error {
 	// Agent settings: always write back (max_iterations, max_concurrency, etc.)
 	merged.Agent = cfg.Agent
 
-	// LLM tier model mappings: always write back (vanguard/balance/swift models).
-	// These are global preferences, not subscription credentials.
-	merged.LLM.VanguardModel = cfg.LLM.VanguardModel
-	merged.LLM.BalanceModel = cfg.LLM.BalanceModel
-	merged.LLM.SwiftModel = cfg.LLM.SwiftModel
-
 	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode):
-	// Single source of truth is user_llm_subscriptions DB, NOT config.json.
-	// Only write credentials to config.json if there are no DB subscriptions
-	// (first-run path where config.json is the only data source).
-	// Guard: only write if credentials are actually present (avoid zero-value overwrite).
-	if len(merged.Subscriptions) == 0 && cfg.LLM.Provider != "" {
-		merged.LLM.Provider = cfg.LLM.Provider
-		merged.LLM.BaseURL = cfg.LLM.BaseURL
-		merged.LLM.APIKey = cfg.LLM.APIKey
-		merged.LLM.Model = cfg.LLM.Model
-		merged.LLM.MaxOutputTokens = cfg.LLM.MaxOutputTokens
-		merged.LLM.ThinkingMode = cfg.LLM.ThinkingMode
-	}
+	// NOT written back to config.json. The DB system subscription (reconciled at
+	// boot) is the single source of truth, and cfg.LLM.* may hold decrypted values
+	// refreshed from DB — writing them back would leak plaintext keys. config.json
+	// keeps its existing credentials (preserved by SaveToFile's deep merge) only as
+	// a boot seed.
 
 	// CLI remote connection settings: only write if non-empty (e.g. first setup)
 	if cfg.CLI.ServerURL != "" || cfg.CLI.Token != "" {
@@ -413,7 +402,7 @@ func loadLLMFromDBSubscription(client *agent.Client, cfg *config.Config) bool {
 	cfg.LLM.Provider = sub.Provider
 	cfg.LLM.BaseURL = sub.BaseURL
 	cfg.LLM.APIKey = sub.APIKey
-	cfg.LLM.Model = sub.Model
+	cfg.LLM.Model = ""
 	cfg.LLM.MaxOutputTokens = client.GetUserMaxOutputTokens(cliSenderID)
 	cfg.LLM.ThinkingMode = client.GetUserThinkingMode(cliSenderID)
 	return true
@@ -490,9 +479,7 @@ func updateActiveSubscription(client *agent.Client, cfg *config.Config, values m
 				newSub.MaxOutputTokens = n
 			}
 		}
-		if v, ok := values["thinking_mode"]; ok {
-			newSub.ThinkingMode = v
-		}
+		// thinking_mode is no longer written onto subscription rows (global user setting).
 		if err := client.AddSubscription(cliSenderID, newSub); err != nil {
 			return fmt.Errorf("create subscription: %w", err)
 		}
@@ -522,9 +509,6 @@ func updateActiveSubscription(client *agent.Client, cfg *config.Config, values m
 			sub.APIKey = key
 		}
 	}
-	if v, ok := values["llm_model"]; ok && strings.TrimSpace(v) != "" {
-		sub.Model = strings.TrimSpace(v)
-	}
 	if v, ok := values["llm_base_url"]; ok && strings.TrimSpace(v) != "" {
 		sub.BaseURL = strings.TrimSpace(v)
 	}
@@ -536,9 +520,8 @@ func updateActiveSubscription(client *agent.Client, cfg *config.Config, values m
 			log.Warnf("[Settings] Invalid max_output_tokens value %q: err=%v", v, err)
 		}
 	}
-	if v, ok := values["thinking_mode"]; ok {
-		sub.ThinkingMode = v
-	}
+	// thinking_mode is no longer written onto subscription rows — it is a global
+	// user setting applied via ApplyRuntimeSettings (Ctrl+M / /settings).
 
 	// Preserve PerModelConfigs — never overwrite with nil (would destroy per-model overrides
 	// written by saveSettings or sub panel). Merge existing values on top.
@@ -555,21 +538,73 @@ type cliApp struct {
 	cfg       *config.Config
 	llmClient llm.LLM
 	client    *agent.Client // unified RPC client (local or remote)
+	localAg   *agent.Agent  // in-process agent, set only in local mode
 	workDir   string
 	xbotHome  string
 
 	// Remote-mode async cache for agent info (avoid RPC from event loop → deadlock)
 	agentCacheMu      sync.RWMutex
 	agentCacheCount   int
-	agentCacheList    []channel.AgentPanelEntry
-	sessionsCacheList []channel.SessionPanelEntry
+	agentCacheList    []cli.AgentPanelEntry
+	sessionsCacheList []cli.SessionPanelEntry
 
 	// Remote-mode async cache for GetCurrentValues (avoid RPC from Update loop → 30s freeze)
 	valuesCacheMu sync.RWMutex
 	valuesCache   map[string]string
 
+	// Async cache for command names used by Tab completion.
+	commandNamesMu    sync.RWMutex
+	commandNamesCache []string
+	commandNamesStop  context.CancelFunc
+
 	// Remote-mode background goroutine cancel
 
+}
+
+func (app *cliApp) refreshCommandNamesCache() {
+	var names []string
+	if app.localAg != nil {
+		names = app.localAg.CommandNames()
+	} else if app.client != nil {
+		var err error
+		names, err = app.client.ListCommandNames()
+		if err != nil {
+			log.WithError(err).Debug("Failed to refresh command names cache")
+			return
+		}
+	} else {
+		return
+	}
+	app.commandNamesMu.Lock()
+	app.commandNamesCache = append([]string(nil), names...)
+	app.commandNamesMu.Unlock()
+}
+
+func (app *cliApp) startCommandNamesRefresh(interval time.Duration) {
+	if app.commandNamesStop != nil {
+		app.commandNamesStop()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	app.commandNamesStop = cancel
+	go func() {
+		app.refreshCommandNamesCache()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				app.refreshCommandNamesCache()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (app *cliApp) getCommandNamesCache() []string {
+	app.commandNamesMu.RLock()
+	defer app.commandNamesMu.RUnlock()
+	return append([]string(nil), app.commandNamesCache...)
 }
 
 // isFirstRun 检测是否是首次运行（config.json 不存在或 API Key 未配置，且未完成 CLI setup）
@@ -604,41 +639,13 @@ func isFirstRun() bool {
 	return true
 }
 
-// isLocalServer returns true if the server URL points to a local/loopback address.
-func isLocalServer(serverURL string) bool {
-	u, err := url.Parse(serverURL)
-	if err != nil {
-		return false
-	}
-	h := strings.Split(u.Host, ":")[0] // strip port
-	// Fast path: standard loopback addresses
-	if h == "127.0.0.1" || h == "localhost" || h == "::1" || h == "" {
-		return true
-	}
-	// Slow path: check if the host is a local network interface IP
-	ip := net.ParseIP(h)
-	if ip == nil {
-		return false
-	}
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return false
-	}
-	for _, addr := range addrs {
-		if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.Equal(ip) {
-			return true
-		}
-	}
-	return false
-}
-
 // newCLIApp 执行公共初始化：加载配置、创建 Backend。
 // If serverURL is non-empty, creates a RemoteBackend (agent runs on server).
 // Otherwise creates a LocalBackend (agent runs in-process).
 // buildPaletteExternalCommands collects commands from skills, plugins, and user
 // custom commands (~/.xbot/commands/*.md). Called each time the palette opens.
-func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand {
-	var cmds []channel.PaletteExternalCommand
+func (a *cliApp) buildPaletteExternalCommands() []cli.PaletteExternalCommand {
+	var cmds []cli.PaletteExternalCommand
 	home, _ := os.UserHomeDir()
 	xbotDir := home + "/.xbot"
 
@@ -652,17 +659,54 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 			if strings.HasPrefix(name, ".") || name == "skill-creator" {
 				continue
 			}
-			cmds = append(cmds, channel.PaletteExternalCommand{
+			cmds = append(cmds, cli.PaletteExternalCommand{
 				Title:       "Skill: " + name,
 				Description: "activate /" + name + " skill",
-				Category:    channel.PaletteCategorySkills,
+				Category:    cli.PaletteCategorySkills,
 				Content:     "/" + name + " ",
 			})
 		}
 	}
 
-	// 2. Plugin commands from loaded plugins
-	// TODO: migrate palette plugin commands to RPC
+	// 2. Plugin commands from local ~/.xbot/plugins/*/plugin.json
+	// NOTE: This reads plugin.json directly to discover commands. In remote mode,
+	// plugin manifests are also synced locally via the plugin system. A future
+	// improvement would be to fetch commands via RPC (list_plugin_commands) for
+	// consistency with the PluginManager, but this approach is correct and simple.
+	if entries, err := os.ReadDir(xbotDir + "/plugins"); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			manifestPath := filepath.Join(xbotDir, "plugins", e.Name(), "plugin.json")
+			data, err := os.ReadFile(manifestPath)
+			if err != nil {
+				continue
+			}
+			var manifest struct {
+				Contributes struct {
+					Commands []struct {
+						Name        string `json:"name"`
+						Description string `json:"description"`
+					} `json:"commands"`
+				} `json:"contributes"`
+			}
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				continue
+			}
+			for _, cmd := range manifest.Contributes.Commands {
+				if cmd.Name == "" {
+					continue
+				}
+				cmds = append(cmds, cli.PaletteExternalCommand{
+					Title:       cmd.Name,
+					Description: cmd.Description,
+					Category:    cli.PaletteCategoryPlugins,
+					Content:     cmd.Name + " ",
+				})
+			}
+		}
+	}
 
 	// 3. User custom commands from ~/.xbot/commands/*.md (crush-style)
 	if entries, err := os.ReadDir(xbotDir + "/commands"); err == nil {
@@ -675,10 +719,10 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 			if err != nil {
 				continue
 			}
-			cmds = append(cmds, channel.PaletteExternalCommand{
+			cmds = append(cmds, cli.PaletteExternalCommand{
 				Title:       name,
 				Description: "custom command",
-				Category:    channel.PaletteCategoryUser,
+				Category:    cli.PaletteCategoryUser,
 				Content:     string(content),
 				Send:        true,
 			})
@@ -695,10 +739,10 @@ func (a *cliApp) buildPaletteExternalCommands() []channel.PaletteExternalCommand
 			if strings.HasPrefix(name, ".") {
 				continue
 			}
-			cmds = append(cmds, channel.PaletteExternalCommand{
+			cmds = append(cmds, cli.PaletteExternalCommand{
 				Title:       "Agent: " + name,
 				Description: "spawn " + name + " SubAgent",
-				Category:    channel.PaletteCategoryAgents,
+				Category:    cli.PaletteCategoryAgents,
 				Content:     "/agent " + name + " ",
 			})
 		}
@@ -735,6 +779,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 	}
 
 	var client *agent.Client
+	var localAg *agent.Agent
 
 	// Seed cfg.LLM from the active config subscription so createLLM uses
 	// the correct BaseURL/APIKey. Without this, cfg.LLM may contain a
@@ -780,14 +825,15 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		// Local mode: InitServer + ChannelTransport + Client.
 		// Create eventCh first — shared between localEventBridge (server side) and Client (CLI side).
 		eventCh := make(chan protocol.WSMessage, 256)
-		_, rpcTable, disp, msgBus, coreErr := serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil, eventCh)
+		ag, rpcTable, disp, msgBus, coreErr := serverapp.InitServer(cfg, llmClient, dbPath, workDir, xbotHome, false, nil, eventCh)
 		if coreErr != nil {
 			log.WithError(coreErr).Fatal("Failed to init server")
 		}
+		localAg = ag
 
 		// Register ChannelProviderFactory for gRPC channel plugins.
 		plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
-			return serverapp.NewStdioChannelPluginProvider(decl, rpcTable), nil
+			return serverapp.NewStdioChannelPluginProvider(decl, rpcTable, ag.Tools(), func() *agent.Agent { return ag }), nil
 		})
 
 		// Register plugin channels in the Dispatcher (equivalent to registerChannels() in server mode).
@@ -795,7 +841,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 		// ChannelTransport wraps RPCTable dispatch
 		transport := agent.NewChannelTransport(serverapp.DispatchRPC(rpcTable), func() context.Context {
-			return serverapp.WithRPCCtx(context.Background(), "admin", "cli_user")
+			return serverapp.WithRPCCtxResolved(context.Background(), "admin", "cli_user", 1, "admin")
 		}, eventCh)
 
 		// Client is the unified interface — eventCh provides server→CLI events
@@ -830,6 +876,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		cfg:       cfg,
 		llmClient: llmClient,
 		client:    client,
+		localAg:   localAg,
 		workDir:   workDir,
 		xbotHome:  xbotHome,
 	}
@@ -837,6 +884,9 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 // Close 释放资源。
 func (app *cliApp) Close() {
+	if app.commandNamesStop != nil {
+		app.commandNamesStop()
+	}
 	if app.client != nil {
 		app.client.Stop()
 	}
@@ -1102,23 +1152,23 @@ func main() {
 		log.WithField("chatID", initialChatID).Info("Ephemeral session (no persistence)")
 	} else if newSession {
 		// --new/--new-session: unconditionally create a new isolated session.
-		name, chatID, err := channel.NewAutoSession(absWorkDir)
+		name, chatID, err := cli.NewAutoSession(absWorkDir)
 		if err != nil {
 			log.WithError(err).Fatal("Failed to create new session")
 		}
 		initialChatID = chatID
 		log.WithFields(log.Fields{"chatID": chatID, "name": name}).Info("Created new session")
-	} else if last := channel.GetLastActiveSession(absWorkDir); last != "" {
+	} else if last := cli.GetLastActiveSession(absWorkDir); last != "" {
 		initialChatID = last
 		log.WithFields(log.Fields{"chatID": initialChatID}).Info("Restoring last active session")
 	}
 
 	remoteServerURL := app.client.ServerURL()
 
-	cliCfg := channel.CLIChannelConfig{
+	cliCfg := cli.CLIChannelConfig{
 		WorkDir:              absWorkDir,
 		ChatID:               initialChatID,
-		RemoteMode:           false, // unified: always use remote adapter path
+		RemoteMode:           true, // unified: always use remote adapter path
 		RemoteServerURL:      remoteServerURL,
 		DebugMode:            flagDebug,
 		DebugInput:           flagDebugInput,
@@ -1142,15 +1192,26 @@ func main() {
 			_, modelChanged := values["llm_model"]
 			_, urlChanged := values["llm_base_url"]
 			_, maxOutputChanged := values["max_output_tokens"]
-			_, thinkingChanged := values["thinking_mode"]
+			// thinking_mode is NOT a subscription field anymore (it's a global user
+			// setting), so it must not trigger updateActiveSubscription nor be written
+			// onto a subscription row. It flows through ApplyRuntimeSettings, whose
+			// thinking_mode handler drops the session memo.
+			// Signal from saveSettings: LLM credentials were saved via subscriptionMgr.
+			// The actual subscription-scoped keys are stripped before reaching here,
+			// so this synthetic key is the only way to know LLM config changed.
+			_, llmCredsSaved := values["__llm_creds_saved"]
 
-			llmFieldChanged := llmChanged || keyChanged || modelChanged || urlChanged || maxOutputChanged || thinkingChanged
+			llmFieldChanged := llmChanged || keyChanged || modelChanged || urlChanged || maxOutputChanged
 
 			// ── Subscription-scoped fields: update via subscription manager ──
+			// Skip the redundant updateActiveSubscription call when saveSettings
+			// already persisted credentials (signaled by __llm_creds_saved).
 			if llmFieldChanged {
 				if err := updateActiveSubscription(app.client, app.cfg, values); err != nil {
 					log.Warnf("Failed to update active subscription: %v", err)
 				}
+			}
+			if llmFieldChanged || llmCredsSaved {
 				// Mark setup as completed so isFirstRun() won't re-trigger on next startup.
 				// This is needed because LLM credentials are stored in DB (user_llm_subscriptions),
 				// not in config.json, so the config-level API key check won't catch them.
@@ -1166,7 +1227,7 @@ func main() {
 					continue // global-scoped keys not stored in DB
 				}
 				// Per-session settings: skip global DB write when in a session context
-				if channel.IsPerSessionSettingKey(k) && chatID != "" {
+				if cli.IsPerSessionSettingKey(k) && chatID != "" {
 					continue
 				}
 				_ = app.client.SetSetting("cli", "cli_user", k, v)
@@ -1181,7 +1242,7 @@ func main() {
 					app.valuesCache = make(map[string]string)
 				}
 				// Per-session settings: don't cache globally (other sessions should see their own values)
-				if channel.IsPerSessionSettingKey(k) && chatID != "" {
+				if cli.IsPerSessionSettingKey(k) && chatID != "" {
 					continue
 				}
 				app.valuesCache[k] = v
@@ -1196,7 +1257,6 @@ func main() {
 
 			// ── LLM config changes applied via RPC (unified local/remote path) ──
 			if llmFieldChanged {
-				app.client.SetModelTiers(app.cfg.LLM)
 				app.client.SetDefaultThinkingMode(app.cfg.LLM.ThinkingMode)
 				app.client.SetModelContexts(app.cfg.Agent.ModelContexts)
 				app.client.SetGlobalMaxTokens(app.cfg.LLM.MaxOutputTokens)
@@ -1236,14 +1296,13 @@ func main() {
 			app.llmClient = client
 			if app.client != nil {
 				_ = app.client.SetChatLLM(absWorkDir, app.cfg.LLM.Provider, app.cfg.LLM)
-				_ = app.client.SetModelTiers(app.cfg.LLM)
 			}
 			return nil
 		},
 		RefreshValuesCache: func(subscriptionID string) {
 			app.refreshRemoteValuesCache(subscriptionID)
 		},
-		UsageQuery: func(senderID string, days int) (*channel.UserTokenUsage, []channel.DailyTokenUsage, error) {
+		UsageQuery: func(senderID string, days int) (*cli.UserTokenUsage, []channel.DailyTokenUsage, error) {
 			if app.client == nil {
 				return nil, nil, fmt.Errorf("agent not initialized")
 			}
@@ -1251,9 +1310,9 @@ func main() {
 			if err != nil {
 				return nil, nil, err
 			}
-			var cumulative *channel.UserTokenUsage
+			var cumulative *cli.UserTokenUsage
 			if cumMap != nil {
-				var u channel.UserTokenUsage
+				var u cli.UserTokenUsage
 				if b, _ := json.Marshal(cumMap); len(b) > 0 {
 					_ = json.Unmarshal(b, &u)
 				}
@@ -1279,14 +1338,14 @@ func main() {
 			}
 			return app.client.CountInteractiveSessions("cli", absWorkDir)
 		},
-		AgentList: func() []channel.AgentPanelEntry {
+		AgentList: func() []cli.AgentPanelEntry {
 			if app.client == nil {
 				return nil
 			}
 			sessions := app.client.ListInteractiveSessions("cli", absWorkDir)
-			entries := make([]channel.AgentPanelEntry, len(sessions))
+			entries := make([]cli.AgentPanelEntry, len(sessions))
 			for i, s := range sessions {
-				entries[i] = channel.AgentPanelEntry{
+				entries[i] = cli.AgentPanelEntry{
 					Role:       s.Role,
 					Instance:   s.Instance,
 					Running:    s.Running,
@@ -1317,19 +1376,19 @@ func main() {
 			}
 			return result
 		},
-		SessionsList: func() []channel.SessionPanelEntry {
+		SessionsList: func() []cli.SessionPanelEntry {
 			// All modes use cache — refreshed by refreshAgentCache() in background.
 			app.agentCacheMu.RLock()
 			cached := app.sessionsCacheList
 			app.agentCacheMu.RUnlock()
-			entries := make([]channel.SessionPanelEntry, len(cached))
+			entries := make([]cli.SessionPanelEntry, len(cached))
 			copy(entries, cached)
 			for _, g := range tools.ListGroups() {
 				status := ""
 				if g.Closed {
 					status = " [closed]"
 				}
-				entries = append(entries, channel.SessionPanelEntry{
+				entries = append(entries, cli.SessionPanelEntry{
 					ID:          g.Name,
 					Type:        "group",
 					Label:       "💬 " + g.Name + status,
@@ -1371,7 +1430,102 @@ func main() {
 		IsAdminFn: func() bool {
 			return true // standalone mode: CLI user is always admin
 		},
-		PaletteContributor: func() []channel.PaletteExternalCommand {
+		GenerateLinkCodeFn: func() (string, error) {
+			if app.client == nil {
+				return "", fmt.Errorf("agent not initialized")
+			}
+			// RPC to server to generate link code for current user
+			result, err := app.client.CallRPC("generate_link_code", map[string]any{})
+			if err != nil {
+				return "", err
+			}
+			var resp struct {
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(result, &resp); err != nil {
+				return "", err
+			}
+			if resp.Error != "" {
+				return "", fmt.Errorf("%s", resp.Error)
+			}
+			return resp.Code, nil
+		},
+		ConsumeLinkCodeFn: func(code string) (string, error) {
+			if app.client == nil {
+				return "", fmt.Errorf("agent not initialized")
+			}
+			// First call without confirm — may return merge_required
+			result, err := app.client.CallRPC("consume_link_code", map[string]any{"code": code, "confirm": false})
+			if err != nil {
+				return "", err
+			}
+			var resp struct {
+				Action  string          `json:"action"`
+				UserID  int64           `json:"user_id"`
+				Preview json.RawMessage `json:"preview"`
+				Message string          `json:"message"`
+			}
+			if err := json.Unmarshal(result, &resp); err != nil {
+				return "", err
+			}
+			if resp.Action == "merge_required" {
+				// Auto-confirm for CLI (single user, trusts their own action)
+				result2, err := app.client.CallRPC("consume_link_code", map[string]any{"code": code, "confirm": true})
+				if err != nil {
+					// Code was already consumed by the first call — re-generate is needed.
+					// But actually ConsumeLinkCode deletes the code on first call.
+					// This is a design issue — fix: don't consume code on preview.
+					return "", fmt.Errorf("merge preview succeeded but code was consumed. Please generate a new code and retry with --confirm")
+				}
+				var resp2 struct {
+					Action string `json:"action"`
+					UserID int64  `json:"user_id"`
+				}
+				if err := json.Unmarshal(result2, &resp2); err != nil {
+					return "", fmt.Errorf("parse merge result: %w", err)
+				}
+				if resp2.UserID == 0 {
+					return "", fmt.Errorf("merge returned invalid user_id")
+				}
+				return fmt.Sprintf("✅ 账号合并成功 (user_id=%d)", resp2.UserID), nil
+			}
+			return fmt.Sprintf("✅ 关联成功 (action=%s, user_id=%d)", resp.Action, resp.UserID), nil
+		},
+		ListIdentitiesFn: func() (any, error) {
+			if app.client == nil {
+				return nil, fmt.Errorf("agent not initialized")
+			}
+			result, err := app.client.CallRPC("list_identities", map[string]any{})
+			if err != nil {
+				return nil, err
+			}
+			return string(result), nil
+		},
+		ListAllTenantsFn: func() ([]cli.AllSessionInfo, error) {
+			if app.client == nil {
+				return nil, fmt.Errorf("agent not initialized")
+			}
+			tenants, err := app.client.ListTenants()
+			if err != nil {
+				return nil, err
+			}
+			result := make([]cli.AllSessionInfo, 0, len(tenants))
+			for _, t := range tenants {
+				result = append(result, cli.AllSessionInfo{
+					Channel:      t.Channel,
+					ChatID:       t.ChatID,
+					Label:        t.Label,
+					Model:        t.Model,
+					LastActiveAt: t.LastActiveAt,
+				})
+			}
+			return result, nil
+		},
+		CommandNamesProvider: func() []string {
+			return app.getCommandNamesCache()
+		},
+		PaletteContributor: func() []cli.PaletteExternalCommand {
 			return app.buildPaletteExternalCommands()
 		},
 	}
@@ -1395,15 +1549,17 @@ func main() {
 		}
 	}
 
-	// Agent session history: load from in-memory interactiveSubAgents (not DB).
 	// refreshAgentCache is declared here at function level (not inside an if block)
 	// so it's accessible from both the SessionsListRefresh callback and the remote
 	// client setup below. Assigned later with = (not :=).
 	var refreshAgentCache func()
 	if app.client != nil {
 		backend := app.client
-		cliCfg.GetActiveProgressFn = func(channelName, chatID string) *protocol.ProgressEvent {
-			return backend.GetActiveProgress(channelName, chatID)
+		cliCfg.GetActiveProgressFn = func(channelName, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent {
+			return backend.GetActiveProgress(channelName, chatID, fetch)
+		}
+		cliCfg.GetPendingAskUserFn = func(channelName, chatID string) *protocol.ProgressEvent {
+			return backend.GetPendingAskUser(channelName, chatID)
 		}
 		cliCfg.BindChatFn = func(chatID string) error {
 			return backend.BindChat(chatID)
@@ -1421,6 +1577,9 @@ func main() {
 		cliCfg.SessionsDeleteFn = func(channelName, chatID string) error {
 			return backend.DeleteChat(channelName, cliSenderID, chatID)
 		}
+		cliCfg.ChatRenameFn = func(channelName, chatID, newName string) error {
+			return backend.RenameChat(channelName, cliSenderID, chatID, newName)
+		}
 		// sessionsListRefresh will be assigned when refreshAgentCache is defined below.
 		// We defer wiring via a pointer so the closure can capture the later-defined func.
 		cliCfg.SessionsListRefresh = func() {
@@ -1428,8 +1587,11 @@ func main() {
 				refreshAgentCache()
 			}
 		}
-		cliCfg.TrimHistoryFn = func(channelName, chatID string, cutoff time.Time) error {
-			return backend.TrimHistory(channelName, chatID, cutoff)
+		cliCfg.RewindHistoryFn = func(channelName, chatID string, historyID int64) (protocol.HistoryRewindResult, error) {
+			return backend.RewindHistory(channelName, chatID, historyID)
+		}
+		cliCfg.ContinueAgentFn = func(fullKey, content string) error {
+			return backend.ContinueInteractiveSession(fullKey, content)
 		}
 		cliCfg.SetCWDFn = func(channelName, chatID, dir string) error {
 			if err := backend.SetCWD(channelName, chatID, dir); err != nil {
@@ -1440,62 +1602,17 @@ func main() {
 			}
 			return nil
 		}
-		cliCfg.AgentSessionDumpFn = func(chatID string) ([]channel.HistoryMessage, error) {
-			// Try in-memory first (running sessions)
-			dump, ok := backend.GetAgentSessionDumpByFullKey(chatID)
-			if ok && len(dump.Messages) > 0 {
-				var msgs []channel.HistoryMessage
-				for _, m := range dump.Messages {
-					msgs = append(msgs, channel.HistoryMessage{
-						Role:    m.Role,
-						Content: m.Content,
-					})
-				}
-				if len(dump.IterationHistory) > 0 {
-					var iters []channel.HistoryIteration
-					for _, snap := range dump.IterationHistory {
-						var tools []protocol.ToolProgress
-						for _, t := range snap.Tools {
-							tools = append(tools, protocol.ToolProgress{
-								Name:      t.Name,
-								Label:     t.Label,
-								Status:    t.Status,
-								Elapsed:   t.ElapsedMS,
-								Iteration: snap.Iteration,
-								Summary:   t.Summary,
-							})
-						}
-						iters = append(iters, channel.HistoryIteration{
-							Iteration: snap.Iteration,
-							Thinking:  snap.Thinking,
-							Reasoning: snap.Reasoning,
-							Tools:     tools,
-						})
-					}
-					msgs = append(msgs, channel.HistoryMessage{
-						Role:       "tool_summary",
-						Iterations: iters,
-					})
-				}
-				return msgs, nil
-			}
-			// Fallback: load from DB (agent tenants have channel="agent", chatID=interactiveKey)
-			if cliCfg.DynamicHistoryLoader != nil {
-				return cliCfg.DynamicHistoryLoader("agent", chatID)
-			}
-			return nil, nil
-		}
 		// SubAgent LLM state for TUI status bar (model name, context limits, token usage)
-		cliCfg.AgentSessionLLMStateFn = func(chatID string) (string, int64, int64, float64, int64, int64) {
+		cliCfg.AgentSessionLLMStateFn = func(chatID string) (string, string, int64, int64, float64, int64, int64) {
 			dump, ok := backend.GetAgentSessionDumpByFullKey(chatID)
 			if !ok || dump == nil {
-				return "", 0, 0, 0, 0, 0
+				return "", "", 0, 0, 0, 0, 0
 			}
-			return dump.ModelName, dump.MaxContextTokens, dump.MaxOutputTokens, dump.CompressRatio, dump.PromptTokens, dump.CompletionTokens
+			return dump.ModelName, dump.SubscriptionID, dump.MaxContextTokens, dump.MaxOutputTokens, dump.CompressRatio, dump.PromptTokens, dump.CompletionTokens
 		}
 	}
 
-	cliCh := channel.NewCLIChannel(&cliCfg)
+	cliCh := cli.NewCLIChannel(&cliCfg)
 	// NOTE: No disp.Register(cliCh) — localEventBridge (registered inside InitServer)
 	// handles server→CLI events via eventCh. Remote mode: events come via WS.
 
@@ -1582,17 +1699,17 @@ func main() {
 		cliCh.SetBgTaskRemoteCallbacks(
 			"cli:"+cliCfg.ChatID,
 			func() int { return app.client.GetBgTaskCount(cliCh.BgSessionKey()) },
-			func() []*channel.BgTask {
+			func() []*cli.BgTask {
 				tasks, _ := app.client.ListBgTasks(cliCh.BgSessionKey())
 				if tasks == nil {
 					return nil
 				}
-				result := make([]*channel.BgTask, len(tasks))
+				result := make([]*cli.BgTask, len(tasks))
 				for i, t := range tasks {
-					result[i] = &channel.BgTask{
+					result[i] = &cli.BgTask{
 						ID:       t.ID,
 						Command:  t.Command,
-						Status:   channel.BgTaskStatus(t.Status),
+						Status:   cli.BgTaskStatus(t.Status),
 						Output:   t.Output,
 						ExitCode: t.ExitCode,
 						Error:    t.Error,
@@ -1611,13 +1728,6 @@ func main() {
 			func(taskID string) error { return app.client.KillBgTask(taskID) },
 			func() { app.client.CleanupCompletedBgTasks(cliCh.BgSessionKey()) },
 		)
-		// Inject TrimHistoryFn for Ctrl+K session truncation (RPC-backed, unified path)
-		cliCh.SetTrimHistoryFn(func(cutoff time.Time) error {
-			return app.client.TrimHistory("cli", cliCfg.ChatID, cutoff)
-		})
-		cliCh.SetResetTokenStateFn(func() {
-			app.client.ResetTokenState()
-		})
 	}
 
 	// Wire AI-Native TUI callback (both local and remote modes)
@@ -1683,6 +1793,7 @@ func main() {
 	// ── Post-Start initialization (unified for all modes) ─────────────
 	// Both local and remote modes run the same initialization.
 	// Only a few items are remote-specific (reconnect, conn_state).
+	app.startCommandNamesRefresh(30 * time.Second)
 
 	// sessionStateHandler and ChatRenameFn are now handled internally by Agent.
 	// No external injection needed — Agent uses its own channelFinder + multiSession.DB().
@@ -1712,7 +1823,7 @@ func main() {
 	// Refresh from server when WS is ready (or from local agent immediately)
 	if vals, err := app.client.GetSettings("cli", "cli_user"); err == nil {
 		if t, ok := vals["theme"]; ok && t != "" {
-			channel.ApplyTheme(t)
+			cli.ApplyTheme(t)
 		}
 		cliCh.ApplyInitialLayout(vals)
 	}
@@ -1738,7 +1849,7 @@ func main() {
 	app.client.BindChat(chatID)
 
 	// Plugin widgets: subscribe to push events for widget zone content.
-	remoteCache := channel.NewRemotePluginCache(chatID, func(method string, params any) (json.RawMessage, error) {
+	remoteCache := cli.NewRemotePluginCache(chatID, func(method string, params any) (json.RawMessage, error) {
 		return app.client.CallRPC(method, params)
 	})
 	cliCh.SetRemotePluginCache(remoteCache)
@@ -1759,8 +1870,9 @@ func main() {
 
 	// Initial restore: load history + active progress + todos atomically.
 	clipanic.Go("main.RestoreActiveProgress", func() {
-		progress := app.client.GetActiveProgress("cli", chatID)
-		var todos []protocol.TodoItem
+		progress := app.client.GetActiveProgress("cli", chatID, protocol.FetchAll()) // initial restore: full history
+		todos := app.client.GetTodos("cli", chatID)
+		pendingAskUser := app.client.GetPendingAskUser("cli", chatID)
 		if progress != nil {
 			log.WithFields(log.Fields{
 				"chatID":    chatID,
@@ -1776,34 +1888,12 @@ func main() {
 			log.WithError(err).Warn("RestoreActiveProgress: failed to load history")
 			return
 		}
-		cliCh.RestoreSession(history, progress, todos)
+		cliCh.RestoreSession(history, progress, todos, pendingAskUser)
 	})
 
-	// Remote-only: reconnect handler for WS connection drops.
+	// Remote-only connection state handling. RemoteTransport owns route restore
+	// and replay, so this layer must not re-bind the startup chat after a switch.
 	if app.client.IsRemote() {
-		app.client.Subscribe(protocol.EventPattern{Type: "reconnect"}, func(env protocol.EventEnvelope) {
-			defer clipanic.Recover("main.OnReconnect", nil, false)
-			_ = app.client.BindChat(chatID)
-			if isLocalServer(app.cfg.CLI.ServerURL) {
-				if cwd, err := os.Getwd(); err == nil {
-					_ = app.client.SetCWD("cli", chatID, cwd)
-				}
-			}
-			clipanic.Go("main.ReconnectRestore", func() {
-				progress := app.client.GetActiveProgress("cli", chatID)
-				history, err := app.client.GetHistory("cli", chatID)
-				if err != nil {
-					log.WithError(err).Warn("ReconnectRestore: failed to load history")
-					return
-				}
-				cliCh.RestoreSession(history, progress, nil)
-				if progress != nil {
-					cliCh.SetProcessing(true)
-				} else {
-					cliCh.SetProcessing(false)
-				}
-			})
-		})
 		// Connection state change handler for header bar indicator.
 		app.client.Subscribe(protocol.EventPattern{Type: "conn_state"}, func(env protocol.EventEnvelope) {
 			var ev protocol.ConnStateEvent
@@ -1844,9 +1934,9 @@ func main() {
 				tenantMap[t.ChatID] = t.Label
 			}
 		}
-		var sessionEntries []channel.SessionPanelEntry
+		var sessionEntries []cli.SessionPanelEntry
 		seen := make(map[string]bool)
-		for _, s := range channel.ListLocalDirSessions(absWorkDir) {
+		for _, s := range cli.ListLocalDirSessions(absWorkDir) {
 			mainBusy := app.client.IsProcessing("cli", s.ID)
 			sessLabel := s.Label
 			if sessLabel == "default" {
@@ -1855,7 +1945,7 @@ func main() {
 			if dbLabel, ok := tenantMap[s.ID]; ok && dbLabel != "" {
 				sessLabel = dbLabel
 			}
-			sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+			sessionEntries = append(sessionEntries, cli.SessionPanelEntry{
 				ID: s.ID, Type: "main", Channel: "cli",
 				Label: sessLabel, Active: s.ID == absWorkDir, Busy: mainBusy,
 			})
@@ -1865,16 +1955,16 @@ func main() {
 					continue
 				}
 				seen[agentKey] = true
-				sessionEntries = append(sessionEntries, channel.SessionPanelEntry{
+				sessionEntries = append(sessionEntries, cli.SessionPanelEntry{
 					ID:   fmt.Sprintf("agent:%s/%s", sub.Role, sub.Instance),
 					Type: "agent", Channel: "cli", Role: sub.Role, Instance: sub.Instance,
 					ParentID: s.ID, Running: sub.Running, Busy: sub.Running, MessageHint: sub.Preview,
 				})
 			}
 		}
-		agentEntries := make([]channel.AgentPanelEntry, 0, len(allSubAgents))
+		agentEntries := make([]cli.AgentPanelEntry, 0, len(allSubAgents))
 		for _, s := range allSubAgents {
-			agentEntries = append(agentEntries, channel.AgentPanelEntry{
+			agentEntries = append(agentEntries, cli.AgentPanelEntry{
 				Role: s.Role, Instance: s.Instance, Running: s.Running,
 				Background: s.Background, Task: s.Task, Preview: s.Preview,
 			})
@@ -1970,7 +2060,7 @@ func syncLLMFromActiveSub(cfg *config.Config) {
 			cfg.LLM.Provider = sc.Provider
 			cfg.LLM.BaseURL = sc.BaseURL
 			cfg.LLM.APIKey = sc.APIKey
-			cfg.LLM.Model = sc.Model
+			cfg.LLM.Model = ""
 			cfg.LLM.MaxOutputTokens = sc.MaxOutputTokens
 			cfg.LLM.ThinkingMode = sc.ThinkingMode
 			return
@@ -2037,7 +2127,7 @@ func setupLogger(cfg config.LogConfig, xbotHome string) error {
 func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) {
 	modelsLoadErrCb := func(err error) {
 		select {
-		case channel.ModelsLoadErrorCh() <- err:
+		case cli.ModelsLoadErrorCh() <- err:
 		default:
 		}
 	}
@@ -2076,7 +2166,7 @@ func createLLM(cfg config.LLMConfig, retryCfg llm.RetryConfig) (llm.LLM, error) 
 // Backend adapters — implement CLI interfaces via Backend RPC
 // ---------------------------------------------------------------------------
 
-// backendSettingsService implements channel.SettingsService via Backend RPC.
+// backendSettingsService implements cli.SettingsService via Backend RPC.
 type backendSettingsService struct {
 	client *agent.Client
 }
@@ -2093,7 +2183,7 @@ func (s *backendSettingsService) SetSetting(namespace, senderID, key, value stri
 	return s.client.SetSetting(namespace, senderID, key, value)
 }
 
-// backendModelLister implements channel.ModelLister via Backend RPC.
+// backendModelLister implements cli.ModelLister via Backend RPC.
 type backendModelLister struct {
 	client *agent.Client
 }
@@ -2115,7 +2205,15 @@ func (l *backendModelLister) ListAllModels() []string {
 	return l.client.ListAllModels()
 }
 
-// backendSubscriptionManager implements channel.SubscriptionManager via Backend interface.
+func (l *backendModelLister) ListAllModelEntries() []protocol.ModelEntry {
+	return l.client.ListAllModelEntries()
+}
+
+func (l *backendModelLister) RefreshModelEntries() []protocol.ModelEntry {
+	return l.client.RefreshModelEntries()
+}
+
+// backendSubscriptionManager implements cli.SubscriptionManager via Backend interface.
 // Works identically for both local (localTransport → DB) and remote (WS RPC → server DB) modes.
 type backendSubscriptionManager struct {
 	client *agent.Client
@@ -2167,7 +2265,27 @@ func (m *backendSubscriptionManager) UpdatePerModelConfig(id, model string, pmc 
 	return m.client.UpdatePerModelConfig(id, model, protocol.PerModelConfig(pmc))
 }
 
-// backendLLMSubscriber implements channel.LLMSubscriber via Backend interface.
+func (m *backendSubscriptionManager) SetModelEnabled(id, model string, enabled bool) error {
+	return m.client.SetModelEnabled(id, model, enabled)
+}
+
+func (m *backendSubscriptionManager) RemoveModel(id, model string) error {
+	return m.client.RemoveModel(id, model)
+}
+
+func (m *backendSubscriptionManager) UpsertModel(id, model string, maxContext, maxOutput int, apiType, thinkingMode string) error {
+	return m.client.UpsertModel(id, model, maxContext, maxOutput, apiType, thinkingMode)
+}
+
+func (m *backendSubscriptionManager) SetSubscriptionEnabled(id string, enabled bool) error {
+	return m.client.SetSubscriptionEnabled(id, enabled)
+}
+
+func (m *backendSubscriptionManager) GetSessionSubscription(senderID, channelName, chatID string) (string, string, error) {
+	return m.client.GetSessionSubscription(senderID, channelName, chatID)
+}
+
+// backendLLMSubscriber implements cli.LLMSubscriber via Backend interface.
 // Works identically for both local and remote modes.
 type backendLLMSubscriber struct {
 	client *agent.Client
@@ -2184,13 +2302,15 @@ func (s *backendLLMSubscriber) SwitchSubscription(senderID string, sub *channel.
 	return s.client.SetDefaultSubscription(sub.ID, chatID)
 }
 
-func (s *backendLLMSubscriber) SwitchModel(senderID, model, chatID string) {
+// SelectModel switches to a specific (subscription, model) pair, used by the
+// model picker when the row carries an owning SubID. This pins the exact
+// subscription the user picked — necessary now that the picker lists the
+// same model name once per subscription that serves it.
+func (s *backendLLMSubscriber) SelectModel(senderID, channelName, subID, model, chatID string) error {
 	if senderID == "" {
 		senderID = cliSenderID
 	}
-	if err := s.client.SwitchModel(senderID, model, chatID); err != nil {
-		log.WithError(err).Warn("backendLLMSubscriber: SwitchModel failed")
-	}
+	return s.client.SelectModel(senderID, channelName, subID, model, chatID)
 }
 
 func (s *backendLLMSubscriber) GetDefaultModel() string {

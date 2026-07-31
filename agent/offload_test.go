@@ -485,6 +485,13 @@ func newTestStore(t *testing.T) (*OffloadStore, string) {
 	return store, dir
 }
 
+// pathArgs builds a JSON tool args string with a "path" field.
+// Uses json.Marshal for cross-platform path escaping (Windows backslashes).
+func pathArgs(path string) string {
+	b, _ := json.Marshal(map[string]string{"path": path})
+	return string(b)
+}
+
 func TestInvalidateStaleReads_NoChange(t *testing.T) {
 	ctx := context.Background()
 	store, dir := newTestStore(t)
@@ -494,7 +501,7 @@ func TestInvalidateStaleReads_NoChange(t *testing.T) {
 	content := strings.Repeat("line of content\n", 500)
 	os.WriteFile(filePath, []byte(content), 0o644)
 
-	args := fmt.Sprintf(`{"path":"%s"}`, strings.ReplaceAll(filePath, `\`, `\\`))
+	args := pathArgs(filePath)
 	offloaded, ok := store.MaybeOffload(ctx, "stale:test", "Read", args, content, "", "", "")
 	if !ok {
 		t.Fatal("expected offload to succeed")
@@ -521,7 +528,7 @@ func TestInvalidateStaleReads_FileModified(t *testing.T) {
 	content := strings.Repeat("original content\n", 500)
 	os.WriteFile(filePath, []byte(content), 0o644)
 
-	args := fmt.Sprintf(`{"path":"%s"}`, strings.ReplaceAll(filePath, `\`, `\\`))
+	args := pathArgs(filePath)
 	offloaded, ok := store.MaybeOffload(ctx, "stale:test", "Read", args, content, "", "", "")
 	if !ok {
 		t.Fatal("expected offload to succeed")
@@ -548,7 +555,7 @@ func TestInvalidateStaleReads_FileDeleted(t *testing.T) {
 	content := strings.Repeat("temp content\n", 500)
 	os.WriteFile(filePath, []byte(content), 0o644)
 
-	args := fmt.Sprintf(`{"path":"%s"}`, strings.ReplaceAll(filePath, `\`, `\\`))
+	args := pathArgs(filePath)
 	offloaded, ok := store.MaybeOffload(ctx, "stale:test", "Read", args, content, "", "", "")
 	if !ok {
 		t.Fatal("expected offload to succeed")
@@ -598,7 +605,7 @@ func TestPurgeStaleMessages(t *testing.T) {
 	content := strings.Repeat("purge content\n", 500)
 	os.WriteFile(filePath, []byte(content), 0o644)
 
-	args := fmt.Sprintf(`{"path":"%s"}`, strings.ReplaceAll(filePath, `\`, `\\`))
+	args := pathArgs(filePath)
 	offloaded, _ := store.MaybeOffload(ctx, "stale:test", "Read", args, content, "", "", "")
 
 	// Modify file to make it stale
@@ -666,7 +673,7 @@ func TestInvalidateStaleReads_AlreadyStale(t *testing.T) {
 	content := strings.Repeat("already stale content\n", 500)
 	os.WriteFile(filePath, []byte(content), 0o644)
 
-	args := fmt.Sprintf(`{"path":"%s"}`, strings.ReplaceAll(filePath, `\`, `\\`))
+	args := pathArgs(filePath)
 	_, _ = store.MaybeOffload(ctx, "stale:test", "Read", args, content, "", "", "")
 
 	// Modify file and invalidate → first time should return the ID
@@ -694,7 +701,7 @@ func TestInvalidateStaleReads_RelativePath(t *testing.T) {
 
 	// Use relative path in args
 	relPath := "relfile.go"
-	args := fmt.Sprintf(`{"path":"%s"}`, relPath)
+	args := pathArgs(relPath)
 	offloaded, _ := store.MaybeOffload(ctx, "stale:test", "Read", args, content, dir, "", "")
 
 	// Modify the file
@@ -732,7 +739,7 @@ func TestInvalidateStaleReads_SandboxPathConversion(t *testing.T) {
 
 	// 用沙箱路径做 ReadPath（模拟 LLM 传入的路径）
 	sandboxPath := "/workspace/main.go"
-	args := fmt.Sprintf(`{"path":"%s"}`, sandboxPath)
+	args := pathArgs(sandboxPath)
 	offloaded, ok := store.MaybeOffload(ctx, "stale:sandbox", "Read", args, content, hostDir, "/workspace", "")
 	if !ok {
 		t.Fatal("expected offload to succeed")
@@ -768,7 +775,7 @@ func TestInvalidateStaleReads_SandboxPathDeleted(t *testing.T) {
 	os.WriteFile(hostFile, []byte(content), 0o644)
 
 	sandboxPath := "/workspace/temp.go"
-	args := fmt.Sprintf(`{"path":"%s"}`, sandboxPath)
+	args := pathArgs(sandboxPath)
 	offloaded, ok := store.MaybeOffload(ctx, "stale:sandbox-del", "Read", args, content, hostDir, "/workspace", "")
 	if !ok {
 		t.Fatal("expected offload to succeed")
@@ -798,7 +805,7 @@ func TestInvalidateStaleReads_SandboxNestedPath(t *testing.T) {
 
 	// LLM 传入 /workspace/agent/engine.go
 	sandboxPath := "/workspace/agent/engine.go"
-	args := fmt.Sprintf(`{"path":"%s"}`, sandboxPath)
+	args := pathArgs(sandboxPath)
 	_, ok := store.MaybeOffload(ctx, "stale:nested", "Read", args, content, hostDir, "/workspace", "")
 	if !ok {
 		t.Fatal("expected offload to succeed")

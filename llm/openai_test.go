@@ -52,3 +52,46 @@ func TestIsMaxTokensParamError(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldFallbackToStreamForNonStreamResponse(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "openai-go SSE content type mismatch",
+			err:  errors.New(`expected destination type of 'string' or '[]byte' for responses with content-type 'text/event-stream' that is not 'application/json'`),
+			want: true,
+		},
+		{
+			name: "SSE with charset",
+			err:  errors.New(`content-type 'text/event-stream; charset=utf-8' that is not 'application/json'`),
+			want: true,
+		},
+		{
+			name: "plain JSON API error",
+			err:  errors.New(`400 Bad Request: invalid_request_error`),
+			want: false,
+		},
+		{
+			name: "SSE mentioned without JSON mismatch",
+			err:  errors.New(`upstream returned text/event-stream but stream ended unexpectedly`),
+			want: false,
+		},
+		{
+			name: "nil",
+			err:  nil,
+			want: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := shouldFallbackToStreamForNonStreamResponse(c.err)
+			if got != c.want {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}

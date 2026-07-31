@@ -10,6 +10,7 @@ import (
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/storage/sqlite"
 
 	"xbot/tools"
 )
@@ -106,6 +107,7 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 	if s.autoNotify {
 		s.notifyProgress("")
 	}
+	execCtx = tools.WithContextEditHandler(execCtx, s.cfg.ContextEditor)
 	result, execErr := s.toolExecutor(execCtx, tc)
 	elapsed := time.Since(start)
 	cancel()
@@ -113,6 +115,18 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 	batch.results[entry.index] = toolExecResult{err: execErr, result: result, elapsed: elapsed}
 	s.updateToolResultProgress(ctx, entry, batch, result, execErr, elapsed)
 	s.updateToolResultLine(ctx, entry, batch, tc, result, execErr, elapsed)
+	// Notify immediately so the TUI sees the done/error status BEFORE
+	// snapshotCompletedIteration clears ActiveTools and prepareForIteration
+	// starts the next iteration. Without this, for fast tools (e.g. config,
+	// Read), the done status is set but not pushed until the dispatcher's
+	// notifyProgress — which fires synchronously right before snapshot and
+	// next-iteration-thinking. The progressSlot drain goroutine doesn't get
+	// a chance to run between them, so only the final "thinking, everything
+	// cleared" event survives → tool goes from yellow(running) straight to
+	// snapshot, never showing green(done).
+	if s.autoNotify {
+		s.notifyProgress("")
+	}
 }
 
 // updateToolResultProgress updates the structured progress entry for a completed tool.
@@ -364,7 +378,7 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 	if s.structuredProgress != nil && len(s.structuredProgress.CompletedTools) > 0 {
 		snap := IterationSnapshot{
 			Iteration: iteration,
-			Thinking:  s.structuredProgress.ThinkingContent,
+			Content:   s.structuredProgress.Content,
 			Reasoning: s.structuredProgress.ReasoningContent,
 			Tools:     make([]IterationToolSnapshot, len(s.structuredProgress.CompletedTools)),
 		}
@@ -375,6 +389,8 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 				Status:    string(t.Status),
 				ElapsedMS: t.Elapsed.Milliseconds(),
 				Summary:   t.Summary,
+				Args:      t.Args,
+				Detail:    t.Detail,
 			}
 		}
 		s.iterationSnapshots = append(s.iterationSnapshots, snap)
@@ -426,43 +442,33 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 			"token_ratio":  fmt.Sprintf("%.2f", float64(totalTokens)/float64(maxTokens)),
 		}).Info("Observation masking applied")
 	}
+	// Append mask controls before installing the in-memory view. Original tool
+	// results remain immutable message rows and replay applies only placeholders.
+	if s.cfg.Session != nil {
+		mutations := make([]sqlite.MaskMutation, 0, len(maskedEntries))
+		for _, entry := range maskedEntries {
+			if entry.MessageIndex < 0 || entry.MessageIndex >= len(s.messages) || s.messages[entry.MessageIndex].ID == 0 {
+				log.Ctx(ctx).WithField("raw_idx", entry.MessageIndex).Warn("Mask skipped: target has no persisted history_id")
+				continue
+			}
+			occurrence := 0
+			for i := 0; i < entry.MessageIndex; i++ {
+				if s.messages[i].ID == s.messages[entry.MessageIndex].ID {
+					occurrence++
+				}
+			}
+			mutations = append(mutations, sqlite.MaskMutation{TargetHistoryID: s.messages[entry.MessageIndex].ID, TargetOccurrence: occurrence, Content: entry.Content})
+		}
+		if len(mutations) > 0 {
+			if err := s.cfg.Session.AppendMasks(mutations); err != nil {
+				log.Ctx(ctx).WithError(err).Error("Failed to append mask history; keeping original context")
+				return
+			}
+		}
+	}
 	s.messages = s.syncMessages(masked)
 	GlobalMetrics.MaskingEvents.Add(1)
 	GlobalMetrics.MaskedItems.Add(int64(count))
-
-	// Persist masked content to session so the next Run() loads masked messages.
-	// CRITICAL: s.messages indices include system messages (not in DB).
-	// The session DB indices skip system messages. Calculate the offset so
-	// masked content lands on the correct DB rows.
-	dbOffset := 0
-	for _, msg := range s.messages {
-		if msg.Role == "system" {
-			dbOffset++
-		} else {
-			break
-		}
-	}
-	if s.cfg.Session != nil {
-		persistedMasked := 0
-		for _, entry := range maskedEntries {
-			dbIdx := entry.MessageIndex - dbOffset
-			if dbIdx < 0 {
-				continue // system message, not in DB
-			}
-			if s.persistence.IsPersisted(entry.MessageIndex) {
-				// Use NonDisplayOnly variant to align with GetAllMessages
-				// (both filter WHERE COALESCE(display_only, 0) = 0).
-				if err := s.cfg.Session.UpdateMessageContentNonDisplayOnly(dbIdx, entry.Content); err != nil {
-					log.Ctx(ctx).WithError(err).WithField("idx", dbIdx).WithField("raw_idx", entry.MessageIndex).Warn("Failed to persist masked message to session")
-				} else {
-					persistedMasked++
-				}
-			}
-		}
-		if persistedMasked > 0 {
-			log.Ctx(ctx).WithField("persisted_masked", persistedMasked).WithField("db_offset", dbOffset).Info("Persisted masked messages to session")
-		}
-	}
 
 	if s.autoNotify {
 		s.progressLines = append(s.progressLines, fmt.Sprintf("> 🎭 上下文较大 (%d tokens)，已遮蔽 %d 条旧工具结果", totalTokens, count))

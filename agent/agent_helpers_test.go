@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -112,44 +113,96 @@ func TestResolveMemoryProvider(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveGlobalSkillsDirs(t *testing.T) {
-	tests := []struct {
-		name      string
-		skillsDir string
-		want      []string
-	}{
-		{
-			name:      "empty returns nil",
-			skillsDir: "",
-			want:      nil,
-		},
-		{
-			name:      "non-empty returns single-element slice",
-			skillsDir: filepath.Join("path", "to", "skills"),
-			want:      []string{filepath.Join("path", "to", "skills")},
-		},
+	// Use a temp HOME directory so tests are deterministic and don't depend on
+	// the host machine's ~/.agents/skills directory.
+	tmpHome := t.TempDir()
+	// Set HOME for Unix/macOS/Linux and USERPROFILE for Windows.
+	// os.UserHomeDir() on Windows checks USERPROFILE first, then HOMEDRIVE+HOMEPATH, then HOME.
+	// On Unix it only checks HOME. Setting both ensures cross-platform coverage.
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	// Also clear HOMEDRIVE/HOMEPATH to prevent them from interfering on Windows.
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+
+	// Helper to build absolute paths inside tmpHome
+	homePath := func(parts ...string) string {
+		all := append([]string{tmpHome}, parts...)
+		return filepath.Join(all...)
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := resolveGlobalSkillsDirs(tc.skillsDir)
-			if tc.want == nil {
-				if got != nil {
-					t.Errorf("resolveGlobalSkillsDirs(%q) = %v, want nil", tc.skillsDir, got)
-				}
-			} else {
-				if len(got) != len(tc.want) {
-					t.Fatalf("length mismatch: got %d, want %d", len(got), len(tc.want))
-				}
-				// resolveGlobalSkillsDirs calls filepath.Abs, so compare absolute paths
-				wantAbs, _ := filepath.Abs(tc.want[0])
-				for i := range got {
-					if got[i] != wantAbs {
-						t.Errorf("got[%d] = %q, want %q", i, got[i], wantAbs)
-					}
-				}
-			}
-		})
-	}
+	t.Run("empty skillsDir, no ~/.agents/skills → empty result", func(t *testing.T) {
+		got := resolveGlobalSkillsDirs("")
+		if len(got) != 0 {
+			t.Fatalf("expected empty slice, got %v", got)
+		}
+	})
+
+	t.Run("non-empty skillsDir, no ~/.agents/skills → single entry", func(t *testing.T) {
+		fakeSkillsDir := homePath("xbot-skills")
+		os.MkdirAll(fakeSkillsDir, 0755)
+		got := resolveGlobalSkillsDirs(fakeSkillsDir)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 entry, got %d: %v", len(got), got)
+		}
+		want := evalRealPath(fakeSkillsDir)
+		if got[0] != want {
+			t.Errorf("got[0] = %q, want %q", got[0], want)
+		}
+	})
+
+	t.Run("~/.agents/skills exists without skillsDir → auto-detected", func(t *testing.T) {
+		agentsDir := homePath(".agents", "skills")
+		os.MkdirAll(agentsDir, 0755)
+		defer os.RemoveAll(agentsDir)
+		got := resolveGlobalSkillsDirs("")
+		if len(got) != 1 {
+			t.Fatalf("expected 1 entry (auto-detected), got %d: %v", len(got), got)
+		}
+		want := evalRealPath(agentsDir)
+		if got[0] != want {
+			t.Errorf("got[0] = %q, want %q", got[0], want)
+		}
+	})
+
+	t.Run("both dirs exist → two entries", func(t *testing.T) {
+		agentsDir := homePath(".agents", "skills")
+		os.MkdirAll(agentsDir, 0755)
+		defer os.RemoveAll(agentsDir)
+		fakeSkillsDir := homePath("xbot-skills-2")
+		os.MkdirAll(fakeSkillsDir, 0755)
+		got := resolveGlobalSkillsDirs(fakeSkillsDir)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 entries, got %d: %v", len(got), got)
+		}
+		// First entry should be the configured skillsDir
+		want0 := evalRealPath(fakeSkillsDir)
+		if got[0] != want0 {
+			t.Errorf("got[0] = %q, want %q", got[0], want0)
+		}
+		// Second entry should be ~/.agents/skills
+		want1 := evalRealPath(agentsDir)
+		if got[1] != want1 {
+			t.Errorf("got[1] = %q, want %q", got[1], want1)
+		}
+	})
+
+	t.Run("symlink deduplication: skillsDir symlinks to ~/.agents/skills", func(t *testing.T) {
+		agentsDir := homePath(".agents", "skills")
+		os.MkdirAll(agentsDir, 0755)
+		defer os.RemoveAll(agentsDir)
+		// Create a symlink that points to agentsDir
+		symlinkPath := homePath("skills-link")
+		if err := os.Symlink(agentsDir, symlinkPath); err != nil {
+			t.Skipf("symlink not supported on this platform: %v", err)
+		}
+		defer os.Remove(symlinkPath)
+		got := resolveGlobalSkillsDirs(symlinkPath)
+		// Should deduplicate to a single entry because symlink resolves to the same real path
+		if len(got) != 1 {
+			t.Fatalf("expected 1 entry after symlink dedup, got %d: %v", len(got), got)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

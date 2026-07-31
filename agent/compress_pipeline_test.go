@@ -303,15 +303,50 @@ func TestApplyCompress_NilSyncMessages(t *testing.T) {
 		t.Fatalf("expected %d messages, got %d", len(result.LLMView), len(got.NewMessages))
 	}
 
-	// Verify same slice identity — when SyncMessages is nil the result
-	// should use result.LLMView directly (same underlying array), not a copy.
-	if len(got.NewMessages) > 0 && len(result.LLMView) > 0 {
-		if &got.NewMessages[0] != &result.LLMView[0] {
-			t.Error("NewMessages should share the same underlying array as LLMView when SyncMessages is nil")
+	for i := range got.NewMessages {
+		if got.NewMessages[i].Role != result.LLMView[i].Role || got.NewMessages[i].Content != result.LLMView[i].Content {
+			t.Errorf("NewMessages[%d]=%+v, want %+v", i, got.NewMessages[i], result.LLMView[i])
 		}
 	}
-	if cap(got.NewMessages) != cap(result.LLMView) {
-		t.Errorf("NewMessages cap=%d, want cap=%d (same as LLMView)", cap(got.NewMessages), cap(result.LLMView))
+}
+
+func TestApplyCompress_SanitizesCompressedLLMView(t *testing.T) {
+	result := &CompressResult{
+		LLMView: []llm.ChatMessage{
+			llm.NewUserMessage("summary"),
+			llm.NewToolMessage("read", "call_late", "{}", "orphan result"),
+			{
+				Role: "assistant",
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_late", Name: "read", Arguments: "{}"},
+				},
+			},
+			llm.NewAssistantMessage("done"),
+		},
+		CompressedTokens: 42,
+	}
+	cm := &mockContextManager{
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+			return result, nil
+		},
+	}
+
+	got, err := ApplyCompress(context.Background(), CompressPipelineParams{
+		CM:        cm,
+		Messages:  []llm.ChatMessage{llm.NewUserMessage("hello")},
+		LLMClient: &mockLLM{},
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, msg := range got.NewMessages {
+		if msg.Role == "tool" {
+			t.Fatalf("ApplyCompress kept orphan tool message: %+v", got.NewMessages)
+		}
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			t.Fatalf("ApplyCompress kept assistant tool_call without following response: %+v", got.NewMessages)
+		}
 	}
 }
 

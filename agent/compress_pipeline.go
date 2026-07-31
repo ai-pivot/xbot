@@ -2,10 +2,8 @@ package agent
 
 import (
 	"context"
-	"time"
 
 	"xbot/llm"
-	log "xbot/logger"
 )
 
 // CompressPipelineParams holds the inputs for a compression pipeline execution.
@@ -56,7 +54,8 @@ type CompressPipelineResult struct {
 //  6. Cleans OffloadStore and MaskStore entries
 //
 // Returns the pipeline result or the compression error.
-// Persistence failures are logged but do not cause an error return.
+// Persistence is fail-closed: the caller must not install the compressed
+// in-memory view unless its control record was appended successfully.
 func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*CompressPipelineResult, error) {
 	var result *CompressResult
 	var err error
@@ -74,10 +73,7 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 		params.AccumulateUsage(result)
 	}
 
-	newMessages := result.LLMView
-	if params.SyncMessages != nil {
-		newMessages = params.SyncMessages(result.LLMView)
-	}
+	newMessages := llm.SanitizeMessages(result.LLMView)
 
 	// Use the locally-estimated token count of the compressed LLMView.
 	// This represents the actual size of the new context — what the NEXT LLM call
@@ -85,23 +81,47 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 	// the compressed context size (that was the root cause of the "117k → 259k" bug).
 	newTokenCount := int64(result.CompressedTokens)
 
+	if params.Persistence != nil {
+		// Persist LLMView (not SessionView) to preserve complete tool call/result
+		// structure. SessionView folds tool messages into flat text summaries,
+		// which loses the original tool structure that TUI needs to render properly.
+		// Strip system messages before persisting — session storage must never
+		// contain system messages (they are rebuilt from scratch by buildPrompt).
+		persistView := make([]llm.ChatMessage, 0, len(newMessages))
+		for _, msg := range newMessages {
+			if msg.Role != "system" {
+				persistView = append(persistView, msg)
+			}
+		}
+		historyID, persistErr := params.Persistence.RewriteAfterCompress(persistView, len(newMessages))
+		if persistErr != nil {
+			return nil, persistErr
+		}
+		if historyID != 0 {
+			for i := range newMessages {
+				if newMessages[i].Role != "system" && !newMessages[i].DisplayOnly && newMessages[i].ID == 0 {
+					newMessages[i].ID = historyID
+				}
+			}
+		}
+	}
+	if params.SyncMessages != nil {
+		newMessages = params.SyncMessages(newMessages)
+	}
+
+	// Smart cleanup: only clean mask/offload entries that are NOT referenced
+	// by any message in the compressed LLMView. This is a key improvement over
+	// the old time-based cleanup — it ensures that mask/offload references in
+	// tail messages and the compaction summary remain loadable after compression.
 	if params.TokenTracker != nil {
 		params.TokenTracker.ResetAfterCompress()
 	}
-
-	if params.Persistence != nil {
-		if ok, _ := params.Persistence.RewriteAfterCompress(result.SessionView, len(newMessages)); !ok {
-			log.Ctx(ctx).Warn("Compression persistence failed, session may be inconsistent")
-		}
-	}
-
-	// Clean offload and mask entries that were compressed away.
-	compressCutoff := time.Now()
+	referencedIDs := extractMaskOffloadIDs(newMessages)
 	if params.OffloadStore != nil {
-		params.OffloadStore.CleanOldEntries(params.OffloadSessionKey, compressCutoff)
+		params.OffloadStore.CleanUnreferencedEntries(params.OffloadSessionKey, referencedIDs)
 	}
 	if params.MaskStore != nil {
-		params.MaskStore.CleanOldEntries(compressCutoff)
+		params.MaskStore.CleanUnreferencedEntries(referencedIDs)
 	}
 
 	return &CompressPipelineResult{

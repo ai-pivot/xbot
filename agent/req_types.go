@@ -14,22 +14,26 @@ const (
 	MethodSetCWD                       = "set_cwd"
 	MethodSetContextMode               = "set_context_mode"
 	MethodGetContextMode               = "get_context_mode"
-	MethodSetUserModel                 = "set_user_model"
-	MethodSwitchModel                  = "switch_model"
+	MethodSelectModel                  = "select_model"
+	MethodSetDefaultModel              = "set_default_model"
+	MethodSetModelEnabled              = "set_model_enabled"
+	MethodRemoveModel                  = "remove_model"
+	MethodUpsertModel                  = "upsert_model"
+	MethodSetSubscriptionEnabled       = "set_subscription_enabled"
 	MethodSetUserMaxContext            = "set_user_max_context"
 	MethodGetUserMaxContext            = "get_user_max_context"
 	MethodSetUserMaxOutputTokens       = "set_user_max_output_tokens"
 	MethodGetUserMaxOutputTokens       = "get_user_max_output_tokens"
 	MethodSetUserThinkingMode          = "set_user_thinking_mode"
 	MethodGetUserThinkingMode          = "get_user_thinking_mode"
-	MethodSetLLMConcurrency            = "set_llm_concurrency"
-	MethodGetLLMConcurrency            = "get_llm_concurrency"
 	MethodClearProxyLLM                = "clear_proxy_llm"
 	MethodSetDefaultThinkingMode       = "set_default_thinking_mode"
 	MethodGetDefaultModel              = "get_default_model"
 	MethodListModels                   = "list_models"
 	MethodListAllModels                = "list_all_models"
-	MethodSetModelTiers                = "set_model_tiers"
+	MethodListAllModelEntries          = "list_all_model_entries"
+	MethodRefreshModelEntries          = "refresh_model_entries"
+	MethodSetUserModel                 = "set_user_model"
 	MethodSetModelContexts             = "set_model_contexts"
 	MethodSetGlobalMaxTokens           = "set_global_max_tokens"
 	MethodSetRetryConfig               = "set_retry_config"
@@ -51,14 +55,17 @@ const (
 	MethodUpdateSubscription           = "update_subscription"
 	MethodUpdatePerModelConfig         = "update_per_model_config"
 	MethodSetSubscriptionModel         = "set_subscription_model"
+	MethodGetSessionSubscription       = "get_session_subscription"
 	MethodGetHistory                   = "get_history"
 	MethodGetTokenState                = "get_token_state"
-	MethodTrimHistory                  = "trim_history"
+	MethodGetContextUsage              = "get_context_usage"
+	MethodRewindHistory                = "rewind_history"
 	MethodResetTokenState              = "reset_token_state"
 	MethodGetChannelConfig             = "get_channel_config"
 	MethodSetChannelConfig             = "set_channel_config"
 	MethodIsProcessing                 = "is_processing"
 	MethodGetActiveProgress            = "get_active_progress"
+	MethodGetPendingAskUser            = "get_pending_ask_user"
 	MethodGetTodos                     = "get_todos"
 	MethodCountInteractiveSessions     = "count_interactive_sessions"
 	MethodListInteractiveSessions      = "list_interactive_sessions"
@@ -66,14 +73,26 @@ const (
 	MethodGetSessionMessages           = "get_session_messages"
 	MethodGetAgentSessionDump          = "get_agent_session_dump"
 	MethodGetAgentSessionDumpByFullKey = "get_agent_session_dump_by_full_key"
+	MethodContinueInteractiveSession   = "continue_interactive_session"
 	MethodListTenants                  = "list_tenants"
-	MethodGetEffectiveMaxContext       = "get_effective_max_context"
-	MethodClearPerChatMaxContext       = "clear_per_chat_max_context"
 	MethodSetMaxIterations             = "set_max_iterations"
 	MethodSetMaxConcurrency            = "set_max_concurrency"
-	MethodSetMaxContextTokens          = "set_max_context_tokens"
 	MethodSetCompressionThreshold      = "set_compression_threshold"
 	MethodApplyRuntimeSettings         = "apply_runtime_settings"
+	MethodRunnerCreate                 = "runner_create"
+	MethodRunnerList                   = "runner_list"
+	MethodRunnerDelete                 = "runner_delete"
+	MethodRunnerGetActive              = "runner_get_active"
+	MethodRunnerSetActive              = "runner_set_active"
+	MethodRunnerRename                 = "runner_rename"
+	MethodGenerateLinkCode             = "generate_link_code"
+	MethodConsumeLinkCode              = "consume_link_code"
+	MethodListIdentities               = "list_identities"
+	MethodAppPack                      = "app_pack"
+	MethodAppInstallFile               = "app_install_file"
+	MethodAppInstallURL                = "app_install_url"
+	MethodAppUninstall                 = "app_uninstall"
+	MethodAppList                      = "app_list"
 )
 
 // --- Settings ---
@@ -120,13 +139,8 @@ type setCompressionThresholdReq struct {
 
 type setUserModelReq struct {
 	SenderID string `json:"sender_id"`
+	SubID    string `json:"sub_id,omitempty"`
 	Model    string `json:"model"`
-}
-
-type switchModelReq struct {
-	SenderID string `json:"sender_id"`
-	Model    string `json:"model"`
-	ChatID   string `json:"chat_id,omitempty"`
 }
 
 type setUserMaxContextReq struct {
@@ -142,11 +156,6 @@ type setUserMaxOutputTokensReq struct {
 type setUserThinkingModeReq struct {
 	SenderID string `json:"sender_id"`
 	Mode     string `json:"mode"`
-}
-
-type setLLMConcurrencyReq struct {
-	SenderID string `json:"sender_id"`
-	Personal int    `json:"personal"`
 }
 
 type setDefaultThinkingModeReq struct {
@@ -181,10 +190,6 @@ type getUserMaxOutputTokensReq struct {
 }
 
 type getUserThinkingModeReq struct {
-	SenderID string `json:"sender_id"`
-}
-
-type getLLMConcurrencyReq struct {
 	SenderID string `json:"sender_id"`
 }
 
@@ -305,10 +310,20 @@ type getTokenStateReq struct {
 	ChatID  string `json:"chat_id"`
 }
 
-type trimHistoryReq struct {
+type getContextUsageReq struct {
 	Channel string `json:"channel"`
 	ChatID  string `json:"chat_id"`
-	Cutoff  int64  `json:"cutoff"` // unix timestamp
+}
+
+type rewindHistoryReq struct {
+	Channel   string `json:"channel"`
+	ChatID    string `json:"chat_id"`
+	HistoryID int64  `json:"history_id"`
+}
+
+type continueInteractiveSessionReq struct {
+	FullKey string `json:"full_key"`
+	Content string `json:"content"`
 }
 
 // --- Channel Config ---
@@ -326,6 +341,12 @@ type isProcessingReq struct {
 }
 
 type getActiveProgressReq struct {
+	Channel       string `json:"channel"`
+	ChatID        string `json:"chat_id"`
+	FromIteration int    `json:"from_iteration"`
+}
+
+type getPendingAskUserReq struct {
 	Channel string `json:"channel"`
 	ChatID  string `json:"chat_id"`
 }
@@ -373,17 +394,60 @@ type getAgentSessionDumpByFullKeyReq struct {
 	FullKey string `json:"full_key"`
 }
 
-type getEffectiveMaxContextReq struct {
-	SenderID string `json:"sender_id"`
-	ChatID   string `json:"chat_id"`
-}
-
-type clearPerChatMaxContextReq struct {
-	ChatID string `json:"chat_id"`
-}
-
 type applyRuntimeSettingsReq struct {
 	Values map[string]string `json:"values"`
+}
+
+// --- App ---
+
+type appPackReq struct {
+	Name   string        `json:"name"`
+	Items  []appItemSpec `json:"items"`
+	Author string        `json:"author"`
+}
+
+type appItemSpec struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+type appPackResp struct {
+	Path string `json:"path"`
+}
+
+type appInstallFileReq struct {
+	ZipPath  string `json:"zip_path"`
+	SenderID string `json:"sender_id"`
+	Force    bool   `json:"force"`
+}
+
+type appInstallURLReq struct {
+	URL      string `json:"url"`
+	SenderID string `json:"sender_id"`
+	Force    bool   `json:"force"`
+}
+
+type appInstallResp struct {
+	Name      string   `json:"name"`
+	Version   string   `json:"version"`
+	Installed []string `json:"installed"`
+	Skipped   []string `json:"skipped"`
+}
+
+type appUninstallReq struct {
+	Type     string `json:"type"`
+	Name     string `json:"name"`
+	SenderID string `json:"sender_id"`
+}
+
+type appListReq struct {
+	SenderID string `json:"sender_id"`
+}
+
+type appListResp struct {
+	Skills  []string `json:"skills"`
+	Agents  []string `json:"agents"`
+	Plugins []string `json:"plugins"`
 }
 
 // --- DirectSend / Channel ---

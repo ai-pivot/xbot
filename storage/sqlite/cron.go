@@ -86,20 +86,10 @@ func (s *CronService) GetJob(id string) (*CronJob, error) {
 		return nil, fmt.Errorf("scan cron job: %w", err)
 	}
 
-	var parseErr error
-	job.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
-	if parseErr != nil {
-		return nil, fmt.Errorf("parse created_at %q: %w", createdAt, parseErr)
-	}
-	job.NextRun, parseErr = time.Parse(time.RFC3339, nextRun)
-	if parseErr != nil {
-		return nil, fmt.Errorf("parse next_run %q: %w", nextRun, parseErr)
-	}
+	job.CreatedAt = parseSQLiteTime(createdAt)
+	job.NextRun = parseSQLiteTime(nextRun)
 	if lastTriggerStr != nil {
-		t, err := time.Parse(time.RFC3339, *lastTriggerStr)
-		if err != nil {
-			return nil, fmt.Errorf("parse last_trigger %q: %w", *lastTriggerStr, err)
-		}
+		t := parseSQLiteTime(*lastTriggerStr)
 		job.LastTrigger = &t
 	}
 	return job, nil
@@ -114,6 +104,74 @@ func (s *CronService) ListJobsBySender(senderID string) ([]*CronJob, error) {
 	`, senderID)
 	if err != nil {
 		return nil, fmt.Errorf("query cron jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []*CronJob
+	for rows.Next() {
+		job := &CronJob{}
+		var createdAt, nextRun string
+		var lastTriggerStr *string
+		if err := rows.Scan(&job.ID, &job.Message, &job.Channel, &job.ChatID, &job.SenderID, &job.CronExpr,
+			&job.EverySeconds, &job.DelaySeconds, &job.At, &createdAt, &nextRun, &lastTriggerStr, &job.OneShot); err != nil {
+			return nil, fmt.Errorf("scan cron job row: %w", err)
+		}
+		job.CreatedAt = parseSQLiteTime(createdAt)
+		job.NextRun = parseSQLiteTime(nextRun)
+		if lastTriggerStr != nil {
+			t := parseSQLiteTime(*lastTriggerStr)
+			job.LastTrigger = &t
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sender cron jobs: %w", err)
+	}
+	return jobs, nil
+}
+
+// ListJobsByUserID lists all cron jobs for a canonical user (by user_id).
+func (s *CronService) ListJobsByUserID(userID int64) ([]*CronJob, error) {
+	conn := s.db.Conn()
+	rows, err := conn.Query(`
+		SELECT id, message, channel, chat_id, sender_id, cron_expr, every_seconds, delay_seconds, at, created_at, next_run, last_trigger, one_shot
+		FROM cron_jobs WHERE user_id = ? ORDER BY created_at
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query cron jobs by user_id: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []*CronJob
+	for rows.Next() {
+		job := &CronJob{}
+		var createdAt, nextRun string
+		var lastTriggerStr *string
+		if err := rows.Scan(&job.ID, &job.Message, &job.Channel, &job.ChatID, &job.SenderID, &job.CronExpr,
+			&job.EverySeconds, &job.DelaySeconds, &job.At, &createdAt, &nextRun, &lastTriggerStr, &job.OneShot); err != nil {
+			return nil, fmt.Errorf("scan cron job row: %w", err)
+		}
+		job.CreatedAt = parseSQLiteTime(createdAt)
+		job.NextRun = parseSQLiteTime(nextRun)
+		if lastTriggerStr != nil {
+			t := parseSQLiteTime(*lastTriggerStr)
+			job.LastTrigger = &t
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+// ListJobsByChannelChatID lists all cron jobs for a specific channel + chat_id pair.
+// This is the tenant-scoped query used by the get_cron_tasks RPC.
+func (s *CronService) ListJobsByChannelChatID(channel, chatID string) ([]*CronJob, error) {
+	conn := s.db.Conn()
+	rows, err := conn.Query(`
+		SELECT id, message, channel, chat_id, sender_id, cron_expr, every_seconds, delay_seconds, at, created_at, next_run, last_trigger, one_shot
+		FROM cron_jobs WHERE channel = ? AND chat_id = ? ORDER BY created_at
+	`, channel, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("query cron jobs by channel/chat: %w", err)
 	}
 	defer rows.Close()
 
@@ -145,7 +203,7 @@ func (s *CronService) ListJobsBySender(senderID string) ([]*CronJob, error) {
 		jobs = append(jobs, job)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate sender cron jobs: %w", err)
+		return nil, fmt.Errorf("iterate channel/chat cron jobs: %w", err)
 	}
 	return jobs, nil
 }
@@ -171,20 +229,10 @@ func (s *CronService) ListAllJobs() ([]*CronJob, error) {
 			&job.EverySeconds, &job.DelaySeconds, &job.At, &createdAt, &nextRun, &lastTriggerStr, &job.OneShot); err != nil {
 			return nil, fmt.Errorf("scan cron job row: %w", err)
 		}
-		var parseErr error
-		job.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse created_at %q for job %s: %w", createdAt, job.ID, parseErr)
-		}
-		job.NextRun, parseErr = time.Parse(time.RFC3339, nextRun)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse next_run %q for job %s: %w", nextRun, job.ID, parseErr)
-		}
+		job.CreatedAt = parseSQLiteTime(createdAt)
+		job.NextRun = parseSQLiteTime(nextRun)
 		if lastTriggerStr != nil {
-			t, err := time.Parse(time.RFC3339, *lastTriggerStr)
-			if err != nil {
-				return nil, fmt.Errorf("parse last_trigger %q for job %s: %w", *lastTriggerStr, job.ID, err)
-			}
+			t := parseSQLiteTime(*lastTriggerStr)
 			job.LastTrigger = &t
 		}
 		jobs = append(jobs, job)
@@ -281,7 +329,7 @@ func (s *CronService) MigrateFromJSON(dataDir string) error {
 
 		// Parse created_at
 		if old.CreatedAt != "" {
-			job.CreatedAt, _ = time.Parse(time.RFC3339, old.CreatedAt)
+			job.CreatedAt = parseSQLiteTime(old.CreatedAt)
 		}
 		if job.CreatedAt.IsZero() {
 			job.CreatedAt = now
@@ -290,9 +338,10 @@ func (s *CronService) MigrateFromJSON(dataDir string) error {
 		// Calculate next_run and one_shot
 		job.OneShot = job.At != "" || job.DelaySeconds > 0
 		if job.At != "" {
-			t, err := time.ParseInLocation("2006-01-02T15:04:05", job.At, time.Local)
-			if err != nil {
-				t, _ = time.Parse(time.RFC3339, job.At)
+			var t time.Time
+			t, _ = time.ParseInLocation("2006-01-02T15:04:05", job.At, time.Local)
+			if t.IsZero() {
+				t = parseSQLiteTime(job.At)
 			}
 			job.NextRun = t
 		} else if job.DelaySeconds > 0 {

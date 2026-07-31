@@ -28,6 +28,7 @@ type OpenAILLM struct {
 	defaultModel      string         // 默认模型
 	maxTokens         int            // 最大生成 token 数（用户配置值，作为上限）
 	baseURL           string         // API base URL for error logging/diagnosis
+	apiType           string         // "chat_completions" (default) | "responses"
 	onModelsLoaded    func([]string) // callback after models loaded from API
 	onModelsLoadError func(error)    // callback after models load fails
 	modelsLoaded      bool           // true after first ListModels() triggers async fetch
@@ -50,6 +51,11 @@ type OpenAIConfig struct {
 	MaxTokens    int    // 最大生成 token 数（默认 defaultMaxTokens）
 	UserAgent    string // 自定义 User-Agent（留空使用默认值）
 
+	// APIType selects the OpenAI API endpoint to use.
+	// "chat_completions" (default) — POST /v1/chat/completions
+	// "responses" — POST /v1/responses (OpenAI Responses API)
+	APIType string
+
 	// OnModelsLoadError is called when the async model list API call fails.
 	// Used by CLI to show a toast notification.
 	OnModelsLoadError func(err error)
@@ -67,6 +73,14 @@ type OpenAIConfig struct {
 // Keep in sync with config.DefaultMaxOutputTokens.
 const defaultMaxTokens = 32_768
 
+// API type constants for selecting between OpenAI API endpoints.
+const (
+	// APITypeChatCompletions is the default API type, using POST /v1/chat/completions.
+	APITypeChatCompletions = "chat_completions"
+	// APITypeResponses uses the OpenAI Responses API (POST /v1/responses).
+	APITypeResponses = "responses"
+)
+
 // NewOpenAILLM 创建 OpenAI LLM 实例
 func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 	if cfg.MaxTokens <= 0 {
@@ -80,6 +94,7 @@ func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 
 	o := &OpenAILLM{
 		baseURL:           cfg.BaseURL,
+		apiType:           cfg.APIType,
 		maxTokens:         cfg.MaxTokens,
 		onModelsLoaded:    cfg.OnModelsLoaded,
 		onModelsLoadError: cfg.OnModelsLoadError,
@@ -173,7 +188,7 @@ func (o *OpenAILLM) ListModels() []string {
 }
 
 // EnsureModelsLoaded performs a synchronous model list fetch if not yet loaded.
-// Callers that need the full model list (e.g. Ctrl+N model cycling) should
+// Callers that need the full model list (e.g. the LLM panel picker) should
 // call this before ListModels to avoid getting a stale single-model fallback.
 func (o *OpenAILLM) EnsureModelsLoaded() {
 	o.mu.RLock()
@@ -692,73 +707,169 @@ func isMaxTokensParamError(err error) string {
 	return ""
 }
 
-// buildThinkingOptions 根据 thinkingMode 构建对应的 request options
-// 支持多种模型的 thinking mode：
-// - DeepSeek: {"thinking": {"type": "enabled"}}
-// - 智谱 GLM: {"thinking": {"type": "enabled", "clear_thinking": false}}
-// - 其他模型可扩展
-//
-// 参数格式：
-// - "enabled" -> {"thinking": {"type": "enabled"}}
-// - "disabled" -> {"thinking": {"type": "disabled"}} (不发送参数，让模型自己决定)
-// - 自定义 JSON: 直接使用，如 {"type": "enabled", "clear_thinking": false}
-func (o *OpenAILLM) buildThinkingOptions(thinkingMode string) []option.RequestOption {
-	if thinkingMode == "" {
+// buildThinkingOptions 根据 thinkingMode 和模型名构建对应的 request options。
+// model 用于检测实际后端（gpt-* → reasoning_effort，glm-* / deepseek-* → thinking）。
+func (o *OpenAILLM) buildThinkingOptions(thinkingMode, model string) []option.RequestOption {
+	if thinkingMode == "" || thinkingMode == "disabled" {
 		return nil
 	}
 
+	// Resolve named modes ("enabled" / "think" / "think-max") to
+	// provider-specific JSON parameters before parsing.
+	thinkingMode = resolveThinkingMode(thinkingMode, model, o.baseURL)
+
 	var opts []option.RequestOption
 
-	switch thinkingMode {
-	case "enabled":
-		// DeepSeek/GLM 标准格式
-		opts = append(opts, option.WithJSONSet("thinking", map[string]any{"type": "enabled"}))
-	case "disabled":
-		// 不发送任何 thinking 参数，让模型自己决定
-	default:
-		// JSON 格式的 thinking 参数
-		// Supports two formats:
-		//   1. Flat thinking object: {"type": "enabled"} → set as "thinking" param
-		//   2. Nested with extras:   {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
-		//      → "thinking" object goes to "thinking" param, other keys become top-level params
-		//   3. Arbitrary key-values: {"reasoning_effort": "high"} → each key is a top-level param
-		if len(thinkingMode) > 0 && thinkingMode[0] == '{' {
-			var customParams map[string]any
-			if err := json.Unmarshal([]byte(thinkingMode), &customParams); err == nil {
-				if thinkingObj, hasThinking := customParams["thinking"]; hasThinking {
-					// Format 2: explicit "thinking" key + optional top-level params
-					opts = append(opts, option.WithJSONSet("thinking", thinkingObj))
-					for key, value := range customParams {
-						if key == "thinking" {
-							continue
-						}
-						opts = append(opts, option.WithJSONSet(key, value))
+	// JSON 格式的 thinking 参数
+	// Supports two formats:
+	//   1. Flat thinking object: {"type": "enabled"} → set as "thinking" param
+	//   2. Nested with extras:   {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+	//      → "thinking" object goes to "thinking" param, other keys become top-level params
+	//   3. Arbitrary key-values: {"reasoning_effort": "high"} → each key is a top-level param
+	if len(thinkingMode) > 0 && thinkingMode[0] == '{' {
+		var customParams map[string]any
+		if err := json.Unmarshal([]byte(thinkingMode), &customParams); err == nil {
+			if thinkingObj, hasThinking := customParams["thinking"]; hasThinking {
+				// Format 2: explicit "thinking" key + optional top-level params
+				opts = append(opts, option.WithJSONSet("thinking", thinkingObj))
+				for key, value := range customParams {
+					if key == "thinking" {
+						continue
 					}
-				} else if _, hasType := customParams["type"]; hasType {
-					// Format 1: flat thinking object
-					opts = append(opts, option.WithJSONSet("thinking", customParams))
-				} else {
-					// Format 3: arbitrary key-values
-					for key, value := range customParams {
-						opts = append(opts, option.WithJSONSet(key, value))
-					}
+					opts = append(opts, option.WithJSONSet(key, value))
 				}
+			} else if _, hasType := customParams["type"]; hasType {
+				// Format 1: flat thinking object
+				opts = append(opts, option.WithJSONSet("thinking", customParams))
 			} else {
-				log.WithFields(log.Fields{
-					"thinking_mode": thinkingMode,
-					"error":         err.Error(),
-				}).Warn("[LLM] Failed to parse thinking mode as JSON, ignoring")
+				// Format 3: arbitrary key-values
+				for key, value := range customParams {
+					opts = append(opts, option.WithJSONSet(key, value))
+				}
 			}
 		} else {
-			log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON, ignoring")
+			log.WithFields(log.Fields{
+				"thinking_mode": thinkingMode,
+				"error":         err.Error(),
+			}).Warn("[LLM] Failed to parse thinking mode as JSON, ignoring")
 		}
+	} else {
+		log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON, ignoring")
 	}
 
 	return opts
 }
 
+// ---------------------------------------------------------------------------
+// Thinking mode resolution: named tiers → provider-specific JSON
+// ---------------------------------------------------------------------------
+
+// detectThinkingProvider classifies the API backend from model name (primary)
+// and base URL (fallback). Model prefix is the most reliable signal since
+// all Chinese providers use provider="openai" in their subscription config.
+func detectThinkingProvider(model, baseURL string) string {
+	lower := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(lower, "gpt-"):
+		return "openai" // reasoning_effort format
+	case strings.HasPrefix(lower, "glm-"):
+		return "glm" // thinking format
+	case strings.HasPrefix(lower, "deepseek"):
+		return "deepseek" // thinking format
+	}
+
+	// Fallback: base URL detection
+	lower = strings.ToLower(baseURL)
+	switch {
+	case strings.Contains(lower, "macaron.xin"):
+		return "openai"
+	case strings.Contains(lower, "deepseek"):
+		return "deepseek"
+	case strings.Contains(lower, "bigmodel.cn"):
+		return "glm"
+	case strings.Contains(lower, "openai.com"):
+		return "openai"
+	default:
+		return "default"
+	}
+}
+
+// thinkingPresets maps named thinking tiers to provider-specific JSON
+// parameters. Two tiers are defined:
+//
+//	think     — normal reasoning (medium effort for providers that support it)
+//	think-max — maximum reasoning (high effort, may use more tokens)
+//
+// For DeepSeek and GLM, both tiers send the same "thinking" parameter because
+// these providers use a binary on/off model — there are no effort levels.
+// GLM's think-max additionally sets clear_thinking:false to preserve thinking
+// output in the conversation history.
+var thinkingPresets = map[string]map[string]string{
+	"think": {
+		"default":  `{"thinking":{"type":"enabled"}}`,
+		"openai":   `{"reasoning_effort":"medium"}`,
+		"deepseek": `{"thinking":{"type":"enabled"}}`,
+		"glm":      `{"thinking":{"type":"enabled"}}`,
+	},
+	"think-max": {
+		"default":  `{"thinking":{"type":"enabled"}}`,
+		"openai":   `{"reasoning_effort":"high"}`,
+		"deepseek": `{"thinking":{"type":"enabled"}}`,
+		"glm":      `{"thinking":{"type":"enabled","clear_thinking":false}}`,
+	},
+}
+
+// resolveThinkingMode maps named thinking modes ("enabled" / "think" /
+// "think-max") to provider-specific JSON. Model name is used as the
+// primary signal for backend detection; base URL is the fallback.
+func resolveThinkingMode(thinkingMode, model, baseURL string) string {
+	switch thinkingMode {
+	case "enabled":
+		// Backward compat: "enabled" is an alias for "think"
+		thinkingMode = "think"
+	case "think", "think-max":
+		// already correct
+	default:
+		// Custom JSON or unknown — pass through
+		return thinkingMode
+	}
+
+	provider := detectThinkingProvider(model, baseURL)
+	preset := thinkingPresets[thinkingMode][provider]
+	if preset != "" {
+		return preset
+	}
+	// Fallback to default provider preset
+	return thinkingPresets[thinkingMode]["default"]
+}
+
+func shouldFallbackToStreamForNonStreamResponse(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "text/event-stream") && strings.Contains(msg, "not") && strings.Contains(msg, "application/json")
+}
+
+func (o *OpenAILLM) generateViaStreamFallback(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
+	eventCh, err := o.GenerateStream(ctx, model, messages, tools, thinkingMode)
+	if err != nil {
+		return nil, fmt.Errorf("openai stream fallback: %w", err)
+	}
+	resp, err := CollectStream(ctx, eventCh)
+	if err != nil {
+		return nil, fmt.Errorf("openai stream fallback collect: %w", err)
+	}
+	return resp, nil
+}
+
 // Generate 生成 LLM 响应
 func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
+	// Route to Responses API if configured
+	if o.apiType == APITypeResponses {
+		return o.generateResponses(ctx, model, messages, tools, thinkingMode)
+	}
+
 	// 如果未指定模型，使用默认模型
 	if model == "" {
 		model = o.GetDefaultModel()
@@ -778,7 +889,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 	params := o.buildParams(model, messages, tools, thinkingMode, false)
 
 	// 构建 thinking mode 相关的 request options
-	opts := o.buildThinkingOptions(thinkingMode)
+	opts := o.buildThinkingOptions(thinkingMode, model)
 	if len(opts) > 0 {
 		log.Ctx(ctx).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
 	}
@@ -799,11 +910,10 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 		}
 	}
 	if err != nil {
-		log.Ctx(ctx).WithFields(log.Fields{
-			"provider": "openai",
-			"duration": time.Since(startTime).String(),
-			"error":    err.Error(),
-		}).Error("[LLM] Request failed")
+		if shouldFallbackToStreamForNonStreamResponse(err) {
+			log.Ctx(ctx).WithError(err).WithField("model", model).Warn("[LLM] Non-stream request returned SSE; falling back to stream collection")
+			return o.generateViaStreamFallback(ctx, model, messages, tools, thinkingMode)
+		}
 		return nil, fmt.Errorf("openai chat completion: %w", err)
 	}
 
@@ -888,6 +998,11 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 
 // GenerateStream 流式生成 LLM 响应
 func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
+	// Route to Responses API if configured
+	if o.apiType == APITypeResponses {
+		return o.generateStreamResponses(ctx, model, messages, tools, thinkingMode)
+	}
+
 	// 如果未指定模型，使用默认模型
 	if model == "" {
 		model = o.GetDefaultModel()
@@ -906,7 +1021,7 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 	startTime := time.Now()
 
 	// 构建 thinking mode 相关的 request options
-	opts := o.buildThinkingOptions(thinkingMode)
+	opts := o.buildThinkingOptions(thinkingMode, model)
 	if len(opts) > 0 {
 		log.Ctx(ctx).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
 	}
@@ -942,21 +1057,11 @@ func (o *OpenAILLM) newStreamingWithRetry(ctx context.Context, model string, mes
 			stream = o.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 			if retryErr := stream.Err(); retryErr != nil {
 				stream.Close()
-				log.Ctx(ctx).WithFields(log.Fields{
-					"provider": "openai", "model": model, "base_url": o.baseURL,
-					"error":    retryErr.Error(),
-					"raw_tail": o.captureStreamTail(),
-				}).Error("[LLM] Stream init error (after max_tokens retry)")
 				return nil, retryErr
 			}
 			return stream, nil
 		}
 		stream.Close()
-		log.Ctx(ctx).WithFields(log.Fields{
-			"provider": "openai", "model": model, "base_url": o.baseURL,
-			"error":    err.Error(),
-			"raw_tail": o.captureStreamTail(),
-		}).Error("[LLM] Stream init error")
 		return nil, err
 	}
 	return stream, nil
@@ -1102,12 +1207,31 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 			"base_url":    o.baseURL,
 			"chunk_count": chunkCount,
 			"duration":    time.Since(startTime).String(),
-			"error":       err.Error(),
-			"raw_tail":    o.captureStreamTail(),
-		}).Error("[LLM] Stream error")
+		}).Warn("[LLM] Stream error: " + err.Error())
 		eventChan <- StreamEvent{
 			Type:  EventError,
 			Error: err.Error(),
+		}
+		return
+	}
+
+	// Detect stream truncation: the HTTP connection was closed cleanly
+	// (stream.Err() == nil) but no finish_reason was ever received and no
+	// tool calls were seen. This happens when a proxy (xray, Cloudflare, etc.)
+	// silently closes the SSE connection mid-stream. Without this check, the
+	// truncated content is returned as a "successful" response, causing the
+	// caller to treat partial output as complete.
+	if lastFinishReason == "" && !hasToolCalls && chunkCount > 0 {
+		l.WithFields(log.Fields{
+			"provider":    "openai",
+			"model":       model,
+			"base_url":    o.baseURL,
+			"chunk_count": chunkCount,
+			"duration":    time.Since(startTime).String(),
+		}).Warn("[LLM] Stream ended without finish_reason — likely truncated by proxy/network")
+		eventChan <- StreamEvent{
+			Type:  EventError,
+			Error: "stream ended without finish_reason (possible truncation)",
 		}
 		return
 	}
@@ -1198,6 +1322,22 @@ func (t *streamCaptureTransport) RoundTrip(req *http.Request) (*http.Response, e
 		return resp, err
 	}
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+
+	// Some OpenAI-compatible servers (e.g. sglang, vLLM) return text/plain
+	// for JSON API responses like /v1/models. The OpenAI Go SDK requires
+	// application/json to pick the JSON decoder; without this rewrite,
+	// model list fetching silently fails. Only rewrite 2xx responses to
+	// /models endpoints — error responses keep their original content-type
+	// so error diagnostics (HTML error pages, plain-text rate limit messages)
+	// are preserved.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 &&
+		resp.Body != nil &&
+		strings.Contains(req.URL.Path, "/models") &&
+		!strings.Contains(contentType, "application/json") &&
+		!strings.Contains(contentType, "text/event-stream") {
+		resp.Header.Set("Content-Type", "application/json")
+	}
+
 	if resp.Body != nil && strings.Contains(contentType, "text/event-stream") {
 		resp.Header.Set("Content-Type", contentType)
 		t.o.streamBodyMu.Lock()
@@ -1240,20 +1380,3 @@ func (r *tailReader) Read(p []byte) (int, error) {
 }
 
 func (r *tailReader) Close() error { return r.inner.Close() }
-
-// captureStreamTail returns a truncated string of the captured streaming
-// response body tail, for inclusion in error logs. Resets the buffer.
-func (o *OpenAILLM) captureStreamTail() string {
-	o.streamBodyMu.Lock()
-	tail := make([]byte, len(o.streamBodyTail))
-	copy(tail, o.streamBodyTail)
-	o.streamBodyTail = o.streamBodyTail[:0]
-	o.streamBodyMu.Unlock()
-
-	s := string(tail)
-	const maxLogLen = 2000
-	if len(s) > maxLogLen {
-		s = "..." + s[len(s)-maxLogLen:]
-	}
-	return s
-}

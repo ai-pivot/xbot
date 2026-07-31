@@ -61,7 +61,14 @@ func activateAndWait(t *testing.T, sp *scriptPlugin, pctx *pluginContextImpl, ti
 		if pctx != nil {
 			wd = pctx.WorkingDir()
 		}
-		got := sp.outputs[wd]
+		var got string
+		if wm := sp.outputs[wd]; wm != nil {
+			// Check the first widget ID
+			for _, v := range wm {
+				got = v
+				break
+			}
+		}
 		sp.outputMu.RUnlock()
 		if n > 0 && got != "" {
 			return
@@ -73,6 +80,76 @@ func activateAndWait(t *testing.T, sp *scriptPlugin, pctx *pluginContextImpl, ti
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: XBOT_WIDGET_ID env var injection
+// ---------------------------------------------------------------------------
+
+func TestScriptPlugin_WidgetIDEnvInjection(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workDir := t.TempDir()
+
+	// Write a script that prints XBOT_WIDGET_ID
+	var scriptPath, entry string
+	if runtime.GOOS == "windows" {
+		scriptPath = filepath.Join(dir, "widget_id.bat")
+		os.WriteFile(scriptPath, []byte("@echo WIDGET=%XBOT_WIDGET_ID%"), 0o644)
+		entry = scriptPath
+	} else {
+		scriptPath = filepath.Join(dir, "widget_id.sh")
+		os.WriteFile(scriptPath, []byte("#!/bin/sh\necho \"WIDGET=$XBOT_WIDGET_ID\""), 0o755)
+		entry = "sh " + scriptPath
+	}
+
+	m := PluginManifest{
+		ID:          "com.test.widgetid",
+		Name:        "widgetid-test",
+		Version:     "1.0.0",
+		Runtime:     RuntimeScript,
+		Entry:       entry,
+		Permissions: []string{PermUIContribute},
+		Contributes: &PluginContributes{
+			UI: []UISlotContribution{
+				{ID: "git-branch", Slot: "infoBar", Priority: 10},
+				{ID: "git-status", Slot: "statusBarRight", Priority: 10},
+			},
+		},
+	}
+	p, err := NewScriptRuntime().Create(&m, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := p.(*scriptPlugin)
+
+	// Run for widget "git-branch"
+	output1, err := sp.runScript(workDir, "git-branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output1, "WIDGET=git-branch") {
+		t.Errorf("output for git-branch = %q, should contain WIDGET=git-branch", output1)
+	}
+
+	// Run for widget "git-status"
+	output2, err := sp.runScript(workDir, "git-status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output2, "WIDGET=git-status") {
+		t.Errorf("output for git-status = %q, should contain WIDGET=git-status", output2)
+	}
+
+	// Run with empty widgetID — XBOT_WIDGET_ID env var is not set,
+	// so $XBOT_WIDGET_ID resolves to empty string.
+	output3, err := sp.runScript(workDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With empty widgetID, the script prints "WIDGET=" (empty value)
+	_ = output3
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +186,11 @@ func TestScriptPlugin_PerWorkDirOutput(t *testing.T) {
 
 	// Verify initial workDir output
 	sp.outputMu.RLock()
-	outA := strings.TrimSpace(sp.outputs[workDirA])
+	wmA := sp.outputs[workDirA]
+	var outA string
+	if wmA != nil {
+		outA = strings.TrimSpace(wmA["w1"])
+	}
 	sp.outputMu.RUnlock()
 	if outA != workDirA {
 		t.Errorf("initial output = %q, want %q", outA, workDirA)
@@ -123,7 +204,11 @@ func TestScriptPlugin_PerWorkDirOutput(t *testing.T) {
 	deadline := time.After(3 * time.Second)
 	for {
 		sp.outputMu.RLock()
-		outB := strings.TrimSpace(sp.outputs[workDirB])
+		wmB := sp.outputs[workDirB]
+		var outB string
+		if wmB != nil {
+			outB = strings.TrimSpace(wmB["w1"])
+		}
 		sp.outputMu.RUnlock()
 		if outB != "" {
 			break
@@ -137,8 +222,15 @@ func TestScriptPlugin_PerWorkDirOutput(t *testing.T) {
 	}
 
 	sp.outputMu.RLock()
-	outA2 := strings.TrimSpace(sp.outputs[workDirA])
-	outB := strings.TrimSpace(sp.outputs[workDirB])
+	wmA2 := sp.outputs[workDirA]
+	wmBB := sp.outputs[workDirB]
+	var outA2, outB string
+	if wmA2 != nil {
+		outA2 = strings.TrimSpace(wmA2["w1"])
+	}
+	if wmBB != nil {
+		outB = strings.TrimSpace(wmBB["w1"])
+	}
 	sp.outputMu.RUnlock()
 
 	// Both workDirs should have independent outputs
@@ -162,12 +254,14 @@ func TestScriptPlugin_RenderForWorkDir(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Pre-populate output for a specific workDir
+	// Pre-populate output for a specific workDir+widgetID
 	sp.outputMu.Lock()
-	sp.outputs = map[string]string{dir: "test-output"}
+	sp.outputs = map[string]map[string]string{dir: {"w1": "test-output"}}
 	sp.outputMu.Unlock()
 
-	spans := sp.RenderForWorkDir(0, dir)
+	// Use a widgetAdapter to call RenderForWorkDir
+	adapter := &widgetAdapter{plugin: sp, widgetID: "w1"}
+	spans := adapter.RenderForWorkDir(0, dir)
 	if len(spans) == 0 {
 		t.Fatal("expected at least 1 span")
 	}
@@ -177,7 +271,7 @@ func TestScriptPlugin_RenderForWorkDir(t *testing.T) {
 
 	// Cache miss for unknown dir — should run script synchronously.
 	otherDir := t.TempDir()
-	spansMiss := sp.RenderForWorkDir(0, otherDir)
+	spansMiss := adapter.RenderForWorkDir(0, otherDir)
 	if len(spansMiss) == 0 {
 		t.Fatal("expected at least 1 span for cache miss")
 	}
@@ -257,8 +351,10 @@ func TestScriptPlugin_ConcurrentRunAndUpdate(t *testing.T) {
 
 	// Verify outputs map is not corrupted — just read all values
 	sp.outputMu.RLock()
-	for _, v := range sp.outputs {
-		_ = v // no panic is sufficient
+	for _, wm := range sp.outputs {
+		for _, v := range wm {
+			_ = v // no panic is sufficient
+		}
 	}
 	sp.outputMu.RUnlock()
 }
@@ -434,8 +530,8 @@ echo "WORKDIR=$XBOT_WORK_DIR TOOL=$XBOT_TOOL_NAME OUTPUT=$XBOT_TOOL_OUTPUT INPUT
 	}
 	sp.lastHookMu.Unlock()
 
-	// Run the script with a real temp workDir
-	output, err := sp.runScript(workDir)
+	// Run the script with a real temp workDir and widgetID
+	output, err := sp.runScript(workDir, "w1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +562,8 @@ func TestScriptPlugin_RenderForWorkDir_EmptyOutput(t *testing.T) {
 	sp := newTestScriptPlugin(t, "true")
 	dir := t.TempDir()
 
-	spans := sp.RenderForWorkDir(0, dir)
+	adapter := &widgetAdapter{plugin: sp, widgetID: "w1"}
+	spans := adapter.RenderForWorkDir(0, dir)
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
@@ -485,13 +582,14 @@ func TestScriptPlugin_RenderForWorkDir_MissingEntry(t *testing.T) {
 	dirA := t.TempDir()
 	dirB := t.TempDir()
 
-	// 预设 dirA 的输出
+	// 预设 dirA 的输出（二级 map: workDir → widgetID → output）
 	sp.outputMu.Lock()
-	sp.outputs = map[string]string{dirA: "existing-output"}
+	sp.outputs = map[string]map[string]string{dirA: {"w1": "existing-output"}}
 	sp.outputMu.Unlock()
 
 	// 请求 dirB — 不在 outputs 中，runScript 会执行并缓存
-	spans := sp.RenderForWorkDir(0, dirB)
+	adapter := &widgetAdapter{plugin: sp, widgetID: "w1"}
+	spans := adapter.RenderForWorkDir(0, dirB)
 	if len(spans) < 1 {
 		t.Fatal("expected at least 1 span")
 	}
@@ -501,8 +599,9 @@ func TestScriptPlugin_RenderForWorkDir_MissingEntry(t *testing.T) {
 
 	// dirA 不受影响
 	sp.outputMu.RLock()
-	if sp.outputs[dirA] != "existing-output" {
-		t.Errorf("dirA output changed: got %q, want %q", sp.outputs[dirA], "existing-output")
+	wmA := sp.outputs[dirA]
+	if wmA == nil || wmA["w1"] != "existing-output" {
+		t.Errorf("dirA output changed: got %v, want %q", wmA, "existing-output")
 	}
 	sp.outputMu.RUnlock()
 }
@@ -591,6 +690,102 @@ func TestParseScriptOutput_Snapshot(t *testing.T) {
 			}
 			if string(got) != tt.wantJSON {
 				t.Errorf("got %s\nwant %s", got, tt.wantJSON)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: Platform-specific entry resolution
+// ---------------------------------------------------------------------------
+
+func TestScriptPlugin_ResolvedEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		entry        string
+		entryWindows string
+		entryDarwin  string
+		entryLinux   string
+	}{
+		{
+			name:  "generic_entry_only",
+			entry: "bash script.sh",
+		},
+		{
+			name:         "all_platform_overrides",
+			entry:        "bash script.sh",
+			entryWindows: "powershell -File script.ps1",
+			entryDarwin:  "bash script_macos.sh",
+			entryLinux:   "bash script_linux.sh",
+		},
+		{
+			name:         "only_windows_override",
+			entry:        "bash script.sh",
+			entryWindows: "powershell -File script.ps1",
+		},
+		{
+			name:        "only_darwin_override",
+			entry:       "bash script.sh",
+			entryDarwin: "bash script_macos.sh",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := PluginManifest{
+				ID:           "com.test.platform",
+				Name:         "platform-test",
+				Version:      "1.0.0",
+				Runtime:      RuntimeScript,
+				Entry:        tt.entry,
+				EntryWindows: tt.entryWindows,
+				EntryDarwin:  tt.entryDarwin,
+				EntryLinux:   tt.entryLinux,
+				Permissions:  []string{PermUIContribute},
+				Contributes: &PluginContributes{
+					UI: []UISlotContribution{{ID: "w1", Slot: "infoBar"}},
+				},
+			}
+			sp := &scriptPlugin{manifest: m, dir: t.TempDir()}
+			got := sp.resolvedEntry()
+
+			switch tt.name {
+			case "generic_entry_only":
+				if got != tt.entry {
+					t.Errorf("resolvedEntry() = %q, want %q", got, tt.entry)
+				}
+			case "all_platform_overrides":
+				want := tt.entry // fallback
+				switch runtime.GOOS {
+				case "windows":
+					want = tt.entryWindows
+				case "darwin":
+					want = tt.entryDarwin
+				case "linux":
+					want = tt.entryLinux
+				}
+				if got != want {
+					t.Errorf("resolvedEntry() on %s = %q, want %q", runtime.GOOS, got, want)
+				}
+			case "only_windows_override":
+				want := tt.entry
+				if runtime.GOOS == "windows" {
+					want = tt.entryWindows
+				}
+				if got != want {
+					t.Errorf("resolvedEntry() on %s = %q, want %q", runtime.GOOS, got, want)
+				}
+			case "only_darwin_override":
+				want := tt.entry
+				if runtime.GOOS == "darwin" {
+					want = tt.entryDarwin
+				}
+				if got != want {
+					t.Errorf("resolvedEntry() on %s = %q, want %q", runtime.GOOS, got, want)
+				}
 			}
 		})
 	}

@@ -14,6 +14,7 @@ CREATE TABLE tenants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel TEXT NOT NULL,
     chat_id TEXT NOT NULL,
+    runner_id TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(channel, chat_id)
@@ -31,10 +32,14 @@ CREATE TABLE session_messages (
 	    detail TEXT,
 	    display_only INTEGER DEFAULT 0,
 	    context_tokens INTEGER DEFAULT 0,
+	    record_type TEXT NOT NULL DEFAULT 'message',
+	    target_history_id INTEGER,
+	    record_data TEXT,
 	    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
 	);
 CREATE INDEX idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
+CREATE INDEX idx_session_messages_tenant_history ON session_messages(tenant_id, id);
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,
@@ -126,22 +131,6 @@ CREATE TABLE runners (
     UNIQUE(user_id, name)
 );
 
-CREATE TABLE shared_registry (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    type        TEXT NOT NULL CHECK(type IN ('skill', 'agent')),
-    name        TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    author      TEXT NOT NULL,
-    tags        TEXT NOT NULL DEFAULT '',
-    source_path TEXT NOT NULL,
-    sharing     TEXT NOT NULL DEFAULT 'private' CHECK(sharing IN ('private', 'public')),
-    created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL,
-    UNIQUE(type, name, author)
-);
-CREATE INDEX idx_shared_type_sharing ON shared_registry(type, sharing);
-CREATE INDEX idx_shared_author ON shared_registry(author);
-
 CREATE TABLE web_users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     username   TEXT NOT NULL UNIQUE,
@@ -159,17 +148,6 @@ CREATE TABLE user_settings (
     UNIQUE(channel, sender_id, key)
 );
 CREATE INDEX idx_user_settings_sender ON user_settings(channel, sender_id);
-CREATE TABLE user_llm_configs (
-    sender_id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL,
-    base_url TEXT NOT NULL,
-    api_key TEXT NOT NULL,
-    model TEXT,
-    max_context INTEGER DEFAULT 0,
-    thinking_mode TEXT DEFAULT '',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
 
 CREATE TABLE cron_jobs (
     id TEXT PRIMARY KEY,
@@ -214,9 +192,19 @@ CREATE TABLE user_chats (
     chat_id TEXT NOT NULL,
     label TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sort_order INTEGER DEFAULT 0,
     UNIQUE(channel, sender_id, chat_id)
 );
 CREATE INDEX idx_user_chats_sender ON user_chats(channel, sender_id);
+
+CREATE TABLE IF NOT EXISTS pending_resumes (
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (channel, chat_id)
+);
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)

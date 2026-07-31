@@ -263,33 +263,16 @@ func detectProjectContextInSandbox(ctx *ToolContext, dir string) string {
 	return sb.String()
 }
 
-// buildDirectoryTree builds a compact directory tree (max 30 entries).
-func buildDirectoryTree(dir string) string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
+// dirEntryInfo represents a directory entry for formatting.
+type dirEntryInfo struct {
+	name  string
+	isDir bool
+	size  int64
+}
 
-	type dirEntry struct {
-		name  string
-		isDir bool
-		size  int64
-	}
-
-	var items []dirEntry
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, ".") && !isKnownDotFile(name) {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		items = append(items, dirEntry{name: name, isDir: e.IsDir(), size: info.Size()})
-	}
-
-	slices.SortFunc(items, func(a, b dirEntry) int {
+// formatDirectoryEntries sorts, truncates and formats directory entries for display.
+func formatDirectoryEntries(name string, entries []dirEntryInfo, maxEntries int) string {
+	slices.SortFunc(entries, func(a, b dirEntryInfo) int {
 		if a.isDir != b.isDir {
 			if a.isDir {
 				return -1
@@ -299,15 +282,18 @@ func buildDirectoryTree(dir string) string {
 		return cmp.Compare(a.name, b.name)
 	})
 
-	maxEntries := 30
-	if len(items) > maxEntries {
-		items = items[:maxEntries]
+	if len(entries) > maxEntries {
+		entries = entries[:maxEntries]
 	}
 
 	var sb strings.Builder
-	sb.WriteString("📂 Directory structure:\n")
+	if name != "" {
+		fmt.Fprintf(&sb, "📂 Directory structure of %s:\n", name)
+	} else {
+		sb.WriteString("📂 Directory structure:\n")
+	}
 
-	for _, item := range items {
+	for _, item := range entries {
 		var prefix, suffix string
 		if item.isDir {
 			prefix = "   📁 "
@@ -324,62 +310,46 @@ func buildDirectoryTree(dir string) string {
 	return sb.String()
 }
 
+// buildDirectoryTree builds a compact directory tree (max 30 entries).
+func buildDirectoryTree(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	var items []dirEntryInfo
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") && !isKnownDotFile(name) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		items = append(items, dirEntryInfo{name: name, isDir: e.IsDir(), size: info.Size()})
+	}
+
+	return formatDirectoryEntries(filepath.Base(dir), items, 30)
+}
+
 // buildDirectoryTreeSandboxAPI builds a directory tree using Sandbox.ReadDir API.
 func buildDirectoryTreeSandboxAPI(ctx *ToolContext, dir string) string {
-
 	entries, err := ctx.Sandbox.ReadDir(ctx.Ctx, dir, ctx.OriginUserID)
 	if err != nil {
 		return ""
 	}
 
-	type dirEntry struct {
-		name  string
-		isDir bool
-		size  int64
-	}
-
-	var items []dirEntry
+	var items []dirEntryInfo
 	for _, e := range entries {
 		name := e.Name
 		if strings.HasPrefix(name, ".") && !isKnownDotFile(name) {
 			continue
 		}
-		items = append(items, dirEntry{name: name, isDir: e.IsDir, size: e.Size})
+		items = append(items, dirEntryInfo{name: name, isDir: e.IsDir, size: e.Size})
 	}
 
-	slices.SortFunc(items, func(a, b dirEntry) int {
-		if a.isDir != b.isDir {
-			if a.isDir {
-				return -1
-			}
-			return 1
-		}
-		return cmp.Compare(a.name, b.name)
-	})
-
-	maxEntries := 30
-	if len(items) > maxEntries {
-		items = items[:maxEntries]
-	}
-
-	var sb strings.Builder
-	sb.WriteString("📂 Directory structure:\n")
-
-	for _, item := range items {
-		var prefix, suffix string
-		if item.isDir {
-			prefix = "   📁 "
-			suffix = "/"
-		} else {
-			prefix = "   📄 "
-			if item.size > 0 {
-				suffix = fmt.Sprintf(" (%s)", formatSize(item.size))
-			}
-		}
-		fmt.Fprintf(&sb, "%s%s%s\n", prefix, item.name, suffix)
-	}
-
-	return sb.String()
+	return formatDirectoryEntries(path.Base(dir), items, 30)
 }
 
 func isKnownDotFile(name string) bool {

@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"xbot/channel"
+	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/tools"
 
 	log "xbot/logger"
 )
@@ -48,6 +50,21 @@ type ChannelPluginTransport struct {
 	pending   map[string]chan *rpcResponse
 	pendingMu sync.Mutex
 	rpcID     atomic.Int64
+
+	// Registry for channel-scoped tool registration.
+	// When the channel process declares tools via "channel_tools" message,
+	// they are registered here with RegisterForChannel(name, bridge).
+	registry *tools.Registry
+
+	// Channel-specific system prompt provider.
+	// When the channel process sends a "channel_prompt" message,
+	// the system parts are stored here and injected into agent sessions
+	// for this channel via ChannelPromptMiddleware.
+	channelPromptProvider *channelPluginPromptProvider
+
+	// Callback invoked when the channel process sends a "channel_prompt" message.
+	// Allows the caller (server/main) to register the prompt provider with the Agent.
+	onChannelPrompt func(provider ChannelPromptProvider)
 
 	// Lifecycle
 	writeMu   sync.Mutex // serializes writes to stdin (Call + PushEvent)
@@ -120,30 +137,47 @@ type ChannelPluginTransportConfig struct {
 	// EventCh receives WSMessage events that should be pushed to the plugin.
 	// The transport reads from this channel and writes to the plugin's stdin.
 	EventCh chan protocol.WSMessage
+
+	// Registry is used to register channel-scoped tools when the channel
+	// process declares them via "channel_tools" message. May be nil if
+	// channel tool registration is not needed.
+	Registry *tools.Registry
+
+	// OnChannelPrompt is called when the channel process sends a "channel_prompt"
+	// declaration. The caller should register the provider with the Agent via
+	// AddChannelPromptProvider. Optional: may be nil.
+	OnChannelPrompt func(provider ChannelPromptProvider)
 }
 
 // NewChannelPluginTransport creates a new ChannelPluginTransport from config.
 func NewChannelPluginTransport(cfg ChannelPluginTransportConfig) *ChannelPluginTransport {
-	return &ChannelPluginTransport{
+	t := &ChannelPluginTransport{
 		name:     cfg.Name,
 		process:  newStdioPipes(cfg.Stdin, cfg.Stdout),
 		dispatch: cfg.Dispatch,
 		eventCh:  cfg.EventCh,
+		registry: cfg.Registry,
 		pending:  make(map[string]chan *rpcResponse),
 		closeCh:  make(chan struct{}),
+
+		// Initialize the prompt provider; plugin can update it via channel_prompt message later.
+		channelPromptProvider: newChannelPluginPromptProvider(cfg.Name),
+		onChannelPrompt:       cfg.OnChannelPrompt,
 	}
+	return t
 }
 
 // NewChannelPluginTransportWithIO creates a ChannelPluginTransport with a custom processIO
 // (for testing).
 func NewChannelPluginTransportWithIO(name string, pio processIO, dispatch func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error), eventCh chan protocol.WSMessage) *ChannelPluginTransport {
 	return &ChannelPluginTransport{
-		name:     name,
-		process:  pio,
-		dispatch: dispatch,
-		eventCh:  eventCh,
-		pending:  make(map[string]chan *rpcResponse),
-		closeCh:  make(chan struct{}),
+		name:                  name,
+		process:               pio,
+		dispatch:              dispatch,
+		eventCh:               eventCh,
+		pending:               make(map[string]chan *rpcResponse),
+		closeCh:               make(chan struct{}),
+		channelPromptProvider: newChannelPluginPromptProvider(name),
 	}
 }
 
@@ -224,6 +258,7 @@ var (
 	_ channel.ProgressSender      = (*ChannelPluginTransport)(nil)
 	_ channel.SessionStateSender  = (*ChannelPluginTransport)(nil)
 	_ channel.UserMessageInjector = (*ChannelPluginTransport)(nil)
+	_ plugin.ChannelToolExecutor  = (*ChannelPluginTransport)(nil) // has Call() method
 )
 
 func (t *ChannelPluginTransport) Name() string                                    { return t.name }
@@ -248,6 +283,11 @@ func (t *ChannelPluginTransport) Stop() {
 			delete(t.pending, id)
 		}
 		t.pendingMu.Unlock()
+
+		// Clean up channel-scoped tools registered by this transport.
+		if t.registry != nil {
+			t.registry.UnregisterChannelTools(t.name)
+		}
 	})
 }
 
@@ -396,11 +436,24 @@ func (t *ChannelPluginTransport) handleIncoming(raw json.RawMessage) {
 	var peek struct {
 		ID     string          `json:"id"`
 		Method string          `json:"method"`
+		Type   string          `json:"type"`
 		Result json.RawMessage `json:"result"`
 		Error  string          `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &peek); err != nil {
 		log.WithField("channel", t.name).WithError(err).Warn("Failed to parse plugin message")
+		return
+	}
+
+	// Channel tool declaration (type-based, no id/method)
+	if peek.Type == protocol.MsgTypeChannelTools {
+		t.handleChannelTools(raw)
+		return
+	}
+
+	// Channel prompt declaration (type-based, no id/method)
+	if peek.Type == protocol.MsgTypeChannelPrompt {
+		t.handleChannelPrompt(raw)
 		return
 	}
 
@@ -412,6 +465,65 @@ func (t *ChannelPluginTransport) handleIncoming(raw json.RawMessage) {
 		t.handlePluginResponse(peek.ID, peek.Result, peek.Error)
 	}
 	// else: unknown message type, ignore
+}
+
+// handleChannelTools processes a "channel_tools" declaration from the channel
+// process. It registers each declared tool into the Registry with
+// RegisterForChannel, allowing the agent to discover and call them.
+// Sending a new "channel_tools" message replaces the previous set (hot-update).
+func (t *ChannelPluginTransport) handleChannelTools(raw json.RawMessage) {
+	if t.registry == nil {
+		return
+	}
+
+	var msg struct {
+		Tools []plugin.ChannelToolDecl `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		log.WithField("channel", t.name).WithError(err).Warn("Failed to parse channel_tools message")
+		return
+	}
+
+	// Hot-update: clear old tools, register new ones
+	t.registry.UnregisterChannelTools(t.name)
+	for _, decl := range msg.Tools {
+		bridge := plugin.NewChannelToolBridge(decl, t) // t implements ChannelToolExecutor via Call()
+		t.registry.RegisterForChannel(t.name, bridge)
+	}
+
+	log.WithField("channel", t.name).WithField("count", len(msg.Tools)).Info("Channel tools registered")
+}
+
+// handleChannelPrompt processes a "channel_prompt" declaration from the channel
+// process. It stores the system prompt parts and triggers the OnChannelPrompt
+// callback to register with the Agent.
+// Sending a new "channel_prompt" message replaces the previous prompt (hot-update).
+func (t *ChannelPluginTransport) handleChannelPrompt(raw json.RawMessage) {
+	var msg struct {
+		SystemParts map[string]string `json:"system_parts"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		log.WithField("channel", t.name).WithError(err).Warn("Failed to parse channel_prompt message")
+		return
+	}
+
+	// Store the prompt parts in the thread-safe provider.
+	t.channelPromptProvider.setSystemParts(msg.SystemParts)
+
+	// Notify the caller to register with the Agent.
+	if t.onChannelPrompt != nil {
+		t.onChannelPrompt(t.channelPromptProvider)
+	}
+
+	log.WithField("channel", t.name).WithField("parts", len(msg.SystemParts)).Info("Channel prompt registered")
+}
+
+// ChannelPromptProvider returns the ChannelPromptProvider for this transport.
+// The returned provider initially returns nil prompt (until the plugin sends
+// a channel_prompt message). Callers can register it with the Agent via
+// AddChannelPromptProvider to have channel-specific prompts injected.
+func (t *ChannelPluginTransport) ChannelPromptProvider() ChannelPromptProvider {
+	return t.channelPromptProvider
 }
 
 // handlePluginRPC dispatches an RPC request from the plugin to xbot's RPCTable.

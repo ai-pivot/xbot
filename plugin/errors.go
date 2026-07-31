@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -16,10 +15,6 @@ var ErrPluginNotFound = errors.New("plugin: not found")
 
 // ErrPluginAlreadyRegistered indicates a plugin ID conflict.
 var ErrPluginAlreadyRegistered = errors.New("plugin: already registered")
-
-// ErrPluginNotActive indicates an operation on an inactive plugin.
-// Reserved for future use when per-state operation guards are added.
-var ErrPluginNotActive = errors.New("plugin: not active")
 
 // ---------------------------------------------------------------------------
 // Structured error types — use with errors.As()
@@ -37,17 +32,6 @@ func (e *ErrPluginActivationFailed) Error() string {
 }
 
 func (e *ErrPluginActivationFailed) Unwrap() error { return e.Err }
-
-// ErrRateLimitExceeded is returned when a plugin exceeds its rate limit.
-// Reserved for future use when Allow() is refactored to return error.
-type ErrRateLimitExceeded struct {
-	PluginID   string
-	RetryAfter time.Duration
-}
-
-func (e *ErrRateLimitExceeded) Error() string {
-	return fmt.Sprintf("plugin %s: rate limit exceeded, retry after %v", e.PluginID, e.RetryAfter)
-}
 
 // ---------------------------------------------------------------------------
 // PermissionError — migrated from context.go for centralized error definitions

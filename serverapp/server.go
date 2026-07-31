@@ -16,6 +16,10 @@ import (
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/feishu"
+	"xbot/channel/napcat"
+	"xbot/channel/qq"
+	"xbot/channel/web"
 	"xbot/config"
 	"xbot/event"
 	llm_pkg "xbot/llm"
@@ -23,6 +27,8 @@ import (
 	"xbot/oauth"
 	"xbot/oauth/providers"
 	"xbot/plugin"
+
+	lark "github.com/larksuite/oapi-sdk-go/v3"
 	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -197,7 +203,7 @@ func resolveStaticDir(cfg *config.Config) string {
 func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageBus) channel.Channel {
 	switch name {
 	case "feishu":
-		return channel.NewFeishuChannel(channel.FeishuConfig{
+		return feishu.NewFeishuChannel(feishu.FeishuConfig{
 			AppID:             cfg.Feishu.AppID,
 			AppSecret:         cfg.Feishu.AppSecret,
 			EncryptKey:        cfg.Feishu.EncryptKey,
@@ -205,13 +211,13 @@ func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageB
 			AllowFrom:         cfg.Feishu.AllowFrom,
 		}, msgBus)
 	case "qq":
-		return channel.NewQQChannel(channel.QQConfig{
+		return qq.NewQQChannel(qq.QQConfig{
 			AppID:        cfg.QQ.AppID,
 			ClientSecret: cfg.QQ.ClientSecret,
 			AllowFrom:    cfg.QQ.AllowFrom,
 		}, msgBus)
 	case "napcat":
-		return channel.NewNapCatChannel(channel.NapCatConfig{
+		return napcat.NewNapCatChannel(napcat.NapCatConfig{
 			WSUrl:     cfg.NapCat.WSUrl,
 			Token:     cfg.NapCat.Token,
 			AllowFrom: cfg.NapCat.AllowFrom,
@@ -271,11 +277,11 @@ func GetPluginChannelConfig(cfg *config.Config, name string) map[string]string {
 }
 
 // registerChannels creates and registers all channels.
-func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, webDB *sql.DB, workDir string) (*channel.FeishuChannel, *channel.WebChannel, error) {
-	var feishuCh *channel.FeishuChannel
-	var webCh *channel.WebChannel
+func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, webDB *sqlite.DB, workDir string) (*feishu.FeishuChannel, *web.WebChannel, error) {
+	var feishuCh *feishu.FeishuChannel
+	var webCh *web.WebChannel
 	if cfg.Feishu.Enabled {
-		feishuCh = channel.NewFeishuChannel(channel.FeishuConfig{
+		feishuCh = feishu.NewFeishuChannel(feishu.FeishuConfig{
 			AppID:             cfg.Feishu.AppID,
 			AppSecret:         cfg.Feishu.AppSecret,
 			EncryptKey:        cfg.Feishu.EncryptKey,
@@ -288,7 +294,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 
 	// 注册 QQ 渠道
 	if cfg.QQ.Enabled {
-		qqCh := channel.NewQQChannel(channel.QQConfig{
+		qqCh := qq.NewQQChannel(qq.QQConfig{
 			AppID:        cfg.QQ.AppID,
 			ClientSecret: cfg.QQ.ClientSecret,
 			AllowFrom:    cfg.QQ.AllowFrom,
@@ -298,7 +304,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 
 	// 注册 NapCat (OneBot 11) 渠道
 	if cfg.NapCat.Enabled {
-		napcatCh := channel.NewNapCatChannel(channel.NapCatConfig{
+		napcatCh := napcat.NewNapCatChannel(napcat.NapCatConfig{
 			WSUrl:     cfg.NapCat.WSUrl,
 			Token:     cfg.NapCat.Token,
 			AllowFrom: cfg.NapCat.AllowFrom,
@@ -308,13 +314,14 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 
 	if cfg.Web.Enable {
 		if webDB != nil {
-			webCh = channel.NewWebChannel(channel.WebChannelConfig{
+			webCh = web.NewWebChannel(web.WebChannelConfig{
 				Host:       cfg.Web.Host,
 				Port:       cfg.Web.Port,
-				DB:         webDB,
+				DB:         webDB.Conn(),
 				AdminToken: cfg.Admin.Token,
 				InviteOnly: cfg.Web.InviteOnly,
 				PublicURL:  cfg.Sandbox.PublicURL,
+				SingleUser: cfg.Agent.Experimental.SingleUser,
 			}, msgBus)
 			// Auto-detect frontend static files if not explicitly configured.
 			staticDir := resolveStaticDir(cfg)
@@ -326,10 +333,10 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			webCh.SetWorkDir(workDir)
 			// Set OSS provider for file storage
 			if cfg.OSS.Provider == "qiniu" {
-				ossProvider, err := channel.NewOSSProvider(
+				ossProvider, err := web.NewOSSProvider(
 					cfg.OSS.Provider,
 					"",
-					channel.QiniuConfig{
+					web.QiniuConfig{
 						AccessKey: cfg.OSS.QiniuAccessKey,
 						SecretKey: cfg.OSS.QiniuSecretKey,
 						Bucket:    cfg.OSS.QiniuBucket,
@@ -346,11 +353,13 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			}
 
 			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
-			// Wire up RemoteSandbox callbacks to push real-time status to WebChannel.
-			// In WebChannel, senderID == chatID (see handleWS: client.userID = senderID, chatID := c.userID).
+			// Wire admin role check into SandboxRouter — admin web users bypass
+			// the DeniedSandbox restriction. Uses WebChannel's IsAdminIdentity
+			// (role-based, checks DB for web-1 or "admin" auth identity).
 			sb := tools.GetSandbox()
 			if sb != nil {
 				if router, ok := sb.(*tools.SandboxRouter); ok {
+					router.SetIsAdminFn(webCh.IsAdminIdentity)
 					if remote := router.Remote(); remote != nil {
 						remote.OnRunnerStatusChange = func(userID, runnerName string, online bool) {
 							webCh.PushRunnerStatus(userID, runnerName, online)
@@ -446,7 +455,7 @@ func Run(args []string) error {
 		log.WithError(err).Fatal("Failed to migrate data to SQLite")
 	}
 
-	oauthServer, oauthManager, feishuProvider, sharedDB, err := setupOAuth(cfg, dbPath)
+	oauthServer, oauthManager, _, sharedDB, err := setupOAuth(cfg, dbPath)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to setup OAuth")
 	}
@@ -472,15 +481,20 @@ func Run(args []string) error {
 	// rpcTablePtr is set later after InitServer, but the factory is called during
 	// InitServer (plugin activation). The dispatch function resolves lazily.
 	var rpcTablePtr *RPCTable
+	var registryPtr *tools.Registry // resolved after InitServer (same pattern as rpcTablePtr)
+	var ag *agent.Agent             // resolved after InitServer; used by channel plugin prompt registration
 	plugin.SetChannelProviderFactory(func(decl *plugin.ChannelProviderDecl, _ *plugin.StdioPluginProcess) (any, error) {
 		return &stdioChannelPluginProvider{
-			decl: decl,
+			decl:     decl,
+			xbotHome: xbotDir,
 			rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 				if rpcTablePtr == nil {
 					return nil, fmt.Errorf("rpc table not available")
 				}
 				return rpcTablePtr.Dispatch(ctx, method, payload)
 			},
+			getRegistry: func() *tools.Registry { return registryPtr },
+			agentGetter: func() *agent.Agent { return ag },
 		}, nil
 	})
 
@@ -488,7 +502,6 @@ func Run(args []string) error {
 	// The closure is only invoked at runtime (never during InitServer), so the
 	// nil→non-nil transition after InitServer returns is safe.
 	var (
-		ag       *agent.Agent
 		rpcTable RPCTable
 		disp     *channel.Dispatcher
 		msgBus   *bus.MessageBus
@@ -531,44 +544,97 @@ func Run(args []string) error {
 		log.WithError(err).Fatal("Failed to init server")
 	}
 
+	// Initialize canonical user identity resolver.
+	// Uses the shared DB if available (OAuth enabled), otherwise opens a direct
+	// connection to the DB path — IdentityResolver should always be available
+	// in server mode regardless of OAuth config.
+	var identityDB *sql.DB
+	if sharedDB != nil {
+		identityDB = sharedDB.Conn()
+	} else {
+		var err error
+		identityDB, err = sql.Open("sqlite", dbPath)
+		if err != nil {
+			log.WithError(err).Warn("Failed to open identity DB, identity resolver disabled")
+		}
+	}
+	if identityDB != nil {
+		resolver := agent.NewIdentityResolver(identityDB)
+		ag.SetIdentityResolver(resolver)
+	}
+
 	// Set the rpcTablePtr for the channel provider factory.
 	// Plugin activation happens during InitServer, so the factory was already called
 	// with the lazy dispatch function. Now the RPCTable is available.
 	rpcTablePtr = &rpcTable
+	registryPtr = ag.Tools() // resolve lazy registry getter for channel providers
 
-	// Migrate config.json subscriptions into DB for the admin user.
-	// This ensures admin is a normal DB user with real subscriptions,
-	// so model switches persist across restarts.
+	// Reconcile subscriptions into DB (single source of truth).
+	// 1. migrate config.json subscriptions[] into DB user subscriptions (one-time).
+	// 2. reconcile the shared system subscription from cfg.LLM/env every boot.
+	// 3. set cli_user's default to the system subscription if it has none (first run).
+	// 4. build the factory's fallback LLM from the system subscription.
 	if subSvc := ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
 		if err := migrateConfigSubscriptions(cfg, subSvc, cliSenderID); err != nil {
 			log.WithError(err).Warn("Failed to migrate config subscriptions to DB")
 		}
-		// Sync LLM client from DB's active subscription (not config.json).
-		// After migration, DB is the source of truth.
-		defSub, errDef := subSvc.GetDefault(cliSenderID)
-		if errDef != nil {
+		if err := reconcileSystemSubscription(cfg, subSvc); err != nil {
+			log.WithError(err).Warn("Failed to reconcile system subscription")
+		}
+		// Seed cli_user's default to the system subscription only if it has no
+		// default yet (first run). Existing user defaults are preserved.
+		if udm, err := subSvc.GetUserDefaultModel(cliSenderID); err == nil && udm == nil {
+			if sys, err := subSvc.GetSystemSubscription(); err == nil && sys != nil {
+				_ = subSvc.SetUserDefaultModel(cliSenderID, sys.ID, sys.Model)
+			}
+		}
+		// Build the factory fallback LLM from the resolved default subscription
+		// (user default, or system subscription as fallback). This replaces the
+		// old "override cfg.LLM → createAdminLLM → SetDefaults" dance: DB is the
+		// single source, and the system subscription carries the config/env values.
+		if defSub, errDef := subSvc.GetDefault(cliSenderID); errDef != nil {
 			log.WithError(errDef).Error("GetDefault failed")
 		} else if defSub == nil {
-			log.Warn("GetDefault returned nil — no default subscription in DB")
+			log.Warn("GetDefault returned nil — no default or system subscription in DB")
 		} else {
 			log.WithFields(log.Fields{
 				"id": defSub.ID, "name": defSub.Name, "model": defSub.Model,
-				"provider": defSub.Provider, "max_output_tokens": defSub.MaxOutputTokens,
+				"provider": defSub.Provider, "is_system": defSub.IsSystem,
 			}).Info("Default subscription from DB")
+			// Refresh cfg.LLM from the authoritative DB row so tier-model mappings
+			// and any cfg.LLM consumers see the resolved values.
 			cfg.LLM.Provider = defSub.Provider
 			cfg.LLM.BaseURL = defSub.BaseURL
 			cfg.LLM.APIKey = defSub.APIKey
-			cfg.LLM.Model = defSub.Model
+			cfg.LLM.Model = ""
 			cfg.LLM.MaxOutputTokens = defSub.MaxOutputTokens
 			if newClient, err := createAdminLLM(cfg); err == nil {
-				ag.LLMFactory().SetDefaults(newClient, defSub.Model)
-				// SetDefaults clears all per-user caches. Re-populate them from
-				// the default subscription so that GetMaxOutputTokens/GetLLM
-				// return correct values for cli_user without waiting for a
-				// SwitchSubscription call.
-				ag.LLMFactory().SetUserMaxOutputTokens(cliSenderID, defSub.MaxOutputTokens)
-				ag.LLMFactory().SetUserThinkingMode(cliSenderID, defSub.ThinkingMode)
+				ag.LLMFactory().SetSystemLLM(newClient, "")
+				// max_output_tokens is per-model in DB now — no cache to seed.
+				// thinking_mode is no longer carried on the factory user cache
+				// from the subscription; it is a global user setting seeded below.
 				log.WithFields(log.Fields{"provider": defSub.Provider, "model": defSub.Model, "max_output_tokens": defSub.MaxOutputTokens}).Info("LLM client synced from DB default subscription")
+			}
+			// Seed the global thinking_mode user setting once, if unset. Source
+			// priority: existing user_settings row → cfg.LLM.ThinkingMode →
+			// default-sub ThinkingMode → "" (auto). After seeding, ResolveLLM
+			// reads it from the user_settings DB (canonical channel); changing it
+			// via Ctrl+M or /settings only needs InvalidateSender. This replaces
+			// the old per-subscription thinking.
+			if ss := ag.SettingsService(); ss != nil {
+				if vals, err := ss.GetSettings(channel.ThinkingModeChannel, cliSenderID); err == nil {
+					if _, set := vals["thinking_mode"]; !set {
+						seed := strings.TrimSpace(cfg.LLM.ThinkingMode)
+						if seed == "" {
+							seed = defSub.ThinkingMode
+						}
+						if err := ss.SetSetting(channel.ThinkingModeChannel, cliSenderID, "thinking_mode", seed); err != nil {
+							log.WithError(err).Warn("Failed to seed global thinking_mode")
+						} else {
+							log.WithField("thinking_mode", seed).Info("Seeded global thinking_mode user setting")
+						}
+					}
+				}
 			}
 		}
 	}
@@ -576,11 +642,13 @@ func Run(args []string) error {
 	// Clean up subscription-scoped keys that were migrated from user_settings
 	// to user_llm_subscriptions. Stale rows in user_settings can overwrite
 	// correct subscription values on startup (e.g. name→provider, max_output_tokens→8192).
+	// NOTE: thinking_mode is intentionally NOT in this list — it is now a global
+	// user_setting (ScopeUser), so a user_settings row for it is legitimate.
 	if ss := ag.SettingsService(); ss != nil {
 		cleaned := 0
 		for _, key := range []string{
 			"llm_provider", "llm_api_key", "llm_model", "llm_base_url",
-			"max_output_tokens", "thinking_mode",
+			"max_output_tokens",
 		} {
 			if err := ss.DeleteSetting("cli", cliSenderID, key); err == nil {
 				cleaned++
@@ -610,7 +678,15 @@ func Run(args []string) error {
 		}
 	}
 
-	// 注册 OAuth 和 Feishu MCP 工具（如果启用）
+	// 初始化 Feishu MCP（无论 OAuth 是否启用，飞书消息相关工具需要它）
+	feishuMCP := feishu_mcp.NewFeishuMCP(oauthManager, cfg.Feishu.AppID, cfg.Feishu.AppSecret)
+	feishuMCP.SetLarkClient(lark.NewClient(cfg.Feishu.AppID, cfg.Feishu.AppSecret,
+		lark.WithOpenBaseUrl("https://open.feishu.cn")))
+
+	// 消息工具（不需要 OAuth，直接用 Lark client 发消息/文件）
+	ag.RegisterToolForChannel("feishu", &feishu_mcp.SendFileTool{MCP: feishuMCP})
+
+	// 注册 OAuth 和 Feishu MCP 文档工具（如果 OAuth 启用）
 	if cfg.OAuth.Enable && oauthManager != nil {
 		// 注册 OAuth 工具
 		oauthTool := &tools.OAuthTool{
@@ -618,58 +694,48 @@ func Run(args []string) error {
 			BaseURL: cfg.OAuth.BaseURL,
 		}
 		ag.RegisterCoreTool(oauthTool)
-		feishuMCP := feishu_mcp.NewFeishuMCP(oauthManager, cfg.Feishu.AppID, cfg.Feishu.AppSecret)
-		if feishuProvider != nil {
-			feishuMCP.SetLarkClient(feishuProvider.GetLarkClient())
-		}
-		ag.RegisterTool(&feishu_mcp.ListAllBitablesTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.BitableFieldsTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.BitableRecordTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.BitableListTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.BatchCreateAppTableRecordTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.ListAllBitablesTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.BitableFieldsTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.BitableRecordTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.BitableListTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.BatchCreateAppTableRecordTool{MCP: feishuMCP})
 
 		// Wiki tools
-		ag.RegisterTool(&feishu_mcp.WikiListSpacesTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.WikiListNodesTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.WikiGetNodeTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.WikiMoveNodeTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.WikiCreateNodeTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiListSpacesTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiListNodesTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiGetNodeTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiMoveNodeTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.WikiCreateNodeTool{MCP: feishuMCP})
 
 		// Document tools
-		ag.RegisterTool(&feishu_mcp.DocxGetContentTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxListBlocksTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxCreateTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxInsertBlockTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxGetBlockTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxDeleteBlocksTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.DocxFindBlockTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxGetContentTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxListBlocksTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxCreateTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxInsertBlockTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxGetBlockTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxDeleteBlocksTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DocxFindBlockTool{MCP: feishuMCP})
 
 		// Search tools
-		ag.RegisterTool(&feishu_mcp.SearchWikiTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.SearchWikiTool{MCP: feishuMCP})
 
 		// Drive tools
-		ag.RegisterTool(&feishu_mcp.UploadFileTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.ListFilesTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.AddPermissionTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.UploadFileTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.ListFilesTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.AddPermissionTool{MCP: feishuMCP})
 
 		// Message resource tools
-		ag.RegisterTool(&feishu_mcp.DownloadFileTool{MCP: feishuMCP})
-		ag.RegisterTool(&feishu_mcp.SendFileTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.DownloadFileTool{MCP: feishuMCP})
+		ag.RegisterToolForChannel("feishu", &feishu_mcp.SendFileTool{MCP: feishuMCP})
 
-		log.Info("OAuth and Feishu MCP tools registered")
+		log.Info("OAuth and Feishu MCP document tools registered")
 	}
 
 	// 注册 DownloadFile 工具（支持 Web/OSS 和飞书两种来源）
 	ag.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
 	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
-	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
-
-	// 注册 Logs 工具（仅管理员可用）
-	adminChatID := cfg.Admin.ChatID
-	if adminChatID != "" {
-		logsTool := tools.NewLogsTool(adminChatID)
-		ag.RegisterCoreTool(logsTool)
-		log.WithField("admin_chat_id", adminChatID).Info("Logs tool registered (admin only)")
+	if !cfg.DisableWebSearch {
+		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 	}
 
 	// 初始化事件触发系统（Event Trigger System）
@@ -696,7 +762,6 @@ func Run(args []string) error {
 
 	// 所有工具注册完成，索引全局工具（用于 search_tools 语义搜索）
 	ag.IndexGlobalTools()
-	ag.LLMFactory().SetModelTiers(cfg.LLM)
 	ag.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
 	ag.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
 		Attempts: uint(cfg.Agent.LLMRetryAttempts),
@@ -712,9 +777,9 @@ func Run(args []string) error {
 		tools.SetRunnerTokenDB(tokenDB.Conn())
 	}
 
-	var webDB *sql.DB
+	var webDB *sqlite.DB
 	if tokenDB != nil {
-		webDB = tokenDB.Conn()
+		webDB = tokenDB
 	}
 	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, ag, webDB, workDir)
 	if err != nil {
@@ -725,8 +790,33 @@ func Run(args []string) error {
 
 	// Wire RPC handler for CLI RemoteBackend clients (after disp/msgBus are available).
 	if webCh != nil {
-		webCh.SetRPCHandler(func(method string, params json.RawMessage, senderID string) (json.RawMessage, error) {
-			return HandleCLIRPC(rpcTable, method, params, senderID)
+		webCh.SetRPCHandler(func(method string, params json.RawMessage, identity web.RPCIdentity) (json.RawMessage, error) {
+			senderID := identity.SenderID
+			userID := identity.CanonicalUserID
+			role := identity.CanonicalRole
+			if senderID == "admin" || senderID == "cli_user" {
+				// CLI users are always admin. Resolve the real user_id via
+				// IdentityResolver so subscription/settings queries (which use
+				// rpcUserID) hit the correct DB rows.
+				if ag.IdentityResolver() != nil {
+					if uid, _, err := ag.IdentityResolver().Resolve("cli", senderID); err == nil && uid > 0 {
+						userID = uid
+					}
+				}
+				role = "admin"
+			} else if role == "" {
+				role = "user"
+			}
+			// bizID is the sender-level identity (for per-session operations).
+			// userID is the canonical user identity (for subscription/settings queries).
+			// RPC handlers choose which to use: subscription/settings use rpcUserID(ctx),
+			// per-session operations use rpcBizID(ctx).
+			bizID := senderID
+			if senderID == "admin" {
+				bizID = cliSenderID
+			}
+			ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, userID, role)
+			return rpcTable.Dispatch(ctx, method, params)
 		})
 	}
 
@@ -734,7 +824,7 @@ func Run(args []string) error {
 	// This makes the dispatcher aware of channel=cli so all outbound messages
 	// (including raw bus.Outbound calls) route correctly to WS clients.
 	if webCh != nil {
-		disp.Register(channel.NewRemoteCLIChannel(webCh.Hub()))
+		disp.Register(web.NewRemoteCLIChannel(webCh.Hub()))
 	}
 
 	// sessionStateHandler and ChatRenameFn are now handled internally by Agent.
@@ -748,15 +838,56 @@ func Run(args []string) error {
 		}
 
 		// 传递 admin chatID 和 web DB（用于 admin 命令如 !webadd）
+		adminChatID := cfg.Admin.ChatID
 		if adminChatID != "" {
 			feishuCh.SetAdminChatID(adminChatID)
 		}
 		if webDB != nil {
-			feishuCh.SetWebDB(webDB)
+			feishuCh.SetWebDB(webDB.Conn())
 		}
 
 		// 注入设置卡片回调（让飞书渠道能访问 Agent 的 LLM/Registry/Settings 功能）
 		feishuCh.SetSettingsCallbacks(buildFeishuSettingsCallbacks(cfg, ag))
+
+		// Wire cross-channel account linking for Feishu.
+		// When a Feishu user sends "/link <code>", the Feishu channel calls this
+		// function to consume the code and link their Feishu identity.
+		feishuCh.SetLinkAccountFn(func(code, channel, channelUserID string) (string, error) {
+			if ag.IdentityResolver() == nil {
+				return "", fmt.Errorf("identity resolver not available")
+			}
+			// Validate code without consuming (preview-safe)
+			targetUserID, err := ag.IdentityResolver().ValidateLinkCode(code)
+			if err != nil {
+				return "", err
+			}
+			// Resolve current Feishu user
+			currentUserID, _, _ := ag.IdentityResolver().Resolve(channel, channelUserID)
+			if currentUserID == targetUserID {
+				ag.IdentityResolver().ConsumeLinkCode(code)
+				return "已关联，无需重复操作", nil
+			}
+			// Try simple link
+			_, err = ag.IdentityResolver().LinkIdentity(targetUserID, channel, channelUserID)
+			if err == nil {
+				ag.IdentityResolver().ConsumeLinkCode(code)
+				return fmt.Sprintf("关联成功 (user_id=%d)", targetUserID), nil
+			}
+			// Merge required — log warning for audit trail, then auto-execute.
+			// Feishu has no practical two-step confirm mechanism; link code (8-char
+			// base32, 5min TTL, single-use) serves as bearer authorization.
+			log.WithFields(log.Fields{
+				"source_user_id": currentUserID,
+				"target_user_id": targetUserID,
+				"channel":        channel,
+				"channel_user":   channelUserID,
+			}).Warn("IdentityResolver: auto-merging users via Feishu /link (irreversible)")
+			ag.IdentityResolver().ConsumeLinkCode(code)
+			if mergeErr := ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
+				return "", fmt.Errorf("合并失败: %w", mergeErr)
+			}
+			return fmt.Sprintf("账号合并成功 (user_id=%d)。此操作不可撤销，旧账号的所有资产已迁移到目标账号。", targetUserID), nil
+		})
 
 		// 注入飞书渠道特化 prompt 提供者
 		ag.SetChannelPromptProviders(&feishuPromptAdapter{ch: feishuCh})
@@ -846,10 +977,18 @@ func Run(args []string) error {
 		go sendStartupNotify(disp, cfg)
 	}
 
+	// 恢复被 graceful shutdown 中断的 agent loop
+	resumePendingTurns(ag, webDB, sigCh)
+
 	// 等待退出信号
 	sig := <-sigCh
 	log.WithField("signal", sig.String()).Warn("Received shutdown signal")
 	fmt.Println("\nShutting down...")
+
+	// 收集正在运行的 agent loop，记录到 pending_resumes 以便重启后恢复。
+	// 必须在 cancel() 之前执行：cancel() 会终止所有 agent loop，
+	// cancel 之后再遍历 chatCancelCh 就取不到任何 key 了。
+	collectPendingResumes(ag, webDB)
 
 	// 先取消 context，让 agent.Run() 退出（其 defer 会清理 cron 和 cleanup routine）
 	cancel()
@@ -900,6 +1039,93 @@ func Run(args []string) error {
 	disp.Stop()
 	log.Info("xbot stopped")
 	return nil
+}
+
+// collectPendingResumes records all active agent loops to pending_resumes table
+// before shutdown. Called BEFORE cancel() — after cancel, chatCancelCh is empty.
+func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
+	if ag == nil || webDB == nil {
+		return
+	}
+	keys := ag.ActiveSessionKeys()
+	if len(keys) == 0 {
+		return
+	}
+	for _, key := range keys {
+		// key format: "channel:chatID"
+		idx := strings.Index(key, ":")
+		if idx < 0 {
+			continue
+		}
+		channel := key[:idx]
+		chatID := key[idx+1:]
+		content, senderID, err := webDB.GetLastUserMessage(channel, chatID)
+		if err != nil {
+			log.WithError(err).WithField("session", key).Warn("Failed to get last user message for pending resume")
+			continue
+		}
+		if content == "" {
+			log.WithField("session", key).Warn("No user message found for pending resume, skipping")
+			continue
+		}
+		if err := webDB.AddPendingResume(channel, chatID, senderID); err != nil {
+			log.WithError(err).WithField("session", key).Warn("Failed to record pending resume")
+		} else {
+			log.WithField("session", key).Info("Recorded pending resume for graceful shutdown recovery")
+		}
+	}
+}
+
+// resumePendingTurns re-triggers agent turns for sessions that were
+// interrupted by graceful shutdown. Called after all channels start.
+// A short delay lets web clients reconnect before the turn fires.
+func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh chan os.Signal) {
+	if ag == nil || webDB == nil {
+		return
+	}
+	pending, err := webDB.ListPendingResumes()
+	if err != nil {
+		log.WithError(err).Warn("Failed to list pending resumes")
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+	// Delay to let web/feishu clients reconnect so resumed replies reach them.
+	// Use select instead of time.Sleep so a SIGTERM during the wait still
+	// triggers graceful shutdown instead of Go's default (immediate exit).
+	// If we consume the signal here, re-inject it so the outer handler
+	// (sig := <-sigCh) still receives it — otherwise the process hangs.
+	log.Info("Pending resumes found, waiting 3s for clients to reconnect...")
+	select {
+	case <-time.After(3 * time.Second):
+	case sig := <-sigCh:
+		log.WithField("signal", sig.String()).Info("Shutdown signal received during resume wait, skipping resume")
+		go func() { sigCh <- sig }()
+		return
+	}
+	for _, pr := range pending {
+		// Skip turns that already completed naturally between shutdown
+		// collection and cancel() — the turn finished and reply was persisted.
+		hasReply, err := webDB.HasAssistantReplyAfterLastUser(pr.Channel, pr.ChatID)
+		if err != nil {
+			log.WithError(err).WithField("session", pr.Channel+":"+pr.ChatID).Error("Failed to check assistant reply, keeping record for next restart")
+			continue
+		}
+		if hasReply {
+			log.WithField("session", pr.Channel+":"+pr.ChatID).Info("Turn already completed, skipping resume")
+			webDB.ClearPendingResume(pr.Channel, pr.ChatID)
+			continue
+		}
+		log.WithFields(log.Fields{
+			"channel": pr.Channel,
+			"chat_id": pr.ChatID,
+		}).Info("Resuming interrupted agent turn")
+		ag.InjectInboundResume(pr.Channel, pr.ChatID, pr.SenderID)
+		if err := webDB.ClearPendingResume(pr.Channel, pr.ChatID); err != nil {
+			log.WithError(err).Error("Failed to clear pending resume record after injection — residual record will self-heal on next restart if the turn completes")
+		}
+	}
 }
 
 // createLLM 根据配置创建 LLM 客户端（带重试、指数退避和随机抖动）
@@ -1001,7 +1227,7 @@ func sendStartupNotify(disp *channel.Dispatcher, cfg *config.Config) {
 // feishuPromptAdapter 将 FeishuChannel 桥接为 agent.ChannelPromptProvider 接口。
 // 避免在 agent 包中直接依赖 channel 包。
 type feishuPromptAdapter struct {
-	ch *channel.FeishuChannel
+	ch *feishu.FeishuChannel
 }
 
 func (a *feishuPromptAdapter) ChannelPromptName() string {
@@ -1026,44 +1252,6 @@ func buildRunnerConnectCmd(cfg *config.Config, entry *tools.RunnerTokenEntry) st
 		cmd += fmt.Sprintf(" --workspace %s", entry.Settings.Workspace)
 	}
 	return cmd
-}
-
-func userScopedSettingsFromGlobalCLI(cfg *config.Config) map[string]string {
-	vals := map[string]string{
-		"context_mode":       cfg.Agent.ContextMode,
-		"max_iterations":     fmt.Sprintf("%d", cfg.Agent.MaxIterations),
-		"max_concurrency":    fmt.Sprintf("%d", cfg.Agent.MaxConcurrency),
-		"max_context_tokens": fmt.Sprintf("%d", cfg.Agent.MaxContextTokens),
-		"theme":              "midnight",
-	}
-	if cfg.Agent.EnableAutoCompress != nil {
-		vals["enable_auto_compress"] = fmt.Sprintf("%t", *cfg.Agent.EnableAutoCompress)
-	} else {
-		vals["enable_auto_compress"] = "true"
-	}
-	return vals
-}
-
-func migrateCLIUserSettingsFromGlobalIfNeeded(cfg *config.Config, ag *agent.Agent, namespace, senderID string) error {
-	if senderID == "" || ag.SettingsService() == nil {
-		return nil
-	}
-	existing, err := ag.SettingsService().GetSettings(namespace, senderID)
-	if err != nil {
-		return err
-	}
-	if len(existing) > 0 {
-		return nil
-	}
-	for k, v := range userScopedSettingsFromGlobalCLI(cfg) {
-		if strings.TrimSpace(v) == "" {
-			continue
-		}
-		if err := ag.SettingsService().SetSetting(namespace, senderID, k, v); err != nil {
-			return fmt.Errorf("seed user setting %s: %w", k, err)
-		}
-	}
-	return nil
 }
 
 // saveServerConfig persists only the config sections the server actually modifies.
@@ -1103,25 +1291,13 @@ func saveServerConfig(cfg *config.Config) error {
 		merged.Agent.EnableAutoCompress = cfg.Agent.EnableAutoCompress
 	}
 
-	// LLM tier model mappings: always write back (vanguard/balance/swift models).
-	// These are global preferences, not subscription credentials.
-	merged.LLM.VanguardModel = cfg.LLM.VanguardModel
-	merged.LLM.BalanceModel = cfg.LLM.BalanceModel
-	merged.LLM.SwiftModel = cfg.LLM.SwiftModel
-
-	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode):
-	// Single source of truth is user_llm_subscriptions DB, NOT config.json.
-	// Only write credentials to config.json if there are no DB subscriptions
-	// (first-run / legacy mode where config.json is the only data source).
-	// Guard: only write if credentials are actually present (avoid zero-value overwrite).
-	if len(merged.Subscriptions) == 0 && cfg.LLM.Provider != "" {
-		merged.LLM.Provider = cfg.LLM.Provider
-		merged.LLM.BaseURL = cfg.LLM.BaseURL
-		merged.LLM.APIKey = cfg.LLM.APIKey
-		merged.LLM.Model = cfg.LLM.Model
-		merged.LLM.MaxOutputTokens = cfg.LLM.MaxOutputTokens
-		merged.LLM.ThinkingMode = cfg.LLM.ThinkingMode
-	}
+	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode)
+	// are NOT written back to config.json. The DB system subscription (reconciled
+	// from config/env at boot) is the single source of truth, and cfg.LLM.* may
+	// hold decrypted values refreshed from DB — writing them back would leak
+	// plaintext keys. config.json keeps whatever credentials it already had
+	// (preserved by SaveToFile's deep merge) solely as a boot seed for the system
+	// subscription.
 
 	return config.SaveToFile(path, merged)
 }
@@ -1137,38 +1313,30 @@ const adminSenderID = "admin"
 // Server-side startup code uses this constant when seeding DB data.
 const cliSenderID = "cli_user"
 
-// isAdmin checks if the given WS auth senderID has admin privileges.
-// Admin is a ROLE (authorization), not a business identity.
-func isAdmin(authSenderID string) bool { return authSenderID == adminSenderID }
+// isAdmin checks if the given context has admin privileges.
+// Checks canonical user role first; falls back to authSenderID == "admin"
+// for backward compat (CLI local mode where IdentityResolver may not be wired).
+func isAdmin(ctx context.Context) bool {
+	if role := rpcRole(ctx); role != "" {
+		return role == "admin"
+	}
+	return rpcAuthID(ctx) == adminSenderID
+}
 
 // sessionKeyOwner extracts the chatID (owner) from a session/full key.
 // Key format: "channel:chatID/roleName[:instance]"
 // Returns empty string if the format is invalid.
 func sessionKeyOwner(key string) string {
-	parts := strings.SplitN(key, ":", 2)
+	slash := strings.LastIndex(key, "/")
+	if slash <= 0 {
+		return ""
+	}
+	parent := key[:slash]
+	parts := strings.SplitN(parent, ":", 2)
 	if len(parts) < 2 {
 		return ""
 	}
-	return strings.SplitN(parts[1], "/", 2)[0]
-}
-
-// senderIDFromParams extracts the business sender_id from RPC params.
-// For admin users (WS auth identity "admin"), if params don't specify a sender_id,
-// it defaults to cliSenderID — because admin is a ROLE, not a business identity.
-// All CLI subscriptions, settings, and per-user state live under cliSenderID.
-//
-// For non-admin web users, falls back to their WS auth identity directly.
-func senderIDFromParams(params json.RawMessage, authSenderID string) string {
-	var p struct {
-		SenderID string `json:"sender_id"`
-	}
-	if err := json.Unmarshal(params, &p); err == nil && p.SenderID != "" {
-		return p.SenderID
-	}
-	if isAdmin(authSenderID) {
-		return cliSenderID
-	}
-	return authSenderID
+	return parts[1]
 }
 
 // migrateConfigSubscriptions seeds config.json subscriptions into the DB for a given user.
@@ -1177,12 +1345,19 @@ func migrateConfigSubscriptions(cfg *config.Config, subSvc *sqlite.LLMSubscripti
 	if len(cfg.Subscriptions) == 0 {
 		return nil
 	}
-	// Skip if user already has DB subscriptions
+	// Skip if user already has non-system DB subscriptions. The system subscription
+	// (is_system=1) is injected by List and must not count as a user subscription.
 	existing, err := subSvc.List(senderID)
 	if err != nil {
 		return fmt.Errorf("list subscriptions: %w", err)
 	}
-	if len(existing) > 0 {
+	userOwned := 0
+	for _, e := range existing {
+		if !e.IsSystem {
+			userOwned++
+		}
+	}
+	if userOwned > 0 {
 		return nil
 	}
 	for i, s := range cfg.Subscriptions {
@@ -1215,4 +1390,32 @@ func hasActiveSub(cfg *config.Config) bool {
 		}
 	}
 	return false
+}
+
+// reconcileSystemSubscription upserts the shared system subscription into the DB
+// from cfg.LLM (+ env overrides) on every boot. The system subscription is the
+// single source for the global/default LLM: read-only, visible to all users, and
+// the lowest-priority fallback in ResolveLLM. Env vars take precedence over
+// config.json values, matching the original config loading semantics.
+func reconcileSystemSubscription(cfg *config.Config, subSvc *sqlite.LLMSubscriptionService) error {
+	llmCfg := cfg.LLM
+	if llmCfg.Provider == "" && llmCfg.BaseURL == "" && llmCfg.APIKey == "" && llmCfg.Model == "" {
+		// No global LLM configured — leave any existing system subscription untouched.
+		return nil
+	}
+	sysSub := &sqlite.LLMSubscription{
+		Provider:        llmCfg.Provider,
+		BaseURL:         llmCfg.BaseURL,
+		APIKey:          llmCfg.APIKey,
+		Model:           llmCfg.Model,
+		MaxOutputTokens: llmCfg.MaxOutputTokens,
+		ThinkingMode:    llmCfg.ThinkingMode,
+	}
+	if err := subSvc.UpsertSystemSubscription(sysSub); err != nil {
+		return fmt.Errorf("upsert system subscription: %w", err)
+	}
+	log.WithFields(log.Fields{
+		"provider": sysSub.Provider, "model": sysSub.Model,
+	}).Info("System subscription reconciled from config/env")
+	return nil
 }

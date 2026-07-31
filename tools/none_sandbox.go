@@ -98,10 +98,10 @@ func (s *NoneSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, err
 	// Wait for the direct child process to exit.
 	// Use cmd.Process.Wait() (not cmd.Wait()) to avoid blocking on IO completion.
 	state, waitErr := cmd.Process.Wait()
-	// Close pipes to unblock capture goroutines (even if grandchildren hold FDs).
-	stdoutPipe.Close()
-	stderrPipe.Close()
-	wg.Wait()
+	// Kill the process group first to release pipe FDs held by background
+	// children, then let capture goroutines drain already-written output.
+	killProcessGroup(cmd.Process)
+	waitForPipeCapture(&wg, stdoutPipe, stderrPipe)
 
 	result := &ExecResult{
 		Stdout: stdoutBuf.String(),
@@ -118,15 +118,26 @@ func (s *NoneSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, err
 		result.TimedOut = true
 	} else if waitErr != nil && result.ExitCode == -1 && ctx.Err() == nil {
 		// Non-timeout, non-exit-code error (e.g. signal kill from process group)
-		killProcessGroup(cmd.Process)
 		return nil, waitErr
 	}
 
-	// Always kill the process group to clean up any orphaned children
-	// (e.g. "go run" leaves compiled binary running after parent exits).
-	killProcessGroup(cmd.Process)
-
 	return result, nil
+}
+
+func waitForPipeCapture(wg *sync.WaitGroup, stdoutPipe, stderrPipe io.Closer) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(50 * time.Millisecond):
+		stdoutPipe.Close()
+		stderrPipe.Close()
+		<-done
+	}
 }
 
 // execKeepAlive runs a command with streaming output via pipes.

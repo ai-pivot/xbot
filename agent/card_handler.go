@@ -35,6 +35,17 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 	if err != nil {
 		return nil, err
 	}
+	cardUserMsg := llm.NewUserMessage(summary)
+	if !msg.Time.IsZero() {
+		cardUserMsg.Timestamp = msg.Time
+	}
+	historyID, err := tenantSession.AppendMessage(cardUserMsg)
+	if err != nil {
+		return nil, err
+	}
+	if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+		messages[len(messages)-1].ID = historyID
+	}
 
 	cardCfg := a.buildMainRunConfig(ctx, msg, messages, tenantSession, true)
 	cardOut := Run(ctx, cardCfg)
@@ -45,21 +56,15 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 	waitingUser := cardOut.WaitingUser
 
 	if waitingUser {
-		log.Ctx(ctx).Info("Tool is waiting for user response, skipping reply")
-		return nil, nil
+		outbound := buildWaitingUserOutbound(ctx, msg, cardOut, tenantSession)
+		a.storePendingAskUserOutbound(msg, outbound)
+		return outbound, nil
 	}
 
-	cardUserMsg := llm.NewUserMessage(summary)
-	if !msg.Time.IsZero() {
-		cardUserMsg.Timestamp = msg.Time
-	}
-	if err := tenantSession.AddMessage(cardUserMsg); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to save user message")
-	}
 	assistantMsg := llm.NewAssistantMessage(finalContent)
 	assistantMsg.ReasoningContent = cardOut.ReasoningContent
 	if err := tenantSession.AddMessage(assistantMsg); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to save assistant message")
+		return nil, err
 	}
 
 	if err := a.sendMessage(msg.Channel, msg.ChatID, finalContent); err != nil {

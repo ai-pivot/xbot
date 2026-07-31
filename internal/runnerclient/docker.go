@@ -213,16 +213,12 @@ func (de *DockerExecutor) Exec(ctx context.Context, spec ExecSpec) (*ExecResult,
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
 	}
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			result.ExitCode = exitErr.ExitCode()
-		} else if ctx.Err() == context.DeadlineExceeded {
-			result.ExitCode = -1
-			result.TimedOut = true
-		} else {
-			return nil, err
-		}
+	exitCode, timedOut, rawErr := extractExitInfo(err, ctx.Err())
+	if rawErr != nil {
+		return nil, rawErr
 	}
+	result.ExitCode = exitCode
+	result.TimedOut = timedOut
 	return result, nil
 }
 

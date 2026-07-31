@@ -1,10 +1,84 @@
 package agent
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"xbot/bus"
 )
+
+func TestContinueInteractiveSessionUsesCanonicalFullKey(t *testing.T) {
+	const fullKey = "agent:web:chat-1/review:1/fix:2"
+	ia := &interactiveAgent{
+		roleName: "fix",
+		instance: "2",
+		running:  true,
+		cfg:      &RunConfig{},
+	}
+	a := &Agent{}
+	a.interactiveSubAgents.Store(fullKey, ia)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- a.ContinueInteractiveSession(context.Background(), fullKey, "continue here", "web-user")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	var pending []pendingUserMsg
+	for time.Now().Before(deadline) {
+		pending = ia.drainPendingMessages()
+		if len(pending) > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(pending) != 1 || pending[0].content != "continue here" {
+		t.Fatalf("pending continuation = %+v", pending)
+	}
+	pending[0].replyCh <- nil
+	if err := <-done; err != nil {
+		t.Fatalf("continue interactive session: %v", err)
+	}
+}
+
+func TestContinueInteractiveSessionRequiresActiveObject(t *testing.T) {
+	err := (&Agent{}).ContinueInteractiveSession(context.Background(), "web:chat-1/review:1", "continue", "web-user")
+	if err == nil || !strings.Contains(err.Error(), "no active interactive session") {
+		t.Fatalf("missing interactive session error = %v", err)
+	}
+}
+
+func TestContinueInteractiveSessionReturnsQueuedDeliveryFailure(t *testing.T) {
+	const fullKey = "web:chat-1/review:1"
+	ia := &interactiveAgent{roleName: "review", instance: "1", running: true, cfg: &RunConfig{}}
+	a := &Agent{}
+	a.interactiveSubAgents.Store(fullKey, ia)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- a.ContinueInteractiveSession(context.Background(), fullKey, "continue", "web-user")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	var pending []pendingUserMsg
+	for time.Now().Before(deadline) {
+		pending = ia.drainPendingMessages()
+		if len(pending) > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending continuation = %+v", pending)
+	}
+	pending[0].replyCh <- errors.New("history was rewound")
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "history was rewound") {
+		t.Fatalf("queued delivery error = %v", err)
+	}
+}
 
 func TestInteractiveKey(t *testing.T) {
 	tests := []struct {
@@ -15,12 +89,52 @@ func TestInteractiveKey(t *testing.T) {
 		{"", "", "test", "", ":/test"},
 		{"feishu", "oc_xxx", "brainstorm", "1", "feishu:oc_xxx/brainstorm:1"},
 		{"feishu", "oc_xxx", "brainstorm", "architect", "feishu:oc_xxx/brainstorm:architect"},
+		{"cli", "chat-1", "reviewer", "oneshot-reviewer-123", "cli:chat-1/reviewer:oneshot-reviewer-123"},
 	}
 	for _, tt := range tests {
 		got := interactiveKey(tt.channel, tt.chatID, tt.roleName, tt.instance)
 		if got != tt.want {
 			t.Errorf("interactiveKey(%q, %q, %q, %q) = %q, want %q", tt.channel, tt.chatID, tt.roleName, tt.instance, got, tt.want)
 		}
+	}
+}
+
+func TestWireSubAgentProgressCarriesSessionKey(t *testing.T) {
+	const sessionKey = "cli:chat-1/reviewer:review-1"
+
+	var got []SubAgentProgressDetail
+	ctx := WithSubAgentProgress(context.Background(), func(detail SubAgentProgressDetail) {
+		got = append(got, detail)
+	})
+	cfg := &RunConfig{}
+	subCtx := wireSubAgentProgress(
+		ctx,
+		context.Background(),
+		cfg,
+		&CallChain{Chain: []string{"main"}},
+		"reviewer",
+		"review-1",
+		sessionKey,
+		false,
+	)
+
+	cfg.ProgressNotifier([]string{"working"}, "checking")
+	if len(got) != 1 || got[0].SessionKey != sessionKey {
+		t.Fatalf("direct progress session key = %#v, want %q", got, sessionKey)
+	}
+
+	nestedCB, ok := SubAgentProgressFromContext(subCtx)
+	if !ok {
+		t.Fatal("nested progress callback not installed")
+	}
+	const nestedKey = "cli:chat-1/fixer:fix-1"
+	nestedCB(SubAgentProgressDetail{
+		Path:       []string{"main/reviewer", "main/reviewer/fixer"},
+		Instance:   "fix-1",
+		SessionKey: nestedKey,
+	})
+	if len(got) != 2 || got[1].SessionKey != nestedKey {
+		t.Fatalf("nested progress session key = %#v, want %q", got, nestedKey)
 	}
 }
 

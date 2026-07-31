@@ -3,10 +3,18 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+// testTimeout is the timeout used for hook command tests that expect the
+// command to succeed. On Windows, powershell.exe has a 5-10s cold-start
+// (loading .NET CLR) on CI runners, so the timeout must be generous.
+// Tests that deliberately exercise the timeout path use their own short value.
+const testTimeout = 30
 
 // ---------------------------------------------------------------------------
 // testEvent is a minimal Event implementation for testing.
@@ -39,8 +47,8 @@ func TestCommandExecutor_Success(t *testing.T) {
 	jsonOut := `{"decision":"deny","reason":"forbidden","context":"extra info"}`
 	def := &HookDef{
 		Type:    "command",
-		Command: "echo '" + jsonOut + "'",
-		Timeout: 5,
+		Command: hookEcho(jsonOut),
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{"session_id": "sess-123"}}
 
@@ -68,8 +76,8 @@ func TestCommandExecutor_SuccessPlainText(t *testing.T) {
 	// Command that outputs non-JSON plain text.
 	def := &HookDef{
 		Type:    "command",
-		Command: "echo 'hello world'",
-		Timeout: 5,
+		Command: hookEcho("hello world"),
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{}}
 
@@ -94,8 +102,8 @@ func TestCommandExecutor_BlockExit2(t *testing.T) {
 
 	def := &HookDef{
 		Type:    "command",
-		Command: "echo 'blocked' >&2; exit 2",
-		Timeout: 5,
+		Command: hookStderrExit("blocked", 2),
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{}}
 
@@ -119,8 +127,8 @@ func TestCommandExecutor_NonBlockError(t *testing.T) {
 
 	def := &HookDef{
 		Type:    "command",
-		Command: "echo 'something went wrong' >&2; exit 1",
-		Timeout: 5,
+		Command: hookStderrExit("something went wrong", 1),
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{}}
 
@@ -145,7 +153,7 @@ func TestCommandExecutor_Timeout(t *testing.T) {
 
 	def := &HookDef{
 		Type:    "command",
-		Command: "sleep 10",
+		Command: hookSleep(10),
 		Timeout: 1, // 1 second timeout
 	}
 	event := &testEvent{payload: map[string]any{}}
@@ -158,7 +166,9 @@ func TestCommandExecutor_Timeout(t *testing.T) {
 		t.Fatal("Execute() expected error for timeout, got nil")
 	}
 	// Should timeout within roughly 2 seconds (1s timeout + overhead).
-	if elapsed > 5*time.Second {
+	// On Windows, powershell.exe cold-start adds 5-10s before the 1s timeout
+	// even fires, so allow generous headroom.
+	if elapsed > 15*time.Second {
 		t.Errorf("Execute() took %v, should have timed out within ~1s", elapsed)
 	}
 }
@@ -170,7 +180,7 @@ func TestCommandExecutor_DefaultTimeout(t *testing.T) {
 	// We verify by running a fast command (should succeed within default timeout).
 	def := &HookDef{
 		Type:    "command",
-		Command: "echo ok",
+		Command: hookEcho("ok"),
 	}
 	event := &testEvent{payload: map[string]any{}}
 
@@ -191,8 +201,8 @@ func TestCommandExecutor_EnvironmentVars(t *testing.T) {
 
 	def := &HookDef{
 		Type:    "command",
-		Command: "echo \"HOME=$XBOT_HOME PROJECT=$XBOT_PROJECT_DIR SESSION=$XBOT_SESSION_ID\"",
-		Timeout: 5,
+		Command: hookPrintEnv(),
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{
 		"session_id": "sess-abc-123",
@@ -226,8 +236,8 @@ func TestCommandExecutor_EnvironmentVarsNoSession(t *testing.T) {
 
 	def := &HookDef{
 		Type:    "command",
-		Command: "echo \"SESSION=${XBOT_SESSION_ID:-unset}\"",
-		Timeout: 5,
+		Command: hookPrintOptionalSession(),
+		Timeout: testTimeout,
 	}
 	// No session_id in payload.
 	event := &testEvent{payload: map[string]any{}}
@@ -246,8 +256,8 @@ func TestCommandExecutor_StdinPayload(t *testing.T) {
 
 	def := &HookDef{
 		Type:    "command",
-		Command: "cat",
-		Timeout: 5,
+		Command: hookCatStdin(),
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{
 		"session_id":      "sess-xyz",
@@ -281,8 +291,8 @@ func TestCommandExecutor_SuccessWithUpdatedInput(t *testing.T) {
 	jsonOut := `{"decision":"allow","updatedInput":{"path":"/new/path","force":true}}`
 	def := &HookDef{
 		Type:    "command",
-		Command: "echo '" + jsonOut + "'",
-		Timeout: 5,
+		Command: hookEcho(jsonOut),
+		Timeout: testTimeout,
 	}
 	event := &testEvent{payload: map[string]any{}}
 
@@ -305,4 +315,57 @@ func TestCommandExecutor_SuccessWithUpdatedInput(t *testing.T) {
 	if result.UpdatedInput["force"] != true {
 		t.Errorf("UpdatedInput[force] = %v, want true", result.UpdatedInput["force"])
 	}
+}
+
+func hookEcho(s string) string {
+	if runtime.GOOS == "windows" {
+		// Drain stdin first — PowerShell -Command doesn't read stdin, but the
+		// exec.Cmd pipe stays open until the process exits. Without draining,
+		// the process waits for stdin to close → context deadline exceeded.
+		return "[Console]::In.ReadToEnd() | Out-Null; Write-Output " + powershellQuote(s)
+	}
+	return "printf '%s\\n' " + posixQuote(s)
+}
+
+func hookStderrExit(s string, code int) string {
+	if runtime.GOOS == "windows" {
+		return "Write-Error " + powershellQuote(s) + "; exit " + strconv.Itoa(code)
+	}
+	return "printf '%s\\n' " + posixQuote(s) + " >&2; exit " + strconv.Itoa(code)
+}
+
+func hookSleep(seconds int) string {
+	if runtime.GOOS == "windows" {
+		return "Start-Sleep -Seconds " + strconv.Itoa(seconds)
+	}
+	return "sleep " + strconv.Itoa(seconds)
+}
+
+func hookPrintEnv() string {
+	if runtime.GOOS == "windows" {
+		return `Write-Output "HOME=$env:XBOT_HOME PROJECT=$env:XBOT_PROJECT_DIR SESSION=$env:XBOT_SESSION_ID"`
+	}
+	return `echo "HOME=$XBOT_HOME PROJECT=$XBOT_PROJECT_DIR SESSION=$XBOT_SESSION_ID"`
+}
+
+func hookPrintOptionalSession() string {
+	if runtime.GOOS == "windows" {
+		return `if ($env:XBOT_SESSION_ID) { Write-Output "SESSION=$env:XBOT_SESSION_ID" } else { Write-Output "SESSION=unset" }`
+	}
+	return `echo "SESSION=${XBOT_SESSION_ID:-unset}"`
+}
+
+func hookCatStdin() string {
+	if runtime.GOOS == "windows" {
+		return "[Console]::In.ReadToEnd()"
+	}
+	return "cat"
+}
+
+func posixQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func powershellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }

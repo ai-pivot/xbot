@@ -41,7 +41,7 @@ var systemReminderRe = regexp.MustCompile(`\n?\n?<system-reminder>[\s\S]*?</syst
 // roundToolCalls is the current round's tool calls (used to detect git commit).
 // sessionKey is the unique session identifier (used for worktree peer lookup).
 // sessionName is the current session display name (used to detect auto-generated names needing rename).
-func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCall, todoSummary string, agentID string, cwd string, sessionKey string, sessionName string) string {
+func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCall, todoSummary string, agentID string, cwd string, sessionKey string, sessionName string, activeSubAgents []SubAgentStatus) string {
 	if len(messages) == 0 {
 		return ""
 	}
@@ -145,6 +145,25 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		}
 	}
 
+	// Active SubAgents: show idle/busy state so the parent agent knows
+	// which SubAgents are currently running vs available.
+	if !isSubAgent && len(activeSubAgents) > 0 {
+		parts = append(parts, "")
+		parts = append(parts, "🤖 活跃 SubAgent:")
+		for _, sa := range activeSubAgents {
+			status := "⏳ 空闲"
+			if sa.Running {
+				status = "🔄 执行中"
+			}
+			label := sa.Role
+			if sa.Instance != "" {
+				label += "/" + sa.Instance
+			}
+			parts = append(parts, fmt.Sprintf("   - %s %s", label, status))
+		}
+		parts = append(parts, "提示: 执行中的 SubAgent 仍在工作，请等待其完成。可用 SubAgent(action=\"inspect\") 查看进度。")
+	}
+
 	parts = append(parts, "行为提醒:")
 	parts = append(parts, "- 优先编辑已有文件，避免创建新文件")
 	parts = append(parts, "- 修改后运行测试验证")
@@ -188,6 +207,11 @@ func extractUserGoal(content string) string {
 		}
 		// 跳过系统引导文本块
 		if strings.Contains(trimmed, "[系统引导]") || strings.Contains(trimmed, "search_tools") || strings.Contains(trimmed, "WebSearch") || strings.Contains(trimmed, "Fetch") || strings.Contains(trimmed, "Skill") || strings.Contains(trimmed, "现在时间") {
+			inGuide = true
+			continue
+		}
+		// Skip auto-naming rename hint (injected by UserMessageMiddleware)
+		if strings.Contains(trimmed, "⚠️ 当前会话名") || strings.Contains(trimmed, "config(action=\"set\", key=\"session_name\"") {
 			inGuide = true
 			continue
 		}

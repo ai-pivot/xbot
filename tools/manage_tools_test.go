@@ -496,13 +496,12 @@ func TestManageTools_UserIsolationAndGlobalMerge(t *testing.T) {
 	}
 }
 
-func TestManageTools_AddMCPInvalidatesImmediatelyInFlatMode(t *testing.T) {
+func TestManageTools_AddMCPInvalidatesImmediately(t *testing.T) {
 	tempDir := t.TempDir()
 	mcpConfigPath := filepath.Join(tempDir, "mcp.json")
 	tool := NewManageTools(tempDir, mcpConfigPath)
 
 	registry := NewRegistry()
-	registry.SetFlatMode(true)
 	invalidated := 0
 	ctx := &ToolContext{
 		Registry:                registry,
@@ -512,26 +511,42 @@ func TestManageTools_AddMCPInvalidatesImmediatelyInFlatMode(t *testing.T) {
 
 	input, _ := json.Marshal(manageToolsArgs{
 		Action:       "add_mcp",
-		Name:         "flat-visible-now",
-		MCPConfig:    `{"command":"echo","args":["flat"]}`,
-		Instructions: "flat test",
+		Name:         "new-server",
+		MCPConfig:    `{"command":"echo","args":["test"]}`,
+		Instructions: "test",
 	})
 
 	result, err := tool.Execute(ctx, string(input))
 	if err != nil {
-		t.Fatalf("flat add_mcp failed: %v", err)
+		t.Fatalf("add_mcp failed: %v", err)
 	}
 	if invalidated != 1 {
 		t.Fatalf("expected immediate MCP invalidation once, got %d", invalidated)
 	}
-	if !strings.Contains(result.Summary, "immediately visible") {
-		t.Fatalf("expected immediate visibility hint, got: %s", result.Summary)
+	if !strings.Contains(result.Summary, "reload") {
+		t.Fatalf("expected reload hint, got: %s", result.Summary)
 	}
 }
 
-func TestRegistry_AsDefinitionsForSession_FlatModeIncludesSessionMCPTools(t *testing.T) {
+type mockSessionMCPProvider struct {
+	manager *SessionMCPManager
+}
+
+func (m *mockSessionMCPProvider) GetSessionMCPManager(_ string) *SessionMCPManager {
+	return m.manager
+}
+
+func hasToolDefinitionName(defs []llm.ToolDefinition, name string) bool {
+	for _, d := range defs {
+		if d.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRegistry_AsDefinitionsForSession_IncludesSessionMCPTools(t *testing.T) {
 	registry := NewRegistry()
-	registry.SetFlatMode(true)
 
 	sm := &SessionMCPManager{
 		connections: map[string]*mcpConnection{
@@ -552,6 +567,6 @@ func TestRegistry_AsDefinitionsForSession_FlatModeIncludesSessionMCPTools(t *tes
 
 	defs := registry.AsDefinitionsForSession("test:chat", 0)
 	if !hasToolDefinitionName(defs, "mcp_demo_ping") {
-		t.Fatalf("expected flat mode to expose session MCP tool immediately")
+		t.Fatalf("expected session MCP tool to be visible")
 	}
 }

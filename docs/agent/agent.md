@@ -69,6 +69,36 @@ SubAgent outbound messages go to **parent's channel/chatID** (never the agent se
 - **`handleFinalResponse` must set `ThinkingContent`** on the prompt data — otherwise PhaseDone assistant synthesis has empty content
 - **Stream content updates must snapshot** — `StreamContentFunc`/`ReasoningStreamContentFunc` must update `lastProgressSnapshot` for CLI to render
 
+## Interactive SubAgent Lifecycle: "Never Outlive Creator"
+
+All SubAgents must be cleaned up when their **direct creator** finishes or is cancelled. This requires both context cancellation AND `cancelChildSessions` in every completion path.
+
+### Context Chain (the enforcement mechanism)
+
+Every interactive SubAgent wraps its own `runCtx` with `bgSessionCtxKey` + `bgParentKey` markers:
+
+- **bg mode** (`SpawnInteractiveSession`): `runCtx` derives from parent's ctx (nested) or `a.agentCtx` (first-level). Always marked.
+- **foreground mode** (`SpawnInteractiveSession`): `fgRunCtx` wraps `subCtx` with markers. `fgRunCancel()` called after `Run()` returns.
+- **send path** (`SendToInteractiveSession`): `runCtx` derived from `asyncBase` + markers + own key as `bgParentKey`.
+
+When a child SubAgent spawns during a parent's `Run()`, the child detects `bgSessionCtxKey` on the parent's runCtx → derives its own context from the parent's → parent's `runCancel()` cancels the child.
+
+### cancelChildSessions (the cleanup mechanism)
+
+Every completion path calls `cancelChildSessions(key)` to remove child entries from `interactiveSubAgents`:
+
+- **bg natural completion**: `runCancel()` at L776 cancels children via context → children self-clean via cancelled path (L883 `cancelChildSessions` + L884 `destroyInteractiveSession`). Parent does NOT call `cancelChildSessions` (session preserved for future send).
+- **bg cancelled (unload/shutdown)**: L883 `cancelChildSessions(key)` + `destroyInteractiveSession(key)` — cascading.
+- **foreground natural/error completion**: `fgRunCancel()` + `cancelChildSessions(key)` after `Run()` returns.
+- **send natural completion**: `runCancel()` + `cancelChildSessions(key)` after `Run()` returns.
+- **send cancelled (unload/shutdown)**: `cancelChildSessions(key)` in cancelled path.
+
+### parentKey propagation
+
+- `placeholder.parentKey` set from `ctx.Value(bgParentKey{})` at spawn time (L482-484).
+- When foreground placeholder is replaced with full `ia` on completion, `parentKey` and `groupID` are preserved.
+- `cancelChildSessions(parentKey)` matches children by their `parentKey` field.
+
 ## Pending Message Delivery (Running SubAgent)
 
 When a SubAgent is running (`ia.running=true`), `action=send` no longer rejects the message. Instead:
@@ -80,10 +110,16 @@ When a SubAgent is running (`ia.running=true`), `action=send` no longer rejects 
 
 All 4 `Run()` call sites in `interactive.go` set `cfg.DrainBgNotifications = ia.wirePendingMessageDrain(key)`.
 
+## Background Notification Cancellation
+
+Agent-level bg notifications are queued by session (`map[sessionKey][]BgNotification`), not in one shared slice. `wireBgNotificationDrain` and `drainAndProcessNotifications` only take the current session's bucket, so other sessions are never scanned/re-appended during a drain.
+
+When Ctrl+C cancels a turn, `handleCancelledRun` does not start a fresh bg-notification turn. It takes same-session pending notifications and records them into the interrupted turn as synthetic assistant tool-call + tool-result pairs, then appends a `user_cancelled` synthetic tool observation. This preserves completed bg work and records the user interruption in context without waking a new turn after the cancel ack. Notifications already drained into the Run are already persisted by the normal synthetic-tool path; cancel clears only their `drainedThisRun` tracking metadata.
+
 ## Context Management
 
 - `Pipeline.Assemble()` safely deduplicates system messages (used to panic) (`middleware.go:170`)
-- Cd tool: must update both `tc.CurrentDir` and `cfg.InitialCWD` (`engine_test.go:1514`)
+- Cd tool: must update both `tc.CurrentDir` and `cfg.InitialCWD` (`engine_test.go:1429`, `TestBuildToolContext_SubAgentCdPersists`)
 - Dynamic context injection detects CWD changes via `dynamic_context.go`
 
 ## Observation Masking

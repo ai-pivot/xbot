@@ -26,173 +26,108 @@ type PluginErrorCallback func(ctx context.Context, err error)
 // PluginContext provides plugins with controlled access to xbot capabilities.
 // It is the ONLY interface plugins should use; direct access to internal
 // structures (ToolContext, Registry, etc.) is prohibited by design.
-type PluginContext interface {
-	// --- Tool Registration ---
+// ---------------------------------------------------------------------------
+// Composite sub-interfaces (Interface Segregation Principle)
+// ---------------------------------------------------------------------------
 
-	// RegisterTool registers a plugin-provided tool.
-	// Requires "tools.register" permission in manifest.
+// ToolRegistrar provides tool and middleware registration capabilities.
+type ToolRegistrar interface {
 	RegisterTool(tool PluginTool) error
-
-	// RegisterTools registers multiple tools at once.
-	// Returns the first error encountered.
 	RegisterTools(tools ...PluginTool) error
-
-	// UseMiddleware registers a plugin middleware.
-	// Middleware is called for ALL tool executions from this plugin.
-	// Requires "tools.register" permission.
 	UseMiddleware(middleware PluginMiddleware) error
+}
 
-	// --- Hook Subscriptions ---
-
-	// OnPreToolUse subscribes to PreToolUse events with an optional matcher.
-	// Requires "hooks.subscribe" permission.
+// HookSubscriber provides lifecycle hook subscription capabilities.
+type HookSubscriber interface {
 	OnPreToolUse(matcher string, handler HookHandler) error
-
-	// OnPostToolUse subscribes to PostToolUse events with an optional matcher.
-	// Requires "hooks.subscribe" permission.
 	OnPostToolUse(matcher string, handler HookHandler) error
-
-	// OnUserPrompt subscribes to UserPromptSubmit events.
-	// Requires "hooks.subscribe" permission.
 	OnUserPrompt(handler HookHandler) error
-
-	// OnAgentStop subscribes to AgentStop events.
-	// Requires "hooks.subscribe" permission.
 	OnAgentStop(handler HookHandler) error
-
-	// OnSessionStart subscribes to SessionStart events.
-	// Requires "hooks.subscribe" permission.
 	OnSessionStart(handler HookHandler) error
-
-	// OnSessionEnd subscribes to SessionEnd events.
-	// Requires "hooks.subscribe" permission.
 	OnSessionEnd(handler HookHandler) error
-
-	// OnEvent subscribes to any lifecycle event by name.
-	// Requires "hooks.subscribe" permission.
 	OnEvent(event HookEvent, matcher string, handler HookHandler) error
-
-	// OnAllToolUse subscribes to both PreToolUse and PostToolUse events for all tools.
-	// Requires "hooks.subscribe" permission.
 	OnAllToolUse(handler HookHandler) error
-
-	// OnError subscribes to PostToolUseFailure events for all tools.
-	// Requires "hooks.subscribe" permission.
 	OnError(handler HookHandler) error
+}
+
+// StorageProvider provides typed key-value storage for plugin state.
+type StorageProvider interface {
+	Storage() StorageAccessor
+	StorageInt(key string) (int64, bool)
+	StorageBool(key string) (bool, bool)
+	StorageJSON(key string, value any) error
+	StorageGetJSON(key string, target any) error
+}
+
+// SessionMetadata provides read-only information about the current session.
+type SessionMetadata interface {
+	PluginID() string
+	WorkingDir() string
+	Channel() string
+	ChatID() string
+	TenantID() int64
+	Logger() Logger
+}
+
+// EventBusPublisher provides plugin-to-plugin event bus access.
+type EventBusPublisher interface {
+	Subscribe(topic string, handler PluginEventHandler) error
+	Publish(topic string, data any) error
+}
+
+// UIContributor provides UI widget, theme, and overlay registration.
+type UIContributor interface {
+	ContributeUI(widgetID, zone string, widget UIWidget, priority int) error
+	UpdateWidget(widgetID string) error
+	SetWidgetRegistry(wr *WidgetRegistry)
+	ContributeTheme(id string, themeData []byte) error
+	RegisterOverlay(id string, provider OverlayProvider) error
+	ShowOverlay(id string) error
+	HideOverlay() error
+}
+
+// CronScheduler provides cron scheduling for plugins.
+type CronScheduler interface {
+	ScheduleCron(spec CronContribution) (string, error)
+	CancelCron(jobID string) error
+}
+
+// PluginContext is the full context passed to a plugin during activation.
+// It composes all sub-interfaces for backward compatibility — existing code
+// that accepts PluginContext continues to work unchanged. New code can
+// accept narrower sub-interfaces where only a subset of capabilities is needed.
+type PluginContext interface {
+	ToolRegistrar
+	HookSubscriber
+	StorageProvider
+	SessionMetadata
+	EventBusPublisher
+	UIContributor
+	CronScheduler
 
 	// --- Context Enrichment ---
-
-	// EnrichContext registers a function that injects dynamic content
-	// into the system prompt. Requires "context.enrich" permission.
 	EnrichContext(name string, enricher ContextEnricher) error
 
-	// --- Storage ---
-
-	// Storage returns the plugin's isolated key-value store.
-	// Requires "storage.private" permission.
-	Storage() StorageAccessor
-
-	// StorageInt retrieves a value by key and parses it as int64.
-	// Returns (0, false) if the key does not exist or the value cannot be parsed.
-	// Requires "storage.private" permission.
-	StorageInt(key string) (int64, bool)
-
-	// StorageBool retrieves a value by key and parses it as bool.
-	// Returns (false, false) if the key does not exist or the value cannot be parsed.
-	// Requires "storage.private" permission.
-	StorageBool(key string) (bool, bool)
-
-	// StorageJSON marshals the value to JSON and stores it under the given key.
-	// Requires "storage.private" permission.
-	StorageJSON(key string, value any) error
-
-	// StorageGetJSON retrieves a value by key and unmarshals it into target.
-	// Returns an error if the key does not exist or JSON unmarshaling fails.
-	// Requires "storage.private" permission.
-	StorageGetJSON(key string, target any) error
-
-	// --- Metadata ---
-
-	// PluginID returns the unique identifier of this plugin.
-	PluginID() string
-
-	// WorkingDir returns the current working directory.
-	WorkingDir() string
-
-	// Channel returns the message channel (feishu, cli, web, etc.).
-	Channel() string
-
-	// ChatID returns the current chat/session ID.
-	ChatID() string
-
-	// TenantID returns the current tenant ID for multi-tenancy awareness.
-	TenantID() int64
-
-	// Logger returns a namespaced logger for this plugin.
-	Logger() Logger
-
-	// --- Plugin Event Bus ---
-
-	// Subscribe registers a handler for plugin-to-plugin events.
-	// Requires "bus.plugin" + "bus.read" permissions.
-	Subscribe(topic string, handler PluginEventHandler) error
-
-	// Publish sends an event to all subscribers of the topic.
-	// Requires "bus.plugin" + "bus.write" permissions.
-	Publish(topic string, data any) error
-
 	// --- Plugin Error Callback ---
-
-	// OnPluginError registers a callback for plugin-level errors (not tool errors).
-	// Called when the plugin encounters an unhandled error during operation
-	// (activation failure, runtime crash, etc.).
-	// Requires "hooks.subscribe" permission.
 	OnPluginError(callback PluginErrorCallback) error
 
-	// --- UI Contributions ---
-
-	// ContributeUI registers a UI widget provider for a zone declared in plugin.json.
-	// Requires "ui.contribute" permission. The widgetID must match a declared
-	// UIContribution ID in the plugin's manifest.
-	ContributeUI(widgetID, zone string, widget UIWidget, priority int) error
-
-	// UpdateWidget triggers an asynchronous re-render of the named widget.
-	// The widgetID must have been registered via ContributeUI.
-	// Safe to call from hook handlers, tool executors, or any goroutine.
-	UpdateWidget(widgetID string) error
-
-	// SetWidgetRegistry sets the widget registry for this context.
-	// Called internally by PluginManager before Activate.
-	SetWidgetRegistry(wr *WidgetRegistry)
-
 	// --- Context Values ---
-
-	// SetValue stores an arbitrary value in the plugin context.
-	// This enables cross-handler data sharing within a plugin.
-	// No permission required — this is in-memory session-scoped state, not persisted.
-	// Data is lost when the plugin deactivates.
 	SetValue(key string, value any)
-
-	// GetValue retrieves a value from the plugin context.
-	// Returns (nil, false) if the key has not been set.
-	// No permission required.
 	GetValue(key string) (any, bool)
 
 	// --- Resource Tracking ---
-
-	// ToolCallCount returns the cumulative number of tool executions for this plugin.
 	ToolCallCount() int64
-
-	// HookCallCount returns the cumulative number of hook dispatches for this plugin.
 	HookCallCount() int64
 
 	// --- Channel Registration ---
-
-	// RegisterChannelProvider 注册自定义 Channel provider。
-	// 需要 "channels.register" 权限。provider 必须实现 channel.ChannelProvider 接口。
-	// 注册后 provider 会被存储，供 serverapp 在 registerChannels 和动态启停路径中使用。
-	// 参数类型为 any 而非 channel.ChannelProvider 是为了避免 plugin→channel 循环依赖。
 	RegisterChannelProvider(provider any) error
+
+	// --- Command Registration ---
+	RegisterCommand(name string, description string, handler PluginCommandHandler) error
+
+	// --- Notifications & Sound ---
+	Notify(level NotificationLevel, title, message string)
+	PlaySound(sound SoundID)
 }
 
 // Logger provides structured logging for plugins.
@@ -246,6 +181,30 @@ type StorageAccessor interface {
 }
 
 // ---------------------------------------------------------------------------
+// Generic snapshot helpers
+// ---------------------------------------------------------------------------
+
+// snapshotSlice returns a defensive copy of a slice under a read lock.
+func snapshotSlice[T any](mu *sync.RWMutex, src []T) []T {
+	mu.RLock()
+	defer mu.RUnlock()
+	dst := make([]T, len(src))
+	copy(dst, src)
+	return dst
+}
+
+// snapshotMap returns a defensive copy of a map under a read lock.
+func snapshotMap[K comparable, V any](mu *sync.RWMutex, src map[K]V) map[K]V {
+	mu.RLock()
+	defer mu.RUnlock()
+	dst := make(map[K]V, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// ---------------------------------------------------------------------------
 // pluginContextImpl — the concrete implementation
 // ---------------------------------------------------------------------------
 
@@ -288,6 +247,19 @@ type pluginContextImpl struct {
 	// Runtime resource tracking (atomic for lock-free reads)
 	toolCallCount int64
 	hookCallCount int64
+
+	// Command handlers
+	commands map[string]pluginCommandEntry
+
+	// Cron tasks
+	crons             []CronContribution
+	cronCancellations map[string]bool
+
+	// Themes
+	themes map[string][]byte
+
+	// Overlays
+	overlays map[string]OverlayProvider
 }
 
 type hookRegistration struct {
@@ -304,22 +276,34 @@ type enricherRegistration struct {
 	Enricher ContextEnricher
 }
 
+// pluginCommandEntry stores a registered command handler.
+type pluginCommandEntry struct {
+	name        string
+	description string
+	handler     PluginCommandHandler
+}
+
 // newPluginContext creates a new PluginContext for the given plugin.
 func newPluginContext(manifest *PluginManifest, storage StorageAccessor, logger Logger, bus *PluginEventBus, configStore *PluginConfigStore, pm *PluginManager) *pluginContextImpl {
 	return &pluginContextImpl{
-		pluginID:         manifest.ID,
-		manifest:         manifest,
-		perm:             NewPermissionChecker(manifest.Permissions),
-		storage:          storage,
-		logger:           logger,
-		tools:            make([]PluginTool, 0),
-		hooks:            make([]hookRegistration, 0),
-		contextEnrichers: make([]enricherRegistration, 0),
-		channelProviders: make([]any, 0),
-		bus:              bus,
-		pm:               pm,
-		configStore:      configStore,
-		contextValues:    make(map[string]any),
+		pluginID:          manifest.ID,
+		manifest:          manifest,
+		perm:              NewPermissionChecker(manifest.Permissions),
+		storage:           storage,
+		logger:            logger,
+		tools:             make([]PluginTool, 0),
+		hooks:             make([]hookRegistration, 0),
+		contextEnrichers:  make([]enricherRegistration, 0),
+		channelProviders:  make([]any, 0),
+		bus:               bus,
+		pm:                pm,
+		configStore:       configStore,
+		contextValues:     make(map[string]any),
+		commands:          make(map[string]pluginCommandEntry),
+		crons:             make([]CronContribution, 0),
+		cronCancellations: make(map[string]bool),
+		themes:            make(map[string][]byte),
+		overlays:          make(map[string]OverlayProvider),
 	}
 }
 
@@ -586,29 +570,17 @@ func (pc *pluginContextImpl) Publish(topic string, data any) error {
 // GetTools returns a snapshot of all tools registered by this plugin.
 
 func (pc *pluginContextImpl) GetTools() []PluginTool {
-	pc.mu.RLock()
-	defer pc.mu.RUnlock()
-	result := make([]PluginTool, len(pc.tools))
-	copy(result, pc.tools)
-	return result
+	return snapshotSlice(&pc.mu, pc.tools)
 }
 
 // GetHooks returns a snapshot of all hooks registered by this plugin.
 func (pc *pluginContextImpl) GetHooks() []hookRegistration {
-	pc.mu.RLock()
-	defer pc.mu.RUnlock()
-	result := make([]hookRegistration, len(pc.hooks))
-	copy(result, pc.hooks)
-	return result
+	return snapshotSlice(&pc.mu, pc.hooks)
 }
 
 // GetEnrichers returns a snapshot of all context enrichers registered by this plugin.
 func (pc *pluginContextImpl) GetEnrichers() []enricherRegistration {
-	pc.mu.RLock()
-	defer pc.mu.RUnlock()
-	result := make([]enricherRegistration, len(pc.contextEnrichers))
-	copy(result, pc.contextEnrichers)
-	return result
+	return snapshotSlice(&pc.mu, pc.contextEnrichers)
 }
 
 // UseMiddleware registers a plugin middleware for tool execution interception.
@@ -632,11 +604,7 @@ func (pc *pluginContextImpl) UseMiddleware(middleware PluginMiddleware) error {
 
 // GetMiddlewares returns a copy of the registered middleware list.
 func (pc *pluginContextImpl) GetMiddlewares() []PluginMiddleware {
-	pc.mu.RLock()
-	defer pc.mu.RUnlock()
-	result := make([]PluginMiddleware, len(pc.toolMiddlewares))
-	copy(result, pc.toolMiddlewares)
-	return result
+	return snapshotSlice(&pc.mu, pc.toolMiddlewares)
 }
 
 func (pc *pluginContextImpl) OnPluginError(callback PluginErrorCallback) error {
@@ -755,20 +723,22 @@ func (d *deniedStorage) Clear() error {
 }
 
 // ---------------------------------------------------------------------------
-// Default Logger — per-plugin log file + global logrus fallback
+// Default Logger — per-plugin log file only (keeps main log clean)
 // ---------------------------------------------------------------------------
 
-// pluginLogger writes structured logs to a per-plugin log file (daily-rotating)
-// AND also writes to the global logrus logger for backward compatibility.
-// This ensures plugin logs are both isolated (per-plugin file) and aggregated
-// (in the main xbot log file).
+// pluginLogger writes structured logs ONLY to a per-plugin log file
+// (daily-rotating, stored under ~/.xbot/plugins/<id>/logs/). This keeps the
+// main xbot log clean — plugin operational logs (tool/hook registration,
+// script execution, widget refresh, etc.) are isolated in the plugin's own
+// directory. If the per-plugin writer could not be created (fileOut == nil),
+// it falls back to the global logrus logger so that no logs are silently lost.
 type pluginLogger struct {
 	id      string
 	fileOut io.Writer // per-plugin rotateWriter (may be nil if creation failed)
 }
 
-// newPluginLogger creates a plugin logger that writes to both the per-plugin
-// log file and the global logrus logger.
+// newPluginLogger creates a plugin logger that writes to the per-plugin log
+// file only.
 func newPluginLogger(pluginID string, logMgr *pluginLogManager) *pluginLogger {
 	pl := &pluginLogger{id: pluginID}
 	if logMgr != nil {
@@ -792,24 +762,41 @@ func (l *pluginLogger) writeToFile(level, msg string, fields []Field) {
 	l.fileOut.Write([]byte(line)) // ignore error — logging must not block
 }
 
+// emit writes to the per-plugin file. If no file writer is available it falls
+// back to the global logrus logger so logs are never silently lost.
+func (l *pluginLogger) emit(level, msg string, fields []Field) {
+	if l.fileOut != nil {
+		l.writeToFile(level, msg, fields)
+		return
+	}
+	// Fallback: per-plugin writer unavailable — use global logrus.
+	fieldsMap := l.buildLogrusFields(fields)
+	switch level {
+	case "DEBUG":
+		log.WithFields(fieldsMap).Debug(msg)
+	case "INFO":
+		log.WithFields(fieldsMap).Info(msg)
+	case "WARN":
+		log.WithFields(fieldsMap).Warn(msg)
+	case "ERROR":
+		log.WithFields(fieldsMap).Error(msg)
+	}
+}
+
 func (l *pluginLogger) Debug(msg string, fields ...Field) {
-	log.WithFields(l.buildLogrusFields(fields)).Debug(msg)
-	l.writeToFile("DEBUG", msg, fields)
+	l.emit("DEBUG", msg, fields)
 }
 
 func (l *pluginLogger) Info(msg string, fields ...Field) {
-	log.WithFields(l.buildLogrusFields(fields)).Info(msg)
-	l.writeToFile("INFO", msg, fields)
+	l.emit("INFO", msg, fields)
 }
 
 func (l *pluginLogger) Warn(msg string, fields ...Field) {
-	log.WithFields(l.buildLogrusFields(fields)).Warn(msg)
-	l.writeToFile("WARN", msg, fields)
+	l.emit("WARN", msg, fields)
 }
 
 func (l *pluginLogger) Error(msg string, fields ...Field) {
-	log.WithFields(l.buildLogrusFields(fields)).Error(msg)
-	l.writeToFile("ERROR", msg, fields)
+	l.emit("ERROR", msg, fields)
 }
 
 func (l *pluginLogger) Debugf(format string, args ...any) {
@@ -947,7 +934,11 @@ func (pc *pluginContextImpl) HookCallCount() int64 {
 // 需要 "channels.register" 权限。provider 必须实现 channel.ChannelProvider 接口。
 func (pc *pluginContextImpl) RegisterChannelProvider(provider any) error {
 	if !pc.perm.Has(PermChannelsRegister) {
-		return fmt.Errorf("permission denied: %q requires %q", "RegisterChannelProvider", PermChannelsRegister)
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermChannelsRegister,
+			Action:     "register channel provider",
+		}
 	}
 	if provider == nil {
 		return fmt.Errorf("provider must not be nil")
@@ -978,9 +969,225 @@ func (pc *pluginContextImpl) RegisterChannelProvider(provider any) error {
 // ChannelProviders 返回当前插件注册的所有 ChannelProvider 实例。
 // 由 serverapp 桥接层收集并转换为 channel.ChannelProvider。
 func (pc *pluginContextImpl) ChannelProviders() []any {
+	return snapshotSlice(&pc.mu, pc.channelProviders)
+}
+
+// ---------------------------------------------------------------------------
+// Command Registration
+// ---------------------------------------------------------------------------
+
+// RegisterCommand registers a slash command handler for this plugin.
+func (pc *pluginContextImpl) RegisterCommand(name string, description string, handler PluginCommandHandler) error {
+	if !pc.perm.Has(PermCommandsRegister) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermCommandsRegister,
+			Action:     "register command",
+		}
+	}
+	if handler == nil {
+		return fmt.Errorf("command handler must not be nil")
+	}
+	if name == "" {
+		return fmt.Errorf("command name must not be empty")
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.commands[name] = pluginCommandEntry{
+		name:        name,
+		description: description,
+		handler:     handler,
+	}
+	pc.logger.Info("Command registered", Field{Key: "command", Value: name})
+	return nil
+}
+
+// GetCommands returns a snapshot of all registered command handlers.
+func (pc *pluginContextImpl) GetCommands() map[string]pluginCommandEntry {
+	return snapshotMap(&pc.mu, pc.commands)
+}
+
+// ---------------------------------------------------------------------------
+// Cron Scheduling
+// ---------------------------------------------------------------------------
+
+// ScheduleCron creates a scheduled task. Returns a job ID.
+func (pc *pluginContextImpl) ScheduleCron(spec CronContribution) (string, error) {
+	if !pc.perm.Has(PermCronSchedule) {
+		return "", &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermCronSchedule,
+			Action:     "schedule cron",
+		}
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	jobID := fmt.Sprintf("plugin:%s:%d", pc.pluginID, len(pc.crons))
+	pc.crons = append(pc.crons, spec)
+	pc.logger.Info("Cron scheduled", Field{Key: "job_id", Value: jobID})
+	return jobID, nil
+}
+
+// CancelCron cancels a previously scheduled task.
+func (pc *pluginContextImpl) CancelCron(jobID string) error {
+	if !pc.perm.Has(PermCronSchedule) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermCronSchedule,
+			Action:     "cancel cron",
+		}
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.cronCancellations[jobID] = true
+	pc.logger.Info("Cron cancellation requested", Field{Key: "job_id", Value: jobID})
+	return nil
+}
+
+// GetCrons returns a snapshot of all scheduled crons.
+func (pc *pluginContextImpl) GetCrons() []CronContribution {
+	return snapshotSlice(&pc.mu, pc.crons)
+}
+
+// GetCronCancellations returns a snapshot of all cancelled cron job IDs.
+func (pc *pluginContextImpl) GetCronCancellations() map[string]bool {
+	return snapshotMap(&pc.mu, pc.cronCancellations)
+}
+
+// ---------------------------------------------------------------------------
+// Theme Contribution
+// ---------------------------------------------------------------------------
+
+// ContributeTheme registers a theme from the plugin.
+func (pc *pluginContextImpl) ContributeTheme(id string, themeData []byte) error {
+	if !pc.perm.Has(PermUIThemes) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermUIThemes,
+			Action:     "contribute theme",
+		}
+	}
+	if id == "" {
+		return fmt.Errorf("theme id must not be empty")
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.themes[id] = themeData
+	pc.logger.Info("Theme contributed", Field{Key: "theme_id", Value: id})
+	return nil
+}
+
+// GetThemes returns a snapshot of all contributed themes.
+func (pc *pluginContextImpl) GetThemes() map[string][]byte {
+	return snapshotMap(&pc.mu, pc.themes)
+}
+
+// ---------------------------------------------------------------------------
+// Overlay
+// ---------------------------------------------------------------------------
+
+// RegisterOverlay registers a full-screen overlay provider.
+func (pc *pluginContextImpl) RegisterOverlay(id string, provider OverlayProvider) error {
+	if !pc.perm.Has(PermUIOverlay) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermUIOverlay,
+			Action:     "register overlay",
+		}
+	}
+	if id == "" {
+		return fmt.Errorf("overlay id must not be empty")
+	}
+	if provider == nil {
+		return fmt.Errorf("overlay provider must not be nil")
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.overlays[id] = provider
+	pc.logger.Info("Overlay registered", Field{Key: "overlay_id", Value: id})
+	return nil
+}
+
+// ShowOverlay triggers the display of a registered overlay.
+func (pc *pluginContextImpl) ShowOverlay(id string) error {
+	if !pc.perm.Has(PermUIOverlay) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermUIOverlay,
+			Action:     "show overlay",
+		}
+	}
 	pc.mu.RLock()
-	defer pc.mu.RUnlock()
-	result := make([]any, len(pc.channelProviders))
-	copy(result, pc.channelProviders)
-	return result
+	_, ok := pc.overlays[id]
+	pc.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("overlay %q not registered", id)
+	}
+	if pc.bus != nil {
+		pc.bus.Publish(context.Background(), "plugin:overlay:show", map[string]string{
+			"plugin_id":  pc.pluginID,
+			"overlay_id": id,
+		})
+	}
+	pc.logger.Info("Overlay shown", Field{Key: "overlay_id", Value: id})
+	return nil
+}
+
+// HideOverlay hides the currently displayed overlay.
+func (pc *pluginContextImpl) HideOverlay() error {
+	if !pc.perm.Has(PermUIOverlay) {
+		return &PermissionError{
+			PluginID:   pc.pluginID,
+			Permission: PermUIOverlay,
+			Action:     "hide overlay",
+		}
+	}
+	if pc.bus != nil {
+		pc.bus.Publish(context.Background(), "plugin:overlay:hide", map[string]string{
+			"plugin_id": pc.pluginID,
+		})
+	}
+	pc.logger.Info("Overlay hidden")
+	return nil
+}
+
+// GetOverlays returns a snapshot of all registered overlay providers.
+func (pc *pluginContextImpl) GetOverlays() map[string]OverlayProvider {
+	return snapshotMap(&pc.mu, pc.overlays)
+}
+
+// ---------------------------------------------------------------------------
+// Notifications & Sound
+// ---------------------------------------------------------------------------
+
+// Notify sends a notification to the user.
+func (pc *pluginContextImpl) Notify(level NotificationLevel, title, message string) {
+	if !pc.perm.Has(PermNotificationsSend) {
+		pc.logger.Warn("Notification denied", Field{Key: "permission", Value: PermNotificationsSend})
+		return
+	}
+	if pc.bus != nil {
+		pc.bus.Publish(context.Background(), "plugin:notify", map[string]string{
+			"plugin_id": pc.pluginID,
+			"level":     string(level),
+			"title":     title,
+			"message":   message,
+		})
+	}
+	pc.logger.Info("Notification sent", Field{Key: "level", Value: string(level)}, Field{Key: "title", Value: title})
+}
+
+// PlaySound plays a sound effect.
+func (pc *pluginContextImpl) PlaySound(sound SoundID) {
+	if !pc.perm.Has(PermNotificationsSend) {
+		pc.logger.Warn("Sound denied", Field{Key: "permission", Value: PermNotificationsSend})
+		return
+	}
+	if pc.bus != nil {
+		pc.bus.Publish(context.Background(), "plugin:sound:play", map[string]string{
+			"plugin_id": pc.pluginID,
+			"sound":     string(sound),
+		})
+	}
+	pc.logger.Info("Sound played", Field{Key: "sound", Value: string(sound)})
 }

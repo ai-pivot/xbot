@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/channel/feishu"
+	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/version"
 )
 
@@ -50,6 +54,34 @@ func (c *versionCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage
 	}, nil
 }
 
+// --- /plugin reload-all (agent-level command for remote CLI) ---
+
+type pluginReloadAllCmd struct{}
+
+func (c *pluginReloadAllCmd) Name() string      { return "/plugin reload-all" }
+func (c *pluginReloadAllCmd) Aliases() []string { return nil }
+func (c *pluginReloadAllCmd) Concurrent() bool  { return true } // doesn't block message queue
+func (c *pluginReloadAllCmd) Match(s string) bool {
+	return strings.TrimSpace(s) == "/plugin reload-all"
+}
+func (c *pluginReloadAllCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	if a.pluginMgr == nil {
+		return nil, fmt.Errorf("plugin system not available")
+	}
+	// Run reload in background — ReloadAll can take a while and must not
+	// block the command handler (which blocks message processing).
+	go func() {
+		if err := a.pluginMgr.ReloadAll(context.Background()); err != nil {
+			log.WithError(err).Error("Plugin reload-all failed")
+		}
+	}()
+	return &channel.OutboundMsg{
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+		Content: "🔄 Plugin reload started — widgets will refresh when complete",
+	}, nil
+}
+
 // --- /help ---
 
 type helpCmd struct{}
@@ -59,25 +91,15 @@ func (c *helpCmd) Aliases() []string   { return nil }
 func (c *helpCmd) Match(s string) bool { return strings.ToLower(s) == "/help" }
 func (c *helpCmd) Concurrent() bool    { return true } // stateless
 
-func (c *helpCmd) Execute(_ context.Context, _ *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+func (c *helpCmd) Execute(_ context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	content := "xbot 命令:\n/help — 显示帮助"
+	if a != nil && a.commands != nil {
+		content = a.commands.HelpText()
+	}
 	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
-		Content: "xbot 命令:\n" +
-			"/new — 开始新对话（归档记忆后重置）\n" +
-			"/version — 显示版本信息\n" +
-			"/prompt <query> — 预览完整提示词（不调用 LLM）\n" +
-			"/help — 显示帮助\n" +
-			"/set-llm provider=<p> base_url=<url> api_key=<key> [model=<m>] — 设置自定义 LLM API\n" +
-			"/unset-llm — 清除自定义 LLM 配置\n" +
-			"/llm — 查看当前 LLM 配置\n" +
-			"/models — 列出当前 API 可用模型\n" +
-			"/set-model <model> — 设置当前使用的模型\n" +
-			"/compress — 手动触发上下文压缩\n" +
-			"/context mode [phase1|none|default] — 查看/切换压缩模式\n" +
-			"/usage — 查看 token 用量统计\n" +
-			"/cancel — 取消当前正在处理的请求\n" +
-			"!<command> — 快捷执行命令（跳过 LLM，直接在 sandbox 中运行）",
+		Content: content,
 	}, nil
 }
 
@@ -130,14 +152,29 @@ func (c *getLLMCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessag
 	return a.handleGetLLM(ctx, msg)
 }
 
+// --- /llms ---
+
+type listLLMsCmd struct{}
+
+func (c *listLLMsCmd) Name() string        { return "/llms" }
+func (c *listLLMsCmd) Aliases() []string   { return nil }
+func (c *listLLMsCmd) Match(s string) bool { return strings.ToLower(s) == "/llms" }
+func (c *listLLMsCmd) Concurrent() bool    { return true } // read-only
+
+func (c *listLLMsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	return a.handleListLLMs(ctx, msg)
+}
+
 // --- /unset-llm ---
 
 type unsetLLMCmd struct{}
 
-func (c *unsetLLMCmd) Name() string        { return "/unset-llm" }
-func (c *unsetLLMCmd) Aliases() []string   { return nil }
-func (c *unsetLLMCmd) Match(s string) bool { return strings.ToLower(s) == "/unset-llm" }
-func (c *unsetLLMCmd) Concurrent() bool    { return false } // mutates LLM config
+func (c *unsetLLMCmd) Name() string      { return "/unset-llm" }
+func (c *unsetLLMCmd) Aliases() []string { return nil }
+func (c *unsetLLMCmd) Match(s string) bool {
+	return strings.HasPrefix(strings.ToLower(s), "/unset-llm")
+}
+func (c *unsetLLMCmd) Concurrent() bool { return false } // mutates LLM config
 
 func (c *unsetLLMCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleUnsetLLM(ctx, msg)
@@ -158,6 +195,52 @@ func (c *compressCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		return nil, err
 	}
 	return a.handleCompress(ctx, msg, tenantSession)
+}
+
+// --- /continue ---
+
+type continueCmd struct{}
+
+func (c *continueCmd) Name() string        { return "/continue" }
+func (c *continueCmd) Aliases() []string   { return nil }
+func (c *continueCmd) Match(s string) bool { return strings.ToLower(s) == "/continue" }
+func (c *continueCmd) Concurrent() bool    { return false } // serializes with the enqueued resume turn
+
+func (c *continueCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	db := a.multiSession.DB()
+	if db == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 数据库未连接"}, nil
+	}
+
+	// Check if the last user message already has an assistant reply.
+	// If it does, the turn completed — nothing to continue.
+	hasReply, err := db.HasAssistantReplyAfterLastUser(msg.Channel, msg.ChatID)
+	if err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("⚠️ 检查失败: %v", err)}, nil
+	}
+	if hasReply {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "💡 上一轮对话已完成，无需继续。"}, nil
+	}
+
+	// Verify there IS a last user message to resume from.
+	content, _, err := db.GetLastUserMessage(msg.Channel, msg.ChatID)
+	if err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("⚠️ 获取历史失败: %v", err)}, nil
+	}
+	if content == "" {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "💡 没有找到可继续的对话。"}, nil
+	}
+
+	// Inject resume turn with empty content — the user message is already
+	// in DB. resume_turn metadata tells processMessage to skip eager-save,
+	// and Assemble skips appending a user message (UserMessage is empty).
+	// LLM sees exactly the DB state — no duplicate, no workaround.
+	log.Ctx(ctx).WithFields(log.Fields{
+		"channel": msg.Channel,
+		"chat_id": msg.ChatID,
+	}).Info("User triggered /continue — resuming interrupted turn")
+	a.InjectInboundResume(msg.Channel, msg.ChatID, msg.SenderID)
+	return nil, nil // no immediate reply — the resumed turn will produce one
 }
 
 // --- /usage ---
@@ -257,243 +340,6 @@ func (c *bangCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage)
 	return a.handleBangCommand(ctx, msg, cmd)
 }
 
-// --- /publish ---
-
-type publishCmd struct{}
-
-func (c *publishCmd) Name() string      { return "/publish" }
-func (c *publishCmd) Aliases() []string { return nil }
-func (c *publishCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/publish ")
-}
-func (c *publishCmd) Concurrent() bool { return false }
-
-func (c *publishCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	content := strings.TrimSpace(msg.Content)
-	args := strings.TrimPrefix(strings.ToLower(content), "/publish ")
-	parts := strings.Fields(args)
-	if len(parts) < 2 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/publish skill|agent <name>`"}, nil
-	}
-	entryType := parts[0]
-	name := parts[1]
-	if entryType != "skill" && entryType != "agent" {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "类型必须是 skill 或 agent"}, nil
-	}
-	if a.registryManager == nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
-	}
-	err := a.registryManager.Publish(entryType, name, msg.SenderID)
-	if err != nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("发布失败：%v", err)}, nil
-	}
-	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已发布", entryType, name)}, nil
-}
-
-// --- /unpublish ---
-
-type unpublishCmd struct{}
-
-func (c *unpublishCmd) Name() string      { return "/unpublish" }
-func (c *unpublishCmd) Aliases() []string { return nil }
-func (c *unpublishCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/unpublish ")
-}
-func (c *unpublishCmd) Concurrent() bool { return false }
-
-func (c *unpublishCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	content := strings.TrimSpace(msg.Content)
-	args := strings.TrimPrefix(strings.ToLower(content), "/unpublish ")
-	parts := strings.Fields(args)
-	if len(parts) < 2 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/unpublish skill|agent <name>`"}, nil
-	}
-	entryType := parts[0]
-	name := parts[1]
-	if a.registryManager == nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
-	}
-	err := a.registryManager.Unpublish(entryType, name, msg.SenderID)
-	if err != nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("取消发布失败：%v", err)}, nil
-	}
-	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已取消发布", entryType, name)}, nil
-}
-
-// --- /browse ---
-
-type browseCmd struct{}
-
-func (c *browseCmd) Name() string      { return "/browse" }
-func (c *browseCmd) Aliases() []string { return nil }
-func (c *browseCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return lower == "/browse" || strings.HasPrefix(lower, "/browse ")
-}
-func (c *browseCmd) Concurrent() bool { return true }
-
-func (c *browseCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	content := strings.TrimSpace(msg.Content)
-	entryType := strings.TrimPrefix(strings.ToLower(content), "/browse ")
-	entryType = strings.TrimSpace(entryType)
-
-	if a.registryManager == nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
-	}
-
-	entries, err := a.registryManager.Browse(entryType, 20, 0)
-	if err != nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("浏览失败：%v", err)}, nil
-	}
-	if len(entries) == 0 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "🏪 市场暂无公开的 Skill/Agent"}, nil
-	}
-
-	var sb strings.Builder
-	sb.WriteString("## 🏪 市场浏览\n\n")
-	for i, e := range entries {
-		typeLabel := "📦"
-		if e.Type == "agent" {
-			typeLabel = "🤖"
-		}
-		fmt.Fprintf(&sb, "%d. %s **%s** — %s\n", i+1, typeLabel, e.Name, e.Description)
-		if e.Author != "" {
-			fmt.Fprintf(&sb, "   作者：%s\n", e.Author)
-		}
-		fmt.Fprintf(&sb, "   安装：`/install %s %d`\n\n", e.Type, e.ID)
-	}
-	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
-}
-
-// --- /install ---
-
-type installCmd struct{}
-
-func (c *installCmd) Name() string      { return "/install" }
-func (c *installCmd) Aliases() []string { return nil }
-func (c *installCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/install ")
-}
-func (c *installCmd) Concurrent() bool { return false }
-
-func (c *installCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	content := strings.TrimSpace(msg.Content)
-	args := strings.TrimPrefix(strings.ToLower(content), "/install ")
-	parts := strings.Fields(args)
-	if len(parts) < 2 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/install skill|agent <id>`"}, nil
-	}
-	entryType := parts[0]
-	id, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "ID 必须是数字"}, nil
-	}
-	if a.registryManager == nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
-	}
-	err = a.registryManager.Install(entryType, id, msg.SenderID)
-	if err != nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("安装失败：%v", err)}, nil
-	}
-	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s #%d 已安装", entryType, id)}, nil
-}
-
-// --- /uninstall ---
-
-type uninstallCmd struct{}
-
-func (c *uninstallCmd) Name() string      { return "/uninstall" }
-func (c *uninstallCmd) Aliases() []string { return nil }
-func (c *uninstallCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/uninstall ")
-}
-func (c *uninstallCmd) Concurrent() bool { return false }
-
-func (c *uninstallCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	content := strings.TrimSpace(msg.Content)
-	args := strings.TrimPrefix(strings.ToLower(content), "/uninstall ")
-	parts := strings.Fields(args)
-	if len(parts) < 2 {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/uninstall skill|agent <name>`"}, nil
-	}
-	entryType := parts[0]
-	name := parts[1]
-	if a.registryManager == nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
-	}
-	err := a.registryManager.Uninstall(entryType, name, msg.SenderID)
-	if err != nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("卸载失败：%v", err)}, nil
-	}
-	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ %s %q 已卸载", entryType, name)}, nil
-}
-
-// --- /my ---
-
-type myCmd struct{}
-
-func (c *myCmd) Name() string      { return "/my" }
-func (c *myCmd) Aliases() []string { return nil }
-func (c *myCmd) Match(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.HasPrefix(lower, "/my ")
-}
-func (c *myCmd) Concurrent() bool { return true }
-
-func (c *myCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	content := strings.TrimSpace(msg.Content)
-	subject := strings.TrimPrefix(strings.ToLower(content), "/my ")
-	subject = strings.TrimSpace(subject)
-
-	if a.registryManager == nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
-	}
-
-	entryType := ""
-	switch subject {
-	case "skills":
-		entryType = "skill"
-	case "agents":
-		entryType = "agent"
-	default:
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/my skills` 或 `/my agents`"}, nil
-	}
-
-	published, installed, err := a.registryManager.ListMy(msg.SenderID, entryType)
-	if err != nil {
-		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("查询失败：%v", err)}, nil
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "## 我的 %s\n\n", subject)
-
-	if len(published) > 0 {
-		sb.WriteString("### 📤 已发布\n\n")
-		for _, e := range published {
-			fmt.Fprintf(&sb, "- **%s** — %s (ID:%d)\n", e.Name, e.Description, e.ID)
-		}
-		sb.WriteString("\n")
-	}
-
-	if len(installed) > 0 {
-		sb.WriteString("### 📥 已安装\n\n")
-		for _, item := range installed {
-			fmt.Fprintf(&sb, "- %s\n", item)
-		}
-		sb.WriteString("\n")
-	}
-
-	if len(published) == 0 && len(installed) == 0 {
-		fmt.Fprintf(&sb, "暂无数据。使用 `/browse %s` 浏览市场。\n", subject)
-	}
-
-	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
-}
-
 // --- /settings ---
 
 type settingsCmd struct{}
@@ -511,9 +357,10 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 设置仅限私聊使用，请私信我发送 /settings"}, nil
 	}
 
-	if a.settingsSvc == nil {
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "SettingsService 未初始化"}, nil
 	}
+	uc := UserContextFromContext(ctx)
 
 	content := strings.TrimSpace(msg.Content)
 	args := strings.TrimPrefix(strings.ToLower(content), "/settings ")
@@ -529,7 +376,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		value := strings.Join(setParts[1:], " ")
 
 		// Fix 4: Validate key against schema if channelFinder is available
-		schema := a.settingsSvc.GetSettingsSchema(msg.Channel)
+		schema := uc.SettingsSvc.GetSettingsSchema(msg.Channel)
 		if len(schema) > 0 {
 			valid := false
 			for _, def := range schema {
@@ -550,7 +397,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 			}
 		}
 
-		err := a.settingsSvc.SetSetting(msg.Channel, msg.SenderID, key, value)
+		err := uc.SettingsSvc.SetSetting(msg.Channel, msg.SenderID, key, value)
 		if err != nil {
 			return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("设置失败：%v", err)}, nil
 		}
@@ -560,7 +407,7 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 	// /settings (list) — 检测飞书渠道使用交互式卡片，其他渠道使用 markdown
 	if a.channelFinder != nil {
 		if ch, ok := a.channelFinder(msg.Channel); ok {
-			if fc, ok := ch.(*channel.FeishuChannel); ok {
+			if fc, ok := ch.(*feishu.FeishuChannel); ok {
 				card, err := fc.BuildSettingsCard(ctx, msg.SenderID, msg.ChatID, "basic")
 				if err != nil {
 					return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("构建设置卡片失败：%v", err)}, nil
@@ -579,61 +426,447 @@ func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 	}
 
 	// Fallback: 非 Feishu 渠道使用 markdown UI
-	ui, err := a.settingsSvc.GetSettingsUI(msg.Channel, msg.SenderID)
+	ui, err := uc.SettingsSvc.GetSettingsUI(msg.Channel, msg.SenderID)
 	if err != nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("获取设置失败：%v", err)}, nil
 	}
 	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: ui}, nil
 }
 
-// --- /menu ---
+// --- /goal ---
 
-type menuCmd struct{}
+type goalCmd struct{}
 
-func (c *menuCmd) Name() string        { return "/menu" }
-func (c *menuCmd) Aliases() []string   { return nil }
-func (c *menuCmd) Match(s string) bool { return strings.ToLower(s) == "/menu" }
-func (c *menuCmd) Concurrent() bool    { return true }
+func (c *goalCmd) Name() string      { return "/goal" }
+func (c *goalCmd) Aliases() []string { return nil }
+func (c *goalCmd) Match(s string) bool {
+	lower := strings.TrimSpace(strings.ToLower(s))
+	if lower == "/goal" {
+		return true
+	}
+	fields := strings.Fields(lower)
+	if len(fields) >= 2 && fields[0] == "/goal" {
+		sub := fields[1]
+		if sub == "status" || sub == "clear" {
+			return false // handled by goalStatusCmd / goalClearCmd
+		}
+		return true
+	}
+	return false
+}
+func (c *goalCmd) Concurrent() bool { return false } // mutates goal state + triggers Run
 
-func (c *menuCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+func (c *goalCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	objective := strings.TrimSpace(strings.TrimPrefix(msg.Content, "/goal"))
+	objective = strings.TrimSpace(objective)
+	if objective == "" || objective == "status" || objective == "clear" {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/goal <目标描述>`"}, nil
+	}
+
+	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
+	if a.goalManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ Goal 系统未初始化"}, nil
+	}
+	a.goalManager.Set(sessionKey, objective)
+
+	// Return sentinel — processMessage detects goal_start metadata,
+	// strips the /goal prefix, and falls through to Run().
 	return &channel.OutboundMsg{
-		Channel: msg.Channel,
-		ChatID:  msg.ChatID,
-		Content: "## 🏠 主菜单\n\n" +
-			"- ⚙️ `/settings` — 个人设置\n" +
-			"- 📦 `/my skills` — 我的 Skills\n" +
-			"- 🤖 `/my agents` — 我的 Agents\n" +
-			"- 🏪 `/browse` — 浏览市场\n" +
-			"- 📤 `/publish skill|agent <name>` — 发布\n" +
-			"- 📥 `/install skill|agent <id>` — 安装\n" +
-			"- 🗑️ `/uninstall skill|agent <name>` — 卸载\n",
+		Channel:  msg.Channel,
+		ChatID:   msg.ChatID,
+		Metadata: map[string]string{"goal_start": objective},
 	}, nil
+}
+
+// --- /goal status ---
+
+type goalStatusCmd struct{}
+
+func (c *goalStatusCmd) Name() string      { return "/goal status" }
+func (c *goalStatusCmd) Aliases() []string { return nil }
+func (c *goalStatusCmd) Match(s string) bool {
+	return strings.TrimSpace(strings.ToLower(s)) == "/goal status"
+}
+func (c *goalStatusCmd) Concurrent() bool { return true }
+
+func (c *goalStatusCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	if a.goalManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ Goal 系统未初始化"}, nil
+	}
+	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
+	g := a.goalManager.Get(sessionKey)
+	if g == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "📭 当前没有目标。使用 `/goal <目标描述>` 设定目标。"}, nil
+	}
+
+	var status string
+	switch g.Status {
+	case GoalCompleted:
+		status = "✅ 已完成"
+	default:
+		status = "🔄 进行中"
+	}
+
+	content := fmt.Sprintf("🎯 **目标**: %s\n📊 **状态**: %s", g.Objective, status)
+	if g.Summary != "" {
+		content += fmt.Sprintf("\n📝 **总结**: %s", g.Summary)
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: content}, nil
+}
+
+// --- /goal clear ---
+
+type goalClearCmd struct{}
+
+func (c *goalClearCmd) Name() string      { return "/goal clear" }
+func (c *goalClearCmd) Aliases() []string { return nil }
+func (c *goalClearCmd) Match(s string) bool {
+	return strings.TrimSpace(strings.ToLower(s)) == "/goal clear"
+}
+func (c *goalClearCmd) Concurrent() bool { return false }
+
+func (c *goalClearCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	if a.goalManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ Goal 系统未初始化"}, nil
+	}
+	sessionKey := qualifyChatID(msg.Channel, msg.ChatID)
+	a.goalManager.Clear(sessionKey)
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "✅ 目标已清除。后续 turn 将正常结束，不再自动继续。"}, nil
 }
 
 // registerBuiltinCommands registers all built-in commands to the registry.
 func registerBuiltinCommands(r *CommandRegistry) {
-	r.Register(&newCmd{})
-	r.Register(&versionCmd{})
-	r.Register(&helpCmd{})
-	r.Register(&promptCmd{})
-	r.Register(&setLLMCmd{})
-	r.Register(&unsetLLMCmd{})
-	r.Register(&getLLMCmd{})
-	r.Register(&compressCmd{})
-	r.Register(&usageCmd{})
-	r.Register(&contextModeCmd{}) // 先注册（更精确的匹配优先）
-	r.Register(&contextInfoCmd{}) // 后注册（更宽泛的匹配）
-	r.Register(&modelsCmd{})
-	r.Register(&setModelCmd{})
-	r.Register(&bangCmd{})
+	r.Register(&newCmd{}, CommandInfo{Usage: "/new", Description: "开始新对话（归档记忆后重置）"})
+	r.Register(&versionCmd{}, CommandInfo{Usage: "/version", Description: "显示版本信息"})
+	r.Register(&helpCmd{}, CommandInfo{Usage: "/help", Description: "显示帮助"})
+	r.Register(&promptCmd{}, CommandInfo{Usage: "/prompt <query>", Description: "预览完整提示词（不调用 LLM）"})
+	r.Register(&setLLMCmd{}, CommandInfo{Usage: "/set-llm provider=<p> base_url=<url> api_key=<key> [model=<m>]", Description: "创建/更新个人 LLM 订阅"})
+	r.Register(&unsetLLMCmd{}, CommandInfo{Usage: "/unset-llm <订阅名>", Description: "删除指定订阅"})
+	r.Register(&getLLMCmd{}, CommandInfo{Usage: "/llm", Description: "查看当前解析到的订阅与模型"})
+	r.Register(&listLLMsCmd{}, CommandInfo{Usage: "/llms", Description: "列出所有个人 LLM 订阅"})
+	r.Register(&compressCmd{}, CommandInfo{Usage: "/compress", Description: "手动触发上下文压缩"})
+	r.Register(&continueCmd{}, CommandInfo{Usage: "/continue", Description: "继续上一轮被中断的对话（基于 DB 断点恢复）"})
+	r.Register(&usageCmd{}, CommandInfo{Usage: "/usage", Description: "查看 token 用量统计"})
+	r.Register(&contextModeCmd{}, CommandInfo{Usage: "/context mode [phase1|none|default]", Description: "查看/切换压缩模式"}) // 先注册（更精确的匹配优先）
+	r.Register(&contextInfoCmd{}, CommandInfo{Usage: "/context", Description: "查看上下文统计"})                              // 后注册（更宽泛的匹配）
+	r.Register(&modelsCmd{}, CommandInfo{Usage: "/models", Description: "列出可选模型（带正常/离线/禁用状态）"})
+	r.Register(&setModelCmd{}, CommandInfo{Usage: "/set-model <订阅名> <模型名>", Description: "切换当前会话模型"})
+	r.Register(&bangCmd{}, CommandInfo{Usage: "!<command>", Description: "快捷执行命令（跳过 LLM，直接在 sandbox 中运行）"})
 
 	// Registry & settings commands
-	r.Register(&publishCmd{})
-	r.Register(&unpublishCmd{})
-	r.Register(&browseCmd{})
-	r.Register(&installCmd{})
-	r.Register(&uninstallCmd{})
-	r.Register(&myCmd{})
-	r.Register(&settingsCmd{})
-	r.Register(&menuCmd{})
+	r.Register(&settingsCmd{}, CommandInfo{Usage: "/settings", Description: "打开个人设置（仅私聊）"})
+	r.Register(&pluginReloadAllCmd{}, CommandInfo{Usage: "/plugin reload-all", Description: "重新加载所有插件"})
+	r.Register(&appCmd{}, CommandInfo{Usage: "/app", Description: "应用管理（打包、安装、卸载）"})
+
+	// Goal commands
+	r.Register(&goalClearCmd{}, CommandInfo{Usage: "/goal clear", Description: "清除当前目标"}) // 先注册（更精确的匹配优先）
+	r.Register(&goalStatusCmd{}, CommandInfo{Usage: "/goal status", Description: "查看当前目标状态"})
+	r.Register(&goalCmd{}, CommandInfo{Usage: "/goal <目标描述>", Description: "设定长期目标，Agent 自动持续工作直到完成"}) // 后注册（匹配 /goal <任意内容>）
+}
+
+// ---------------------------------------------------------------------------
+// Plugin Command Adapter — bridges plugin.PluginCommandHandler → agent.Command
+// ---------------------------------------------------------------------------
+
+// pluginCmdAdapter wraps a plugin command handler as an agent.Command.
+// It avoids circular imports by living in the agent package, receiving the
+// handler and PluginContext from plugin.WirePluginCommands.
+type pluginCmdAdapter struct {
+	name        string
+	description string
+	handler     plugin.PluginCommandHandler
+	pctx        plugin.PluginContext
+}
+
+func (a *pluginCmdAdapter) Name() string      { return a.name }
+func (a *pluginCmdAdapter) Aliases() []string { return nil }
+func (a *pluginCmdAdapter) Concurrent() bool  { return false }
+func (a *pluginCmdAdapter) CommandInfo() CommandInfo {
+	return CommandInfo{Name: a.name, Usage: a.name, Description: a.description}
+}
+
+func isPluginCommand(cmd Command) bool {
+	switch c := cmd.(type) {
+	case *pluginCmdAdapter:
+		return true
+	case *commandWithInfo:
+		_, ok := c.Command.(*pluginCmdAdapter)
+		return ok
+	default:
+		return false
+	}
+}
+
+func (a *pluginCmdAdapter) Match(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	return strings.HasPrefix(trimmed, a.name+" ") || trimmed == a.name
+}
+
+func (a *pluginCmdAdapter) Execute(ctx context.Context, ag *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	trimmed := strings.TrimSpace(msg.Content)
+	args := ""
+	if strings.HasPrefix(trimmed, a.name+" ") {
+		args = strings.TrimSpace(strings.TrimPrefix(trimmed, a.name+" "))
+	}
+	result, err := a.handler(ctx, args, a.pctx)
+	if err != nil {
+		return nil, err
+	}
+	return &channel.OutboundMsg{
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+		Content: result,
+	}, nil
+}
+
+// --- /app (app management) ---
+
+type appCmd struct{}
+
+func (c *appCmd) Name() string      { return "/app" }
+func (c *appCmd) Aliases() []string { return nil }
+func (c *appCmd) Match(s string) bool {
+	lower := strings.ToLower(s)
+	return lower == "/app" || strings.HasPrefix(lower, "/app ")
+}
+func (c *appCmd) Concurrent() bool { return false }
+
+func (c *appCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	content := strings.TrimSpace(msg.Content)
+	args := strings.TrimPrefix(strings.ToLower(content), "/app")
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: appHelp()}, nil
+	}
+
+	parts := strings.Fields(args)
+	subCmd := parts[0]
+	rest := parts[1:]
+
+	switch subCmd {
+	case "export":
+		return c.handleExport(a, msg, rest)
+	case "install":
+		return c.handleInstall(a, msg, rest)
+	case "uninstall":
+		return c.handleUninstall(a, msg, rest)
+	case "list":
+		return c.handleList(a, msg, rest)
+	default:
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: appHelp()}, nil
+	}
+}
+
+func (c *appCmd) handleExport(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
+	// Parse: /app export <app-name> -s <skill> -a <agent> -p <plugin> [...]
+	if len(args) < 2 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app export <app-name> -s <skill> -a <agent> -p <plugin>`"}, nil
+	}
+
+	appName := args[0]
+	var items []AppItem
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "-s", "--skill":
+			if i+1 < len(args) {
+				items = append(items, AppItem{Type: "skill", Name: args[i+1]})
+				i++
+			}
+		case "-a", "--agent":
+			if i+1 < len(args) {
+				items = append(items, AppItem{Type: "agent", Name: args[i+1]})
+				i++
+			}
+		case "-p", "--plugin":
+			if i+1 < len(args) {
+				items = append(items, AppItem{Type: "plugin", Name: args[i+1]})
+				i++
+			}
+		}
+	}
+
+	if len(items) == 0 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 -s、-a 或 -p"}, nil
+	}
+	if a.registryManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+	}
+
+	outputPath := filepath.Join(os.TempDir(), appName+".zip")
+	if err := a.registryManager.PackApp(items, outputPath, msg.SenderID); err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("导出失败：%v", err)}, nil
+	}
+
+	var itemNames []string
+	for _, it := range items {
+		itemNames = append(itemNames, fmt.Sprintf("%s:%s", it.Type, it.Name))
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("✅ 应用已导出到 %s\n包含：%s", outputPath, strings.Join(itemNames, ", "))}, nil
+}
+
+func (c *appCmd) handleInstall(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
+	force := false
+	var positional []string
+	for _, arg := range args {
+		if arg == "-f" || arg == "--force" {
+			force = true
+		} else {
+			positional = append(positional, arg)
+		}
+	}
+	if len(positional) < 1 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app install [-f] <file-path|url>`\n`-f` 强制覆盖同名组件"}, nil
+	}
+	if a.registryManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+	}
+
+	target := positional[0]
+	var result *AppInstallResult
+	var err error
+
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		result, err = a.registryManager.InstallAppFromURL(target, msg.SenderID, force)
+	} else {
+		result, err = a.registryManager.InstallAppFromFile(target, msg.SenderID, force)
+	}
+	if err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("安装失败：%v", err)}, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "✅ 应用 %q 安装完成\n", result.Manifest.Name)
+	if result.Manifest.Version != "" {
+		fmt.Fprintf(&sb, "版本：%s\n", result.Manifest.Version)
+	}
+	if len(result.Installed) > 0 {
+		sb.WriteString("已安装：\n")
+		for _, item := range result.Installed {
+			fmt.Fprintf(&sb, "  - %s\n", item)
+		}
+	}
+	if len(result.Skipped) > 0 {
+		sb.WriteString("跳过（已存在，用 -f 强制覆盖）：\n")
+		for _, item := range result.Skipped {
+			fmt.Fprintf(&sb, "  - %s\n", item)
+		}
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
+}
+
+func (c *appCmd) handleUninstall(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
+	if len(args) < 2 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "用法：`/app uninstall -n <app-name>` 或 `/app uninstall -s <skill> -a <agent> -p <plugin>`\n`-n` 卸载整个 app 包"}, nil
+	}
+	if a.registryManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+	}
+
+	type uninstallItem struct {
+		entryType string
+		name      string
+	}
+	var items []uninstallItem
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-n", "--app":
+			if i+1 < len(args) {
+				items = append(items, uninstallItem{"app", args[i+1]})
+				i++
+			}
+		case "-s", "--skill":
+			if i+1 < len(args) {
+				items = append(items, uninstallItem{"skill", args[i+1]})
+				i++
+			}
+		case "-a", "--agent":
+			if i+1 < len(args) {
+				items = append(items, uninstallItem{"agent", args[i+1]})
+				i++
+			}
+		case "-p", "--plugin":
+			if i+1 < len(args) {
+				items = append(items, uninstallItem{"plugin", args[i+1]})
+				i++
+			}
+		}
+	}
+
+	if len(items) == 0 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "至少指定一个 -n、-s、-a 或 -p"}, nil
+	}
+
+	var sb strings.Builder
+	var hasError bool
+	for _, item := range items {
+		if err := a.registryManager.Uninstall(item.entryType, item.name, msg.SenderID); err != nil {
+			fmt.Fprintf(&sb, "❌ %s %q: %v\n", item.entryType, item.name, err)
+			hasError = true
+		} else {
+			fmt.Fprintf(&sb, "✅ %s %q 已卸载\n", item.entryType, item.name)
+		}
+	}
+	if hasError {
+		sb.WriteString("\n⚠️ 部分组件卸载失败")
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
+}
+
+func (c *appCmd) handleList(a *Agent, msg bus.InboundMessage, args []string) (*channel.OutboundMsg, error) {
+	if a.registryManager == nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "RegistryManager 未初始化"}, nil
+	}
+	// List installed skills
+	skills := a.registryManager.ListInstalledSkills(msg.SenderID)
+	// List installed agents
+	agents := a.registryManager.ListInstalledAgents(msg.SenderID)
+	// List installed plugins
+	plugins := a.registryManager.ListInstalledPlugins(msg.SenderID)
+
+	if len(skills) == 0 && len(agents) == 0 && len(plugins) == 0 {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "📦 暂无已安装的 skill、agent 或 plugin"}, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## 📦 已安装\n\n")
+	if len(skills) > 0 {
+		sb.WriteString("**Skills:**\n")
+		for _, s := range skills {
+			fmt.Fprintf(&sb, "- 📦 %s\n", s)
+		}
+		sb.WriteString("\n")
+	}
+	if len(agents) > 0 {
+		sb.WriteString("**Agents:**\n")
+		for _, a := range agents {
+			fmt.Fprintf(&sb, "- 🤖 %s\n", a)
+		}
+		sb.WriteString("\n")
+	}
+	if len(plugins) > 0 {
+		sb.WriteString("**Plugins:**\n")
+		for _, p := range plugins {
+			fmt.Fprintf(&sb, "- 🧩 %s\n", p)
+		}
+	}
+	return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: sb.String()}, nil
+}
+
+func appHelp() string {
+	return "## 📦 /app — 应用管理\n\n" +
+		"**子命令：**\n\n" +
+		"- `/app list` — 查看已安装\n" +
+		"- `/app install [-f] <file-path>` — 从 .zip 文件安装（-f 强制覆盖）\n" +
+		"- `/app install [-f] <url>` — 从 URL 下载并安装（-f 强制覆盖）\n" +
+		"- `/app uninstall -n <app> -s <skill> -a <agent> -p <plugin>` — 卸载（-n 卸载整个 app 包）\n" +
+		"- `/app export <name> -s <skill> -a <agent> -p <plugin>` — 打包导出\n\n" +
+		"**示例：**\n\n" +
+		"```\n" +
+		"/app list\n" +
+		"/app install /tmp/my-app.zip\n" +
+		"/app install -f https://example.com/my-app.zip\n" +
+		"/app uninstall -n my-app\n" +
+		"/app uninstall -s debug -a explore\n" +
+		"/app export my-app -s debug -a explore -p git-widget\n" +
+		"```\n"
 }

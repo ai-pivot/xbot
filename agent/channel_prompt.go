@@ -1,6 +1,9 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // ChannelPromptProvider 定义 channel 特化 prompt 提供者接口。
 // 由外部（main.go 中的适配器）实现并注入，不依赖 channel 包。
@@ -17,7 +20,9 @@ type ChannelPromptProvider interface {
 
 // ChannelPromptMiddleware 注入 channel 特化的 system prompt 片段。
 // 优先级 5（在 SystemPromptMiddleware 之后，SkillsCatalog 之前）。
+// 并发安全：支持运行时通过 AddProvider 动态添加 provider。
 type ChannelPromptMiddleware struct {
+	mu        sync.RWMutex
 	providers map[string]ChannelPromptProvider // key: channel name
 }
 
@@ -29,6 +34,14 @@ func NewChannelPromptMiddleware(providers ...ChannelPromptProvider) *ChannelProm
 	return m
 }
 
+// AddProvider 动态添加一个 channel prompt provider（线程安全）。
+// 如果同名 provider 已存在，则覆盖更新。
+func (m *ChannelPromptMiddleware) AddProvider(p ChannelPromptProvider) {
+	m.mu.Lock()
+	m.providers[p.ChannelPromptName()] = p
+	m.mu.Unlock()
+}
+
 func (m *ChannelPromptMiddleware) Name() string  { return "channel_prompt" }
 func (m *ChannelPromptMiddleware) Priority() int { return 5 }
 
@@ -36,7 +49,9 @@ func (m *ChannelPromptMiddleware) Process(mc *MessageContext) error {
 	if mc.Channel == "" {
 		return nil
 	}
+	m.mu.RLock()
 	provider, ok := m.providers[mc.Channel]
+	m.mu.RUnlock()
 	if !ok {
 		return nil
 	}

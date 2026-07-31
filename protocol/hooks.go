@@ -63,6 +63,17 @@ type RewindResult struct {
 	Errors     []string `json:"errors"`
 }
 
+// HistoryRewindResult reports chat-history and file-checkpoint outcomes
+// independently. HistoryRewound is only true after the DB truncate commits.
+type HistoryRewindResult struct {
+	TargetHistoryID int64         `json:"target_history_id"`
+	Draft           string        `json:"draft"`
+	HistoryRewound  bool          `json:"history_rewound"`
+	FilesRewound    bool          `json:"files_rewound"`
+	Checkpoint      *RewindResult `json:"rewind_result,omitempty"`
+	CheckpointError string        `json:"checkpoint_error,omitempty"`
+}
+
 type CheckpointStore interface {
 	Rewind(turnIdx int) (RewindResult, error)
 	HasChanges(turnIdx int) bool
@@ -102,6 +113,15 @@ func (cs *CheckpointState) TurnIdx() int {
 // Store returns the underlying CheckpointStore.
 func (cs *CheckpointState) Store() CheckpointStore {
 	return cs.store
+}
+
+// SetStore replaces the underlying CheckpointStore. Used when switching sessions
+// to point the shared CheckpointState at a session-specific store.
+// The old store (if any) is NOT closed — the caller manages store lifecycle.
+func (cs *CheckpointState) SetStore(store CheckpointStore) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.store = store
 }
 
 // SetPending stores a file snapshot for the given path.

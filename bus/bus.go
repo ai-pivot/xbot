@@ -1,6 +1,12 @@
 package bus
 
-import "time"
+import (
+	"errors"
+	"sync/atomic"
+	"time"
+)
+
+var ErrInboundQueueFull = errors.New("chat queue full")
 
 // MessagePayload 是所有消息共享的核心字段。
 // protocol/ 通过嵌入复用，避免字段重复定义。
@@ -80,6 +86,9 @@ type InboundMessage struct {
 	Time      time.Time
 	IsCron    bool   // Deprecated: cron now uses same pipeline as regular messages. Kept for backward compat.
 	RequestID string // 请求追踪 ID（UUID 无横线），在渠道收到消息时生成
+	// DeliveryAck is set by transports that require acknowledgement from the
+	// agent's per-chat queue. It is process-local and never serialized.
+	DeliveryAck chan error
 
 	// Event-triggered metadata (generalization beyond IsCron)
 	EventSource  string // event origin: "webhook", "cron", "" (user message)
@@ -161,8 +170,9 @@ type OutboundMessage struct {
 
 // MessageBus 异步消息总线，解耦渠道和 Agent
 type MessageBus struct {
-	Inbound  chan InboundMessage
-	Outbound chan OutboundMessage
+	Inbound            chan InboundMessage
+	Outbound           chan OutboundMessage
+	requireDeliveryAck atomic.Bool
 }
 
 // NewMessageBus 创建消息总线
@@ -171,4 +181,20 @@ func NewMessageBus() *MessageBus {
 		Inbound:  make(chan InboundMessage, 64),
 		Outbound: make(chan OutboundMessage, 64),
 	}
+}
+
+func (b *MessageBus) EnableDeliveryAcknowledgement() {
+	if b != nil {
+		b.requireDeliveryAck.Store(true)
+	}
+}
+
+func (b *MessageBus) DisableDeliveryAcknowledgement() {
+	if b != nil {
+		b.requireDeliveryAck.Store(false)
+	}
+}
+
+func (b *MessageBus) DeliveryAcknowledgementEnabled() bool {
+	return b != nil && b.requireDeliveryAck.Load()
 }

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"xbot/config"
 	"xbot/protocol"
 )
 
@@ -42,12 +41,6 @@ func (a *Agent) SetCWD(ch, chatID, dir string) error {
 	return nil
 }
 
-// SetModelTiers configures the LLM model tiers via LLMFactory.
-func (a *Agent) SetModelTiers(cfg config.LLMConfig) error {
-	a.llmFactory.SetModelTiers(cfg)
-	return nil
-}
-
 // IsProcessingByChannel returns true if there is an active Run for the given channel:chatID.
 func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 	key := ch + ":" + chatID
@@ -56,18 +49,39 @@ func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 }
 
 // GetActiveProgress returns the latest progress snapshot for the given channel:chatID.
+// The fromIter parameter is the TUI's watermark — only iterations with
+// Iteration > fromIter are included in the returned IterationHistory. This keeps
+// pull payloads proportional to the number of missing iterations, not the total
+// turn length. Pass fromIter=0 (or -1) to get all iterations (for /su switch or
+// initial restore).
+//
 // For agent sessions, corrects Phase from the authoritative running state in
 // interactiveSubAgents when the agent is between iterations (Phase="done" but
 // still running). This unifies the busy/idle logic across all session types.
-func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
+func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent {
 	key := ch + ":" + chatID
 	v, ok := a.lastProgressSnapshot.Load(key)
 	if !ok {
-		return nil
+		// Turn has ended (snapshot deleted). Return a minimal snapshot with
+		// only todos so the client can restore the TODO list on session switch.
+		// Without this, switching to an idle session with todos shows no todos
+		// until the next TodoWrite tool call.
+		todos := a.GetTodos(ch, chatID)
+		if len(todos) == 0 {
+			return nil
+		}
+		return &protocol.ProgressEvent{
+			Phase: "done",
+			Todos: todos,
+		}
 	}
 	snapshot := v.(*protocol.ProgressEvent)
-	// Shallow copy to avoid data race: agent may update snapshot fields concurrently.
 	result := *snapshot
+
+	// Merge live stream state (updated by stream callbacks between structured events).
+	// This is the pull-model replacement for stream event push — the client reads
+	// live streaming content via tick pull instead of receiving push events.
+	a.mergeStreamState(key, &result)
 
 	// Agent sessions: correct Phase from authoritative running state.
 	// interactiveSubAgents stores entries keyed by interactiveKey (no "agent:" prefix),
@@ -101,8 +115,15 @@ func (a *Agent) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
 	if histPtr, ok := a.iterationHistories.Load(key); ok {
 		hist := *histPtr.(*[]protocol.ProgressEvent)
 		if len(hist) > 0 {
-			result.IterationHistory = make([]protocol.ProgressEvent, len(hist))
-			copy(result.IterationHistory, hist)
+			flat := progressHistoryWithoutNested(hist)
+			a.iterationHistories.CompareAndSwap(key, histPtr, &flat)
+			filtered := make([]protocol.ProgressEvent, 0, len(flat))
+			for _, h := range flat {
+				if fetch.Filter(h.Iteration) {
+					filtered = append(filtered, h)
+				}
+			}
+			result.IterationHistory = filtered
 			return &result
 		}
 	}

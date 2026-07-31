@@ -5,15 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"time"
 
+	"xbot/internal/cmdbuilder"
 	"xbot/tools"
 )
 
 // CommandExecutor runs shell commands as hook handlers.
-// It executes the command from HookDef.Command via "sh -c", passes event
-// payload as JSON on stdin, and interprets the exit code to produce a Result.
+// It executes the command from HookDef.Command via the platform shell, passes
+// event payload as JSON on stdin, and interprets the exit code to produce a Result.
 type CommandExecutor struct {
 	xbotHome   string // $XBOT_HOME value
 	projectDir string // $XBOT_PROJECT_DIR value
@@ -35,7 +35,7 @@ func (e *CommandExecutor) Type() string { return "command" }
 //
 // Execution flow:
 //  1. Determine timeout: def.Timeout > 0, otherwise default 30s.
-//  2. Create a child process via "sh -c <command>" with XBOT_* env vars.
+//  2. Create a child process via the platform shell with XBOT_* env vars.
 //  3. Pipe event.Payload() as JSON to stdin.
 //  4. Capture stdout and stderr separately.
 //  5. Interpret exit code:
@@ -54,7 +54,10 @@ func (e *CommandExecutor) Execute(ctx context.Context, def *HookDef, event Event
 	defer cancel()
 
 	// 3. Build command.
-	cmd := exec.Command("sh", "-c", def.Command)
+	cmd, err := cmdbuilder.Build(cmdCtx, true, def.Command, nil, "", nil, cmdbuilder.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("build command: %w", err)
+	}
 	// Use process group so timeout can kill the entire tree (shell + children).
 	tools.SetProcessAttrs(cmd)
 

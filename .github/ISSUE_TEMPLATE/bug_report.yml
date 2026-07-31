@@ -1,0 +1,134 @@
+name: 🐛 Bug 报告
+description: 报告一个 bug 或异常行为
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你报告 bug！请尽量填写以下信息，帮助我们快速定位问题。
+
+        > 💡 提交前请先 [搜索已有 issues](https://github.com/ai-pivot/xbot/issues?q=is%3Aissue) 确认未被重复报告。
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 受影响的组件
+      description: 选择出问题的功能模块（可多选）
+      multiple: true
+      options:
+        - 🖥️ CLI / TUI（终端界面）
+        - 📱 Feishu（飞书）
+        - 💬 QQ / NapCat
+        - 🌐 Web
+        - 🤖 LLM / 订阅系统（Subscription）
+        - 🧠 Memory（记忆系统）
+        - 🔌 Plugin（插件系统）
+        - 🏗️ Runner / Sandbox（沙箱）
+        - 🔄 SubAgent / Group Chat
+        - 🔧 Tool（内置工具：Shell / Read / Edit / WebSearch 等）
+        - ⏱️ Cron（定时任务）
+        - 🪝 Hooks（钩子）
+        - 📚 Documentation（文档）
+        - ❓ 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 运行模式
+      options:
+        - Standalone（CLI 本地模式）
+        - Server（服务器模式 — CLI 远程连接 / Feishu / QQ / Web）
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug 描述
+      description: 简要描述遇到了什么问题。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 详细的重现步骤，帮助我们复现问题。
+      placeholder: |
+        1. 启动 xbot（'xbot-cli' 或 'xbot serve'）
+        2. ...
+        3. ...
+        4. 看到错误
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 你期望发生什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 错误信息
+      description: 相关的日志输出或错误堆栈。CLI 模式按 `Ctrl+L` 可查看日志文件路径；Server 模式查看 `~/.xbot/logs/`。
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: macOS 14.4 / Ubuntu 22.04 / Windows 11 / ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: xbot 版本
+      description: 运行 `xbot version` 或 `xbot-cli version` 获取版本号。
+      placeholder: v0.x.x
+    validations:
+      required: true
+
+  - type: input
+    id: llm-provider
+    attributes:
+      label: LLM 提供商和模型
+      placeholder: OpenAI / gpt-4o, DeepSeek / deepseek-chat, Anthropic / claude-3.5-sonnet, ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 配置信息（可选）
+      description: 相关的 `~/.xbot/config.json` 配置片段（**请移除 API key 和敏感信息**）。
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息
+      description: 截图、相关的 config 片段、或任何其他有助于理解问题的信息。
+    validations:
+      required: false

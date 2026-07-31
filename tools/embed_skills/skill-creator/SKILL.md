@@ -1,9 +1,52 @@
 ---
 name: skill-creator
-description: Create, update, or delete skills. Use when the user asks to create a new skill, modify an existing skill, package scripts/assets into a skill, or discusses skill design and structure.
+description: Create, update, delete, or install skills. Use when the user asks to create a new skill, modify an existing skill, install/import a skill from external sources (GitHub, URLs), package scripts/assets into a skill, or discusses skill design and structure. Skills are universal agent capabilities — install whatever the user wants.
 ---
 
 # Skill Creator
+
+Skills are **universal agent capabilities**. They are not limited to xbot-specific
+features — any workflow, integration, or domain knowledge can be packaged as a
+skill. When a user asks to install or create a skill, **always do it**, regardless
+of the skill's purpose or origin.
+
+## Installing External Skills
+
+Users may ask to install a skill from GitHub, a URL, or another source. This is
+the most common skill workflow — treat it as first-class.
+
+### From GitHub
+
+```bash
+# Clone into skills directory
+git clone https://github.com/user/agent-skill-foo.git ~/.xbot/skills/foo
+
+# Or download a single file
+curl -fsSL https://raw.githubusercontent.com/user/repo/main/SKILL.md \
+  -o ~/.xbot/skills/foo/SKILL.md
+```
+
+After downloading, verify:
+1. The file is `SKILL.md` with valid frontmatter (`name:` and `description:`)
+2. Scripts are executable (`chmod +x`)
+3. `Skill(name="foo", action=load)` works
+
+### Searching for Skills
+
+When searching the web for skills, search for **"agent skill"** or **"AI agent skill"**,
+NOT "xbot skill". The skill format (SKILL.md with YAML frontmatter) is a universal
+convention used across agent frameworks. Good search queries:
+
+- `"agent skill" <topic> github`
+- `"SKILL.md" <domain>`
+- `AI agent skill <capability>`
+
+### Installing from User Description
+
+When a user says "I want a skill that does X":
+1. Search the web for existing agent skills for X
+2. If found → download and install
+3. If not found → create from scratch following the guide below
 
 ## Skill Structure
 
@@ -34,7 +77,8 @@ To find the correct path, look at the system prompt section `# Available Skills`
 
 1. **Discovery** — Every message, all skill names + descriptions appear in the system prompt
 2. **Loading** — LLM calls `Skill(name=..., action=load)` to read SKILL.md
-3. **Tool loading** — LLM **immediately** calls `load_tools` for all tools listed in the skill's "Required Tools" section
+3. **Tool usage** — All tools are always available; use them directly
+   as listed in the skill's "Required Tools" section
 4. **File listing** — `Skill(name=..., action=list_files)` returns full paths of all files in the skill
 5. **Execution** — LLM runs scripts via `Shell` tool using the paths from `list_files`
 
@@ -49,7 +93,7 @@ search_tools(query="send feishu message")  → finds feishu_send_message, etc.
 search_tools(query="github pull request")  → finds mcp_github_create_pr, etc.
 ```
 
-Include the discovered tool names in the skill body so the LLM knows which tools to `load_tools` after activating the skill.
+Include the discovered tool names in the skill body so the LLM knows which tools the skill expects to use.
 
 ### 2. Write SKILL.md
 
@@ -62,7 +106,7 @@ description: What this skill does and WHEN to activate it. Be specific — this 
 # My Skill
 
 ## Required Tools
-After loading this skill, immediately call `load_tools` for these tools:
+These tools are used by this skill (all are always available):
 - feishu_send_message
 - feishu_search_wiki
 
@@ -70,7 +114,7 @@ After loading this skill, immediately call `load_tools` for these tools:
 Step-by-step instructions for the LLM...
 ```
 
-**Critical**: Every skill MUST include a "Required Tools" section listing tools to load. After `Skill(action=load)` returns, the LLM must **immediately** call `load_tools` for all listed tools before doing anything else.
+**Note**: Every skill SHOULD include a "Required Tools" section listing which tools the skill expects to use. All tools are always available to the agent — this section is documentation, not a load trigger.
 
 ### 3. Add scripts (optional)
 
@@ -103,7 +147,7 @@ Skill(name=my-skill, action=load, file=references/api-spec.md)
 ## Updating a Skill
 
 1. `Skill(name=..., action=load)` — read current content
-2. `Edit` tool — modify SKILL.md or other files
+2. `FileReplace`/`FileCreate` tool — modify SKILL.md or other files
 3. `Skill(name=..., action=list_files)` — verify file layout
 
 ## Writing Guidelines

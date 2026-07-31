@@ -109,7 +109,19 @@ func (s *Scheduler) cleanupExpiredJobs() {
 	cleaned := 0
 	for _, job := range jobs {
 		if job.OneShot && job.NextRun.Before(now) {
-			// Remove expired one-shot jobs
+			if job.DelaySeconds > 0 {
+				// delay_seconds one-shot jobs represent relative time ("N seconds from
+				// creation"). If expired during downtime, keep them so checkAndFire
+				// triggers immediately on the first tick — the user expected them to
+				// fire eventually, not be silently dropped.
+				log.WithFields(log.Fields{
+					"job_id":   job.ID,
+					"next_run": job.NextRun,
+				}).Info("Preserving expired delay_seconds one-shot job for immediate fire")
+				continue
+			}
+			// At-based one-shot jobs: the scheduled moment has passed.
+			// Remove them (matching traditional cron catch-up semantics).
 			if err := s.cronSvc.RemoveJob(job.ID); err != nil {
 				log.WithError(err).WithField("job_id", job.ID).Warn("Failed to remove expired one-shot job")
 			} else {
@@ -247,8 +259,16 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 				log.WithError(err).WithField("job_id", job.ID).Error("Failed to remove one-shot job")
 			}
 		} else if job.EverySeconds > 0 {
-			// Update next run for interval jobs
-			nextRun := now.Add(time.Duration(job.EverySeconds) * time.Second)
+			// Update next run for interval jobs.
+			// Base next_run on the scheduled time (job.NextRun), not the actual
+			// fire time (now), to prevent accumulated drift when the 5s ticker
+			// fires slightly late. If multiple intervals were missed, advance
+			// forward until we reach a future time.
+			interval := time.Duration(job.EverySeconds) * time.Second
+			nextRun := job.NextRun.Add(interval)
+			for !nextRun.After(now) {
+				nextRun = nextRun.Add(interval)
+			}
 			if err := s.cronSvc.UpdateNextRun(job.ID, nextRun); err != nil {
 				log.WithError(err).WithField("job_id", job.ID).Error("Failed to update interval job")
 			}

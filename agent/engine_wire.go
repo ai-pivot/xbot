@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +15,7 @@ import (
 	"xbot/agent/hooks"
 	"xbot/bus"
 	channelpkg "xbot/channel"
+	"xbot/channel/cli"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/memory"
@@ -76,6 +79,7 @@ func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextMan
 // 包含 LLM、身份、工作区、工具执行器、循环控制、HookManager 等公共字段。
 // 返回 (RunConfig, userMaxContext) — userMaxContext 为用户在 Settings 中设置的值，0 表示未设置。
 func (a *Agent) buildBaseRunConfig(
+	ctx context.Context,
 	channel, chatID, senderID string,
 	messages []llm.ChatMessage,
 	senderName string,
@@ -83,11 +87,19 @@ func (a *Agent) buildBaseRunConfig(
 ) (RunConfig, int) {
 	sessionKey := qualifyChatID(channel, chatID)
 
-	llmClient, model, userMaxCtx, thinkingMode := a.llmFactory.GetLLMForChat(senderID, chatID)
+	// All user-related info is resolved once at processMessage entry and
+	// carried via context. No direct LLMFactory/SettingsService access here.
+	userCtx := UserContextFromContext(ctx)
 
-	// LLM 并发限流回调（per-tenant）
-	llmSemAcquire := a.llmFactory.LLMSemAcquireForUser(senderID)
-	subAgentSem := a.llmFactory.SubAgentSemAcquireForUser(senderID)
+	llmClient := userCtx.LLMClient
+	model := userCtx.Model
+	userMaxCtx := userCtx.MaxContextTokens
+	thinkingMode := userCtx.ThinkingMode
+	maxOutputTokens := userCtx.MaxOutputTokens
+
+	// LLM 并发限流回调（per-tenant）— resolved by middleware
+	llmSemAcquire := userCtx.LLMSemAcquire
+	subAgentSem := userCtx.SubAgentSem
 
 	return RunConfig{
 		// 必需
@@ -101,8 +113,9 @@ func (a *Agent) buildBaseRunConfig(
 		AgentID: "main",
 		Channel: channel,
 		ChatID:  chatID,
+		SubID:   userCtx.SubID,
 		SessionName: func() string {
-			_, name := channelpkg.ParseChatID(chatID)
+			_, name := cli.ParseChatID(chatID)
 			// Override with DB label if available (e.g. renamed from "Agent-xxx" to a custom name).
 			// This ensures the rename reminder doesn't fire for already-renamed sessions.
 			if a.multiSession != nil {
@@ -131,19 +144,19 @@ func (a *Agent) buildBaseRunConfig(
 		MCPConfigPath:    tools.UserMCPConfigPath(a.workDir, sandboxUserID),
 		GlobalMCPConfig:  filepath.Join(a.xbotHome, "mcp.json"),
 		DataDir:          a.workDir,
-		SandboxEnabled:   a.sandboxMode != "none",
-		PreferredSandbox: a.sandboxMode,
-		Sandbox:          resolveSandbox(a.sandbox, sandboxUserID),
-		SandboxMode:      a.sandboxMode,
+		SandboxEnabled:   userCtx.SandboxMode != "none",
+		PreferredSandbox: userCtx.SandboxMode,
+		Sandbox:          userCtx.Sandbox,
+		SandboxMode:      userCtx.SandboxMode,
 		InitialCWD:       a.workDir, // absolute-resolved at buildToolContext time
 
 		// 循环控制
 		MaxIterations:   a.getMaxIterations(),
-		MaxOutputTokens: a.llmFactory.GetMaxOutputTokens(senderID),
+		MaxOutputTokens: maxOutputTokens,
 
 		// Auto worktree: read via GetEffectiveSetting — the single correct
 		// read path for user-scoped settings. Same source as /settings panel.
-		AutoWorktreeEnabled: a.settingsSvc.GetEffectiveSettingBool(channel, senderID, "auto_worktree"),
+		AutoWorktreeEnabled: userCtx.GetSettingBool("auto_worktree"),
 
 		// Session
 		SessionKey: sessionKey,
@@ -153,8 +166,7 @@ func (a *Agent) buildBaseRunConfig(
 		InjectInbound: a.injectInbound,
 
 		// 工具执行
-		ToolExecutor: a.buildToolExecutor(channel, chatID, senderID, senderName, sandboxUserID),
-		// ToolTimeout: no longer used. Tools manage their own timeouts.
+		ToolExecutor: a.buildToolExecutor(ctx, channel, chatID, senderID, senderName, sandboxUserID, ""),
 
 		// 读写分离（主 Agent 始终启用）
 		EnableReadWriteSplit: true,
@@ -174,8 +186,8 @@ func (a *Agent) buildBaseRunConfig(
 		// PluginManager — inherit from Agent
 		PluginManager: a.pluginMgr,
 
-		// SettingsSvc — inherit from Agent
-		SettingsSvc: a.settingsSvc,
+		// PermUsers — from UserContext (resolved at processMessage entry)
+		PermUsers: userCtx.PermUsers,
 
 		// TUI/Config callbacks — inherit from Agent (CLI local mode)
 		TUICtrlFn:    a.tuiCtrlFn,
@@ -187,7 +199,11 @@ func (a *Agent) buildBaseRunConfig(
 		RemoteTUICtrlFn: a.buildRemoteTUICtrlFn(channel, chatID),
 
 		// Subscription listing — from LLMFactory
-		ListLLMSubs: a.listLLMSubsFn(channel),
+		ListLLMSubs: a.listLLMSubsFn(userCtx),
+
+		// Subscription read/write — from LLMFactory (for config tool)
+		GetActiveSubFieldFn: a.getActiveSubFieldFn(userCtx, channel, chatID),
+		UpdateActiveSubFn:   a.updateActiveSubFn(userCtx, channel),
 
 		// LLM 并发限流回调（per-tenant）
 		LLMSemAcquire:             llmSemAcquire,
@@ -199,7 +215,7 @@ func (a *Agent) buildBaseRunConfig(
 // buildMainRunConfig 为主 Agent 构建完整的 RunConfig。
 // 从 processMessage / handleCardResponse 调用。
 func (a *Agent) buildMainRunConfig(
-	_ context.Context,
+	ctx context.Context,
 	msg bus.InboundMessage,
 	messages []llm.ChatMessage,
 	tenantSession *session.TenantSession,
@@ -216,7 +232,58 @@ func (a *Agent) buildMainRunConfig(
 		sandboxUserID = feishuUserID
 	}
 
-	cfg, userMaxCtx := a.buildBaseRunConfig(channel, chatID, senderID, messages, senderName, sandboxUserID)
+	cfg, userMaxCtx := a.buildBaseRunConfig(ctx, channel, chatID, senderID, messages, senderName, sandboxUserID)
+
+	// TurnID is assigned by chatProcessLoop (per-session monotonic counter) and
+	// carried via msg.Metadata. Propagate to RunConfig so every progress event
+	// and the final reply carry it for frontend association.
+	if raw := msg.Metadata["turn_id"]; raw != "" {
+		if tid, err := strconv.ParseUint(raw, 10, 64); err == nil {
+			cfg.TurnID = tid
+		} else {
+			log.WithFields(log.Fields{"raw": raw}).Warn("buildMainRunConfig: failed to parse turn_id from metadata")
+		}
+	}
+
+	// physical_channel: the channel the user is actually connected through.
+	// When a web user browses a CLI-created session, msg.Channel is "cli"
+	// (the session's origin channel), but the user is on "web". Channel-scoped
+	// tools (like display_html) must resolve against the physical channel,
+	// not the session origin.
+	physicalChannel := msg.Metadata["physical_channel"]
+	if physicalChannel != "" && physicalChannel != channel {
+		// Override SessionKey so AsDefinitionsForSession/GetForSession find
+		// channel-scoped tools registered under the physical channel.
+		sessionKey = physicalChannel + ":" + chatID
+		cfg.SessionKey = sessionKey
+		// RootSessionKey must use the CANONICAL session key (origin channel),
+		// NOT the physical channel. Offload data is session-scoped — it must
+		// be stored and recalled under the same key regardless of whether the
+		// session is accessed via web or CLI. Using the physical key would
+		// split offload data across web:/cli: directories for the same session.
+		cfg.RootSessionKey = qualifyChatID(channel, chatID)
+		// Rebuild ToolExecutor with the physical channel so tool EXECUTION
+		// also resolves channel-scoped tools correctly.
+		cfg.ToolExecutor = a.buildToolExecutor(ctx, channel, chatID, senderID, senderName, sandboxUserID, physicalChannel)
+	}
+
+	// Identity is resolved at processMessage entry and carried via ctx.
+	userCtx := UserContextFromContext(ctx)
+	// Channel entry points may override via msg.Metadata (already resolved at
+	// entry layer — avoids double DB lookup).
+	if uid, role, ok := parseUserIDFromMetadata(msg.Metadata); ok {
+		cfg.UserID = uid
+		cfg.Role = role
+	} else {
+		cfg.UserID = userCtx.UserID
+		cfg.Role = userCtx.Role
+	}
+	if cfg.UserID == 0 {
+		cfg.UserID = 1 // standalone mode default
+	}
+	if cfg.Role == "" {
+		cfg.Role = "user" // safe default
+	}
 
 	// 从 tenant session 获取租户 ID，用于 per-tenant 工具可见性
 	cfg.TenantID = tenantSession.TenantID()
@@ -258,50 +325,45 @@ func (a *Agent) buildMainRunConfig(
 	// OAuth 处理
 	cfg.OAuthHandler = a.buildOAuthHandler(channel, chatID, senderID, sessionKey)
 
-	// 进度通知
-	// Web/CLI 渠道: no-op notifier — structured progress goes via ProgressEventHandler
-	// Plugin channels (ProgressSender): same — structured progress via ProgressEventHandler
-	// Other channels: fallback to sendMessage-based progress (legacy behavior)
-	isProgressSenderCh := false
-	if channel != "web" && channel != "cli" && a.channelFinder != nil {
-		if ch, ok := a.channelFinder(channel); ok {
-			if _, ok := ch.(channelpkg.ProgressSender); ok {
-				isProgressSenderCh = true
+	// Structured progress has one channel-agnostic snapshot/log producer.
+	// Every ProgressSender receives the exact same protocol event; channel
+	// transports only handle delivery and never derive semantic history.
+	// Set up BEFORE ProgressNotifier so we can detect structured availability.
+	if handler := a.buildProgressEventHandler(chatID, channel); handler != nil {
+		done := ctx.Done()
+		cfg.ProgressEventHandler = func(ev *ProgressEvent) {
+			select {
+			case <-done:
+				// PhaseDone is the authoritative final snapshot and must survive
+				// cancellation for every channel.
+				if ev != nil && ev.Structured != nil && ev.Structured.Phase == PhaseDone {
+					handler(ev)
+				}
+				return
+			default:
 			}
+			handler(ev)
 		}
 	}
 
-	if channel == "web" || channel == "cli" || isProgressSenderCh {
-		// Structured progress goes via ProgressEventHandler below.
-		// Setting ProgressNotifier to non-nil enables autoNotify in engine.Run()
-		cfg.ProgressNotifier = func(lines []string, _ string) {}
-	} else if autoNotify {
-		// Legacy fallback: send progress text as messages (no patch support)
+	// ProgressNotifier sends text-based progress as a regular message. This is
+	// ONLY for channels without structured progress (e.g. Feishu, which patches
+	// the existing message with progress content). Channels WITH structured
+	// progress (CLI, Web) receive progress via progress_structured events —
+	// sending text messages here pollutes their message stream with progress
+	// rendering artifacts ("> ✅ Shell:", "> 🎭 上下文较大", "> 💭 思考中...").
+	// A non-nil notifier keeps autoNotify=true so notifyProgress still runs and
+	// feeds progressLines to the structured path.
+	if autoNotify && cfg.ProgressEventHandler == nil {
 		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
-				_ = a.sendMessage(channel, chatID, lines[0])
+				if err := a.sendMessage(channel, chatID, lines[0]); err != nil {
+					log.Warn("Failed to send progress: ", err)
+				}
 			}
 		}
-	}
-
-	// 结构化进度事件推送（web, cli, and plugin ProgressSender channels）
-	if (channel == "web" || channel == "cli" || isProgressSenderCh) && a.channelFinder != nil {
-		switch channel {
-		case "cli":
-			if handler := a.buildCLIProgressEventHandler(chatID, channel); handler != nil {
-				cfg.ProgressEventHandler = handler
-			}
-		case "web":
-			if handler := a.buildWebProgressEventHandler(chatID, channel); handler != nil {
-				cfg.ProgressEventHandler = handler
-			}
-		default:
-			// Plugin channel with ProgressSender (e.g. TG) — build a handler
-			// that sends progress_structured events via the channel's SendProgress.
-			if handler := a.buildPluginProgressEventHandler(chatID, channel); handler != nil {
-				cfg.ProgressEventHandler = handler
-			}
-		}
+	} else {
+		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	}
 
 	// 注入 ContextManager
@@ -324,6 +386,7 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	// SpawnAgent（主 Agent 可以创建 SubAgent）
+	// ctx already carries UserContext — SubAgent inherits it via context.
 	cfg.SpawnAgent = func(ctx context.Context, inMsg bus.InboundMessage) (*channelpkg.OutboundMsg, error) {
 		return a.spawnSubAgent(ctx, inMsg)
 	}
@@ -334,15 +397,11 @@ func (a *Agent) buildMainRunConfig(
 	// MaskStore — Observation Masking（默认开启，可通过 settings 的 enable_masking 关闭）
 	cfg.MaskStore = a.maskStore
 	streamDisabled := false
-	if a.settingsSvc != nil {
-		if vals, err := a.settingsSvc.GetSettings(channel, senderID); err == nil {
-			if vals["enable_masking"] == "false" {
-				cfg.MaskStore = nil
-			}
-			if vals["enable_stream"] == "false" {
-				streamDisabled = true
-			}
-		}
+	if userCtx.GetSetting("enable_masking") == "false" {
+		cfg.MaskStore = nil
+	}
+	if userCtx.GetSetting("enable_stream") == "false" {
+		streamDisabled = true
 	}
 
 	// Stream — default ON for all channels; wire callbacks per channel type.
@@ -351,12 +410,14 @@ func (a *Agent) buildMainRunConfig(
 		if a.channelFinder != nil {
 			var progressSeq atomic.Uint64
 			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq)
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID)
 		}
 	}
 
 	// ContextEditor — Context Editing（精确编辑上下文）
-	cfg.ContextEditor = a.contextEditor
+	if a.contextEditor != nil {
+		cfg.ContextEditor = NewContextEditor(a.contextEditor.Store)
+	}
 
 	// TodoManager — TODO 状态查询
 	if a.todoManager != nil {
@@ -365,8 +426,10 @@ func (a *Agent) buildMainRunConfig(
 
 	// InteractiveCallbacks — interactive SubAgent 支持
 	cfg.InteractiveCallbacks = &InteractiveCallbacks{
-		SpawnFn: a.SpawnInteractiveSession,
-		SendFn:  a.SendToInteractiveSession,
+		SpawnFn: func(ctx context.Context, roleName string, msg bus.InboundMessage) (*channelpkg.OutboundMsg, error) {
+			return a.SpawnInteractiveSession(ctx, roleName, msg)
+		},
+		SendFn: a.SendToInteractiveSession,
 		UnloadFn: func(ctx context.Context, roleName, instance string) error {
 			return a.UnloadInteractiveSession(ctx, roleName, channel, chatID, instance)
 		},
@@ -375,6 +438,9 @@ func (a *Agent) buildMainRunConfig(
 		},
 		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
 			return a.InspectInteractiveSession(ctx, roleName, channel, chatID, instance, tail)
+		},
+		ListActiveFn: func(ch, cid string) []SubAgentStatus {
+			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
 		},
 	}
 
@@ -387,6 +453,56 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	return cfg
+}
+
+// filterSubAgentTools 根据白名单过滤子 Agent 工具集。
+// 以下工具永久可用，不受白名单限制：
+//   - SubAgent（如果 caps.SpawnAgent=true）
+//   - offload_recall、recall_masked（SubAgent 需要访问父 Agent 的 offload/mask 数据）
+//   - SendMessage、CreateChat（interactive SubAgent 群聊/agent 间通信必需）
+func filterSubAgentTools(subTools *tools.Registry, allowedTools []string, caps tools.SubAgentCapabilities, interactive bool) {
+	if len(allowedTools) == 0 {
+		return
+	}
+	allowed := make(map[string]bool, len(allowedTools))
+	for _, name := range allowedTools {
+		allowed[name] = true
+	}
+	for _, tool := range subTools.List() {
+		toolName := tool.Name()
+		// SubAgent 工具：如果 SpawnAgent=true，始终保留
+		if toolName == "SubAgent" && caps.SpawnAgent {
+			continue
+		}
+		// offload_recall / recall_masked：SubAgent 始终可用
+		if toolName == "offload_recall" || toolName == "recall_masked" {
+			continue
+		}
+		// SendMessage / CreateChat：interactive SubAgent 始终可用（群聊通信）
+		if interactive && (toolName == "SendMessage" || toolName == "CreateChat") {
+			continue
+		}
+		if !allowed[toolName] {
+			subTools.Unregister(toolName)
+		}
+	}
+}
+
+// resolveSubAgentCWD 解析子 Agent 的当前工作目录。
+// 继承父 Agent 的 CWD，无则默认 workDir。同时检测 worktree 隔离。
+func resolveSubAgentCWD(parentCtx *tools.ToolContext, workDir string) (cwd string, newWorkDir string, isWorktreeIsolated bool) {
+	cwd = parentCtx.CurrentDir
+	if cwd == "" {
+		cwd = workDir
+	}
+	isWorktreeIsolated = parentCtx.IsWorktreeIsolated
+	if strings.Contains(cwd, ".xbot-worktrees") {
+		newWorkDir = cwd
+		isWorktreeIsolated = true
+	} else {
+		newWorkDir = workDir
+	}
+	return
 }
 
 // buildSubAgentRunConfig 为 SubAgent 构建 RunConfig。
@@ -407,6 +523,11 @@ func (a *Agent) buildSubAgentRunConfig(
 ) RunConfig {
 	parentAgentID := parentCtx.AgentID
 
+	// Extract UserContext from context — set by SpawnAgent callback.
+	// This is the SINGLE source of user info for SubAgent construction.
+	// No direct access to LLMFactory/SettingsService/IdentityResolver below.
+	userCtx := UserContextFromContext(ctx)
+
 	// Interactive SubAgent 默认拥有 send_message 能力（群聊/agent 间通信必需）
 	if interactive {
 		caps.SendMessage = true
@@ -421,36 +542,15 @@ func (a *Agent) buildSubAgentRunConfig(
 	if !caps.SpawnAgent {
 		subTools.Unregister("SubAgent")
 	}
+	// AskUser 依赖 channel adapter 渲染交互 UI（TUI 面板/飞书卡片），
+	// 但 SubAgent 运行在 "agent" channel 上，不在 AskUser.SupportedChannels 中。
+	// 即使工具被执行，WaitingUser 信号也会被 RunSubAgent/SpawnInteractive 丢弃，
+	// 导致 SubAgent 静默挂起（空回复 + idle 状态，用户从未看到问题）。
+	// 无条件移除，避免静默失效。
+	subTools.Unregister("AskUser")
 
 	// 如果指定了工具白名单，只保留白名单中的工具
-	// 以下工具永久可用，不受白名单限制：
-	//   - SubAgent（如果 caps.SpawnAgent=true）
-	//   - offload_recall、recall_masked（SubAgent 需要访问父 Agent 的 offload/mask 数据）
-	//   - SendMessage、CreateChat（interactive SubAgent 群聊/agent 间通信必需）
-	if len(allowedTools) > 0 {
-		allowed := make(map[string]bool, len(allowedTools))
-		for _, name := range allowedTools {
-			allowed[name] = true
-		}
-		for _, tool := range subTools.List() {
-			toolName := tool.Name()
-			// SubAgent 工具：如果 SpawnAgent=true，始终保留
-			if toolName == "SubAgent" && caps.SpawnAgent {
-				continue
-			}
-			// offload_recall / recall_masked：SubAgent 始终可用
-			if toolName == "offload_recall" || toolName == "recall_masked" {
-				continue
-			}
-			// SendMessage / CreateChat：interactive SubAgent 始终可用（群聊通信）
-			if interactive && (toolName == "SendMessage" || toolName == "CreateChat") {
-				continue
-			}
-			if !allowed[toolName] {
-				subTools.Unregister(toolName)
-			}
-		}
-	}
+	filterSubAgentTools(subTools, allowedTools, caps, interactive)
 
 	// 构建 SubAgent 的 system prompt：通用模板 + 角色专有能力描述
 	// parentCtx.WorkspaceRoot 在 remote 模式下为空（buildToolContext 清空了宿主机路径），
@@ -465,21 +565,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
 
 	// CWD 继承父 Agent 的当前目录，无则默认 workDir
-	cwd := parentCtx.CurrentDir
-	if cwd == "" {
-		cwd = workDir
-	}
-
-	// Worktree isolation: if the parent's CWD is inside a worktree directory,
-	// rewrite workDir to the worktree path so the SubAgent's system prompt
-	// shows the correct workspace and all path resolution uses worktree-relative paths.
-	// This must happen before system prompt construction (below) so the prompt
-	// displays the worktree as "工作目录".
-	isWorktreeIsolated := parentCtx.IsWorktreeIsolated
-	if strings.Contains(cwd, ".xbot-worktrees") {
-		workDir = cwd
-		isWorktreeIsolated = true
-	}
+	cwd, workDir, isWorktreeIsolated := resolveSubAgentCWD(parentCtx, workDir)
 	cwdPart := "\n- 当前目录：" + cwd
 
 	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）
@@ -550,14 +636,9 @@ func (a *Agent) buildSubAgentRunConfig(
 	// Phase 5: Inject user language preference into SubAgent prompt.
 	// Only inject if not already present in the inherited system prompt
 	// (LanguageMiddleware on the main Agent already adds it via SystemParts).
-	if a.settingsSvc != nil {
-		if vals, err := a.settingsSvc.GetSettings(parentCtx.Channel, originUserID); err == nil {
-			if lang, ok := vals["language"]; ok && lang != "" {
-				// Check if language instruction is already in sysPrompt (inherited from main Agent)
-				if !strings.Contains(sysPrompt, "## Language") {
-					sysPrompt += "\n" + LanguageInstruction(lang)
-				}
-			}
+	if lang := userCtx.GetSetting("language"); lang != "" {
+		if !strings.Contains(sysPrompt, "## Language") {
+			sysPrompt += "\n" + LanguageInstruction(lang)
 		}
 	}
 
@@ -568,36 +649,19 @@ func (a *Agent) buildSubAgentRunConfig(
 
 	subAgentID := parentAgentID + "/" + roleName
 
-	// SubAgent 继承父 Agent 的 LLM 配置（使用 OriginUserID 获取原始用户的配置）
-	// 如果角色指定了模型（含 tier 名称如 vanguard/balance/swift），则通过 GetLLMForModel
-	// 智能查找对应的订阅。当 tier 未配置模型时，自动 fallback 到 GetLLM(originUserID)，
-	// 即父 agent 当前使用的模型和订阅。model 为空时同理。
-	var llmClient llm.LLM
-	var subModel string
-	var userMaxCtx int
-	var thinkingMode string
-	if model != "" {
-		llmClient, subModel, userMaxCtx, thinkingMode, _ = a.llmFactory.GetLLMForModel(originUserID, model)
-	} else {
-		llmClient, subModel, userMaxCtx, thinkingMode = a.llmFactory.GetLLM(originUserID)
-	}
+	// SubAgent LLM resolution — via UserContext, no direct LLMFactory access.
+	llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens, subID := userCtx.ResolveLLMForModelWithFallback(model)
 
 	// Stream — default ON; inherit from parent config unless explicitly disabled.
-	stream := true
-	if a.settingsSvc != nil {
-		if vals, err := a.settingsSvc.GetSettings(parentCtx.Channel, originUserID); err == nil {
-			if vals["enable_stream"] == "false" {
-				stream = false
-			}
-		}
-	}
+	stream := userCtx.GetSetting("enable_stream") != "false"
 
 	cfg := RunConfig{
 		LLMClient:       llmClient,
 		Model:           subModel,
+		SubID:           subID,
 		ThinkingMode:    thinkingMode,
 		Stream:          stream,
-		MaxOutputTokens: a.llmFactory.GetMaxOutputTokens(originUserID),
+		MaxOutputTokens: maxOutputTokens,
 		Tools:           subTools,
 		Messages:        messages,
 		AgentID:         subAgentID,
@@ -645,11 +709,11 @@ func (a *Agent) buildSubAgentRunConfig(
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
 		// LLM 并发限流：继承父 Agent 的 per-tenant 信号量
-		LLMSemAcquire: a.llmFactory.LLMSemAcquireForUser(originUserID),
+		LLMSemAcquire: userCtx.LLMSemAcquire,
 
 		// SubAgent 如果能 spawn 子 Agent，也启用并行执行
 		EnableConcurrentSubAgents: caps.SpawnAgent,
-		SubAgentSem:               a.llmFactory.SubAgentSemAcquireForUser(originUserID),
+		SubAgentSem:               userCtx.SubAgentSem,
 
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
 	}
@@ -746,10 +810,14 @@ func (a *Agent) buildSubAgentRunConfig(
 			return a.spawnSubAgent(ctx, msg)
 		}
 	}
-	// HookManager — SubAgent inherits parent Agent's hook manager
-	cfg.HookManager = a.hookManager
+	// HookManager — SubAgent does NOT inherit the parent Agent's hook manager.
+	// Goal continuation (PreTurnEndHook) is a main-Agent-only feature.
+	// If SubAgent inherits it, the goal hook fires during SubAgent execution,
+	// injecting goal-continuation prompts into SubAgent turns — causing
+	// SubAgents to never end naturally and loop on the goal prompt.
+	// SubAgent still gets plugin hooks via PluginManager (separate system).
+	cfg.HookManager = nil
 	cfg.PluginManager = a.pluginMgr
-	cfg.SettingsSvc = a.settingsSvc
 
 	// SaveTokenState: persist token counts so GetTokenState RPC returns
 	// correct values when the TUI switches to a SubAgent session.
@@ -785,6 +853,9 @@ func (a *Agent) buildSubAgentRunConfig(
 		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
 			return a.InspectInteractiveSession(ctx, roleName, parentCtx.Channel, parentCtx.ChatID, instance, tail)
 		},
+		ListActiveFn: func(ch, cid string) []SubAgentStatus {
+			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
+		},
 	}
 
 	return cfg
@@ -793,8 +864,14 @@ func (a *Agent) buildSubAgentRunConfig(
 // buildToolExecutor 构建主 Agent 的工具执行器。
 // 包含 session MCP 查找、激活检查、工具使用追踪等完整逻辑。
 // 这是主 Agent 和 Cron 使用的执行器，SubAgent 使用 defaultToolExecutor。
-func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandboxUserID string) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID, senderName, sandboxUserID string, physicalChannel string) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+	userCtx := UserContextFromContext(ctx)
+	// If physicalChannel is set (web user browsing CLI session), use it for
+	// channel-scoped tool resolution. Otherwise fall back to the session's origin channel.
 	sessionKey := qualifyChatID(channel, chatID)
+	if physicalChannel != "" && physicalChannel != channel {
+		sessionKey = physicalChannel + ":" + chatID
+	}
 
 	// Pre-build RunConfig outside closure to avoid reallocating on every tool call.
 	// Only ctx (from the caller) changes per-call; all config fields are stable.
@@ -809,13 +886,14 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 		workingDir = a.workDir
 	}
 	cfg := &RunConfig{
-		AgentID:      "main",
-		Channel:      channel,
-		ChatID:       chatID,
-		SenderID:     senderID,      // 主 Agent: 直接调用者（用于消息路由）
-		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
-		SenderName:   senderName,
-		SendFunc:     a.sendMessage,
+		AgentID:        "main",
+		Channel:        channel,
+		ChatID:         chatID,
+		SenderID:       senderID,      // 主 Agent: 直接调用者（用于消息路由）
+		OriginUserID:   sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
+		SenderName:     senderName,
+		SendFunc:       a.sendMessage,
+		RootSessionKey: qualifyChatID(channel, chatID), // canonical session key for offload_recall
 
 		WorkingDir:             workingDir,
 		WorkspaceRoot:          workspaceRoot,
@@ -828,6 +906,7 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 		SandboxEnabled:         a.sandboxMode != "none",
 		PreferredSandbox:       a.sandboxMode,
 		Sandbox:                resolveSandbox(a.sandbox, sandboxUserID),
+		SandboxRouter:          a.sandbox, // raw router for per-tool-call re-resolution
 		SandboxMode:            a.sandboxMode,
 		InjectInbound:          a.injectInbound,
 		Tools:                  a.tools,
@@ -853,6 +932,9 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
 			return a.InspectInteractiveSession(ctx, roleName, channel, chatID, instance, tail)
 		},
+		ListActiveFn: func(ch, cid string) []SubAgentStatus {
+			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
+		},
 	}
 
 	// Pre-build Letta memory extras (involves GetOrCreateSession + LettaMemory lookup).
@@ -864,13 +946,14 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 	// Inherit hook manager from Agent.
 	cfg.HookManager = a.hookManager
 	cfg.PluginManager = a.pluginMgr
-	cfg.SettingsSvc = a.settingsSvc
 
 	// TUI/Config callbacks for tool execution (needed by tui_control/config tools)
 	cfg.TUICtrlFn = a.tuiCtrlFn
 	cfg.RemoteTUICtrlFn = a.buildRemoteTUICtrlFn(channel, chatID)
 	cfg.ChatRenameFn = a.renameSession
-	cfg.ListLLMSubs = a.listLLMSubsFn(channel)
+	cfg.ListLLMSubs = a.listLLMSubsFn(userCtx)
+	cfg.GetActiveSubFieldFn = a.getActiveSubFieldFn(userCtx, channel, chatID)
+	cfg.UpdateActiveSubFn = a.updateActiveSubFn(userCtx, channel)
 
 	var sessionOnce sync.Once
 
@@ -900,39 +983,35 @@ func (a *Agent) buildToolExecutor(channel, chatID, senderID, senderName, sandbox
 			}
 		}
 		if !ok {
-			tool, ok = a.tools.Get(tc.Name)
-			// Also check tenant-scoped tools if session is available
-			if !ok && cfg.Session != nil {
-				tool, ok = a.tools.GetForTenant(tc.Name, cfg.Session.TenantID())
+			// Unified lookup: channel-scoped → tenant → global
+			tenantID := int64(0)
+			if cfg.Session != nil {
+				tenantID = cfg.Session.TenantID()
 			}
+			tool, ok = a.tools.GetForSession(tc.Name, tenantID, sessionKey)
 		}
 		if !ok {
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}
 
-		// 2. 激活检查：未激活的工具返回提示
-		if !a.tools.IsToolActive(sessionKey, tc.Name) {
-			return &tools.ToolResult{
-				Summary: fmt.Sprintf("Tool %q is not loaded yet. Call load_tools(tools=%q) first to load it before use.", tc.Name, tc.Name),
-			}, nil
-		}
-
-		// 3. 刷新工具最后使用 round，延长激活有效期
-		a.tools.TouchTool(sessionKey, tc.Name)
-
-		// 4. 确保用户工作目录存在（remote 模式跳过，runner 自行管理文件系统）
+		// 2. 确保用户工作目录存在（remote 模式跳过，runner 自行管理文件系统）
 		if !a.isRemoteUser(senderID) {
 			if err := os.MkdirAll(wsRoot, 0o755); err != nil {
 				return nil, fmt.Errorf("create user workspace: %w", err)
 			}
 		}
 
+		// Re-resolve sandbox per tool call — picks up runner switches immediately
+		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
+			cfg.Sandbox = router.SandboxForSession(
+				cfg.Channel+":"+cfg.ChatID,
+				cfg.OriginUserID,
+			)
+		}
+
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
-		if cfg.SettingsSvc != nil {
-			permUsers := cfg.SettingsSvc.GetPermUsers(cfg.Channel, cfg.OriginUserID)
-			if permUsers != nil {
-				toolExecCtx = tools.WithPermUsers(toolExecCtx, permUsers.DefaultUser, permUsers.PrivilegedUser)
-			}
+		if cfg.PermUsers != nil {
+			toolExecCtx = tools.WithPermUsers(toolExecCtx, cfg.PermUsers.DefaultUser, cfg.PermUsers.PrivilegedUser)
 		}
 
 		// 5. 构建 ToolContext（统一路径，只有 ctx 变化）
@@ -1220,6 +1299,8 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	// 构建 parentCtx（从 InboundMessage 恢复）
 	originChannel, originChatID, originSender := resolveOriginIDs(msg)
 	parentCtx := a.buildParentToolContext(ctx, originChannel, originChatID, originSender, msg)
+	oneshotInstance := fmt.Sprintf("oneshot-%s-%d", roleName, time.Now().UnixNano())
+	oneshotKey := interactiveKey(originChannel, originChatID, roleName, oneshotInstance)
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"parent": parentAgentID,
@@ -1268,18 +1349,19 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		cfg.ProgressNotifier = func(lines []string, thinking string) {
 			if len(lines) > 0 {
 				parentCB(SubAgentProgressDetail{
-					Path:     myPath,
-					Lines:    lines,
-					Depth:    myDepth,
-					Instance: instance,
-					Thinking: thinking,
+					Path:       myPath,
+					Lines:      lines,
+					Depth:      myDepth,
+					Instance:   oneshotInstance,
+					SessionKey: oneshotKey,
+					Content:    thinking,
 				})
 			}
 		}
-	} else if originChannel != "" && originChatID != "" && originChannel != "cli" {
-		// 非 CLI 渠道（飞书、Web 等）：发送 text-based progress 到聊天窗口。
-		// CLI 模式下由 wireSubAgentCLIProgress 的 StructuredProgress 处理，
-		// 不需要 sendMessage（否则会把工具行渲染成主 session 的 assistant 消息）。
+	} else if originChannel != "" && originChatID != "" && a.wantsPreReplyNotify(originChannel) {
+		// Channels without structured progress (Feishu, QQ): send text-based
+		// SubAgent progress to the chat window. Channels with structured progress
+		// (Web, CLI) handle SubAgent progress via ProgressSender events.
 		rn := roleName
 		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
@@ -1288,19 +1370,20 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 					last = last[idx+1:]
 				}
 				prefixed := "📋 subagent: [" + rn + "] " + last + "\n"
-				_ = a.sendMessage(originChannel, originChatID, prefixed)
+				if err := a.sendMessage(originChannel, originChatID, prefixed); err != nil {
+					log.Warn("Failed to send prefixed output: ", err)
+				}
 			}
 		}
-	} else if originChannel == "cli" {
-		// CLI 渠道 + 无父 callback：设置 dummy notifier 使 autoNotify=true，
-		// 这样 wireSubAgentCLIProgress 设置的 ProgressEventHandler 才会被调用。
+	} else {
+		// Channels with structured progress (Web, CLI): set a dummy notifier so
+		// autoNotify=true, which enables wireSubAgentProgress's ProgressEventHandler
+		// to fire. The dummy itself sends nothing.
 		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	}
 
 	// Register one-shot subagent in interactiveSubAgents so it's visible
 	// in the Ctrl+T panel. Kept after completion for history viewing; TTL cleans it up.
-	oneshotInstance := fmt.Sprintf("oneshot-%s-%d", roleName, time.Now().UnixNano())
-	oneshotKey := interactiveKey(originChannel, originChatID, roleName, oneshotInstance)
 	oneshotIA := &interactiveAgent{
 		roleName:   roleName,
 		instance:   oneshotInstance,
@@ -1312,21 +1395,35 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	a.interactiveSubAgents.Store(oneshotKey, oneshotIA)
 
 	// Create TenantSession for message persistence (same as interactive SubAgents).
-	agentTenantSession, err := a.multiSession.GetOrCreateSession("agent", oneshotKey)
+	agentTenantSession, err := a.multiSession.GetOrCreateSessionWithOwner("agent", oneshotKey, cfg.UserID)
 	if err != nil {
 		a.interactiveSubAgents.Delete(oneshotKey)
 		return nil, fmt.Errorf("create oneshot agent tenant session: %w", err)
 	}
 	cfg.Session = agentTenantSession
-	_ = agentTenantSession.Clear()
+	operationGate := a.sessionOperationGate("agent", oneshotKey)
+	if !operationGate.lock(subCtx) {
+		a.interactiveSubAgents.Delete(oneshotKey)
+		return nil, subCtx.Err()
+	}
+	defer operationGate.unlock()
+	if err := agentTenantSession.Clear(); err != nil {
+		a.interactiveSubAgents.Delete(oneshotKey)
+		return nil, fmt.Errorf("clear oneshot agent tenant session: %w", err)
+	}
 
 	// Eager-save user message so get_history returns it during Run().
-	if err := agentTenantSession.AddMessage(llm.NewUserMessage(task)); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to eager-save oneshot agent user message")
+	historyID, err := agentTenantSession.AppendMessage(llm.NewUserMessage(task))
+	if err != nil {
+		a.interactiveSubAgents.Delete(oneshotKey)
+		return nil, fmt.Errorf("append oneshot agent user message: %w", err)
+	}
+	if len(cfg.Messages) > 1 && cfg.Messages[1].Role == "user" {
+		cfg.Messages[1].ID = historyID
 	}
 
 	// Wire CLI progress + stream callbacks so Ctrl+T shows real-time progress.
-	a.wireSubAgentCLIProgress(oneshotKey, originChatID, &cfg)
+	a.wireSubAgentProgress(oneshotKey, originChatID, &cfg)
 
 	// Wire incremental snapshot callback so iteration history is available
 	// during Run() for panel preview and inspect — not only after completion.
@@ -1351,24 +1448,26 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 
 	// Emit subagent_started event for instant sidebar push.
 	a.emitSessionState(protocol.SessionEvent{
-		Channel:  originChannel,
-		ChatID:   originChatID,
-		Action:   "subagent_started",
-		Role:     roleName,
-		Instance: oneshotInstance,
-		ParentID: originChatID,
+		Channel:    originChannel,
+		ChatID:     originChatID,
+		Action:     "subagent_started",
+		Role:       roleName,
+		Instance:   oneshotInstance,
+		SessionKey: oneshotKey,
+		ParentID:   originChatID,
 	})
 
 	out := Run(subCtx, cfg)
 
 	// Emit subagent_stopped event for instant sidebar update.
 	a.emitSessionState(protocol.SessionEvent{
-		Channel:  originChannel,
-		ChatID:   originChatID,
-		Action:   "subagent_stopped",
-		Role:     roleName,
-		Instance: oneshotInstance,
-		ParentID: originChatID,
+		Channel:    originChannel,
+		ChatID:     originChatID,
+		Action:     "subagent_stopped",
+		Role:       roleName,
+		Instance:   oneshotInstance,
+		SessionKey: oneshotKey,
+		ParentID:   originChatID,
 	})
 
 	log.Ctx(ctx).WithFields(log.Fields{
@@ -1389,6 +1488,28 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	oneshotIA.running = false
 	if out != nil {
 		oneshotIA.lastReply = out.Content
+		oneshotIA.promptTokens = out.LastPromptTokens
+		oneshotIA.completionTokens = out.LastCompletionTokens
+		if len(cfg.Messages) > 0 {
+			oneshotIA.systemPrompt = cfg.Messages[0]
+		}
+		if len(out.Messages) > 0 {
+			start := 0
+			if out.Messages[0].Role == "system" {
+				start = 1
+			}
+			oneshotIA.messages = make([]llm.ChatMessage, len(out.Messages)-start)
+			copy(oneshotIA.messages, out.Messages[start:])
+		}
+		if out.Content != "" {
+			oneshotIA.messages = append(oneshotIA.messages, llm.NewAssistantMessage(out.Content))
+		}
+		if out.Content != "" && out.ReasoningContent != "" && len(oneshotIA.messages) > 0 {
+			oneshotIA.messages[len(oneshotIA.messages)-1].ReasoningContent = out.ReasoningContent
+		}
+		if len(out.IterationHistory) > 0 {
+			oneshotIA.iterationHistory = out.IterationHistory
+		}
 		log.Ctx(ctx).WithField("iteration_count", len(oneshotIA.iterationHistory)).Info("oneshot subagent completed")
 	} else {
 		log.Ctx(ctx).Warn("oneshot subagent returned nil output")
@@ -1397,8 +1518,36 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		return &channelpkg.OutboundMsg{}, nil
 	}
 	oneshotIA.mu.Unlock()
+	if agentTenantSession != nil && out.Content != "" {
+		assistantMsg := llm.NewAssistantMessage(out.Content)
+		assistantMsg.ReasoningContent = out.ReasoningContent
+		if len(out.IterationHistory) > 0 {
+			if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+				assistantMsg.Detail = string(jsonBytes)
+			}
+		}
+		historyID, err := agentTenantSession.AppendMessage(assistantMsg)
+		if err != nil {
+			a.cancelChildSessions(oneshotKey)
+			persistErrText := fmt.Sprintf("append oneshot agent assistant message: %v", err)
+			oneshotIA.mu.Lock()
+			oneshotIA.running = false
+			oneshotIA.lastError = persistErrText
+			if len(oneshotIA.messages) > 0 && oneshotIA.messages[len(oneshotIA.messages)-1].Role == "assistant" {
+				oneshotIA.messages = oneshotIA.messages[:len(oneshotIA.messages)-1]
+			}
+			oneshotIA.mu.Unlock()
+			return nil, fmt.Errorf("append oneshot agent assistant message: %w", err)
+		}
+		oneshotIA.mu.Lock()
+		if len(oneshotIA.messages) > 0 && oneshotIA.messages[len(oneshotIA.messages)-1].Role == "assistant" {
+			oneshotIA.messages[len(oneshotIA.messages)-1].ID = historyID
+		}
+		oneshotIA.mu.Unlock()
+	}
 	// Cascade-cancel any bg sessions spawned during this one-shot's Run(),
-	// then destroy the one-shot session immediately (no TTL retention).
+	// then destroy the one-shot session immediately. Persisted agent tenant
+	// history remains available for Web history/session-tree reads.
 	a.cancelChildSessions(oneshotKey)
 	a.destroyInteractiveSession(oneshotKey)
 
@@ -1440,53 +1589,16 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	return out.OutboundMsg, nil
 }
 
-// convertWsSubAgentTree 将 agent.SubAgentNode 转换为 protocol.SubAgentInfo 树。
-func convertWsSubAgentTree(nodes []SubAgentNode) []protocol.SubAgentInfo {
-	if len(nodes) == 0 {
-		return nil
-	}
-	result := make([]protocol.SubAgentInfo, len(nodes))
-	for i, n := range nodes {
-		result[i] = protocol.SubAgentInfo{
-			Role:     n.Role,
-			Instance: n.Instance,
-			Status:   n.Status,
-			Desc:     n.Desc,
-			Children: convertWsSubAgentTree(n.Children),
-		}
-	}
-	return result
-}
-
-// convertCLISubAgentTree 将 agent.SubAgentNode 转换为 protocol.SubAgentInfo 树。
 // resolveSubAgents extracts the SubAgent tree from a ProgressEvent.
 // It prefers the structured SubAgents field (reliable), falling back to
 // text-based ExtractSubAgentTree only if structured data is unavailable.
 func resolveSubAgents(event *ProgressEvent) []protocol.SubAgentInfo {
-	// Prefer structured data (no fragile text parsing)
+	// Structured data only — no text-based string matching. SubAgents are
+	// cleared at iteration boundary in beginIteration (they're one-shot tools
+	// that complete synchronously within the iteration). When nil, returns nil
+	// — no fallback.
 	if event.Structured != nil && len(event.Structured.SubAgents) > 0 {
 		return convertCLISubAgentTree(event.Structured.SubAgents)
-	}
-	// Fallback: text-based parsing for backward compatibility
-	if len(event.Lines) > 0 {
-		subAgents := ExtractSubAgentTree(event.Lines)
-		if len(subAgents) > 0 {
-			return convertCLISubAgentTree(subAgents)
-		}
-	}
-	return nil
-}
-
-// resolveWsSubAgents is the WsSubAgent variant of resolveSubAgents.
-func resolveWsSubAgents(event *ProgressEvent) []protocol.SubAgentInfo {
-	if event.Structured != nil && len(event.Structured.SubAgents) > 0 {
-		return convertWsSubAgentTree(event.Structured.SubAgents)
-	}
-	if len(event.Lines) > 0 {
-		subAgents := ExtractSubAgentTree(event.Lines)
-		if len(subAgents) > 0 {
-			return convertWsSubAgentTree(subAgents)
-		}
 	}
 	return nil
 }
@@ -1499,447 +1611,290 @@ func convertCLISubAgentTree(nodes []SubAgentNode) []protocol.SubAgentInfo {
 	result := make([]protocol.SubAgentInfo, len(nodes))
 	for i, n := range nodes {
 		result[i] = protocol.SubAgentInfo{
-			Role:     n.Role,
-			Instance: n.Instance,
-			Status:   n.Status,
-			Desc:     n.Desc,
-			Children: convertCLISubAgentTree(n.Children),
+			Role:       n.Role,
+			Instance:   n.Instance,
+			SessionKey: n.SessionKey,
+			Status:     n.Status,
+			Desc:       n.Desc,
+			Children:   convertCLISubAgentTree(n.Children),
 		}
 	}
 	return result
 }
 
-// buildCLIProgressEventHandler creates the progress event handler for CLI channels
-// (both local and remote). Returns nil if no CLI channel is available.
-func (a *Agent) buildCLIProgressEventHandler(chatID, channel string) func(*ProgressEvent) {
-	var cliCh *channelpkg.CLIChannel
-	var remoteCLICh channelpkg.ProgressSender
-	if a.channelFinder != nil {
-		if ch, ok := a.channelFinder("cli"); ok {
-			if cc, ok := ch.(*channelpkg.CLIChannel); ok {
-				cliCh = cc
-			} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
-				// RemoteCLIChannel, ChannelCliChannel, or any other ProgressSender
-				remoteCLICh = rc
-			} else {
-				log.WithField("type", fmt.Sprintf("%T", ch)).Warn("buildCLIProgressEventHandler: channelFinder('cli') returned unexpected type")
-			}
-		} else {
-			log.Warn("buildCLIProgressEventHandler: channelFinder('cli') returned not found")
-		}
-	} else {
-		log.Warn("buildCLIProgressEventHandler: channelFinder is nil")
-	}
-	log.WithFields(log.Fields{
-		"hasCliCh":       cliCh != nil,
-		"hasRemoteCLICh": remoteCLICh != nil,
-		"progressKey":    qualifyChatID(channel, chatID),
-	}).Info("buildCLIProgressEventHandler: cli channel resolution")
-
-	if cliCh == nil && remoteCLICh == nil {
+// buildProgressPayload converts one engine progress event into the shared
+// protocol consumed by every ProgressSender channel. Snapshot/log identity is
+// assigned once before fan-out; transports never derive iteration history.
+func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.ProgressEvent {
+	if event == nil || event.Structured == nil {
 		return nil
 	}
-
-	progressKey := qualifyChatID(channel, chatID)
-	return func(event *ProgressEvent) {
-		if event == nil || event.Structured == nil {
-			return
-		}
-		s := event.Structured
-		if cliCh != nil {
-			payload := &protocol.ProgressEvent{
-				ChatID:           progressKey,
-				Phase:            string(s.Phase),
-				Seq:              s.Seq,
-				Iteration:        s.Iteration,
-				Thinking:         s.ThinkingContent,
-				Reasoning:        s.ReasoningContent,
-				HistoryCompacted: s.HistoryCompacted,
-				CWD:              s.CWD,
-			}
-			for _, t := range s.ActiveTools {
-				payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
-					Name:      t.Name,
-					Label:     t.Label,
-					Status:    string(t.Status),
-					Elapsed:   t.Elapsed.Milliseconds(),
-					Iteration: t.Iteration,
-					Summary:   t.Summary,
-					Detail:    t.Detail,
-					Args:      t.Args,
-					ToolHints: t.ToolHints,
-				})
-			}
-			for _, t := range s.CompletedTools {
-				payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
-					Name:      t.Name,
-					Label:     t.Label,
-					Status:    string(t.Status),
-					Elapsed:   t.Elapsed.Milliseconds(),
-					Iteration: t.Iteration,
-					Summary:   t.Summary,
-					Detail:    t.Detail,
-					Args:      t.Args,
-					ToolHints: t.ToolHints,
-				})
-			}
-			if cliSubAgents := resolveSubAgents(event); len(cliSubAgents) > 0 {
-				payload.SubAgents = cliSubAgents
-			}
-			if len(s.Todos) > 0 {
-				payload.Todos = make([]protocol.TodoItem, len(s.Todos))
-				for i, td := range s.Todos {
-					payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
-				}
-			}
-			if s.TokenUsage != nil {
-				payload.TokenUsage = &protocol.TokenUsage{
-					PromptTokens:     s.TokenUsage.PromptTokens,
-					CompletionTokens: s.TokenUsage.CompletionTokens,
-					TotalTokens:      s.TokenUsage.TotalTokens,
-					CacheHitTokens:   s.TokenUsage.CacheHitTokens,
-					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
-				}
-			}
-			cliCh.SendProgress(chatID, payload)
-			// Save snapshot + track iteration history for mid-session reconnect.
-			a.recordIterationSnapshot(progressKey, func(prev *protocol.ProgressEvent) bool {
-				return s.Iteration > prev.Iteration && prev.Iteration >= 0
-			})
-			a.lastProgressSnapshot.Store(progressKey, payload)
-		}
-		if remoteCLICh != nil {
-			payload := &protocol.ProgressEvent{
-				ChatID:           progressKey,
-				Seq:              s.Seq,
-				Phase:            string(s.Phase),
-				Iteration:        s.Iteration,
-				Thinking:         s.ThinkingContent,
-				Reasoning:        s.ReasoningContent,
-				HistoryCompacted: s.HistoryCompacted,
-				CWD:              s.CWD,
-			}
-			for _, t := range s.ActiveTools {
-				payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
-					Name:      t.Name,
-					Label:     t.Label,
-					Status:    string(t.Status),
-					Elapsed:   t.Elapsed.Milliseconds(),
-					Summary:   t.Summary,
-					Detail:    t.Detail,
-					Args:      t.Args,
-					ToolHints: t.ToolHints,
-					Iteration: t.Iteration,
-				})
-			}
-			for _, t := range s.CompletedTools {
-				payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
-					Name:      t.Name,
-					Label:     t.Label,
-					Status:    string(t.Status),
-					Elapsed:   t.Elapsed.Milliseconds(),
-					Summary:   t.Summary,
-					Detail:    t.Detail,
-					Args:      t.Args,
-					ToolHints: t.ToolHints,
-					Iteration: t.Iteration,
-				})
-			}
-			if wsSubAgents := resolveWsSubAgents(event); len(wsSubAgents) > 0 {
-				payload.SubAgents = wsSubAgents
-			}
-			if len(s.Todos) > 0 {
-				payload.Todos = make([]protocol.TodoItem, len(s.Todos))
-				for i, td := range s.Todos {
-					payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
-				}
-			}
-			if s.TokenUsage != nil {
-				payload.TokenUsage = &protocol.TokenUsage{
-					PromptTokens:     s.TokenUsage.PromptTokens,
-					CompletionTokens: s.TokenUsage.CompletionTokens,
-					TotalTokens:      s.TokenUsage.TotalTokens,
-					CacheHitTokens:   s.TokenUsage.CacheHitTokens,
-					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
-				}
-			}
-			remoteCLICh.SendProgress(chatID, payload)
-			// Store progress snapshot for remote CLI reconnect recovery.
-			// Without this, GetActiveProgress returns nil after CLI restart
-			// because only the local cliCh path stored snapshots.
-			cliPayload := &protocol.ProgressEvent{
-				ChatID:           progressKey,
-				Seq:              s.Seq,
-				Phase:            string(s.Phase),
-				Iteration:        s.Iteration,
-				Thinking:         s.ThinkingContent,
-				Reasoning:        s.ReasoningContent,
-				HistoryCompacted: s.HistoryCompacted,
-				CWD:              s.CWD,
-			}
-			for _, t := range s.ActiveTools {
-				cliPayload.ActiveTools = append(cliPayload.ActiveTools, protocol.ToolProgress{
-					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-				})
-			}
-			for _, t := range s.CompletedTools {
-				cliPayload.CompletedTools = append(cliPayload.CompletedTools, protocol.ToolProgress{
-					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-				})
-			}
-			if cliSubAgents := resolveSubAgents(event); len(cliSubAgents) > 0 {
-				cliPayload.SubAgents = cliSubAgents
-			}
-			if len(s.Todos) > 0 {
-				cliPayload.Todos = make([]protocol.TodoItem, len(s.Todos))
-				for i, td := range s.Todos {
-					cliPayload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
-				}
-			}
-			if s.TokenUsage != nil {
-				cliPayload.TokenUsage = &protocol.TokenUsage{
-					PromptTokens:     s.TokenUsage.PromptTokens,
-					CompletionTokens: s.TokenUsage.CompletionTokens,
-					TotalTokens:      s.TokenUsage.TotalTokens,
-					CacheHitTokens:   s.TokenUsage.CacheHitTokens,
-					MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
-				}
-			}
-			a.recordIterationSnapshot(progressKey, func(prev *protocol.ProgressEvent) bool {
-				return s.Iteration > prev.Iteration && prev.Iteration >= 0
-			})
-			a.lastProgressSnapshot.Store(progressKey, cliPayload)
-			log.WithFields(log.Fields{
-				"key":       progressKey,
-				"phase":     cliPayload.Phase,
-				"iteration": cliPayload.Iteration,
-				"active":    len(cliPayload.ActiveTools),
-				"completed": len(cliPayload.CompletedTools),
-			}).Info("remote CLI: stored progress snapshot")
-		}
+	s := event.Structured
+	payload := &protocol.ProgressEvent{
+		ChatID: progressKey, Phase: string(s.Phase), Seq: s.Seq,
+		Iteration: s.Iteration, Content: s.Content, Reasoning: s.ReasoningContent,
+		HistoryCompacted: s.HistoryCompacted, CWD: s.CWD,
+		TurnID: s.TurnID,
 	}
-}
-
-// buildWebProgressEventHandler creates the progress event handler for the Web channel.
-// Returns nil if no Web channel is available.
-func (a *Agent) buildWebProgressEventHandler(chatID, channel string) func(*ProgressEvent) {
-	if a.channelFinder == nil {
-		return nil
-	}
-	ch, ok := a.channelFinder("web")
-	if !ok {
-		return nil
-	}
-	wc, ok := ch.(*channelpkg.WebChannel)
-	if !ok {
-		log.WithField("channel", channel).Warn("Web channel found but type assertion failed, skipping ProgressEventHandler")
-		return nil
-	}
-	progressKey := qualifyChatID(channel, chatID)
-	return func(event *ProgressEvent) {
-		if event == nil || event.Structured == nil {
-			return
-		}
-		s := event.Structured
-		payload := &protocol.ProgressEvent{
-			ChatID:           progressKey,
-			Phase:            string(s.Phase),
-			Seq:              s.Seq,
-			Iteration:        s.Iteration,
-			Thinking:         s.ThinkingContent,
-			Reasoning:        s.ReasoningContent,
-			HistoryCompacted: s.HistoryCompacted,
-			CWD:              s.CWD,
-		}
-		for _, t := range s.ActiveTools {
-			payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
-				Name:      t.Name,
-				Label:     t.Label,
-				Status:    string(t.Status),
-				Elapsed:   t.Elapsed.Milliseconds(),
-				Summary:   t.Summary,
-				Detail:    t.Detail,
-				Args:      t.Args,
-				ToolHints: t.ToolHints,
-				Iteration: t.Iteration,
-			})
-		}
-		for _, t := range s.CompletedTools {
-			payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
-				Name:      t.Name,
-				Label:     t.Label,
-				Status:    string(t.Status),
-				Elapsed:   t.Elapsed.Milliseconds(),
-				Summary:   t.Summary,
-				Detail:    t.Detail,
-				Args:      t.Args,
-				ToolHints: t.ToolHints,
-				Iteration: t.Iteration,
-			})
-		}
-		// Resolve sub-agent tree (structured data preferred over text parsing)
-		if wsSubAgents := resolveWsSubAgents(event); len(wsSubAgents) > 0 {
-			payload.SubAgents = wsSubAgents
-		}
-		// Copy todo items for web display
-		if len(s.Todos) > 0 {
-			payload.Todos = make([]protocol.TodoItem, len(s.Todos))
-			for i, td := range s.Todos {
-				payload.Todos[i] = protocol.TodoItem{
-					ID:   td.ID,
-					Text: td.Text,
-					Done: td.Done,
-				}
-			}
-		}
-		// Pass token usage snapshot
-		if s.TokenUsage != nil {
-			payload.TokenUsage = &protocol.TokenUsage{
-				PromptTokens:     s.TokenUsage.PromptTokens,
-				CompletionTokens: s.TokenUsage.CompletionTokens,
-				TotalTokens:      s.TokenUsage.TotalTokens,
-				CacheHitTokens:   s.TokenUsage.CacheHitTokens,
-				MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
-			}
-		}
-
-		// Keep event order stable for frontend rendering. SendProgress itself is non-blocking.
-		wc.SendProgress(chatID, payload)
-
-		// Track iteration history: when iteration advances, snapshot the
-		// PREVIOUS iteration into the history list for mid-session reconnect.
-		a.recordIterationSnapshot(progressKey, func(prev *protocol.ProgressEvent) bool {
-			return s.Iteration > prev.Iteration && prev.Iteration >= 0
+	for _, t := range s.ActiveTools {
+		payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
+			Name: t.Name, Label: t.Label, Status: string(t.Status),
+			Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
+			Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 		})
-		// Save current iteration snapshot
-		a.lastProgressSnapshot.Store(progressKey, payload)
 	}
+	for _, t := range s.CompletedTools {
+		payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
+			Name: t.Name, Label: t.Label, Status: string(t.Status),
+			Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
+			Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
+		})
+	}
+	payload.SubAgents = resolveSubAgents(event)
+	payload.Todos = make([]protocol.TodoItem, len(s.Todos))
+	for i, td := range s.Todos {
+		payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+	}
+	if s.TokenUsage != nil {
+		payload.TokenUsage = &protocol.TokenUsage{
+			PromptTokens: s.TokenUsage.PromptTokens, CompletionTokens: s.TokenUsage.CompletionTokens,
+			TotalTokens: s.TokenUsage.TotalTokens, CacheHitTokens: s.TokenUsage.CacheHitTokens,
+			MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
+		}
+	}
+	return payload
 }
 
-// buildPluginProgressEventHandler creates the progress event handler for plugin channels
-// (e.g. TG) that implement channel.ProgressSender.
-// Returns nil if no suitable channel is available.
-func (a *Agent) buildPluginProgressEventHandler(chatID, channel string) func(*ProgressEvent) {
-	if a.channelFinder == nil {
+// buildProgressEventHandler creates the single channel-agnostic structured
+// progress pipeline. It derives one semantic snapshot/log event, stores it
+// once, then broadcasts that exact immutable payload to every registered
+// ProgressSender (CLI, Web, and plugin channels).
+func (a *Agent) buildProgressEventHandler(chatID, originatingChannel string) func(*ProgressEvent) {
+	if a.channelRange == nil {
 		return nil
 	}
-	ch, ok := a.channelFinder(channel)
-	if !ok {
+	var senders []channelpkg.ProgressSender
+	a.channelRange(func(_ string, ch channelpkg.Channel) bool {
+		if sender, ok := ch.(channelpkg.ProgressSender); ok {
+			senders = append(senders, sender)
+		}
+		return true
+	})
+	if len(senders) == 0 {
 		return nil
 	}
-	ps, ok := ch.(channelpkg.ProgressSender)
-	if !ok {
-		return nil
-	}
-	progressKey := qualifyChatID(channel, chatID)
+	progressKey := qualifyChatID(originatingChannel, chatID)
 	return func(event *ProgressEvent) {
-		if event == nil || event.Structured == nil {
+		payload := buildProgressPayload(progressKey, event)
+		if payload == nil {
 			return
 		}
-		s := event.Structured
-		payload := &protocol.ProgressEvent{
-			ChatID:           progressKey,
-			Phase:            string(s.Phase),
-			Seq:              s.Seq,
-			Iteration:        s.Iteration,
-			Thinking:         s.ThinkingContent,
-			Reasoning:        s.ReasoningContent,
-			HistoryCompacted: s.HistoryCompacted,
-			CWD:              s.CWD,
+		a.attachIterationDelta(progressKey, payload.Iteration, payload)
+		a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
+		a.clearStreamState(progressKey)
+		for _, sender := range senders {
+			sender.SendProgress(chatID, cloneProgressEvent(payload))
 		}
-		for _, t := range s.ActiveTools {
-			payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
-				Name:      t.Name,
-				Label:     t.Label,
-				Status:    string(t.Status),
-				Elapsed:   t.Elapsed.Milliseconds(),
-				Summary:   t.Summary,
-				Detail:    t.Detail,
-				Args:      t.Args,
-				Iteration: t.Iteration,
-			})
-		}
-		for _, t := range s.CompletedTools {
-			payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
-				Name:      t.Name,
-				Label:     t.Label,
-				Status:    string(t.Status),
-				Elapsed:   t.Elapsed.Milliseconds(),
-				Summary:   t.Summary,
-				Detail:    t.Detail,
-				Args:      t.Args,
-				Iteration: t.Iteration,
-			})
-		}
-		if len(s.Todos) > 0 {
-			payload.Todos = make([]protocol.TodoItem, len(s.Todos))
-			for i, td := range s.Todos {
-				payload.Todos[i] = protocol.TodoItem{
-					ID:   td.ID,
-					Text: td.Text,
-					Done: td.Done,
-				}
-			}
-		}
-		if s.TokenUsage != nil {
-			payload.TokenUsage = &protocol.TokenUsage{
-				PromptTokens:     s.TokenUsage.PromptTokens,
-				CompletionTokens: s.TokenUsage.CompletionTokens,
-				TotalTokens:      s.TokenUsage.TotalTokens,
-				CacheHitTokens:   s.TokenUsage.CacheHitTokens,
-				MaxOutputTokens:  s.TokenUsage.MaxOutputTokens,
-			}
-		}
-		ps.SendProgress(chatID, payload)
 	}
 }
 
-// buildStreamCallbacks resolves CLI and Web channels and returns stream content
-// and reasoning stream callbacks. Returns nil, nil if streaming is disabled or
-// no channels are available.
-// Plugin channels (e.g. TG) do NOT receive stream — they get structured progress instead.
-func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64) (streamContentFunc func(string), streamReasoningFunc func(string)) {
-	var cliCh *channelpkg.CLIChannel
-	var remoteCLICh channelpkg.ProgressSender
-	if ch, ok := a.channelFinder("cli"); ok {
-		if cc, ok := ch.(*channelpkg.CLIChannel); ok {
-			cliCh = cc
-		} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
-			remoteCLICh = rc
-		}
-	}
-	var webCh *channelpkg.WebChannel
-	if ch, ok := a.channelFinder("web"); ok {
-		if wc, ok := ch.(*channelpkg.WebChannel); ok {
-			webCh = wc
+// buildStreamCallbacks collects the ProgressSender for the ORIGINATING channel
+// and returns stream callbacks that push to it.
+//
+// Only the originating channel is used — its SendProgress already broadcasts
+// to ALL Hub subscribers (including other channels' clients). Broadcasting to
+// multiple channels causes duplicate delivery: each channel sends to the same
+// Hub, which broadcasts to the same subscribers, so each subscriber receives
+// the event N times (where N = number of ProgressSender channels).
+//
+// RATE LIMITING: content/reasoning push is NOT throttled — every token
+// callback pushes immediately. The frontend typewriter (50ms tick) renders
+// at its own pace; coalescing of redundant snapshots happens at the SSE
+// delivery layer (sendCh batching + ring-buffer mergeStatelessEvent).
+// Tool calls and token usage are low-frequency, also not throttled.
+// All callbacks also write to atomic streamState for GetActiveProgress reconnect.
+func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64, turnID uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
+	// Use ONLY the originating channel — its SendProgress broadcasts to ALL
+	// Hub subscribers (including other channels' clients via shared Hub).
+	var sender channelpkg.ProgressSender
+	if ch, ok := a.channelFinder(channel); ok {
+		if ps, ok := ch.(channelpkg.ProgressSender); ok {
+			sender = ps
 		}
 	}
 
+	progressKey := qualifyChatID(channel, chatID)
+
+	// broadcastProgress pushes to the originating channel only.
+	// chatID (raw) is the routing key for SendProgress's first parameter.
+	// payload.ChatID (qualified progressKey) is the session identity for
+	// the TUI's handleProgressMsg filter. These are two different semantics —
+	// never mix them.
+	broadcastProgress := func(payload *protocol.ProgressEvent) {
+		if payload.ChatID == "" {
+			payload.ChatID = progressKey
+		}
+		if sender != nil {
+			sender.SendProgress(chatID, payload)
+		}
+	}
+
+	// All stream callbacks go through broadcastProgress with a qualified
+	// ChatID. This replaces the old SendStreamContent path which had
+	// inconsistent ChatID qualification across implementations (CLIChannel
+	// used raw, RemoteCLI/Web qualified manually).
 	streamContentFunc = func(content string) {
-		seq := progressSeq.Add(1)
-		if cliCh != nil {
-			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: qualifyChatID(channel, chatID), Seq: seq, StreamContent: content})
-		}
-		if remoteCLICh != nil {
-			remoteCLICh.SendStreamContent(chatID, content, "")
-		}
-		if webCh != nil {
-			webCh.SendStreamContent(chatID, content, "")
-		}
+		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
+			s.StreamContent = content
+		})
+		broadcastProgress(&protocol.ProgressEvent{
+			ChatID:        progressKey,
+			TurnID:        turnID,
+			StreamContent: content,
+		})
 	}
 	streamReasoningFunc = func(content string) {
+		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
+			s.ReasoningStreamContent = content
+		})
+		broadcastProgress(&protocol.ProgressEvent{
+			ChatID:                 progressKey,
+			TurnID:                 turnID,
+			ReasoningStreamContent: content,
+		})
+	}
+	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
+		tools := make([]protocol.ToolProgress, 0, len(toolCalls))
+		var genuiContent string
+		for _, tc := range toolCalls {
+			if tc.Name != "" {
+				tools = append(tools, protocol.ToolProgress{
+					Name:     tc.Name,
+					Status:   "generating",
+					GenChars: len(tc.Arguments),
+				})
+				// Extract streaming HTML from display_html tool arguments.
+				// tc.Arguments is accumulated partial JSON like {"code":"<div cla...
+				if tc.Name == "display_html" {
+					genuiContent = extractPartialCodeFromArgs(tc.Arguments)
+				}
+			}
+		}
+		if len(tools) == 0 && genuiContent == "" {
+			return
+		}
+
+		// No server-side throttle for genuiContent — the frontend already
+		// throttles compilation to 100ms. Server-side throttle would drop
+		// intermediate updates and potentially the final code.
+		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
+			s.StreamingTools = tools
+			if genuiContent != "" {
+				s.GenUIContent = genuiContent
+			}
+		})
 		seq := progressSeq.Add(1)
-		if cliCh != nil {
-			cliCh.SendProgress(chatID, &protocol.ProgressEvent{ChatID: qualifyChatID(channel, chatID), Seq: seq, ReasoningStreamContent: content})
+		payload := &protocol.ProgressEvent{
+			ChatID:         progressKey,
+			TurnID:         turnID,
+			Seq:            seq,
+			StreamingTools: tools,
 		}
-		if remoteCLICh != nil {
-			remoteCLICh.SendStreamContent(chatID, "", content)
+		if genuiContent != "" {
+			payload.GenUIContent = genuiContent
 		}
-		if webCh != nil {
-			webCh.SendStreamContent(chatID, "", content)
+		broadcastProgress(payload)
+	}
+	streamUsageFunc = func(usage *llm.TokenUsage) {
+		if usage == nil || usage.CompletionTokens == 0 {
+			return
+		}
+		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
+			s.StreamTokens = usage.CompletionTokens
+		})
+		seq := progressSeq.Add(1)
+		broadcastProgress(&protocol.ProgressEvent{
+			ChatID:       progressKey,
+			TurnID:       turnID,
+			Seq:          seq,
+			StreamTokens: usage.CompletionTokens,
+		})
+	}
+	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc
+}
+
+// extractPartialCodeFromArgs extracts the "code" field value from a partial JSON
+// string like {"code":"<div class='...'>...}. The JSON may be incomplete (streaming),
+// so we use a string scan instead of json.Unmarshal.
+func extractPartialCodeFromArgs(args string) string {
+	// Find "code":" or "code": "
+	idx := strings.Index(args, `"code"`)
+	if idx == -1 {
+		return ""
+	}
+	// Skip past "code"
+	rest := args[idx+6:]
+	// Skip whitespace and colon
+	for len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n' || rest[0] == ':') {
+		rest = rest[1:]
+	}
+	if len(rest) == 0 {
+		return ""
+	}
+	// Must start with a quote
+	quote := rest[0]
+	if quote != '"' && quote != '\'' {
+		return ""
+	}
+	rest = rest[1:]
+	// Read until matching quote (respecting backslash escapes)
+	var sb strings.Builder
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		if ch == '\\' && i+1 < len(rest) {
+			// Handle escape sequences
+			next := rest[i+1]
+			switch next {
+			case 'n':
+				sb.WriteByte('\n')
+			case 't':
+				sb.WriteByte('\t')
+			case 'r':
+				sb.WriteByte('\r')
+			case '"':
+				sb.WriteByte('"')
+			case '\\':
+				sb.WriteByte('\\')
+			case '/':
+				sb.WriteByte('/')
+			default:
+				sb.WriteByte(next)
+			}
+			i++
+			continue
+		}
+		if ch == quote {
+			return sb.String()
+		}
+		sb.WriteByte(ch)
+	}
+	// Stream incomplete — return what we have so far
+	return sb.String()
+}
+
+// interactiveSessionsToStatuses converts InteractiveSessionInfo slice to
+// lightweight SubAgentStatus slice for system reminder injection.
+func interactiveSessionsToStatuses(sessions []InteractiveSessionInfo) []SubAgentStatus {
+	if len(sessions) == 0 {
+		return nil
+	}
+	statuses := make([]SubAgentStatus, len(sessions))
+	for i, s := range sessions {
+		statuses[i] = SubAgentStatus{
+			Role:     s.Role,
+			Instance: s.Instance,
+			Running:  s.Running,
 		}
 	}
-	return streamContentFunc, streamReasoningFunc
+	return statuses
 }

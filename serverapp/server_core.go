@@ -96,7 +96,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		PersonaIsolation:      personaIsolation,
 		OffloadDir:            offloadDir,
 		MaskDir:               maskDir,
-		PluginEnabled:         cfg.Plugins.Enabled,
+		PluginEnabled:         cfg.Plugins.IsEnabled(),
 		PluginDirs:            cfg.Plugins.Dirs,
 		PluginDisabledPlugins: cfg.Plugins.DisabledPlugins,
 	})
@@ -125,17 +125,13 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// 4. Register core tools.
 	ag.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
 	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
-	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
-
-	if adminChatID := cfg.Admin.ChatID; adminChatID != "" {
-		ag.RegisterCoreTool(tools.NewLogsTool(adminChatID))
-		log.WithField("admin_chat_id", adminChatID).Info("Logs tool registered (admin only)")
+	if !cfg.DisableWebSearch {
+		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 	}
 
 	ag.IndexGlobalTools()
 
 	// 5. Configure LLM.
-	ag.LLMFactory().SetModelTiers(cfg.LLM)
 	ag.LLMFactory().SetModelContexts(cfg.Agent.ModelContexts)
 	ag.LLMFactory().SetRetryConfig(llm_pkg.RetryConfig{
 		Attempts: uint(cfg.Agent.LLMRetryAttempts),
@@ -161,6 +157,9 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		},
 		func(name string) { disp.Unregister(name) }, // unregisterAgentChannel
 	)
+	// Inject channel range so agent can broadcast to ALL channels
+	// (including plugin channels) without hardcoding names.
+	ag.SetChannelRange(disp.RangeChannels)
 
 	// 7. Start agent loop.
 	ctx, cancel := context.WithCancel(context.Background())

@@ -223,12 +223,34 @@ write_config_jq() {
     jq '{server: (.server // {}), web: (.web // {}), cli: (.cli // {}), admin: (.admin // {}), agent: (.agent // {})} * .' \
         "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
 
+    # _jq_set writes a value to config.json using jq.
+    # Uses --argjson for JSON types (numbers, booleans) and --arg for strings.
+    _jq_set() {
+        local section="$1" key="$2" value="$3"
+        case "$value" in
+            true|false)
+                jq --argjson v "$value" ".${section}.${key} = \$v" "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
+                ;;
+            [0-9]*)
+                # Only use --argjson for pure integers (no dots, no dashes)
+                if [[ "$value" =~ ^[0-9]+$ ]]; then
+                    jq --argjson v "$value" ".${section}.${key} = \$v" "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
+                else
+                    jq --arg v "$value" ".${section}.${key} = \$v" "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
+                fi
+                ;;
+            *)
+                jq --arg v "$value" ".${section}.${key} = \$v" "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
+                ;;
+        esac
+    }
+
     _set_if_missing() {
         local section="$1" key="$2" value="$3"
         local current
         current=$(jq -r ".${section}.${key} // empty" "$CONFIG_PATH" 2>/dev/null)
         if [ -z "$current" ]; then
-            jq --arg v "$value" ".${section}.${key} = \$v" "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
+            _jq_set "$section" "$key" "$value"
             changes+=("${section}.${key}=${value}")
         else
             preserved+=("${section}.${key}=${current}")
@@ -239,7 +261,7 @@ write_config_jq() {
         local section="$1" key="$2" value="$3"
         local old
         old=$(jq -r ".${section}.${key} // empty" "$CONFIG_PATH" 2>/dev/null)
-        jq --arg v "$value" ".${section}.${key} = \$v" "$CONFIG_PATH" > "${CONFIG_PATH}.tmp" && mv "${CONFIG_PATH}.tmp" "$CONFIG_PATH"
+        _jq_set "$section" "$key" "$value"
         if [ "$old" != "$value" ]; then
             changes+=("${section}.${key}=${value} (was ${old})")
         else

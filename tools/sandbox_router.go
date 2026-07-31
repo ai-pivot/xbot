@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"xbot/config"
 	log "xbot/logger"
@@ -28,13 +29,35 @@ type SandboxRouter struct {
 	denied     *DeniedSandbox
 	tokenStore *RunnerTokenStore
 
+	// IsAdminFn, when non-nil, is called to check if a user has admin privileges.
+	// Admin users bypass the web-user DeniedSandbox restriction in SandboxForUser.
+	// Set by serverapp after construction (server has admin identity info).
+	IsAdminFn func(userID string) bool
+
+	// sessionRunners holds session-level runner bindings (sessionKey → runnerName).
+	// This is session-scoped: switching runner in one session doesn't affect others.
+	// Shared with RemoteSandbox so getRunner can read the same binding.
+	sessionRunners sync.Map // "channel:chatID" → runnerName
+
+	// Lazy-init state for remote sandbox
+	remoteMu      sync.Mutex
+	remoteCfg     RemoteSandboxConfig // stored for EnsureRemote lazy init
+	remoteSyncCfg RemoteSandboxSyncConfig
+
 	// defaultMode is used when SandboxForUser can't determine per-user routing.
 	// "docker" if docker is enabled, "remote" if remote is enabled, "none" otherwise.
 	defaultMode string
 }
 
+// SetIsAdminFn sets the admin-check callback used by SandboxForUser to bypass
+// the web-user DeniedSandbox restriction for admin users.
+func (r *SandboxRouter) SetIsAdminFn(fn func(userID string) bool) {
+	r.IsAdminFn = fn
+}
+
 // NewSandboxRouter creates a router that holds both docker and remote sandbox instances.
 // Either (or both) may be nil — the router falls back gracefully.
+// Remote sandbox can be lazy-started later via EnsureRemote() if not configured at construction time.
 func NewSandboxRouter(sandboxCfg config.SandboxConfig, workDir string) *SandboxRouter {
 	r := &SandboxRouter{
 		none:   &NoneSandbox{},
@@ -50,26 +73,24 @@ func NewSandboxRouter(sandboxCfg config.SandboxConfig, workDir string) *SandboxR
 		r.docker = NewDockerSandbox(sandboxCfg, workDir)
 	}
 
+	// Store config for lazy remote sandbox startup.
+	wsPort := sandboxCfg.WSPort
+	if wsPort == 0 {
+		wsPort = 8080
+	}
+	xbotDir := workDir + "/.xbot"
+	r.remoteCfg = RemoteSandboxConfig{
+		Addr:      "0.0.0.0:" + strconv.Itoa(wsPort),
+		AuthToken: sandboxCfg.AuthToken,
+	}
+	r.remoteSyncCfg = RemoteSandboxSyncConfig{
+		GlobalSkillDirs: []string{xbotDir + "/skills"},
+		AgentsDir:       xbotDir + "/agents",
+	}
+
 	// Initialize remote sandbox if configured
 	if sandboxCfg.RemoteMode != "" || sandboxCfg.Mode == "remote" {
-		wsPort := sandboxCfg.WSPort
-		if wsPort == 0 {
-			wsPort = 8080
-		}
-		xbotDir := workDir + "/.xbot"
-		syncCfg := RemoteSandboxSyncConfig{
-			GlobalSkillDirs: []string{xbotDir + "/skills"},
-			AgentsDir:       xbotDir + "/agents",
-		}
-		rs, err := NewRemoteSandbox(RemoteSandboxConfig{
-			Addr:      "0.0.0.0:" + strconv.Itoa(wsPort),
-			AuthToken: sandboxCfg.AuthToken,
-		}, syncCfg)
-		if err != nil {
-			log.WithError(err).Error("Failed to start remote sandbox, falling back")
-		} else {
-			r.remote = rs
-		}
+		r.EnsureRemote()
 	}
 
 	// Determine default mode for Name() and fallback routing
@@ -86,6 +107,37 @@ func NewSandboxRouter(sandboxCfg config.SandboxConfig, workDir string) *SandboxR
 		r.defaultMode, r.docker != nil, r.remote != nil)
 
 	return r
+}
+
+// EnsureRemote starts the remote sandbox WebSocket server if not already running.
+// Safe to call multiple times — subsequent calls are no-ops.
+// Returns true if the remote sandbox is available (started now or already running).
+func (r *SandboxRouter) EnsureRemote() bool {
+	if r.remote != nil {
+		return true
+	}
+	r.remoteMu.Lock()
+	defer r.remoteMu.Unlock()
+	if r.remote != nil {
+		return true
+	}
+	rs, err := NewRemoteSandbox(r.remoteCfg, r.remoteSyncCfg)
+	if err != nil {
+		log.WithError(err).Error("Failed to start remote sandbox, falling back")
+		return false
+	}
+	// Transfer token store if already set
+	if r.tokenStore != nil {
+		rs.SetTokenStore(r.tokenStore)
+	}
+	// Share session-level runner bindings
+	rs.sessionRunners = &r.sessionRunners
+	r.remote = rs
+	if r.defaultMode == "none" {
+		r.defaultMode = "remote"
+	}
+	log.Info("Remote sandbox started dynamically")
+	return true
 }
 
 // Name returns the default sandbox mode name.
@@ -133,28 +185,75 @@ func (r *SandboxRouter) SetTokenStore(store *RunnerTokenStore) {
 	r.tokenStore = store
 }
 
+// SetSessionRunner binds a session to a specific runner (session-level, not user-level).
+// This is called by config tool's runner switch action.
+func (r *SandboxRouter) SetSessionRunner(sessionKey, runnerName string) {
+	r.sessionRunners.Store(sessionKey, runnerName)
+}
+
+// GetSessionRunner returns the session-level runner binding, or "" if not set.
+func (r *SandboxRouter) GetSessionRunner(sessionKey string) string {
+	if v, ok := r.sessionRunners.Load(sessionKey); ok {
+		return v.(string)
+	}
+	return ""
+}
+
+// SandboxForSession resolves the sandbox for a session, checking session-level binding first.
+// sessionKey format: "channel:chatID".
+func (r *SandboxRouter) SandboxForSession(sessionKey, userID string) Sandbox {
+	// 1. Check session-level runner binding (highest priority)
+	if runnerName := r.GetSessionRunner(sessionKey); runnerName != "" {
+		if runnerName == BuiltinDockerRunnerName {
+			if r.docker != nil {
+				return r.docker
+			}
+			return r.none
+		}
+		// Specific remote runner
+		if r.remote != nil && r.remote.IsRunnerOnline(userID, runnerName) {
+			return r.remote
+		}
+		// Session wants a specific runner but it's offline → local
+		return r.none
+	}
+
+	// 2. Fall back to user-level routing
+	return r.SandboxForUser(userID)
+}
+
 // SandboxForUser returns the user-specific sandbox instance.
 // This is the key method for per-user routing — buildToolContext uses it
 // to inject the correct sandbox into ToolContext.Sandbox.
 //
 // Routing priority:
-//  1. If user has set active_runner to BuiltinDockerRunnerName → docker
-//  2. If user has a connected remote runner matching active_runner name → remote
-//  3. If user has any connected remote runner → remote
-//  4. Fallback → docker (if enabled), then none
+//  1. active_runner == BuiltinDockerRunnerName → docker (if enabled)
+//  2. active_runner == specific remote name → remote (only if that runner is online)
+//  3. active_runner set but not online → none (local execution, don't silently fallback to wrong runner)
+//  4. No active_runner → any connected remote (if any), then docker, then none
 func (r *SandboxRouter) SandboxForUser(userID string) Sandbox {
 	// 1. Check explicit active_runner preference
 	if userID != "" && r.tokenStore != nil {
-		if activeName, err := r.tokenStore.GetActiveRunner(userID); err == nil {
+		if activeName, err := r.tokenStore.GetActiveRunner(userID); err == nil && activeName != "" {
+			// Built-in docker
 			if activeName == BuiltinDockerRunnerName {
 				if r.docker != nil {
 					return r.docker
 				}
 			}
+			// Specific remote runner: only route if THAT runner is online
+			if r.remote != nil {
+				if r.remote.IsRunnerOnline(userID, activeName) {
+					return r.remote
+				}
+				// active_runner set to a specific remote name but it's NOT connected
+				// → fall through to local (don't silently route to a different runner)
+			}
+			return r.none
 		}
 	}
 
-	// 2. Check remote runner (explicit active name or any connection)
+	// 2. No active_runner set → use any connected remote runner
 	if userID != "" && r.remote != nil {
 		if r.remote.HasUser(userID) {
 			return r.remote
@@ -162,18 +261,33 @@ func (r *SandboxRouter) SandboxForUser(userID string) Sandbox {
 	}
 
 	// 3. Pure web user without remote runner — denied by default
+	//    unless the user is admin or the server has no sandbox at all.
 	if strings.HasPrefix(userID, "web-") {
-		webServerRunner := false
-		if v := os.Getenv("WEB_USER_SERVER_RUNNER"); v != "" {
-			if b, err := strconv.ParseBool(v); err == nil {
-				webServerRunner = b
+		// Admin users bypass the web-user restriction — they own the server
+		// and should have the same access as CLI users.
+		if r.IsAdminFn != nil && r.IsAdminFn(userID) {
+			// Fall through to docker/none below — admin gets host access.
+		} else {
+			webServerRunner := false
+			if v := os.Getenv("WEB_USER_SERVER_RUNNER"); v != "" {
+				if b, err := strconv.ParseBool(v); err == nil {
+					webServerRunner = b
+				}
 			}
+			if !webServerRunner {
+				// When no sandbox is configured (no docker, no remote), the server
+				// is running in local mode — CLI users get NoneSandbox. Denying web
+				// users here would be inconsistent: the server explicitly chose to
+				// run without isolation, so all users get host access.
+				// DeniedSandbox only applies when there IS a sandbox but the user
+				// doesn't have access (docker or remote configured but not for them).
+				if r.docker == nil && r.remote == nil {
+					return r.none
+				}
+				return r.denied
+			}
+			// Explicitly enabled: allow fallback to server sandbox (docker)
 		}
-		if !webServerRunner {
-			// User must have their own remote runner — return DeniedSandbox to block ALL access
-			return r.denied
-		}
-		// Explicitly enabled: allow fallback to server sandbox (docker)
 	}
 
 	if r.docker != nil {

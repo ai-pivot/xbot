@@ -11,7 +11,7 @@ import (
 // formatToolProgress renders a human-readable progress label for a tool call.
 // Parses JSON args to extract key fields per tool type.
 func formatToolProgress(name string, args string) string {
-	const maxLen = 80
+	const maxLen = 200
 
 	// Helper to get a string field from parsed JSON
 	get := func(m map[string]any, key string) string {
@@ -117,8 +117,13 @@ func formatToolProgress(name string, args string) string {
 	case "SubAgent":
 		role := get(m, "role")
 		task := get(m, "task")
+		instance := get(m, "instance")
 		if role != "" {
-			summary = truncate(fmt.Sprintf("SubAgent [%s]: %s", role, task), maxLen)
+			if instance != "" {
+				summary = truncate(fmt.Sprintf("SubAgent [%s/%s]: %s", role, instance, task), maxLen)
+			} else {
+				summary = truncate(fmt.Sprintf("SubAgent [%s]: %s", role, task), maxLen)
+			}
 		} else {
 			summary = fmt.Sprintf("SubAgent: %s", task)
 		}
@@ -147,8 +152,8 @@ func formatToolProgress(name string, args string) string {
 			summary = "card_create"
 		}
 	default:
-		// Unknown tools (including MCP tools): show first 60 chars of args
-		raw := truncate(args, 60)
+		// Unknown tools (including MCP tools): show first 150 chars of args
+		raw := truncate(args, 150)
 		summary = fmt.Sprintf("%s: %s", name, raw)
 	}
 

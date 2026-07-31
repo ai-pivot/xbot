@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"xbot/channel"
 	"xbot/clipanic"
 	"xbot/config"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 )
 
@@ -127,8 +129,8 @@ func TestSubscriptionPersistence(t *testing.T) {
 
 	// Test syncLLMFromActiveSub derives cfg.LLM from active subscription
 	syncLLMFromActiveSub(cfg)
-	if cfg.LLM.Model != "glm-5" {
-		t.Errorf("cfg.LLM.Model should be 'glm-5' after syncLLMFromActiveSub, got %q", cfg.LLM.Model)
+	if cfg.LLM.Model != "" {
+		t.Errorf("cfg.LLM.Model should be empty (model is user-level now), got %q", cfg.LLM.Model)
 	}
 	if cfg.LLM.Provider != "openai" {
 		t.Errorf("cfg.LLM.Provider should be 'openai', got %q", cfg.LLM.Provider)
@@ -146,9 +148,9 @@ func TestSubscriptionPersistence(t *testing.T) {
 		t.Fatalf("save after model change: %v", err)
 	}
 
-	// Verify cfg.LLM.Model and active subscription Model are both consistent
-	if cfg.LLM.Model != "glm-5-turbo" {
-		t.Errorf("cfg.LLM.Model should be 'glm-5-turbo', got %q", cfg.LLM.Model)
+	// Verify cfg.LLM.Model is empty (model is user-level, not in cfg.LLM)
+	if cfg.LLM.Model != "" {
+		t.Errorf("cfg.LLM.Model should be empty (model is user-level now), got %q", cfg.LLM.Model)
 	}
 	activeModel = ""
 	for _, s := range cfg.Subscriptions {
@@ -163,8 +165,8 @@ func TestSubscriptionPersistence(t *testing.T) {
 
 	// Reload and verify persistence
 	loaded = config.LoadFromFile(cfgPath)
-	if loaded.LLM.Model != "glm-5-turbo" {
-		t.Errorf("loaded cfg.LLM.Model should be 'glm-5-turbo', got %q", loaded.LLM.Model)
+	if loaded.LLM.Model != "" {
+		t.Errorf("loaded cfg.LLM.Model should be empty (model is user-level now), got %q", loaded.LLM.Model)
 	}
 	activeModel = ""
 	for _, s := range loaded.Subscriptions {
@@ -355,8 +357,8 @@ func TestLoadLLMFromDBSubscriptionPrefersDB(t *testing.T) {
 
 	loadLLMFromDBSubscription(backend, cfg)
 
-	if cfg.LLM.BaseURL != "https://db.example/v1" || cfg.LLM.APIKey != "db-key" || cfg.LLM.Model != "db-model" {
-		t.Fatalf("expected cfg.LLM to be loaded from DB default subscription, got %+v", cfg.LLM)
+	if cfg.LLM.BaseURL != "https://db.example/v1" || cfg.LLM.APIKey != "db-key" || cfg.LLM.Model != "" {
+		t.Fatalf("expected cfg.LLM to be loaded from DB (Model empty, model is user-level), got %+v", cfg.LLM)
 	}
 }
 
@@ -411,27 +413,40 @@ func TestSeedLocalDBSubscriptionsOnlyWhenDBEmpty(t *testing.T) {
 	}
 }
 
-func TestSaveCLIConfig_WritesLLMCredentialsWhenNoSubscriptions(t *testing.T) {
+func TestSaveCLIConfig_DoesNotWriteLLMCredentials(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XBOT_HOME", dir)
 	cfgPath := filepath.Join(dir, "config.json")
 
-	// Seed disk config with NO subscriptions — the legacy/first-run path.
+	// Seed disk config with NO subscriptions and existing LLM credentials that
+	// must be preserved (not overwritten) — the DB system subscription is the
+	// single source of truth for credentials, so saveCLIConfig must NOT write
+	// runtime cfg.LLM credentials back to config.json (they may be decrypted
+	// values refreshed from DB).
 	diskCfg := &config.Config{
 		Admin: config.AdminConfig{Token: "admin-secret"},
 		Web:   config.WebConfig{Port: 9090, Enable: true},
+		LLM: config.LLMConfig{
+			Provider:        "openai",
+			BaseURL:         "https://api.openai.com/v1",
+			APIKey:          "sk-disk-key",
+			Model:           "gpt-4.1",
+			MaxOutputTokens: 2048,
+			ThinkingMode:    "disabled",
+		},
 	}
 	if err := config.SaveToFile(cfgPath, diskCfg); err != nil {
 		t.Fatalf("seed disk config: %v", err)
 	}
 
-	// Runtime cfg carries LLM credentials and agent settings.
+	// Runtime cfg carries DIFFERENT LLM credentials (e.g. decrypted from DB) and
+	// agent settings. These credentials must NOT leak into config.json.
 	appCfg := &config.Config{
 		LLM: config.LLMConfig{
-			Provider:        "openai",
-			BaseURL:         "https://api.openai.com/v1",
-			APIKey:          "sk-test-key",
-			Model:           "gpt-4.1",
+			Provider:        "deepseek",
+			BaseURL:         "https://api.deepseek.com",
+			APIKey:          "sk-runtime-leak",
+			Model:           "deepseek-v4",
 			MaxOutputTokens: 4096,
 			ThinkingMode:    "enabled",
 		},
@@ -445,32 +460,22 @@ func TestSaveCLIConfig_WritesLLMCredentialsWhenNoSubscriptions(t *testing.T) {
 	loaded := config.LoadFromFile(cfgPath)
 	if loaded == nil {
 		t.Fatal("LoadFromFile returned nil")
-		return
 	}
 
-	// LLM credentials MUST be written because there are no subscriptions.
+	// LLM credentials MUST be preserved from disk, NOT overwritten by runtime values.
 	if loaded.LLM.Provider != "openai" {
-		t.Errorf("LLM.Provider = %q, want %q", loaded.LLM.Provider, "openai")
+		t.Errorf("LLM.Provider = %q, want %q (disk preserved)", loaded.LLM.Provider, "openai")
 	}
-	if loaded.LLM.BaseURL != "https://api.openai.com/v1" {
-		t.Errorf("LLM.BaseURL = %q, want %q", loaded.LLM.BaseURL, "https://api.openai.com/v1")
-	}
-	if loaded.LLM.APIKey != "sk-test-key" {
-		t.Errorf("LLM.APIKey = %q, want %q", loaded.LLM.APIKey, "sk-test-key")
+	if loaded.LLM.APIKey != "sk-disk-key" {
+		t.Errorf("LLM.APIKey = %q, want %q (disk preserved, no runtime leak)", loaded.LLM.APIKey, "sk-disk-key")
 	}
 	if loaded.LLM.Model != "gpt-4.1" {
-		t.Errorf("LLM.Model = %q, want %q", loaded.LLM.Model, "gpt-4.1")
-	}
-	if loaded.LLM.MaxOutputTokens != 4096 {
-		t.Errorf("LLM.MaxOutputTokens = %d, want %d", loaded.LLM.MaxOutputTokens, 4096)
-	}
-	if loaded.LLM.ThinkingMode != "enabled" {
-		t.Errorf("LLM.ThinkingMode = %q, want %q", loaded.LLM.ThinkingMode, "enabled")
+		t.Errorf("LLM.Model = %q, want %q (disk preserved)", loaded.LLM.Model, "gpt-4.1")
 	}
 
-	// Agent should also be persisted.
+	// Agent should be persisted.
 	if loaded.Agent.MaxIterations != 42 {
-		t.Errorf("Agent.MaxIterations = %d, want %d", loaded.Agent.MaxIterations, 42)
+		t.Errorf("Agent.MaxIterations = %d, want 42", loaded.Agent.MaxIterations)
 	}
 
 	// Other sections from disk should be preserved.
@@ -490,11 +495,7 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 	// Disk config has subscriptions — LLM credentials should NOT be written,
 	// but tier models should always be persisted.
 	diskCfg := &config.Config{
-		LLM: config.LLMConfig{
-			VanguardModel: "old-vanguard",
-			BalanceModel:  "old-balance",
-			SwiftModel:    "old-swift",
-		},
+		LLM: config.LLMConfig{},
 		Subscriptions: []config.SubscriptionConfig{{
 			ID: "sub1", Name: "sub1", Provider: "openai",
 			BaseURL: "https://sub.example/v1", APIKey: "sub-key",
@@ -509,13 +510,10 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 	// Runtime cfg updates tier models.
 	appCfg := &config.Config{
 		LLM: config.LLMConfig{
-			Provider:      "openai",
-			BaseURL:       "https://runtime.example/v1",
-			APIKey:        "runtime-key",
-			Model:         "runtime-model",
-			VanguardModel: "new-vanguard",
-			BalanceModel:  "new-balance",
-			SwiftModel:    "new-swift",
+			Provider: "openai",
+			BaseURL:  "https://runtime.example/v1",
+			APIKey:   "runtime-key",
+			Model:    "runtime-model",
 		},
 		Agent: config.AgentConfig{MaxConcurrency: 5},
 	}
@@ -530,20 +528,10 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 		return
 	}
 
-	// Tier models must always be persisted regardless of subscriptions.
-	if loaded.LLM.VanguardModel != "new-vanguard" {
-		t.Errorf("VanguardModel = %q, want %q", loaded.LLM.VanguardModel, "new-vanguard")
-	}
-	if loaded.LLM.BalanceModel != "new-balance" {
-		t.Errorf("BalanceModel = %q, want %q", loaded.LLM.BalanceModel, "new-balance")
-	}
-	if loaded.LLM.SwiftModel != "new-swift" {
-		t.Errorf("SwiftModel = %q, want %q", loaded.LLM.SwiftModel, "new-swift")
-	}
-
-	// LLM credentials must NOT be written because subscriptions exist.
+	// LLM credentials must NOT be written — the DB system subscription is the
+	// single source of truth, so runtime cfg.LLM credentials never go to disk.
 	if loaded.LLM.Provider != "" {
-		t.Errorf("LLM.Provider should NOT be overwritten when subscriptions exist, got %q", loaded.LLM.Provider)
+		t.Errorf("LLM.Provider should NOT be written to config.json, got %q", loaded.LLM.Provider)
 	}
 	if loaded.LLM.BaseURL != "" {
 		t.Errorf("LLM.BaseURL should NOT be overwritten when subscriptions exist, got %q", loaded.LLM.BaseURL)
@@ -578,11 +566,10 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 	diskCfg := &config.Config{
 		CLI: config.CLIConfig{ServerURL: "ws://localhost:7777", Token: "existing-token"},
 		LLM: config.LLMConfig{
-			Provider:      "anthropic",
-			BaseURL:       "https://api.anthropic.com",
-			APIKey:        "sk-ant-existing",
-			Model:         "claude-3",
-			VanguardModel: "claude-opus",
+			Provider: "anthropic",
+			BaseURL:  "https://api.anthropic.com",
+			APIKey:   "sk-ant-existing",
+			Model:    "claude-3",
 		},
 		Agent: config.AgentConfig{
 			MaxIterations:  10,
@@ -605,11 +592,7 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 
 	// Call saveCLIConfig with new agent settings only.
 	appCfg := &config.Config{
-		LLM: config.LLMConfig{
-			VanguardModel: "claude-opus-4",
-			BalanceModel:  "claude-sonnet-4",
-			SwiftModel:    "claude-haiku-4",
-		},
+		LLM: config.LLMConfig{},
 		Agent: config.AgentConfig{
 			MaxIterations:  99,
 			MaxConcurrency: 12,
@@ -636,17 +619,6 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 	}
 	if loaded.Agent.MemoryProvider != "redis" {
 		t.Errorf("Agent.MemoryProvider = %q, want %q", loaded.Agent.MemoryProvider, "redis")
-	}
-
-	// Tier models must be updated.
-	if loaded.LLM.VanguardModel != "claude-opus-4" {
-		t.Errorf("VanguardModel = %q, want %q", loaded.LLM.VanguardModel, "claude-opus-4")
-	}
-	if loaded.LLM.BalanceModel != "claude-sonnet-4" {
-		t.Errorf("BalanceModel = %q, want %q", loaded.LLM.BalanceModel, "claude-sonnet-4")
-	}
-	if loaded.LLM.SwiftModel != "claude-haiku-4" {
-		t.Errorf("SwiftModel = %q, want %q", loaded.LLM.SwiftModel, "claude-haiku-4")
 	}
 
 	// Existing CLI settings must be preserved (appCfg.CLI is zero, so no overwrite).
@@ -679,15 +651,31 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 
 // fakeTransport implements agent.Transport for tests, delegating subscription RPCs to sqlite.
 type fakeTransport struct {
-	subSvc       *sqlite.LLMSubscriptionService
-	defaultModel string
-	defaultSub   *channel.Subscription
+	subSvc          *sqlite.LLMSubscriptionService
+	defaultModel    string
+	defaultSub      *channel.Subscription
+	perModelConfigs map[string]protocol.PerModelConfig // injected for ListSubscriptions/GetDefaultSubscription
+	subMaxContext   int                                // injected for ListSubscriptions/GetDefaultSubscription
+	settingsData    map[string]string                  // injected for GetSettings
+	contextMode     string                             // injected for GetContextMode
 }
 
 func (t *fakeTransport) Close() error { return nil }
 
 func (t *fakeTransport) Call(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {
+	case agent.MethodGetSettings:
+		if t.settingsData != nil {
+			return json.Marshal(t.settingsData)
+		}
+		return json.RawMessage("null"), nil
+
+	case agent.MethodGetContextMode:
+		if t.contextMode != "" {
+			return json.RawMessage(`"` + t.contextMode + `"`), nil
+		}
+		return json.RawMessage(`""`), nil
+
 	case agent.MethodListSubscriptions:
 		var req struct {
 			SenderID string `json:"sender_id"`
@@ -701,7 +689,7 @@ func (t *fakeTransport) Call(method string, payload json.RawMessage) (json.RawMe
 		}
 		out := make([]channel.Subscription, len(subs))
 		for i, s := range subs {
-			out[i] = channel.Subscription{ID: s.ID, Name: s.Name, Provider: s.Provider, BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault}
+			out[i] = channel.Subscription{ID: s.ID, Name: s.Name, Provider: s.Provider, BaseURL: s.BaseURL, APIKey: s.APIKey, Model: s.Model, Active: s.IsDefault, PerModelConfigs: t.perModelConfigs, MaxContext: t.subMaxContext}
 		}
 		return json.Marshal(out)
 
@@ -719,7 +707,7 @@ func (t *fakeTransport) Call(method string, payload json.RawMessage) (json.RawMe
 		if err != nil || sub == nil {
 			return json.Marshal(nil)
 		}
-		return json.Marshal(&channel.Subscription{ID: sub.ID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, Active: sub.IsDefault})
+		return json.Marshal(&channel.Subscription{ID: sub.ID, Name: sub.Name, Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey, Model: sub.Model, Active: sub.IsDefault, PerModelConfigs: t.perModelConfigs, MaxContext: t.subMaxContext})
 
 	case agent.MethodAddSubscription:
 		var req struct {
@@ -880,5 +868,237 @@ func TestIsCLISubscriptionSettingKey(t *testing.T) {
 				t.Errorf("isCLISubscriptionSettingKey(%q) = %v, want %v", tc.key, got, tc.want)
 			}
 		})
+	}
+}
+
+// ── refreshRemoteValuesCache: max_context_tokens regression tests ──────
+//
+// Bug: refreshRemoteValuesCache did not extract max_context_tokens from
+// subscription PerModelConfigs. When the user saved max_context_tokens via the
+// settings panel (saveSettings → UpdatePerModelConfig → RefreshValuesCache),
+// the cache was populated with config.DefaultMaxContextTokens (200000) instead
+// of the real PerModelConfigs value. Then reloadSettingsCaches → resolveMaxContext
+// → GetCurrentValues() read the wrong value, overwriting cachedMaxContextTokens.
+// Restarting the TUI fixed it because startup re-resolved from subscription data.
+//
+// These tests verify refreshRemoteValuesCache correctly picks up max_context_tokens
+// from PerModelConfigs[model].MaxContext and sub.MaxContext, with proper fallback.
+
+func TestRefreshValuesCache_MaxContextFromPerModelConfigs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	ft := &fakeTransport{
+		subSvc: svc,
+		perModelConfigs: map[string]protocol.PerModelConfig{
+			"gpt-4.1": {MaxContext: 128000, MaxOutputTokens: 4096},
+		},
+	}
+	client := newTestClient(ft)
+
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	if got != "128000" {
+		t.Errorf("max_context_tokens = %q, want 128000 (from PerModelConfigs)", got)
+	}
+}
+
+func TestRefreshValuesCache_MaxContextFromSubMaxContext(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	// PerModelConfigs doesn't have MaxContext for the model, but sub.MaxContext is set
+	ft := &fakeTransport{
+		subSvc: svc,
+		perModelConfigs: map[string]protocol.PerModelConfig{
+			"gpt-4.1": {MaxOutputTokens: 4096}, // MaxContext = 0
+		},
+		subMaxContext: 256000,
+	}
+	client := newTestClient(ft)
+
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	if got != "256000" {
+		t.Errorf("max_context_tokens = %q, want 256000 (from sub.MaxContext fallback)", got)
+	}
+}
+
+func TestRefreshValuesCache_MaxContextFallbackToAgentConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	// Neither PerModelConfigs nor sub.MaxContext has max_context
+	ft := &fakeTransport{
+		subSvc: svc,
+		perModelConfigs: map[string]protocol.PerModelConfig{
+			"gpt-4.1": {MaxOutputTokens: 4096},
+		},
+	}
+	client := newTestClient(ft)
+
+	// Config.Agent.MaxContextTokens should be used as fallback
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{Agent: config.AgentConfig{MaxContextTokens: 50000}},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	if got != "50000" {
+		t.Errorf("max_context_tokens = %q, want 50000 (from config.Agent.MaxContextTokens fallback)", got)
+	}
+}
+
+func TestRefreshValuesCache_MaxContextNotOverwrittenByDBValue(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	ft := &fakeTransport{
+		subSvc: svc,
+		perModelConfigs: map[string]protocol.PerModelConfig{
+			"gpt-4.1": {MaxContext: 128000},
+		},
+		// Simulate config tool wrote max_context_tokens to user_settings DB
+		// (the old SetSetting path). The DB value should take precedence.
+		settingsData: map[string]string{
+			"max_context_tokens": "99999",
+		},
+	}
+	client := newTestClient(ft)
+
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	// user_settings DB value takes precedence over subscription defaults
+	if got != "99999" {
+		t.Errorf("max_context_tokens = %q, want 99999 (user_settings DB value takes precedence)", got)
+	}
+}
+
+func TestRefreshValuesCache_DefaultFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	svc := sqlite.NewLLMSubscriptionService(db)
+	if err := svc.Add(&sqlite.LLMSubscription{
+		ID: "sub-1", SenderID: cliSenderID, Name: "test", Provider: "openai",
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test",
+		Model: "gpt-4.1", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	// Completely empty: no PerModelConfigs, no sub.MaxContext, no config.Agent.MaxContextTokens
+	ft := &fakeTransport{
+		subSvc: svc,
+	}
+	client := newTestClient(ft)
+
+	app := &cliApp{
+		client: client,
+		cfg:    &config.Config{},
+	}
+	app.refreshRemoteValuesCache("sub-1")
+
+	app.valuesCacheMu.RLock()
+	got := app.valuesCache["max_context_tokens"]
+	app.valuesCacheMu.RUnlock()
+
+	want := fmt.Sprintf("%d", config.DefaultMaxContextTokens)
+	if got != want {
+		t.Errorf("max_context_tokens = %q, want %q (config.DefaultMaxContextTokens fallback)", got, want)
 	}
 }

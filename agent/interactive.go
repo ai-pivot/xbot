@@ -17,6 +17,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
+	"xbot/session"
 	"xbot/tools"
 )
 
@@ -61,6 +62,7 @@ type interactiveAgent struct {
 	promptTokens     int64               // last known prompt token count (for TUI status bar)
 	completionTokens int64               // last known completion token count (for TUI status bar)
 	pendingMessages  []pendingUserMsg    // messages queued while Run is in progress
+	subID            string              // subscription ID for TUI status bar display
 }
 
 // drainPendingMessages drains all pending user messages queued while the SubAgent
@@ -184,20 +186,60 @@ func (a *Agent) cleanupExpiredSessions() {
 	})
 }
 
+func cloneProgressEvent(src *protocol.ProgressEvent) *protocol.ProgressEvent {
+	if src == nil {
+		return nil
+	}
+	clone := *src
+	clone.ActiveTools = append([]protocol.ToolProgress(nil), src.ActiveTools...)
+	clone.CompletedTools = append([]protocol.ToolProgress(nil), src.CompletedTools...)
+	clone.StreamingTools = append([]protocol.ToolProgress(nil), src.StreamingTools...)
+	clone.SubAgents = append([]protocol.SubAgentInfo(nil), src.SubAgents...)
+	clone.Todos = append([]protocol.TodoItem(nil), src.Todos...)
+	clone.IterationHistory = progressHistoryWithoutNested(src.IterationHistory)
+	if src.TokenUsage != nil {
+		tokens := *src.TokenUsage
+		clone.TokenUsage = &tokens
+	}
+	return &clone
+}
+
+func progressSnapshotWithoutHistory(src *protocol.ProgressEvent) *protocol.ProgressEvent {
+	clone := cloneProgressEvent(src)
+	if clone != nil {
+		clone.IterationHistory = nil
+	}
+	return clone
+}
+
+func progressHistoryWithoutNested(hist []protocol.ProgressEvent) []protocol.ProgressEvent {
+	if len(hist) == 0 {
+		return nil
+	}
+	result := make([]protocol.ProgressEvent, len(hist))
+	for i := range hist {
+		result[i] = *progressSnapshotWithoutHistory(&hist[i])
+	}
+	return result
+}
+
 // recordIterationSnapshot appends the previous snapshot to iteration history if the
 // shouldAppend predicate returns true. Uses CAS loop to avoid TOCTOU races on sync.Map.
-func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *protocol.ProgressEvent) bool) {
+// Returns the newly appended snapshot (the delta), or nil if nothing was appended.
+// The caller uses the delta to send only new iterations in push events — never the
+// full cumulative history.
+func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *protocol.ProgressEvent) bool) *protocol.ProgressEvent {
 	prevSnap, loaded := a.lastProgressSnapshot.Load(key)
 	if !loaded {
-		return
+		return nil
 	}
-	prev := prevSnap.(*protocol.ProgressEvent)
+	prev := progressSnapshotWithoutHistory(prevSnap.(*protocol.ProgressEvent))
 	if !shouldAppend(prev) {
-		return
+		return nil
 	}
 	for {
 		histPtr, _ := a.iterationHistories.LoadOrStore(key, &[]protocol.ProgressEvent{})
-		hist := *histPtr.(*[]protocol.ProgressEvent)
+		hist := progressHistoryWithoutNested(*histPtr.(*[]protocol.ProgressEvent))
 		already := false
 		for _, h := range hist {
 			if h.Iteration == prev.Iteration {
@@ -206,163 +248,160 @@ func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *prot
 			}
 		}
 		if already {
-			return
+			if a.iterationHistories.CompareAndSwap(key, histPtr, &hist) {
+				return nil
+			}
+			continue
 		}
 		updated := append(hist, *prev)
 		if a.iterationHistories.CompareAndSwap(key, histPtr, &updated) {
-			return
+			return prev
 		}
 	}
 }
 
-// wireSubAgentCLIProgress sets up ProgressEventHandler and stream callbacks on cfg
-// so the SubAgent's progress is pushed to CLI (both local and remote) with its own
-// ChatID. This enables Ctrl+T session switching to show real-time progress for both
-// interactive and one-shot SubAgents.
-func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig) {
-	if a.channelFinder == nil {
+// attachIterationDelta records the previous iteration (if iteration advanced) and
+// attaches ONLY the newly completed iteration to the payload — not the full
+// cumulative history. The TUI appends this delta to its local iteration list.
+// If the iteration didn't advance, no delta is attached (payload.IterationHistory
+// stays nil → omitted from JSON by omitempty).
+//
+// This replaces the old recordIterationAdvanceAndAttachHistory which attached the
+// full IterationHistory on every push, causing O(N) payload growth and CPU waste
+// from redundant JSON serialization.
+func (a *Agent) attachIterationDelta(key string, nextIteration int, payload *protocol.ProgressEvent) {
+	if payload == nil {
 		return
 	}
-	ch, ok := a.channelFinder("cli")
-	if !ok {
+	delta := a.recordIterationSnapshot(key, func(prev *protocol.ProgressEvent) bool {
+		// 1-based: prev.Iteration=0 means "uninitialized" (first event hasn't
+		// been stored yet). nextIteration >= 1 is the first real iteration.
+		return nextIteration > prev.Iteration && prev.Iteration >= 1
+	})
+	if delta != nil {
+		payload.IterationHistory = []protocol.ProgressEvent{*delta}
+	}
+}
+
+// wireSubAgentProgress sets up ProgressEventHandler and stream callbacks on cfg
+// for interactive and one-shot SubAgents. Sends progress events to ALL
+// registered channels that implement ProgressSender — including CLI, Web,
+// and plugin channels.
+func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
+	if a.channelRange == nil {
 		return
 	}
-	var localCh *channelpkg.CLIChannel
-	var remoteCh channelpkg.ProgressSender
-	if cc, ok := ch.(*channelpkg.CLIChannel); ok {
-		localCh = cc
-	} else if rc, ok := ch.(channelpkg.ProgressSender); ok {
-		remoteCh = rc
+
+	// Collect all ProgressSender channels once at wire time.
+	// SendProgress does a subscriber lookup at call time — zero cost when
+	// no clients are subscribed to this session.
+	type senderEntry struct {
+		ps    channelpkg.ProgressSender
+		rawID string
 	}
-	if localCh == nil && remoteCh == nil {
+	var senders []senderEntry
+	a.channelRange(func(name string, ch channelpkg.Channel) bool {
+		if ps, ok := ch.(channelpkg.ProgressSender); ok {
+			senders = append(senders, senderEntry{ps: ps, rawID: key})
+		}
+		return true
+	})
+	if len(senders) == 0 {
 		return
 	}
 
 	agentProgressKey := "agent:" + key
-	cfg.ProgressEventHandler = func(event *ProgressEvent) {
-		if event == nil || event.Structured == nil {
-			return
-		}
-		s := event.Structured
 
-		cliPayload := &protocol.ProgressEvent{
-			ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
-			Iteration: s.Iteration, Thinking: s.ThinkingContent,
-			Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
+	// broadcast sends a clone of payload to each ProgressSender channel.
+	// Each channel gets an independent clone to prevent cross-channel mutation.
+	broadcast := func(payload *protocol.ProgressEvent) {
+		for _, snd := range senders {
+			snd.ps.SendProgress(snd.rawID, cloneProgressEvent(payload))
+		}
+	}
+
+	// buildPayload constructs a unified progress event from structured data.
+	buildPayload := func(s *StructuredProgress) *protocol.ProgressEvent {
+		payload := &protocol.ProgressEvent{
+			ChatID:           agentProgressKey,
+			Seq:              s.Seq,
+			Phase:            string(s.Phase),
+			Iteration:        s.Iteration,
+			Content:          s.Content,
+			Reasoning:        s.ReasoningContent,
+			HistoryCompacted: s.HistoryCompacted,
+			CWD:              s.CWD,
 		}
 		for _, t := range s.ActiveTools {
-			cliPayload.ActiveTools = append(cliPayload.ActiveTools, protocol.ToolProgress{
+			payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
-				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, ToolHints: t.ToolHints,
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
+				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 			})
 		}
 		for _, t := range s.CompletedTools {
-			cliPayload.CompletedTools = append(cliPayload.CompletedTools, protocol.ToolProgress{
+			payload.CompletedTools = append(payload.CompletedTools, protocol.ToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
-				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, ToolHints: t.ToolHints,
+				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
+				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 			})
 		}
-		if len(s.Todos) > 0 {
-			cliPayload.Todos = make([]protocol.TodoItem, len(s.Todos))
-			for i, td := range s.Todos {
-				cliPayload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
-			}
+		payload.Todos = make([]protocol.TodoItem, len(s.Todos))
+		for i, td := range s.Todos {
+			payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
 		}
 		if s.TokenUsage != nil {
-			cliPayload.TokenUsage = &protocol.TokenUsage{
+			payload.TokenUsage = &protocol.TokenUsage{
 				PromptTokens: s.TokenUsage.PromptTokens, CompletionTokens: s.TokenUsage.CompletionTokens,
 				TotalTokens: s.TokenUsage.TotalTokens, CacheHitTokens: s.TokenUsage.CacheHitTokens,
 				MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
 			}
 		}
-
-		if localCh != nil {
-			localCh.SendProgress(key, cliPayload)
-		} else if remoteCh != nil {
-			wsPayload := &protocol.ProgressEvent{
-				ChatID: agentProgressKey, Seq: s.Seq, Phase: string(s.Phase),
-				Iteration: s.Iteration, Thinking: s.ThinkingContent,
-				Reasoning: s.ReasoningContent, HistoryCompacted: s.HistoryCompacted,
-			}
-			for _, t := range s.ActiveTools {
-				wsPayload.ActiveTools = append(wsPayload.ActiveTools, protocol.ToolProgress{
-					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-				})
-			}
-			for _, t := range s.CompletedTools {
-				wsPayload.CompletedTools = append(wsPayload.CompletedTools, protocol.ToolProgress{
-					Name: t.Name, Label: t.Label, Status: string(t.Status),
-					Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration, Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
-				})
-			}
-			if len(s.Todos) > 0 {
-				wsPayload.Todos = make([]protocol.TodoItem, len(s.Todos))
-				for i, td := range s.Todos {
-					wsPayload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
-				}
-			}
-			if s.TokenUsage != nil {
-				wsPayload.TokenUsage = &protocol.TokenUsage{
-					PromptTokens: s.TokenUsage.PromptTokens, CompletionTokens: s.TokenUsage.CompletionTokens,
-					TotalTokens: s.TokenUsage.TotalTokens, CacheHitTokens: s.TokenUsage.CacheHitTokens,
-					MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
-				}
-			}
-			// Route progress to the agent session's hub key (interactiveKey format)
-			// so the remote CLI client subscribed to this agent session receives it.
-			remoteCh.SendProgress(key, wsPayload)
-		}
-
-		// Save snapshot + track iteration history for mid-session reconnect.
-		a.recordIterationSnapshot(agentProgressKey, func(prev *protocol.ProgressEvent) bool {
-			return s.Iteration > prev.Iteration && prev.Iteration >= 0
-		})
-		a.lastProgressSnapshot.Store(agentProgressKey, cliPayload)
+		return payload
 	}
 
-	// Wire stream callbacks for real-time rendering
+	cfg.ProgressEventHandler = func(event *ProgressEvent) {
+		if event == nil || event.Structured == nil {
+			return
+		}
+		s := event.Structured
+		payload := buildPayload(s)
+		a.attachIterationDelta(agentProgressKey, s.Iteration, payload)
+		broadcast(payload)
+		a.lastProgressSnapshot.Store(agentProgressKey, progressSnapshotWithoutHistory(payload))
+	}
+
+	// Wire stream callbacks
 	cfg.Stream = true
 	var subAgentProgressSeq atomic.Uint64
 	cfg.ProgressSeq = &subAgentProgressSeq
-	if localCh != nil {
-		cfg.StreamContentFunc = func(content string) {
-			seq := subAgentProgressSeq.Add(1)
-			localCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
-			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
-				cp := *snap.(*protocol.ProgressEvent)
-				cp.StreamContent = content
-				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
-			}
+	cfg.StreamContentFunc = func(content string) {
+		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
+			s.StreamContent = content
+		})
+		broadcast(&protocol.ProgressEvent{
+			ChatID:        agentProgressKey,
+			StreamContent: content,
+		})
+	}
+	cfg.StreamReasoningFunc = func(content string) {
+		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
+			s.ReasoningStreamContent = content
+		})
+		broadcast(&protocol.ProgressEvent{
+			ChatID:                 agentProgressKey,
+			ReasoningStreamContent: content,
+		})
+	}
+	cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {
+		if usage == nil || usage.CompletionTokens == 0 {
+			return
 		}
-		cfg.StreamReasoningFunc = func(content string) {
-			seq := subAgentProgressSeq.Add(1)
-			localCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
-			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
-				cp := *snap.(*protocol.ProgressEvent)
-				cp.ReasoningStreamContent = content
-				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
-			}
-		}
-	} else if remoteCh != nil {
-		cfg.StreamContentFunc = func(content string) {
-			seq := subAgentProgressSeq.Add(1)
-			remoteCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamContent: content})
-			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
-				cp := *snap.(*protocol.ProgressEvent)
-				cp.StreamContent = content
-				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
-			}
-		}
-		cfg.StreamReasoningFunc = func(content string) {
-			seq := subAgentProgressSeq.Add(1)
-			remoteCh.SendProgress(key, &protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, ReasoningStreamContent: content})
-			if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
-				cp := *snap.(*protocol.ProgressEvent)
-				cp.ReasoningStreamContent = content
-				a.lastProgressSnapshot.Store(agentProgressKey, &cp)
-			}
-		}
+		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
+			s.StreamTokens = usage.CompletionTokens
+		})
+		seq := subAgentProgressSeq.Add(1)
+		broadcast(&protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamTokens: usage.CompletionTokens})
 	}
 }
 
@@ -371,13 +410,6 @@ func (a *Agent) wireSubAgentCLIProgress(key, originChatID string, cfg *RunConfig
 // Used when a background subagent is interrupted, since the normal Run() exit path
 // doesn't send PhaseDone on cancellation.
 func (a *Agent) sendSubAgentPhaseDone(key string) {
-	if a.channelFinder == nil {
-		return
-	}
-	ch, ok := a.channelFinder("cli")
-	if !ok {
-		return
-	}
 	agentProgressKey := "agent:" + key
 
 	// Build PhaseDone payload from the last known progress snapshot.
@@ -393,11 +425,17 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 		}
 	}
 
-	if localCh, ok := ch.(*channelpkg.CLIChannel); ok {
-		localCh.SendProgress(key, payload)
-	} else if remoteCh, ok := ch.(channelpkg.ProgressSender); ok {
-		remoteCh.SendProgress(key, payload)
+	// Broadcast PhaseDone to ALL registered channels that implement
+	// ProgressSender — including plugin channels.
+	if a.channelRange == nil {
+		return
 	}
+	a.channelRange(func(name string, ch channelpkg.Channel) bool {
+		if ps, ok := ch.(channelpkg.ProgressSender); ok {
+			ps.SendProgress(key, payload)
+		}
+		return true
+	})
 }
 
 // destroyInteractiveSession removes all resources for an interactive SubAgent session:
@@ -432,7 +470,9 @@ func (a *Agent) destroyInteractiveSession(key string) {
 
 	// Destroy tenant session (cache + DB with CASCADE to messages)
 	if a.multiSession != nil {
-		_ = a.multiSession.DestroySession("agent", key)
+		if err := a.multiSession.DestroySession("agent", key); err != nil {
+			log.Warn("Failed to destroy agent session: ", err)
+		}
 	}
 }
 
@@ -446,6 +486,126 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 		key += ":" + instance
 	}
 	return key
+}
+
+// syncInteractiveSessionAfterRewind replaces the viewer/run cache with the
+// DB-authoritative prefix after an agent-session rewind. The caller holds the
+// session operation gate, so no Run can publish a newer state concurrently.
+func (a *Agent) syncInteractiveSessionAfterRewind(key string) {
+	value, ok := a.interactiveSubAgents.Load(key)
+	if !ok {
+		return
+	}
+	ia, ok := value.(*interactiveAgent)
+	if !ok || ia == nil {
+		return
+	}
+
+	var persisted []llm.ChatMessage
+	var promptTokens int64
+	if a.multiSession != nil {
+		if sess, err := a.multiSession.GetOrCreateSession("agent", key); err != nil {
+			log.WithError(err).WithField("session_key", key).Warn("Failed to reopen rewound interactive session")
+		} else {
+			if messages, err := sess.GetMessages(); err != nil {
+				log.WithError(err).WithField("session_key", key).Warn("Failed to reload rewound interactive session")
+			} else {
+				persisted = messages
+			}
+			if tokens, err := sess.GetLastContextTokens(); err == nil {
+				promptTokens = tokens
+			}
+		}
+	}
+
+	lastReply := ""
+	for i := len(persisted) - 1; i >= 0; i-- {
+		if persisted[i].Role == "assistant" && persisted[i].Content != "" {
+			lastReply = persisted[i].Content
+			break
+		}
+	}
+
+	ia.mu.Lock()
+	pending := ia.pendingMessages
+	ia.messages = append([]llm.ChatMessage(nil), persisted...)
+	ia.iterationHistory = nil
+	ia.pendingMessages = nil
+	ia.interrupted = false
+	ia.lastError = ""
+	ia.lastReply = lastReply
+	ia.promptTokens = promptTokens
+	ia.completionTokens = 0
+	ia.lastUsed = time.Now()
+	if ia.cfg != nil {
+		ia.cfg.LastPromptTokens = promptTokens
+		ia.cfg.LastCompletionTokens = 0
+	}
+	ia.mu.Unlock()
+
+	for _, message := range pending {
+		select {
+		case message.replyCh <- fmt.Errorf("interactive session history was rewound"):
+		default:
+		}
+	}
+}
+
+func appendInteractiveInterruption(sess *session.TenantSession, partial string) ([]llm.ChatMessage, error) {
+	if sess == nil {
+		return nil, fmt.Errorf("interactive interruption has no tenant session")
+	}
+	appended := make([]llm.ChatMessage, 0, 3)
+	if partial != "" {
+		appended = append(appended, llm.NewAssistantMessage(partial))
+	}
+	toolID := fmt.Sprintf("interactive_interrupt_%d", time.Now().UnixNano())
+	assistant := llm.ChatMessage{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: toolID, Name: "user_cancelled", Arguments: `{}`}}}
+	appended = append(appended, assistant)
+	toolMsg := llm.NewToolMessage("user_cancelled", toolID, `{}`, "interrupted by parent agent")
+	appended = append(appended, toolMsg)
+	historyIDs, err := sess.AppendMessages(appended)
+	if err != nil {
+		return nil, err
+	}
+	for i, historyID := range historyIDs {
+		appended[i].ID = historyID
+	}
+	return appended, nil
+}
+
+// wireSubAgentProgress 为 SubAgent 注入进度上报回调。
+// 设置 cfg.ProgressNotifier 让子 Agent 报告进度到父 Agent 的 TUI，
+// 同时注入穿透回调到 subCtx 让更深层 SubAgent 也能递归穿透。
+// Background 模式不启用（bg subagent 进度不应穿透到父 agent TUI）。
+func wireSubAgentProgress(ctx context.Context, subCtx context.Context, cfg *RunConfig, cc *CallChain, roleName, instance, sessionKey string, background bool) context.Context {
+	if background {
+		return subCtx
+	}
+	if cb, ok := SubAgentProgressFromContext(ctx); ok {
+		myDepth := cc.Depth() + 1
+		myPath := cc.Spawn(roleName).Chain
+		cfg.ProgressNotifier = func(lines []string, thinking string) {
+			if len(lines) > 0 {
+				cb(SubAgentProgressDetail{
+					Path:       myPath,
+					Lines:      lines,
+					Depth:      myDepth,
+					Instance:   instance,
+					SessionKey: sessionKey,
+					Content:    thinking,
+				})
+			}
+		}
+		subCtx = WithSubAgentProgress(subCtx, func(detail SubAgentProgressDetail) {
+			detail.Depth = myDepth + detail.Depth
+			if len(detail.Path) == 0 {
+				detail.Path = myPath
+			}
+			cb(detail)
+		})
+	}
+	return subCtx
 }
 
 // SpawnInteractiveSession 创建一个新的 interactive SubAgent 会话并执行首次任务。
@@ -490,12 +650,13 @@ func (a *Agent) SpawnInteractiveSession(
 
 	// Emit subagent_started event for instant sidebar push.
 	a.emitSessionState(protocol.SessionEvent{
-		Channel:  originChannel,
-		ChatID:   originChatID,
-		Action:   "subagent_started",
-		Role:     roleName,
-		Instance: instance,
-		ParentID: originChatID,
+		Channel:    originChannel,
+		ChatID:     originChatID,
+		Action:     "subagent_started",
+		Role:       roleName,
+		Instance:   instance,
+		SessionKey: key,
+		ParentID:   originChatID,
 	})
 
 	// --- 阶段 2：锁外构建 config（不需要锁） ---
@@ -529,12 +690,13 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 		}
 		a.emitSessionState(protocol.SessionEvent{
-			Channel:  chanPart,
-			ChatID:   chatIDPart,
-			Action:   "subagent_stopped",
-			Role:     rolePart,
-			Instance: instPart,
-			ParentID: chatIDPart,
+			Channel:    chanPart,
+			ChatID:     chatIDPart,
+			Action:     "subagent_stopped",
+			Role:       rolePart,
+			Instance:   instPart,
+			SessionKey: key,
+			ParentID:   chatIDPart,
 		}) // 清理占位符
 		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
 	}
@@ -553,8 +715,6 @@ func (a *Agent) SpawnInteractiveSession(
 	// TUI status bar falls back to the parent agent's default subscription model.
 	placeholder.mu.Lock()
 	placeholder.cfg = &cfg
-	placeholder.mu.Unlock()
-
 	// Update placeholder with system prompt + user message so CLI session viewer
 	// can display them while Run() is executing (before the full session data
 	// replaces the placeholder).
@@ -564,33 +724,53 @@ func (a *Agent) SpawnInteractiveSession(
 	if len(cfg.Messages) > 1 {
 		placeholder.messages = []llm.ChatMessage{cfg.Messages[1]}
 	}
+	placeholder.mu.Unlock()
 
 	// Interactive SubAgent gets its own TenantSession for message persistence.
 	// Channel="agent", ChatID=key → messages saved to DB like normal sessions.
-	agentTenantSession, err := a.multiSession.GetOrCreateSession("agent", key)
+	agentTenantSession, err := a.multiSession.GetOrCreateSessionWithOwner("agent", key, cfg.UserID)
 	if err != nil {
 		a.destroyInteractiveSession(key)
 		return nil, fmt.Errorf("create agent tenant session: %w", err)
 	}
 	cfg.Session = agentTenantSession
+	operationGate := a.sessionOperationGate("agent", key)
+	if !operationGate.lock(ctx) {
+		a.destroyInteractiveSession(key)
+		return nil, ctx.Err()
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			operationGate.unlock()
+		}
+	}()
 
 	// Clear any stale messages from a previous session with the same key.
 	// This can happen after server restart (DB retains old tenant data) or
 	// if destroyInteractiveSession's DeleteTenant failed silently.
-	_ = agentTenantSession.Clear()
+	if err := agentTenantSession.Clear(); err != nil {
+		a.destroyInteractiveSession(key)
+		return nil, fmt.Errorf("clear interactive agent tenant session: %w", err)
+	}
 
 	// Eager-save user message so get_history returns it during Run().
 	// Without this, the CLI shows "已加载 0 条历史消息" and the DB has no
 	// user message turn boundary. Run()'s incremental persistence skips
 	// messages[0:lastPersistedCount] which includes this user message.
-	if err := agentTenantSession.AddMessage(llm.NewUserMessage(msg.Content)); err != nil {
-		log.Ctx(ctx).WithError(err).Warn("Failed to eager-save interactive agent user message")
+	historyID, err := agentTenantSession.AppendMessage(llm.NewUserMessage(msg.Content))
+	if err != nil {
+		a.destroyInteractiveSession(key)
+		return nil, fmt.Errorf("append interactive agent user message: %w", err)
+	}
+	if len(cfg.Messages) > 1 && cfg.Messages[1].Role == "user" {
+		cfg.Messages[1].ID = historyID
 	}
 
 	// Wire CLI progress + stream callbacks for ALL sessions (foreground and background).
 	// ChatID-based filtering in handleProgressMsg ensures events route to the correct session view.
 	// Without this, background sessions have no live progress when viewed via Ctrl+T panel.
-	a.wireSubAgentCLIProgress(key, originChatID, &cfg)
+	a.wireSubAgentProgress(key, originChatID, &cfg)
 
 	// SubAgent 进度上报：优先使用父 Agent 注入的回调（避免并发 SubAgent 互相覆盖 patch），
 	// 否则 fallback 到直接发送消息（非并行场景）。
@@ -603,45 +783,8 @@ func (a *Agent) SpawnInteractiveSession(
 		return a.sendMessage("agent", key, content, metadata...)
 	}
 
-	if !background {
-		if cb, ok := SubAgentProgressFromContext(ctx); ok {
-			rn := roleName
-			myDepth := cc.Depth() + 1
-			myPath := cc.Spawn(rn).Chain
-			inst := instance
-			cfg.ProgressNotifier = func(lines []string, thinking string) {
-				if len(lines) > 0 {
-					cb(SubAgentProgressDetail{
-						Path:     myPath,
-						Lines:    lines,
-						Depth:    myDepth,
-						Instance: inst,
-						Thinking: thinking,
-					})
-				}
-			}
-		}
-		// 注意：无父引擎进度上下文时不使用 fallback sendMessage。
-		// 多个交互式 agent 共享 sessionMsgIDs（key=channel:chatID）会导致
-		// 后一个 agent 的进度 patch 到前一个 agent 的消息上（进度树串扰）。
-
-		// 注入穿透回调到 subCtx，让子 Agent 的 execOne 能获取并递归上报进度到父 Agent
-		if cb, ok := SubAgentProgressFromContext(ctx); ok {
-			myDepth := cc.Depth() + 1
-			myPath := cc.Spawn(roleName).Chain
-			subCtx = WithSubAgentProgress(subCtx, func(detail SubAgentProgressDetail) {
-				detail.Depth = myDepth + detail.Depth
-				if len(detail.Path) == 0 {
-					detail.Path = myPath
-				}
-				cb(detail)
-			})
-		}
-	}
-	// Background mode: no ProgressNotifier needed — autoNotify in engine.Run()
-	// now derives from ProgressEventHandler too, not just ProgressNotifier.
-	// wireSubAgentCLIProgress already sets ProgressEventHandler for background
-	// mode, so progress events will flow to the CLI channel automatically.
+	// SubAgent 进度上报：注入 ProgressNotifier 和穿透回调
+	subCtx = wireSubAgentProgress(ctx, subCtx, &cfg, cc, roleName, instance, key, background)
 
 	// --- 阶段 3：执行 Run ---
 	preLen := len(cfg.Messages)
@@ -692,12 +835,12 @@ func (a *Agent) SpawnInteractiveSession(
 			if notifyMgr != nil {
 				var sb strings.Builder
 				fmt.Fprintf(&sb, "Iteration %d completed.\n", snap.Iteration)
-				if snap.Thinking != "" {
-					thinking := snap.Thinking
+				if snap.Content != "" {
+					thinking := snap.Content
 					if len(thinking) > 200 {
 						thinking = thinking[len(thinking)-200:]
 					}
-					fmt.Fprintf(&sb, "Thinking: %s\n", thinking)
+					fmt.Fprintf(&sb, "Content: %s\n", thinking)
 				}
 				for _, t := range snap.Tools {
 					fmt.Fprintf(&sb, "- %s [%s, %dms]", t.Name, t.Status, t.ElapsedMS)
@@ -717,7 +860,9 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 		}
 
+		gateOwned = false
 		go func() {
+			defer operationGate.unlock()
 			startTime := time.Now()
 			defer func() {
 				if r := recover(); r != nil {
@@ -751,12 +896,13 @@ func (a *Agent) SpawnInteractiveSession(
 					}
 					// Emit subagent_stopped so sidebar updates immediately
 					a.emitSessionState(protocol.SessionEvent{
-						Channel:  originChannel,
-						ChatID:   originChatID,
-						Action:   "subagent_stopped",
-						Role:     roleName,
-						Instance: instance,
-						ParentID: originChatID,
+						Channel:    originChannel,
+						ChatID:     originChatID,
+						Action:     "subagent_stopped",
+						Role:       roleName,
+						Instance:   instance,
+						SessionKey: key,
+						ParentID:   originChatID,
 					})
 				}
 			}()
@@ -809,20 +955,16 @@ func (a *Agent) SpawnInteractiveSession(
 				placeholder.cancelCurrent = nil
 				placeholder.interrupted = false // reset for next send
 
-				// Add an interrupt marker to ia.messages so the TUI session view
-				// can display the interruption. Without this, the session jumps
-				// from old iterations directly to new ones with no visual break.
-				if wasInterrupted && out.Content != "" {
-					// Append partial assistant reply (if any) so it's not lost.
-					if len(placeholder.messages) == 0 || placeholder.messages[len(placeholder.messages)-1].Content != out.Content {
-						placeholder.messages = append(placeholder.messages, llm.NewAssistantMessage(out.Content))
-					}
-				}
 				if wasInterrupted {
-					placeholder.messages = append(placeholder.messages, llm.ChatMessage{
-						Role:    "system",
-						Content: "⏸ [interrupted by parent agent]",
-					})
+					appended, appendErr := appendInteractiveInterruption(agentTenantSession, out.Content)
+					if appendErr != nil {
+						placeholder.lastError = fmt.Sprintf("append interruption history: %v", appendErr)
+						if persisted, loadErr := agentTenantSession.GetMessages(); loadErr == nil {
+							placeholder.messages = persisted
+						}
+					} else {
+						placeholder.messages = append(placeholder.messages, appended...)
+					}
 				}
 				placeholder.mu.Unlock()
 
@@ -861,12 +1003,13 @@ func (a *Agent) SpawnInteractiveSession(
 					}).Info("Background interactive session interrupted, session preserved for future send")
 					// Emit subagent_stopped so sidebar updates immediately (busy→idle)
 					a.emitSessionState(protocol.SessionEvent{
-						Channel:  originChannel,
-						ChatID:   originChatID,
-						Action:   "subagent_stopped",
-						Role:     roleName,
-						Instance: instance,
-						ParentID: originChatID,
+						Channel:    originChannel,
+						ChatID:     originChatID,
+						Action:     "subagent_stopped",
+						Role:       roleName,
+						Instance:   instance,
+						SessionKey: key,
+						ParentID:   originChatID,
 					})
 					return
 				}
@@ -937,25 +1080,12 @@ func (a *Agent) SpawnInteractiveSession(
 				if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Content != out.Content || newMsgs[len(newMsgs)-1].Role != "assistant" {
 					newMsgs = append(newMsgs, llm.NewAssistantMessage(out.Content))
 				}
-			} else if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Role != "assistant" {
-				newMsgs = append(newMsgs, llm.NewAssistantMessage("(empty response)"))
 			}
 			// Carry ReasoningContent to the in-memory message for subsequent turns
-			if out.ReasoningContent != "" && len(newMsgs) > 0 {
+			if out.Content != "" && out.ReasoningContent != "" && len(newMsgs) > 0 {
 				newMsgs[len(newMsgs)-1].ReasoningContent = out.ReasoningContent
 			}
-			placeholder.messages = newMsgs
-			if len(cfg.Messages) > 0 {
-				placeholder.systemPrompt = cfg.Messages[0]
-			}
-			placeholder.cfg = &cfg
-			placeholder.cfg.Messages = nil
-
-			// Persist final assistant message with iteration history as Detail,
-			// same as the foreground path and the main agent does in
-			// handleInboundMessage. The incremental persistence in
-			// postToolProcessing saves assistant messages WITHOUT Detail —
-			// this adds the one with full iteration history.
+			// Persist before publishing the final reply to in-memory session state.
 			if agentTenantSession != nil && out.Content != "" {
 				assistantMsg := llm.NewAssistantMessage(out.Content)
 				assistantMsg.ReasoningContent = out.ReasoningContent
@@ -964,24 +1094,44 @@ func (a *Agent) SpawnInteractiveSession(
 						assistantMsg.Detail = string(jsonBytes)
 					}
 				}
-				if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
-					log.WithFields(log.Fields{
-						"role": roleName, "instance": instance,
-					}).WithError(err).Warn("Failed to save bg interactive agent assistant message with detail")
+				historyID, err := agentTenantSession.AppendMessage(assistantMsg)
+				if err != nil {
+					placeholder.lastError = fmt.Sprintf("append bg interactive agent assistant message: %v", err)
+					if persisted, loadErr := agentTenantSession.GetMessages(); loadErr == nil {
+						placeholder.messages = persisted
+					}
+					return
+				}
+				if len(newMsgs) > 0 && newMsgs[len(newMsgs)-1].Role == "assistant" && newMsgs[len(newMsgs)-1].Content == out.Content {
+					newMsgs[len(newMsgs)-1].ID = historyID
 				}
 			}
+			placeholder.messages = newMsgs
+			if len(cfg.Messages) > 0 {
+				placeholder.systemPrompt = cfg.Messages[0]
+			}
+			placeholder.cfg = &cfg
+			placeholder.cfg.Messages = nil
 
 			// Emit subagent_stopped so sidebar updates immediately (busy→idle).
 			// Must be called while placeholder.mu is still held (deferred unlock)
 			// to guarantee the state transition is visible to concurrent readers.
 			a.emitSessionState(protocol.SessionEvent{
-				Channel:  originChannel,
-				ChatID:   originChatID,
-				Action:   "subagent_stopped",
-				Role:     roleName,
-				Instance: instance,
-				ParentID: originChatID,
+				Channel:    originChannel,
+				ChatID:     originChatID,
+				Action:     "subagent_stopped",
+				Role:       roleName,
+				Instance:   instance,
+				SessionKey: key,
+				ParentID:   originChatID,
 			})
+
+			// Note: cancelChildSessions is NOT called here because this bg session
+			// stays for future "send" interactions. Its children's lifecycles are
+			// managed by context cancellation (runCancel was called at L776) and
+			// by UnloadInteractiveSession when the session is explicitly unloaded.
+			// Children detect context cancellation and self-clean via the cancelled
+			// path (L883 cancelChildSessions + L884 destroyInteractiveSession).
 		}()
 
 		log.WithFields(log.Fields{
@@ -996,8 +1146,21 @@ func (a *Agent) SpawnInteractiveSession(
 	}
 
 	// Foreground mode: execute synchronously
+	// Wrap subCtx with a session-scoped context that carries bgSessionCtxKey
+	// and bgParentKey so that any SubAgents spawned during this Run derive
+	// their lifecycle from THIS session — not from a grandparent. Without
+	// this wrapper, a foreground SubAgent B (child of A) that creates C would
+	// have C's context chain point directly to A, so B's completion would NOT
+	// cancel C, violating the "subagents never outlive their creator" invariant.
+	fgRunCtx, fgRunCancel := context.WithCancel(subCtx)
+	fgRunCtx = context.WithValue(fgRunCtx, bgSessionCtxKey{}, true)
+	fgRunCtx = context.WithValue(fgRunCtx, bgParentKey{}, key)
+	// Preserve call chain from subCtx
+	fgRunCtx = WithCallChain(fgRunCtx, CallChainFromContext(subCtx))
+
 	placeholder.mu.Lock()
 	placeholder.running = true
+	placeholder.cancelCurrent = fgRunCancel
 	placeholder.mu.Unlock()
 
 	// Wire DrainBgNotifications so pending messages (sent via action=send
@@ -1005,11 +1168,20 @@ func (a *Agent) SpawnInteractiveSession(
 	fgSessionKey := originChannel + ":" + originChatID
 	cfg.DrainBgNotifications = placeholder.wirePendingMessageDrain(fgSessionKey)
 
-	out := Run(subCtx, cfg)
+	out := Run(fgRunCtx, cfg)
+
+	// Cancel the foreground session context so any child SubAgents spawned
+	// during this Run are notified that their creator has finished.
+	fgRunCancel()
 
 	placeholder.mu.Lock()
 	placeholder.running = false
+	placeholder.cancelCurrent = nil
 	placeholder.mu.Unlock()
+
+	// Cascade: cancel and remove all child sessions spawned by this Run,
+	// ensuring no SubAgent outlives its creator even on natural completion.
+	a.cancelChildSessions(key)
 
 	if out.Error != nil {
 		a.destroyInteractiveSession(key) // 清理占位符 + tenant session
@@ -1040,8 +1212,12 @@ func (a *Agent) SpawnInteractiveSession(
 		messages:         newMessages,
 		iterationHistory: out.IterationHistory,
 		cfg:              &cfg,
+		subID:            cfg.SubID,
 		lastUsed:         time.Now(),
 		lastReply:        out.Content,
+		background:       false,
+		parentKey:        placeholder.parentKey, // preserve parent key for cascade cleanup
+		groupID:          placeholder.groupID,   // preserve group membership
 	}
 	if len(cfg.Messages) > 0 {
 		ia.systemPrompt = cfg.Messages[0]
@@ -1051,17 +1227,6 @@ func (a *Agent) SpawnInteractiveSession(
 	// out.Messages (from Run) excludes the final text-only response — it's only
 	// in out.Content / buildOutput. Without this, switching away and back loses
 	// the assistant's final reply.
-	if out.Content != "" {
-		ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
-	} else {
-		ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
-	}
-	// Carry ReasoningContent to the in-memory message for subsequent turns
-	if out.ReasoningContent != "" && len(ia.messages) > 0 {
-		ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
-	}
-	a.interactiveSubAgents.Store(key, ia)
-
 	// Persist final assistant message with iteration history as Detail,
 	// same as the main agent does in handleInboundMessage (agent.go:1884).
 	// The incremental persistence in postToolProcessing saves assistant messages
@@ -1074,10 +1239,21 @@ func (a *Agent) SpawnInteractiveSession(
 				assistantMsg.Detail = string(jsonBytes)
 			}
 		}
-		if err := agentTenantSession.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save interactive agent assistant message with detail")
+		historyID, err := agentTenantSession.AppendMessage(assistantMsg)
+		if err != nil {
+			a.destroyInteractiveSession(key)
+			return nil, fmt.Errorf("append interactive agent assistant message: %w", err)
 		}
+		assistantMsg.ID = historyID
+		ia.messages = append(ia.messages, assistantMsg)
+	} else if out.Content != "" {
+		assistantMsg := llm.NewAssistantMessage(out.Content)
+		assistantMsg.ReasoningContent = out.ReasoningContent
+		ia.messages = append(ia.messages, assistantMsg)
 	}
+	// Publish only the fully initialized state. Readers can never observe the
+	// final assistant reply before its durable HistoryID has been assigned.
+	a.interactiveSubAgents.Store(key, ia)
 
 	log.WithFields(log.Fields{
 		"role":     roleName,
@@ -1085,6 +1261,71 @@ func (a *Agent) SpawnInteractiveSession(
 	}).Info("Interactive session spawned")
 
 	return out.OutboundMsg, nil
+}
+
+// ContinueInteractiveSession continues an active interactive SubAgent by its
+// full canonical key. This is the UI/RPC entry point; it deliberately bypasses
+// generic inbound routing so the content cannot start a separate agent session.
+// A nil result means the asynchronous continuation was accepted, not completed.
+func (a *Agent) ContinueInteractiveSession(ctx context.Context, fullKey, content, senderID string) error {
+	if fullKey == "" {
+		return fmt.Errorf("full_key is required")
+	}
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("content is required")
+	}
+
+	value, ok := a.interactiveSubAgents.Load(fullKey)
+	if !ok {
+		return fmt.Errorf("no active interactive session for %q", fullKey)
+	}
+	ia, ok := value.(*interactiveAgent)
+	if !ok || ia == nil {
+		return fmt.Errorf("corrupted interactive session %q", fullKey)
+	}
+
+	ia.mu.Lock()
+	roleName := ia.roleName
+	instance := ia.instance
+	initialized := ia.cfg != nil
+	ia.mu.Unlock()
+	if !initialized {
+		return fmt.Errorf("interactive session %q is still initializing", fullKey)
+	}
+
+	parentChannel, parentChatID := parseInteractiveKeyParent(fullKey)
+	if parentChannel == "" || parentChatID == "" || roleName == "" ||
+		interactiveKey(parentChannel, parentChatID, roleName, instance) != fullKey {
+		return fmt.Errorf("invalid interactive session key %q", fullKey)
+	}
+
+	metadata := map[string]string(nil)
+	if instance != "" {
+		metadata = map[string]string{"instance_id": instance}
+	}
+	out, err := a.SendToInteractiveSession(ctx, roleName, bus.InboundMessage{
+		Channel:    parentChannel,
+		ChatID:     parentChatID,
+		SenderID:   senderID,
+		SenderName: "Interactive User",
+		ChatType:   "p2p",
+		Content:    content,
+		Metadata:   metadata,
+		Time:       time.Now(),
+	})
+	if err != nil {
+		return err
+	}
+	if out != nil && out.Error != nil {
+		return out.Error
+	}
+	if current, exists := a.interactiveSubAgents.Load(fullKey); !exists || current != value {
+		return fmt.Errorf("no active interactive session for %q", fullKey)
+	}
+	if out == nil {
+		return fmt.Errorf("interactive session %q did not accept the continuation", fullKey)
+	}
+	return nil
 }
 
 // SendToInteractiveSession 向已有的 interactive session 发送新消息。
@@ -1100,16 +1341,20 @@ func (a *Agent) SendToInteractiveSession(
 
 	val, ok := a.interactiveSubAgents.Load(key)
 	if !ok {
+		err := fmt.Errorf("no active interactive session for role %q, use interactive=true to create one first", roleName)
 		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("no active interactive session for role %q, use interactive=true to create one first", roleName),
+			Content: err.Error(),
+			Error:   err,
 		}, nil
 	}
 
 	ia, ok := val.(*interactiveAgent)
 	if !ok || ia == nil {
 		a.interactiveSubAgents.Delete(key)
+		err := fmt.Errorf("corrupted interactive session for role %q", roleName)
 		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("corrupted interactive session for role %q", roleName),
+			Content: err.Error(),
+			Error:   err,
 		}, nil
 	}
 
@@ -1123,8 +1368,10 @@ func (a *Agent) SendToInteractiveSession(
 	if ia.running {
 		if ia.cfg == nil {
 			ia.mu.Unlock()
+			err := fmt.Errorf("interactive session for role %q is still initializing, please try again later", roleName)
 			return &channelpkg.OutboundMsg{
-				Content: fmt.Sprintf("interactive session for role %q is still initializing, please try again later", roleName),
+				Content: err.Error(),
+				Error:   err,
 			}, nil
 		}
 
@@ -1140,8 +1387,10 @@ func (a *Agent) SendToInteractiveSession(
 		select {
 		case err := <-replyCh:
 			if err != nil {
+				deliveryErr := fmt.Errorf("failed to deliver message to %q (instance=%q): %w", roleName, instance, err)
 				return &channelpkg.OutboundMsg{
-					Content: fmt.Sprintf("failed to deliver message to %q (instance=%q): %v", roleName, instance, err),
+					Content: deliveryErr.Error(),
+					Error:   deliveryErr,
 				}, nil
 			}
 			return &channelpkg.OutboundMsg{
@@ -1157,16 +1406,20 @@ func (a *Agent) SendToInteractiveSession(
 				}
 			}
 			ia.mu.Unlock()
+			deliveryErr := fmt.Errorf("message delivery to %q (instance=%q) cancelled: %w", roleName, instance, ctx.Err())
 			return &channelpkg.OutboundMsg{
-				Content: fmt.Sprintf("message delivery to %q (instance=%q) cancelled: context deadline exceeded", roleName, instance),
+				Content: deliveryErr.Error(),
+				Error:   deliveryErr,
 			}, nil
 		}
 	}
 
 	if ia.cfg == nil {
 		ia.mu.Unlock()
+		err := fmt.Errorf("interactive session for role %q is still initializing, please try again later", roleName)
 		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("interactive session for role %q is still initializing, please try again later", roleName),
+			Content: err.Error(),
+			Error:   err,
 		}, nil
 	}
 
@@ -1181,15 +1434,43 @@ func (a *Agent) SendToInteractiveSession(
 	newMessages = append(newMessages, ia.messages...)
 	newMessages = append(newMessages, llm.NewUserMessage(msg.Content))
 	cfg.Messages = newMessages
-
-	// Eager-save user message so get_history returns it during Run().
-	if cfg.Session != nil {
-		if err := cfg.Session.AddMessage(llm.NewUserMessage(msg.Content)); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to eager-save interactive agent user message (send)")
-		}
-	}
+	systemPrompt := ia.systemPrompt
 
 	ia.mu.Unlock()
+	operationGate := a.sessionOperationGate("agent", key)
+	if !operationGate.lock(ctx) {
+		return nil, ctx.Err()
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			operationGate.unlock()
+		}
+	}()
+
+	// A rewind may have completed while this send waited for the operation gate.
+	// Rebuild from the DB-authoritative active replay before appending the turn.
+	if cfg.Session != nil {
+		persisted, err := cfg.Session.GetMessages()
+		if err != nil {
+			return nil, fmt.Errorf("reload interactive agent history: %w", err)
+		}
+		if promptTokens, err := cfg.Session.GetLastContextTokens(); err == nil {
+			cfg.LastPromptTokens = promptTokens
+			cfg.LastCompletionTokens = 0
+		}
+		newMessages = append([]llm.ChatMessage{systemPrompt}, persisted...)
+		newMessages = append(newMessages, llm.NewUserMessage(msg.Content))
+		cfg.Messages = newMessages
+		ia.mu.Lock()
+		ia.messages = append([]llm.ChatMessage(nil), persisted...)
+		ia.mu.Unlock()
+		historyID, err := cfg.Session.AppendMessage(newMessages[len(newMessages)-1])
+		if err != nil {
+			return nil, fmt.Errorf("append interactive agent user message: %w", err)
+		}
+		newMessages[len(newMessages)-1].ID = historyID
+	}
 
 	// --- 阶段 2：锁外构建上下文和执行 ---
 	// BUG FIX: 不能在持有 ia.mu 期间调用 Run()。
@@ -1210,11 +1491,12 @@ func (a *Agent) SendToInteractiveSession(
 			cfg.ProgressNotifier = func(lines []string, thinking string) {
 				if len(lines) > 0 {
 					cb(SubAgentProgressDetail{
-						Path:     myPath,
-						Lines:    lines,
-						Depth:    myDepth,
-						Instance: inst,
-						Thinking: thinking,
+						Path:       myPath,
+						Lines:      lines,
+						Depth:      myDepth,
+						Instance:   inst,
+						SessionKey: key,
+						Content:    thinking,
 					})
 				}
 			}
@@ -1268,369 +1550,318 @@ func (a *Agent) SendToInteractiveSession(
 	preLen := len(cfg.Messages)
 
 	ia.mu.Lock()
+	wasRunning := ia.running
 	ia.running = true
 	ia.interrupted = false // clear any stale interrupt flag from previous Run
 
 	// --- Pre-Run state reset for background mode ---
-	// Before starting a new Run, reset iteration history and progress snapshots
-	// so the TUI session view shows a clean break from the previous turn.
-	// Without this, the new Run's iterations (starting from 0) are appended to
-	// the old history, creating confusing numbering (e.g. #0-#35 from previous
-	// Run, then #0-#N from new Run), and recordIterationSnapshot skips new
-	// iterations because they're <= the old max iteration.
 	if ia.background {
-		// 1. Add user message to ia.messages NOW (before Run) so
-		//    GetAgentSessionDump shows it immediately for TUI rendering.
-		ia.messages = append(ia.messages, llm.NewUserMessage(msg.Content))
-
-		// 2. Clear iteration history so the new Run starts fresh.
+		ia.messages = append(ia.messages, newMessages[len(newMessages)-1])
 		ia.iterationHistory = nil
-
-		// 3. Clear progress snapshots so recordIterationSnapshot works correctly
-		//    for the new Run's iterations (which start from 0).
 		agentProgressKey := "agent:" + key
 		a.lastProgressSnapshot.Delete(agentProgressKey)
 		a.iterationHistories.Delete(agentProgressKey)
 	}
 
-	// For background mode, create a cancellable context so UnloadInteractiveSession
-	// can cancel the running goroutine. Must derive from the agent lifecycle context
-	// (a.agentCtx), NOT from subCtx — subCtx inherits the parent's tool execution
-	// deadline, which would kill the background goroutine when the parent's tool
-	// call times out. Same pattern as the initial spawn path above.
-	if ia.background {
-		var bgBase context.Context
-		if ctx.Value(bgSessionCtxKey{}) != nil {
-			// Nested: parent is a bg session → derive from parent's lifecycle
-			bgBase = ctx
-		} else {
-			// First level: derive from Agent lifecycle (no deadline)
-			bgBase = a.agentCtx
-		}
-		if bgBase == nil {
-			bgBase = context.Background()
-		}
-		runCtx, runCancel := context.WithCancel(bgBase)
-		subCtx = runCtx
-		ia.cancelCurrent = runCancel
+	// Derive context from agent lifecycle so the async Run survives
+	// past the caller's tool execution deadline. Without this, a parent
+	// agent's SendMessage tool call would kill the child's Run when the
+	// tool timeout fires.
+	var asyncBase context.Context
+	if ctx.Value(bgSessionCtxKey{}) != nil {
+		asyncBase = ctx
+	} else if a.agentCtx != nil {
+		asyncBase = a.agentCtx
+	} else {
+		asyncBase = context.Background()
 	}
+	runCtx, runCancel := context.WithCancel(asyncBase)
+	// Mark as bg session context so nested SubAgents detect it and
+	// derive their lifecycle from this session (not a grandparent).
+	runCtx = context.WithValue(runCtx, bgSessionCtxKey{}, true)
+	// Store own key so nested bg sessions can identify this as parent.
+	runCtx = context.WithValue(runCtx, bgParentKey{}, key)
+	// Carry call chain and progress callbacks from subCtx so nested
+	// SubAgents can still report progress up the chain.
+	runCtx = WithCallChain(runCtx, CallChainFromContext(subCtx))
+	if cb, ok := SubAgentProgressFromContext(subCtx); ok {
+		runCtx = WithSubAgentProgress(runCtx, cb)
+	}
+	ia.cancelCurrent = runCancel
 	ia.mu.Unlock()
 
-	if ia.background {
-		// Background agents: run asynchronously (same as initial spawn).
-		// Without this, SubAgent(action="send") blocks the caller's tool
-		// execution for the entire duration of Run() — which can be minutes.
-		// The caller gets an immediate acknowledgment, and the result is
-		// delivered via BgTaskMgr notification when Run() completes.
-		go func() {
-			startTime := time.Now()
-			defer func() {
-				if r := recover(); r != nil {
-					clipanic.Report("agent.interactive.SendBackground", fmt.Sprintf("%s:%s", roleName, instance), r)
-					ia.mu.Lock()
-					ia.running = false
-					ia.cancelCurrent = nil
-					ia.lastError = fmt.Sprintf("panic: %v", r)
-					ia.mu.Unlock()
-					if a.bgTaskMgr != nil {
-						sessionKey := originChannel + ":" + originChatID
-						a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-							Key:      sessionKey,
-							Type:     tools.SubAgentBgNotifyCompleted,
-							Role:     roleName,
-							Instance: instance,
-							Content:  fmt.Sprintf("Panic: %v", r),
-							Elapsed:  time.Since(startTime),
-							Sid:      originSender,
-						})
-					}
-					// Emit subagent_stopped so sidebar updates immediately
-					a.emitSessionState(protocol.SessionEvent{
-						Channel:  originChannel,
-						ChatID:   originChatID,
-						Action:   "subagent_stopped",
+	// Emit subagent_started so sidebar spinner updates from idle→busy.
+	if !wasRunning {
+		a.emitSessionState(protocol.SessionEvent{
+			Channel:    originChannel,
+			ChatID:     originChatID,
+			Action:     "subagent_started",
+			Role:       roleName,
+			Instance:   instance,
+			SessionKey: key,
+			ParentID:   originChatID,
+		})
+	}
+
+	// --- Always async: run in goroutine, return immediately ---
+	gateOwned = false
+	go func() {
+		defer operationGate.unlock()
+		startTime := time.Now()
+		defer func() {
+			if r := recover(); r != nil {
+				clipanic.Report("agent.interactive.SendAsync", fmt.Sprintf("%s:%s", roleName, instance), r)
+				ia.mu.Lock()
+				ia.running = false
+				ia.cancelCurrent = nil
+				ia.lastError = fmt.Sprintf("panic: %v", r)
+				ia.mu.Unlock()
+				if a.bgTaskMgr != nil {
+					sessionKey := originChannel + ":" + originChatID
+					a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+						Key:      sessionKey,
+						Type:     tools.SubAgentBgNotifyCompleted,
 						Role:     roleName,
 						Instance: instance,
-						ParentID: originChatID,
+						Content:  fmt.Sprintf("Panic: %v", r),
+						Elapsed:  time.Since(startTime),
+						Sid:      originSender,
 					})
 				}
-			}()
-
-			// Wire DrainBgNotifications for pending message delivery.
-			bgSendKey := originChannel + ":" + originChatID
-			cfg.DrainBgNotifications = ia.wirePendingMessageDrain(bgSendKey)
-
-			out := Run(subCtx, cfg)
-
-			// Check if the context was cancelled (interrupt or unload).
-			// Must check BEFORE clearing cancelCurrent so we can read ia.interrupted.
-			// subCtx is derived from context.WithCancel, so subCtx.Err() tells us.
-			wasCancelled := subCtx.Err() != nil
-
-			ia.mu.Lock()
-			ia.running = false
-			ia.cancelCurrent = nil
-			wasInterrupted := ia.interrupted
-			ia.interrupted = false // reset for next send
-			ia.mu.Unlock()
-
-			if wasCancelled {
-				if wasInterrupted {
-					// Add interrupt marker to ia.messages (same as initial spawn path).
-					ia.mu.Lock()
-					if out.Content != "" {
-						if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Content != out.Content {
-							ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
-						}
-					}
-					ia.messages = append(ia.messages, llm.ChatMessage{
-						Role:    "system",
-						Content: "⏸ [interrupted by parent agent]",
-					})
-					ia.mu.Unlock()
-
-					// Send PhaseDone to CLI so TUI properly ends the turn.
-					a.sendSubAgentPhaseDone(key)
-
-					// Interrupt: notify parent so it knows the agent stopped.
-					// The session stays for future "send" interactions.
-					if a.bgTaskMgr != nil {
-						content := "[interrupted] "
-						if out.Content != "" {
-							content += out.Content
-						} else {
-							content += "Agent was interrupted."
-						}
-						if len(content) > 2000 {
-							content = content[:2000] + "... [truncated, use inspect for details]"
-						}
-						sessionKey := originChannel + ":" + originChatID
-						a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-							Key:      sessionKey,
-							Type:     tools.SubAgentBgNotifyCompleted,
-							Role:     roleName,
-							Instance: instance,
-							Content:  content,
-							Elapsed:  time.Since(startTime),
-							Sid:      originSender,
-						})
-					}
-					log.WithFields(log.Fields{
-						"role":     roleName,
-						"instance": instance,
-					}).Info("Background send interrupted, session preserved for future send")
-					// Emit subagent_stopped so sidebar updates immediately (busy→idle)
-					a.emitSessionState(protocol.SessionEvent{
-						Channel:  originChannel,
-						ChatID:   originChatID,
-						Action:   "subagent_stopped",
-						Role:     roleName,
-						Instance: instance,
-						ParentID: originChatID,
-					})
-					return
-				}
-				// Unload/shutdown: NO notification — the parent already knows.
-				log.WithFields(log.Fields{
-					"role":     roleName,
-					"instance": instance,
-				}).Info("Background send cancelled (unload/shutdown)")
-				return
-			}
-
-			// Notify parent via BgTaskManager (same as initial spawn).
-			if a.bgTaskMgr != nil {
-				content := out.Content
-				if out.Error != nil {
-					content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
-				}
-				if len(content) > 2000 {
-					content = content[:2000] + "... [truncated, use inspect for details]"
-				}
-				sessionKey := originChannel + ":" + originChatID
-				a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-					Key:      sessionKey,
-					Type:     tools.SubAgentBgNotifyCompleted,
-					Role:     roleName,
-					Instance: instance,
-					Content:  content,
-					Elapsed:  time.Since(startTime),
-					Sid:      originSender,
+				a.emitSessionState(protocol.SessionEvent{
+					Channel:    originChannel,
+					ChatID:     originChatID,
+					Action:     "subagent_stopped",
+					Role:       roleName,
+					Instance:   instance,
+					SessionKey: key,
+					ParentID:   originChatID,
 				})
-			}
-
-			// Emit subagent_stopped so sidebar updates immediately (busy→idle).
-			a.emitSessionState(protocol.SessionEvent{
-				Channel:  originChannel,
-				ChatID:   originChatID,
-				Action:   "subagent_stopped",
-				Role:     roleName,
-				Instance: instance,
-				ParentID: originChatID,
-			})
-
-			// --- Write back results (mirrors foreground 阶段 3 below) ---
-			ia.mu.Lock()
-			defer ia.mu.Unlock()
-
-			if out.Error != nil {
-				ia.lastError = out.Error.Error()
-				ia.lastReply = out.Content
-			} else {
-				ia.lastError = ""
-				ia.lastReply = out.Content
-				ia.promptTokens = out.LastPromptTokens
-				ia.completionTokens = out.LastCompletionTokens
-
-				// Build ia.messages from the authoritative engine output.
-				// out.Messages comes from Run()'s s.messages — it includes the
-				// system prompt at [0] and ALL previous messages. We must NOT
-				// include the system prompt in ia.messages (it's stored separately
-				// in ia.systemPrompt), so we skip out.Messages[0].
-				//
-				// Note: ia.messages was already updated before Run (user message
-				// appended), so we need to replace it entirely with the engine's
-				// output (minus system prompt) to reflect tool calls, compression,
-				// and other changes that happened during Run.
-				if len(out.Messages) < preLen || len(out.Messages) == 0 {
-					// Compression happened (or edge case): replace entirely.
-					// Skip system prompt (out.Messages[0]) if present.
-					start := 0
-					if len(out.Messages) > 0 && out.Messages[0].Role == "system" {
-						start = 1
-					}
-					ia.messages = make([]llm.ChatMessage, len(out.Messages)-start)
-					copy(ia.messages, out.Messages[start:])
-				} else {
-					// Normal case (no compression): out.Messages includes all
-					// messages from the start. Skip system prompt at [0].
-					// Replace ia.messages entirely to keep in sync with engine.
-					start := 0
-					if len(out.Messages) > 0 && out.Messages[0].Role == "system" {
-						start = 1
-					}
-					ia.messages = make([]llm.ChatMessage, len(out.Messages)-start)
-					copy(ia.messages, out.Messages[start:])
-				}
-
-				// Append final assistant reply if not already in out.Messages.
-				// handleFinalResponse returns directly without appending to s.messages,
-				// so out.Messages may not contain the final text reply.
-				if out.Content != "" {
-					// Check if the last message is already this assistant reply
-					if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Content != out.Content || ia.messages[len(ia.messages)-1].Role != "assistant" {
-						ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
-					}
-				} else if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Role != "assistant" {
-					ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
-				}
-				// Carry ReasoningContent to the in-memory message for subsequent turns
-				if out.ReasoningContent != "" && len(ia.messages) > 0 {
-					ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
-				}
-				// Save iteration history for inspect
-				if len(out.IterationHistory) > 0 {
-					ia.iterationHistory = out.IterationHistory
-				}
-			}
-
-			// Persist final assistant message with iteration history as Detail,
-			// same as foreground path below and the main agent does in handleInboundMessage.
-			if cfg.Session != nil && out.Content != "" {
-				assistantMsg := llm.NewAssistantMessage(out.Content)
-				assistantMsg.ReasoningContent = out.ReasoningContent
-				if len(out.IterationHistory) > 0 {
-					if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
-						assistantMsg.Detail = string(jsonBytes)
-					}
-				}
-				if err := cfg.Session.AddMessage(assistantMsg); err != nil {
-					log.Ctx(ctx).WithError(err).Warn("Failed to save bg send agent assistant message with detail")
-				}
 			}
 		}()
 
-		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("Message sent to background agent %q (instance=%q). Results will be notified when complete.", roleName, instance),
-		}, nil
-	}
+		// Wire DrainBgNotifications for pending message delivery.
+		drainKey := originChannel + ":" + originChatID
+		cfg.DrainBgNotifications = ia.wirePendingMessageDrain(drainKey)
 
-	// Foreground agents: run synchronously (blocks caller until complete)
-	// Wire DrainBgNotifications for pending message delivery.
-	fgSendKey := originChannel + ":" + originChatID
-	cfg.DrainBgNotifications = ia.wirePendingMessageDrain(fgSendKey)
+		out := Run(runCtx, cfg)
 
-	out := Run(subCtx, cfg)
+		// Cancel the run context after Run completes so any child SubAgents
+		// spawned during this Run are notified that their creator has finished.
+		// Must check cancellation BEFORE calling runCancel — after runCancel,
+		// runCtx.Err() is always non-nil.
+		wasCancelled := runCtx.Err() != nil
+		runCancel()
 
-	ia.mu.Lock()
-	ia.running = false
-	ia.mu.Unlock()
+		ia.mu.Lock()
+		ia.running = false
+		ia.cancelCurrent = nil
+		wasInterrupted := ia.interrupted
+		ia.interrupted = false
+		ia.mu.Unlock()
 
-	// --- 阶段 3：锁内写回结果 ---
-	ia.mu.Lock()
-	defer ia.mu.Unlock()
+		if wasCancelled {
+			if wasInterrupted {
+				ia.mu.Lock()
+				appended, appendErr := appendInteractiveInterruption(cfg.Session, out.Content)
+				if appendErr != nil {
+					ia.lastError = fmt.Sprintf("append interruption history: %v", appendErr)
+					if persisted, loadErr := cfg.Session.GetMessages(); loadErr == nil {
+						ia.messages = persisted
+					}
+				} else {
+					ia.messages = append(ia.messages, appended...)
+				}
+				ia.mu.Unlock()
 
-	if out.Error != nil {
-		ia.lastError = out.Error.Error()
-		content := out.Content
-		if content == "" {
-			content = "⚠️ Interactive SubAgent 执行失败。"
+				a.sendSubAgentPhaseDone(key)
+
+				if a.bgTaskMgr != nil {
+					content := "[interrupted] "
+					if out.Content != "" {
+						content += out.Content
+					} else {
+						content += "Agent was interrupted."
+					}
+					if len(content) > 2000 {
+						content = content[:2000] + "... [truncated, use inspect for details]"
+					}
+					sessionKey := originChannel + ":" + originChatID
+					a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+						Key:      sessionKey,
+						Type:     tools.SubAgentBgNotifyCompleted,
+						Role:     roleName,
+						Instance: instance,
+						Content:  content,
+						Elapsed:  time.Since(startTime),
+						Sid:      originSender,
+					})
+				}
+				log.WithFields(log.Fields{
+					"role":     roleName,
+					"instance": instance,
+				}).Info("Async send interrupted, session preserved for future send")
+				a.emitSessionState(protocol.SessionEvent{
+					Channel:    originChannel,
+					ChatID:     originChatID,
+					Action:     "subagent_stopped",
+					Role:       roleName,
+					Instance:   instance,
+					SessionKey: key,
+					ParentID:   originChatID,
+				})
+				return
+			}
+			log.WithFields(log.Fields{
+				"role":     roleName,
+				"instance": instance,
+			}).Info("Async send cancelled (unload/shutdown)")
+			// Cascade: clean up children so they don't outlive this session.
+			// The UnloadInteractiveSession that triggered this cancel also
+			// calls cancelChildSessions, but if we got here via context
+			// propagation (parent cancelled), we need to clean our own children.
+			a.cancelChildSessions(key)
+			return
 		}
-		content += fmt.Sprintf("\n\n> ❌ SubAgent Error: %v", out.Error)
-		out.Content = content
-		return out.OutboundMsg, nil
-	}
 
-	// 追加新增对话消息到 ia.messages
-	// Include the user message sent via action=send so GetAgentSessionDump shows it.
-	// cfg.Messages[preLen-1] is the last element before Run, which is the user message
-	// appended at line ~670 (newMessages = append(..., llm.NewUserMessage(msg.Content)))
-	if preLen > 0 {
-		lastBeforeRun := cfg.Messages[preLen-1]
-		if lastBeforeRun.Role == "user" {
-			ia.messages = append(ia.messages, lastBeforeRun)
+		// Notify parent via BgTaskManager.
+		if a.bgTaskMgr != nil {
+			content := out.Content
+			if out.Error != nil {
+				content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
+			}
+			if len(content) > 2000 {
+				content = content[:2000] + "... [truncated, use inspect for details]"
+			}
+			sessionKey := originChannel + ":" + originChatID
+			a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+				Key:      sessionKey,
+				Type:     tools.SubAgentBgNotifyCompleted,
+				Role:     roleName,
+				Instance: instance,
+				Content:  content,
+				Elapsed:  time.Since(startTime),
+				Sid:      originSender,
+			})
 		}
-	}
-	if len(out.Messages) > preLen {
-		ia.messages = append(ia.messages, out.Messages[preLen:]...)
-	}
-	// Append final assistant reply (missing from out.Messages when
-	// handleFinalResponse returns directly without appending to s.messages).
-	if out.Content != "" {
-		ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
-	} else {
-		// LLM returned empty response — generate a placeholder so
-		// GetAgentSessionDump shows the session has completed this turn.
-		// Without this, the session shows user2 but no assistant2,
-		// making it look like the SubAgent never replied (Issue #bug3).
-		ia.messages = append(ia.messages, llm.NewAssistantMessage("(empty response)"))
-	}
-	// Carry ReasoningContent to the in-memory message for subsequent turns
-	if out.ReasoningContent != "" && len(ia.messages) > 0 {
-		ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
-	}
-	// Save iteration history for inspect
-	if len(out.IterationHistory) > 0 {
-		ia.iterationHistory = append(ia.iterationHistory, out.IterationHistory...)
-	}
-	ia.lastReply = out.Content
 
-	// Persist final assistant message with iteration history as Detail,
-	// same as the main agent does in handleInboundMessage (agent.go:1884).
-	if cfg.Session != nil && out.Content != "" {
-		assistantMsg := llm.NewAssistantMessage(out.Content)
-		assistantMsg.ReasoningContent = out.ReasoningContent
-		if len(out.IterationHistory) > 0 {
-			if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
-				assistantMsg.Detail = string(jsonBytes)
+		// Emit subagent_stopped so sidebar updates immediately (busy→idle).
+		a.emitSessionState(protocol.SessionEvent{
+			Channel:    originChannel,
+			ChatID:     originChatID,
+			Action:     "subagent_stopped",
+			Role:       roleName,
+			Instance:   instance,
+			SessionKey: key,
+			ParentID:   originChatID,
+		})
+
+		// Cascade: cancel and remove all child sessions spawned by this Run.
+		// This ensures no SubAgent outlives its creator even on natural completion.
+		// The session itself stays for future "send" interactions, but its children
+		// (which were created to serve this specific Run) must be cleaned up.
+		a.cancelChildSessions(key)
+
+		// --- Write back results ---
+		ia.mu.Lock()
+		defer ia.mu.Unlock()
+		var persistedAssistant *llm.ChatMessage
+		if out.Error == nil && cfg.Session != nil && out.Content != "" {
+			assistantMsg := llm.NewAssistantMessage(out.Content)
+			assistantMsg.ReasoningContent = out.ReasoningContent
+			if len(out.IterationHistory) > 0 {
+				if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+					assistantMsg.Detail = string(jsonBytes)
+				}
+			}
+			historyID, err := cfg.Session.AppendMessage(assistantMsg)
+			if err != nil {
+				ia.lastError = fmt.Sprintf("append async agent assistant message: %v", err)
+				if persisted, loadErr := cfg.Session.GetMessages(); loadErr == nil {
+					ia.messages = persisted
+				}
+				return
+			}
+			assistantMsg.ID = historyID
+			persistedAssistant = &assistantMsg
+		}
+
+		if out.Error != nil {
+			ia.lastError = out.Error.Error()
+			ia.lastReply = out.Content
+		} else {
+			ia.lastError = ""
+			ia.lastReply = out.Content
+			ia.promptTokens = out.LastPromptTokens
+			ia.completionTokens = out.LastCompletionTokens
+
+			// Build ia.messages from the authoritative engine output.
+			// Preserve existing history (ia.messages before this Run) and only
+			// append new messages produced by this Run. This matches the
+			// background spawn path (line ~962-975) and prevents history loss.
+			//
+			// cfg.Messages was built as [systemPrompt] + ia.messages + [newUserMsg]
+			// so preLen = len(systemPrompt) + len(ia.messages) + 1.
+			// out.Messages is the engine's final message list after Run.
+			if len(out.Messages) < preLen {
+				// Compression happened during Run: replace entirely with
+				// the compressed list (minus system prompt).
+				start := 0
+				if len(out.Messages) > 0 && out.Messages[0].Role == "system" {
+					start = 1
+				}
+				ia.messages = make([]llm.ChatMessage, len(out.Messages)-start)
+				copy(ia.messages, out.Messages[start:])
+			} else {
+				// Normal case: preserve existing history, append only new
+				// messages from this Run (out.Messages[preLen:]).
+				//
+				// Background mode: user message was already appended to
+				// ia.messages before Run (line ~1357), so out.Messages[preLen:]
+				// contains only new assistant/tool messages.
+				//
+				// Foreground send mode: user message was NOT appended to
+				// ia.messages (it was only in cfg.Messages). We must add it
+				// here before appending engine output, otherwise the user
+				// message is lost from ia.messages.
+				if !ia.background {
+					ia.messages = append(ia.messages, cfg.Messages[len(cfg.Messages)-1])
+				}
+				if len(out.Messages) > preLen {
+					ia.messages = append(ia.messages, out.Messages[preLen:]...)
+				}
+			}
+
+			if out.Content != "" {
+				if len(ia.messages) == 0 || ia.messages[len(ia.messages)-1].Content != out.Content || ia.messages[len(ia.messages)-1].Role != "assistant" {
+					if persistedAssistant != nil {
+						ia.messages = append(ia.messages, *persistedAssistant)
+					} else {
+						ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+					}
+				}
+			}
+			if out.Content != "" && out.ReasoningContent != "" && len(ia.messages) > 0 {
+				ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
+			}
+			// For bg mode, iteration history was already incrementally updated via
+			// OnIterationSnapshot during Run() (line ~1321). out.IterationHistory
+			// contains the same snapshots from snapshotCompletedIteration — appending
+			// would duplicate every iteration, causing the TUI to render previous
+			// iteration content twice (visible as stale content at the bottom of the
+			// reasoning progress view).
+			// For foreground mode, OnIterationSnapshot is NOT set (only bg mode sets
+			// it), so we must append out.IterationHistory to preserve cross-turn iterations.
+			if !ia.background && len(out.IterationHistory) > 0 {
+				ia.iterationHistory = append(ia.iterationHistory, out.IterationHistory...)
 			}
 		}
-		if err := cfg.Session.AddMessage(assistantMsg); err != nil {
-			log.Ctx(ctx).WithError(err).Warn("Failed to save interactive agent assistant message with detail")
-		}
-	}
 
-	return out.OutboundMsg, nil
+	}()
+
+	return &channelpkg.OutboundMsg{
+		Content: fmt.Sprintf("Message sent to %q (instance=%q). Results will be notified when complete.", roleName, instance),
+	}, nil
 }
 
 // InterruptInteractiveSession cancels the current running iteration of an interactive session.
@@ -1781,13 +2012,13 @@ func (a *Agent) InspectInteractiveSession(
 		fmt.Fprintf(&sb, "\n### Recent Iterations (last %d):\n", len(snapshots))
 		for _, snap := range snapshots {
 			fmt.Fprintf(&sb, "\n**Iteration %d**\n", snap.Iteration)
-			if snap.Thinking != "" {
-				thinking := snap.Thinking
+			if snap.Content != "" {
+				thinking := snap.Content
 				if len(thinking) > 300 {
 					thinking = thinking[len(thinking)-300:]
 					thinking = "..." + thinking
 				}
-				fmt.Fprintf(&sb, "Thinking: %s\n", thinking)
+				fmt.Fprintf(&sb, "Content: %s\n", thinking)
 			}
 			if snap.Reasoning != "" {
 				reasoning := snap.Reasoning
@@ -1920,6 +2151,20 @@ func (a *Agent) UnloadInteractiveSession(
 	// 清理
 	a.destroyInteractiveSession(key)
 
+	// Emit subagent_stopped so sidebar updates immediately.
+	// Other completion paths (foreground/bg Run, timeout) emit this event,
+	// but the explicit unload path was missing it, causing sidebar to
+	// only refresh on the 30s safety-net poll.
+	a.emitSessionState(protocol.SessionEvent{
+		Channel:    channel,
+		ChatID:     chatID,
+		Action:     "subagent_stopped",
+		Role:       roleName,
+		Instance:   instance,
+		SessionKey: key,
+		ParentID:   chatID,
+	})
+
 	log.WithField("role", roleName).Info("Interactive session unloaded")
 	return nil
 }
@@ -2035,13 +2280,17 @@ func resolveOriginIDs(msg bus.InboundMessage) (channel, chatID, sender string) {
 
 // InteractiveSessionInfo represents a snapshot of an interactive agent session.
 type InteractiveSessionInfo struct {
-	Role       string
-	Instance   string
-	Running    bool
-	Background bool
-	Task       string // one-shot subagent task description (empty for interactive)
-	Preview    string // latest progress/last reply summary for panel display
-	ChatID     string // parent session's chatID (for cross-session listing)
+	Role          string
+	Instance      string
+	Running       bool
+	Background    bool
+	Task          string // one-shot subagent task description (empty for interactive)
+	Preview       string // latest progress/last reply summary for panel display
+	ChatID        string // parent session's chatID (for cross-session listing)
+	Key           string // full interactive session key: channel:chatID/role[:instance]
+	ParentKey     string // direct parent interactive key when nested, empty for main sessions
+	ParentChannel string // direct parent channel derived from ParentKey or Key
+	ParentChatID  string // direct parent chatID derived from ParentKey or Key
 }
 
 // ListInteractiveSessions returns info about all interactive sessions matching the given channel/chatID prefix.
@@ -2070,20 +2319,40 @@ func (a *Agent) ListInteractiveSessions(channel, chatID string) []InteractiveSes
 			return true
 		}
 		ia.mu.Lock()
+		parentChannel, parentChatID := parseInteractiveKeyParent(keyStr)
+		if ia.parentKey != "" {
+			parentChannel, parentChatID = "agent", ia.parentKey
+		}
 		info := InteractiveSessionInfo{
-			Role:       ia.roleName,
-			Instance:   ia.instance,
-			Running:    ia.running,
-			Background: ia.background,
-			Task:       ia.task,
-			Preview:    summarizeInteractivePreviewLocked(ia),
-			ChatID:     parseInteractiveKeyChatID(keyStr),
+			Role:          ia.roleName,
+			Instance:      ia.instance,
+			Running:       ia.running,
+			Background:    ia.background,
+			Task:          ia.task,
+			Preview:       summarizeInteractivePreviewLocked(ia),
+			ChatID:        parseInteractiveKeyChatID(keyStr),
+			Key:           keyStr,
+			ParentKey:     ia.parentKey,
+			ParentChannel: parentChannel,
+			ParentChatID:  parentChatID,
 		}
 		ia.mu.Unlock()
 		results = append(results, info)
 		return true
 	})
 	return results
+}
+
+func parseInteractiveKeyParent(key string) (channel, chatID string) {
+	slashIdx := strings.LastIndex(key, "/")
+	if slashIdx <= 0 {
+		return "", ""
+	}
+	colonIdx := strings.Index(key, ":")
+	if colonIdx < 0 || colonIdx >= slashIdx {
+		return "", ""
+	}
+	return key[:colonIdx], key[colonIdx+1 : slashIdx]
 }
 
 // parseInteractiveKeyChatID extracts the parent chatID from an interactive key.
@@ -2114,8 +2383,8 @@ func summarizeInteractivePreviewLocked(ia *interactiveAgent) string {
 	}
 	if n := len(ia.iterationHistory); n > 0 {
 		snap := ia.iterationHistory[n-1]
-		if snap.Thinking != "" {
-			return snap.Thinking
+		if snap.Content != "" {
+			return snap.Content
 		}
 		if snap.Reasoning != "" {
 			return snap.Reasoning
@@ -2147,6 +2416,7 @@ type AgentSessionDump struct {
 
 	// Status bar metadata — used by TUI to render context bar, model name, etc.
 	ModelName        string  `json:"modelName,omitempty"`
+	SubscriptionID   string  `json:"subscriptionID,omitempty"`
 	MaxContextTokens int64   `json:"maxContextTokens,omitempty"`
 	MaxOutputTokens  int64   `json:"maxOutputTokens,omitempty"`
 	CompressRatio    float64 `json:"compressRatio,omitempty"`
@@ -2194,6 +2464,7 @@ func (a *Agent) GetAgentSessionDump(channel, chatID, roleName, instance string) 
 		Messages:         msgs,
 		IterationHistory: iters,
 		ModelName:        ia.modelName(),
+		SubscriptionID:   ia.subID,
 		MaxContextTokens: ia.maxContextTokens(),
 		MaxOutputTokens:  ia.maxOutputTokens(),
 		CompressRatio:    ia.compressRatio(),
@@ -2242,6 +2513,7 @@ func (a *Agent) GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump,
 		Messages:         msgs,
 		IterationHistory: iters,
 		ModelName:        ia.modelName(),
+		SubscriptionID:   ia.subID,
 		MaxContextTokens: ia.maxContextTokens(),
 		MaxOutputTokens:  ia.maxOutputTokens(),
 		CompressRatio:    ia.compressRatio(),

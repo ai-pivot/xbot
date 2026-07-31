@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -116,8 +117,20 @@ func (d *Dispatcher) SendMessage(channelName, chatID, content string) (string, e
 	})
 }
 
+// SendMessageCtx implements bus.MessageSenderCtx.
+// Propagates ctx to AgentChannel so pending RPCs can be cancelled by the caller.
+func (d *Dispatcher) SendMessageCtx(ctx context.Context, channelName, chatID, content string) (string, error) {
+	return d.SendDirect(OutboundMsg{
+		Channel: channelName,
+		ChatID:  chatID,
+		Content: content,
+		Ctx:     ctx,
+	})
+}
+
 // Compile-time interface check
 var _ bus.MessageSender = (*Dispatcher)(nil)
+var _ bus.MessageSenderCtx = (*Dispatcher)(nil)
 
 // SendDirect 同步发送消息到指定渠道，返回平台消息 ID
 func (d *Dispatcher) SendDirect(msg OutboundMsg) (string, error) {
@@ -147,4 +160,27 @@ func (d *Dispatcher) EnabledChannels() []string {
 	}
 	d.mu.RUnlock()
 	return names
+}
+
+// RangeChannels iterates over all registered channels, calling fn for each.
+// If fn returns false, iteration stops. This is the canonical way to
+// broadcast to all channels (including plugin channels) without hardcoding
+// channel names. The caller should type-assert to the desired interface
+// (ProgressSender, SessionStateSender, etc.) to filter.
+func (d *Dispatcher) RangeChannels(fn func(name string, ch Channel) bool) {
+	d.mu.RLock()
+	type entry struct {
+		name string
+		ch   Channel
+	}
+	entries := make([]entry, 0, len(d.channels))
+	for name, ch := range d.channels {
+		entries = append(entries, entry{name, ch})
+	}
+	d.mu.RUnlock()
+	for _, e := range entries {
+		if !fn(e.name, e.ch) {
+			return
+		}
+	}
 }

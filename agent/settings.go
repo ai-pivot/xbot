@@ -106,6 +106,22 @@ func (s *SettingsService) SetSetting(channelName, senderID, key, value string) e
 	return s.store.Set(channelName, senderID, key, value)
 }
 
+// GetByUserID retrieves all settings for a canonical user (by user_id).
+func (s *SettingsService) GetByUserID(channelName string, userID int64) (map[string]string, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("settings service not initialized")
+	}
+	return s.store.GetByUserID(channelName, userID)
+}
+
+// SetByUserID sets a single setting for a canonical user (by user_id).
+func (s *SettingsService) SetByUserID(channelName string, userID int64, key, value string) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("settings service not initialized")
+	}
+	return s.store.SetByUserID(channelName, userID, key, value)
+}
+
 // GetSettingsSchema retrieves the settings schema for a channel.
 // Returns nil if the channel is not found or doesn't implement SettingsCapability.
 func (s *SettingsService) GetSettingsSchema(channelName string) []channel.SettingDefinition {

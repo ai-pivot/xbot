@@ -2,9 +2,7 @@ package tools
 
 import (
 	"context"
-	"slices"
-	"sort"
-	"sync"
+
 	"xbot/bus"
 	"xbot/llm"
 	"xbot/memory"
@@ -39,9 +37,12 @@ type ToolContext struct {
 	SenderID                string                                                                     // 直接调用者 ID（SubAgent 场景下为父 Agent ID，主 Agent 场景下等于 OriginUserID）
 	OriginUserID            string                                                                     // 原始用户 ID（始终为终端用户，用于 LLM 配置、工作区路径等需要原始用户的场景）
 	SenderName              string                                                                     // 当前消息发送者姓名
+	UserID                  int64                                                                      // Canonical user ID (from IdentityResolver, 0 in standalone mode)
+	Role                    string                                                                     // User role ("admin" | "user", from IdentityResolver)
 	SendFunc                func(channel, chatID, content string, metadata ...map[string]string) error // 向 IM 渠道发送消息（不经过 Agent），返回错误
 	InjectInbound           func(channel, chatID, senderID, content string)                            // 注入入站消息，触发 Agent 完整处理循环
 	Registry                *Registry                                                                  // 工具注册表引用（用于动态注册工具）
+	ContextEditHandler      ContextEditHandler                                                         // 当前 Run 的上下文编辑器
 	InvalidateAllSessionMCP func()                                                                     // 使所有会话的 MCP 连接失效
 
 	// Letta memory fields (nil when memory provider is not letta)
@@ -52,6 +53,10 @@ type ToolContext struct {
 	RecallTimeRange vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
 	ToolIndexer     memory.ToolIndexer           // 工具索引服务（Letta 模式下可用）
 
+	// SessionKey is the authoritative session key (may differ from
+	// Channel:ChatID when physicalChannel overrides it). Used by TodoManager
+	// and other session-scoped state to match notifyProgress's sessionKey.
+	SessionKey string
 	// RootSessionKey 顶层 Agent 的 session key。
 	// SubAgent 场景下指向主 Agent 的 session（offload 文件存放在该 session 目录下），
 	// 主 Agent 场景下为空（与 SessionKey 相同）。
@@ -112,6 +117,11 @@ type ToolContext struct {
 	ConfigGet func(key string) (string, error)
 
 	// ConfigSet writes a configuration value and returns the previous value (for config tool).
+	// The implementation routes to the correct backend based on SettingDef.Source:
+	//   SourceUserDB        → user_settings DB (via SettingsSvc)
+	//   SourceConfigJSON    → config.json (via SaveToFile)
+	// Subscription-scoped keys (llm_model, max_output_tokens, etc.) are written via
+	// the subscription manager to the user_llm_subscriptions DB.
 	ConfigSet func(key, value string) (string, error)
 
 	// ChatRename renames the current chat session (for config tool's session_name key).
@@ -127,6 +137,26 @@ type ToolContext struct {
 
 	// ListSubscriptions returns all LLM subscriptions for the current user.
 	ListSubscriptions func() []SubscriptionInfo
+
+	// ── Runner CRUD (for config tool) ──
+
+	// RunnerCreate creates a new runner and returns the token.
+	RunnerCreate func(name, mode, dockerImage, workspace, llmProvider, llmAPIKey, llmModel, llmBaseURL string) (token string, err error)
+
+	// RunnerList returns all runners for the current user.
+	RunnerList func() ([]RunnerInfo, error)
+
+	// RunnerDelete deletes a runner by name.
+	RunnerDelete func(name string) error
+
+	// RunnerGetActive returns the active runner name for the current user.
+	RunnerGetActive func() (string, error)
+
+	// RunnerSetActive sets the active runner by name.
+	RunnerSetActive func(name string) error
+
+	// RunnerRename renames a runner.
+	RunnerRename func(oldName, newName string) error
 
 	// OriginUserIsAdmin is true when the end user has admin privileges.
 	// Global-scoped settings should only be modified when this is true.
@@ -217,602 +247,4 @@ func (r *ToolResult) WithTips(tips string) *ToolResult {
 type Tool interface {
 	llm.ToolDefinition
 	Execute(ctx *ToolContext, input string) (*ToolResult, error)
-}
-
-const defaultMaxIdleRounds int64 = 5
-
-// Registry 工具注册表
-type Registry struct {
-	mu               sync.RWMutex
-	globalTools      map[string]Tool             // 所有工具（全局共享）
-	coreTools        map[string]bool             // 核心工具名（始终在 tool definitions 中）
-	sessionActivated map[string]map[string]int64 // sessionKey → toolName → lastUsedRound
-	sessionRound     map[string]int64            // sessionKey → 当前 round 计数
-	maxIdleRounds    int64                       // 连续多少轮未使用后自动失效
-	sessionMCPMgr    SessionMCPManagerProvider   // 会话MCP管理器提供者
-	globalMCPCatalog []MCPServerCatalogEntry     // 全局 MCP Server 目录（由 MCPManager.RegisterTools 设置）
-	flatMode         bool                        // flat memory 模式：所有工具均为核心，无需 load_tools
-
-	tenantTools   map[int64]map[string]Tool // tenantID → toolName → Tool（per-tenant 工具）
-	tenantToolsMu sync.RWMutex
-}
-
-// NewRegistry 创建工具注册表
-func NewRegistry() *Registry {
-	return &Registry{
-		globalTools:      make(map[string]Tool),
-		coreTools:        make(map[string]bool),
-		sessionActivated: make(map[string]map[string]int64),
-		sessionRound:     make(map[string]int64),
-		maxIdleRounds:    defaultMaxIdleRounds,
-	}
-}
-
-// SetFlatMode 设置 flat memory 模式。
-// flat 模式下所有工具均为核心工具，无需 load_tools 激活，永不过期。
-func (r *Registry) SetFlatMode(flat bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.flatMode = flat
-}
-
-func (r *Registry) IsFlatMode() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.flatMode
-}
-
-// Register 注册工具（非核心，需通过 load_tools 激活后才出现在 tool definitions 中）。
-// flat 模式下等同于 RegisterCore。
-func (r *Registry) Register(tool Tool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.globalTools[tool.Name()] = tool
-	if r.flatMode {
-		r.coreTools[tool.Name()] = true
-	}
-}
-
-// RegisterForTenant 注册一个工具仅对特定租户可见。
-// tenantID=0 等同于 Register（全局可见）。
-func (r *Registry) RegisterForTenant(tenantID int64, tool Tool) {
-	if tenantID == 0 {
-		r.Register(tool)
-		return
-	}
-	r.tenantToolsMu.Lock()
-	defer r.tenantToolsMu.Unlock()
-	if r.tenantTools == nil {
-		r.tenantTools = make(map[int64]map[string]Tool)
-	}
-	if r.tenantTools[tenantID] == nil {
-		r.tenantTools[tenantID] = make(map[string]Tool)
-	}
-	r.tenantTools[tenantID][tool.Name()] = tool
-}
-
-// RegisterCore 注册核心工具（始终出现在 tool definitions 中，无需激活）
-func (r *Registry) RegisterCore(tool Tool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.globalTools[tool.Name()] = tool
-	r.coreTools[tool.Name()] = true
-}
-
-// Unregister 注销工具
-func (r *Registry) Unregister(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.globalTools, name)
-}
-
-// Get 获取工具（先查全局，再查租户）
-func (r *Registry) Get(name string) (Tool, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tool, ok := r.globalTools[name]
-	return tool, ok
-}
-
-// GetForTenant 获取工具（先查租户，再查全局）
-func (r *Registry) GetForTenant(name string, tenantID int64) (Tool, bool) {
-	if tenantID != 0 {
-		r.tenantToolsMu.RLock()
-		if tenantTools, ok := r.tenantTools[tenantID]; ok {
-			if tool, found := tenantTools[name]; found {
-				r.tenantToolsMu.RUnlock()
-				return tool, true
-			}
-		}
-		r.tenantToolsMu.RUnlock()
-	}
-	return r.Get(name)
-}
-
-// List 列出所有工具（按名称排序，保证顺序稳定以优化 KV-cache）
-func (r *Registry) List() []Tool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tools := make([]Tool, 0, len(r.globalTools))
-	for _, tool := range r.globalTools {
-		tools = append(tools, tool)
-	}
-	sort.Slice(tools, func(i, j int) bool {
-		return tools[i].Name() < tools[j].Name()
-	})
-	return tools
-}
-
-// AsDefinitions 转换为 LLM 工具定义列表（仅核心工具，按名称排序）
-func (r *Registry) AsDefinitions() []llm.ToolDefinition {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var defs []llm.ToolDefinition
-	for _, tool := range r.globalTools {
-		if r.coreTools[tool.Name()] {
-			defs = append(defs, tool)
-		}
-	}
-	sort.Slice(defs, func(i, j int) bool {
-		return defs[i].Name() < defs[j].Name()
-	})
-	return defs
-}
-
-// SetSessionMCPManagerProvider 设置会话 MCP 管理器提供者
-func (r *Registry) SetSessionMCPManagerProvider(provider SessionMCPManagerProvider) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sessionMCPMgr = provider
-}
-
-// AsDefinitionsForSession 获取特定会话的工具定义：
-//   - 核心工具始终包含
-//   - 非核心工具仅在激活且未过期（maxIdleRounds 内有使用）时才包含
-//   - 全局 MCP 工具激活后以完整参数 schema 加入（而非 stub 模式的空 params）
-//   - tenantID>0 时同时包含该租户的专属工具（与全局合并，租户优先）
-//   - tenantID=0 时仅返回全局工具（向后兼容）
-func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []llm.ToolDefinition {
-	r.mu.RLock()
-	active := r.activeToolSet(sessionKey)
-	flatMode := r.flatMode
-
-	// 收集 tenant 专属工具（先获取，在合并时优先）
-	r.mu.RUnlock()
-	var tenantToolMap map[string]Tool
-	if tenantID != 0 {
-		r.tenantToolsMu.RLock()
-		tenantToolMap = r.tenantTools[tenantID]
-		r.tenantToolsMu.RUnlock()
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	seen := make(map[string]bool)
-	var defs []llm.ToolDefinition
-
-	// 辅助函数：将 tool 转为 ToolDefinition 加入列表
-	addTool := func(tool Tool) {
-		if seen[tool.Name()] {
-			return
-		}
-		seen[tool.Name()] = true
-		if mcp, isMCP := tool.(mcpSchemaProvider); isMCP {
-			// 全局 MCP 工具：flat 模式直接可见；否则仅在激活后以完整参数 schema 加入
-			if flatMode || active[tool.Name()] {
-				defs = append(defs, &mcpToolDefinition{
-					name:   tool.Name(),
-					desc:   tool.Description(),
-					params: mcp.fullParams(),
-				})
-			}
-			return
-		}
-		if r.coreTools[tool.Name()] || active[tool.Name()] {
-			defs = append(defs, tool)
-		}
-	}
-
-	// 先遍历 tenant 工具（租户优先）
-	for _, tool := range tenantToolMap {
-		addTool(tool)
-	}
-
-	// 再遍历 global 工具
-	for _, tool := range r.globalTools {
-		addTool(tool)
-	}
-
-	// 追加会话 MCP 工具：flat 模式直接可见（含完整参数 schema）；否则仅追加已激活工具
-	if r.sessionMCPMgr != nil {
-		if sm := r.sessionMCPMgr.GetSessionMCPManager(sessionKey); sm != nil {
-			if flatMode {
-				for _, tool := range sm.GetSessionTools() {
-					if mcp, ok := tool.(mcpSchemaProvider); ok {
-						defs = append(defs, &mcpToolDefinition{
-							name:   tool.Name(),
-							desc:   tool.Description(),
-							params: mcp.fullParams(),
-						})
-					}
-				}
-			} else {
-				defs = append(defs, sm.GetActivatedToolDefs(active)...)
-			}
-		}
-	}
-
-	sort.Slice(defs, func(i, j int) bool {
-		return defs[i].Name() < defs[j].Name()
-	})
-
-	return defs
-}
-
-// activeToolSet 返回指定会话中未过期的已激活工具名集合（调用方需持有 r.mu 读锁）
-func (r *Registry) activeToolSet(sessionKey string) map[string]bool {
-	toolRounds := r.sessionActivated[sessionKey]
-	if len(toolRounds) == 0 {
-		return nil
-	}
-	curRound := r.sessionRound[sessionKey]
-	active := make(map[string]bool, len(toolRounds))
-	for name, lastRound := range toolRounds {
-		if curRound-lastRound <= r.maxIdleRounds {
-			active[name] = true
-		}
-	}
-	return active
-}
-
-// TickSession 推进会话 round 计数（每次处理新用户消息时调用），同时清理已过期的工具。
-// 返回新的 round 编号。
-func (r *Registry) TickSession(sessionKey string) int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sessionRound[sessionKey]++
-	curRound := r.sessionRound[sessionKey]
-
-	// 清理过期工具，防止 map 无限增长
-	if toolRounds := r.sessionActivated[sessionKey]; len(toolRounds) > 0 {
-		for name, lastRound := range toolRounds {
-			if curRound-lastRound > r.maxIdleRounds {
-				delete(toolRounds, name)
-			}
-		}
-	}
-
-	return curRound
-}
-
-// ActivateTools 激活指定会话的工具，记录当前 round（内置 + MCP 均通过此方法）
-func (r *Registry) ActivateTools(sessionKey string, toolNames []string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	m := r.sessionActivated[sessionKey]
-	if m == nil {
-		m = make(map[string]int64, len(toolNames))
-		r.sessionActivated[sessionKey] = m
-	}
-	curRound := r.sessionRound[sessionKey]
-	for _, name := range toolNames {
-		m[name] = curRound
-	}
-}
-
-// TouchTool 刷新工具的最后使用 round（在工具实际执行时调用）
-func (r *Registry) TouchTool(sessionKey, toolName string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.coreTools[toolName] {
-		return
-	}
-	if m := r.sessionActivated[sessionKey]; m != nil {
-		if _, exists := m[toolName]; exists {
-			m[toolName] = r.sessionRound[sessionKey]
-		}
-	}
-}
-
-// IsToolActive 检查工具是否对指定会话可用（核心工具始终返回 true，已过期的返回 false）
-// flat 模式下所有工具（包括 session MCP 工具）始终视为活跃，无需 load_tools 激活。
-func (r *Registry) IsToolActive(sessionKey, toolName string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.coreTools[toolName] {
-		return true
-	}
-	if r.flatMode {
-		return true
-	}
-	lastRound, ok := r.sessionActivated[sessionKey][toolName]
-	if !ok {
-		return false
-	}
-	return r.sessionRound[sessionKey]-lastRound <= r.maxIdleRounds
-}
-
-// DeactivateSession 清理指定会话的全部激活状态和 round 计数
-func (r *Registry) DeactivateSession(sessionKey string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.sessionActivated, sessionKey)
-	delete(r.sessionRound, sessionKey)
-}
-
-// Clone 复制工具注册表
-func (r *Registry) Clone() *Registry {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	clone := NewRegistry()
-	for name, tool := range r.globalTools {
-		clone.globalTools[name] = tool
-	}
-	for name := range r.coreTools {
-		clone.coreTools[name] = true
-	}
-	// 复制 tenant 工具
-	r.tenantToolsMu.RLock()
-	if len(r.tenantTools) > 0 {
-		clone.tenantTools = make(map[int64]map[string]Tool, len(r.tenantTools))
-		for tid, tools := range r.tenantTools {
-			m := make(map[string]Tool, len(tools))
-			for name, tool := range tools {
-				m[name] = tool
-			}
-			clone.tenantTools[tid] = m
-		}
-	}
-	r.tenantToolsMu.RUnlock()
-	return clone
-}
-
-// mcpSchemaProvider 内部接口，MCPRemoteTool 和 SessionMCPRemoteTool 都实现此接口
-// 用于 load_tools 获取完整参数信息
-type mcpSchemaProvider interface {
-	fullDescription() string
-	fullParams() []llm.ToolParam
-	mcpServerName() string
-}
-
-// ToolGroupProvider 工具组提供者接口，用于将工具分组显示
-// 实现此接口的工具将显示在独立的工具组中，而非 Built-in 分组
-type ToolGroupProvider interface {
-	GroupName() string         // 工具组名称（如 "Feishu"）
-	GroupInstructions() string // 工具组使用说明
-}
-
-// ChannelProvider 渠道提供者接口，用于限制工具仅在特定渠道可用
-// 未实现此接口的工具在所有渠道可用
-type ChannelProvider interface {
-	SupportedChannels() []string // 返回支持的渠道列表，空则表示所有渠道
-}
-
-// IsChannelSupported 检查工具是否支持指定渠道
-// 如果工具未实现 ChannelProvider 接口，则默认支持所有渠道
-func IsChannelSupported(tool Tool, channel string) bool {
-	if cp, ok := tool.(ChannelProvider); ok {
-		channels := cp.SupportedChannels()
-		if len(channels) == 0 {
-			return true // 空列表 = 所有渠道
-		}
-		for _, c := range channels {
-			if c == channel {
-				return true
-			}
-		}
-		return false
-	}
-	return true // 未实现接口 = 所有渠道可用
-}
-
-// ToolGroupEntry 工具组条目
-type ToolGroupEntry struct {
-	Name         string   // 工具组名称
-	Instructions string   // 工具组使用说明
-	ToolNames    []string // 工具名称列表
-}
-
-// ToolSchema 工具完整 schema 信息（供 load_tools 使用）
-type ToolSchema struct {
-	ToolName    string
-	ServerName  string // 内置工具为空，MCP 工具为 server 名
-	Description string
-	Params      []llm.ToolParam
-}
-
-// GetBuiltinToolNames 返回所有内置（非 MCP、非工具组）工具的名称列表（按名称排序）
-// 内置工具不实现 mcpSchemaProvider 接口，也不实现 ToolGroupProvider 接口
-func (r *Registry) GetBuiltinToolNames() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var names []string
-	for name, tool := range r.globalTools {
-		if _, isMCP := tool.(mcpSchemaProvider); isMCP {
-			continue
-		}
-		if _, hasGroup := tool.(ToolGroupProvider); hasGroup {
-			continue
-		}
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
-}
-
-// GetToolGroups returns all tool groups (sorted by name).
-// Each group contains name, instructions, and tool names.
-// Equivalent to GetToolGroupsForChannel("") with no channel filtering.
-func (r *Registry) GetToolGroups() []ToolGroupEntry {
-	return r.GetToolGroupsForChannel("")
-}
-
-// GetToolGroupsForChannel 返回指定渠道可用的工具组（按组名排序）
-// channel 为空时不进行渠道过滤，返回所有工具组
-func (r *Registry) GetToolGroupsForChannel(channel string) []ToolGroupEntry {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	groups := make(map[string]*ToolGroupEntry)
-	for _, tool := range r.globalTools {
-		// 渠道过滤（空渠道不过滤）
-		if channel != "" && !IsChannelSupported(tool, channel) {
-			continue
-		}
-		if groupProvider, ok := tool.(ToolGroupProvider); ok {
-			groupName := groupProvider.GroupName()
-			if groups[groupName] == nil {
-				groups[groupName] = &ToolGroupEntry{
-					Name:         groupName,
-					Instructions: groupProvider.GroupInstructions(),
-					ToolNames:    []string{},
-				}
-			}
-			groups[groupName].ToolNames = append(groups[groupName].ToolNames, tool.Name())
-		}
-	}
-
-	// 转换为切片并排序
-	result := make([]ToolGroupEntry, 0, len(groups))
-	for _, entry := range groups {
-		slices.Sort(entry.ToolNames)
-		result = append(result, *entry)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
-	})
-	return result
-}
-
-// SetGlobalMCPCatalog 设置全局 MCP Server 目录（由 MCPManager.RegisterTools 调用）
-func (r *Registry) SetGlobalMCPCatalog(catalog []MCPServerCatalogEntry) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	// 防御性复制，避免调用方修改切片导致竞争条件
-	r.globalMCPCatalog = append([]MCPServerCatalogEntry{}, catalog...)
-}
-
-// GetMCPCatalog 获取完整 MCP Server 目录（全局 + 会话特定）
-func (r *Registry) GetMCPCatalog(sessionKey string) []MCPServerCatalogEntry {
-	r.mu.RLock()
-	global := append([]MCPServerCatalogEntry{}, r.globalMCPCatalog...)
-	r.mu.RUnlock()
-
-	if r.sessionMCPMgr != nil {
-		sessionMCP := r.sessionMCPMgr.GetSessionMCPManager(sessionKey)
-		if sessionMCP != nil {
-			sessionCatalog := sessionMCP.GetCatalog()
-			global = append(global, sessionCatalog...)
-		}
-	}
-	return global
-}
-
-// GetToolSchemas 获取指定工具的完整 schema 信息（参数定义、描述等）
-// 支持内置工具和 MCP 工具。toolNames 为工具全名列表；传入 nil 返回所有可加载工具的 schema。
-// 如果 channel 不为空，则过滤掉不支持该渠道的工具。
-func (r *Registry) GetToolSchemas(sessionKey string, toolNames []string) []ToolSchema {
-	return r.GetToolSchemasForChannel(sessionKey, toolNames, "")
-}
-
-// GetToolSchemasForChannel 获取指定渠道可用的工具 schema 信息
-// channel 为空时不进行渠道过滤
-func (r *Registry) GetToolSchemasForChannel(sessionKey string, toolNames []string, channel string) []ToolSchema {
-	nameSet := make(map[string]bool, len(toolNames))
-	matchAll := len(toolNames) == 0
-	for _, n := range toolNames {
-		nameSet[n] = true
-	}
-
-	var schemas []ToolSchema
-
-	r.mu.RLock()
-	for name, tool := range r.globalTools {
-		if !matchAll && !nameSet[name] {
-			continue
-		}
-		// 渠道过滤
-		if channel != "" && !IsChannelSupported(tool, channel) {
-			continue
-		}
-		if p, ok := tool.(mcpSchemaProvider); ok {
-			schemas = append(schemas, ToolSchema{
-				ToolName:    name,
-				ServerName:  p.mcpServerName(),
-				Description: p.fullDescription(),
-				Params:      p.fullParams(),
-			})
-		} else if !r.coreTools[name] {
-			schemas = append(schemas, ToolSchema{
-				ToolName:    name,
-				Description: tool.Description(),
-				Params:      tool.Parameters(),
-			})
-		}
-	}
-	r.mu.RUnlock()
-
-	// 扫描会话 MCP 工具
-	if r.sessionMCPMgr != nil {
-		if sm := r.sessionMCPMgr.GetSessionMCPManager(sessionKey); sm != nil {
-			for _, tool := range sm.GetSessionTools() {
-				if !matchAll && !nameSet[tool.Name()] {
-					continue
-				}
-				// 会话 MCP 工具暂不做渠道过滤（MCP 工具通常是通用的）
-				if p, ok := tool.(mcpSchemaProvider); ok {
-					schemas = append(schemas, ToolSchema{
-						ToolName:    tool.Name(),
-						ServerName:  p.mcpServerName(),
-						Description: p.fullDescription(),
-						Params:      p.fullParams(),
-					})
-				}
-			}
-		}
-	}
-
-	return schemas
-}
-
-// DefaultRegistry 创建包含默认工具的注册表
-// 核心工具（RegisterCore）始终在 tool definitions 中；其余需通过 load_tools 激活。
-// flat 模式下所有工具均为核心工具，不注册 LoadToolsTool。
-// 注意：CronTool 需要依赖注入，不在默认注册表中，需单独注册
-func DefaultRegistry(memoryProvider string) *Registry {
-	r := NewRegistry()
-	if memoryProvider == "flat" {
-		r.SetFlatMode(true)
-	}
-	// 核心工具：基础文件/系统操作，始终可用
-	r.RegisterCore(&ShellTool{})
-	r.RegisterCore(&CdTool{})
-	r.RegisterCore(&GlobTool{})
-	r.RegisterCore(&GrepTool{})
-	r.RegisterCore(&ReadTool{})
-	r.RegisterCore(&FileCreateTool{})
-	r.RegisterCore(&FileReplaceTool{})
-	r.RegisterCore(&SubAgentTool{})
-	// CreateChatTool — creates agent private chats and moderated group chats.
-	r.RegisterCore(&CreateChatTool{})
-	r.RegisterCore(&SendMessageTool{})
-	r.RegisterCore(&JoinGroupTool{})
-	r.RegisterCore(&LeaveGroupTool{})
-	r.RegisterCore(&ListGroupMembersTool{})
-	r.RegisterCore(&SkillTool{})
-	r.RegisterCore(&TaskStatusTool{})
-	r.RegisterCore(&TaskKillTool{})
-	r.RegisterCore(&TaskReadTool{})
-	// CronTool 需要依赖注入，需在 agent 初始化后单独注册
-	// DownloadFileTool 和 WebSearchTool 需要凭证注入，在 main.go 中注册
-	// WebSearch: always available (requires TAVILY_API_KEY)
-	r.RegisterCore(NewFetchTool())
-	r.RegisterCore(&AskUserTool{})
-	// WorktreeTool — multi-agent workspace isolation via git worktrees
-	r.RegisterCore(&WorktreeTool{})
-	// LoadToolsTool 仅在 letta 模式下注册（flat 模式所有工具直接可用）
-	if memoryProvider != "flat" {
-		r.RegisterCore(&LoadToolsTool{})
-	}
-	return r
 }

@@ -157,6 +157,13 @@ func (m *TodoManager) GetTodos(sessionKey string) []TodoItem {
 // to isolate their TODOs from the main agent. Main agent (AgentID="main")
 // keeps the original Channel:ChatID key so all readers remain compatible.
 func (m *TodoManager) sessionKey(ctx *ToolContext) string {
+	// Prefer SessionKey (set by engine, accounts for physicalChannel override).
+	// Without this, TodoWrite writes to "cli:chatID" but notifyProgress reads
+	// from "web:chatID" (when physicalChannel overrides the session key) →
+	// todos never appear in the progress stream.
+	if ctx.SessionKey != "" {
+		return ctx.SessionKey
+	}
 	if ctx.Channel != "" && ctx.ChatID != "" {
 		// SubAgent AgentID format: "parentID/roleName" (contains "/")
 		if strings.Contains(ctx.AgentID, "/") {

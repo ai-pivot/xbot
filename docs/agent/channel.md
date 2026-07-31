@@ -1,5 +1,63 @@
 # channel/ — Channel Adapters
 
+## Progress snapshot + semantic log
+
+Structured progress has one channel-agnostic production path. The agent
+converts each engine event to one `protocol.ProgressEvent`, assigns its
+monotonic semantic `Seq`, derives the completed-iteration delta once, stores the
+current snapshot without cumulative history, then broadcasts an isolated clone of that semantic event
+to every registered `channel.ProgressSender` (CLI, Web, and plugin channels).
+Channels are transports only; they must not derive iteration history or use
+channel-specific progress reducers.
+
+Reconnect consumers install the active snapshot and use `ProgressEvent.Seq` as
+the semantic watermark. Events with `seq <= snapshot.seq` are replayed or stale
+and are ignored. `IterationHistory` is the authoritative completed-iteration
+log, keyed by iteration; clients never synthesize an iteration when the current
+iteration advances. SSE/WS envelope sequence numbers remain transport replay
+IDs and are independent from the semantic progress watermark.
+
+History recovery keeps DB rows as-is (including incrementally-persisted
+assistant `ToolCalls` from the active turn). The frontend reconciles: when the
+last history assistant is the active turn, `liveProgress` attaches to that row
+instead of appending a separate `liveMessage`. The snapshot's
+`iterationHistory` is authoritative for completed iterations, and
+`LiveIteration` renders only the current iteration's tools — no overlap, no
+duplicate. This mirrors CLI's `acceptProgress` merge where the history
+assistant IS the streaming slot.
+
+## Package Structure (Refactored)
+
+The `channel` package has been split into a shared root package plus implementation sub-packages:
+
+```
+channel/              # Root package — shared core types, interfaces, infrastructure
+├── channel.go        # Channel interface
+├── types.go          # OutboundMsg, InboundMsg, AskQItem, SessionChatMessage
+├── interfaces.go     # ProgressSender, UserMessageInjector, SessionStateSender
+├── subscription.go   # Subscription/PerModelConfig aliases, ConvertMessagesToHistory
+├── session_utils.go  # DeduplicateSessionName, NameEntry, GenerateSessionName
+├── dispatcher.go     # Outbound message routing to channels
+├── agent_channel.go  # AgentChannel for SubAgent communication
+├── capability.go     # SettingsCapability, SettingDefinition, UIBuilder
+├── provider.go       # ChannelProvider interface
+├── callbacks.go      # RunnerCallbacks, RegistryCallbacks, LLMCallbacks
+├── setting_keys.go   # Setting key constants, CLIRuntimeSettingKeys
+├── setting_helpers.go
+├── card_converter.go # ConvertFeishuCard (shared by CLI + Web)
+├── mock.go           # MockChannel for testing
+├── ws_base.go        # WSChannelBase (shared by QQ + NapCat)
+├── i18n.go           # Internationalization: zh/en UI strings (~1390 lines)
+├── channel_cli.go    # ChannelCliChannel: WS bridge for remote CLI
+├── cli_msg_builder.go # CliMsg: message builder (shared by CLI + Web)
+
+channel/cli/          # CLI BubbleTea TUI (~44k lines)
+channel/feishu/       # Feishu webhook + settings UI
+channel/web/          # REST + SSE Web server, WebSocket RemoteCLIChannel, auth
+channel/qq/           # QQ bot (WebSocket)
+channel/napcat/       # NapCat HTTP API
+```
+
 ## Files
 
 | File | Purpose |
@@ -19,12 +77,18 @@
 | `cli_palette.go` | Command palette (Ctrl+K): fuzzy-search, category tabs, external contributors (~531 lines) |
 | `feishu.go` | Feishu webhook, message send, card messages (~3154 lines) |
 | `feishu_settings.go` | Feishu settings UI (~2189 lines) |
-| `web.go` | WebSocket server, WebChannel core, read/write pumps, RPC dispatch (~1269 lines) |
-| `web_hub.go` | Hub: WS connection routing, Client struct, ring buffer for offline messages (~195 lines) |
+| `web.go` | WebChannel core, route registration, HTTP lifecycle, security middleware |
+| `web_socket.go` | WebSocket handler and read/write pumps; retained for remote CLI transport |
+| `web_sse.go` | Cookie-authenticated `/api/sse` transport, event replay, 15s heartbeat, SSE framing |
+| `web_types.go` | Web channel configuration, callbacks, and API response types |
+| `web_outbound.go` | WebChannel outbound message stamping and Hub delivery |
+| `web_static.go` | Frontend static-file and SPA fallback handler |
+| `web_hub.go` | Shared WS/SSE connection routing, Client struct, offline ring buffer, stateless message slotting |
 | `web_eventstream.go` | EventStream: seq-stamped ring buffer for replay/dedup (~99 lines) |
 | `web_remote_cli.go` | RemoteCLIChannel: virtual CLI channel for CLI→WS→server mode (~270 lines) |
-| `web_api.go` | REST API endpoints (~1569 lines) |
+| `web_api.go` | REST API endpoints (~1901 lines) |
 | `web_auth.go` | OAuth/token auth (~670 lines) |
+| `web_fs.go` | Filesystem REST API (`/api/fs/list`, `/read`, `/search`, `/stat`); single-level `os.ReadDir`, path-traversal guard, 2MB read cap, language-from-extension map (~511 lines) |
 | `qq.go` | QQ bot API (~1736 lines) |
 | `napcat.go` | NapCat HTTP API (~821 lines) |
 | `i18n.go` | Internationalization: zh/en UI strings (~1390 lines) |
@@ -35,6 +99,34 @@
 Optional channel capabilities via interfaces in `capability.go`:
 - `SettingsCapability` — channel supports user settings UI
 - `UIBuilder` — channel can render custom UI elements
+
+## Web Context Usage
+
+The Web context ring reads the authoritative session snapshot from the
+`get_context_usage` RPC using `(channel, chat_id)`. The response combines the
+current `(subscription, model)`, its effective `max_context_tokens`, and the
+latest provider-confirmed `prompt_tokens`; the browser must not rebuild this
+state by joining subscription APIs or by falling back to a hard-coded limit.
+
+- `prompt_tokens` is the context fill value. Completion tokens are informational
+  and are never added to the usage percentage.
+- Usage is exact at LLM-response and compression checkpoints. Active streaming
+  keeps the last confirmed snapshot until the provider returns another usage
+  record; Web does not estimate token growth locally.
+- A session with no confirmed usage, or one whose model was just changed,
+  returns `available=false` and `usage_percent=null` until the new model responds.
+- The server does not clamp `usage_percent`. The ring may cap its drawing at
+  100%, but its tooltip must retain the real percentage when usage is over the
+  configured context window.
+- Web refreshes the snapshot on session/reconnection lifecycle changes, model
+  switches, history compression or reset, completed turns, and exact prompt
+  token changes from structured progress. The snapshot lives outside the
+  progress store so terminal progress cleanup cannot reset an idle ring to 0%.
+- Web chat creation persists the canonical user ID to `user_chats.user_id`, and
+  tenant creation/binding copies it to `tenants.owner_user_id` while lazily
+  repairing legacy zero-owner rows. Context RPC authorization still accepts a
+  matching Web `user_chats.sender_id` for pre-canonical data, but never applies
+  that fallback across channels.
 
 ## CLI Conventions
 
@@ -62,6 +154,9 @@ Optional channel capabilities via interfaces in `capability.go`:
 ### CLI Iteration Snapshots (Tool Summary)
 
 - Iteration snapshots track reasoning, thinking, tools, and wall-clock time per iteration
+- **Iteration-advance progress push must carry completed history**: before sending a structured event that advances current from C to D, record C into `iterationHistories` and attach `IterationHistory` to that same outgoing payload. The TUI must never observe `current=D` while completed history still lacks C; otherwise C's reasoning/content/tool block briefly disappears until the next tick pull.
+- **Progress history must stay flat**: `lastProgressSnapshot` and every `iterationHistories` entry must have `IterationHistory=nil`. Only outgoing RPC/push payloads may carry a flat `IterationHistory` copy. Storing payloads with nested `IterationHistory` causes exponential history growth and can OOM during reconnect/progress restore.
+- **Sparse same-iteration snapshots preserve generating tools**: `StreamingTools` is stream-only like `StreamContent`. When a same-iteration structured snapshot has no `StreamingTools`, `ActiveTools`, or `CompletedTools`, carry forward previous `StreamingTools` so an ultra-fast generating→done tool does not vanish for one frame. Once any structured tool state arrives, it replaces generating state.
 - **Deduplication**: when `PhaseDone` and `handleAgentMessage` both snapshot the same iteration, prefer PhaseDone version (has complete reasoning from server)
 - `ElapsedWall` must be set in ALL snapshot creation paths (iteration change, PhaseDone, handleAgentMessage) — missing it causes fallback to sum only last iteration's tool.Elapsed
 - Title bar shows `[host:port]` in remote mode (parsed from `RemoteBackend.ServerURL()`)
@@ -72,11 +167,51 @@ When viewing an interactive SubAgent session, the CLI switches to an "agent sess
 - `m.activeAgentSession` tracks the current agent session key (`channel:chatID/roleName:instance`)
 - Messages are loaded via `handleSuHistoryLoad` which calls `get_history` RPC
 - Outbound messages from the SubAgent are routed to the parent's chatID — CLI detects and filters
-- **`get_active_progress` RPC bypasses bizID check for agent channel** (`p.Channel != "agent"`)
+- Agent-channel history/progress access recursively validates the child session's
+  real parent channel and chat ID; there is no `chat_id == bizID` authorization
+  shortcut.
 - **Tick chain must not break** — `tickCmd()` injection should be unconditional in multiple code paths to prevent chain breakage during session switches
 - **`handleSuHistoryLoad` default case (PhaseDone)**: triggers `DynamicHistoryLoader` reload to pick up the final assistant reply
 - **Viewport dirty-check fallback**: tick handler checks `!m.renderCacheValid` when `busy=false` to ensure viewport refreshes after session switch
 - **`removeAllToolSummaries()`** must be called in all progress restore paths to prevent duplicate tool summaries
+
+### Append-only History Display and Rewind
+
+- `get_history` WS RPC and `/api/history` REST expose the same chronological
+  projection: every persisted message row (including tool/tool-call rows) plus
+  every compression marker, ordered by `history_id`. Internal controls
+  (`context_edit`, `mask`, AskUser controls, `prune`) stay private.
+- `compacted_by` and compression source IDs are relationship metadata only.
+  Neither TUI nor Web hides source messages after compression.
+- TUI renders compression markers with its existing summary style. Web renders
+  each marker as an independent collapsible tool-like block whose body contains
+  only that compression summary.
+- Every persisted, non-display-only user message is a Rewind candidate, including
+  messages before a compression boundary. Rewind requests contain exactly
+  `channel`, `chat_id`, and `history_id`; timestamp and cutoff fallbacks do not
+  exist.
+- A matching `history_rewound` session event clears live progress and forces a
+  history reload. Server WS/SSE state is keyed by explicit channel + chat ID;
+  reset clears only the target route before broadcasting the barrier, so
+  reconnect cannot restore deleted future events and same-ID sessions on other
+  channels remain intact.
+- Remote CLI subscriptions carry an explicit route and a route-scoped replay
+  cursor. The server installs the subscription and replay suffix under one
+  publication lock. If the retained ring cannot cover the cursor, it sends
+  `resync_required`; both TUI and Web then reload the complete authoritative
+  session snapshot, including active progress, TODOs, and pending AskUser.
+- Web edit-and-rewind waits for REST success and a completed history reload before
+  resending the edited text. File-checkpoint rollback errors are warnings after
+  history commits; REST or reload failures retain the draft and do not send.
+- TUI and Web keep rewind locked through the matching reset and history reload.
+  Session generation guards prevent a late rewind/reload from clearing or
+  resending into a newly selected session, and AskUser input is disabled while
+  that destructive operation is pending.
+- Agent child sessions load the same canonical history API. TUI/Web sending and
+  post-rewind resend use `continue_interactive_session(full_key, content)` so an
+  active interactive object is continued with its own Run config; stale/one-shot
+  history is read-only. TUI invokes the blocking RPC through an asynchronous
+  BubbleTea command so progress rendering remains responsive.
 
 ### CLI Context Bar Rendering
 

@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -59,20 +58,13 @@ func (e *NativeExecutor) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, 
 	err = cmd.Run()
 	_ = time.Since(start)
 
-	exitCode := 0
-	timedOut := false
-
-	if ctx.Err() == context.DeadlineExceeded {
-		timedOut = true
-		exitCode = -1
+	exitCode, timedOut, rawErr := extractExitInfo(err, ctx.Err())
+	if rawErr != nil {
+		return nil, rawErr
+	}
+	if timedOut {
 		if cmd.Process != nil {
 			killProcessTree(cmd.Process.Pid)
-		}
-	} else if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return nil, err
 		}
 	}
 

@@ -354,13 +354,14 @@ func TestPluginMigration_ContextCancellation(t *testing.T) {
 	pluginID := "test.migration.cancel"
 	storage := newMapStorage()
 
-	block := make(chan struct{})
+	started := make(chan struct{})
 	RegisterMigration(pluginID, PluginMigration{
 		FromVersion: "1.0.0",
 		ToVersion:   "1.1.0",
 		Migrate: func(ctx context.Context, s StorageAccessor) error {
-			<-block // block until cancelled
-			return nil
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
 		},
 	})
 
@@ -374,8 +375,8 @@ func TestPluginMigration_ContextCancellation(t *testing.T) {
 		runErr = RunMigrations(ctx, pluginID, "1.1.0", storage)
 	}()
 
+	<-started
 	cancel()
-	close(block) // unblock the migration
 	wg.Wait()
 
 	if runErr == nil {

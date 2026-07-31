@@ -140,13 +140,10 @@ func (s *OffloadStore) offloadFilePath(sessionDir, id string) string {
 	return filepath.Join(sessionDir, id+".json")
 }
 
-// estimateTokenSize 使用 llm.CountTokens 估算 token 数，error 时 fallback 到 len(text)*2/5。
+// estimateTokenSize 使用字符数估算 token 数。
+// ~2/5 字符/token 是英文的保守估计（中文约 2/3）。
 func estimateTokenSize(text string, model string) int {
-	n, err := llm.CountTokens(text, model)
-	if err != nil {
-		return len(text) * 2 / 5
-	}
-	return n
+	return len(text) * 2 / 5
 }
 
 // MaybeOffload 检测 tool result 是否超过阈值，超过则 offload 到磁盘。
@@ -315,6 +312,49 @@ func (s *OffloadStore) CleanOldEntries(sessionKey string, cutoff time.Time) int 
 			"kept":    len(kept),
 			"cutoff":  cutoff.Format(time.RFC3339),
 		}).Info("OffloadStore: cleaned old entries after compression")
+	}
+	return removedCount
+}
+
+// CleanUnreferencedEntries removes offload entries whose IDs are NOT in the
+// referencedIDs set. This is the smart cleanup used by the V2 compression
+// pipeline — it ensures that offload references in compressed messages (both
+// in the compaction summary and in tail messages) remain loadable.
+func (s *OffloadStore) CleanUnreferencedEntries(sessionKey string, referencedIDs map[string]bool) int {
+	idx := s.getOrCreateIndex(sessionKey)
+	sessionDir := s.getSessionDir(sessionKey)
+
+	idx.mu.Lock()
+	var kept []OffloadedResult
+	removedCount := 0
+	for _, entry := range idx.entries {
+		if !referencedIDs[entry.ID] {
+			// Not referenced by any message — safe to clean
+			fp := s.offloadFilePath(sessionDir, entry.ID)
+			if err := os.Remove(fp); err != nil && !os.IsNotExist(err) {
+				log.WithFields(log.Fields{
+					"session":  sessionKey,
+					"entry_id": entry.ID,
+					"error":    err,
+				}).Warn("OffloadStore: failed to remove offload file")
+			}
+			removedCount++
+		} else {
+			kept = append(kept, entry)
+		}
+	}
+	idx.entries = kept
+	idx.mu.Unlock()
+
+	// Persist updated index
+	if removedCount > 0 {
+		s.persistIndex(sessionDir, idx)
+		log.WithFields(log.Fields{
+			"session":    sessionKey,
+			"removed":    removedCount,
+			"kept":       len(kept),
+			"referenced": len(referencedIDs),
+		}).Info("OffloadStore: cleaned unreferenced entries after compression")
 	}
 	return removedCount
 }

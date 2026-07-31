@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"context"
+	"strings"
 	"testing"
+
+	"xbot/bus"
 )
 
 func TestCommandRegistry_Match(t *testing.T) {
@@ -17,6 +21,7 @@ func TestCommandRegistry_Match(t *testing.T) {
 		{"/version", "/version"},
 		{"/help", "/help"},
 		{"/llm", "/llm"},
+		{"/llms", "/llms"},
 
 		// Case insensitive
 		{"/NEW", "/new"},
@@ -31,8 +36,9 @@ func TestCommandRegistry_Match(t *testing.T) {
 		// Prefix commands
 		{"/prompt", "/prompt"},
 		{"/prompt show me the system prompt", "/prompt"},
-		{"/set-llm provider=openai", "/set-llm"},
 		{"/set-llm", "/set-llm"},
+		{"/set-llm provider=openai", "/set-llm"},
+		{"/unset-llm", "/unset-llm"},
 		{"/set-model", "/set-model"},
 		{"/set-model gpt-4", "/set-model"},
 		{"/models", "/models"},
@@ -96,11 +102,47 @@ func TestCommandRegistry_Commands(t *testing.T) {
 	for _, cmd := range cmds {
 		names[cmd.Name()] = true
 	}
-	expected := []string{"/new", "/version", "/help", "/prompt", "/set-llm", "/unset-llm", "/llm", "/models", "/set-model", "/compress", "/context", "!", "/publish", "/unpublish", "/browse", "/install", "/uninstall", "/my", "/settings", "/menu"}
+	expected := []string{"/new", "/version", "/help", "/prompt", "/set-llm", "/unset-llm", "/llm", "/llms", "/models", "/set-model", "/compress", "/continue", "/context", "!", "/settings", "/app", "/goal", "/goal status", "/goal clear"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("Command %q not found in registry", name)
 		}
+	}
+}
+
+func TestCommandRegistry_HelpTextUsesRegisteredCommands(t *testing.T) {
+	r := NewCommandRegistry()
+	registerBuiltinCommands(r)
+	r.RegisterCommand(&pluginCmdAdapter{name: "/deploy", description: "部署当前项目"})
+
+	help := r.HelpText()
+	for _, want := range []string{
+		"/new — 开始新对话",
+		"/set-model <订阅名> <模型名> — 切换当前会话模型",
+		"/plugin reload-all — 重新加载所有插件",
+		"/deploy — 部署当前项目",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("HelpText() missing %q\n%s", want, help)
+		}
+	}
+}
+
+func TestHelpCommandRendersRegistryHelp(t *testing.T) {
+	r := NewCommandRegistry()
+	registerBuiltinCommands(r)
+	r.RegisterCommand(&pluginCmdAdapter{name: "/deploy", description: "部署当前项目"})
+
+	cmd := r.Match("/help")
+	if cmd == nil {
+		t.Fatal("Match(/help) = nil")
+	}
+	out, err := cmd.Execute(context.Background(), &Agent{commands: r}, bus.InboundMessage{Channel: "cli", ChatID: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil || !strings.Contains(out.Content, "/deploy — 部署当前项目") {
+		t.Fatalf("/help output did not include registered plugin command: %#v", out)
 	}
 }
 
@@ -120,21 +162,25 @@ func TestCommandConcurrency(t *testing.T) {
 		"/unpublish":    true,
 		"/install":      true,
 		"/uninstall":    true,
+		"/goal":         true,
+		"/goal clear":   true,
 	}
 
 	// Commands that are stateless/read-only should be concurrent
 	concurrent := map[string]bool{
-		"/version":  true,
-		"/help":     true,
-		"/llm":      true,
-		"/models":   true,
-		"/prompt":   true,
-		"/context":  true,
-		"!":         true,
-		"/browse":   true,
-		"/my":       true,
-		"/settings": true,
-		"/menu":     true,
+		"/version":     true,
+		"/help":        true,
+		"/llm":         true,
+		"/llms":        true,
+		"/models":      true,
+		"/prompt":      true,
+		"/context":     true,
+		"!":            true,
+		"/browse":      true,
+		"/my":          true,
+		"/settings":    true,
+		"/menu":        false,
+		"/goal status": true,
 	}
 
 	for _, cmd := range r.Commands() {

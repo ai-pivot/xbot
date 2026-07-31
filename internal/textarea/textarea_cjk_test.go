@@ -1,6 +1,7 @@
 package textarea
 
 import (
+	"slices"
 	"testing"
 
 	"charm.land/bubbles/v2/key"
@@ -138,10 +139,8 @@ func TestCtrlArrowKeyBindings(t *testing.T) {
 
 	assertHasKey := func(t *testing.T, binding key.Binding, want string) {
 		t.Helper()
-		for _, k := range binding.Keys() {
-			if k == want {
-				return
-			}
+		if slices.Contains(binding.Keys(), want) {
+			return
 		}
 		t.Errorf("binding keys %v should include %q", binding.Keys(), want)
 	}

@@ -10,6 +10,15 @@ import (
 	"xbot/tools"
 )
 
+// ThinkingModeChannel is the canonical channel under which the global
+// thinking_mode user setting is stored. The CLI settings panel and the Ctrl+M
+// toggle both write here, and ResolveLLM reads here regardless of the actual
+// call channel — making thinking a single per-user value across all surfaces
+// (CLI, Feishu, Web). Defined in the channel package (not agent) to avoid an
+// import cycle: both agent and channel/cli need it, and channel/cli cannot
+// import agent.
+const ThinkingModeChannel = "cli"
+
 // SettingScope defines where a setting's value is stored and persisted.
 type SettingScope int
 
@@ -71,7 +80,21 @@ var AllSettingDefs = []SettingDef{
 	{Key: "llm_base_url", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, AIDescription: "Custom API base URL (leave empty for default)", ValidValues: "empty or valid HTTPS URL"},
 	{Key: "llm_model", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermManual, AIDescription: "Model name to use (provider-specific)", ValidValues: "provider-specific model ID"},
 	{Key: "max_output_tokens", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "Maximum tokens per response", ValidValues: "1-131072", DefaultValue: "4096"},
-	{Key: "thinking_mode", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "Enable thinking/reasoning mode", ValidValues: "true|false", DefaultValue: "true"},
+	// thinking_mode is a GLOBAL user setting (one toggle for all subscriptions/
+	// models), surfaced as a Ctrl+M hotkey + status-bar indicator on the main
+	// chat dialog and as a Select in /settings. Per-model overrides still exist
+	// in subscription_models but are not user-editable. It is NOT subscription-
+	// scoped anymore ("订阅是订阅，模型是模型").
+	{Key: "thinking_mode", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Set thinking/reasoning effort (global)", ValidValues: "|think|think-max|disabled|enabled", DefaultValue: ""},
+	{Key: "api_type", Scope: ScopeSubscription, Source: SourceLLMConfig, Permission: PermPersistent, AIDescription: "OpenAI API endpoint type: chat_completions or responses", ValidValues: "chat_completions|responses", DefaultValue: "chat_completions"},
+
+	// ── Model tier settings (user_settings DB, consumed by agent tier resolver) ──
+	// Stored under the "cli" channel. Values use "subID|model" format. Not Runtime
+	// (no.ApplyConfig/ApplyAgent handler needed — the agent reads them lazily via
+	// getSetting at SubAgent invocation time).
+	{Key: "tier_vanguard", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Model used for SubAgent vanguard tier (cross-subscription)", ValidValues: "subID|model or plain model name", DefaultValue: ""},
+	{Key: "tier_balance", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Model used for SubAgent balance tier (cross-subscription)", ValidValues: "subID|model or plain model name", DefaultValue: ""},
+	{Key: "tier_swift", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Model used for SubAgent swift tier (cross-subscription)", ValidValues: "subID|model or plain model name", DefaultValue: ""},
 
 	// ── User-scoped settings (user_settings DB) ──
 	{Key: "enable_stream", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "Show LLM output token-by-token", ValidValues: "true|false", DefaultValue: "true"},
@@ -104,14 +127,14 @@ var AllSettingDefs = []SettingDef{
 	{Key: "context_mode", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Context handling: auto or manual", ValidValues: "auto|manual", DefaultValue: "auto"},
 	{Key: "max_iterations", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max tool iterations per turn", ValidValues: "1-500", DefaultValue: "30"},
 	{Key: "max_concurrency", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max parallel LLM calls", ValidValues: "1-100", DefaultValue: "5"},
-	{Key: "max_context_tokens", Scope: ScopeSubscription, Source: SourceLLMConfig, Runtime: true, Permission: PermPersistent, AIDescription: "Target context window size for compression (per subscription+model)", ValidValues: "any positive integer"},
+	// max_context_tokens is per-model (stored in PerModelConfigs), not per-subscription.
+	// Its read/write entry point is GetUserMaxContext/SetUserMaxContext (ResolveActiveSubModel
+	// → PerModelConfigs), NOT the subscription-scoped subFieldValue/setSubFieldValue path.
+	// Removed from AllSettingDefs to prevent config tool from routing it to the wrong layer.
 	{Key: "enable_auto_compress", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Legacy alias for context_mode=auto (deprecated)", ValidValues: "true|false"},
 	{Key: "runner_server", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Remote sandbox server address", ValidValues: "host:port or URL"},
 	{Key: "runner_token", Scope: ScopeUser, Source: SourceUserDB, Permission: PermManual, Sensitive: true, AIDescription: "Auth token for remote runner (masked)", ValidValues: "any valid token"},
 	{Key: "runner_workspace", Scope: ScopeUser, Source: SourceUserDB, Permission: PermPersistent, AIDescription: "Workspace dir on remote runner", ValidValues: "any valid path"},
-	{Key: "vanguard_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermManual, AIDescription: "Model for vanguard tier", ValidValues: "any model name"},
-	{Key: "balance_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermManual, AIDescription: "Model for balance tier", ValidValues: "any model name"},
-	{Key: "swift_model", Scope: ScopeUser, Source: SourceLLMConfig, Runtime: true, Permission: PermManual, AIDescription: "Model for swift tier", ValidValues: "any model name"},
 
 	// ── Action keys (UI triggers) ──
 	{Key: "subscription_manage", Scope: ScopeAction, AIDescription: "Open subscription management panel"},
@@ -203,12 +226,17 @@ func IsUserScopedSettingKey(key string) bool {
 }
 
 // IsKnownNonRuntimeKey returns true for keys that don't need runtime handling
-// (UI-only, persistence-only, or action keys). These are keys NOT registered
-// in AllSettingDefs. Both CLI and Server use this to avoid warning logs for
-// known harmless keys.
+// (UI-only, persistence-only, action keys, or registered keys with Runtime=false).
+// Keys NOT registered in AllSettingDefs are treated as known non-runtime.
+// Keys registered with Runtime=false also don't need a handler.
+// Both CLI and Server use this to avoid warning logs for known harmless keys.
 func IsKnownNonRuntimeKey(key string) bool {
-	_, inDefs := allSettingDefsMap[key]
-	return !inDefs
+	d, ok := allSettingDefsMap[key]
+	if !ok {
+		return true // Not in defs at all — known harmless (UI-only, action, etc.)
+	}
+	// In defs but Runtime=false — doesn't need runtime handling (DB persistence only)
+	return !d.Runtime
 }
 
 // IsGlobalScopedSettingKey returns true if the key has ScopeGlobal.

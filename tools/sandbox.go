@@ -6,14 +6,11 @@ import (
 	"time"
 )
 
-// MaxSandboxFileSize is the maximum file size for ReadFile/WriteFile (500MB).
-const MaxSandboxFileSize = 500 * 1024 * 1024
-
 // SandboxCtx returns a context with a 30-second timeout for sandbox I/O operations.
 // The returned cancel function should be deferred to avoid resource leaks.
 // This is used for single sandbox calls where no caller context is available.
 func SandboxCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Second)
+	return context.WithTimeout(context.Background(), SandboxCtxTimeout)
 }
 
 // ExecSpec defines the parameters for a sandbox command execution.

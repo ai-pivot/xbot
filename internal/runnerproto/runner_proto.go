@@ -258,8 +258,71 @@ type StdioExitMessage struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// PTY streaming protocol for web terminal support.
+// Allows the server to create an interactive PTY on the runner and proxy
+// stdin/stdout/resize/close over WebSocket. Mirrors the stdio protocol but
+// uses a pseudo-terminal (pty) instead of pipes, enabling full terminal
+// emulation (ANSI colors, cursor movement, interactive shells).
+const (
+	ProtoPtyCreate = "pty_create" // Server → Runner: create PTY (request/response)
+	ProtoPtyStdin  = "pty_stdin"  // Server → Runner: write to PTY stdin (fire-and-forget)
+	ProtoPtyResize = "pty_resize" // Server → Runner: resize PTY (fire-and-forget)
+	ProtoPtyClose  = "pty_close"  // Server → Runner: destroy PTY (request/response)
+	ProtoPtyData   = "pty_data"   // Runner → Server: PTY output data (push)
+	ProtoPtyExit   = "pty_exit"   // Runner → Server: PTY process exited (push)
+)
+
 // DefaultRequestTimeout is the default timeout for non-exec operations.
 const DefaultRequestTimeout = 30 * time.Second
+
+// --- PTY Streaming Protocol Types ---
+
+// PtyCreateRequest asks the runner to create an interactive PTY.
+type PtyCreateRequest struct {
+	StreamID string   `json:"stream_id"`
+	Command  string   `json:"command"` // shell path (e.g. /bin/bash)
+	Args     []string `json:"args,omitempty"`
+	Env      []string `json:"env,omitempty"`
+	Dir      string   `json:"dir,omitempty"` // working directory
+	Cols     uint16   `json:"cols"`          // initial terminal width
+	Rows     uint16   `json:"rows"`          // initial terminal height
+}
+
+// PtyCreateResponse confirms the PTY was created.
+type PtyCreateResponse struct {
+	StreamID string `json:"stream_id"`
+}
+
+// PtyStdinRequest sends data to the PTY's stdin.
+type PtyStdinRequest struct {
+	StreamID string `json:"stream_id"`
+	Data     string `json:"data"` // base64-encoded
+}
+
+// PtyResizeRequest resizes the PTY.
+type PtyResizeRequest struct {
+	StreamID string `json:"stream_id"`
+	Cols     uint16 `json:"cols"`
+	Rows     uint16 `json:"rows"`
+}
+
+// PtyCloseRequest asks the runner to destroy the PTY.
+type PtyCloseRequest struct {
+	StreamID string `json:"stream_id"`
+}
+
+// PtyDataMessage carries PTY output data (runner → server push).
+type PtyDataMessage struct {
+	StreamID string `json:"stream_id"`
+	Data     string `json:"data"` // base64-encoded
+}
+
+// PtyExitMessage notifies the server that the PTY process exited (runner → server push).
+type PtyExitMessage struct {
+	StreamID string `json:"stream_id"`
+	ExitCode int    `json:"exit_code"`
+	Error    string `json:"error,omitempty"`
+}
 
 // --- Background Task Protocol Types ---
 

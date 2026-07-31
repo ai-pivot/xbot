@@ -34,7 +34,8 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 
 	// 获取工具定义
 	sessionKey := msg.Channel + ":" + msg.ChatID
-	toolDefs := visibleToolDefs(a.tools.AsDefinitionsForSession(sessionKey, tenantSession.TenantID()), a.settingsSvc, msg.Channel, msg.SenderID)
+	userCtx := UserContextFromContext(ctx)
+	toolDefs := visibleToolDefs(a.tools.AsDefinitionsForSession(sessionKey, tenantSession.TenantID()), userCtx.PermUsers, msg.Channel)
 
 	// 格式化输出
 	var buf strings.Builder
@@ -87,9 +88,9 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
 	a.emitBuiltinProgress(msg.Channel, msg.ChatID, PhaseNewing)
 	// Pass zero TokenUsage so the TUI context bar resets to empty.
-	defer a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, &protocol.TokenUsage{})
+	defer a.emitBuiltinProgressDone(msg.Channel, msg.ChatID, &protocol.TokenUsage{}, false)
 
-	llmClient, model, _, _ := a.llmFactory.GetLLM(msg.SenderID)
+	userCtx := UserContextFromContext(ctx)
 
 	messages, err := tenantSession.GetMessages()
 	if err != nil {
@@ -108,13 +109,13 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 		snapshot = messages[lastConsolidated:]
 	}
 
-	if len(snapshot) > 0 {
+	if mem != nil && len(snapshot) > 0 {
 		log.Ctx(ctx).WithField("tenant", tenantSession.String()).Infof("/new: archiving %d unconsolidated messages", len(snapshot))
 		result, _ := mem.Memorize(ctx, memory.MemorizeInput{
 			Messages:         snapshot,
 			LastConsolidated: 0,
-			LLMClient:        llmClient,
-			Model:            model,
+			LLMClient:        userCtx.LLMClient,
+			Model:            userCtx.Model,
 			ArchiveAll:       true,
 		})
 		if result.OK {

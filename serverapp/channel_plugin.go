@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -13,6 +15,7 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/plugin"
+	"xbot/tools"
 
 	log "xbot/logger"
 	"xbot/protocol"
@@ -30,9 +33,12 @@ type RPCTableDispatcher interface {
 // ---------------------------------------------------------------------------
 
 type stdioChannelPluginProvider struct {
-	decl    *plugin.ChannelProviderDecl
-	msgBus  *bus.MessageBus
-	rpcDisp func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
+	decl        *plugin.ChannelProviderDecl
+	msgBus      *bus.MessageBus
+	rpcDisp     func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error)
+	getRegistry func() *tools.Registry // lazy registry getter (resolved after agent init)
+	agentGetter func() *agent.Agent    // lazy agent getter (for prompt registration)
+	xbotHome    string                 // for per-plugin log file redirection
 
 	mu   sync.Mutex
 	conn *agent.ChannelPluginTransport
@@ -41,13 +47,18 @@ type stdioChannelPluginProvider struct {
 var _ channel.ChannelProvider = (*stdioChannelPluginProvider)(nil)
 
 // NewStdioChannelPluginProvider creates a stdioChannelPluginProvider with the
-// given declaration and RPC dispatch table. Used by both CLI and server modes.
-func NewStdioChannelPluginProvider(decl *plugin.ChannelProviderDecl, rpcTable RPCTableDispatcher) *stdioChannelPluginProvider {
+// given declaration, RPC dispatch table, tool registry, and agent getter.
+// Used by both CLI and server modes. registry may be nil if channel tool
+// registration is not needed. getAgent may be nil if agent is not yet available
+// (use SetAgentGetter later).
+func NewStdioChannelPluginProvider(decl *plugin.ChannelProviderDecl, rpcTable RPCTableDispatcher, registry *tools.Registry, getAgent func() *agent.Agent) *stdioChannelPluginProvider {
 	return &stdioChannelPluginProvider{
 		decl: decl,
 		rpcDisp: func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
 			return rpcTable.Dispatch(ctx, method, payload)
 		},
+		getRegistry: func() *tools.Registry { return registry },
+		agentGetter: getAgent,
 	}
 }
 
@@ -59,19 +70,37 @@ func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus
 	p.msgBus = msgBus
 
 	// Spawn a dedicated process for the channel.
-	proc, err := spawnChannelProcess(p.decl)
+	proc, err := spawnChannelProcess(p.decl, p.xbotHome)
 	if err != nil {
 		return nil, fmt.Errorf("spawn channel process: %w", err)
 	}
 
 	// Create the bidirectional transport.
 	eventCh := make(chan protocol.WSMessage, 256)
+	// Resolve registry lazily (agent may not be available at factory creation time).
+	var reg *tools.Registry
+	if p.getRegistry != nil {
+		reg = p.getRegistry()
+	}
+
+	// Set up the OnChannelPrompt callback to register with the Agent.
+	var onChannelPrompt func(agent.ChannelPromptProvider)
+	if p.agentGetter != nil {
+		onChannelPrompt = func(provider agent.ChannelPromptProvider) {
+			if ag := p.agentGetter(); ag != nil {
+				ag.AddChannelPromptProvider(provider)
+			}
+		}
+	}
+
 	transport := agent.NewChannelPluginTransport(agent.ChannelPluginTransportConfig{
-		Name:     p.decl.Name,
-		Stdin:    proc.stdinPipe,
-		Stdout:   proc.stdoutPipe,
-		Dispatch: p.rpcDisp,
-		EventCh:  eventCh,
+		Name:            p.decl.Name,
+		Stdin:           proc.stdinPipe,
+		Stdout:          proc.stdoutPipe,
+		Dispatch:        p.rpcDisp,
+		EventCh:         eventCh,
+		Registry:        reg,
+		OnChannelPrompt: onChannelPrompt,
 	})
 
 	p.mu.Lock()
@@ -135,6 +164,23 @@ func (p *stdioChannelPluginProvider) GetTransport() *agent.ChannelPluginTranspor
 	return p.conn
 }
 
+// SetAgentGetter sets the lazy agent getter for prompt and other
+// agent-dependent registrations. Should be called before CreateChannel.
+func (p *stdioChannelPluginProvider) SetAgentGetter(getter func() *agent.Agent) {
+	p.agentGetter = getter
+}
+
+// GetChannelPromptProvider returns the ChannelPromptProvider for this channel
+// plugin, or nil if the transport is not yet created.
+func (p *stdioChannelPluginProvider) GetChannelPromptProvider() agent.ChannelPromptProvider {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.conn == nil {
+		return nil
+	}
+	return p.conn.ChannelPromptProvider()
+}
+
 // ---------------------------------------------------------------------------
 // channelProcess — manages the lifecycle of a channel plugin process.
 // ---------------------------------------------------------------------------
@@ -145,7 +191,7 @@ type channelProcess struct {
 	stdoutPipe io.Reader
 }
 
-func spawnChannelProcess(decl *plugin.ChannelProviderDecl) (*channelProcess, error) {
+func spawnChannelProcess(decl *plugin.ChannelProviderDecl, xbotHome string) (*channelProcess, error) {
 	var cmd *exec.Cmd
 	if decl.Executable != "" {
 		cmd = exec.Command(decl.Executable, decl.Args...)
@@ -157,6 +203,18 @@ func spawnChannelProcess(decl *plugin.ChannelProviderDecl) (*channelProcess, err
 		cmd = exec.Command(parts[0], parts[1:]...)
 	}
 	cmd.Dir = decl.Dir
+
+	// Redirect stderr to per-plugin log file instead of os.Stderr.
+	// This keeps channel plugin process output (DEBUG logs, HTTP traces, etc.)
+	// out of the main xbot log — consistent with Go plugin log isolation.
+	stderrWriter, err := openPluginStderrWriter(decl.Name, xbotHome)
+	if err != nil {
+		log.WithField("channel", decl.Name).WithError(err).
+			Warn("Failed to open plugin log file for stderr, falling back to os.Stderr")
+		cmd.Stderr = os.Stderr
+	} else {
+		cmd.Stderr = stderrWriter
+	}
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -178,4 +236,25 @@ func spawnChannelProcess(decl *plugin.ChannelProviderDecl) (*channelProcess, err
 		stdinPipe:  stdinPipe,
 		stdoutPipe: stdoutPipe,
 	}, nil
+}
+
+// openPluginStderrWriter creates (or opens) a log file for the channel plugin
+// process's stderr. The file is at <xbotHome>/plugins/<channelName>/logs/stderr.log.
+// Returns an *os.File that the caller assigns to cmd.Stderr. The OS will close
+// the file when the process exits.
+// If xbotHome is empty, returns an error so the caller falls back to os.Stderr.
+func openPluginStderrWriter(channelName, xbotHome string) (*os.File, error) {
+	if xbotHome == "" {
+		return nil, fmt.Errorf("xbotHome is empty")
+	}
+	dir := filepath.Join(xbotHome, "plugins", channelName, "logs")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("create plugin log dir: %w", err)
+	}
+	logPath := filepath.Join(dir, "stderr.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open plugin stderr log: %w", err)
+	}
+	return f, nil
 }

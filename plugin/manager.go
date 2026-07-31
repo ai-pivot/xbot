@@ -73,6 +73,10 @@ type PluginManager struct {
 
 	// logMgr manages per-plugin log writers and unified cleanup.
 	logMgr *pluginLogManager
+
+	// onReloadCallbacks are called after ReloadAll completes successfully.
+	onReloadCallbacks []func()
+	onReloadMu        sync.Mutex
 }
 
 // RuntimeFactory creates Plugin instances for different runtime types.
@@ -122,12 +126,6 @@ func (pm *PluginManager) SetRuntimeFactory(factory RuntimeFactory) {
 // Kept for backward compatibility only.
 func (pm *PluginManager) SetWorkDir(wd string) {
 	// no-op
-}
-
-// WorkDir is deprecated. Returns empty string.
-// CWD is now managed by TenantSession as the single source of truth.
-func (pm *PluginManager) WorkDir() string {
-	return ""
 }
 
 // RefreshWorkDir updates the working directory on ALL active plugin contexts.
@@ -465,23 +463,7 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 		// Find plugin directory
 		pluginDir := pm.findPluginDir(dirs, m.ID)
 
-		entry := &PluginEntry{
-			Manifest: m,
-			State:    StateDiscovered,
-			Dir:      pluginDir,
-		}
-
-		// Create storage for this plugin
-		storage, err := NewFileStorage(pluginDir)
-		if err != nil {
-			log.WithField("plugin", m.ID).Warn("Failed to create storage: ", err)
-			storage = &noopStorage{}
-		}
-
-		// Create PluginContext with per-plugin log writer
-		logger := newPluginLogger(m.ID, pm.logMgr)
-		entry.Context = newPluginContext(m, storage, logger, pm.bus, pm.configStore, pm)
-		entry.Context.SetWidgetRegistry(pm.widgetRegistry)
+		entry := pm.newEntry(m, pluginDir, nil)
 
 		// Create runtime instance
 		if pm.runtimeFactory != nil {
@@ -507,6 +489,25 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 	}
 
 	return loaded, nil
+}
+
+// newEntry creates a PluginEntry with storage, logger, and context.
+// Shared by Discover, Register, Reload, and InstallPlugin.
+func (pm *PluginManager) newEntry(m *PluginManifest, pluginDir string, p Plugin) *PluginEntry {
+	storage, err := NewFileStorage(pluginDir)
+	if err != nil {
+		log.WithField("plugin", m.ID).Warn("Failed to create storage: ", err)
+		storage = &noopStorage{}
+	}
+	entry := &PluginEntry{
+		Manifest: m,
+		State:    StateDiscovered,
+		Dir:      pluginDir,
+		Plugin:   p,
+		Context:  newPluginContext(m, storage, newPluginLogger(m.ID, pm.logMgr), pm.bus, pm.configStore, pm),
+	}
+	entry.Context.SetWidgetRegistry(pm.widgetRegistry)
+	return entry
 }
 
 // findPluginDir locates the directory containing the plugin.
@@ -770,6 +771,18 @@ func (pm *PluginManager) ListPlugins() []*PluginEntry {
 	return result
 }
 
+// GetOverlayProvider looks up an overlay provider by plugin ID and overlay ID.
+// Returns the provider and true if found, or nil and false otherwise.
+func (pm *PluginManager) GetOverlayProvider(pluginID, overlayID string) (OverlayProvider, bool) {
+	entry, ok := pm.GetPlugin(pluginID)
+	if !ok || entry.Context == nil || entry.State != StateActive {
+		return nil, false
+	}
+	overlays := entry.Context.GetOverlays()
+	provider, ok := overlays[overlayID]
+	return provider, ok
+}
+
 // ActiveCount returns the number of currently active plugins.
 func (pm *PluginManager) ActiveCount() int {
 	pm.mu.RLock()
@@ -804,19 +817,7 @@ func (pm *PluginManager) Register(p Plugin) error {
 	}
 
 	pluginDir := filepath.Join(pm.xbotHome, "plugins", m.ID)
-	storage, err := NewFileStorage(pluginDir)
-	if err != nil {
-		storage = &noopStorage{}
-	}
-
-	entry := &PluginEntry{
-		Manifest: &m,
-		Plugin:   p,
-		Context:  newPluginContext(&m, storage, newPluginLogger(m.ID, pm.logMgr), pm.bus, pm.configStore, pm),
-		State:    StateDiscovered,
-		Dir:      pluginDir,
-	}
-	entry.Context.SetWidgetRegistry(pm.widgetRegistry)
+	entry := pm.newEntry(&m, pluginDir, p)
 
 	pm.entries[m.ID] = entry
 	log.WithField("plugin", m.ID).Info("Native plugin registered")
@@ -954,6 +955,8 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 
 // ReloadAll deactivates all plugins, clears entries, re-discovers, and re-activates.
 func (pm *PluginManager) ReloadAll(ctx context.Context) error {
+	// Suppress widget push during reload to avoid flooding WebSocket sendCh
+	defer pm.widgetRegistry.SuppressUpdates()()
 	pm.DeactivateAll(ctx)
 
 	// Collect plugin IDs before clearing entries so we can unregister widgets.
@@ -977,7 +980,32 @@ func (pm *PluginManager) ReloadAll(ctx context.Context) error {
 		return fmt.Errorf("reload all: discover failed: %w", err)
 	}
 
-	return pm.ActivateAll(ctx)
+	if err := pm.ActivateAll(ctx); err != nil {
+		return err
+	}
+
+	// Notify reload listeners asynchronously to avoid blocking the RPC handler
+	// (listeners may push widget updates via WebSocket which can be slow).
+	pm.onReloadMu.Lock()
+	cbs := make([]func(), len(pm.onReloadCallbacks))
+	copy(cbs, pm.onReloadCallbacks)
+	pm.onReloadMu.Unlock()
+	if len(cbs) > 0 {
+		go func() {
+			for _, cb := range cbs {
+				cb()
+			}
+		}()
+	}
+
+	return nil
+}
+
+// OnReload registers a callback invoked after ReloadAll completes.
+func (pm *PluginManager) OnReload(cb func()) {
+	pm.onReloadMu.Lock()
+	defer pm.onReloadMu.Unlock()
+	pm.onReloadCallbacks = append(pm.onReloadCallbacks, cb)
 }
 
 // ---------------------------------------------------------------------------

@@ -3,10 +3,13 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"xbot/bus"
+	ch "xbot/channel"
 	"xbot/llm"
 	"xbot/tools"
 )
@@ -163,4 +166,406 @@ func TestRun_CancelPreservesEngineMessages(t *testing.T) {
 	}
 
 	t.Logf("Cancel preserved %d engine messages (expected >= 2)", len(out.EngineMessages))
+}
+
+// ==================== Cancel × Bg Notification Race Tests ====================
+//
+// These tests verify the fix for the race condition where:
+// 1. Bg task notification is drained into a Run as a synthetic tool pair
+// 2. User presses Ctrl+C
+// 3. Cancel signal arrives but Run may continue processing the injected iteration
+//
+// The fix ensures:
+// - Cancel interception does NOT send premature cancel ack (Part 1)
+// - DrainBgNotifications skips when ctx is cancelled (Part 2)
+// - Drained notifications are persisted on cancel (Part 3)
+
+// makeTestNotif creates a BgNotification with the given session key.
+// Uses CronFired because it has exported fields (no unexported sessionKey).
+func makeTestNotif(sessionKey, id string) tools.BgNotification {
+	return &tools.CronFired{
+		Key:     sessionKey,
+		Sid:     "user-1",
+		Message: id,
+	}
+}
+
+// TestWireBgNotificationDrain_TracksDrained verifies that wireBgNotificationDrain
+// records drained notifications until their synthetic tool pairs are committed.
+func TestWireBgNotificationDrain_TracksDrained(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	a := &Agent{
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
+	}
+
+	sessionKey := "cli:test-chat"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(sessionKey, ss)
+	defer a.bgSessionStates.Delete(sessionKey)
+
+	n1 := makeTestNotif(sessionKey, "notif-1")
+	n2 := makeTestNotif(sessionKey, "notif-2")
+
+	a.enqueueBgNotifications([]tools.BgNotification{n1, n2})
+
+	drain := a.wireBgNotificationDrain(sessionKey)
+	drained := drain()
+
+	if len(drained) != 2 {
+		t.Fatalf("drained %d notifications, want 2", len(drained))
+	}
+
+	ss.drainedThisRunMu.Lock()
+	tracked := ss.drainedThisRun
+	ss.drainedThisRunMu.Unlock()
+
+	if len(tracked) != 2 {
+		t.Fatalf("drainedThisRun has %d notifications, want 2", len(tracked))
+	}
+}
+
+// TestWireBgNotificationDrain_OtherSessionNotTracked verifies that notifications
+// for other sessions are not tracked in this session's drainedThisRun.
+func TestWireBgNotificationDrain_OtherSessionNotTracked(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	a := &Agent{
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
+	}
+
+	sessionA := "cli:chat-a"
+	sessionB := "cli:chat-b"
+	ssA := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(sessionA, ssA)
+	defer a.bgSessionStates.Delete(sessionA)
+
+	nA := makeTestNotif(sessionA, "notif-a")
+	nB := makeTestNotif(sessionB, "notif-b")
+
+	a.enqueueBgNotifications([]tools.BgNotification{nA, nB})
+
+	drain := a.wireBgNotificationDrain(sessionA)
+	drained := drain()
+
+	if len(drained) != 1 {
+		t.Fatalf("drained %d, want 1 (only session A)", len(drained))
+	}
+
+	ssA.drainedThisRunMu.Lock()
+	trackedA := ssA.drainedThisRun
+	ssA.drainedThisRunMu.Unlock()
+	if len(trackedA) != 1 {
+		t.Fatalf("drainedThisRun for A has %d, want 1", len(trackedA))
+	}
+
+	remaining := a.pendingBgNotifications(sessionB)
+	if len(remaining) != 1 {
+		t.Fatalf("bgRunPending has %d, want 1 (session B)", len(remaining))
+	}
+}
+
+// TestClearDrainedThisRun_PreventsStaleCancelDiscard verifies that clearDrainedThisRun
+// prevents notifications from a completed turn from being discarded if the next
+// turn is cancelled.
+func TestClearDrainedThisRun_PreventsStaleCancelDiscard(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	a := &Agent{
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
+	}
+
+	sessionKey := "cli:test-chat"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(sessionKey, ss)
+	defer a.bgSessionStates.Delete(sessionKey)
+
+	// Turn 1: drain then clear (normal completion)
+	n1 := makeTestNotif(sessionKey, "notif-turn-1")
+	a.enqueueBgNotification(n1)
+
+	drain := a.wireBgNotificationDrain(sessionKey)
+	drain()
+	ss.clearDrainedThisRun()
+
+	ss.drainedThisRunMu.Lock()
+	if len(ss.drainedThisRun) != 0 {
+		t.Fatalf("drainedThisRun should be empty after clear, got %d", len(ss.drainedThisRun))
+	}
+	ss.drainedThisRunMu.Unlock()
+
+	// Turn 2: drain another notification
+	n2 := makeTestNotif(sessionKey, "notif-turn-2")
+	a.enqueueBgNotification(n2)
+
+	drain2 := a.wireBgNotificationDrain(sessionKey)
+	drained2 := drain2()
+
+	if len(drained2) != 1 {
+		t.Fatalf("Turn 2 drained %d, want 1", len(drained2))
+	}
+
+	// Only notif-turn-2 should be tracked (notif-turn-1 was cleared)
+	ss.drainedThisRunMu.Lock()
+	tracked := ss.drainedThisRun
+	ss.drainedThisRunMu.Unlock()
+	if len(tracked) != 1 {
+		t.Fatalf("drainedThisRun has %d after Turn 2, want 1", len(tracked))
+	}
+	cron, ok := tracked[0].(*tools.CronFired)
+	if !ok || cron.Message != "notif-turn-2" {
+		t.Errorf("expected notif-turn-2, got %+v", tracked[0])
+	}
+}
+
+// TestHandleCancelledRun_RecordsPendingNotifications verifies that both
+// unacknowledged drained notifications and still-pending notifications are
+// committed into the interrupted turn before either queue is cleared.
+func TestHandleCancelledRun_RecordsPendingNotifications(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, sess := newAgentHistorySession(t)
+
+	a := &Agent{
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
+	}
+
+	sessionKey := "cli:test-chat"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(sessionKey, ss)
+	defer a.bgSessionStates.Delete(sessionKey)
+
+	notif := makeTestNotif(sessionKey, "cancel-record-test")
+	ss.drainedThisRunMu.Lock()
+	ss.drainedThisRun = append(ss.drainedThisRun, notif)
+	ss.drainedThisRunMu.Unlock()
+
+	pendingSameSession := makeTestNotif(sessionKey, "pending-same-session")
+	pendingOtherSession := makeTestNotif("cli:other-chat", "pending-other-session")
+	a.enqueueBgNotifications([]tools.BgNotification{pendingSameSession, pendingOtherSession})
+
+	msg := bus.InboundMessage{
+		Channel: "cli", ChatID: "test-chat", Content: "test", SenderID: "user-1",
+	}
+	out := &RunOutput{}
+
+	if _, err := a.handleCancelledRun(ctx, msg, out, sess); err != nil {
+		t.Fatal(err)
+	}
+	records, err := sess.GetFullHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notificationResults []string
+	for _, record := range records {
+		if record.Message.Role == "tool" && record.Message.ToolName == "cron_fired" {
+			notificationResults = append(notificationResults, record.Message.Content)
+		}
+	}
+	if len(notificationResults) != 2 ||
+		!strings.Contains(notificationResults[0], "cancel-record-test") ||
+		!strings.Contains(notificationResults[1], "pending-same-session") {
+		t.Fatalf("cancel notification results=%q", notificationResults)
+	}
+
+	if queued := a.pendingBgNotifications(sessionKey); len(queued) != 0 {
+		t.Fatalf("same-session bgRunPending has %d after cancel, want 0", len(queued))
+	}
+	queuedOther := a.pendingBgNotifications("cli:other-chat")
+	if len(queuedOther) != 1 {
+		t.Fatalf("other-session bgRunPending has %d after cancel, want 1", len(queuedOther))
+	}
+	cron, ok := queuedOther[0].(*tools.CronFired)
+	if !ok || cron.Message != "pending-other-session" {
+		t.Fatalf("bgRunPending kept %+v, want pending-other-session", queuedOther[0])
+	}
+
+	ss.drainedThisRunMu.Lock()
+	trackedLen := len(ss.drainedThisRun)
+	ss.drainedThisRunMu.Unlock()
+	if trackedLen != 0 {
+		t.Errorf("drainedThisRun should be empty after cancel, got %d", trackedLen)
+	}
+}
+
+func TestHandleCancelledRun_FailedBatchRequeuesNotificationsForRetry(t *testing.T) {
+	ctx := context.Background()
+	mt, sess := newAgentHistorySession(t)
+	if _, err := mt.DB().Conn().Exec(`
+		CREATE TRIGGER fail_cancel_batch BEFORE INSERT ON session_messages
+		WHEN NEW.role = 'tool' AND NEW.tool_name = 'user_cancelled'
+		BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{bus: bus.NewMessageBus(), agentCtx: ctx}
+	sessionKey := "cli:test-chat"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(sessionKey, ss)
+	drained := makeTestNotif(sessionKey, "already-drained")
+	ss.drainedThisRun = []tools.BgNotification{drained}
+	pending := makeTestNotif(sessionKey, "pending")
+	a.enqueueBgNotification(pending)
+
+	_, err := a.handleCancelledRun(ctx, bus.InboundMessage{Channel: "cli", ChatID: "test-chat"}, &RunOutput{
+		EngineMessages: []llm.ChatMessage{llm.NewAssistantMessage("partial")},
+	}, sess)
+	if err == nil {
+		t.Fatal("expected cancelled batch failure")
+	}
+	records, loadErr := sess.GetFullHistory()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("cancelled batch partially persisted: %+v", records)
+	}
+	if queued := a.pendingBgNotifications(sessionKey); len(queued) != 2 {
+		t.Fatalf("notifications not requeued after failed commit: %+v", queued)
+	}
+	ss.drainedThisRunMu.Lock()
+	drainedCount := len(ss.drainedThisRun)
+	ss.drainedThisRunMu.Unlock()
+	if drainedCount != 0 {
+		t.Fatalf("requeued notifications remained in drained ledger: %d", drainedCount)
+	}
+
+	if _, err := mt.DB().Conn().Exec(`DROP TRIGGER fail_cancel_batch`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.handleCancelledRun(ctx, bus.InboundMessage{Channel: "cli", ChatID: "test-chat"}, &RunOutput{
+		EngineMessages: []llm.ChatMessage{llm.NewAssistantMessage("partial")},
+	}, sess); err != nil {
+		t.Fatal(err)
+	}
+	records, err = sess.GetFullHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notificationResults []string
+	for _, record := range records {
+		if record.Message.Role == "tool" && record.Message.ToolName == "cron_fired" {
+			notificationResults = append(notificationResults, record.Message.Content)
+		}
+	}
+	if len(notificationResults) != 2 ||
+		!strings.Contains(notificationResults[0], "already-drained") ||
+		!strings.Contains(notificationResults[1], "pending") {
+		t.Fatalf("retried cancel notification results=%q", notificationResults)
+	}
+	if queued := a.pendingBgNotifications(sessionKey); len(queued) != 0 {
+		t.Fatalf("notifications remained after successful retry: %+v", queued)
+	}
+}
+
+func TestHandleBgNotifySignal_AfterCancelProcessesNormally(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	a := &Agent{
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
+	}
+
+	sessionKey := "cli:test-chat"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+
+	newNotif := makeTestNotif(sessionKey, "new-after-cancel")
+	a.enqueueBgNotification(newNotif)
+
+	a.handleBgNotifySignal(sessionKey, ss)
+
+	if queued := a.pendingBgNotifications(sessionKey); len(queued) != 0 {
+		t.Fatalf("new notification remained pending after idle notify, got %d", len(queued))
+	}
+
+	select {
+	case msg := <-a.bus.Inbound:
+		if msg.ChatID != "test-chat" {
+			t.Fatalf("ChatID = %q, want test-chat", msg.ChatID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for notification to be injected")
+	}
+}
+
+func TestInjectedBgNotificationMetadata(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	a := &Agent{
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
+	}
+
+	a.injectBgUserMessage("cli", "test-chat", "system", "bg task done")
+
+	select {
+	case msg := <-a.bus.Inbound:
+		if msg.Metadata[bgNotificationMetadataKey] != "true" {
+			t.Fatalf("injected bg notification metadata = %v, want %s=true", msg.Metadata, bgNotificationMetadataKey)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for injected bg notification")
+	}
+}
+
+// TestCancelIntercept_DoesNotSendPrematureAck verifies that when /cancel arrives
+// and cancelCh IS registered, the agent does NOT send an outbound message.
+// The cancel ack should only come from chatProcessLoop's wasCancelled path
+// after Run actually returns.
+//
+// This test uses directSend mock to capture sendMessage calls without running
+// the full agent loop (which needs multiSession and other heavy deps).
+func TestCancelIntercept_DoesNotSendPrematureAck(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var sentMessages []string
+	var sentMu sync.Mutex
+
+	a := &Agent{
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
+		// Mock directSend to capture any messages sent via sendMessage
+		directSend: func(msg ch.OutboundMsg) (string, error) {
+			sentMu.Lock()
+			sentMessages = append(sentMessages, msg.Content)
+			sentMu.Unlock()
+			return "", nil
+		},
+		// channelFinder returns nil — sendMessage falls through to directSend
+		channelFinder: func(name string) (ch.Channel, bool) { return nil, false },
+	}
+
+	// Register a cancelCh to simulate an active turn
+	cancelKey := "cli:test-chat"
+	cancelCh := make(chan struct{}, 1)
+	a.chatCancelCh.Store(cancelKey, cancelCh)
+
+	// Simulate what the cancel interception does: send the cancel signal
+	// (this is the ONLY thing the fixed code does — it no longer calls sendMessage)
+	select {
+	case cancelCh <- struct{}{}:
+		// Signal sent — this is the expected behavior
+	default:
+		t.Fatal("failed to send cancel signal")
+	}
+
+	// Verify NO message was sent via directSend (the old code would have
+	// called sendMessage("⚠️ 已取消请求", cancelMeta) here)
+	sentMu.Lock()
+	count := len(sentMessages)
+	sentMu.Unlock()
+	if count != 0 {
+		t.Fatalf("expected 0 messages sent after cancel signal, got %d: %v — "+
+			"cancel interception must NOT send premature ack", count, sentMessages)
+	}
 }

@@ -16,10 +16,16 @@ import (
 // RPC mechanism: Each Send() creates a per-request reply channel.
 // The processing goroutine writes the result to that specific channel.
 // This prevents reply mixing under concurrent Send() calls.
+//
+// Concurrency: The processing loop dispatches each request to its own
+// goroutine so that multiple RPCs can execute concurrently. This prevents
+// circular-wait deadlocks when two agents SendMessage to each other
+// simultaneously.
 type AgentChannel struct {
-	name   string
-	runFn  bus.RunFn
-	ctx    context.Context
+	name  string
+	runFn bus.RunFn
+	ctx   context.Context // lifecycle context, cancelled by Stop() or parent cancellation
+	// cancel cancels the lifecycle context. It is nil until Start() is called.
 	cancel context.CancelFunc
 	inbox  chan *rpcRequest
 	closed atomic.Bool
@@ -37,6 +43,9 @@ func NewAgentChannel(name string, runFn bus.RunFn) *AgentChannel {
 	return &AgentChannel{
 		name:  name,
 		runFn: runFn,
+		// Buffer 32: increased from 16 because concurrent request dispatch (ac.wg.Go per
+		// request) means multiple requests may arrive in quick succession before the
+		// processing goroutines pick them up.
 		inbox: make(chan *rpcRequest, 32),
 	}
 }
@@ -49,41 +58,76 @@ func (ac *AgentChannel) Start() error {
 	ac.ctx = ctx
 	ac.cancel = cancel
 
+	ac.startLoop()
+	return nil
+}
+
+// StartWithContext is like Start but binds the channel's lifecycle to parentCtx.
+// When parentCtx is cancelled (e.g. agent shutdown, Ctrl+C), the channel stops
+// and all pending Send() calls return errors.
+func (ac *AgentChannel) StartWithContext(parentCtx context.Context) error {
+	ctx, cancel := context.WithCancel(parentCtx)
+	ac.ctx = ctx
+	ac.cancel = cancel
+
+	// Note: Stop() calls ac.cancel() which triggers ctx.Done(),
+	// so this goroutine always exits via the ctx.Done() branch.
+	go func() {
+		select {
+		case <-parentCtx.Done():
+			ac.Stop()
+		case <-ctx.Done():
+			// Already stopped via Stop().
+		}
+	}()
+
+	ac.startLoop()
+	return nil
+}
+
+// startLoop runs the shared inbox dispatch goroutine.
+// Each request is dispatched to its own goroutine for concurrent execution,
+// preventing circular-wait deadlocks.
+func (ac *AgentChannel) startLoop() {
 	ac.wg.Go(func() {
 		for {
 			select {
-			case <-ctx.Done():
+			case <-ac.ctx.Done():
 				return
 			case req := <-ac.inbox:
-				// Recover inside the loop body so a panic in runFn
-				// doesn't kill the processing goroutine. Without this,
-				// a panic strands all pending requests (their replyCh
-				// never receives) and the AgentChannel hangs permanently.
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							clipanic.Report("channel.AgentChannel.runFn", ac.name, r)
-							errMsg := fmt.Sprintf("panic: %v", r)
-							select {
-							case req.replyCh <- errMsg:
-							case <-ctx.Done():
-							}
-						}
-					}()
-					result, err := ac.runFn(ctx, req.task)
-					if err != nil {
-						result = "Error: " + err.Error()
-					}
-					select {
-					case req.replyCh <- result:
-					case <-ctx.Done():
-					}
-				}()
+				// Dispatch each request to its own goroutine so that
+				// concurrent RPCs don't block each other. Without this,
+				// two agents sending messages to each other create a
+				// circular-wait deadlock because the processing loop
+				// is single-threaded and can only handle one RunFn at a time.
+				ac.wg.Go(func() {
+					ac.processRequest(req)
+				})
 			}
 		}
 	})
+}
 
-	return nil
+// processRequest runs a single RPC request to completion.
+func (ac *AgentChannel) processRequest(req *rpcRequest) {
+	defer func() {
+		if r := recover(); r != nil {
+			clipanic.Report("channel.AgentChannel.runFn", ac.name, r)
+			errMsg := fmt.Sprintf("panic: %v", r)
+			select {
+			case req.replyCh <- errMsg:
+			case <-ac.ctx.Done():
+			}
+		}
+	}()
+	result, err := ac.runFn(ac.ctx, req.task)
+	if err != nil {
+		result = "Error: " + err.Error()
+	}
+	select {
+	case req.replyCh <- result:
+	case <-ac.ctx.Done():
+	}
 }
 
 // Stop cancels the SubAgent and waits for it to finish.
@@ -106,6 +150,8 @@ func (ac *AgentChannel) Stop() {
 }
 
 // Send delivers a message to the SubAgent and waits for the reply (RPC).
+// If msg.Ctx is set, the wait respects caller cancellation (e.g. Ctrl+C).
+// Otherwise, only the channel's lifecycle context is used.
 func (ac *AgentChannel) Send(msg OutboundMsg) (string, error) {
 	replyCh := make(chan string, 1)
 	req := &rpcRequest{task: msg.Content, replyCh: replyCh}
@@ -116,14 +162,14 @@ func (ac *AgentChannel) Send(msg OutboundMsg) (string, error) {
 		return "", fmt.Errorf("agent channel %s is closed", ac.name)
 	}
 	// Fast path: try non-blocking send while holding lock (prevents send-on-closed-channel).
-	// inbox buffer=16 makes this succeed in almost all cases.
+	// inbox buffer=32 makes this succeed in almost all cases.
 	select {
 	case ac.inbox <- req:
 		ac.mu.Unlock()
 	default:
 		ac.mu.Unlock()
 		// Slow path: inbox full, wait with context cancellation guard.
-		// Stop() may close inbox while we wait — ac.ctx.Done() prevents hang.
+		// Stop() may cancel ctx while we wait — ac.ctx.Done() prevents hang.
 		select {
 		case ac.inbox <- req:
 		case <-ac.ctx.Done():
@@ -131,11 +177,21 @@ func (ac *AgentChannel) Send(msg OutboundMsg) (string, error) {
 		}
 	}
 
+	// Wait for reply, respecting both channel lifecycle and caller context.
+	// msg.Ctx is set by the caller (e.g. SendMessage tool) to propagate
+	// cancellation signals (Ctrl+C, tool timeout).
+	callerCtx := msg.Ctx
+	if callerCtx == nil {
+		callerCtx = context.Background() // no caller cancellation
+	}
+
 	select {
 	case reply := <-replyCh:
 		return reply, nil
 	case <-ac.ctx.Done():
-		return "", fmt.Errorf("agent channel %s stopped", ac.name)
+		return "", fmt.Errorf("agent channel %s stopped while waiting for reply", ac.name)
+	case <-callerCtx.Done():
+		return "", fmt.Errorf("caller cancelled while waiting for reply from %s: %w", ac.name, callerCtx.Err())
 	}
 }
 

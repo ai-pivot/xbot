@@ -51,13 +51,57 @@ func TestBuildThinkingOptions(t *testing.T) {
 				"budget_tokens": float64(10000),
 			},
 		},
+		{
+			name:         "think mode with gpt model → reasoning_effort",
+			thinkingMode: "think",
+			expectNil:    false,
+			expectedInJSON: map[string]any{
+				"reasoning_effort": "medium",
+			},
+		},
+		{
+			name:         "think mode with glm model → thinking",
+			thinkingMode: "think",
+			expectNil:    false,
+			expectedInJSON: map[string]any{
+				"thinking": map[string]any{"type": "enabled"},
+			},
+		},
+		{
+			name:         "think-max mode with gpt model → reasoning_effort high",
+			thinkingMode: "think-max",
+			expectNil:    false,
+			expectedInJSON: map[string]any{
+				"reasoning_effort": "high",
+			},
+		},
+		{
+			name:         "think-max mode with glm model → thinking + clear_thinking",
+			thinkingMode: "think-max",
+			expectNil:    false,
+			expectedInJSON: map[string]any{
+				"thinking": map[string]any{
+					"type":           "enabled",
+					"clear_thinking": false,
+				},
+			},
+		},
 	}
 
 	o := &OpenAILLM{}
 
+	// Map test case names to model overrides for provider detection
+	modelOverrides := map[string]string{
+		"think mode with gpt model → reasoning_effort":              "gpt-5.5",
+		"think mode with glm model → thinking":                      "glm-5.2",
+		"think-max mode with gpt model → reasoning_effort high":     "gpt-5.5",
+		"think-max mode with glm model → thinking + clear_thinking": "glm-5.2",
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			opts := o.buildThinkingOptions(tt.thinkingMode)
+			model := modelOverrides[tt.name]
+			opts := o.buildThinkingOptions(tt.thinkingMode, model)
 
 			if tt.expectNil {
 				if len(opts) != 0 {

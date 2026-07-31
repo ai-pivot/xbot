@@ -152,6 +152,56 @@ func TestRun_BasicConversation(t *testing.T) {
 	}
 }
 
+func TestRun_TodosCarriedInMidBusyProgress(t *testing.T) {
+	todoMgr := tools.NewTodoManager()
+	todoTool := &tools.TodoWriteTool{Manager: todoMgr}
+
+	mock := &mockLLM{
+		responses: []llm.LLMResponse{
+			{
+				FinishReason: llm.FinishReasonToolCalls,
+				ToolCalls: []llm.ToolCall{
+					{ID: "tc1", Name: "TodoWrite", Arguments: `{"todos":[{"id":1,"text":"task A","done":false}]}`},
+				},
+			},
+			{Content: "done"},
+		},
+	}
+
+	var midBusyTodos []TodoProgressItem
+	sawMidBusy := false
+	Run(context.Background(), RunConfig{
+		LLMClient:        mock,
+		Model:            "test",
+		Tools:            newTestRegistry(),
+		Messages:         baseMessages(),
+		AgentID:          "main",
+		Channel:          "web",
+		ChatID:           "chat1",
+		SessionKey:       "web:chat1",
+		TodoManager:      &todoManagerAdapter{mgr: todoMgr},
+		ProgressNotifier: func(_ []string, _ string) {},
+		ProgressEventHandler: func(evt *ProgressEvent) {
+			if evt.Structured != nil && evt.Structured.Phase != PhaseDone && len(evt.Structured.Todos) > 0 {
+				sawMidBusy = true
+				midBusyTodos = evt.Structured.Todos
+			}
+		},
+		ToolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+			tctx := &tools.ToolContext{AgentID: "main", Channel: "web", ChatID: "chat1"}
+			return todoTool.Execute(tctx, tc.Arguments)
+		},
+	})
+
+	if !sawMidBusy {
+		t.Fatal("no mid-busy progress event carried todos — todos are missing during busy")
+	}
+	t.Logf("mid-busy todos: %+v", midBusyTodos)
+	if len(midBusyTodos) != 1 || midBusyTodos[0].Text != "task A" {
+		t.Errorf("unexpected mid-busy todos: %+v", midBusyTodos)
+	}
+}
+
 func TestRun_SingleToolCall(t *testing.T) {
 	shellTool := &mockTool{
 		name:   "Shell",

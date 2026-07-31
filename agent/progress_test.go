@@ -833,6 +833,34 @@ func TestFormatSubAgentProgress(t *testing.T) {
 	}
 }
 
+func TestSubAgentSessionKeyConversion(t *testing.T) {
+	const parentKey = "cli:chat-1/reviewer:review-1"
+	const childKey = "cli:chat-1/fixer:fix-1"
+	detail := SubAgentProgressDetail{
+		Path:       []string{"main/reviewer"},
+		Instance:   "review-1",
+		SessionKey: parentKey,
+	}
+	nodes := extractSubAgentNodesFromDetail(detail)
+	if len(nodes) != 1 || nodes[0].SessionKey != parentKey {
+		t.Fatalf("extracted nodes = %#v, want session key %q", nodes, parentKey)
+	}
+	nodes[0].Children = []SubAgentNode{{
+		Role:       "fixer",
+		Instance:   "fix-1",
+		SessionKey: childKey,
+		Status:     "running",
+	}}
+
+	converted := convertCLISubAgentTree(nodes)
+	if len(converted) != 1 || converted[0].SessionKey != parentKey {
+		t.Fatalf("conversion = %#v, want parent key %q", converted, parentKey)
+	}
+	if len(converted[0].Children) != 1 || converted[0].Children[0].SessionKey != childKey {
+		t.Fatalf("nested conversion = %#v, want child key %q", converted, childKey)
+	}
+}
+
 // ==================== 输出格式验证测试 ====================
 
 func TestFormatSubAgentProgress_LeafIsSingleLine(t *testing.T) {
@@ -1212,5 +1240,46 @@ func TestFormatSubAgentProgress_FullTreeScenario(t *testing.T) {
 	// 刑部 (depth 2: 　　)
 	if !strings.Contains(lines[4], "　　✅ 刑部:") {
 		t.Errorf("line 4 (刑部): %q", lines[4])
+	}
+}
+
+// TestFormatToolProgress_SubAgent_InstanceDistinguishesLabel verifies that
+// the SubAgent tool progress label includes the instance parameter so that
+// parallel SubAgent calls with the same role+task get unique labels and are
+// not incorrectly deduplicated by liveIterationBlocks.
+func TestFormatToolProgress_SubAgent_InstanceDistinguishesLabel(t *testing.T) {
+	// Three parallel SubAgent calls, all with role=explore and same task,
+	// but different instances. Without instance in the label, all three
+	// would share the same key and get deduplicated to one.
+	label1 := formatToolProgress("SubAgent", `{"role":"explore","task":"Investigate crash","instance":"debug-1"}`)
+	label2 := formatToolProgress("SubAgent", `{"role":"explore","task":"Investigate crash","instance":"debug-2"}`)
+	label3 := formatToolProgress("SubAgent", `{"role":"explore","task":"Investigate crash","instance":"debug-3"}`)
+
+	// All three must have unique labels
+	if label1 == label2 {
+		t.Errorf("label1 and label2 are identical: %q — instance not included", label1)
+	}
+	if label1 == label3 {
+		t.Errorf("label1 and label3 are identical: %q — instance not included", label1)
+	}
+	if label2 == label3 {
+		t.Errorf("label2 and label3 are identical: %q — instance not included", label2)
+	}
+
+	// Verify instances appear in the labels
+	if !strings.Contains(label1, "debug-1") {
+		t.Errorf("label1 missing instance: %q", label1)
+	}
+	if !strings.Contains(label2, "debug-2") {
+		t.Errorf("label2 missing instance: %q", label2)
+	}
+	if !strings.Contains(label3, "debug-3") {
+		t.Errorf("label3 missing instance: %q", label3)
+	}
+
+	// Backward compat: SubAgent without instance should still work
+	labelNoInst := formatToolProgress("SubAgent", `{"role":"explore","task":"Investigate crash"}`)
+	if !strings.Contains(labelNoInst, "explore") {
+		t.Errorf("label without instance should still include role: %q", labelNoInst)
 	}
 }

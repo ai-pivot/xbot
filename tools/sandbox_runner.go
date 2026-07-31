@@ -17,11 +17,6 @@ import (
 	log "xbot/logger"
 )
 
-const (
-	dockerCmdTimeout  = 30 * time.Second  // 普通 docker 命令超时
-	dockerSlowTimeout = 120 * time.Second // 慢操作（export/import）超时
-)
-
 // dockerExec runs a docker command with a timeout (0 = no timeout), returning combined output.
 func dockerExec(timeout time.Duration, args ...string) ([]byte, error) {
 	var ctx context.Context
@@ -207,12 +202,12 @@ func cleanupStaleTmpFiles() {
 // 注意：不清理已停止的容器，容器生命周期由使用者控制。
 func pruneDockerResources() {
 	// 清理悬空镜像（<none>:<none>），这些是异常退出时未被 rmi 的旧镜像
-	if out, err := dockerExec(dockerCmdTimeout, "image", "prune", "-f"); err == nil {
+	if out, err := dockerExec(DockerCmdTimeout, "image", "prune", "-f"); err == nil {
 		log.Debugf("Docker image prune: %s", strings.TrimSpace(string(out)))
 	}
 	// 二次清理：确保所有悬空镜像都被删除
 	// docker image prune 可能因镜像被容器引用而遗漏，再执行一次 builder prune
-	dockerRun(dockerCmdTimeout, "image", "prune", "-f", "--filter", "until=168h")
+	dockerRun(DockerCmdTimeout, "image", "prune", "-f", "--filter", "until=168h")
 }
 
 // parseJSONStringArray parses a JSON string array like ["foo","bar"] into a Go slice.

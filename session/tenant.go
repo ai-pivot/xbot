@@ -36,6 +36,59 @@ func (s *TenantSession) AddMessage(msg llm.ChatMessage) error {
 	return s.sessionSvc.AddMessage(s.tenantID, msg)
 }
 
+// AddMessageWithID adds a message and returns the DB auto-increment id.
+func (s *TenantSession) AddMessageWithID(msg llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AddMessageWithID(s.tenantID, msg)
+}
+
+// AppendMessage appends a message and returns its stable history ID.
+func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AppendMessage(s.tenantID, msg)
+}
+
+// AppendMessages atomically appends a related message batch.
+func (s *TenantSession) AppendMessages(messages []llm.ChatMessage) ([]int64, error) {
+	return s.sessionSvc.AppendMessages(s.tenantID, messages)
+}
+
+// AppendMessagesAndAskQuestion atomically appends an AskUser tool exchange and
+// the control record that makes the question pending across restarts.
+func (s *TenantSession) AppendMessagesAndAskQuestion(messages []llm.ChatMessage, metadata map[string]string) ([]int64, int64, error) {
+	return s.sessionSvc.AppendMessagesAndAskQuestion(s.tenantID, messages, metadata)
+}
+
+func (s *TenantSession) AppendControl(recordType sqlite.HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
+	return s.sessionSvc.AppendControl(s.tenantID, recordType, targetHistoryID, data)
+}
+
+func (s *TenantSession) AppendContextSnapshot(recordType sqlite.HistoryRecordType, messages []llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AppendContextSnapshot(s.tenantID, recordType, messages)
+}
+
+func (s *TenantSession) AppendAskQuestion(metadata map[string]string) (int64, error) {
+	return s.sessionSvc.AppendAskQuestion(s.tenantID, metadata)
+}
+
+func (s *TenantSession) AppendAskAnswer(answer string) (int64, error) {
+	return s.sessionSvc.AppendAskAnswer(s.tenantID, answer)
+}
+
+func (s *TenantSession) AppendMasks(mutations []sqlite.MaskMutation) error {
+	return s.sessionSvc.AppendMasks(s.tenantID, mutations)
+}
+
+func (s *TenantSession) Replay() (*sqlite.ReplayResult, error) {
+	return s.sessionSvc.Replay(s.tenantID)
+}
+
+func (s *TenantSession) GetFullHistory() ([]sqlite.HistoryRecord, error) {
+	return s.sessionSvc.GetFullHistory(s.tenantID)
+}
+
+func (s *TenantSession) RewindToHistoryID(historyID int64) (llm.ChatMessage, int, error) {
+	return s.sessionSvc.RewindToHistoryID(s.tenantID, historyID)
+}
+
 // ReplaceToolMessage updates the most recent matching tool-role message.
 // Empty toolName/toolCallID act as wildcards (match any).
 func (s *TenantSession) ReplaceToolMessage(toolName, toolCallID, content string) error {
@@ -45,6 +98,11 @@ func (s *TenantSession) ReplaceToolMessage(toolName, toolCallID, content string)
 // GetHistory retrieves recent messages for LLM context window
 func (s *TenantSession) GetHistory(maxMessages int) ([]llm.ChatMessage, error) {
 	return s.sessionSvc.GetHistory(s.tenantID, maxMessages)
+}
+
+// GetHistoryBefore returns up to maxMessages user turns before beforeID.
+func (s *TenantSession) GetHistoryBefore(beforeID int64, maxMessages int) ([]llm.ChatMessage, error) {
+	return s.sessionSvc.GetHistoryBefore(s.tenantID, beforeID, maxMessages)
 }
 
 // GetMessages retrieves all messages for this tenant
@@ -118,8 +176,16 @@ func (s *TenantSession) SaveContextTokens(promptTokens int64) error {
 
 // GetLastContextTokens returns the context_tokens of the most recent user message.
 // Used by rewind to restore accurate token state.
+// GetLastContextTokens returns the context_tokens from the most recent
+// non-display-only user message, used to restore the token tracker.
 func (s *TenantSession) GetLastContextTokens() (int64, error) {
 	return s.sessionSvc.GetLastUserMessageContextTokens(s.tenantID)
+}
+
+// GetMaxTurnID returns the highest turn_id for this tenant's messages.
+// Used to restore the per-session turn ID counter after a server restart.
+func (s *TenantSession) GetMaxTurnID() (uint64, error) {
+	return s.sessionSvc.GetMaxTurnID(s.tenantID)
 }
 
 // MemoryService returns the underlying SQLite memory service for this tenant.
@@ -265,6 +331,12 @@ func loadPersistedCWD(channel, chatID string) string {
 		return ""
 	}
 	return cwd
+}
+
+// LoadPersistedCWD returns the persisted CWD for a session without creating a
+// TenantSession. It is used by API surfaces that need to inspect idle sessions.
+func LoadPersistedCWD(channel, chatID string) string {
+	return loadPersistedCWD(channel, chatID)
 }
 
 // DeletePersistedCWD removes the persisted CWD file for a session.

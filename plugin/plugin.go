@@ -72,9 +72,17 @@ type PluginManifest struct {
 	Runtime RuntimeType `json:"runtime"`
 
 	// Entry is the plugin entry point.
-	// For native: Go function name (default: "Plugin")
-	// For grpc: command to start the plugin process
+	// For script runtime: command to execute (e.g. "bash my-script.sh")
+	// For grpc runtime: command to start the plugin process
+	// This is the default/fallback — platform-specific entries take precedence.
 	Entry string `json:"entry"`
+
+	// Platform-specific entry overrides. When set, these take precedence
+	// over Entry for the matching OS. Use these when a plugin needs different
+	// scripts on different platforms (e.g. bash on Unix vs PowerShell on Windows).
+	EntryWindows string `json:"entry_windows,omitempty"`
+	EntryDarwin  string `json:"entry_darwin,omitempty"`
+	EntryLinux   string `json:"entry_linux,omitempty"`
 
 	// Executable is the command to start the plugin process (gRPC runtime).
 	// If set, takes precedence over Entry. Use this for security.
@@ -125,8 +133,17 @@ type PluginContributes struct {
 	Hooks            []HookContribution         `json:"hooks,omitempty"`
 	ContextEnrichers []EnricherContribution     `json:"context_enrichers,omitempty"`
 	Commands         []CommandContribution      `json:"commands,omitempty"`
+	Crons            []CronContribution         `json:"crons,omitempty"`
+	Themes           []ThemeContribution        `json:"themes,omitempty"`
+	Overlays         []OverlayContribution      `json:"overlays,omitempty"`
 	Configuration    *ConfigurationContribution `json:"configuration,omitempty"`
 	UI               []UISlotContribution       `json:"ui,omitempty"`
+}
+
+// OverlayContribution describes a full-screen overlay provided by the plugin.
+type OverlayContribution struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
 }
 
 // ToolContribution describes a tool provided by the plugin.
@@ -154,6 +171,55 @@ type CommandContribution struct {
 	Name        string `json:"name"` // e.g., "/deploy"
 	Description string `json:"description"`
 }
+
+// PluginCommandHandler is the function signature for plugin command handlers.
+// args contains everything after the command name (trimmed).
+// Returns the response text to show to the user.
+type PluginCommandHandler func(ctx context.Context, args string, pctx PluginContext) (string, error)
+
+// CronContribution describes a scheduled task provided by the plugin.
+type CronContribution struct {
+	Message      string `json:"message"` // message sent to agent when triggered
+	CronExpr     string `json:"cron_expr,omitempty"`
+	EverySeconds int    `json:"every_seconds,omitempty"`
+	At           string `json:"at,omitempty"`
+	DelaySeconds int    `json:"delay_seconds,omitempty"`
+}
+
+// ThemeContribution describes a theme provided by the plugin.
+type ThemeContribution struct {
+	ID   string `json:"id"`
+	File string `json:"file"` // path relative to plugin dir, e.g. "themes/dracula.json"
+}
+
+// OverlayProvider is implemented by plugins that want to render a full-screen overlay.
+type OverlayProvider interface {
+	// Render returns the overlay content for the given terminal dimensions.
+	Render(width, height int) string
+	// HandleKey processes a key event. Returns true if the overlay should close.
+	HandleKey(key string) bool
+}
+
+// SoundID identifies a sound effect.
+type SoundID string
+
+const (
+	SoundBeep        SoundID = "beep"
+	SoundChime       SoundID = "chime"
+	SoundComplete    SoundID = "complete"
+	SoundError       SoundID = "error"
+	SoundAchievement SoundID = "achievement"
+)
+
+// NotificationLevel indicates the severity of a notification.
+type NotificationLevel string
+
+const (
+	NotifyInfo    NotificationLevel = "info"
+	NotifySuccess NotificationLevel = "success"
+	NotifyWarning NotificationLevel = "warning"
+	NotifyError   NotificationLevel = "error"
+)
 
 // ConfigurationContribution declares user-configurable settings for the plugin.
 // Defined in plugin.json under "contributes.configuration".

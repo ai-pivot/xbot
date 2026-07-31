@@ -60,6 +60,27 @@ func PluginBridgeCallback(bridge *plugin.PluginHookBridge) *CallbackHook {
 				}
 			}
 
+			// Extract session context (model, tokens) from context.
+			// Injected by the engine via WithSessionContext.
+			if sc := SessionContextFromContext(ctx); sc != nil {
+				extra := make(map[string]any)
+				if sc.Model != "" {
+					extra["model"] = sc.Model
+				}
+				if sc.MaxContext > 0 {
+					extra["max_context"] = sc.MaxContext
+				}
+				if sc.PromptTokens > 0 {
+					extra["prompt_tokens"] = sc.PromptTokens
+				}
+				if sc.CompTokens > 0 {
+					extra["comp_tokens"] = sc.CompTokens
+				}
+				if len(extra) > 0 {
+					payload.Extra = extra
+				}
+			}
+
 			// Dispatch to all registered plugin hooks
 			result := bridge.Dispatch(ctx, payload)
 

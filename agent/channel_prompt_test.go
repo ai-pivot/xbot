@@ -205,3 +205,68 @@ func TestChannelPromptMiddleware_ExistingPartsPreserved(t *testing.T) {
 		t.Errorf("expected 05_channel_feishu to be injected, got %q (ok=%v)", got, ok)
 	}
 }
+
+// TestChannelPromptMiddleware_AddProvider 测试动态添加 provider。
+func TestChannelPromptMiddleware_AddProvider(t *testing.T) {
+	mw := NewChannelPromptMiddleware()
+
+	// 初始为空
+	mc1 := &MessageContext{
+		Ctx:         context.Background(),
+		SystemParts: make(map[string]string),
+		Channel:     "telegram",
+	}
+	if err := mw.Process(mc1); err != nil {
+		t.Fatalf("Process() returned error: %v", err)
+	}
+	if len(mc1.SystemParts) != 0 {
+		t.Errorf("expected no parts initially, got %d", len(mc1.SystemParts))
+	}
+
+	// 动态添加 provider
+	mw.AddProvider(&mockChannelPromptProvider{
+		name: "telegram",
+		parts: map[string]string{
+			"05_channel_telegram": "telegram rules",
+		},
+	})
+
+	// 现在应该能匹配
+	mc2 := &MessageContext{
+		Ctx:         context.Background(),
+		SystemParts: make(map[string]string),
+		Channel:     "telegram",
+	}
+	if err := mw.Process(mc2); err != nil {
+		t.Fatalf("Process() returned error: %v", err)
+	}
+	if got, ok := mc2.SystemParts["05_channel_telegram"]; !ok || got != "telegram rules" {
+		t.Errorf("expected 'telegram rules', got %q (ok=%v)", got, ok)
+	}
+}
+
+// TestChannelPromptMiddleware_AddProviderOverwrite 测试 AddProvider 覆盖同名 provider。
+func TestChannelPromptMiddleware_AddProviderOverwrite(t *testing.T) {
+	mw := NewChannelPromptMiddleware()
+
+	mw.AddProvider(&mockChannelPromptProvider{
+		name:  "github",
+		parts: map[string]string{"05_channel_github": "v1"},
+	})
+	mw.AddProvider(&mockChannelPromptProvider{
+		name:  "github",
+		parts: map[string]string{"05_channel_github": "v2"},
+	})
+
+	mc := &MessageContext{
+		Ctx:         context.Background(),
+		SystemParts: make(map[string]string),
+		Channel:     "github",
+	}
+	if err := mw.Process(mc); err != nil {
+		t.Fatalf("Process() returned error: %v", err)
+	}
+	if got := mc.SystemParts["05_channel_github"]; got != "v2" {
+		t.Errorf("expected 'v2' after overwrite, got %q", got)
+	}
+}

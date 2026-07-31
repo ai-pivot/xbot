@@ -30,7 +30,7 @@ type StructuredProgress struct {
 	Iteration        int
 	ActiveTools      []ToolProgress
 	CompletedTools   []ToolProgress
-	ThinkingContent  string // assistant's text output (streaming, for display)
+	Content          string // assistant's text output (streaming, for display)
 	ReasoningContent string // model's reasoning/thinking chain (reasoning_content field)
 	TokenUsage       *TokenUsageSnapshot
 	Todos            []TodoProgressItem
@@ -45,6 +45,39 @@ type StructuredProgress struct {
 	// SubAgents carries the structured SubAgent tree directly, avoiding
 	// the fragile text-based parsing in ExtractSubAgentTree.
 	SubAgents []SubAgentNode
+
+	// TurnID uniquely identifies the agent turn. Propagated from RunConfig.TurnID
+	// in initProgress, then copied to every protocol.ProgressEvent via
+	// buildProgressPayload. 0 = untracked (SubAgent).
+	TurnID uint64
+}
+
+func (p *StructuredProgress) Clone() *StructuredProgress {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.ActiveTools = append([]ToolProgress(nil), p.ActiveTools...)
+	cp.CompletedTools = append([]ToolProgress(nil), p.CompletedTools...)
+	cp.Todos = append([]TodoProgressItem(nil), p.Todos...)
+	cp.SubAgents = cloneSubAgentNodes(p.SubAgents)
+	if p.TokenUsage != nil {
+		tu := *p.TokenUsage
+		cp.TokenUsage = &tu
+	}
+	return &cp
+}
+
+func cloneSubAgentNodes(nodes []SubAgentNode) []SubAgentNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+	cp := make([]SubAgentNode, len(nodes))
+	for i := range nodes {
+		cp[i] = nodes[i]
+		cp[i].Children = cloneSubAgentNodes(nodes[i].Children)
+	}
+	return cp
 }
 
 // ProgressPhase Agent 运行阶段。
@@ -101,11 +134,12 @@ type TokenUsageSnapshot struct {
 // SubAgentProgressDetail 携带层级信息的 SubAgent 进度回调参数。
 // 用于递归 SubAgent 场景，让深层子 Agent 的进度能穿透到最顶层。
 type SubAgentProgressDetail struct {
-	Path     []string // 调用链: ["工部", "ministry-works/audit"]
-	Lines    []string // 进度内容（所有行，已清理换行）
-	Depth    int      // 嵌套深度（0 = 直接子 Agent）
-	Instance string   // 子 Agent 实例 ID（用于区分同 role 的不同实例）
-	Thinking string   // 当前迭代的 assistant thinking/content（用于进度树描述）
+	Path       []string // 调用链: ["工部", "ministry-works/audit"]
+	Lines      []string // 进度内容（所有行，已清理换行）
+	Depth      int      // 嵌套深度（0 = 直接子 Agent）
+	Instance   string   // 子 Agent 实例 ID（用于区分同 role 的不同实例）
+	SessionKey string   // 完整 Agent 会话 key，用于只读定位
+	Content    string   // 当前迭代的 assistant content（用于进度树描述）
 }
 
 // --- 辅助函数 ---
@@ -375,9 +409,23 @@ func isPlausibleAgentRole(name string) bool {
 	if firstRune >= 'A' && firstRune <= 'Z' {
 		return false
 	}
-	// 首字母是非 ASCII（中文等）→ 角色名
+	// 首字母是非 ASCII（中文等）→ 可能是角色名
 	if firstRune > 127 {
-		return true
+		// 限制中文角色名长度：真实角色名通常 2-6 个字（如"刑部"、"工部"、"中书省"）
+		// 超过 6 个字的中文几乎一定是工具输出文本而非角色名
+		if len(runes) > 6 {
+			return false
+		}
+		// 排除常见的非角色中文词（工具输出中的标签词）
+		nonRoleWords := map[string]bool{
+			"来源": true, "场景": true, "结果": true, "写入": true, "语义": true,
+			"触发": true, "优先级": true, "行为": true, "步骤": true,
+			"注入": true, "返回": true, "查询": true, "说明": true,
+			"注意": true, "问题": true, "原因": true, "修复": true,
+			"状态": true, "配置": true, "参数": true, "类型": true,
+			"目标": true, "关注点": true, "总结": true, "结论": true,
+		}
+		return !nonRoleWords[name]
 	}
 	// ASCII 小写开头 → 角色名（如 "explore", "crown-prince"）
 	// 但需排除含空格的句子
@@ -566,11 +614,12 @@ func ExtractSubAgentTree(lines []string) []SubAgentNode {
 
 // SubAgentNode 可序列化的子 Agent 状态节点（供 channel 层使用）。
 type SubAgentNode struct {
-	Role     string         `json:"role"`
-	Instance string         `json:"instance,omitempty"`
-	Status   string         `json:"status"` // "running" | "done" | "error" | "pending"
-	Desc     string         `json:"desc,omitempty"`
-	Children []SubAgentNode `json:"children,omitempty"`
+	Role       string         `json:"role"`
+	Instance   string         `json:"instance,omitempty"`
+	SessionKey string         `json:"session_key,omitempty"`
+	Status     string         `json:"status"` // "running" | "done" | "error" | "pending"
+	Desc       string         `json:"desc,omitempty"`
+	Children   []SubAgentNode `json:"children,omitempty"`
 }
 
 // convertChildTree 将内部 childAgentStatus 转换为可序列化的 SubAgentNode。
@@ -746,32 +795,36 @@ func renderChildrenTree(children []childAgentStatus, baseIndent string, currentD
 
 // extractSubAgentNodesFromDetail builds structured SubAgentNode trees directly
 // from SubAgentProgressDetail, without relying on text-based parsing.
-// This replaces the fragile ExtractSubAgentTree that parses progress text lines.
+//
+// STRONG TYPE: SubAgentNode children are NOT extracted from detail.Lines.
+// The old code called extractOwnAndChildProgress(flat) which used string
+// matching (isSubAgentLine/isPlausibleAgentRole) to guess which lines were
+// child SubAgents — any Chinese text with a colon was misidentified as a
+// child agent, creating phantom tree nodes from tool output.
+//
+// Children are now ONLY populated by deeper SubAgentProgressDetail callbacks
+// that bubble up through the parent callback chain (engine_wire.go:1382).
+// Each callback carries its own Path (role chain), so the tree structure is
+// determined by the callback hierarchy, not by parsing text.
 func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNode {
 	roleName := extractRoleName(detail.Path)
 
-	flat := flattenLines(detail.Lines)
-	_, children := extractOwnAndChildProgress(flat)
-
 	// Status:穿透回调只在 SubAgent 运行期间触发（完成后不再调用），
-	// 所以状态始终为 "running"。绝不能从 ownLine 推断 "done" ——
-	// ownLine 是 SubAgent 内部的 progressLines，工具完成后包含 ✅ 前缀，
-	// 会被 CLI renderSubAgentTree 跳过导致进度树消失。
+	// 所以状态始终为 "running"。
 	status := "running"
 
 	// Description:优先使用 thinking content（LLM 迭代的实际输出），
 	// 这比工具行名称更能反映 SubAgent 当前在做什么。
 	desc := ""
-	if detail.Thinking != "" {
-		desc = detail.Thinking
+	if detail.Content != "" {
+		desc = detail.Content
 		if r := []rune(desc); len(r) > 80 {
 			desc = string(r[:80]) + "…"
 		}
 	}
 	if desc == "" {
 		// Fallback:从 progressLines 提取最新活动行（跳过 ✅/❌ 和 💭 占位行）。
-		// 如果所有行都是完成的工具或思考占位，desc 保持空，
-		// 让 mergeSubAgentTrees 保留上一条有意义的描述。
+		flat := flattenLines(detail.Lines)
 		ownLine := ""
 		for i := len(flat) - 1; i >= 0; i-- {
 			line := flat[i]
@@ -794,13 +847,14 @@ func extractSubAgentNodesFromDetail(detail SubAgentProgressDetail) []SubAgentNod
 	}
 
 	node := SubAgentNode{
-		Role:     roleName,
-		Instance: detail.Instance,
-		Status:   status,
-		Desc:     desc,
-	}
-	if len(children) > 0 {
-		node.Children = convertChildTree(children)
+		Role:       roleName,
+		Instance:   detail.Instance,
+		SessionKey: detail.SessionKey,
+		Status:     status,
+		Desc:       desc,
+		// Children: NOT populated from text parsing.
+		// Deeper SubAgents report via their own SubAgentProgressDetail callbacks,
+		// which are merged separately by mergeSubAgentNodeList at the parent level.
 	}
 	return []SubAgentNode{node}
 }

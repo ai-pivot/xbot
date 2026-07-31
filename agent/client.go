@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"xbot/bus"
 	"xbot/channel"
@@ -123,6 +122,12 @@ func (c *Client) dispatchWSMessage(msg protocol.WSMessage) {
 		if msg.Session != nil {
 			c.base.emit(c.ctx, *msg.Session)
 		}
+	case protocol.MsgTypeResyncRequired:
+		c.base.emit(c.ctx, protocol.SessionEvent{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+			Action:  "resync_required",
+		})
 	case protocol.MsgTypePluginWidgets:
 		var zones map[string]string
 		if err := json.Unmarshal([]byte(msg.Content), &zones); err == nil {
@@ -179,6 +184,11 @@ func (c *Client) callVoid(method string, req any) {
 // Start initializes the client. For remote mode, starts the transport.
 // For local mode, the eventLoop is already started in NewClient.
 func (c *Client) Start(ctx context.Context) error {
+	// Share event base with transport so local events (conn_state, reconnect)
+	// dispatched by the transport reach Client subscribers.
+	if sharer, ok := c.transport.(interface{ ShareEventBase(*baseTransport) }); ok {
+		sharer.ShareEventBase(&c.base)
+	}
 	// For remote mode, if transport implements AgentRunner, start it.
 	if runner, ok := c.transport.(AgentRunner); ok {
 		return runner.Start(ctx)
@@ -390,8 +400,22 @@ func (c *Client) ListAllModels() []string {
 	return r
 }
 
-func (c *Client) SetModelTiers(cfg config.LLMConfig) error {
-	return c.call(MethodSetModelTiers, cfg, nil)
+// ListAllModelEntries returns selectable models paired with their owning
+// subscription (SubID/SubName empty for system-default models), for the model
+// picker UI. Skips disabled subscriptions and disabled models.
+func (c *Client) ListAllModelEntries() []protocol.ModelEntry {
+	var r []protocol.ModelEntry
+	_ = c.call(MethodListAllModelEntries, struct{}{}, &r)
+	return r
+}
+
+// RefreshModelEntries live-fetches /models for every enabled subscription,
+// persists to CachedModels, and returns the fresh entry list. Use before
+// opening the model picker so it reflects providers' true available models.
+func (c *Client) RefreshModelEntries() []protocol.ModelEntry {
+	var r []protocol.ModelEntry
+	_ = c.call(MethodRefreshModelEntries, struct{}{}, &r)
+	return r
 }
 
 func (c *Client) SetDefaultThinkingMode(mode string) error {
@@ -456,22 +480,67 @@ func (c *Client) SetUserThinkingMode(senderID string, mode string) error {
 	return c.call(MethodSetUserThinkingMode, setUserThinkingModeReq{SenderID: senderID, Mode: mode}, nil)
 }
 
-func (c *Client) GetLLMConcurrency(senderID string) int {
-	var r int
-	_ = c.call(MethodGetLLMConcurrency, getLLMConcurrencyReq{SenderID: senderID}, &r)
-	return r
+func (c *Client) SetUserModel(senderID, subID, model string) error {
+	return c.call(MethodSetUserModel, setUserModelReq{SenderID: senderID, SubID: subID, Model: model}, nil)
 }
 
-func (c *Client) SetLLMConcurrency(senderID string, personal int) error {
-	return c.call(MethodSetLLMConcurrency, setLLMConcurrencyReq{SenderID: senderID, Personal: personal}, nil)
+// SelectModel sets the per-session (subscription, model) for a chat.
+// Persists to the tenants table via the select_model RPC.
+func (c *Client) SelectModel(senderID, channelName, subID, model, chatID string) error {
+	return c.call(MethodSelectModel, struct {
+		SenderID string `json:"sender_id"`
+		Channel  string `json:"channel"`
+		SubID    string `json:"sub_id"`
+		Model    string `json:"model"`
+		ChatID   string `json:"chat_id,omitempty"`
+	}{SenderID: senderID, Channel: channelName, SubID: subID, Model: model, ChatID: chatID}, nil)
 }
 
-func (c *Client) SetUserModel(senderID, model string) error {
-	return c.call(MethodSetUserModel, setUserModelReq{SenderID: senderID, Model: model}, nil)
+// SetDefaultModel sets the user-level default (subscription, model) for new sessions.
+func (c *Client) SetDefaultModel(senderID, subID, model string) error {
+	return c.call(MethodSetDefaultModel, struct {
+		SenderID string `json:"sender_id"`
+		SubID    string `json:"sub_id"`
+		Model    string `json:"model"`
+	}{SenderID: senderID, SubID: subID, Model: model}, nil)
 }
 
-func (c *Client) SwitchModel(senderID, model, chatID string) error {
-	return c.call(MethodSwitchModel, switchModelReq{SenderID: senderID, Model: model, ChatID: chatID}, nil)
+// SetModelEnabled toggles a model's enabled flag (model disable feature).
+func (c *Client) SetModelEnabled(subID, model string, enabled bool) error {
+	return c.call(MethodSetModelEnabled, struct {
+		SubID   string `json:"sub_id"`
+		Model   string `json:"model"`
+		Enabled bool   `json:"enabled"`
+	}{SubID: subID, Model: model, Enabled: enabled}, nil)
+}
+
+// RemoveModel permanently deletes a model from subscription_models.
+func (c *Client) RemoveModel(subID, model string) error {
+	return c.call(MethodRemoveModel, struct {
+		SubID string `json:"sub_id"`
+		Model string `json:"model"`
+	}{SubID: subID, Model: model}, nil)
+}
+
+// UpsertModel inserts or updates a model in subscription_models.
+func (c *Client) UpsertModel(subID, model string, maxContext, maxOutput int, apiType, thinkingMode string) error {
+	return c.call(MethodUpsertModel, struct {
+		SubID        string `json:"sub_id"`
+		Model        string `json:"model"`
+		MaxContext   int    `json:"max_context"`
+		MaxOutput    int    `json:"max_output"`
+		APIType      string `json:"api_type"`
+		ThinkingMode string `json:"thinking_mode"`
+	}{SubID: subID, Model: model, MaxContext: maxContext, MaxOutput: maxOutput, APIType: apiType, ThinkingMode: thinkingMode}, nil)
+}
+
+// SetSubscriptionEnabled toggles a subscription's enabled flag (v40). A disabled
+// subscription stops contributing models to the picker.
+func (c *Client) SetSubscriptionEnabled(subID string, enabled bool) error {
+	return c.call(MethodSetSubscriptionEnabled, struct {
+		SubID   string `json:"sub_id"`
+		Enabled bool   `json:"enabled"`
+	}{SubID: subID, Enabled: enabled}, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -484,17 +553,6 @@ func (c *Client) SetMaxIterations(n int) {
 
 func (c *Client) SetMaxConcurrency(n int) {
 	c.callVoid(MethodSetMaxConcurrency, setMaxConcurrencyReq{N: n})
-}
-
-func (c *Client) SetMaxContextTokens(n int, chatID ...string) {
-	chatIDVal := ""
-	if len(chatID) > 0 {
-		chatIDVal = chatID[0]
-	}
-	c.callVoid(MethodSetMaxContextTokens, struct {
-		MaxContext int    `json:"max_context"`
-		ChatID     string `json:"chat_id,omitempty"`
-	}{MaxContext: n, ChatID: chatIDVal})
 }
 
 func (c *Client) SetCompressionThreshold(f float64) {
@@ -517,16 +575,6 @@ func (c *Client) SetCWD(ch, chatID, dir string) error {
 
 func (c *Client) ResetTokenState() {
 	c.callVoid(MethodResetTokenState, struct{}{})
-}
-
-func (c *Client) GetEffectiveMaxContext(senderID, chatID string) int {
-	var r int
-	_ = c.call(MethodGetEffectiveMaxContext, getEffectiveMaxContextReq{SenderID: senderID, ChatID: chatID}, &r)
-	return r
-}
-
-func (c *Client) ClearPerChatMaxContext(chatID string) {
-	c.callVoid(MethodClearPerChatMaxContext, clearPerChatMaxContextReq{ChatID: chatID})
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +600,12 @@ func (c *Client) GetTokenState(ch, chatID string) (int64, int64, error) {
 		return 0, 0, err
 	}
 	return r.Prompt, r.Completion, nil
+}
+
+func (c *Client) GetContextUsage(ch, chatID string) (protocol.ContextUsage, error) {
+	var usage protocol.ContextUsage
+	err := c.call(MethodGetContextUsage, getContextUsageReq{Channel: ch, ChatID: chatID}, &usage)
+	return usage, err
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +675,16 @@ func (c *Client) SetDefaultSubscription(id string, chatID string) error {
 	return c.call(MethodSetDefaultSubscription, setDefaultSubscriptionReq{ID: id, ChatID: chatID}, nil)
 }
 
+// GetSessionSubscription returns the session→subscription mapping from the backend.
+// Returns (subscriptionID, model). Empty strings if no mapping exists.
+func (c *Client) GetSessionSubscription(senderID, channelName, chatID string) (subscriptionID, model string, err error) {
+	var result map[string]string
+	if err := c.call(MethodGetSessionSubscription, map[string]string{"channel": channelName, "chat_id": chatID}, &result); err != nil {
+		return "", "", err
+	}
+	return result["subscription_id"], result["model"], nil
+}
+
 func (c *Client) UpdateSubscription(id string, sub protocol.Subscription) error {
 	return c.call(MethodUpdateSubscription, updateSubscriptionReq{
 		ID: id,
@@ -669,8 +733,10 @@ func (c *Client) GetHistory(channelName, chatID string) ([]protocol.HistoryMessa
 	return r, c.call(MethodGetHistory, getHistoryReq{Channel: channelName, ChatID: chatID}, &r)
 }
 
-func (c *Client) TrimHistory(ch, chatID string, cutoff time.Time) error {
-	return c.call(MethodTrimHistory, trimHistoryReq{Channel: ch, ChatID: chatID, Cutoff: cutoff.Unix()}, nil)
+func (c *Client) RewindHistory(ch, chatID string, historyID int64) (protocol.HistoryRewindResult, error) {
+	var result protocol.HistoryRewindResult
+	err := c.call(MethodRewindHistory, rewindHistoryReq{Channel: ch, ChatID: chatID, HistoryID: historyID}, &result)
+	return result, err
 }
 
 // ---------------------------------------------------------------------------
@@ -725,6 +791,16 @@ func (c *Client) GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump
 	return &dump, len(dump.Messages) > 0
 }
 
+// ContinueInteractiveSession submits content to the active interactive SubAgent
+// identified by its canonical full key. A nil error means accepted; completion
+// is reported later through progress events.
+func (c *Client) ContinueInteractiveSession(fullKey, content string) error {
+	return c.call(MethodContinueInteractiveSession, continueInteractiveSessionReq{
+		FullKey: fullKey,
+		Content: content,
+	}, nil)
+}
+
 // ---------------------------------------------------------------------------
 // Processing state (via RPC)
 // ---------------------------------------------------------------------------
@@ -735,9 +811,15 @@ func (c *Client) IsProcessing(ch, chatID string) bool {
 	return r
 }
 
-func (c *Client) GetActiveProgress(ch, chatID string) *protocol.ProgressEvent {
+func (c *Client) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent {
 	var r *protocol.ProgressEvent
-	_ = c.call(MethodGetActiveProgress, getActiveProgressReq{Channel: ch, ChatID: chatID}, &r)
+	_ = c.call(MethodGetActiveProgress, getActiveProgressReq{Channel: ch, ChatID: chatID, FromIteration: fetch.ToFromIter()}, &r)
+	return r
+}
+
+func (c *Client) GetPendingAskUser(ch, chatID string) *protocol.ProgressEvent {
+	var r *protocol.ProgressEvent
+	_ = c.call(MethodGetPendingAskUser, getPendingAskUserReq{Channel: ch, ChatID: chatID}, &r)
 	return r
 }
 
@@ -770,6 +852,15 @@ func (c *Client) CallRPC(method string, params any) (json.RawMessage, error) {
 		return nil, err
 	}
 	return c.transport.Call(method, payload)
+}
+
+// ListCommandNames returns visible commands registered by the backend agent.
+func (c *Client) ListCommandNames() ([]string, error) {
+	var names []string
+	if err := c.call("list_command_names", nil, &names); err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -814,6 +905,64 @@ func (c *Client) DeleteChat(ch, senderID, chatID string) error {
 	return err
 }
 
+// ---------------------------------------------------------------------------
+// Runner CRUD (via RPC)
+// ---------------------------------------------------------------------------
+
+func (c *Client) RunnerCreate(name, mode, dockerImage, workspace, llmProvider, llmAPIKey, llmModel, llmBaseURL string) (map[string]string, error) {
+	var r map[string]string
+	err := c.call(MethodRunnerCreate, map[string]string{
+		"name":         name,
+		"mode":         mode,
+		"docker_image": dockerImage,
+		"workspace":    workspace,
+		"llm_provider": llmProvider,
+		"llm_api_key":  llmAPIKey,
+		"llm_model":    llmModel,
+		"llm_base_url": llmBaseURL,
+	}, &r)
+	return r, err
+}
+
+func (c *Client) RunnerList() ([]map[string]any, error) {
+	var r []map[string]any
+	raw, err := c.CallRPC(MethodRunnerList, struct{}{})
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (c *Client) RunnerDelete(name string) error {
+	_, err := c.CallRPC(MethodRunnerDelete, map[string]string{"name": name})
+	return err
+}
+
+func (c *Client) RunnerGetActive() (string, error) {
+	raw, err := c.CallRPC(MethodRunnerGetActive, struct{}{})
+	if err != nil {
+		return "", err
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", err
+	}
+	return s, nil
+}
+
+func (c *Client) RunnerSetActive(name string) error {
+	_, err := c.CallRPC(MethodRunnerSetActive, map[string]string{"name": name})
+	return err
+}
+
+func (c *Client) RunnerRename(oldName, newName string) error {
+	_, err := c.CallRPC(MethodRunnerRename, map[string]string{"old_name": oldName, "new_name": newName})
+	return err
+}
+
 func (c *Client) RenameChat(ch, senderID, chatID, newName string) error {
 	_, err := c.CallRPC("rename_chat", map[string]string{
 		"channel":  ch,
@@ -822,4 +971,61 @@ func (c *Client) RenameChat(ch, senderID, chatID, newName string) error {
 		"new_name": newName,
 	})
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// App (via RPC)
+// ---------------------------------------------------------------------------
+
+// AppPack packs local items into a .xbot.zip file and returns the output path.
+func (c *Client) AppPack(name string, items []AppItem, author string) (string, error) {
+	specs := make([]appItemSpec, len(items))
+	for i, it := range items {
+		specs[i] = appItemSpec(it)
+	}
+	var r appPackResp
+	if err := c.call(MethodAppPack, appPackReq{Name: name, Items: specs, Author: author}, &r); err != nil {
+		return "", err
+	}
+	return r.Path, nil
+}
+
+// AppInstallFile installs a .xbot.zip from a local file path.
+func (c *Client) AppInstallFile(zipPath, senderID string, force bool) (*AppInstallResult, error) {
+	var r appInstallResp
+	if err := c.call(MethodAppInstallFile, appInstallFileReq{ZipPath: zipPath, SenderID: senderID, Force: force}, &r); err != nil {
+		return nil, err
+	}
+	return &AppInstallResult{
+		Manifest:  AppManifest{Name: r.Name, Version: r.Version},
+		Installed: r.Installed,
+		Skipped:   r.Skipped,
+	}, nil
+}
+
+// AppInstallURL downloads a .xbot.zip from a URL and installs it.
+func (c *Client) AppInstallURL(url, senderID string, force bool) (*AppInstallResult, error) {
+	var r appInstallResp
+	if err := c.call(MethodAppInstallURL, appInstallURLReq{URL: url, SenderID: senderID, Force: force}, &r); err != nil {
+		return nil, err
+	}
+	return &AppInstallResult{
+		Manifest:  AppManifest{Name: r.Name, Version: r.Version},
+		Installed: r.Installed,
+		Skipped:   r.Skipped,
+	}, nil
+}
+
+// AppUninstall removes an installed skill/agent/plugin/app.
+func (c *Client) AppUninstall(entryType, name, senderID string) error {
+	return c.call(MethodAppUninstall, appUninstallReq{Type: entryType, Name: name, SenderID: senderID}, nil)
+}
+
+// AppList returns lists of installed skills, agents, and plugins.
+func (c *Client) AppList(senderID string) (skills, agents, plugins []string, err error) {
+	var r appListResp
+	if err := c.call(MethodAppList, appListReq{SenderID: senderID}, &r); err != nil {
+		return nil, nil, nil, err
+	}
+	return r.Skills, r.Agents, r.Plugins, nil
 }
