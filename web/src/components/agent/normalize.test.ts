@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  historyProgressToLive,
   normalizeIteration,
   normalizeIterationTool,
   normalizeTool,
@@ -144,5 +145,47 @@ describe('toolStatusKind', () => {
     ['unknown', 'pending'],
   ])('status %s → %s', (input, expected) => {
     expect(toolStatusKind(input)).toBe(expected)
+  })
+})
+
+describe('historyProgressToLive', () => {
+  it('restores reasoning_stream_content so first-iteration thinking survives refresh', () => {
+    const live = historyProgressToLive({
+      phase: 'thinking',
+      iteration: 1,
+      reasoning_stream_content: 'thinking about the task...',
+      seq: 3,
+      turn_id: 7,
+    } as never)
+    expect(live.phase).toBe('thinking')
+    expect(live.reasoningStreamContent).toBe('thinking about the task...')
+    expect(live.streaming).toBe(true)
+    expect(live.turnID).toBe(7)
+  })
+
+  it('restores structured reasoning into lastReasoning', () => {
+    const live = historyProgressToLive({
+      phase: 'tool',
+      reasoning: 'reasoned via structured event',
+      seq: 4,
+    } as never)
+    expect(live.lastReasoning).toBe('reasoned via structured event')
+  })
+
+  it('restores stream_content for an in-flight partial reply', () => {
+    const live = historyProgressToLive({
+      phase: 'thinking',
+      stream_content: 'partial reply that should be preserved',
+      seq: 5,
+    } as never)
+    expect(live.streamContent).toBe('partial reply that should be preserved')
+    expect(live.streaming).toBe(true)
+  })
+
+  it('returns empty snapshot for null/done', () => {
+    expect(historyProgressToLive(null).phase).toBe('')
+    const done = historyProgressToLive({ phase: 'done' } as never)
+    expect(done.streaming).toBe(false)
+    expect(done.phase).toBe('')
   })
 })

@@ -557,6 +557,10 @@ export function useChatMessages({
           const match = m.id.match(/^user-(\d+)-/)
           return Boolean(match && now - parseInt(match[1], 10) < 5000)
         }) : -1
+        // Preserve turnID from the optimistic message (set by bindLastUserToTurn).
+        // If user_echo arrives before turn_started, turnID is still 0 —
+        // bindLastUserToTurn will update it later via the echo's requestID match.
+        const existingTurnID = lastUserIdx >= 0 ? prev[lastUserIdx].turnID : 0
         const newMsg: ChatMessage = {
           id,
           role: 'user',
@@ -564,7 +568,7 @@ export function useChatMessages({
           iterations: [],
           timestamp: ts,
           isPartial: false,
-          turnID: 0,
+          turnID: existingTurnID,
           persisted: false,
           eventSeq: msg.seq,
           requestID,

@@ -445,6 +445,17 @@ export class ProgressStore {
     })
   }
 
+  /** Stop streaming animations (typewriter) but KEEP all content/tools visible.
+   *  Used on PhaseDone: the turn is over, so busy fallbacks (progressSnapshot.
+   *  streaming) must return false and the typewriter must stop — but tools and
+   *  iterations stay rendered until the text event commits them atomically. */
+  stopStreaming(): void {
+    if (this.disposed) return
+    this.mutate((draft) => {
+      draft.streaming = false
+    })
+  }
+
   /**
    * Apply a structured progress event with carry-forward + iteration snapshot.
    *
@@ -682,7 +693,7 @@ export class ProgressStore {
         }
         if (completedIterSet.size > 0) {
           draft.completedTools = draft.completedTools.filter(
-            (t) => !t.iteration || !completedIterSet.has(t.iteration),
+            (t) => (t.iteration === undefined || t.iteration === null) || !completedIterSet.has(t.iteration),
           )
         }
         // Recompute lastIter from merged history so the delta push protocol

@@ -511,6 +511,12 @@ function handleProgressMessage(
         window.dispatchEvent(new CustomEvent('agent-idle', {
           detail: { chatID: p.chat_id ?? undefined, channel: undefined },
         }))
+        // PhaseDone: the turn is over. Stop streaming animations AND clear the
+        // busy fallback signal (progressSnapshot.streaming) — without this, the
+        // AgentPanel busy fallback (streaming && phase !== 'done') keeps showing
+        // "思考中…" until the text event arrives. DO NOT reset the store: tools
+        // and iterations stay visible until the text event commits atomically.
+        store.stopStreaming()
         // Update todos if the PhaseDone event carries them. Do NOT clear
         // tools here — clearing causes a 4-5s gap where tools disappear
         // between PhaseDone and the text event. The text event (or cancel
@@ -667,13 +673,13 @@ function handleProgressMessage(
         if (finalizedRef) finalizedRef.current = true
         if (phaseDoneRef) phaseDoneRef.current = true
         // Freeze: mark all in-progress tools as error, stop streaming/reasoning animations.
+        // Do NOT reset the store — frozen content stays visible until the next turn.
         store.freeze()
         cancelCompleteRef?.current?.()
-        // Dispatch agent-idle so useSessionStore clears the busy state even
-        // if the session(idle) SSE event was dropped (sendCh full / network).
-        window.dispatchEvent(new CustomEvent('agent-idle', {
-          detail: { chatID: msg.chat_id ?? undefined, channel: msg.channel ?? undefined },
-        }))
+        // Do NOT dispatch agent-idle here — it would trigger the session(idle)
+        // handler's defensive finalize, which calls completeRef + store.reset(),
+        // wiping the frozen content. The backend's session(idle) SSE event
+        // will arrive separately and be ignored (finalizedRef=true + phase=frozen).
         return
       }
       // Final assistant message: commit then clear the live stream.

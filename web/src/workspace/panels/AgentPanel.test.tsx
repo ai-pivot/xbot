@@ -22,7 +22,8 @@ const mocks = vi.hoisted(() => {
     sessionStore: { activeSession: { channel: 'web', chatID: 'chat-1' }, sessions: [] },
     rightSidebar: { openPanel: vi.fn() },
   }
-  return { chat, context, order, rewindHistory: vi.fn() }
+  const progress = { progressSnapshot: { todos: [], tokenUsage: null }, liveMessage: null, isStreaming: false }
+  return { chat, context, order, progress, rewindHistory: vi.fn() }
 })
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -33,11 +34,7 @@ vi.mock('@/hooks/useCollapseLevel', () => ({
   useMergeTools: () => ({ mergeTools: false }),
 }))
 vi.mock('@/hooks/useProgressStream', () => ({
-  useProgressStream: () => ({
-    progressSnapshot: { todos: [], tokenUsage: null },
-    liveMessage: null,
-    isStreaming: false,
-  }),
+  useProgressStream: () => mocks.progress,
 }))
 vi.mock('@/hooks/useTodos', () => ({ useTodos: () => ({ total: 0 }) }))
 vi.mock('@/hooks/useActiveSSESubscription', () => ({ useActiveSSESubscription: vi.fn() }))
@@ -66,20 +63,23 @@ vi.mock('@/components/agent/MessageInput', () => ({ MessageInput: () => null }))
 vi.mock('@/components/agent/ModelSelector', () => ({ ModelSelector: () => null }))
 vi.mock('@/components/agent/MessageList', () => ({
   latestCompactBoundaryIndex: () => -1,
-  MessageList: (props: { onRewind?: (content: string, message: unknown) => void }) => (
-    <button
-      type="button"
-      onClick={() => props.onRewind?.('edited message', {
-        id: 'db-42',
-        role: 'user',
-        content: 'original message',
-        timestamp: '2026-07-08T00:00:01Z',
-        dbID: 42,
-        persisted: true,
-      })}
-    >
-      rewind
-    </button>
+  MessageList: (props: { onRewind?: (content: string, message: unknown) => void; busy?: boolean }) => (
+    <div>
+      <div data-testid="message-list-busy">{String(props.busy ?? false)}</div>
+      <button
+        type="button"
+        onClick={() => props.onRewind?.('edited message', {
+          id: 'db-42',
+          role: 'user',
+          content: 'original message',
+          timestamp: '2026-07-08T00:00:01Z',
+          dbID: 42,
+          persisted: true,
+        })}
+      >
+        rewind
+      </button>
+    </div>
   ),
 }))
 vi.mock('@/workspace/types', () => ({ useDockviewContext: () => mocks.context }))
@@ -120,5 +120,54 @@ describe('AgentPanel rewind', () => {
     expect(mocks.chat.clearMessages).not.toHaveBeenCalled()
     expect(mocks.chat.reload).not.toHaveBeenCalled()
     expect(mocks.chat.sendMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('AgentPanel busy state', () => {
+  beforeEach(() => {
+    mocks.progress.progressSnapshot = { todos: [], tokenUsage: null }
+    mocks.progress.liveMessage = null
+  })
+
+  it('falls back to progressSnapshot.streaming when sessionStore.running is false (refresh mid-turn)', () => {
+    // Simulates a page refresh during first-iteration thinking: SSE does not
+    // replay session(busy), so sessionStore.running stays false. But the
+    // hydrated active_progress (historyProgressToLive) sets streaming=true
+    // with phase='thinking' — the "思考中…" placeholder must still render.
+    mocks.progress.progressSnapshot = {
+      todos: [],
+      tokenUsage: null,
+      streaming: true,
+      phase: 'thinking',
+    }
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-busy').textContent).toBe('true')
+  })
+
+  it('does NOT treat frozen (cancel) or done snapshots as busy', () => {
+    mocks.progress.progressSnapshot = {
+      todos: [],
+      tokenUsage: null,
+      streaming: false,
+      phase: 'frozen',
+    }
+    const { unmount } = render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
+    unmount()
+
+    mocks.progress.progressSnapshot = {
+      todos: [],
+      tokenUsage: null,
+      streaming: false,
+      phase: 'done',
+    }
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
+  })
+
+  it('stays idle when no live progress and session is idle', () => {
+    mocks.progress.progressSnapshot = { todos: [], tokenUsage: null }
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
   })
 })

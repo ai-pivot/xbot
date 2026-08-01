@@ -130,11 +130,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: web/package-lock.json
+
+      - name: Build backend binary
+        run: go build -o /tmp/xbot-cli ./cmd/xbot-cli
 
       - name: Install dependencies
         working-directory: web
@@ -144,13 +151,52 @@ jobs:
         working-directory: web
         run: npx playwright install --with-deps chromium
 
-      - name: Run E2E tests
+      - name: Start backend server
+        env:
+          XBOT_HOME: /tmp/xbot-e2e
+        run: |
+          mkdir -p /tmp/xbot-e2e
+          # static_dir is NOT required — E2E tests load the frontend from the
+          # vite dev server (port 5199) and proxy /api to the backend (8082).
+          cat > /tmp/xbot-e2e/config.json << 'EOF'
+          {
+            "web": { "enable": true, "host": "127.0.0.1", "port": 8082, "invite_only": false },
+            "llm": { "provider": "openai", "base_url": "http://127.0.0.1:9999/v1", "api_key": "ci-fake-key", "model": "gpt-4o-mini" },
+            "agent": { "workdir": "." }
+          }
+          EOF
+          nohup /tmp/xbot-cli serve --config /tmp/xbot-e2e/config.json > /tmp/xbot-e2e/server.log 2>&1 &
+          echo $! > /tmp/xbot-e2e/server.pid
+          for i in $(seq 1 20); do
+            if curl -sf -X POST http://127.0.0.1:8082/api/auth/config -H 'Content-Type: application/json' -d '{}' > /dev/null 2>&1; then
+              echo "backend up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          # Register the admin user used by REAL-backend E2E tests.
+          curl -sf -X POST http://127.0.0.1:8082/api/auth/register \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"admin"}' || true
+          echo "backend ready"
+
+      - name: Run E2E tests (full suite — mock + real backend)
         working-directory: web
         env:
           CI: "true"
-        # Only run scroll.spec.ts (uses page.route() mock backend — no real server needed).
-        # Other E2E tests (login, chat, right-sidebar) require a real backend.
-        run: npx playwright test e2e/scroll.spec.ts --project=chromium --reporter=line
+          E2E_BASE_URL: "http://localhost:5199"
+          E2E_USERNAME: "admin"
+          E2E_PASSWORD: "admin"
+        # Runs the FULL Playwright suite: mock-backend tests (page.route) AND
+        # real-backend tests (login/chat/tabbar/right-sidebar) against the
+        # xbot-cli serve instance started above. Limit workers to avoid
+        # resource contention on CI runners.
+        run: npx playwright test --project=chromium --reporter=line --workers=4
+
+      - name: Stop backend server
+        if: always()
+        run: |
+          if [ -f /tmp/xbot-e2e/server.pid ]; then kill $(cat /tmp/xbot-e2e/server.pid) 2>/dev/null || true; fi
 
       - name: Upload test results
         if: always()

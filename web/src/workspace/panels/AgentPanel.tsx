@@ -222,12 +222,18 @@ export function AgentPanel({ params }: PanelProps) {
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
-  // Busy state is driven solely by sessionStore — the same source the sidebar
-  // uses. sessionStore.running is updated by SSE session(busy)/session(idle)
-  // events and is always correct. No optimistic states, no cache, no fragile
-  // isStreaming/processing checks.
+  // Busy state: sessionStore.running is the primary source (same source the
+  // sidebar uses — SSE session(busy)/session(idle) events). BUT after a page
+  // refresh, SSE does NOT replay session(busy) for an in-flight turn, so
+  // running stays false even though active_progress says the agent is
+  // mid-turn (first-iteration thinking with no content yet = no liveMessage).
+  // Fall back to the hydrated progressSnapshot.streaming (set true by
+  // historyProgressToLive and by any stream/structured event while phase !=
+  // done) so the "思考中…" placeholder still renders on refresh.
   const currentSession = store.sessions.find((s) => sameSession(s, activeSession))
-  const busy = (currentSession?.running ?? false) && !askUser.prompt
+  const busy = ((currentSession?.running ?? false) ||
+    (progressSnapshot.streaming && progressSnapshot.phase !== 'done' && progressSnapshot.phase !== 'frozen')) &&
+    !askUser.prompt
 
   const llmSettings = useLLMSettings()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens
