@@ -54,7 +54,7 @@ interface UseProgressStreamOptions {
   /** Channel this stream tracks. Progress events may qualify chat_id as channel:chatID. */
   channel?: string
   /** Called with the finalized assistant text when a `text` event arrives. */
-  onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => void
+  onAssistantComplete?: (finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => void
   /** Called when the turn is cancelled (cancel ack). Should NOT re-render the
    *  message list — the user already sees the streamed content as-is.
    *  Only reset the live progress store. */
@@ -461,7 +461,7 @@ function handleProgressMessage(
                 )
                 commitText = ''
               }
-              completeRef?.current?.(commitText, commitIters, undefined, snap.turnID || store.lastTurnID)
+              completeRef?.current?.(commitText, commitIters, undefined, snap.turnID || store.lastTurnID, true)
             }
           }
           store.reset()

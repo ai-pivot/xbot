@@ -1021,4 +1021,51 @@ describe('useChatMessages', () => {
       'initial', 'reply after gap',
     ]))
   })
+
+  it('bindLastUserToTurn stamps turnID on the last optimistic user message', async () => {
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'bind-turn', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // 用户发送一条消息 → optimistic user (turnID=0, persisted=false)
+    act(() => {
+      result.current.sendMessage('msg-1')
+    })
+    expect(result.current.messages.map((m) => m.content)).toEqual(['msg-1'])
+    expect(result.current.messages[0].turnID).toBe(0)
+    expect(result.current.messages[0].persisted).toBe(false)
+
+    // turn_started 到达 → bindLastUserToTurn 把 turnID 绑定到 optimistic user
+    act(() => {
+      result.current.bindLastUserToTurn(42)
+    })
+    expect(result.current.messages[0].turnID).toBe(42)
+    expect(result.current.messages[0].persisted).toBe(false)
+
+    // 再次 bind 相同 turnID → 不重复处理
+    act(() => {
+      result.current.bindLastUserToTurn(42)
+    })
+    expect(result.current.messages[0].turnID).toBe(42)
+    expect(result.current.messages.length).toBe(1)
+  })
+
+  it('bindLastUserToTurn only binds the LAST unpersisted user message (rapid sends)', async () => {
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'bind-turn-2', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // 连发两条消息：u1 (turnID=0), u2 (turnID=0)
+    act(() => result.current.sendMessage('first'))
+    act(() => result.current.sendMessage('second'))
+    expect(result.current.messages.map((m) => m.content)).toEqual(['first', 'second'])
+    expect(result.current.messages.every((m) => m.turnID === 0)).toBe(true)
+
+    // turn_started 到达 → 只绑定最后一条 (second → turnID=7)
+    act(() => result.current.bindLastUserToTurn(7))
+    expect(result.current.messages.map((m) => [m.content, m.turnID])).toEqual([
+      ['first', 0],
+      ['second', 7],
+    ])
+  })
 })

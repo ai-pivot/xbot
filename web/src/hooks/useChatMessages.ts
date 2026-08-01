@@ -80,7 +80,13 @@ export interface UseChatMessagesResult {
   /** Upload a file; returns the server upload metadata for sending with a message. */
   upload: (file: File) => Promise<UploadResponse>
   /** Append a finalized assistant message (called by useProgressStream). */
-  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => void
+  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => void
+  /** Bind the last unpersisted user message to a turnID (on turn_started).
+   *  Optimistic user messages are created with turnID=0 at send time; when
+   *  turn_started arrives with the real turnID, we stamp it on the user row so
+   *  appendLiveMessage can position the live assistant correctly (between the
+   *  current user msg and any newer optimistic user msgs). */
+  bindLastUserToTurn: (turnID: number) => void
   /** Inject a user message from a bg notification/cron (called by useProgressStream). */
   injectUserMessage: (content: string, turnID: number, isNotification: boolean) => void
   /** Remove the trailing assistant message by id (for cancellation cleanup). */
@@ -676,7 +682,7 @@ export function useChatMessages({
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
-  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => {
+  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => {
     if (!content && !iterations.length) return
     messageMutationGenRef.current += 1
     // Use the same id format as parseHistoryMessages (seq-${eventSeq}) so that
@@ -696,18 +702,23 @@ export function useChatMessages({
       eventSeq,
     }
     setMessages((prev) => {
-      // Insert the committed assistant message BEFORE the last user message
-      // (if it's an optimistic/uncommitted one). This handles the cancel-then-
-      // send case: the frozen assistant content (turn N) must appear before
-      // the new optimistic user message (turn N+1), not after it.
+      // DEFAULT: append to the end. This preserves turn order — the assistant
+      // reply belongs AFTER its user message.
+      //
+      // insertBeforeLastUser=true (cancel-then-send commit-frozen path only):
+      // the frozen assistant content (turn N) was cancelled, then the user
+      // sent a new message (turn N+1, optimistic user still unpersisted). The
+      // frozen content must appear BEFORE the new optimistic user message,
+      // not after it — otherwise two user messages would be adjacent.
       let insertIdx = prev.length
-      for (let i = prev.length - 1; i >= 0; i--) {
-        if (prev[i].role === 'user' && !prev[i].persisted) {
-          insertIdx = i
-          break
+      if (insertBeforeLastUser) {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].role === 'user' && !prev[i].persisted) {
+            insertIdx = i
+            break
+          }
+          if (prev[i].persisted) break
         }
-        // If we hit an already-committed message, insert after it
-        if (prev[i].persisted) break
       }
       const withMsg = [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)]
       const next = dedupMessages(withMsg)
@@ -720,6 +731,25 @@ export function useChatMessages({
   // Called by useProgressStream when a turn_started event with trigger
   // "notification" or "resume" arrives. The message is tagged with the
   // backend TurnID so the assistant response can be associated correctly.
+  const bindLastUserToTurn = useCallback((turnID: number) => {
+    if (turnID <= 0) return
+    setMessages((prev) => {
+      // Find the last unpersisted user message (the optimistic one created by
+      // sendMessage with turnID=0). Stamp the real turnID on it so the
+      // assistant response (also turnID) is positioned AFTER this user msg.
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i].role === 'user' && !prev[i].persisted) {
+          if (prev[i].turnID === turnID) return prev // already bound
+          const copy = [...prev]
+          copy[i] = { ...prev[i], turnID }
+          messagesRef.current = copy
+          return copy
+        }
+        if (prev[i].persisted) break
+      }
+      return prev
+    })
+  }, [])
   const injectUserMessage = useCallback((content: string, turnID: number, isNotification: boolean) => {
     messageMutationGenRef.current += 1
     const id = `notif-${turnID}-${echoSeq++}`
@@ -791,6 +821,7 @@ export function useChatMessages({
     upload,
     appendAssistant,
     injectUserMessage,
+    bindLastUserToTurn,
     removeMessage,
     clearMessages,
     markDestructiveMutation,

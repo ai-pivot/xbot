@@ -163,9 +163,11 @@ export function MessageList({
 
       // 2. No merge target — insert at the correct position by turnID.
       //    Scan backwards: insert after the last message with turnID <=
-      //    liveMessage.turnID (same turn: user before assistant; earlier
-      //    turns before later turns). Messages with turnID=0 (old/unknown)
-      //    stay before liveMessage.
+      //    liveMessage.turnID. Skip turnID=0 messages (optimistic user rows
+      //    that haven't been bound to a turn yet, or legacy rows) — they are
+      //    ambiguous and the live assistant should go after the last bound
+      //    message with a matching or earlier turn. If no bound message is
+      //    found, fall back to appending at the end.
       let insertIdx = deduped.length
       for (let i = deduped.length - 1; i >= 0; i--) {
         const m = deduped[i]
@@ -173,10 +175,8 @@ export function MessageList({
           insertIdx = i + 1
           break
         }
-        if (m.turnID === 0) {
-          insertIdx = i + 1
-          break
-        }
+        // turnID=0: skip — could be a newer optimistic user msg (should stay
+        // after liveMessage) or an older legacy row. Keep scanning.
       }
       return [...deduped.slice(0, insertIdx), liveMessage, ...deduped.slice(insertIdx)]
     }
