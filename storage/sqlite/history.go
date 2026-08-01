@@ -1138,12 +1138,18 @@ func (s *SessionService) countActiveMessages(tenantID int64, userOnly bool) (int
 			}
 		}
 		// Count message records appended after the checkpoint.
+		// When userOnly, filter by role='user' — the checkpoint snapshot
+		// already filtered, but appended records need the same filter.
+		roleFilter := ""
+		if userOnly {
+			roleFilter = " AND role = 'user'"
+		}
 		row := conn.QueryRow(`
 			SELECT COUNT(*) FROM session_messages
 			WHERE tenant_id = ? AND record_type = 'message'
 			  AND COALESCE(display_only, 0) = 0
-			  AND id > ?
-		`, tenantID, checkpoint.HistoryID)
+			  AND id > ?`+roleFilter,
+			tenantID, checkpoint.HistoryID)
 		var afterCount int
 		if err := row.Scan(&afterCount); err != nil {
 			return 0, fmt.Errorf("count messages after checkpoint: %w", err)

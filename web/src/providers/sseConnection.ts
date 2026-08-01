@@ -326,9 +326,29 @@ export class SSEConnectionImpl implements WSConnection {
     // Snapshot the cached progress BEFORE recovery to detect TurnID changes.
     const cachedProgress = cacheKey ? progressSnapshotCache.get(cacheKey) : undefined
     try {
+      // Request iterations NEWER than our local watermark. SSE may have been
+      // disconnected while the agent advanced many iterations — we need the
+      // delta (iteration > localWatermark) to fill the gap, otherwise the
+      // rendered iteration history is non-linear (missing middle iterations).
+      //
+      // Watermark = the last COMPLETED iteration we already have. Using
+      // cachedProgress.iteration (current in-progress iteration) would skip
+      // a just-completed iteration with the same number. Derive from
+      // iteration_history's last entry; fall back to 0 (all iterations).
+      let fromIteration = 0
+      if (cachedProgress) {
+        const hist = cachedProgress.iteration_history
+        if (Array.isArray(hist) && hist.length > 0) {
+          const last = hist[hist.length - 1] as { iteration?: number } | undefined
+          if (typeof last?.iteration === 'number' && last.iteration > 0) {
+            fromIteration = last.iteration
+          }
+        }
+      }
       const progress = await this.rpc<ProgressEvent | null>('get_active_progress', {
         channel,
         chat_id: chatID,
+        from_iteration: fromIteration,
       })
       if (
         this._channel !== channel ||
