@@ -2486,7 +2486,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
 			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
 				a.interceptCancel(msg)
-				acknowledgeInboundDelivery(msg, nil)
+				acknowledgeInboundDelivery(msg, bus.DeliveryResult{})
 				continue
 			}
 
@@ -2494,22 +2494,30 @@ func (a *Agent) Run(ctx context.Context) error {
 			q := getOrCreateQueue(key)
 			select {
 			case q <- msg:
+				// Successfully admitted to the per-chat queue. The ack is
+				// DELAYED until the chatWorker pulls the message off the
+				// queue: it allocates the per-session TurnID and detects
+				// whether the chat is already busy (queued), then acks
+				// with {TurnID, Queued} so REST responses can return the
+				// turn id directly without waiting for turn_started (which
+				// may be lost/coalesced in SSE). If a message somehow never
+				// reaches the chatWorker (ctx cancel), the transport's own
+				// ctx/timeout will unblock the request.
 				a.clearPendingAskUserForEnqueuedAnswer(msg)
-				acknowledgeInboundDelivery(msg, nil)
 			default:
-				acknowledgeInboundDelivery(msg, bus.ErrInboundQueueFull)
+				acknowledgeInboundDelivery(msg, bus.DeliveryResult{Err: bus.ErrInboundQueueFull})
 				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": key}).Warn("Chat queue full, dropping message")
 			}
 		}
 	}
 }
 
-func acknowledgeInboundDelivery(msg bus.InboundMessage, err error) {
+func acknowledgeInboundDelivery(msg bus.InboundMessage, res bus.DeliveryResult) {
 	if msg.DeliveryAck == nil {
 		return
 	}
 	select {
-	case msg.DeliveryAck <- err:
+	case msg.DeliveryAck <- res:
 	default:
 	}
 }
@@ -2678,6 +2686,9 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 					m := msg
 					c := cmd
 					clipanic.Go("agent.chatWorker.concurrentCommand", func() {
+						// 并发命令即时处理：无 turn 概念，立即 ack（不预分配
+						// turnID，也不产生 turn_started 事件）。
+						acknowledgeInboundDelivery(m, bus.DeliveryResult{})
 						// 清除 sessionFinalSent：command 不走 processMessage，
 						// 需要手动清除否则 sendMessage 会被拦截
 						cmdKey := qualifyChatID(m.Channel, m.ChatID)
@@ -2710,21 +2721,13 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 				} else {
 					// 有状态命令（/new, /compress, /set-llm 等）：走串行队列，
 					// 避免与正在处理的普通消息产生 session 数据竞态
-					select {
-					case msgCh <- msg:
-					case <-ctx.Done():
-						return
-					}
+					a.admitToMsgCh(ctx, chatKey, msg, ss, msgCh)
 				}
 				continue
 			}
 
 			// 普通消息：转发到内部队列，由 processLoop 串行处理
-			select {
-			case msgCh <- msg:
-			case <-ctx.Done():
-				return
-			}
+			a.admitToMsgCh(ctx, chatKey, msg, ss, msgCh)
 
 		case <-ss.notifyCh:
 			a.handleBgNotifySignal(chatKey, ss)
@@ -2732,6 +2735,32 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// admitToMsgCh 在消息进入 msgCh（chatProcessLoop 串行队列）前分配
+// per-session TurnID 并立即 ack 给传输层。ack 携带 turn_id —— REST 响应
+// 可直接返回它，不再依赖可能被 SSE 合并/丢弃的 turn_started 事件 —— 以及
+// 排队状态（chat 已在处理上一条消息 → queued=true，前端显示排队标记）。
+//
+// AskUser answer 不预分配 turnID：其复用逻辑依赖 activeTurnID（当前正在
+// 处理的 turn），若在此提前 setActiveTurn 会被排队消息污染（排队消息会
+// 把 activeTurnID 改写成自己的 turn，导致 answer 复用错误的 turn id）。
+// answer 的复用由 chatProcessLoop 在真正出队处理时完成。
+func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.InboundMessage, ss *bgSessionState, msgCh chan<- bus.InboundMessage) {
+	queued := len(msgCh) > 0 || ss.busy.Load()
+	var turnID uint64
+	if msg.Metadata == nil || msg.Metadata["ask_user_answered"] != "true" {
+		turnID = ss.nextTurnID()
+		if msg.Metadata == nil {
+			msg.Metadata = map[string]string{}
+		}
+		msg.Metadata["turn_id"] = strconv.FormatUint(turnID, 10)
+	}
+	acknowledgeInboundDelivery(msg, bus.DeliveryResult{TurnID: turnID, Queued: queued})
+	select {
+	case msgCh <- msg:
+	case <-ctx.Done():
 	}
 }
 
@@ -2800,23 +2829,29 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				}
 			}
 
-			// Generate per-session TurnID and emit turn_started so the frontend can
-			// associate this turn's user message with its response — eliminating
-			// arrival-order races between bg notifications and user-typed messages.
+			// TurnID 由 chatWorker 在入队时预分配（普通/有状态命令消息，
+			// 见 admitToMsgCh），写入 Metadata["turn_id"] 并随 DeliveryAck 返回，
+			// 使 REST 响应能直接返回 turn id（不依赖可能被 SSE 合并/丢弃的
+			// turn_started 事件）。
 			//
-			// AskUser answer: this is a CONTINUATION of the same turn, not a new turn.
-			// Reuse the active TurnID (set by the original turn's nextTurnID call).
-			// This prevents TurnID regression (prev=N, next=N) and ensures the
-			// frontend's turn_started handler preserves iterationHistory.
-			askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
-			var turnID uint64
-			if askUserAnswered {
-				turnID = ss.activeTurnID.Load()
+			// AskUser answer 不预分配 —— 它复用 active TurnID（同一 turn 的
+			// 延续）。activeTurnID 反映「当前正在处理的 turn」，只有在消息真正
+			// 出队处理时读取才准确：入队时 activeTurnID 可能已被排队消息改写。
+			// 复用避免 TurnID 回归（prev=N, next=N）并确保前端 turn_started
+			// 处理器保留 iterationHistory。
+			turnID, _ := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64)
+			if turnID == 0 {
+				askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
+				if askUserAnswered {
+					turnID = ss.activeTurnID.Load()
+				}
 				if turnID == 0 {
 					turnID = ss.nextTurnID()
 				}
-			} else {
-				turnID = ss.nextTurnID()
+				if msg.Metadata == nil {
+					msg.Metadata = map[string]string{}
+				}
+				msg.Metadata["turn_id"] = strconv.FormatUint(turnID, 10)
 			}
 			ss.setActiveTurn(turnID)
 			// Consistency check: TurnID must be strictly monotonic per session.
@@ -2841,10 +2876,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				}
 			}
 			ss.lastTurnID.Store(turnID)
-			if msg.Metadata == nil {
-				msg.Metadata = map[string]string{}
-			}
-			msg.Metadata["turn_id"] = strconv.FormatUint(turnID, 10)
 			a.emitTurnStarted(msg, turnID)
 
 			sem := a.getSemaphoreForMessage(msg)

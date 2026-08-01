@@ -175,6 +175,7 @@ const en: Translations = {
     emptyConversation: 'Send a message below to start a conversation.',
     loading: 'Loading…',
     sending: 'Sending…',
+    queued: 'Queued — waiting for the current turn to finish…',
     compressing: 'Compressing context…',
     iterations: 'Iterations',
     tools: 'tools',

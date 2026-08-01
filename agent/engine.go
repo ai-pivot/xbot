@@ -489,7 +489,23 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	ctx = hooks.WithSessionContext(ctx, sessionCtx)
 	s.sessionCtx = sessionCtx
 
-	// Cleanup completed TODOs on exit
+	// Setup structured progress tracking
+	s.initProgress()
+
+	// Ensure PhaseDone event is sent on exit
+	if s.progressFinalizer != nil {
+		defer s.progressFinalizer()
+	}
+
+	// Cleanup completed TODOs on exit.
+	// IMPORTANT: registered AFTER progressFinalizer so it runs BEFORE the
+	// finalizer (Go defer is LIFO). PhaseDone must carry the POST-cleanup
+	// todos — if todos are fully completed, cleanupTodos clears them and
+	// refreshStructuredTodos writes [] into structuredProgress.Todos, so the
+	// finalizer's Clone() emits `todos: []` and the frontend clears its list.
+	// With the old order (cleanup after finalizer) PhaseDone carried the
+	// pre-cleanup "all done" list while the server memory was already empty —
+	// the frontend kept stale todos indefinitely (inconsistent with server).
 	defer s.cleanupTodos()
 	// Cleanup completed background tasks on exit to prevent stale tasks from
 	// accumulating indefinitely across multiple agent turns.

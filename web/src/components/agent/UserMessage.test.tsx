@@ -174,3 +174,35 @@ describe('UserMessage — inline edit mode (Spec C §2)', () => {
     expect(onEndEdit).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('UserMessage — compact-marker folding', () => {
+  it('renders a compact marker as a collapsed placeholder (summary hidden)', () => {
+    const { container, getByText } = renderWithProviders(
+      <UserMessage content={'[Compacted context]\nLONG SUMMARY BODY'} />,
+    )
+    // The title line is visible in the collapsed <summary>.
+    expect(getByText('[Compacted context]')).toBeInTheDocument()
+    // The body is inside a closed <details> — not visible until expanded.
+    const details = container.querySelector('details')
+    expect(details).not.toBeNull()
+    expect(details!.open).toBe(false)
+  })
+
+  it('reveals the summary body when the placeholder is expanded', () => {
+    const { container, getByText } = renderWithProviders(
+      <UserMessage content={'[Compacted context]\nLONG SUMMARY BODY'} />,
+    )
+    const details = container.querySelector('details')!
+    fireEvent.click(getByText('[Compacted context]'))
+    expect(details.open).toBe(true)
+    expect(getByText('LONG SUMMARY BODY')).toBeInTheDocument()
+  })
+
+  it('does not fold a normal user message', () => {
+    const { container, queryByText } = renderWithProviders(
+      <UserMessage content="hello world" />,
+    )
+    expect(container.querySelector('details')).toBeNull()
+    expect(queryByText('hello world')).toBeInTheDocument()
+  })
+})

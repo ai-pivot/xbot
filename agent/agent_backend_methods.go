@@ -66,14 +66,22 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 		// only todos so the client can restore the TODO list on session switch.
 		// Without this, switching to an idle session with todos shows no todos
 		// until the next TodoWrite tool call.
-		todos := a.GetTodos(ch, chatID)
-		if len(todos) == 0 {
-			return nil
+		//
+		// Distinguish two cases:
+		//   - HasTodos=false → the session never ran and never wrote a todo
+		//     list → return nil (no active progress, nothing to restore).
+		//   - HasTodos=true (possibly empty) → the session ran and its todo
+		//     list was cleared (todo_write([]) / turn-end cleanupTodos) → return
+		//     done + [] so the frontend LEARNS the list is now empty. Returning
+		//     nil for an empty list meant the client could never tell "cleared"
+		//     from "no data", so stale items survived refreshes.
+		if a.todoManager != nil && a.todoManager.HasTodos(key) {
+			return &protocol.ProgressEvent{
+				Phase: "done",
+				Todos: a.GetTodos(ch, chatID),
+			}
 		}
-		return &protocol.ProgressEvent{
-			Phase: "done",
-			Todos: todos,
-		}
+		return nil
 	}
 	snapshot := v.(*protocol.ProgressEvent)
 	result := *snapshot

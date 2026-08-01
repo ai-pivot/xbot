@@ -576,7 +576,7 @@ func TestRESTMessageCommitsIdempotencyOnlyAfterAgentAdmission(t *testing.T) {
 
 	go func() {
 		message := <-msgBus.Inbound
-		message.DeliveryAck <- bus.ErrInboundQueueFull
+		message.DeliveryAck <- bus.DeliveryResult{Err: bus.ErrInboundQueueFull}
 	}()
 	failed := httptest.NewRecorder()
 	wc.handleMessage(failed, authedAPIRequest(http.MethodPost, "/api/message", body))
@@ -591,7 +591,7 @@ func TestRESTMessageCommitsIdempotencyOnlyAfterAgentAdmission(t *testing.T) {
 
 	go func() {
 		message := <-msgBus.Inbound
-		message.DeliveryAck <- nil
+		message.DeliveryAck <- bus.DeliveryResult{}
 	}()
 	accepted := httptest.NewRecorder()
 	wc.handleMessage(accepted, authedAPIRequest(http.MethodPost, "/api/message", body))
@@ -634,18 +634,18 @@ func TestRESTMessageCancellationAfterHandoffPreservesIdempotency(t *testing.T) {
 	}
 	resultCh := make(chan dispatchResult, 1)
 	go func() {
-		sel, _, _, err := wc.dispatchUserMessage(ctx, identity, message)
+		sel, _, _, _, _, err := wc.dispatchUserMessage(ctx, identity, message)
 		resultCh <- dispatchResult{sel: sel, err: err}
 	}()
 
 	inbound := <-msgBus.Inbound
 	cancel()
-	inbound.DeliveryAck <- nil
+	inbound.DeliveryAck <- bus.DeliveryResult{}
 	result := <-resultCh
 	if result.err != nil || result.sel.ChatID != "web-1" {
 		t.Fatalf("dispatch after handoff cancellation = (%#v, %v)", result.sel, result.err)
 	}
-	if _, _, _, err := wc.dispatchUserMessage(context.Background(), identity, message); err != nil {
+	if _, _, _, _, _, err := wc.dispatchUserMessage(context.Background(), identity, message); err != nil {
 		t.Fatalf("same-ID retry after cancelled response: %v", err)
 	}
 	select {

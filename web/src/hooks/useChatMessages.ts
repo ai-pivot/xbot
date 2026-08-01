@@ -430,8 +430,8 @@ export function useChatMessages({
         setInitialProgress(null)
         return
       }
-      // Normal mode: load via Web history snapshot (paginated: last 30 turns).
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 30 })
+      // Normal mode: load via Web history snapshot (paginated: last 100 messages).
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100 })
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return
       const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
@@ -482,7 +482,7 @@ export function useChatMessages({
     if (!w) return false
     setLoadingMore(true)
     try {
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 30, beforeId: oldestIdRef.current })
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId: oldestIdRef.current })
       const rows = data.messages ?? []
       if (rows.length === 0) {
         setHasMore(false)
@@ -637,6 +637,12 @@ export function useChatMessages({
         const msgID = resp?.message_id
         const serverTs = resp?.timestamp
         const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
+        // The API returns the per-session turn_id allocated at queue-admission
+        // time, so we bind the optimistic user row directly — no dependence on
+        // turn_started (which may be lost/coalesced in SSE). queued=true means
+        // the chat was busy; keep a queued marker until turn_started arrives.
+        const respTurnID = resp?.turn_id
+        const respQueued = resp?.queued === true
         if (optimisticID) {
           const sentID = optimisticID
           messageMutationGenRef.current += 1
@@ -647,6 +653,10 @@ export function useChatMessages({
               persisted: true,
               ...(msgID ? { dbID: msgID, id: `db-${msgID}` } : {}),
               ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
+              // Prefer the API-returned turnID. If turn_started already bound
+              // a turnID (race), keep that — they are the same value.
+              ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),
+              ...(respQueued ? { queued: true } : {}),
             } : m)
             messagesRef.current = next
             return next
@@ -738,18 +748,26 @@ export function useChatMessages({
   const bindLastUserToTurn = useCallback((turnID: number) => {
     if (turnID <= 0) return
     setMessages((prev) => {
-      // Find the last unpersisted user message (the optimistic one created by
-      // sendMessage with turnID=0). Stamp the real turnID on it so the
-      // assistant response (also turnID) is positioned AFTER this user msg.
+      // Find this turn's user message and stamp the real turnID on it so the
+      // assistant response (also turnID) is positioned AFTER it. Also clear
+      // any queued marker — turn_started means the message is now actively
+      // being processed.
+      //
+      // Two arrival orders:
+      //  - turn_started first: the optimistic row is still unpersisted
+      //    (persisted=false, turnID=0).
+      //  - REST response first: the row was already persisted with its turnID
+      //    bound from the API response and possibly marked queued=true. We
+      //    must still find it (via the queued flag) to clear the marker.
       for (let i = prev.length - 1; i >= 0; i--) {
-        if (prev[i].role === 'user' && !prev[i].persisted) {
-          if (prev[i].turnID === turnID) return prev // already bound
+        if (prev[i].role === 'user' && (!prev[i].persisted || prev[i].queued)) {
+          if (prev[i].turnID === turnID && !prev[i].queued) return prev // already bound
           const copy = [...prev]
-          copy[i] = { ...prev[i], turnID }
+          copy[i] = { ...prev[i], turnID, queued: false }
           messagesRef.current = copy
           return copy
         }
-        if (prev[i].persisted) break
+        if (prev[i].persisted && !prev[i].queued) break
       }
       return prev
     })

@@ -92,6 +92,80 @@ func TestSessionService_GetHistory(t *testing.T) {
 	}
 }
 
+// TestSessionService_GetHistoryBefore_MessageLimit verifies that the limit
+// counts raw MESSAGES, not user turns. A single turn commonly holds many
+// assistant/tool rows; bounding by message count keeps the paginated payload
+// proportional to what the client can render (a turn-count bound allowed a
+// single turn with dozens of tool rows to balloon the window to millions of
+// tokens).
+func TestSessionService_GetHistoryBefore_MessageLimit(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	tenantSvc := NewTenantService(db)
+	sessionSvc := NewSessionService(db)
+	tenantID, err := tenantSvc.GetOrCreateTenantID("test", "chat1")
+	if err != nil {
+		t.Fatalf("Failed to create tenant: %v", err)
+	}
+
+	// Two turns: turn 1 = 1 user + 2 assistant (3 rows); turn 2 = 1 user + 1
+	// assistant (2 rows). Total 5 rows.
+	add := func(m llm.ChatMessage) {
+		if err := sessionSvc.AddMessage(tenantID, m); err != nil {
+			t.Fatalf("Failed to add message: %v", err)
+		}
+	}
+	add(llm.NewUserMessage("u1"))
+	add(llm.NewAssistantMessage("a1-1"))
+	add(llm.NewAssistantMessage("a1-2"))
+	add(llm.NewUserMessage("u2"))
+	add(llm.NewAssistantMessage("a2"))
+
+	// limit=3 bounds by message count → the window is the last 3 rows
+	// (u2, a2 + the immediately preceding a1-2), NOT the last 3 turns.
+	history, err := sessionSvc.GetHistoryBefore(tenantID, 0, 3)
+	if err != nil {
+		t.Fatalf("Failed to get history: %v", err)
+	}
+	if len(history) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(history))
+	}
+	if history[0].Content != "a1-2" || history[1].Content != "u2" || history[2].Content != "a2" {
+		t.Fatalf("unexpected window contents: %v", history)
+	}
+
+	// beforeID pagination: everything before u2 (exclusive) = u1, a1-1, a1-2.
+	all, err := sessionSvc.GetAllMessages(tenantID)
+	if err != nil {
+		t.Fatalf("Failed to get all messages: %v", err)
+	}
+	var u2ID int64
+	for _, m := range all {
+		if m.Content == "u2" {
+			u2ID = m.ID
+			break
+		}
+	}
+	if u2ID == 0 {
+		t.Fatal("u2 message not found")
+	}
+	older, err := sessionSvc.GetHistoryBefore(tenantID, u2ID, 100)
+	if err != nil {
+		t.Fatalf("Failed to get older history: %v", err)
+	}
+	if len(older) != 3 {
+		t.Fatalf("expected 3 older messages, got %d", len(older))
+	}
+	if older[0].Content != "u1" || older[1].Content != "a1-1" || older[2].Content != "a1-2" {
+		t.Fatalf("unexpected older window contents: %v", older)
+	}
+}
+
 func TestSessionService_GetAllMessages(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 	db, err := Open(dbPath)

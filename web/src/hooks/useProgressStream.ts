@@ -224,13 +224,15 @@ export function useProgressStream({
       if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
       finalizedRef.current = false
       if (hasVisibleProgress(store.getSnapshot())) store.reset()
-      const todos = (initialProgress.todos ?? []) as TodoItem[]
-      // Only replace todos if the server returned non-empty todos.
-      // If server returned empty [], preserve existing todos (from /switch
-      // response cache) — the server may not have todos in active_progress
-      // when phase='done' (snapshot already cleaned up).
-      if (todos.length > 0) {
-        store.replace({ todos })
+      // Unconditionally replace todos when the server explicitly returned an
+      // array — INCLUDING an empty one. GetActiveProgress returns
+      // `{phase:'done', todos}` after a turn (turn-end cleanupTodos clears the
+      // list, so todos: [] means "cleared"). With the old `todos.length > 0`
+      // guard, an empty list was treated as "no data → keep existing",
+      // resurrecting stale todos on every session switch/refresh — the
+      // frontend diverged from the server's authoritative state.
+      if (Array.isArray(initialProgress.todos)) {
+        store.replace({ todos: initialProgress.todos as TodoItem[] })
       }
       return
     }
@@ -522,14 +524,18 @@ function handleProgressMessage(
         // between PhaseDone and the text event. The text event (or cancel
         // ack) calls store.reset() which clears everything atomically.
         let doneTodos: TodoItem[] | undefined
-        if (Array.isArray(p.todos) && p.todos.length > 0) {
+        if (Array.isArray(p.todos)) {
+          // Unconditionally apply todos, INCLUDING an empty array. The server
+          // sends todos: [] when the list was cleared (todo_write([]) or
+          // turn-end cleanupTodos) — the frontend must learn the list is now
+          // empty, otherwise stale items survive until the next event/refresh.
           doneTodos = p.todos.map((t) => ({
             id: typeof t.id === 'number' ? t.id : 0,
             text: typeof t.text === 'string' ? t.text : '',
             done: Boolean(t.done),
           }))
         }
-        if (doneTodos) {
+        if (doneTodos !== undefined) {
           store.setStructuredTools({ eventSeq: typeof p.seq === 'number' ? p.seq : undefined, todos: doneTodos })
         }
         return
@@ -636,6 +642,14 @@ function handleProgressMessage(
           store.reset()
         }
         store.lastTurnID = p.turn_id
+        // turn_started normally stamps the real turnID on the optimistic user
+        // message via onTurnStarted → bindLastUserToTurn. If it was lost, the
+        // user message keeps turnID=0 and MessageList can't place the live
+        // assistant after it (renders inside the previous turn instead). Bind
+        // here as well — bindLastUserToTurn is idempotent (same turnID no-op).
+        if (turnStartedRef?.current) {
+          turnStartedRef.current(p.turn_id, 'user')
+        }
       }
 
       // Apply structured event with carry-forward (stream-only fields preserved)

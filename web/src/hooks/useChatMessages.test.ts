@@ -1068,4 +1068,55 @@ describe('useChatMessages', () => {
       ['second', 7],
     ])
   })
+
+  it('sendMessage binds turnID from the API response without waiting for turn_started', async () => {
+    const ws = makeWS([{ messages: [] }])
+    vi.mocked(ws.send).mockResolvedValue({
+      turn_id: 42,
+      queued: false,
+      message_id: 7,
+      timestamp: 1_786_000_000,
+    })
+    const { result } = renderHook(() => useChatMessages({ chatID: 'turn-resp', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // 发送消息 → optimistic user (turnID=0)
+    act(() => {
+      result.current.sendMessage('hello')
+    })
+    expect(result.current.messages[0].content).toBe('hello')
+    expect(result.current.messages[0].turnID).toBe(0)
+
+    // REST 响应直接携带 turn_id → optimistic user 被绑定，无需 turn_started
+    await waitFor(() => expect(result.current.messages[0].turnID).toBe(42))
+    expect(result.current.messages[0].queued).toBeUndefined()
+    expect(result.current.messages[0].persisted).toBe(true)
+  })
+
+  it('sendMessage marks the optimistic user as queued when the chat is busy, cleared on turn_started', async () => {
+    const ws = makeWS([{ messages: [] }])
+    vi.mocked(ws.send).mockResolvedValue({
+      turn_id: 43,
+      queued: true,
+      message_id: 8,
+      timestamp: 1_786_000_000,
+    })
+    const { result } = renderHook(() => useChatMessages({ chatID: 'queued', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    act(() => {
+      result.current.sendMessage('hello')
+    })
+    // queued=true → 消息标记排队中（仍带 turn_id）
+    await waitFor(() => expect(result.current.messages[0].queued).toBe(true))
+    expect(result.current.messages[0].turnID).toBe(43)
+    expect(result.current.messages[0].sending).toBe(false)
+
+    // turn_started 到达 → bindLastUserToTurn 清除排队标记
+    act(() => {
+      result.current.bindLastUserToTurn(43)
+    })
+    expect(result.current.messages[0].queued).toBe(false)
+    expect(result.current.messages[0].turnID).toBe(43)
+  })
 })

@@ -74,6 +74,113 @@ export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boo
   return row.role === 'user' && row.content.trimStart().startsWith('[Compacted context]')
 }
 
+/**
+ * Build the combined row list: committed messages + optional live streaming row.
+ *
+ * ALWAYS remove intermediate assistant messages after the last user message.
+ * ConvertMessagesToHistory can split one turn into multiple assistant
+ * messages (when a Content assistant appears between ToolCalls). Without
+ * this, both assistants render the same tools — once from DB iterations
+ * and once from the progress snapshot — causing duplicates. Only the LAST
+ * assistant after the last user message is kept.
+ *
+ * Live insertion order (turn-aware):
+ *  - Same turnID:role committed message exists → merge (no separate row).
+ *  - Otherwise insert at the correct turn position. The live assistant must
+ *    render AFTER its own turn's user message. If the optimistic user row
+ *    (turnID=0, persisted=false) is still unbound — turn_started was lost
+ *    (SSE drop/coalesce) so bindLastUserToTurn never ran — insert after it.
+ *    Without this, the live assistant lands after the PREVIOUS turn's
+ *    assistant and renders inside the wrong turn.
+ */
+export function buildMessageRows(
+  messages: ChatMessage[],
+  liveMessage: ChatMessage | null,
+): ChatMessage[] {
+  // Remove intermediate assistant messages after the last user message.
+  // Only apply when the last message is an assistant (active turn) —
+  // if the last message is a user message, ALL previous assistants are
+  // from completed turns and must be preserved.
+  const last = messages[messages.length - 1]
+  const deduped = [...messages]
+  if (last && last.role === 'assistant') {
+    for (let i = deduped.length - 2; i >= 0; i--) {
+      if (deduped[i].role === 'user') break
+      if (deduped[i].role === 'assistant') deduped.splice(i, 1)
+    }
+  }
+
+  // ID-based ordering + dedup using turnID.
+  if (!liveMessage) return deduped
+
+  // 1. Merge: if ANY message in the list has the same turnID:role as
+  //    liveMessage, pass liveProgress to it (don't add a separate row).
+  //    This handles IncrementalPersist (committed assistant from DB) and
+  //    appendAssistant (locally committed) — both carry the same turnID.
+  if (liveMessage.turnID > 0) {
+    const matchIdx = deduped.findIndex(
+      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
+    )
+    if (matchIdx >= 0) {
+      // Merge: the committed message gets liveProgress via liveId.
+      return deduped
+    }
+
+    // 2. No merge target — insert at the correct position by turnID.
+    //    Scan backwards: insert after the last message with turnID <=
+    //    liveMessage.turnID. Skip turnID=0 messages (optimistic user rows
+    //    that haven't been bound to a turn yet, or legacy rows) — they are
+    //    ambiguous and the live assistant should go after the last bound
+    //    message with a matching or earlier turn. If no bound message is
+    //    found, fall back to appending at the end.
+    let insertIdx = deduped.length
+
+    // 2a. The live assistant belongs AFTER its own turn's user message.
+    //     First look for the bound user of THIS turn (turnID == live.turnID).
+    let turnUserIdx = -1
+    for (let i = deduped.length - 1; i >= 0; i--) {
+      if (deduped[i].turnID === liveMessage.turnID && deduped[i].role === 'user') {
+        turnUserIdx = i
+        break
+      }
+    }
+    if (turnUserIdx >= 0) {
+      insertIdx = turnUserIdx + 1
+    } else {
+      // 2b. No bound user for this turn — the trailing optimistic user row
+      //     (turnID=0, persisted=false) IS this turn's user (turn_started was
+      //     lost, so bindLastUserToTurn never ran). Insert after it so the
+      //     live assistant doesn't land inside the previous turn. A turnID=0
+      //     row that is NOT the last unbound user (persisted) is legacy and
+      //     is still skipped.
+      let foundUnbound = false
+      for (let i = deduped.length - 1; i >= 0; i--) {
+        const m = deduped[i]
+        if (m.turnID === 0 && m.role === 'user' && m.persisted === false) {
+          insertIdx = i + 1
+          foundUnbound = true
+          break
+        }
+        if (m.turnID > 0) break // stop at the first bound row from the end
+      }
+      // 2c. Fall back to the original turnID scan ONLY when 2b found nothing.
+      if (!foundUnbound) {
+        for (let i = deduped.length - 1; i >= 0; i--) {
+          const m = deduped[i]
+          if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
+            insertIdx = i + 1
+            break
+          }
+        }
+      }
+    }
+    return [...deduped.slice(0, insertIdx), liveMessage, ...deduped.slice(insertIdx)]
+  }
+
+  // No turnID (shouldn't happen in practice) — append at end.
+  return [...deduped, liveMessage]
+}
+
 export function MessageList({
   chatKey,
   followResetToken = 0,
@@ -131,59 +238,7 @@ export function MessageList({
   // Only the LAST assistant after the last user message is kept; all earlier
   // ones are absorbed (their tools are in the snapshot or in the last
   // assistant's iterations).
-  const rows = useMemo<ChatMessage[]>(() => {
-    // Remove intermediate assistant messages after the last user message.
-    // Only apply when the last message is an assistant (active turn) —
-    // if the last message is a user message, ALL previous assistants are
-    // from completed turns and must be preserved.
-    const last = messages[messages.length - 1]
-    const deduped = [...messages]
-    if (last && last.role === 'assistant') {
-      for (let i = deduped.length - 2; i >= 0; i--) {
-        if (deduped[i].role === 'user') break
-        if (deduped[i].role === 'assistant') deduped.splice(i, 1)
-      }
-    }
-
-    // ID-based ordering + dedup using turnID.
-    if (!liveMessage) return deduped
-
-    // 1. Merge: if ANY message in the list has the same turnID:role as
-    //    liveMessage, pass liveProgress to it (don't add a separate row).
-    //    This handles IncrementalPersist (committed assistant from DB) and
-    //    appendAssistant (locally committed) — both carry the same turnID.
-    if (liveMessage.turnID > 0) {
-      const matchIdx = deduped.findIndex(
-        (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
-      )
-      if (matchIdx >= 0) {
-        // Merge: the committed message gets liveProgress via liveId.
-        return deduped
-      }
-
-      // 2. No merge target — insert at the correct position by turnID.
-      //    Scan backwards: insert after the last message with turnID <=
-      //    liveMessage.turnID. Skip turnID=0 messages (optimistic user rows
-      //    that haven't been bound to a turn yet, or legacy rows) — they are
-      //    ambiguous and the live assistant should go after the last bound
-      //    message with a matching or earlier turn. If no bound message is
-      //    found, fall back to appending at the end.
-      let insertIdx = deduped.length
-      for (let i = deduped.length - 1; i >= 0; i--) {
-        const m = deduped[i]
-        if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
-          insertIdx = i + 1
-          break
-        }
-        // turnID=0: skip — could be a newer optimistic user msg (should stay
-        // after liveMessage) or an older legacy row. Keep scanning.
-      }
-      return [...deduped.slice(0, insertIdx), liveMessage, ...deduped.slice(insertIdx)]
-    }
-
-    // No turnID (shouldn't happen in practice) — append at end.
-    return [...deduped, liveMessage]
-  }, [messages, liveMessage])
+  const rows = useMemo<ChatMessage[]>(() => buildMessageRows(messages, liveMessage), [messages, liveMessage])
   // liveId points to the row that receives liveProgress. Scan ALL rows
   // for a match by turnID:role (the committed message that liveProgress
   // should be passed to). If no match, liveMessage has its own row.

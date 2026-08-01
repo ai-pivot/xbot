@@ -1060,7 +1060,10 @@ export function useSessionStoreImpl(): SessionStore {
       // immediately after switching — before /api/history's active_progress
       // arrives. Write to progressSnapshotCache as a "done" snapshot with todos;
       // useProgressStream's hydrate effect picks it up on the next render.
-      if (switchResponse.todos && switchResponse.todos.length > 0) {
+      // Unconditional on Array.isArray — an EMPTY array is a valid "cleared"
+      // state from the server; the old `length > 0` guard kept stale todos
+      // from the previous session when switching to a session with no todos.
+      if (Array.isArray(switchResponse.todos)) {
         const cacheKey = sessionCacheKey(useChannel, id)
         progressSnapshotCache.set(cacheKey, {
           phase: 'done',

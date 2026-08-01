@@ -71,7 +71,7 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if request.ChatID != "" && request.Channel == "" {
 		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
-	sel, msgID, ts, err := wc.dispatchUserMessage(r.Context(), identity, request)
+	sel, msgID, ts, turnID, queued, err := wc.dispatchUserMessage(r.Context(), identity, request)
 	if err != nil {
 		writeInboundError(w, err)
 		return
@@ -81,6 +81,13 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		"channel":    sel.Channel,
 		"message_id": msgID,
 		"timestamp":  ts.UnixMilli(),
+		// turn_id is allocated at queue-admission time by the agent loop, so
+		// the API response always carries it (no dependence on turn_started,
+		// which may be lost/coalesced in SSE). queued=true means the chat was
+		// already processing an earlier message — the frontend shows a
+		// "queued" marker instead of treating the message as actively running.
+		"turn_id": turnID,
+		"queued":  queued,
 	})
 }
 

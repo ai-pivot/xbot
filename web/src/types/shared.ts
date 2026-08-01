@@ -406,6 +406,10 @@ export interface ChatMessage {
   persisted?: boolean
   /** True while the message is being sent (optimistic, before echo/busy). */
   sending?: boolean
+  /** True when the send was admitted but the chat was already busy — the
+   *  message is queued and will be handled after the current turn completes.
+   *  Cleared when turn_started arrives for this message. */
+  queued?: boolean
   /** True when injected by bg notification (not typed by user). Renders 🔔 badge. */
   isNotification?: boolean
   /** SSE sequence for live committed rows, used to reconcile them with history. */

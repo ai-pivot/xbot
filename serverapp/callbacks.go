@@ -293,8 +293,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		// Paginated history: GetHistoryBefore returns up to `limit` user turns
-		// before beforeID. On initial load (beforeID=0) returns most recent.
+		// Paginated history: GetHistoryBefore returns up to `limit` raw
+		// messages before beforeID. On initial load (beforeID=0) returns the
+		// most recent `limit` messages.
 		msgs, err := sess.GetHistoryBefore(beforeID, limit)
 		if err != nil {
 			return web.HistorySnapshot{}, err
@@ -319,9 +320,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		var progress *protocol.ProgressEvent
 		if beforeID == 0 {
 			progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll())
-			if progress != nil && progress.Phase == "done" && len(progress.Todos) == 0 {
-				progress = nil
-			}
+			// Keep the done event even with an empty Todos list. The frontend
+			// hydrates from active_progress to restore todos on refresh;
+			// dropping `done + todos:[]` made the client unable to learn that
+			// the server cleared its todos, so stale items survived reloads.
 		}
 		return web.HistorySnapshot{
 			Messages:       channel.ConvertMessagesToHistory(msgs),

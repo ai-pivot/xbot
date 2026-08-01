@@ -12,8 +12,8 @@
  *   - Only one message can be edited at a time (editingMessageId prop)
  *   - Edit container inherits the display height as min-height to prevent jitter
  */
-import { memo, useEffect, useRef, useState } from 'react'
-import { Check, Loader2, Pencil, X } from 'lucide-react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Check, ChevronRight, Clock, Loader2, Pencil, X } from 'lucide-react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { Button } from '@/components/ui/button'
@@ -35,6 +35,9 @@ interface UserMessageProps {
   editDisabled?: boolean
   /** True while the message is being sent (shows a spinner). */
   sending?: boolean
+  /** True when the message was admitted while the chat was already busy —
+   *  it is queued and will be processed after the current turn completes. */
+  queued?: boolean
   /** True when injected by bg notification (renders 🔔 badge + muted style). */
   isNotification?: boolean
 }
@@ -47,6 +50,7 @@ export const UserMessage = memo(function UserMessage({
   onEndEdit,
   editDisabled = false,
   sending = false,
+  queued = false,
   isNotification = false,
 }: UserMessageProps) {
   const { t } = useI18n()
@@ -55,6 +59,20 @@ export const UserMessage = memo(function UserMessage({
   const editRef = useRef<HTMLTextAreaElement>(null)
   const displayRef = useRef<HTMLDivElement>(null)
   const [editMinHeight, setEditMinHeight] = useState<number | null>(null)
+
+  // Compact-marker messages ("[Compacted context]\n<summary>") are rendered as
+  // a collapsed placeholder so the potentially-huge summary never dominates the
+  // visible history or visually overlaps the messages that follow it. The full
+  // summary stays available via the native <details> toggle.
+  const compactBody = useMemo(() => {
+    const trimmed = content.trimStart()
+    if (!trimmed.startsWith('[Compacted context]')) return null
+    const firstLineEnd = content.indexOf('\n')
+    return {
+      title: firstLineEnd === -1 ? trimmed : trimmed.slice(0, firstLineEnd).trim(),
+      body: firstLineEnd === -1 ? '' : content.slice(firstLineEnd + 1).trimStart(),
+    }
+  }, [content])
 
   // Capture display height before entering edit mode to prevent height jitter
   const handleStartEdit = () => {
@@ -160,6 +178,24 @@ export const UserMessage = memo(function UserMessage({
     )
   }
 
+  if (compactBody) {
+    return (
+      <div className="flex justify-end px-1">
+        <details className="group w-full max-w-[85%] rounded-2xl rounded-br-sm border border-dashed border-border bg-bg-secondary px-3.5 py-2">
+          <summary className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-text-muted">
+            <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
+            <span>{compactBody.title}</span>
+          </summary>
+          {compactBody.body && (
+            <div className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-text-muted">
+              {compactBody.body}
+            </div>
+          )}
+        </details>
+      </div>
+    )
+  }
+
   return (
     <div className="flex justify-end px-1">
       <div className="flex max-w-[85%] flex-col items-end gap-1">
@@ -179,6 +215,12 @@ export const UserMessage = memo(function UserMessage({
             <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-muted">
               <Loader2 className="size-3 animate-spin" />
               <span>{t('agent.sending')}</span>
+            </div>
+          )}
+          {!sending && queued && (
+            <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-muted">
+              <Clock className="size-3" />
+              <span>{t('agent.queued')}</span>
             </div>
           )}
         </div>

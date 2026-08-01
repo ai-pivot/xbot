@@ -622,6 +622,92 @@ describe('useProgressStream event dispatch', () => {
     emitAndFlush({ type: 'text', content: 'reply', chat_id: 'c1' })
     expect(result.current.progressSnapshot.todos).toHaveLength(2)
   })
+
+  it('PhaseDone with empty todos clears the store (todo_write([]) cleanup)', () => {
+    // Bug: the PhaseDone branch filtered `p.todos.length > 0`, so a server
+    // sending `todos: []` (turn-end cleanup of a fully-completed todo list)
+    // was IGNORED — the frontend kept stale todos indefinitely, diverging
+    // from the server's authoritative (cleared) state.
+    const todos = [
+      { id: 1, text: 'task A', done: true },
+      { id: 2, text: 'task B', done: true },
+    ]
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 1, phase: 'tool_exec', iteration: 1, todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+
+    // turn ends, server sends PhaseDone with empty todos (cleanupTodos cleared them)
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 2, phase: 'done', todos: [] } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(0)
+  })
+
+  it('PhaseDone with todos present preserves them (not cleared)', () => {
+    const todos = [
+      { id: 1, text: 'task A', done: true },
+      { id: 2, text: 'task B', done: false },
+    ]
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 1, phase: 'tool_exec', iteration: 1, todos } as ProgressEvent,
+    })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 2, phase: 'done', todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+  })
+
+  it('todo_write([]) clearing todos propagates: mid-busy [] and PhaseDone [] both clear', () => {
+    // Bug: notifyProgress only refreshed structuredProgress.Todos when
+    // len(todos) > 0, and the PhaseDone branch skipped `todos.length > 0`
+    // checks — a todo_write([]) (clear) never reached the frontend, so stale
+    // todos lingered indefinitely (inconsistent with the server).
+    const todos = [
+      { id: 1, text: 'task A', done: true },
+      { id: 2, text: 'task B', done: false },
+    ]
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 1, phase: 'tool_exec', iteration: 1, todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+
+    // todo_write([]) → server sends todos: [] → must clear (not carry-forward)
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 2, phase: 'tool_exec', iteration: 2, todos: [] } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(0)
+
+    // PhaseDone with empty todos must ALSO clear (turn end cleanup)
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 3, phase: 'done', todos: [] } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(0)
+
+    // text finalize must not resurrect cleared todos
+    emitAndFlush({ type: 'text', content: 'reply', chat_id: 'c1' })
+    expect(result.current.progressSnapshot.todos).toHaveLength(0)
+  })
 })
 
 describe('cancel ack: preserves live state without commit', () => {

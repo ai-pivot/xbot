@@ -84,15 +84,20 @@ func (s *SessionService) ReplaceToolMessage(tenantID int64, toolName, toolCallID
 // limit specifies the minimum number of user/assistant messages to return.
 // Tool messages between them are included to maintain context continuity.
 // display_only messages (e.g. cron results) are excluded from LLM context.
-// GetHistory returns the last `limit` user turns (plus their associated
-// messages). If beforeID > 0, returns messages with id < beforeID only.
+// GetHistory returns the last `limit` messages (rows). If beforeID > 0,
+// returns messages with id < beforeID only.
 func (s *SessionService) GetHistory(tenantID int64, limit int) ([]llm.ChatMessage, error) {
 	return s.GetHistoryBefore(tenantID, 0, limit)
 }
 
-// GetHistoryBefore returns up to `limit` user turns that occur before
-// beforeID. If beforeID <= 0, returns the most recent `limit` turns.
-// The result is chronologically ordered (oldest first).
+// GetHistoryBefore returns up to `limit` raw history messages (rows) that
+// occur before beforeID. If beforeID <= 0, returns the most recent `limit`
+// messages. The result is chronologically ordered (oldest first).
+//
+// The limit counts MESSAGES, not user turns. Counting turns let a single
+// turn with many tool/assistant rows balloon the returned window to millions
+// of tokens (one turn commonly holds 10-50 rows). Bounding by message count
+// keeps the payload proportional to what the client can render.
 func (s *SessionService) GetHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
 	replay, err := s.Replay(tenantID)
 	if err != nil {
@@ -116,17 +121,11 @@ func (s *SessionService) GetHistoryBefore(tenantID int64, beforeID int64, limit 
 			return nil, nil
 		}
 	}
-	// Walk backwards counting user turns; start is the first message of the
-	// window. This naturally groups user+assistant+tool into a turn.
-	start, users := 0, 0
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
-			users++
-			if users == limit {
-				start = i
-				break
-			}
-		}
+	// Walk backwards counting messages; start is the first message of the
+	// window (oldest). Messages are already in chronological order.
+	start := 0
+	if len(msgs) > limit {
+		start = len(msgs) - limit
 	}
 	return append([]llm.ChatMessage(nil), msgs[start:]...), nil
 }

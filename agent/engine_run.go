@@ -245,7 +245,33 @@ func (s *runState) cleanupTodos() {
 				s.cfg.TodoManager.ClearTodos(s.sessionKey)
 			}
 		}
+		// Always refresh structuredProgress.Todos after cleanup so any event
+		// emitted by progressFinalizer (PhaseDone) carries the AUTHORITATIVE
+		// post-cleanup todo list (possibly empty). Previously the todos were
+		// refreshed only when len(todos) > 0, so a clear left stale todos in
+		// the snapshot and the frontend never learned the list was emptied.
+		s.refreshStructuredTodos()
 	}
+}
+
+// refreshStructuredTodos unconditionally copies the TodoManager's current
+// items into structuredProgress.Todos — including an EMPTY slice when the
+// list was cleared. This makes "no todos" an explicit, pushable state:
+// the frontend treats `todos: []` as "cleared" (not "no data → keep old").
+func (s *runState) refreshStructuredTodos() {
+	if s.structuredProgress == nil || s.cfg.TodoManager == nil || s.sessionKey == "" {
+		return
+	}
+	items := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
+	todos := make([]TodoProgressItem, len(items))
+	for i, td := range items {
+		todos[i] = TodoProgressItem{
+			ID:   td.ID,
+			Text: td.Text,
+			Done: td.Done,
+		}
+	}
+	s.structuredProgress.Todos = todos
 }
 
 // cleanupBgTasks removes completed background tasks for the session.
@@ -295,15 +321,11 @@ func (s *runState) notifyProgress(extra string) {
 	// tool updates the manager's memory, but structuredProgress.Todos is only
 	// synced at iteration start (initToolProgress). Without this refresh, the
 	// first progress_structured event after a TodoWrite call carries stale todos.
-	if s.structuredProgress != nil && s.cfg.TodoManager != nil && s.sessionKey != "" {
-		todos := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
-		if len(todos) > 0 {
-			s.structuredProgress.Todos = make([]TodoProgressItem, len(todos))
-			copy(s.structuredProgress.Todos, todos)
-		} else {
-			s.structuredProgress.Todos = nil
-		}
-	}
+	// Unconditional refresh — an EMPTY list is a valid, pushable state
+	// (todo_write([]) cleared the list). Previously `len(todos) > 0` skipped
+	// the refresh, so the frontend never learned the todos were emptied and
+	// kept stale items forever.
+	s.refreshStructuredTodos()
 	// Increment seq and assign to structuredProgress (unified entry point).
 	if s.structuredProgress != nil && s.cfg.ProgressSeq != nil {
 		s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
@@ -436,15 +458,7 @@ func (s *runState) beginIteration(i int) {
 	// (the "explore card that never disappears" bug). resolveSubAgents returns
 	// nil when SubAgents is empty — there is no text-based fallback.
 	s.subAgentNodes = nil
-	if s.structuredProgress != nil && s.cfg.TodoManager != nil && s.sessionKey != "" {
-		todos := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
-		if len(todos) > 0 {
-			s.structuredProgress.Todos = make([]TodoProgressItem, len(todos))
-			copy(s.structuredProgress.Todos, todos)
-		} else {
-			s.structuredProgress.Todos = nil
-		}
-	}
+	s.refreshStructuredTodos()
 }
 
 // notifyThinking sends the thinking progress notification.
