@@ -1307,6 +1307,17 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		// A prompt may have been stored just before the active Run returned.
 		// Clear it, but never replace the active cancellation with an early ack.
 		a.clearPendingAskUser(msg.Channel, msg.ChatID)
+		// Persist ask_answer to invalidate the pending ask_question record.
+		// Without this, Replay() finds an unanswered ask_question on reload
+		// and restores the AskUser prompt. The wasCancelled path (line ~2927)
+		// can't do this because GetPendingAskUser returns nil after the clear above.
+		if a.multiSession != nil {
+			if sess, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID); err == nil {
+				if _, err := sess.AppendAskAnswer("[cancelled]"); err != nil {
+					log.WithError(err).Warn("Failed to append ask_answer for cancelled AskUser (active Run)")
+				}
+			}
+		}
 		a.cancelStateMu.Unlock()
 		if sent {
 			log.Info("Cancel signal sent to processing goroutine")

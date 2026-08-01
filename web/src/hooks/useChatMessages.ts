@@ -361,6 +361,8 @@ export function useChatMessages({
     if (!sameTarget) {
       messagesRef.current = []
       setMessages([])
+      setHasMore(false)
+      oldestIdRef.current = null
     }
     const hasVisibleRows = sameTarget && messagesRef.current.length > 0
     setLoading(!hasVisibleRows)
@@ -481,9 +483,16 @@ export function useChatMessages({
         return false
       }
       const parsed = parseHistoryMessages(rows)
-      // Prepend: older messages go before existing ones.
+      // Dedup against existing messages (by id) to prevent duplicates
+      // at the pagination boundary (e.g. if server returns id <= beforeId).
       const prev = messagesRef.current
-      const next = [...parsed, ...prev]
+      const existingIds = new Set(prev.map((m) => m.id))
+      const deduped = parsed.filter((m) => !existingIds.has(m.id))
+      if (deduped.length === 0) {
+        setHasMore(false)
+        return false
+      }
+      const next = [...deduped, ...prev]
       messagesRef.current = next
       setMessages(next)
       setHasMore(Boolean(data.has_more))
@@ -687,7 +696,21 @@ export function useChatMessages({
       eventSeq,
     }
     setMessages((prev) => {
-      const next = dedupMessages([...prev, newMsg])
+      // Insert the committed assistant message BEFORE the last user message
+      // (if it's an optimistic/uncommitted one). This handles the cancel-then-
+      // send case: the frozen assistant content (turn N) must appear before
+      // the new optimistic user message (turn N+1), not after it.
+      let insertIdx = prev.length
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i].role === 'user' && !prev[i].persisted) {
+          insertIdx = i
+          break
+        }
+        // If we hit an already-committed message, insert after it
+        if (prev[i].persisted) break
+      }
+      const withMsg = [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)]
+      const next = dedupMessages(withMsg)
       messagesRef.current = next
       return next
     })

@@ -145,41 +145,62 @@ export function MessageList({
       }
     }
 
+    // ID-based ordering + dedup using turnID.
     if (!liveMessage) return deduped
-    const lastDeduped = deduped[deduped.length - 1]
-    if (lastDeduped && lastDeduped.role === 'assistant' &&
-        lastDeduped.eventSeq != null && liveMessage.eventSeq != null &&
-        lastDeduped.eventSeq === liveMessage.eventSeq) {
-      return deduped
+
+    // 1. Merge: if ANY message in the list has the same turnID:role as
+    //    liveMessage, pass liveProgress to it (don't add a separate row).
+    //    This handles IncrementalPersist (committed assistant from DB) and
+    //    appendAssistant (locally committed) — both carry the same turnID.
+    if (liveMessage.turnID > 0) {
+      const matchIdx = deduped.findIndex(
+        (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
+      )
+      if (matchIdx >= 0) {
+        // Merge: the committed message gets liveProgress via liveId.
+        return deduped
+      }
+
+      // 2. No merge target — insert at the correct position by turnID.
+      //    Scan backwards: insert after the last message with turnID <=
+      //    liveMessage.turnID (same turn: user before assistant; earlier
+      //    turns before later turns). Messages with turnID=0 (old/unknown)
+      //    stay before liveMessage.
+      let insertIdx = deduped.length
+      for (let i = deduped.length - 1; i >= 0; i--) {
+        const m = deduped[i]
+        if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
+          insertIdx = i + 1
+          break
+        }
+        if (m.turnID === 0) {
+          insertIdx = i + 1
+          break
+        }
+      }
+      return [...deduped.slice(0, insertIdx), liveMessage, ...deduped.slice(insertIdx)]
     }
-    // When the last message is an assistant from the SAME turn as the live
-    // progress, pass liveProgress to it (don't append a separate liveMessage
-    // row). This covers two scenarios:
-    //  1. Locally-committed message (appendAssistant): matched by turnID
-    //  2. DB-committed message (IncrementalPersist → reload): matched by
-    //     turnID — the DB message carries turn_id (v50 migration), and the
-    //     live store's snapshot carries the same turn_id from structured events.
-    // Without this, both the committed message and liveMessage render —
-    // duplicating the same turn's content + tools.
-    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial &&
-        (lastDeduped.isPartial ||
-         (liveMessage.turnID > 0 && lastDeduped.turnID === liveMessage.turnID))) {
-      return deduped
-    }
+
+    // No turnID (shouldn't happen in practice) — append at end.
     return [...deduped, liveMessage]
   }, [messages, liveMessage])
-  // liveId points to the row that receives liveProgress. When the last
-  // history assistant is the streaming slot — in-flight partial (isPartial)
-  // or same turnID — liveProgress goes to it. Otherwise, liveMessage gets
-  // its own row.
-  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
-  const liveId = liveMessage
-    ? (lastMsg && lastMsg.role === 'assistant' && liveMessage.isPartial &&
-       (lastMsg.isPartial ||
-        (liveMessage.turnID > 0 && lastMsg.turnID === liveMessage.turnID))
-        ? lastMsg.id
-        : liveMessage.id)
-    : null
+  // liveId points to the row that receives liveProgress. Scan ALL rows
+  // for a match by turnID:role (the committed message that liveProgress
+  // should be passed to). If no match, liveMessage has its own row.
+  const liveId = useMemo(() => {
+    if (!liveMessage) return null
+    if (liveMessage.turnID > 0) {
+      // Check if rows contains a committed message with same turnID:role
+      // (merge case — liveProgress goes to that message, not liveMessage).
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i]
+        if (r.turnID === liveMessage.turnID && r.role === liveMessage.role && r.id !== liveMessage.id) {
+          return r.id
+        }
+      }
+    }
+    return liveMessage.id
+  }, [rows, liveMessage])
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
@@ -302,11 +323,25 @@ export function MessageList({
     }
   }, [virtualizer, cancelPendingFollow])
 
-  // Scroll-to-top: load older messages.
+  // Scroll-to-top sentinel ref — used by IntersectionObserver to detect
+  // when the user scrolls to the top and trigger loadMore.
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+
   useEffect(() => {
-    if (!atTop || !hasMore || loadingMore) return
-    void onLoadMore?.()
-  }, [atTop, hasMore, loadingMore, onLoadMore])
+    const el = sentinelRef.current
+    if (!el || !hasMore || !onLoadMore) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
+          void onLoadMore()
+        }
+      },
+      { root: scrollRef.current, threshold: 0 },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hasMore, loadingMore, onLoadMore])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
@@ -511,23 +546,7 @@ export function MessageList({
         <div ref={contentRef} data-message-list-content className="w-full">
           {/* Scroll-to-top sentinel: triggers loadMore via IntersectionObserver */}
           {hasMore && (
-            <div
-              ref={(el) => {
-                if (!el) return
-                const observer = new IntersectionObserver(
-                  (entries) => {
-                    if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
-                      void onLoadMore?.()
-                    }
-                  },
-                  { root: scrollRef.current, threshold: 0 },
-                )
-                observer.observe(el)
-                // Cleanup on unmount/re-render
-                return () => observer.disconnect()
-              }}
-              className="flex justify-center py-2"
-            >
+            <div ref={sentinelRef} className="flex justify-center py-2">
               {loadingMore ? (
                 <Loader2 className="size-4 animate-spin text-text-muted" />
               ) : (

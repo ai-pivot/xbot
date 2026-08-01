@@ -49,7 +49,6 @@ func (wc *WebChannel) inferAPISessionChannel(senderID, chatID string) string {
 	return "web"
 }
 
-// handleHistory handles GET /api/history for Web session snapshots.
 // handleHistory handles POST /api/history for Web session snapshots.
 // Parameters (channel, chat_id, limit, before_id) are in the JSON body.
 func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +81,7 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	lastSeq := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
 	if wc.callbacks.HistorySnapshot == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel, "has_more": false, "oldest_id": 0})
 		return
 	}
 	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel, limit, body.BeforeID)

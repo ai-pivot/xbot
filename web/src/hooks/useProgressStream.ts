@@ -424,6 +424,46 @@ function handleProgressMessage(
         if (ts?.trigger === 'resume') {
           store.resetStreamingState()
         } else {
+          // Commit any frozen/uncommitted content from the previous turn
+          // (e.g. after cancel: store.freeze() kept the live message visible,
+          // but never committed it. Without this, the cancelled turn's content
+          // vanishes when store.reset() clears the live message.)
+          const snap = store.getSnapshot()
+          if (hasVisibleProgress(snap) && (!finalizedRef?.current || snap.phase === 'frozen')) {
+            const text = snap.streamContent || snap.content || ''
+            const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
+            let iters = snap.iterationHistory
+            if (liveReasoning) {
+              if (iters.length === 0) {
+                iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
+              } else if (liveReasoning.length > (iters[iters.length - 1].reasoning || '').length) {
+                iters = iters.map((it, i) =>
+                  i === iters.length - 1 ? { ...it, reasoning: liveReasoning } : it
+                )
+              }
+            }
+            if (text || iters.length > 0) {
+              // Frozen content (from a cancelled turn) is by definition NOT
+              // the final reply — it's partial/intermediate. If there are no
+              // iterations to hold the content, wrap it as iteration.thinking
+              // so shouldRenderFinalContent returns false (no copy button on
+              // intermediate content). TurnBody renders thinking as visible
+              // markdown (kind='text'), so it stays visible without a button.
+              let commitText = text
+              let commitIters = iters
+              if (snap.phase === 'frozen' && text && iters.length === 0) {
+                commitIters = [{ iteration: 1, thinking: text, reasoning: liveReasoning, tools: [], toolCount: 0 }]
+                commitText = ''
+              } else if (snap.phase === 'frozen' && text && iters.length > 0 && !iters[iters.length - 1].thinking) {
+                // Last iteration has no thinking — put the stream content there
+                commitIters = iters.map((it, i) =>
+                  i === iters.length - 1 ? { ...it, thinking: text } : it
+                )
+                commitText = ''
+              }
+              completeRef?.current?.(commitText, commitIters, undefined, snap.turnID || store.lastTurnID)
+            }
+          }
           store.reset()
           store.lastIter = 0
         }
@@ -494,6 +534,16 @@ function handleProgressMessage(
       // append stale content as a duplicate message. finalizedRef is reset
       // only on stream_content (genuine new LLM output) or session(busy) on a
       // clean store (genuine new turn).
+      
+      // Guard: if the turn is already finalized (text event or cancel ack
+      // arrived), discard late progress_structured events. They would write
+      // new state into the already-reset store, making liveMessage reappear
+      // ("思考中…" spinner below the committed reply). This mirrors master's
+      // turnDoneRef guard.
+      if (finalizedRef?.current && !p.history_compacted && p.phase !== 'done') {
+        return
+      }
+      
       if (p.history_compacted) {
         store.reset()
         compactedRef.current?.()
