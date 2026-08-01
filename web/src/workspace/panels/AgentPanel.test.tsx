@@ -22,7 +22,15 @@ const mocks = vi.hoisted(() => {
     sessionStore: { activeSession: { channel: 'web', chatID: 'chat-1' }, sessions: [] },
     rightSidebar: { openPanel: vi.fn() },
   }
-  const progress = { progressSnapshot: { todos: [], tokenUsage: null }, liveMessage: null, isStreaming: false }
+  const progress: {
+    progressSnapshot: { todos: unknown[]; tokenUsage: null; streaming?: boolean; phase?: string }
+    liveMessage: unknown
+    isStreaming: boolean
+  } = {
+    progressSnapshot: { todos: [], tokenUsage: null },
+    liveMessage: null,
+    isStreaming: false,
+  }
   return { chat, context, order, progress, rewindHistory: vi.fn() }
 })
 
