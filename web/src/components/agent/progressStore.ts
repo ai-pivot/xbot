@@ -40,16 +40,24 @@ type Mutator = (draft: ProgressSnapshot) => void
 
 /**
  * Append new iterations (Delta Push: 0-1 entries) to iterationHistory,
- * deduplicating by iteration number. Creates a new array reference so
- * immer detects the change (push on draft arrays can be unreliable when
- * the source is a shared constant like EMPTY_PROGRESS_SNAPSHOT).
+ * deduplicating by iteration number, then SORT by iteration number so the
+ * array is always ordered regardless of arrival order.
+ *
+ * Weak-network / reconnect recovery can deliver iterations out of order
+ * (old iteration 1 arriving between new iterations 100 and 101). Appending
+ * in arrival order produced [100, 1, 101] — a non-contiguous, mis-ordered
+ * sequence that rendered iteration 1 inside iterations 100/101. Sorting
+ * after the union keeps the array ordered; continuousIterations then
+ * truncates at the first gap for linear consistency.
  */
 function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
   const newIters = incoming.filter(
     (iter) => !draft.iterationHistory.some((i) => i.iteration === iter.iteration),
   )
   if (newIters.length > 0) {
-    draft.iterationHistory = [...draft.iterationHistory, ...newIters]
+    draft.iterationHistory = [...draft.iterationHistory, ...newIters].sort(
+      (a, b) => a.iteration - b.iteration,
+    )
     assertIterationContinuity(draft.iterationHistory)
   }
 }

@@ -508,3 +508,46 @@ describe('continuousIterations — linear-consistency guard (weak-network iterat
     expect(continuousIterations(iters([1, 3])).map((i) => i.iteration)).toEqual([1])
   })
 })
+
+describe('appendIterations — ordered union (reconnect out-of-order delivery)', () => {
+  let rafCbs: Array<() => void>
+  let rafSpy: ReturnType<typeof vi.spyOn>
+  beforeEach(() => {
+    rafCbs = []
+    rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      rafCbs.push(cb as () => void)
+      return rafCbs.length
+    })
+  })
+  afterEach(() => rafSpy.mockRestore())
+  function flushRaf() {
+    rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+  }
+  function mkIter(n: number): WebIteration {
+    return { iteration: n, thinking: '', reasoning: '', content: '', tools: [], toolCount: 0 }
+  }
+
+  it('sorts iterations regardless of arrival order (old 1 arriving between 100 and 101)', () => {
+    const store = new ProgressStore()
+    // new iteration 100 arrives first (reconnect recovery), then old 1, then 101
+    store.replace({ iterationHistory: [mkIter(100)] })
+    flushRaf()
+    store.replace({ iterationHistory: [mkIter(1)] })
+    flushRaf()
+    store.replace({ iterationHistory: [mkIter(101)] })
+    flushRaf()
+    const hist = store.getSnapshot().iterationHistory.map((i) => i.iteration)
+    expect(hist).toEqual([1, 100, 101])
+    // continuousIterations truncates at the gap → only the contiguous prefix renders
+    expect(continuousIterations(store.getSnapshot().iterationHistory).map((i) => i.iteration)).toEqual([1])
+  })
+
+  it('dedupes by iteration number and keeps order', () => {
+    const store = new ProgressStore()
+    store.replace({ iterationHistory: [mkIter(2), mkIter(1)] })
+    flushRaf()
+    store.replace({ iterationHistory: [mkIter(2)] })
+    flushRaf()
+    expect(store.getSnapshot().iterationHistory.map((i) => i.iteration)).toEqual([1, 2])
+  })
+})
