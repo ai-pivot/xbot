@@ -2109,7 +2109,7 @@ func migrateV51ToV52(conn *sql.DB) error {
 	}{
 		{"record_type", "ALTER TABLE session_messages ADD COLUMN record_type TEXT NOT NULL DEFAULT 'message'"},
 		{"target_history_id", "ALTER TABLE session_messages ADD COLUMN target_history_id INTEGER"},
-		{"record_data", "ALTER TABLE session_messages ADD COLUMN record_data TEXT"},	}
+		{"record_data", "ALTER TABLE session_messages ADD COLUMN record_data TEXT"}}
 	for _, column := range columns {
 		exists, err := columnExists(conn, "session_messages", column.name)
 		if err != nil {
