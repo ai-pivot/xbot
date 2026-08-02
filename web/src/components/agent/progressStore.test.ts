@@ -524,7 +524,7 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
   }
   function mkIter(n: number): WebIteration {
-    return { iteration: n, thinking: '', reasoning: '', content: '', tools: [], toolCount: 0 }
+    return { iteration: n, thinking: '', reasoning: '', tools: [], toolCount: 0 }
   }
 
   it('sorts iterations regardless of arrival order (old 1 arriving between 100 and 101)', () => {

@@ -189,6 +189,16 @@ export function MessageList({
   // ones are absorbed (their tools are in the snapshot or in the last
   // assistant's iterations).
   const rows = useMemo<ChatMessage[]>(() => buildMessageRows(messages, liveMessage), [messages, liveMessage])
+  // Invariant guard: the "thinking…" busy placeholder must never render below
+  // a FINISHED assistant (copy button shown — turn complete). A finished turn
+  // followed by "thinking…" would imply the completed turn is still running.
+  // A committed assistant is isPartial=false with final content (approximation
+  // of shouldRenderFinalContent at the row level).
+  const lastIsFinishedAssistant =
+    rows.length > 0 &&
+    rows[rows.length - 1].role === 'assistant' &&
+    rows[rows.length - 1].isPartial === false &&
+    !!rows[rows.length - 1].content
   // liveId points to the row that receives liveProgress. Scan ALL rows
   // for a match by turnID:role (the committed message that liveProgress
   // should be passed to). If no match, liveMessage has its own row.
@@ -607,8 +617,14 @@ export function MessageList({
               content has arrived yet (e.g. session just started, or
               switched to a busy tab with no iterations). Shown during
               loading when rows exist (the spinner handles the empty case),
-              so the user always sees feedback on a busy session. */}
-          {busy && !liveMessage && !(loading && rows.length === 0) && (
+              so the user always sees feedback on a busy session.
+              INVARIANT: never show the placeholder below a FINISHED
+              assistant message (one with a copy button — turn complete).
+              A finished turn followed by "thinking…" would imply the
+              completed turn is still running (linear-consistency
+              violation). The placeholder only appears when the last row is
+              a user message (new turn) or nothing at all. */}
+          {busy && !liveMessage && !lastIsFinishedAssistant && !(loading && rows.length === 0) && (
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">
