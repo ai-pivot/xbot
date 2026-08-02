@@ -366,8 +366,19 @@ function commitLiveProgressAndReset(
     // non-empty the finished tools are already recorded there — folding a
     // stale activeTools residue (e.g. a previous turn's tools that PhaseDone
     // did not clear) would leak them into this commit (cross-turn leak).
+    // Include the CURRENT iteration's IN-FLIGHT tools (activeTools with
+    // status running/generating) — but ONLY when there is no iteration
+    // history yet: a cancelled turn whose tool was still RUNNING at cancel
+    // time lived in activeTools and was visible in the live UI ("user msg1
+    // iter1(cancelled) user msg2" lost iter1 until a reload backfilled it).
+    // DONE/COMPLETED tools are NOT folded — they are already recorded in the
+    // iteration history / progress_history, and a stale activeTools residue
+    // (PhaseDone does not clear it until the text event) would leak the
+    // PREVIOUS turn's tools into this commit (cross-turn leak, Bug 2).
     const liveTools: WebToolProgress[] = iters.length === 0
-      ? snap.activeTools.filter((t) => t && t.name)
+      ? snap.activeTools.filter(
+          (t) => t && t.name && (t.status === 'running' || t.status === 'generating'),
+        )
       : []
     if (liveTools.length > 0) {
       if (iters.length === 0) {
