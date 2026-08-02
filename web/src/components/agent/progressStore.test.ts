@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ProgressStore, dedupMessages, normalizeWebSubAgent, continuousIterations } from './progressStore'
-import type { WebToolProgress } from '@/types/shared'
+import type { WebIteration, WebToolProgress } from '@/types/shared'
 
 // Helper: create a tool with defaults
 function tool(opts: Partial<WebToolProgress>): WebToolProgress {
