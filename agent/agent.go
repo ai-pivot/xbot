@@ -3304,16 +3304,21 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		if !msg.Time.IsZero() {
 			userMsg.Timestamp = msg.Time
 		}
-		// Persist the turn_id on the user row so history reloads can associate
-		// each user message with its turn. Without it, reloaded user messages
-		// carry turn_id=0 and the frontend cannot reliably position a
-		// late-committed assistant (insertBeforeLastUser) after its own turn's
-		// user — turn N's iteration history renders BELOW turn N+1's user.
-		if raw := msg.Metadata["turn_id"]; raw != "" {
-			if tid, err := strconv.ParseUint(raw, 10, 64); err == nil {
-				userMsg.TurnID = tid
-			}
+		// INVARIANT: every persisted user message MUST carry a non-zero
+		// turn_id. admitToMsgCh allocates it at queue-admission time for all
+		// messages that reach processMessage (incl. bg notifications, which
+		// route through the same queue). A missing/zero turn_id here is an
+		// upstream bug — persisting an unbound user row breaks turn
+		// association and made the frontend render replies above the user
+		// message. FAIL FAST (panic) instead of writing the row.
+		tid, perr := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64)
+		if perr != nil || tid == 0 {
+			panic(fmt.Sprintf(
+				"agent: INVARIANT VIOLATION — user message has no turn_id (channel=%s chat=%s content=%.80q askUserAnswered=%v resumeTurn=%v)",
+				msg.Channel, msg.ChatID, msg.Content, askUserAnswered, resumeTurn,
+			))
 		}
+		userMsg.TurnID = tid
 		historyID, err := tenantSession.AppendMessage(userMsg)
 		if err != nil {
 			return nil, fmt.Errorf("eager-save user message: %w", err)

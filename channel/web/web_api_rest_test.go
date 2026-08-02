@@ -401,6 +401,7 @@ func TestRESTChatDeleteAllowsAdminVerifiedLocalCLISession(t *testing.T) {
 func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
 	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
@@ -408,36 +409,52 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
+	go func() {
+		message := <-msgBus.Inbound
+		if message.Channel != "web" || message.ChatID != "web-1" || message.Content != "hello" {
+			t.Errorf("unexpected message inbound: %#v", message)
+		}
+		if message.Metadata[bus.MetadataReplyPolicy] != bus.ReplyPolicyOptional {
+			t.Errorf("missing reply policy metadata: %#v", message.Metadata)
+		}
+		message.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+	}()
 	wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", []byte(`{"content":"hello"}`)))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("message status = %d: %s", recorder.Code, recorder.Body.String())
 	}
-	message := <-msgBus.Inbound
-	if message.Channel != "web" || message.ChatID != "web-1" || message.Content != "hello" {
-		t.Fatalf("unexpected message inbound: %#v", message)
-	}
-	if message.Metadata[bus.MetadataReplyPolicy] != bus.ReplyPolicyOptional {
-		t.Fatalf("missing reply policy metadata: %#v", message.Metadata)
-	}
 
 	recorder = httptest.NewRecorder()
+	go func() {
+		cancel := <-msgBus.Inbound
+		if cancel.Content != "/cancel" || cancel.ChatID != "web-1" {
+			t.Errorf("unexpected cancel message: %#v", cancel)
+		}
+		cancel.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+	}()
 	wc.handleCancel(recorder, authedAPIRequest(http.MethodPost, "/api/cancel", []byte(`{"chat_id":"web-1"}`)))
-	cancel := <-msgBus.Inbound
-	if recorder.Code != http.StatusOK || cancel.Content != "/cancel" || cancel.ChatID != "web-1" {
-		t.Fatalf("unexpected cancel result: status=%d message=%#v", recorder.Code, cancel)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
+	go func() {
+		answer := <-msgBus.Inbound
+		if answer.Content != "Qq1: yes" || answer.Metadata["ask_user_answered"] != "true" {
+			t.Errorf("unexpected AskUser message: %#v", answer)
+		}
+		answer.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+	}()
 	wc.handleAskUserRespond(recorder, authedAPIRequest(http.MethodPost, "/api/ask_user/respond", []byte(`{"chat_id":"web-1","question_id":"q1","answer":"yes"}`)))
-	answer := <-msgBus.Inbound
-	if recorder.Code != http.StatusOK || answer.Content != "Qq1: yes" || answer.Metadata["ask_user_answered"] != "true" {
-		t.Fatalf("unexpected AskUser result: status=%d message=%#v", recorder.Code, answer)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("AskUser status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
 func TestRESTMessageInjectsCanonicalIdentity(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
 	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
@@ -448,20 +465,24 @@ func TestRESTMessageInjectsCanonicalIdentity(t *testing.T) {
 		IdentityResolver: fixedIdentityResolver{userID: 42, role: "admin"},
 	})
 
+	go func() {
+		message := <-msgBus.Inbound
+		if message.Metadata["user_id"] != "42" || message.Metadata["user_role"] != "admin" {
+			t.Errorf("canonical identity not injected into metadata: %#v", message.Metadata)
+		}
+		message.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+	}()
 	recorder := httptest.NewRecorder()
 	wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", []byte(`{"content":"hello"}`)))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("message status = %d: %s", recorder.Code, recorder.Body.String())
-	}
-	message := <-msgBus.Inbound
-	if message.Metadata["user_id"] != "42" || message.Metadata["user_role"] != "admin" {
-		t.Fatalf("canonical identity not injected into metadata: %#v", message.Metadata)
 	}
 }
 
 func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
 	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
 	wc.SetOSSProvider(fixedOSSProvider{})
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
@@ -492,6 +513,22 @@ func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			ackCh := make(chan struct{})
+			go func() {
+				// First attempt sends one inbound; the retry hits the
+				// dispatchOnce idempotency cache (no second send).
+				inbound := <-msgBus.Inbound
+				if inbound.RequestID != tc.requestID || !strings.Contains(inbound.Content, "<file") {
+					t.Errorf("inbound = %#v", inbound)
+				}
+				inbound.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+				close(ackCh)
+				select {
+				case duplicate := <-msgBus.Inbound:
+					t.Errorf("duplicate inbound: %#v", duplicate)
+				default:
+				}
+			}()
 			for attempt := 0; attempt < 2; attempt++ {
 				recorder := httptest.NewRecorder()
 				wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", body))
@@ -499,16 +536,7 @@ func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
 					t.Fatalf("attempt %d status = %d: %s", attempt+1, recorder.Code, recorder.Body.String())
 				}
 			}
-
-			inbound := <-msgBus.Inbound
-			if inbound.RequestID != tc.requestID || !strings.Contains(inbound.Content, "<file") {
-				t.Fatalf("inbound = %#v", inbound)
-			}
-			select {
-			case duplicate := <-msgBus.Inbound:
-				t.Fatalf("duplicate inbound: %#v", duplicate)
-			default:
-			}
+			<-ackCh
 			echo := <-client.sendCh
 			if echo.Type != protocol.MsgTypeUserEcho || echo.ID != tc.requestID || echo.OriginalContent != tc.content {
 				t.Fatalf("echo = %#v", echo)
@@ -591,7 +619,7 @@ func TestRESTMessageCommitsIdempotencyOnlyAfterAgentAdmission(t *testing.T) {
 
 	go func() {
 		message := <-msgBus.Inbound
-		message.DeliveryAck <- bus.DeliveryResult{}
+		message.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
 	}()
 	accepted := httptest.NewRecorder()
 	wc.handleMessage(accepted, authedAPIRequest(http.MethodPost, "/api/message", body))
@@ -640,7 +668,7 @@ func TestRESTMessageCancellationAfterHandoffPreservesIdempotency(t *testing.T) {
 
 	inbound := <-msgBus.Inbound
 	cancel()
-	inbound.DeliveryAck <- bus.DeliveryResult{}
+	inbound.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
 	result := <-resultCh
 	if result.err != nil || result.sel.ChatID != "web-1" {
 		t.Fatalf("dispatch after handoff cancellation = (%#v, %v)", result.sel, result.err)

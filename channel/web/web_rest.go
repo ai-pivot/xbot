@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"xbot/bus"
+	log "xbot/logger"
 	"xbot/protocol"
 )
 
@@ -76,19 +77,50 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		writeInboundError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"chat_id":    sel.ChatID,
 		"channel":    sel.Channel,
 		"message_id": msgID,
 		"timestamp":  ts.UnixMilli(),
-		// turn_id is allocated at queue-admission time by the agent loop, so
-		// the API response always carries it (no dependence on turn_started,
-		// which may be lost/coalesced in SSE). queued=true means the chat was
-		// already processing an earlier message — the frontend shows a
-		// "queued" marker instead of treating the message as actively running.
-		"turn_id": turnID,
-		"queued":  queued,
-	})
+		"queued":     queued,
+	}
+	if queued {
+		// QUEUED: the chat was already busy; the message will be handled after
+		// the current turn. Deliberately OMIT turn_id — the frontend shows a
+		// queued marker and binds the turn via turn_started when processing
+		// begins (turn_id is not yet meaningful while queued).
+	} else if turnID == 0 && !isSlashCommand(request.Content) {
+		// INSERTED (non-queued): the response MUST carry a non-zero turn_id —
+		// EXCEPT slash commands (e.g. /help, /new), which are handled
+		// concurrently by the chatWorker and have no user-message turn
+		// semantics (their turn_id is legitimately 0; the frontend does not
+		// bind a turn for them). A 0 turn_id on a real user message means the
+		// queue-admission allocation failed upstream — the frontend binds the
+		// optimistic user row from this value and a 0 would break turn order
+		// (replies rendering above the user msg). Fail fast.
+		log.WithFields(log.Fields{
+			"channel": sel.Channel,
+			"chat_id": sel.ChatID,
+			"msg_id":  msgID,
+		}).Error("handleMessage: turn_id is 0 for a user message — refusing to return an unbound user message")
+		writeInboundError(w, fmt.Errorf("internal error: message accepted without a turn_id"))
+		return
+	} else {
+		// Non-queued, non-command: turn_id must be non-zero (guaranteed by
+		// admitToMsgCh for user messages); commands keep turn_id omitted.
+		if turnID != 0 {
+			resp["turn_id"] = turnID
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// isSlashCommand reports whether a message content is a slash command (e.g.
+// /help, /new). Command messages are handled by the chatWorker's command
+// branch — they have no user-message turn semantics, so their turn_id may
+// legitimately be 0 and is omitted from the API response.
+func isSlashCommand(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "/")
 }
 
 func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {
