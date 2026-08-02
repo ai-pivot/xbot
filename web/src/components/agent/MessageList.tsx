@@ -110,9 +110,24 @@ export function buildMessageRows(
       (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
     )
     if (hasCommitted) return [...messages]
+    // Insert at the correct TURN position: after the last message whose
+    // turnID <= live.turnID. A frozen live row from a CANCELLED previous turn
+    // (turn_started of the new turn not yet received) must land ABOVE the new
+    // user message. Appending it to the end made the new user flicker above
+    // the cancelled turn for a frame until turn_started committed the frozen
+    // content. The current turn's live row (turnID > everything committed)
+    // naturally lands at the end.
+    let insertIdx = messages.length
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
+        insertIdx = i + 1
+        break
+      }
+    }
+    return [...messages.slice(0, insertIdx), liveMessage, ...messages.slice(insertIdx)]
   }
-  // Live message for the current (uncommitted) turn — render after everything
-  // the user has already seen; its own user row is already in the array.
+  // turnID=0 live (unbound) — append at end.
   return [...messages, liveMessage]
 }
 

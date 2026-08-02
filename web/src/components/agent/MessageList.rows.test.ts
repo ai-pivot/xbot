@@ -91,4 +91,27 @@ describe('buildMessageRows turn-boundary live insertion', () => {
     expect(rows).toHaveLength(2)
     expect(rows.some((r) => r.id === 'live-1')).toBe(false)
   })
+
+  it('places a FROZEN live row from a cancelled previous turn ABOVE the new user message (no flicker)', () => {
+    // BUG: turn N was cancelled BEFORE any assistant was committed → store
+    // froze its live content (liveMessage, turnID=1) and there is no committed
+    // same-turn assistant to merge into. The user then sent a new message
+    // (u-new, turn 2). Appending the frozen live row at the END made u-new
+    // render ABOVE the cancelled turn for a frame (until turn_started(2)
+    // committed the frozen content) — the "user msg 跑到被 cancel 的 agent
+    // turn 上方一瞬间" flicker.
+    const messages: ChatMessage[] = [
+      msg('u1', 'user', 1),
+      msg('u-new', 'user', 2, { persisted: false }),
+    ]
+    const live: ChatMessage = {
+      id: 'live-frozen', role: 'assistant', content: 'cancelled turn 1 content',
+      iterations: [], timestamp: '', isPartial: true, turnID: 1,
+    }
+    const rows = buildMessageRows(messages, live)
+    const ids = rows.map((r) => r.id)
+    // The frozen turn-1 live row must land ABOVE u-new (turn 2), never below it.
+    expect(ids.indexOf('live-frozen')).toBeGreaterThan(ids.indexOf('u1'))
+    expect(ids.indexOf('live-frozen')).toBeLessThan(ids.indexOf('u-new'))
+  })
 })
