@@ -97,34 +97,23 @@ export function buildMessageRows(
   messages: ChatMessage[],
   liveMessage: ChatMessage | null,
 ): ChatMessage[] {
-  // Deterministic order — no insertion heuristics or fallbacks. Every row's
-  // position is derived from its authoritative turnID (backend-persisted,
-  // turn_started-bound, or derived at history conversion for legacy rows):
-  //   1. turnID ascending (turnID=0 rows — unbound optimistic / legacy —
-  //      sort LAST: they are the newest or unclassified)
-  //   2. within a turn: user before assistant
-  //   3. within same turn+role: eventSeq / dbID ascending (backend order)
-  const rows = liveMessage ? [...messages, liveMessage] : [...messages]
-  rows.sort((a, b) => {
-    const ta = a.turnID > 0 ? a.turnID : Number.MAX_SAFE_INTEGER
-    const tb = b.turnID > 0 ? b.turnID : Number.MAX_SAFE_INTEGER
-    if (ta !== tb) return ta - tb
-    const ra = a.role === 'user' ? 0 : 1
-    const rb = b.role === 'user' ? 0 : 1
-    if (ra !== rb) return ra - rb
-    return (a.eventSeq ?? a.dbID ?? 0) - (b.eventSeq ?? b.dbID ?? 0)
-  })
+  // Order = the message array's accumulation order (append-only — mirrors the
+  // backend's DB row order). NO turnID re-sorting: user rows keep their
+  // natural order, and a turn_id=0 user must NOT be grouped with other users.
+  // The committed assistant's position is fixed by appendAssistant at commit
+  // time (inserted before the newest user), so the array is already ordered.
+  if (!liveMessage) return [...messages]
   // The live message for a turn that already has a committed assistant is
   // merged into it (liveProgress flows via liveId) — never rendered twice.
-  if (liveMessage && liveMessage.turnID > 0) {
-    const hasCommitted = rows.some(
-      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role && m.id !== liveMessage.id,
+  if (liveMessage.turnID > 0) {
+    const hasCommitted = messages.some(
+      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
     )
-    if (hasCommitted) {
-      return rows.filter((m) => m.id !== liveMessage.id)
-    }
+    if (hasCommitted) return [...messages]
   }
-  return rows
+  // Live message for the current (uncommitted) turn — render after everything
+  // the user has already seen; its own user row is already in the array.
+  return [...messages, liveMessage]
 }
 
 export function MessageList({

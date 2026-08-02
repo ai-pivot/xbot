@@ -719,37 +719,18 @@ export function useChatMessages({
       // DEFAULT: append to the end. This preserves turn order — the assistant
       // reply belongs AFTER its user message.
       //
-      // insertBeforeLastUser=true (cancel-then-send commit path): the committed
-      // assistant content (turn N) was finalized by turn_started (N+1) or the
-      // turn_id-change fallback while the user already typed the next message.
-      // It must appear AFTER ITS OWN turn's user (turn N), NOT after the next
-      // turn's user. Prefer locating the user by turnID; fall back to the old
-      // heuristic (last unpersisted user) when this turn's user is unbound
-      // (turnID=0, turn_started lost) — otherwise a persisted next-turn user
-      // (REST response arrived first) makes insertIdx fall through to the END,
-      // rendering turn N's iteration history AFTER turn N+1's user/live content.
+      // insertBeforeLastUser=true (turn_started(N+1) / turn_id-change fallback
+      // commit path): the committed assistant belongs to the turn BEFORE the
+      // newest user — it must land ABOVE that user, never below it. The rule
+      // is deterministic and turn_id-independent: insert before the LAST user
+      // message in the list (persisted or not). The newest user is exactly the
+      // one that triggered the commit, so this always restores turn order.
       let insertIdx = prev.length
       if (insertBeforeLastUser) {
-        if (turnID && turnID > 0) {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i].role === 'user' && prev[i].turnID === turnID) {
-              insertIdx = i + 1
-              break
-            }
-          }
-        }
-        if (insertIdx === prev.length) {
-          // Fallback: insert before the LAST user message (persisted or not).
-          // The committed assistant belongs after its own turn's user, which is
-          // always before the newest user (the one that triggered the commit).
-          // Do NOT restrict to unpersisted users — a persisted next-turn user
-          // (REST response arrived first) must still stay BELOW this assistant,
-          // otherwise turn N's history renders after turn N+1's user (interleaved).
-          for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i].role === 'user') {
-              insertIdx = i
-              break
-            }
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].role === 'user') {
+            insertIdx = i
+            break
           }
         }
       }
