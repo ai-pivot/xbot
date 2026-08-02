@@ -1119,4 +1119,31 @@ describe('useChatMessages', () => {
     expect(result.current.messages[0].queued).toBe(false)
     expect(result.current.messages[0].turnID).toBe(43)
   })
+
+  it('inserts a committed assistant after ITS OWN turn user even when the next turn user is already persisted', async () => {
+    // BUG: appendAssistant(insertBeforeLastUser=true) only looked for an
+    // UNPERSISTED user. When the next turn's user was persisted first (REST
+    // response arrived), it fell through to the END of the list, rendering
+    // turn N's iteration history AFTER turn N+1's user/live content — the
+    // "严重迭代混乱" layout (asst-42 appears below user-43).
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'turn-order', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // turn 42: user + bound turnID
+    act(() => result.current.sendMessage('u42'))
+    act(() => result.current.bindLastUserToTurn(42))
+    // turn 43: user; REST response resolves → persisted=true
+    act(() => result.current.sendMessage('u43'))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.messages.find((m) => m.content === 'u43')?.persisted).toBe(true)
+    act(() => result.current.bindLastUserToTurn(43))
+
+    // turn 42's assistant committed late (turn_started(43) / text fallback)
+    act(() => result.current.appendAssistant('A42', [], undefined, 42, true))
+
+    const contents = result.current.messages.map((m) => m.content)
+    expect(contents.indexOf('A42')).toBeGreaterThan(contents.indexOf('u42'))
+    expect(contents.indexOf('A42')).toBeLessThan(contents.indexOf('u43'))
+  })
 })

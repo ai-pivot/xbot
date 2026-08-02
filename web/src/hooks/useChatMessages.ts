@@ -719,19 +719,33 @@ export function useChatMessages({
       // DEFAULT: append to the end. This preserves turn order — the assistant
       // reply belongs AFTER its user message.
       //
-      // insertBeforeLastUser=true (cancel-then-send commit-frozen path only):
-      // the frozen assistant content (turn N) was cancelled, then the user
-      // sent a new message (turn N+1, optimistic user still unpersisted). The
-      // frozen content must appear BEFORE the new optimistic user message,
-      // not after it — otherwise two user messages would be adjacent.
+      // insertBeforeLastUser=true (cancel-then-send commit path): the committed
+      // assistant content (turn N) was finalized by turn_started (N+1) or the
+      // turn_id-change fallback while the user already typed the next message.
+      // It must appear AFTER ITS OWN turn's user (turn N), NOT after the next
+      // turn's user. Prefer locating the user by turnID; fall back to the old
+      // heuristic (last unpersisted user) when this turn's user is unbound
+      // (turnID=0, turn_started lost) — otherwise a persisted next-turn user
+      // (REST response arrived first) makes insertIdx fall through to the END,
+      // rendering turn N's iteration history AFTER turn N+1's user/live content.
       let insertIdx = prev.length
       if (insertBeforeLastUser) {
-        for (let i = prev.length - 1; i >= 0; i--) {
-          if (prev[i].role === 'user' && !prev[i].persisted) {
-            insertIdx = i
-            break
+        if (turnID && turnID > 0) {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === 'user' && prev[i].turnID === turnID) {
+              insertIdx = i + 1
+              break
+            }
           }
-          if (prev[i].persisted) break
+        }
+        if (insertIdx === prev.length) {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === 'user' && !prev[i].persisted) {
+              insertIdx = i
+              break
+            }
+            if (prev[i].persisted) break
+          }
         }
       }
       const withMsg = [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)]
