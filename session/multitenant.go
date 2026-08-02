@@ -350,7 +350,7 @@ func (m *MultiTenantSession) getOrCreateSession(channel, chatID string, canonica
 		memory:     memProvider,
 		mcpManager: mcpManager,
 		lastActive: time.Now(),
-		cwd:        loadPersistedCWD(channel, chatID),
+		cwd:        loadPersistedCWD(m.sessionSvc, tenantID),
 	}
 
 	m.tenantCache[key] = sess

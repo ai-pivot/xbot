@@ -742,15 +742,18 @@ func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 }
 
 func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
-	dir := session.LoadPersistedCWD(channelName, chatID)
+	// CWD is restored from the DB (tenants.cwd) when the session is created
+	// (GetOrCreateSession → loadPersistedCWD reads the DB). Read it from the
+	// session directly — no file access (session_cwd files are retired).
+	var dir string
+	if ag != nil && ag.MultiSession() != nil {
+		if sess, ok := ag.MultiSession().GetSession(channelName, chatID); ok && sess != nil {
+			dir = sess.GetCurrentDir()
+		}
+	}
 	if dir == "" && channelName == "cli" {
 		if workDir, _ := parseCLIChatID(chatID); workDir != "" {
 			dir = workDir
-		}
-	}
-	if dir == "" && ag != nil && ag.MultiSession() != nil {
-		if sess, ok := ag.MultiSession().GetSession(channelName, chatID); ok && sess != nil {
-			dir = sess.GetCurrentDir()
 		}
 	}
 	// Final fallback: use the server's workDir. This ensures new web sessions

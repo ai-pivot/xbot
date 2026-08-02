@@ -303,3 +303,37 @@ func (s *SessionService) GetMaxTurnID(tenantID int64) (uint64, error) {
 	}
 	return 0, nil
 }
+
+// SetTenantCWD persists a session's current working directory in the tenants
+// table (the single authoritative store; file-based session_cwd is retired).
+func (s *SessionService) SetTenantCWD(tenantID int64, cwd string) error {
+	conn, err := s.conn()
+	if err != nil {
+		return err
+	}
+	if _, err := conn.Exec("UPDATE tenants SET cwd = ? WHERE id = ?", cwd, tenantID); err != nil {
+		return fmt.Errorf("update tenants.cwd: %w", err)
+	}
+	return nil
+}
+
+// GetTenantCWD reads a session's persisted CWD from the tenants table.
+// Returns "" when the session has no persisted CWD (fresh session).
+func (s *SessionService) GetTenantCWD(tenantID int64) (string, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return "", err
+	}
+	var cwd sql.NullString
+	err = conn.QueryRow("SELECT cwd FROM tenants WHERE id = ?", tenantID).Scan(&cwd)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", fmt.Errorf("get tenants.cwd: %w", err)
+	}
+	if cwd.Valid {
+		return cwd.String, nil
+	}
+	return "", nil
+}

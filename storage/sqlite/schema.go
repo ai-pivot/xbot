@@ -17,6 +17,7 @@ CREATE TABLE tenants (
     runner_id TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    cwd TEXT DEFAULT '',
     UNIQUE(channel, chat_id)
 );
 
