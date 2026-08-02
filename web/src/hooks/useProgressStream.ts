@@ -366,18 +366,8 @@ function commitLiveProgressAndReset(
     // non-empty the finished tools are already recorded there — folding a
     // stale activeTools residue (e.g. a previous turn's tools that PhaseDone
     // did not clear) would leak them into this commit (cross-turn leak).
-    const liveTools = iters.length === 0
-      ? snap.activeTools
-          .filter((t) => t && t.name)
-          .map((t) => ({
-            name: t.name,
-            label: t.label ?? '',
-            status: t.status ?? 'done',
-            elapsedMs: t.elapsedMs,
-            summary: t.summary,
-            detail: t.detail,
-            args: t.args,
-          }))
+    const liveTools: WebToolProgress[] = iters.length === 0
+      ? snap.activeTools.filter((t) => t && t.name)
       : []
     if (liveTools.length > 0) {
       if (iters.length === 0) {
