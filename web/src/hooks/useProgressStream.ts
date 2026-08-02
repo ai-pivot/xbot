@@ -358,6 +358,32 @@ function commitLiveProgressAndReset(
     const text = snap.streamContent || snap.content || ''
     const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
     let iters = snap.iterationHistory
+    // Include the CURRENT iteration's tools — a cancelled turn's in-flight
+    // tool calls were visible in the live UI and MUST NOT vanish on commit
+    // (otherwise "user msg1 iter1(cancelled) user msg2" loses iter1 until a
+    // reload backfills it from DB).
+    const liveTools = [...snap.activeTools, ...snap.completedTools]
+      .filter((t) => t && t.name)
+      .map((t) => ({
+        name: t.name,
+        label: t.label ?? '',
+        status: t.status ?? 'done',
+        elapsedMs: t.elapsedMs,
+        summary: t.summary,
+        detail: t.detail,
+        args: t.args,
+      }))
+    if (liveTools.length > 0) {
+      if (iters.length === 0) {
+        iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: liveTools, toolCount: liveTools.length }]
+      } else {
+        const last = iters[iters.length - 1]
+        iters = [
+          ...iters.slice(0, iters.length - 1),
+          { ...last, tools: [...(last.tools ?? []), ...liveTools], toolCount: (last.toolCount ?? 0) + liveTools.length },
+        ]
+      }
+    }
     if (liveReasoning) {
       if (iters.length === 0) {
         iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
