@@ -169,6 +169,29 @@ func formatToolLabel(name, argsJSON string) string {
 //  2. Cancelled/interrupted turn: intermediate assistant(ToolCalls) without Detail → pending tool_summary
 //  3. Mixed: some turns completed, last one cancelled
 func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
+	// Copy so the derivation below never mutates the caller's slice.
+	msgs = append([]llm.ChatMessage(nil), msgs...)
+
+	// Derive turn_id for legacy user rows (turn_id=0, written before eager-save
+	// stamped it): a user row belongs to the first turn_id>0 row that follows
+	// it before the next user row. Deterministic — based on the append-only
+	// row order, so the frontend can always order messages by turn_id without
+	// heuristics/fallbacks.
+	for i := range msgs {
+		if msgs[i].Role != "user" || msgs[i].TurnID > 0 {
+			continue
+		}
+		for j := i + 1; j < len(msgs); j++ {
+			if msgs[j].Role == "user" {
+				break
+			}
+			if msgs[j].TurnID > 0 {
+				msgs[i].TurnID = msgs[j].TurnID
+				break
+			}
+		}
+	}
+
 	var history []HistoryMessage
 	var pendingIters []HistoryIteration
 	var curIterTools []protocol.ToolProgress

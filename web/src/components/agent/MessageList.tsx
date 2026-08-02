@@ -97,88 +97,34 @@ export function buildMessageRows(
   messages: ChatMessage[],
   liveMessage: ChatMessage | null,
 ): ChatMessage[] {
-  // Remove intermediate assistant messages after the last user message.
-  // Only apply when the last message is an assistant (active turn) —
-  // if the last message is a user message, ALL previous assistants are
-  // from completed turns and must be preserved.
-  const last = messages[messages.length - 1]
-  const deduped = [...messages]
-  if (last && last.role === 'assistant') {
-    for (let i = deduped.length - 2; i >= 0; i--) {
-      if (deduped[i].role === 'user') break
-      if (deduped[i].role === 'assistant') deduped.splice(i, 1)
-    }
-  }
-
-  // ID-based ordering + dedup using turnID.
-  if (!liveMessage) return deduped
-
-  // 1. Merge: if ANY message in the list has the same turnID:role as
-  //    liveMessage, pass liveProgress to it (don't add a separate row).
-  //    This handles IncrementalPersist (committed assistant from DB) and
-  //    appendAssistant (locally committed) — both carry the same turnID.
-  if (liveMessage.turnID > 0) {
-    const matchIdx = deduped.findIndex(
-      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
+  // Deterministic order — no insertion heuristics or fallbacks. Every row's
+  // position is derived from its authoritative turnID (backend-persisted,
+  // turn_started-bound, or derived at history conversion for legacy rows):
+  //   1. turnID ascending (turnID=0 rows — unbound optimistic / legacy —
+  //      sort LAST: they are the newest or unclassified)
+  //   2. within a turn: user before assistant
+  //   3. within same turn+role: eventSeq / dbID ascending (backend order)
+  const rows = liveMessage ? [...messages, liveMessage] : [...messages]
+  rows.sort((a, b) => {
+    const ta = a.turnID > 0 ? a.turnID : Number.MAX_SAFE_INTEGER
+    const tb = b.turnID > 0 ? b.turnID : Number.MAX_SAFE_INTEGER
+    if (ta !== tb) return ta - tb
+    const ra = a.role === 'user' ? 0 : 1
+    const rb = b.role === 'user' ? 0 : 1
+    if (ra !== rb) return ra - rb
+    return (a.eventSeq ?? a.dbID ?? 0) - (b.eventSeq ?? b.dbID ?? 0)
+  })
+  // The live message for a turn that already has a committed assistant is
+  // merged into it (liveProgress flows via liveId) — never rendered twice.
+  if (liveMessage && liveMessage.turnID > 0) {
+    const hasCommitted = rows.some(
+      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role && m.id !== liveMessage.id,
     )
-    if (matchIdx >= 0) {
-      // Merge: the committed message gets liveProgress via liveId.
-      return deduped
+    if (hasCommitted) {
+      return rows.filter((m) => m.id !== liveMessage.id)
     }
-
-    // 2. No merge target — insert at the correct position by turnID.
-    //    Scan backwards: insert after the last message with turnID <=
-    //    liveMessage.turnID. Skip turnID=0 messages (optimistic user rows
-    //    that haven't been bound to a turn yet, or legacy rows) — they are
-    //    ambiguous and the live assistant should go after the last bound
-    //    message with a matching or earlier turn. If no bound message is
-    //    found, fall back to appending at the end.
-    let insertIdx = deduped.length
-
-    // 2a. The live assistant belongs AFTER its own turn's user message.
-    //     First look for the bound user of THIS turn (turnID == live.turnID).
-    let turnUserIdx = -1
-    for (let i = deduped.length - 1; i >= 0; i--) {
-      if (deduped[i].turnID === liveMessage.turnID && deduped[i].role === 'user') {
-        turnUserIdx = i
-        break
-      }
-    }
-    if (turnUserIdx >= 0) {
-      insertIdx = turnUserIdx + 1
-    } else {
-      // 2b. No bound user for this turn — the trailing optimistic user row
-      //     (turnID=0, persisted=false) IS this turn's user (turn_started was
-      //     lost, so bindLastUserToTurn never ran). Insert after it so the
-      //     live assistant doesn't land inside the previous turn. A turnID=0
-      //     row that is NOT the last unbound user (persisted) is legacy and
-      //     is still skipped.
-      let foundUnbound = false
-      for (let i = deduped.length - 1; i >= 0; i--) {
-        const m = deduped[i]
-        if (m.turnID === 0 && m.role === 'user' && m.persisted === false) {
-          insertIdx = i + 1
-          foundUnbound = true
-          break
-        }
-        if (m.turnID > 0) break // stop at the first bound row from the end
-      }
-      // 2c. Fall back to the original turnID scan ONLY when 2b found nothing.
-      if (!foundUnbound) {
-        for (let i = deduped.length - 1; i >= 0; i--) {
-          const m = deduped[i]
-          if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
-            insertIdx = i + 1
-            break
-          }
-        }
-      }
-    }
-    return [...deduped.slice(0, insertIdx), liveMessage, ...deduped.slice(insertIdx)]
   }
-
-  // No turnID (shouldn't happen in practice) — append at end.
-  return [...deduped, liveMessage]
+  return rows
 }
 
 export function MessageList({

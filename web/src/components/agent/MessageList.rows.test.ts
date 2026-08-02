@@ -28,13 +28,14 @@ function msg(id: string, role: 'user' | 'assistant', turnID: number, extra: Part
 }
 
 describe('buildMessageRows turn-boundary live insertion', () => {
-  it('BUG: inserts the live assistant AFTER the current turn optimistic user (turnID=0) — not after the previous assistant', () => {
-    // Previous turn complete; the new user message is optimistic with turnID=0
-    // because turn_started was lost and bindLastUserToTurn never ran.
+  it('orders the live assistant after its own turn user (REST-bound turnID, no heuristics)', () => {
+    // The new user message is bound to turn 6 via the REST response turn_id
+    // (sendMessage binds resp.turn_id) — deterministic ordering by turnID
+    // places it and its live assistant after the previous turn, user first.
     const messages: ChatMessage[] = [
       msg('u-prev', 'user', 5),
       msg('a-prev', 'assistant', 5),
-      msg('u-new', 'user', 0, { persisted: false }),
+      msg('u-new', 'user', 6, { persisted: false }),
     ]
     const live: ChatMessage = {
       id: 'live-new', role: 'assistant', content: 'streaming new reply',
@@ -42,9 +43,25 @@ describe('buildMessageRows turn-boundary live insertion', () => {
     }
     const rows = buildMessageRows(messages, live)
     const ids = rows.map((r) => r.id)
-    // The live assistant MUST render after the new user message.
+    // The live assistant MUST render after the new user message (same turn:
+    // user before assistant), and never inside the previous turn.
     expect(ids.indexOf('live-new')).toBeGreaterThan(ids.indexOf('u-new'))
-    expect(ids[ids.length - 1]).toBe('live-new')
+    expect(ids.indexOf('u-new')).toBeGreaterThan(ids.indexOf('a-prev'))
+  })
+
+  it('sorts an unbound optimistic user (turnID=0) LAST — deterministic, no fallback', () => {
+    // turnID=0 rows are unclassified (unbound optimistic / legacy) and sort
+    // last by the deterministic ordering key. In the normal flow the REST
+    // response binds resp.turn_id before the live assistant exists, so this
+    // only occurs when the response itself is lost.
+    const messages: ChatMessage[] = [
+      msg('u-prev', 'user', 5),
+      msg('a-prev', 'assistant', 5),
+      msg('u-new', 'user', 0, { persisted: false }),
+    ]
+    const rows = buildMessageRows(messages, null)
+    const ids = rows.map((r) => r.id)
+    expect(ids).toEqual(['u-prev', 'a-prev', 'u-new'])
   })
 
   it('inserts live assistant after a bound same-turn user when turn_started arrived normally', () => {
