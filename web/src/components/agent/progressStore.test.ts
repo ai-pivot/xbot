@@ -500,7 +500,11 @@ describe('continuousIterations — linear-consistency guard (weak-network iterat
     expect(continuousIterations(iters([1])).map((i) => i.iteration)).toEqual([1])
   })
 
-  it('is order-independent (sorts before truncating)', () => {
-    expect(continuousIterations(iters([3, 1, 2])).map((i) => i.iteration)).toEqual([1, 2, 3])
+  it('preserves input order (no sorting — reordering after reconnect looks like duplication)', () => {
+    // iterations arrive in order from appendIterations; continuousIterations
+    // must NOT sort (sorting would reorder rows after a reconnect and make
+    // old iterations appear near the latest progress)
+    expect(continuousIterations(iters([1, 2, 3])).map((i) => i.iteration)).toEqual([1, 2, 3])
+    expect(continuousIterations(iters([1, 3])).map((i) => i.iteration)).toEqual([1])
   })
 })
