@@ -114,4 +114,24 @@ describe('buildMessageRows turn-boundary live insertion', () => {
     expect(ids.indexOf('live-frozen')).toBeGreaterThan(ids.indexOf('u1'))
     expect(ids.indexOf('live-frozen')).toBeLessThan(ids.indexOf('u-new'))
   })
+
+  it('places the CURRENT turn reply BELOW the new user message (unbound user, turnID not in list)', () => {
+    // BUG: user2 is optimistic/unbound (turnID=0). The live reply has turnID=2
+    // (not yet in the committed list). The turnID scan skipped the unbound
+    // user and inserted the reply ABOVE it — "reply rendered above my user msg"
+    // (linear-consistency violation).
+    const messages: ChatMessage[] = [
+      msg('u1', 'user', 1),
+      msg('a1', 'assistant', 1),
+      msg('u2', 'user', 0, { persisted: false }),
+    ]
+    const live: ChatMessage = {
+      id: 'live-2', role: 'assistant', content: 'reply', iterations: [], timestamp: '', isPartial: true, turnID: 2,
+    }
+    const rows = buildMessageRows(messages, live)
+    const ids = rows.map((r) => r.id)
+    expect(ids.indexOf('live-2')).toBeGreaterThan(ids.indexOf('u2'))
+    expect(ids[ids.length - 1]).toBe('live-2')
+  })
+
 })

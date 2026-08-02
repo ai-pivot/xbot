@@ -110,24 +110,31 @@ export function buildMessageRows(
       (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
     )
     if (hasCommitted) return [...messages]
-    // Insert at the correct TURN position: after the last message whose
-    // turnID <= live.turnID. A frozen live row from a CANCELLED previous turn
-    // (turn_started of the new turn not yet received) must land ABOVE the new
-    // user message. Appending it to the end made the new user flicker above
-    // the cancelled turn for a frame until turn_started committed the frozen
-    // content. The current turn's live row (turnID > everything committed)
-    // naturally lands at the end.
-    let insertIdx = messages.length
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]
-      if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
-        insertIdx = i + 1
-        break
+    // Distinguish the two live-row kinds by whether its turnID already exists
+    // in the committed list:
+    //  - EXISTS (e.g. a frozen row from a CANCELLED previous turn whose user is
+    //    in the list): insert after that turn's last message — ABOVE the newest
+    //    user. Without this, the new user flickered above the cancelled turn.
+    //  - NOT EXISTS (the CURRENT turn's reply — its user was just sent and is
+    //    still unbound / turnID not yet in the list): append at the END, below
+    //    the new user. Falling through to the turnID scan skipped the unbound
+    //    user (turnID=0) and inserted the reply ABOVE the user — the "reply
+    //    rendered above my user msg" linear-consistency violation.
+    const turnExists = messages.some((m) => m.turnID === liveMessage.turnID)
+    if (turnExists) {
+      let insertIdx = messages.length
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i]
+        if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
+          insertIdx = i + 1
+          break
+        }
       }
+      return [...messages.slice(0, insertIdx), liveMessage, ...messages.slice(insertIdx)]
     }
-    return [...messages.slice(0, insertIdx), liveMessage, ...messages.slice(insertIdx)]
   }
-  // turnID=0 live (unbound) — append at end.
+  // turnID=0 live, or the current turn's reply (turnID not in the committed
+  // list yet) — append at the end (below the newest user).
   return [...messages, liveMessage]
 }
 
