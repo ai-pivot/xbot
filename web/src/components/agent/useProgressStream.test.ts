@@ -1020,4 +1020,42 @@ describe('cancel: assistant message must not vanish', () => {
     warnSpy.mockRestore()
     errorSpy.mockRestore()
   })
+
+  it('turn_started-lost fallback COMMITS old live content instead of wiping it (no flicker, no data loss)', () => {
+    // BUG: when the old turn's text event AND the new turn's turn_started are
+    // both lost (SSE coalescing/disconnect), the old turn's live content (tools,
+    // stream text) is the ONLY display of the old reply. The 637-line fallback
+    // called store.reset() directly — the content vanished from the UI in one
+    // frame (flicker) and was lost until a history reload.
+    const complete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+    // Turn 1: turn_started → stream content + running tool. text event NEVER arrives.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'old reply', turn_id: 1 } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: {
+        phase: 'tool_exec', iteration: 1, seq: 2, turn_id: 1, chat_id: 'web:c1',
+        active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+      },
+    })
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.progressSnapshot.activeTools).toHaveLength(1)
+
+    // Turn 2 begins: turn_started(2) lost too. First structured event triggers
+    // the fallback — it must hand the old content to the committed list
+    // (onAssistantComplete) BEFORE resetting, so nothing flickers or vanishes.
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { phase: 'thinking', iteration: 1, seq: 3, turn_id: 2, chat_id: 'web:c1' },
+    })
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete.mock.calls[0][0]).toBe('old reply')
+    // Store reset + new turn applied cleanly: no stale old-turn tools remain.
+    expect(result.current.progressSnapshot.activeTools).toEqual([])
+    expect(result.current.liveMessage).toBeNull()
+  })
 })

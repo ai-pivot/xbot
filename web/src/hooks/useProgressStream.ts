@@ -339,6 +339,52 @@ function hasVisibleProgress(snap: ProgressSnapshot): boolean {
   )
 }
 
+/**
+ * Commit any uncommitted live progress content to the committed message list,
+ * then reset the store. Used when a new turn begins but the previous turn's
+ * text event was lost (SSE coalescing/disconnect): the live content is the
+ * ONLY display of the old turn's reply — wiping it without committing makes
+ * the content vanish from the UI in one frame (flicker) AND loses it until a
+ * history reload. Commit-then-reset hands the content over atomically: the
+ * message stays visible at the same position, just re-parented from the live
+ * stream to the committed list. No-op (plain reset) when nothing is visible.
+ */
+function commitLiveProgressAndReset(
+  store: ProgressStore,
+  complete: ((finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => void) | undefined,
+): void {
+  const snap = store.getSnapshot()
+  if (hasVisibleProgress(snap)) {
+    const text = snap.streamContent || snap.content || ''
+    const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
+    let iters = snap.iterationHistory
+    if (liveReasoning) {
+      if (iters.length === 0) {
+        iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
+      } else if (liveReasoning.length > (iters[iters.length - 1].reasoning || '').length) {
+        iters = iters.map((it, i) =>
+          i === iters.length - 1 ? { ...it, reasoning: liveReasoning } : it
+        )
+      }
+    }
+    if (text || iters.length > 0) {
+      let commitText = text
+      let commitIters = iters
+      if (snap.phase === 'frozen' && text && iters.length === 0) {
+        commitIters = [{ iteration: 1, thinking: text, reasoning: liveReasoning, tools: [], toolCount: 0 }]
+        commitText = ''
+      } else if (snap.phase === 'frozen' && text && iters.length > 0 && !iters[iters.length - 1].thinking) {
+        commitIters = iters.map((it, i) =>
+          i === iters.length - 1 ? { ...it, thinking: text } : it
+        )
+        commitText = ''
+      }
+      complete?.(commitText, commitIters, undefined, snap.turnID || store.lastTurnID, true)
+    }
+  }
+  store.reset()
+}
+
 /** Dispatch one WSMessage into the progress store. Shared with history hydration. */
 function handleProgressMessage(
   msg: WSMessage,
@@ -426,47 +472,15 @@ function handleProgressMessage(
         if (ts?.trigger === 'resume') {
           store.resetStreamingState()
         } else {
-          // Commit any frozen/uncommitted content from the previous turn
-          // (e.g. after cancel: store.freeze() kept the live message visible,
-          // but never committed it. Without this, the cancelled turn's content
-          // vanishes when store.reset() clears the live message.)
-          const snap = store.getSnapshot()
-          if (hasVisibleProgress(snap) && (!finalizedRef?.current || snap.phase === 'frozen')) {
-            const text = snap.streamContent || snap.content || ''
-            const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
-            let iters = snap.iterationHistory
-            if (liveReasoning) {
-              if (iters.length === 0) {
-                iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
-              } else if (liveReasoning.length > (iters[iters.length - 1].reasoning || '').length) {
-                iters = iters.map((it, i) =>
-                  i === iters.length - 1 ? { ...it, reasoning: liveReasoning } : it
-                )
-              }
-            }
-            if (text || iters.length > 0) {
-              // Frozen content (from a cancelled turn) is by definition NOT
-              // the final reply — it's partial/intermediate. If there are no
-              // iterations to hold the content, wrap it as iteration.thinking
-              // so shouldRenderFinalContent returns false (no copy button on
-              // intermediate content). TurnBody renders thinking as visible
-              // markdown (kind='text'), so it stays visible without a button.
-              let commitText = text
-              let commitIters = iters
-              if (snap.phase === 'frozen' && text && iters.length === 0) {
-                commitIters = [{ iteration: 1, thinking: text, reasoning: liveReasoning, tools: [], toolCount: 0 }]
-                commitText = ''
-              } else if (snap.phase === 'frozen' && text && iters.length > 0 && !iters[iters.length - 1].thinking) {
-                // Last iteration has no thinking — put the stream content there
-                commitIters = iters.map((it, i) =>
-                  i === iters.length - 1 ? { ...it, thinking: text } : it
-                )
-                commitText = ''
-              }
-              completeRef?.current?.(commitText, commitIters, undefined, snap.turnID || store.lastTurnID, true)
-            }
-          }
-          store.reset()
+          // Commit any uncommitted live content from the previous turn, then
+          // reset. Unconditional commit (the helper no-ops on an empty store):
+          // a store with visible content is by definition un-finalized — the
+          // text event (the authoritative finalizer) resets it on arrival. If
+          // the text event was lost (SSE coalescing/disconnect), the live
+          // content is the ONLY display of the old turn's reply; committing it
+          // before the reset keeps it visible at the same position (no flicker,
+          // no data loss) instead of vanishing in one frame.
+          commitLiveProgressAndReset(store, completeRef?.current)
           store.lastIter = 0
         }
         if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
@@ -638,8 +652,12 @@ function handleProgressMessage(
         // Fallback: turn_started was lost (SSE drop). Clear stale data so the
         // new turn's iterations don't append to the old turn's iterationHistory.
         // (turn_started normally handles this, but SSE can coalesce/drop it.)
+        // Commit-then-reset: the old turn's text event may ALSO have been lost,
+        // so the live content is the only display of the old reply — wiping it
+        // directly makes it vanish in one frame (flicker). Hand it to the
+        // committed message list first, then reset cleanly.
         if (store.lastTurnID > 0 && hasVisibleProgress(store.getSnapshot())) {
-          store.reset()
+          commitLiveProgressAndReset(store, completeRef?.current)
         }
         store.lastTurnID = p.turn_id
         // turn_started normally stamps the real turnID on the optimistic user
