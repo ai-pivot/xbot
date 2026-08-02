@@ -278,30 +278,7 @@
 
 ### Web Frontend Rendering
 - **User messages MUST be persisted with their turn_id (eager-save).** `processMessage` eager-saves the user row via `AppendMessage` but built `userMsg` with `TurnID=0` — every reloaded user message carried `turn_id=0`, so the frontend could not locate a turn's user by turnID and `insertBeforeLastUser` (late-committed assistant) fell through to the END of the list → turn N's history rendered below turn N+1's user/live (interleaved turns). Fix: stamp `msg.Metadata["turn_id"]` onto the user row at eager-save. `appendMessageWith` already writes `TurnID`.
-- **Message ordering — FORMAL PROOF of correctness (no fallbacks, legacy-data compatible).**
-  **Invariant I1**: rendered row order == the message array's accumulation order.
-  **Invariant I2**: the array's accumulation order == backend production order.
-  **Lemma A (append-only)**: `session_messages` is an append-only log; rows get
-  monotonically increasing DB ids; SSE pushes events in that order.
-  **Lemma B (accumulation)**: every frontend mutation either appends to the array
-  end (`sendMessage` optimistic user, `user_echo`, default `appendAssistant`) or
-  inserts at a deterministic commit point (`insertBeforeLastUser`).
-  **Lemma C (commit point)**: `insertBeforeLastUser=true` runs ONLY from
-  `turn_started(N+1)` / turn_id-change fallback — i.e. after user N+1 was sent.
-  That user is the array's LAST user (sends append), so the committed assistant
-  (produced before that user) is inserted above it; the array order remains the
-  production order.
-  **Theorem**: by A/B/C, rendered order == backend production order — deterministic,
-  consistent across reloads, and independent of `turn_id` values (so legacy rows
-  with `turn_id=0` render correctly).
-  **Why NOT re-sort by turnID**: legacy user rows carry `turn_id=0` (eager-save
-  stamps only new rows; history derivation is query-time and conservative). A
-  `(turnID, role, seq)` sort sent all `turn_id=0` users to the END and grouped
-  them — every user message piled at the bottom (regression, reverted). The
-  frontend therefore NEVER re-sorts; `turn_id` is used only for live↔committed
-  merge (same-turnID assistant) and the backend's derivation is conservative
-  (a user row takes the first `turn_id>0` row before the next user; otherwise
-  stays 0).
+- **Message order = the array's accumulation order (NEVER re-sort by turnID).** `session_messages` is append-only (monotonic DB ids) and SSE pushes in that order; the frontend appends every event in arrival order, and `insertBeforeLastUser` (only from turn_started(N+1)/turn_id fallback — i.e. after user N+1 was sent, which is the last user) inserts the committed assistant above that user. Hence rendered order == backend production order — deterministic, reload-consistent, and independent of `turn_id` (legacy `turn_id=0` rows render correctly). Re-sorting by `(turnID, role, seq)` is FORBIDDEN: it grouped all `turn_id=0` users together (regression, reverted). `turn_id` is used only for live↔committed merge; the backend derivation for legacy user rows is conservative (first `turn_id>0` row before the next user, else 0).
 - **`appendAssistant` `insertBeforeLastUser` fallback inserts before the LAST user message (persisted or not).** The turnID-based lookup (own turn's user) is primary; the old fallback searched only for an UNPERSISTED user, which failed once the next turn's user was persisted (REST response arrived before the commit path) — the assistant appended at the END. Inserting before the last user (persisted or not) is always correct: the committed assistant belongs above the newest user that triggered the commit.
 
 - **`appendAssistant` `insertBeforeLastUser` must locate the committed assistant's OWN turn user by turnID, not just the last UNPERSISTED user.** The commit path (turn_started(N+1) / turn_id-change fallback) commits turn N's live content with `insertBeforeLastUser=true`. The old heuristic searched for an unpersisted user; when turn N+1's user was already persisted (REST `POST /api/message` response arrived before the commit ran — `persisted=true` set in sendMessage's `.then`), the search fell through to the END of the list: turn N's iteration history rendered BELOW turn N+1's user/live content (severe turn-order corruption, `data-turn-id=42` row below `data-turn-id=43`). Fix: first scan backwards for `role==='user' && turnID===turnID` and insert after it; fall back to the last unpersisted user only when this turn's user is unbound (turn_started lost). Test: `inserts a committed assistant after ITS OWN turn user even when the next turn user is already persisted`.
