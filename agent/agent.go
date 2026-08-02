@@ -3304,6 +3304,16 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		if !msg.Time.IsZero() {
 			userMsg.Timestamp = msg.Time
 		}
+		// Persist the turn_id on the user row so history reloads can associate
+		// each user message with its turn. Without it, reloaded user messages
+		// carry turn_id=0 and the frontend cannot reliably position a
+		// late-committed assistant (insertBeforeLastUser) after its own turn's
+		// user — turn N's iteration history renders BELOW turn N+1's user.
+		if raw := msg.Metadata["turn_id"]; raw != "" {
+			if tid, err := strconv.ParseUint(raw, 10, 64); err == nil {
+				userMsg.TurnID = tid
+			}
+		}
 		historyID, err := tenantSession.AppendMessage(userMsg)
 		if err != nil {
 			return nil, fmt.Errorf("eager-save user message: %w", err)

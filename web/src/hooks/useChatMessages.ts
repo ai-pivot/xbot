@@ -739,12 +739,17 @@ export function useChatMessages({
           }
         }
         if (insertIdx === prev.length) {
+          // Fallback: insert before the LAST user message (persisted or not).
+          // The committed assistant belongs after its own turn's user, which is
+          // always before the newest user (the one that triggered the commit).
+          // Do NOT restrict to unpersisted users — a persisted next-turn user
+          // (REST response arrived first) must still stay BELOW this assistant,
+          // otherwise turn N's history renders after turn N+1's user (interleaved).
           for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i].role === 'user' && !prev[i].persisted) {
+            if (prev[i].role === 'user') {
               insertIdx = i
               break
             }
-            if (prev[i].persisted) break
           }
         }
       }
