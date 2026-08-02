@@ -358,21 +358,27 @@ function commitLiveProgressAndReset(
     const text = snap.streamContent || snap.content || ''
     const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
     let iters = snap.iterationHistory
-    // Include the CURRENT iteration's tools — a cancelled turn's in-flight
-    // tool calls were visible in the live UI and MUST NOT vanish on commit
-    // (otherwise "user msg1 iter1(cancelled) user msg2" loses iter1 until a
-    // reload backfills it from DB).
-    const liveTools = [...snap.activeTools, ...snap.completedTools]
-      .filter((t) => t && t.name)
-      .map((t) => ({
-        name: t.name,
-        label: t.label ?? '',
-        status: t.status ?? 'done',
-        elapsedMs: t.elapsedMs,
-        summary: t.summary,
-        detail: t.detail,
-        args: t.args,
-      }))
+    // Include the CURRENT iteration's IN-FLIGHT tools (activeTools only) —
+    // but ONLY when there is no iteration history yet: a cancelled turn whose
+    // tool was still RUNNING at cancel time lived in activeTools and was
+    // visible in the live UI ("user msg1 iter1(cancelled) user msg2" lost
+    // iter1 until a reload backfilled it from DB). When iterationHistory is
+    // non-empty the finished tools are already recorded there — folding a
+    // stale activeTools residue (e.g. a previous turn's tools that PhaseDone
+    // did not clear) would leak them into this commit (cross-turn leak).
+    const liveTools = iters.length === 0
+      ? snap.activeTools
+          .filter((t) => t && t.name)
+          .map((t) => ({
+            name: t.name,
+            label: t.label ?? '',
+            status: t.status ?? 'done',
+            elapsedMs: t.elapsedMs,
+            summary: t.summary,
+            detail: t.detail,
+            args: t.args,
+          }))
+      : []
     if (liveTools.length > 0) {
       if (iters.length === 0) {
         iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: liveTools, toolCount: liveTools.length }]
