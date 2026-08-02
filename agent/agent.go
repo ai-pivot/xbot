@@ -267,7 +267,7 @@ type bgSessionState struct {
 	// keeps rendering the previous iteration's content/tools (iter2 shows
 	// iter1's content1 tool1).
 	activeIteration atomic.Int64
-	turnIDSeq      atomic.Uint64 // per-session monotonic TurnID counter
+	turnIDSeq       atomic.Uint64 // per-session monotonic TurnID counter
 	// lastTurnID tracks the most recently assigned TurnID for monotonicity
 	// assertions. Must be strictly increasing; a regression or non-increment
 	// indicates a turn lifecycle bug.
