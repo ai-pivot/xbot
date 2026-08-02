@@ -41,7 +41,7 @@ import type {
 } from '@/types/shared'
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
-import type { WSMessage } from '@/types/shared'
+import type { WSMessage, WebToolProgress } from '@/types/shared'
 import {
   clearProgressSnapshot,
   progressSnapshotCache,
