@@ -13,6 +13,7 @@ import { IterationGroup } from './IterationHistory'
 import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
 import { LiveIteration } from './LiveIteration'
+import { continuousIterations } from './progressStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { useI18n } from '@/providers/i18n'
@@ -64,11 +65,18 @@ export const TurnBody = memo(function TurnBody({
 }: TurnBodyProps) {
   const { t } = useI18n()
 
+  // Linear-consistency guard: only render the CONTIGUOUS prefix of iterations.
+  // On a weak network a middle iteration's delta may be dropped before
+  // restoreActiveProgress backfills it — rendering iteration 3 while 2 is
+  // missing would show a non-contiguous sequence (1, 3). Rendering the
+  // contiguous prefix keeps the visible history linear.
+  const contiguous = continuousIterations(iterations)
+
   // Fast path: if mergeTools is off, use the original per-iteration rendering.
   if (!mergeTools) {
     return (
       <div className="flex flex-col gap-1">
-        {iterations.map((iter, i) => (
+        {contiguous.map((iter, i) => (
           <IterationGroup
             key={iter.iteration ?? i}
             iteration={iter}
@@ -82,7 +90,7 @@ export const TurnBody = memo(function TurnBody({
   }
 
   // mergeTools on: flatten iterations into content blocks, merging consecutive tools.
-  const blocks = flattenIterations(iterations)
+  const blocks = flattenIterations(contiguous)
 
   return (
     <div className="flex flex-col gap-1">

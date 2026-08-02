@@ -77,6 +77,32 @@ export function assertIterationContinuity(iters: WebIteration[]) {
   }
 }
 
+/**
+ * Return the longest CONTIGUOUS prefix of iterations (1, 2, 3, ...).
+ *
+ * Linear-consistency guarantee: whatever is RENDERED must be a valid,
+ * contiguous iteration sequence — a gap (e.g. 1 → 3, iteration 2's delta lost
+ * on a weak network before restoreActiveProgress backfills it) would render
+ * iteration 3 in place of 2, violating iteration order. Rendering only the
+ * contiguous prefix keeps the visible history linear; the missing iterations
+ * are backfilled by restoreActiveProgress (SSE seq-gap recovery) and the
+ * hidden tail reappears once contiguous.
+ */
+export function continuousIterations(iters: WebIteration[]): WebIteration[] {
+  if (iters.length < 2) return iters
+  const sorted = [...iters].sort((a, b) => a.iteration - b.iteration)
+  const first = sorted[0]
+  if (first.iteration !== 1) return [] // no valid start — render nothing
+  const out: WebIteration[] = [first]
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = out[out.length - 1]
+    const curr = sorted[i]
+    if (curr.iteration !== prev.iteration + 1) break
+    out.push(curr)
+  }
+  return out
+}
+
 // ── exported helpers (used by useProgressStream) ──────────────────────────
 
 /** Detect a stream-only event: no phase/iteration, has stream fields. */
