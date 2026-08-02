@@ -459,6 +459,11 @@ func (s *runState) beginIteration(i int) {
 	// nil when SubAgents is empty — there is no text-based fallback.
 	s.subAgentNodes = nil
 	s.refreshStructuredTodos()
+	// Notify the agent of the iteration boundary so stream callbacks can stamp
+	// iteration on stream_content events (frontend iteration-boundary clearing).
+	if s.cfg.OnIterationChange != nil {
+		s.cfg.OnIterationChange(i)
+	}
 }
 
 // notifyThinking sends the thinking progress notification.

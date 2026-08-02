@@ -422,6 +422,16 @@ function handleProgressMessage(
       if (p.reasoning_stream_content) {
         store.appendReasoningContent(p.reasoning_stream_content)
       }
+      // Iteration boundary via stream events: the backend stamps the current
+      // iteration on stream_content. When it advances past the last structured
+      // iteration, the previous iteration's content/tools are stale — the
+      // structured boundary event (thinking) may have been coalesced/dropped
+      // in SSE, so without this the frontend keeps rendering iter1's content
+      // inside iter2 (iter2 shows reason2 + content1 + tool1).
+      const streamIter = typeof p.iteration === 'number' && p.iteration > 0 ? p.iteration : undefined
+      if (streamIter !== undefined && streamIter > store.lastIter) {
+        store.setStructuredTools({ iteration: streamIter })
+      }
       // GenUI streaming HTML (from display_html tool arguments)
       if (p.genui_content) store.setGenUIContent(p.genui_content)
       // Streaming tools (generating status) — patch only, no snapshot replace

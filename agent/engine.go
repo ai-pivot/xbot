@@ -283,6 +283,14 @@ type RunConfig struct {
 	// history for real-time inspect, instead of waiting for Run() to finish.
 	OnIterationSnapshot func(snap IterationSnapshot)
 
+	// OnIterationChange is called at the start of each iteration (beginIteration)
+	// with the new iteration number. The agent uses it to track the current
+	// iteration per session so stream callbacks can stamp iteration on
+	// stream_content events — without it the frontend cannot detect that a new
+	// iteration started when only reasoning/content streams arrive (no
+	// structured event), and keeps rendering the previous iteration's content.
+	OnIterationChange func(iteration int)
+
 	// StreamContentFunc is called with accumulated text content on each content delta
 	// during LLM streaming. When set (and Stream=true), generateResponse uses
 	// CollectStreamWithCallback instead of CollectStream. Nil by default (no streaming).

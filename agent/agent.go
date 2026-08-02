@@ -259,7 +259,15 @@ type bgSessionState struct {
 	// session, so there is no concurrent write — but sendMessage may be called
 	// from the Run's goroutine (ProgressNotifier), hence atomic.
 	activeTurnID atomic.Uint64
-	turnIDSeq    atomic.Uint64 // per-session monotonic TurnID counter
+	// activeIteration is the iteration number of the currently-processing
+	// iteration. Set by runState.beginIteration via cfg.OnIterationChange so
+	// stream callbacks can stamp the iteration on stream_content events —
+	// without it the frontend cannot tell that a new iteration started when
+	// only reasoning/content streams arrive (no structured event), and it
+	// keeps rendering the previous iteration's content/tools (iter2 shows
+	// iter1's content1 tool1).
+	activeIteration atomic.Int64
+	turnIDSeq      atomic.Uint64 // per-session monotonic TurnID counter
 	// lastTurnID tracks the most recently assigned TurnID for monotonicity
 	// assertions. Must be strictly increasing; a regression or non-increment
 	// indicates a turn lifecycle bug.
@@ -2652,6 +2660,14 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 	a.bgSessionStates.Store(chatKey, ss)
 	defer a.bgSessionStates.Delete(chatKey)
 
+	// Restore the per-session turn ID counter from DB SYNCHRONOUSLY, BEFORE
+	// the processLoop goroutine starts and BEFORE the main loop can admit any
+	// message. chatProcessLoop used to restore it asynchronously; a message
+	// arriving at admitToMsgCh before the restore ran allocated turn_id from
+	// the zeroed counter (turn_id=1), colliding with a pre-restart turn and
+	// producing TURN_ID_GAP (prev=1, new=154) + cross-turn iteration pollution.
+	a.restoreTurnIDSeq(chatKey, ss)
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	clipanic.Go("agent.chatWorker.processLoop", func() {
@@ -2774,13 +2790,14 @@ func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
 	}
 }
 
-// chatProcessLoop 串行处理普通消息（非命令），带信号量控制和 per-request cancel 支持。
-// After each turn completes (response sent), drains pending bg notifications
-// at a safe point where injectCLIUserMessage cannot race with the turn's reply.
-func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan bus.InboundMessage, ss *bgSessionState) {
-	// Restore the per-session turn ID counter from DB so it stays globally
-	// monotonic across server restarts. Without this, the counter resets to 0
-	// and the next turn gets turn_id=1, colliding with a pre-restart turn.
+// restoreTurnIDSeq restores the per-session turn ID counter from DB so it
+// stays globally monotonic across server restarts. Must run SYNCHRONOUSLY in
+// chatWorker before any message is admitted (admitToMsgCh allocates turn ids
+// via ss.nextTurnID). Running it inside chatProcessLoop (async goroutine)
+// raced with the main loop: a message admitted before the restore allocated
+// turn_id=1, colliding with a pre-restart turn (TURN_ID_GAP + cross-turn
+// iteration pollution).
+func (a *Agent) restoreTurnIDSeq(chatKey string, ss *bgSessionState) {
 	if a.multiSession != nil {
 		parts := strings.SplitN(chatKey, ":", 2)
 		if len(parts) == 2 {
@@ -2795,7 +2812,12 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			}
 		}
 	}
+}
 
+// chatProcessLoop 串行处理普通消息（非命令），带信号量控制和 per-request cancel 支持。
+// After each turn completes (response sent), drains pending bg notifications
+// at a safe point where injectCLIUserMessage cannot race with the turn's reply.
+func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan bus.InboundMessage, ss *bgSessionState) {
 	var idleTimer *time.Timer
 	defer func() {
 		if idleTimer != nil {
@@ -3631,6 +3653,17 @@ func (a *Agent) ResolveTool(sessionKey string, tenantID int64, name string) (too
 func (a *Agent) getActiveTurnID(sessionKey string) uint64 {
 	if state, ok := a.bgSessionStates.Load(sessionKey); ok {
 		return state.(*bgSessionState).activeTurnID.Load()
+	}
+	return 0
+}
+
+// getActiveIteration returns the iteration number of the currently-processing
+// iteration for the given session key, or 0 if no turn is active. Set by
+// runState.beginIteration via cfg.OnIterationChange; read by stream callbacks
+// to stamp iteration on stream_content events.
+func (a *Agent) getActiveIteration(sessionKey string) int {
+	if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+		return int(state.(*bgSessionState).activeIteration.Load())
 	}
 	return 0
 }

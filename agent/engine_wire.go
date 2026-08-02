@@ -245,6 +245,16 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
+	// Track the current iteration per session so stream callbacks can stamp it
+	// on stream_content events. The frontend uses the iteration to clear the
+	// previous iteration's content/tools when a new iteration begins with only
+	// stream events (structured boundary event may be coalesced/lost in SSE).
+	cfg.OnIterationChange = func(iteration int) {
+		if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+			state.(*bgSessionState).activeIteration.Store(int64(iteration))
+		}
+	}
+
 	// physical_channel: the channel the user is actually connected through.
 	// When a web user browses a CLI-created session, msg.Channel is "cli"
 	// (the session's origin channel), but the user is on "web". Channel-scoped
@@ -1750,6 +1760,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		broadcastProgress(&protocol.ProgressEvent{
 			ChatID:        progressKey,
 			TurnID:        turnID,
+			Iteration:     a.getActiveIteration(progressKey),
 			StreamContent: content,
 		})
 	}
@@ -1760,6 +1771,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		broadcastProgress(&protocol.ProgressEvent{
 			ChatID:                 progressKey,
 			TurnID:                 turnID,
+			Iteration:              a.getActiveIteration(progressKey),
 			ReasoningStreamContent: content,
 		})
 	}
