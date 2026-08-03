@@ -270,7 +270,7 @@ export function dedupTools(tools: WebToolProgress[]): WebToolProgress[] {
  * 2. Messages with eventSeq: dedup by eventSeq (SSE sequence is globally unique).
  * 3. Messages with neither (history messages): never deduped — they have unique DB IDs.
  */
-export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number; dbID?: number; persisted?: boolean }>(
+export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number; dbID?: number; persisted?: boolean; iterations?: WebIteration[] }>(
   messages: T[],
 ): T[] {
   const turnSeen = new Map<string, number>()
@@ -282,17 +282,50 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
       const key = `${messages[i].turnID}:${messages[i].role}`
       const existing = turnSeen.get(key)
       if (existing !== undefined) {
-        // Prefer the message with a dbID (persisted history row) — replacing
-        // a history row with an optimistic/live row of the same turnID:role
-        // would lose the history row when the optimistic row is later
-        // reconciled/removed (user msg suddenly disappears).
+        // MERGE instead of replace: union iterations by iteration number.
+        // When a batch boundary splits a turn, batch 1 (newer) has the final
+        // assistant with Detail iterations, batch 2 (older, from loadMore)
+        // has the tool_summary with early iterations from flushPending.
+        // Dropping either loses data; merging gives the complete iteration set.
+        // Choose the base: prefer dbID (persisted). If both have dbID, prefer
+        // the one with non-empty content (the final reply).
+        // When neither has dbID, content, or iterations (both empty placeholders),
+        // prefer the LATEST (incoming) — old behavior for optimistic/live replacement.
         const existingHasDB = result[existing].dbID != null
         const incomingHasDB = messages[i].dbID != null
-        if (existingHasDB && !incomingHasDB) {
-          // Keep the persisted row; skip the optimistic one.
-          continue
+        const existingHasContent = (result[existing].content ?? '') !== ''
+        const incomingHasContent = (messages[i].content ?? '') !== ''
+        const existingHasIters = (result[existing].iterations ?? []).length > 0
+        const incomingHasIters = (messages[i].iterations ?? []).length > 0
+        const existingHasData = existingHasDB || existingHasContent || existingHasIters
+        const incomingHasData = incomingHasDB || incomingHasContent || incomingHasIters
+        let base: T
+        let other: T
+        if (!existingHasData && !incomingHasData) {
+          // Both empty placeholders — prefer LATEST (incoming replacement)
+          base = messages[i]
+          other = result[existing]
+        } else if (existingHasDB && !incomingHasDB) {
+          base = result[existing]
+          other = messages[i]
+        } else if (!existingHasDB && incomingHasDB) {
+          base = messages[i]
+          other = result[existing]
+        } else if (incomingHasContent && !existingHasContent) {
+          base = messages[i]
+          other = result[existing]
+        } else {
+          base = result[existing]
+          other = messages[i]
         }
-        result[existing] = messages[i]
+        // Merge iterations: union by iteration number, prefer non-empty content.
+        const mergedIters = mergeIterations(base.iterations ?? [], other.iterations ?? [])
+        result[existing] = {
+          ...base,
+          iterations: mergedIters.length > 0 ? mergedIters : (base.iterations ?? []),
+          // Prefer non-empty content
+          content: (base.content ?? '') !== '' ? base.content : (other.content ?? ''),
+        } as T
       } else {
         turnSeen.set(key, result.length)
         result.push(messages[i])
@@ -317,6 +350,45 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
     result.push(messages[i])
   }
   return result
+}
+
+/**
+ * Merge two arrays of WebIteration by iteration number (union).
+ * When both have the same iteration number, prefer the one with non-empty
+ * thinking/content or more tools.
+ */
+function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIteration[] {
+  if (a.length === 0) return b
+  if (b.length === 0) return a
+  const map = new Map<number, WebIteration>()
+  for (const iter of a) map.set(iter.iteration, iter)
+  for (const iter of b) {
+    const existing = map.get(iter.iteration)
+    if (!existing) {
+      map.set(iter.iteration, iter)
+    } else {
+      // Prefer the one with non-empty thinking/content, or more tools
+      const existingHasContent = (existing.thinking ?? '') !== '' || (existing.reasoning ?? '') !== ''
+      const incomingHasContent = (iter.thinking ?? '') !== '' || (iter.reasoning ?? '') !== ''
+      if (incomingHasContent && !existingHasContent) {
+        map.set(iter.iteration, iter)
+      } else if (existingHasContent && !incomingHasContent) {
+        // Keep existing
+      } else {
+        // Merge tools (union by name+label)
+        const toolMap = new Map<string, WebToolProgress>()
+        for (const t of [...existing.tools, ...iter.tools]) {
+          toolMap.set(`${t.name}\x00${t.label}`, t)
+        }
+        map.set(iter.iteration, {
+          ...existing,
+          tools: Array.from(toolMap.values()),
+          toolCount: toolMap.size,
+        })
+      }
+    }
+  }
+  return Array.from(map.values()).sort((x, y) => x.iteration - y.iteration)
 }
 
 // ── ProgressStore ──────────────────────────────────────────────────────────

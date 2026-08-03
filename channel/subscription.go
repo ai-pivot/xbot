@@ -172,17 +172,44 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	// Copy so the derivation below never mutates the caller's slice.
 	msgs = append([]llm.ChatMessage(nil), msgs...)
 
-	// Derive turn_id for legacy user rows (turn_id=0, written before eager-save
-	// stamped it): a user row belongs to the first turn_id>0 row that follows
-	// it before the next user row. Deterministic — based on the append-only
-	// row order, so the frontend can always order messages by turn_id without
-	// heuristics/fallbacks.
+	// Derive turn_id for legacy rows (turn_id=0, written before eager-save
+	// stamped it). Two passes:
+	//  Pass 1 (forward, user only): a user row belongs to the first turn_id>0
+	//    row that follows it before the next user row. Deterministic — based on
+	//    the append-only row order.
+	//  Pass 2 (backward, all roles): an assistant/tool row with turn_id=0
+	//    belongs to the same turn as the nearest preceding message with
+	//    turn_id>0 (typically the user message of this turn). Without this,
+	//    flushPending's pendingTurnID=0 → the tool_summary has turn_id=0 →
+	//    the frontend's turnID:role dedup in loadMore can't match it against
+	//    the final assistant (same turn, different batch), causing duplicate
+	//    assistant messages at batch boundaries within a super-long turn.
 	for i := range msgs {
 		if msgs[i].Role != "user" || msgs[i].TurnID > 0 {
 			continue
 		}
 		for j := i + 1; j < len(msgs); j++ {
 			if msgs[j].Role == "user" {
+				break
+			}
+			if msgs[j].TurnID > 0 {
+				msgs[i].TurnID = msgs[j].TurnID
+				break
+			}
+		}
+	}
+	// Pass 2: backward search for assistant messages with turn_id=0.
+	// Stops at the preceding user message (turn boundary).
+	for i := range msgs {
+		if msgs[i].TurnID > 0 {
+			continue
+		}
+		for j := i - 1; j >= 0; j-- {
+			if msgs[j].Role == "user" {
+				// Don't cross into the previous turn.
+				if msgs[j].TurnID > 0 {
+					msgs[i].TurnID = msgs[j].TurnID
+				}
 				break
 			}
 			if msgs[j].TurnID > 0 {
@@ -240,6 +267,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				syntheticIdx++
 			}
 			history = append(history, HistoryMessage{
+				ID:         lastAssistantID,
 				HistoryID:  lastAssistantID,
 				Role:       "assistant",
 				Content:    "",
@@ -398,6 +426,12 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				// We need to combine them into one HistoryMessage for unified rendering.
 				if len(history) > 0 && history[len(history)-1].Role == "assistant" &&
 					history[len(history)-1].Content == "" && len(history[len(history)-1].Iterations) > 0 {
+					// Stamp BOTH ID and HistoryID with the final assistant's DB id.
+					// The row was created by flushPending() with ID=0 (or by the
+					// Detail path with an older ID); leaving ID stale/zero makes
+					// json:"id,omitempty" drop the field → frontend falls back to
+					// a batch-index temp ID (hist-${i}), breaking loadMore dedup.
+					history[len(history)-1].ID = m.ID
 					history[len(history)-1].HistoryID = m.ID
 					history[len(history)-1].Content = m.Content
 					history[len(history)-1].Timestamp = m.Timestamp
@@ -436,6 +470,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 					Role:      m.Role,
 					Content:   m.Content,
 					Timestamp: m.Timestamp,
+					TurnID:    m.TurnID,
 				})
 			}
 		}

@@ -500,16 +500,23 @@ export function useChatMessages({
         return false
       }
       const parsed = parseHistoryMessages(rows)
-      // Dedup against existing messages (by id) to prevent duplicates
-      // at the pagination boundary (e.g. if server returns id <= beforeId).
+      // Merge new messages with existing ones using dedupMessages, which
+      // handles turnID:role-based MERGE (not DROP): when the batch boundary
+      // splits a turn, batch 1 (newer) has the final assistant with Detail
+      // iterations, batch 2 (older, from loadMore) has the tool_summary with
+      // early iterations from flushPending. dedupMessages unions their
+      // iterations by iteration number, preserving both sets of data.
       const prev = messagesRef.current
       const existingIds = new Set(prev.map((m) => m.id))
-      const deduped = parsed.filter((m) => !existingIds.has(m.id))
-      if (deduped.length === 0) {
+      // First pass: drop exact ID duplicates (same DB row returned by server)
+      const noExactDups = parsed.filter((m) => !existingIds.has(m.id))
+      // Second pass: merge by turnID:role — dedupMessages handles iteration union
+      const next = dedupMessages([...noExactDups, ...prev])
+      if (next.length === prev.length) {
+        // No new messages survived dedup
         setHasMore(false)
         return false
       }
-      const next = [...deduped, ...prev]
       messagesRef.current = next
       setMessages(next)
       setHasMore(Boolean(data.has_more))
@@ -543,9 +550,15 @@ export function useChatMessages({
     const listenerCacheKey = activeMessageCacheKey
     const off = ws.onMessage((msg: WSMessage) => {
       if (activeMessageCacheKeyRef.current !== listenerCacheKey) return
-      // replay_gap: SSE reconnect detected real data loss (TurnID changed or
-      // turn ended during gap). Reload from DB to pick up lost committed messages.
+      // replay_gap: SSE reconnect detected real data loss (TurnID changed,
+      // turn ended during gap, or large iteration gap). Reload from DB to pick
+      // up lost committed messages. When force_reload=true (large gap or
+      // cross-turn), show a loading spinner during reload — the UI is too
+      // stale to render incrementally.
       if (msg.type === 'replay_gap') {
+        if (msg.metadata?.force_reload === 'true') {
+          setLoading(true)
+        }
         void reload()
         return
       }
@@ -784,21 +797,31 @@ export function useChatMessages({
     })
   }, [])
   const injectUserMessage = useCallback((content: string, turnID: number, isNotification: boolean) => {
-    messageMutationGenRef.current += 1
-    const id = `notif-${turnID}-${echoSeq++}`
-    const newMsg: ChatMessage = {
-      id,
-      role: 'user',
-      content,
-      iterations: [],
-      timestamp: new Date().toISOString(),
-      isPartial: false,
-      turnID,
-      isNotification,
-      persisted: false,
-      eventSeq: -1, // marker: dedup against history by turnID:role in reconcile
-    }
     setMessages((prev) => {
+      // Dedup: if a notification with the same turnID already exists (from a
+      // previous turn_started replay — SSE reconnect replays buffered
+      // progress_structured events including turn_started), don't create a
+      // duplicate. The ring buffer (web_hub.go isStatefulMsg) keeps
+      // progress_structured events and replays them on reconnect, so
+      // turn_started with trigger=notification can arrive twice.
+      if (turnID > 0) {
+        const existing = prev.find(m => m.turnID === turnID && m.role === 'user' && m.isNotification)
+        if (existing) return prev
+      }
+      messageMutationGenRef.current += 1
+      const id = `notif-${turnID}-${echoSeq++}`
+      const newMsg: ChatMessage = {
+        id,
+        role: 'user',
+        content,
+        iterations: [],
+        timestamp: new Date().toISOString(),
+        isPartial: false,
+        turnID,
+        isNotification,
+        persisted: false,
+        eventSeq: -1, // marker: dedup against history by turnID:role in reconcile
+      }
       const next = [...prev, newMsg]
       messagesRef.current = next
       return next

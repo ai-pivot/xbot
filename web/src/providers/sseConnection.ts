@@ -369,8 +369,24 @@ export class SSEConnectionImpl implements WSConnection {
         cachedProgress.turn_id !== progress.turn_id
       const turnEndedDuringGap = cachedProgress && cachedProgress.phase !== 'done' &&
         (!progress || progress.phase === 'done')
-      if (turnIDChanged || turnEndedDuringGap) {
-        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
+
+      // ── Detect large iteration gap within the same turn ──
+      // If the iteration gap is large (many iterations lost during SSE disconnect),
+      // delta-fill via get_active_progress may be incomplete or slow. A full reload
+      // with a spinner is better UX than a partial iteration history.
+      // Threshold: if the gap between cached and current iteration is > 10, reload.
+      const sameTurn = cachedProgress && progress &&
+        typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
+        cachedProgress.turn_id === progress.turn_id
+      const cachedIter = cachedProgress?.iteration ?? 0
+      const newIter = progress?.iteration ?? 0
+      const largeGap = sameTurn && cachedIter > 0 && newIter > 0 && (newIter - cachedIter) > 10
+
+      if (turnIDChanged || turnEndedDuringGap || largeGap) {
+        // force_reload=true: show a loading spinner during reload. For cross-turn
+        // and large gaps, the UI is too stale to render incrementally — a clean
+        // reload is better than a partially-inconsistent view.
+        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
       }
 
       if (!progress || progress.phase === 'done') {
