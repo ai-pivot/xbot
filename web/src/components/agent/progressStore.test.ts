@@ -491,8 +491,10 @@ describe('continuousIterations — linear-consistency guard (weak-network iterat
     expect(continuousIterations(iters([1, 3, 4])).map((i) => i.iteration)).toEqual([1])
   })
 
-  it('renders nothing when the sequence does not start at 1', () => {
-    expect(continuousIterations(iters([2, 3])).map((i) => i.iteration)).toEqual([])
+  it('renders a contiguous sequence that does not start at 1 (partial history from compression)', () => {
+    // History may contain only a subset of iterations (earlier ones compressed/merged).
+    // A contiguous 2->3 is valid and should render.
+    expect(continuousIterations(iters([2, 3])).map((i) => i.iteration)).toEqual([2, 3])
   })
 
   it('handles empty and single-iteration input', () => {

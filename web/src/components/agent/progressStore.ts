@@ -87,7 +87,7 @@ export function assertIterationContinuity(iters: WebIteration[]) {
 
 /**
  * Return the longest CONTIGUOUS prefix of iterations, preserving the input
- * order (1, 2, 3, ...).
+ * order.
  *
  * Linear-consistency guarantee: whatever is RENDERED must be a valid,
  * contiguous iteration sequence — a gap (e.g. 1 → 3, iteration 2's delta lost
@@ -97,14 +97,14 @@ export function assertIterationContinuity(iters: WebIteration[]) {
  * are backfilled by restoreActiveProgress (SSE seq-gap recovery) and the
  * hidden tail reappears once contiguous.
  *
- * NOTE: the input order is PRESERVED (no sorting). Sorting would reorder
- * iterations after a reconnect/replace and make old iterations appear to
- * jump to the "latest progress" area (visual duplication). appendIterations
- * already appends in arrival order, which equals iteration order.
+ * NOTE: the input order is PRESERVED (no sorting). appendIterations already
+ * appends in arrival order, which equals iteration order.
+ * NOTE: does NOT require iteration 1 — history may contain only a subset
+ * (earlier iterations compressed/merged into a previous message). A contiguous
+ * sequence starting at any number (e.g. 12→13→14→...) is valid.
  */
 export function continuousIterations(iters: WebIteration[]): WebIteration[] {
   if (iters.length < 2) return iters
-  if (iters[0].iteration !== 1) return [] // no valid start — render nothing
   const out: WebIteration[] = [iters[0]]
   for (let i = 1; i < iters.length; i++) {
     const prev = out[out.length - 1]
