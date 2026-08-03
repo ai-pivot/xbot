@@ -132,6 +132,12 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
   // Normalize each row from the WS RPC format (protocol.HistoryMessage).
   // Iterations are already pre-parsed by the backend (no detail JSON to parse).
   const normalized: ChatMessage[] = []
+  // Replay-derived rows can share the same DB id (compress snapshots fall back
+  // to the compress record's HistoryID for every snapshot message). The
+  // virtualized MessageList keys rows by id — duplicate ids corrupt row-height
+  // measurement and make an expanded <details> (e.g. [Compacted context])
+  // overlap the rows below it. Make every row id unique with a -N suffix.
+  const idCounts = new Map<string, number>()
   for (let i = 0; i < rows.length; i++) {
     const m = rows[i]
 
@@ -158,8 +164,13 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       continue
     }
 
+    const baseId = m.id != null ? `db-${m.id}` : (m.seq != null ? `seq-${m.seq}` : `hist-${i}`)
+    const seen = idCounts.get(baseId) ?? 0
+    idCounts.set(baseId, seen + 1)
+    const id = seen === 0 ? baseId : `${baseId}-${seen}`
+
     normalized.push({
-      id: m.id != null ? `db-${m.id}` : (m.seq != null ? `seq-${m.seq}` : `hist-${i}`),
+      id,
       role: (m.role === 'user' ? 'user' : 'assistant') as ChatMessage['role'],
       content,
       iterations,

@@ -196,6 +196,17 @@ export function MessageList({
   // ones are absorbed (their tools are in the snapshot or in the last
   // assistant's iterations).
   const rows = useMemo<ChatMessage[]>(() => buildMessageRows(messages, liveMessage), [messages, liveMessage])
+  // Latest-rows ref: closures (IntersectionObserver, loadMore anchor restore)
+  // must read the CURRENT rows, not a stale snapshot captured in effect deps —
+  // after onLoadMore prepends older rows, the effect closure's `rows` is still
+  // the pre-prepend array, so findIndex would miss the anchor.
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  // loadMore scroll-anchor: id of the first VISIBLE row captured BEFORE older
+  // rows prepend. After the prepend lands we scrollToIndex it back to 'start'
+  // so the user's visible region stays put — new older rows appear above it,
+  // which pushes the scrollbar toward the middle (not the top).
+  const loadMoreAnchorIdRef = useRef<string | null>(null)
   // Invariant guard: the "thinking…" busy placeholder must never render below
   // a FINISHED assistant (copy button shown — turn complete). A finished turn
   // followed by "thinking…" would imply the completed turn is still running.
@@ -356,6 +367,15 @@ export function MessageList({
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
+          // Capture the first VISIBLE row id BEFORE onLoadMore prepends older
+          // rows — this is the scroll anchor we restore after the load lands,
+          // so the viewport stays on the same content (not jumping to top).
+          const items = virtualizer.getVirtualItems()
+          const firstVisible = items[0]
+          if (firstVisible) {
+            const anchorRow = rowsRef.current[firstVisible.index]
+            loadMoreAnchorIdRef.current = anchorRow?.id ?? null
+          }
           void onLoadMore()
         }
       },
@@ -363,7 +383,28 @@ export function MessageList({
     )
     observer.observe(el)
     return () => observer.disconnect()
-  }, [hasMore, loadingMore, onLoadMore])
+  }, [hasMore, loadingMore, onLoadMore, virtualizer])
+
+  // ── loadMore scroll-anchor: restore viewport after older rows prepend ────
+  // Older rows prepend ABOVE the captured anchor, growing scrollHeight. Without
+  // restoring, the viewport jumps to the new top. We scroll the anchor row back
+  // to 'start' so the user's visible content is unchanged; the freshly loaded
+  // older rows sit above it, so the scrollbar lands mid-list (not at the top).
+  // Guarded by loadMoreAnchorIdRef so this is a no-op during normal streaming
+  // (the ref is only set in the IntersectionObserver callback right before a load).
+  useEffect(() => {
+    const anchorId = loadMoreAnchorIdRef.current
+    if (!anchorId) return
+    const newIdx = rowsRef.current.findIndex((m) => m.id === anchorId)
+    if (newIdx < 0) return
+    // rAF: let the virtualizer mount + measure the freshly prepended rows so
+    // scrollToIndex positions against real (not estimated) row heights.
+    const raf = requestAnimationFrame(() => {
+      loadMoreAnchorIdRef.current = null
+      virtualizer.scrollToIndex(newIdx, { align: 'start' })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [rows, virtualizer])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
