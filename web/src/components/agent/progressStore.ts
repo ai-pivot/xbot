@@ -270,7 +270,7 @@ export function dedupTools(tools: WebToolProgress[]): WebToolProgress[] {
  * 2. Messages with eventSeq: dedup by eventSeq (SSE sequence is globally unique).
  * 3. Messages with neither (history messages): never deduped — they have unique DB IDs.
  */
-export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number }>(
+export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number; dbID?: number; persisted?: boolean }>(
   messages: T[],
 ): T[] {
   const turnSeen = new Map<string, number>()
@@ -282,6 +282,16 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
       const key = `${messages[i].turnID}:${messages[i].role}`
       const existing = turnSeen.get(key)
       if (existing !== undefined) {
+        // Prefer the message with a dbID (persisted history row) — replacing
+        // a history row with an optimistic/live row of the same turnID:role
+        // would lose the history row when the optimistic row is later
+        // reconciled/removed (user msg suddenly disappears).
+        const existingHasDB = result[existing].dbID != null
+        const incomingHasDB = messages[i].dbID != null
+        if (existingHasDB && !incomingHasDB) {
+          // Keep the persisted row; skip the optimistic one.
+          continue
+        }
         result[existing] = messages[i]
       } else {
         turnSeen.set(key, result.length)
