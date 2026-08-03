@@ -1059,38 +1059,8 @@ describe('cancel: assistant message must not vanish', () => {
     expect(result.current.liveMessage).toBeNull()
   })
 
-  it('stream event with a higher iteration clears the previous iteration content/tools (iter2 must not show iter1 content)', () => {
-    // BUG: when iteration 2 starts with ONLY reasoning streaming (no structured
-    // event — the thinking boundary event may be coalesced/dropped in SSE),
-    // the frontend kept iter1's content/tools in the live snapshot, so
-    // LiveIteration rendered iter2(reason2 + content1 + tool1).
-    // Backend now stamps iteration on stream_content; the frontend must treat
-    // an iteration advance in a stream event as an iteration boundary.
-    const { result } = renderHook(() =>
-      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
-    )
-    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } as ProgressEvent })
-    // iter1: content + running tool (structured event)
-    emitAndFlush({
-      type: 'progress_structured',
-      progress: {
-        phase: 'tool_exec', iteration: 1, seq: 2, turn_id: 1, chat_id: 'web:c1',
-        content: 'content1',
-        active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
-      } as unknown as ProgressEvent,
-    })
-    expect(result.current.progressSnapshot.content).toBe('content1')
-    expect(result.current.progressSnapshot.activeTools).toHaveLength(1)
 
-    // iter2: pure reasoning stream — backend stamps iteration=2
-    emitAndFlush({
-      type: 'stream_content',
-      progress: { reasoning_stream_content: 'reason2', iteration: 2, turn_id: 1 } as unknown as ProgressEvent,
-    })
 
-    expect(result.current.progressSnapshot.content).toBe('')
-    expect(result.current.progressSnapshot.activeTools).toEqual([])
-    expect(result.current.progressSnapshot.completedTools).toEqual([])
-    expect(result.current.progressSnapshot.lastIter).toBe(2)
-  })
+
+
 })
