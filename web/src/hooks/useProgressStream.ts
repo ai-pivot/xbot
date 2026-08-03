@@ -185,7 +185,6 @@ export function useProgressStream({
     // On non-chatID triggers (disabled toggle), preserve todos via reset().
     if (progressCacheKey !== prevProgressCacheKeyRef.current) {
       prevProgressCacheKeyRef.current = progressCacheKey
-      store.fullReset()
       // Restore todos from progressSnapshotCache — switchSession writes
       // the /switch response todos here so they appear immediately,
       // before /api/history's active_progress arrives (which may return
@@ -193,12 +192,18 @@ export function useProgressStream({
       if (progressCacheKey) {
         const cached = progressSnapshotCache.get(progressCacheKey)
         if (cached?.todos && cached.todos.length > 0) {
-          store.replace({ todos: cached.todos.map((t) => ({
+          // Atomic reset + replace: single notification instead of two
+          // (fullReset → render → replace → render).
+          store.resetAndReplace({ todos: cached.todos.map((t) => ({
             id: typeof t.id === 'number' ? t.id : 0,
             text: typeof t.text === 'string' ? t.text : '',
             done: Boolean(t.done),
           })) })
+        } else {
+          store.fullReset()
         }
+      } else {
+        store.fullReset()
       }
     } else {
       store.reset()

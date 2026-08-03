@@ -51,9 +51,14 @@ type Mutator = (draft: ProgressSnapshot) => void
  * truncates at the first gap for linear consistency.
  */
 function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
-  const newIters = incoming.filter(
-    (iter) => !draft.iterationHistory.some((i) => i.iteration === iter.iteration),
-  )
+  if (incoming.length === 0) return
+  // O(N+M) dedup using a Set instead of O(N*M) Array.some() per incoming item.
+  // For long-running agents with 50+ iterations, this avoids 2500+ comparisons.
+  const existing = new Set<number>()
+  for (const iter of draft.iterationHistory) {
+    existing.add(iter.iteration)
+  }
+  const newIters = incoming.filter((iter) => !existing.has(iter.iteration))
   if (newIters.length > 0) {
     draft.iterationHistory = [...draft.iterationHistory, ...newIters].sort(
       (a, b) => a.iteration - b.iteration,
@@ -405,6 +410,10 @@ export class ProgressStore {
   /** Tracks the last seen iteration number within the current turn for continuity assertions.
    *  0 = uninitialized (no iteration seen yet). Iterations are 1-based. */
   lastIter = 0
+  /** Dirty flag: when only stream-only fields changed, structured arrays
+   *  (iterationHistory, activeTools, completedTools) keep their references
+   *  so downstream useMemo (liveMessage, buildMessageRows) can skip recompute. */
+  private streamOnlyDirty = false
 
   /** Subscribe to snapshot changes; returns an unsubscribe function. */
   subscribe = (listener: Listener): (() => void) => {
@@ -417,11 +426,16 @@ export class ProgressStore {
   /** Current snapshot. Stable between notifies (same reference). */
   getSnapshot = (): ProgressSnapshot => this.snapshot
 
-  /** Apply a mutation under the hood; schedules a throttled notify. */
-  mutate(mutator: Mutator): void {
+  /** Apply a mutation under the hood; schedules a throttled notify.
+   *  streamOnly: when true, the mutation only touched stream-only fields
+   *  (streamContent, reasoningStreamContent, streaming, streamingTools).
+   *  flush() can reuse the previous snapshot's structured arrays (iterationHistory,
+   *  activeTools, completedTools) so downstream useMemo sees the same reference. */
+  mutate(mutator: Mutator, streamOnly = false): void {
     if (this.disposed) return
     mutator(this.current)
     this.dirty = true
+    if (streamOnly) this.streamOnlyDirty = true
     this.scheduleNotify()
   }
 
@@ -454,8 +468,47 @@ export class ProgressStore {
     this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
     this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
     this.dirty = false
+    this.streamOnlyDirty = false
     this.lastTurnID = 0
     this.lastIter = 0
+    if (this.rafHandle !== null) {
+      cancelAnimationFrame(this.rafHandle)
+      this.rafHandle = null
+    }
+    this.listeners.forEach((l) => l())
+  }
+
+  /** Atomic reset + replace — used on session switch to avoid two separate
+   *  notifications (fullReset → listeners → React render, then replace →
+   *  listeners → React render). Combines into one notification. */
+  resetAndReplace(next: Partial<ProgressSnapshot>): void {
+    if (this.disposed) return
+    this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
+    // Apply replacement directly to current (no rAF — synchronous)
+    const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, todos: _td, ...rest } = next
+    if (next.todos !== undefined) {
+      this.current.todos = next.todos
+    }
+    if (next.iterationHistory) {
+      appendIterations(this.current, next.iterationHistory)
+      const maxIter = this.current.iterationHistory.reduce((max, i) => Math.max(max, i.iteration), 0)
+      if (maxIter > this.current.lastIter) this.current.lastIter = maxIter
+    }
+    if (next.completedTools) {
+      const currentIter = next.iteration ?? this.current.iteration
+      const filtered = currentIter > 0
+        ? next.completedTools.filter((t) => t.iteration === undefined || t.iteration === currentIter)
+        : next.completedTools
+      this.current.completedTools = dedupTools(filtered)
+    }
+    if (next.eventSeq !== undefined && next.eventSeq > this.current.eventSeq) {
+      this.current.eventSeq = next.eventSeq
+    }
+    Object.assign(this.current, rest)
+    // Single snapshot + single notification
+    this.snapshot = { ...this.current }
+    this.dirty = false
+    this.streamOnlyDirty = false
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null
@@ -534,7 +587,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.streamContent = delta  // cumulative value, use assignment not append
       draft.streaming = true
-    })
+    }, true) // streamOnly: reuse structured arrays in snapshot
   }
 
   /** Replace streamContent (single source of truth, no accumulation). */
@@ -543,7 +596,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.streamContent = content
       draft.streaming = true
-    })
+    }, true)
   }
 
   /** Set streamed reasoning text (cumulative value from reasoning_stream_content events). */
@@ -552,7 +605,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.reasoningStreamContent = delta  // cumulative value, use assignment not append
       draft.streaming = true
-    })
+    }, true)
   }
 
   /** Replace reasoningStreamContent (single source of truth, no accumulation). */
@@ -561,7 +614,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.reasoningStreamContent = content
       draft.streaming = true
-    })
+    }, true)
   }
 
   /** Set streaming GenUI HTML content (from display_html tool arguments). */
@@ -570,7 +623,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.genuiContent = content
       draft.streaming = true
-    })
+    }, true)
   }
 
   /**
@@ -582,7 +635,7 @@ export class ProgressStore {
       if (opts.streamingTools) {
         draft.streamingTools = opts.streamingTools
       }
-    })
+    }, true)
   }
 
   /** Stop streaming animations (typewriter) but KEEP all content/tools visible.
@@ -876,10 +929,16 @@ export class ProgressStore {
     })
   }
 
-  /** Build a fresh immutable snapshot (shallow-copied top-level) and notify. */
+  /** Build a fresh immutable snapshot (shallow-copied top-level) and notify.
+   *  When streamOnlyDirty is set, structured arrays (iterationHistory,
+   *  activeTools, completedTools, subAgents) reuse the previous snapshot's
+   *  references — downstream useMemo sees the same array and skips recompute. */
   private flush(): void {
     if (this.disposed || !this.dirty) return
     this.dirty = false
+    const reuseStructured = this.streamOnlyDirty
+    this.streamOnlyDirty = false
+    const prev = this.snapshot
     this.snapshot = {
       eventSeq: this.current.eventSeq,
       phase: this.current.phase,
@@ -888,17 +947,18 @@ export class ProgressStore {
       content: this.current.content,
       reasoningStreamContent: this.current.reasoningStreamContent,
       streaming: this.current.streaming,
-      activeTools: this.current.activeTools,
-      completedTools: this.current.completedTools,
-      iterationHistory: this.current.iterationHistory,
+      // Reuse structured array references when only stream-only fields changed.
+      // This lets useMemo in useProgressStream (liveMessage) and MessageList
+      // (buildMessageRows) skip recompute — they check array identity.
+      activeTools: reuseStructured ? prev.activeTools : this.current.activeTools,
+      completedTools: reuseStructured ? prev.completedTools : this.current.completedTools,
+      iterationHistory: reuseStructured ? prev.iterationHistory : this.current.iterationHistory,
       streamingTools: this.current.streamingTools,
       genuiContent: this.current.genuiContent,
       lastIter: this.current.lastIter,
       lastReasoning: this.current.lastReasoning,
       todos: this.current.todos,
-      // TODO-DBG: log todos in snapshot
-      ...(this.current.todos.length > 0 ? { _todoDbg: this.current.todos.length } : {}),
-      subAgents: this.current.subAgents,
+      subAgents: reuseStructured ? prev.subAgents : this.current.subAgents,
       tokenUsage: this.current.tokenUsage,
       turnID: this.current.turnID,
     }

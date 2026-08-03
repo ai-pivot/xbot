@@ -28,7 +28,7 @@ import {
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
 import { dedupMessages, assertIterationContinuity } from '@/components/agent/progressStore'
-import { getProgressGeneration, sessionCacheKey } from '@/lib/webCache'
+import { getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
 import type { ChatMessage, WebIteration } from '@/types/shared'
@@ -374,15 +374,27 @@ export function useChatMessages({
     )
     const reloadKey = activeMessageCacheKey
     const sameTarget = lastReloadKeyRef.current === reloadKey
-    // No cache read — always start fresh on session switch.
+    // Session switch: try messagesCache for instant render (LRU).
+    // The cache stores the last-seen messages for recently visited sessions.
+    // On a cache hit, render immediately while the network fetch refreshes.
     if (!sameTarget) {
-      messagesRef.current = []
-      setMessages([])
+      const cacheKey = chatID ? sessionCacheKey(channel, chatID) : null
+      const cached = cacheKey ? messagesCache.get(cacheKey) : null
+      if (cached && cached.length > 0) {
+        messagesRef.current = cached
+        setMessages(cached)
+        // Don't set loading — we have content to show immediately
+        setLoading(false)
+      } else {
+        messagesRef.current = []
+        setMessages([])
+        setHasMore(false)
+        oldestIdRef.current = null
+        setLoading(true)
+      }
       setHasMore(false)
       oldestIdRef.current = null
     }
-    const hasVisibleRows = sameTarget && messagesRef.current.length > 0
-    setLoading(!hasVisibleRows)
     setError(null)
     lastReloadKeyRef.current = reloadKey
     if (!sameTarget) setInitialProgress(null)
@@ -464,6 +476,15 @@ export function useChatMessages({
       const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0) : parsed
       messagesRef.current = next
       setMessages(next)
+      // Cache messages for instant render on next session switch (LRU).
+      if (cursorCacheKey) {
+        messagesCache.set(cursorCacheKey, next)
+        // LRU eviction: keep at most 5 sessions cached
+        if (messagesCache.size > 5) {
+          const oldestKey = messagesCache.keys().next().value
+          if (oldestKey !== cursorCacheKey) messagesCache.delete(oldestKey)
+        }
+      }
       // Track pagination cursor.
       setHasMore(Boolean(data.has_more))
       oldestIdRef.current = data.oldest_id ?? null

@@ -49,6 +49,12 @@ export function useTypewriter(fullText: string): TypewriterState {
   const skipFlipRef = useRef(false)
   const fullTextRef = useRef('')
 
+  // Cache the runes array — Array.from(fullText) is O(n) and was previously
+  // called on every 50ms tick. For long reasoning (10K+ chars), this allocated
+  // a 10K-element array 20 times/second. Now we only rebuild when fullText changes.
+  const runesRef = useRef<string[]>([])
+  const runesTextRef = useRef('')
+
   fullTextRef.current = fullText
 
   // Advance visible runes by the TUI exponential catch-up formula.
@@ -75,14 +81,20 @@ export function useTypewriter(fullText: string): TypewriterState {
   // without waiting for the 50ms interval tick.
   useLayoutEffect(() => {
     if (!fullText) {
+      runesRef.current = []
+      runesTextRef.current = ''
       if (visibleRef.current !== 0) {
         visibleRef.current = 0
         setState({ visibleChars: 0, isTyping: false })
       }
       return
     }
-    const runes = Array.from(fullText)
-    if (runes.length < visibleRef.current) {
+    // Rebuild runes cache only when text changes
+    if (runesTextRef.current !== fullText) {
+      runesRef.current = Array.from(fullText)
+      runesTextRef.current = fullText
+    }
+    if (runesRef.current.length < visibleRef.current) {
       visibleRef.current = 0
       setState({ visibleChars: 0, isTyping: false })
     }
@@ -97,7 +109,12 @@ export function useTypewriter(fullText: string): TypewriterState {
     const tick = () => {
       const text = fullTextRef.current
       if (!text) return
-      const runes = Array.from(text)
+      // Use cached runes — only rebuild when fullText changed
+      if (runesTextRef.current !== text) {
+        runesRef.current = Array.from(text)
+        runesTextRef.current = text
+      }
+      const runes = runesRef.current
       const visible = visibleRef.current
       const gap = runes.length - visible
       if (gap <= 0) {
