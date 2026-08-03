@@ -15,7 +15,7 @@
  * not set, but raw HTML nodes are not present from remark output), and we only
  * pass through highlight.js token spans we generated ourselves.
  */
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react'
+import { memo, useCallback, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -24,6 +24,7 @@ import type { PluggableList } from 'unified'
 import { Check, Copy } from 'lucide-react'
 
 import { highlightSync, normalizeLanguage, ensureHljsLoaded, useHljsReady } from './highlight'
+import { MermaidDiagram, MermaidSourceBlock } from './MermaidDiagram'
 import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
@@ -93,6 +94,14 @@ function CopyButton({ getText }: { getText: () => string }) {
 }
 
 /**
+ * Context that tells code-block-level components whether the markdown source
+ * is actively streaming. Mermaid diagrams are expensive (async SVG render) and
+ * the source is incomplete during streaming, so they are shown as plain source
+ * until streaming ends — only then does MermaidDiagram mount and render once.
+ */
+const StreamingContext = createContext(false)
+
+/**
  * Inline or block code. Block code (a <pre><code> with a language) is rendered
  * with highlight.js tokens and a copy button; inline code is a plain styled
  * <code>. react-markdown passes `inline` for inline spans (v9+) — we also
@@ -110,6 +119,12 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
       (props as unknown as { 'data-language'?: string })['data-language'],
   )
   const isInline = inline || (!lang && !text.includes('\n'))
+
+  // Whether the markdown source is actively streaming. Mermaid diagrams are
+  // expensive (async SVG render) and the source is incomplete during streaming,
+  // so they are shown as plain source until streaming ends — only then does
+  // MermaidDiagram mount and render the complete diagram exactly once.
+  const streaming = useContext(StreamingContext)
 
   // Synchronous highlighting: compute the highlighted HTML during render
   // (via useMemo), not in a post-render useEffect. This shares the streaming
@@ -130,6 +145,15 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, ...prop
 
   // Kick off hljs load on first block render (no-op if already loaded/loading).
   useEffect(() => { if (!isInline) ensureHljsLoaded() }, [])
+
+  // Mermaid diagrams: render to SVG instead of syntax-highlighted source.
+  // All hooks above must run unconditionally before any early return.
+  if (lang === 'mermaid') {
+    const source = text.replace(/\n$/, '')
+    return streaming
+      ? <MermaidSourceBlock source={source} />
+      : <MermaidDiagram source={source} />
+  }
 
   // Inline code: short, no newline, no language fence.
   if (isInline) {
@@ -256,11 +280,13 @@ function clipTextNodes(root: HTMLElement, visibleChars: number): void {
   }
 }
 
-const ParsedMarkdown = memo(function ParsedMarkdown({ content }: { content: string }) {
+const ParsedMarkdown = memo(function ParsedMarkdown({ content, streaming }: { content: string; streaming: boolean }) {
   return (
-    <Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={COMPONENTS}>
-      {normalizeMathDelimiters(content)}
-    </Markdown>
+    <StreamingContext.Provider value={streaming}>
+      <Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={COMPONENTS}>
+        {normalizeMathDelimiters(content)}
+      </Markdown>
+    </StreamingContext.Provider>
   )
 })
 
@@ -385,7 +411,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
           clipTextNodes mutates text.data behind React's back; without a remount,
           React's reconciler skips DOM updates for text nodes whose virtual DOM
           value is unchanged, leaving clipped (empty) values in place. */}
-      <ParsedMarkdown key={debouncedContent} content={debouncedContent} />
+      <ParsedMarkdown key={debouncedContent} content={debouncedContent} streaming={isStreamingMode} />
     </div>
   )
 }, (prev, next) => {

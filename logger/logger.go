@@ -39,6 +39,7 @@ type SetupConfig struct {
 	MaxAge     int    // 日志保留天数（默认 7 天）
 	MaxBackups int    // 保留的旧日志文件数量（默认 0，表示不限制）
 	FileOnly   bool   // true: only write to log file, suppress stdout (for TUI modes)
+	BaseName   string // 日志文件基础名（默认 "xbot"，CLI 用 "xbot-cli" 以区分服务端日志）
 }
 
 // dailyRotateFile 支持按日轮转的日志文件写入器
@@ -163,7 +164,11 @@ func Setup(cfg SetupConfig) error {
 		logDir = filepath.Join(cfg.WorkDir, ".xbot", "logs")
 	}
 	if logDir != "" {
-		drf, err := newDailyRotateFile(logDir, "xbot")
+		baseName := cfg.BaseName
+		if baseName == "" {
+			baseName = "xbot"
+		}
+		drf, err := newDailyRotateFile(logDir, baseName)
 		if err != nil {
 			return fmt.Errorf("failed to create log rotator: %w", err)
 		}

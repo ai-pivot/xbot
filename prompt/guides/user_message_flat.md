@@ -1,3 +1,3 @@
 [System Guide]
-- TUI operations (sessions/sidebar/theme) → `tui_control`
+- Match skills for task guidance → `Skill`
 - Configuration → `config`
