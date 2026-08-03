@@ -139,8 +139,9 @@ func (db *DB) initSchema() error {
 		if err := db.createSchema(); err != nil {
 			return err
 		}
-		// createSchema only creates v2 base; run full migration chain
-		return db.migrateSchema(2)
+		// createSchema creates the full schema at the current schemaVersion.
+		// No migrations needed for fresh databases.
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("check schema: %w", err)

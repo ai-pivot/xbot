@@ -46,7 +46,9 @@ type scriptPlugin struct {
 	dir      string
 
 	cancel    context.CancelFunc // stops the periodic refresh loop
+	bgCtx     context.Context    // background context for refreshLoop + runScript
 	triggerCh chan struct{}      // signals hook-triggered instant runs
+	done      chan struct{}      // closed when refreshLoop exits (for Deactivate to wait)
 
 	// Per-workDir per-widget output cache — each CLI window (different workDir)
 	// sees its own git branch, not the branch of whichever window last refreshed.
@@ -230,8 +232,10 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 	}
 
 	bgCtx, cancel := context.WithCancel(context.Background())
+	p.bgCtx = bgCtx
 	p.cancel = cancel
 	p.triggerCh = make(chan struct{}, 8) // buffered for multiple rapid triggers
+	p.done = make(chan struct{})
 
 	go p.refreshLoop(bgCtx, interval)
 
@@ -243,6 +247,16 @@ func (p *scriptPlugin) Deactivate(ctx PluginContext) error {
 	if p.cancel != nil {
 		p.cancel()
 		p.cancel = nil
+	}
+	// Wait for refreshLoop to exit so no script processes are still running.
+	// This prevents TempDir cleanup failures on Windows where a process
+	// holds a file handle to a directory being RemoveAll'd.
+	if p.done != nil {
+		select {
+		case <-p.done:
+		case <-time.After(5 * time.Second):
+			// Don't hang forever if refreshLoop is stuck in a long script.
+		}
 	}
 	ctx.Logger().Info(fmt.Sprintf("Script plugin %s deactivated", p.manifest.ID))
 	return nil
@@ -341,6 +355,7 @@ func (p *scriptPlugin) refreshLoop(ctx context.Context, interval time.Duration) 
 	p.runAndUpdate()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	defer close(p.done)
 
 	for {
 		select {
@@ -622,7 +637,14 @@ func (p *scriptPlugin) runScript(workDir, widgetID string) (string, error) {
 		return "", fmt.Errorf("empty entry command")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Derive timeout from the background context so Deactivate can kill
+	// running script processes by cancelling p.bgCtx. This prevents Windows
+	// file-lock errors during TempDir cleanup (process still holds a handle).
+	parent := p.bgCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
@@ -716,7 +738,12 @@ func (p *scriptPlugin) runCommand(cmdName, args string) (string, error) {
 		return "", fmt.Errorf("empty entry command")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Derive timeout from the background context (same as runScript).
+	parent := p.bgCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
