@@ -51,7 +51,7 @@ export const LiveIteration = memo(function LiveIteration({
   // markdown twice — normal body + streaming-content). Drop streamContent when
   // it equals the last iteration's text.
   const lastIter = progress.iterationHistory[progress.iterationHistory.length - 1]
-  const lastIterText = (lastIter?.thinking || lastIter?.content || '').trim()
+  const lastIterText = (lastIter?.thinking || '').trim()
   const streamText = (progress.streamContent || '').trim()
   const effectiveStreamContent = streamText && streamText !== lastIterText ? progress.streamContent : ''
   const textContent = effectiveStreamContent || progress.content || ''
