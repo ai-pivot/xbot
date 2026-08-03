@@ -356,14 +356,24 @@ export function MessageList({
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
-          void onLoadMore()
+          // Scroll-anchor the viewport: remember the first VISIBLE row before
+          // older rows are prepended, then scroll back to it after load — the
+          // user's viewpoint must NOT jump to the top; the newly loaded rows
+          // simply appear above and remain reachable by scrolling up.
+          const items = virtualizer.getVirtualItems()
+          const anchorId = items.length > 0 ? rows[items[0].index]?.id : undefined
+          void onLoadMore().then(() => {
+            if (anchorId == null) return
+            const idx = rows.findIndex((r) => r.id === anchorId)
+            if (idx >= 0) virtualizer.scrollToIndex(idx, { align: 'start' })
+          })
         }
       },
       { root: scrollRef.current, threshold: 0 },
     )
     observer.observe(el)
     return () => observer.disconnect()
-  }, [hasMore, loadingMore, onLoadMore])
+  }, [hasMore, loadingMore, onLoadMore, rows, virtualizer])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
