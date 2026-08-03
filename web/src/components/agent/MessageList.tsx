@@ -196,6 +196,11 @@ export function MessageList({
   // ones are absorbed (their tools are in the snapshot or in the last
   // assistant's iterations).
   const rows = useMemo<ChatMessage[]>(() => buildMessageRows(messages, liveMessage), [messages, liveMessage])
+  // Latest-rows ref: async scroll-anchor callbacks (loadMore .then) run AFTER
+  // rows was recomputed — the effect closure holds the OLD array, so finding
+  // the anchor's new index must read the CURRENT array from this ref.
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
   // Invariant guard: the "thinking…" busy placeholder must never render below
   // a FINISHED assistant (copy button shown — turn complete). A finished turn
   // followed by "thinking…" would imply the completed turn is still running.
@@ -364,8 +369,15 @@ export function MessageList({
           const anchorId = items.length > 0 ? rows[items[0].index]?.id : undefined
           void onLoadMore().then(() => {
             if (anchorId == null) return
-            const idx = rows.findIndex((r) => r.id === anchorId)
-            if (idx >= 0) virtualizer.scrollToIndex(idx, { align: 'start' })
+            // rowsRef.current is the LATEST array (the effect closure's rows
+            // is stale after the prepend); scroll in rAF so the virtualizer
+            // has measured the newly prepended rows.
+            const idx = rowsRef.current.findIndex((r) => r.id === anchorId)
+            if (idx >= 0) {
+              requestAnimationFrame(() => {
+                virtualizer.scrollToIndex(idx, { align: 'start' })
+              })
+            }
           })
         }
       },
