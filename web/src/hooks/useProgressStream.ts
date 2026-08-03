@@ -654,6 +654,21 @@ function handleProgressMessage(
         }
       }
 
+      // Stream fields may also arrive inside structured events (the Web
+      // channel forwards all ProgressEvents as type=progress_structured,
+      // including stream callbacks' reasoning_stream_content / stream_content).
+      // Handle them here the same as the stream_content case so reasoning/
+      // content stay live — and BEFORE the seq check (stream deltas are
+      // cumulative, not ordered by seq).
+      if (p.reasoning_stream_content) store.appendReasoningContent(p.reasoning_stream_content)
+      if (p.stream_content) store.appendStreamContent(String(p.stream_content))
+      if (p.genui_content) store.setGenUIContent(p.genui_content)
+      if (p.streaming_tools) {
+        store.setStreamOnlyFields({
+          streamingTools: normalizeWebTools(p.streaming_tools as unknown[]),
+        })
+      }
+
       // ── Consistency check: iteration must advance by exactly 1 within a turn ──
       // Iterations are 1-based: 0 = uninitialized, 1 = first iteration.
       // Only STRUCTURED events (phase set) participate. Stream events
