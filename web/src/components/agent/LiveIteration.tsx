@@ -43,7 +43,18 @@ export const LiveIteration = memo(function LiveIteration({
   const hasReasoning = Boolean(reasoningContent)
   // Text output: prefer streaming (real-time), fall back to structured content
   // (snapshot from server — may arrive without preceding stream_content events)
-  const textContent = progress.streamContent || progress.content || ''
+  //
+  // Linear-consistency guard: after a session switch the hydrated snapshot can
+  // carry the same final text in BOTH streamContent AND the last completed
+  // iteration's thinking/content. TurnBody already rendered the iteration text;
+  // rendering streamContent again duplicates it (the hist-N row showed the same
+  // markdown twice — normal body + streaming-content). Drop streamContent when
+  // it equals the last iteration's text.
+  const lastIter = progress.iterationHistory[progress.iterationHistory.length - 1]
+  const lastIterText = (lastIter?.thinking || lastIter?.content || '').trim()
+  const streamText = (progress.streamContent || '').trim()
+  const effectiveStreamContent = streamText && streamText !== lastIterText ? progress.streamContent : ''
+  const textContent = effectiveStreamContent || progress.content || ''
   const hasStreamContent = Boolean(textContent)
   const hasSubAgents = progress.subAgents.length > 0
 

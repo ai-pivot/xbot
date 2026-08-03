@@ -181,4 +181,47 @@ describe('LiveIteration — typewriter cursor', () => {
     // SweepText is shown when a tool is running (status === 'running')
     expect(container.querySelector('.sweep-text')).not.toBeNull()
   })
+
+describe('LiveIteration — streamContent/iteration duplication guard', () => {
+  it('does NOT re-render streamContent that equals the last iteration text (session-switch hydration)', () => {
+    const { container } = renderWithProviders(
+      <LiveIteration
+        progress={makeSnapshot({
+          phase: 'tool_exec',
+          streaming: false,
+          streamContent: 'case50 200rpm bench is running',
+          content: '',
+          iterationHistory: [
+            { iteration: 1, thinking: 'case50 200rpm bench is running', reasoning: '', tools: [], toolCount: 0 },
+          ],
+        })}
+        level="minimal"
+      />,
+    )
+    // The text must appear at most once — TurnBody renders the iteration text;
+    // LiveIteration must not duplicate it via streamContent.
+    const text = container.textContent ?? ''
+    const count = (text.match(/case50 200rpm bench is running/g) ?? []).length
+    expect(count).toBeLessThanOrEqual(1)
+  })
+
+  it('renders streamContent when it differs from the last iteration text', () => {
+    const { container } = renderWithProviders(
+      <LiveIteration
+        progress={makeSnapshot({
+          phase: 'tool_exec',
+          streaming: false,
+          streamContent: 'new streaming text',
+          content: '',
+          iterationHistory: [
+            { iteration: 1, thinking: 'old iteration text', reasoning: '', tools: [], toolCount: 0 },
+          ],
+        })}
+        level="minimal"
+      />,
+    )
+    expect(container.textContent).toContain('new streaming text')
+  })
+})
+
 })
