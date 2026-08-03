@@ -249,8 +249,18 @@ func (a *Agent) buildMainRunConfig(
 	// on stream_content events. The frontend uses the iteration to clear the
 	// previous iteration's content/tools when a new iteration begins with only
 	// stream events (structured boundary event may be coalesced/lost in SSE).
+	//
+	// CRITICAL: use the ORIGIN key (qualifyChatID(channel, chatID)), NOT the
+	// physical sessionKey (which may be overridden to physicalChannel:chatID
+	// at line 267 for web-users-browsing-CLI-sessions). buildStreamCallbacks
+	// computes progressKey = qualifyChatID(channel, chatID) and reads
+	// activeIteration via getActiveIteration(progressKey) — if OnIterationChange
+	// writes to the physical key while getActiveIteration reads the origin key,
+	// they mismatch and getActiveIteration returns the stale initial value (1)
+	// on every iteration.
 	cfg.OnIterationChange = func(iteration int) {
-		if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+		originKey := qualifyChatID(channel, chatID)
+		if state, ok := a.bgSessionStates.Load(originKey); ok {
 			state.(*bgSessionState).activeIteration.Store(int64(iteration))
 		}
 	}
