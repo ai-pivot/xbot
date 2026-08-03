@@ -196,11 +196,6 @@ export function MessageList({
   // ones are absorbed (their tools are in the snapshot or in the last
   // assistant's iterations).
   const rows = useMemo<ChatMessage[]>(() => buildMessageRows(messages, liveMessage), [messages, liveMessage])
-  // Latest-rows ref: async scroll-anchor callbacks (loadMore .then) run AFTER
-  // rows was recomputed — the effect closure holds the OLD array, so finding
-  // the anchor's new index must read the CURRENT array from this ref.
-  const rowsRef = useRef(rows)
-  rowsRef.current = rows
   // Invariant guard: the "thinking…" busy placeholder must never render below
   // a FINISHED assistant (copy button shown — turn complete). A finished turn
   // followed by "thinking…" would imply the completed turn is still running.
@@ -361,31 +356,14 @@ export function MessageList({
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
-          // Scroll-anchor the viewport: remember the first VISIBLE row before
-          // older rows are prepended, then scroll back to it after load — the
-          // user's viewpoint must NOT jump to the top; the newly loaded rows
-          // simply appear above and remain reachable by scrolling up.
-          const items = virtualizer.getVirtualItems()
-          const anchorId = items.length > 0 ? rows[items[0].index]?.id : undefined
-          void onLoadMore().then(() => {
-            if (anchorId == null) return
-            // rowsRef.current is the LATEST array (the effect closure's rows
-            // is stale after the prepend); scroll in rAF so the virtualizer
-            // has measured the newly prepended rows.
-            const idx = rowsRef.current.findIndex((r) => r.id === anchorId)
-            if (idx >= 0) {
-              requestAnimationFrame(() => {
-                virtualizer.scrollToIndex(idx, { align: 'start' })
-              })
-            }
-          })
+          void onLoadMore()
         }
       },
       { root: scrollRef.current, threshold: 0 },
     )
     observer.observe(el)
     return () => observer.disconnect()
-  }, [hasMore, loadingMore, onLoadMore, rows, virtualizer])
+  }, [hasMore, loadingMore, onLoadMore])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
