@@ -454,22 +454,37 @@ func drainStderr(serverName string, r io.Reader) {
 
 // ConnectHTTPServer 连接 HTTP 模式的 MCP Server（公共函数）
 func ConnectHTTPServer(ctx context.Context, cfg MCPServerConfig) (*mcp.ClientSession, error) {
-	transport := &mcp.StreamableClientTransport{
-		Endpoint: cfg.URL,
-	}
-
-	// Note: Headers are injected via custom HTTP client if needed.
-	// The official SDK's StreamableClientTransport uses HTTPClient field.
-	if len(cfg.Headers) > 0 {
-		transport.HTTPClient = newHeaderInjectorClient(cfg.Headers)
-	}
-
 	connectCtx, cancel := context.WithTimeout(ctx, MCPConnectTimeout)
 	defer cancel()
 
-	session, err := sharedMCPClient.Connect(connectCtx, transport, nil)
+	// Try Streamable HTTP first (POST-based, the MCP spec default).
+	streamableTransport := &mcp.StreamableClientTransport{
+		Endpoint: cfg.URL,
+	}
+	if len(cfg.Headers) > 0 {
+		streamableTransport.HTTPClient = newHeaderInjectorClient(cfg.Headers)
+	}
+	session, err := sharedMCPClient.Connect(connectCtx, streamableTransport, nil)
+	if err == nil {
+		return session, nil
+	}
+
+	// Fall back to SSE transport (GET-based). Some MCP servers (e.g. BigModel)
+	// only support SSE, not Streamable HTTP — they return 400 on POST.
+	sseEndpoint := cfg.URL
+	// If the URL ends with /mcp, try /sse as the SSE endpoint.
+	if strings.HasSuffix(sseEndpoint, "/mcp") {
+		sseEndpoint = strings.TrimSuffix(sseEndpoint, "/mcp") + "/sse"
+	}
+	sseTransport := &mcp.SSEClientTransport{
+		Endpoint: sseEndpoint,
+	}
+	if len(cfg.Headers) > 0 {
+		sseTransport.HTTPClient = newHeaderInjectorClient(cfg.Headers)
+	}
+	session, err = sharedMCPClient.Connect(connectCtx, sseTransport, nil)
 	if err != nil {
-		return nil, fmt.Errorf("connect HTTP: %w", err)
+		return nil, fmt.Errorf("connect HTTP (tried Streamable at %s and SSE at %s): %w", cfg.URL, sseEndpoint, err)
 	}
 
 	return session, nil

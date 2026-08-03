@@ -55,10 +55,11 @@ type BackgroundTask struct {
 	sessionKey string // session key for routing completion notifications
 	senderID   string // original user ID that triggered this task
 	cancel     context.CancelFunc
-	mu         sync.Mutex  // protects Output for concurrent writes
-	killed     bool        // set by Kill() before cancel()
-	process    *os.Process // live OS process (set by Adopt, nil for Start-based tasks)
-	exitCodeCh chan int    // optional: receives real exit code from cmd.Wait goroutine (Adopt only)
+	mu         sync.Mutex    // protects Output for concurrent writes
+	killed     bool          // set by Kill() before cancel()
+	process    *os.Process   // live OS process (set by Adopt, nil for Start-based tasks)
+	exitCodeCh chan int      // optional: receives real exit code from cmd.Wait goroutine (Adopt only)
+	done       chan struct{} // closed when the task finishes; enables non-polling wait
 }
 
 // BackgroundTaskManager manages background task lifecycle.
@@ -120,6 +121,7 @@ func (m *BackgroundTaskManager) Start(
 		ExitCode:   -1,
 		sessionKey: sessionKey,
 		senderID:   senderID,
+		done:       make(chan struct{}),
 	}
 
 	// Safety timeout context (24h max lifetime)
@@ -177,6 +179,7 @@ func (m *BackgroundTaskManager) Start(
 			task.Status = BgTaskDone
 		}
 		task.mu.Unlock()
+		close(task.done)
 
 		log.WithFields(log.Fields{
 			"task_id":   id,
@@ -235,6 +238,7 @@ func (m *BackgroundTaskManager) Adopt(
 		senderID:   senderID,
 		process:    proc,
 		exitCodeCh: exitCodeCh,
+		done:       make(chan struct{}),
 	}
 
 	// Safety timeout context (24h max lifetime)
@@ -338,6 +342,7 @@ func (m *BackgroundTaskManager) Adopt(
 			task.Status = BgTaskDone
 		}
 		task.mu.Unlock()
+		close(task.done)
 
 		log.WithFields(log.Fields{
 			"task_id":   id,
@@ -414,6 +419,19 @@ func (m *BackgroundTaskManager) Status(taskID string) (*BackgroundTask, error) {
 		return nil, fmt.Errorf("task %s not found", taskID)
 	}
 	return task, nil
+}
+
+// WaitDone returns a channel that is closed when the task finishes.
+// If the task is already done, the channel is already closed (returns immediately).
+func (m *BackgroundTaskManager) WaitDone(taskID string) (<-chan struct{}, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	task, ok := m.tasks[taskID]
+	if !ok {
+		return nil, fmt.Errorf("task %s not found", taskID)
+	}
+	return task.done, nil
 }
 
 // List returns all tasks for a session.

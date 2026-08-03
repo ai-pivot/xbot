@@ -63,6 +63,17 @@ type RewindResult struct {
 	Errors     []string `json:"errors"`
 }
 
+// HistoryRewindResult reports chat-history and file-checkpoint outcomes
+// independently. HistoryRewound is only true after the DB truncate commits.
+type HistoryRewindResult struct {
+	TargetHistoryID int64         `json:"target_history_id"`
+	Draft           string        `json:"draft"`
+	HistoryRewound  bool          `json:"history_rewound"`
+	FilesRewound    bool          `json:"files_rewound"`
+	Checkpoint      *RewindResult `json:"rewind_result,omitempty"`
+	CheckpointError string        `json:"checkpoint_error,omitempty"`
+}
+
 type CheckpointStore interface {
 	Rewind(turnIdx int) (RewindResult, error)
 	HasChanges(turnIdx int) bool

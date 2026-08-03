@@ -92,6 +92,80 @@ func TestSessionService_GetHistory(t *testing.T) {
 	}
 }
 
+// TestSessionService_GetHistoryBefore_MessageLimit verifies that the limit
+// counts raw MESSAGES, not user turns. A single turn commonly holds many
+// assistant/tool rows; bounding by message count keeps the paginated payload
+// proportional to what the client can render (a turn-count bound allowed a
+// single turn with dozens of tool rows to balloon the window to millions of
+// tokens).
+func TestSessionService_GetHistoryBefore_MessageLimit(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	tenantSvc := NewTenantService(db)
+	sessionSvc := NewSessionService(db)
+	tenantID, err := tenantSvc.GetOrCreateTenantID("test", "chat1")
+	if err != nil {
+		t.Fatalf("Failed to create tenant: %v", err)
+	}
+
+	// Two turns: turn 1 = 1 user + 2 assistant (3 rows); turn 2 = 1 user + 1
+	// assistant (2 rows). Total 5 rows.
+	add := func(m llm.ChatMessage) {
+		if err := sessionSvc.AddMessage(tenantID, m); err != nil {
+			t.Fatalf("Failed to add message: %v", err)
+		}
+	}
+	add(llm.NewUserMessage("u1"))
+	add(llm.NewAssistantMessage("a1-1"))
+	add(llm.NewAssistantMessage("a1-2"))
+	add(llm.NewUserMessage("u2"))
+	add(llm.NewAssistantMessage("a2"))
+
+	// limit=3 bounds by message count → the window is the last 3 rows
+	// (u2, a2 + the immediately preceding a1-2), NOT the last 3 turns.
+	history, err := sessionSvc.GetHistoryBefore(tenantID, 0, 3)
+	if err != nil {
+		t.Fatalf("Failed to get history: %v", err)
+	}
+	if len(history) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(history))
+	}
+	if history[0].Content != "a1-2" || history[1].Content != "u2" || history[2].Content != "a2" {
+		t.Fatalf("unexpected window contents: %v", history)
+	}
+
+	// beforeID pagination: everything before u2 (exclusive) = u1, a1-1, a1-2.
+	all, err := sessionSvc.GetAllMessages(tenantID)
+	if err != nil {
+		t.Fatalf("Failed to get all messages: %v", err)
+	}
+	var u2ID int64
+	for _, m := range all {
+		if m.Content == "u2" {
+			u2ID = m.ID
+			break
+		}
+	}
+	if u2ID == 0 {
+		t.Fatal("u2 message not found")
+	}
+	older, err := sessionSvc.GetHistoryBefore(tenantID, u2ID, 100)
+	if err != nil {
+		t.Fatalf("Failed to get older history: %v", err)
+	}
+	if len(older) != 3 {
+		t.Fatalf("expected 3 older messages, got %d", len(older))
+	}
+	if older[0].Content != "u1" || older[1].Content != "a1-1" || older[2].Content != "a1-2" {
+		t.Fatalf("unexpected older window contents: %v", older)
+	}
+}
+
 func TestSessionService_GetAllMessages(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 	db, err := Open(dbPath)
@@ -243,74 +317,6 @@ func TestSessionService_ToolCalls(t *testing.T) {
 	}
 	if messages[0].ToolCalls[0].Name != "tool1" {
 		t.Errorf("Expected tool name 'tool1', got '%s'", messages[0].ToolCalls[0].Name)
-	}
-}
-
-func TestSessionService_PurgeFromMessageID(t *testing.T) {
-	dbPath := t.TempDir() + "/test.db"
-	db, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	defer db.Close()
-
-	tenantSvc := NewTenantService(db)
-	sessionSvc := NewSessionService(db)
-
-	tenantID, err := tenantSvc.GetOrCreateTenantID("test", "chat1")
-	if err != nil {
-		t.Fatalf("Failed to create tenant: %v", err)
-	}
-
-	// Insert 8 messages: U1, A1, U2, A2, U3, A3, U4, A4
-	msgs := []llm.ChatMessage{
-		llm.NewUserMessage("U1"),
-		llm.NewAssistantMessage("A1"),
-		llm.NewUserMessage("U2"),
-		llm.NewAssistantMessage("A2"),
-		llm.NewUserMessage("U3"),
-		llm.NewAssistantMessage("A3"),
-		llm.NewUserMessage("U4"),
-		llm.NewAssistantMessage("A4"),
-	}
-	var ids []int64
-	for i, m := range msgs {
-		id, err := sessionSvc.AddMessageWithID(tenantID, m)
-		if err != nil {
-			t.Fatalf("Failed to add message %d: %v", i, err)
-		}
-		ids = append(ids, id)
-	}
-
-	// Purge from U3 (index 4) onwards — should remove U3, A3, U4, A4 (4 messages)
-	targetID := ids[4]
-	purged, err := sessionSvc.PurgeFromMessageID(tenantID, targetID)
-	if err != nil {
-		t.Fatalf("PurgeFromMessageID: %v", err)
-	}
-	if purged != 4 {
-		t.Errorf("expected 4 purged (U3, A3, U4, A4), got %d", purged)
-	}
-
-	// Verify remaining messages: U1, A1, U2, A2
-	remaining, err := sessionSvc.GetAllMessages(tenantID)
-	if err != nil {
-		t.Fatalf("GetAllMessages: %v", err)
-	}
-	if len(remaining) != 4 {
-		t.Fatalf("expected 4 remaining (U1, A1, U2, A2), got %d", len(remaining))
-	}
-	if remaining[0].Content != "U1" {
-		t.Errorf("first message = %q, want %q", remaining[0].Content, "U1")
-	}
-	if remaining[3].Content != "A2" {
-		t.Errorf("last message = %q, want %q", remaining[3].Content, "A2")
-	}
-
-	// PurgeFromMessageID with messageID <= 0 is a no-op
-	purged, err = sessionSvc.PurgeFromMessageID(tenantID, 0)
-	if err != nil || purged != 0 {
-		t.Errorf("expected 0 purged for messageID=0, got %d (err=%v)", purged, err)
 	}
 }
 

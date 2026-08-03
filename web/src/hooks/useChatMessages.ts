@@ -80,7 +80,13 @@ export interface UseChatMessagesResult {
   /** Upload a file; returns the server upload metadata for sending with a message. */
   upload: (file: File) => Promise<UploadResponse>
   /** Append a finalized assistant message (called by useProgressStream). */
-  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => void
+  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => void
+  /** Bind the last unpersisted user message to a turnID (on turn_started).
+   *  Optimistic user messages are created with turnID=0 at send time; when
+   *  turn_started arrives with the real turnID, we stamp it on the user row so
+   *  appendLiveMessage can position the live assistant correctly (between the
+   *  current user msg and any newer optimistic user msgs). */
+  bindLastUserToTurn: (turnID: number) => void
   /** Inject a user message from a bg notification/cron (called by useProgressStream). */
   injectUserMessage: (content: string, turnID: number, isNotification: boolean) => void
   /** Remove the trailing assistant message by id (for cancellation cleanup). */
@@ -89,6 +95,12 @@ export interface UseChatMessagesResult {
   clearMessages: () => void
   /** Mark a destructive mutation — next reload discards live rows. */
   markDestructiveMutation: () => void
+  /** Load older messages (scroll-up pagination). Returns false when no more. */
+  loadMore: () => Promise<boolean>
+  /** True if there are older messages available to load. */
+  hasMore: boolean
+  /** True while loadMore is fetching. */
+  loadingMore: boolean
 }
 
 /** File references resolved from an upload, ready to attach to a message. */
@@ -120,6 +132,12 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
   // Normalize each row from the WS RPC format (protocol.HistoryMessage).
   // Iterations are already pre-parsed by the backend (no detail JSON to parse).
   const normalized: ChatMessage[] = []
+  // Replay-derived rows can share the same DB id (compress snapshots fall back
+  // to the compress record's HistoryID for every snapshot message). The
+  // virtualized MessageList keys rows by id — duplicate ids corrupt row-height
+  // measurement and make an expanded <details> (e.g. [Compacted context])
+  // overlap the rows below it. Make every row id unique with a -N suffix.
+  const idCounts = new Map<string, number>()
   for (let i = 0; i < rows.length; i++) {
     const m = rows[i]
 
@@ -146,9 +164,14 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       continue
     }
 
+    const baseId = m.id != null ? `db-${m.id}` : (m.seq != null ? `seq-${m.seq}` : `hist-${i}`)
+    const seen = idCounts.get(baseId) ?? 0
+    idCounts.set(baseId, seen + 1)
+    const id = seen === 0 ? baseId : `${baseId}-${seen}`
+
     normalized.push({
-      id: m.id != null ? `db-${m.id}` : (m.seq != null ? `seq-${m.seq}` : `hist-${i}`),
-      role: m.role,
+      id,
+      role: (m.role === 'user' ? 'user' : 'assistant') as ChatMessage['role'],
       content,
       iterations,
       timestamp: m.timestamp ?? '',
@@ -303,6 +326,9 @@ export function useChatMessages({
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
   const [processing, setProcessing] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const oldestIdRef = useRef<number | null>(null)
 
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
@@ -352,6 +378,8 @@ export function useChatMessages({
     if (!sameTarget) {
       messagesRef.current = []
       setMessages([])
+      setHasMore(false)
+      oldestIdRef.current = null
     }
     const hasVisibleRows = sameTarget && messagesRef.current.length > 0
     setLoading(!hasVisibleRows)
@@ -413,8 +441,8 @@ export function useChatMessages({
         setInitialProgress(null)
         return
       }
-      // Normal mode: load via Web history snapshot (full history + progress).
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null)
+      // Normal mode: load via Web history snapshot (paginated: last 100 messages).
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100 })
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return
       const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
@@ -436,6 +464,9 @@ export function useChatMessages({
       const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0) : parsed
       messagesRef.current = next
       setMessages(next)
+      // Track pagination cursor.
+      setHasMore(Boolean(data.has_more))
+      oldestIdRef.current = data.oldest_id ?? null
       // Always restore active_progress — it contains the COMPLETE iterationHistory
       // from the server. Don't skip it when progressChanged (SSE delta arrived
       // during reload) — that's exactly when we need the full snapshot most,
@@ -454,6 +485,42 @@ export function useChatMessages({
       if (gen === reloadGenRef.current) setLoading(false)
     }
   }, [channel, chatID, subAgentRole, subAgentInstance, parentChatID, agentChatID, activeMessageCacheKey])
+
+  // Load older messages (scroll-up pagination).
+  const loadMore = useCallback(async (): Promise<boolean> => {
+    if (loadingMore || !hasMore || !oldestIdRef.current) return false
+    const w = wsRef.current
+    if (!w) return false
+    setLoadingMore(true)
+    try {
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId: oldestIdRef.current })
+      const rows = data.messages ?? []
+      if (rows.length === 0) {
+        setHasMore(false)
+        return false
+      }
+      const parsed = parseHistoryMessages(rows)
+      // Dedup against existing messages (by id) to prevent duplicates
+      // at the pagination boundary (e.g. if server returns id <= beforeId).
+      const prev = messagesRef.current
+      const existingIds = new Set(prev.map((m) => m.id))
+      const deduped = parsed.filter((m) => !existingIds.has(m.id))
+      if (deduped.length === 0) {
+        setHasMore(false)
+        return false
+      }
+      const next = [...deduped, ...prev]
+      messagesRef.current = next
+      setMessages(next)
+      setHasMore(Boolean(data.has_more))
+      oldestIdRef.current = data.oldest_id ?? null
+      return true
+    } catch {
+      return false
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [loadingMore, hasMore, channel, chatID])
 
   // Load history when the chatID changes (or on first enable).
   useLayoutEffect(() => {
@@ -501,6 +568,10 @@ export function useChatMessages({
           const match = m.id.match(/^user-(\d+)-/)
           return Boolean(match && now - parseInt(match[1], 10) < 5000)
         }) : -1
+        // Preserve turnID from the optimistic message (set by bindLastUserToTurn).
+        // If user_echo arrives before turn_started, turnID is still 0 —
+        // bindLastUserToTurn will update it later via the echo's requestID match.
+        const existingTurnID = lastUserIdx >= 0 ? prev[lastUserIdx].turnID : 0
         const newMsg: ChatMessage = {
           id,
           role: 'user',
@@ -508,14 +579,14 @@ export function useChatMessages({
           iterations: [],
           timestamp: ts,
           isPartial: false,
-          turnID: 0,
+          turnID: existingTurnID,
           persisted: false,
           eventSeq: msg.seq,
           requestID,
         }
         if (lastUserIdx >= 0) {
           const copy = [...prev]
-          copy[lastUserIdx] = newMsg
+          copy[lastUserIdx] = { ...newMsg, sending: false }
           messagesRef.current = copy
           return copy
         }
@@ -577,6 +648,12 @@ export function useChatMessages({
         const msgID = resp?.message_id
         const serverTs = resp?.timestamp
         const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
+        // The API returns the per-session turn_id allocated at queue-admission
+        // time, so we bind the optimistic user row directly — no dependence on
+        // turn_started (which may be lost/coalesced in SSE). queued=true means
+        // the chat was busy; keep a queued marker until turn_started arrives.
+        const respTurnID = resp?.turn_id
+        const respQueued = resp?.queued === true
         if (optimisticID) {
           const sentID = optimisticID
           messageMutationGenRef.current += 1
@@ -587,6 +664,10 @@ export function useChatMessages({
               persisted: true,
               ...(msgID ? { dbID: msgID, id: `db-${msgID}` } : {}),
               ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
+              // Prefer the API-returned turnID. If turn_started already bound
+              // a turnID (race), keep that — they are the same value.
+              ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),
+              ...(respQueued ? { queued: true } : {}),
             } : m)
             messagesRef.current = next
             return next
@@ -626,7 +707,7 @@ export function useChatMessages({
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
-  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number) => {
+  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => {
     if (!content && !iterations.length) return
     messageMutationGenRef.current += 1
     // Use the same id format as parseHistoryMessages (seq-${eventSeq}) so that
@@ -646,7 +727,26 @@ export function useChatMessages({
       eventSeq,
     }
     setMessages((prev) => {
-      const next = dedupMessages([...prev, newMsg])
+      // DEFAULT: append to the end. This preserves turn order — the assistant
+      // reply belongs AFTER its user message.
+      //
+      // insertBeforeLastUser=true (turn_started(N+1) / turn_id-change fallback
+      // commit path): the committed assistant belongs to the turn BEFORE the
+      // newest user — it must land ABOVE that user, never below it. The rule
+      // is deterministic and turn_id-independent: insert before the LAST user
+      // message in the list (persisted or not). The newest user is exactly the
+      // one that triggered the commit, so this always restores turn order.
+      let insertIdx = prev.length
+      if (insertBeforeLastUser) {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].role === 'user') {
+            insertIdx = i
+            break
+          }
+        }
+      }
+      const withMsg = [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)]
+      const next = dedupMessages(withMsg)
       messagesRef.current = next
       return next
     })
@@ -656,6 +756,33 @@ export function useChatMessages({
   // Called by useProgressStream when a turn_started event with trigger
   // "notification" or "resume" arrives. The message is tagged with the
   // backend TurnID so the assistant response can be associated correctly.
+  const bindLastUserToTurn = useCallback((turnID: number) => {
+    if (turnID <= 0) return
+    setMessages((prev) => {
+      // Find this turn's user message and stamp the real turnID on it so the
+      // assistant response (also turnID) is positioned AFTER it. Also clear
+      // any queued marker — turn_started means the message is now actively
+      // being processed.
+      //
+      // Two arrival orders:
+      //  - turn_started first: the optimistic row is still unpersisted
+      //    (persisted=false, turnID=0).
+      //  - REST response first: the row was already persisted with its turnID
+      //    bound from the API response and possibly marked queued=true. We
+      //    must still find it (via the queued flag) to clear the marker.
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i].role === 'user' && (!prev[i].persisted || prev[i].queued)) {
+          if (prev[i].turnID === turnID && !prev[i].queued) return prev // already bound
+          const copy = [...prev]
+          copy[i] = { ...prev[i], turnID, queued: false }
+          messagesRef.current = copy
+          return copy
+        }
+        if (prev[i].persisted && !prev[i].queued) break
+      }
+      return prev
+    })
+  }, [])
   const injectUserMessage = useCallback((content: string, turnID: number, isNotification: boolean) => {
     messageMutationGenRef.current += 1
     const id = `notif-${turnID}-${echoSeq++}`
@@ -669,6 +796,7 @@ export function useChatMessages({
       turnID,
       isNotification,
       persisted: false,
+      eventSeq: -1, // marker: dedup against history by turnID:role in reconcile
     }
     setMessages((prev) => {
       const next = [...prev, newMsg]
@@ -726,9 +854,13 @@ export function useChatMessages({
     upload,
     appendAssistant,
     injectUserMessage,
+    bindLastUserToTurn,
     removeMessage,
     clearMessages,
     markDestructiveMutation,
+    loadMore,
+    hasMore,
+    loadingMore,
   }
 }
 

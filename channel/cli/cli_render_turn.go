@@ -233,6 +233,8 @@ func (m *cliModel) renderToolTags(tools []protocol.ToolProgress, width int, s *c
 			if tool.Elapsed > 0 {
 				tag += " " + s.ProgressElapsed.Render(formatElapsed(tool.Elapsed))
 			}
+		case "history":
+			tag = s.ToolHint.Render(label)
 		default:
 			tag = s.ProgressRunning.Render("● " + label)
 		}

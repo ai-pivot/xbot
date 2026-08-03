@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { postAPI } from '@/lib/api'
-import { fetchCwd, fetchSessionSubscription, isMaskedAPIKey } from './api'
+import { continueInteractiveSession, fetchCwd, fetchSessionSubscription, isMaskedAPIKey, rewindHistory } from './api'
 import type { Subscription } from '@/types/shared'
 
 vi.mock('@/lib/api', () => ({
@@ -18,8 +18,9 @@ describe('agent REST API', () => {
   it('reads idle session CWD from the authoritative status endpoint', async () => {
     postAPIMock.mockResolvedValue({ cwd: '/workspace/project' })
 
-    await expect(fetchCwd({ channel: 'cli', chatID: '/workspace:Agent-main' }))
-      .resolves.toEqual({ dir: '/workspace/project' })
+    await expect(fetchCwd({ channel: 'cli', chatID: '/workspace:Agent-main' })).resolves.toEqual({
+      dir: '/workspace/project',
+    })
     expect(postAPIMock).toHaveBeenCalledWith('/api/session/status', {
       channel: 'cli',
       chat_id: '/workspace:Agent-main',
@@ -27,13 +28,43 @@ describe('agent REST API', () => {
   })
 
   it('requests the selected session subscription', async () => {
-    postAPIMock.mockResolvedValue({ subscription_id: 'sub-a', model: 'model-a' })
+    postAPIMock.mockResolvedValue({
+      subscription_id: 'sub-a',
+      model: 'model-a',
+    })
 
-    await expect(fetchSessionSubscription({ channel: 'agent', chatID: 'web:web-1/review:1' }))
-      .resolves.toEqual({ subscription_id: 'sub-a', model: 'model-a' })
+    await expect(
+      fetchSessionSubscription({
+        channel: 'agent',
+        chatID: 'web:web-1/review:1',
+      }),
+    ).resolves.toEqual({ subscription_id: 'sub-a', model: 'model-a' })
     expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', {
       method: 'get_session_subscription',
       params: { channel: 'agent', chat_id: 'web:web-1/review:1' },
+    })
+  })
+
+  it('rewinds by stable history ID without timestamp fields', async () => {
+    postAPIMock.mockResolvedValue({ history_rewound: true })
+
+    await rewindHistory({ channel: 'web', chatID: 'chat-1' }, 42)
+
+    expect(postAPIMock).toHaveBeenCalledWith('/api/history/rewind', {
+      channel: 'web',
+      chat_id: 'chat-1',
+      history_id: 42,
+    })
+  })
+
+  it('continues an interactive Agent by canonical full key', async () => {
+    const ws = { rpc: vi.fn(async () => undefined) }
+
+    await continueInteractiveSession(ws as never, 'agent:web:chat-1/review:1/fix:2', 'continue')
+
+    expect(ws.rpc).toHaveBeenCalledWith('continue_interactive_session', {
+      full_key: 'agent:web:chat-1/review:1/fix:2',
+      content: 'continue',
     })
   })
 })
@@ -138,7 +169,13 @@ describe('Tier config value format', () => {
       const [subID, model] = v.split('|')
       return { subID, model }
     }
-    expect(parseTierValue('sub-1|gpt-4o')).toEqual({ subID: 'sub-1', model: 'gpt-4o' })
-    expect(parseTierValue('system|gpt-4o-mini')).toEqual({ subID: 'system', model: 'gpt-4o-mini' })
+    expect(parseTierValue('sub-1|gpt-4o')).toEqual({
+      subID: 'sub-1',
+      model: 'gpt-4o',
+    })
+    expect(parseTierValue('system|gpt-4o-mini')).toEqual({
+      subID: 'system',
+      model: 'gpt-4o-mini',
+    })
   })
 })

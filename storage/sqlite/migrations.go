@@ -298,6 +298,26 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v52: make session_messages an append-only history log by adding
+	// record_type, target_history_id, and record_data columns. Existing rows
+	// are the migration baseline and remain ordinary message records.
+	if from < 52 {
+		if err := migrateV51ToV52(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v52: %w", err)
+		}
+	}
+
+	// v53: move session CWD persistence from files (~/.xbot/session_cwd/*.txt)
+	// into the tenants table. File-based CWD was unreliable (Cd in
+	// sessionless/SubAgent context only mutated in-memory InitialCWD, and the
+	// file key could mismatch the tenant's channel:chatID), so after a restart
+	// every session fell back to "~". The DB is authoritative.
+	if from < 53 {
+		if err := migrateV52ToV53(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v53: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -2075,5 +2095,60 @@ func migrateV46ToV47(conn *sql.DB) error {
 	}
 
 	log.Info("Database migrated to v47: added pending_resumes table")
+	return nil
+}
+
+// migrateV51ToV52 makes session_messages an append-only history log by adding
+// record_type, target_history_id, and record_data columns. Existing rows are
+// the migration baseline and remain ordinary message records (record_type
+// defaults to 'message').
+func migrateV51ToV52(conn *sql.DB) error {
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{"record_type", "ALTER TABLE session_messages ADD COLUMN record_type TEXT NOT NULL DEFAULT 'message'"},
+		{"target_history_id", "ALTER TABLE session_messages ADD COLUMN target_history_id INTEGER"},
+		{"record_data", "ALTER TABLE session_messages ADD COLUMN record_data TEXT"}}
+	for _, column := range columns {
+		exists, err := columnExists(conn, "session_messages", column.name)
+		if err != nil {
+			return fmt.Errorf("check session_messages.%s: %w", column.name, err)
+		}
+		if !exists {
+			if _, err := conn.Exec(column.ddl); err != nil {
+				return fmt.Errorf("add session_messages.%s: %w", column.name, err)
+			}
+		}
+	}
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_session_messages_tenant_history ON session_messages(tenant_id, id)`); err != nil {
+		return fmt.Errorf("create history index: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 52"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v52: append-only session history records")
+	return nil
+}
+
+// migrateV52ToV53 moves session CWD persistence from files into the tenants
+// table. File-based CWD was unreliable (Cd in sessionless/SubAgent context
+// only mutated in-memory InitialCWD; file keys could mismatch the tenant's
+// channel:chatID), so after a restart every session fell back to "~". The DB
+// is now the single authoritative store (TUI may keep a local file view).
+func migrateV52ToV53(conn *sql.DB) error {
+	exists, err := columnExists(conn, "tenants", "cwd")
+	if err != nil {
+		return fmt.Errorf("check tenants.cwd: %w", err)
+	}
+	if !exists {
+		if _, err := conn.Exec("ALTER TABLE tenants ADD COLUMN cwd TEXT DEFAULT ''"); err != nil {
+			return fmt.Errorf("add tenants.cwd: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 53"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v53: session CWD persisted in tenants.cwd")
 	return nil
 }

@@ -622,10 +622,96 @@ describe('useProgressStream event dispatch', () => {
     emitAndFlush({ type: 'text', content: 'reply', chat_id: 'c1' })
     expect(result.current.progressSnapshot.todos).toHaveLength(2)
   })
+
+  it('PhaseDone with empty todos clears the store (todo_write([]) cleanup)', () => {
+    // Bug: the PhaseDone branch filtered `p.todos.length > 0`, so a server
+    // sending `todos: []` (turn-end cleanup of a fully-completed todo list)
+    // was IGNORED — the frontend kept stale todos indefinitely, diverging
+    // from the server's authoritative (cleared) state.
+    const todos = [
+      { id: 1, text: 'task A', done: true },
+      { id: 2, text: 'task B', done: true },
+    ]
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 1, phase: 'tool_exec', iteration: 1, todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+
+    // turn ends, server sends PhaseDone with empty todos (cleanupTodos cleared them)
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 2, phase: 'done', todos: [] } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(0)
+  })
+
+  it('PhaseDone with todos present preserves them (not cleared)', () => {
+    const todos = [
+      { id: 1, text: 'task A', done: true },
+      { id: 2, text: 'task B', done: false },
+    ]
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 1, phase: 'tool_exec', iteration: 1, todos } as ProgressEvent,
+    })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 2, phase: 'done', todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+  })
+
+  it('todo_write([]) clearing todos propagates: mid-busy [] and PhaseDone [] both clear', () => {
+    // Bug: notifyProgress only refreshed structuredProgress.Todos when
+    // len(todos) > 0, and the PhaseDone branch skipped `todos.length > 0`
+    // checks — a todo_write([]) (clear) never reached the frontend, so stale
+    // todos lingered indefinitely (inconsistent with the server).
+    const todos = [
+      { id: 1, text: 'task A', done: true },
+      { id: 2, text: 'task B', done: false },
+    ]
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+
+    emitAndFlush({ type: 'session', session: { action: 'busy', chat_id: 'c1' } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 1, phase: 'tool_exec', iteration: 1, todos } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(2)
+
+    // todo_write([]) → server sends todos: [] → must clear (not carry-forward)
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 2, phase: 'tool_exec', iteration: 2, todos: [] } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(0)
+
+    // PhaseDone with empty todos must ALSO clear (turn end cleanup)
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { chat_id: 'web:c1', seq: 3, phase: 'done', todos: [] } as ProgressEvent,
+    })
+    expect(result.current.progressSnapshot.todos).toHaveLength(0)
+
+    // text finalize must not resurrect cleared todos
+    emitAndFlush({ type: 'text', content: 'reply', chat_id: 'c1' })
+    expect(result.current.progressSnapshot.todos).toHaveLength(0)
+  })
 })
 
-describe('cancel ack: commits via onAssistantComplete with server data', () => {
-  it('cancel DOES call onAssistantComplete with server iterations', () => {
+describe('cancel ack: preserves live state without commit', () => {
+  it('cancel does NOT call onAssistantComplete — keeps live progress as-is', () => {
     const complete = vi.fn()
     const cancelComplete = vi.fn()
     const { result } = renderHook(() =>
@@ -638,9 +724,11 @@ describe('cancel ack: commits via onAssistantComplete with server data', () => {
     )
 
     emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial reply' } })
+    expect(result.current.liveMessage?.content).toBe('partial reply')
+
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'done' } })
 
-    // Cancel ack with server progress_history (includes user_cancelled)
+    // Cancel ack with server progress_history
     const serverHistory = JSON.stringify([{
       iteration: 1,
       tools: [
@@ -650,46 +738,11 @@ describe('cancel ack: commits via onAssistantComplete with server data', () => {
     }])
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
 
-    // Cancel DOES call onAssistantComplete (commits the message)
-    expect(complete).toHaveBeenCalledTimes(1)
-    const [content, iterations] = complete.mock.calls[0]
-    expect(content).toBe('partial reply') // streamContent as final text
-    expect(iterations).toHaveLength(1)
-    const allTools = iterations[0].tools.map((t: { name: string }) => t.name)
-    expect(allTools).toContain('user_cancelled')
-    // Store is reset after commit
-    expect(result.current.liveMessage).toBeNull()
+    // Cancel does NOT commit — the live progress stays as-is
+    expect(complete).not.toHaveBeenCalled()
     expect(cancelComplete).toHaveBeenCalledTimes(1)
-  })
-
-  it('cancel merges live-only iterations with server data', () => {
-    const complete = vi.fn()
-    const cancelComplete = vi.fn()
-    renderHook(() =>
-      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, onCancelComplete: cancelComplete, ws: currentWS as unknown as WSConnection }),
-    )
-
-    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'hello' } })
-    emitAndFlush({ type: 'progress_structured', progress: {
-      phase: 'tool_exec', iteration: 2,
-      iteration_history: [
-        { iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 },
-        { iteration: 2, thinking: '', reasoning: '', tools: [{ name: 'Grep', status: 'done' }], toolCount: 1 },
-      ],
-    } })
-
-    const serverHistory = JSON.stringify([{
-      iteration: 2,
-      tools: [{ name: 'Grep', status: 'done' }, { name: 'user_cancelled', status: 'done' }],
-    }])
-    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
-
-    // Cancel DOES call onAssistantComplete with merged iterations
-    expect(complete).toHaveBeenCalledTimes(1)
-    const [, iterations] = complete.mock.calls[0]
-    const iterNums = iterations.map((i: { iteration: number }) => i.iteration).sort()
-    expect(iterNums).toContain(1) // live-only
-    expect(iterNums).toContain(2) // from server
+    // Store is NOT reset — liveMessage content preserved
+    expect(result.current.progressSnapshot.streamContent).toBe('partial reply')
   })
 })
 
@@ -711,18 +764,16 @@ describe('cancel: no duplicate message', () => {
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
 
     // Defensive finalize should NOT commit — PhaseDone already fired (phaseDoneRef=true)
-    // The cancel ack is the authoritative finalizer.
     expect(complete).not.toHaveBeenCalled()
 
-    // Cancel ack arrives — NOW commit
+    // Cancel ack arrives — does NOT commit, keeps live state
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
-    expect(complete).toHaveBeenCalledTimes(1)
-    expect(result.current.liveMessage).toBeNull()
+    expect(complete).not.toHaveBeenCalled()
   })
 })
 
 describe('cancel: iteration preservation', () => {
-  it('cancel commits content + iterations (no vanish)', () => {
+  it('cancel preserves live state (no reset, no commit)', () => {
     const complete = vi.fn()
     const cancelComplete = vi.fn()
     const { result } = renderHook(() =>
@@ -738,11 +789,11 @@ describe('cancel: iteration preservation', () => {
     }])
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, progress_history: serverHistory })
 
-    // Cancel DOES call onAssistantComplete — commits the message
-    expect(complete).toHaveBeenCalledTimes(1)
+    // Cancel does NOT commit and does NOT reset
+    expect(complete).not.toHaveBeenCalled()
     expect(cancelComplete).toHaveBeenCalledTimes(1)
-    // Store is reset after commit — liveMessage is null
-    expect(result.current.liveMessage).toBeNull()
+    // Store is preserved — streamContent stays
+    expect(result.current.progressSnapshot.streamContent).toBe('partial reply')
   })
 })
 
@@ -864,10 +915,10 @@ describe('busy: no iteration lost under packet loss', () => {
 })
 
 describe('cancel: assistant message must not vanish', () => {
-  it('cancel commits content with non-empty stream', () => {
+  it('cancel preserves live content without committing', () => {
     const complete = vi.fn()
     const cancelComplete = vi.fn()
-    renderHook(() =>
+    const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', onAssistantComplete: complete, onCancelComplete: cancelComplete, ws: currentWS as unknown as WSConnection }),
     )
 
@@ -881,9 +932,11 @@ describe('cancel: assistant message must not vanish', () => {
     emitAndFlush({ type: 'progress_structured', seq: 2, progress: { phase: 'done' } })
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
 
-    // Cancel DOES call onAssistantComplete — commits the content
-    expect(complete).toHaveBeenCalledTimes(1)
+    // Cancel does NOT commit — live progress is preserved as-is
+    expect(complete).not.toHaveBeenCalled()
     expect(cancelComplete).toHaveBeenCalledTimes(1)
+    // Stream content is still visible
+    expect(result.current.progressSnapshot.streamContent).toBe('I am working on')
   })
 
   it('does NOT commit when cancel has no content AND no iterations', () => {
@@ -897,8 +950,7 @@ describe('cancel: assistant message must not vanish', () => {
     emitAndFlush({ type: 'progress_structured', seq: 1, progress: { phase: 'done' } })
     emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true })
 
-    // onAssistantComplete should NOT be called — there's nothing to commit
-    // (empty content + no iterations = no visible assistant message)
+    // onAssistantComplete should NOT be called
     expect(complete).not.toHaveBeenCalled()
   })
 
@@ -968,4 +1020,47 @@ describe('cancel: assistant message must not vanish', () => {
     warnSpy.mockRestore()
     errorSpy.mockRestore()
   })
+
+  it('turn_started-lost fallback COMMITS old live content instead of wiping it (no flicker, no data loss)', () => {
+    // BUG: when the old turn's text event AND the new turn's turn_started are
+    // both lost (SSE coalescing/disconnect), the old turn's live content (tools,
+    // stream text) is the ONLY display of the old reply. The 637-line fallback
+    // called store.reset() directly — the content vanished from the UI in one
+    // frame (flicker) and was lost until a history reload.
+    const complete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+    // Turn 1: turn_started → stream content + running tool. text event NEVER arrives.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'old reply', turn_id: 1 } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: {
+        phase: 'tool_exec', iteration: 1, seq: 2, turn_id: 1, chat_id: 'web:c1',
+        active_tools: [{ name: 'Read', status: 'running', iteration: 1 }],
+      },
+    })
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.progressSnapshot.activeTools).toHaveLength(1)
+
+    // Turn 2 begins: turn_started(2) lost too. First structured event triggers
+    // the fallback — it must hand the old content to the committed list
+    // (onAssistantComplete) BEFORE resetting, so nothing flickers or vanishes.
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { phase: 'thinking', iteration: 1, seq: 3, turn_id: 2, chat_id: 'web:c1' },
+    })
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete.mock.calls[0][0]).toBe('old reply')
+    // Store reset + new turn applied cleanly: no stale old-turn tools remain.
+    expect(result.current.progressSnapshot.activeTools).toEqual([])
+    expect(result.current.liveMessage).toBeNull()
+  })
+
+
+
+
+
 })

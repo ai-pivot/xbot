@@ -6,12 +6,15 @@ const password = process.env.E2E_PASSWORD || 'admin'
 // Helper: login before each test
 test.beforeEach(async ({ page }) => {
   await page.goto('/')
-  const userInput = page.locator('input[name="username"]')
-  if (await userInput.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await page.fill('input[name="username"]', username)
-    await page.fill('input[name="password"]', password)
+  // Wait for either the login form or the chat editor (already authed).
+  const userInput = page.locator('#login-username')
+  const editor = page.locator('textarea, [contenteditable]')
+  await userInput.or(editor).first().waitFor({ timeout: 15_000 }).catch(() => {})
+  if (await userInput.isVisible().catch(() => false)) {
+    await page.fill('#login-username', username)
+    await page.fill('#login-password', password)
     await page.click('button[type="submit"], button:has-text("登录"), button:has-text("Login")')
-    await expect(page.locator('.bg-slate-900')).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator('textarea, [contenteditable]')).toBeVisible({ timeout: 15_000 })
   }
 })
 
@@ -42,7 +45,7 @@ test.describe('Chat interaction', () => {
     const sendBtn = page.locator('button[aria-label="发送"], button[aria-label="Send"], button.send-btn, button:has-text("发送")')
     await sendBtn.first().click()
 
-    // Check for user message bubble
-    await expect(page.locator('.message-user, [data-msg-type="user"], .bg-blue-600, .bg-blue-700')).toBeVisible({ timeout: 5_000 })
+    // Check for user message bubble (the newly sent one with our text)
+    await expect(page.locator('[data-role="user"]', { hasText: 'hello test' }).first()).toBeVisible({ timeout: 5_000 })
   })
 })

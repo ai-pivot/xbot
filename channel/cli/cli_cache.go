@@ -236,6 +236,12 @@ func (m *cliModel) appendNewMessagesToCache() {
 		msg.dirty = false
 		msg.renderWidth = cw
 		m.trimToolSummaryPayload(msg)
+		if rendered == "" {
+			msg.wrappedLines = nil
+			msg.wrappedMaxWidth = 0
+			msg.wrappedWidth = cw
+			continue
+		}
 		sb.WriteString(rendered)
 		// Wrap rendered lines and append to histLines so the tick fast path
 		// can assemble viewport content without setViewportContent's re-wrap.
@@ -306,6 +312,9 @@ func (m *cliModel) fullRebuild() {
 	cw := m.chatWidth()
 	allCached := splitIdx > 0
 	for i := range m.messages[:splitIdx] {
+		if m.messages[i].hidden && m.messages[i].rendered == "" {
+			continue
+		}
 		if m.messages[i].dirty || m.messages[i].renderWidth != cw || len(m.messages[i].wrappedLines) == 0 || m.messages[i].wrappedWidth != cw {
 			allCached = false
 			break
@@ -318,6 +327,9 @@ func (m *cliModel) fullRebuild() {
 		var allWrappedLines []string
 		for i := range m.messages[:splitIdx] {
 			m.msgLineOffsets = append(m.msgLineOffsets, runningLines)
+			if m.messages[i].hidden && m.messages[i].rendered == "" {
+				continue
+			}
 			wl := m.messages[i].wrappedLines
 			if m.messages[i].wrappedMaxWidth > hmax {
 				hmax = m.messages[i].wrappedMaxWidth
@@ -370,6 +382,12 @@ func (m *cliModel) fullRebuild() {
 			m.trimToolSummaryPayload(&m.messages[i])
 		} else {
 			rendered = m.messages[i].rendered
+		}
+		if rendered == "" {
+			m.messages[i].wrappedLines = nil
+			m.messages[i].wrappedMaxWidth = 0
+			m.messages[i].wrappedWidth = cw
+			continue
 		}
 		// Wrap lines for this message only and collect into allWrappedLines.
 		// For cached messages, pre-compute wrappedLines if not already set.

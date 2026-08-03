@@ -92,10 +92,50 @@ LLM 配置通过**订阅（Subscription）**系统管理，不再使用全局单
 ## Concurrency Model
 
 - Agent main loop: one goroutine per chat (`chatProcessLoop`)
+- Run and Rewind share a per-session operation gate. A Run holds it for the
+  whole turn; Rewind uses a non-blocking acquire and returns busy while the
+  session is processing.
 - Commands: serialized via message queue (non-concurrent commands)
 - Tool calls: controlled by `maxConcurrency` (global semaphore) + read/write split
 - LLM calls: per-tenant semaphore (`llm/semaphore.go`)
 - Background tasks: goroutine + WaitGroup, drained on shutdown
+
+## Append-only History and Rewind
+
+`session_messages` is the canonical append-only history. Ordinary messages and
+context controls share a monotonic `history_id`; controls include compression,
+prune, context edit, AskUser question/answer, and mask records.
+
+- `SessionService.Replay` builds the active LLM context from history. Versioned
+  compress/prune snapshots are checkpoints, so replay starts at the newest valid
+  checkpoint and interprets only its suffix. Legacy snapshots fall back to full
+  replay.
+- Public history is a display projection ordered by `history_id`: all raw
+  messages and every compression marker are returned. Internal controls are not
+  exposed. `compacted_by` describes the relationship but does not hide source
+  messages.
+- Rewind accepts only a persisted, non-display-only user `history_id`, deletes
+  that node and its future, and restores the remaining prompt-token state in
+  the same SQLite transaction before resetting pending/checkpoint state and
+  emitting a `history_rewound` session event. Live progress caches and channel-qualified
+  WS/SSE replay/pending buffers are cleared before the event is broadcast; a
+  slow WebSocket that cannot accept the barrier is disconnected for replay.
+- History ownership is resolved through the canonical channel/chat session. An
+  Agent child session recursively validates every child and its real parent
+  ownership. Runner-token CLI sessions use the token's canonical user and
+  atomically claim or verify a new named CLI tenant; tokens are not global
+  session credentials.
+- WS replay sequence numbers are scoped to the explicit channel/chat route.
+  Reconnect first restores that route and cursor; an evicted replay suffix emits
+  `resync_required`, which makes TUI/Web reload history, active progress, TODOs,
+  and pending AskUser state from authoritative APIs.
+- History validation and control append operations are serialized per tenant
+  and run on one SQLite `BEGIN IMMEDIATE` connection, so a second DB handle
+  cannot rewind between validation and append. Compound writes such as AskUser
+  tool pairs plus the pending-question control use one transaction as well.
+- Interactive Agent history uses `channel="agent"` plus the full canonical
+  session key. UI continuations call `continue_interactive_session`; they never
+  enter the generic inbound Agent loop.
 
 ## Run State Components
 
@@ -103,19 +143,20 @@ The `runState` struct (`agent/engine_run.go`) orchestrates a single `Run()` exec
 
 ### TokenTracker (`agent/token_tracker.go`)
 
-Manages token accounting for a single Run. Replaces scattered `lastPromptTokens`/`lastCompletionTokens`/`lastMsgCountAtLLMCall` fields.
+Manages token accounting for a single Run. Compression decisions use only token
+counts returned by the LLM API or restored from persisted state; there is no
+local token estimate in this path.
 
-- **RecordLLMCall(prompt, completion, msgCount)** — Called after each LLM API response. Stores exact token counts from the API.
-- **ResetAfterCompress(newTokens, msgCount)** — Called after context compression. Resets to locally-estimated counts.
-- **EstimateTotal(messages, model)** — Returns estimated total context size. Strategy varies by data source: API+completion+tool_delta, API+completion, restored-from-DB, or local-estimate-fallback.
-- **DetectTruncation(messages, model)** — Detects if messages were truncated (Ctrl+K / rewind) since last LLM call. Re-estimates if so.
+- **RecordLLMCall(prompt, completion)** — Stores exact API usage after a successful LLM response.
+- **ResetAfterCompress()** — Clears all token state before the compressed API count is recorded/restored.
+- **GetPromptTokens()** — Returns the prompt count and its source (`api`, `restored`, or `no_data`). `no_data` never triggers compression.
 - **SaveState(saveFn)** — Persists token state to DB for next Run restoration.
 
 ### CompressPipeline (`agent/compress_pipeline.go`)
 
 Encapsulates the compress→persist→cleanup pipeline that was duplicated across `runCompression`, `handleInputTooLong`, and `context_window_exceeded`.
 
-- **ApplyCompress(ctx, params)** → Executes: CM.Compress → AccumulateUsage → SyncMessages → EstimateTokens → TokenTracker.ResetAfterCompress → Persistence.RewriteAfterCompress → CleanOffload/MaskStores.
+- **ApplyCompress(ctx, params)** → Executes: CM.Compress → accumulate exact API usage → sync messages → reset token state → append a compression snapshot → clean offload/mask stores.
 - Returns `CompressPipelineResult{NewMessages, NewTokenCount, CompressOutput}`.
 
 ### PersistenceBridge (`agent/persist_bridge.go`)
@@ -123,7 +164,9 @@ Encapsulates the compress→persist→cleanup pipeline that was duplicated acros
 Manages incremental session persistence. Replaces the inline `lastPersistedCount` field and scattered `session.AddMessage` calls.
 
 - **IncrementalPersist(messages)** — Persists messages after the watermark. Skips system messages, strips `<system-reminder>` tags.
-- **RewriteAfterCompress(sessionView, totalMsgCount)** — Clears session and re-adds compressed messages. Used after compression.
+- **IncrementalPersistAndAskQuestion(messages, metadata)** — Atomically appends the AskUser tool exchange and pending-question control.
+- **RewriteAfterCompress(sessionView, totalMsgCount)** — Appends a versioned compression snapshot without rewriting original history.
+- **AppendPrune(sessionView, totalMsgCount)** — Appends a versioned aggressive-prune snapshot.
 - **MarkAllPersisted(count)** — Updates watermark without writing (for bg task notifications).
 - **ComputeEngineMessages(messages)** — Returns messages produced during this Run (for RunOutput.EngineMessages).
 - **IsPersisted(idx)** — Checks if a message at index has been persisted (for observation masking in-place updates).
@@ -132,7 +175,7 @@ Manages incremental session persistence. Replaces the inline `lastPersistedCount
 
 Debug-mode state consistency checker, called at key transition points:
 
-- **ValidateInvariants()** — Checks: (1) persistence watermark ≤ len(messages), (2) promptTokens > 0 iff hadLLMCall || restoredFromDB, (3) msgCountAtCall ≤ len(messages).
+- **ValidateInvariants()** — Checks that the persistence watermark never exceeds the active message count and that token state is internally consistent.
 - Called via `validateInvariantsAt(ctx, point)` at: post_llm_call, post_llm_call_input_too_long, post_compress, post_compress_window_exceeded, post_persist.
 
 ## AgentBackend

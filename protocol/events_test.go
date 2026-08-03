@@ -27,15 +27,19 @@ func TestSubAgentSessionKeyJSON(t *testing.T) {
 	}
 
 	eventJSON, err := json.Marshal(SessionEvent{
-		Channel:    "cli",
-		ChatID:     "chat-1",
-		Action:     "subagent_started",
-		SessionKey: "cli:chat-1/reviewer:review-1",
+		Channel:         "cli",
+		ChatID:          "chat-1",
+		Action:          "history_rewound",
+		SessionKey:      "cli:chat-1/reviewer:review-1",
+		TargetHistoryID: 42,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(eventJSON), `"session_key":"cli:chat-1/reviewer:review-1"`) {
 		t.Fatalf("SessionEvent session key missing: %s", eventJSON)
+	}
+	if !strings.Contains(string(eventJSON), `"target_history_id":42`) {
+		t.Fatalf("SessionEvent target history ID missing: %s", eventJSON)
 	}
 }

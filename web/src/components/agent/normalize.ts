@@ -154,7 +154,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     iteration: typeof p.iteration === 'number' ? p.iteration : 0,
     streamContent: p.stream_content ?? '',
     content,
-    reasoningStreamContent: '',
+    reasoningStreamContent: p.reasoning_stream_content ?? '',
     streaming: true,
     activeTools: active,
     completedTools: completed,
@@ -162,7 +162,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     streamingTools: [],
     genuiContent: '',
     lastIter: 0, // 0 = uninitialized; iterations are 1-based
-    lastReasoning: '',
+    lastReasoning: p.reasoning ?? '',
     todos: (p.todos ?? []) as TodoItem[],
     subAgents: normalizeWebSubAgents(p.sub_agents),
     tokenUsage: null,

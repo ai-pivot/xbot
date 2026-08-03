@@ -347,7 +347,7 @@ describe('SSEConnectionImpl', () => {
     await vi.advanceTimersByTimeAsync(1_000)
     expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', {
       method: 'get_active_progress',
-      params: { channel: 'cli', chat_id: '/repo:Agent-main' },
+      params: { channel: 'cli', chat_id: '/repo:Agent-main', from_iteration: 0 },
     })
     connection.dispose()
   })
@@ -371,7 +371,7 @@ describe('SSEConnectionImpl', () => {
 
     expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', {
       method: 'get_active_progress',
-      params: { channel: 'web', chat_id: 'chat-a' },
+      params: { channel: 'web', chat_id: 'chat-a', from_iteration: 0 },
     })
     expect(received.filter((m) => m.type === 'progress_structured').at(-1)).toMatchObject({
       type: 'progress_structured',
@@ -547,7 +547,7 @@ describe('SSEConnectionImpl', () => {
 
     expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', {
       method: 'get_active_progress',
-      params: { channel: 'web', chat_id: 'chat-a' },
+      params: { channel: 'web', chat_id: 'chat-a', from_iteration: 0 },
     })
     expect(received.filter((m) => m.type === 'progress_structured').at(-1)).toMatchObject({
       type: 'progress_structured',
@@ -573,7 +573,7 @@ describe('SSEConnectionImpl', () => {
 
     expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', {
       method: 'get_active_progress',
-      params: { channel: 'web', chat_id: 'chat-zero' },
+      params: { channel: 'web', chat_id: 'chat-zero', from_iteration: 0 },
     })
     expect(received.filter((m) => m.type === 'progress_structured').at(-1)).toMatchObject({
       type: 'progress_structured',

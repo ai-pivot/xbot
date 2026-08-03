@@ -352,7 +352,24 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 
   useLayoutEffect(() => {
     const root = rootRef.current
-    if (!root || visibleChars === undefined) return
+    if (!root) return
+    if (visibleChars === undefined) {
+      // Streaming stopped (cancel/freeze/done): restore any clipped text
+      // nodes from sourceRef. clipTextNodes mutates text.data behind React's
+      // back — React's reconciler won't restore it because the virtual DOM
+      // text value is unchanged, leaving the content stuck at the last
+      // typewriter position (e.g. "I am thinking about thi" after cancel).
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const text = node as Text
+        const saved = sourceRef.current.get(text)
+        if (saved !== undefined) {
+          text.data = saved
+        }
+      }
+      return
+    }
 
     const contentChanged = sourceContentRef.current !== debouncedContent
 

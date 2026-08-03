@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { ProgressStore, dedupMessages, normalizeWebSubAgent } from './progressStore'
-import type { WebToolProgress } from '@/types/shared'
+import { ProgressStore, dedupMessages, normalizeWebSubAgent, continuousIterations } from './progressStore'
+import type { WebIteration, WebToolProgress } from '@/types/shared'
 
 // Helper: create a tool with defaults
 function tool(opts: Partial<WebToolProgress>): WebToolProgress {
@@ -458,117 +458,62 @@ describe('dedupMessages', () => {
     const result = dedupMessages(msgs)
     expect(result).toEqual(msgs)
   })
+
+  it('keeps equal live content when it came from distinct event occurrences', () => {
+    const msgs = [
+      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'hello' },
+      { turnID: 0, role: 'assistant', eventSeq: 11, content: 'hello' },
+    ]
+    const result = dedupMessages(msgs)
+    expect(result).toHaveLength(2)
+  })
+
+  it('dedupes a replay of the same event occurrence', () => {
+    const msgs = [
+      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'partial' },
+      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'final' },
+    ]
+    expect(dedupMessages(msgs)).toEqual([msgs[1]])
+  })
 })
 
-// ── Todo real-time update tests ──
-// Bug: todos only appear after busy→idle transition, not immediately when
-// the TodoWrite tool fires a progress_structured event.
-describe('ProgressStore todos real-time update', () => {
-  let rafSpy: ReturnType<typeof vi.spyOn>
-  let rafCallbacks: Array<() => void>
-
-  beforeEach(() => {
-    rafCallbacks = []
-    rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
-      rafCallbacks.push(cb as () => void)
-      return rafCallbacks.length
-    })
-  })
-  afterEach(() => rafSpy.mockRestore())
-
-  function flushRaf() {
-    rafCallbacks.splice(0, rafCallbacks.length).forEach((cb) => cb())
+describe('continuousIterations — linear-consistency guard (weak-network iteration gaps)', () => {
+  function iters(nums: number[]): WebIteration[] {
+    return nums.map((n) => ({ iteration: n, thinking: '', reasoning: '', content: '', tools: [], toolCount: 0 }))
   }
 
-  it('todos appear immediately after setStructuredTools (no flush needed between)', () => {
-    const store = new ProgressStore()
-
-    // Simulate: agent starts thinking (busy)
-    store.setStructuredTools({ phase: 'thinking', iteration: 1 })
-    flushRaf()
-    expect(store.getSnapshot().todos).toHaveLength(0)
-
-    // Simulate: TodoWrite fires → next progress_structured carries todos
-    store.setStructuredTools({
-      phase: 'tool_exec',
-      iteration: 1,
-      todos: [
-        { id: 1, text: 'task A', done: false },
-        { id: 2, text: 'task B', done: false },
-      ],
-    })
-    flushRaf()
-
-    // Todos should be visible NOW, not after idle
-    expect(store.getSnapshot().todos).toHaveLength(2)
-    expect(store.getSnapshot().todos[0].text).toBe('task A')
-    store.dispose()
+  it('keeps a fully contiguous sequence as-is', () => {
+    expect(continuousIterations(iters([1, 2, 3])).map((i) => i.iteration)).toEqual([1, 2, 3])
   })
 
-  it('todos survive reset() — preserved across turn boundary', () => {
-    const store = new ProgressStore()
-
-    store.setStructuredTools({
-      phase: 'tool_exec',
-      iteration: 1,
-      todos: [{ id: 1, text: 'task A', done: false }],
-    })
-    flushRaf()
-
-    // Turn ends → reset() clears streaming state but keeps todos
-    store.reset()
-    flushRaf()
-
-    expect(store.getSnapshot().todos).toHaveLength(1)
-    store.dispose()
+  it('truncates at the first gap (weak network dropped iteration 2)', () => {
+    // delta for iteration 2 lost before restoreActiveProgress backfills it
+    expect(continuousIterations(iters([1, 3, 4])).map((i) => i.iteration)).toEqual([1])
   })
 
-  it('PhaseDone event applies its todos (TodoWrite-as-last-tool scenario)', () => {
-    const store = new ProgressStore()
-
-    // TodoWrite is often the last tool → its todos ride on the PhaseDone
-    // event. When the mid-busy push events are dropped (SSE backpressure /
-    // coalescing), PhaseDone is the only carrier. It MUST apply its todos.
-    store.setStructuredTools({
-      phase: 'done',
-      todos: [{ id: 1, text: 'task A', done: false }],
-    })
-    flushRaf()
-
-    expect(store.getSnapshot().todos).toHaveLength(1)
-    expect(store.getSnapshot().todos[0].text).toBe('task A')
-    store.dispose()
+  it('renders a contiguous sequence that does not start at 1 (partial history from compression)', () => {
+    // History may contain only a subset of iterations (earlier ones compressed/merged).
+    // A contiguous 2->3 is valid and should render.
+    expect(continuousIterations(iters([2, 3])).map((i) => i.iteration)).toEqual([2, 3])
   })
 
-  it('empty todos array clears previous todos (todo_write([]))', () => {
-    const store = new ProgressStore()
+  it('handles empty and single-iteration input', () => {
+    expect(continuousIterations([])).toEqual([])
+    expect(continuousIterations(iters([1])).map((i) => i.iteration)).toEqual([1])
+  })
 
-    store.setStructuredTools({
-      phase: 'tool_exec',
-      iteration: 1,
-      todos: [{ id: 1, text: 'task A', done: false }],
-    })
-    flushRaf()
-    expect(store.getSnapshot().todos).toHaveLength(1)
-
-    // todo_write([]) → backend sends todos: []
-    store.setStructuredTools({
-      phase: 'tool_exec',
-      iteration: 1,
-      todos: [],
-    })
-    flushRaf()
-
-    expect(store.getSnapshot().todos).toHaveLength(0)
-    store.dispose()
+  it('preserves input order (no sorting — reordering after reconnect looks like duplication)', () => {
+    // iterations arrive in order from appendIterations; continuousIterations
+    // must NOT sort (sorting would reorder rows after a reconnect and make
+    // old iterations appear near the latest progress)
+    expect(continuousIterations(iters([1, 2, 3])).map((i) => i.iteration)).toEqual([1, 2, 3])
+    expect(continuousIterations(iters([1, 3])).map((i) => i.iteration)).toEqual([1])
   })
 })
 
-// ── Iteration history preservation under packet loss ──
-describe('ProgressStore: iterationHistory preserved on stale events', () => {
+describe('appendIterations — ordered union (reconnect out-of-order delivery)', () => {
   let rafCbs: Array<() => void>
   let rafSpy: ReturnType<typeof vi.spyOn>
-
   beforeEach(() => {
     rafCbs = []
     rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
@@ -576,109 +521,35 @@ describe('ProgressStore: iterationHistory preserved on stale events', () => {
       return rafCbs.length
     })
   })
-  afterEach(() => {
-    rafSpy.mockRestore()
-    rafCbs.splice(0)
-  })
-
+  afterEach(() => rafSpy.mockRestore())
   function flushRaf() {
     rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
   }
+  function mkIter(n: number): WebIteration {
+    return { iteration: n, thinking: '', reasoning: '', tools: [], toolCount: 0 }
+  }
 
-  it('appends iterationHistory from stale (low-seq) recovery events', () => {
+  it('sorts iterations regardless of arrival order (old 1 arriving between 100 and 101)', () => {
     const store = new ProgressStore()
-
-    // seq 1: iter 1 starts
-    store.setStructuredTools({ eventSeq: 1, iteration: 1, phase: 'tool_exec',
-      activeTools: [tool({ name: 'Read', status: 'running', iteration: 1 })] })
+    // new iteration 100 arrives first (reconnect recovery), then old 1, then 101
+    store.replace({ iterationHistory: [mkIter(100)] })
     flushRaf()
-
-    // seq 3: iter 2 starts (seq 2 was dropped — no delta for iter 1)
-    store.setStructuredTools({ eventSeq: 3, iteration: 2, phase: 'tool_exec',
-      activeTools: [tool({ name: 'Shell', status: 'running', iteration: 2 })] })
+    store.replace({ iterationHistory: [mkIter(1)] })
     flushRaf()
-
-    // Recovery: same seq=3 event carrying iter 1 history
-    // (restoreActiveProgress returns the last snapshot's seq)
-    store.setStructuredTools({ eventSeq: 3, iteration: 2, phase: 'tool_exec',
-      iterationHistory: [{ iteration: 1, thinking: '', reasoning: '', tools: [tool({ name: 'Read', status: 'done', iteration: 1 })], toolCount: 1 }] })
+    store.replace({ iterationHistory: [mkIter(101)] })
     flushRaf()
-
-    const snap = store.getSnapshot()
-    expect(snap.iterationHistory).toHaveLength(1)
-    expect(snap.iterationHistory[0].iteration).toBe(1)
+    const hist = store.getSnapshot().iterationHistory.map((i) => i.iteration)
+    expect(hist).toEqual([1, 100, 101])
+    // continuousIterations truncates at the gap → only the contiguous prefix renders
+    expect(continuousIterations(store.getSnapshot().iterationHistory).map((i) => i.iteration)).toEqual([1])
   })
 
-  it('does NOT duplicate iterations when recovery event repeats', () => {
+  it('dedupes by iteration number and keeps order', () => {
     const store = new ProgressStore()
-
-    // Normal: iter 1 delta arrives
-    store.setStructuredTools({ eventSeq: 1, iteration: 1, phase: 'tool_exec',
-      iterationHistory: [{ iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }] })
+    store.replace({ iterationHistory: [mkIter(2), mkIter(1)] })
     flushRaf()
-
-    // Stale recovery: same seq=1 event repeats with same iter 1
-    store.setStructuredTools({ eventSeq: 1, iteration: 1, phase: 'tool_exec',
-      iterationHistory: [{ iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }] })
+    store.replace({ iterationHistory: [mkIter(2)] })
     flushRaf()
-
-    const snap = store.getSnapshot()
-    expect(snap.iterationHistory).toHaveLength(1) // no duplicate
-  })
-
-  it('does NOT update phase/tools on stale event (only appends iterations)', () => {
-    const store = new ProgressStore()
-
-    // seq 2: iter 1, tools running
-    store.setStructuredTools({ eventSeq: 2, iteration: 1, phase: 'tool_exec',
-      activeTools: [tool({ name: 'Read', status: 'running', iteration: 1 })] })
-    flushRaf()
-    expect(store.getSnapshot().activeTools).toHaveLength(1)
-
-    // Stale seq=1 event tries to set different phase + empty tools
-    store.setStructuredTools({ eventSeq: 1, iteration: 1, phase: 'thinking',
-      activeTools: [] })
-    flushRaf()
-
-    const snap = store.getSnapshot()
-    // Phase/tools NOT overwritten by stale event
-    expect(snap.phase).toBe('tool_exec')
-    expect(snap.activeTools).toHaveLength(1)
-  })
-
-  it('does NOT reset on stale PhaseDone from a previous turn (SSE replay)', () => {
-    // BUG: switching to a busy session hydrates the store from initialProgress
-    // (seq=8, activeTools=[Shell]). Then SSE replay delivers a stale PhaseDone
-    // (seq=5) from the PREVIOUS turn.
-    //
-    // In production, useProgressStream intercepts phase==='done' BEFORE calling
-    // setStructuredTools — it only forwards {eventSeq, todos}, never phase.
-    // The stale guard in useProgressStream skips stale PhaseDone entirely.
-    // This test verifies the STORE level: a stale event (seq <= current) with
-    // todos only (no phase) does NOT reset the store.
-    const store = new ProgressStore()
-
-    // Hydrate from initialProgress (simulates history API active_progress)
-    store.replace({
-      eventSeq: 8,
-      phase: 'tool_exec',
-      iteration: 2,
-      streaming: true,
-      activeTools: [tool({ name: 'Shell', status: 'running', iteration: 2 })],
-    })
-    flushRaf()
-    expect(store.getSnapshot().activeTools).toHaveLength(1)
-
-    // Stale event from previous turn arrives (seq=5 < 8).
-    // Production path: useProgressStream forwards only {eventSeq, todos} for
-    // PhaseDone — no phase field. The stale guard must preserve activeTools.
-    store.setStructuredTools({ eventSeq: 5, todos: [] })
-    flushRaf()
-
-    const snap = store.getSnapshot()
-    // Store must NOT be reset — the event is stale (previous turn)
-    expect(snap.phase).toBe('tool_exec')
-    expect(snap.activeTools).toHaveLength(1)
-    expect(snap.activeTools[0].name).toBe('Shell')
+    expect(store.getSnapshot().iterationHistory.map((i) => i.iteration)).toEqual([1, 2])
   })
 })

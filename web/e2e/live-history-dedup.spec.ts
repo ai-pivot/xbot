@@ -118,6 +118,11 @@ test.describe('Live message does not duplicate committed history', () => {
       chat_id: 'chat-1', last_seq: 3,
       active_progress: {
         phase: 'thinking', iteration: 0, seq: 4, turn_id: 6, chat_id: 'web:chat-1',
+        // Must carry content — hasVisibleProgress is false for a bare
+        // phase:'thinking' snapshot, so liveMessage would be null and the
+        // committed message would be the only assistant row (1, not 2).
+        reasoning_stream_content: 'current turn thinking...',
+        stream_content: 'current turn answer',
         iteration_history: [],
       },
     }
@@ -151,6 +156,10 @@ test.describe('Live message does not duplicate committed history', () => {
       chat_id: 'chat-1', last_seq: 2,
       active_progress: {
         phase: 'thinking', iteration: 0, seq: 3, turn_id: 1, chat_id: 'web:chat-1',
+        // Must carry content (see comment above — bare thinking snapshot has
+        // no visible progress, so liveMessage would be null).
+        reasoning_stream_content: 'new turn thinking...',
+        stream_content: 'new turn answer',
         iteration_history: [],
       },
     }

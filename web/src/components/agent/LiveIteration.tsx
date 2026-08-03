@@ -77,10 +77,10 @@ export const LiveIteration = memo(function LiveIteration({
   // iteration persist because the backend clears ActiveTools (nil→omitted by
   // omitempty) so the frontend keeps the previous event's value.
   const currentActive = progress.activeTools.filter(
-    (t) => !t.iteration || t.iteration > maxCompletedIter,
+    (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
   )
   const currentCompleted = progress.completedTools.filter(
-    (t) => !t.iteration || t.iteration > maxCompletedIter,
+    (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
   )
   // Exclude stale completedTools already rendered in completed iterations
   // (by name+label). This filter does NOT apply to activeTools — a running

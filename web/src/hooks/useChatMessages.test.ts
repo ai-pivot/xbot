@@ -120,8 +120,9 @@ describe('useChatMessages', () => {
       'cursor-b': deferred<{ messages: never[]; chat_id: string; last_seq: number }>(),
     }
     vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const request = JSON.parse(String(init?.body)) as { chat_id: keyof typeof histories }
-      const data = await histories[request.chat_id].promise
+      const body = init?.body ? JSON.parse(String(init.body)) : {}
+      const chat_id = body.chat_id as keyof typeof histories
+      const data = await histories[chat_id].promise
       return new Response(JSON.stringify({ ok: true, data, error: null }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -1019,5 +1020,130 @@ describe('useChatMessages', () => {
     await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual([
       'initial', 'reply after gap',
     ]))
+  })
+
+  it('bindLastUserToTurn stamps turnID on the last optimistic user message', async () => {
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'bind-turn', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // 用户发送一条消息 → optimistic user (turnID=0, persisted=false)
+    act(() => {
+      result.current.sendMessage('msg-1')
+    })
+    expect(result.current.messages.map((m) => m.content)).toEqual(['msg-1'])
+    expect(result.current.messages[0].turnID).toBe(0)
+    expect(result.current.messages[0].persisted).toBe(false)
+
+    // turn_started 到达 → bindLastUserToTurn 把 turnID 绑定到 optimistic user
+    act(() => {
+      result.current.bindLastUserToTurn(42)
+    })
+    expect(result.current.messages[0].turnID).toBe(42)
+    expect(result.current.messages[0].persisted).toBe(false)
+
+    // 再次 bind 相同 turnID → 不重复处理
+    act(() => {
+      result.current.bindLastUserToTurn(42)
+    })
+    expect(result.current.messages[0].turnID).toBe(42)
+    expect(result.current.messages.length).toBe(1)
+  })
+
+  it('bindLastUserToTurn only binds the LAST unpersisted user message (rapid sends)', async () => {
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'bind-turn-2', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // 连发两条消息：u1 (turnID=0), u2 (turnID=0)
+    act(() => result.current.sendMessage('first'))
+    act(() => result.current.sendMessage('second'))
+    expect(result.current.messages.map((m) => m.content)).toEqual(['first', 'second'])
+    expect(result.current.messages.every((m) => m.turnID === 0)).toBe(true)
+
+    // turn_started 到达 → 只绑定最后一条 (second → turnID=7)
+    act(() => result.current.bindLastUserToTurn(7))
+    expect(result.current.messages.map((m) => [m.content, m.turnID])).toEqual([
+      ['first', 0],
+      ['second', 7],
+    ])
+  })
+
+  it('sendMessage binds turnID from the API response without waiting for turn_started', async () => {
+    const ws = makeWS([{ messages: [] }])
+    vi.mocked(ws.send).mockResolvedValue({
+      turn_id: 42,
+      queued: false,
+      message_id: 7,
+      timestamp: 1_786_000_000,
+    })
+    const { result } = renderHook(() => useChatMessages({ chatID: 'turn-resp', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // 发送消息 → optimistic user (turnID=0)
+    act(() => {
+      result.current.sendMessage('hello')
+    })
+    expect(result.current.messages[0].content).toBe('hello')
+    expect(result.current.messages[0].turnID).toBe(0)
+
+    // REST 响应直接携带 turn_id → optimistic user 被绑定，无需 turn_started
+    await waitFor(() => expect(result.current.messages[0].turnID).toBe(42))
+    expect(result.current.messages[0].queued).toBeUndefined()
+    expect(result.current.messages[0].persisted).toBe(true)
+  })
+
+  it('sendMessage marks the optimistic user as queued when the chat is busy, cleared on turn_started', async () => {
+    const ws = makeWS([{ messages: [] }])
+    vi.mocked(ws.send).mockResolvedValue({
+      turn_id: 43,
+      queued: true,
+      message_id: 8,
+      timestamp: 1_786_000_000,
+    })
+    const { result } = renderHook(() => useChatMessages({ chatID: 'queued', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    act(() => {
+      result.current.sendMessage('hello')
+    })
+    // queued=true → 消息标记排队中（仍带 turn_id）
+    await waitFor(() => expect(result.current.messages[0].queued).toBe(true))
+    expect(result.current.messages[0].turnID).toBe(43)
+    expect(result.current.messages[0].sending).toBe(false)
+
+    // turn_started 到达 → bindLastUserToTurn 清除排队标记
+    act(() => {
+      result.current.bindLastUserToTurn(43)
+    })
+    expect(result.current.messages[0].queued).toBe(false)
+    expect(result.current.messages[0].turnID).toBe(43)
+  })
+
+  it('inserts a committed assistant after ITS OWN turn user even when the next turn user is already persisted', async () => {
+    // BUG: appendAssistant(insertBeforeLastUser=true) only looked for an
+    // UNPERSISTED user. When the next turn's user was persisted first (REST
+    // response arrived), it fell through to the END of the list, rendering
+    // turn N's iteration history AFTER turn N+1's user/live content — the
+    // "严重迭代混乱" layout (asst-42 appears below user-43).
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'turn-order', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // turn 42: user + bound turnID
+    act(() => result.current.sendMessage('u42'))
+    act(() => result.current.bindLastUserToTurn(42))
+    // turn 43: user; REST response resolves → persisted=true
+    act(() => result.current.sendMessage('u43'))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.messages.find((m) => m.content === 'u43')?.persisted).toBe(true)
+    act(() => result.current.bindLastUserToTurn(43))
+
+    // turn 42's assistant committed late (turn_started(43) / text fallback)
+    act(() => result.current.appendAssistant('A42', [], undefined, 42, true))
+
+    const contents = result.current.messages.map((m) => m.content)
+    expect(contents.indexOf('A42')).toBeGreaterThan(contents.indexOf('u42'))
+    expect(contents.indexOf('A42')).toBeLessThan(contents.indexOf('u43'))
   })
 })

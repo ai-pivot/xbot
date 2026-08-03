@@ -228,6 +228,11 @@ type RunConfig struct {
 	// Returns nil when no notifications are pending. Called on each iteration.
 	DrainBgNotifications func() []tools.BgNotification
 
+	// AcknowledgeBgNotifications confirms that the first count notifications
+	// returned by DrainBgNotifications were durably persisted or intentionally
+	// discarded. A failed injection must not acknowledge its notification.
+	AcknowledgeBgNotifications func(count int)
+
 	// LLMSemAcquire is called before each LLM call to acquire a per-tenant
 	// concurrency slot. Returns a release function that must be called after
 	// the LLM call completes. If nil, no concurrency limiting is applied.
@@ -277,6 +282,14 @@ type RunConfig struct {
 	// Used by background interactive sessions to incrementally expose iteration
 	// history for real-time inspect, instead of waiting for Run() to finish.
 	OnIterationSnapshot func(snap IterationSnapshot)
+
+	// OnIterationChange is called at the start of each iteration (beginIteration)
+	// with the new iteration number. The agent uses it to track the current
+	// iteration per session so stream callbacks can stamp iteration on
+	// stream_content events — without it the frontend cannot detect that a new
+	// iteration started when only reasoning/content streams arrive (no
+	// structured event), and keeps rendering the previous iteration's content.
+	OnIterationChange func(iteration int)
 
 	// StreamContentFunc is called with accumulated text content on each content delta
 	// during LLM streaming. When set (and Stream=true), generateResponse uses
@@ -484,7 +497,23 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	ctx = hooks.WithSessionContext(ctx, sessionCtx)
 	s.sessionCtx = sessionCtx
 
-	// Cleanup completed TODOs on exit
+	// Setup structured progress tracking
+	s.initProgress()
+
+	// Ensure PhaseDone event is sent on exit
+	if s.progressFinalizer != nil {
+		defer s.progressFinalizer()
+	}
+
+	// Cleanup completed TODOs on exit.
+	// IMPORTANT: registered AFTER progressFinalizer so it runs BEFORE the
+	// finalizer (Go defer is LIFO). PhaseDone must carry the POST-cleanup
+	// todos — if todos are fully completed, cleanupTodos clears them and
+	// refreshStructuredTodos writes [] into structuredProgress.Todos, so the
+	// finalizer's Clone() emits `todos: []` and the frontend clears its list.
+	// With the old order (cleanup after finalizer) PhaseDone carried the
+	// pre-cleanup "all done" list while the server memory was already empty —
+	// the frontend kept stale todos indefinitely (inconsistent with server).
 	defer s.cleanupTodos()
 	// Cleanup completed background tasks on exit to prevent stale tasks from
 	// accumulating indefinitely across multiple agent turns.
@@ -567,7 +596,11 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		}
 
 		s.beginIteration(i)
-		s.maybeCompress(ctx)
+		if err := s.maybeCompress(ctx); err != nil {
+			out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
+			out.Error = fmt.Errorf("persist context compression: %w", err)
+			return out
+		}
 		s.notifyThinking(i)
 
 		if out := s.assertSystemMessages(ctx); out != nil {
@@ -1051,10 +1084,14 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		InjectInbound: cfg.InjectInbound,
 
 		// 工具注册表
-		Registry: cfg.Tools,
+		Registry:           cfg.Tools,
+		ContextEditHandler: cfg.ContextEditor,
 
 		// 流式设置继承
 		Stream: cfg.Stream,
+	}
+	if handler := tools.ContextEditHandlerFromContext(ctx); handler != nil {
+		tc.ContextEditHandler = handler
 	}
 
 	// 注入 SpawnAgent（包装为 SubAgentManager 接口）

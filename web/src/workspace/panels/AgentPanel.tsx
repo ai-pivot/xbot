@@ -159,12 +159,12 @@ export function AgentPanel({ params }: PanelProps) {
     chatID: progressChatID,
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
-    onAssistantComplete: (finalText, iterations, _eventSeq, turnID) => {
+    onAssistantComplete: (finalText, iterations, _eventSeq, turnID, insertBeforeLastUser) => {
       // Commit the message AND reset progress in the SAME synchronous render.
       // This eliminates the intermediate frame where content moves from
       // LiveIteration to MarkdownRenderer.
       flushSync(() => {
-        chat.appendAssistant(finalText, iterations, _eventSeq, turnID)
+        chat.appendAssistant(finalText, iterations, _eventSeq, turnID, insertBeforeLastUser)
         resetProgressRef.current?.()
       })
       void sessionContext.refresh()
@@ -182,12 +182,19 @@ export function AgentPanel({ params }: PanelProps) {
     onInjectUserMessage: (content, turnID, isNotification) => {
       chat.injectUserMessage(content, turnID, isNotification)
     },
-    onTurnStarted: (_turnID, _trigger) => {
+    onTurnStarted: (turnID, _trigger) => {
       // Optimistically mark the session as running so the input box switches
       // to cancel mode immediately. session(busy) may be lost or delayed by
       // SSE coalescing — turn_started is the earliest reliable signal.
       if (chatID) {
         store.setStatus({ channel: messageChannel, chatID }, 'running')
+      }
+      // Stamp the real turnID on the last optimistic user message. Without
+      // this, appendLiveMessage can't distinguish "current turn's user" from
+      // "newer optimistic user" — the live assistant gets positioned after
+      // a newer user msg, breaking turn order.
+      if (turnID > 0) {
+        chat.bindLastUserToTurn(turnID)
       }
     },
     ws,
@@ -215,12 +222,18 @@ export function AgentPanel({ params }: PanelProps) {
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
-  // Busy state is driven solely by sessionStore — the same source the sidebar
-  // uses. sessionStore.running is updated by SSE session(busy)/session(idle)
-  // events and is always correct. No optimistic states, no cache, no fragile
-  // isStreaming/processing checks.
+  // Busy state: sessionStore.running is the primary source (same source the
+  // sidebar uses — SSE session(busy)/session(idle) events). BUT after a page
+  // refresh, SSE does NOT replay session(busy) for an in-flight turn, so
+  // running stays false even though active_progress says the agent is
+  // mid-turn (first-iteration thinking with no content yet = no liveMessage).
+  // Fall back to the hydrated progressSnapshot.streaming (set true by
+  // historyProgressToLive and by any stream/structured event while phase !=
+  // done) so the "思考中…" placeholder still renders on refresh.
   const currentSession = store.sessions.find((s) => sameSession(s, activeSession))
-  const busy = (currentSession?.running ?? false) && !askUser.prompt
+  const busy = ((currentSession?.running ?? false) ||
+    (progressSnapshot.streaming && progressSnapshot.phase !== 'done' && progressSnapshot.phase !== 'frozen')) &&
+    !askUser.prompt
 
   const llmSettings = useLLMSettings()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens
@@ -317,6 +330,9 @@ export function AgentPanel({ params }: PanelProps) {
         collapseLevel={level}
         mergeTools={mergeTools}
         loading={chat.loading}
+        loadingMore={chat.loadingMore}
+        hasMore={chat.hasMore}
+        onLoadMore={chat.loadMore}
         error={chat.error}
         onRewind={isSubAgent || busy ? undefined : rewindTo}
         editingMessageId={editingMessageId}

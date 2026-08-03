@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"xbot/bus"
+	log "xbot/logger"
 	"xbot/protocol"
 )
 
@@ -61,17 +62,6 @@ type sessionBody struct {
 	ChatID  string `json:"chat_id,omitempty"`
 }
 
-func sessionQuery(body sessionBody) url.Values {
-	query := make(url.Values)
-	if body.Channel != "" {
-		query.Set("channel", body.Channel)
-	}
-	if body.ChatID != "" {
-		query.Set("chat_id", body.ChatID)
-	}
-	return query
-}
-
 func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 	var request protocol.WSClientMessage
 	if err := decodeJSONBody(r, &request, false); err != nil {
@@ -82,17 +72,55 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if request.ChatID != "" && request.Channel == "" {
 		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
-	sel, msgID, ts, err := wc.dispatchUserMessage(r.Context(), identity, request)
+	sel, msgID, ts, turnID, queued, err := wc.dispatchUserMessage(r.Context(), identity, request)
 	if err != nil {
 		writeInboundError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"chat_id":    sel.ChatID,
 		"channel":    sel.Channel,
 		"message_id": msgID,
 		"timestamp":  ts.UnixMilli(),
-	})
+		"queued":     queued,
+	}
+	if queued {
+		// QUEUED: the chat was already busy; the message will be handled after
+		// the current turn. Deliberately OMIT turn_id — the frontend shows a
+		// queued marker and binds the turn via turn_started when processing
+		// begins (turn_id is not yet meaningful while queued).
+	} else if turnID == 0 && !isSlashCommand(request.Content) {
+		// INSERTED (non-queued): the response MUST carry a non-zero turn_id —
+		// EXCEPT slash commands (e.g. /help, /new), which are handled
+		// concurrently by the chatWorker and have no user-message turn
+		// semantics (their turn_id is legitimately 0; the frontend does not
+		// bind a turn for them). A 0 turn_id on a real user message means the
+		// queue-admission allocation failed upstream — the frontend binds the
+		// optimistic user row from this value and a 0 would break turn order
+		// (replies rendering above the user msg). Fail fast.
+		log.WithFields(log.Fields{
+			"channel": sel.Channel,
+			"chat_id": sel.ChatID,
+			"msg_id":  msgID,
+		}).Error("handleMessage: turn_id is 0 for a user message — refusing to return an unbound user message")
+		writeInboundError(w, fmt.Errorf("internal error: message accepted without a turn_id"))
+		return
+	} else {
+		// Non-queued, non-command: turn_id must be non-zero (guaranteed by
+		// admitToMsgCh for user messages); commands keep turn_id omitted.
+		if turnID != 0 {
+			resp["turn_id"] = turnID
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// isSlashCommand reports whether a message content is a slash command (e.g.
+// /help, /new). Command messages are handled by the chatWorker's command
+// branch — they have no user-message turn semantics, so their turn_id may
+// legitimately be 0 and is omitted from the API response.
+func isSlashCommand(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "/")
 }
 
 func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -246,8 +274,10 @@ var nonAdminRESTRPCMethods = map[string]struct{}{
 	"get_daily_token_usage":              {},
 	"get_agent_session_dump":             {},
 	"get_agent_session_dump_by_full_key": {},
+	"continue_interactive_session":       {},
 	"get_session_messages":               {},
 	"get_active_progress":                {},
+	"get_pending_ask_user":               {},
 	"kill_bg_task":                       {},
 	"plugin_widgets":                     {},
 	"genui_action":                       {},
@@ -290,7 +320,7 @@ func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, me
 			return http.StatusForbidden, fmt.Errorf("access denied")
 		}
 	}
-	if method == "get_active_progress" {
+	if method == "get_active_progress" || method == "get_pending_ask_user" {
 		var request sessionBody
 		if err := json.Unmarshal(params, &request); err != nil {
 			return http.StatusBadRequest, fmt.Errorf("invalid params: %w", err)
@@ -326,15 +356,6 @@ func restRPCErrorStatus(err error) int {
 		}
 	}
 	return http.StatusInternalServerError
-}
-
-func (wc *WebChannel) handleHistoryPOST(w http.ResponseWriter, r *http.Request) {
-	var body sessionBody
-	if err := decodeJSONBody(r, &body, true); err != nil {
-		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	wc.handleHistory(w, legacyRequest(r, http.MethodGet, sessionQuery(body), nil))
 }
 
 func (wc *WebChannel) handleSearchPOST(w http.ResponseWriter, r *http.Request) {

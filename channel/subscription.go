@@ -3,11 +3,13 @@ package channel
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"xbot/llm"
 	"xbot/protocol"
+	"xbot/storage/sqlite"
 )
 
 // Subscription represents a LLM subscription for display/selection.
@@ -167,6 +169,29 @@ func formatToolLabel(name, argsJSON string) string {
 //  2. Cancelled/interrupted turn: intermediate assistant(ToolCalls) without Detail → pending tool_summary
 //  3. Mixed: some turns completed, last one cancelled
 func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
+	// Copy so the derivation below never mutates the caller's slice.
+	msgs = append([]llm.ChatMessage(nil), msgs...)
+
+	// Derive turn_id for legacy user rows (turn_id=0, written before eager-save
+	// stamped it): a user row belongs to the first turn_id>0 row that follows
+	// it before the next user row. Deterministic — based on the append-only
+	// row order, so the frontend can always order messages by turn_id without
+	// heuristics/fallbacks.
+	for i := range msgs {
+		if msgs[i].Role != "user" || msgs[i].TurnID > 0 {
+			continue
+		}
+		for j := i + 1; j < len(msgs); j++ {
+			if msgs[j].Role == "user" {
+				break
+			}
+			if msgs[j].TurnID > 0 {
+				msgs[i].TurnID = msgs[j].TurnID
+				break
+			}
+		}
+	}
+
 	var history []HistoryMessage
 	var pendingIters []HistoryIteration
 	var curIterTools []protocol.ToolProgress
@@ -198,6 +223,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	// flushPending() uses it to stamp the generated HistoryMessage so the frontend
 	// can match it against the live store's TurnID (same-turn dedup).
 	var pendingTurnID uint64
+	var lastAssistantID int64
 	// syntheticIdx provides monotonically-increasing nanosecond offsets to
 	// guarantee unique timestamps for consecutive flushPending() calls when
 	// no real assistant timestamp is available (e.g. all turns interrupted).
@@ -214,6 +240,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				syntheticIdx++
 			}
 			history = append(history, HistoryMessage{
+				HistoryID:  lastAssistantID,
 				Role:       "assistant",
 				Content:    "",
 				Timestamp:  ts,
@@ -240,6 +267,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			continue
 		case "assistant":
 			lastAssistantTS = m.Timestamp
+			lastAssistantID = m.ID
 			if m.Detail != "" {
 				// Detail has authoritative iteration history. Discard pending iters
 				// from intermediate assistant messages — they lack elapsed/label data.
@@ -370,6 +398,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 				// We need to combine them into one HistoryMessage for unified rendering.
 				if len(history) > 0 && history[len(history)-1].Role == "assistant" &&
 					history[len(history)-1].Content == "" && len(history[len(history)-1].Iterations) > 0 {
+					history[len(history)-1].HistoryID = m.ID
 					history[len(history)-1].Content = m.Content
 					history[len(history)-1].Timestamp = m.Timestamp
 					history[len(history)-1].TurnID = m.TurnID
@@ -400,6 +429,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 			// so it should use its own synthetic timestamp if that turn
 			// is also interrupted (no assistant reply).
 			lastAssistantTS = time.Time{}
+			lastAssistantID = 0
 			if m.Content != "" {
 				history = append(history, HistoryMessage{
 					ID:        m.ID,
@@ -412,4 +442,160 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	}
 	flushPending()
 	return history
+}
+
+// ConvertHistoryRecords exposes one row for every raw message and compression
+// marker while keeping internal history controls private.
+func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
+	ordered := append([]sqlite.HistoryRecord(nil), records...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].HistoryID < ordered[j].HistoryID
+	})
+
+	toolResults := make(map[string]string)
+	for _, record := range ordered {
+		if record.Type == sqlite.HistoryRecordMessage && record.Message.Role == "tool" && record.Message.ToolCallID != "" {
+			toolResults[record.Message.ToolCallID] = record.Message.Content
+		}
+	}
+
+	history := make([]HistoryMessage, 0, len(ordered))
+	for _, record := range ordered {
+		if record.Type == sqlite.HistoryRecordMessage {
+			message := record.Message
+
+			// Skip tool-role messages: their results are already embedded in
+			// the preceding assistant message's Detail/iterations. Emitting
+			// them as separate HistoryMessage rows causes the frontend to
+			// render them as assistant messages (with copy buttons) and leak
+			// raw tool output. This mirrors master's ConvertMessagesToHistory
+			// which does `case "tool": continue`.
+			if message.Role == "tool" {
+				continue
+			}
+
+			// Skip display_only messages: these are synthetic tool pairs
+			// (background notifications, user_cancelled) and intermediate
+			// iteration snapshots. Replay() also filters them out (line 891).
+			// Including them causes the frontend to render synthetic text
+			// like "A background task has completed..." as final assistant
+			// content with copy buttons.
+			if message.DisplayOnly {
+				continue
+			}
+
+			timestamp := message.Timestamp
+			if timestamp.IsZero() {
+				timestamp = record.CreatedAt
+			}
+			toolCalls := make([]protocol.HistoryToolCall, len(message.ToolCalls))
+			for i, call := range message.ToolCalls {
+				toolCalls[i] = protocol.HistoryToolCall{
+					ID: call.ID, Name: call.Name, Arguments: call.Arguments,
+				}
+			}
+			// Intermediate assistant with ToolCalls but no Detail: content is
+			// the LLM's narration, not the final reply. rawMessageIterations
+			// puts it in the iteration's Content (thinking). Set message
+			// content empty to prevent shouldRenderFinalContent from treating
+			// it as the final reply (which would add a copy button).
+			emitContent := message.Content
+			iters := rawMessageIterations(message, toolResults)
+			if len(iters) > 0 && message.Detail == "" && len(message.ToolCalls) > 0 {
+				emitContent = ""
+			}
+			history = append(history, HistoryMessage{
+				ID:               record.HistoryID,
+				HistoryID:        record.HistoryID,
+				Role:             message.Role,
+				Content:          emitContent,
+				ReasoningContent: message.ReasoningContent,
+				ToolCallID:       message.ToolCallID,
+				ToolName:         message.ToolName,
+				ToolArguments:    message.ToolArguments,
+				ToolCalls:        toolCalls,
+				Timestamp:        timestamp,
+				TurnID:           message.TurnID,
+				Iterations:       iters,
+				RecordType:       string(sqlite.HistoryRecordMessage),
+				CompactedBy:      record.CompactedBy,
+				DisplayOnly:      message.DisplayOnly,
+			})
+			continue
+		}
+		if record.Type != sqlite.HistoryRecordCompress {
+			continue
+		}
+		control := HistoryMessage{
+			ID: record.HistoryID, HistoryID: record.HistoryID, Role: "control", Timestamp: record.CreatedAt, RecordType: string(record.Type),
+			TargetHistoryID: record.TargetHistoryID, CompactedBy: record.CompactedBy,
+		}
+		control.Role = "system"
+		control.Content = "[Compacted context]"
+		var snapshot sqlite.ContextSnapshot
+		if err := json.Unmarshal(record.Data, &snapshot); err == nil {
+			for _, msg := range snapshot.Messages {
+				if strings.HasPrefix(strings.TrimSpace(msg.Content), "[Compacted context]") {
+					control.Content = msg.Content
+					break
+				}
+			}
+		}
+		if record.Compression != nil {
+			control.Compression = &protocol.HistoryCompression{
+				StartHistoryID:   record.Compression.StartHistoryID,
+				EndHistoryID:     record.Compression.EndHistoryID,
+				SourceHistoryIDs: append([]int64(nil), record.Compression.SourceHistoryIDs...),
+			}
+		}
+		history = append(history, control)
+	}
+	return history
+}
+
+func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string) []HistoryIteration {
+	if message.Detail != "" {
+		var snapshots []iterSnapshot
+		if err := json.Unmarshal([]byte(message.Detail), &snapshots); err == nil {
+			iterations := make([]HistoryIteration, len(snapshots))
+			for i, snapshot := range snapshots {
+				tools := make([]protocol.ToolProgress, len(snapshot.Tools))
+				for j, tool := range snapshot.Tools {
+					label := tool.Label
+					if label == "" {
+						label = tool.Name
+					}
+					tools[j] = protocol.ToolProgress{
+						Name: tool.Name, Label: label, Status: tool.Status,
+						Elapsed: tool.ElapsedMS, Iteration: snapshot.Iteration,
+						Summary: tool.Summary, Args: tool.Args, Detail: tool.Detail,
+					}
+				}
+				iterations[i] = HistoryIteration{
+					Iteration: snapshot.Iteration, Content: snapshot.Content,
+					Reasoning: snapshot.Reasoning, Tools: tools,
+				}
+			}
+			return iterations
+		}
+	}
+	if message.Role != "assistant" || (len(message.ToolCalls) == 0 && message.ReasoningContent == "") {
+		return nil
+	}
+	tools := make([]protocol.ToolProgress, len(message.ToolCalls))
+	for i, call := range message.ToolCalls {
+		status := "done"
+		if content, ok := toolResults[call.ID]; ok && strings.HasPrefix(content, "Error:") {
+			status = "error"
+		}
+		tools[i] = protocol.ToolProgress{
+			Name: call.Name, Label: formatToolLabel(call.Name, call.Arguments),
+			Status: status, Iteration: 1,
+		}
+	}
+	// The intermediate assistant's Content is the LLM's narration ("两端就绪 ✅..."),
+	// NOT the final reply. Put it in the iteration's Content (frontend maps to
+	// thinking) so it renders inside the iteration fold, not as message.content
+	// (which would get a copy button via shouldRenderFinalContent).
+	return []HistoryIteration{{Iteration: 1, Content: message.Content, Reasoning: message.ReasoningContent, Tools: tools}}
 }

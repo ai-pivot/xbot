@@ -202,9 +202,13 @@ func (m *cliModel) handleKeyPress(msg tea.KeyPressMsg, wasTyping bool) (tea.Mode
 
 // handleInjectedUserMsg processes user messages injected by the agent (e.g. bg task completion).
 func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
+	matchesCurrentSession := msg.chatID == "" || msg.chatID == qualifyChatID(m.channelName, m.chatID)
 	// suLoading guard: during session switch in remote mode, discard injected messages.
 	// They belong to the previous session's context; the RPC will handle state.
 	if m.splashState.suLoading {
+		if matchesCurrentSession {
+			m.historyMutationGeneration++
+		}
 		log.WithFields(log.Fields{"msg_chat_id": msg.chatID}).Debug("handleInjectedUserMsg: suLoading, discarding (session switch in progress)")
 		return nil
 	}
@@ -217,6 +221,7 @@ func (m *cliModel) handleInjectedUserMsg(msg cliInjectedUserMsg) []tea.Cmd {
 			return nil
 		}
 	}
+	m.historyMutationGeneration++
 
 	// ── Race guard: queue if the current turn hasn't received its reply yet ──
 	// The agent's chatProcessLoop calls sendMessage (async via bus) then immediately
@@ -531,13 +536,15 @@ func (m *cliModel) handleTickMsg() []tea.Cmd {
 	// the injected notification, causing the user message to appear before
 	// the notification in the TUI — even though the backend processed the
 	// notification first.
-	if m.needFlushQueue && !m.typing && m.replyProcessed && !m.splashState.suLoading && len(m.messageQueue) > 0 {
+	if m.needFlushQueue && !m.typing && m.replyProcessed && !m.splashState.suLoading && !m.splashState.compReloading && len(m.messageQueue) > 0 {
 		if m.flushDelay > 0 {
 			m.flushDelay--
 		} else {
 			m.needFlushQueue = false
 			m.flushDelay = 0
-			m.flushMessageQueue()
+			if cmd := m.flushMessageQueue(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 			return cmds
 		}
 	}
@@ -658,6 +665,9 @@ func (m *cliModel) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd, boo
 // and file completion. Returns (model, cmds, handled).
 func (m *cliModel) handleEnterKey() (tea.Model, []tea.Cmd, bool) {
 	var cmds []tea.Cmd
+	if m.rewindPending {
+		return m, nil, true
+	}
 
 	// Plain Enter sends. Modified/newline-intent variants should fall through to
 	// the textarea so its native multiline/internal-scroll behavior works,

@@ -171,17 +171,22 @@ test.describe('AskUser iteration preservation', () => {
     await page.waitForTimeout(300)
 
     // ── Phase 4: Simulate the answer's Run ──
-    // turn_started with new TurnID
+    // The real backend sends turn_started with trigger="resume" (metadata
+    // ask_user_answered=true → emitTurnStarted sets trigger="resume") and the
+    // SAME TurnID as the original turn — the answer continues the same
+    // logical turn, so the frontend preserves iterationHistory. The old mock
+    // used trigger="user" + turn_id:2, which made the frontend do a full
+    // reset (new turn) and drop the pre-AskUser iterations.
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'turn_started', turn_id: 2, turn_start: { trigger: 'user', request_id: 'ans-1' }, chat_id: 'web:chat-1' },
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'resume', request_id: 'ans-1' }, chat_id: 'web:chat-1' },
     })
     await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
     // New iteration (delta push — iteration 0, but it's a new Run)
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
       progress: {
-        phase: 'thinking', iteration: 0, seq: 5, turn_id: 2,
+        phase: 'thinking', iteration: 0, seq: 5, turn_id: 1,
         chat_id: 'web:chat-1',
         active_tools: [],
         completed_tools: [],

@@ -40,16 +40,24 @@ type Mutator = (draft: ProgressSnapshot) => void
 
 /**
  * Append new iterations (Delta Push: 0-1 entries) to iterationHistory,
- * deduplicating by iteration number. Creates a new array reference so
- * immer detects the change (push on draft arrays can be unreliable when
- * the source is a shared constant like EMPTY_PROGRESS_SNAPSHOT).
+ * deduplicating by iteration number, then SORT by iteration number so the
+ * array is always ordered regardless of arrival order.
+ *
+ * Weak-network / reconnect recovery can deliver iterations out of order
+ * (old iteration 1 arriving between new iterations 100 and 101). Appending
+ * in arrival order produced [100, 1, 101] — a non-contiguous, mis-ordered
+ * sequence that rendered iteration 1 inside iterations 100/101. Sorting
+ * after the union keeps the array ordered; continuousIterations then
+ * truncates at the first gap for linear consistency.
  */
 function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
   const newIters = incoming.filter(
     (iter) => !draft.iterationHistory.some((i) => i.iteration === iter.iteration),
   )
   if (newIters.length > 0) {
-    draft.iterationHistory = [...draft.iterationHistory, ...newIters]
+    draft.iterationHistory = [...draft.iterationHistory, ...newIters].sort(
+      (a, b) => a.iteration - b.iteration,
+    )
     assertIterationContinuity(draft.iterationHistory)
   }
 }
@@ -75,6 +83,36 @@ export function assertIterationContinuity(iters: WebIteration[]) {
       break // report first gap only
     }
   }
+}
+
+/**
+ * Return the longest CONTIGUOUS prefix of iterations, preserving the input
+ * order.
+ *
+ * Linear-consistency guarantee: whatever is RENDERED must be a valid,
+ * contiguous iteration sequence — a gap (e.g. 1 → 3, iteration 2's delta lost
+ * on a weak network before restoreActiveProgress backfills it) would render
+ * iteration 3 in place of 2, violating iteration order. Rendering only the
+ * contiguous prefix keeps the visible history linear; the missing iterations
+ * are backfilled by restoreActiveProgress (SSE seq-gap recovery) and the
+ * hidden tail reappears once contiguous.
+ *
+ * NOTE: the input order is PRESERVED (no sorting). appendIterations already
+ * appends in arrival order, which equals iteration order.
+ * NOTE: does NOT require iteration 1 — history may contain only a subset
+ * (earlier iterations compressed/merged into a previous message). A contiguous
+ * sequence starting at any number (e.g. 12→13→14→...) is valid.
+ */
+export function continuousIterations(iters: WebIteration[]): WebIteration[] {
+  if (iters.length < 2) return iters
+  const out: WebIteration[] = [iters[0]]
+  for (let i = 1; i < iters.length; i++) {
+    const prev = out[out.length - 1]
+    const curr = iters[i]
+    if (curr.iteration !== prev.iteration + 1) break
+    out.push(curr)
+  }
+  return out
 }
 
 // ── exported helpers (used by useProgressStream) ──────────────────────────
@@ -232,7 +270,7 @@ export function dedupTools(tools: WebToolProgress[]): WebToolProgress[] {
  * 2. Messages with eventSeq: dedup by eventSeq (SSE sequence is globally unique).
  * 3. Messages with neither (history messages): never deduped — they have unique DB IDs.
  */
-export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number }>(
+export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number; dbID?: number; persisted?: boolean }>(
   messages: T[],
 ): T[] {
   const turnSeen = new Map<string, number>()
@@ -244,6 +282,16 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
       const key = `${messages[i].turnID}:${messages[i].role}`
       const existing = turnSeen.get(key)
       if (existing !== undefined) {
+        // Prefer the message with a dbID (persisted history row) — replacing
+        // a history row with an optimistic/live row of the same turnID:role
+        // would lose the history row when the optimistic row is later
+        // reconciled/removed (user msg suddenly disappears).
+        const existingHasDB = result[existing].dbID != null
+        const incomingHasDB = messages[i].dbID != null
+        if (existingHasDB && !incomingHasDB) {
+          // Keep the persisted row; skip the optimistic one.
+          continue
+        }
         result[existing] = messages[i]
       } else {
         turnSeen.set(key, result.length)
@@ -380,6 +428,21 @@ export class ProgressStore {
       draft.streaming = false
       draft.phase = 'frozen'
       draft.streamingTools = []
+      // Mark all in-progress tools as error (cancelled)
+      const markError = (tools: WebToolProgress[]) => {
+        for (const t of tools) {
+          if (t.status === 'running' || t.status === 'generating' || t.status === 'pending') {
+            t.status = 'error'
+          }
+        }
+      }
+      markError(draft.activeTools)
+      markError(draft.completedTools)
+      markError(draft.streamingTools)
+      // Also mark in-progress tools inside iteration history
+      for (const iter of draft.iterationHistory) {
+        markError(iter.tools)
+      }
     })
     // Synchronously update snapshot so getSnapshot() returns 'frozen' immediately
     this.snapshot = { ...this.current }
@@ -391,11 +454,22 @@ export class ProgressStore {
     this.listeners.forEach((l) => l())
   }
 
-  /** Set streamed assistant text (cumulative value from stream_content events). */
+  /** Set streamed assistant text (cumulative value from stream_content events).
+   *  The value is the FULL cumulative stream content (not a delta) — uses
+   *  assignment, not append. */
   appendStreamContent(delta: string): void {
     if (!delta) return
     this.mutate((draft) => {
       draft.streamContent = delta  // cumulative value, use assignment not append
+      draft.streaming = true
+    })
+  }
+
+  /** Replace streamContent (single source of truth, no accumulation). */
+  setStreamContent(content: string): void {
+    if (!content) return
+    this.mutate((draft) => {
+      draft.streamContent = content
       draft.streaming = true
     })
   }
@@ -405,6 +479,15 @@ export class ProgressStore {
     if (!delta) return
     this.mutate((draft) => {
       draft.reasoningStreamContent = delta  // cumulative value, use assignment not append
+      draft.streaming = true
+    })
+  }
+
+  /** Replace reasoningStreamContent (single source of truth, no accumulation). */
+  setReasoningContent(content: string): void {
+    if (!content) return
+    this.mutate((draft) => {
+      draft.reasoningStreamContent = content
       draft.streaming = true
     })
   }
@@ -427,6 +510,17 @@ export class ProgressStore {
       if (opts.streamingTools) {
         draft.streamingTools = opts.streamingTools
       }
+    })
+  }
+
+  /** Stop streaming animations (typewriter) but KEEP all content/tools visible.
+   *  Used on PhaseDone: the turn is over, so busy fallbacks (progressSnapshot.
+   *  streaming) must return false and the typewriter must stop — but tools and
+   *  iterations stay rendered until the text event commits them atomically. */
+  stopStreaming(): void {
+    if (this.disposed) return
+    this.mutate((draft) => {
+      draft.streaming = false
     })
   }
 
@@ -667,7 +761,7 @@ export class ProgressStore {
         }
         if (completedIterSet.size > 0) {
           draft.completedTools = draft.completedTools.filter(
-            (t) => !t.iteration || !completedIterSet.has(t.iteration),
+            (t) => (t.iteration === undefined || t.iteration === null) || !completedIterSet.has(t.iteration),
           )
         }
         // Recompute lastIter from merged history so the delta push protocol
@@ -678,7 +772,12 @@ export class ProgressStore {
       // Assign remaining fields, but NEVER downgrade client-side tracking:
       // - eventSeq: take max (server seq may be older than what SSE already delivered)
       // - lastIter: already computed above from merged iterationHistory
-      const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, ...rest } = next
+      // - todos: preserve existing — historyProgressToLive returns todos:[] when
+      //   the server omits the field, which would overwrite cached todos
+      //   (restored by the session-switch cache). todos are managed by
+      //   setStructuredTools or the explicit `phase==='done'` replace path,
+      //   not by the general replace/Object.assign.
+      const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, todos: _td, ...rest } = next
       if (next.eventSeq !== undefined && next.eventSeq > draft.eventSeq) {
         draft.eventSeq = next.eventSeq
       }

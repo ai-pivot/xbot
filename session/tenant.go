@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +40,54 @@ func (s *TenantSession) AddMessageWithID(msg llm.ChatMessage) (int64, error) {
 	return s.sessionSvc.AddMessageWithID(s.tenantID, msg)
 }
 
+// AppendMessage appends a message and returns its stable history ID.
+func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AppendMessage(s.tenantID, msg)
+}
+
+// AppendMessages atomically appends a related message batch.
+func (s *TenantSession) AppendMessages(messages []llm.ChatMessage) ([]int64, error) {
+	return s.sessionSvc.AppendMessages(s.tenantID, messages)
+}
+
+// AppendMessagesAndAskQuestion atomically appends an AskUser tool exchange and
+// the control record that makes the question pending across restarts.
+func (s *TenantSession) AppendMessagesAndAskQuestion(messages []llm.ChatMessage, metadata map[string]string) ([]int64, int64, error) {
+	return s.sessionSvc.AppendMessagesAndAskQuestion(s.tenantID, messages, metadata)
+}
+
+func (s *TenantSession) AppendControl(recordType sqlite.HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
+	return s.sessionSvc.AppendControl(s.tenantID, recordType, targetHistoryID, data)
+}
+
+func (s *TenantSession) AppendContextSnapshot(recordType sqlite.HistoryRecordType, messages []llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AppendContextSnapshot(s.tenantID, recordType, messages)
+}
+
+func (s *TenantSession) AppendAskQuestion(metadata map[string]string) (int64, error) {
+	return s.sessionSvc.AppendAskQuestion(s.tenantID, metadata)
+}
+
+func (s *TenantSession) AppendAskAnswer(answer string) (int64, error) {
+	return s.sessionSvc.AppendAskAnswer(s.tenantID, answer)
+}
+
+func (s *TenantSession) AppendMasks(mutations []sqlite.MaskMutation) error {
+	return s.sessionSvc.AppendMasks(s.tenantID, mutations)
+}
+
+func (s *TenantSession) Replay() (*sqlite.ReplayResult, error) {
+	return s.sessionSvc.Replay(s.tenantID)
+}
+
+func (s *TenantSession) GetFullHistory() ([]sqlite.HistoryRecord, error) {
+	return s.sessionSvc.GetFullHistory(s.tenantID)
+}
+
+func (s *TenantSession) RewindToHistoryID(historyID int64) (llm.ChatMessage, int, error) {
+	return s.sessionSvc.RewindToHistoryID(s.tenantID, historyID)
+}
+
 // ReplaceToolMessage updates the most recent matching tool-role message.
 // Empty toolName/toolCallID act as wildcards (match any).
 func (s *TenantSession) ReplaceToolMessage(toolName, toolCallID, content string) error {
@@ -50,6 +97,12 @@ func (s *TenantSession) ReplaceToolMessage(toolName, toolCallID, content string)
 // GetHistory retrieves recent messages for LLM context window
 func (s *TenantSession) GetHistory(maxMessages int) ([]llm.ChatMessage, error) {
 	return s.sessionSvc.GetHistory(s.tenantID, maxMessages)
+}
+
+// GetHistoryBefore returns up to maxMessages raw history messages before
+// beforeID.
+func (s *TenantSession) GetHistoryBefore(beforeID int64, maxMessages int) ([]llm.ChatMessage, error) {
+	return s.sessionSvc.GetHistoryBefore(s.tenantID, beforeID, maxMessages)
 }
 
 // GetMessages retrieves all messages for this tenant
@@ -231,59 +284,45 @@ func (s *TenantSession) GetCurrentDir() string {
 	return s.cwd
 }
 
-// SetCurrentDir 设置当前工作目录（PWD 工具优化），并持久化到磁盘。
-// 按 channel:chatID 唯一标识持久化，同一用户的多个会话互不干扰。
+// SetCurrentDir 设置当前工作目录（PWD 工具优化），持久化到数据库。
+// The tenants.cwd column is the single authoritative store (file-based
+// session_cwd is retired — it was unreliable across restarts).
 func (s *TenantSession) SetCurrentDir(dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cwd = dir
-
-	// Persist CWD to disk so it survives server restarts.
-	// Keyed by session (channel:chatID) not tenantID — multiple sessions
-	// under the same user must have independent CWDs.
-	cwdDir := filepath.Join(config.XbotHome(), "session_cwd")
-	if err := os.MkdirAll(cwdDir, 0700); err == nil {
-		cwdFile := filepath.Join(cwdDir, sessionCwdFileName(s.channel, s.chatID))
-		_ = os.WriteFile(cwdFile, []byte(dir), 0600)
-	}
+	_ = s.sessionSvc.SetTenantCWD(s.tenantID, dir)
 }
 
 // sessionCwdFileName returns a safe filename for the given session.
 // Uses SHA256 hash of "channel:chatID" to avoid filesystem-unsafe characters.
+// Retained only for legacy file-based CWD (TUI local mode may still use it).
 func sessionCwdFileName(channel, chatID string) string {
 	h := sha256.Sum256([]byte(sessKey(channel, chatID)))
 	return fmt.Sprintf("%x.txt", h[:16])
 }
 
-// loadPersistedCWD tries to restore CWD from disk after a restart.
-// CRITICAL SAFETY: never load a worktree path as CWD. Worktree paths
-// are session-specific and must never leak into a different session.
-// If the persisted CWD points to a worktree, it is deleted and "" is returned.
-func loadPersistedCWD(channel, chatID string) string {
-	cwdFile := filepath.Join(config.XbotHome(), "session_cwd", sessionCwdFileName(channel, chatID))
-	data, err := os.ReadFile(cwdFile)
-	if err != nil {
-		return ""
-	}
-	cwd := string(data)
-	// Reject worktree paths — they are session-specific and stale after
-	// session deletion/recreation. Delete the file to prevent re-detection.
-	if strings.Contains(cwd, ".xbot-worktrees") {
-		_ = os.Remove(cwdFile)
-		return ""
-	}
-	// Also reject non-existent directories — stale from a previous session.
-	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
-		_ = os.Remove(cwdFile)
+// loadPersistedCWD reads the session's CWD from the database. Legacy file
+// based session_cwd entries (pre-v53) are ignored — the DB is authoritative.
+func loadPersistedCWD(sessionSvc *sqlite.SessionService, tenantID int64) string {
+	cwd, err := sessionSvc.GetTenantCWD(tenantID)
+	if err != nil || cwd == "" {
 		return ""
 	}
 	return cwd
 }
 
 // LoadPersistedCWD returns the persisted CWD for a session without creating a
-// TenantSession. It is used by API surfaces that need to inspect idle sessions.
+// TenantSession. Used by TUI local mode (file-based) and API surfaces that
+// need to inspect idle sessions. Server-side CWD is DB-authoritative; the
+// file is a TUI-only legacy view.
 func LoadPersistedCWD(channel, chatID string) string {
-	return loadPersistedCWD(channel, chatID)
+	cwdFile := filepath.Join(config.XbotHome(), "session_cwd", sessionCwdFileName(channel, chatID))
+	data, err := os.ReadFile(cwdFile)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // DeletePersistedCWD removes the persisted CWD file for a session.

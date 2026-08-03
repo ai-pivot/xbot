@@ -78,15 +78,16 @@ test.describe('Cancel + reconnect iteration bugs', () => {
     await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
     await page.waitForTimeout(500)
 
-    // Iteration 0 should STILL be visible — the cancel ack committed the
-    // message with progress_history iterations. Check for the committed
-    // message's summary text (tools are folded at 'all' level).
+    // Iteration 0 should STILL be visible — the cancel ack freezes the live
+    // message (no new committed message, no re-render). The frozen content
+    // keeps the Read tool + Shell tool visible as-is (tool summaries like
+    // "main.go" are folded at 'all' level — only tool names are in the DOM).
     const hasCommitted = await page.evaluate(() => {
       const text = document.body.textContent || ''
-      // Committed message shows "Processed N iterations" or similar
-      return text.includes('Processed') || text.includes('processed') || text.includes('已处理')
+      // Frozen live content keeps the tool names visible.
+      return text.includes('Read') && text.includes('Shell')
     })
-    console.log('After cancel - committed message:', hasCommitted)
+    console.log('After cancel - frozen content:', hasCommitted)
     expect(hasCommitted).toBe(true)
 
     await page.close()

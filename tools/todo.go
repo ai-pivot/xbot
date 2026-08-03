@@ -102,7 +102,13 @@ func (m *TodoManager) SetTodos(sessionKey string, items []TodoItem) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(items) == 0 {
-		delete(m.todos, sessionKey)
+		// Keep an (empty) record so HasTodos can distinguish "cleared" from
+		// "never set". The frontend needs to learn that the server cleared its
+		// todos (todo_write([]) or turn-end cleanupTodos) — GetActiveProgress
+		// returns done + [] for cleared sessions and nil for never-run sessions.
+		if _, ok := m.todos[sessionKey]; ok {
+			m.todos[sessionKey] = []TodoItem{}
+		}
 		return
 	}
 	// 防止 map 无限增长：超过上限时清理最旧的一半条目
@@ -118,6 +124,18 @@ func (m *TodoManager) SetTodos(sessionKey string, items []TodoItem) {
 		}
 	}
 	m.todos[sessionKey] = items
+}
+
+// HasTodos reports whether the given session has ever had a todo list written
+// (including a cleared/empty one). This distinguishes "turn ended, todos were
+// cleared" (HasTodos=true, GetTodos=[]) from "session never ran"
+// (HasTodos=false) — the former must produce a done+[] progress event so the
+// frontend clears stale todos, the latter returns nil (no active progress).
+func (m *TodoManager) HasTodos(sessionKey string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.todos[sessionKey]
+	return ok
 }
 
 // GetTodoSummary 获取指定 session 的 TODO 状态摘要

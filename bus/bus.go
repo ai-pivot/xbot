@@ -88,7 +88,11 @@ type InboundMessage struct {
 	RequestID string // 请求追踪 ID（UUID 无横线），在渠道收到消息时生成
 	// DeliveryAck is set by transports that require acknowledgement from the
 	// agent's per-chat queue. It is process-local and never serialized.
-	DeliveryAck chan error
+	// The ack carries the allocated TurnID (assigned at queue-admission time
+	// so REST responses can return it directly) plus a Queued flag that tells
+	// the caller whether the message was admitted while the chat was already
+	// processing an earlier message (it will be handled after the current turn).
+	DeliveryAck chan DeliveryResult
 
 	// Event-triggered metadata (generalization beyond IsCron)
 	EventSource  string // event origin: "webhook", "cron", "" (user message)
@@ -108,6 +112,19 @@ type InboundMessage struct {
 // IsFromAgent 判断消息是否来自其他 Agent（而非 IM 渠道）。
 func (m *InboundMessage) IsFromAgent() bool {
 	return m.Channel == SchemeAgent || m.From.IsAgent()
+}
+
+// DeliveryResult is the ack payload sent back to a transport that set
+// InboundMessage.DeliveryAck. Err is non-nil when the message was NOT
+// admitted to the chat queue (e.g. queue full). When Err is nil, TurnID is
+// the per-session turn id allocated for the message at queue-admission time
+// (so the API response can return it directly) and Queued reports whether
+// the chat was already busy processing an earlier message (the message will
+// be handled after the current turn completes).
+type DeliveryResult struct {
+	Err    error
+	TurnID uint64
+	Queued bool
 }
 
 // OriginChannel 获取原始 IM 渠道名称。

@@ -29,6 +29,8 @@ type inboundRequestState struct {
 	sel         SessionSelector
 	msgID       int64
 	ts          time.Time
+	turnID      uint64
+	queued      bool
 	err         error
 	completedAt time.Time
 }
@@ -82,12 +84,19 @@ func (wc *WebChannel) inboundIdentityFromRequest(r *http.Request) inboundIdentit
 	if identity.SenderName == "" {
 		identity.SenderName = identity.SenderID
 	}
-	if wc.callbacks.IdentityResolver != nil {
+	if userID, role, ok := canonicalIdentityFromContext(r.Context()); ok {
+		identity.CanonicalUserID = userID
+		identity.CanonicalRole = role
+	} else if wc.callbacks.IdentityResolver != nil {
 		resolveChannel := "web"
 		if identity.FeishuUserID != "" {
 			resolveChannel = "feishu"
 		}
-		identity.CanonicalUserID, identity.CanonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, identity.SenderID)
+		resolveID := identity.SenderID
+		if identity.FeishuUserID != "" {
+			resolveID = identity.FeishuUserID
+		}
+		identity.CanonicalUserID, identity.CanonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, resolveID)
 	}
 	// In single-user mode, all users share one identity and are treated as admin.
 	if wc.singleUser {
@@ -101,20 +110,35 @@ func (wc *WebChannel) resolveInboundSession(ctx context.Context, identity inboun
 	if channelName != "" && chatID != "" {
 		sel = SessionSelector{Channel: channelName, ChatID: chatID}
 	}
-	if !identity.IsCLI && !wc.canAccessSession(ctx, identity.WebUserID, identity.SenderID, sel.Channel, sel.ChatID) {
+	access := sessionAccessIdentity{
+		senderID:        identity.SenderID,
+		webUserID:       identity.WebUserID,
+		canonicalUserID: identity.CanonicalUserID,
+		canonicalRole:   identity.CanonicalRole,
+	}
+	if identity.IsCLI && sel.Channel == "cli" {
+		if _, agentShaped := parseWebAgentTenantChatID(sel.ChatID); agentShaped {
+			return SessionSelector{}, fmt.Errorf("access denied")
+		}
+	}
+	allowed := wc.canAccessSessionAs(access, sel.Channel, sel.ChatID)
+	if !allowed && identity.IsCLI && sel.Channel == "cli" {
+		allowed = wc.claimCLIClientSession(sel.ChatID, identity.CanonicalUserID)
+	}
+	if !allowed {
 		return SessionSelector{}, fmt.Errorf("access denied")
 	}
 	return sel, nil
 }
 
-func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundIdentity, msg protocol.WSClientMessage) (SessionSelector, int64, time.Time, error) {
+func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundIdentity, msg protocol.WSClientMessage) (SessionSelector, int64, time.Time, uint64, bool, error) {
 	if strings.TrimSpace(msg.Content) == "" && len(msg.UploadKeys) == 0 {
-		return SessionSelector{}, 0, time.Time{}, errEmptyMessage
+		return SessionSelector{}, 0, time.Time{}, 0, false, errEmptyMessage
 	}
 
 	sel, err := wc.resolveInboundSession(ctx, identity, msg.Channel, msg.ChatID)
 	if err != nil {
-		return SessionSelector{}, 0, time.Time{}, err
+		return SessionSelector{}, 0, time.Time{}, 0, false, err
 	}
 	msg.ID = strings.TrimSpace(msg.ID)
 	if msg.ID == "" {
@@ -126,13 +150,13 @@ func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundI
 		chatID:    sel.ChatID,
 		requestID: msg.ID,
 	}
-	sel2, msgID, ts, err := wc.dispatchUserMessageOnce(ctx, key, func() (SessionSelector, int64, time.Time, error) {
+	sel2, msgID, ts, turnID, queued, err := wc.dispatchUserMessageOnce(ctx, key, func() (SessionSelector, int64, time.Time, uint64, bool, error) {
 		return wc.dispatchResolvedUserMessage(ctx, identity, sel, msg)
 	})
-	return sel2, msgID, ts, err
+	return sel2, msgID, ts, turnID, queued, err
 }
 
-func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity inboundIdentity, sel SessionSelector, msg protocol.WSClientMessage) (SessionSelector, int64, time.Time, error) {
+func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity inboundIdentity, sel SessionSelector, msg protocol.WSClientMessage) (SessionSelector, int64, time.Time, uint64, bool, error) {
 
 	originalContent := msg.Content
 	content := wc.expandUploadKeys(msg)
@@ -172,20 +196,13 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 	}
 	receivedAt := time.Now()
 
-	// Eager-save user message to DB synchronously so we can return the DB id
-	// in the HTTP response. The agent loop skips re-saving via metadata flag.
+	// History persistence is Agent-owned after session operation-gate
+	// admission. The transport must not pre-write the user message; the
+	// agent loop persists it eagerly before running the turn. The REST
+	// response therefore returns message_id=0 (the DB id is not yet known).
 	var msgDBID int64
-	trimmed := strings.TrimSpace(content)
-	if wc.db != nil && shouldEagerSaveUserMessage(sel.Channel, trimmed) {
-		if id, err := eagerSaveUserMsg(wc.db, sel.Channel, sel.ChatID, content); err != nil {
-			log.WithError(err).Warn("Failed to eager-save user message")
-		} else {
-			msgDBID = id
-			metadata["user_msg_eager_saved"] = "true"
-		}
-	}
 
-	err := wc.enqueueInbound(ctx, bus.InboundMessage{
+	res, err := wc.enqueueInbound(ctx, bus.InboundMessage{
 		Channel:    sel.Channel,
 		SenderID:   msgSenderID,
 		SenderName: msgSenderName,
@@ -198,7 +215,7 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 		Metadata:   metadata,
 	})
 	if err != nil {
-		return sel, 0, time.Time{}, err
+		return sel, 0, time.Time{}, 0, false, err
 	}
 
 	// The agent persists accepted user messages before running the turn. Echo
@@ -213,10 +230,14 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 			TS:              receivedAt.Unix(),
 		})
 	}
-	return sel, msgDBID, receivedAt, nil
+	// res.TurnID is the per-session turn id allocated at queue-admission time
+	// (by agent.chatWorker.admitToMsgCh); res.Queued reports whether the chat
+	// was already busy processing an earlier message. Both are returned to the
+	// REST layer so the API response can carry them directly.
+	return sel, msgDBID, receivedAt, res.TurnID, res.Queued, nil
 }
 
-func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRequestKey, fn func() (SessionSelector, int64, time.Time, error)) (SessionSelector, int64, time.Time, error) {
+func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRequestKey, fn func() (SessionSelector, int64, time.Time, uint64, bool, error)) (SessionSelector, int64, time.Time, uint64, bool, error) {
 	now := time.Now()
 	wc.inboundRequestsMu.Lock()
 	for existingKey, state := range wc.inboundRequests {
@@ -228,20 +249,22 @@ func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRe
 		wc.inboundRequestsMu.Unlock()
 		select {
 		case <-state.done:
-			return state.sel, state.msgID, state.ts, state.err
+			return state.sel, state.msgID, state.ts, state.turnID, state.queued, state.err
 		case <-ctx.Done():
-			return SessionSelector{}, 0, time.Time{}, ctx.Err()
+			return SessionSelector{}, 0, time.Time{}, 0, false, ctx.Err()
 		}
 	}
 	state := &inboundRequestState{done: make(chan struct{})}
 	wc.inboundRequests[key] = state
 	wc.inboundRequestsMu.Unlock()
 
-	sel, msgID, ts, err := fn()
+	sel, msgID, ts, turnID, queued, err := fn()
 	wc.inboundRequestsMu.Lock()
 	state.sel = sel
 	state.msgID = msgID
 	state.ts = ts
+	state.turnID = turnID
+	state.queued = queued
 	state.err = err
 	state.completedAt = time.Now()
 	if err != nil {
@@ -249,7 +272,7 @@ func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRe
 	}
 	close(state.done)
 	wc.inboundRequestsMu.Unlock()
-	return sel, msgID, ts, err
+	return sel, msgID, ts, turnID, queued, err
 }
 
 func (wc *WebChannel) expandUploadKeys(msg protocol.WSClientMessage) string {
@@ -299,7 +322,7 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 	}
 	cancelMeta := map[string]string{}
 	withPhysicalChannel(cancelMeta, identity.IsCLI)
-	return sel, wc.enqueueInbound(ctx, bus.InboundMessage{
+	_, err = wc.enqueueInbound(ctx, bus.InboundMessage{
 		Channel:    sel.Channel,
 		SenderID:   msgSenderID,
 		SenderName: msgSenderName,
@@ -311,6 +334,7 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 		From:       bus.NewIMAddress(sel.Channel, msgSenderID),
 		Metadata:   cancelMeta,
 	})
+	return sel, err
 }
 
 func (wc *WebChannel) dispatchAskUserResponse(ctx context.Context, identity inboundIdentity, channelName, chatID string, response protocol.AskUserResponse) (SessionSelector, error) {
@@ -328,7 +352,7 @@ func (wc *WebChannel) dispatchAskUserResponse(ctx context.Context, identity inbo
 	for questionID, answer := range response.Answers {
 		parts = append(parts, fmt.Sprintf("Q%s: %s", questionID, answer))
 	}
-	return sel, wc.enqueueInbound(ctx, bus.InboundMessage{
+	_, err = wc.enqueueInbound(ctx, bus.InboundMessage{
 		Channel:    sel.Channel,
 		SenderID:   identity.SenderID,
 		SenderName: identity.SenderName,
@@ -344,31 +368,38 @@ func (wc *WebChannel) dispatchAskUserResponse(ctx context.Context, identity inbo
 			return m
 		}(),
 	})
+	return sel, err
 }
 
-func (wc *WebChannel) enqueueInbound(ctx context.Context, message bus.InboundMessage) error {
+func (wc *WebChannel) enqueueInbound(ctx context.Context, message bus.InboundMessage) (bus.DeliveryResult, error) {
 	if wc.msgBus == nil {
-		return errInboundUnavailable
+		return bus.DeliveryResult{}, errInboundUnavailable
 	}
-	var deliveryAck chan error
+	var deliveryAck chan bus.DeliveryResult
 	if wc.msgBus.DeliveryAcknowledgementEnabled() {
-		deliveryAck = make(chan error, 1)
+		deliveryAck = make(chan bus.DeliveryResult, 1)
 		message.DeliveryAck = deliveryAck
 	}
 	select {
 	case wc.msgBus.Inbound <- message:
 		if deliveryAck == nil {
-			return nil
+			return bus.DeliveryResult{}, nil
 		}
 	case <-ctx.Done():
-		return ctx.Err()
+		return bus.DeliveryResult{}, ctx.Err()
 	case <-wc.stopCh:
-		return errInboundUnavailable
+		return bus.DeliveryResult{}, errInboundUnavailable
 	}
+	// Wait for the agent's ack. Do NOT select on ctx.Done() here: once the
+	// message has been handed off to the bus (above), it is admitted to the
+	// agent's per-chat queue and WILL be processed. Returning context.Canceled
+	// here would tell the frontend the send failed, triggering a same-ID retry
+	// that the dedup layer would swallow — silently losing the user message.
+	// The transport's own request timeout / channel stop are the only exits.
 	select {
-	case err := <-deliveryAck:
-		return err
+	case res := <-deliveryAck:
+		return res, res.Err
 	case <-wc.stopCh:
-		return errInboundUnavailable
+		return bus.DeliveryResult{}, errInboundUnavailable
 	}
 }

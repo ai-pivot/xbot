@@ -281,7 +281,9 @@ test.describe('Iteration sequence integrity', () => {
       type: 'stream_content',
       progress: { stream_content: 'I am working on something...', chat_id: 'web:chat-1', streaming: true },
     })
-    await page.waitForTimeout(300)
+    // Typewriter reveals content progressively (gap/3 per 50ms tick) — a
+    // fixed 300ms may not be enough for the full substring. Poll instead.
+    await page.waitForFunction(() => document.body.textContent?.includes('working on something') ?? false, { timeout: 5000 })
 
     // Content should be visible
     const contentBefore = await countText(page, 'working on something')

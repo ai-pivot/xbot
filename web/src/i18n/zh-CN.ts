@@ -172,6 +172,7 @@ const zhCN = {
     emptyConversation: '在下方发送消息开始对话。',
     loading: '加载中…',
     sending: '发送中…',
+    queued: '排队中 — 等待当前轮次完成…',
     compressing: '正在压缩上下文…',
     iterations: '迭代历史',
     tools: '工具',
@@ -217,6 +218,9 @@ const zhCN = {
     navNextUser: '下一个用户消息',
     navToBottom: '回到最下方',
     newContent: '新内容',
+    compactedContext: '上下文压缩',
+    compactedContextCount: '上下文压缩 · {{count}} 条消息',
+    compressionSummaryUnavailable: '暂无压缩摘要',
   },
   settings: {
     title: '设置',

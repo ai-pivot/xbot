@@ -27,6 +27,17 @@ type fixedIdentityResolver struct {
 	role   string
 }
 
+type channelAwareIdentityResolver struct {
+	fixedIdentityResolver
+}
+
+func (r channelAwareIdentityResolver) Resolve(channel, channelUserID string) (int64, string, error) {
+	if channel == "feishu" && channelUserID == "ou_linked" {
+		return 42, "user", nil
+	}
+	return 99, "user", nil
+}
+
 type fixedOSSProvider struct{}
 
 func (fixedOSSProvider) Upload(string, []byte) error { return nil }
@@ -296,6 +307,35 @@ func TestRESTChatCRUDPassesChannelToCallbacks(t *testing.T) {
 	}
 }
 
+func TestHistoryRewindUsesHistoryIDAndReturnsPartialFileStatus(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "chat-a"})
+	wc.SetCallbacks(WebCallbacks{RewindHistory: func(_ string, _ SessionSelector, historyID int64) (RewindHistoryResult, error) {
+		if historyID != 42 {
+			t.Fatalf("historyID=%d", historyID)
+		}
+		return RewindHistoryResult{HistoryRewindResult: protocol.HistoryRewindResult{
+			TargetHistoryID: 42, Draft: "redo", HistoryRewound: true, FilesRewound: false, CheckpointError: "file failed",
+		}}, nil
+	}})
+	rec := httptest.NewRecorder()
+	wc.handleHistoryRewind(rec, authedAPIRequest(http.MethodPost, "/api/history/rewind", []byte(`{"history_id":42}`)))
+	_, out := decodeAPIResponse(t, rec)
+	if rec.Code != http.StatusOK || out["history_rewound"] != true || out["files_rewound"] != false || out["checkpoint_error"] != "file failed" {
+		t.Fatalf("unexpected partial rewind response: %d %#v", rec.Code, out)
+	}
+}
+
+func TestHistoryRewindRejectsLegacyTimestampWithoutHistoryID(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "chat-a"})
+	rec := httptest.NewRecorder()
+	wc.handleHistoryRewind(rec, authedAPIRequest(http.MethodPost, "/api/history/rewind", []byte(`{"cutoff_ms":1700000000000}`)))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid body") {
+		t.Fatalf("unexpected legacy rewind response: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRESTChatDeleteAllowsAdminVerifiedLocalCLISession(t *testing.T) {
 	db := newTestDB(t)
 	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
@@ -361,6 +401,7 @@ func TestRESTChatDeleteAllowsAdminVerifiedLocalCLISession(t *testing.T) {
 func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
 	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
@@ -368,36 +409,52 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
+	go func() {
+		message := <-msgBus.Inbound
+		if message.Channel != "web" || message.ChatID != "web-1" || message.Content != "hello" {
+			t.Errorf("unexpected message inbound: %#v", message)
+		}
+		if message.Metadata[bus.MetadataReplyPolicy] != bus.ReplyPolicyOptional {
+			t.Errorf("missing reply policy metadata: %#v", message.Metadata)
+		}
+		message.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+	}()
 	wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", []byte(`{"content":"hello"}`)))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("message status = %d: %s", recorder.Code, recorder.Body.String())
 	}
-	message := <-msgBus.Inbound
-	if message.Channel != "web" || message.ChatID != "web-1" || message.Content != "hello" {
-		t.Fatalf("unexpected message inbound: %#v", message)
-	}
-	if message.Metadata[bus.MetadataReplyPolicy] != bus.ReplyPolicyOptional {
-		t.Fatalf("missing reply policy metadata: %#v", message.Metadata)
-	}
 
 	recorder = httptest.NewRecorder()
+	go func() {
+		cancel := <-msgBus.Inbound
+		if cancel.Content != "/cancel" || cancel.ChatID != "web-1" {
+			t.Errorf("unexpected cancel message: %#v", cancel)
+		}
+		cancel.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+	}()
 	wc.handleCancel(recorder, authedAPIRequest(http.MethodPost, "/api/cancel", []byte(`{"chat_id":"web-1"}`)))
-	cancel := <-msgBus.Inbound
-	if recorder.Code != http.StatusOK || cancel.Content != "/cancel" || cancel.ChatID != "web-1" {
-		t.Fatalf("unexpected cancel result: status=%d message=%#v", recorder.Code, cancel)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
+	go func() {
+		answer := <-msgBus.Inbound
+		if answer.Content != "Qq1: yes" || answer.Metadata["ask_user_answered"] != "true" {
+			t.Errorf("unexpected AskUser message: %#v", answer)
+		}
+		answer.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+	}()
 	wc.handleAskUserRespond(recorder, authedAPIRequest(http.MethodPost, "/api/ask_user/respond", []byte(`{"chat_id":"web-1","question_id":"q1","answer":"yes"}`)))
-	answer := <-msgBus.Inbound
-	if recorder.Code != http.StatusOK || answer.Content != "Qq1: yes" || answer.Metadata["ask_user_answered"] != "true" {
-		t.Fatalf("unexpected AskUser result: status=%d message=%#v", recorder.Code, answer)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("AskUser status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
 func TestRESTMessageInjectsCanonicalIdentity(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
 	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
@@ -408,20 +465,24 @@ func TestRESTMessageInjectsCanonicalIdentity(t *testing.T) {
 		IdentityResolver: fixedIdentityResolver{userID: 42, role: "admin"},
 	})
 
+	go func() {
+		message := <-msgBus.Inbound
+		if message.Metadata["user_id"] != "42" || message.Metadata["user_role"] != "admin" {
+			t.Errorf("canonical identity not injected into metadata: %#v", message.Metadata)
+		}
+		message.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+	}()
 	recorder := httptest.NewRecorder()
 	wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", []byte(`{"content":"hello"}`)))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("message status = %d: %s", recorder.Code, recorder.Body.String())
-	}
-	message := <-msgBus.Inbound
-	if message.Metadata["user_id"] != "42" || message.Metadata["user_role"] != "admin" {
-		t.Fatalf("canonical identity not injected into metadata: %#v", message.Metadata)
 	}
 }
 
 func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
+	msgBus.EnableDeliveryAcknowledgement()
 	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
 	wc.SetOSSProvider(fixedOSSProvider{})
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
@@ -452,6 +513,22 @@ func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			ackCh := make(chan struct{})
+			go func() {
+				// First attempt sends one inbound; the retry hits the
+				// dispatchOnce idempotency cache (no second send).
+				inbound := <-msgBus.Inbound
+				if inbound.RequestID != tc.requestID || !strings.Contains(inbound.Content, "<file") {
+					t.Errorf("inbound = %#v", inbound)
+				}
+				inbound.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
+				close(ackCh)
+				select {
+				case duplicate := <-msgBus.Inbound:
+					t.Errorf("duplicate inbound: %#v", duplicate)
+				default:
+				}
+			}()
 			for attempt := 0; attempt < 2; attempt++ {
 				recorder := httptest.NewRecorder()
 				wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", body))
@@ -459,16 +536,7 @@ func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
 					t.Fatalf("attempt %d status = %d: %s", attempt+1, recorder.Code, recorder.Body.String())
 				}
 			}
-
-			inbound := <-msgBus.Inbound
-			if inbound.RequestID != tc.requestID || !strings.Contains(inbound.Content, "<file") {
-				t.Fatalf("inbound = %#v", inbound)
-			}
-			select {
-			case duplicate := <-msgBus.Inbound:
-				t.Fatalf("duplicate inbound: %#v", duplicate)
-			default:
-			}
+			<-ackCh
 			echo := <-client.sendCh
 			if echo.Type != protocol.MsgTypeUserEcho || echo.ID != tc.requestID || echo.OriginalContent != tc.content {
 				t.Fatalf("echo = %#v", echo)
@@ -536,7 +604,7 @@ func TestRESTMessageCommitsIdempotencyOnlyAfterAgentAdmission(t *testing.T) {
 
 	go func() {
 		message := <-msgBus.Inbound
-		message.DeliveryAck <- bus.ErrInboundQueueFull
+		message.DeliveryAck <- bus.DeliveryResult{Err: bus.ErrInboundQueueFull}
 	}()
 	failed := httptest.NewRecorder()
 	wc.handleMessage(failed, authedAPIRequest(http.MethodPost, "/api/message", body))
@@ -551,7 +619,7 @@ func TestRESTMessageCommitsIdempotencyOnlyAfterAgentAdmission(t *testing.T) {
 
 	go func() {
 		message := <-msgBus.Inbound
-		message.DeliveryAck <- nil
+		message.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
 	}()
 	accepted := httptest.NewRecorder()
 	wc.handleMessage(accepted, authedAPIRequest(http.MethodPost, "/api/message", body))
@@ -594,18 +662,18 @@ func TestRESTMessageCancellationAfterHandoffPreservesIdempotency(t *testing.T) {
 	}
 	resultCh := make(chan dispatchResult, 1)
 	go func() {
-		sel, _, _, err := wc.dispatchUserMessage(ctx, identity, message)
+		sel, _, _, _, _, err := wc.dispatchUserMessage(ctx, identity, message)
 		resultCh <- dispatchResult{sel: sel, err: err}
 	}()
 
 	inbound := <-msgBus.Inbound
 	cancel()
-	inbound.DeliveryAck <- nil
+	inbound.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
 	result := <-resultCh
 	if result.err != nil || result.sel.ChatID != "web-1" {
 		t.Fatalf("dispatch after handoff cancellation = (%#v, %v)", result.sel, result.err)
 	}
-	if _, _, _, err := wc.dispatchUserMessage(context.Background(), identity, message); err != nil {
+	if _, _, _, _, _, err := wc.dispatchUserMessage(context.Background(), identity, message); err != nil {
 		t.Fatalf("same-ID retry after cancelled response: %v", err)
 	}
 	select {
@@ -641,7 +709,7 @@ func TestRESTRPCDispatchesThroughCallback(t *testing.T) {
 }
 
 func TestRESTRPCAllowsFrontendRecoveryMethods(t *testing.T) {
-	methods := []string{"list_command_names", "set_cwd"}
+	methods := []string{"list_command_names", "set_cwd", "continue_interactive_session"}
 	for _, wantMethod := range methods {
 		t.Run(wantMethod, func(t *testing.T) {
 			wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
@@ -701,7 +769,7 @@ func TestRESTRPCAllowsModelManagementMethodsForNonAdmin(t *testing.T) {
 	}
 }
 
-func TestRESTRPCGetActiveProgressChecksAgentOwnership(t *testing.T) {
+func TestRESTRPCSessionRecoveryMethodsCheckAgentOwnership(t *testing.T) {
 	db := newTestDB(t)
 	for _, chat := range []struct {
 		senderID string
@@ -710,15 +778,19 @@ func TestRESTRPCGetActiveProgressChecksAgentOwnership(t *testing.T) {
 		{senderID: "web-2", chatID: "owned-chat"},
 		{senderID: "web-3", chatID: "foreign-chat"},
 	} {
+		owner := int64(2)
+		if chat.senderID == "web-3" {
+			owner = 3
+		}
 		if _, err := db.Exec(
-			"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
-			"web", chat.senderID, chat.chatID, chat.chatID,
+			"INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id) VALUES (?, ?, ?, ?, ?)",
+			"web", chat.senderID, chat.chatID, chat.chatID, owner,
 		); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(
-			"INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)",
-			"agent", "web:"+chat.chatID+"/review:1", time.Now().Format(time.RFC3339),
+			"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
+			"agent", "web:"+chat.chatID+"/review:1", owner, time.Now().Format(time.RFC3339),
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -731,16 +803,27 @@ func TestRESTRPCGetActiveProgressChecksAgentOwnership(t *testing.T) {
 		return json.RawMessage(`{"phase":"tool"}`), nil
 	})
 
-	owned := httptest.NewRecorder()
-	wc.handleRPC(owned, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_active_progress","params":{"channel":"agent","chat_id":"web:owned-chat/review:1"}}`), "web-2", 2))
-	if owned.Code != http.StatusOK || dispatched != 1 {
-		t.Fatalf("owned status=%d dispatched=%d body=%s", owned.Code, dispatched, owned.Body.String())
-	}
+	for _, method := range []string{"get_active_progress", "get_pending_ask_user"} {
+		t.Run(method, func(t *testing.T) {
+			before := dispatched
+			owned := httptest.NewRecorder()
+			ownedBody := []byte(`{"method":"` + method + `","params":{"channel":"agent","chat_id":"web:owned-chat/review:1"}}`)
+			ownedRequest := authedAPIRequestFor(http.MethodPost, "/api/rpc", ownedBody, "web-2", 2)
+			ownedRequest = ownedRequest.WithContext(contextWithCanonicalIdentity(ownedRequest.Context(), 2, "user"))
+			wc.handleRPC(owned, ownedRequest)
+			if owned.Code != http.StatusOK || dispatched != before+1 {
+				t.Fatalf("owned status=%d dispatched=%d body=%s", owned.Code, dispatched, owned.Body.String())
+			}
 
-	foreign := httptest.NewRecorder()
-	wc.handleRPC(foreign, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_active_progress","params":{"channel":"agent","chat_id":"web:foreign-chat/review:1"}}`), "web-2", 2))
-	if foreign.Code != http.StatusForbidden || dispatched != 1 {
-		t.Fatalf("foreign status=%d dispatched=%d body=%s", foreign.Code, dispatched, foreign.Body.String())
+			foreign := httptest.NewRecorder()
+			foreignBody := []byte(`{"method":"` + method + `","params":{"channel":"agent","chat_id":"web:foreign-chat/review:1"}}`)
+			foreignRequest := authedAPIRequestFor(http.MethodPost, "/api/rpc", foreignBody, "web-2", 2)
+			foreignRequest = foreignRequest.WithContext(contextWithCanonicalIdentity(foreignRequest.Context(), 2, "user"))
+			wc.handleRPC(foreign, foreignRequest)
+			if foreign.Code != http.StatusForbidden || dispatched != before+1 {
+				t.Fatalf("foreign status=%d dispatched=%d body=%s", foreign.Code, dispatched, foreign.Body.String())
+			}
+		})
 	}
 }
 
@@ -891,6 +974,17 @@ func TestRESTSessionStatusReturnsTokenUsageAndCWD(t *testing.T) {
 		GetCWD: func(senderID string, sel SessionSelector) (string, error) {
 			return "/home/user", nil
 		},
+		CommandList: func(senderID string) ([]CommandInfo, error) {
+			return []CommandInfo{{Name: "help", Description: "show help"}}, nil
+		},
+		RewindHistory: func(senderID string, sel SessionSelector, historyID int64) (RewindHistoryResult, error) {
+			return RewindHistoryResult{HistoryRewindResult: protocol.HistoryRewindResult{
+				Draft: "redo", HistoryRewound: true, FilesRewound: true,
+				Checkpoint: &protocol.RewindResult{
+					Restored: []string{"a"},
+				},
+			}}, nil
+		},
 	})
 	recorder := httptest.NewRecorder()
 	wc.handleSessionStatus(recorder, authedAPIRequest(http.MethodPost, "/api/session/status", []byte(`{"chat_id":"web-1"}`)))
@@ -950,14 +1044,14 @@ func TestRESTHistoryCursorPrecedesInterleavedEvent(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	wc.SetCallbacks(WebCallbacks{
-		HistorySnapshot: func(senderID string, sel SessionSelector) (HistorySnapshot, error) {
+		HistorySnapshot: func(senderID string, sel SessionSelector, limit int, beforeID int64) (HistorySnapshot, error) {
 			wc.hub.sendToClient(sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "interleaved"})
 			return HistorySnapshot{Messages: []ch.HistoryMessage{}}, nil
 		},
 	})
 
 	recorder := httptest.NewRecorder()
-	wc.handleHistory(recorder, authedAPIRequest(http.MethodGet, "/api/history?channel=web&chat_id=web-1", nil))
+	wc.handleHistory(recorder, authedAPIRequest(http.MethodPost, "/api/history", []byte(`{"channel":"web","chat_id":"web-1"}`)))
 	_, data := decodeAPIResponse(t, recorder)
 	if recorder.Code != http.StatusOK || data["last_seq"] != float64(0) {
 		t.Fatalf("history status=%d data=%#v", recorder.Code, data)
@@ -970,8 +1064,8 @@ func TestRESTHistoryCursorPrecedesInterleavedEvent(t *testing.T) {
 func TestRESTSessionStatusReturnsIdleOwnedSessionCWD(t *testing.T) {
 	db := newTestDB(t)
 	if _, err := db.Exec(
-		"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
-		"web", "web-2", "owned-chat", "Owned",
+		"INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id) VALUES (?, ?, ?, ?, ?)",
+		"web", "web-2", "owned-chat", "Owned", 2,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -985,7 +1079,9 @@ func TestRESTSessionStatusReturnsIdleOwnedSessionCWD(t *testing.T) {
 		},
 	})
 	recorder := httptest.NewRecorder()
-	wc.handleSessionStatus(recorder, authedAPIRequestFor(http.MethodPost, "/api/session/status", []byte(`{"channel":"web","chat_id":"owned-chat"}`), "web-2", 2))
+	request := authedAPIRequestFor(http.MethodPost, "/api/session/status", []byte(`{"channel":"web","chat_id":"owned-chat"}`), "web-2", 2)
+	request = request.WithContext(contextWithCanonicalIdentity(request.Context(), 2, "user"))
+	wc.handleSessionStatus(recorder, request)
 	_, data := decodeAPIResponse(t, recorder)
 	if recorder.Code != http.StatusOK || data["cwd"] != "/workspace/idle" {
 		t.Fatalf("status=%d data=%#v", recorder.Code, data)
@@ -1027,7 +1123,7 @@ func TestRESTHistoryInfersCurrentOwnedAgentChannelFromChatID(t *testing.T) {
 		t.Fatal(err)
 	}
 	wc.SetCallbacks(WebCallbacks{
-		HistorySnapshot: func(senderID string, sel SessionSelector) (HistorySnapshot, error) {
+		HistorySnapshot: func(senderID string, sel SessionSelector, limit int, beforeID int64) (HistorySnapshot, error) {
 			if senderID != "web-2" || sel.Channel != "agent" || sel.ChatID != chatID {
 				t.Fatalf("wrong history selector: sender=%q selector=%#v", senderID, sel)
 			}
@@ -1035,7 +1131,7 @@ func TestRESTHistoryInfersCurrentOwnedAgentChannelFromChatID(t *testing.T) {
 		},
 	})
 	recorder := httptest.NewRecorder()
-	request := authedAPIRequestFor(http.MethodGet, "/api/history?chat_id="+url.QueryEscape(chatID), nil, "web-2", 2)
+	request := authedAPIRequestFor(http.MethodPost, "/api/history", []byte(`{"chat_id":"`+chatID+`"}`), "web-2", 2)
 	wc.handleHistory(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("history status = %d: %s", recorder.Code, recorder.Body.String())
@@ -1161,5 +1257,34 @@ func TestCanAccessAgentSessionUsesTenantAndWebParentOwnership(t *testing.T) {
 	}
 	if wc.canAccessSession(contextWithUserID(context.Background(), 1), 1, "web-1", "agent", "cli:/repo:Agent-main/missing:1") {
 		t.Fatal("admin access still requires an existing agent tenant")
+	}
+}
+
+func TestCanAccessSessionUsesLinkedCanonicalIdentityAndTenantOwner(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.SetCallbacks(WebCallbacks{IdentityResolver: channelAwareIdentityResolver{}})
+	for _, tenant := range []struct {
+		chatID string
+		owner  int64
+	}{
+		{chatID: "ou_linked", owner: 99},
+		{chatID: "owned-web-chat", owner: 42},
+	} {
+		if _, err := db.Exec(
+			"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES ('web', ?, ?, ?)",
+			tenant.chatID, tenant.owner, time.Now().Format(time.RFC3339),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := contextWithSenderID(contextWithUserID(context.Background(), 2), "ou_linked")
+	ctx = context.WithValue(ctx, webSessionKey, sessionInfo{userID: 2, feishuUserID: "ou_linked"})
+
+	if wc.canAccessSession(ctx, 2, "ou_linked", "web", "ou_linked") {
+		t.Fatal("raw chat_id == sender_id bypassed the canonical tenant owner")
+	}
+	if !wc.canAccessSession(ctx, 2, "ou_linked", "web", "owned-web-chat") {
+		t.Fatal("linked Feishu canonical owner could not access its Web tenant")
 	}
 }

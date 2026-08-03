@@ -8,13 +8,19 @@
  * LLM subscription/model RPCs (Spec D) go through WSConnection.rpc → POST /api/rpc.
  */
 import type { WSConnection } from '@/types/ws'
-import type { ContextUsage, ModelEntry, PerModelConfig, SessionSelector, Subscription, TodoItem } from '@/types/shared'
+import type { ContextUsage, ModelEntry, PerModelConfig, ProgressEvent, SessionSelector, Subscription, TodoItem } from '@/types/shared'
 import { postAPI } from '@/lib/api'
 
 /** History message row (protocol.HistoryMessage). */
 export interface HistMsg {
-  role: 'user' | 'assistant'
+  history_id?: number
+  role: string
   content: string
+  reasoning_content?: string
+  tool_call_id?: string
+  tool_name?: string
+  tool_arguments?: string
+  tool_calls?: { id: string; name: string; arguments: string }[]
   timestamp?: string
   id?: number
   iterations?: unknown[]
@@ -26,28 +32,18 @@ export interface HistMsg {
    *  before being persisted to DB). Used as a stable dedup key — no string
    *  matching needed. */
   seq?: number
+  record_type?: string
+  compacted_by?: number
+  display_only?: boolean
+  compression?: {
+    start_history_id?: number
+    end_history_id?: number
+    source_history_ids?: number[]
+  }
 }
 
 /** Raw active-progress snapshot (protocol.ProgressEvent). */
-export interface HistProgress {
-  /** Semantic progress-log watermark (protocol.ProgressEvent.Seq). */
-  seq?: number
-  phase?: string
-  iteration?: number
-  thinking?: string
-  content?: string
-  active_tools?: unknown[]
-  completed_tools?: unknown[]
-  sub_agents?: unknown[]
-  stream_content?: string
-  /** TurnID of the active turn (for stale-data detection in hydrate). */
-  turn_id?: number
-  /** Total wall-clock of the active turn (ms). */
-  elapsed_wall?: number
-  iteration_history?: unknown[]
-  todos?: { id: number; text: string; done: boolean }[]
-  cwd?: string
-}
+export type HistProgress = ProgressEvent
 
 /** /api/history response. */
 export interface HistoryResponse {
@@ -57,6 +53,8 @@ export interface HistoryResponse {
   last_seq?: number
   chat_id?: string
   channel?: string
+  has_more?: boolean
+  oldest_id?: number
 }
 
 /** Upload response (channel/web/web_file.go handleCloudUpload). */
@@ -67,9 +65,15 @@ export interface UploadResponse {
   mime?: string
 }
 
-/** Fetch conversation history through the Web-only snapshot API. */
-export async function fetchHistory(_ws: WSConnection, session?: SessionSelector | null): Promise<HistoryResponse> {
-  return postAPI<HistoryResponse>('/api/history', sessionBody(session))
+/** Fetch conversation history through the Web-only snapshot API.
+ *  limit: max user turns (default 30, server-side default).
+ *  beforeId: pagination cursor — return messages older than this id. */
+export async function fetchHistory(_ws: WSConnection, session?: SessionSelector | null, opts?: { limit?: number; beforeId?: number }): Promise<HistoryResponse> {
+  return postAPI<HistoryResponse>('/api/history', {
+    ...sessionBody(session),
+    ...(opts?.limit ? { limit: opts.limit } : {}),
+    ...(opts?.beforeId ? { before_id: opts.beforeId } : {}),
+  })
 }
 
 export async function fetchCwd(session?: SessionSelector | null): Promise<{ dir?: string; todos?: TodoItem[] }> {
@@ -100,9 +104,7 @@ export async function fetchCommands<T>(): Promise<T[]> {
     method: 'list_command_names',
     params: {},
   })
-  return commands.map((command) => (
-    typeof command === 'string' ? { name: command } as T : command
-  ))
+  return commands.map((command) => (typeof command === 'string' ? ({ name: command } as T) : command))
 }
 
 export async function fetchSessionSubscription(session: SessionSelector): Promise<Record<string, string>> {
@@ -112,12 +114,17 @@ export async function fetchSessionSubscription(session: SessionSelector): Promis
   })
 }
 
-export async function rewindHistory<T>(session: SessionSelector, messageID: number): Promise<T> {
+export async function rewindHistory<T>(session: SessionSelector, historyID: number): Promise<T> {
   return postAPI<T>('/api/history/rewind', {
     channel: session.channel,
     chat_id: session.chatID,
-    message_id: messageID,
+    history_id: historyID,
   })
+}
+
+/** Continue an active interactive SubAgent without generic inbound routing. */
+export async function continueInteractiveSession(ws: WSConnection, fullKey: string, content: string): Promise<void> {
+  await ws.rpc('continue_interactive_session', { full_key: fullKey, content })
 }
 
 /** Upload a single file; returns the server-issued upload key + metadata. */
@@ -129,7 +136,23 @@ export async function uploadFile(file: File): Promise<UploadResponse> {
   return data
 }
 
-function sessionBody(session?: SessionSelector | null): { channel?: string; chat_id?: string } {
+interface SessionStatusResponse<CronTask, BackgroundTask> {
+  tasks?: CronTask[]
+  background_tasks?: BackgroundTask[]
+  token_usage?: Record<string, unknown>
+  cwd?: string
+}
+
+export function fetchSessionStatus<CronTask = unknown, BackgroundTask = unknown>(
+  session: SessionSelector,
+): Promise<SessionStatusResponse<CronTask, BackgroundTask>> {
+  return postAPI('/api/session/status', sessionBody(session))
+}
+
+function sessionBody(session?: SessionSelector | null): {
+  channel?: string
+  chat_id?: string
+} {
   if (!session) return {}
   return { channel: session.channel, chat_id: session.chatID }
 }
@@ -213,39 +236,21 @@ export async function renameSubscription(ws: WSConnection, id: string, name: str
   await ws.rpc('rename_subscription', { id, name })
 }
 
-export async function setDefaultSubscription(
-  ws: WSConnection,
-  id: string,
-  chatID?: string,
-): Promise<void> {
+export async function setDefaultSubscription(ws: WSConnection, id: string, chatID?: string): Promise<void> {
   await ws.rpc('set_default_subscription', { id, chat_id: chatID ?? '' })
 }
 
-export async function setSubscriptionEnabled(
-  ws: WSConnection,
-  subID: string,
-  enabled: boolean,
-): Promise<void> {
+export async function setSubscriptionEnabled(ws: WSConnection, subID: string, enabled: boolean): Promise<void> {
   await ws.rpc('set_subscription_enabled', { sub_id: subID, enabled })
 }
 
 // ── Model Management ──
 
-export async function updatePerModelConfig(
-  ws: WSConnection,
-  id: string,
-  model: string,
-  config: PerModelConfig,
-): Promise<void> {
+export async function updatePerModelConfig(ws: WSConnection, id: string, model: string, config: PerModelConfig): Promise<void> {
   await ws.rpc('update_per_model_config', { id, model, config })
 }
 
-export async function setModelEnabled(
-  ws: WSConnection,
-  subID: string,
-  model: string,
-  enabled: boolean,
-): Promise<void> {
+export async function setModelEnabled(ws: WSConnection, subID: string, model: string, enabled: boolean): Promise<void> {
   await ws.rpc('set_model_enabled', { sub_id: subID, model, enabled })
 }
 
@@ -253,14 +258,7 @@ export async function removeModel(ws: WSConnection, subID: string, model: string
   await ws.rpc('remove_model', { sub_id: subID, model })
 }
 
-export async function upsertModel(
-  ws: WSConnection,
-  subID: string,
-  model: string,
-  maxContext = 0,
-  maxOutput = 0,
-  apiType = '',
-): Promise<void> {
+export async function upsertModel(ws: WSConnection, subID: string, model: string, maxContext = 0, maxOutput = 0, apiType = ''): Promise<void> {
   await ws.rpc('upsert_model', {
     sub_id: subID,
     model,
@@ -272,13 +270,7 @@ export async function upsertModel(
 
 // ── Model Selection & Query ──
 
-export async function selectModel(
-  ws: WSConnection,
-  channel: string,
-  subID: string,
-  model: string,
-  chatID: string,
-): Promise<void> {
+export async function selectModel(ws: WSConnection, channel: string, subID: string, model: string, chatID: string): Promise<void> {
   await ws.rpc('select_model', {
     sub_id: subID,
     model,
@@ -295,22 +287,14 @@ export async function refreshModelEntries(ws: WSConnection): Promise<ModelEntry[
   return ws.rpc<ModelEntry[]>('refresh_model_entries', {})
 }
 
-export async function getSessionSubscription(
-  ws: WSConnection,
-  channel: string,
-  chatID: string,
-): Promise<{ subscription_id?: string; model?: string }> {
+export async function getSessionSubscription(ws: WSConnection, channel: string, chatID: string): Promise<{ subscription_id?: string; model?: string }> {
   return ws.rpc<{ subscription_id?: string; model?: string }>('get_session_subscription', {
     channel,
     chat_id: chatID,
   })
 }
 
-export async function getContextUsage(
-  ws: WSConnection,
-  channel: string,
-  chatID: string,
-): Promise<ContextUsage> {
+export async function getContextUsage(ws: WSConnection, channel: string, chatID: string): Promise<ContextUsage> {
   return ws.rpc<ContextUsage>('get_context_usage', {
     channel,
     chat_id: chatID,
@@ -337,19 +321,14 @@ export async function setLLMConcurrency(ws: WSConnection, personal: number): Pro
 
 // ── Tier Config (via generic settings RPC) ──
 
-export async function getSettings(
-  ws: WSConnection,
-  namespace: string,
-): Promise<Record<string, string>> {
-  return ws.rpc<Record<string, string>>('get_settings', { namespace, sender_id: '' })
+export async function getSettings(ws: WSConnection, namespace: string): Promise<Record<string, string>> {
+  return ws.rpc<Record<string, string>>('get_settings', {
+    namespace,
+    sender_id: '',
+  })
 }
 
-export async function setSetting(
-  ws: WSConnection,
-  namespace: string,
-  key: string,
-  value: string,
-): Promise<void> {
+export async function setSetting(ws: WSConnection, namespace: string, key: string, value: string): Promise<void> {
   await ws.rpc('set_setting', { namespace, sender_id: '', key, value })
 }
 

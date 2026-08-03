@@ -39,6 +39,12 @@ interface MessageListProps {
   /** Whether to merge consecutive tools. Default true. */
   mergeTools?: boolean
   loading: boolean
+  /** True while loading older messages (scroll-up pagination). */
+  loadingMore?: boolean
+  /** True if there are older messages available to load. */
+  hasMore?: boolean
+  /** Called when the user scrolls to the top — load older messages. */
+  onLoadMore?: () => Promise<boolean>
   error: string | null
   /** Rewind callback — receives the edited content string. */
   onRewind?: (editedContent: string, originalMessage: ChatMessage) => void
@@ -68,6 +74,70 @@ export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boo
   return row.role === 'user' && row.content.trimStart().startsWith('[Compacted context]')
 }
 
+/**
+ * Build the combined row list: committed messages + optional live streaming row.
+ *
+ * ALWAYS remove intermediate assistant messages after the last user message.
+ * ConvertMessagesToHistory can split one turn into multiple assistant
+ * messages (when a Content assistant appears between ToolCalls). Without
+ * this, both assistants render the same tools — once from DB iterations
+ * and once from the progress snapshot — causing duplicates. Only the LAST
+ * assistant after the last user message is kept.
+ *
+ * Live insertion order (turn-aware):
+ *  - Same turnID:role committed message exists → merge (no separate row).
+ *  - Otherwise insert at the correct turn position. The live assistant must
+ *    render AFTER its own turn's user message. If the optimistic user row
+ *    (turnID=0, persisted=false) is still unbound — turn_started was lost
+ *    (SSE drop/coalesce) so bindLastUserToTurn never ran — insert after it.
+ *    Without this, the live assistant lands after the PREVIOUS turn's
+ *    assistant and renders inside the wrong turn.
+ */
+export function buildMessageRows(
+  messages: ChatMessage[],
+  liveMessage: ChatMessage | null,
+): ChatMessage[] {
+  // Order = the message array's accumulation order (append-only — mirrors the
+  // backend's DB row order). NO turnID re-sorting: user rows keep their
+  // natural order, and a turn_id=0 user must NOT be grouped with other users.
+  // The committed assistant's position is fixed by appendAssistant at commit
+  // time (inserted before the newest user), so the array is already ordered.
+  if (!liveMessage) return [...messages]
+  // The live message for a turn that already has a committed assistant is
+  // merged into it (liveProgress flows via liveId) — never rendered twice.
+  if (liveMessage.turnID > 0) {
+    const hasCommitted = messages.some(
+      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
+    )
+    if (hasCommitted) return [...messages]
+    // Distinguish the two live-row kinds by whether its turnID already exists
+    // in the committed list:
+    //  - EXISTS (e.g. a frozen row from a CANCELLED previous turn whose user is
+    //    in the list): insert after that turn's last message — ABOVE the newest
+    //    user. Without this, the new user flickered above the cancelled turn.
+    //  - NOT EXISTS (the CURRENT turn's reply — its user was just sent and is
+    //    still unbound / turnID not yet in the list): append at the END, below
+    //    the new user. Falling through to the turnID scan skipped the unbound
+    //    user (turnID=0) and inserted the reply ABOVE the user — the "reply
+    //    rendered above my user msg" linear-consistency violation.
+    const turnExists = messages.some((m) => m.turnID === liveMessage.turnID)
+    if (turnExists) {
+      let insertIdx = messages.length
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i]
+        if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
+          insertIdx = i + 1
+          break
+        }
+      }
+      return [...messages.slice(0, insertIdx), liveMessage, ...messages.slice(insertIdx)]
+    }
+  }
+  // turnID=0 live, or the current turn's reply (turnID not in the committed
+  // list yet) — append at the end (below the newest user).
+  return [...messages, liveMessage]
+}
+
 export function MessageList({
   chatKey,
   followResetToken = 0,
@@ -78,6 +148,9 @@ export function MessageList({
   collapseLevel,
   mergeTools = true,
   loading,
+  loadingMore = false,
+  hasMore = false,
+  onLoadMore,
   error,
   onRewind,
   editingMessageId,
@@ -122,55 +195,45 @@ export function MessageList({
   // Only the LAST assistant after the last user message is kept; all earlier
   // ones are absorbed (their tools are in the snapshot or in the last
   // assistant's iterations).
-  const rows = useMemo<ChatMessage[]>(() => {
-    // Remove intermediate assistant messages after the last user message.
-    // Only apply when the last message is an assistant (active turn) —
-    // if the last message is a user message, ALL previous assistants are
-    // from completed turns and must be preserved.
-    const last = messages[messages.length - 1]
-    const deduped = [...messages]
-    if (last && last.role === 'assistant') {
-      for (let i = deduped.length - 2; i >= 0; i--) {
-        if (deduped[i].role === 'user') break
-        if (deduped[i].role === 'assistant') deduped.splice(i, 1)
+  const rows = useMemo<ChatMessage[]>(() => buildMessageRows(messages, liveMessage), [messages, liveMessage])
+  // Latest-rows ref: closures (IntersectionObserver, loadMore anchor restore)
+  // must read the CURRENT rows, not a stale snapshot captured in effect deps —
+  // after onLoadMore prepends older rows, the effect closure's `rows` is still
+  // the pre-prepend array, so findIndex would miss the anchor.
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  // loadMore scroll-anchor: id of the first VISIBLE row captured BEFORE older
+  // rows prepend. After the prepend lands we scrollToIndex it back to 'start'
+  // so the user's visible region stays put — new older rows appear above it,
+  // which pushes the scrollbar toward the middle (not the top).
+  const loadMoreAnchorIdRef = useRef<string | null>(null)
+  // Invariant guard: the "thinking…" busy placeholder must never render below
+  // a FINISHED assistant (copy button shown — turn complete). A finished turn
+  // followed by "thinking…" would imply the completed turn is still running.
+  // A committed assistant is isPartial=false with final content (approximation
+  // of shouldRenderFinalContent at the row level).
+  const lastIsFinishedAssistant =
+    rows.length > 0 &&
+    rows[rows.length - 1].role === 'assistant' &&
+    rows[rows.length - 1].isPartial === false &&
+    !!rows[rows.length - 1].content
+  // liveId points to the row that receives liveProgress. Scan ALL rows
+  // for a match by turnID:role (the committed message that liveProgress
+  // should be passed to). If no match, liveMessage has its own row.
+  const liveId = useMemo(() => {
+    if (!liveMessage) return null
+    if (liveMessage.turnID > 0) {
+      // Check if rows contains a committed message with same turnID:role
+      // (merge case — liveProgress goes to that message, not liveMessage).
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i]
+        if (r.turnID === liveMessage.turnID && r.role === liveMessage.role && r.id !== liveMessage.id) {
+          return r.id
+        }
       }
     }
-
-    if (!liveMessage) return deduped
-    const lastDeduped = deduped[deduped.length - 1]
-    if (lastDeduped && lastDeduped.role === 'assistant' &&
-        lastDeduped.eventSeq != null && liveMessage.eventSeq != null &&
-        lastDeduped.eventSeq === liveMessage.eventSeq) {
-      return deduped
-    }
-    // When the last message is an assistant from the SAME turn as the live
-    // progress, pass liveProgress to it (don't append a separate liveMessage
-    // row). This covers two scenarios:
-    //  1. Locally-committed message (appendAssistant): matched by turnID
-    //  2. DB-committed message (IncrementalPersist → reload): matched by
-    //     turnID — the DB message carries turn_id (v50 migration), and the
-    //     live store's snapshot carries the same turn_id from structured events.
-    // Without this, both the committed message and liveMessage render —
-    // duplicating the same turn's content + tools.
-    if (lastDeduped && lastDeduped.role === 'assistant' && liveMessage.isPartial &&
-        (lastDeduped.isPartial ||
-         (liveMessage.turnID > 0 && lastDeduped.turnID === liveMessage.turnID))) {
-      return deduped
-    }
-    return [...deduped, liveMessage]
-  }, [messages, liveMessage])
-  // liveId points to the row that receives liveProgress. When the last
-  // history assistant is the streaming slot — in-flight partial (isPartial)
-  // or same turnID — liveProgress goes to it. Otherwise, liveMessage gets
-  // its own row.
-  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
-  const liveId = liveMessage
-    ? (lastMsg && lastMsg.role === 'assistant' && liveMessage.isPartial &&
-       (lastMsg.isPartial ||
-        (liveMessage.turnID > 0 && lastMsg.turnID === liveMessage.turnID))
-        ? lastMsg.id
-        : liveMessage.id)
-    : null
+    return liveMessage.id
+  }, [rows, liveMessage])
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
@@ -292,6 +355,56 @@ export function MessageList({
       )
     }
   }, [virtualizer, cancelPendingFollow])
+
+  // Scroll-to-top sentinel ref — used by IntersectionObserver to detect
+  // when the user scrolls to the top and trigger loadMore.
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el || !hasMore || !onLoadMore) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
+          // Capture the first VISIBLE row id BEFORE onLoadMore prepends older
+          // rows — this is the scroll anchor we restore after the load lands,
+          // so the viewport stays on the same content (not jumping to top).
+          const items = virtualizer.getVirtualItems()
+          const firstVisible = items[0]
+          if (firstVisible) {
+            const anchorRow = rowsRef.current[firstVisible.index]
+            loadMoreAnchorIdRef.current = anchorRow?.id ?? null
+          }
+          void onLoadMore()
+        }
+      },
+      { root: scrollRef.current, threshold: 0 },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hasMore, loadingMore, onLoadMore, virtualizer])
+
+  // ── loadMore scroll-anchor: restore viewport after older rows prepend ────
+  // Older rows prepend ABOVE the captured anchor, growing scrollHeight. Without
+  // restoring, the viewport jumps to the new top. We scroll the anchor row back
+  // to 'start' so the user's visible content is unchanged; the freshly loaded
+  // older rows sit above it, so the scrollbar lands mid-list (not at the top).
+  // Guarded by loadMoreAnchorIdRef so this is a no-op during normal streaming
+  // (the ref is only set in the IntersectionObserver callback right before a load).
+  useEffect(() => {
+    const anchorId = loadMoreAnchorIdRef.current
+    if (!anchorId) return
+    const newIdx = rowsRef.current.findIndex((m) => m.id === anchorId)
+    if (newIdx < 0) return
+    // rAF: let the virtualizer mount + measure the freshly prepended rows so
+    // scrollToIndex positions against real (not estimated) row heights.
+    const raf = requestAnimationFrame(() => {
+      loadMoreAnchorIdRef.current = null
+      virtualizer.scrollToIndex(newIdx, { align: 'start' })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [rows, virtualizer])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
@@ -494,6 +607,16 @@ export function MessageList({
         )}
 
         <div ref={contentRef} data-message-list-content className="w-full">
+          {/* Scroll-to-top sentinel: triggers loadMore via IntersectionObserver */}
+          {hasMore && (
+            <div ref={sentinelRef} className="flex justify-center py-2">
+              {loadingMore ? (
+                <Loader2 className="size-4 animate-spin text-text-muted" />
+              ) : (
+                <span className="text-xs text-text-muted">↑ 滚动加载更多</span>
+              )}
+            </div>
+          )}
           {rows.length > 0 && (
             <div
               style={{ height: `${virtualizer.getTotalSize()}px` }}
@@ -542,8 +665,14 @@ export function MessageList({
               content has arrived yet (e.g. session just started, or
               switched to a busy tab with no iterations). Shown during
               loading when rows exist (the spinner handles the empty case),
-              so the user always sees feedback on a busy session. */}
-          {busy && !liveMessage && !(loading && rows.length === 0) && (
+              so the user always sees feedback on a busy session.
+              INVARIANT: never show the placeholder below a FINISHED
+              assistant message (one with a copy button — turn complete).
+              A finished turn followed by "thinking…" would imply the
+              completed turn is still running (linear-consistency
+              violation). The placeholder only appears when the last row is
+              a user message (new turn) or nothing at all. */}
+          {busy && !liveMessage && !lastIsFinishedAssistant && !(loading && rows.length === 0) && (
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">

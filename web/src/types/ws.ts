@@ -10,12 +10,21 @@ import type {
   WSMessage,
 } from './shared'
 
-/** Response from POST /api/message — includes the DB id of the persisted user message. */
+/**
+ * Response from POST /api/message — includes the DB id of the persisted user
+ * message plus the turn_id allocated at queue-admission time (so the frontend
+ * can bind the optimistic user row without depending on turn_started, which
+ * may be lost/coalesced in SSE) and a queued flag: true when the chat was
+ * already busy processing an earlier message (the message will be handled
+ * after the current turn completes).
+ */
 export interface SendMessageResponse {
   chat_id?: string
   channel?: string
   message_id?: number
   timestamp?: number
+  turn_id?: number
+  queued?: boolean
 }
 
 export interface WSConnection {

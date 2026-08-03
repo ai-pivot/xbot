@@ -26,6 +26,14 @@ type suHistoryLoadMsg struct {
 	channelName    string                  // target session at time of request
 	chatID         string                  // target session at time of request
 	activeProgress *protocol.ProgressEvent // non-nil if target session has an active agent turn
+	// authoritative replaces the local transcript instead of dedup-appending it.
+	// Used after replay gaps, where every local projection may be stale.
+	authoritative bool
+	// mutationGuard rejects this snapshot if live state changed while its DB
+	// read was in flight, then schedules a fresh authoritative read.
+	mutationGuard      bool
+	mutationGeneration uint64
+	snapshotGeneration uint64
 	// tokenState holds the last persisted token counts for the session.
 	// Used as fallback when activeProgress is nil (idle session) so the
 	// context bar still shows the session's last known token usage.
@@ -41,7 +49,12 @@ type suHistoryLoadMsg struct {
 	// Populated by suLoadHistoryCmd via GetTodosFn RPC.
 	// When non-nil, it overwrites the local TodoManager cache so
 	// the first session switch after TUI startup shows fresh data.
-	todos []protocol.TodoItem
+	todos      []protocol.TodoItem
+	todosKnown bool
+	// pendingAskUserKnown distinguishes an authoritative "none pending" result
+	// from a client that does not provide the pending AskUser RPC.
+	pendingAskUser      *protocol.ProgressEvent
+	pendingAskUserKnown bool
 }
 
 // sessionState holds per-session state that should be preserved when switching sessions.
@@ -147,6 +160,8 @@ func (m *cliModel) saveCurrentSession() {
 // restoreSession restores a session's live state from the savedSessions map.
 // If the session has saved state, restores it; otherwise resets to idle.
 func (m *cliModel) restoreSession() {
+	// Rewind RPC/reset coordination is scoped to the session being left.
+	m.rewindSync = rewindWarningSync{}
 	key := m.sessionKey()
 	if saved, ok := m.savedSessions[key]; ok {
 		m.progressState.current = saved.progress
@@ -321,6 +336,7 @@ func (m *cliModel) resetToIdleState() {
 	m.rewindItems = nil
 	m.rewindCursor = 0
 	m.rewindResult = nil
+	m.rewindSync = rewindWarningSync{}
 	m.checkpointState = nil
 
 	// --- Panel State ---
@@ -535,8 +551,7 @@ func (m *cliModel) postRestoreSessionSetup() []tea.Cmd {
 		cmds = append(cmds, m.suLoadHistoryCmd())
 	} else {
 		// Local mode: for regular CLI sessions, restored state is authoritative.
-		// Agent sessions also need suLoadHistoryCmd (uses AgentSessionDumpFn
-		// for in-memory agent state, not DB RPC) to load progress + history.
+		// Agent sessions also load canonical persisted history and live progress.
 		if m.channelName == "agent" {
 			m.progressState.current = nil
 			m.typing = false
@@ -592,6 +607,47 @@ func (m *cliModel) checkAndRestorePendingAskUser() tea.Cmd {
 	m.askUserSession = m.chatID // bind AskUser to current session
 	m.openAskUserPanel(items, m.pendingAskUserOnAnswer(requestID), m.pendingAskUserOnCancel(requestID))
 	return nil
+}
+
+// applyPendingAskUserSnapshot replaces the local pending question with the
+// server's authoritative state. In particular, nil removes the persisted file
+// so a question invalidated by rewind/resync cannot reopen later.
+func (m *cliModel) applyPendingAskUserSnapshot(pending *protocol.ProgressEvent) {
+	m.clearPendingAskUserUI(m.chatID)
+	if pending == nil || len(pending.Questions) == 0 {
+		return
+	}
+
+	items := make([]askItem, len(pending.Questions))
+	questions := make([]askQItem, len(pending.Questions))
+	for i, q := range pending.Questions {
+		options := append([]string(nil), q.Options...)
+		items[i] = askItem{Question: q.Question, Options: options}
+		questions[i] = askQItem{Question: q.Question, Options: options}
+	}
+	if raw, err := json.Marshal(questions); err == nil {
+		m.savePendingAskUser(m.chatID, map[string]string{
+			"ask_questions": string(raw),
+			"request_id":    pending.RequestID,
+		})
+	}
+
+	m.askUserSession = m.chatID
+	m.openAskUserPanel(items, m.pendingAskUserOnAnswer(pending.RequestID), m.pendingAskUserOnCancel(pending.RequestID))
+}
+
+func (m *cliModel) clearPendingAskUserUI(chatID string) {
+	if chatID == "" {
+		return
+	}
+	if m.panelState.mode == "askuser" && m.askUserSession == chatID {
+		m.closePanel()
+	} else {
+		m.deletePendingAskUser(chatID)
+	}
+	if m.askUserSession == chatID {
+		m.askUserSession = ""
+	}
 }
 
 // pendingAskUserOnAnswer returns a callback for answered pending questions.
@@ -658,11 +714,15 @@ func (m *cliModel) savePendingToSessionState() {
 // cliHistoryReloadMsg context compression 后重新加载历史完成消息
 // cliHistoryReloadMsg context compression 后重新加载历史完成消息
 type cliHistoryReloadMsg struct {
-	channelName      string
-	chatID           string
-	history          []ch.HistoryMessage
-	err              error
-	forceFullRebuild bool
+	channelName        string
+	chatID             string
+	history            []ch.HistoryMessage
+	err                error
+	forceFullRebuild   bool
+	rewindGeneration   uint64
+	mutationGuard      bool
+	mutationGeneration uint64
+	reloadGeneration   uint64
 }
 
 // cliTokenRefreshMsg refreshes the context bar after compression.
@@ -688,6 +748,10 @@ type cliSessionResult struct {
 // The engine has replaced its internal message list and persisted to session DB;
 // CLI must rebuild m.messages to stay in sync.
 func (m *cliModel) reloadMessagesFromSession(forceFullRebuild bool) {
+	m.reloadMessagesFromSessionForRewind(forceFullRebuild, 0)
+}
+
+func (m *cliModel) reloadMessagesFromSessionForRewind(forceFullRebuild bool, rewindGeneration uint64) {
 	if m.channel == nil {
 		return
 	}
@@ -697,6 +761,9 @@ func (m *cliModel) reloadMessagesFromSession(forceFullRebuild bool) {
 	}
 	chatID := m.chatID
 	channelName := m.channelName
+	m.historyReloadGeneration++
+	reloadGeneration := m.historyReloadGeneration
+	mutationGeneration := m.historyMutationGeneration
 	clipanic.Go("ch.cliModel.reloadMessagesFromSession", func() {
 		history, err := loader(channelName, chatID)
 		// Send result via async channel (goroutine-safe).
@@ -705,11 +772,15 @@ func (m *cliModel) reloadMessagesFromSession(forceFullRebuild bool) {
 		// compression; the old 10s single-attempt timeout had no retry.
 		if m.channel != nil {
 			reloadMsg := cliHistoryReloadMsg{
-				channelName:      channelName,
-				chatID:           chatID,
-				history:          history,
-				err:              err,
-				forceFullRebuild: forceFullRebuild,
+				channelName:        channelName,
+				chatID:             chatID,
+				history:            history,
+				err:                err,
+				forceFullRebuild:   forceFullRebuild,
+				rewindGeneration:   rewindGeneration,
+				mutationGuard:      true,
+				mutationGeneration: mutationGeneration,
+				reloadGeneration:   reloadGeneration,
 			}
 			sent := false
 			for attempt := 0; attempt < 3 && !sent; attempt++ {

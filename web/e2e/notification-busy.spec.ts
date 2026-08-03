@@ -64,14 +64,17 @@ async function getInputMode(page: Page): Promise<{ hasSend: boolean; hasCancel: 
     await page.waitForTimeout(100)
   }
   return page.evaluate(() => {
-    // The MessageInput's action button: cancel uses variant="destructive"
-    // (class includes "destructive"), send uses bg-accent.
+    // The MessageInput's action button: cancel uses aria-label t('common.cancel')
+    // ("Cancel"/"取消"), send uses aria-label t('agent.send') ("Send"/"发送").
+    // Use aria-labels — className sniffing for bg-accent/destructive is
+    // unreliable (hover:bg-accent/10 on unrelated buttons also matches).
     const buttons = Array.from(document.querySelectorAll('button'))
-    const hasCancel = buttons.some(b => (b.className || '').includes('destructive'))
-    const hasSend = buttons.some(b => {
-      const cls = b.className || ''
-      return cls.includes('bg-accent') && !cls.includes('destructive')
-    })
+    const isLabel = (b: Element, ...labels: string[]) => {
+      const aria = b.getAttribute('aria-label')?.toLowerCase() ?? ''
+      return labels.some((l) => aria.includes(l))
+    }
+    const hasCancel = buttons.some((b) => isLabel(b, 'cancel', '取消'))
+    const hasSend = buttons.some((b) => isLabel(b, 'send', '发送'))
     return { hasSend, hasCancel }
   })
 }
