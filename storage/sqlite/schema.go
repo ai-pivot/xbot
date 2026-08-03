@@ -311,4 +311,4 @@ INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES
 	}
 	log.WithField("version", schemaVersion).Info("Database schema initialized")
 	return nil
-	}
+}
