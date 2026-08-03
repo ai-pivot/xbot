@@ -742,7 +742,12 @@ export class ProgressStore {
       // Assign remaining fields, but NEVER downgrade client-side tracking:
       // - eventSeq: take max (server seq may be older than what SSE already delivered)
       // - lastIter: already computed above from merged iterationHistory
-      const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, ...rest } = next
+      // - todos: preserve existing — historyProgressToLive returns todos:[] when
+      //   the server omits the field, which would overwrite cached todos
+      //   (restored by the session-switch cache). todos are managed by
+      //   setStructuredTools or the explicit `phase==='done'` replace path,
+      //   not by the general replace/Object.assign.
+      const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, todos: _td, ...rest } = next
       if (next.eventSeq !== undefined && next.eventSeq > draft.eventSeq) {
         draft.eventSeq = next.eventSeq
       }
