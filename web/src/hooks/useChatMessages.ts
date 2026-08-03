@@ -482,7 +482,7 @@ export function useChatMessages({
         // LRU eviction: keep at most 5 sessions cached
         if (messagesCache.size > 5) {
           const oldestKey = messagesCache.keys().next().value
-          if (oldestKey !== cursorCacheKey) messagesCache.delete(oldestKey)
+          if (oldestKey && oldestKey !== cursorCacheKey) messagesCache.delete(oldestKey)
         }
       }
       // Track pagination cursor.
