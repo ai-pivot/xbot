@@ -16,6 +16,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 
 import { highlightCode as highlightCodeAsync, highlightAuto as highlightAutoAsync, normalizeLanguage } from '@/components/agent/highlight'
+import { MermaidDiagram } from '@/components/agent/MermaidDiagram'
 import { joinPath } from '@/hooks/useFileSystem'
 
 import 'katex/dist/katex.min.css'
@@ -97,6 +98,10 @@ export const MarkdownPreview = memo(function MarkdownPreview({
             const text = String(children ?? '')
             if (isCodeBlock(className, children)) {
               const lang = extractLanguage(className)
+              // Mermaid diagrams render to SVG instead of highlighted source.
+              if (lang && normalizeLanguage(lang) === 'mermaid') {
+                return <MermaidDiagram source={text.replace(/\n$/, '')} />
+              }
               return <FileCodeBlock text={text.replace(/\n$/, '')} lang={lang} />
             }
             return (
