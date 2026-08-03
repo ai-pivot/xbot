@@ -232,7 +232,12 @@ export function useProgressStream({
       // resurrecting stale todos on every session switch/refresh — the
       // frontend diverged from the server's authoritative state.
       if (Array.isArray(initialProgress.todos)) {
-        store.replace({ todos: initialProgress.todos as TodoItem[] })
+        // Use setStructuredTools, NOT replace: ProgressStore.replace strips
+        // `todos` from its input (todos are managed separately to avoid
+        // historyProgressToLive's todos:[] overwriting cached todos).
+        // setStructuredTools applies todos via its dedicated todos path
+        // (see the phase==='done' contract in progressStore.ts setStructuredTools).
+        store.setStructuredTools({ todos: initialProgress.todos as TodoItem[] })
       }
       return
     }
