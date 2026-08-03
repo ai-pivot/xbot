@@ -444,11 +444,22 @@ export class ProgressStore {
     this.listeners.forEach((l) => l())
   }
 
-  /** Set streamed assistant text (cumulative value from stream_content events). */
+  /** Set streamed assistant text (cumulative value from stream_content events).
+   *  The value is the FULL cumulative stream content (not a delta) — uses
+   *  assignment, not append. */
   appendStreamContent(delta: string): void {
     if (!delta) return
     this.mutate((draft) => {
       draft.streamContent = delta  // cumulative value, use assignment not append
+      draft.streaming = true
+    })
+  }
+
+  /** Replace streamContent (single source of truth, no accumulation). */
+  setStreamContent(content: string): void {
+    if (!content) return
+    this.mutate((draft) => {
+      draft.streamContent = content
       draft.streaming = true
     })
   }
@@ -458,6 +469,15 @@ export class ProgressStore {
     if (!delta) return
     this.mutate((draft) => {
       draft.reasoningStreamContent = delta  // cumulative value, use assignment not append
+      draft.streaming = true
+    })
+  }
+
+  /** Replace reasoningStreamContent (single source of truth, no accumulation). */
+  setReasoningContent(content: string): void {
+    if (!content) return
+    this.mutate((draft) => {
+      draft.reasoningStreamContent = content
       draft.streaming = true
     })
   }
