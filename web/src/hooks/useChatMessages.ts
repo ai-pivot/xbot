@@ -377,9 +377,11 @@ export function useChatMessages({
     // Session switch: try messagesCache for instant render (LRU).
     // The cache stores the last-seen messages for recently visited sessions.
     // On a cache hit, render immediately while the network fetch refreshes.
+    // Use activeMessageCacheKey (includes :role:instance:agentChatID suffix)
+    // to avoid collision between parent session and SubAgent panels which
+    // share the same channel+chatID but display different messages.
     if (!sameTarget) {
-      const cacheKey = chatID ? sessionCacheKey(channel, chatID) : null
-      const cached = cacheKey ? messagesCache.get(cacheKey) : null
+      const cached = activeMessageCacheKey ? messagesCache.get(activeMessageCacheKey) : null
       if (cached && cached.length > 0) {
         messagesRef.current = cached
         setMessages(cached)
@@ -477,12 +479,14 @@ export function useChatMessages({
       messagesRef.current = next
       setMessages(next)
       // Cache messages for instant render on next session switch (LRU).
-      if (cursorCacheKey) {
-        messagesCache.set(cursorCacheKey, next)
+      // Use activeMessageCacheKey to match the read path (avoids collision
+      // between parent session and SubAgent panels).
+      if (activeMessageCacheKey) {
+        messagesCache.set(activeMessageCacheKey, next)
         // LRU eviction: keep at most 5 sessions cached
         if (messagesCache.size > 5) {
           const oldestKey = messagesCache.keys().next().value
-          if (oldestKey && oldestKey !== cursorCacheKey) messagesCache.delete(oldestKey)
+          if (oldestKey && oldestKey !== activeMessageCacheKey) messagesCache.delete(oldestKey)
         }
       }
       // Track pagination cursor.

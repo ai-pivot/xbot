@@ -410,10 +410,6 @@ export class ProgressStore {
   /** Tracks the last seen iteration number within the current turn for continuity assertions.
    *  0 = uninitialized (no iteration seen yet). Iterations are 1-based. */
   lastIter = 0
-  /** Dirty flag: when only stream-only fields changed, structured arrays
-   *  (iterationHistory, activeTools, completedTools) keep their references
-   *  so downstream useMemo (liveMessage, buildMessageRows) can skip recompute. */
-  private streamOnlyDirty = false
 
   /** Subscribe to snapshot changes; returns an unsubscribe function. */
   subscribe = (listener: Listener): (() => void) => {
@@ -426,16 +422,11 @@ export class ProgressStore {
   /** Current snapshot. Stable between notifies (same reference). */
   getSnapshot = (): ProgressSnapshot => this.snapshot
 
-  /** Apply a mutation under the hood; schedules a throttled notify.
-   *  streamOnly: when true, the mutation only touched stream-only fields
-   *  (streamContent, reasoningStreamContent, streaming, streamingTools).
-   *  flush() can reuse the previous snapshot's structured arrays (iterationHistory,
-   *  activeTools, completedTools) so downstream useMemo sees the same reference. */
-  mutate(mutator: Mutator, streamOnly = false): void {
+  /** Apply a mutation under the hood; schedules a throttled notify. */
+  mutate(mutator: Mutator): void {
     if (this.disposed) return
     mutator(this.current)
     this.dirty = true
-    if (streamOnly) this.streamOnlyDirty = true
     this.scheduleNotify()
   }
 
@@ -468,7 +459,6 @@ export class ProgressStore {
     this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
     this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
     this.dirty = false
-    this.streamOnlyDirty = false
     this.lastTurnID = 0
     this.lastIter = 0
     if (this.rafHandle !== null) {
@@ -508,7 +498,6 @@ export class ProgressStore {
     // Single snapshot + single notification
     this.snapshot = { ...this.current }
     this.dirty = false
-    this.streamOnlyDirty = false
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null
@@ -587,7 +576,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.streamContent = delta  // cumulative value, use assignment not append
       draft.streaming = true
-    }, true) // streamOnly: reuse structured arrays in snapshot
+    })
   }
 
   /** Replace streamContent (single source of truth, no accumulation). */
@@ -596,7 +585,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.streamContent = content
       draft.streaming = true
-    }, true)
+    })
   }
 
   /** Set streamed reasoning text (cumulative value from reasoning_stream_content events). */
@@ -605,7 +594,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.reasoningStreamContent = delta  // cumulative value, use assignment not append
       draft.streaming = true
-    }, true)
+    })
   }
 
   /** Replace reasoningStreamContent (single source of truth, no accumulation). */
@@ -614,7 +603,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.reasoningStreamContent = content
       draft.streaming = true
-    }, true)
+    })
   }
 
   /** Set streaming GenUI HTML content (from display_html tool arguments). */
@@ -623,7 +612,7 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.genuiContent = content
       draft.streaming = true
-    }, true)
+    })
   }
 
   /**
@@ -635,7 +624,7 @@ export class ProgressStore {
       if (opts.streamingTools) {
         draft.streamingTools = opts.streamingTools
       }
-    }, true)
+    })
   }
 
   /** Stop streaming animations (typewriter) but KEEP all content/tools visible.
@@ -930,15 +919,15 @@ export class ProgressStore {
   }
 
   /** Build a fresh immutable snapshot (shallow-copied top-level) and notify.
-   *  When streamOnlyDirty is set, structured arrays (iterationHistory,
-   *  activeTools, completedTools, subAgents) reuse the previous snapshot's
-   *  references — downstream useMemo sees the same array and skips recompute. */
+   *  Structured arrays (activeTools, completedTools, iterationHistory, subAgents)
+   *  are copied by reference from `current` — they are only reassigned in `current`
+   *  when content actually changes (e.g. `draft.activeTools = dedupTools(...)`),
+   *  so stream-only mutations naturally keep the same reference. This means
+   *  downstream useMemo (liveMessage, buildMessageRows) skips recompute
+   *  automatically when these arrays haven't changed — no manual flag needed. */
   private flush(): void {
     if (this.disposed || !this.dirty) return
     this.dirty = false
-    const reuseStructured = this.streamOnlyDirty
-    this.streamOnlyDirty = false
-    const prev = this.snapshot
     this.snapshot = {
       eventSeq: this.current.eventSeq,
       phase: this.current.phase,
@@ -947,18 +936,15 @@ export class ProgressStore {
       content: this.current.content,
       reasoningStreamContent: this.current.reasoningStreamContent,
       streaming: this.current.streaming,
-      // Reuse structured array references when only stream-only fields changed.
-      // This lets useMemo in useProgressStream (liveMessage) and MessageList
-      // (buildMessageRows) skip recompute — they check array identity.
-      activeTools: reuseStructured ? prev.activeTools : this.current.activeTools,
-      completedTools: reuseStructured ? prev.completedTools : this.current.completedTools,
-      iterationHistory: reuseStructured ? prev.iterationHistory : this.current.iterationHistory,
+      activeTools: this.current.activeTools,
+      completedTools: this.current.completedTools,
+      iterationHistory: this.current.iterationHistory,
       streamingTools: this.current.streamingTools,
       genuiContent: this.current.genuiContent,
       lastIter: this.current.lastIter,
       lastReasoning: this.current.lastReasoning,
       todos: this.current.todos,
-      subAgents: reuseStructured ? prev.subAgents : this.current.subAgents,
+      subAgents: this.current.subAgents,
       tokenUsage: this.current.tokenUsage,
       turnID: this.current.turnID,
     }
