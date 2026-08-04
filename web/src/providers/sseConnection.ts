@@ -367,10 +367,38 @@ export class SSEConnectionImpl implements WSConnection {
       const turnIDChanged = cachedProgress && progress &&
         typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
         cachedProgress.turn_id !== progress.turn_id
-      const turnEndedDuringGap = cachedProgress && cachedProgress.phase !== 'done' &&
+      // turnEndedDuringGap: the turn ended (or is done) on the server side.
+      // ALWAYS reload when the server reports done/null — the DB has the
+      // authoritative iteration history (Detail JSON), while the live SSE
+      // snapshot may be incomplete (SSE dropped structured events during
+      // disconnect). Without this reload, the live message (seq-NNNN) keeps
+      // its incomplete SSE-accumulated iterations forever, never replaced by
+      // the complete DB message.
+      // Previous condition (cachedProgress.phase !== 'done') skipped reload
+      // when PhaseDone had already arrived before disconnect — but PhaseDone
+      // arriving doesn't mean the text event (with progress_history) also
+      // arrived. If SSE dropped the text event, the live message has
+      // incomplete iterations and is never replaced by the DB version.
+      const turnEndedDuringGap = cachedProgress &&
         (!progress || progress.phase === 'done')
-      if (turnIDChanged || turnEndedDuringGap) {
-        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
+
+      // ── Detect large iteration gap within the same turn ──
+      // If the iteration gap is large (many iterations lost during SSE disconnect),
+      // delta-fill via get_active_progress may be incomplete or slow. A full reload
+      // with a spinner is better UX than a partial iteration history.
+      // Threshold: if the gap between cached and current iteration is > 10, reload.
+      const sameTurn = cachedProgress && progress &&
+        typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
+        cachedProgress.turn_id === progress.turn_id
+      const cachedIter = cachedProgress?.iteration ?? 0
+      const newIter = progress?.iteration ?? 0
+      const largeGap = sameTurn && cachedIter > 0 && newIter > 0 && (newIter - cachedIter) > 10
+
+      if (turnIDChanged || turnEndedDuringGap || largeGap) {
+        // force_reload=true: show a loading spinner during reload. For cross-turn
+        // and large gaps, the UI is too stale to render incrementally — a clean
+        // reload is better than a partially-inconsistent view.
+        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
       }
 
       if (!progress || progress.phase === 'done') {

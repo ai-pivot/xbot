@@ -606,6 +606,16 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// DB on restart, so mergeIterationHistory was always a no-op there.
 	assistantMsg := llm.NewAssistantMessage(finalContent)
 	assistantMsg.ReasoningContent = out.ReasoningContent
+	// Set TurnID from the active turn so the frontend can dedup the live SSE
+	// message against the DB-persisted message by turnID:role. Without this,
+	// the DB row has turn_id=0 while the SSE text event carries the real
+	// turn_id (stamped by sendMessage via getActiveTurnID) — the mismatch
+	// defeats dedupMessages and reconcileHistoryWithLiveRows, producing
+	// two consecutive assistant messages (DB + live) with the same content.
+	// handleCancelledRun already does this; handleRunOutput must too.
+	if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
+		assistantMsg.TurnID = tid
+	}
 	iterHistory := out.IterationHistory
 	if len(iterHistory) > 0 {
 		if jsonBytes, err := json.Marshal(iterHistory); err == nil {

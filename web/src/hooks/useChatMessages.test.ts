@@ -1146,4 +1146,85 @@ describe('useChatMessages', () => {
     expect(contents.indexOf('A42')).toBeGreaterThan(contents.indexOf('u42'))
     expect(contents.indexOf('A42')).toBeLessThan(contents.indexOf('u43'))
   })
+
+  it('injectUserMessage deduplicates notification by turnID (SSE reconnect replay)', async () => {
+    // BUG: turn_started events are buffered by the web hub's ring buffer as
+    // stateful messages and replayed on SSE reconnect. Without dedup, each
+    // replay calls injectUserMessage again, creating duplicate notification
+    // user messages. After refresh, reconcileHistoryWithLiveRows drops the
+    // live rows (eventSeq=-1 < watermark), so the duplicate "disappears".
+    // Fix: injectUserMessage checks if a notification with the same turnID
+    // already exists before creating a new one.
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'notif-dedup', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // First turn_started (notification) — creates the notification user message.
+    act(() => result.current.injectUserMessage('bg task completed', 55, true))
+    expect(result.current.messages).toHaveLength(1)
+    expect(result.current.messages[0].content).toBe('bg task completed')
+    expect(result.current.messages[0].turnID).toBe(55)
+    expect(result.current.messages[0].isNotification).toBe(true)
+
+    // SSE reconnect replays the same turn_started — must NOT create a duplicate.
+    act(() => result.current.injectUserMessage('bg task completed', 55, true))
+    expect(result.current.messages).toHaveLength(1)
+
+    // A different turnID (new notification) — should create a new message.
+    act(() => result.current.injectUserMessage('cron job done', 56, true))
+    expect(result.current.messages).toHaveLength(2)
+  })
+
+  it('loadMore deduplicates by turnID:role across batch boundaries', async () => {
+    // BUG: ConvertMessagesToHistory processes each batch independently.
+    // When the batch boundary cuts mid-turn, batch 1 has the turn's END (final
+    // assistant reply with Detail/iterations, e.g. ID=106) and batch 2 has the
+    // turn's BEGINNING (user + assistant with tool_calls, e.g. ID=99). Both
+    // produce an assistant HistoryMessage with the same turnID:role but different
+    // DB IDs. The id-only dedup in loadMore can't catch them → the same turn's
+    // iterations render twice after scrolling up.
+    //
+    // Fix: loadMore also dedups by turnID:role (same pattern as
+    // reconcileHistoryWithLiveRows). When the new batch's message has the same
+    // turnID:role as an existing message, drop the new one (the existing message
+    // from the more recent batch has the complete final reply + iterations).
+    const ws = makeWS([
+      // Initial load: one assistant with turnID=5 (final reply, has iterations)
+      {
+        messages: [{
+          id: 106, role: 'assistant', content: 'final reply', turn_id: 5,
+          timestamp: '2026-08-03T00:00:06Z',
+          iterations: [{ iteration: 1, content: 'final reply', tools: [] }],
+        }],
+        last_seq: 200, oldest_id: 106, has_more: true,
+      },
+      // loadMore: user(5) + assistant(5, tool_summary from flushPending, same turnID)
+      {
+        messages: [
+          { id: 98, role: 'user', content: 'hello', turn_id: 5, timestamp: '2026-08-03T00:00:01Z' },
+          { id: 99, role: 'assistant', content: '', turn_id: 5, timestamp: '2026-08-03T00:00:02Z',
+            iterations: [{ iteration: 1, tools: [{ name: 'Shell', status: 'done' }] }] },
+        ],
+        last_seq: 99, oldest_id: 98, has_more: false,
+      },
+    ])
+
+    const { result } = renderHook(() => useChatMessages({ chatID: 'loadmore-dedup', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['final reply']))
+
+    // loadMore: batch 2 arrives with user(5) + assistant(5, tool_summary).
+    // The assistant(5) must be DEDUPED — batch 1 already has assistant(5)
+    // with the complete final reply + iterations.
+    let loaded = false
+    await act(async () => { loaded = await result.current.loadMore() })
+    expect(loaded).toBe(true)
+
+    const msgs = result.current.messages
+    // Should have: user(5) + assistant(5, final reply). NOT user(5) + assistant(5, tool_summary) + assistant(5, final reply).
+    const assistantTurn5 = msgs.filter((m) => m.role === 'assistant' && m.turnID === 5)
+    expect(assistantTurn5).toHaveLength(1)
+    expect(assistantTurn5[0].content).toBe('final reply')
+    // user(5) should be present (it's new — not in batch 1).
+    expect(msgs.some((m) => m.role === 'user' && m.turnID === 5 && m.content === 'hello')).toBe(true)
+  })
 })
