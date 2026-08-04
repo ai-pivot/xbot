@@ -510,13 +510,24 @@ export function useChatMessages({
       const existingIds = new Set(prev.map((m) => m.id))
       // First pass: drop exact ID duplicates (same DB row returned by server)
       const noExactDups = parsed.filter((m) => !existingIds.has(m.id))
-      // Second pass: merge by turnID:role — dedupMessages handles iteration union
-      const next = dedupMessages([...noExactDups, ...prev])
-      if (next.length === prev.length) {
-        // No new messages survived dedup
+      // If the server returned only rows we already have (by ID), there is
+      // genuinely no more data — stop pagination. This is the ONLY correct
+      // stop condition: the server's has_more is authoritative for whether
+      // MORE rows exist beyond this batch, but if all returned rows are
+      // duplicates, we've reached the end.
+      //
+      // Do NOT use next.length === prev.length as a stop condition: when an
+      // entire batch merges by turnID:role without adding new message slots
+      // (e.g. a super-long turn spanning 3+ batches where the middle batch
+      // has only same-turn assistant/tool messages), next.length stays the
+      // same but the server still has more data (the turn's user message and
+      // earlier turns). Stopping here would permanently break pagination.
+      if (noExactDups.length === 0) {
         setHasMore(false)
         return false
       }
+      // Second pass: merge by turnID:role — dedupMessages handles iteration union
+      const next = dedupMessages([...noExactDups, ...prev])
       messagesRef.current = next
       setMessages(next)
       setHasMore(Boolean(data.has_more))
