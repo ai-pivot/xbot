@@ -943,6 +943,8 @@ func main() {
 		fmt.Println("  --max-context N     Override max context tokens (e.g. 128000)")
 		fmt.Println("  --max-tokens N      Override max output tokens (e.g. 8192)")
 		fmt.Println("  -p <prompt>         Non-interactive single prompt")
+		fmt.Println("  --export-session <file>  Export current session (full history) to JSON and exit")
+		fmt.Println("  --import-session <file>  Import session JSON before running (combine with --ephemeral for bench)")
 		fmt.Println("  --token <token>     Token for remote server")
 		fmt.Println("  --workspace <path>  Override workspace")
 		fmt.Println("  --sidebar-width N  Set sidebar width (16-40, default 20)")
@@ -988,6 +990,8 @@ func main() {
 		flagNoSidebar    bool          // --no-sidebar
 		flagMaxContext   int           // --max-context N (override max context tokens)
 		flagMaxTokens    int           // --max-tokens N (override max output tokens)
+		flagExportFile   string        // --export-session <file> export session JSON and exit
+		flagImportFile   string        // --import-session <file> import session JSON before running
 	)
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -997,6 +1001,16 @@ func main() {
 			newSession = true
 		case "--ephemeral":
 			ephemeral = true
+		case "--export-session":
+			if len(os.Args) > i+1 {
+				flagExportFile = os.Args[i+1]
+				i++
+			}
+		case "--import-session":
+			if len(os.Args) > i+1 {
+				flagImportFile = os.Args[i+1]
+				i++
+			}
 		case "-p":
 			if len(os.Args) > i+1 {
 				prompt = os.Args[i+1]
@@ -1093,9 +1107,31 @@ func main() {
 	// Refined AFTER newCLIApp so we can also check DB subscriptions, not just config.json.
 	firstRun := prompt == "" && isFirstRun()
 
+	// 导出模式：--export-session <file> 导出当前会话后退出。
+	// 与 prompt / TUI 互斥，单独处理。
+	if flagExportFile != "" {
+		app := newCLIApp(flagServer, flagToken, flagLocal, flagMaxContext, flagMaxTokens, ephemeral)
+		defer app.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = app.client.Start(ctx)
+
+		workDir := app.workDir
+		if cwd, err := os.Getwd(); err == nil && cwd != "" {
+			workDir = cwd
+		}
+		absWorkDir, _ := filepath.Abs(workDir)
+		if err := doExportSession(app, flagExportFile, "cli", absWorkDir); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Exported session to %s\n", flagExportFile)
+		return
+	}
+
 	// 非交互模式
 	if prompt != "" {
-		executeNonInteractive(prompt, flagMaxContext, flagMaxTokens, ephemeral)
+		executeNonInteractive(prompt, flagMaxContext, flagMaxTokens, ephemeral, flagImportFile)
 		return
 	}
 
@@ -1845,6 +1881,16 @@ func main() {
 		}
 	}
 
+	// Import session history (bench mode: --import-session [+ --ephemeral]).
+	// Runs before BindChat so the TUI restores the imported history.
+	if flagImportFile != "" {
+		if n, err := doImportSession(app, flagImportFile, "cli", chatID); err != nil {
+			log.WithError(err).Fatal("Failed to import session")
+		} else {
+			log.WithField("imported", n).Info("Imported session history")
+		}
+	}
+
 	// BindChat: subscribe to events for the initial chatID.
 	app.client.BindChat(chatID)
 
@@ -2074,7 +2120,9 @@ func red(s string) string {
 }
 
 // executeNonInteractive 非交互模式：单次执行 prompt 并输出到 stdout。
-func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int, ephemeral bool) {
+// importFile 非空时，先从该文件导入会话历史（配合 --ephemeral 不落盘，
+// 用于 bench：加载既定上下文后跑单轮 prompt）。
+func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int, ephemeral bool, importFile string) {
 	app := newCLIApp("", "", true, maxContextTokens, maxOutputTokens, ephemeral) // non-interactive always uses local backend
 	defer app.Close()
 
@@ -2083,6 +2131,16 @@ func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int,
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = app.client.Start(ctx)
+
+	// Import session history before sending the prompt (bench mode).
+	if importFile != "" {
+		n, err := doImportSession(app, importFile, "cli", absWorkDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "import_session failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Imported %d messages from %s\n", n, importFile)
+	}
 
 	// Subscribe to outbound events to print to stdout
 	done := make(chan struct{})
@@ -2108,6 +2166,44 @@ func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int,
 
 	<-done
 	fmt.Println()
+}
+
+// doImportSession reads a portable session JSON file and imports its messages
+// into the given session. Returns the number of messages imported.
+func doImportSession(app *cliApp, file, channel, chatID string) (int, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return 0, fmt.Errorf("read import file %s: %w", file, err)
+	}
+	var session protocol.ExportedSession
+	if err := json.Unmarshal(data, &session); err != nil {
+		return 0, fmt.Errorf("parse session JSON %s: %w", file, err)
+	}
+	if len(session.Messages) == 0 && len(session.Records) == 0 {
+		return 0, fmt.Errorf("session file %s has no messages", file)
+	}
+	n, err := app.client.ImportSession(channel, chatID, &session)
+	if err != nil {
+		return 0, fmt.Errorf("import session: %w", err)
+	}
+	return n, nil
+}
+
+// doExportSession exports the given session (complete history + active messages)
+// to a portable JSON file.
+func doExportSession(app *cliApp, file, channel, chatID string) error {
+	session, err := app.client.ExportSession(channel, chatID)
+	if err != nil {
+		return fmt.Errorf("export session: %w", err)
+	}
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal session: %w", err)
+	}
+	if err := os.WriteFile(file, data, 0o644); err != nil {
+		return fmt.Errorf("write export file %s: %w", file, err)
+	}
+	return nil
 }
 
 // setupLogger 配置日志（CLI 模式：仅文件输出，不干扰终端 TUI）。

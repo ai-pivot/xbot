@@ -1254,6 +1254,93 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		return h.Ag.RewindHistory(channelName, chatID, p.HistoryID)
 	})
 
+	// ── Session import/export (xbot native format, Codex-interoperable) ──
+	t[agent.MethodExportSession] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedHistorySession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		ms := h.Ag.MultiSession()
+		if ms == nil {
+			return nil, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ms.GetOrCreateSession(channelName, chatID)
+		if err != nil {
+			return nil, err
+		}
+		// Active (replayed) messages → Codex-interoperable Messages array.
+		msgs, err := sess.GetMessages()
+		if err != nil {
+			return nil, err
+		}
+		// Get model + tenantID for the full raw history.
+		var model string
+		var tenantID int64
+		if db := ms.DB(); db != nil {
+			ts := sqlite.NewTenantService(db)
+			if _, m, err := ts.GetTenantSubscription(channelName, chatID); err == nil {
+				model = m
+			}
+			if id, err := ts.GetTenantIDByChannelChatID(channelName, chatID); err == nil {
+				tenantID = id
+			}
+		}
+		session, err := protocol.ExportSession(chatID, model, msgs)
+		if err != nil {
+			return nil, err
+		}
+		// Complete append-only history → Records (lossless restore).
+		if tenantID > 0 {
+			if db := ms.DB(); db != nil {
+				if records, err := sqlite.NewSessionService(db).GetFullHistory(tenantID); err == nil {
+					session.Records = make([]protocol.ExportedRecord, 0, len(records))
+					for _, r := range records {
+						session.Records = append(session.Records, historyRecordToExported(r))
+					}
+				}
+			}
+		}
+		log.WithFields(log.Fields{
+			"channel": channelName, "chat_id": chatID,
+			"messages": len(session.Messages), "records": len(session.Records),
+		}).Info("RPC export_session")
+		return session, nil
+	})
+	t[agent.MethodImportSession] = rpc1(func(ctx context.Context, p struct {
+		Channel string                   `json:"channel"`
+		ChatID  string                   `json:"chat_id"`
+		Session *protocol.ExportedSession `json:"session"`
+	}) (any, error) {
+		if p.Session == nil {
+			return nil, fmt.Errorf("session is required")
+		}
+		channelName, chatID, err := h.resolveOwnedHistorySession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		ms := h.Ag.MultiSession()
+		if ms == nil {
+			return nil, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ms.GetOrCreateSession(channelName, chatID)
+		if err != nil {
+			return nil, err
+		}
+		msgs := protocol.ImportSession(p.Session)
+		if len(msgs) == 0 {
+			return nil, fmt.Errorf("no messages to import")
+		}
+		_, err = sess.AppendMessages(msgs)
+		if err != nil {
+			return nil, err
+		}
+		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID, "imported": len(msgs)}).Info("RPC import_session")
+		return map[string]any{"imported": len(msgs)}, nil
+	})
+
 	// ── Status ──
 	t["is_processing"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
@@ -2078,6 +2165,36 @@ func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
 		PerModelConfigs: s.PerModelConfigs,
 		IsSystem:        s.IsSystem,
 	}
+}
+
+// historyRecordToExported converts a raw append-only history record
+// (session_messages row) to the portable export format.
+func historyRecordToExported(r sqlite.HistoryRecord) protocol.ExportedRecord {
+	rec := protocol.ExportedRecord{
+		HistoryID:       r.HistoryID,
+		RecordType:      string(r.Type),
+		TargetHistoryID: r.TargetHistoryID,
+		RecordData:      r.Data,
+		CreatedAt:       r.CreatedAt,
+	}
+	if r.Type == sqlite.HistoryRecordMessage {
+		m := r.Message
+		rec.Role = m.Role
+		rec.Content = m.Content
+		rec.ToolCallID = m.ToolCallID
+		rec.ToolName = m.ToolName
+		rec.ToolArguments = m.ToolArguments
+		rec.Detail = m.Detail
+		rec.Reasoning = m.ReasoningContent
+		rec.DisplayOnly = m.DisplayOnly
+		rec.TurnID = m.TurnID
+		if len(m.ToolCalls) > 0 {
+			if data, err := json.Marshal(m.ToolCalls); err == nil {
+				rec.ToolCalls = data
+			}
+		}
+	}
+	return rec
 }
 
 type bgTaskJSON struct {

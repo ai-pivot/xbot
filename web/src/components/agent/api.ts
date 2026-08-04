@@ -122,6 +122,67 @@ export async function rewindHistory<T>(session: SessionSelector, historyID: numb
   })
 }
 
+// ---------------------------------------------------------------------------
+// Session import/export (xbot portable session format)
+// ---------------------------------------------------------------------------
+
+/** Portable session format for import/export (Codex-interoperable shape). */
+export interface ExportedSession {
+  id: string
+  model?: string
+  system_instructions?: string
+  messages: ExportedMessage[]
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number }
+  created_at?: string
+  updated_at?: string
+  /** Complete append-only history rows (xbot extension, lossless restore). */
+  records?: ExportedRecord[]
+}
+
+export interface ExportedMessage {
+  role: string
+  content: string | Array<{ type: string; text?: string }>
+  reasoning?: string
+  detail?: string
+  tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>
+  tool_call_id?: string
+  name?: string
+}
+
+export interface ExportedRecord {
+  history_id: number
+  record_type: string
+  target_history_id?: number
+  record_data?: unknown
+  role?: string
+  content?: string
+  tool_call_id?: string
+  tool_name?: string
+  tool_arguments?: string
+  tool_calls?: unknown
+  detail?: string
+  reasoning?: string
+  display_only?: boolean
+  turn_id?: number
+  created_at?: string
+}
+
+/** Export a session as portable JSON. Returns the full session object. */
+export async function exportSession(session: SessionSelector): Promise<ExportedSession> {
+  return postAPI<ExportedSession>('/api/rpc', {
+    method: 'export_session',
+    params: sessionBody(session),
+  })
+}
+
+/** Import a portable session into an existing (or new) chat. */
+export async function importSession(session: SessionSelector, data: ExportedSession): Promise<{ imported: number }> {
+  return postAPI<{ imported: number }>('/api/rpc', {
+    method: 'import_session',
+    params: { channel: session.channel, chat_id: session.chatID, session: data },
+  })
+}
+
 /** Continue an active interactive SubAgent without generic inbound routing. */
 export async function continueInteractiveSession(ws: WSConnection, fullKey: string, content: string): Promise<void> {
   await ws.rpc('continue_interactive_session', { full_key: fullKey, content })
