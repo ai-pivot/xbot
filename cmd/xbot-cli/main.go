@@ -945,6 +945,7 @@ func main() {
 		fmt.Println("  -p <prompt>         Non-interactive single prompt")
 		fmt.Println("  --export-session <file>  Export current session (full history) to JSON and exit")
 		fmt.Println("  --import-session <file>  Import session JSON before running (combine with --ephemeral for bench)")
+		fmt.Println("  --export-after <file>    Export session JSON after task completes (bench: no re-run needed)")
 		fmt.Println("  --token <token>     Token for remote server")
 		fmt.Println("  --workspace <path>  Override workspace")
 		fmt.Println("  --sidebar-width N  Set sidebar width (16-40, default 20)")
@@ -992,6 +993,7 @@ func main() {
 		flagMaxTokens    int           // --max-tokens N (override max output tokens)
 		flagExportFile   string        // --export-session <file> export session JSON and exit
 		flagImportFile   string        // --import-session <file> import session JSON before running
+		flagExportAfter  string        // --export-after <file> export session JSON after task completes (bench)
 	)
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -1009,6 +1011,11 @@ func main() {
 		case "--import-session":
 			if len(os.Args) > i+1 {
 				flagImportFile = os.Args[i+1]
+				i++
+			}
+		case "--export-after":
+			if len(os.Args) > i+1 {
+				flagExportAfter = os.Args[i+1]
 				i++
 			}
 		case "-p":
@@ -1131,7 +1138,7 @@ func main() {
 
 	// 非交互模式
 	if prompt != "" {
-		executeNonInteractive(prompt, flagMaxContext, flagMaxTokens, ephemeral, flagImportFile)
+		executeNonInteractive(prompt, flagMaxContext, flagMaxTokens, ephemeral, flagImportFile, flagExportAfter)
 		return
 	}
 
@@ -2122,7 +2129,9 @@ func red(s string) string {
 // executeNonInteractive 非交互模式：单次执行 prompt 并输出到 stdout。
 // importFile 非空时，先从该文件导入会话历史（配合 --ephemeral 不落盘，
 // 用于 bench：加载既定上下文后跑单轮 prompt）。
-func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int, ephemeral bool, importFile string) {
+// exportAfter 非空时，任务完成后自动把会话历史导出到该文件（bench 跑完
+// 直接拿历史，无需重跑导出命令；ephemeral 内存 DB 在进程内导出即可）。
+func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int, ephemeral bool, importFile, exportAfter string) {
 	app := newCLIApp("", "", true, maxContextTokens, maxOutputTokens, ephemeral) // non-interactive always uses local backend
 	defer app.Close()
 
@@ -2166,6 +2175,17 @@ func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int,
 
 	<-done
 	fmt.Println()
+
+	// Auto-export session history after the task completes (bench mode).
+	// Runs while the in-memory DB is still alive — no need to re-run a
+	// separate export command.
+	if exportAfter != "" {
+		if err := doExportSession(app, exportAfter, "cli", absWorkDir); err != nil {
+			fmt.Fprintf(os.Stderr, "export_session failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Exported session history to %s\n", exportAfter)
+	}
 }
 
 // doImportSession reads a portable session JSON file and imports its messages
