@@ -367,7 +367,19 @@ export class SSEConnectionImpl implements WSConnection {
       const turnIDChanged = cachedProgress && progress &&
         typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
         cachedProgress.turn_id !== progress.turn_id
-      const turnEndedDuringGap = cachedProgress && cachedProgress.phase !== 'done' &&
+      // turnEndedDuringGap: the turn ended (or is done) on the server side.
+      // ALWAYS reload when the server reports done/null — the DB has the
+      // authoritative iteration history (Detail JSON), while the live SSE
+      // snapshot may be incomplete (SSE dropped structured events during
+      // disconnect). Without this reload, the live message (seq-NNNN) keeps
+      // its incomplete SSE-accumulated iterations forever, never replaced by
+      // the complete DB message.
+      // Previous condition (cachedProgress.phase !== 'done') skipped reload
+      // when PhaseDone had already arrived before disconnect — but PhaseDone
+      // arriving doesn't mean the text event (with progress_history) also
+      // arrived. If SSE dropped the text event, the live message has
+      // incomplete iterations and is never replaced by the DB version.
+      const turnEndedDuringGap = cachedProgress &&
         (!progress || progress.phase === 'done')
 
       // ── Detect large iteration gap within the same turn ──
