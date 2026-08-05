@@ -1310,8 +1310,8 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		return session, nil
 	})
 	t[agent.MethodImportSession] = rpc1(func(ctx context.Context, p struct {
-		Channel string                   `json:"channel"`
-		ChatID  string                   `json:"chat_id"`
+		Channel string                    `json:"channel"`
+		ChatID  string                    `json:"chat_id"`
 		Session *protocol.ExportedSession `json:"session"`
 	}) (any, error) {
 		if p.Session == nil {

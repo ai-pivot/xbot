@@ -755,8 +755,8 @@ func (c *Client) ImportSession(channel, chatID string, session *protocol.Exporte
 		Imported int `json:"imported"`
 	}
 	err := c.call(MethodImportSession, struct {
-		Channel string                   `json:"channel"`
-		ChatID  string                   `json:"chat_id"`
+		Channel string                    `json:"channel"`
+		ChatID  string                    `json:"chat_id"`
 		Session *protocol.ExportedSession `json:"session"`
 	}{Channel: channel, ChatID: chatID, Session: session}, &r)
 	return r.Imported, err
