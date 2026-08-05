@@ -24,6 +24,11 @@ func (t *GrepTool) Description() string {
 Use **Go RE2 regular expression syntax**: \d+ (digits), \w+ (word chars), \s+ (whitespace), \b (word boundary), (?i) (case-insensitive), named groups (?P<name>...), etc.
 The tool automatically handles compatibility between Go RE2 and POSIX ERE syntax when running in different modes.
 Supports regular expressions. Returns matching lines with file paths and line numbers.
+
+**Search strategy (read before searching):**
+- When searching for unknown or case-mixed content (secrets, tokens, ids, API keys), use a **loose pattern with ignore_case=true**. Prefer character classes that cover both cases: [A-Za-z0-9] or \\w instead of [a-z]/[A-Z] alone. Example: a pattern like hf_[A-Za-z0-9]{20,} finds HuggingFace tokens whose value is mixed-case (hf_ followed by mixed-case alphanumerics) that hf_[a-z]{20,} silently misses.
+- A case-sensitive narrow regex is a **false-negative trap**: patterns like [a-z]{20,} do NOT match mixed-case content, and a "No matches" result from such a pattern does NOT mean the content is absent.
+- "No matches" is a signal, not a conclusion: before concluding something does not exist, re-search from a different angle — broader pattern, different prefix, ignore_case=true, other file types (e.g. *.json, *.yaml) — and confirm with at least one cross-check.
 Parameters (JSON):
   - pattern: string, the regex pattern to search for (e.g., "func main", "TODO|FIXME", "error\.(New|Wrap)", "\d+")
   - path: string, optional, the directory to search in (defaults to current working directory)
@@ -35,10 +40,10 @@ Example: {"pattern": "func main", "path": "/project", "include": "*.go"}`
 
 func (t *GrepTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "pattern", Type: "string", Description: "The regex pattern to search for in file contents", Required: true},
+		{Name: "pattern", Type: "string", Description: "The regex pattern to search for in file contents. For unknown/case-mixed content use a loose pattern covering both cases (e.g. hf_[A-Za-z0-9]{20,}, AKIA[A-Za-z0-9]{16}) — [a-z]-only classes miss mixed-case values", Required: true},
 		{Name: "path", Type: "string", Description: "The directory to search in (defaults to current working directory)", Required: false},
 		{Name: "include", Type: "string", Description: "Glob pattern to filter which files to search (e.g., \"*.go\", \"*.{ts,tsx}\")", Required: false},
-		{Name: "ignore_case", Type: "boolean", Description: "Perform case-insensitive matching (defaults to false)", Required: false},
+		{Name: "ignore_case", Type: "boolean", Description: "Perform case-insensitive matching (defaults to false). Set true when the target may contain mixed-case characters", Required: false},
 		{Name: "context_lines", Type: "integer", Description: "Number of context lines to show before and after each match (defaults to 0)", Required: false},
 	}
 }
