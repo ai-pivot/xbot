@@ -520,3 +520,16 @@ model-first 重构曾把 `OnModelsLoaded` 回调丢线：`createClientFromSub`�
 订阅/设置/tier 全部绑定 `user_id`（v45），但**飞书 channel 的 settings callbacks 曾用 `senderID` 查询**（`LLMListAllModels(senderID)` / `LLMList(senderID)` → `ListAllModelEntriesForUser(sender_id)`）——一个飞书身份 `ou_xxx` 即使通过 link code 关联到 admin 用户，卡片里也只看到 system 订阅（`WHERE sender_id='ou_xxx' OR is_system=1` 查不到 admin 的订阅）。而 web 走 RPC（`rpcUserID(ctx)` + `ListAllModelEntriesForUserID`）正常。症状：飞书 `/models` 卡片只有 `system` 模型，与 web/cli 不一致。
 
 修复：`serverapp/callbacks.go` 新增 `canonicalModelEntries(ag, channel, senderID)` helper——用 `ag.IdentityResolver().Resolve(channel, senderID)` 解析 canonical `user_id`，再 `ListAllModelEntriesForUserID(uid)`（与 RPC 层一致）；`llmCallbacks` 增加 `channelName` 参数（web/feishu），`LLMList` 和飞书 `LLMListAllModels` 都走该 helper。**任何新增的 channel settings callback（查订阅/模型/tier/设置）必须用 canonical user_id，禁止直接用 senderID 查 user 级数据**。回归测试：`agent/llm_factory_modelfirst_test.go` 的 `TestListAllModelEntriesByCanonicalUserID`。
+
+### 18. 统一 canonical user：订阅/tier/thinking/默认模型的读写全部按 user_id（senderID 入口内部解析）
+
+v45 之后所有 user 级数据（`user_llm_subscriptions.user_id`、`user_settings.user_id`、`user_default_model.user_id`）都绑定 canonical user_id，但**部分 channel callbacks / Agent setters 仍按 senderID 键**（`GetSettings(chan, senderID)`、`SetUserDefaultModel(sender_id)` 用 `ON CONFLICT(sender_id)`），导致关联身份（飞书 `ou_xxx` → admin user_id=1）在 /models 面板看不到 web 添加的订阅/tier，且 web 添加的订阅飞书无法选择（数据分裂、疑似丢数据）。
+
+**无 hack 统一方案（根上解决，无 fallback 链）**：
+- `IdentityResolver.ResolveSender(senderID)`：跨 channel 只读解析（`channel_user_id` 全局唯一），**不 auto-create**（查询无副作用）；`Agent.resolveUserID(senderID)` helper 封装。
+- Agent 层 senderID 版 user 方法**内部解析 canonical** 后走 ForUserID 变体：`Get/SetUserThinkingMode`→`ForUserID`、`Get/SetUserTierModel`→新增 `ForUserID`（`settingsSvc.GetByUserID/SetByUserID`，canonical thinkingModeChannel）、`SetUserModel`→新增 `LLMFactory.SetUserDefaultModelByUserID`→storage `SetUserDefaultModelByUserID`（user_id UPDATE/INSERT，`user_default_model` 无 user_id UNIQUE 约束所以不能用 `ON CONFLICT(user_id)`）。
+- 飞书 callbacks：`LLMListSubscriptions`→`ListByUserID`、`LLMGetDefaultSubscription`→`GetDefaultByUserID`、`LLMAddSubscription`→`Add` + `SetSubscriptionUserID(sub.ID, uid)`（新订阅绑定 canonical，不丢数据）。
+- `canonicalModelEntries` 改用 `ResolveSender`（不再 auto-create）。
+- **任何 senderID 入口读写 user 级数据前必须 `resolveUserID`**；RPC 层（`rpcUserID`）已是 canonical，无需改。
+- 回归测试：`TestSetUserDefaultModelByUserID_RoundTrip`、`TestListAllModelEntriesByCanonicalUserID`。
+- 旧数据回填：`user_default_model`/`user_settings` 中 `user_id=0` 的行按 `sender_id` 查 `user_identities` 映射回填（一次性 SQL）。
