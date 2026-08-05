@@ -12,11 +12,11 @@ func TestExportImportRoundTrip(t *testing.T) {
 		{Role: "system", Content: "You are a helpful assistant."},
 		{Role: "user", Content: "Hello", TurnID: 1},
 		{
-			Role:      "assistant",
-			Content:   "Let me check that.",
+			Role:             "assistant",
+			Content:          "Let me check that.",
 			ReasoningContent: "I need to read the file first.",
-			ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "Read", Arguments: `{"path":"a.go"}`}},
-			TurnID:    1,
+			ToolCalls:        []llm.ToolCall{{ID: "call_1", Name: "Read", Arguments: `{"path":"a.go"}`}},
+			TurnID:           1,
 		},
 		{Role: "tool", Content: "package a", ToolCallID: "call_1", ToolName: "Read", Detail: "diff shown", TurnID: 1},
 		{Role: "user", Content: "Thanks", TurnID: 2},
@@ -73,6 +73,37 @@ func TestExportImportRoundTrip(t *testing.T) {
 	}
 	if imported[3].Detail != "diff shown" {
 		t.Errorf("imported[3] detail lost: %+v", imported[3])
+	}
+}
+
+func TestExportSessionStripsLastAssistantDetail(t *testing.T) {
+	// The last assistant message's Detail (aggregated iteration history JSON)
+	// duplicates content already present in the message stream — exports must
+	// strip it while keeping tool-message detail intact.
+	msgs := []llm.ChatMessage{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "task", TurnID: 1},
+		{Role: "tool", Content: "file content", ToolCallID: "call_1", ToolName: "Read", Detail: "diff shown", TurnID: 1},
+		{Role: "assistant", Content: "final reply", Detail: `[{"iteration":1,"content":"thinking","reasoning":"...","tools":[]}]`, TurnID: 1},
+	}
+	sess, err := ExportSession("chat-1", "m", msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// system extracted → 3 messages: user, tool, assistant
+	if len(sess.Messages) != 3 {
+		t.Fatalf("Messages len = %d, want 3", len(sess.Messages))
+	}
+	last := sess.Messages[len(sess.Messages)-1]
+	if last.Role != "assistant" {
+		t.Fatalf("last role = %q, want assistant", last.Role)
+	}
+	if last.Detail != "" {
+		t.Errorf("last assistant detail should be stripped, got %q", last.Detail)
+	}
+	// tool-message detail must survive (used for UI rendering on import).
+	if sess.Messages[1].Role != "tool" || sess.Messages[1].Detail != "diff shown" {
+		t.Errorf("tool detail lost: %+v", sess.Messages[1])
 	}
 }
 

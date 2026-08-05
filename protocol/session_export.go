@@ -27,13 +27,13 @@ import (
 
 // ExportedSession is the top-level exported session structure.
 type ExportedSession struct {
-	ID                 string             `json:"id"`
-	Model              string             `json:"model,omitempty"`
-	SystemInstructions string             `json:"system_instructions,omitempty"`
-	Messages           []ExportedMessage  `json:"messages"`
-	Usage              *ExportedUsage     `json:"usage,omitempty"`
-	CreatedAt          time.Time          `json:"created_at,omitempty"`
-	UpdatedAt          time.Time          `json:"updated_at,omitempty"`
+	ID                 string            `json:"id"`
+	Model              string            `json:"model,omitempty"`
+	SystemInstructions string            `json:"system_instructions,omitempty"`
+	Messages           []ExportedMessage `json:"messages"`
+	Usage              *ExportedUsage    `json:"usage,omitempty"`
+	CreatedAt          time.Time         `json:"created_at,omitempty"`
+	UpdatedAt          time.Time         `json:"updated_at,omitempty"`
 	// Records is the complete append-only history (xbot extension).
 	// Empty when the export only contains the active (replayed) message view.
 	Records []ExportedRecord `json:"records,omitempty"`
@@ -49,13 +49,13 @@ type ExportedUsage struct {
 // ExportedMessage follows the OpenAI Chat Completions message format.
 // Content is json.RawMessage to accept both the string and array forms.
 type ExportedMessage struct {
-	Role      string          `json:"role"`
-	Content   json.RawMessage `json:"content"` // string OR []ExportedContentPart
-	Reasoning string          `json:"reasoning,omitempty"` // xbot extension: reasoning_content
-	Detail    string          `json:"detail,omitempty"`    // xbot extension: tool result detail
-	ToolCalls []ExportedToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	Name      string          `json:"name,omitempty"` // tool role: function name
+	Role       string             `json:"role"`
+	Content    json.RawMessage    `json:"content"`             // string OR []ExportedContentPart
+	Reasoning  string             `json:"reasoning,omitempty"` // xbot extension: reasoning_content
+	Detail     string             `json:"detail,omitempty"`    // xbot extension: tool result detail
+	ToolCalls  []ExportedToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string             `json:"tool_call_id,omitempty"`
+	Name       string             `json:"name,omitempty"` // tool role: function name
 }
 
 // ExportedContentPart represents a multimodal content part.
@@ -72,9 +72,9 @@ type ExportedImageURL struct {
 
 // ExportedToolCall follows the OpenAI function-calling format.
 type ExportedToolCall struct {
-	ID       string                 `json:"id"`
-	Type     string                 `json:"type"` // always "function"
-	Function ExportedToolFunction   `json:"function"`
+	ID       string               `json:"id"`
+	Type     string               `json:"type"` // always "function"
+	Function ExportedToolFunction `json:"function"`
 }
 
 // ExportedToolFunction is the function payload inside a tool call.
@@ -156,11 +156,11 @@ func (m ExportedMessage) ToChatMessage() llm.ChatMessage {
 // FromChatMessage converts an llm.ChatMessage to an ExportedMessage.
 func FromChatMessage(msg llm.ChatMessage) ExportedMessage {
 	cm := ExportedMessage{
-		Role:        msg.Role,
-		Reasoning:   msg.ReasoningContent,
-		Detail:      msg.Detail,
-		ToolCallID:  msg.ToolCallID,
-		Name:        msg.ToolName,
+		Role:       msg.Role,
+		Reasoning:  msg.ReasoningContent,
+		Detail:     msg.Detail,
+		ToolCallID: msg.ToolCallID,
+		Name:       msg.ToolName,
 	}
 	// Content is always a string in xbot.
 	cm.Content, _ = json.Marshal(msg.Content)
@@ -199,6 +199,16 @@ func ExportSession(chatID, model string, msgs []llm.ChatMessage) (*ExportedSessi
 		}
 	}
 	session.Messages = filtered
+	// The last assistant message's Detail holds the aggregated iteration
+	// history JSON, which duplicates content already present in the message
+	// stream — strip it from exports to keep the file clean. Tool-message
+	// detail (diff etc.) is kept: it is UI-only and not part of the reply.
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		if session.Messages[i].Role == "assistant" {
+			session.Messages[i].Detail = ""
+			break
+		}
+	}
 	return session, nil
 }
 
