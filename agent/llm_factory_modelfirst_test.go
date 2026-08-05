@@ -85,6 +85,30 @@ func TestListAllModelEntriesByCanonicalUserID(t *testing.T) {
 	}
 }
 
+// TestSetUserDefaultModelByUserID_RoundTrip verifies the canonical-user default
+// model write path: linked identities (web/cli/feishu sharing user_id) persist
+// and read the SAME default model — no data loss across channels.
+func TestSetUserDefaultModelByUserID_RoundTrip(t *testing.T) {
+	_, subSvc, _ := newModelFirstTestFactory(t)
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-xin", SenderID: "cli_user", Name: "xin", Provider: "openai",
+		BaseURL: "https://api.xin.example/v1", APIKey: "sk-xin", Model: "glm-5.2",
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := subSvc.SetUserDefaultModelByUserID(42, sub.ID, "glm-5.2"); err != nil {
+		t.Fatalf("SetUserDefaultModelByUserID: %v", err)
+	}
+	got, err := subSvc.GetUserDefaultModelByUserID(42)
+	if err != nil {
+		t.Fatalf("GetUserDefaultModelByUserID: %v", err)
+	}
+	if got == nil || got.SubscriptionID != sub.ID || got.Model != "glm-5.2" {
+		t.Errorf("default model mismatch: got %+v, want sub=%s model=glm-5.2", got, sub.ID)
+	}
+}
+
 // TestResolveLLM_SelectModel_PersistsPerSession verifies SelectModel writes the
 // per-session (sub, model) to tenants and ResolveLLM reads it back, with the
 // client cached per subscription.

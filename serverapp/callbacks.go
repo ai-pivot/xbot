@@ -124,14 +124,26 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 // (channel, senderID). Subscriptions/settings are bound to user_id (v45+);
 // querying by senderID (old behavior) misses subscriptions of linked
 // identities (e.g. a Feishu ou_xxx linked to the admin user). Mirrors the RPC
-// layer (rpcUserID + ListAllModelEntriesForUserID).
+// layer (rpcUserID + ListAllModelEntriesForUserID). Uses ResolveSender — a
+// read-only lookup that never auto-creates users.
 func canonicalModelEntries(ag *agent.Agent, channelName, senderID string) []protocol.ModelEntry {
 	if ag.IdentityResolver() != nil {
-		if uid, _, err := ag.IdentityResolver().Resolve(channelName, senderID); err == nil && uid > 0 {
+		if uid, _, err := ag.IdentityResolver().ResolveSender(senderID); err == nil && uid > 0 {
 			return ag.LLMFactory().ListAllModelEntriesForUserID(uid)
 		}
 	}
 	return ag.LLMFactory().ListAllModelEntriesForUser(senderID)
+}
+
+// resolveUID resolves senderID to its canonical user_id (read-only, no
+// auto-create). Returns 0 when the identity is unknown.
+func resolveUID(ag *agent.Agent, senderID string) int64 {
+	if ag.IdentityResolver() != nil {
+		if uid, _, err := ag.IdentityResolver().ResolveSender(senderID); err == nil {
+			return uid
+		}
+	}
+	return 0
 }
 
 func llmCallbacks(ag *agent.Agent, channelName string) channel.LLMCallbacks {
@@ -1699,9 +1711,17 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 			return fmt.Errorf("not supported in server mode")
 		},
 
-		// Subscription management
+		// Subscription management — all keyed by canonical user_id so web/cli/
+		// feishu linked identities see the SAME subscriptions (v45 user_id).
 		LLMListSubscriptions: func(senderID string) ([]channel.Subscription, error) {
-			subs, err := ag.LLMFactory().GetSubscriptionSvc().List(senderID)
+			svc := ag.LLMFactory().GetSubscriptionSvc()
+			var subs []*sqlite.LLMSubscription
+			var err error
+			if uid := resolveUID(ag, senderID); uid > 0 {
+				subs, err = svc.ListByUserID(uid)
+			} else {
+				subs, err = svc.List(senderID)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -1712,7 +1732,14 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 			return result, nil
 		},
 		LLMGetDefaultSubscription: func(senderID string) (*channel.Subscription, error) {
-			sub, err := ag.LLMFactory().GetSubscriptionSvc().GetDefault(senderID)
+			svc := ag.LLMFactory().GetSubscriptionSvc()
+			var sub *sqlite.LLMSubscription
+			var err error
+			if uid := resolveUID(ag, senderID); uid > 0 {
+				sub, err = svc.GetDefaultByUserID(uid)
+			} else {
+				sub, err = svc.GetDefault(senderID)
+			}
 			if err != nil || sub == nil {
 				return nil, err
 			}
@@ -1737,12 +1764,26 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 				Model:    sub.Model,
 			}
 			// If user has no default subscription yet, auto-set the first one.
-			existing, _ := svc.List(senderID)
-			if len(existing) == 0 {
-				newSub.IsDefault = true
+			uid := resolveUID(ag, senderID)
+			if uid > 0 {
+				existing, _ := svc.ListByUserID(uid)
+				if len(existing) == 0 {
+					newSub.IsDefault = true
+				}
+			} else {
+				existing, _ := svc.List(senderID)
+				if len(existing) == 0 {
+					newSub.IsDefault = true
+				}
 			}
 			if err := svc.Add(newSub); err != nil {
 				return err
+			}
+			// Bind to canonical user so every linked identity sees it (v45).
+			if uid > 0 {
+				if err := svc.SetSubscriptionUserID(newSub.ID, uid); err != nil {
+					log.WithError(err).WithField("sub_id", newSub.ID).Warn("failed to bind subscription to canonical user")
+				}
 			}
 			ag.LLMFactory().InvalidateSender(senderID)
 			ag.LLMFactory().InvalidateSubscription(newSub.ID)

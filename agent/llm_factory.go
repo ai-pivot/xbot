@@ -981,6 +981,30 @@ func (f *LLMFactory) SetUserDefaultModel(senderID, subID, model string) error {
 	return nil
 }
 
+// SetUserDefaultModelByUserID persists the default (subscription, model) keyed
+// by canonical user_id so all linked identities (web/cli/feishu) share it.
+func (f *LLMFactory) SetUserDefaultModelByUserID(userID int64, subID, model string) error {
+	if f.subscriptionSvc == nil {
+		return fmt.Errorf("SetUserDefaultModelByUserID: subscription service unavailable")
+	}
+	if subID == "" {
+		return fmt.Errorf("SetUserDefaultModelByUserID: subID is required")
+	}
+	sub, err := f.subscriptionSvc.Get(subID)
+	if err != nil || sub == nil {
+		return fmt.Errorf("SetUserDefaultModelByUserID: subscription %s not found", subID)
+	}
+	if model != "" {
+		if sm, gerr := f.subscriptionSvc.GetModel(subID, model); gerr == nil && sm != nil && !sm.Enabled {
+			return fmt.Errorf("SetUserDefaultModelByUserID: model %q is disabled", model)
+		}
+	}
+	if err := f.subscriptionSvc.SetUserDefaultModelByUserID(userID, subID, model); err != nil {
+		return fmt.Errorf("SetUserDefaultModelByUserID: persist: %w", err)
+	}
+	return nil
+}
+
 // SetModelEnabled toggles a model's enabled flag and invalidates any cached
 // state for its subscription so resolution picks up the change.
 func (f *LLMFactory) SetModelEnabled(subID, model string, enabled bool) error {

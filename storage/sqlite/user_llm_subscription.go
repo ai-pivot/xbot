@@ -914,6 +914,34 @@ func (s *LLMSubscriptionService) SetUserDefaultModel(senderID, subID, model stri
 	return nil
 }
 
+// SetUserDefaultModelByUserID upserts the default (subscription, model) keyed by
+// canonical user_id (v43 user_default_model.user_id). Channel UIs and linked
+// identities (web/cli/feishu sharing one user_id) must persist via this method
+// so every channel sees the same default model. user_id has no UNIQUE
+// constraint (sender_id is the PK), so this uses an explicit UPDATE/INSERT.
+func (s *LLMSubscriptionService) SetUserDefaultModelByUserID(userID int64, subID, model string) error {
+	conn := s.db.Conn()
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("set user default model by user id: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE user_default_model
+		SET subscription_id = ?, model = ?, updated_at = datetime('now')
+		WHERE user_id = ?`, subID, model, userID)
+	if err != nil {
+		return fmt.Errorf("set user default model by user id: update: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		if _, err := tx.Exec(`INSERT INTO user_default_model
+			(user_id, sender_id, subscription_id, model, updated_at)
+			VALUES (?, '', ?, ?, datetime('now'))`, userID, subID, model); err != nil {
+			return fmt.Errorf("set user default model by user id: insert: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 // ClearUserDefaultModel removes the user's default model selection.
 func (s *LLMSubscriptionService) ClearUserDefaultModel(senderID string) error {
 	conn := s.db.Conn()

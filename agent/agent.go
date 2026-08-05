@@ -985,7 +985,13 @@ func (a *Agent) SetUserModel(senderID, subID, model string) error {
 		}
 		subID = sub.ID
 	}
-	if err := a.userSys.llmFactory.SetUserDefaultModel(senderID, subID, model); err != nil {
+	// Persist the default model under the canonical user_id so linked
+	// identities (web/cli/feishu) all see the same selection.
+	if uid, ok := a.resolveUserID(senderID); ok {
+		if err := a.userSys.llmFactory.SetUserDefaultModelByUserID(uid, subID, model); err != nil {
+			return fmt.Errorf("save default model: %w", err)
+		}
+	} else if err := a.userSys.llmFactory.SetUserDefaultModel(senderID, subID, model); err != nil {
 		return fmt.Errorf("save default model: %w", err)
 	}
 	a.userSys.llmFactory.Invalidate(senderID)
