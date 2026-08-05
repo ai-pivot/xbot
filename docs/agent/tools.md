@@ -14,7 +14,7 @@
 | `cd.go` | Cd tool (directory switching, persists across turns) |
 | `edit.go` | FileReplace + FileCreate tools |
 | `read.go` | Read tool (line-numbered output) |
-| `grep.go` | Grep tool (Go RE2 regex) |
+| `grep.go` | Grep tool (Go RE2 regex). Description teaches loose-pattern search: use `[A-Za-z0-9]`/`\w` + `ignore_case=true` for unknown/case-mixed content (secrets/tokens/ids) — case-sensitive narrow classes like `[a-z]{20,}` are a false-negative trap (miss `hf_` tokens with mixed-case values). "No matches" is a signal, not a conclusion: cross-check with a broader pattern before concluding absence. |
 | `glob.go` | Glob tool (pattern matching) |
 | `fetch.go` | Fetch tool (HTTP → markdown) |
 | `shell.go` | Shell tool (command execution) |
