@@ -120,10 +120,24 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 }
 
 // llmCallbacks builds the shared LLM callback closures.
-func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
+// canonicalModelEntries returns model entries for the canonical user of
+// (channel, senderID). Subscriptions/settings are bound to user_id (v45+);
+// querying by senderID (old behavior) misses subscriptions of linked
+// identities (e.g. a Feishu ou_xxx linked to the admin user). Mirrors the RPC
+// layer (rpcUserID + ListAllModelEntriesForUserID).
+func canonicalModelEntries(ag *agent.Agent, channelName, senderID string) []protocol.ModelEntry {
+	if ag.IdentityResolver() != nil {
+		if uid, _, err := ag.IdentityResolver().Resolve(channelName, senderID); err == nil && uid > 0 {
+			return ag.LLMFactory().ListAllModelEntriesForUserID(uid)
+		}
+	}
+	return ag.LLMFactory().ListAllModelEntriesForUser(senderID)
+}
+
+func llmCallbacks(ag *agent.Agent, channelName string) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
 		LLMList: func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry) {
-			entries := ag.LLMFactory().ListAllModelEntriesForUser(senderID)
+			entries := canonicalModelEntries(ag, channelName, senderID)
 			sub, model, err := ag.LLMFactory().ResolveActiveSubModel(senderID, "", "")
 			if err != nil || sub == nil {
 				return entries, protocol.ModelEntry{Model: model}
@@ -219,7 +233,7 @@ func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, d
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
 func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
-	llmc := llmCallbacks(ag)
+	llmc := llmCallbacks(ag, "web")
 
 	callbacks := web.WebCallbacks{
 		// Runner callbacks
@@ -1661,7 +1675,7 @@ func looksLikeWorkDir(s string) bool {
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.
 func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.SettingsCallbacks {
 	rc := runnerCallbacks(cfg)
-	llmc := llmCallbacks(ag)
+	llmc := llmCallbacks(ag, "feishu")
 
 	return feishu.SettingsCallbacks{
 		// LLM basic callbacks
@@ -1824,7 +1838,10 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 			return ag.SetUserTierModel(senderID, tier, subID, model)
 		},
 		LLMListAllModels: func(senderID string) []protocol.ModelEntry {
-			return ag.LLMFactory().ListAllModelEntriesForUser(senderID)
+			// Subscriptions are bound to the canonical user_id (v45+); a Feishu
+			// identity (ou_xxx) linked to the admin user must see the SAME
+			// subscriptions as web/cli — resolve canonical user like the RPC layer.
+			return canonicalModelEntries(ag, "feishu", senderID)
 		},
 
 		// Context mode
