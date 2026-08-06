@@ -181,6 +181,12 @@ type FeishuChannel struct {
 	// Settings card callbacks (injected from Agent via main.go)
 	settingsCallbacks SettingsCallbacks
 
+	// Model card two-level selector: per-sender "currently viewing subscription"
+	// (subscription select → model select). Kept in memory; defaults to the
+	// active subscription when unset.
+	settingsSubMu     sync.Mutex
+	settingsSubFilter map[string]string // senderID → subID
+
 	// Permission control
 	approvalState *protocol.ApprovalState
 	approvalsMu   sync.Mutex
