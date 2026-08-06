@@ -16,8 +16,51 @@ description: "Guide for AI to configure xbot TUI, themes, subscriptions, and set
 | Switch theme | `tui_control set_theme(theme_name)` | `tui_control set_theme("ocean")` |
 | Adjust layout | `tui_control set_layout(key, value)` | `tui_control set_layout("sidebar_width", "30")` |
 | Execute command | `tui_control send_slash(command="/xxx")` | `/set-llm`, `/palette`, `/set-model`, `/context` |
-| List subscriptions | `config subscriptions` | |
+| List subscriptions | `config action=subscriptions` or `config action=subscription sub=list` | |
 | Create new session | `CreateChat(type=agent, role=explore, instance="name")` | |
+
+## Model Management
+
+| Task | Tool call | Notes |
+|------|-----------|-------|
+| List all models | `config action=model sub=list` | Shows all models across subscriptions with status (normal/offline/disabled) |
+| Show current session model | `config action=model sub=active` | Returns sub_id + model of current session |
+| Switch session model | `config action=model sub=switch sub_id=xxx model=yyy` | Per-session, doesn't affect other sessions |
+| Set max context | `config action=model sub=set_context sub_id=xxx model=yyy value=131072` | Per-model max context tokens |
+| Set max output | `config action=model sub=set_output sub_id=xxx model=yyy value=8192` | Per-model max output tokens |
+| Enable model | `config action=model sub=enable sub_id=xxx model=yyy` | Makes model selectable |
+| Disable model | `config action=model sub=disable sub_id=xxx model=yyy` | Greys out model |
+| Add/register model | `config action=model sub=add sub_id=xxx model=yyy max_context=131072` | Register a model not in provider's list |
+| Remove model | `config action=model sub=remove sub_id=xxx model=yyy` | Permanently delete model config |
+| Refresh model list | `config action=model sub=refresh` | Live-fetch /models from all providers |
+
+Use `config action=model sub=list` first to get `sub_id` and available `model` names.
+
+## Subscription Management
+
+| Task | Tool call | Notes |
+|------|-----------|-------|
+| List subscriptions | `config action=subscription sub=list` | Same as `config action=subscriptions` |
+| Add subscription | `config action=subscription sub=add name=xxx provider=openai api_key=sk-xxx model=gpt-4o` | Creates new LLM subscription |
+| Remove subscription | `config action=subscription sub=remove sub_id=xxx` | Deletes subscription + its models |
+| Update subscription | `config action=subscription sub=update sub_id=xxx api_key=newkey` | Only specified fields are changed |
+| Set default | `config action=subscription sub=set_default sub_id=xxx` | User-level default for new sessions |
+| Enable/disable | `config action=subscription sub=set_enabled sub_id=xxx value=false` | Disabled subs keep credentials |
+| Rename | `config action=subscription sub=rename sub_id=xxx name=newname` | Rename subscription |
+
+### Typical workflow: add a new LLM provider
+```
+config action=subscription sub=add name="deepseek" provider=openai base_url="https://api.deepseek.com" api_key="sk-xxx" model="deepseek-chat"
+→ Returns subscription ID
+config action=model sub=set_context sub_id=<id> model="deepseek-chat" value=131072
+```
+
+### Typical workflow: switch current session's model
+```
+config action=model sub=list
+→ Find desired model + sub_id
+config action=model sub=switch sub_id=<id> model=<model>
+```
 
 ## Theme Creation
 

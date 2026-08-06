@@ -505,7 +505,13 @@ function handleProgressMessage(
             })
           }
         }
-        store.lastTurnID = p.turn_id ?? 0
+        // NOTE: store.lastTurnID is NOT updated here — it must remain the OLD
+        // value (previous turn's ID) so that commitLiveProgressAndReset can use
+        // it as a fallback when snap.turnID is 0 (cancelled turn with no
+        // structured events). Updating it before the commit causes
+        // snap.turnID || store.lastTurnID to resolve to the NEW turn's ID,
+        // giving the committed assistant the wrong turnID.
+        // store.lastTurnID is updated AFTER the commit, below.
         const ts = p.turn_start
         // For "resume" trigger (AskUser answer), preserve iterationHistory —
         // the answer is a CONTINUATION of the same turn, not a new turn.

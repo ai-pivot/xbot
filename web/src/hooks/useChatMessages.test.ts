@@ -978,4 +978,40 @@ describe('useChatMessages', () => {
     // user(5) should be present (it's new — not in batch 1).
     expect(msgs.some((m) => m.role === 'user' && m.turnID === 5 && m.content === 'hello')).toBe(true)
   })
+
+  it('cancelled-turn assistant committed via commitLiveProgressAndReset lands AFTER its turn user, even when next user is not yet in the list', async () => {
+    // BUG: when turn_started(2) fires and commitLiveProgressAndReset commits
+    // the cancelled turn 1's assistant, appendAssistant(insertBeforeLastUser=true)
+    // scans backwards for the LAST user message. If user2's optimistic row
+    // hasn't been added to the messages array yet (race: turn_started arrives
+    // before sendMessage's setMessages is applied), the scan finds user1 at
+    // index 0 and inserts BEFORE it: [assistant1, user1]. Then user2 is added:
+    // [assistant1, user1, user2] — the assistant appears BEFORE user1.
+    //
+    // Fix: when insertBeforeLastUser=true AND turnID > 0, first scan for the
+    // assistant's OWN turn user (role=user && turnID matches) and insert AFTER
+    // it. This correctly positions the assistant even when the next turn's
+    // user is not yet in the list.
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'cancel-race', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // turn 1: user1 sent with turnID=1 (use injectUserMessage to set turnID directly)
+    act(() => result.current.injectUserMessage('u1', 1, false))
+    expect(result.current.messages).toHaveLength(1)
+    expect(result.current.messages[0].turnID).toBe(1)
+
+    // Simulate the race: commitLiveProgressAndReset fires BEFORE user2 is
+    // added to the messages array. The committed assistant has turnID=1
+    // (the cancelled turn's ID).
+    act(() => result.current.appendAssistant('A1', [], undefined, 1, true))
+
+    // The assistant must land AFTER user1 (its own turn user), not before it.
+    const contents = result.current.messages.map((m) => m.content)
+    expect(contents).toEqual(['u1', 'A1'])
+
+    // Now user2 is added (next turn's user)
+    act(() => result.current.injectUserMessage('u2', 2, false))
+    expect(result.current.messages.map((m) => m.content)).toEqual(['u1', 'A1', 'u2'])
+  })
 })

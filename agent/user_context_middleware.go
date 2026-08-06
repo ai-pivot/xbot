@@ -105,6 +105,9 @@ func (a *Agent) ResolveUserContext(channel, chatID, senderID string) *UserContex
 	refreshModels := func() ([]protocol.ModelEntry, []RefreshResult) {
 		return a.userSys.llmFactory.RefreshModelEntriesForUserWithResults(senderID)
 	}
+	listModels := func() []protocol.ModelEntry {
+		return a.userSys.llmFactory.ListAllModelEntriesForUser(senderID)
+	}
 
 	uc := &UserContext{
 		UserID:           userID,
@@ -132,6 +135,7 @@ func (a *Agent) ResolveUserContext(channel, chatID, senderID string) *UserContex
 		ResolveActiveSub: resolveActiveSub,
 		SelectModel:      selectModel,
 		RefreshModels:    refreshModels,
+		ListModels:       listModels,
 		factory:          factoryRef,
 	}
 

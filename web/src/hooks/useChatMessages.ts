@@ -741,22 +741,28 @@ export function useChatMessages({
       // one that triggered the commit, so this always restores turn order.
       let insertIdx = prev.length
       if (insertBeforeLastUser) {
-        // Prefer THIS TURN's user (turnID match) → insert AFTER it. This is
-        // the AskUser answer case: the answer is persisted as a user message
-        // with the SAME turnID as the iterations that follow, and it may be
-        // the last user in the list — inserting before it would render the
-        // new iterations ABOVE the answer (broken order). Fall back to
-        // "before the last user" (classic turn_started(N+1) case, where the
-        // last user belongs to the NEXT turn).
+        // Two-step insertion:
+        // 1. If turnID > 0: first scan for the assistant's OWN turn user
+        //    (role=user && turnID matches) and insert AFTER it. This correctly
+        //    positions the assistant even when the next turn's user hasn't been
+        //    added to the messages array yet (race: turn_started arrives before
+        //    sendMessage's setMessages is applied). Without this, the scan finds
+        //    user1 (the ONLY user) and inserts BEFORE it: [assistant1, user1].
+        // 2. Fallback: insert before the LAST user message (persisted or not).
+        //    The newest user is the one that triggered the commit, so this
+        //    restores turn order when the assistant's own turn user is unbound
+        //    (turn_started was lost, turnID=0).
+        let foundOwnTurnUser = false
         if (turnID) {
           for (let i = prev.length - 1; i >= 0; i--) {
             if (prev[i].role === 'user' && prev[i].turnID === turnID) {
               insertIdx = i + 1
+              foundOwnTurnUser = true
               break
             }
           }
         }
-        if (insertIdx === prev.length) {
+        if (!foundOwnTurnUser) {
           for (let i = prev.length - 1; i >= 0; i--) {
             if (prev[i].role === 'user') {
               insertIdx = i
