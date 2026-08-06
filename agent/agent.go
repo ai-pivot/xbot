@@ -2862,20 +2862,14 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// 使 REST 响应能直接返回 turn id（不依赖可能被 SSE 合并/丢弃的
 			// turn_started 事件）。
 			//
-			// AskUser answer 不预分配 —— 它复用 active TurnID（同一 turn 的
-			// 延续）。activeTurnID 反映「当前正在处理的 turn」，只有在消息真正
-			// 出队处理时读取才准确：入队时 activeTurnID 可能已被排队消息改写。
-			// 复用避免 TurnID 回归（prev=N, next=N）并确保前端 turn_started
-			// 处理器保留 iterationHistory。
+			// AskUser answer 也是独立 turn：分配新 turn_id（nextTurnID），
+			// 不复用 activeTurnID。复用会让回答 user 消息与回答前的 assistant
+			// 同 turn，前端按 turn 合并迭代时把回答前后的内容（如 pwd 与
+			// task_wait）混进同一个 assistant 块。新 turn 保证回答后的消息
+			// 与回答前严格分离。
 			turnID, _ := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64)
 			if turnID == 0 {
-				askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
-				if askUserAnswered {
-					turnID = ss.activeTurnID.Load()
-				}
-				if turnID == 0 {
-					turnID = ss.nextTurnID()
-				}
+				turnID = ss.nextTurnID()
 				if msg.Metadata == nil {
 					msg.Metadata = map[string]string{}
 				}
