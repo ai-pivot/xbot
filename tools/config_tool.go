@@ -28,20 +28,20 @@ func (t *ConfigTool) Description() string {
 // configParams holds all parameters for the config tool. Fields are shared
 // across actions — only relevant ones are used per action.
 type configParams struct {
-	Action      string `json:"action"`
-	Key         string `json:"key"`
-	Value       string `json:"value"`
-	Sub         string `json:"sub"`
-	SubID       string `json:"sub_id"`
-	Model       string `json:"model"`
-	MaxContext  string `json:"max_context"`
-	MaxOutput   string `json:"max_output"`
-	Name        string `json:"name"`
-	Provider    string `json:"provider"`
-	BaseURL     string `json:"base_url"`
-	APIKey      string `json:"api_key"`
-	APIType     string `json:"api_type"`
-	IsDefault   bool   `json:"is_default"`
+	Action     string `json:"action"`
+	Key        string `json:"key"`
+	Value      string `json:"value"`
+	Sub        string `json:"sub"`
+	SubID      string `json:"sub_id"`
+	Model      string `json:"model"`
+	MaxContext string `json:"max_context"`
+	MaxOutput  string `json:"max_output"`
+	Name       string `json:"name"`
+	Provider   string `json:"provider"`
+	BaseURL    string `json:"base_url"`
+	APIKey     string `json:"api_key"`
+	APIType    string `json:"api_type"`
+	IsDefault  bool   `json:"is_default"`
 	// Runner params (unchanged from original)
 	NewName     string `json:"new_name"`
 	Mode        string `json:"mode"`
