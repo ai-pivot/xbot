@@ -31,7 +31,7 @@ so that old gate silently disabled text progress for ALL channels. CLI/Web
 keeping their message stream free of progress text artifacts.
 
 - **`AskUser` 事件必须送达**（web 端曾因 request-ID 校验静默吞掉事件 → 面板不渲染，用户手动回答污染历史）。规则：同一 (channel, chatID) **只有一个 pending AskUser**，所以 `Send`/SSE 写循环**只按 pending 存在性**判断（存在→发布/发送，清除→跳过/consumed），**绝不做 request-ID 相等校验**；`WithPendingAskUser` 仅用于补全 pending 快照，返回值不 veto 发送。已回答/取消的 prompt 由生产者跳过（Send 不重发）+ SSE consumed（reconnect 不重放）。回归测试：`TestSSEAskUser_PendingExistsSends` / `TestSSEAskUser_PendingMissingConsumed`。
-- **`AskUser` 历史记录**：`ask_question`/`ask_answer` 以 control record（role=control, display_only=1）追加（`AppendAskAnswer`），不参与 LLM 上下文与正常消息渲染；回答（`ask_user_answered`）走 `AppendAskAnswer` + 替换 AskUser tool 消息，不生成独立 user 消息（避免用户手动回答导致的 control records + 错位渲染）。
+- **`AskUser` 历史记录**：`ask_question`/`ask_answer` 以 control record（role=control, display_only=1）追加（`AppendAskAnswer`），不参与 LLM 上下文与正常消息渲染；回答（`ask_user_answered`）**持久化为正常 user 消息**（绑定本 turn 的 turn_id，非 display_only——Replay 排除 display_only 行，前端拿不到会导致顺序破坏），AskUser tool 消息保持原始结果文本（回答只存在于 user 消息，避免 LLM 上下文重复）。**回答 user 消息是回答后迭代的 turn 锚点**——没有它，appendAssistant 的 insertBeforeLastUser 回退到原始 user 消息，把回答后的新迭代渲染到旧迭代上方（顺序破坏）。
 
 History recovery keeps DB rows as-is (including incrementally-persisted
 assistant `ToolCalls` from the active turn). The frontend reconciles: when the
