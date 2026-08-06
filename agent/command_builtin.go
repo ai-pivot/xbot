@@ -586,7 +586,7 @@ func (c *infoCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage)
 type exportCmd struct{}
 
 func (c *exportCmd) Name() string      { return "/export" }
-func (c *exportCmd) Aliases() []string  { return nil }
+func (c *exportCmd) Aliases() []string { return nil }
 func (c *exportCmd) Match(s string) bool {
 	lower := strings.ToLower(strings.TrimSpace(s))
 	return lower == "/export" || strings.HasPrefix(lower, "/export ")
