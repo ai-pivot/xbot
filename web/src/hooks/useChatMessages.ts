@@ -787,10 +787,27 @@ export function useChatMessages({
       // one that triggered the commit, so this always restores turn order.
       let insertIdx = prev.length
       if (insertBeforeLastUser) {
-        for (let i = prev.length - 1; i >= 0; i--) {
-          if (prev[i].role === 'user') {
-            insertIdx = i
-            break
+        // Prefer THIS TURN's user (turnID match) → insert AFTER it. This is
+        // the AskUser answer case: the answer is persisted as a user message
+        // with the SAME turnID as the iterations that follow, and it may be
+        // the last user in the list — inserting before it would render the
+        // new iterations ABOVE the answer (broken order). Fall back to
+        // "before the last user" (classic turn_started(N+1) case, where the
+        // last user belongs to the NEXT turn).
+        if (turnID) {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === 'user' && prev[i].turnID === turnID) {
+              insertIdx = i + 1
+              break
+            }
+          }
+        }
+        if (insertIdx === prev.length) {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === 'user') {
+              insertIdx = i
+              break
+            }
           }
         }
       }

@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"xbot/llm"
 
@@ -76,8 +77,26 @@ func (t *AskUserTool) Execute(ctx *ToolContext, input string) (*ToolResult, erro
 	// and sends an interactive card. No SendFunc needed here.
 	_ = ctx // ctx is available for future use but not needed currently
 
+	// The Summary is what the model sees as the tool result. It MUST state the
+	// async semantics explicitly: the questions were SENT to the user, this
+	// turn ends now (WaitingUser), and the answer(s) arrive as a user message
+	// in the next turn. Without this, models get confused ("is AskUser async?
+	// did it already return the answer?") and keep generating instead of
+	// stopping to wait.
+	qs := make([]string, 0, len(args.Questions))
+	for _, q := range args.Questions {
+		qs = append(qs, q.Question)
+	}
+	detail := ""
+	if len(qs) > 0 {
+		detail = " Questions: " + strings.Join(qs, " | ")
+	}
 	return &ToolResult{
-		Summary:     fmt.Sprintf("Asked %d question(s)", len(args.Questions)),
+		Summary: fmt.Sprintf(
+			"Asked %d question(s) to the user; awaiting their answer(s). "+
+				"This is ASYNC: end this turn now (the engine pauses until the user replies). "+
+				"The user's answer(s) will arrive as a user message in the next turn.%s",
+			len(args.Questions), detail),
 		WaitingUser: true,
 		Metadata:    metadata,
 	}, nil

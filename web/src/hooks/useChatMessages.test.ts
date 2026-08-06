@@ -1147,6 +1147,30 @@ describe('useChatMessages', () => {
     expect(contents.indexOf('A42')).toBeLessThan(contents.indexOf('u43'))
   })
 
+  it('inserts committed assistant AFTER the AskUser answer user (same turnID, last user)', async () => {
+    // AskUser answer case: the answer is persisted as a user message with the
+    // SAME turnID as the iterations that follow, and it is the LAST user in
+    // the list. insertBeforeLastUser must locate THIS TURN's user (turnID
+    // match) and insert AFTER it — otherwise the new iterations render ABOVE
+    // the answer (broken order).
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'askuser-order', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // original user + AskUser answer user — both turn 2
+    act(() => result.current.sendMessage('u2'))
+    act(() => result.current.bindLastUserToTurn(2))
+    act(() => result.current.sendMessage('answer'))
+    act(() => result.current.bindLastUserToTurn(2))
+
+    // post-answer iteration (turn 2) commits via insertBeforeLastUser
+    act(() => result.current.appendAssistant('A2', [], undefined, 2, true))
+
+    const contents = result.current.messages.map((m) => m.content)
+    expect(contents.indexOf('A2')).toBeGreaterThan(contents.indexOf('answer'))
+    expect(contents.indexOf('A2')).toBeGreaterThan(contents.indexOf('u2'))
+  })
+
   it('injectUserMessage deduplicates notification by turnID (SSE reconnect replay)', async () => {
     // BUG: turn_started events are buffered by the web hub's ring buffer as
     // stateful messages and replayed on SSE reconnect. Without dedup, each
