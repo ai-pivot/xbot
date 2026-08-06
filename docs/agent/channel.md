@@ -17,6 +17,19 @@ log, keyed by iteration; clients never synthesize an iteration when the current
 iteration advances. SSE/WS envelope sequence numbers remain transport replay
 IDs and are independent from the semantic progress watermark.
 
+### Text-based progress (PreReplyNotifier channels)
+
+Channels without structured display (Feishu patches the sent message with
+progress text, QQ sends progress as separate messages) implement
+`channel.PreReplyNotifier` and receive per-iteration progress as **text lines**
+via `RunConfig.ProgressNotifier` → `a.sendMessage`. This must be keyed by
+**channel capability** (`wantsPreReplyNotify`, i.e. `autoNotify` passed into
+`buildMainRunConfig`), **never** by `cfg.ProgressEventHandler == nil` — every
+channel now has a ProgressEventHandler (needed for `/su` viewing + PhaseDone),
+so that old gate silently disabled text progress for ALL channels. CLI/Web
+(ProgressSender, structured) have `autoNotify=false` → notifier is a no-op,
+keeping their message stream free of progress text artifacts.
+
 History recovery keeps DB rows as-is (including incrementally-persisted
 assistant `ToolCalls` from the active turn). The frontend reconciles: when the
 last history assistant is the active turn, `liveProgress` attaches to that row
