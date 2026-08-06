@@ -3276,14 +3276,31 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 			messages = messages[:len(messages)-1]
 		}
+		// Replace the most recent AskUser tool message content with the user's
+		// answer so THIS turn's LLM context contains the answer — the model
+		// cannot see the persisted answer user message in the current prompt.
+		// (Without this the model keeps seeing "Asked N question(s)" and has
+		// no idea the user answered.)
+		foundAskUserTool := false
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role != "tool" {
+				continue
+			}
+			if messages[i].ToolName != "AskUser" {
+				continue
+			}
+			messages[i].Content = msg.Content
+			foundAskUserTool = true
+			break
+		}
+		if !foundAskUserTool {
+			log.Ctx(ctx).Warn("AskUser answer received but no matching AskUser tool message found in prompt history")
+		}
 		// Persist the answer as a NORMAL user message bound to this turn so the
 		// web history has a real "user replied" row (turn anchor for the
 		// iterations that follow). Non-display-only: GetHistory/Replay excludes
 		// display_only rows, so the frontend would never see it and the order
-		// would still break. The AskUser tool message keeps its original result
-		// text ("Asked N question(s)"); the answer lives only in this user
-		// message, so it is not duplicated in the LLM context. AppendAskAnswer
-		// already records the detailed Q&A as a display-only control record.
+		// would still break.
 		if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
 			if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
 				answerMsg := llm.NewUserMessage(msg.Content)
