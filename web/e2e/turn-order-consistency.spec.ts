@@ -73,6 +73,9 @@ test.describe('Turn order consistency', () => {
     // Send first message
     await page.locator('textarea').fill('first message')
     await page.locator('textarea').press('Control+Enter')
+    // NO optimistic rendering: the backend echoes every accepted user message
+    // as user_echo WITH its authoritative turn_id. Emit it to render user-1.
+    await emitSSE(page, 'user_echo', { content: 'first message', turn_id: 1, ts: Date.now() / 1000, id: 'r1' })
     await page.waitForTimeout(500)
 
     // Emit turn_started for turn 1
@@ -90,6 +93,9 @@ test.describe('Turn order consistency', () => {
     // Send second message WHILE agent is still processing turn 1
     await page.locator('textarea').fill('second message')
     await page.locator('textarea').press('Control+Enter')
+    // Backend echoes user-2 (turn_id=2). Rendering is deterministic — the
+    // echo arrives after the live assistant for turn 1 is already visible.
+    await emitSSE(page, 'user_echo', { content: 'second message', turn_id: 2, ts: Date.now() / 1000, id: 'r2' })
     await page.waitForTimeout(500)
 
     // Emit turn_started for turn 2 (binds second user msg to turnID=2)
