@@ -8,11 +8,15 @@
  * shows a Bot icon instead of the status dot, and hides the star/time.
  */
 import { useCallback } from 'react'
-import { Star, Pencil, Trash2, Bot, GitBranch, Loader2, ExternalLink, Check } from 'lucide-react'
+import { Star, Pencil, Trash2, Bot, GitBranch, Loader2, ExternalLink, Check, Download } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { cn } from '@/lib/utils'
@@ -20,6 +24,7 @@ import { useI18n } from '@/providers/i18n'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { parseAgentChatID, sessionKey } from '@/lib/session-grouping'
 import type { SessionInfo, SessionStatus } from '@/types/shared'
+import type { ExportFormat } from '@/components/agent/api'
 
 interface SessionItemProps {
   session: SessionInfo
@@ -33,6 +38,8 @@ interface SessionItemProps {
   onToggleStar: (id: string) => void
   onRename: (session: SessionInfo) => void
   onDelete: (session: SessionInfo) => void
+  /** Export the session in the given format. */
+  onExport?: (session: SessionInfo, format: ExportFormat) => void
   /** Multi-select mode: show checkbox, click toggles selection. */
   multiSelectMode?: boolean
   /** Whether this item is currently selected in multi-select mode. */
@@ -64,6 +71,7 @@ export function SessionItem({
   onToggleStar,
   onRename,
   onDelete,
+  onExport,
   multiSelectMode = false,
   selected = false,
   onToggleSelect,
@@ -251,6 +259,26 @@ export function SessionItem({
           <Pencil className="size-4" />
           {t('common.rename')}
         </ContextMenuItem>
+        {onExport && (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>
+              <Download className="size-4" />
+              {t('session.export')}
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem onClick={() => onExport(session, 'native')}>
+                {t('session.exportNative')}
+              </ContextMenuItem>
+              <ContextMenuItem onClick={() => onExport(session, 'openai')}>
+                {t('session.exportOpenAI')}
+              </ContextMenuItem>
+              <ContextMenuItem onClick={() => onExport(session, 'codex')}>
+                {t('session.exportCodex')}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+        )}
+        <ContextMenuSeparator />
         <ContextMenuItem onClick={() => onDelete(session)} variant="destructive">
           <Trash2 className="size-4" />
           {t('common.delete')}
