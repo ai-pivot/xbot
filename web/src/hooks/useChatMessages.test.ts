@@ -1014,4 +1014,42 @@ describe('useChatMessages', () => {
     act(() => result.current.injectUserMessage('u2', 2, false))
     expect(result.current.messages.map((m) => m.content)).toEqual(['u1', 'A1', 'u2'])
   })
+
+  it('sendMessage updates optimistic message with REST response turn_id (prevents assistant displacement)', async () => {
+    // BUG: sendMessage's .then() callback didn't update the optimistic message
+    // with the REST response data (turn_id, message_id). The optimistic message
+    // stayed turnID=0, persisted=false until user_echo arrived. When
+    // commitLiveProgressAndReset fired (from turn_started of the NEXT turn),
+    // appendAssistant(insertBeforeLastUser=true, turnID=N) couldn't find a
+    // user with turnID=N (it was 0), fell back to inserting BEFORE the last
+    // user — which was user(N) itself — resulting in [assistant(N), user(N)]
+    // instead of [user(N), assistant(N)].
+    //
+    // Fix: .then() updates the optimistic message with turn_id, dbID,
+    // persisted=true, sending=false from the REST response.
+    const ws = makeWS([{ messages: [] }])
+    // REST response includes turn_id and message_id
+    vi.mocked(ws.send).mockResolvedValue({ turn_id: 42, queued: false, message_id: 100, timestamp: 1_786_000_000 })
+    const { result } = renderHook(() => useChatMessages({ chatID: 'rest-bind', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // Send message — optimistic user is added
+    act(() => result.current.sendMessage('hello'))
+    expect(result.current.messages).toHaveLength(1)
+    expect(result.current.messages[0].content).toBe('hello')
+    expect(result.current.messages[0].sending).toBe(true)
+
+    // REST response resolves — optimistic message is updated
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.messages[0].turnID).toBe(42)
+    expect(result.current.messages[0].persisted).toBe(true)
+    expect(result.current.messages[0].sending).toBe(false)
+    expect(result.current.messages[0].dbID).toBe(100)
+
+    // Now commitLiveProgressAndReset (from turn_started of next turn) fires
+    // with turnID=42. appendAssistant scans for user with turnID=42 → found
+    // → inserts AFTER it (not before).
+    act(() => result.current.appendAssistant('reply', [], undefined, 42, true))
+    expect(result.current.messages.map((m) => m.content)).toEqual(['hello', 'reply'])
+  })
 })

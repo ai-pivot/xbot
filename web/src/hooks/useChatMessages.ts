@@ -722,7 +722,37 @@ export function useChatMessages({
         file_sizes: attachments?.fileSizes,
         file_mimes: attachments?.fileMimes,
       })
-        .then(() => {
+        .then((resp) => {
+          // Update the optimistic message with the server's authoritative
+          // data (turn_id, message_id, dbID). This is critical:
+          // 1. turnID enables appendAssistant's turnID-aware insertion logic
+          //    (insertBeforeLastUser scans for user with matching turnID).
+          // 2. persisted=true makes reconcileHistoryWithLiveRows treat it as
+          //    a committed message (not a live row to be dropped).
+          // 3. dbID enables instant rewind without a page refresh.
+          // 4. sending=false clears the "sending..." indicator.
+          if (optimisticID && resp) {
+            const sentID = optimisticID
+            const respTurnID = resp.turn_id
+            const respQueued = resp.queued === true
+            const msgID = resp.message_id
+            const serverTs = resp.timestamp
+            const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
+            messageMutationGenRef.current += 1
+            setMessages((prev) => {
+              const next = prev.map((m) => m.id === sentID ? {
+                ...m,
+                sending: false,
+                persisted: true,
+                ...(msgID ? { dbID: msgID, id: `db-${msgID}` } : {}),
+                ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
+                ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),
+                ...(respQueued ? { queued: true } : {}),
+              } : m)
+              messagesRef.current = next
+              return next
+            })
+          }
           onSendSuccess?.()
         })
         .catch((error: unknown) => {
