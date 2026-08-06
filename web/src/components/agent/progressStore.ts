@@ -362,7 +362,7 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
  * When both have the same iteration number, prefer the one with non-empty
  * thinking/content or more tools.
  */
-function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIteration[] {
+export function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIteration[] {
   if (a.length === 0) return b
   if (b.length === 0) return a
   const map = new Map<number, WebIteration>()

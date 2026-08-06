@@ -25,7 +25,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useSyncExternalStore } from 'react'
 
-import { ProgressStore, normalizeWebSubAgents, normalizeWebTools } from '@/components/agent/progressStore'
+import { ProgressStore, mergeIterations, normalizeWebSubAgents, normalizeWebTools } from '@/components/agent/progressStore'
 import {
   historyProgressToLive,
   normalizeWebIteration,
@@ -804,13 +804,14 @@ function handleProgressMessage(
       const finalText = msg.content ?? ''
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
-      // Prefer the live snapshot's iterationHistory — it was built incrementally
-      // via SSE and already contains all completed iterations. Using the
-      // server's parsedIterations instead would replace the data source, causing
-      // all iterations to re-render (tool labels/status may differ in format).
-      // Only fall back to parsedIterations when the snapshot has no iterations
-      // (e.g. reconnect where no SSE events were received).
-      const iterations = snap.iterationHistory.length > 0 ? snap.iterationHistory : parsedIterations
+      // Merge live + server iterations: the live snapshot (from SSE deltas)
+      // may have GAPS if SSE dropped/coalesced some delta events. The server's
+      // parsedIterations (from progress_history in the text event) has ALL
+      // iterations. Merging them fills any gaps in the live snapshot while
+      // preserving live-only data (e.g. streamed reasoning that structured
+      // events didn't carry). Without this merge, continuousIterations would
+      // truncate at the gap, hiding hundreds of iterations from the user.
+      const iterations = mergeIterations(snap.iterationHistory, parsedIterations)
       // Merge live reasoningStreamContent into the last iteration's reasoning.
       // The streamed reasoning (from reasoning_stream_content events) is in
       // snap.reasoningStreamContent, but the iteration snapshot's reasoning

@@ -639,10 +639,10 @@ export function useChatMessages({
       setMessages((prev) => {
         if (activeMessageCacheKeyRef.current !== listenerCacheKey) return prev
         messageMutationGenRef.current += 1
-        // Deterministic: the backend echoes every accepted user message with
-        // its authoritative turn_id (NO optimistic rendering, NO
-        // bindLastUserToTurn). Dedup by requestID for SSE replay.
-        if (requestID && prev.some((m) => m.requestID === requestID)) return prev
+        // Dedup by requestID for SSE replay — skip if a PERSISTED message
+        // with the same requestID already exists. An optimistic (persisted=false)
+        // message with the same requestID should be REPLACED, not skipped.
+        if (requestID && prev.some((m) => m.requestID === requestID && m.persisted !== false)) return prev
         const newMsg: ChatMessage = {
           id,
           role: 'user',
@@ -654,6 +654,21 @@ export function useChatMessages({
           persisted: true,
           eventSeq: msg.seq,
           requestID,
+        }
+        // If there's an optimistic message with the same requestID (from
+        // sendMessage), replace it with the authoritative echo version
+        // (persisted=true, turnID from server, dbID from DB). This updates
+        // the existing row in-place instead of appending a duplicate.
+        if (requestID) {
+          const optimisticIdx = prev.findIndex(
+            (m) => m.requestID === requestID && m.persisted === false,
+          )
+          if (optimisticIdx >= 0) {
+            const copy = [...prev]
+            copy[optimisticIdx] = { ...newMsg, id: prev[optimisticIdx].id }
+            messagesRef.current = copy
+            return copy
+          }
         }
         const next = [...prev, newMsg]
         messagesRef.current = next
@@ -668,10 +683,34 @@ export function useChatMessages({
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
       const requestID = newMessageRequestID()
-      // NO optimistic rendering: the backend echoes every accepted user
-      // message as user_echo WITH its authoritative turn_id (web_inbound.go
-      // dispatchUserMessage). The frontend renders the user message
-      // deterministically from that echo only.
+      // Optimistic rendering: show the user message immediately with a "sending"
+      // indicator. When the backend's user_echo arrives (SSE), it replaces this
+      // optimistic row — matched by requestID — with the authoritative version
+      // (persisted=true, turnID from server, dbID from DB).
+      const resetCommand = text === '/new' && !attachments?.uploadKeys.length
+      let optimisticID: string | null = null
+      if (!resetCommand) {
+        const id = `user-${Date.now()}-${echoSeq++}`
+        optimisticID = id
+        const newMsg: ChatMessage = {
+          id,
+          role: 'user',
+          content: text,
+          iterations: [],
+          timestamp: new Date().toISOString(),
+          isPartial: false,
+          turnID: 0,
+          persisted: false,
+          requestID,
+          sending: true,
+        }
+        messageMutationGenRef.current += 1
+        setMessages((prev) => {
+          const next = [...prev, newMsg]
+          messagesRef.current = next
+          return next
+        })
+      }
       void ws.send({
         type: 'message',
         id: requestID,
@@ -687,6 +726,16 @@ export function useChatMessages({
           onSendSuccess?.()
         })
         .catch((error: unknown) => {
+          // Remove the optimistic message on send failure
+          if (optimisticID) {
+            const failedID = optimisticID
+            messageMutationGenRef.current += 1
+            setMessages((prev) => {
+              const next = prev.filter((m) => m.id !== failedID)
+              messagesRef.current = next
+              return next
+            })
+          }
           toast.error(error instanceof Error ? error.message : 'message send failed')
         })
     },
