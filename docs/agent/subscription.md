@@ -533,3 +533,13 @@ v45 之后所有 user 级数据（`user_llm_subscriptions.user_id`、`user_setti
 - **任何 senderID 入口读写 user 级数据前必须 `resolveUserID`**；RPC 层（`rpcUserID`）已是 canonical，无需改。
 - 回归测试：`TestSetUserDefaultModelByUserID_RoundTrip`、`TestListAllModelEntriesByCanonicalUserID`。
 - 旧数据回填：`user_default_model`/`user_settings` 中 `user_id=0` 的行按 `sender_id` 查 `user_identities` 映射回填（一次性 SQL）。
+
+### 19. 飞书卡片 select_static 有 options 硬上限；模型选择用两级（订阅 → 模型）
+
+飞书卡片 `select_static` 的 options 有硬上限——`maxModels=120`（109 个订阅模型全塞进一个 select）直接导致 /models 卡片构建报错打不开；`maxModels=30` 则截断，用户 100+ 模型里靠后订阅（如 xin，11 个模型）完全看不到。**教训：不要在一个 select 里塞全部模型**。
+
+修复：`buildModelsCardContent` 模型选择改为**两级**：
+- **订阅 select**（`subscription_select`，action `settings_select_subscription`）：canonical 用户的所有订阅（≤16 个），当前查看订阅高亮（per-sender 记忆 `settingsSubFilter`，默认当前使用模型的订阅）。
+- **模型 select**（`model_select`，action `settings_set_model`）：**只显示当前查看订阅的模型**（≤40），每个订阅都可达，不超飞书 options 上限。
+- `maxModels`/`maxTierModels` 均回到 40（单订阅模型数安全值）；`listModelEntriesCoreByUserID` 用户订阅先于 system 输出（截断时优先用户模型）。
+- 回归测试：`TestListAllModelEntries_UserModelsBeforeSystem`。
