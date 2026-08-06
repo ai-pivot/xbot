@@ -189,13 +189,8 @@ export function AgentPanel({ params }: PanelProps) {
       if (chatID) {
         store.setStatus({ channel: messageChannel, chatID }, 'running')
       }
-      // Stamp the real turnID on the last optimistic user message. Without
-      // this, appendLiveMessage can't distinguish "current turn's user" from
-      // "newer optimistic user" — the live assistant gets positioned after
-      // a newer user msg, breaking turn order.
-      if (turnID > 0) {
-        chat.bindLastUserToTurn(turnID)
-      }
+      // NO optimistic user messages — user rows come from the backend user_echo
+      // (authoritative turn_id). Nothing to bind here.
     },
     ws,
     onHistoryCompacted: isSubAgent ? undefined : () => {
@@ -342,7 +337,13 @@ export function AgentPanel({ params }: PanelProps) {
           askUser.prompt && !isSubAgent ? (
             <AskUserPanel
               prompt={askUser.prompt}
-              onRespond={askUser.respond}
+              onRespond={(answers) => {
+                askUser.respond(answers)
+                // Deterministic: the backend persists the answer as a user
+                // message; reload history so it renders with its authoritative
+                // turn_id (NO optimistic rendering).
+                void chat.reload()
+              }}
               onCancel={askUser.cancel}
             />
           ) : null

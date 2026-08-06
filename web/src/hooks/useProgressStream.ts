@@ -737,11 +737,9 @@ function handleProgressMessage(
           commitLiveProgressAndReset(store, completeRef?.current)
         }
         store.lastTurnID = p.turn_id
-        // turn_started normally stamps the real turnID on the optimistic user
-        // message via onTurnStarted → bindLastUserToTurn. If it was lost, the
-        // user message keeps turnID=0 and MessageList can't place the live
-        // assistant after it (renders inside the previous turn instead). Bind
-        // here as well — bindLastUserToTurn is idempotent (same turnID no-op).
+        // NO optimistic user messages: user rows come from backend user_echo
+        // with authoritative turn_id. turn_started only needs to notify the
+        // panel (typing/active-turn state) — nothing to bind.
         if (turnStartedRef?.current) {
           turnStartedRef.current(p.turn_id, 'user')
         }

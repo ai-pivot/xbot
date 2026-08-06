@@ -81,12 +81,6 @@ export interface UseChatMessagesResult {
   upload: (file: File) => Promise<UploadResponse>
   /** Append a finalized assistant message (called by useProgressStream). */
   appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => void
-  /** Bind the last unpersisted user message to a turnID (on turn_started).
-   *  Optimistic user messages are created with turnID=0 at send time; when
-   *  turn_started arrives with the real turnID, we stamp it on the user row so
-   *  appendLiveMessage can position the live assistant correctly (between the
-   *  current user msg and any newer optimistic user msgs). */
-  bindLastUserToTurn: (turnID: number) => void
   /** Inject a user message from a bg notification/cron (called by useProgressStream). */
   injectUserMessage: (content: string, turnID: number, isNotification: boolean) => void
   /** Remove the trailing assistant message by id (for cancellation cleanup). */
@@ -249,19 +243,24 @@ function reconcileHistoryWithLiveRows(
   }
 
   const liveRows = current.filter((message) => {
-    if (message.persisted !== false) return false
     if (message.eventSeq == null) return false
     // Below watermark: always superseded by history.
     if (message.eventSeq < historyWatermark) return false
-    // Same turnID:role already in history — drop the live row.
+    // Same turnID:role already in history — drop the row.
     // This is the PRIMARY dedup for cancel acks and final replies: the
     // locally-committed message (streaming content) and the DB message
     // ([interrupted] or normal reply) share the same turnID but have
     // different content/eventSeq, so content matching alone fails.
     if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
     // Content+role fallback for messages without turnID (user_echo).
-    if (message.turnID === 0 && message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
-    return true
+    if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
+    // Unpersisted live rows (assistant streaming, cancel acks) are kept.
+    if (message.persisted === false) return true
+    // Persisted user-echo rows (backend-confirmed user messages with their
+    // authoritative turn_id) are kept when a racing history reload does not
+    // yet contain them — they are deterministic data, never dropped.
+    // Content+role dedup above prevents duplicates once history catches up.
+    return message.role === 'user' && message.eventSeq != null
   })
   return [...history, ...liveRows]
 }
@@ -605,22 +604,13 @@ export function useChatMessages({
       const requestID = msg.id
       const id = `echo-${msg.ts ?? Date.now()}-${echoSeq++}`
       const ts = msg.ts ? new Date(msg.ts * 1000).toISOString() : new Date().toISOString()
-      const now = Date.now()
       setMessages((prev) => {
         if (activeMessageCacheKeyRef.current !== listenerCacheKey) return prev
         messageMutationGenRef.current += 1
-        // A replayed echo finds the already-replaced row by requestID, so it
-        // updates in place instead of appending a duplicate.
-        const lastUserIdx = msg.type === 'user_echo' ? prev.findLastIndex((m) => {
-          if (requestID) return m.requestID === requestID
-          if (!m.id.startsWith('user-') || m.content !== msg.original_content) return false
-          const match = m.id.match(/^user-(\d+)-/)
-          return Boolean(match && now - parseInt(match[1], 10) < 5000)
-        }) : -1
-        // Preserve turnID from the optimistic message (set by bindLastUserToTurn).
-        // If user_echo arrives before turn_started, turnID is still 0 —
-        // bindLastUserToTurn will update it later via the echo's requestID match.
-        const existingTurnID = lastUserIdx >= 0 ? prev[lastUserIdx].turnID : 0
+        // Deterministic: the backend echoes every accepted user message with
+        // its authoritative turn_id (NO optimistic rendering, NO
+        // bindLastUserToTurn). Dedup by requestID for SSE replay.
+        if (requestID && prev.some((m) => m.requestID === requestID)) return prev
         const newMsg: ChatMessage = {
           id,
           role: 'user',
@@ -628,16 +618,10 @@ export function useChatMessages({
           iterations: [],
           timestamp: ts,
           isPartial: false,
-          turnID: existingTurnID,
-          persisted: false,
+          turnID: msg.turn_id ?? 0,
+          persisted: true,
           eventSeq: msg.seq,
           requestID,
-        }
-        if (lastUserIdx >= 0) {
-          const copy = [...prev]
-          copy[lastUserIdx] = { ...newMsg, sending: false }
-          messagesRef.current = copy
-          return copy
         }
         const next = [...prev, newMsg]
         messagesRef.current = next
@@ -652,34 +636,10 @@ export function useChatMessages({
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
       const requestID = newMessageRequestID()
-      // a few hundred ms; if it doesn't, don't leave stuck in optimistic state.
-      const resetCommand = text === '/new' && !attachments?.uploadKeys.length
-      let optimisticID: string | null = null
-      if (!resetCommand) {
-        const id = `user-${Date.now()}-${echoSeq++}`
-        optimisticID = id
-        // Optimistically show normal user messages. /new waits for
-        // session_reset so the old history does not flash with a visible
-        // slash-command row.
-        const newMsg: ChatMessage = {
-          id,
-          role: 'user',
-          content: text,
-          iterations: [],
-          timestamp: new Date().toISOString(),
-          isPartial: false,
-          turnID: 0,
-          persisted: false,
-          requestID,
-          sending: true,
-        }
-        messageMutationGenRef.current += 1
-        setMessages((prev) => {
-          const next = [...prev, newMsg]
-          messagesRef.current = next
-              return next
-        })
-      }
+      // NO optimistic rendering: the backend echoes every accepted user
+      // message as user_echo WITH its authoritative turn_id (web_inbound.go
+      // dispatchUserMessage). The frontend renders the user message
+      // deterministically from that echo only.
       void ws.send({
         type: 'message',
         id: requestID,
@@ -690,51 +650,13 @@ export function useChatMessages({
         file_names: attachments?.fileNames,
         file_sizes: attachments?.fileSizes,
         file_mimes: attachments?.fileMimes,
-      }).then((resp) => {
-        // API succeeded — the message is now persisted on the backend.
-        // Use the server-returned message_id (DB auto-increment) so rewind
-        // works immediately without a page refresh. Also sync timestamp.
-        const msgID = resp?.message_id
-        const serverTs = resp?.timestamp
-        const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
-        // The API returns the per-session turn_id allocated at queue-admission
-        // time, so we bind the optimistic user row directly — no dependence on
-        // turn_started (which may be lost/coalesced in SSE). queued=true means
-        // the chat was busy; keep a queued marker until turn_started arrives.
-        const respTurnID = resp?.turn_id
-        const respQueued = resp?.queued === true
-        if (optimisticID) {
-          const sentID = optimisticID
-          messageMutationGenRef.current += 1
-          setMessages((prev) => {
-            const next = prev.map((m) => m.id === sentID ? {
-              ...m,
-              sending: false,
-              persisted: true,
-              ...(msgID ? { dbID: msgID, id: `db-${msgID}` } : {}),
-              ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
-              // Prefer the API-returned turnID. If turn_started already bound
-              // a turnID (race), keep that — they are the same value.
-              ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),
-              ...(respQueued ? { queued: true } : {}),
-            } : m)
-            messagesRef.current = next
-            return next
-          })
-        }
-        onSendSuccess?.()
-      }).catch((error: unknown) => {
-        if (optimisticID) {
-          const failedID = optimisticID
-          messageMutationGenRef.current += 1
-          setMessages((prev) => {
-            const next = prev.filter((message) => message.id !== failedID)
-            messagesRef.current = next
-            return next
-          })
-        }
-        toast.error(error instanceof Error ? error.message : "message send failed")
       })
+        .then(() => {
+          onSendSuccess?.()
+        })
+        .catch((error: unknown) => {
+          toast.error(error instanceof Error ? error.message : 'message send failed')
+        })
     },
     [ws, channel],
   )
@@ -822,33 +744,6 @@ export function useChatMessages({
   // Called by useProgressStream when a turn_started event with trigger
   // "notification" or "resume" arrives. The message is tagged with the
   // backend TurnID so the assistant response can be associated correctly.
-  const bindLastUserToTurn = useCallback((turnID: number) => {
-    if (turnID <= 0) return
-    setMessages((prev) => {
-      // Find this turn's user message and stamp the real turnID on it so the
-      // assistant response (also turnID) is positioned AFTER it. Also clear
-      // any queued marker — turn_started means the message is now actively
-      // being processed.
-      //
-      // Two arrival orders:
-      //  - turn_started first: the optimistic row is still unpersisted
-      //    (persisted=false, turnID=0).
-      //  - REST response first: the row was already persisted with its turnID
-      //    bound from the API response and possibly marked queued=true. We
-      //    must still find it (via the queued flag) to clear the marker.
-      for (let i = prev.length - 1; i >= 0; i--) {
-        if (prev[i].role === 'user' && (!prev[i].persisted || prev[i].queued)) {
-          if (prev[i].turnID === turnID && !prev[i].queued) return prev // already bound
-          const copy = [...prev]
-          copy[i] = { ...prev[i], turnID, queued: false }
-          messagesRef.current = copy
-          return copy
-        }
-        if (prev[i].persisted && !prev[i].queued) break
-      }
-      return prev
-    })
-  }, [])
   const injectUserMessage = useCallback((content: string, turnID: number, isNotification: boolean) => {
     setMessages((prev) => {
       // Dedup: if a notification with the same turnID already exists (from a
@@ -930,7 +825,6 @@ export function useChatMessages({
     upload,
     appendAssistant,
     injectUserMessage,
-    bindLastUserToTurn,
     removeMessage,
     clearMessages,
     markDestructiveMutation,
