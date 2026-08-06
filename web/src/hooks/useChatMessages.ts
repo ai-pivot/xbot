@@ -244,22 +244,27 @@ function reconcileHistoryWithLiveRows(
 
   const liveRows = current.filter((message) => {
     if (message.eventSeq == null) return false
+    // Live rows (unpersisted: streaming assistant, cancel ack, frozen content)
+    // are NEVER dropped by the history watermark — the DB may only hold a
+    // thin placeholder ([interrupted] for a cancelled turn) whose eventSeq is
+    // higher, and dropping the live row would wipe the user-visible content
+    // (e.g. a cancelled assistant with 2 completed iterations vanishes).
+    // Dedup against history (turnID:role / content:role) is still applied.
+    if (message.persisted === false) {
+      if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
+      if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
+      return true
+    }
     // Below watermark: always superseded by history.
     if (message.eventSeq < historyWatermark) return false
     // Same turnID:role already in history — drop the row.
-    // This is the PRIMARY dedup for cancel acks and final replies: the
-    // locally-committed message (streaming content) and the DB message
-    // ([interrupted] or normal reply) share the same turnID but have
-    // different content/eventSeq, so content matching alone fails.
+    // This is the PRIMARY dedup for cancel acks and final replies.
     if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
     // Content+role fallback for messages without turnID (user_echo).
     if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
-    // Unpersisted live rows (assistant streaming, cancel acks) are kept.
-    if (message.persisted === false) return true
     // Persisted user-echo rows (backend-confirmed user messages with their
     // authoritative turn_id) are kept when a racing history reload does not
     // yet contain them — they are deterministic data, never dropped.
-    // Content+role dedup above prevents duplicates once history catches up.
     return message.role === 'user' && message.eventSeq != null
   })
   return [...history, ...liveRows]
