@@ -119,6 +119,14 @@ export default defineConfig({
             if (id.includes('/react-markdown/') || id.includes('/remark-gfm/')) return 'vendor-markdown'
             if (id.includes('/highlight.js/')) return 'vendor-highlight'
             if (id.includes('/katex/')) return 'vendor-katex'
+            // Split medium-sized libraries into their own chunks to reduce
+            // the main entry chunk (was 4.4MB). These are loaded on demand
+            // or are only needed for specific features.
+            if (id.includes('/framer-motion/')) return 'vendor-framer-motion'
+            if (id.includes('/dockview/')) return 'vendor-dockview'
+            if (id.includes('/@tiptap/') || id.includes('/tiptap-markdown/')) return 'vendor-tiptap'
+            if (id.includes('/i18next/') || id.includes('/react-i18next/')) return 'vendor-i18n'
+            if (id.includes('/xterm/')) return 'vendor-xterm'
           }
         },
       },

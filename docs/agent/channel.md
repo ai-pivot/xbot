@@ -17,6 +17,25 @@ log, keyed by iteration; clients never synthesize an iteration when the current
 iteration advances. SSE/WS envelope sequence numbers remain transport replay
 IDs and are independent from the semantic progress watermark.
 
+### Text-based progress (PreReplyNotifier channels)
+
+Channels without structured display (Feishu patches the sent message with
+progress text, QQ sends progress as separate messages) implement
+`channel.PreReplyNotifier` and receive per-iteration progress as **text lines**
+via `RunConfig.ProgressNotifier` → `a.sendMessage`. This must be keyed by
+**channel capability** (`wantsPreReplyNotify`, i.e. `autoNotify` passed into
+`buildMainRunConfig`), **never** by `cfg.ProgressEventHandler == nil` — every
+channel now has a ProgressEventHandler (needed for `/su` viewing + PhaseDone),
+so that old gate silently disabled text progress for ALL channels. CLI/Web
+(ProgressSender, structured) have `autoNotify=false` → notifier is a no-op,
+keeping their message stream free of progress text artifacts.
+
+- **`AskUser` 事件必须送达**（web 端曾因 request-ID 校验静默吞掉事件 → 面板不渲染，用户手动回答污染历史）。规则：同一 (channel, chatID) **只有一个 pending AskUser**，所以 `Send`/SSE 写循环**只按 pending 存在性**判断（存在→发布/发送，清除→跳过/consumed），**绝不做 request-ID 相等校验**；`WithPendingAskUser` 仅用于补全 pending 快照，返回值不 veto 发送。已回答/取消的 prompt 由生产者跳过（Send 不重发）+ SSE consumed（reconnect 不重放）。回归测试：`TestSSEAskUser_PendingExistsSends` / `TestSSEAskUser_PendingMissingConsumed`。
+- **`AskUser` 历史记录**：`ask_question`/`ask_answer` 以 control record（role=control, display_only=1）追加（`AppendAskAnswer`），不参与 LLM 上下文与正常消息渲染；回答（`ask_user_answered`）**两条路径**：(a) **替换 AskUser tool 消息内容为回答**（让本轮 LLM 上下文包含回答——否则模型只看到 "Asked N question(s)" 以为用户没答）；(b) **持久化为正常 user 消息**（绑定本 turn 的 turn_id，非 display_only——Replay 排除 display_only 行，前端拿不到会导致顺序破坏）。**回答 user 消息是回答后迭代的 turn 锚点**——没有它，appendAssistant 的 insertBeforeLastUser 回退到原始 user 消息，把回答后的新迭代渲染到旧迭代上方（顺序破坏）。
+
+- **Web 无乐观渲染（确定性原则）**：前端**禁止任何乐观渲染**——用户消息（含 AskUser 回答）只由**后端 `user_echo` 推送**渲染（`web_inbound.go dispatchUserMessage`：每条被接受的 user 消息回显，**含权威 turn_id**）；`sendMessage` 不插乐观行/不绑 turn_id/无 queued 标记；`bindLastUserToTurn` 已删除；`reconcileHistoryWithLiveRows` 保留 history 竞态未覆盖的 persisted user-echo 行（确定性数据不丢）；AskUser 回答后 AgentPanel 触发 `chat.reload()`（回答 user 消息从后端历史加载）。**迭代号（iter id）也由后端下发**：`ProgressEvent.Iteration` + 历史 `HistoryIteration.Iteration`——前端不做任何迭代号推测。**所有数据确定性、决定性**：turn_id/iter_id 由后端生成并在历史/事件/echo 中返回。
+- **`reconcileHistoryWithLiveRows` must dedup by `turnID:role`, not `eventSeq`/`content`**：cancel 后 `appendAssistant` 创建 live 消息（`seq-N`，`turnID=3`，`persisted=false`）；`markDestructiveMutation` → 下次 reload 走 `reconcileHistoryWithLiveRows`。DB 返回 `[interrupted]`（`hist-N`，`turnID=3`，`content=""`）。修复：从 history 构建 `Set<turnID:role>`，live 消息的 `turnID:role` 已在集合中则丢弃；`turnID=0` 消息（user_echo）用 `content:role` 兜底。live（persisted=false）行在 `eventSeq < watermark` 时被 history 覆盖，但**高于 watermark 的 live 行**（reload 后 SSE 新到数据）保留。**Reload 主路径 ALWAYS reconcile**（`markDestructiveMutation` 在 reload 前递增 gen 导致 `mutated=false`，直接 parsed 替换会丢 persisted user_echo 行）。**persisted USER 行保护**：带 eventSeq 的 echo 走 watermark 判断；无 eventSeq 的 echo（web_inbound.go 推送）仅当 `turnID > 快照最新 user turn` 时保留（竞态 reload 期间当前 turn 消息不消失，同/更早 turn 被 DB 覆盖）。persisted assistant 行由 DB 版本权威。
+
 History recovery keeps DB rows as-is (including incrementally-persisted
 assistant `ToolCalls` from the active turn). The frontend reconciles: when the
 last history assistant is the active turn, `liveProgress` attaches to that row

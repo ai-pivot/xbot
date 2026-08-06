@@ -139,3 +139,13 @@ is unified through Backend methods that route via Transport automatically.
 3. Add `DirectBackend` method (agent/direct_backend.go) for local mode
 4. Add server RPC handler (serverapp/rpc_table.go) — single truth source for both modes
 5. No IsRemote() needed in CLI code
+
+## Session Export (`protocol/session_export.go`)
+
+- `ExportSession` produces a portable JSON (`--export-after` for bench). The **last
+  assistant message's `Detail` is stripped** on export: it holds the aggregated
+  iteration-history JSON which duplicates content already present in the message
+  stream. Tool-message `Detail` (UI-only diff etc.) is preserved — it round-trips
+  through `ImportSession` for UI rendering and is not sent to the LLM.
+- `DisplayOnly` messages are filtered out; the first system message becomes
+  `SystemInstructions`.

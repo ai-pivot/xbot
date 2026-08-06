@@ -74,6 +74,8 @@ const (
 	MethodGetAgentSessionDump          = "get_agent_session_dump"
 	MethodGetAgentSessionDumpByFullKey = "get_agent_session_dump_by_full_key"
 	MethodContinueInteractiveSession   = "continue_interactive_session"
+	MethodExportSession                = "export_session"
+	MethodImportSession                = "import_session"
 	MethodListTenants                  = "list_tenants"
 	MethodSetMaxIterations             = "set_max_iterations"
 	MethodSetMaxConcurrency            = "set_max_concurrency"

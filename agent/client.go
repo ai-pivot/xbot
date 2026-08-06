@@ -739,6 +739,29 @@ func (c *Client) RewindHistory(ch, chatID string, historyID int64) (protocol.His
 	return result, err
 }
 
+// ExportSession exports a session's messages in xbot's portable session format.
+func (c *Client) ExportSession(channel, chatID string) (*protocol.ExportedSession, error) {
+	var r protocol.ExportedSession
+	return &r, c.call(MethodExportSession, struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}{Channel: channel, ChatID: chatID}, &r)
+}
+
+// ImportSession imports a portable session into an existing (or new) chat.
+// Returns the number of messages imported.
+func (c *Client) ImportSession(channel, chatID string, session *protocol.ExportedSession) (int, error) {
+	var r struct {
+		Imported int `json:"imported"`
+	}
+	err := c.call(MethodImportSession, struct {
+		Channel string                    `json:"channel"`
+		ChatID  string                    `json:"chat_id"`
+		Session *protocol.ExportedSession `json:"session"`
+	}{Channel: channel, ChatID: chatID, Session: session}, &r)
+	return r.Imported, err
+}
+
 // ---------------------------------------------------------------------------
 // Interactive SubAgent sessions (via RPC)
 // ---------------------------------------------------------------------------

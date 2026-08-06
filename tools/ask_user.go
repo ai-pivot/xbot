@@ -84,6 +84,8 @@ func (t *AskUserTool) Execute(ctx *ToolContext, input string) (*ToolResult, erro
 }
 
 // SupportedChannels implements ChannelProvider interface.
+// web must be included: the web AskUserPanel + ask_user SSE pipeline is
+// complete; without the tool, web agents can never initiate a question.
 func (t *AskUserTool) SupportedChannels() []string {
-	return []string{"cli", "feishu"}
+	return []string{"cli", "feishu", "web"}
 }

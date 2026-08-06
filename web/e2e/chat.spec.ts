@@ -31,6 +31,12 @@ test.describe('Chat interaction', () => {
   })
 
   test('should show user message after sending', async ({ page }) => {
+    // Wait for the session tree to finish loading — deterministic rendering
+    // matches user_echo by chatID, so sending before the frontend binds a
+    // chatID (session tree still loading under parallel load) makes the echo
+    // unroutable and the user message never renders.
+    await expect(page.locator('text=Loading...')).toHaveCount(0, { timeout: 15_000 }).catch(() => {})
+
     const editor = page.locator('.tiptap')
     if (await editor.isVisible({ timeout: 3000 }).catch(() => false)) {
       await editor.click()

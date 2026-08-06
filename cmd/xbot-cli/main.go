@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,6 +40,8 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/pprof"
+
+	_ "modernc.org/sqlite"
 	"xbot/protocol"
 	"xbot/serverapp"
 	"xbot/tools"
@@ -751,7 +754,7 @@ func (a *cliApp) buildPaletteExternalCommands() []cli.PaletteExternalCommand {
 	return cmds
 }
 
-func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOutputTokens int, ephemeral bool) *cliApp {
+func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOutputTokens int, ephemeral bool, thinkingModeOverride string) *cliApp {
 	cfg := config.Load()
 
 	// If --server was not specified on the command line, fall back to config.
@@ -795,6 +798,14 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 	if maxOutputTokens > 0 {
 		cfg.LLM.MaxOutputTokens = maxOutputTokens
 		log.WithField("max_output_tokens", maxOutputTokens).Info("CLI --max-tokens override applied")
+	}
+	// CLI flag overrides LLM thinking_mode directly (highest priority).
+	// Terminal-Bench needs `reasoning_effort: max` for GLM-5.2 — without it
+	// resolve drops from ~80% to ~55%. Config/DB fallback can be empty on a
+	// fresh DB, so this flag is the reliable way to force it.
+	if thinkingModeOverride != "" {
+		cfg.LLM.ThinkingMode = thinkingModeOverride
+		log.WithField("thinking_mode", thinkingModeOverride).Info("CLI --thinking-mode override applied")
 	}
 
 	llmClient, err := createLLM(cfg.LLM, llm.RetryConfig{
@@ -940,9 +951,13 @@ func main() {
 		fmt.Println("  --new, --new-session  Start a new isolated session (auto-named)")
 		fmt.Println("  --ephemeral         Ephemeral mode: no persistence, clean state for benchmarking")
 		fmt.Println("  --resume            Resume last session (default)")
-		fmt.Println("  --max-context N     Override max context tokens (e.g. 128000)")
+		fmt.Println("  --max-context N     Override max context tokens (e.g. 128000, 1000000)")
 		fmt.Println("  --max-tokens N      Override max output tokens (e.g. 8192)")
+		fmt.Println("  --thinking-mode <json>  Override LLM thinking_mode (e.g. {\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"max\"})")
 		fmt.Println("  -p <prompt>         Non-interactive single prompt")
+		fmt.Println("  --export-session <file>  Export current session (full history) to JSON and exit")
+		fmt.Println("  --import-session <file>  Import session JSON before running (combine with --ephemeral for bench)")
+		fmt.Println("  --export-after <file>    Export session JSON after task completes (bench: no re-run needed)")
 		fmt.Println("  --token <token>     Token for remote server")
 		fmt.Println("  --workspace <path>  Override workspace")
 		fmt.Println("  --sidebar-width N  Set sidebar width (16-40, default 20)")
@@ -988,6 +1003,10 @@ func main() {
 		flagNoSidebar    bool          // --no-sidebar
 		flagMaxContext   int           // --max-context N (override max context tokens)
 		flagMaxTokens    int           // --max-tokens N (override max output tokens)
+		flagThinkingMode string        // --thinking-mode <json> (override LLM thinking_mode, e.g. {"thinking":{"type":"enabled"},"reasoning_effort":"max"})
+		flagExportFile   string        // --export-session <file> export session JSON and exit
+		flagImportFile   string        // --import-session <file> import session JSON before running
+		flagExportAfter  string        // --export-after <file> export session JSON after task completes (bench)
 	)
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -997,6 +1016,26 @@ func main() {
 			newSession = true
 		case "--ephemeral":
 			ephemeral = true
+		case "--export-session":
+			if len(os.Args) > i+1 {
+				flagExportFile = os.Args[i+1]
+				i++
+			}
+		case "--import-session":
+			if len(os.Args) > i+1 {
+				flagImportFile = os.Args[i+1]
+				i++
+			}
+		case "--export-after":
+			if len(os.Args) > i+1 {
+				flagExportAfter = os.Args[i+1]
+				i++
+			}
+		case "--thinking-mode":
+			if len(os.Args) > i+1 {
+				flagThinkingMode = os.Args[i+1]
+				i++
+			}
 		case "-p":
 			if len(os.Args) > i+1 {
 				prompt = os.Args[i+1]
@@ -1093,9 +1132,31 @@ func main() {
 	// Refined AFTER newCLIApp so we can also check DB subscriptions, not just config.json.
 	firstRun := prompt == "" && isFirstRun()
 
+	// 导出模式：--export-session <file> 导出当前会话后退出。
+	// 与 prompt / TUI 互斥，单独处理。
+	if flagExportFile != "" {
+		app := newCLIApp(flagServer, flagToken, flagLocal, flagMaxContext, flagMaxTokens, ephemeral, flagThinkingMode)
+		defer app.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = app.client.Start(ctx)
+
+		workDir := app.workDir
+		if cwd, err := os.Getwd(); err == nil && cwd != "" {
+			workDir = cwd
+		}
+		absWorkDir, _ := filepath.Abs(workDir)
+		if err := doExportSession(app, flagExportFile, "cli", absWorkDir); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Exported session to %s\n", flagExportFile)
+		return
+	}
+
 	// 非交互模式
 	if prompt != "" {
-		executeNonInteractive(prompt, flagMaxContext, flagMaxTokens, ephemeral)
+		executeNonInteractive(prompt, flagMaxContext, flagMaxTokens, ephemeral, flagImportFile, flagExportAfter, flagThinkingMode)
 		return
 	}
 
@@ -1111,7 +1172,7 @@ func main() {
 	if flagLocal {
 		flagServer = ""
 	}
-	app := newCLIApp(flagServer, flagToken, flagLocal, flagMaxContext, flagMaxTokens, ephemeral)
+	app := newCLIApp(flagServer, flagToken, flagLocal, flagMaxContext, flagMaxTokens, ephemeral, flagThinkingMode)
 	if flagLocal {
 		fmt.Println("Backend: in-process (channel transport)")
 	} else if app.client != nil && app.client.IsRemote() {
@@ -1795,6 +1856,11 @@ func main() {
 	// Only a few items are remote-specific (reconnect, conn_state).
 	app.startCommandNamesRefresh(30 * time.Second)
 
+	// Seed thinking_mode (config.json / --thinking-mode flag) into user_settings
+	// so the agent loop's userThinkingMode() uses it. Fresh DB has empty
+	// user_settings → without this, GLM-5.2 loses reasoning_effort:max.
+	seedThinkingModeToSettings(app)
+
 	// sessionStateHandler and ChatRenameFn are now handled internally by Agent.
 	// No external injection needed — Agent uses its own channelFinder + multiSession.DB().
 
@@ -1842,6 +1908,16 @@ func main() {
 				"cwd":     cwd,
 				"chat_id": chatID,
 			}).Info("Synced CLI CWD")
+		}
+	}
+
+	// Import session history (bench mode: --import-session [+ --ephemeral]).
+	// Runs before BindChat so the TUI restores the imported history.
+	if flagImportFile != "" {
+		if n, err := doImportSession(app, flagImportFile, "cli", chatID); err != nil {
+			log.WithError(err).Fatal("Failed to import session")
+		} else {
+			log.WithField("imported", n).Info("Imported session history")
 		}
 	}
 
@@ -2073,9 +2149,67 @@ func red(s string) string {
 	return "\033[0;31m" + s + "\033[0m"
 }
 
+// seedThinkingModeToSettings writes cfg.LLM.ThinkingMode (from config.json or
+// --thinking-mode flag) into user_settings so the agent loop's
+// userThinkingMode() picks it up.
+//
+// WHY direct DB write: the set_user_thinking_mode RPC resolves the canonical
+// user and stores the row with sender_id=<userID> (e.g. "user-1"), while the
+// agent loop's getSetting() queries by raw sender_id ("cli_user"). On a fresh
+// bench DB the raw row is missing → thinking_mode="" → GLM-5.2 loses
+// reasoning_effort:max (Terminal-Bench resolve 55% vs 80%). Writing the raw
+// "cli_user" row (in addition to the canonical one) makes the read path work.
+func seedThinkingModeToSettings(app *cliApp) {
+	if app == nil || app.cfg == nil {
+		return
+	}
+	tm := app.cfg.LLM.ThinkingMode
+	if tm == "" || tm == "auto" {
+		return
+	}
+	// Canonical write (user_id row) — AGENTS.md: settings bound to canonical user.
+	if app.client != nil {
+		if err := app.client.SetUserThinkingMode(cliSenderID, tm); err != nil {
+			log.WithError(err).Warn("Failed to seed thinking_mode (canonical)")
+		}
+		// Also set the LLMFactory default thinking mode — ResolveLLM falls back
+		// to defaultThinkingMode when a fresh DB has no sub/model binding
+		// (tenants/user_default_model empty, ensureSessionModel no-op).
+		// Without this the fallback path returns thinking="" even though
+		// user_settings has the value.
+		if err := app.client.SetDefaultThinkingMode(tm); err != nil {
+			log.WithError(err).Warn("Failed to seed default thinking_mode")
+		}
+	}
+	// Direct write of the raw "cli_user" row the agent loop reads.
+	dbPath := config.DBFilePath()
+	if dbPath == "" || dbPath == ":memory:" {
+		log.Warn("seed thinking_mode: no disk DB path, skipping raw row (ephemeral)")
+		return
+	}
+	conn, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		log.WithError(err).Warn("seed thinking_mode: open db failed")
+		return
+	}
+	defer conn.Close()
+	if _, err := conn.Exec(`INSERT INTO user_settings (channel, sender_id, key, value, updated_at)
+		VALUES ('cli','cli_user','thinking_mode',?,?)
+		ON CONFLICT(channel, sender_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		tm, time.Now().Unix()); err != nil {
+		log.WithError(err).Warn("seed thinking_mode: write user_settings failed")
+		return
+	}
+	log.WithField("thinking_mode", tm).Info("Seeded thinking_mode to user_settings (cli_user row)")
+}
+
 // executeNonInteractive 非交互模式：单次执行 prompt 并输出到 stdout。
-func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int, ephemeral bool) {
-	app := newCLIApp("", "", true, maxContextTokens, maxOutputTokens, ephemeral) // non-interactive always uses local backend
+// importFile 非空时，先从该文件导入会话历史（配合 --ephemeral 不落盘，
+// 用于 bench：加载既定上下文后跑单轮 prompt）。
+// exportAfter 非空时，任务完成后自动把会话历史导出到该文件（bench 跑完
+// 直接拿历史，无需重跑导出命令；ephemeral 内存 DB 在进程内导出即可）。
+func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int, ephemeral bool, importFile, exportAfter, thinkingModeOverride string) {
+	app := newCLIApp("", "", true, maxContextTokens, maxOutputTokens, ephemeral, thinkingModeOverride) // non-interactive always uses local backend
 	defer app.Close()
 
 	absWorkDir, _ := filepath.Abs(app.workDir)
@@ -2083,6 +2217,21 @@ func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int,
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = app.client.Start(ctx)
+
+	// Seed thinking_mode (config.json / --thinking-mode flag) into user_settings
+	// so the agent loop's userThinkingMode() uses it. Fresh DB has empty
+	// user_settings → without this, GLM-5.2 loses reasoning_effort:max.
+	seedThinkingModeToSettings(app)
+
+	// Import session history before sending the prompt (bench mode).
+	if importFile != "" {
+		n, err := doImportSession(app, importFile, "cli", absWorkDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "import_session failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Imported %d messages from %s\n", n, importFile)
+	}
 
 	// Subscribe to outbound events to print to stdout
 	done := make(chan struct{})
@@ -2108,6 +2257,55 @@ func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int,
 
 	<-done
 	fmt.Println()
+
+	// Auto-export session history after the task completes (bench mode).
+	// Runs while the in-memory DB is still alive — no need to re-run a
+	// separate export command.
+	if exportAfter != "" {
+		if err := doExportSession(app, exportAfter, "cli", absWorkDir); err != nil {
+			fmt.Fprintf(os.Stderr, "export_session failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Exported session history to %s\n", exportAfter)
+	}
+}
+
+// doImportSession reads a portable session JSON file and imports its messages
+// into the given session. Returns the number of messages imported.
+func doImportSession(app *cliApp, file, channel, chatID string) (int, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return 0, fmt.Errorf("read import file %s: %w", file, err)
+	}
+	var session protocol.ExportedSession
+	if err := json.Unmarshal(data, &session); err != nil {
+		return 0, fmt.Errorf("parse session JSON %s: %w", file, err)
+	}
+	if len(session.Messages) == 0 && len(session.Records) == 0 {
+		return 0, fmt.Errorf("session file %s has no messages", file)
+	}
+	n, err := app.client.ImportSession(channel, chatID, &session)
+	if err != nil {
+		return 0, fmt.Errorf("import session: %w", err)
+	}
+	return n, nil
+}
+
+// doExportSession exports the given session (complete history + active messages)
+// to a portable JSON file.
+func doExportSession(app *cliApp, file, channel, chatID string) error {
+	session, err := app.client.ExportSession(channel, chatID)
+	if err != nil {
+		return fmt.Errorf("export session: %w", err)
+	}
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal session: %w", err)
+	}
+	if err := os.WriteFile(file, data, 0o644); err != nil {
+		return fmt.Errorf("write export file %s: %w", file, err)
+	}
+	return nil
 }
 
 // setupLogger 配置日志（CLI 模式：仅文件输出，不干扰终端 TUI）。

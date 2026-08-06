@@ -102,14 +102,14 @@ export function buildMessageRows(
   // natural order, and a turn_id=0 user must NOT be grouped with other users.
   // The committed assistant's position is fixed by appendAssistant at commit
   // time (inserted before the newest user), so the array is already ordered.
-  if (!liveMessage) return [...messages]
+  if (!liveMessage) return messages.length > 0 ? messages : []
   // The live message for a turn that already has a committed assistant is
   // merged into it (liveProgress flows via liveId) — never rendered twice.
   if (liveMessage.turnID > 0) {
     const hasCommitted = messages.some(
       (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
     )
-    if (hasCommitted) return [...messages]
+    if (hasCommitted) return messages
     // Distinguish the two live-row kinds by whether its turnID already exists
     // in the committed list:
     //  - EXISTS (e.g. a frozen row from a CANCELLED previous turn whose user is
@@ -171,6 +171,11 @@ export function MessageList({
   // only true during the synchronous scroll event our write dispatches, not
   // across unrelated later scroll events.
   const programmaticScrollRef = useRef(false)
+  // Track scroll velocity for dynamic overscan: fast scrolling needs more
+  // pre-rendered rows to avoid blank flashes; static needs fewer (less work).
+  const lastScrollTopRef = useRef(0)
+  const lastScrollTimeRef = useRef(0)
+  const [dynamicOverscan, setDynamicOverscan] = useState(8)
   const lastChatKeyRef = useRef<string | null | undefined>(chatKey)
   const lastRowCountRef = useRef(0)
   const lastFollowResetTokenRef = useRef(followResetToken)
@@ -249,7 +254,7 @@ export function MessageList({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATE,
-    overscan: 8,
+    overscan: dynamicOverscan,
     getItemKey: (index) => rows[index]?.id ?? `row-${index}`,
   })
 
@@ -331,6 +336,19 @@ export function MessageList({
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
+    // Track scroll velocity for dynamic overscan
+    const now = performance.now()
+    const dt = now - lastScrollTimeRef.current
+    if (dt > 0) {
+      const delta = Math.abs(el.scrollTop - lastScrollTopRef.current)
+      const velocity = delta / dt // px per ms
+      // Fast scroll (>2px/ms): increase overscan to prevent blank flashes.
+      // Slow/stop (<0.5px/ms): reduce overscan to save render work.
+      const target = velocity > 2 ? 14 : velocity > 0.5 ? 8 : 5
+      if (target !== dynamicOverscan) setDynamicOverscan(target)
+    }
+    lastScrollTopRef.current = el.scrollTop
+    lastScrollTimeRef.current = now
     const atEnd = isAtBottom(el)
     const atStart = el.scrollTop <= EDGE_EPSILON
     setAtTop((prev) => (prev === atStart ? prev : atStart))
@@ -354,7 +372,7 @@ export function MessageList({
           : { start: newStart, end: newEnd },
       )
     }
-  }, [virtualizer, cancelPendingFollow])
+  }, [virtualizer, cancelPendingFollow, dynamicOverscan])
 
   // Scroll-to-top sentinel ref — used by IntersectionObserver to detect
   // when the user scrolls to the top and trigger loadMore.
@@ -474,6 +492,11 @@ export function MessageList({
     // callbacks during lazy measurement, and each one must immediately correct
     // scrollTop to the new scrollHeight. Using RAF (scheduleFollow) here causes
     // an active loop: the RAF cancels/reschedules faster than it can execute.
+    //
+    // OPTIMIZATION: Only observe scrollElement (not content). content height
+    // changes are reflected in scrollElement.scrollHeight automatically.
+    // Observing both caused duplicate callbacks (each item resize fired
+    // twice), leading to redundant forced reflows (scrollTop = scrollHeight).
     const observer = new ResizeObserver(() => {
       if (!stickToBottomRef.current) return
       const el = scrollRef.current
@@ -484,7 +507,6 @@ export function MessageList({
       }
     })
     observer.observe(scrollElement)
-    observer.observe(content)
     return () => {
       observer.disconnect()
       cancelPendingFollow()

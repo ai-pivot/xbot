@@ -51,9 +51,14 @@ type Mutator = (draft: ProgressSnapshot) => void
  * truncates at the first gap for linear consistency.
  */
 function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
-  const newIters = incoming.filter(
-    (iter) => !draft.iterationHistory.some((i) => i.iteration === iter.iteration),
-  )
+  if (incoming.length === 0) return
+  // O(N+M) dedup using a Set instead of O(N*M) Array.some() per incoming item.
+  // For long-running agents with 50+ iterations, this avoids 2500+ comparisons.
+  const existing = new Set<number>()
+  for (const iter of draft.iterationHistory) {
+    existing.add(iter.iteration)
+  }
+  const newIters = incoming.filter((iter) => !existing.has(iter.iteration))
   if (newIters.length > 0) {
     draft.iterationHistory = [...draft.iterationHistory, ...newIters].sort(
       (a, b) => a.iteration - b.iteration,
@@ -456,6 +461,43 @@ export class ProgressStore {
     this.dirty = false
     this.lastTurnID = 0
     this.lastIter = 0
+    if (this.rafHandle !== null) {
+      cancelAnimationFrame(this.rafHandle)
+      this.rafHandle = null
+    }
+    this.listeners.forEach((l) => l())
+  }
+
+  /** Atomic reset + replace — used on session switch to avoid two separate
+   *  notifications (fullReset → listeners → React render, then replace →
+   *  listeners → React render). Combines into one notification. */
+  resetAndReplace(next: Partial<ProgressSnapshot>): void {
+    if (this.disposed) return
+    this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
+    // Apply replacement directly to current (no rAF — synchronous)
+    const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, todos: _td, ...rest } = next
+    if (next.todos !== undefined) {
+      this.current.todos = next.todos
+    }
+    if (next.iterationHistory) {
+      appendIterations(this.current, next.iterationHistory)
+      const maxIter = this.current.iterationHistory.reduce((max, i) => Math.max(max, i.iteration), 0)
+      if (maxIter > this.current.lastIter) this.current.lastIter = maxIter
+    }
+    if (next.completedTools) {
+      const currentIter = next.iteration ?? this.current.iteration
+      const filtered = currentIter > 0
+        ? next.completedTools.filter((t) => t.iteration === undefined || t.iteration === currentIter)
+        : next.completedTools
+      this.current.completedTools = dedupTools(filtered)
+    }
+    if (next.eventSeq !== undefined && next.eventSeq > this.current.eventSeq) {
+      this.current.eventSeq = next.eventSeq
+    }
+    Object.assign(this.current, rest)
+    // Single snapshot + single notification
+    this.snapshot = { ...this.current }
+    this.dirty = false
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = null
@@ -876,7 +918,13 @@ export class ProgressStore {
     })
   }
 
-  /** Build a fresh immutable snapshot (shallow-copied top-level) and notify. */
+  /** Build a fresh immutable snapshot (shallow-copied top-level) and notify.
+   *  Structured arrays (activeTools, completedTools, iterationHistory, subAgents)
+   *  are copied by reference from `current` — they are only reassigned in `current`
+   *  when content actually changes (e.g. `draft.activeTools = dedupTools(...)`),
+   *  so stream-only mutations naturally keep the same reference. This means
+   *  downstream useMemo (liveMessage, buildMessageRows) skips recompute
+   *  automatically when these arrays haven't changed — no manual flag needed. */
   private flush(): void {
     if (this.disposed || !this.dirty) return
     this.dirty = false
@@ -896,8 +944,6 @@ export class ProgressStore {
       lastIter: this.current.lastIter,
       lastReasoning: this.current.lastReasoning,
       todos: this.current.todos,
-      // TODO-DBG: log todos in snapshot
-      ...(this.current.todos.length > 0 ? { _todoDbg: this.current.todos.length } : {}),
       subAgents: this.current.subAgents,
       tokenUsage: this.current.tokenUsage,
       turnID: this.current.turnID,

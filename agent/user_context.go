@@ -30,6 +30,20 @@ func WithUserContext(ctx context.Context, uc *UserContext) context.Context {
 	return context.WithValue(ctx, userContextKey{}, uc)
 }
 
+// resolveUserID resolves a senderID to its canonical user_id via the identity
+// resolver (cross-channel). Returns (0, false) when the identity is unknown or
+// the resolver is unavailable — callers then fall back to sender-scoped storage.
+func (a *Agent) resolveUserID(senderID string) (int64, bool) {
+	if a.userSys == nil || a.userSys.identityResolver == nil {
+		return 0, false
+	}
+	uid, _, err := a.userSys.identityResolver.ResolveSender(senderID)
+	if err != nil || uid <= 0 {
+		return 0, false
+	}
+	return uid, true
+}
+
 // UserContextFromContext extracts the UserContext from context.
 // Returns nil if not set (e.g. cron path without processMessage).
 func UserContextFromContext(ctx context.Context) *UserContext {

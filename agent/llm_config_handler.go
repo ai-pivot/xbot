@@ -619,6 +619,9 @@ func (a *Agent) SetUserMaxOutputTokensForSubModel(senderID, subID, model string,
 // ("" = auto). Thinking is a global per-user setting stored under the canonical
 // channel (see LLMFactory.thinkingModeChannel), no longer subscription-scoped.
 func (a *Agent) GetUserThinkingMode(senderID string) string {
+	if uid, ok := a.resolveUserID(senderID); ok {
+		return a.GetUserThinkingModeForUserID(uid)
+	}
 	if a.userSys == nil || a.userSys.llmFactory == nil || a.userSys.settingsSvc == nil {
 		return ""
 	}
@@ -645,6 +648,9 @@ func (a *Agent) GetUserThinkingModeForUserID(userID int64) string {
 // channel) and invalidates the cached LLM client. It no longer touches
 // subscription rows — thinking is global, not per-subscription.
 func (a *Agent) SetUserThinkingMode(senderID string, mode string) error {
+	if uid, ok := a.resolveUserID(senderID); ok {
+		return a.SetUserThinkingModeForUserID(uid, mode)
+	}
 	if mode == "auto" {
 		mode = ""
 	}
@@ -679,6 +685,9 @@ func (a *Agent) SetUserThinkingModeForUserID(userID int64, mode string) error {
 // in resolveTierModel). Uses the same canonical channel as thinking_mode so tier
 // settings are shared across all channels (CLI, Feishu, Web) per user.
 func (a *Agent) GetUserTierModel(senderID, tier string) (subID, model string) {
+	if uid, ok := a.resolveUserID(senderID); ok {
+		return a.GetUserTierModelForUserID(uid, tier)
+	}
 	if a.userSys == nil || a.userSys.llmFactory == nil || a.userSys.settingsSvc == nil {
 		return "", ""
 	}
@@ -693,10 +702,30 @@ func (a *Agent) GetUserTierModel(senderID, tier string) (subID, model string) {
 	return parseTierValue(raw)
 }
 
+// GetUserTierModelForUserID returns the per-user tier model setting keyed by
+// canonical user_id (shares the canonical thinkingModeChannel).
+func (a *Agent) GetUserTierModelForUserID(userID int64, tier string) (subID, model string) {
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
+		return "", ""
+	}
+	vals, err := a.userSys.settingsSvc.GetByUserID(thinkingModeChannel, userID)
+	if err != nil || vals == nil {
+		return "", ""
+	}
+	raw := vals["tier_"+tier]
+	if raw == "" {
+		return "", ""
+	}
+	return parseTierValue(raw)
+}
+
 // SetUserTierModel updates the per-user tier model setting in user_settings DB.
 // Value is stored as "subID|model" (or plain "model" when subID is empty).
 // Invalidates the cached LLM client for the sender.
 func (a *Agent) SetUserTierModel(senderID, tier, subID, model string) error {
+	if uid, ok := a.resolveUserID(senderID); ok {
+		return a.SetUserTierModelForUserID(uid, tier, subID, model)
+	}
 	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return ErrSettingsUnavailable
 	}
@@ -709,6 +738,22 @@ func (a *Agent) SetUserTierModel(senderID, tier, subID, model string) error {
 	}
 	if a.userSys.llmFactory != nil {
 		a.userSys.llmFactory.InvalidateSender(senderID)
+	}
+	return nil
+}
+
+// SetUserTierModelForUserID updates the per-user tier setting keyed by
+// canonical user_id.
+func (a *Agent) SetUserTierModelForUserID(userID int64, tier, subID, model string) error {
+	if a.userSys == nil || a.userSys.settingsSvc == nil {
+		return ErrSettingsUnavailable
+	}
+	val := model
+	if subID != "" {
+		val = subID + "|" + model
+	}
+	if err := a.userSys.settingsSvc.SetByUserID(thinkingModeChannel, userID, "tier_"+tier, val); err != nil {
+		return fmt.Errorf("save tier_%s: %w", tier, err)
 	}
 	return nil
 }

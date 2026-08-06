@@ -11,6 +11,43 @@ import (
 	"testing"
 )
 
+// TestGrepToolDescriptionIncludesSearchStrategy guards the search-strategy
+// guidance in the tool description/params: loose pattern + ignore_case +
+// cross-check before concluding "No matches" (prevents case-sensitive
+// narrow-regex false negatives when hunting for secrets/tokens).
+func TestGrepToolDescriptionIncludesSearchStrategy(t *testing.T) {
+	desc := (&GrepTool{}).Description()
+	for _, want := range []string{
+		"Search strategy",
+		"loose pattern",
+		"[A-Za-z0-9]",
+		"false-negative trap",
+		"hf_[A-Za-z0-9]{20,}",
+		"ignore_case",
+		"re-search from a different angle",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("Description missing %q", want)
+		}
+	}
+	// Param-level guidance: pattern and ignore_case must hint at case-mixed content.
+	var patDesc, icDesc string
+	for _, p := range (&GrepTool{}).Parameters() {
+		switch p.Name {
+		case "pattern":
+			patDesc = p.Description
+		case "ignore_case":
+			icDesc = p.Description
+		}
+	}
+	if !strings.Contains(patDesc, "hf_[A-Za-z0-9]{20,}") || !strings.Contains(patDesc, "mixed-case") {
+		t.Errorf("pattern param lacks loose-pattern guidance: %q", patDesc)
+	}
+	if !strings.Contains(icDesc, "mixed-case") {
+		t.Errorf("ignore_case param lacks mixed-case guidance: %q", icDesc)
+	}
+}
+
 // setupGrepTestDir creates a temporary directory structure for grep tests.
 func setupGrepTestDir(t *testing.T) string {
 	t.Helper()

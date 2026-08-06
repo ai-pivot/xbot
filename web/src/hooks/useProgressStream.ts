@@ -185,7 +185,6 @@ export function useProgressStream({
     // On non-chatID triggers (disabled toggle), preserve todos via reset().
     if (progressCacheKey !== prevProgressCacheKeyRef.current) {
       prevProgressCacheKeyRef.current = progressCacheKey
-      store.fullReset()
       // Restore todos from progressSnapshotCache — switchSession writes
       // the /switch response todos here so they appear immediately,
       // before /api/history's active_progress arrives (which may return
@@ -193,12 +192,18 @@ export function useProgressStream({
       if (progressCacheKey) {
         const cached = progressSnapshotCache.get(progressCacheKey)
         if (cached?.todos && cached.todos.length > 0) {
-          store.replace({ todos: cached.todos.map((t) => ({
+          // Atomic reset + replace: single notification instead of two
+          // (fullReset → render → replace → render).
+          store.resetAndReplace({ todos: cached.todos.map((t) => ({
             id: typeof t.id === 'number' ? t.id : 0,
             text: typeof t.text === 'string' ? t.text : '',
             done: Boolean(t.done),
           })) })
+        } else {
+          store.fullReset()
         }
+      } else {
+        store.fullReset()
       }
     } else {
       store.reset()
@@ -732,11 +737,9 @@ function handleProgressMessage(
           commitLiveProgressAndReset(store, completeRef?.current)
         }
         store.lastTurnID = p.turn_id
-        // turn_started normally stamps the real turnID on the optimistic user
-        // message via onTurnStarted → bindLastUserToTurn. If it was lost, the
-        // user message keeps turnID=0 and MessageList can't place the live
-        // assistant after it (renders inside the previous turn instead). Bind
-        // here as well — bindLastUserToTurn is idempotent (same turnID no-op).
+        // NO optimistic user messages: user rows come from backend user_echo
+        // with authoritative turn_id. turn_started only needs to notify the
+        // panel (typing/active-turn state) — nothing to bind.
         if (turnStartedRef?.current) {
           turnStartedRef.current(p.turn_id, 'user')
         }

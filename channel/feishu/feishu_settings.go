@@ -120,6 +120,9 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		selectName := ""
 		var delegateAction string
 		switch formName {
+		case "subscription_select_form":
+			selectName = "subscription_select"
+			delegateAction = "settings_select_subscription"
 		case "model_select_form":
 			selectName = "model_select"
 			delegateAction = "settings_set_model"
@@ -132,7 +135,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		selectedValue := formStr(actionData, selectName)
 		if selectedValue == "" {
 			// Nothing selected; re-render whichever card the form lives on.
-			if formName == "model_select_form" {
+			if formName == "model_select_form" || formName == "subscription_select_form" {
 				return f.BuildModelsCard(ctx, senderID)
 			}
 			return f.BuildSettingsCard(ctx, senderID, chatID, "general")
@@ -149,6 +152,22 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 			}
 		}
 		return f.HandleSettingsAction(ctx, newActionData, senderID, chatID, messageID)
+
+	case "settings_select_subscription":
+		// Two-level model picker: user switched the subscription select.
+		// Remember the viewed subscription per sender, re-render the card so
+		// the model select shows that subscription's models.
+		subID := ""
+		if opt, ok := actionData["selected_option"].(string); ok && opt != "" {
+			subID = opt
+		}
+		f.settingsSubMu.Lock()
+		if f.settingsSubFilter == nil {
+			f.settingsSubFilter = map[string]string{}
+		}
+		f.settingsSubFilter[senderID] = subID
+		f.settingsSubMu.Unlock()
+		return f.BuildModelsCard(ctx, senderID)
 
 	case "settings_set_model":
 		// Option value is strictly encoded as "subID|model". Per project
@@ -1258,64 +1277,134 @@ func (f *FeishuChannel) BuildModelsCard(ctx context.Context, senderID string) (m
 func (f *FeishuChannel) buildModelsCardContent(ctx context.Context, senderID string) ([]map[string]any, error) {
 	var elements []map[string]any
 
-	// --- Quick model switch (all subscriptions' models) ---
+	// --- Quick model switch (two-level: subscription select → model select) ---
+	// User subscriptions may hold 100+ models; Feishu select_static has a hard
+	// option cap, so a single flat list truncated user models (e.g. xin).
+	// Two-level keeps each select small and every subscription reachable.
 	var entries []protocol.ModelEntry
 	currentEntry := protocol.ModelEntry{}
 	if f.settingsCallbacks.LLMList != nil {
 		entries, currentEntry = f.settingsCallbacks.LLMList(senderID)
 	}
 
-	maxModels := 30
-	if len(entries) > maxModels {
-		entries = entries[:maxModels]
+	// Currently-viewed subscription: user's last pick > active model's sub.
+	viewSubID := ""
+	f.settingsSubMu.Lock()
+	if f.settingsSubFilter != nil {
+		viewSubID = f.settingsSubFilter[senderID]
+	}
+	f.settingsSubMu.Unlock()
+	if viewSubID == "" {
+		viewSubID = currentEntry.SubID
 	}
 
-	// Always render the model selector. When the API model list is empty
-	// (e.g. async loading not complete), include the current model so the
-	// dropdown is never blank.
-	if len(entries) == 0 && currentEntry.Model != "" {
-		entries = append(entries, currentEntry)
+	// Subscription select options (canonical user's subscriptions).
+	var subs []ch.Subscription
+	if f.settingsCallbacks.LLMListSubscriptions != nil {
+		subs, _ = f.settingsCallbacks.LLMListSubscriptions(senderID)
 	}
-	if len(entries) > 0 {
-		var options []map[string]any
-		for _, e := range entries {
-			val := e.SubID + "|" + e.Model
-			display := e.Model
-			if e.SubName != "" {
-				display = e.Model + " (" + e.SubName + ")"
-			}
-			options = append(options, map[string]any{
-				"text":  map[string]any{"tag": "plain_text", "content": display},
-				"value": val,
-			})
+	subOptions := []map[string]any{}
+	seenSub := map[string]bool{}
+	for _, s := range subs {
+		if seenSub[s.ID] {
+			continue
 		}
-
-		selectControl := map[string]any{
-			"tag":         "select_static",
-			"name":        "model_select",
-			"placeholder": map[string]any{"tag": "plain_text", "content": "切换模型..."},
-			"options":     options,
-			"value": map[string]string{
-				"action_data": mustMapToJSON(map[string]string{
-					"action": "settings_set_model",
-				}),
-			},
-		}
-		initialVal := currentEntry.SubID + "|" + currentEntry.Model
-		for _, o := range options {
-			if o["value"] == initialVal {
-				selectControl["initial_option"] = initialVal
-				break
-			}
-		}
-
-		elements = append(elements, buildSelectFormRow(
-			"**当前模型**",
-			currentEntry.Model,
-			"model_select_form",
-			selectControl,
-		)...)
+		seenSub[s.ID] = true
+		subOptions = append(subOptions, map[string]any{
+			"text":  map[string]any{"tag": "plain_text", "content": s.Name},
+			"value": s.ID,
+		})
 	}
+	if len(subOptions) == 0 {
+		subOptions = append(subOptions, map[string]any{
+			"text":  map[string]any{"tag": "plain_text", "content": "暂无订阅"},
+			"value": "",
+		})
+	}
+	subSelect := map[string]any{
+		"tag":         "select_static",
+		"name":        "subscription_select",
+		"placeholder": map[string]any{"tag": "plain_text", "content": "选择订阅..."},
+		"options":     subOptions,
+		"value": map[string]string{
+			"action_data": mustMapToJSON(map[string]string{
+				"action": "settings_select_subscription",
+			}),
+		},
+	}
+	for _, o := range subOptions {
+		if o["value"] == viewSubID {
+			subSelect["initial_option"] = viewSubID
+			break
+		}
+	}
+	elements = append(elements, buildSelectFormRow(
+		"**订阅**",
+		viewSubID,
+		"subscription_select_form",
+		subSelect,
+	)...)
+
+	// Model select: models of the currently-viewed subscription only.
+	var viewEntries []protocol.ModelEntry
+	for _, e := range entries {
+		if e.SubID == viewSubID {
+			viewEntries = append(viewEntries, e)
+		}
+	}
+	// Fallback: if the viewed subscription has no entries yet (async load),
+	// include the active model so the dropdown is never blank.
+	if len(viewEntries) == 0 && currentEntry.Model != "" {
+		viewEntries = append(viewEntries, currentEntry)
+	}
+	maxModels := 40
+	if len(viewEntries) > maxModels {
+		viewEntries = viewEntries[:maxModels]
+	}
+	var options []map[string]any
+	for _, e := range viewEntries {
+		val := e.SubID + "|" + e.Model
+		display := e.Model
+		if e.SubName != "" {
+			display = e.Model + " (" + e.SubName + ")"
+		}
+		options = append(options, map[string]any{
+			"text":  map[string]any{"tag": "plain_text", "content": display},
+			"value": val,
+		})
+	}
+	if len(options) == 0 {
+		options = append(options, map[string]any{
+			"text":  map[string]any{"tag": "plain_text", "content": "该订阅暂无模型"},
+			"value": "",
+		})
+	}
+
+	selectControl := map[string]any{
+		"tag":         "select_static",
+		"name":        "model_select",
+		"placeholder": map[string]any{"tag": "plain_text", "content": "切换模型..."},
+		"options":     options,
+		"value": map[string]string{
+			"action_data": mustMapToJSON(map[string]string{
+				"action": "settings_set_model",
+			}),
+		},
+	}
+	initialVal := currentEntry.SubID + "|" + currentEntry.Model
+	for _, o := range options {
+		if o["value"] == initialVal {
+			selectControl["initial_option"] = initialVal
+			break
+		}
+	}
+
+	elements = append(elements, buildSelectFormRow(
+		"**当前模型**",
+		currentEntry.Model,
+		"model_select_form",
+		selectControl,
+	)...)
 
 	// Max context (unit: k, stored as k*1000)
 	currentMaxContext := 0
@@ -1416,7 +1505,9 @@ func (f *FeishuChannel) buildModelsCardContent(ctx context.Context, senderID str
 	if f.settingsCallbacks.LLMListAllModels != nil {
 		allEntries = f.settingsCallbacks.LLMListAllModels(senderID)
 	}
-	maxTierModels := 15
+	// Tier selectors reuse the model-option list; Feishu select_static has a
+	// hard option cap, so bound it the same as the model selector.
+	maxTierModels := 40
 	if len(allEntries) > maxTierModels {
 		allEntries = allEntries[:maxTierModels]
 	}

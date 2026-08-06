@@ -219,9 +219,20 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 	}
 
 	// The agent persists accepted user messages before running the turn. Echo
-	// expanded attachments only after queue admission so failed requests leave
-	// neither replay events nor phantom history.
-	if content != originalContent && len(msg.UploadKeys) > 0 {
+	// EVERY accepted user message back to the sender WITH its turn_id — the
+	// frontend renders user messages deterministically from this echo (NO
+	// optimistic rendering; turn_id is authoritative). Expanded attachments
+	// keep the original content for display.
+	if res.TurnID > 0 {
+		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{
+			Type:            protocol.MsgTypeUserEcho,
+			ID:              requestID,
+			Content:         content,
+			OriginalContent: originalContent,
+			TS:              receivedAt.Unix(),
+			TurnID:          res.TurnID,
+		})
+	} else if content != originalContent && len(msg.UploadKeys) > 0 {
 		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{
 			Type:            protocol.MsgTypeUserEcho,
 			ID:              requestID,

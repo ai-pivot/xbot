@@ -363,11 +363,12 @@ describe('MessageList virtualization', () => {
 
     // ResizeObserver now scrolls synchronously (no RAF) to handle virtualizer
     // scroll corrections. Each trigger immediately writes scrollTop.
+    // Note: we observe scrollElement (not content) — content height changes
+    // are reflected in scrollElement.scrollHeight automatically.
     act(() => {
-      const content = contentElement(container)
-      RO.trigger(content)
-      RO.trigger(content)
-      RO.trigger(content)
+      RO.trigger(scroller)
+      RO.trigger(scroller)
+      RO.trigger(scroller)
     })
     // At least one write happened synchronously
     expect(tracked.writes.length).toBeGreaterThanOrEqual(1)

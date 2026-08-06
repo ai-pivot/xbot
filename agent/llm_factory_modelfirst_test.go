@@ -28,6 +28,129 @@ func newModelFirstTestFactory(t *testing.T) (*LLMFactory, *sqlite.LLMSubscriptio
 	return f, subSvc, tenantSvc
 }
 
+// TestListAllModelEntriesByCanonicalUserID reproduces the Feishu /models bug:
+// subscriptions are bound to the canonical user_id, but the Feishu card queried
+// by senderID (ou_xxx) and only saw the system fallback. The canonical-user
+// query must return the user's subscriptions.
+func TestListAllModelEntriesByCanonicalUserID(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+
+	// System subscription (shared fallback, read-only).
+	sys := &sqlite.LLMSubscription{
+		ID: "system", SenderID: "__system__", Name: "system", Provider: "openai",
+		BaseURL: "https://api.example/v1", APIKey: "sk", Model: "sys-model", IsSystem: true,
+	}
+	if err := subSvc.Add(sys); err != nil {
+		t.Fatalf("Add system sub: %v", err)
+	}
+	if err := subSvc.UpsertModel(sys.ID, "sys-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel sys: %v", err)
+	}
+
+	// User subscription owned by canonical user_id 42 (sender_id is the linked
+	// CLI identity — a Feishu identity ou_xxx is a DIFFERENT sender_id).
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-user", SenderID: "cli_user", Name: "user-sub", Provider: "openai",
+		BaseURL: "https://api.user.example/v1", APIKey: "sk-user", Model: "user-model",
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add user sub: %v", err)
+	}
+	if err := subSvc.UpsertModel(sub.ID, "user-model", 0, 0, "", ""); err != nil {
+		t.Fatalf("UpsertModel user: %v", err)
+	}
+	if err := subSvc.SetSubscriptionUserID(sub.ID, 42); err != nil {
+		t.Fatalf("SetSubscriptionUserID: %v", err)
+	}
+
+	// Canonical-user query (what the Feishu fix must use): returns user models.
+	entriesByUID := f.ListAllModelEntriesForUserID(42)
+	found := false
+	for _, e := range entriesByUID {
+		if e.Model == "user-model" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ListAllModelEntriesForUserID(42) missing user-model; got %+v", entriesByUID)
+	}
+
+	// senderID query (the OLD Feishu path with an unrelated ou_xxx sender):
+	// must NOT return the canonical user's subscription (only system fallback).
+	entriesBySender := f.ListAllModelEntriesForUser("ou_b90fbcfdce7ff144cdfb6326ca317c8e")
+	for _, e := range entriesBySender {
+		if e.Model == "user-model" {
+			t.Errorf("ListAllModelEntriesForUser(ou_xxx) leaked canonical user model %q (bug: Feishu must query by canonical user_id)", e.Model)
+		}
+	}
+}
+
+// TestSetUserDefaultModelByUserID_RoundTrip verifies the canonical-user default
+// model write path: linked identities (web/cli/feishu sharing user_id) persist
+// and read the SAME default model — no data loss across channels.
+func TestSetUserDefaultModelByUserID_RoundTrip(t *testing.T) {
+	_, subSvc, _ := newModelFirstTestFactory(t)
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-xin", SenderID: "cli_user", Name: "xin", Provider: "openai",
+		BaseURL: "https://api.xin.example/v1", APIKey: "sk-xin", Model: "glm-5.2",
+	}
+	if err := subSvc.Add(sub); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := subSvc.SetUserDefaultModelByUserID(42, sub.ID, "glm-5.2"); err != nil {
+		t.Fatalf("SetUserDefaultModelByUserID: %v", err)
+	}
+	got, err := subSvc.GetUserDefaultModelByUserID(42)
+	if err != nil {
+		t.Fatalf("GetUserDefaultModelByUserID: %v", err)
+	}
+	if got == nil || got.SubscriptionID != sub.ID || got.Model != "glm-5.2" {
+		t.Errorf("default model mismatch: got %+v, want sub=%s model=glm-5.2", got, sub.ID)
+	}
+}
+
+// TestListAllModelEntries_UserModelsBeforeSystem guards the picker ordering:
+// user subscriptions' models must come BEFORE the shared system models, so a
+// truncated picker (Feishu maxModels) never hides user models behind system.
+func TestListAllModelEntries_UserModelsBeforeSystem(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	sys := &sqlite.LLMSubscription{
+		ID: "system", SenderID: "__system__", Name: "system", Provider: "openai",
+		BaseURL: "https://api.example/v1", APIKey: "sk", Model: "sys-model", IsSystem: true,
+	}
+	subSvc.Add(sys)
+	subSvc.UpsertModel(sys.ID, "sys-model", 0, 0, "", "")
+
+	user := &sqlite.LLMSubscription{
+		ID: "sub-xin", SenderID: "cli_user", Name: "xin", Provider: "openai",
+		BaseURL: "https://api.xin.example/v1", APIKey: "sk-xin", Model: "",
+	}
+	subSvc.Add(user)
+	subSvc.UpsertModel(user.ID, "xin-model", 0, 0, "", "")
+	subSvc.SetSubscriptionUserID(user.ID, 42)
+
+	entries := f.ListAllModelEntriesForUserID(42)
+	// xin-model must appear before sys-model.
+	xinIdx, sysIdx := -1, -1
+	for i, e := range entries {
+		switch e.Model {
+		case "xin-model":
+			xinIdx = i
+		case "sys-model":
+			sysIdx = i
+		}
+	}
+	if xinIdx < 0 {
+		t.Fatalf("xin-model missing from entries: %+v", entries)
+	}
+	if sysIdx < 0 {
+		t.Fatalf("sys-model missing from entries: %+v", entries)
+	}
+	if xinIdx > sysIdx {
+		t.Errorf("user model xin-model(%d) must precede system model sys-model(%d)", xinIdx, sysIdx)
+	}
+}
+
 // TestResolveLLM_SelectModel_PersistsPerSession verifies SelectModel writes the
 // per-session (sub, model) to tenants and ResolveLLM reads it back, with the
 // client cached per subscription.

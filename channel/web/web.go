@@ -695,7 +695,13 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 		log.WithFields(log.Fields{"chat_id": msg.ChatID, "target_client_id": targetClientID}).Debug("Web client offline, message buffered")
 	}
 
-	// AskUser: agent needs user input
+	// AskUser: agent needs user input. Publish when the prompt is still
+	// pending (or no pending callback wired); skip only when the pending
+	// has been cleared (already answered/cancelled — never re-announce).
+	// There is exactly ONE pending AskUser per (channel, chatID), so no
+	// request-ID check is needed — a transient mismatch must never
+	// swallow the event (otherwise the web UI never renders the ask panel
+	// and the user answers as a plain message, polluting history).
 	if msg.WaitingUser {
 		askPayload := &protocol.ProgressEvent{}
 		if msg.Metadata != nil {
@@ -716,14 +722,16 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 			Progress: askPayload,
 		}
 		if wc.callbacks.WithPendingAskUser != nil {
-			wc.callbacks.WithPendingAskUser(msg.Channel, msg.ChatID, func(pending *protocol.ProgressEvent) bool {
-				if pending.RequestID != askPayload.RequestID {
-					return false
-				}
-				askMsg.Progress = pending
-				wc.hub.sendToSession(channelName, targetClientID, askMsg)
+			matched := wc.callbacks.WithPendingAskUser(msg.Channel, msg.ChatID, func(pending *protocol.ProgressEvent) bool {
+				askMsg.Progress = pending // richer snapshot (full questions)
 				return true
 			})
+			if matched {
+				wc.hub.sendToSession(channelName, targetClientID, askMsg)
+			}
+			// pending cleared (answered/cancelled) → skip re-announcing.
+		} else {
+			wc.hub.sendToSession(channelName, targetClientID, askMsg)
 		}
 	}
 

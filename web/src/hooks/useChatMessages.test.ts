@@ -151,68 +151,6 @@ describe('useChatMessages', () => {
     second.unmount()
   })
 
-  it('does not let delayed history replace an optimistic message or its SSE echo', async () => {
-    const history = deferred<{
-      messages: { role: string; content: string; timestamp: string }[]
-      chat_id: string
-      last_seq: number
-    }>()
-    let messageHandler: ((message: WSMessage) => void) | null = null
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const data = await history.promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
-    const ws = {
-      rpc: vi.fn(),
-      send: vi.fn(async () => undefined),
-      setLastSeq: vi.fn(),
-      onMessage: vi.fn((handler) => {
-        messageHandler = handler
-        return vi.fn()
-      }),
-    } as unknown as WSConnection
-    const { result } = renderHook(() => useChatMessages({ chatID: 'slow-chat', channel: 'web', ws }))
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
-
-    act(() => {
-      result.current.sendMessage('new message')
-    })
-    expect(result.current.messages.map((message) => message.content)).toEqual(['new message'])
-    const sentMessage = vi.mocked(ws.send).mock.calls[0][0]
-
-    act(() => {
-      messageHandler?.({
-        type: 'user_echo',
-        id: sentMessage.id,
-        chat_id: 'slow-chat',
-        content: 'new message with attachment',
-        original_content: 'new message',
-        ts: 1_786_000_000,
-        seq: 100,
-      })
-    })
-    expect(result.current.messages.map((message) => message.content)).toEqual(['new message with attachment'])
-
-    await act(async () => {
-      history.resolve({
-        messages: [{ role: 'user', content: 'old history', timestamp: '2026-07-08T00:00:00Z' }],
-        chat_id: 'slow-chat',
-        last_seq: 99,
-      })
-      await history.promise
-    })
-    await waitFor(() => expect(result.current.loading).toBe(false))
-
-    expect(result.current.messages.map((message) => message.content)).toEqual([
-      'old history',
-      'new message with attachment',
-    ])
-    expect(ws.setLastSeq).not.toHaveBeenCalled()
-  })
-
   it('does not duplicate a replayed user echo included above the history cursor', async () => {
     const replayTimestamp = '2026-08-06T07:06:40Z'
     const history = deferred<{
@@ -276,52 +214,6 @@ describe('useChatMessages', () => {
     expect(ws.setLastSeq).not.toHaveBeenCalled()
   })
 
-  it('does not duplicate an optimistic message persisted during slow history', async () => {
-    const history = deferred<{
-      messages: { role: string; content: string; timestamp: string }[]
-      chat_id: string
-      last_seq: number
-    }>()
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const data = await history.promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
-    const ws = {
-      rpc: vi.fn(),
-      send: vi.fn(async () => undefined),
-      setLastSeq: vi.fn(),
-      onMessage: vi.fn(() => vi.fn()),
-    } as unknown as WSConnection
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: 'optimistic-history-chat', channel: 'web', ws })
-    ))
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
-
-    act(() => result.current.sendMessage('persisted while loading'))
-    const optimisticTimestamp = result.current.messages[0].timestamp
-    await act(async () => {
-      history.resolve({
-        messages: [{
-          role: 'user',
-          content: 'persisted while loading',
-          timestamp: optimisticTimestamp,
-        }],
-        chat_id: 'optimistic-history-chat',
-        last_seq: 0,
-      })
-      await history.promise
-    })
-
-    await waitFor(() => expect(result.current.messages).toHaveLength(1))
-    expect(result.current.messages[0]).toMatchObject({
-      content: 'persisted while loading',
-      persisted: true,
-    })
-  })
-
   it('keeps a covered replay echo when history does not contain that occurrence', async () => {
     const history = deferred<{
       messages: never[]
@@ -371,7 +263,7 @@ describe('useChatMessages', () => {
     await waitFor(() => expect(result.current.messages).toHaveLength(1))
     expect(result.current.messages[0]).toMatchObject({
       content: 'not persisted yet',
-      persisted: false,
+      persisted: true,
       eventSeq: 7,
     })
     expect(ws.setLastSeq).not.toHaveBeenCalled()
@@ -427,8 +319,10 @@ describe('useChatMessages', () => {
       seq: 1,
     }
     act(() => {
-      messageHandler?.(secondEcho)
+      // Real backend pushes echoes in send order; repeated echoes (SSE replay)
+      // are deduped by requestID.
       messageHandler?.(firstEcho)
+      messageHandler?.(secondEcho)
       messageHandler?.(firstEcho)
     })
 
@@ -466,89 +360,6 @@ describe('useChatMessages', () => {
     expect(result.current.messages.map((message) => message.content)).toEqual(['background task finished'])
   })
 
-  it('restores initial history when an optimistic send fails during loading', async () => {
-    const initialHistory = deferred<{
-      messages: { role: string; content: string; timestamp: string }[]
-      chat_id: string
-      last_seq: number
-    }>()
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const data = await initialHistory.promise
-      return new Response(JSON.stringify({ ok: true, data, error: null }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }))
-    let rejectSend!: (reason: Error) => void
-    const sendPromise = new Promise<void>((_resolve, reject) => {
-      rejectSend = reject
-    })
-    const ws = {
-      rpc: vi.fn(),
-      send: vi.fn(() => sendPromise),
-      setLastSeq: vi.fn(),
-      onMessage: vi.fn(() => vi.fn()),
-    } as unknown as WSConnection
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: 'failed-send-chat', channel: 'web', ws })
-    ))
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
-
-    act(() => {
-      result.current.sendMessage('temporary message')
-    })
-    expect(result.current.messages.map((message) => message.content)).toEqual(['temporary message'])
-
-    await act(async () => {
-      rejectSend(new Error('network unavailable'))
-      await sendPromise.catch(() => undefined)
-    })
-    expect(result.current.messages).toEqual([])
-
-    await act(async () => {
-      initialHistory.resolve({
-        messages: [{ role: 'user', content: 'persisted history', timestamp: '2026-07-08T00:00:01Z' }],
-        chat_id: 'failed-send-chat',
-        last_seq: 77,
-      })
-      await initialHistory.promise
-    })
-
-    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual([
-      'persisted history',
-    ]))
-    expect(ws.setLastSeq).not.toHaveBeenCalled()
-  })
-
-  it('removes a failed optimistic send only from its original session after switching', async () => {
-    let rejectSend!: (reason: Error) => void
-    const sendPromise = new Promise<void>((_resolve, reject) => {
-      rejectSend = reject
-    })
-    const ws = makeWS([
-      { messages: [{ role: 'user', content: 'history A', timestamp: '2026-07-08T00:00:00Z' }] },
-      { messages: [{ role: 'user', content: 'history B', timestamp: '2026-07-08T00:00:01Z' }] },
-    ])
-    vi.mocked(ws.send).mockReturnValue(sendPromise)
-    const { result, rerender } = renderHook(
-      ({ chatID }) => useChatMessages({ chatID, channel: 'web', ws }),
-      { initialProps: { chatID: 'session-a' } },
-    )
-    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['history A']))
-
-    act(() => result.current.sendMessage('temporary A'))
-    expect(result.current.messages.map((message) => message.content)).toEqual(['history A', 'temporary A'])
-
-    rerender({ chatID: 'session-b' })
-    await waitFor(() => expect(result.current.messages.map((message) => message.content)).toEqual(['history B']))
-    await act(async () => {
-      rejectSend(new Error('network unavailable'))
-      await sendPromise.catch(() => undefined)
-    })
-
-    expect(result.current.messages.map((message) => message.content)).toEqual(['history B'])
-  })
-
   it('never returns the previous session messages during a target transition', async () => {
     const historyB = deferred<{ messages: never[]; chat_id: string }>()
     const ws = makeWS([
@@ -565,35 +376,6 @@ describe('useChatMessages', () => {
 
     expect(result.current.messages).toEqual([])
     historyB.resolve({ messages: [], chat_id: 'session-b' })
-  })
-
-  it('keeps an optimistic message visible when the initial history request fails', async () => {
-    let rejectHistory!: (reason: Error) => void
-    const historyPromise = new Promise<never>((_resolve, reject) => {
-      rejectHistory = reject
-    })
-    vi.stubGlobal('fetch', vi.fn(async () => historyPromise))
-    const ws = {
-      rpc: vi.fn(),
-      send: vi.fn(async () => undefined),
-      setLastSeq: vi.fn(),
-      onMessage: vi.fn(() => vi.fn()),
-    } as unknown as WSConnection
-    const { result } = renderHook(() => (
-      useChatMessages({ chatID: 'failed-history-chat', channel: 'web', ws })
-    ))
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
-
-    act(() => {
-      result.current.sendMessage('keep optimistic')
-    })
-    await act(async () => {
-      rejectHistory(new Error('history unavailable'))
-      await historyPromise.catch(() => undefined)
-    })
-
-    expect(result.current.messages.map((message) => message.content)).toEqual(['keep optimistic'])
-    expect(result.current.error).toBe('history unavailable')
   })
 
   it('does not publish delayed active progress after a newer live progress event', async () => {
@@ -941,6 +723,53 @@ describe('useChatMessages', () => {
     // (the live row with 'partial reply' is kept via >= watermark)
   })
 
+  it('cancel: user message does NOT vanish after reload (persisted echo + DB row)', async () => {
+    // USER BUG: send a user message then cancel — the user message disappears
+    // until refresh. user_echo rows are persisted:true, so reconcile's first
+    // check (persisted !== false) drops them and the DB snapshot must carry
+    // them. This test pins the invariant: when the DB snapshot contains the
+    // row, the reload must render it (no vanish).
+    const ws = makeWS([{ messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1, turn_id: 1 }], chat_id: 'cancel-user-chat', last_seq: 1 }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'cancel-user-chat', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map(m => m.role)).toEqual(['user']))
+    const handler = vi.mocked(ws.onMessage).mock.calls[0][0] as (m: WSMessage) => void
+
+    // User sends 'world' — backend echoes it deterministically (persisted:true)
+    act(() => handler({ type: 'user_echo', content: 'world', turn_id: 2, ts: 1000, id: 'r2' }))
+    expect(result.current.messages.map(m => m.content)).toContain('world')
+
+    // User cancels — destructive mutation marks next reload for reconcile
+    act(() => { result.current.markDestructiveMutation() })
+
+    // Reload returns a RACING snapshot that does NOT contain the user row yet
+    // (cancel landed between eager-save and the snapshot; the DB write is
+    // still in flight). This is the exact "user msg vanishes until refresh"
+    // bug: the persisted user_echo row (eventSeq=undefined) must survive the
+    // reload, otherwise the user message disappears and only a refresh (after
+    // the write lands) brings it back.
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      return new Response(JSON.stringify({
+        ok: true,
+        data: {
+          messages: [
+            { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1, turn_id: 1 },
+            { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:02Z', seq: 3, turn_id: 2,
+              iterations: [{ iteration: 1, thinking: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
+          ],
+          chat_id: 'cancel-user-chat', last_seq: 3,
+        },
+        error: null,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    await act(async () => { void result.current.reload() })
+
+    // The user message must survive (persisted user_echo row is deterministic
+    // data — never dropped when the racing snapshot lacks it)
+    const contents = result.current.messages.map(m => m.content)
+    expect(contents).toContain('world')
+  })
+
   it('cancel: appendAssistant with turnID does NOT duplicate after reload', async () => {
     // Bug: after cancel, appendAssistant creates seq-N (turnID=3, persisted=false).
     // markDestructiveMutation → next reload uses reconcileHistoryWithLiveRows.
@@ -1022,104 +851,6 @@ describe('useChatMessages', () => {
     ]))
   })
 
-  it('bindLastUserToTurn stamps turnID on the last optimistic user message', async () => {
-    const ws = makeWS([{ messages: [] }])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'bind-turn', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-
-    // 用户发送一条消息 → optimistic user (turnID=0, persisted=false)
-    act(() => {
-      result.current.sendMessage('msg-1')
-    })
-    expect(result.current.messages.map((m) => m.content)).toEqual(['msg-1'])
-    expect(result.current.messages[0].turnID).toBe(0)
-    expect(result.current.messages[0].persisted).toBe(false)
-
-    // turn_started 到达 → bindLastUserToTurn 把 turnID 绑定到 optimistic user
-    act(() => {
-      result.current.bindLastUserToTurn(42)
-    })
-    expect(result.current.messages[0].turnID).toBe(42)
-    expect(result.current.messages[0].persisted).toBe(false)
-
-    // 再次 bind 相同 turnID → 不重复处理
-    act(() => {
-      result.current.bindLastUserToTurn(42)
-    })
-    expect(result.current.messages[0].turnID).toBe(42)
-    expect(result.current.messages.length).toBe(1)
-  })
-
-  it('bindLastUserToTurn only binds the LAST unpersisted user message (rapid sends)', async () => {
-    const ws = makeWS([{ messages: [] }])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'bind-turn-2', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-
-    // 连发两条消息：u1 (turnID=0), u2 (turnID=0)
-    act(() => result.current.sendMessage('first'))
-    act(() => result.current.sendMessage('second'))
-    expect(result.current.messages.map((m) => m.content)).toEqual(['first', 'second'])
-    expect(result.current.messages.every((m) => m.turnID === 0)).toBe(true)
-
-    // turn_started 到达 → 只绑定最后一条 (second → turnID=7)
-    act(() => result.current.bindLastUserToTurn(7))
-    expect(result.current.messages.map((m) => [m.content, m.turnID])).toEqual([
-      ['first', 0],
-      ['second', 7],
-    ])
-  })
-
-  it('sendMessage binds turnID from the API response without waiting for turn_started', async () => {
-    const ws = makeWS([{ messages: [] }])
-    vi.mocked(ws.send).mockResolvedValue({
-      turn_id: 42,
-      queued: false,
-      message_id: 7,
-      timestamp: 1_786_000_000,
-    })
-    const { result } = renderHook(() => useChatMessages({ chatID: 'turn-resp', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-
-    // 发送消息 → optimistic user (turnID=0)
-    act(() => {
-      result.current.sendMessage('hello')
-    })
-    expect(result.current.messages[0].content).toBe('hello')
-    expect(result.current.messages[0].turnID).toBe(0)
-
-    // REST 响应直接携带 turn_id → optimistic user 被绑定，无需 turn_started
-    await waitFor(() => expect(result.current.messages[0].turnID).toBe(42))
-    expect(result.current.messages[0].queued).toBeUndefined()
-    expect(result.current.messages[0].persisted).toBe(true)
-  })
-
-  it('sendMessage marks the optimistic user as queued when the chat is busy, cleared on turn_started', async () => {
-    const ws = makeWS([{ messages: [] }])
-    vi.mocked(ws.send).mockResolvedValue({
-      turn_id: 43,
-      queued: true,
-      message_id: 8,
-      timestamp: 1_786_000_000,
-    })
-    const { result } = renderHook(() => useChatMessages({ chatID: 'queued', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-
-    act(() => {
-      result.current.sendMessage('hello')
-    })
-    // queued=true → 消息标记排队中（仍带 turn_id）
-    await waitFor(() => expect(result.current.messages[0].queued).toBe(true))
-    expect(result.current.messages[0].turnID).toBe(43)
-    expect(result.current.messages[0].sending).toBe(false)
-
-    // turn_started 到达 → bindLastUserToTurn 清除排队标记
-    act(() => {
-      result.current.bindLastUserToTurn(43)
-    })
-    expect(result.current.messages[0].queued).toBe(false)
-    expect(result.current.messages[0].turnID).toBe(43)
-  })
-
   it('inserts a committed assistant after ITS OWN turn user even when the next turn user is already persisted', async () => {
     // BUG: appendAssistant(insertBeforeLastUser=true) only looked for an
     // UNPERSISTED user. When the next turn's user was persisted first (REST
@@ -1129,15 +860,11 @@ describe('useChatMessages', () => {
     const ws = makeWS([{ messages: [] }])
     const { result } = renderHook(() => useChatMessages({ chatID: 'turn-order', channel: 'web', ws }))
     await waitFor(() => expect(result.current.messages).toEqual([]))
+    const handler = vi.mocked(ws.onMessage).mock.calls[0][0] as (m: WSMessage) => void
 
-    // turn 42: user + bound turnID
-    act(() => result.current.sendMessage('u42'))
-    act(() => result.current.bindLastUserToTurn(42))
-    // turn 43: user; REST response resolves → persisted=true
-    act(() => result.current.sendMessage('u43'))
-    await act(async () => { await Promise.resolve() })
-    expect(result.current.messages.find((m) => m.content === 'u43')?.persisted).toBe(true)
-    act(() => result.current.bindLastUserToTurn(43))
+    // turn 42 + turn 43 users arrive via deterministic backend user_echo (turn_id included).
+    act(() => handler({ type: 'user_echo', content: 'u42', turn_id: 42, ts: 1000, id: 'r42' }))
+    act(() => handler({ type: 'user_echo', content: 'u43', turn_id: 43, ts: 1001, id: 'r43' }))
 
     // turn 42's assistant committed late (turn_started(43) / text fallback)
     act(() => result.current.appendAssistant('A42', [], undefined, 42, true))
@@ -1145,6 +872,30 @@ describe('useChatMessages', () => {
     const contents = result.current.messages.map((m) => m.content)
     expect(contents.indexOf('A42')).toBeGreaterThan(contents.indexOf('u42'))
     expect(contents.indexOf('A42')).toBeLessThan(contents.indexOf('u43'))
+  })
+
+  it('inserts committed assistant AFTER the AskUser answer user (same turnID, last user)', async () => {
+    // AskUser answer case: the answer is persisted as a user message with the
+    // SAME turnID as the iterations that follow, and it is the LAST user in
+    // the list. insertBeforeLastUser must locate THIS TURN's user (turnID
+    // match) and insert AFTER it — otherwise the new iterations render ABOVE
+    // the answer (broken order).
+    const ws = makeWS([{ messages: [] }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'askuser-order', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+    const handler = vi.mocked(ws.onMessage).mock.calls[0][0] as (m: WSMessage) => void
+
+    // original user + AskUser answer user — both arrive via backend user_echo
+    // (deterministic turn_id), same turn 2.
+    act(() => handler({ type: 'user_echo', content: 'u2', turn_id: 2, ts: 1000, id: 'r2a' }))
+    act(() => handler({ type: 'user_echo', content: 'answer', turn_id: 2, ts: 1001, id: 'r2b' }))
+
+    // post-answer iteration (turn 2) commits via insertBeforeLastUser
+    act(() => result.current.appendAssistant('A2', [], undefined, 2, true))
+
+    const contents = result.current.messages.map((m) => m.content)
+    expect(contents.indexOf('A2')).toBeGreaterThan(contents.indexOf('answer'))
+    expect(contents.indexOf('A2')).toBeGreaterThan(contents.indexOf('u2'))
   })
 
   it('injectUserMessage deduplicates notification by turnID (SSE reconnect replay)', async () => {

@@ -20,6 +20,45 @@ import (
 	"xbot/tools"
 )
 
+func TestSSEAskUser_PendingMissingConsumed(t *testing.T) {
+	// After the prompt is answered/cancelled the pending is gone: the event
+	// is consumed (not replayed) and must NOT be sent again on reconnect.
+	recorder := httptest.NewRecorder()
+	client := &Client{w: recorder, flusher: recorder}
+	wc := &WebChannel{}
+	wc.callbacks.WithPendingAskUser = func(ch, chatID string, fn func(*protocol.ProgressEvent) bool) bool {
+		return false // resolved — no pending
+	}
+	msg := protocol.WSMessage{Type: protocol.MsgTypeAskUser, Seq: 5, ChatID: "chat-1", Progress: &protocol.ProgressEvent{RequestID: "req-1"}}
+	if err := wc.writeCurrentSSEEvent(client, msg); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.Body.String(); got != "" {
+		t.Fatalf("resolved ask_user must be consumed (not sent), got: %q", got)
+	}
+	if client.lastSentSeq != 5 {
+		t.Fatalf("resolved ask_user must advance lastSentSeq, got %d", client.lastSentSeq)
+	}
+}
+
+func TestSSEAskUser_PendingExistsSends(t *testing.T) {
+	// ask_user reaches the client while the prompt is pending (typical live
+	// case — pending lookup succeeds).
+	recorder := httptest.NewRecorder()
+	client := &Client{w: recorder, flusher: recorder}
+	wc := &WebChannel{}
+	wc.callbacks.WithPendingAskUser = func(ch, chatID string, fn func(*protocol.ProgressEvent) bool) bool {
+		return fn(&protocol.ProgressEvent{RequestID: "req-1"})
+	}
+	msg := protocol.WSMessage{Type: protocol.MsgTypeAskUser, Seq: 5, ChatID: "chat-1", Progress: &protocol.ProgressEvent{RequestID: "req-1"}}
+	if err := wc.writeCurrentSSEEvent(client, msg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(recorder.Body.String(), "event:ask_user") {
+		t.Fatalf("ask_user not sent while pending: %q", recorder.Body.String())
+	}
+}
+
 func TestWriteSSEEventFormat(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	client := &Client{w: recorder, flusher: recorder}

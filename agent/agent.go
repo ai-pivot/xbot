@@ -985,7 +985,13 @@ func (a *Agent) SetUserModel(senderID, subID, model string) error {
 		}
 		subID = sub.ID
 	}
-	if err := a.userSys.llmFactory.SetUserDefaultModel(senderID, subID, model); err != nil {
+	// Persist the default model under the canonical user_id so linked
+	// identities (web/cli/feishu) all see the same selection.
+	if uid, ok := a.resolveUserID(senderID); ok {
+		if err := a.userSys.llmFactory.SetUserDefaultModelByUserID(uid, subID, model); err != nil {
+			return fmt.Errorf("save default model: %w", err)
+		}
+	} else if err := a.userSys.llmFactory.SetUserDefaultModel(senderID, subID, model); err != nil {
 		return fmt.Errorf("save default model: %w", err)
 	}
 	a.userSys.llmFactory.Invalidate(senderID)
@@ -2856,20 +2862,14 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// 使 REST 响应能直接返回 turn id（不依赖可能被 SSE 合并/丢弃的
 			// turn_started 事件）。
 			//
-			// AskUser answer 不预分配 —— 它复用 active TurnID（同一 turn 的
-			// 延续）。activeTurnID 反映「当前正在处理的 turn」，只有在消息真正
-			// 出队处理时读取才准确：入队时 activeTurnID 可能已被排队消息改写。
-			// 复用避免 TurnID 回归（prev=N, next=N）并确保前端 turn_started
-			// 处理器保留 iterationHistory。
+			// AskUser answer 也是独立 turn：分配新 turn_id（nextTurnID），
+			// 不复用 activeTurnID。复用会让回答 user 消息与回答前的 assistant
+			// 同 turn，前端按 turn 合并迭代时把回答前后的内容（如 pwd 与
+			// task_wait）混进同一个 assistant 块。新 turn 保证回答后的消息
+			// 与回答前严格分离。
 			turnID, _ := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64)
 			if turnID == 0 {
-				askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
-				if askUserAnswered {
-					turnID = ss.activeTurnID.Load()
-				}
-				if turnID == 0 {
-					turnID = ss.nextTurnID()
-				}
+				turnID = ss.nextTurnID()
 				if msg.Metadata == nil {
 					msg.Metadata = map[string]string{}
 				}
@@ -3258,8 +3258,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		return nil, err
 	}
 
-	// AskUser 回答不是新的 user message，而是替换 AskUser 的 tool result。
-	// 移除 Assemble 追加的 user message，并精确替换最近的 AskUser tool message。
+	// AskUser 回答：记录 Q&A + 清理 pending + 持久化回答为正常 user 消息。
 	askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
 	if askUserAnswered {
 		// Append the answer before mutating prompt or pending state.
@@ -3271,7 +3270,11 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 			messages = messages[:len(messages)-1]
 		}
-		// Replace the most recent AskUser tool message content with user's answer.
+		// Replace the most recent AskUser tool message content with the user's
+		// answer so THIS turn's LLM context contains the answer — the model
+		// cannot see the persisted answer user message in the current prompt.
+		// (Without this the model keeps seeing "Asked N question(s)" and has
+		// no idea the user answered.)
 		foundAskUserTool := false
 		for i := len(messages) - 1; i >= 0; i-- {
 			if messages[i].Role != "tool" {
@@ -3286,6 +3289,20 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		}
 		if !foundAskUserTool {
 			log.Ctx(ctx).Warn("AskUser answer received but no matching AskUser tool message found in prompt history")
+		}
+		// Persist the answer as a NORMAL user message bound to this turn so the
+		// web history has a real "user replied" row (turn anchor for the
+		// iterations that follow). Non-display-only: GetHistory/Replay excludes
+		// display_only rows, so the frontend would never see it and the order
+		// would still break.
+		if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
+			if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
+				answerMsg := llm.NewUserMessage(msg.Content)
+				answerMsg.TurnID = tid
+				if _, err := tenantSession.AppendMessage(answerMsg); err != nil {
+					log.Ctx(ctx).WithError(err).Warn("failed to persist AskUser answer user message")
+				}
+			}
 		}
 	}
 

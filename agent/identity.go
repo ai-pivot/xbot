@@ -90,6 +90,26 @@ func (r *IdentityResolver) Resolve(channel, channelUserID string) (int64, string
 	return userID, role, nil
 }
 
+// ResolveSender resolves a senderID to its canonical user_id by searching
+// across ALL channels. channel_user_id values are globally unique (cli_user,
+// web-N, ou_xxx each belong to exactly one channel), so a cross-channel lookup
+// is unambiguous. Unlike Resolve it does NOT auto-create a user — unknown
+// senders return 0 so callers can fall back to sender-scoped storage.
+func (r *IdentityResolver) ResolveSender(senderID string) (int64, string, error) {
+	if r == nil || !r.initialized || senderID == "" {
+		return 0, "", nil
+	}
+	var userID int64
+	err := r.db.QueryRow(
+		`SELECT user_id FROM user_identities WHERE channel_user_id = ? LIMIT 1`,
+		senderID,
+	).Scan(&userID)
+	if err != nil {
+		return 0, "", nil // not linked → caller falls back to sender-scoped data
+	}
+	return userID, r.getRole(userID), nil
+}
+
 // getRole fetches the role for a canonical user_id.
 func (r *IdentityResolver) getRole(userID int64) string {
 	var role string

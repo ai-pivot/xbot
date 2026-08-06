@@ -514,3 +514,32 @@ model-first 重构曾把 `OnModelsLoaded` 回调丢线：`createClientFromSub`�
 光修回调还不够——`CachedModels` 只在订阅 client 被构造时才更新，"从没用过的订阅" / "provider 新增模型"仍是旧值。所以开面板**必须**触发 `RefreshModelEntriesForUser`：并行（`sem` 容量 8）对每个 `Enabled && BaseURL && APIKey` 的订阅 `createClientFromSub` + `llm.ModelLoader.LoadModelsFromAPI`（8s 超时），失败软降级（保留旧 `CachedModels`），完成后返回最新 entries。CLI 侧异步：`openLLMPanel` 把 `refreshModelEntriesCmd` 推进 `m.pendingCmds`，三个入口（Ctrl+N / 点状态栏模型名 / palette Enter）都必须 drain `pendingCmds` 把 cmd 发出去；回包 `cliModelEntriesRefreshedMsg` 在 `Update` 顶层处理，`rebuildLLMRows` 重建 `quickSwitchRows`（**只夹紧光标，不重置**——否则后台刷新会把用户光标拽回顶部）。`rebuildLLMRows` 因此只做 clamp，光标置位由调用方负责（open → `cursorToActiveLLMRow`，typing → 0）。`backendModelLister.EnsureModelsLoaded` 是 no-op（远程模式服务端管缓存），刷新由 `RefreshModelEntries` 显式触发，别再依赖 `EnsureModelsLoaded`。
 
 **`/models` 跨 provider 不可靠是固有的**：Anthropic 根本没有 `/models` 端点；代理/网关常 404、或只返回 curated 子集、或返回非 OpenAI 格式导致 SDK 解析失败 → 软降级保留旧缓存（看起来"不全"）。这不是 bug，是 API-pull 的代价。缓解：`isNoiseModel` 默认过滤掉 chat 不可用的噪声模型（image/realtime/whisper/tts/audio/embed/moderation/dated-snapshot），`E` 让用户手动给任何模型配参数/启停（写入只增不减的 `subscription_models`），`S` 显示全部噪声，`N` 手动注册 provider 没列出的模型（显示为 `offline`，立即可选）。**不保证列表完整**——provider 没列出的模型需要用户用 `N` 手动添加。
+
+### 17. Channel 卡片（飞书 /models）必须按 canonical user_id 查订阅，不能按 sender_id
+
+订阅/设置/tier 全部绑定 `user_id`（v45），但**飞书 channel 的 settings callbacks 曾用 `senderID` 查询**（`LLMListAllModels(senderID)` / `LLMList(senderID)` → `ListAllModelEntriesForUser(sender_id)`）——一个飞书身份 `ou_xxx` 即使通过 link code 关联到 admin 用户，卡片里也只看到 system 订阅（`WHERE sender_id='ou_xxx' OR is_system=1` 查不到 admin 的订阅）。而 web 走 RPC（`rpcUserID(ctx)` + `ListAllModelEntriesForUserID`）正常。症状：飞书 `/models` 卡片只有 `system` 模型，与 web/cli 不一致。
+
+修复：`serverapp/callbacks.go` 新增 `canonicalModelEntries(ag, channel, senderID)` helper——用 `ag.IdentityResolver().Resolve(channel, senderID)` 解析 canonical `user_id`，再 `ListAllModelEntriesForUserID(uid)`（与 RPC 层一致）；`llmCallbacks` 增加 `channelName` 参数（web/feishu），`LLMList` 和飞书 `LLMListAllModels` 都走该 helper。**任何新增的 channel settings callback（查订阅/模型/tier/设置）必须用 canonical user_id，禁止直接用 senderID 查 user 级数据**。回归测试：`agent/llm_factory_modelfirst_test.go` 的 `TestListAllModelEntriesByCanonicalUserID`。
+
+### 18. 统一 canonical user：订阅/tier/thinking/默认模型的读写全部按 user_id（senderID 入口内部解析）
+
+v45 之后所有 user 级数据（`user_llm_subscriptions.user_id`、`user_settings.user_id`、`user_default_model.user_id`）都绑定 canonical user_id，但**部分 channel callbacks / Agent setters 仍按 senderID 键**（`GetSettings(chan, senderID)`、`SetUserDefaultModel(sender_id)` 用 `ON CONFLICT(sender_id)`），导致关联身份（飞书 `ou_xxx` → admin user_id=1）在 /models 面板看不到 web 添加的订阅/tier，且 web 添加的订阅飞书无法选择（数据分裂、疑似丢数据）。
+
+**无 hack 统一方案（根上解决，无 fallback 链）**：
+- `IdentityResolver.ResolveSender(senderID)`：跨 channel 只读解析（`channel_user_id` 全局唯一），**不 auto-create**（查询无副作用）；`Agent.resolveUserID(senderID)` helper 封装。
+- Agent 层 senderID 版 user 方法**内部解析 canonical** 后走 ForUserID 变体：`Get/SetUserThinkingMode`→`ForUserID`、`Get/SetUserTierModel`→新增 `ForUserID`（`settingsSvc.GetByUserID/SetByUserID`，canonical thinkingModeChannel）、`SetUserModel`→新增 `LLMFactory.SetUserDefaultModelByUserID`→storage `SetUserDefaultModelByUserID`（user_id UPDATE/INSERT，`user_default_model` 无 user_id UNIQUE 约束所以不能用 `ON CONFLICT(user_id)`）。
+- 飞书 callbacks：`LLMListSubscriptions`→`ListByUserID`、`LLMGetDefaultSubscription`→`GetDefaultByUserID`、`LLMAddSubscription`→`Add` + `SetSubscriptionUserID(sub.ID, uid)`（新订阅绑定 canonical，不丢数据）。
+- `canonicalModelEntries` 改用 `ResolveSender`（不再 auto-create）。
+- **任何 senderID 入口读写 user 级数据前必须 `resolveUserID`**；RPC 层（`rpcUserID`）已是 canonical，无需改。
+- 回归测试：`TestSetUserDefaultModelByUserID_RoundTrip`、`TestListAllModelEntriesByCanonicalUserID`。
+- 旧数据回填：`user_default_model`/`user_settings` 中 `user_id=0` 的行按 `sender_id` 查 `user_identities` 映射回填（一次性 SQL）。
+
+### 19. 飞书卡片 select_static 有 options 硬上限；模型选择用两级（订阅 → 模型）
+
+飞书卡片 `select_static` 的 options 有硬上限——`maxModels=120`（109 个订阅模型全塞进一个 select）直接导致 /models 卡片构建报错打不开；`maxModels=30` 则截断，用户 100+ 模型里靠后订阅（如 xin，11 个模型）完全看不到。**教训：不要在一个 select 里塞全部模型**。
+
+修复：`buildModelsCardContent` 模型选择改为**两级**：
+- **订阅 select**（`subscription_select`，action `settings_select_subscription`）：canonical 用户的所有订阅（≤16 个），当前查看订阅高亮（per-sender 记忆 `settingsSubFilter`，默认当前使用模型的订阅）。
+- **模型 select**（`model_select`，action `settings_set_model`）：**只显示当前查看订阅的模型**（≤40），每个订阅都可达，不超飞书 options 上限。
+- `maxModels`/`maxTierModels` 均回到 40（单订阅模型数安全值）；`listModelEntriesCoreByUserID` 用户订阅先于 system 输出（截断时优先用户模型）。
+- 回归测试：`TestListAllModelEntries_UserModelsBeforeSystem`。
