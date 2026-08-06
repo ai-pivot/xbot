@@ -232,6 +232,7 @@ function reconcileHistoryWithLiveRows(
   // Build lookup sets from history for O(1) dedup checks.
   const historyTurnRoles = new Set<string>()
   const historyContentKeys = new Set<string>()
+  let newestUserTurn = 0
   for (const m of history) {
     if (m.turnID > 0) {
       historyTurnRoles.add(`${m.turnID}:${m.role}`)
@@ -240,13 +241,42 @@ function reconcileHistoryWithLiveRows(
     if (m.content) {
       historyContentKeys.add(`${m.role}:${m.content}`)
     }
+    if (m.role === 'user' && m.turnID > newestUserTurn) {
+      newestUserTurn = m.turnID
+    }
   }
 
   const liveRows = current.filter((message) => {
+    // Persisted rows: normally covered by history. BUT user_echo rows carry
+    // eventSeq=undefined (the backend echo has no seq), so the eventSeq guard
+    // below would drop them even when the racing DB snapshot does NOT contain
+    // the row yet — the user message vanishes until refresh. Keep persisted
+    // USER rows that are NEWER than the snapshot's newest user turn (a racing
+    // reload during the current turn); drop everything else per dedup rules.
+    if (message.persisted !== false) {
+      if (message.role !== 'user') return false
+      if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
+      if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
+      // Echoes carrying an eventSeq follow the watermark rule: below it they
+      // are covered by history; at/above it they are post-snapshot data and
+      // kept (SSE replay echo / reconnect recovery).
+      if (message.eventSeq != null) {
+        if (message.eventSeq < historyWatermark) return false
+        return true
+      }
+      // No eventSeq (web_inbound.go echoes have none): a racing reload may
+      // lack the row entirely (eager-save still in flight) — the user message
+      // vanished until refresh. Keep it ONLY when its turn is newer than the
+      // snapshot's newest user turn; a same-or-older turn is superseded by
+      // the DB (e.g. same-session background reload replacing old content).
+      if (message.turnID <= newestUserTurn) return false
+      return true
+    }
+    // Unpersisted live rows (streaming assistant, cancel acks, frozen content).
     if (message.eventSeq == null) return false
     // Below watermark: always superseded by history.
     if (message.eventSeq < historyWatermark) return false
-    // Same turnID:role already in history — drop the row.
+    // Same turnID:role already in history — drop the live row.
     // This is the PRIMARY dedup for cancel acks and final replies: the
     // locally-committed message (streaming content) and the DB message
     // ([interrupted] or normal reply) share the same turnID but have
@@ -254,13 +284,7 @@ function reconcileHistoryWithLiveRows(
     if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
     // Content+role fallback for messages without turnID (user_echo).
     if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
-    // Unpersisted live rows (assistant streaming, cancel acks) are kept.
-    if (message.persisted === false) return true
-    // Persisted user-echo rows (backend-confirmed user messages with their
-    // authoritative turn_id) are kept when a racing history reload does not
-    // yet contain them — they are deterministic data, never dropped.
-    // Content+role dedup above prevents duplicates once history catches up.
-    return message.role === 'user' && message.eventSeq != null
+    return true
   })
   return [...history, ...liveRows]
 }
@@ -474,7 +498,15 @@ export function useChatMessages({
       }
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
-      const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0) : parsed
+      // ALWAYS reconcile (not only when `mutated`): markDestructiveMutation
+      // (cancel) increments the gen BEFORE the next reload captures it, so
+      // `mutated` is false for a cancel-triggered reload and the plain
+      // `parsed` replacement would drop persisted user_echo rows when the
+      // racing DB snapshot does not contain them yet — the user message
+      // vanishes until refresh. reconcile keeps persisted USER rows that the
+      // snapshot lacks (dedup by turnID:role / content:role) and drops
+      // everything else per its rules, so it is safe unconditionally.
+      const next = reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0)
       messagesRef.current = next
       setMessages(next)
       // Cache messages for instant render on next session switch (LRU).

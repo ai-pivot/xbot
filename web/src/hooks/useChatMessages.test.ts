@@ -723,6 +723,53 @@ describe('useChatMessages', () => {
     // (the live row with 'partial reply' is kept via >= watermark)
   })
 
+  it('cancel: user message does NOT vanish after reload (persisted echo + DB row)', async () => {
+    // USER BUG: send a user message then cancel — the user message disappears
+    // until refresh. user_echo rows are persisted:true, so reconcile's first
+    // check (persisted !== false) drops them and the DB snapshot must carry
+    // them. This test pins the invariant: when the DB snapshot contains the
+    // row, the reload must render it (no vanish).
+    const ws = makeWS([{ messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1, turn_id: 1 }], chat_id: 'cancel-user-chat', last_seq: 1 }])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'cancel-user-chat', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map(m => m.role)).toEqual(['user']))
+    const handler = vi.mocked(ws.onMessage).mock.calls[0][0] as (m: WSMessage) => void
+
+    // User sends 'world' — backend echoes it deterministically (persisted:true)
+    act(() => handler({ type: 'user_echo', content: 'world', turn_id: 2, ts: 1000, id: 'r2' }))
+    expect(result.current.messages.map(m => m.content)).toContain('world')
+
+    // User cancels — destructive mutation marks next reload for reconcile
+    act(() => { result.current.markDestructiveMutation() })
+
+    // Reload returns a RACING snapshot that does NOT contain the user row yet
+    // (cancel landed between eager-save and the snapshot; the DB write is
+    // still in flight). This is the exact "user msg vanishes until refresh"
+    // bug: the persisted user_echo row (eventSeq=undefined) must survive the
+    // reload, otherwise the user message disappears and only a refresh (after
+    // the write lands) brings it back.
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      return new Response(JSON.stringify({
+        ok: true,
+        data: {
+          messages: [
+            { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1, turn_id: 1 },
+            { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:02Z', seq: 3, turn_id: 2,
+              iterations: [{ iteration: 1, thinking: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
+          ],
+          chat_id: 'cancel-user-chat', last_seq: 3,
+        },
+        error: null,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    await act(async () => { void result.current.reload() })
+
+    // The user message must survive (persisted user_echo row is deterministic
+    // data — never dropped when the racing snapshot lacks it)
+    const contents = result.current.messages.map(m => m.content)
+    expect(contents).toContain('world')
+  })
+
   it('cancel: appendAssistant with turnID does NOT duplicate after reload', async () => {
     // Bug: after cancel, appendAssistant creates seq-N (turnID=3, persisted=false).
     // markDestructiveMutation → next reload uses reconcileHistoryWithLiveRows.
