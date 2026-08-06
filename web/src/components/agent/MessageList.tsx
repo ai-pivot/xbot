@@ -212,7 +212,6 @@ export function MessageList({
   // so the user's visible region stays put — new older rows appear above it,
   // which pushes the scrollbar toward the middle (not the top).
   const loadMoreAnchorIdRef = useRef<string | null>(null)
-  const prevScrollHeightRef = useRef<number | null>(null)
   // Invariant guard: the "thinking…" busy placeholder must never render below
   // a FINISHED assistant (copy button shown — turn complete). A finished turn
   // followed by "thinking…" would imply the completed turn is still running.
@@ -389,16 +388,12 @@ export function MessageList({
           // Capture the first VISIBLE row id BEFORE onLoadMore prepends older
           // rows — this is the scroll anchor we restore after the load lands,
           // so the viewport stays on the same content (not jumping to top).
-          // Also snapshot scrollHeight: if the anchor id is later replaced by
-          // the merge (real-time echo → persisted db row), we fall back to a
-          // scrollTop-delta correction.
           const items = virtualizer.getVirtualItems()
           const firstVisible = items[0]
           if (firstVisible) {
             const anchorRow = rowsRef.current[firstVisible.index]
             loadMoreAnchorIdRef.current = anchorRow?.id ?? null
           }
-          prevScrollHeightRef.current = scrollRef.current?.scrollHeight ?? null
           void onLoadMore()
         }
       },
@@ -419,25 +414,11 @@ export function MessageList({
     const anchorId = loadMoreAnchorIdRef.current
     if (!anchorId) return
     const newIdx = rowsRef.current.findIndex((m) => m.id === anchorId)
-    if (newIdx < 0) {
-      // The anchor id was replaced by the merge (real-time echo row became a
-      // persisted db row). Fall back to a scrollTop-delta correction so the
-      // viewport stays on the same content instead of jumping to the top.
-      const scrollEl = scrollRef.current
-      const prevHeight = prevScrollHeightRef.current
-      if (scrollEl && prevHeight != null) {
-        const delta = scrollEl.scrollHeight - prevHeight
-        if (delta !== 0) scrollEl.scrollTop += delta
-      }
-      loadMoreAnchorIdRef.current = null
-      prevScrollHeightRef.current = null
-      return
-    }
+    if (newIdx < 0) return
     // rAF: let the virtualizer mount + measure the freshly prepended rows so
     // scrollToIndex positions against real (not estimated) row heights.
     const raf = requestAnimationFrame(() => {
       loadMoreAnchorIdRef.current = null
-      prevScrollHeightRef.current = null
       virtualizer.scrollToIndex(newIdx, { align: 'start' })
     })
     return () => cancelAnimationFrame(raf)
