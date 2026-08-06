@@ -366,15 +366,15 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
-	// ProgressNotifier sends text-based progress as a regular message. This is
-	// ONLY for channels without structured progress (e.g. Feishu, which patches
-	// the existing message with progress content). Channels WITH structured
-	// progress (CLI, Web) receive progress via progress_structured events —
-	// sending text messages here pollutes their message stream with progress
-	// rendering artifacts ("> ✅ Shell:", "> 🎭 上下文较大", "> 💭 思考中...").
-	// A non-nil notifier keeps autoNotify=true so notifyProgress still runs and
-	// feeds progressLines to the structured path.
-	if autoNotify && cfg.ProgressEventHandler == nil {
+	// ProgressNotifier sends text-based progress as a regular message. It is
+	// enabled by CHANNEL CAPABILITY (autoNotify = PreReplyNotifier — Feishu
+	// patches the existing message with progress text, QQ sends separate
+	// messages), NOT by the absence of a ProgressEventHandler. Every channel
+	// now has a ProgressEventHandler (needed for /su viewing + PhaseDone), so
+	// keying on `ProgressEventHandler == nil` silently disabled text progress
+	// for all channels. CLI/Web have structured progress (ProgressSender) —
+	// autoNotify=false there, so no text pollution.
+	if autoNotify {
 		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
 				if err := a.sendMessage(channel, chatID, lines[0]); err != nil {
