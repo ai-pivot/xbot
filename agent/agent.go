@@ -3264,8 +3264,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		return nil, err
 	}
 
-	// AskUser 回答不是新的 user message，而是替换 AskUser 的 tool result。
-	// 移除 Assemble 追加的 user message，并精确替换最近的 AskUser tool message。
+	// AskUser 回答：记录 Q&A + 清理 pending + 持久化回答为正常 user 消息。
 	askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
 	if askUserAnswered {
 		// Append the answer before mutating prompt or pending state.
@@ -3277,21 +3276,22 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 			messages = messages[:len(messages)-1]
 		}
-		// Replace the most recent AskUser tool message content with user's answer.
-		foundAskUserTool := false
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role != "tool" {
-				continue
+		// Persist the answer as a NORMAL user message bound to this turn so the
+		// web history has a real "user replied" row (turn anchor for the
+		// iterations that follow). Non-display-only: GetHistory/Replay excludes
+		// display_only rows, so the frontend would never see it and the order
+		// would still break. The AskUser tool message keeps its original result
+		// text ("Asked N question(s)"); the answer lives only in this user
+		// message, so it is not duplicated in the LLM context. AppendAskAnswer
+		// already records the detailed Q&A as a display-only control record.
+		if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
+			if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
+				answerMsg := llm.NewUserMessage(msg.Content)
+				answerMsg.TurnID = tid
+				if _, err := tenantSession.AppendMessage(answerMsg); err != nil {
+					log.Ctx(ctx).WithError(err).Warn("failed to persist AskUser answer user message")
+				}
 			}
-			if messages[i].ToolName != "AskUser" {
-				continue
-			}
-			messages[i].Content = msg.Content
-			foundAskUserTool = true
-			break
-		}
-		if !foundAskUserTool {
-			log.Ctx(ctx).Warn("AskUser answer received but no matching AskUser tool message found in prompt history")
 		}
 	}
 
