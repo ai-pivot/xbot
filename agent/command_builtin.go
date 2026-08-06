@@ -562,6 +562,39 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&goalClearCmd{}, CommandInfo{Usage: "/goal clear", Description: "清除当前目标"}) // 先注册（更精确的匹配优先）
 	r.Register(&goalStatusCmd{}, CommandInfo{Usage: "/goal status", Description: "查看当前目标状态"})
 	r.Register(&goalCmd{}, CommandInfo{Usage: "/goal <目标描述>", Description: "设定长期目标，Agent 自动持续工作直到完成"}) // 后注册（匹配 /goal <任意内容>）
+
+	// Session info & export
+	r.Register(&infoCmd{}, CommandInfo{Usage: "/info", Description: "查看当前会话信息"})
+	r.Register(&exportCmd{}, CommandInfo{Usage: "/export [native|openai|codex]", Description: "导出当前会话"})
+}
+
+// --- /info ---
+
+type infoCmd struct{}
+
+func (c *infoCmd) Name() string        { return "/info" }
+func (c *infoCmd) Aliases() []string   { return nil }
+func (c *infoCmd) Match(s string) bool { return strings.ToLower(strings.TrimSpace(s)) == "/info" }
+func (c *infoCmd) Concurrent() bool    { return true } // read-only
+
+func (c *infoCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	return a.handleSessionInfo(ctx, msg)
+}
+
+// --- /export ---
+
+type exportCmd struct{}
+
+func (c *exportCmd) Name() string      { return "/export" }
+func (c *exportCmd) Aliases() []string  { return nil }
+func (c *exportCmd) Match(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	return lower == "/export" || strings.HasPrefix(lower, "/export ")
+}
+func (c *exportCmd) Concurrent() bool { return true } // read-only DB query
+
+func (c *exportCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	return a.handleExportSession(ctx, msg)
 }
 
 // ---------------------------------------------------------------------------
