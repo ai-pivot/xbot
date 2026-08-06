@@ -1052,4 +1052,74 @@ describe('useChatMessages', () => {
     act(() => result.current.appendAssistant('reply', [], undefined, 42, true))
     expect(result.current.messages.map((m) => m.content)).toEqual(['hello', 'reply'])
   })
+
+  it('full linear consistency: user1 → assistant1(cancelled) → user2 → assistant2', async () => {
+    // End-to-end test covering the cancelled-turn rendering bug.
+    // After this fix, the order must ALWAYS be [u1, A1, u2, A2] — never
+    // [A1, u1, u2, A2] or [u1, u2, A1, A2].
+    const ws = makeWS([{ messages: [] }])
+    vi.mocked(ws.send).mockResolvedValue({ turn_id: 1, queued: false, message_id: 1, timestamp: 1 })
+    const { result } = renderHook(() => useChatMessages({ chatID: 'e2e-linear', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // Turn 1: user1 sent (REST response binds turnID=1)
+    act(() => result.current.sendMessage('u1'))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.messages[0].turnID).toBe(1)
+
+    // Turn 1 cancelled: commitLiveProgressAndReset fires with turnID=1
+    // (simulating turn_started(2) committing turn 1's frozen content)
+    act(() => result.current.appendAssistant('A1', [], undefined, 1, true))
+    expect(result.current.messages.map((m) => m.content)).toEqual(['u1', 'A1'])
+
+    // Turn 2: user2 sent (REST response binds turnID=2)
+    vi.mocked(ws.send).mockResolvedValue({ turn_id: 2, queued: false, message_id: 2, timestamp: 2 })
+    act(() => result.current.sendMessage('u2'))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.messages.map((m) => m.content)).toEqual(['u1', 'A1', 'u2'])
+    expect(result.current.messages[2].turnID).toBe(2)
+
+    // Turn 2 completes: text event commits assistant2 with turnID=2
+    act(() => result.current.appendAssistant('A2', [], undefined, 2, false))
+    expect(result.current.messages.map((m) => m.content)).toEqual(['u1', 'A1', 'u2', 'A2'])
+
+    // Verify turnIDs are correct
+    expect(result.current.messages.map((m) => m.turnID)).toEqual([1, 1, 2, 2])
+  })
+
+  it('user_echo deduplicates against REST-response-bound optimistic message', async () => {
+    // Race: REST response arrives first (binds turnID, sets persisted=true),
+    // then user_echo arrives. The echo must NOT create a duplicate.
+    const ws = makeWS([{ messages: [] }])
+    vi.mocked(ws.send).mockResolvedValue({ turn_id: 42, queued: false, message_id: 100, timestamp: 1 })
+    const { result } = renderHook(() => useChatMessages({ chatID: 'echo-dedup', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toEqual([]))
+
+    // sendMessage creates optimistic, REST resolves with turnID=42
+    act(() => result.current.sendMessage('hello'))
+    await act(async () => { await Promise.resolve() })
+    expect(result.current.messages).toHaveLength(1)
+    expect(result.current.messages[0].turnID).toBe(42)
+    expect(result.current.messages[0].persisted).toBe(true)
+
+    // Simulate user_echo arriving via SSE (ws.onMessage callback)
+    const onMessageCb = vi.mocked(ws.onMessage).mock.calls[0]?.[0] as (msg: WSMessage) => () => void
+    expect(onMessageCb).toBeDefined()
+    act(() => {
+      const off = onMessageCb({
+        type: 'user_echo',
+        id: result.current.messages[0].requestID,
+        content: 'hello',
+        turn_id: 42,
+        seq: 1,
+        ts: 1,
+      } as WSMessage)
+      off?.()
+    })
+
+    // Must NOT create a duplicate — the echo should be deduped
+    expect(result.current.messages).toHaveLength(1)
+    expect(result.current.messages[0].content).toBe('hello')
+    expect(result.current.messages[0].turnID).toBe(42)
+  })
 })
