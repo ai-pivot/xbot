@@ -450,28 +450,25 @@ func (wc *WebChannel) writeSSEBatch(ctx context.Context, client *Client, batch [
 }
 
 func (wc *WebChannel) writeCurrentSSEEvent(client *Client, msg protocol.WSMessage) error {
-	if msg.Type != protocol.MsgTypeAskUser || msg.Seq == 0 || msg.Seq <= client.lastSentSeq {
-		return writeSSEEvent(client, msg)
+	// AskUser: deliver while the prompt is pending; drop as consumed when it
+	// has been answered/cancelled (must not remain at the replay cursor, and
+	// reconnect must not re-announce a resolved prompt). Pending-existence is
+	// the only signal — there is exactly one pending AskUser per
+	// (channel, chatID), so no request-ID check is needed (a transient ID
+	// mismatch must never swallow a LIVE event; the producer already skips
+	// re-announcing cleared prompts).
+	if msg.Type == protocol.MsgTypeAskUser {
+		if wc.callbacks.WithPendingAskUser != nil &&
+			wc.callbacks.WithPendingAskUser(client.sessionChannel, client.chatID, func(*protocol.ProgressEvent) bool {
+				return true
+			}) {
+			return writeSSEEvent(client, msg)
+		}
+		// Resolved prompt — treat as consumed, omit from the response stream.
+		client.lastSentSeq = msg.Seq
+		return nil
 	}
-
-	requestID := askUserRequestID(msg)
-	var currentEvent protocol.WSMessage
-	current := requestID != "" && wc.callbacks.WithPendingAskUser != nil &&
-		wc.callbacks.WithPendingAskUser(client.sessionChannel, client.chatID, func(pending *protocol.ProgressEvent) bool {
-			if pending.RequestID != requestID {
-				return false
-			}
-			msg.Progress = pending
-			currentEvent = msg
-			return true
-		})
-	if current {
-		return writeSSEEvent(client, currentEvent)
-	}
-	// A resolved prompt must not remain at the replay cursor forever. Treat
-	// it as consumed while omitting it from the response stream.
-	client.lastSentSeq = msg.Seq
-	return nil
+	return writeSSEEvent(client, msg)
 }
 
 func writeSSEEvent(client *Client, msg protocol.WSMessage) error {
