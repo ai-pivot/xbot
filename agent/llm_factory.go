@@ -1146,7 +1146,7 @@ func (f *LLMFactory) listModelEntriesCoreByUserID(userID int64, includeDisabled 
 		}
 		infos = append(infos, subInfo{sub: sub, rows: rows, rowEn: rowEn})
 	}
-	for _, info := range infos {
+	emitInfo := func(info subInfo) {
 		sub := info.sub
 		subName := sub.Name
 		if sub.IsSystem {
@@ -1168,11 +1168,24 @@ func (f *LLMFactory) listModelEntriesCoreByUserID(userID int64, includeDisabled 
 			status := "normal"
 			if en, ok := info.rowEn[sub.Model]; ok && !en {
 				if !includeDisabled {
-					continue
+					return
 				}
 				status = "disabled"
 			}
 			add(sub.ID, subName, sub.Model, status)
+		}
+	}
+	// User subscriptions first, system fallback LAST — pickers that truncate
+	// (e.g. Feishu card, maxModels) must never hide a user's own models behind
+	// the shared system models.
+	for _, info := range infos {
+		if !info.sub.IsSystem {
+			emitInfo(info)
+		}
+	}
+	for _, info := range infos {
+		if info.sub.IsSystem {
+			emitInfo(info)
 		}
 	}
 	return result

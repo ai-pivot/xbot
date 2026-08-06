@@ -1265,7 +1265,11 @@ func (f *FeishuChannel) buildModelsCardContent(ctx context.Context, senderID str
 		entries, currentEntry = f.settingsCallbacks.LLMList(senderID)
 	}
 
-	maxModels := 30
+	// Model list is DB-driven; user subscriptions may hold 100+ models.
+	// Feishu select_static options are attributes (not card elements), so a
+	// large option list is fine. Keep a generous cap (120) rather than 30 —
+	// the old cap hid later subscriptions' models (e.g. xin) entirely.
+	maxModels := 120
 	if len(entries) > maxModels {
 		entries = entries[:maxModels]
 	}
@@ -1416,7 +1420,9 @@ func (f *FeishuChannel) buildModelsCardContent(ctx context.Context, senderID str
 	if f.settingsCallbacks.LLMListAllModels != nil {
 		allEntries = f.settingsCallbacks.LLMListAllModels(senderID)
 	}
-	maxTierModels := 15
+	// Same reasoning as the model selector: user subscriptions can hold 100+
+	// models; the old 15 cap hid most of them from the tier selectors.
+	maxTierModels := 120
 	if len(allEntries) > maxTierModels {
 		allEntries = allEntries[:maxTierModels]
 	}

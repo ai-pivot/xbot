@@ -109,6 +109,48 @@ func TestSetUserDefaultModelByUserID_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestListAllModelEntries_UserModelsBeforeSystem guards the picker ordering:
+// user subscriptions' models must come BEFORE the shared system models, so a
+// truncated picker (Feishu maxModels) never hides user models behind system.
+func TestListAllModelEntries_UserModelsBeforeSystem(t *testing.T) {
+	f, subSvc, _ := newModelFirstTestFactory(t)
+	sys := &sqlite.LLMSubscription{
+		ID: "system", SenderID: "__system__", Name: "system", Provider: "openai",
+		BaseURL: "https://api.example/v1", APIKey: "sk", Model: "sys-model", IsSystem: true,
+	}
+	subSvc.Add(sys)
+	subSvc.UpsertModel(sys.ID, "sys-model", 0, 0, "", "")
+
+	user := &sqlite.LLMSubscription{
+		ID: "sub-xin", SenderID: "cli_user", Name: "xin", Provider: "openai",
+		BaseURL: "https://api.xin.example/v1", APIKey: "sk-xin", Model: "",
+	}
+	subSvc.Add(user)
+	subSvc.UpsertModel(user.ID, "xin-model", 0, 0, "", "")
+	subSvc.SetSubscriptionUserID(user.ID, 42)
+
+	entries := f.ListAllModelEntriesForUserID(42)
+	// xin-model must appear before sys-model.
+	xinIdx, sysIdx := -1, -1
+	for i, e := range entries {
+		switch e.Model {
+		case "xin-model":
+			xinIdx = i
+		case "sys-model":
+			sysIdx = i
+		}
+	}
+	if xinIdx < 0 {
+		t.Fatalf("xin-model missing from entries: %+v", entries)
+	}
+	if sysIdx < 0 {
+		t.Fatalf("sys-model missing from entries: %+v", entries)
+	}
+	if xinIdx > sysIdx {
+		t.Errorf("user model xin-model(%d) must precede system model sys-model(%d)", xinIdx, sysIdx)
+	}
+}
+
 // TestResolveLLM_SelectModel_PersistsPerSession verifies SelectModel writes the
 // per-session (sub, model) to tenants and ResolveLLM reads it back, with the
 // client cached per subscription.
