@@ -186,12 +186,16 @@ Changes the agent's working directory. Subsequent tool calls (Shell, Read, Grep,
 
 ## AskUser Tool (`tools/ask_user.go`)
 
-Allows the agent to ask the user questions and wait for responses. Only available in CLI mode. Supports:
+Allows the agent to ask the user questions and wait for responses. Available on **cli / feishu / web** (`SupportedChannels`). Supports:
 - Multiple questions in a single call
 - Optional multiple-choice options for each question
 - Multi-line question text
 
-The CLI channel renders questions in an interactive input panel.
+- CLI: interactive input panel (`channel/cli/cli_msg_builder.go`)
+- Feishu: WaitingUser text message, user replies in chat
+- Web: `ask_user` SSE event → AskUserPanel → `ask_user_response` (channel/web + sseConnection.ts + useAskUser.ts)
+- **Must include `web`** — a missing channel here silently removes the tool from that session's tool list, so the agent can never initiate a question (the otherwise-complete render pipeline never fires). Regression: `TestAskUserToolSupportsWeb`.
+- AskUser history: `ask_question`/`ask_answer` are control records (display_only=1); answers via `ask_user_answered` → `AppendAskAnswer` + replace the AskUser tool message (no separate user message).
 
 ## DownloadFile Tool (`tools/download.go`)
 
