@@ -22,10 +22,19 @@ const singleUserSenderID = "cli_user"
 // No code after this point should access LLMFactory / IdentityResolver /
 // SettingsService directly.
 //
+// Identity resolution priority:
+//  1. metadata["user_id"] — injected by the channel entry layer using the
+//     PHYSICAL channel (e.g. "web"), which is authoritative. This avoids
+//     re-resolving via (msg.Channel, senderID) which uses the session's
+//     ORIGIN channel (e.g. "cli") — a pair that may not exist in
+//     user_identities for cross-channel browsing scenarios.
+//  2. IdentityResolver.Resolve(channel, senderID) — fallback when metadata
+//     is absent (standalone CLI, SubAgent, etc.).
+//
 // In single-user mode (a.singleUser == true), all senderIDs are mapped to
 // a single canonical identity. This is the ONLY place that needs to change
 // to switch between multi-user and single-user modes.
-func (a *Agent) ResolveUserContext(channel, chatID, senderID string) *UserContext {
+func (a *Agent) ResolveUserContext(channel, chatID, senderID string, metadata map[string]string) *UserContext {
 	if a.userSys == nil || a.userSys.llmFactory == nil {
 		log.Warn("ResolveUserContext: userSys or llmFactory is nil, returning nil")
 		return nil
@@ -57,10 +66,20 @@ func (a *Agent) ResolveUserContext(channel, chatID, senderID string) *UserContex
 	}
 
 	// --- Identity ---
+	// Channel entry points inject the pre-resolved canonical identity via
+	// metadata. This is authoritative — ResolveUserContext must NOT
+	// re-resolve via (channel, senderID) because that pair uses the
+	// session's origin channel, not the physical channel the user
+	// authenticated through. Re-resolving would create a wrong
+	// (channel, channel_user_id) pair for cross-channel browsing.
 	userID := int64(0)
 	role := ""
 	standaloneMode := true
-	if a.userSys.identityResolver != nil && !a.singleUser {
+	if uid, r, ok := parseUserIDFromMetadata(metadata); ok && !a.singleUser {
+		userID = uid
+		role = r
+		standaloneMode = false
+	} else if a.userSys.identityResolver != nil && !a.singleUser {
 		standaloneMode = false
 		uid, r, _ := a.userSys.identityResolver.Resolve(channel, senderID)
 		userID = uid
