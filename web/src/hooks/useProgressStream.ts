@@ -520,7 +520,20 @@ function handleProgressMessage(
         // For "user"/"notification" triggers, full reset (new turn).
         if (ts?.trigger === 'resume') {
           store.resetStreamingState()
+          // Resume is a continuation of the same turn — the text event is
+          // expected to finalize. Reset finalizedRef so it can fire.
+          if (finalizedRef) finalizedRef.current = false
         } else {
+          // Capture whether the store has visible progress BEFORE the commit.
+          // If it does, commitLiveProgressAndReset will call onAssistantComplete
+          // → resetProgress → finalizedRef = true. We must NOT reset
+          // finalizedRef to false afterward (line 546) — otherwise the text
+          // event sees finalizedRef=false and calls appendAssistant again,
+          // creating a duplicate (the committed message has turnID=0 + live
+          // content, the text event has turnID=N + final content —
+          // incrementalDedup can't match them because both turnID and
+          // content differ).
+          const hadVisibleProgress = hasVisibleProgress(store.getSnapshot())
           // Commit any uncommitted live content from the previous turn, then
           // reset. Unconditional commit (the helper no-ops on an empty store):
           // a store with visible content is by definition un-finalized — the
@@ -531,6 +544,20 @@ function handleProgressMessage(
           // no data loss) instead of vanishing in one frame.
           commitLiveProgressAndReset(store, completeRef?.current)
           store.lastIter = 0
+          // If the commit happened (store had visible content), set
+          // finalizedRef = true DIRECTLY — do NOT rely on onAssistantComplete's
+          // side-effect (resetProgress) to set it. The text event for the
+          // previous turn may arrive after turn_started; if finalizedRef is
+          // false, the text event calls onAssistantComplete again → duplicate
+          // message with different turnID + content → incrementalDedup can't
+          // match them → duplicate rendering.
+          // If the store was empty (no commit), reset finalizedRef for the new
+          // turn — the text event is expected and will finalize.
+          if (hadVisibleProgress) {
+            if (finalizedRef) finalizedRef.current = true
+          } else {
+            if (finalizedRef) finalizedRef.current = false
+          }
         }
         if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
           injectRef?.current?.(ts.content, p.turn_id, ts.trigger === 'notification')
@@ -542,8 +569,10 @@ function handleProgressMessage(
           turnStartedRef?.current?.(p.turn_id, ts?.trigger ?? 'user')
           store.lastTurnID = p.turn_id
         }
-        // Reset finalize guards for the new turn.
-        if (finalizedRef) finalizedRef.current = false
+        // Reset phaseDone guard for the new turn. finalizedRef was already
+        // handled above (kept true if commit happened, reset to false otherwise).
+        // For the resume case, finalizedRef is reset to false (the AskUser
+        // answer is a continuation — text event is expected).
         if (phaseDoneRef) phaseDoneRef.current = false
         return
       }
