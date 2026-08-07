@@ -33,7 +33,7 @@ type DB struct {
 	historyLocks [historyLockStripes]sync.Mutex
 }
 
-const schemaVersion = 54
+const schemaVersion = 53
 const historyLockStripes = 64
 
 // Open opens or creates a SQLite database at the given path
