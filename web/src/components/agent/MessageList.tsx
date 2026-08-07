@@ -19,7 +19,6 @@ import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucid
 
 import { MessageItem } from './MessageItem'
 import { ShimmerThinking } from './ShimmerThinking'
-import { mergeIterations } from './progressStore'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -111,18 +110,13 @@ export function buildMessageRows(
       (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
     )
     if (hasCommitted) {
-      // Merge live iterations into the committed message — the live progress
-      // store has real-time iteration data from SSE, which is MORE complete
-      // than the DB-sourced iterations (especially for in-progress turns
-      // where Detail hasn't been set yet). Without this merge, switching
-      // sessions loses earlier iterations because the DB only has
-      // pendingIters (from IncrementalPersist's ToolCalls, missing content
-      // and reasoning for earlier iterations).
-      return messages.map((m) =>
-        m.turnID === liveMessage.turnID && m.role === 'assistant' && m.id !== liveMessage.id
-          ? { ...m, iterations: mergeIterations(m.iterations ?? [], liveMessage.iterations ?? []) }
-          : m,
-      )
+      // The live message has a committed counterpart — liveProgress flows
+      // to it via liveId (MessageList.tsx). AssistantMessage ignores
+      // message.iterations when hasLiveProgress is true (it uses
+      // progress.iterationHistory exclusively), so merging iterations here
+      // would be wasted work that breaks MessageItem memo (new object ref
+      // every frame). Just return messages as-is.
+      return messages
     }
     // Distinguish the two live-row kinds by whether its turnID already exists
     // in the committed list:
