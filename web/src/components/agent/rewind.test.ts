@@ -45,6 +45,31 @@ describe('resolveUserMessageDBID', () => {
     expect(resolveUserMessageDBID(reloadRows, echoRow)).toBe(202)
   })
 
+  it('content-only fallback picks the MOST RECENT occurrence, not the oldest', () => {
+    // Duplicate content: the user sent identical attachment messages twice.
+    // rows are DB-id-ascending; rewind targets the newest occurrence — a
+    // forward scan would hit db-100 (the OLDEST) and rewind to the wrong spot.
+    const echoRow = userMsg({ id: 'echo-dup', turnID: 0, content: 'same file.pdf', persisted: true })
+    const reloadRows = [
+      userMsg({ id: 'db-100', turnID: 1, content: 'same file.pdf', persisted: true, dbID: 100 }),
+      userMsg({ id: 'db-101', turnID: 2, content: 'other', persisted: true, dbID: 101 }),
+      userMsg({ id: 'db-102', turnID: 4, content: 'same file.pdf', persisted: true, dbID: 102 }),
+    ]
+    expect(resolveUserMessageDBID(reloadRows, echoRow)).toBe(102)
+  })
+
+  it('turnID>0 target with mismatched content does NOT guess across turns', () => {
+    // The authoritative turnID path is exact-only: a content mismatch means the
+    // reloaded row is not this message. Never fall through to a content-only
+    // guess that could pick another turn's message.
+    const echoRow = userMsg({ id: 'echo-x', turnID: 7, content: 'hello', persisted: true })
+    const reloadRows = [
+      userMsg({ id: 'db-201', turnID: 7, content: 'different text', persisted: true, dbID: 201 }),
+      userMsg({ id: 'db-200', turnID: 6, content: 'hello', persisted: true, dbID: 200 }),
+    ]
+    expect(resolveUserMessageDBID(reloadRows, echoRow)).toBeUndefined()
+  })
+
   it('returns undefined when the message is not in the fresh snapshot (genuinely not persisted)', () => {
     const echoRow = userMsg({ id: 'echo-3', turnID: 9, content: 'queued msg', persisted: true })
     expect(resolveUserMessageDBID([], echoRow)).toBeUndefined()

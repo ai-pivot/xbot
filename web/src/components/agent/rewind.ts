@@ -11,9 +11,18 @@ import type { ChatMessage } from '@/types/shared'
  * (parseHistoryMessages → `dbID: m.id`).
  *
  * Rewind (RewindToHistoryID) requires that DB id, so rewindTo resolves it from
- * a fresh reload when the echo row lacks it. Matching is turnID+content first
- * (echo rows always carry the authoritative turnID); rows without a turnID
- * (attachment-expansion echoes) fall back to content-only matching.
+ * a fresh reload when the echo row lacks it.
+ *
+ * Matching:
+ * - turnID>0 targets: exact turnID+content match. The echo's content equals
+ *   the persisted content (the agent loop eager-saves the same expanded
+ *   string), so a mismatch means the row isn't this message — return undefined
+ *   rather than guessing across turns.
+ * - turnID=0 targets (attachment-expansion echoes): no turnID to match, so
+ *   fall back to content. `rows` are DB-id-ascending, so scan in REVERSE to
+ *   hit the MOST RECENT occurrence — rewind semantically targets the newest
+ *   message with that content; a forward scan would match the oldest
+ *   same-content row and rewind to the wrong position when content repeats.
  *
  * @param rows   Fresh history rows (must carry dbID).
  * @param target The echo row the user is trying to rewind.
@@ -24,13 +33,17 @@ export function resolveUserMessageDBID(
   rows: ChatMessage[],
   target: Pick<ChatMessage, 'role' | 'turnID' | 'content'>,
 ): number | undefined {
-  for (const m of rows) {
-    if (m.role !== 'user' || m.dbID == null) continue
-    if (m.turnID === target.turnID && m.turnID > 0 && m.content === target.content) {
-      return m.dbID
+  if (target.turnID > 0) {
+    for (const m of rows) {
+      if (m.role !== 'user' || m.dbID == null) continue
+      if (m.turnID === target.turnID && m.content === target.content) {
+        return m.dbID
+      }
     }
+    return undefined
   }
-  for (const m of rows) {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]
     if (m.role !== 'user' || m.dbID == null) continue
     if (m.content && m.content === target.content) {
       return m.dbID
