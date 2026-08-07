@@ -3126,7 +3126,7 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// Resolve all user-related components ONCE at the entry point.
 	// Everything downstream reads UserContext from ctx — no direct access
 	// to LLMFactory/IdentityResolver/SettingsService anywhere in the agent loop.
-	userCtx := a.ResolveUserContext(msg.Channel, msg.ChatID, msg.SenderID)
+	userCtx := a.ResolveUserContext(msg.Channel, msg.ChatID, msg.SenderID, msg.Metadata)
 	ctx = WithUserContext(ctx, userCtx)
 
 	preview := msg.Content
@@ -3158,16 +3158,15 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		a.sessionReplyTo.Delete(key)
 	}
 
-	// Create the tenant with the identity already authenticated by the channel
-	// boundary. Metadata is authoritative for linked identities whose transport
-	// channel differs from their canonical identity channel.
+	// Create the tenant with the identity already resolved by
+	// ResolveUserContext. The canonical user_id is authoritative — it was
+	// resolved at the channel boundary using the physical channel, and
+	// ResolveUserContext already preferred metadata injection over
+	// re-resolving via (msg.Channel, senderID).
 	tenantOwner := int64(0)
 	if msg.Channel == "web" || msg.Channel == "cli" || msg.Channel == "agent" {
 		if userCtx != nil {
 			tenantOwner = userCtx.UserID
-		}
-		if uid, _, ok := parseUserIDFromMetadata(msg.Metadata); ok {
-			tenantOwner = uid
 		}
 	}
 

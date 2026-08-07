@@ -288,16 +288,11 @@ func (a *Agent) buildMainRunConfig(
 	}
 
 	// Identity is resolved at processMessage entry and carried via ctx.
+	// ResolveUserContext already preferred metadata injection (from the
+	// channel boundary) over re-resolving via (channel, senderID).
 	userCtx := UserContextFromContext(ctx)
-	// Channel entry points may override via msg.Metadata (already resolved at
-	// entry layer — avoids double DB lookup).
-	if uid, role, ok := parseUserIDFromMetadata(msg.Metadata); ok {
-		cfg.UserID = uid
-		cfg.Role = role
-	} else {
-		cfg.UserID = userCtx.UserID
-		cfg.Role = userCtx.Role
-	}
+	cfg.UserID = userCtx.UserID
+	cfg.Role = userCtx.Role
 	if cfg.UserID == 0 {
 		cfg.UserID = 1 // standalone mode default
 	}
