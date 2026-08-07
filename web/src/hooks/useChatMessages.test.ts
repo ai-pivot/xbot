@@ -1033,17 +1033,15 @@ describe('useChatMessages', () => {
     const { result } = renderHook(() => useChatMessages({ chatID: 'rest-bind', channel: 'web', ws }))
     await waitFor(() => expect(result.current.messages).toEqual([]))
 
-    // Send message — optimistic user is added
+    // Send message — optimistic user is added (no sending spinner)
     act(() => result.current.sendMessage('hello'))
     expect(result.current.messages).toHaveLength(1)
     expect(result.current.messages[0].content).toBe('hello')
-    expect(result.current.messages[0].sending).toBe(true)
 
     // REST response resolves — optimistic message is updated
     await act(async () => { await Promise.resolve() })
     expect(result.current.messages[0].turnID).toBe(42)
     expect(result.current.messages[0].persisted).toBe(true)
-    expect(result.current.messages[0].sending).toBe(false)
     expect(result.current.messages[0].dbID).toBe(100)
 
     // Now commitLiveProgressAndReset (from turn_started of next turn) fires

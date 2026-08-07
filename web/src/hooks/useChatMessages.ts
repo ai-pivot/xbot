@@ -683,10 +683,12 @@ export function useChatMessages({
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
       const requestID = newMessageRequestID()
-      // Optimistic rendering: show the user message immediately with a "sending"
-      // indicator. When the backend's user_echo arrives (SSE), it replaces this
-      // optimistic row — matched by requestID — with the authoritative version
-      // (persisted=true, turnID from server, dbID from DB).
+      // Optimistic rendering: show the user message immediately.
+      // No "sending" spinner — the REST response is typically <200ms, and
+      // the spinner's height change (appear → disappear) causes the user
+      // message bubble to resize, which triggers TanStack Virtual remeasurement
+      // → scroll correction → visible jitter. The message appearing is enough
+      // feedback; the busy state (from onSendSuccess) provides the rest.
       const resetCommand = text === '/new' && !attachments?.uploadKeys.length
       let optimisticID: string | null = null
       if (!resetCommand) {
@@ -702,7 +704,6 @@ export function useChatMessages({
           turnID: 0,
           persisted: false,
           requestID,
-          sending: true,
         }
         messageMutationGenRef.current += 1
         setMessages((prev) => {
@@ -723,14 +724,15 @@ export function useChatMessages({
         file_mimes: attachments?.fileMimes,
       })
         .then((resp) => {
-          // Update the optimistic message with the server's authoritative
-          // data (turn_id, message_id, dbID). This is critical:
-          // 1. turnID enables appendAssistant's turnID-aware insertion logic
-          //    (insertBeforeLastUser scans for user with matching turnID).
-          // 2. persisted=true makes reconcileHistoryWithLiveRows treat it as
-          //    a committed message (not a live row to be dropped).
-          // 3. dbID enables instant rewind without a page refresh.
-          // 4. sending=false clears the "sending..." indicator.
+          // Call onSendSuccess BEFORE setMessages so the busy placeholder
+          // appears in the same render cycle as the message update. Otherwise
+          // (onSendSuccess after setMessages) there are two separate renders:
+          // 1) message update (no height change since no spinner)
+          // 2) busy placeholder appears (height increases)
+          // Two renders with different scroll heights = visible jitter.
+          // Calling onSendSuccess first lets both updates land in the same
+          // React batch (React 18 automatic batching for promises).
+          onSendSuccess?.()
           if (optimisticID && resp) {
             const sentID = optimisticID
             const respTurnID = resp.turn_id
@@ -742,11 +744,7 @@ export function useChatMessages({
             setMessages((prev) => {
               const next = prev.map((m) => m.id === sentID ? {
                 ...m,
-                sending: false,
                 persisted: true,
-                // Keep the optimistic id — changing it causes TanStack Virtual
-                // to unmount/remount the row (key change), visible as a jitter.
-                // dbID is stored separately for rewind; id stays stable.
                 ...(msgID ? { dbID: msgID } : {}),
                 ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
                 ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),
@@ -756,7 +754,6 @@ export function useChatMessages({
               return next
             })
           }
-          onSendSuccess?.()
         })
         .catch((error: unknown) => {
           // Remove the optimistic message on send failure
