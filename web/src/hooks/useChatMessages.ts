@@ -744,7 +744,10 @@ export function useChatMessages({
                 ...m,
                 sending: false,
                 persisted: true,
-                ...(msgID ? { dbID: msgID, id: `db-${msgID}` } : {}),
+                // Keep the optimistic id — changing it causes TanStack Virtual
+                // to unmount/remount the row (key change), visible as a jitter.
+                // dbID is stored separately for rewind; id stays stable.
+                ...(msgID ? { dbID: msgID } : {}),
                 ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
                 ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),
                 ...(respQueued ? { queued: true } : {}),
