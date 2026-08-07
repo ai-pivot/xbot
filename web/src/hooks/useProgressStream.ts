@@ -513,15 +513,14 @@ function handleProgressMessage(
         // giving the committed assistant the wrong turnID.
         // store.lastTurnID is updated AFTER the commit, below.
         const ts = p.turn_start
-        // For "resume" trigger (AskUser answer), preserve iterationHistory —
-        // the answer is a CONTINUATION of the same turn, not a new turn.
-        // Only clear streaming state (streamContent, activeTools, etc.) so
-        // the new iteration starts clean, but previous iterations survive.
-        // For "user"/"notification" triggers, full reset (new turn).
+        // For "resume" trigger (InjectInboundResume — NOT AskUser answer),
+        // preserve iterationHistory — the answer is a CONTINUATION of the
+        // same turn, not a new turn. Only clear streaming state so the new
+        // iteration starts clean, but previous iterations survive.
+        // AskUser answer now uses trigger="user" (new turn, new turnID) —
+        // it goes through the else branch (commitLiveProgressAndReset).
         if (ts?.trigger === 'resume') {
           store.resetStreamingState()
-          // Resume is a continuation of the same turn — the text event is
-          // expected to finalize. Reset finalizedRef so it can fire.
           if (finalizedRef) finalizedRef.current = false
         } else {
           // Capture whether the store has visible progress BEFORE the commit.

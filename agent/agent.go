@@ -3719,11 +3719,12 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 		} else if msg.Metadata["resume_turn"] == "true" {
 			trigger = "resume"
 		} else if msg.Metadata["ask_user_answered"] == "true" {
-			// AskUser answer is a CONTINUATION of the same turn, not a new turn.
-			// Use trigger="resume" so the frontend preserves iterationHistory
-			// from before the AskUser call — the answer's Run continues the
-			// same logical turn.
-			trigger = "resume"
+			// AskUser answer is a NEW turn (new turnID allocated by chatProcessLoop).
+			// trigger="user" so the frontend does commitLiveProgressAndReset
+			// (commits old turn's live content, resets store). Using "resume"
+			// was wrong — it preserved old iterationHistory (resetStreamingState)
+			// and lost the old turn's live content.
+			trigger = "user"
 		}
 	}
 
