@@ -53,12 +53,16 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   const hasLiveProgress = progress != null && progress.phase !== 'done'
 
   // Completed iterations: snapshot when live, DB when not.
-  // CRITICAL: when live, use progress.iterationHistory exclusively — even
-  // if empty. message.iterations from DB contains the active turn's tools
-  // (incremental persistence), which overlap with LiveIteration's tools.
+  // When live, prefer progress.iterationHistory (real-time SSE data). But
+  // if it's empty (e.g. turnCommittedRef blocked initialProgress hydration
+  // after session switch — store wasn't hydrated), fall back to
+  // message.iterations (DB data) so the user sees completed iterations
+  // instead of an empty assistant message with only the live iteration.
+  const progressIters = progress?.iterationHistory ?? []
+  const dbIters = message.iterations ?? []
   const iterations = hasLiveProgress
-    ? (progress.iterationHistory ?? [])
-    : (message.iterations ?? [])
+    ? (progressIters.length > 0 ? progressIters : dbIters)
+    : dbIters
 
   // LiveIteration renders the current in-flight iteration. It has its own
   // tool filtering (by iteration number) so it won't duplicate completed
