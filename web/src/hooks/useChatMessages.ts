@@ -27,7 +27,7 @@ import {
   type UploadResponse,
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
-import { dedupMessages, assertIterationContinuity } from '@/components/agent/progressStore'
+import { dedupMessages, mergeIterations, assertIterationContinuity } from '@/components/agent/progressStore'
 import { getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
@@ -189,6 +189,71 @@ let echoSeq = 0
 function newMessageRequestID(): string {
   const id = globalThis.crypto?.randomUUID?.()
   return id ? id.replaceAll('-', '') : `web-${Date.now()}-${echoSeq++}`
+}
+
+/**
+ * Incremental dedup: assumes the existing array (excluding newMsgIdx) is
+ * already linearly consistent (previously deduped). Only the NEW message at
+ * newMsgIdx can conflict — scan the array for a match by:
+ * 1. turnID:role (same turn + role → merge iterations, prefer DB version)
+ * 2. eventSeq (same SSE seq → replace)
+ * 3. content:role (same content → content-based dedup for turnID=0 commits)
+ *
+ * If no conflict, returns the array unchanged. If conflict, merges in-place
+ * and removes the duplicate. O(n) worst case but typically O(1) — the
+ * conflicting message is almost always the last few rows (same turn).
+ *
+ * This replaces the previous O(n) dedupMessages(withMsg) call that re-scanned
+ * the entire array on every appendAssistant invocation.
+ */
+function incrementalDedup<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number; dbID?: number; persisted?: boolean; iterations?: WebIteration[] }>(
+  arr: T[],
+  newMsgIdx: number,
+): T[] {
+  const msg = arr[newMsgIdx]
+  // Check for conflicts only against the new message
+  for (let i = 0; i < arr.length; i++) {
+    if (i === newMsgIdx) continue
+    const existing = arr[i]
+    // 1. Same turnID:role (turnID > 0)
+    if (msg.turnID > 0 && existing.turnID === msg.turnID && existing.role === msg.role) {
+      const merged = mergeIterations(existing.iterations ?? [], msg.iterations ?? [])
+      const result = [...arr]
+      result[i] = {
+        ...existing,
+        iterations: merged.length > 0 ? merged : (existing.iterations ?? []),
+        content: (existing.content ?? '') !== '' ? existing.content : (msg.content ?? ''),
+      }
+      result.splice(newMsgIdx, 1)
+      return result
+    }
+    // 2. Same eventSeq (SSE replay)
+    if (msg.eventSeq != null && existing.eventSeq === msg.eventSeq) {
+      const result = [...arr]
+      result[i] = msg // replace with newer version
+      result.splice(newMsgIdx, 1)
+      return result
+    }
+    // 3. Content-based dedup: same content + role='assistant'
+    // (turnID=0 live commit vs turnID>0 DB message)
+    const msgContent = msg.content ?? ''
+    if (msgContent && msg.role === 'assistant' && existing.role === 'assistant' &&
+        (existing.content ?? '') === msgContent) {
+      // Prefer the DB version (turnID > 0) as base
+      const base = existing.turnID > 0 ? existing : msg
+      const other = existing.turnID > 0 ? msg : existing
+      const merged = mergeIterations(base.iterations ?? [], other.iterations ?? [])
+      const result = [...arr]
+      result[i] = {
+        ...base,
+        iterations: merged.length > 0 ? merged : (base.iterations ?? []),
+      }
+      result.splice(newMsgIdx, 1)
+      return result
+    }
+  }
+  // No conflict — array is already consistent
+  return arr
 }
 
 /** SubAgent message from get_session_messages RPC (agent.SessionMessage). */
@@ -851,7 +916,11 @@ export function useChatMessages({
         }
       }
       const withMsg = [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)]
-      const next = dedupMessages(withMsg)
+      // Incremental dedup: the existing array (prev) is already linearly
+      // consistent (previously deduped). Only the NEW message can conflict.
+      // Check in O(1): scan for a match by turnID:role, eventSeq, or
+      // content:role (content-based fallback for turnID=0 live commits).
+      const next = incrementalDedup(withMsg, insertIdx)
       messagesRef.current = next
       return next
     })
