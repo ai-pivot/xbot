@@ -26,31 +26,35 @@ interface TurnBodyProps {
   liveProgress?: ProgressSnapshot | null
   level: CollapseLevel
   mergeTools?: boolean
+  /** TurnID for data-attribute debugging (data-turn-id on each block). */
+  turnID?: number
 }
 
 /** A flattened content block extracted from iterations. */
 type ContentBlock =
-  | { kind: 'reasoning'; text: string }
-  | { kind: 'text'; content: string }
-  | { kind: 'tools'; tools: WebToolProgress[] }
+  | { kind: 'reasoning'; text: string; iteration: number }
+  | { kind: 'text'; content: string; iteration: number }
+  | { kind: 'tools'; tools: WebToolProgress[]; iterations: number[] }
 
 /** Flatten iterations into content blocks, merging consecutive tool blocks. */
 function flattenIterations(iterations: WebIteration[]): ContentBlock[] {
   const blocks: ContentBlock[] = []
   for (const iter of iterations) {
+    const iterNum = iter.iteration
     if (iter.reasoning) {
-      blocks.push({ kind: 'reasoning', text: iter.reasoning })
+      blocks.push({ kind: 'reasoning', text: iter.reasoning, iteration: iterNum })
     }
     if (iter.thinking) {
-      blocks.push({ kind: 'text', content: iter.thinking })
+      blocks.push({ kind: 'text', content: iter.thinking, iteration: iterNum })
     }
     if (iter.tools.length > 0) {
       // Merge with previous block if it's also tools
       const last = blocks[blocks.length - 1]
       if (last && last.kind === 'tools') {
         last.tools.push(...iter.tools)
+        last.iterations.push(iterNum)
       } else {
-        blocks.push({ kind: 'tools', tools: [...iter.tools] })
+        blocks.push({ kind: 'tools', tools: [...iter.tools], iterations: [iterNum] })
       }
     }
   }
@@ -62,6 +66,7 @@ export const TurnBody = memo(function TurnBody({
   liveProgress,
   level,
   mergeTools = true,
+  turnID,
 }: TurnBodyProps) {
   const { t } = useI18n()
 
@@ -75,16 +80,21 @@ export const TurnBody = memo(function TurnBody({
   // Fast path: if mergeTools is off, use the original per-iteration rendering.
   if (!mergeTools) {
     return (
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1" data-iter-range={contiguous.length > 0 ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}` : undefined} data-iter-total={contiguous.length}>
         {contiguous.map((iter, i) => (
-          <IterationGroup
-            key={iter.iteration ?? i}
-            iteration={iter}
-            level={level}
-            mergeTools={mergeTools}
-          />
+          <div key={iter.iteration ?? i} data-iter-id={iter.iteration} data-turn-id={turnID}>
+            <IterationGroup
+              iteration={iter}
+              level={level}
+              mergeTools={mergeTools}
+            />
+          </div>
         ))}
-        {liveProgress && <LiveIteration progress={liveProgress} level={level} mergeTools={mergeTools} />}
+        {liveProgress && (
+          <div data-iter-id="live" data-iter-num={liveProgress.iteration || undefined} data-turn-id={liveProgress.turnID || turnID}>
+            <LiveIteration progress={liveProgress} level={level} mergeTools={mergeTools} />
+          </div>
+        )}
       </div>
     )
   }
@@ -93,39 +103,47 @@ export const TurnBody = memo(function TurnBody({
   const blocks = flattenIterations(contiguous)
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1" data-iter-range={contiguous.length > 0 ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}` : undefined} data-iter-total={contiguous.length}>
       {blocks.map((block, i) => {
         if (block.kind === 'reasoning') {
           return (
-            <FoldedLine
-              key={`r-${i}`}
-              title={t('agent.thinkingChars', { count: block.text.length })}
-              defaultOpen={false}
-            >
-              <ReasoningBlock content={block.text} />
-            </FoldedLine>
+            <div key={`r-${i}`} data-iter-id={block.iteration} data-turn-id={turnID}>
+              <FoldedLine
+                title={t('agent.thinkingChars', { count: block.text.length })}
+                defaultOpen={false}
+              >
+                <ReasoningBlock content={block.text} />
+              </FoldedLine>
+            </div>
           )
         }
         if (block.kind === 'text') {
           return (
-            <MarkdownRenderer
-              key={`t-${i}`}
-              content={block.content}
-              className="text-sm text-text-primary"
-            />
+            <div key={`t-${i}`} data-iter-id={block.iteration} data-turn-id={turnID}>
+              <MarkdownRenderer
+                content={block.content}
+                className="text-sm text-text-primary"
+              />
+            </div>
           )
         }
-        // tools block
+        // tools block — may span multiple iterations (merged). Show all iter IDs.
+        const iterIds = block.iterations.join(',')
         return (
-          <FoldedToolGroup
-            key={`c-${i}`}
-            tools={block.tools}
-            level={level}
-            mergeTools={mergeTools}
-          />
+          <div key={`c-${i}`} data-iter-id={iterIds} data-turn-id={turnID}>
+            <FoldedToolGroup
+              tools={block.tools}
+              level={level}
+              mergeTools={mergeTools}
+            />
+          </div>
         )
       })}
-      {liveProgress && <LiveIteration progress={liveProgress} level={level} mergeTools={mergeTools} />}
+      {liveProgress && (
+        <div data-iter-id="live" data-iter-num={liveProgress.iteration || undefined} data-turn-id={liveProgress.turnID || turnID}>
+          <LiveIteration progress={liveProgress} level={level} mergeTools={mergeTools} />
+        </div>
+      )}
     </div>
   )
 })

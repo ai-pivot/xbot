@@ -174,6 +174,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
         liveProgress={liveProgress}
         level={effectiveLevel}
         mergeTools={mergeTools}
+        turnID={message.turnID}
       />
       {/* Final O: for committed messages, render message.content after iterations.
           For streaming, the streamContent is already in LiveIteration.

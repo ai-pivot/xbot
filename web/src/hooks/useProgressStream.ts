@@ -156,6 +156,12 @@ export function useProgressStream({
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
   const finalizedRef = useRef(false)
+  // Set when commitLiveProgressAndReset commits old turn's content (turn_started
+  // with hadVisibleProgress=true). Prevents initialProgress hydration from
+  // re-introducing old turn's iterationHistory into the new turn's store.
+  // Cleared when the first structured event of the new turn arrives (stream_content
+  // or progress_structured with phase != done).
+  const turnCommittedRef = useRef(false)
   // Set when PhaseDone is received. Prevents session(idle) from defensively
   // finalizing — PhaseDone means the turn ended, and the text event (normal
   // or cancel ack) is the authoritative finalizer. Without this, if
@@ -251,6 +257,11 @@ export function useProgressStream({
     // hydrate if we haven't started receiving live events for this turn
     // (finalizedRef is false AND store is empty = fresh load/reconnect).
     if (finalizedRef.current) return
+    // turnCommittedRef: turn_started committed old turn's live content.
+    // reload()'s active_progress may still carry old turn's iterationHistory
+    // (server hasn't cleaned up). Block hydration until the new turn's first
+    // structured event arrives (which clears turnCommittedRef).
+    if (turnCommittedRef.current) return
     // After turn_started set store.lastTurnID, a reload's active_progress may
     // still carry the PREVIOUS turn's data (server hasn't cleaned up yet).
     // Hydrating with it would re-introduce old iterationHistory → cross-turn
@@ -301,7 +312,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef)
     })
     return offMessage
   }, [store, disabled, channel])
@@ -362,6 +373,7 @@ function hasVisibleProgress(snap: ProgressSnapshot): boolean {
 function commitLiveProgressAndReset(
   store: ProgressStore,
   complete: ((finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => void) | undefined,
+  newTurnID?: number,
 ): void {
   const snap = store.getSnapshot()
   if (hasVisibleProgress(snap)) {
@@ -422,7 +434,7 @@ function commitLiveProgressAndReset(
         )
         commitText = ''
       }
-      complete?.(commitText, commitIters, undefined, snap.turnID || store.lastTurnID, true)
+      complete?.(commitText, commitIters, undefined, snap.turnID || newTurnID || store.lastTurnID, true)
     }
   }
   store.reset()
@@ -440,6 +452,7 @@ function handleProgressMessage(
   injectRef?: React.MutableRefObject<UseProgressStreamOptions['onInjectUserMessage']>,
   turnStartedRef?: React.MutableRefObject<UseProgressStreamOptions['onTurnStarted']>,
   cancelCompleteRef?: React.MutableRefObject<UseProgressStreamOptions['onCancelComplete']>,
+  turnCommittedRef?: React.MutableRefObject<boolean>,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -453,6 +466,11 @@ function handleProgressMessage(
       // (the generating tool renders alongside the same iteration's "done" entry
       // in iterationHistory).
       if (phaseDoneRef?.current) return
+
+      // New turn's first stream event — clear turnCommittedRef (set by
+      // turn_started when it committed old turn's live content). This
+      // unblocks initialProgress hydration for future reloads.
+      if (turnCommittedRef) turnCommittedRef.current = false
 
       // stream_content carries content deltas in progress.stream_content /
       // progress.reasoning_stream_content (channel/web/web.go SendStreamContent).
@@ -541,7 +559,7 @@ function handleProgressMessage(
           // content is the ONLY display of the old turn's reply; committing it
           // before the reset keeps it visible at the same position (no flicker,
           // no data loss) instead of vanishing in one frame.
-          commitLiveProgressAndReset(store, completeRef?.current)
+          commitLiveProgressAndReset(store, completeRef?.current, p.turn_id)
           store.lastIter = 0
           // If the commit happened (store had visible content), set
           // finalizedRef = true DIRECTLY — do NOT rely on onAssistantComplete's
@@ -554,6 +572,13 @@ function handleProgressMessage(
           // turn — the text event is expected and will finalize.
           if (hadVisibleProgress) {
             if (finalizedRef) finalizedRef.current = true
+            // Block initialProgress hydration from re-introducing old turn's
+            // iterationHistory. reload()'s active_progress may still carry
+            // the old turn's data (server hasn't cleaned up yet). Without
+            // this flag, session(busy) resets finalizedRef=false, then
+            // initialProgress hydration calls store.replace() with old
+            // iterationHistory → cross-turn iteration leak.
+            if (turnCommittedRef) turnCommittedRef.current = true
           } else {
             if (finalizedRef) finalizedRef.current = false
           }
@@ -646,7 +671,10 @@ function handleProgressMessage(
       if (finalizedRef?.current && !p.history_compacted && p.phase !== 'done') {
         return
       }
-      
+
+      // New turn's first structured event — clear turnCommittedRef.
+      if (turnCommittedRef) turnCommittedRef.current = false
+
       if (p.history_compacted) {
         store.reset()
         compactedRef.current?.()

@@ -674,6 +674,7 @@ export function MessageList({
                     data-turn-id={row.turnID || undefined}
                     data-message-id={row.id}
                     data-role={row.role}
+                    data-iter-count={row.iterations?.length ?? 0}
                   >
                     <MessageItem
                       message={row}
