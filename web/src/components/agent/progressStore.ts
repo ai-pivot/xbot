@@ -280,6 +280,11 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
 ): T[] {
   const turnSeen = new Map<string, number>()
   const seqSeen = new Set<number>()
+  // Content+role index for assistant messages with non-empty content.
+  // Used as a fallback to dedup live-committed messages (turnID=0) against
+  // DB messages (turnID>0) when commitLiveProgressAndReset committed with
+  // a wrong/missing turnID.
+  const contentSeen = new Map<string, number>()
   const result: T[] = []
   for (let i = 0; i < messages.length; i++) {
     // Dedup by turnID:role for tracked turns
@@ -288,14 +293,6 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
       const existing = turnSeen.get(key)
       if (existing !== undefined) {
         // MERGE instead of replace: union iterations by iteration number.
-        // When a batch boundary splits a turn, batch 1 (newer) has the final
-        // assistant with Detail iterations, batch 2 (older, from loadMore)
-        // has the tool_summary with early iterations from flushPending.
-        // Dropping either loses data; merging gives the complete iteration set.
-        // Choose the base: prefer dbID (persisted). If both have dbID, prefer
-        // the one with non-empty content (the final reply).
-        // When neither has dbID, content, or iterations (both empty placeholders),
-        // prefer the LATEST (incoming) — old behavior for optimistic/live replacement.
         const existingHasDB = result[existing].dbID != null
         const incomingHasDB = messages[i].dbID != null
         const existingHasContent = (result[existing].content ?? '') !== ''
@@ -307,7 +304,6 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
         let base: T
         let other: T
         if (!existingHasData && !incomingHasData) {
-          // Both empty placeholders — prefer LATEST (incoming replacement)
           base = messages[i]
           other = result[existing]
         } else if (existingHasDB && !incomingHasDB) {
@@ -323,16 +319,18 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
           base = result[existing]
           other = messages[i]
         }
-        // Merge iterations: union by iteration number, prefer non-empty content.
         const mergedIters = mergeIterations(base.iterations ?? [], other.iterations ?? [])
         result[existing] = {
           ...base,
           iterations: mergedIters.length > 0 ? mergedIters : (base.iterations ?? []),
-          // Prefer non-empty content
           content: (base.content ?? '') !== '' ? base.content : (other.content ?? ''),
         } as T
       } else {
         turnSeen.set(key, result.length)
+        const content = messages[i].content ?? ''
+        if (content) {
+          contentSeen.set(`${messages[i].role}:${content}`, result.length)
+        }
         result.push(messages[i])
       }
       continue
@@ -342,7 +340,6 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
     if (seqVal != null) {
       const seq = seqVal
       if (seqSeen.has(seq)) {
-        // Replace existing with the newer version (may have updated content/iterations)
         const existingIdx = result.findIndex((m) => m.eventSeq === seq)
         if (existingIdx >= 0) {
           result[existingIdx] = messages[i]
@@ -351,8 +348,50 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
       }
       seqSeen.add(seq)
     }
+    // Content-based dedup fallback: a live-committed message (turnID=0) with
+    // the same content+role as a DB message (turnID>0) is a duplicate. This
+    // happens when commitLiveProgressAndReset commits with turnID=0 (snap.turnID=0
+    // and store.lastTurnID=0) and the DB version later arrives with the correct
+    // turnID. Without this, both rows survive and render as duplicates.
+    const content = messages[i].content ?? ''
+    if (content && messages[i].role === 'assistant') {
+      const contentKey = `${messages[i].role}:${content}`
+      const existingIdx = contentSeen.get(contentKey)
+      if (existingIdx !== undefined) {
+        // Merge iterations into the existing (DB) message — the live version
+        // may have richer iteration data from SSE.
+        const existing = result[existingIdx]
+        const mergedIters = mergeIterations(existing.iterations ?? [], messages[i].iterations ?? [])
+        result[existingIdx] = {
+          ...existing,
+          iterations: mergedIters.length > 0 ? mergedIters : (existing.iterations ?? []),
+        } as T
+        continue
+      }
+    }
     // History messages (no turnID, no eventSeq) are never deduped — unique IDs.
     result.push(messages[i])
+  }
+  // Post-pass: remove turnID=0 assistant messages whose content matches a
+  // turnID>0 assistant message that was added LATER (live-first, DB-second
+  // arrival order). The contentSeen index only catches DB-first order;
+  // this pass catches the reverse.
+  const dbContentKeys = new Set<string>()
+  for (const m of result) {
+    if (m.turnID > 0 && m.role === 'assistant' && (m.content ?? '') !== '') {
+      dbContentKeys.add(`${m.role}:${m.content}`)
+    }
+  }
+  if (dbContentKeys.size > 0) {
+    const filtered: T[] = []
+    for (const m of result) {
+      if (m.turnID === 0 && m.role === 'assistant' && (m.content ?? '') !== '' && dbContentKeys.has(`assistant:${m.content}`)) {
+        // Skip — duplicate of a DB message with the same content
+        continue
+      }
+      filtered.push(m)
+    }
+    return filtered
   }
   return result
 }
