@@ -19,6 +19,7 @@ import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucid
 
 import { MessageItem } from './MessageItem'
 import { ShimmerThinking } from './ShimmerThinking'
+import { mergeIterations } from './progressStore'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -109,7 +110,20 @@ export function buildMessageRows(
     const hasCommitted = messages.some(
       (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
     )
-    if (hasCommitted) return messages
+    if (hasCommitted) {
+      // Merge live iterations into the committed message — the live progress
+      // store has real-time iteration data from SSE, which is MORE complete
+      // than the DB-sourced iterations (especially for in-progress turns
+      // where Detail hasn't been set yet). Without this merge, switching
+      // sessions loses earlier iterations because the DB only has
+      // pendingIters (from IncrementalPersist's ToolCalls, missing content
+      // and reasoning for earlier iterations).
+      return messages.map((m) =>
+        m.turnID === liveMessage.turnID && m.role === 'assistant' && m.id !== liveMessage.id
+          ? { ...m, iterations: mergeIterations(m.iterations ?? [], liveMessage.iterations ?? []) }
+          : m,
+      )
+    }
     // Distinguish the two live-row kinds by whether its turnID already exists
     // in the committed list:
     //  - EXISTS (e.g. a frozen row from a CANCELLED previous turn whose user is
