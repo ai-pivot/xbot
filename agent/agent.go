@@ -3710,6 +3710,16 @@ func (a *Agent) getActiveIteration(sessionKey string) int {
 func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	progressKey := qualifyChatID(msg.Channel, msg.ChatID)
 
+	// Clear iteration history from the previous turn. iterationHistories is
+	// per-session (not per-turn) — without clearing, GetActiveProgress returns
+	// old turn's iterations mixed with the new turn's, causing the frontend
+	// to render duplicate iterations across turns (e.g. turn 27's iter 1-2
+	// appearing inside turn 28's assistant message).
+	// Skip for resume (InjectInboundResume) — it continues the same turn.
+	if msg.Metadata == nil || msg.Metadata["resume_turn"] != "true" {
+		a.iterationHistories.Delete(progressKey)
+	}
+
 	trigger := "user"
 	content := ""
 	if msg.Metadata != nil {
