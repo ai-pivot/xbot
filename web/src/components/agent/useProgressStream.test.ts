@@ -1090,7 +1090,7 @@ describe('cancel: assistant message must not vanish', () => {
 
   it('turn_started with empty store does NOT block text event', () => {
     const complete = vi.fn()
-    const { result } = renderHook(() =>
+    renderHook(() =>
       useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
     )
     // Turn 1: turn_started, but NO streaming content (store is empty)
@@ -1105,7 +1105,7 @@ describe('cancel: assistant message must not vanish', () => {
 
   it('resume trigger resets finalizedRef so text event can fire', () => {
     const complete = vi.fn()
-    const { result } = renderHook(() =>
+    renderHook(() =>
       useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
     )
     // Turn 1: stream + text (finalized)
