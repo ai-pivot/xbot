@@ -7,7 +7,7 @@ import (
 )
 
 // createSchema creates the initial database schema at the current schemaVersion.
-// The DDL includes ALL tables/columns/indexes that migrations v1→v53 would add,
+// The DDL includes ALL tables/columns/indexes that migrations v1→v54 would add,
 // so fresh databases skip the migration chain entirely. This is critical on
 // Windows where running 51 migrations per test DB causes CI timeouts (600s+).
 //
@@ -117,7 +117,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (53);
+INSERT INTO schema_version (version) VALUES (54);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations)
 CREATE TABLE user_llm_subscriptions (

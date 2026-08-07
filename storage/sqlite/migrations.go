@@ -318,6 +318,18 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v54: fix duplicate users created by the cross-channel identity bug.
+	// Resolve(channel, channelUserID) was channel-scoped — when the same
+	// channel_user_id (e.g. web-1) appeared in a different channel than it
+	// was registered under (e.g. cli instead of web), Resolve auto-created a
+	// new user instead of reusing the existing one. This migration merges
+	// those duplicate users back into the canonical one.
+	if from < 54 {
+		if err := migrateV53ToV54(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v54: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -2151,4 +2163,150 @@ func migrateV52ToV53(conn *sql.DB) error {
 	}
 	log.Info("Database migrated to v53: session CWD persisted in tenants.cwd")
 	return nil
+}
+
+// migrateV53ToV54 fixes duplicate users created by the cross-channel identity
+// bug in IdentityResolver.Resolve. Before the fix, Resolve was channel-scoped:
+// when the same channel_user_id (e.g. "web-1") appeared in a different channel
+// than it was registered under, Resolve auto-created a new user instead of
+// reusing the existing one. This migration finds all such duplicate users and
+// merges them back into the canonical one (the user with the most identities).
+func migrateV53ToV54(conn *sql.DB) error {
+	// v54 depends on user_identities (created in v45). Databases that predate
+	// v45 and were not migrated through it won't have the table — skip safely.
+	var tableCount int
+	if err := conn.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='user_identities'",
+	).Scan(&tableCount); err != nil {
+		return fmt.Errorf("check user_identities table: %w", err)
+	}
+	if tableCount == 0 {
+		if _, err := conn.Exec("UPDATE schema_version SET version = 54"); err != nil {
+			return fmt.Errorf("update schema version: %w", err)
+		}
+		log.Info("Database migrated to v54: user_identities table not present, skipped")
+		return nil
+	}
+
+	// Find channel_user_id values that map to more than one distinct user_id.
+	rows, err := conn.Query(`
+		SELECT channel_user_id
+		FROM user_identities
+		GROUP BY channel_user_id
+		HAVING COUNT(DISTINCT user_id) > 1`)
+	if err != nil {
+		return fmt.Errorf("find duplicate channel_user_ids: %w", err)
+	}
+	var dupIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan duplicate channel_user_id: %w", err)
+		}
+		dupIDs = append(dupIDs, id)
+	}
+	rows.Close()
+
+	if len(dupIDs) == 0 {
+		if _, err := conn.Exec("UPDATE schema_version SET version = 54"); err != nil {
+			return fmt.Errorf("update schema version: %w", err)
+		}
+		log.Info("Database migrated to v54: no duplicate identities found")
+		return nil
+	}
+
+	merged := 0
+	for _, channelUserID := range dupIDs {
+		// Pick canonical: the user_id with the most identities (tie-break: lowest id).
+		var canonicalID int64
+		if err := conn.QueryRow(`
+			SELECT user_id FROM user_identities
+			WHERE channel_user_id = ?
+			GROUP BY user_id
+			ORDER BY COUNT(*) DESC, user_id ASC
+			LIMIT 1`, channelUserID).Scan(&canonicalID); err != nil {
+			return fmt.Errorf("find canonical user for %s: %w", channelUserID, err)
+		}
+
+		// Collect the non-canonical user_ids to merge.
+		mergeRows, err := conn.Query(`
+			SELECT DISTINCT user_id FROM user_identities
+			WHERE channel_user_id = ? AND user_id != ?`, channelUserID, canonicalID)
+		if err != nil {
+			return fmt.Errorf("find source users for %s: %w", channelUserID, err)
+		}
+		var sourceIDs []int64
+		for mergeRows.Next() {
+			var sid int64
+			if err := mergeRows.Scan(&sid); err != nil {
+				mergeRows.Close()
+				return fmt.Errorf("scan source user_id: %w", err)
+			}
+			sourceIDs = append(sourceIDs, sid)
+		}
+		mergeRows.Close()
+
+		for _, sourceID := range sourceIDs {
+			if err := mergeUserInDB(conn, sourceID, canonicalID); err != nil {
+				return fmt.Errorf("merge user %d into %d: %w", sourceID, canonicalID, err)
+			}
+			merged++
+		}
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 54"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.WithField("merged_users", merged).Info("Database migrated to v54: duplicate cross-channel identities merged")
+	return nil
+}
+
+// mergeUserInDB merges sourceUserID into targetUserID within a single
+// transaction. Mirrors IdentityResolver.MergeUsers but operates at the raw
+// SQL level for use in migrations (no IdentityResolver available).
+func mergeUserInDB(conn *sql.DB, sourceUserID, targetUserID int64) error {
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin merge tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Resolve runner name conflicts (suffix source's duplicate names).
+	tx.Exec(`UPDATE runners SET name = name || ' (' || CAST(? AS TEXT) || ')' 
+		WHERE owner_user_id = ? AND name IN (SELECT name FROM runners WHERE owner_user_id = ?)`,
+		sourceUserID, sourceUserID, targetUserID)
+
+	// Delete conflicting user_settings (keep target's).
+	tx.Exec(`DELETE FROM user_settings WHERE user_id = ? AND (channel, key) IN 
+		(SELECT channel, key FROM user_settings WHERE user_id = ?)`, sourceUserID, targetUserID)
+
+	// Delete conflicting user_default_model (keep target's).
+	tx.Exec(`DELETE FROM user_default_model WHERE user_id = ?`, sourceUserID)
+
+	// Role escalation: if source is admin, target becomes admin.
+	var sourceRole, targetRole string
+	tx.QueryRow("SELECT role FROM users WHERE id = ?", sourceUserID).Scan(&sourceRole)
+	tx.QueryRow("SELECT role FROM users WHERE id = ?", targetUserID).Scan(&targetRole)
+	if sourceRole == "admin" && targetRole != "admin" {
+		tx.Exec("UPDATE users SET role = 'admin' WHERE id = ?", targetUserID)
+	}
+
+	// Migrate identities first (before deleting source — CASCADE safe).
+	tx.Exec("UPDATE user_identities SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+
+	// Migrate asset tables.
+	tx.Exec("UPDATE user_llm_subscriptions SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE runners SET owner_user_id = ? WHERE owner_user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE user_settings SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE user_default_model SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE user_chats SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE tenants SET owner_user_id = ? WHERE owner_user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE cron_jobs SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+	tx.Exec("UPDATE event_triggers SET user_id = ? WHERE user_id = ?", targetUserID, sourceUserID)
+
+	// Delete source user.
+	tx.Exec("DELETE FROM users WHERE id = ?", sourceUserID)
+
+	return tx.Commit()
 }

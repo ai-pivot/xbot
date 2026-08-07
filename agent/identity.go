@@ -41,12 +41,20 @@ func NewIdentityResolver(db *sql.DB) *IdentityResolver {
 // INSERT INTO users (generating two rows), but the second INSERT INTO user_identities
 // will hit the UNIQUE(channel, channel_user_id) constraint and be ignored.
 // The re-SELECT returns the canonical user_id regardless of which INSERT won.
+//
+// Cross-channel lookup: channel_user_id values are globally unique by format
+// convention (cli_user, web-N, ou_xxx — no overlap between channels). When a
+// channel_user_id exists in another channel, Resolve links it to the same
+// canonical user instead of auto-creating a duplicate. This prevents the
+// "tenant belongs to another user" error when, e.g., a web user (web-1)
+// accesses a CLI session and Resolve("cli","web-1") would otherwise miss the
+// existing (web, web-1) identity.
 func (r *IdentityResolver) Resolve(channel, channelUserID string) (int64, string, error) {
 	if r == nil || !r.initialized {
 		return 0, "admin", nil // fallback: standalone mode, treat as admin
 	}
 
-	// 1. Fast path: check if already linked
+	// 1. Fast path: check if already linked in this channel
 	var userID int64
 	err := r.db.QueryRow(
 		`SELECT user_id FROM user_identities WHERE channel = ? AND channel_user_id = ?`,
@@ -57,14 +65,31 @@ func (r *IdentityResolver) Resolve(channel, channelUserID string) (int64, string
 		return userID, role, nil
 	}
 
-	// 2. Not linked — auto-create a new user
+	// 2. Cross-channel lookup: channel_user_id is globally unique. If the
+	//    identity exists in another channel, link it to the same canonical user.
+	err = r.db.QueryRow(
+		`SELECT user_id FROM user_identities WHERE channel_user_id = ? LIMIT 1`,
+		channelUserID,
+	).Scan(&userID)
+	if err == nil {
+		r.db.Exec(
+			`INSERT INTO user_identities (user_id, channel, channel_user_id)
+			 VALUES (?, ?, ?)
+			 ON CONFLICT(channel, channel_user_id) DO NOTHING`,
+			userID, channel, channelUserID,
+		)
+		role := r.getRole(userID)
+		return userID, role, nil
+	}
+
+	// 3. Not linked anywhere — auto-create a new user
 	result, err := r.db.Exec(`INSERT INTO users (role) VALUES ('user')`)
 	if err != nil {
 		return 0, "", fmt.Errorf("identity resolve: create user: %w", err)
 	}
 	newID, _ := result.LastInsertId()
 
-	// 3. Link identity (ON CONFLICT handles race: if another goroutine already inserted)
+	// 4. Link identity (ON CONFLICT handles race: if another goroutine already inserted)
 	r.db.Exec(
 		`INSERT INTO user_identities (user_id, channel, channel_user_id)
 		 VALUES (?, ?, ?)
@@ -72,7 +97,7 @@ func (r *IdentityResolver) Resolve(channel, channelUserID string) (int64, string
 		newID, channel, channelUserID,
 	)
 
-	// 4. Re-SELECT to get the canonical user_id (may differ if race lost)
+	// 5. Re-SELECT to get the canonical user_id (may differ if race lost)
 	err = r.db.QueryRow(
 		`SELECT user_id FROM user_identities WHERE channel = ? AND channel_user_id = ?`,
 		channel, channelUserID,
@@ -81,7 +106,7 @@ func (r *IdentityResolver) Resolve(channel, channelUserID string) (int64, string
 		return 0, "", fmt.Errorf("identity resolve: re-select: %w", err)
 	}
 
-	// 5. If our auto-created user was orphaned (race lost), clean it up
+	// 6. If our auto-created user was orphaned (race lost), clean it up
 	if userID != newID {
 		r.db.Exec(`DELETE FROM users WHERE id = ? AND id NOT IN (SELECT user_id FROM user_identities)`, newID)
 	}
