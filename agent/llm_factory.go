@@ -888,6 +888,14 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 	return false
 }
 
+// EnsureSessionModelBinding is the public wrapper for ensureSessionModel.
+// Called at session creation time to immediately create a per-session model
+// binding, preventing cross-session model leak when the user switches models
+// in another session (which updates user_default_model).
+func (f *LLMFactory) EnsureSessionModelBinding(senderID, chatID, channel string) {
+	f.ensureSessionModel(senderID, chatID, channel)
+}
+
 // ResolveSubscriptionForModel finds the subscription that provides the given
 // model for a user. This is the model-first inverse of "which models does this
 // subscription serve": given a model name picked from the unified model list,
