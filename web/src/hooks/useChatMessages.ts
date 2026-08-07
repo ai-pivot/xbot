@@ -349,6 +349,12 @@ function reconcileHistoryWithLiveRows(
     if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
     // Content+role fallback for messages without turnID (user_echo).
     if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
+    // Content-based dedup for assistant messages with turnID=0 (live commit
+    // from commitLiveProgressAndReset with snap.turnID=0). The DB version
+    // arrives with the correct turnID but different content may exist —
+    // match by content:role to drop the stale live commit.
+    if (message.turnID === 0 && message.role === 'assistant' && message.content &&
+        historyContentKeys.has(`assistant:${message.content}`)) return false
     return true
   })
   return [...history, ...liveRows]
