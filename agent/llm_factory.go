@@ -825,13 +825,13 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 			return fmt.Errorf("SelectModel: persist tenant: %w", err)
 		}
 	}
-	// Do NOT call SetUserDefaultModel here. SelectModel is a per-session
-	// operation (SetTenantSubscription above). Updating user_default_model
-	// causes a cross-session leak: switching model in session B updates
-	// user_default_model, then session A (which has no per-session binding
-	// yet) inherits B's model via ensureSessionModel → GetUserDefaultModel.
-	// New sessions should inherit from Balance tier config or the system
-	// default, not from another session's per-session switch.
+	// Update "last used model" (user_default_model repurposed) so new sessions
+	// inherit this (sub, model) pair. This is NOT "setting a default subscription" —
+	// the table now serves as last-used-model storage for session inheritance.
+	if err := f.subscriptionSvc.SetUserDefaultModel(senderID, subID, model); err != nil {
+		// Non-fatal: log and continue. New sessions will fall back to system subscription.
+		log.WithError(err).Warn("SelectModel: failed to update last-used model")
+	}
 	return nil
 }
 
