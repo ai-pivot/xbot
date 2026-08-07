@@ -75,7 +75,7 @@ func (a *Agent) ResolveUserContext(channel, chatID, senderID string, metadata ma
 	userID := int64(0)
 	role := ""
 	standaloneMode := true
-	if uid, r, ok := parseUserIDFromMetadata(metadata); ok {
+	if uid, r, ok := parseUserIDFromMetadata(metadata); ok && !a.singleUser {
 		userID = uid
 		role = r
 		standaloneMode = false

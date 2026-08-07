@@ -72,12 +72,16 @@ func (r *IdentityResolver) Resolve(channel, channelUserID string) (int64, string
 		channelUserID,
 	).Scan(&userID)
 	if err == nil {
-		r.db.Exec(
+		if _, err := r.db.Exec(
 			`INSERT INTO user_identities (user_id, channel, channel_user_id)
 			 VALUES (?, ?, ?)
 			 ON CONFLICT(channel, channel_user_id) DO NOTHING`,
 			userID, channel, channelUserID,
-		)
+		); err != nil {
+			log.WithError(err).WithField("channel", channel).
+				WithField("channel_user_id", channelUserID).
+				Warn("cross-channel identity link failed")
+		}
 		role := r.getRole(userID)
 		return userID, role, nil
 	}
