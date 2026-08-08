@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"xbot/memory"
+	"xbot/session"
+	"xbot/tools"
 )
 
 // --- Mocks specific to this file ---
@@ -714,6 +716,185 @@ func TestLoadProjectContextFile(t *testing.T) {
 		}
 		if strings.Contains(got, "agent") {
 			t.Error("should not contain AGENT.md content when .xbot/context.md exists")
+		}
+	})
+}
+
+// =====================================================================
+// TestLoadGlobalContextFile
+// =====================================================================
+
+func TestLoadGlobalContextFile(t *testing.T) {
+	t.Run("empty_home_returns_empty", func(t *testing.T) {
+		dir := t.TempDir()
+		got := LoadGlobalContextFile(dir)
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("empty_home_name_returns_empty", func(t *testing.T) {
+		got := LoadGlobalContextFile("")
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("loads_global_agents_md", func(t *testing.T) {
+		dir := t.TempDir()
+		content := "# Global Instructions\nFollow these always."
+		os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(content), 0644)
+
+		got := LoadGlobalContextFile(dir)
+		if !strings.Contains(got, content) {
+			t.Errorf("expected global AGENTS.md content %q in result, got %q", content, got)
+		}
+		if !strings.Contains(got, "Global Instructions") {
+			t.Errorf("expected formatted global instructions block, got %q", got)
+		}
+	})
+
+	t.Run("priority_agents_md_over_legacy_files", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("alpha-content"), 0644)
+		os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("bravo-content"), 0644)
+		os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("charlie-content"), 0644)
+
+		got := LoadGlobalContextFile(dir)
+		if !strings.Contains(got, "alpha-content") {
+			t.Errorf("expected AGENTS.md to take priority, got %q", got)
+		}
+		if strings.Contains(got, "bravo-content") || strings.Contains(got, "charlie-content") {
+			t.Error("should not contain CLAUDE.md/AGENT.md content when AGENTS.md exists")
+		}
+	})
+
+	t.Run("falls_back_to_claude_md", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("claude-only"), 0644)
+
+		got := LoadGlobalContextFile(dir)
+		if !strings.Contains(got, "claude-only") {
+			t.Errorf("expected CLAUDE.md fallback, got %q", got)
+		}
+	})
+}
+
+// =====================================================================
+// TestBuildSubAgentRunConfig_GlobalContext
+// =====================================================================
+
+func TestBuildSubAgentRunConfig_GlobalContext(t *testing.T) {
+	t.Run("injects_global_agents_md_into_subagent_system_prompt", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		globalHome := filepath.Join(tmpDir, "xbot-home")
+		workDir := filepath.Join(tmpDir, "work")
+		if err := os.MkdirAll(globalHome, 0o755); err != nil {
+			t.Fatalf("mkdir globalHome: %v", err)
+		}
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			t.Fatalf("mkdir workDir: %v", err)
+		}
+
+		globalContent := "# Global Instructions\nFollow these global rules."
+		if err := os.WriteFile(filepath.Join(globalHome, "AGENTS.md"), []byte(globalContent), 0o644); err != nil {
+			t.Fatalf("write global AGENTS.md: %v", err)
+		}
+
+		multiSession, err := session.NewMultiTenant(filepath.Join(tmpDir, "test.db"))
+		if err != nil {
+			t.Fatalf("NewMultiTenant: %v", err)
+		}
+		t.Cleanup(func() { multiSession.Close() })
+
+		a := &Agent{
+			multiSession: multiSession,
+			tools:        newTestRegistry(),
+			skills:       NewSkillStore(workDir, nil, nil),
+			workDir:      workDir,
+			xbotHome:     globalHome,
+		}
+
+		userCtx := &UserContext{
+			SenderID:  "test-user",
+			Settings:  map[string]string{},
+			LLMClient: &mockLLM{},
+			Model:     "test-model",
+		}
+		ctx := WithUserContext(context.Background(), userCtx)
+
+		parentCtx := &tools.ToolContext{
+			Ctx:           ctx,
+			SenderID:      "test-user",
+			OriginUserID:  "test-user",
+			Channel:       "cli",
+			ChatID:        "chat-1",
+			WorkspaceRoot: workDir,
+		}
+
+		cfg := a.buildSubAgentRunConfig(ctx, parentCtx, "do the task", "You are a helper", nil, tools.SubAgentCapabilities{}, "helper", false, "inst-1", "")
+
+		if len(cfg.Messages) == 0 {
+			t.Fatal("expected at least one message in RunConfig")
+		}
+		sysPrompt := cfg.Messages[0].Content
+		if !strings.Contains(sysPrompt, globalContent) {
+			t.Errorf("expected global AGENTS.md content %q in SubAgent system prompt, got:\n%s", globalContent, sysPrompt)
+		}
+		if !strings.Contains(sysPrompt, "Global Instructions") {
+			t.Errorf("expected formatted global instructions block in SubAgent system prompt")
+		}
+	})
+
+	t.Run("no_global_file_skips_injection", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		globalHome := filepath.Join(tmpDir, "xbot-home")
+		workDir := filepath.Join(tmpDir, "work")
+		if err := os.MkdirAll(globalHome, 0o755); err != nil {
+			t.Fatalf("mkdir globalHome: %v", err)
+		}
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			t.Fatalf("mkdir workDir: %v", err)
+		}
+
+		multiSession, err := session.NewMultiTenant(filepath.Join(tmpDir, "test.db"))
+		if err != nil {
+			t.Fatalf("NewMultiTenant: %v", err)
+		}
+		t.Cleanup(func() { multiSession.Close() })
+
+		a := &Agent{
+			multiSession: multiSession,
+			tools:        newTestRegistry(),
+			skills:       NewSkillStore(workDir, nil, nil),
+			workDir:      workDir,
+			xbotHome:     globalHome,
+		}
+
+		userCtx := &UserContext{
+			SenderID:  "test-user",
+			Settings:  map[string]string{},
+			LLMClient: &mockLLM{},
+			Model:     "test-model",
+		}
+		ctx := WithUserContext(context.Background(), userCtx)
+
+		parentCtx := &tools.ToolContext{
+			Ctx:           ctx,
+			SenderID:      "test-user",
+			OriginUserID:  "test-user",
+			Channel:       "cli",
+			ChatID:        "chat-1",
+			WorkspaceRoot: workDir,
+		}
+
+		cfg := a.buildSubAgentRunConfig(ctx, parentCtx, "do the task", "You are a helper", nil, tools.SubAgentCapabilities{}, "helper", false, "inst-2", "")
+		if len(cfg.Messages) == 0 {
+			t.Fatal("expected at least one message in RunConfig")
+		}
+		sysPrompt := cfg.Messages[0].Content
+		if strings.Contains(sysPrompt, "Global Instructions") {
+			t.Errorf("should NOT inject global instructions block when no global file exists, got:\n%s", sysPrompt)
 		}
 	})
 }

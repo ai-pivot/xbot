@@ -169,6 +169,9 @@ func (m *ProjectContextMiddleware) loadGlobal(xbotHome string) (content string, 
 }
 
 // formatGlobalContext builds a formatted string for global context injection.
+// Wraps global content in XML+CDATA boundaries (same as formatProjectContext).
+// Global instructions from ~/.xbot/AGENTS.md are user-editable content — without
+// CDATA, instructions can escape their section and override system-level behavior.
 func formatGlobalContext(content string, filePath string) string {
 	var sb strings.Builder
 	sb.WriteString("\n## Global Instructions\n\n")
@@ -176,13 +179,16 @@ func formatGlobalContext(content string, filePath string) string {
 	sb.WriteString(filePath)
 	sb.WriteString("`.\n\n")
 
+	fmt.Fprintf(&sb, "<global_instructions source=\"%s\">\n", filePath)
+	sb.WriteString("<![CDATA[\n")
 	if len(content) > maxProjectContextChars {
 		sb.WriteString(content[:maxProjectContextChars])
 		fmt.Fprintf(&sb, "\n\n... (truncated, use Read tool to view full `%s`)\n", filePath)
 	} else {
 		sb.WriteString(content)
 	}
-	sb.WriteString("\n")
+	sb.WriteString("\n]]>\n")
+	sb.WriteString("</global_instructions>\n")
 	return sb.String()
 }
 
@@ -296,6 +302,28 @@ func LoadProjectContextFile(dir string) string {
 			continue
 		}
 		return formatProjectContext(content, name)
+	}
+	return ""
+}
+
+// LoadGlobalContextFile is a standalone helper that loads the first matching
+// global context file from xbotHome (e.g. ~/.xbot). Used by SubAgent code
+// which doesn't go through the pipeline. Returns a formatted string for
+// injection or empty string.
+func LoadGlobalContextFile(xbotHome string) string {
+	if xbotHome == "" {
+		return ""
+	}
+	for _, name := range globalContextFiles {
+		data, err := os.ReadFile(filepath.Join(xbotHome, name))
+		if err != nil {
+			continue
+		}
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+		return formatGlobalContext(content, name)
 	}
 	return ""
 }

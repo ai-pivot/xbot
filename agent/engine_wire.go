@@ -645,6 +645,15 @@ func (a *Agent) buildSubAgentRunConfig(
 	// Pre-compute parentExtras once (shared between Phase 4 and buildSubAgentMemory)
 	parentExtras := a.buildToolContextExtras(parentCtx.Channel, parentCtx.ChatID)
 
+	// Inject global context from ~/.xbot/AGENTS.md (or CLAUDE.md/AGENT.md).
+	// Mirrors ProjectContextMiddleware's 04_global_context injection so
+	// SubAgents see the same global instructions as the main agent.
+	// Global comes BEFORE project context, matching the main agent's
+	// SystemParts ordering (04_global_context < 05_project_context).
+	if globalCtx := LoadGlobalContextFile(a.xbotHome); globalCtx != "" {
+		sysPrompt += globalCtx
+	}
+
 	// Phase 4: Inject project context from AGENTS.md
 	// Check resolved workDir first (includes sandbox path), then a.workDir
 	// (host path, needed in remote mode where sandbox clears workDir).

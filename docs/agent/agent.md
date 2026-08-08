@@ -33,6 +33,7 @@ Execution order defined by Priority field (see `architecture.md` for full table)
 
 SubAgents bypass the pipeline. System prompt built in `buildSubAgentRunConfig` (`engine_wire.go`).
 Inherits parent's: HookChain (same pointer), LLMFactory, skill catalog, tool context extras.
+System prompt injection order: global context (`LoadGlobalContextFile(a.xbotHome)` — `~/.xbot/AGENTS.md`/`CLAUDE.md`/`AGENT.md`) → project context (`LoadProjectContextFile`) → language preference. Mirrors the main agent's `04_global_context < 05_project_context` ordering.
 
 Max nesting depth: 6. Three levels: main → SubAgent → SubSubAgent.
 
