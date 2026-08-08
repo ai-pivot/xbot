@@ -280,6 +280,10 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
 ): T[] {
   const turnSeen = new Map<string, number>()
   const seqSeen = new Set<number>()
+  // Content+role index for ALL assistant messages with non-empty content.
+  // Handles both arrival orders (DB-first and live-first) for content-based
+  // dedup of turnID=0 live commits against turnID>0 DB messages.
+  const contentSeen = new Map<string, number>()
   const result: T[] = []
   for (let i = 0; i < messages.length; i++) {
     // Dedup by turnID:role for tracked turns
@@ -288,14 +292,6 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
       const existing = turnSeen.get(key)
       if (existing !== undefined) {
         // MERGE instead of replace: union iterations by iteration number.
-        // When a batch boundary splits a turn, batch 1 (newer) has the final
-        // assistant with Detail iterations, batch 2 (older, from loadMore)
-        // has the tool_summary with early iterations from flushPending.
-        // Dropping either loses data; merging gives the complete iteration set.
-        // Choose the base: prefer dbID (persisted). If both have dbID, prefer
-        // the one with non-empty content (the final reply).
-        // When neither has dbID, content, or iterations (both empty placeholders),
-        // prefer the LATEST (incoming) — old behavior for optimistic/live replacement.
         const existingHasDB = result[existing].dbID != null
         const incomingHasDB = messages[i].dbID != null
         const existingHasContent = (result[existing].content ?? '') !== ''
@@ -307,7 +303,6 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
         let base: T
         let other: T
         if (!existingHasData && !incomingHasData) {
-          // Both empty placeholders — prefer LATEST (incoming replacement)
           base = messages[i]
           other = result[existing]
         } else if (existingHasDB && !incomingHasDB) {
@@ -323,16 +318,35 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
           base = result[existing]
           other = messages[i]
         }
-        // Merge iterations: union by iteration number, prefer non-empty content.
         const mergedIters = mergeIterations(base.iterations ?? [], other.iterations ?? [])
         result[existing] = {
           ...base,
           iterations: mergedIters.length > 0 ? mergedIters : (base.iterations ?? []),
-          // Prefer non-empty content
           content: (base.content ?? '') !== '' ? base.content : (other.content ?? ''),
         } as T
       } else {
+        // Content-based dedup: check if a turnID=0 live commit with the same
+        // content already exists (live-first arrival order). Replace it
+        // in-place with the DB version (turnID>0), merging iterations.
+        const content = messages[i].content ?? ''
+        if (content && messages[i].role === 'assistant') {
+          const contentKey = `assistant:${content}`
+          const existingIdx = contentSeen.get(contentKey)
+          if (existingIdx !== undefined && result[existingIdx].turnID === 0) {
+            const live = result[existingIdx]
+            const mergedIters = mergeIterations(messages[i].iterations ?? [], live.iterations ?? [])
+            result[existingIdx] = {
+              ...messages[i],
+              iterations: mergedIters.length > 0 ? mergedIters : (messages[i].iterations ?? []),
+            } as T
+            turnSeen.set(key, existingIdx)
+            continue
+          }
+        }
         turnSeen.set(key, result.length)
+        if (content && messages[i].role === 'assistant') {
+          contentSeen.set(`assistant:${content}`, result.length)
+        }
         result.push(messages[i])
       }
       continue
@@ -342,7 +356,6 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
     if (seqVal != null) {
       const seq = seqVal
       if (seqSeen.has(seq)) {
-        // Replace existing with the newer version (may have updated content/iterations)
         const existingIdx = result.findIndex((m) => m.eventSeq === seq)
         if (existingIdx >= 0) {
           result[existingIdx] = messages[i]
@@ -351,7 +364,26 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
       }
       seqSeen.add(seq)
     }
-    // History messages (no turnID, no eventSeq) are never deduped — unique IDs.
+    // Content-based dedup: a live-committed message (turnID=0) with the same
+    // content+role as a DB message (turnID>0, indexed in contentSeen) is a
+    // duplicate. Only matches against turnID>0 entries — two turnID=0
+    // messages with the same content are NOT deduped (distinct occurrences).
+    const content = messages[i].content ?? ''
+    if (content && messages[i].role === 'assistant') {
+      const contentKey = `assistant:${content}`
+      const existingIdx = contentSeen.get(contentKey)
+      if (existingIdx !== undefined && result[existingIdx].turnID > 0) {
+        const existing = result[existingIdx]
+        const mergedIters = mergeIterations(existing.iterations ?? [], messages[i].iterations ?? [])
+        result[existingIdx] = {
+          ...existing,
+          iterations: mergedIters.length > 0 ? mergedIters : (existing.iterations ?? []),
+        } as T
+        continue
+      }
+      // Also index turnID=0 messages so a later turnID>0 message can find them
+      contentSeen.set(contentKey, result.length)
+    }
     result.push(messages[i])
   }
   return result
@@ -362,7 +394,7 @@ export function dedupMessages<T extends { turnID: number; role: string; content?
  * When both have the same iteration number, prefer the one with non-empty
  * thinking/content or more tools.
  */
-function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIteration[] {
+export function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIteration[] {
   if (a.length === 0) return b
   if (b.length === 0) return a
   const map = new Map<number, WebIteration>()

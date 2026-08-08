@@ -25,6 +25,8 @@ import { useI18n } from '@/providers/i18n'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { groupSessions, isSubAgentSession, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
+import type { ExportFormat } from '@/components/agent/api'
+import { downloadSession } from '@/components/agent/api'
 import type { TabManager } from '@/hooks/useTabManager'
 import { SessionSearch } from './SessionSearch'
 import { SessionList } from './SessionList'
@@ -111,6 +113,22 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
       }
     },
     [store.sessions, store.subAgents, store.switchSession, tabManager],
+  )
+
+  // Export handler: download a session in the specified format
+  const handleExport = useCallback(
+    async (session: SessionInfo, format: ExportFormat) => {
+      const selector: SessionSelector = {
+        channel: session.channel || 'web',
+        chatID: session.chatID,
+      }
+      try {
+        await downloadSession(selector, format)
+      } catch (err) {
+        console.error('export session failed:', err)
+      }
+    },
+    [],
   )
 
   // Multi-select toggle handler with Shift+click range support
@@ -332,6 +350,7 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
           onToggleStar={store.toggleStar}
           onRename={store.renameSession}
           onDelete={store.deleteSession}
+          onExport={handleExport}
           onReorder={store.reorderSessions}
           multiSelectMode={multiSelectMode}
           selectedIds={selectedIds}

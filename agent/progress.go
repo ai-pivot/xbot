@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"xbot/protocol"
 )
 
 // ProgressEvent 结构化进度事件，供上层消费（如飞书卡片渲染）。
@@ -50,6 +52,11 @@ type StructuredProgress struct {
 	// in initProgress, then copied to every protocol.ProgressEvent via
 	// buildProgressPayload. 0 = untracked (SubAgent).
 	TurnID uint64
+
+	// StreamStats holds timing statistics from the most recent LLM streaming
+	// response (TTFT, TPOT, total duration, chunk count). Set by callLLM after
+	// each LLM call, read by buildProgressPayload to expose to the frontend.
+	StreamStats *protocol.StreamStats
 }
 
 func (p *StructuredProgress) Clone() *StructuredProgress {

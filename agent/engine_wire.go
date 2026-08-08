@@ -336,6 +336,15 @@ func (a *Agent) buildMainRunConfig(
 			}
 		}
 	}
+	// SaveStreamStats: persist stream timing stats to session-level storage
+	// (survives turn end, unlike lastProgressSnapshot which is deleted).
+	progressKey := qualifyChatID(channel, chatID)
+	cfg.SaveStreamStats = func(stats *protocol.StreamStats) {
+		if stats == nil {
+			return
+		}
+		a.lastStreamStats.Store(progressKey, stats)
+	}
 
 	// OAuth 处理
 	cfg.OAuthHandler = a.buildOAuthHandler(channel, chatID, senderID, sessionKey)
@@ -1676,6 +1685,10 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 			TotalTokens: s.TokenUsage.TotalTokens, CacheHitTokens: s.TokenUsage.CacheHitTokens,
 			MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
 		}
+	}
+	// Attach stream timing stats from the latest LLM call
+	if s.StreamStats != nil {
+		payload.StreamStats = s.StreamStats
 	}
 	return payload
 }

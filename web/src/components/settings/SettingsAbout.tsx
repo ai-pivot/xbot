@@ -1,10 +1,12 @@
 /**
- * SettingsAbout — about / PWA install panel with diagnostics.
+ * SettingsAbout — about / PWA install panel with diagnostics + dev tools.
  */
 import { useState } from 'react'
-import { Download, Check, AlertCircle, RefreshCw } from 'lucide-react'
+import { Download, Check, AlertCircle, RefreshCw, Terminal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { usePwaInstall } from '@/hooks/usePwaInstall'
+import { exportSession } from '@/components/agent/api'
+import { useSessionStore } from '@/hooks/useSessionStore'
 
 /** One diagnostic row with a pass/fail indicator. */
 function DiagRow({ label, ok }: { label: string; ok: boolean }) {
@@ -24,6 +26,9 @@ export function SettingsAbout() {
   const [checking, setChecking] = useState(false)
   const [upToDate, setUpToDate] = useState(false)
   const [reloading, setReloading] = useState(false)
+  const [devExporting, setDevExporting] = useState(false)
+  const [devExportResult, setDevExportResult] = useState('')
+  const sessionStore = useSessionStore()
 
   const handleUpdate = async () => {
     if (updateAvailable) {
@@ -145,6 +150,80 @@ export function SettingsAbout() {
             <span className="text-xs" style={{ color: 'var(--status-running)' }}>
               ● 已是最新版本
             </span>
+          )}
+        </div>
+      </section>
+
+      {/* Developer tools */}
+      <section className="flex flex-col gap-3">
+        <h3 className="text-sm font-semibold text-text-primary">开发人员选项</h3>
+        <div className="flex flex-col gap-2 rounded-md bg-bg-tertiary px-3 py-3 text-xs">
+          <div className="flex items-center gap-2">
+            <Terminal className="size-4 shrink-0 text-text-muted" />
+            <span className="text-text-secondary">导出当前会话的 turn + iteration 顺序（排查线性一致性问题）</span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-fit gap-2"
+            disabled={devExporting || !sessionStore.activeSession}
+            onClick={async () => {
+              const s = sessionStore.activeSession
+              if (!s) return
+              setDevExporting(true)
+              setDevExportResult('')
+              try {
+                const data = await exportSession({ channel: s.channel, chatID: s.chatID })
+                // Build a compact turn+iter summary
+                const lines: string[] = []
+                lines.push(`# Session: ${s.channel}:${s.chatID}`)
+                lines.push(`# Model: ${data.model || 'unknown'}`)
+                lines.push(`# Messages: ${data.messages.length}`)
+                lines.push(`# Exported: ${new Date().toISOString()}`)
+                lines.push('')
+                for (const msg of data.messages) {
+                  const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+                  const preview = content.slice(0, 80).replace(/\n/g, ' ')
+                  const iterInfo = msg.detail ? ' [has detail]' : ''
+                  lines.push(`role=${msg.role} content="${preview}${content.length > 80 ? '...' : ''}"${iterInfo}`)
+                }
+                lines.push('')
+                lines.push('# Records (append-only history):')
+                if (data.records && data.records.length > 0) {
+                  for (const r of data.records) {
+                    const content = (r.content || '').slice(0, 60).replace(/\n/g, ' ')
+                    lines.push(`  hid=${r.history_id} type=${r.record_type} turn=${r.turn_id ?? 0} role=${r.role || '-'} content="${content}${(r.content || '').length > 60 ? '...' : ''}"`)
+                  }
+                } else {
+                  lines.push('  (no records)')
+                }
+                const text = lines.join('\n')
+                const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `session-${s.chatID.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)}-turn-iter.txt`
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                URL.revokeObjectURL(url)
+                setDevExportResult(`已导出 ${data.messages.length} 条消息`)
+              } catch (err) {
+                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+              } finally {
+                setDevExporting(false)
+              }
+            }}
+          >
+            <Download className="size-4" />
+            {devExporting ? '导出中…' : '导出 Turn+Iter 顺序'}
+          </Button>
+          {devExportResult && (
+            <span className="text-text-muted">{devExportResult}</span>
+          )}
+          {!sessionStore.activeSession && (
+            <span className="text-text-muted">（无活跃会话）</span>
           )}
         </div>
       </section>

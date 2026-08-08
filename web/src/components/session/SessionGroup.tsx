@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
+import type { ExportFormat } from '@/components/agent/api'
 import { SessionItem } from './SessionItem'
 import { childrenForParent } from './session-tree'
 import { AnimatedCollapse } from '@/components/ui/animated-collapse'
@@ -25,6 +26,7 @@ interface SessionGroupProps {
   onToggleStar: (id: string) => void
   onRename: (session: SessionInfo) => void
   onDelete: (session: SessionInfo) => void
+  onExport?: (session: SessionInfo, format: ExportFormat) => void
   /** Multi-select mode props (passed through to SessionItem). */
   multiSelectMode?: boolean
   selectedIds?: Set<string>
@@ -45,6 +47,7 @@ export function SessionGroup({
   onToggleStar,
   onRename,
   onDelete,
+  onExport,
   multiSelectMode = false,
   selectedIds,
   onToggleSelect,
@@ -85,6 +88,7 @@ export function SessionGroup({
                 onToggleStar={onToggleStar}
                 onRename={onRename}
                 onDelete={onDelete}
+                onExport={onExport}
                 multiSelectMode={multiSelectMode}
                 selected={selectedIds?.has(sessionKey(s)) ?? false}
                 onToggleSelect={onToggleSelect}

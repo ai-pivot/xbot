@@ -175,6 +175,113 @@ export async function exportSession(session: SessionSelector): Promise<ExportedS
   })
 }
 
+/** Export format options for downloadSession. */
+export type ExportFormat = 'native' | 'openai' | 'codex'
+
+/**
+ * Export a session and trigger a browser download in the specified format.
+ * - native: xbot portable JSON (full ExportedSession with records)
+ * - openai: OpenAI Chat Completions request body ({model, messages:[...]})
+ * - codex: Codex JSONL (one JSON object per line, Codex CLI session format)
+ */
+export async function downloadSession(session: SessionSelector, format: ExportFormat = 'native'): Promise<void> {
+  const data = await exportSession(session)
+  let content: string
+  let mime: string
+  let ext: string
+
+  switch (format) {
+    case 'openai': {
+      // Construct an OpenAI Chat Completions API request body.
+      const messages: Array<Record<string, unknown>> = []
+      if (data.system_instructions) {
+        messages.push({ role: 'system', content: data.system_instructions })
+      }
+      for (const msg of data.messages) {
+        const entry: Record<string, unknown> = { role: msg.role, content: typeof msg.content === 'string' ? msg.content : msg.content }
+        if (msg.tool_calls?.length) {
+          entry.tool_calls = msg.tool_calls
+        }
+        if (msg.tool_call_id) {
+          entry.tool_call_id = msg.tool_call_id
+        }
+        if (msg.name) {
+          entry.name = msg.name
+        }
+        messages.push(entry)
+      }
+      const requestBody = {
+        model: data.model || 'gpt-4o',
+        messages,
+      }
+      content = JSON.stringify(requestBody, null, 2)
+      mime = 'application/json'
+      ext = 'json'
+      break
+    }
+    case 'codex': {
+      // Codex JSONL: one JSON object per line. Each line is a message
+      // in Codex CLI session format with type/role/content.
+      const lines: string[] = []
+      if (data.system_instructions) {
+        lines.push(JSON.stringify({
+          type: 'message',
+          role: 'system',
+          content: [{ type: 'input_text', text: data.system_instructions }],
+        }))
+      }
+      for (const msg of data.messages) {
+        const text = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        const contentPart = msg.role === 'assistant'
+          ? { type: 'output_text', text }
+          : { type: 'input_text', text }
+        const entry: Record<string, unknown> = {
+          type: 'message',
+          role: msg.role,
+          content: [contentPart],
+        }
+        if (msg.reasoning) {
+          entry.reasoning = msg.reasoning
+        }
+        if (msg.tool_calls?.length) {
+          entry.tool_calls = msg.tool_calls
+        }
+        if (msg.tool_call_id) {
+          entry.tool_call_id = msg.tool_call_id
+        }
+        if (msg.name) {
+          entry.name = msg.name
+        }
+        lines.push(JSON.stringify(entry))
+      }
+      content = lines.join('\n')
+      mime = 'application/x-jsonlines'
+      ext = 'jsonl'
+      break
+    }
+    default: {
+      // native: full xbot portable JSON
+      content = JSON.stringify(data, null, 2)
+      mime = 'application/json'
+      ext = 'json'
+      break
+    }
+  }
+
+  // Sanitize the session label for filename
+  const label = (session.chatID || 'session').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)
+  const filename = `${label}.${ext}`
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 /** Import a portable session into an existing (or new) chat. */
 export async function importSession(session: SessionSelector, data: ExportedSession): Promise<{ imported: number }> {
   return postAPI<{ imported: number }>('/api/rpc', {

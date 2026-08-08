@@ -1059,8 +1059,70 @@ describe('cancel: assistant message must not vanish', () => {
     expect(result.current.liveMessage).toBeNull()
   })
 
+  it('turn_started commit does NOT let text event create a duplicate (finalizedRef preserved)', () => {
+    // BUG: turn_started called commitLiveProgressAndReset → onAssistantComplete
+    // → resetProgress → finalizedRef=true. Then turn_started reset
+    // finalizedRef=false (line 546). The text event arrived, saw
+    // finalizedRef=false, and called onAssistantComplete AGAIN → duplicate.
+    const complete = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+    // Turn 1: stream content
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'streaming reply', turn_id: 1 } })
+    expect(result.current.liveMessage?.content).toBe('streaming reply')
 
+    // Turn 2: turn_started fires BEFORE the text event for turn 1.
+    // commitLiveProgressAndReset commits the live content.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 2, chat_id: 'web:c1' } })
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete.mock.calls[0][0]).toBe('streaming reply')
 
+    // Text event for turn 1 arrives AFTER turn_started(2).
+    // Before fix: finalizedRef was reset to false → text event called
+    // onAssistantComplete again → duplicate.
+    // After fix: finalizedRef is preserved (true from commit) → text event
+    // returns early → NO duplicate.
+    emitAndFlush({ type: 'text', content: 'final reply', chat_id: 'c1', turn_id: 1 })
+    expect(complete).toHaveBeenCalledTimes(1)
+  })
 
+  it('turn_started with empty store does NOT block text event', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+    // Turn 1: turn_started, but NO streaming content (store is empty)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    expect(complete).not.toHaveBeenCalled()
 
+    // Text event arrives — should fire onAssistantComplete
+    emitAndFlush({ type: 'text', content: 'reply', chat_id: 'c1', turn_id: 1 })
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(complete.mock.calls[0][0]).toBe('reply')
+  })
+
+  it('resume trigger resets finalizedRef so text event can fire', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+    // Turn 1: stream + text (finalized)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial', turn_id: 1 } })
+    emitAndFlush({ type: 'text', content: 'first reply', chat_id: 'c1', turn_id: 1 })
+    expect(complete).toHaveBeenCalledTimes(1)
+
+    // Resume (AskUser answer) — same turnID
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'resume' }, chat_id: 'web:c1' },
+    })
+
+    // Text event for the resumed turn — should fire
+    emitAndFlush({ type: 'text', content: 'resumed reply', chat_id: 'c1', turn_id: 1 })
+    expect(complete).toHaveBeenCalledTimes(2)
+    expect(complete.mock.calls[1][0]).toBe('resumed reply')
+  })
 })
