@@ -36,6 +36,10 @@ description: "Guide for AI to configure xbot TUI, themes, subscriptions, and set
 
 Use `config action=model sub=list` first to get `sub_id` and available `model` names.
 
+**Note**: `set_context` and `set_output` only update the specified field — they do NOT
+reset other per-model config (max_output, thinking_mode, api_type). Passing `max_output=0`
+to `update` or `add` means "don't set" (0 is treated as "not provided"), not "clear to 0".
+
 ## Subscription Management
 
 | Task | Tool call | Notes |

@@ -1353,8 +1353,11 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		}
 		tc.GetActiveModelFn = func() (string, string, error) {
 			sub, model, err := uc.ResolveActiveSub(cfg.ChatID)
-			if err != nil || sub == nil {
+			if err != nil {
 				return "", "", fmt.Errorf("no active subscription: %w", err)
+			}
+			if sub == nil {
+				return "", "", fmt.Errorf("no active subscription for this session")
 			}
 			return sub.ID, model, nil
 		}
@@ -1385,14 +1388,14 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 			svc := uc.SubSvc
 
 			tc.SetModelContextFn = func(subID, model string, maxContext int) error {
-				if err := svc.UpsertModel(subID, model, maxContext, 0, "", ""); err != nil {
+				if err := svc.SetModelMaxContext(subID, model, maxContext); err != nil {
 					return err
 				}
 				uc.InvalidateLLM()
 				return nil
 			}
 			tc.SetModelOutputFn = func(subID, model string, maxOutput int) error {
-				if err := svc.UpsertModel(subID, model, 0, maxOutput, "", ""); err != nil {
+				if err := svc.SetModelMaxOutput(subID, model, maxOutput); err != nil {
 					return err
 				}
 				uc.InvalidateLLM()
