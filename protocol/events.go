@@ -121,7 +121,7 @@ type StreamStats struct {
 	TTFTMs  int64 `json:"ttft_ms,omitempty"`  // Time to first token (ms)
 	TPOTMs  int64 `json:"tpot_ms,omitempty"`  // Time per output token (ms)
 	TotalMs int64 `json:"total_ms,omitempty"` // Total stream duration (ms)
-	Chunks  int64 `json:"chunks,omitempty"`  // Number of chunks received
+	Chunks  int64 `json:"chunks,omitempty"`   // Number of chunks received
 }
 
 // TurnStartInfo carries the user message that triggered a turn. Only set when
