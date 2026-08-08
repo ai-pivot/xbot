@@ -6,7 +6,6 @@ import (
 	"xbot/bus"
 	"xbot/llm"
 	"xbot/memory"
-	xbotmemory "xbot/memory/xbot"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
 )
@@ -54,8 +53,12 @@ type ToolContext struct {
 	RecallTimeRange vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
 	ToolIndexer     memory.ToolIndexer           // 工具索引服务（Letta 模式下可用）
 
-	// XbotMemory fields (nil when memory provider is not xbot)
-	XbotMemory *xbotmemory.XbotMemory // xbot 记忆系统实例（BM25 检索 + 三层记忆）
+	// MemoryProvider is the generic memory provider instance.
+	// Tools access provider-specific methods via type assertion:
+	//   xm, ok := ctx.MemoryProvider.(*xbotmemory.XbotMemory)
+	// This eliminates the need for provider-specific fields — adding a new
+	// provider requires zero changes to ToolContext/engine code.
+	MemoryProvider memory.MemoryProvider
 
 	// SessionKey is the authoritative session key (may differ from
 	// Channel:ChatID when physicalChannel overrides it). Used by TodoManager

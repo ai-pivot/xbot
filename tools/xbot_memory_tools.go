@@ -63,14 +63,14 @@ func (t *MemorySearchTool) Execute(ctx *ToolContext, input string) (*ToolResult,
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("## Memory Search Results (%d found)\n\n", len(entries)))
+	fmt.Fprintf(&sb, "## Memory Search Results (%d found)\n\n", len(entries))
 	for i, e := range entries {
-		sb.WriteString(fmt.Sprintf("### %d. [%s] (importance: %.1f)\n", i+1, e.Type, e.Importance))
+		fmt.Fprintf(&sb, "### %d. [%s] (importance: %.1f)\n", i+1, e.Type, e.Importance)
 		sb.WriteString(e.Content)
 		if e.Keywords != "" {
-			sb.WriteString(fmt.Sprintf("\n*Keywords: %s*\n", e.Keywords))
+			fmt.Fprintf(&sb, "\n*Keywords: %s*\n", e.Keywords)
 		}
-		sb.WriteString(fmt.Sprintf("\n*Created: %s*\n\n", e.CreatedAt))
+		fmt.Fprintf(&sb, "\n*Created: %s*\n\n", e.CreatedAt)
 	}
 
 	return NewResult(sb.String()), nil
@@ -194,11 +194,11 @@ func (t *MemoryManageTool) Execute(ctx *ToolContext, input string) (*ToolResult,
 			return NewResult("No memories found."), nil
 		}
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("## All Memories (%d)\n\n", len(entries)))
+		fmt.Fprintf(&sb, "## All Memories (%d)\n\n", len(entries))
 		for _, e := range entries {
-			sb.WriteString(fmt.Sprintf("- **#%d [%s]** (importance: %.1f) %s", e.ID, e.Type, e.Importance, e.Content))
+			fmt.Fprintf(&sb, "- **#%d [%s]** (importance: %.1f) %s", e.ID, e.Type, e.Importance, e.Content)
 			if e.Keywords != "" {
-				sb.WriteString(fmt.Sprintf("  *(keywords: %s)*", e.Keywords))
+				fmt.Fprintf(&sb, "  *(keywords: %s)*", e.Keywords)
 			}
 			sb.WriteString("\n")
 		}
@@ -244,7 +244,14 @@ func init() {
 }
 
 // getXbotMemory extracts the XbotMemory instance from the tool context.
-// Returns nil if the memory provider is not xbot.
+// Uses the generic MemoryProvider field + type assertion — no provider-specific
+// field needed on ToolContext. Returns nil if the memory provider is not xbot.
 func getXbotMemory(ctx *ToolContext) *xbotmemory.XbotMemory {
-	return ctx.XbotMemory
+	if ctx.MemoryProvider == nil {
+		return nil
+	}
+	if xm, ok := ctx.MemoryProvider.(*xbotmemory.XbotMemory); ok {
+		return xm
+	}
+	return nil
 }

@@ -27,6 +27,7 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/memory/letta"
+	xbotmemory "xbot/memory/xbot"
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/runner"
@@ -3187,6 +3188,16 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		return nil, fmt.Errorf("get/create tenant session: %w", err)
 	}
 
+	// Ensure the memory provider is scoped to the canonical owner so memories
+	// are shared across ALL sessions of this user (not per-tenant).
+	// The provider may have been created earlier by buildToolContextExtras via
+	// GetOrCreateSession (no owner → userID=0); fix it up now.
+	if tenantOwner > 0 {
+		if xm, ok := tenantSession.Memory().(*xbotmemory.XbotMemory); ok {
+			xm.SetOwnerUserID(tenantOwner)
+		}
+	}
+
 	// Set tenant-scoped stores for this request.
 	tenantID := tenantSession.TenantID()
 	if a.maskStore != nil {
@@ -3421,23 +3432,58 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 	out := Run(ctx, cfg)
 
-	// Auto-memorize: asynchronously extract memories after each turn.
-	// This enables cross-session memory WITHOUT requiring /new.
-	// The memory provider's Memorize is called with ArchiveAll=true on the
-	// messages from this Run. For xbot provider, this triggers LLM-based
-	// extraction of atomic memories + session summary.
-	// Runs in a goroutine to not block the response.
+	// Auto-memorize: lightweight incremental consolidation after each turn.
+	// This enables cross-session memory WITHOUT requiring /new, WITHOUT burning
+	// 3 LLM calls per turn (the old code called Memorize(ArchiveAll=true) after
+	// EVERY turn — the root cause of "记忆整理太频繁" + "记忆膨胀").
+	//
+	// Providers implementing TurnConsolidator (xbot) get throttled incremental
+	// extraction: new messages accumulate until a threshold, then one LLM call
+	// extracts atomic memories. Providers without it (flat/letta) fall back to
+	// the old full Memorize — unchanged behavior.
 	if mem := tenantSession.Memory(); mem != nil && len(out.Messages) > 0 {
-		go func(mem memory.MemoryProvider, messages []llm.ChatMessage, chatID string) {
+		lastConsolidated := tenantSession.LastConsolidated()
+		log.Ctx(ctx).WithFields(log.Fields{
+			"messages":          len(out.Messages),
+			"provider":          mem.Name(),
+			"last_consolidated": lastConsolidated,
+		}).Info("Auto-memorize: starting incremental consolidation")
+		go func(mem memory.MemoryProvider, messages []llm.ChatMessage, chatID string, llmClient llm.LLM, model string, lastCons int) {
 			// Use a fresh context — the original ctx may be cancelled after response.
 			memCtx := context.Background()
-			mem.Memorize(memCtx, memory.MemorizeInput{
-				Messages:   messages,
-				LLMClient:  cfg.LLMClient,
-				Model:      cfg.Model,
-				ArchiveAll: true,
-			})
-		}(mem, out.Messages, msg.ChatID)
+			input := memory.MemorizeInput{
+				Messages:         messages,
+				LastConsolidated: lastCons,
+				LLMClient:        llmClient,
+				Model:            model,
+				ArchiveAll:       false, // incremental — never full archive per turn
+			}
+
+			var result memory.MemorizeResult
+			var err error
+			if tc, ok := mem.(memory.TurnConsolidator); ok {
+				result, err = tc.ConsolidateTurn(memCtx, input)
+			} else {
+				// Legacy provider: full Memorize (ArchiveAll forced true so
+				// flat/letta actually do something — their Memorize no-ops when
+				// ArchiveAll=false).
+				input.ArchiveAll = true
+				result, err = mem.Memorize(memCtx, input)
+			}
+			if err != nil {
+				log.WithError(err).WithField("chat_id", chatID).Warn("Auto-memorize: consolidation failed")
+				return
+			}
+			log.WithFields(log.Fields{
+				"chat_id": chatID,
+				"ok":      result.OK,
+			}).Info("Auto-memorize: consolidation completed")
+		}(mem, out.Messages, msg.ChatID, cfg.LLMClient, cfg.Model, lastConsolidated)
+	} else if mem != nil && len(out.Messages) == 0 {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"provider":  mem.Name(),
+			"msg_count": len(out.Messages),
+		}).Warn("Auto-memorize: skipped — out.Messages is empty (cfg.Memory may not have been set)")
 	}
 
 	// Save iteration history on cancellation, even if Run() returned nil error.

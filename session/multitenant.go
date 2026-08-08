@@ -332,8 +332,12 @@ func (m *MultiTenantSession) getOrCreateSession(channel, chatID string, canonica
 		memDir := filepath.Join(config.XbotHome(), "memory", fmt.Sprintf("%d", tenantID))
 		deps := memory.ProviderDeps{
 			TenantID: tenantID,
-			BaseDir:  memDir,
-			DB:       m.db.Conn(),
+			// Memories are scoped by canonical owner (cross-session shared).
+			// canonicalUserID may be 0 in legacy/standalone paths — provider
+			// falls back to tenant-scoped isolation in that case.
+			UserID:  canonicalUserID,
+			BaseDir: memDir,
+			DB:      m.db.Conn(),
 		}
 		// Letta-specific deps
 		if m.memoryProvider == "letta" {

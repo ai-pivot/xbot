@@ -113,7 +113,7 @@ func (c *promptCmd) Match(s string) bool {
 	lower := strings.ToLower(s)
 	return lower == "/prompt" || strings.HasPrefix(lower, "/prompt ")
 }
-func (c *promptCmd) Concurrent() bool { return true } // read-only snapshot, no real-time requirement
+func (c *promptCmd) Concurrent() bool { return false } // needs UserContext (only available in processMessage path)
 
 func (c *promptCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)

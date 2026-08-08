@@ -21,7 +21,6 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/memory/letta"
-	xbotmemory "xbot/memory/xbot"
 	"xbot/oauth"
 	"xbot/protocol"
 	"xbot/session"
@@ -181,6 +180,16 @@ func (a *Agent) buildBaseRunConfig(
 
 		// Letta 记忆字段
 		ToolContextExtras: a.buildToolContextExtras(channel, chatID),
+
+		// Memory provider — set so buildOutput populates out.Messages for
+		// auto-memorize, and CompressionAware hooks fire during compaction.
+		Memory: func() memory.MemoryProvider {
+			ts, err := a.multiSession.GetOrCreateSession(channel, chatID)
+			if err != nil {
+				return nil
+			}
+			return ts.Memory()
+		}(),
 
 		// HookManager — inherit from Agent
 		HookManager: a.hookManager,
@@ -1152,8 +1161,9 @@ func (a *Agent) buildMemoryToolSetup(channel, chatID string) ([]llm.ToolDefiniti
 }
 
 // buildToolContextExtras 构建 ToolContext 扩展字段。
-// 通用字段（TenantID、MemorySvc）从 TenantSession 直接获取，对所有 memory 类型生效。
-// LettaMemory 专属字段（CoreMemory、ArchivalMemory、ToolIndexer）仅在 LettaMemory 时设置。
+// 通用字段（TenantID、MemorySvc、MemoryProvider）从 TenantSession 直接获取。
+// LettaMemory 专属字段（CoreMemory、ArchivalMemory、ToolIndexer）通过类型断言设置。
+// 新增 provider 无需修改此函数——工具通过 ctx.MemoryProvider 类型断言获取特有方法。
 func (a *Agent) buildToolContextExtras(channel, chatID string) *ToolContextExtras {
 	extras := &ToolContextExtras{
 		InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
@@ -1170,17 +1180,15 @@ func (a *Agent) buildToolContextExtras(channel, chatID string) *ToolContextExtra
 		extras.TenantID = ts.TenantID()
 		extras.MemorySvc = ts.MemoryService()
 		extras.RecallTimeRange = a.multiSession.RecallTimeRangeFunc()
+		// Generic: store the MemoryProvider instance. Tools type-assert to get
+		// provider-specific methods (e.g. *xbotmemory.XbotMemory).
+		extras.MemoryProvider = ts.Memory()
 
-		// LettaMemory-specific fields
+		// LettaMemory-specific fields (backward compat for existing letta tools)
 		if lm, ok := ts.Memory().(*letta.LettaMemory); ok {
 			extras.CoreMemory = lm.CoreService()
 			extras.ArchivalMemory = lm.ArchivalService()
 			extras.ToolIndexer = lm
-		}
-
-		// XbotMemory-specific fields
-		if xm, ok := ts.Memory().(*xbotmemory.XbotMemory); ok {
-			extras.XbotMemory = xm
 		}
 	}
 
@@ -1215,9 +1223,12 @@ func (a *Agent) buildSubAgentMemory(
 	subTenantID := deriveSubAgentTenantID(parentExtras.TenantID, parentAgentID, roleName)
 
 	// 3. 通过注册表创建 SubAgent 记忆系统（无硬编码 provider 名称）
+	//    记忆按 owner user_id 共享（与父 Agent 同一 canonical user），
+	//    SubAgent 的记忆归原始终端用户所有，跨会话可见。
 	memDir := filepath.Join(config.XbotHome(), "memory", fmt.Sprintf("%d", subTenantID))
 	deps := memory.ProviderDeps{
 		TenantID: subTenantID,
+		UserID:   parentCtx.UserID, // canonical owner — same user across all sessions
 		BaseDir:  memDir,
 		DB:       a.multiSession.DB().Conn(),
 	}
@@ -1267,13 +1278,11 @@ func (a *Agent) buildSubAgentMemory(
 	// 4. 构建 ToolContextExtras（供 SubAgent 的工具使用）
 	extras := &ToolContextExtras{
 		TenantID:                subTenantID,
+		MemoryProvider:          mem, // generic: tools type-assert to get provider-specific methods
 		InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
 	}
 
-	// Provider-specific extras injection
-	if xm, ok := mem.(*xbotmemory.XbotMemory); ok {
-		extras.XbotMemory = xm
-	}
+	// LettaMemory-specific fields (backward compat for existing letta tools)
 	if lm, ok := mem.(*letta.LettaMemory); ok {
 		extras.CoreMemory = lm.CoreService()
 		extras.ArchivalMemory = lm.ArchivalService()

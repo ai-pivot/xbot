@@ -53,6 +53,18 @@ type MemorizeInput struct {
 	ArchiveAll       bool              // true=归档所有消息（/new 命令）
 }
 
+// TurnConsolidator 可选接口：每轮对话后的轻量增量记忆整理。
+// 与 Memorize(ArchiveAll=true) 的区别：
+//   - 增量：只处理 LastConsolidated 之后的新消息，不重复提取历史
+//   - 节流：内部维护计数器，积累足够新消息才触发 LLM 提取（避免每轮调用）
+//   - 轻量：只提取原子记忆，不生成会话摘要、不更新核心摘要
+//
+// 实现此接口的 provider 由 agent 每轮对话后调用；未实现的 provider
+// 回退到全量 Memorize。flat/letta 不实现，行为不变。
+type TurnConsolidator interface {
+	ConsolidateTurn(ctx context.Context, input MemorizeInput) (MemorizeResult, error)
+}
+
 // MemorizeResult 记忆写入的结果。
 type MemorizeResult struct {
 	NewLastConsolidated int  // 新的合并偏移量
@@ -153,7 +165,12 @@ type PromptParts struct {
 // Each provider type-asserts the fields it needs; unused fields are nil.
 type ProviderDeps struct {
 	TenantID int64
-	BaseDir  string
+	// UserID is the canonical owner user_id. Memories are scoped by user_id
+	// (not tenant_id) so the SAME user sees the same memories across ALL
+	// sessions/tenants — this is what "cross-session memory" means.
+	// 0 = unknown (fallback to tenant-scoped in provider).
+	UserID  int64
+	BaseDir string
 	DB      *sql.DB
 	// LettaDeps is provider-specific deps for letta (nil for non-letta).
 	// Type: *letta.Deps — stored as any to avoid import cycle.

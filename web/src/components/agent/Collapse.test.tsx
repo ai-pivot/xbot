@@ -222,7 +222,7 @@ describe('FoldedToolGroup', () => {
     expect(container.querySelector('.sweep-text')).toBeNull()
   })
 
-  it('uses one sweep for a merged running-tool title', () => {
+  it('uses one sweep per tool in a merged running-tool title', () => {
     const { container } = renderWithProviders(
       <FoldedToolGroup
         tools={[
@@ -234,7 +234,9 @@ describe('FoldedToolGroup', () => {
     )
 
     const title = container.querySelector('button[aria-expanded="false"]')
-    expect(title?.querySelectorAll('.sweep-text')).toHaveLength(1)
+    // Each tool group gets its own SweepText (icon + name per group).
+    // This ensures icons are positioned before their corresponding names.
+    expect(title?.querySelectorAll('.sweep-text')).toHaveLength(2)
   })
 
   it('does not animate both the title and card for one expanded running tool', () => {
@@ -271,6 +273,88 @@ describe('FoldedToolGroup', () => {
       <FoldedToolGroup tools={[]} level="minimal" />,
     )
     expect(container.firstChild).toBeNull()
+  })
+
+  // ── Icon position tests ──────────────────────────────────────────────
+  // Regression: icons must appear BEFORE their corresponding tool name,
+  // not grouped together before all names. This was broken when the running
+  // branch rendered all icons in one span, then all text in a SweepText.
+  // These tests ensure each icon is immediately followed by its tool name.
+
+  /** Helper: check that within a span, the icon element comes before the text element. */
+  function expectIconBeforeText(span: HTMLElement) {
+    const icon = span.querySelector('.tool-icon-single')
+    const text = span.querySelector('.sweep-text, .font-mono')
+    expect(icon).not.toBeNull()
+    expect(text).not.toBeNull()
+    // Compare DOM position: icon should come before text
+    // compareDocumentPosition returns bitmask; Node.DOCUMENT_POSITION_FOLLOWING = 4
+    // If icon precedes text: text.compareDocumentPosition(icon) & 4 === 4 (icon is following text → wrong)
+    // If icon precedes text: icon.compareDocumentPosition(text) & 4 === 4 (text follows icon → correct)
+    const mask = icon!.compareDocumentPosition(text!)
+    expect(mask & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy() // text follows icon
+  }
+
+  it('places each icon directly before its tool name in merged running tools', () => {
+    const tools = [
+      makeTool({ name: 'Fetch', label: 'Fetch', status: 'running' }),
+      makeTool({ name: 'WebSearch', label: 'WebSearch', status: 'running' }),
+    ]
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={tools} level="minimal" />,
+    )
+    const button = container.querySelector('button[aria-expanded="false"]')
+    expect(button).not.toBeNull()
+
+    // Each tool group should be a span containing [icon, text] in that order.
+    // We do NOT want all icons grouped in one span before all text.
+    const toolSpans = button!.querySelectorAll('span.flex.items-center.gap-0\\.5')
+    expect(toolSpans.length).toBe(2) // one span per tool group
+
+    expectIconBeforeText(toolSpans[0] as HTMLElement) // Fetch
+    expectIconBeforeText(toolSpans[1] as HTMLElement) // WebSearch
+  })
+
+  it('places each icon directly before its tool name in merged done tools', () => {
+    const tools = [
+      makeTool({ name: 'Read', label: 'Read', status: 'done' }),
+      makeTool({ name: 'Grep', label: 'Grep', status: 'done' }),
+    ]
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={tools} level="minimal" />,
+    )
+    const button = container.querySelector('button[aria-expanded="false"]')
+    expect(button).not.toBeNull()
+
+    const toolSpans = button!.querySelectorAll('span.flex.items-center.gap-0\\.5')
+    expect(toolSpans.length).toBe(2)
+
+    for (const span of toolSpans) {
+      expectIconBeforeText(span as HTMLElement)
+    }
+  })
+
+  it('never groups all icons before all names (regression test)', () => {
+    // This is the specific regression: a previous implementation rendered
+    // all icons in one <span>, then all text in a <SweepText>, causing
+    // [icon][icon][text text] instead of [icon text][icon text].
+    const tools = [
+      makeTool({ name: 'Fetch', label: 'Fetch', status: 'running' }),
+      makeTool({ name: 'WebSearch', label: 'WebSearch', status: 'running' }),
+    ]
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={tools} level="minimal" />,
+    )
+    const button = container.querySelector('button[aria-expanded="false"]')
+    expect(button).not.toBeNull()
+
+    // Verify: no span contains 2+ icons without text between them.
+    // Each tool group span should have exactly 1 icon.
+    const toolSpans = button!.querySelectorAll('span.flex.items-center.gap-0\\.5')
+    for (const span of toolSpans) {
+      const icons = span.querySelectorAll(':scope > .tool-icon-single')
+      expect(icons.length).toBe(1) // exactly 1 icon per tool group span
+    }
   })
 })
 

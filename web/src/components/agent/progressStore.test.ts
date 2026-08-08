@@ -604,4 +604,68 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     flushRaf()
     expect(store.getSnapshot().iterationHistory.map((i) => i.iteration)).toEqual([1, 2])
   })
+
+  // ── SSE reconnect linear-consistency regression tests ──
+  // After an SSE disconnect/reconnect, restoreActiveProgress can deliver a
+  // STALE snapshot (seq <= current.eventSeq) while live events have already
+  // advanced the store. The stale branch must append missing iterations but
+  // must NOT roll back phase/iteration/content/activeTools — otherwise the
+  // newer live state is overwritten by the older snapshot (linear-consistency
+  // violation: history jumps backward after reconnect).
+
+  it('stale snapshot (seq <= current) appends iterations but does NOT roll back newer live state', () => {
+    const store = new ProgressStore()
+
+    // Live events advance the store to iteration 2, seq 10 (arrived via SSE
+    // before the recovery RPC returned).
+    store.setStructuredTools({ eventSeq: 9, iteration: 1, phase: 'tool_exec',
+      activeTools: [tool({ name: 'Read', status: 'done', iteration: 1 })] })
+    flushRaf()
+    store.setStructuredTools({ eventSeq: 10, iteration: 2, phase: 'tool_exec',
+      content: 'NEW live content for iter 2',
+      activeTools: [tool({ name: 'Shell', status: 'running', iteration: 2 })],
+      iterationHistory: [mkIter(1)] })
+    flushRaf()
+    const before = store.getSnapshot()
+    expect(before.iteration).toBe(2)
+    expect(before.phase).toBe('tool_exec')
+    expect(before.activeTools[0].name).toBe('Shell')
+
+    // Stale recovery snapshot (seq 8 < current 10) from restoreActiveProgress.
+    store.setStructuredTools({
+      eventSeq: 8,
+      phase: 'tool_exec',
+      iteration: 1, // OLD iteration — must NOT roll back
+      content: 'OLD content from stale snapshot',
+      activeTools: [tool({ name: 'Read', status: 'done', iteration: 1 })],
+      iterationHistory: [mkIter(3)], // NEW iteration — should still be appended
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    // Phase/iteration/content must NOT be rolled back to the stale snapshot.
+    expect(snap.phase).toBe('tool_exec')
+    expect(snap.content).toBe('NEW live content for iter 2')
+    expect(snap.activeTools[0].name).toBe('Shell')
+    // Iteration history from the stale event is still appended (dedup by num).
+    expect(snap.iterationHistory.map((i) => i.iteration)).toContain(3)
+  })
+
+  it('stale snapshot does NOT change streaming flag or revert to done', () => {
+    const store = new ProgressStore()
+
+    // Live event: turn running at iter 1, seq 5.
+    store.setStructuredTools({ eventSeq: 5, iteration: 1, phase: 'running',
+      content: 'live', activeTools: [] })
+    flushRaf()
+    expect(store.getSnapshot().phase).toBe('running')
+
+    // Stale done-ish snapshot at seq 3 — must not turn the live state into done.
+    store.setStructuredTools({ eventSeq: 3, phase: 'done', iteration: 0 })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.phase).toBe('running') // NOT rolled back to 'done'
+    expect(snap.streaming).toBe(true)
+  })
 })

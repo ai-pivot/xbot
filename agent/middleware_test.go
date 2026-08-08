@@ -476,7 +476,7 @@ func TestMemoryMiddleware(t *testing.T) {
 			Ctx:         context.Background(),
 			SystemParts: make(map[string]string),
 			UserContent: "hello",
-			UserMessage: "[2026-01-01] [TestUser]\nhello\n\n[System Guide]\n- test\n现在时间：2026-01-01\n",
+			UserMessage: "<context>\n<time>2026-01-01</time>\n<sender>TestUser</sender>\n</context>\n\nhello",
 			Extra:       make(map[string]any),
 		}
 		mc.SetExtra(ExtraKeyMemoryProvider, &mockMemoryProvider{
@@ -592,8 +592,14 @@ func TestUserMessageMiddleware(t *testing.T) {
 		if !strings.Contains(mc.UserMessage, "hello world") {
 			t.Error("user message should contain original content")
 		}
-		if !strings.Contains(mc.UserMessage, "Skill") {
-			t.Error("user message should contain system guidance")
+		if !strings.Contains(mc.UserMessage, "<context>") {
+			t.Error("user message should contain <context> XML block")
+		}
+		if !strings.Contains(mc.UserMessage, "<time>") {
+			t.Error("user message should contain <time> tag")
+		}
+		if !strings.Contains(mc.UserMessage, "<sender>") {
+			t.Error("user message should contain <sender> tag")
 		}
 	})
 
@@ -604,11 +610,15 @@ func TestUserMessageMiddleware(t *testing.T) {
 		mw := NewUserMessageMiddleware("flat")
 		_ = mw.Process(mc)
 
-		if strings.Contains(mc.UserMessage, "[]") {
-			t.Error("user message should not have empty sender brackets")
-		}
 		if !strings.Contains(mc.UserMessage, "hello world") {
 			t.Error("user message should contain original content")
+		}
+		if !strings.Contains(mc.UserMessage, "<time>") {
+			t.Error("user message should contain <time> tag")
+		}
+		// No <sender> tag when sender name is empty
+		if strings.Contains(mc.UserMessage, "<sender>") {
+			t.Error("user message should not contain <sender> tag when sender name is empty")
 		}
 	})
 }
@@ -696,8 +706,8 @@ func TestPipeline_FullIntegration(t *testing.T) {
 	if !strings.Contains(userMsg, "hello") {
 		t.Error("user message should contain original content")
 	}
-	if !strings.Contains(userMsg, "Skill") {
-		t.Error("user message should contain system guidance")
+	if !strings.Contains(userMsg, "<context>") {
+		t.Error("user message should contain <context> XML block")
 	}
 	if !strings.Contains(userMsg, "I am xbot") {
 		t.Error("user message should contain memory")

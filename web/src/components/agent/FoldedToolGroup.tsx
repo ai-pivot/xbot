@@ -129,7 +129,10 @@ function formatToolTitle(tool: WebToolProgress, sweepRunning = true): ReactNode 
   )
 }
 
-/** Build merged title: [icon] Name ×N [icon] Name ×M */
+/** Build merged title: [icon] Name ×N [icon] Name ×M
+ *  Each icon is placed directly before its corresponding tool name.
+ *  Never group all icons together before all names — that breaks visual association.
+ */
 function formatMergedTitle(tools: WebToolProgress[], sweepRunning = true): ReactNode {
   const status = aggregateStatus(tools)
   const color = statusColorVar(status)
@@ -146,40 +149,21 @@ function formatMergedTitle(tools: WebToolProgress[], sweepRunning = true): React
     }
   }
 
-  const animatedText = groups
-    .filter((group) => !isSubAgentToolName(group.name))
-    .map((group) => `${group.name}${group.count > 1 ? ` ×${group.count}` : ''}`)
-    .join('  ')
-  const staticText = groups
-    .filter((group) => isSubAgentToolName(group.name))
-    .map((group) => `${group.name}${group.count > 1 ? ` ×${group.count}` : ''}`)
-    .join('  ')
-
   return (
     <span className="flex flex-wrap items-center gap-1.5" style={{ color }}>
-      {status === 'running' && sweepRunning && animatedText ? (
-        <>
-          <span className="flex items-center gap-0.5">
-            {groups.map((group, index) => (
-              <ToolIcon key={`${group.name}-${index}`} name={group.name} status={status} />
-            ))}
+      {groups.map((g, i) => {
+        const isSubAgent = isSubAgentToolName(g.name)
+        const label = `${g.name}${g.count > 1 ? ` ×${g.count}` : ''}`
+        const showSweep = status === 'running' && sweepRunning && !isSubAgent
+        return (
+          <span key={`${g.name}-${i}`} className="flex items-center gap-0.5">
+            <ToolIcon name={g.name} status={status} />
+            {showSweep
+              ? <SweepText text={label} color={color} className="shrink-0 font-mono text-xs" />
+              : <span className="shrink-0 font-mono text-xs">{label}</span>}
           </span>
-          <SweepText
-            text={animatedText}
-            color={color}
-            className="shrink-0 font-mono text-xs"
-          />
-          {staticText && <span className="shrink-0 font-mono text-xs">{staticText}</span>}
-        </>
-      ) : groups.map((g, i) => (
-        <span key={`${g.name}-${i}`} className="flex items-center gap-0.5">
-          <ToolIcon name={g.name} status={status} />
-          <span className="shrink-0 font-mono text-xs">{g.name}</span>
-          {g.count > 1 ? (
-            <span className="shrink-0 text-[11px]" style={{ color }}>×{g.count}</span>
-          ) : null}
-        </span>
-      ))}
+        )
+      })}
     </span>
   )
 }

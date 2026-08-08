@@ -451,7 +451,7 @@ func TestMemoryMiddleware_Extended(t *testing.T) {
 		m := NewMemoryMiddleware()
 		mc := newMC()
 		mc.UserContent = "what did I say yesterday?"
-		mc.UserMessage = "[2026-01-01] [TestUser]\nwhat did I say yesterday?\n\n[System Guide]\n- test\n现在时间：2026-01-01\n"
+		mc.UserMessage = "<context>\n<time>2026-01-01</time>\n<sender>TestUser</sender>\n</context>\n\nwhat did I say yesterday?"
 		recallContent := "User previously asked about the database schema."
 		mem := &mockMemoryRecaller{
 			recallResult: recallContent,
