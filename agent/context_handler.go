@@ -373,6 +373,12 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 			if stats.TPOTMs > 0 {
 				fmt.Fprintf(&sb, "| TPOT | %d ms |\n", stats.TPOTMs)
 			}
+			if stats.TokensPerSec > 0 {
+				fmt.Fprintf(&sb, "| Gen Speed | %d tok/s |\n", stats.TokensPerSec)
+			}
+			if stats.SSEIntervalMs > 0 {
+				fmt.Fprintf(&sb, "| SSE Interval | %d ms |\n", stats.SSEIntervalMs)
+			}
 			fmt.Fprintf(&sb, "| Stream Duration | %d ms |\n", stats.TotalMs)
 			fmt.Fprintf(&sb, "| Output Chunks | %d |\n", stats.Chunks)
 		}

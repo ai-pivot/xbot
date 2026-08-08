@@ -118,10 +118,12 @@ type ProgressEvent struct {
 // Mirrors llm.StreamStats — duplicated here to avoid circular import
 // (protocol ← llm would create a cycle).
 type StreamStats struct {
-	TTFTMs  int64 `json:"ttft_ms,omitempty"`  // Time to first token (ms)
-	TPOTMs  int64 `json:"tpot_ms,omitempty"`  // Time per output token (ms)
-	TotalMs int64 `json:"total_ms,omitempty"` // Total stream duration (ms)
-	Chunks  int64 `json:"chunks,omitempty"`   // Number of chunks received
+	TTFTMs        int64 `json:"ttft_ms,omitempty"`        // Time to first token (ms)
+	TPOTMs        int64 `json:"tpot_ms,omitempty"`        // True TPOT (ms) — model generation rate
+	SSEIntervalMs int64 `json:"sse_interval_ms,omitempty"` // SSE chunk interval (ms) — includes network latency
+	TokensPerSec  int64 `json:"tokens_per_sec,omitempty"`  // Average generation speed (tokens/sec)
+	TotalMs       int64 `json:"total_ms,omitempty"`       // Total stream duration (ms)
+	Chunks        int64 `json:"chunks,omitempty"`         // Number of chunks received
 }
 
 // TurnStartInfo carries the user message that triggered a turn. Only set when

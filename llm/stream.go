@@ -104,13 +104,34 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 		if firstChunkAt.IsZero() {
 			return // no chunks received
 		}
+		totalMs := time.Since(requestStart).Milliseconds()
+		ttftMs := firstChunkAt.Sub(requestStart).Milliseconds()
 		stats := &StreamStats{
-			TTFTMs:  firstChunkAt.Sub(requestStart).Milliseconds(),
-			TotalMs: time.Since(requestStart).Milliseconds(),
+			TTFTMs:  ttftMs,
+			TotalMs: totalMs,
 			Chunks:  chunkCount,
 		}
+		// SSE interval: chunk-based, includes network/SSE/hub latency
 		if chunkCount > 1 {
-			stats.TPOTMs = lastChunkAt.Sub(firstChunkAt).Milliseconds() / (chunkCount - 1)
+			stats.SSEIntervalMs = lastChunkAt.Sub(firstChunkAt).Milliseconds() / (chunkCount - 1)
+		}
+		// True TPOT: use API-returned completion_tokens (model generation rate,
+		// excludes network/SSE latency). TPOT = (Total - TTFT) / (tokens - 1).
+		generationMs := totalMs - ttftMs
+		if generationMs < 0 {
+			generationMs = 0
+		}
+		tokens := resp.Usage.CompletionTokens
+		if tokens > 1 {
+			stats.TPOTMs = generationMs / (tokens - 1)
+			// Average generation speed (tokens/sec), excluding TTFT
+			if generationMs > 0 {
+				stats.TokensPerSec = tokens * 1000 / generationMs
+			}
+		} else if chunkCount > 1 {
+			// Fallback when completion_tokens unavailable (stream cancelled
+			// before usage event): use SSE interval as approximate TPOT
+			stats.TPOTMs = stats.SSEIntervalMs
 		}
 		resp.StreamStats = stats
 	}

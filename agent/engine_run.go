@@ -592,19 +592,23 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		s.tokenTracker.RecordStreamStats(response.StreamStats)
 		if s.structuredProgress != nil && response.StreamStats != nil {
 			s.structuredProgress.StreamStats = &protocol.StreamStats{
-				TTFTMs:  response.StreamStats.TTFTMs,
-				TPOTMs:  response.StreamStats.TPOTMs,
-				TotalMs: response.StreamStats.TotalMs,
-				Chunks:  response.StreamStats.Chunks,
+				TTFTMs:        response.StreamStats.TTFTMs,
+				TPOTMs:        response.StreamStats.TPOTMs,
+				SSEIntervalMs: response.StreamStats.SSEIntervalMs,
+				TokensPerSec:  response.StreamStats.TokensPerSec,
+				TotalMs:       response.StreamStats.TotalMs,
+				Chunks:        response.StreamStats.Chunks,
 			}
 		}
 		// Persist stream stats to session-level storage (survives turn end)
 		if s.cfg.SaveStreamStats != nil && response.StreamStats != nil {
 			s.cfg.SaveStreamStats(&protocol.StreamStats{
-				TTFTMs:  response.StreamStats.TTFTMs,
-				TPOTMs:  response.StreamStats.TPOTMs,
-				TotalMs: response.StreamStats.TotalMs,
-				Chunks:  response.StreamStats.Chunks,
+				TTFTMs:        response.StreamStats.TTFTMs,
+				TPOTMs:        response.StreamStats.TPOTMs,
+				SSEIntervalMs: response.StreamStats.SSEIntervalMs,
+				TokensPerSec:  response.StreamStats.TokensPerSec,
+				TotalMs:       response.StreamStats.TotalMs,
+				Chunks:        response.StreamStats.Chunks,
 			})
 		}
 		s.localInputTokens += int(response.Usage.PromptTokens)
