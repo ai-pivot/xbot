@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"xbot/llm"
+	"xbot/memory"
 )
 
 // CompressPipelineParams holds the inputs for a compression pipeline execution.
@@ -32,6 +33,17 @@ type CompressPipelineParams struct {
 	AccumulateUsage func(*CompressResult)
 	// SyncMessages syncs the ContextEditor reference when messages change.
 	SyncMessages func([]llm.ChatMessage) []llm.ChatMessage
+
+	// --- Memory system integration (xbot provider only) ---
+
+	// Memory is the memory provider (used for CompressionAware interface).
+	// nil for flat/letta/none providers — compression behavior is unchanged.
+	Memory memory.MemoryProvider
+	// SessionID is the current session ID (for memory PreCompress/PostCompress).
+	SessionID string
+	// PreserveHints are critical information hints from PreCompress,
+	// injected into the compression prompt to prevent information loss.
+	PreserveHints []string
 }
 
 // CompressPipelineResult holds the outputs of a compression pipeline execution.

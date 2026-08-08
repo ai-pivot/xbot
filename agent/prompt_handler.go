@@ -9,6 +9,7 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/config"
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/protocol"
@@ -17,6 +18,14 @@ import (
 
 // handlePromptQuery 构建完整提示词并写入文件发送给用户（dryrun，不调用 LLM）
 func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
+	// /prompt 是 concurrent 命令，ctx 未经过 processMessage 的 ResolveUserContext。
+	// 此处必须自行解析，否则 UserContextFromContext(ctx) 返回 nil，
+	// 下方 userCtx.PermUsers 空指针 panic → goroutine 崩溃 → 无回复。
+	if UserContextFromContext(ctx) == nil {
+		userCtx := a.ResolveUserContext(msg.Channel, msg.ChatID, msg.SenderID, msg.Metadata)
+		ctx = WithUserContext(ctx, userCtx)
+	}
+
 	// 提取 /prompt 之后的 query 内容（先 trim 再截取，与 cmd 解析对齐）
 	trimmed := strings.TrimSpace(msg.Content)
 	query := strings.TrimSpace(trimmed[len("/prompt"):])
@@ -60,27 +69,48 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 
 	fmt.Fprintf(&buf, "\n--- Total messages: %d ---\n", len(messages))
 
-	// 写入文件并发送
-	sbUID := sandboxUserID(msg)
-	workspaceRoot := a.sandboxWorkspace(sbUID)
-	if err := a.ensureWorkspace(ctx, workspaceRoot, sbUID); err != nil {
-		return nil, fmt.Errorf("create user workspace: %w", err)
+	// 写入宿主机可访问的绝对路径（~/.xbot/prompt-dryrun/<channel>-<chatid>.md）。
+	// 不使用 sandbox workspace —— remote/docker 沙箱的 workspace 是沙箱内部路径，
+	// 用户（尤其 web/CLI 会话）无法直接访问，导致"文件没生成"的错觉。
+	// 使用 config.XbotHome()（$XBOT_HOME 或 ~/.xbot）而非 a.xbotHome：
+	// a.xbotHome 可能为空字符串（config.json 未设置 XbotHome 时），
+	// filepath.Join("", "prompt-dryrun") 会退化为相对路径写到 CWD，用户找不到。
+	dryRunDir := filepath.Join(config.XbotHome(), "prompt-dryrun")
+	if err := os.MkdirAll(dryRunDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create prompt dryrun dir: %w", err)
 	}
-	promptFile := filepath.Join(workspaceRoot, "prompt-dryrun.md")
-	if a.sandbox != nil {
-		if err := a.sandbox.WriteFile(ctx, promptFile, []byte(buf.String()), 0o644, sbUID); err != nil {
-			return nil, fmt.Errorf("write prompt file: %w", err)
+	chatID := msg.ChatID
+	if chatID == "" {
+		chatID = "default"
+	}
+	promptFile := filepath.Join(dryRunDir, fmt.Sprintf("%s-%s.md", msg.Channel, strings.ReplaceAll(chatID, "/", "_")))
+
+	// 尝试写入沙箱（如果有且可用），失败则回退宿主机写入。
+	// 无论哪种方式，promptFile 都是宿主机绝对路径，确保用户能访问。
+	writeErr := os.WriteFile(promptFile, []byte(buf.String()), 0o644)
+	if writeErr != nil {
+		// sandbox-aware 写入（docker/remote 场景），仍然写入宿主机路径目录
+		if a.sandbox != nil {
+			writeErr = a.sandbox.WriteFile(ctx, promptFile, []byte(buf.String()), 0o644, sandboxUserID(msg))
 		}
-	} else {
-		if err := os.WriteFile(promptFile, []byte(buf.String()), 0o644); err != nil {
-			return nil, fmt.Errorf("write prompt file: %w", err)
-		}
+	}
+	if writeErr != nil {
+		return nil, fmt.Errorf("write prompt file: %w", writeErr)
+	}
+
+	// 回复中直接附上工具清单摘要（方便确认工具是否注册，无需打开文件）
+	var toolNames []string
+	for _, td := range toolDefs {
+		toolNames = append(toolNames, td.Name())
 	}
 
 	return &channel.OutboundMsg{
 		Channel: msg.Channel,
 		ChatID:  msg.ChatID,
-		Content: fmt.Sprintf("[prompt-dryrun.md](%s)", promptFile),
+		Content: fmt.Sprintf(
+			"Prompt dry run 已写入: `%s`\n\n工具数量: %d\n工具列表: %s",
+			promptFile, len(toolDefs), strings.Join(toolNames, ", "),
+		),
 	}, nil
 }
 

@@ -119,18 +119,9 @@ export const LiveIteration = memo(function LiveIteration({
   const hasGenUI = Boolean(progress.genuiContent)
 
   if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) {
-    // Show a "thinking..." placeholder when the live iteration has no content
-    // yet (agent is between iterations — reasoning hasn't started streaming,
-    // no tools running). Without this, the live div renders empty and the
-    // user sees a blank area with no feedback.
-    if (progress.streaming || progress.phase === 'thinking') {
-      return (
-        <div className="flex items-center gap-2 py-1 text-xs text-text-muted">
-          <span className="inline-block size-3.5 animate-spin rounded-full border-2 border-text-muted border-t-transparent" />
-          <span>{t('agent.reasoningStreaming')}</span>
-        </div>
-      )
-    }
+    // No content yet — return null instead of showing a spinner placeholder.
+    // The progress panel itself shows iteration status; a separate "thinking…"
+    // spinner here is redundant visual noise.
     return null
   }
 

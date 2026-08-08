@@ -402,10 +402,17 @@ export class SSEConnectionImpl implements WSConnection {
       }
 
       if (!progress || progress.phase === 'done') {
+        // CRITICAL: carry the cached snapshot's seq so the stale PhaseDone
+        // guard in useProgressStream works. Without a seq, the guard
+        // (seq <= store.eventSeq) is skipped and phaseDoneRef gets set to
+        // true — then the NEXT turn's stream_content / turn_started events
+        // are discarded (phaseDoneRef?.current check), breaking linear
+        // consistency after reconnect.
+        const doneSeq = typeof cachedProgress?.seq === 'number' ? cachedProgress.seq : undefined
         this.dispatch({
           type: 'progress_structured',
           chat_id: chatID,
-          progress: { phase: 'done' },
+          progress: doneSeq ? { phase: 'done', seq: doneSeq } : { phase: 'done' },
         })
         // Also dispatch idle so the sidebar recovers from a stale busy state
         // after an SSE reconnect gap.
@@ -415,6 +422,9 @@ export class SSEConnectionImpl implements WSConnection {
         })
         return
       }
+      // Recovery snapshot — carry its seq so setStructuredTools can apply the
+      // stale watermark check (an old snapshot must not roll back a newer
+      // live state that SSE already delivered during the reconnect window).
       this.dispatch({
         type: 'progress_structured',
         chat_id: chatID,

@@ -323,22 +323,38 @@ func (m *MultiTenantSession) getOrCreateSession(channel, chatID string, canonica
 	sessionKey := sessKey(channel, chatID)
 	mcpManager := tools.NewSessionMCPManager(sessionKey, "", m.mcpConfigPath, "", "", m.mcpInactivityTimeout)
 
-	// Letta 模式：创建 LettaMemory（userID 通过 context 传递，不存储在结构体中）
-	// 根据配置选择记忆提供者
+	// 根据配置选择记忆提供者（通过注册表创建，无硬编码 provider 名称）
 	var memProvider memory.MemoryProvider
-	switch m.memoryProvider {
-	case "letta":
-		memProvider = letta.New(tenantID, m.coreSvc, m.archivalSvc, m.memorySvc, m.toolIndexSvc)
-		// 前向兼容：一次性迁移 user_profiles → core memory blocks
-		m.migrateProfileToCoreMemory(tenantID)
-	case "none":
+	if m.memoryProvider == "none" {
 		// No memory provider — tools and archiving are disabled.
 		memProvider = nil
-	default:
-		// Flat memory: file-based storage under ~/.xbot/memory/{tenantID}/
-		// Use tenantID (numeric) as directory name for filesystem safety
-		flatMemDir := filepath.Join(config.XbotHome(), "memory", fmt.Sprintf("%d", tenantID))
-		memProvider = flat.New(tenantID, flatMemDir)
+	} else {
+		memDir := filepath.Join(config.XbotHome(), "memory", fmt.Sprintf("%d", tenantID))
+		deps := memory.ProviderDeps{
+			TenantID: tenantID,
+			// Memories are scoped by canonical owner (cross-session shared).
+			// canonicalUserID may be 0 in legacy/standalone paths — provider
+			// falls back to tenant-scoped isolation in that case.
+			UserID:  canonicalUserID,
+			BaseDir: memDir,
+			DB:      m.db.Conn(),
+		}
+		// Letta-specific deps
+		if m.memoryProvider == "letta" {
+			deps.LettaDeps = &letta.Deps{
+				CoreSvc:      m.coreSvc,
+				ArchivalSvc:  m.archivalSvc,
+				MemorySvc:    m.memorySvc,
+				ToolIndexSvc: m.toolIndexSvc,
+			}
+			// 前向兼容：一次性迁移 user_profiles → core memory blocks
+			m.migrateProfileToCoreMemory(tenantID)
+		}
+		memProvider = memory.CreateProvider(m.memoryProvider, deps)
+		// Fallback to flat if provider not registered
+		if memProvider == nil {
+			memProvider = flat.New(tenantID, memDir)
+		}
 	}
 	// Create tenant session
 	sess = &TenantSession{

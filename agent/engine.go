@@ -369,12 +369,18 @@ type SubAgentStatus struct {
 // 仅包含 Letta memory 特有的字段，通用字段（InjectInbound、Registry 等）
 // 已迁移到 RunConfig 中。
 type ToolContextExtras struct {
-	TenantID                int64
-	CoreMemory              *sqlite.CoreMemoryService
-	ArchivalMemory          *vectordb.ArchivalService
-	MemorySvc               *sqlite.MemoryService
-	RecallTimeRange         vectordb.RecallTimeRangeFunc
-	ToolIndexer             memory.ToolIndexer
+	TenantID        int64
+	CoreMemory      *sqlite.CoreMemoryService
+	ArchivalMemory  *vectordb.ArchivalService
+	MemorySvc       *sqlite.MemoryService
+	RecallTimeRange vectordb.RecallTimeRangeFunc
+	ToolIndexer     memory.ToolIndexer
+	// MemoryProvider is the generic memory provider instance.
+	// Tools access provider-specific methods via type assertion:
+	//   xm, ok := ctx.MemoryProvider.(*xbotmemory.XbotMemory)
+	// This eliminates the need for provider-specific fields — adding a new
+	// provider requires zero changes to ToolContext/ToolContextExtras/engine code.
+	MemoryProvider          memory.MemoryProvider
 	InvalidateAllSessionMCP func()
 }
 
@@ -1126,7 +1132,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.Manager = adapter
 	}
 
-	// 注入 Letta 记忆字段（覆盖上面的默认值）
+	// 注入记忆字段（覆盖上面的默认值）
 	if ext := cfg.ToolContextExtras; ext != nil {
 		tc.TenantID = ext.TenantID
 		tc.CoreMemory = ext.CoreMemory
@@ -1134,6 +1140,9 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.MemorySvc = ext.MemorySvc
 		tc.RecallTimeRange = ext.RecallTimeRange
 		tc.ToolIndexer = ext.ToolIndexer
+		// Generic: store the MemoryProvider instance. Tools type-assert
+		// to get provider-specific methods (e.g. *xbotmemory.XbotMemory).
+		tc.MemoryProvider = ext.MemoryProvider
 		if ext.InvalidateAllSessionMCP != nil {
 			tc.InvalidateAllSessionMCP = ext.InvalidateAllSessionMCP
 		}

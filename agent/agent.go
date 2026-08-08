@@ -27,6 +27,7 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/memory/letta"
+	xbotmemory "xbot/memory/xbot"
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/runner"
@@ -581,6 +582,10 @@ type Agent struct {
 
 	// singleUser enables single-user mode: all senders share one identity.
 	singleUser bool
+
+	// memoryProvider stores the resolved memory provider type ("flat", "letta", "xbot", "none").
+	// Used by SubAgent memory construction to match the parent's provider.
+	memoryProvider string
 
 	// identityResolver resolves channel-specific senderID to canonical user_id.
 	// IdentityResolver is accessed via a.userSys.identityResolver (no direct field).
@@ -1612,6 +1617,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	contextMode := resolveContextMode(cfg)
 
 	memoryProvider := resolveMemoryProvider(cfg.MemoryProvider)
+	a.memoryProvider = memoryProvider
 
 	multiSession.SetMCPConfigPath(mcpConfigPath)
 
@@ -1620,21 +1626,12 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// 全局工具索引通过 IndexGlobalTools() 在所有工具注册完成后调用
 
-	// 如果使用 Letta 记忆模式，注册记忆工具（核心工具，始终可用）
-	if memoryProvider == "letta" {
-		for _, tool := range tools.LettaMemoryTools() {
-			registry.RegisterCore(tool)
-		}
-		registry.RegisterCore(&tools.SearchToolsTool{})
-		log.Info("Letta memory tools registered (core)")
+	// 注册记忆工具（通过注册表，无硬编码 provider 名称）
+	for _, tool := range tools.GetMemoryTools(memoryProvider) {
+		registry.RegisterCore(tool)
 	}
-
-	// Flat 模式：注册 flat memory tools（memory_read/write/list）
-	if memoryProvider == "flat" {
-		for _, tool := range tools.FlatMemoryTools() {
-			registry.RegisterCore(tool)
-		}
-		log.Info("Flat memory tools registered (core)")
+	if memoryProvider != "none" && len(tools.GetMemoryTools(memoryProvider)) > 0 {
+		log.WithField("provider", memoryProvider).Info("Memory tools registered (core)")
 	}
 
 	log.Info("Knowledge tools removed — project knowledge is managed via AGENTS.md + docs/agent/")
@@ -3191,6 +3188,16 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		return nil, fmt.Errorf("get/create tenant session: %w", err)
 	}
 
+	// Ensure the memory provider is scoped to the canonical owner so memories
+	// are shared across ALL sessions of this user (not per-tenant).
+	// The provider may have been created earlier by buildToolContextExtras via
+	// GetOrCreateSession (no owner → userID=0); fix it up now.
+	if tenantOwner > 0 {
+		if xm, ok := tenantSession.Memory().(*xbotmemory.XbotMemory); ok {
+			xm.SetOwnerUserID(tenantOwner)
+		}
+	}
+
 	// Set tenant-scoped stores for this request.
 	tenantID := tenantSession.TenantID()
 	if a.maskStore != nil {
@@ -3424,6 +3431,60 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 
 	out := Run(ctx, cfg)
+
+	// Auto-memorize: lightweight incremental consolidation after each turn.
+	// This enables cross-session memory WITHOUT requiring /new, WITHOUT burning
+	// 3 LLM calls per turn (the old code called Memorize(ArchiveAll=true) after
+	// EVERY turn — the root cause of "记忆整理太频繁" + "记忆膨胀").
+	//
+	// Providers implementing TurnConsolidator (xbot) get throttled incremental
+	// extraction: new messages accumulate until a threshold, then one LLM call
+	// extracts atomic memories. Providers without it (flat/letta) fall back to
+	// the old full Memorize — unchanged behavior.
+	if mem := tenantSession.Memory(); mem != nil && len(out.Messages) > 0 {
+		lastConsolidated := tenantSession.LastConsolidated()
+		log.Ctx(ctx).WithFields(log.Fields{
+			"messages":          len(out.Messages),
+			"provider":          mem.Name(),
+			"last_consolidated": lastConsolidated,
+		}).Info("Auto-memorize: starting incremental consolidation")
+		go func(mem memory.MemoryProvider, messages []llm.ChatMessage, chatID string, llmClient llm.LLM, model string, lastCons int) {
+			// Use a fresh context — the original ctx may be cancelled after response.
+			memCtx := context.Background()
+			input := memory.MemorizeInput{
+				Messages:         messages,
+				LastConsolidated: lastCons,
+				LLMClient:        llmClient,
+				Model:            model,
+				ArchiveAll:       false, // incremental — never full archive per turn
+			}
+
+			var result memory.MemorizeResult
+			var err error
+			if tc, ok := mem.(memory.TurnConsolidator); ok {
+				result, err = tc.ConsolidateTurn(memCtx, input)
+			} else {
+				// Legacy provider: full Memorize (ArchiveAll forced true so
+				// flat/letta actually do something — their Memorize no-ops when
+				// ArchiveAll=false).
+				input.ArchiveAll = true
+				result, err = mem.Memorize(memCtx, input)
+			}
+			if err != nil {
+				log.WithError(err).WithField("chat_id", chatID).Warn("Auto-memorize: consolidation failed")
+				return
+			}
+			log.WithFields(log.Fields{
+				"chat_id": chatID,
+				"ok":      result.OK,
+			}).Info("Auto-memorize: consolidation completed")
+		}(mem, out.Messages, msg.ChatID, cfg.LLMClient, cfg.Model, lastConsolidated)
+	} else if mem != nil && len(out.Messages) == 0 {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"provider":  mem.Name(),
+			"msg_count": len(out.Messages),
+		}).Warn("Auto-memorize: skipped — out.Messages is empty (cfg.Memory may not have been set)")
+	}
 
 	// Save iteration history on cancellation, even if Run() returned nil error.
 	// The context may have been cancelled after Run() finished its last iteration

@@ -12,6 +12,7 @@ import (
 	"xbot/channel"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/memory"
 	"xbot/protocol"
 
 	"xbot/tools"
@@ -1131,6 +1132,37 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		sessionCM.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
 	}
 
+	// --- Memory system integration: PreCompress ---
+	// If the memory provider implements CompressionAware, extract critical
+	// information from messages about to be compressed before they're lost.
+	var preserveHints []string
+	if mem, ok := s.cfg.Memory.(memory.CompressionAware); ok && mem != nil {
+		// Split messages: approximate the toCompress/tail boundary
+		// (the actual split is done inside compactMessages, but we need
+		// to pass the full set to PreCompress — it will extract what it can)
+		preResult, err := mem.PreCompress(ctx, memory.PreCompressInput{
+			MessagesToCompress: s.messages,
+			SessionID:          s.cfg.ChatID,
+			LLMClient:          s.cfg.LLMClient,
+			Model:              s.cfg.Model,
+		})
+		if err != nil {
+			log.Ctx(ctx).WithError(err).Warn("PreCompress failed, continuing with compression")
+		} else {
+			preserveHints = preResult.PreserveHints
+			if preResult.SavedCount > 0 {
+				log.Ctx(ctx).WithField("saved_count", preResult.SavedCount).Info("PreCompress: saved memories before compression")
+			}
+			if preResult.SkipCompress {
+				log.Ctx(ctx).Info("PreCompress: memory system requested skip, skipping compression")
+				if s.structuredProgress != nil {
+					s.structuredProgress.Phase = PhaseThinking
+				}
+				return nil
+			}
+		}
+	}
+
 	pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
 		CM:                sessionCM,
 		Messages:          s.messages,
@@ -1143,6 +1175,9 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		MaskStore:         s.cfg.MaskStore,
 		AccumulateUsage:   s.accumulateCompressUsage,
 		SyncMessages:      s.syncMessages,
+		Memory:            s.cfg.Memory,
+		SessionID:         s.cfg.ChatID,
+		PreserveHints:     preserveHints,
 	})
 	if compressErr != nil {
 		log.Ctx(ctx).WithError(compressErr).Warn("Auto context compaction failed")
@@ -1182,6 +1217,33 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			Trigger:              "token_limit",
 			EstimatedTokensAfter: pipelineResult.NewTokenCount,
 		})
+	}
+
+	// --- Memory system integration: PostCompress ---
+	// If the memory provider implements CompressionAware, save the compaction
+	// summary and update memory state after compression completes.
+	if mem, ok := s.cfg.Memory.(memory.CompressionAware); ok && mem != nil {
+		// Extract compaction summary from the compressed messages
+		compactionSummary := ""
+		for _, msg := range pipelineResult.NewMessages {
+			if msg.Role == "user" && strings.Contains(msg.Content, "[Compacted context]") {
+				compactionSummary = msg.Content
+				break
+			}
+		}
+		removedCount := len(s.messages) - len(pipelineResult.NewMessages)
+		if removedCount < 0 {
+			removedCount = 0
+		}
+		err := mem.PostCompress(ctx, memory.PostCompressInput{
+			CompressedMessages:  pipelineResult.NewMessages,
+			CompactionSummary:   compactionSummary,
+			RemovedMessageCount: removedCount,
+			SessionID:           s.cfg.ChatID,
+		})
+		if err != nil {
+			log.Ctx(ctx).WithError(err).Warn("PostCompress failed")
+		}
 	}
 
 	if s.structuredProgress != nil {
