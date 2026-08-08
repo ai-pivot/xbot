@@ -3421,6 +3421,25 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 	out := Run(ctx, cfg)
 
+	// Auto-memorize: asynchronously extract memories after each turn.
+	// This enables cross-session memory WITHOUT requiring /new.
+	// The memory provider's Memorize is called with ArchiveAll=true on the
+	// messages from this Run. For xbot provider, this triggers LLM-based
+	// extraction of atomic memories + session summary.
+	// Runs in a goroutine to not block the response.
+	if mem := tenantSession.Memory(); mem != nil && len(out.Messages) > 0 {
+		go func(mem memory.MemoryProvider, messages []llm.ChatMessage, chatID string) {
+			// Use a fresh context — the original ctx may be cancelled after response.
+			memCtx := context.Background()
+			mem.Memorize(memCtx, memory.MemorizeInput{
+				Messages:   messages,
+				LLMClient:  cfg.LLMClient,
+				Model:      cfg.Model,
+				ArchiveAll: true,
+			})
+		}(mem, out.Messages, msg.ChatID)
+	}
+
 	// Save iteration history on cancellation, even if Run() returned nil error.
 	// The context may have been cancelled after Run() finished its last iteration
 	// but before it checked ctx.Done(). In that case out.Error is nil but the

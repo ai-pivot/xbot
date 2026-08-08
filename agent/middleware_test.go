@@ -466,8 +466,8 @@ func TestMemoryMiddleware(t *testing.T) {
 		if err != nil {
 			t.Errorf("nil provider should not error: %v", err)
 		}
-		if _, ok := mc.SystemParts["20_memory"]; ok {
-			t.Error("nil provider should not set memory")
+		if mc.UserMessage != "" {
+			t.Error("nil provider should not set user message")
 		}
 	})
 
@@ -476,6 +476,7 @@ func TestMemoryMiddleware(t *testing.T) {
 			Ctx:         context.Background(),
 			SystemParts: make(map[string]string),
 			UserContent: "hello",
+			UserMessage: "[2026-01-01] [TestUser]\nhello\n\n[System Guide]\n- test\n现在时间：2026-01-01\n",
 			Extra:       make(map[string]any),
 		}
 		mc.SetExtra(ExtraKeyMemoryProvider, &mockMemoryProvider{
@@ -486,9 +487,11 @@ func TestMemoryMiddleware(t *testing.T) {
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-		mem := mc.SystemParts["20_memory"]
-		if !strings.Contains(mem, "Some facts") {
-			t.Errorf("memory should contain recall result, got: %q", mem)
+		if !strings.Contains(mc.UserMessage, "Some facts") {
+			t.Errorf("user message should contain recall result, got: %q", mc.UserMessage)
+		}
+		if !strings.Contains(mc.UserMessage, "<system-reminder>") {
+			t.Error("user message should contain <system-reminder> block")
 		}
 	})
 
@@ -497,6 +500,7 @@ func TestMemoryMiddleware(t *testing.T) {
 			Ctx:         context.Background(),
 			SystemParts: make(map[string]string),
 			UserContent: "hello",
+			UserMessage: "hello",
 			Extra:       make(map[string]any),
 		}
 		mc.SetExtra(ExtraKeyMemoryProvider, &mockMemoryProvider{
@@ -514,6 +518,7 @@ func TestMemoryMiddleware(t *testing.T) {
 			Ctx:         context.Background(),
 			SystemParts: make(map[string]string),
 			UserContent: "hello",
+			UserMessage: "hello",
 			Extra:       make(map[string]any),
 		}
 		mc.SetExtra(ExtraKeyMemoryProvider, &mockMemoryProvider{recallResult: ""})
@@ -522,8 +527,27 @@ func TestMemoryMiddleware(t *testing.T) {
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-		if _, ok := mc.SystemParts["20_memory"]; ok {
-			t.Error("empty recall should not set memory key")
+		if strings.Contains(mc.UserMessage, "<system-reminder>") {
+			t.Error("empty recall should not add system-reminder to user message")
+		}
+	})
+
+	t.Run("empty user message skips injection", func(t *testing.T) {
+		mc := &MessageContext{
+			Ctx:         context.Background(),
+			SystemParts: make(map[string]string),
+			UserContent: "hello",
+			UserMessage: "", // resume turn: empty user message
+			Extra:       make(map[string]any),
+		}
+		mc.SetExtra(ExtraKeyMemoryProvider, &mockMemoryProvider{recallResult: "some memory"})
+		mw := NewMemoryMiddleware()
+		err := mw.Process(mc)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if mc.UserMessage != "" {
+			t.Error("empty user message should remain empty (resume turn)")
 		}
 	})
 }
@@ -648,7 +672,8 @@ func TestPipeline_FullIntegration(t *testing.T) {
 		t.Fatalf("expected 4 messages, got %d", len(messages))
 	}
 
-	// System message should contain all parts in order
+	// System message should contain all parts EXCEPT memory
+	// (memory is now injected into user message, not system prompt)
 	sys := messages[0].Content
 	if !strings.Contains(sys, "xbot") {
 		t.Error("system should contain base prompt")
@@ -659,36 +684,26 @@ func TestPipeline_FullIntegration(t *testing.T) {
 	if !strings.Contains(sys, "code-reviewer") {
 		t.Error("system should contain agents catalog")
 	}
-	if !strings.Contains(sys, "I am xbot") {
-		t.Error("system should contain memory")
+	if strings.Contains(sys, "I am xbot") {
+		t.Error("system should NOT contain memory (now in user message)")
 	}
 	if !strings.Contains(sys, "TestUser") {
 		t.Error("system should contain sender info")
 	}
 
-	// Verify ordering: base < skills < agents < memory < sender
-	baseIdx := strings.Index(sys, "xbot")
-	skillsIdx := strings.Index(sys, "deploy")
-	memIdx := strings.Index(sys, "I am xbot")
-	senderIdx := strings.Index(sys, "TestUser")
-
-	if baseIdx > skillsIdx {
-		t.Error("base should come before skills")
-	}
-	if skillsIdx > memIdx {
-		t.Error("skills should come before memory")
-	}
-	if memIdx > senderIdx {
-		t.Error("memory should come before sender")
-	}
-
-	// User message should have timestamp and guidance
+	// User message should have timestamp, guidance, AND memory
 	userMsg := messages[3].Content
 	if !strings.Contains(userMsg, "hello") {
 		t.Error("user message should contain original content")
 	}
 	if !strings.Contains(userMsg, "Skill") {
 		t.Error("user message should contain system guidance")
+	}
+	if !strings.Contains(userMsg, "I am xbot") {
+		t.Error("user message should contain memory")
+	}
+	if !strings.Contains(userMsg, "<system-reminder>") {
+		t.Error("user message should contain <system-reminder> block")
 	}
 }
 
@@ -844,8 +859,13 @@ func TestFullPipeline_AllMiddlewares(t *testing.T) {
 	if !strings.Contains(sys, "reviewer") {
 		t.Error("should contain agents")
 	}
-	if !strings.Contains(sys, "I am xbot") {
-		t.Error("should contain memory")
+	if strings.Contains(sys, "I am xbot") {
+		t.Error("system should NOT contain memory (now in user message)")
+	}
+	// Memory should be in user message
+	userMsg := messages[2].Content
+	if !strings.Contains(userMsg, "I am xbot") {
+		t.Error("user message should contain memory")
 	}
 }
 

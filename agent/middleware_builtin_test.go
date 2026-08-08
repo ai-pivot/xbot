@@ -412,8 +412,8 @@ func TestMemoryMiddleware_Extended(t *testing.T) {
 		if m.Name() != "memory" {
 			t.Errorf("Name() = %q, want %q", m.Name(), "memory")
 		}
-		if m.Priority() != 120 {
-			t.Errorf("Priority() = %d, want %d", m.Priority(), 120)
+		if m.Priority() != 250 {
+			t.Errorf("Priority() = %d, want %d", m.Priority(), 250)
 		}
 	})
 
@@ -421,18 +421,18 @@ func TestMemoryMiddleware_Extended(t *testing.T) {
 		m := NewMemoryMiddleware()
 		mc := newMC()
 		mc.SetExtra(ExtraKeyMemoryProvider, nil)
-		// GetExtraTyped does a type assertion, nil won't match memory.MemoryProvider
 		if err := m.Process(mc); err != nil {
 			t.Fatalf("Process() error: %v", err)
 		}
-		if _, ok := mc.SystemParts["20_memory"]; ok {
-			t.Error("expected no 20_memory system part when provider is nil")
+		if strings.Contains(mc.UserMessage, "<system-reminder>") {
+			t.Error("expected no system-reminder in user message when provider is nil")
 		}
 	})
 
 	t.Run("recall_error_wrapped", func(t *testing.T) {
 		m := NewMemoryMiddleware()
 		mc := newMC()
+		mc.UserMessage = "hello"
 		mem := &mockMemoryRecaller{
 			recallErr: errors.New("recall failed"),
 		}
@@ -451,6 +451,7 @@ func TestMemoryMiddleware_Extended(t *testing.T) {
 		m := NewMemoryMiddleware()
 		mc := newMC()
 		mc.UserContent = "what did I say yesterday?"
+		mc.UserMessage = "[2026-01-01] [TestUser]\nwhat did I say yesterday?\n\n[System Guide]\n- test\n现在时间：2026-01-01\n"
 		recallContent := "User previously asked about the database schema."
 		mem := &mockMemoryRecaller{
 			recallResult: recallContent,
@@ -459,13 +460,11 @@ func TestMemoryMiddleware_Extended(t *testing.T) {
 		if err := m.Process(mc); err != nil {
 			t.Fatalf("Process() error: %v", err)
 		}
-		got, ok := mc.SystemParts["20_memory"]
-		if !ok {
-			t.Fatal("expected 20_memory system part to be set")
+		if !strings.Contains(mc.UserMessage, "<system-reminder>") {
+			t.Fatal("expected <system-reminder> block in user message")
 		}
-		want := "# Memory\n\n" + recallContent + "\n"
-		if got != want {
-			t.Errorf("SystemParts[20_memory] = %q, want %q", got, want)
+		if !strings.Contains(mc.UserMessage, recallContent) {
+			t.Errorf("user message should contain recall result, got: %q", mc.UserMessage)
 		}
 	})
 
@@ -474,6 +473,7 @@ func TestMemoryMiddleware_Extended(t *testing.T) {
 		mc := newMC()
 		mc.Ctx = nil
 		mc.UserContent = "hello"
+		mc.UserMessage = "hello"
 		mem := &mockMemoryRecaller{
 			recallResult: "some memory",
 		}
@@ -481,8 +481,8 @@ func TestMemoryMiddleware_Extended(t *testing.T) {
 		if err := m.Process(mc); err != nil {
 			t.Fatalf("Process() error: %v", err)
 		}
-		if _, ok := mc.SystemParts["20_memory"]; !ok {
-			t.Error("expected 20_memory to be set even with nil context")
+		if !strings.Contains(mc.UserMessage, "some memory") {
+			t.Error("user message should contain memory")
 		}
 	})
 }

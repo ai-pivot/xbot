@@ -396,7 +396,9 @@ func (m *PermissionControlMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// MemoryMiddleware 注入长期记忆。
+// MemoryMiddleware 注入长期记忆到用户消息后面的 <system-reminder> 块中。
+// 不注入到 SystemParts（system prompt），以保持 system prompt 稳定，
+// 最大化 LLM prefix cache 命中率。
 // 从 MessageContext.Extra[ExtraKeyMemoryProvider] 读取动态 MemoryProvider。
 type MemoryMiddleware struct{}
 
@@ -405,11 +407,17 @@ func NewMemoryMiddleware() *MemoryMiddleware {
 }
 
 func (m *MemoryMiddleware) Name() string  { return "memory" }
-func (m *MemoryMiddleware) Priority() int { return 120 }
+// Priority 250: 在 UserMessageMiddleware (200) 之后执行，
+// 将记忆追加到已构建的 mc.UserMessage 末尾。
+func (m *MemoryMiddleware) Priority() int { return 250 }
 
 func (m *MemoryMiddleware) Process(mc *MessageContext) error {
 	mem, ok := GetExtraTyped[memory.MemoryProvider](mc, ExtraKeyMemoryProvider)
 	if !ok || mem == nil {
+		return nil
+	}
+	// Resume turn: user message is empty, skip memory injection.
+	if mc.UserMessage == "" {
 		return nil
 	}
 	ctx := mc.Ctx
@@ -421,7 +429,9 @@ func (m *MemoryMiddleware) Process(mc *MessageContext) error {
 		return fmt.Errorf("recall memory: %w", err)
 	}
 	if memCtx != "" {
-		mc.SystemParts["20_memory"] = "# Memory\n\n" + memCtx + "\n"
+		// 追加到 user message 末尾作为 <system-reminder> 块。
+		// 不注入 SystemParts → system prompt 保持稳定 → prefix cache 命中。
+		mc.UserMessage += "\n\n<system-reminder>\n" + memCtx + "\n</system-reminder>"
 		GlobalMetrics.MemoryRecalls.Add(1)
 	}
 	return nil
