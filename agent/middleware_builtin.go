@@ -499,16 +499,13 @@ func (m *LanguageMiddleware) Process(mc *MessageContext) error {
 // --- Priority 200-299: 用户消息处理 ---
 
 // buildSystemGuideText 根据记忆模式生成系统引导文本。
-// letta 模式下包含 search_tools 引导，flat 模式下不包含。
+// 通过 memory.GetPromptParts 注册表获取，无硬编码 provider 名称。
 func buildSystemGuideText(memoryProvider string) string {
-	switch memoryProvider {
-	case "letta":
-		return prompt.UserMessageGuideLetta
-	case "xbot":
-		return prompt.UserMessageGuideXbot
-	default:
-		return prompt.UserMessageGuideFlat
+	parts := memory.GetPromptParts(memoryProvider)
+	if parts.UserGuide != "" {
+		return parts.UserGuide
 	}
+	return prompt.UserMessageGuideFlat
 }
 
 // UserMessageMiddleware 构建最终的用户消息（注入时间戳、发送者标识、系统引导）

@@ -1214,38 +1214,22 @@ func (a *Agent) buildSubAgentMemory(
 	// 2. 推导 SubAgent 的独立 tenantID
 	subTenantID := deriveSubAgentTenantID(parentExtras.TenantID, parentAgentID, roleName)
 
-	// 3. 根据 memoryProvider 选择 SubAgent 记忆系统
-	memoryProvider := a.memoryProvider
+	// 3. 通过注册表创建 SubAgent 记忆系统（无硬编码 provider 名称）
+	memDir := filepath.Join(config.XbotHome(), "memory", fmt.Sprintf("%d", subTenantID))
+	deps := memory.ProviderDeps{
+		TenantID: subTenantID,
+		BaseDir:  memDir,
+		DB:       a.multiSession.DB().Conn(),
+	}
 
-	switch memoryProvider {
-	case "xbot":
-		// Xbot memory: SQLite FTS5 BM25, no external embedding dependency
-		xbotMemDir := filepath.Join(config.XbotHome(), "memory", fmt.Sprintf("%d", subTenantID))
-		mem := xbotmemory.New(subTenantID, xbotMemDir, a.multiSession.DB().Conn())
-
-		extras := &ToolContextExtras{
-			TenantID:                subTenantID,
-			XbotMemory:              mem,
-			InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
-		}
-
-		log.Ctx(ctx).WithFields(log.Fields{
-			"sub_tenant_id": subTenantID,
-			"parent_agent":  parentAgentID,
-			"role":          roleName,
-		}).Info("SubAgent memory: created xbot memory system")
-
-		return extras, mem
-
-	case "letta", "": // Default to letta for backward compatibility
-		// 3. 获取共享服务（通过 multiSession 访问）
+	// Letta-specific deps
+	if a.memoryProvider == "letta" || a.memoryProvider == "" {
 		coreSvc := a.multiSession.CoreMemoryService()
 		archivalSvc := a.multiSession.ArchivalService()
 		memorySvc := a.multiSession.MemoryService()
+		toolIndexSvc := a.multiSession.ToolIndexService()
 
-		// 4. 初始化 SubAgent 的 core memory blocks（persona + human）
-		//    persona: 空的，由 SubAgent 通过 memorize 自行积累（不预填 systemPrompt，避免重复注入）
-		//    human: 以 parentAgentID 为 senderID 隔离
+		// Initialize SubAgent core memory blocks
 		subSenderID := subAgentHumanBlockSenderID(parentAgentID)
 		if err := coreSvc.InitBlocks(subTenantID, subSenderID); err != nil {
 			log.Ctx(ctx).WithError(err).WithFields(log.Fields{
@@ -1257,70 +1241,68 @@ func (a *Agent) buildSubAgentMemory(
 			return nil, nil
 		}
 
-		// 5. 创建独立的 LettaMemory 实例
-		toolIndexSvc := a.multiSession.ToolIndexService()
-		mem := letta.New(subTenantID, coreSvc, archivalSvc, memorySvc, toolIndexSvc)
-
-		// 6. 构建 ToolContextExtras（供 SubAgent 的工具使用）
-		extras := &ToolContextExtras{
-			TenantID:                subTenantID,
-			CoreMemory:              coreSvc,
-			ArchivalMemory:          archivalSvc,
-			MemorySvc:               memorySvc,
-			RecallTimeRange:         a.multiSession.RecallTimeRangeFunc(),
-			ToolIndexer:             mem,
-			InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
+		deps.LettaDeps = &letta.Deps{
+			CoreSvc:      coreSvc,
+			ArchivalSvc:  archivalSvc,
+			MemorySvc:    memorySvc,
+			ToolIndexSvc: toolIndexSvc,
 		}
+	}
 
-		log.Ctx(ctx).WithFields(log.Fields{
-			"sub_tenant_id": subTenantID,
-			"parent_agent":  parentAgentID,
-			"role":          roleName,
-			"sub_sender_id": subSenderID,
-		}).Info("SubAgent memory: created independent memory system")
-
-		return extras, mem
-
-	default:
+	providerName := a.memoryProvider
+	if providerName == "" {
+		providerName = "letta" // backward compat
+	}
+	if providerName == "none" || providerName == "flat" {
 		// flat/none: no SubAgent memory
 		return nil, nil
 	}
+
+	mem := memory.CreateProvider(providerName, deps)
+	if mem == nil {
+		log.Ctx(ctx).WithField("provider", providerName).Warn("SubAgent memory: provider not registered")
+		return nil, nil
+	}
+
+	// 4. 构建 ToolContextExtras（供 SubAgent 的工具使用）
+	extras := &ToolContextExtras{
+		TenantID:                subTenantID,
+		InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
+	}
+
+	// Provider-specific extras injection
+	if xm, ok := mem.(*xbotmemory.XbotMemory); ok {
+		extras.XbotMemory = xm
+	}
+	if lm, ok := mem.(*letta.LettaMemory); ok {
+		extras.CoreMemory = lm.CoreService()
+		extras.ArchivalMemory = lm.ArchivalService()
+		extras.MemorySvc = a.multiSession.MemoryService()
+		extras.RecallTimeRange = a.multiSession.RecallTimeRangeFunc()
+		extras.ToolIndexer = lm
+	}
+
+	log.Ctx(ctx).WithFields(log.Fields{
+		"sub_tenant_id": subTenantID,
+		"parent_agent":  parentAgentID,
+		"role":          roleName,
+		"provider":      providerName,
+	}).Info("SubAgent memory: created memory system")
+
+	return extras, mem
 }
 
-// subagentMemorySectionForXbot is the xbot provider's SubAgent memory guide.
-const subagentMemorySectionForXbot = `
-## 记忆
-
-你有跨会话持久记忆系统：
-
-1. **核心摘要** — 始终在系统提示词中可见，包含关键事实
-2. **短期记忆** — 最近会话的摘要，自动注入
-3. **长期记忆** — 原子化事实/偏好/事件/决策/技能，按相关性检索
-
-### 记忆工具
-
-- ` + "`memory_search`" + ` — 搜索跨会话记忆（BM25 关键词检索）
-- ` + "`memory_add`" + ` — 保存重要信息供未来对话使用
-- ` + "`memory_manage`" + ` — 列出/更新/删除记忆
-
-### 记忆行为
-
-- 相关记忆会自动注入系统提示词，无需手动搜索
-- 发现重要信息时用 ` + "`memory_add`" + ` 主动保存
-- 记忆类型：fact（事实）、preference（偏好）、event（事件）、decision（决策）、skill（技能）
-- 记忆会随时间衰减，重要记忆持久保留
-`
-
 // subagentMemorySection returns the memory guide for SubAgent based on the provider type.
+// Uses memory.GetPromptParts registry — no hardcoded provider names.
 func (a *Agent) subagentMemorySection() string {
-	switch a.memoryProvider {
-	case "xbot":
-		return subagentMemorySectionForXbot
-	case "letta", "":
-		return subagentMemorySection
-	default:
-		return "" // flat/none: no SubAgent memory guide
+	parts := memory.GetPromptParts(a.memoryProvider)
+	if parts.MemoryPrompt != "" {
+		return parts.MemoryPrompt
 	}
+	if a.memoryProvider == "letta" || a.memoryProvider == "" {
+		return subagentMemorySection // backward compat: letta's SubAgent guide
+	}
+	return "" // flat/none: no SubAgent memory guide
 }
 
 // subAgentHumanBlockSenderID returns the virtual senderID used for the SubAgent's

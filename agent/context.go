@@ -11,6 +11,7 @@ import (
 
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/memory"
 	"xbot/prompt"
 )
 
@@ -147,14 +148,13 @@ func enrichPromptData(data PromptData) PromptData {
 	data.Environment = prompt.Environment
 	data.CodeRules = prompt.CodeRules
 
-	switch data.MemoryProvider {
-	case "letta":
-		data.Tools = prompt.ToolsLetta
-		data.Memory = prompt.MemoryLetta
-	case "xbot":
-		data.Tools = prompt.ToolsXbot
-		data.Memory = prompt.MemoryXbot
-	default:
+	// Use registered prompt parts (no hardcoded provider names)
+	parts := memory.GetPromptParts(data.MemoryProvider)
+	if parts.ToolsPrompt != "" || parts.MemoryPrompt != "" {
+		data.Tools = parts.ToolsPrompt
+		data.Memory = parts.MemoryPrompt
+	} else {
+		// Default for unknown/none providers
 		data.Tools = prompt.ToolsFlat
 		data.Memory = ""
 	}

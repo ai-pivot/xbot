@@ -13,6 +13,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/memory"
+	"xbot/prompt"
 	"xbot/storage/vectordb"
 )
 
@@ -38,6 +39,20 @@ type FlatMemory struct {
 
 var _ memory.MemoryProvider = (*FlatMemory)(nil)
 var _ memory.ToolIndexer = (*FlatMemory)(nil)
+
+// Name returns the provider's unique identifier.
+func (m *FlatMemory) Name() string { return "flat" }
+
+func init() {
+	memory.RegisterProviderFactory("flat", func(deps memory.ProviderDeps) memory.MemoryProvider {
+		return New(deps.TenantID, deps.BaseDir)
+	})
+	memory.RegisterPromptParts("flat", memory.PromptParts{
+		ToolsPrompt:  prompt.ToolsFlat,
+		MemoryPrompt: "",
+		UserGuide:    prompt.UserMessageGuideFlat,
+	})
+}
 
 // New creates a FlatMemory instance with file-based storage.
 // baseDir is the per-tenant memory directory (e.g. ~/.xbot/memory/cli:direct/).

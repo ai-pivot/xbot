@@ -2,13 +2,19 @@ package memory
 
 import (
 	"context"
+	"database/sql"
+	"sync"
 
 	"xbot/llm"
 )
 
 // MemoryProvider 可插拔记忆系统的核心接口。
-// 所有记忆实现（flat/tiered/agentic）必须满足此接口。
+// 所有记忆实现（flat/letta/xbot）必须满足此接口。
 type MemoryProvider interface {
+	// Name 返回 provider 的唯一标识符（如 "flat", "letta", "xbot"）。
+	// 用于日志、SubAgent 记忆构建等场景的 provider 类型识别。
+	Name() string
+
 	// Recall 为当前对话检索相关记忆，返回注入 system prompt 的文本。
 	// query 为用户当前消息，用于按需检索（flat 实现忽略此参数）。
 	Recall(ctx context.Context, query string) (string, error)
@@ -131,4 +137,77 @@ type PostCompressInput struct {
 	RemovedMessageCount int
 	// SessionID 当前会话 ID。
 	SessionID string
+}
+
+// --- Provider Registry (decoupled from agent/session code) ---
+
+// PromptParts holds the system prompt fragments for a memory provider.
+// Registered by each provider package in init(), retrieved by name.
+type PromptParts struct {
+	ToolsPrompt  string // system prompt "## Tools" section
+	MemoryPrompt string // system prompt "## Memory" section (empty = no injection)
+	UserGuide    string // user message guide text
+}
+
+// ProviderDeps holds dependencies for creating a MemoryProvider instance.
+// Each provider type-asserts the fields it needs; unused fields are nil.
+type ProviderDeps struct {
+	TenantID int64
+	BaseDir  string
+	DB      *sql.DB
+	// LettaDeps is provider-specific deps for letta (nil for non-letta).
+	// Type: *letta.Deps — stored as any to avoid import cycle.
+	LettaDeps any
+}
+
+// ProviderFactory creates a MemoryProvider from ProviderDeps.
+type ProviderFactory func(deps ProviderDeps) MemoryProvider
+
+var (
+	providerFactories = map[string]ProviderFactory{}
+	promptPartsMap    = map[string]PromptParts{}
+	registryMu        sync.RWMutex
+)
+
+// RegisterProviderFactory registers a provider factory by name.
+// Called by each provider package in init().
+func RegisterProviderFactory(name string, factory ProviderFactory) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	providerFactories[name] = factory
+}
+
+// CreateProvider creates a MemoryProvider by name.
+// Returns nil if no factory is registered for the name (including "none").
+func CreateProvider(name string, deps ProviderDeps) MemoryProvider {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	if f, ok := providerFactories[name]; ok {
+		return f(deps)
+	}
+	return nil
+}
+
+// RegisterPromptParts registers prompt parts for a provider name.
+// Called by each provider package in init().
+func RegisterPromptParts(name string, parts PromptParts) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	promptPartsMap[name] = parts
+}
+
+// GetPromptParts returns the prompt parts for a provider name.
+// Returns empty PromptParts if not registered.
+func GetPromptParts(name string) PromptParts {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	return promptPartsMap[name]
+}
+
+// IsProviderRegistered returns true if a provider factory is registered for the name.
+func IsProviderRegistered(name string) bool {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	_, ok := providerFactories[name]
+	return ok
 }

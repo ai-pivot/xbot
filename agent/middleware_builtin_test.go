@@ -32,6 +32,7 @@ type mockMemoryRecaller struct {
 	recallErr    error
 }
 
+func (m *mockMemoryRecaller) Name() string { return "mock" }
 func (m *mockMemoryRecaller) Recall(_ context.Context, _ string) (string, error) {
 	return m.recallResult, m.recallErr
 }

@@ -239,6 +239,10 @@ func XbotMemoryTools() []Tool {
 	}
 }
 
+func init() {
+	RegisterMemoryTools("xbot", func() []Tool { return XbotMemoryTools() })
+}
+
 // getXbotMemory extracts the XbotMemory instance from the tool context.
 // Returns nil if the memory provider is not xbot.
 func getXbotMemory(ctx *ToolContext) *xbotmemory.XbotMemory {

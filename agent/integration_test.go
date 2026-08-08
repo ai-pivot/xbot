@@ -22,6 +22,7 @@ import (
 // It enables out.Messages to be populated (engine.go only fills out.Messages when Memory != nil).
 type mockMemory struct{}
 
+func (m *mockMemory) Name() string                                          { return "mock" }
 func (m *mockMemory) Recall(ctx context.Context, query string) (string, error) { return "", nil }
 func (m *mockMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (memory.MemorizeResult, error) {
 	return memory.MemorizeResult{}, nil

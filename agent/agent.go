@@ -1625,29 +1625,12 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// 全局工具索引通过 IndexGlobalTools() 在所有工具注册完成后调用
 
-	// 如果使用 Letta 记忆模式，注册记忆工具（核心工具，始终可用）
-	if memoryProvider == "letta" {
-		for _, tool := range tools.LettaMemoryTools() {
-			registry.RegisterCore(tool)
-		}
-		registry.RegisterCore(&tools.SearchToolsTool{})
-		log.Info("Letta memory tools registered (core)")
+	// 注册记忆工具（通过注册表，无硬编码 provider 名称）
+	for _, tool := range tools.GetMemoryTools(memoryProvider) {
+		registry.RegisterCore(tool)
 	}
-
-	// Flat 模式：注册 flat memory tools（memory_read/write/list）
-	if memoryProvider == "flat" {
-		for _, tool := range tools.FlatMemoryTools() {
-			registry.RegisterCore(tool)
-		}
-		log.Info("Flat memory tools registered (core)")
-	}
-
-	// Xbot 模式：注册 xbot memory tools（memory_search/add/manage）
-	if memoryProvider == "xbot" {
-		for _, tool := range tools.XbotMemoryTools() {
-			registry.RegisterCore(tool)
-		}
-		log.Info("Xbot memory tools registered (core)")
+	if memoryProvider != "none" && len(tools.GetMemoryTools(memoryProvider)) > 0 {
+		log.WithField("provider", memoryProvider).Info("Memory tools registered (core)")
 	}
 
 	log.Info("Knowledge tools removed — project knowledge is managed via AGENTS.md + docs/agent/")

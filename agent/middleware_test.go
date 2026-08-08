@@ -35,6 +35,7 @@ type mockMemoryProvider struct {
 	recallErr    error
 }
 
+func (m *mockMemoryProvider) Name() string { return "mock" }
 func (m *mockMemoryProvider) Recall(_ context.Context, _ string) (string, error) {
 	return m.recallResult, m.recallErr
 }
