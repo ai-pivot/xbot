@@ -575,7 +575,7 @@ type infoCmd struct{}
 func (c *infoCmd) Name() string        { return "/info" }
 func (c *infoCmd) Aliases() []string   { return nil }
 func (c *infoCmd) Match(s string) bool { return strings.ToLower(strings.TrimSpace(s)) == "/info" }
-func (c *infoCmd) Concurrent() bool    { return true } // read-only
+func (c *infoCmd) Concurrent() bool    { return false } // needs UserContext (only available in processMessage path)
 
 func (c *infoCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleSessionInfo(ctx, msg)
@@ -591,7 +591,7 @@ func (c *exportCmd) Match(s string) bool {
 	lower := strings.ToLower(strings.TrimSpace(s))
 	return lower == "/export" || strings.HasPrefix(lower, "/export ")
 }
-func (c *exportCmd) Concurrent() bool { return true } // read-only DB query
+func (c *exportCmd) Concurrent() bool { return false } // needs UserContext (only available in processMessage path)
 
 func (c *exportCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleExportSession(ctx, msg)
