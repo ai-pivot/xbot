@@ -12,6 +12,7 @@ import (
 	"xbot/channel"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/protocol"
 
 	"xbot/tools"
 )
@@ -587,6 +588,16 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 			s.localCachedTokens += int(response.Usage.CacheHitTokens)
 		}
+		// Record stream timing stats (TTFT, TPOT, total duration, chunk count)
+		s.tokenTracker.RecordStreamStats(response.StreamStats)
+		if s.structuredProgress != nil && response.StreamStats != nil {
+			s.structuredProgress.StreamStats = &protocol.StreamStats{
+				TTFTMs:  response.StreamStats.TTFTMs,
+				TPOTMs:  response.StreamStats.TPOTMs,
+				TotalMs: response.StreamStats.TotalMs,
+				Chunks:  response.StreamStats.Chunks,
+			}
+		}
 		s.localInputTokens += int(response.Usage.PromptTokens)
 		s.localOutputTokens += int(response.Usage.CompletionTokens)
 		s.updateTokenUsage()
@@ -681,6 +692,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 			s.localCachedTokens += int(response.Usage.CacheHitTokens)
 		}
+		s.tokenTracker.RecordStreamStats(response.StreamStats)
 		s.localInputTokens += int(response.Usage.PromptTokens)
 		s.localOutputTokens += int(response.Usage.CompletionTokens)
 		s.updateTokenUsage()

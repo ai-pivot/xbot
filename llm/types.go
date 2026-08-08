@@ -293,12 +293,21 @@ func (u TokenUsage) Add(u1 TokenUsage) TokenUsage {
 }
 
 // LLMResponse 业务层定义的 LLM 响应类型
+// StreamStats holds timing statistics for a single LLM streaming response.
+type StreamStats struct {
+	TTFTMs  int64 `json:"ttft_ms,omitempty"`  // Time to first token (ms) — from request start to first chunk
+	TPOTMs  int64 `json:"tpot_ms,omitempty"`  // Time per output token (ms) — (lastChunk - firstChunk) / (chunks-1)
+	TotalMs int64 `json:"total_ms,omitempty"` // Total stream duration (ms) — from request start to done
+	Chunks  int64 `json:"chunks,omitempty"`   // Number of chunks received (content + reasoning + tool_call)
+}
+
 type LLMResponse struct {
 	Content          string       `json:"content"`                     // 文本内容
 	ReasoningContent string       `json:"reasoning_content,omitempty"` // 思维链内容（DeepSeek/OpenAI reasoning 模型）
 	ToolCalls        []ToolCall   `json:"tool_calls,omitempty"`        // 工具调用列表（可能为空）
 	FinishReason     FinishReason `json:"finish_reason"`               // 结束原因
 	Usage            TokenUsage   `json:"usage"`                       // token 使用统计
+	StreamStats      *StreamStats `json:"stream_stats,omitempty"`      // 流式时间统计
 }
 
 // HasToolCalls 检查是否有工具调用。

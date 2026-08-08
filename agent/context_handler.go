@@ -356,13 +356,25 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 		fmt.Fprintf(&sb, "| 工具消息 | %d |\n", toolCount)
 	}
 
-	// Token usage
+	// Token usage + stream timing stats
 	if tenantSession != nil {
 		if memSvc := tenantSession.MemoryService(); memSvc != nil {
 			if pt, ct, err := memSvc.GetTokenState(ctx, tenantSession.TenantID()); err == nil && pt > 0 {
 				fmt.Fprintf(&sb, "| Prompt Tokens | %s |\n", formatTokenCount(pt))
 				fmt.Fprintf(&sb, "| Completion Tokens | %s |\n", formatTokenCount(ct))
 			}
+		}
+	}
+	// Stream timing stats from the most recent LLM call (from lastProgressSnapshot)
+	progressKey := msg.Channel + ":" + msg.ChatID
+	if v, ok := a.lastProgressSnapshot.Load(progressKey); ok {
+		if snap, ok := v.(*protocol.ProgressEvent); ok && snap.StreamStats != nil {
+			fmt.Fprintf(&sb, "| TTFT | %d ms |\n", snap.StreamStats.TTFTMs)
+			if snap.StreamStats.TPOTMs > 0 {
+				fmt.Fprintf(&sb, "| TPOT | %d ms |\n", snap.StreamStats.TPOTMs)
+			}
+			fmt.Fprintf(&sb, "| Stream Duration | %d ms |\n", snap.StreamStats.TotalMs)
+			fmt.Fprintf(&sb, "| Output Chunks | %d |\n", snap.StreamStats.Chunks)
 		}
 	}
 

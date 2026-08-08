@@ -94,6 +94,27 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 	toolCalls := make(map[int]*ToolCallDelta) // index → accumulated delta
 	var gotDone bool                          // tracks whether EventDone was explicitly received
 
+	// Stream timing statistics
+	requestStart := time.Now()
+	var firstChunkAt time.Time
+	var lastChunkAt time.Time
+	var chunkCount int64 // all chunk types: content + reasoning + tool_call
+
+	finalizeStats := func() {
+		if firstChunkAt.IsZero() {
+			return // no chunks received
+		}
+		stats := &StreamStats{
+			TTFTMs:  firstChunkAt.Sub(requestStart).Milliseconds(),
+			TotalMs: time.Since(requestStart).Milliseconds(),
+			Chunks:  chunkCount,
+		}
+		if chunkCount > 1 {
+			stats.TPOTMs = lastChunkAt.Sub(firstChunkAt).Milliseconds() / (chunkCount - 1)
+		}
+		resp.StreamStats = stats
+	}
+
 	// Idle timeout: if no chunk arrives for this duration, the stream is considered
 	// hung and we return an error. This replaces the old approach of using ctx deadline
 	// as a total stream timeout, which incorrectly killed actively-streaming responses
@@ -112,6 +133,7 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 			resp.Content = content.String()
 			resp.ReasoningContent = reasoningContent.String()
 			resp.ToolCalls = orderedToolCalls(toolCalls)
+			finalizeStats()
 			return &resp, err
 		}
 		select {
@@ -121,6 +143,7 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 			resp.Content = content.String()
 			resp.ReasoningContent = reasoningContent.String()
 			resp.ToolCalls = orderedToolCalls(toolCalls)
+			finalizeStats()
 			return &resp, ctx.Err()
 
 		case <-idleTimer.C:
@@ -128,24 +151,23 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 			resp.Content = content.String()
 			resp.ReasoningContent = reasoningContent.String()
 			resp.ToolCalls = orderedToolCalls(toolCalls)
+			finalizeStats()
 			return &resp, fmt.Errorf("stream idle timeout after %v: %w", streamIdleTimeout, context.DeadlineExceeded)
 
 		case ev, ok := <-eventCh:
 			if !ok {
-				// If EventDone was never received, the stream was likely
-				// truncated by a proxy or network issue (clean TCP close
-				// without proper SSE termination). Return an error so the
-				// retry layer can attempt to recover.
 				if !gotDone {
 					resp.Content = content.String()
 					resp.ReasoningContent = reasoningContent.String()
 					resp.ToolCalls = orderedToolCalls(toolCalls)
+					finalizeStats()
 					return &resp, fmt.Errorf("stream ended without EventDone (possible truncation)")
 				}
 				// Channel closed normally — stream completed.
 				resp.Content = content.String()
 				resp.ReasoningContent = reasoningContent.String()
 				resp.ToolCalls = orderedToolCalls(toolCalls)
+				finalizeStats()
 
 				// Infer finish_reason from actual response data.
 				// Some providers send "stop" instead of "tool_calls" even when tool_calls are present.
@@ -154,6 +176,14 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 				}
 				return &resp, nil
 			}
+
+			// Record chunk timing — any event type counts (content, reasoning, tool_call).
+			now := time.Now()
+			if firstChunkAt.IsZero() {
+				firstChunkAt = now
+			}
+			lastChunkAt = now
+			chunkCount++
 
 			// Reset idle timer — we received a chunk, so the stream is alive.
 			if !idleTimer.Stop() {
@@ -232,6 +262,7 @@ func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, 
 					resp.Content = content.String()
 					resp.ReasoningContent = reasoningContent.String()
 					resp.ToolCalls = orderedToolCalls(toolCalls)
+					finalizeStats()
 					return &resp, fmt.Errorf("stream error: %s", ev.Error)
 				}
 			}

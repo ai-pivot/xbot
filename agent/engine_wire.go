@@ -1682,6 +1682,10 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 			MaxOutputTokens: s.TokenUsage.MaxOutputTokens,
 		}
 	}
+	// Attach stream timing stats from the latest LLM call
+	if s.StreamStats != nil {
+		payload.StreamStats = s.StreamStats
+	}
 	return payload
 }
 

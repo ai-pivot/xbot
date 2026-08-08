@@ -99,6 +99,7 @@ type ProgressEvent struct {
 	// provide usage at stream end). When >0, TUI displays token count instead of
 	// char count for streaming progress.
 	StreamTokens     int64           `json:"stream_tokens,omitempty"`
+	StreamStats      *StreamStats    `json:"stream_stats,omitempty"`
 	IterationHistory []ProgressEvent `json:"iteration_history,omitempty"`
 	HistoryCompacted bool            `json:"history_compacted,omitempty"`
 	CWD              string          `json:"cwd,omitempty"`
@@ -111,6 +112,16 @@ type ProgressEvent struct {
 	// bg-notification-injected user messages and user-typed messages).
 	TurnID    uint64         `json:"turn_id,omitempty"`
 	TurnStart *TurnStartInfo `json:"turn_start,omitempty"` // only on turn_started events
+}
+
+// StreamStats holds timing statistics for a single LLM streaming response.
+// Mirrors llm.StreamStats — duplicated here to avoid circular import
+// (protocol ← llm would create a cycle).
+type StreamStats struct {
+	TTFTMs  int64 `json:"ttft_ms,omitempty"`  // Time to first token (ms)
+	TPOTMs  int64 `json:"tpot_ms,omitempty"`  // Time per output token (ms)
+	TotalMs int64 `json:"total_ms,omitempty"` // Total stream duration (ms)
+	Chunks  int64 `json:"chunks,omitempty"`  // Number of chunks received
 }
 
 // TurnStartInfo carries the user message that triggered a turn. Only set when

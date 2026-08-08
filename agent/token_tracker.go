@@ -1,5 +1,7 @@
 package agent
 
+import "xbot/llm"
+
 // TokenTracker manages token accounting for a single Run() execution.
 // All token counts come from API responses — never from local estimation.
 type TokenTracker struct {
@@ -7,6 +9,11 @@ type TokenTracker struct {
 	completionTokens int64
 	hadLLMCall       bool
 	restoredFromDB   bool // true when initialized from previous Run's persisted token counts
+	// Stream timing stats from the most recent LLM call
+	lastTTFT   int64 // ms
+	lastTPOT   int64 // ms
+	lastTotal  int64 // ms
+	lastChunks int64
 }
 
 // NewTokenTracker creates a TokenTracker, optionally seeded with token counts
@@ -24,6 +31,23 @@ func (t *TokenTracker) RecordLLMCall(prompt, completion int64) {
 	t.promptTokens = prompt
 	t.completionTokens = completion
 	t.hadLLMCall = true
+}
+
+// RecordStreamStats records the stream timing statistics from the most recent
+// LLM streaming response (TTFT, TPOT, total duration, chunk count).
+func (t *TokenTracker) RecordStreamStats(stats *llm.StreamStats) {
+	if stats == nil {
+		return
+	}
+	t.lastTTFT = stats.TTFTMs
+	t.lastTPOT = stats.TPOTMs
+	t.lastTotal = stats.TotalMs
+	t.lastChunks = stats.Chunks
+}
+
+// GetStreamStats returns the stream timing stats from the most recent LLM call.
+func (t *TokenTracker) GetStreamStats() (ttft, tpot, total int64, chunks int64) {
+	return t.lastTTFT, t.lastTPOT, t.lastTotal, t.lastChunks
 }
 
 // ResetAfterCompress resets token state after context compression.
