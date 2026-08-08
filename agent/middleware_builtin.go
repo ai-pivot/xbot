@@ -501,10 +501,14 @@ func (m *LanguageMiddleware) Process(mc *MessageContext) error {
 // buildSystemGuideText 根据记忆模式生成系统引导文本。
 // letta 模式下包含 search_tools 引导，flat 模式下不包含。
 func buildSystemGuideText(memoryProvider string) string {
-	if memoryProvider == "letta" {
+	switch memoryProvider {
+	case "letta":
 		return prompt.UserMessageGuideLetta
+	case "xbot":
+		return prompt.UserMessageGuideXbot
+	default:
+		return prompt.UserMessageGuideFlat
 	}
-	return prompt.UserMessageGuideFlat
 }
 
 // UserMessageMiddleware 构建最终的用户消息（注入时间戳、发送者标识、系统引导）

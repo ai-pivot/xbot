@@ -13,6 +13,7 @@ import (
 	"xbot/bus"
 	"xbot/llm"
 	"xbot/memory"
+	xbotmemory "xbot/memory/xbot"
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/session"
@@ -375,6 +376,7 @@ type ToolContextExtras struct {
 	MemorySvc               *sqlite.MemoryService
 	RecallTimeRange         vectordb.RecallTimeRangeFunc
 	ToolIndexer             memory.ToolIndexer
+	XbotMemory              *xbotmemory.XbotMemory
 	InvalidateAllSessionMCP func()
 }
 

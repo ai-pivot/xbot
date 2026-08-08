@@ -16,10 +16,12 @@ import (
 	"xbot/bus"
 	channelpkg "xbot/channel"
 	"xbot/channel/cli"
+	"xbot/config"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/memory/letta"
+	xbotmemory "xbot/memory/xbot"
 	"xbot/oauth"
 	"xbot/protocol"
 	"xbot/session"
@@ -807,12 +809,16 @@ func (a *Agent) buildSubAgentRunConfig(
 			cfg.ToolContextExtras = extras
 			cfg.Memory = mem
 
-			// 注入记忆使用指南到 system prompt
-			messages[0].Content += subagentMemorySection
+			// 注入记忆使用指南到 system prompt（根据 provider 类型选择）
+			messages[0].Content += a.subagentMemorySection()
 
 			// 注入记忆到 system prompt（SubAgent 不使用 pipeline，需手动调用 Recall）
-			subSenderID := subAgentHumanBlockSenderID(parentAgentID)
-			memCtx := letta.WithUserID(ctx, subSenderID)
+			memCtx := ctx
+			// letta 模式需要 WithUserID
+			if _, ok := mem.(*letta.LettaMemory); ok {
+				subSenderID := subAgentHumanBlockSenderID(parentAgentID)
+				memCtx = letta.WithUserID(ctx, subSenderID)
+			}
 			if recallText, err := mem.Recall(memCtx, task); err == nil && recallText != "" {
 				messages[0].Content += "\n\n" + recallText
 			}
@@ -826,6 +832,9 @@ func (a *Agent) buildSubAgentRunConfig(
 		subTools.Unregister("archival_memory_insert")
 		subTools.Unregister("archival_memory_search")
 		subTools.Unregister("recall_memory_search")
+		subTools.Unregister("memory_search")
+		subTools.Unregister("memory_add")
+		subTools.Unregister("memory_manage")
 	}
 
 	// Capability: spawn_agent — 允许 SubAgent 创建子 Agent
@@ -1168,6 +1177,11 @@ func (a *Agent) buildToolContextExtras(channel, chatID string) *ToolContextExtra
 			extras.ArchivalMemory = lm.ArchivalService()
 			extras.ToolIndexer = lm
 		}
+
+		// XbotMemory-specific fields
+		if xm, ok := ts.Memory().(*xbotmemory.XbotMemory); ok {
+			extras.XbotMemory = xm
+		}
 	}
 
 	return extras
@@ -1200,48 +1214,113 @@ func (a *Agent) buildSubAgentMemory(
 	// 2. 推导 SubAgent 的独立 tenantID
 	subTenantID := deriveSubAgentTenantID(parentExtras.TenantID, parentAgentID, roleName)
 
-	// 3. 获取共享服务（通过 multiSession 访问）
-	coreSvc := a.multiSession.CoreMemoryService()
-	archivalSvc := a.multiSession.ArchivalService()
-	memorySvc := a.multiSession.MemoryService()
+	// 3. 根据 memoryProvider 选择 SubAgent 记忆系统
+	memoryProvider := a.memoryProvider
 
-	// 4. 初始化 SubAgent 的 core memory blocks（persona + human）
-	//    persona: 空的，由 SubAgent 通过 memorize 自行积累（不预填 systemPrompt，避免重复注入）
-	//    human: 以 parentAgentID 为 senderID 隔离
-	subSenderID := subAgentHumanBlockSenderID(parentAgentID)
-	if err := coreSvc.InitBlocks(subTenantID, subSenderID); err != nil {
-		log.Ctx(ctx).WithError(err).WithFields(log.Fields{
-			"tenant_id":     subTenantID,
+	switch memoryProvider {
+	case "xbot":
+		// Xbot memory: SQLite FTS5 BM25, no external embedding dependency
+		xbotMemDir := filepath.Join(config.XbotHome(), "memory", fmt.Sprintf("%d", subTenantID))
+		mem := xbotmemory.New(subTenantID, xbotMemDir, a.multiSession.DB().Conn())
+
+		extras := &ToolContextExtras{
+			TenantID:                subTenantID,
+			XbotMemory:              mem,
+			InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
+		}
+
+		log.Ctx(ctx).WithFields(log.Fields{
+			"sub_tenant_id": subTenantID,
+			"parent_agent":  parentAgentID,
+			"role":          roleName,
+		}).Info("SubAgent memory: created xbot memory system")
+
+		return extras, mem
+
+	case "letta", "": // Default to letta for backward compatibility
+		// 3. 获取共享服务（通过 multiSession 访问）
+		coreSvc := a.multiSession.CoreMemoryService()
+		archivalSvc := a.multiSession.ArchivalService()
+		memorySvc := a.multiSession.MemoryService()
+
+		// 4. 初始化 SubAgent 的 core memory blocks（persona + human）
+		//    persona: 空的，由 SubAgent 通过 memorize 自行积累（不预填 systemPrompt，避免重复注入）
+		//    human: 以 parentAgentID 为 senderID 隔离
+		subSenderID := subAgentHumanBlockSenderID(parentAgentID)
+		if err := coreSvc.InitBlocks(subTenantID, subSenderID); err != nil {
+			log.Ctx(ctx).WithError(err).WithFields(log.Fields{
+				"tenant_id":     subTenantID,
+				"parent_agent":  parentAgentID,
+				"role":          roleName,
+				"sub_sender_id": subSenderID,
+			}).Warn("SubAgent memory: failed to init core blocks")
+			return nil, nil
+		}
+
+		// 5. 创建独立的 LettaMemory 实例
+		toolIndexSvc := a.multiSession.ToolIndexService()
+		mem := letta.New(subTenantID, coreSvc, archivalSvc, memorySvc, toolIndexSvc)
+
+		// 6. 构建 ToolContextExtras（供 SubAgent 的工具使用）
+		extras := &ToolContextExtras{
+			TenantID:                subTenantID,
+			CoreMemory:              coreSvc,
+			ArchivalMemory:          archivalSvc,
+			MemorySvc:               memorySvc,
+			RecallTimeRange:         a.multiSession.RecallTimeRangeFunc(),
+			ToolIndexer:             mem,
+			InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
+		}
+
+		log.Ctx(ctx).WithFields(log.Fields{
+			"sub_tenant_id": subTenantID,
 			"parent_agent":  parentAgentID,
 			"role":          roleName,
 			"sub_sender_id": subSenderID,
-		}).Warn("SubAgent memory: failed to init core blocks")
+		}).Info("SubAgent memory: created independent memory system")
+
+		return extras, mem
+
+	default:
+		// flat/none: no SubAgent memory
 		return nil, nil
 	}
+}
 
-	// 5. 创建独立的 LettaMemory 实例
-	toolIndexSvc := a.multiSession.ToolIndexService()
-	mem := letta.New(subTenantID, coreSvc, archivalSvc, memorySvc, toolIndexSvc)
+// subagentMemorySectionForXbot is the xbot provider's SubAgent memory guide.
+const subagentMemorySectionForXbot = `
+## 记忆
 
-	// 6. 构建 ToolContextExtras（供 SubAgent 的工具使用）
-	extras := &ToolContextExtras{
-		TenantID:                subTenantID,
-		CoreMemory:              coreSvc,
-		ArchivalMemory:          archivalSvc,
-		MemorySvc:               memorySvc,
-		RecallTimeRange:         a.multiSession.RecallTimeRangeFunc(),
-		ToolIndexer:             mem,
-		InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
+你有跨会话持久记忆系统：
+
+1. **核心摘要** — 始终在系统提示词中可见，包含关键事实
+2. **短期记忆** — 最近会话的摘要，自动注入
+3. **长期记忆** — 原子化事实/偏好/事件/决策/技能，按相关性检索
+
+### 记忆工具
+
+- ` + "`memory_search`" + ` — 搜索跨会话记忆（BM25 关键词检索）
+- ` + "`memory_add`" + ` — 保存重要信息供未来对话使用
+- ` + "`memory_manage`" + ` — 列出/更新/删除记忆
+
+### 记忆行为
+
+- 相关记忆会自动注入系统提示词，无需手动搜索
+- 发现重要信息时用 ` + "`memory_add`" + ` 主动保存
+- 记忆类型：fact（事实）、preference（偏好）、event（事件）、decision（决策）、skill（技能）
+- 记忆会随时间衰减，重要记忆持久保留
+`
+
+// subagentMemorySection returns the memory guide for SubAgent based on the provider type.
+func (a *Agent) subagentMemorySection() string {
+	switch a.memoryProvider {
+	case "xbot":
+		return subagentMemorySectionForXbot
+	case "letta", "":
+		return subagentMemorySection
+	default:
+		return "" // flat/none: no SubAgent memory guide
 	}
-
-	log.Ctx(ctx).WithFields(log.Fields{
-		"sub_tenant_id": subTenantID,
-		"parent_agent":  parentAgentID,
-		"role":          roleName,
-		"sub_sender_id": subSenderID,
-	}).Info("SubAgent memory: created independent memory system")
-
-	return extras, mem
 }
 
 // subAgentHumanBlockSenderID returns the virtual senderID used for the SubAgent's

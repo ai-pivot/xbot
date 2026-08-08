@@ -6,6 +6,7 @@ import (
 	"xbot/bus"
 	"xbot/llm"
 	"xbot/memory"
+	xbotmemory "xbot/memory/xbot"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
 )
@@ -52,6 +53,9 @@ type ToolContext struct {
 	MemorySvc       *sqlite.MemoryService        // 事件历史存储（用于 rethink 日志）
 	RecallTimeRange vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
 	ToolIndexer     memory.ToolIndexer           // 工具索引服务（Letta 模式下可用）
+
+	// XbotMemory fields (nil when memory provider is not xbot)
+	XbotMemory *xbotmemory.XbotMemory // xbot 记忆系统实例（BM25 检索 + 三层记忆）
 
 	// SessionKey is the authoritative session key (may differ from
 	// Channel:ChatID when physicalChannel overrides it). Used by TodoManager

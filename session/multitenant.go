@@ -18,6 +18,7 @@ import (
 	"xbot/memory"
 	"xbot/memory/flat"
 	"xbot/memory/letta"
+	xbotmemory "xbot/memory/xbot"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
 	"xbot/tools"
@@ -331,6 +332,10 @@ func (m *MultiTenantSession) getOrCreateSession(channel, chatID string, canonica
 		memProvider = letta.New(tenantID, m.coreSvc, m.archivalSvc, m.memorySvc, m.toolIndexSvc)
 		// 前向兼容：一次性迁移 user_profiles → core memory blocks
 		m.migrateProfileToCoreMemory(tenantID)
+	case "xbot":
+		// Xbot memory: SQLite FTS5 BM25 + three-tier memory, no external embedding dependency
+		xbotMemDir := filepath.Join(config.XbotHome(), "memory", fmt.Sprintf("%d", tenantID))
+		memProvider = xbotmemory.New(tenantID, xbotMemDir, m.db.Conn())
 	case "none":
 		// No memory provider — tools and archiving are disabled.
 		memProvider = nil

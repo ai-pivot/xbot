@@ -151,6 +151,9 @@ func enrichPromptData(data PromptData) PromptData {
 	case "letta":
 		data.Tools = prompt.ToolsLetta
 		data.Memory = prompt.MemoryLetta
+	case "xbot":
+		data.Tools = prompt.ToolsXbot
+		data.Memory = prompt.MemoryXbot
 	default:
 		data.Tools = prompt.ToolsFlat
 		data.Memory = ""

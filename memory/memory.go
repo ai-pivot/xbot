@@ -73,3 +73,62 @@ type Evolution struct {
 	NoteID string
 	Detail string
 }
+
+// CompressionAware 允许记忆系统干涉上下文压缩流程。
+// 实现此接口的 MemoryProvider 可以在压缩前保存即将丢失的消息，
+// 在压缩后执行记忆后处理，以及向压缩 LLM 提供额外上下文。
+//
+// 这是可选接口——flat/letta provider 不实现它，压缩行为完全不变。
+// 只有 xbot provider 实现此接口以解决压缩失忆问题。
+type CompressionAware interface {
+	// PreCompress 在压缩执行前调用。
+	// 接收即将被压缩的消息列表，将其中的关键信息保存到长期记忆。
+	// 返回的 PreCompressResult 可以影响压缩行为。
+	PreCompress(ctx context.Context, input PreCompressInput) (*PreCompressResult, error)
+
+	// PostCompress 在压缩完成后调用。
+	// 接收压缩后的消息列表和压缩摘要，执行记忆后处理。
+	PostCompress(ctx context.Context, input PostCompressInput) error
+
+	// CompressContext 注入到压缩 LLM 的 system prompt 中。
+	// 允许记忆系统向压缩 LLM 提供额外上下文（如"这些信息很重要，务必保留"）。
+	CompressContext(ctx context.Context) (string, error)
+}
+
+// PreCompressInput 压缩前输入。
+type PreCompressInput struct {
+	// MessagesToCompress 即将被压缩的消息（不含 system 和 tail）。
+	MessagesToCompress []llm.ChatMessage
+	// TailMessages 压缩后保留的尾部消息。
+	TailMessages []llm.ChatMessage
+	// SessionID 当前会话 ID。
+	SessionID string
+	// LLMClient 用于记忆提取的 LLM。
+	LLMClient llm.LLM
+	// Model LLM 模型名。
+	Model string
+}
+
+// PreCompressResult 压缩前处理结果。
+type PreCompressResult struct {
+	// SavedCount 保存到长期记忆的条目数。
+	SavedCount int
+	// PreserveHints 需要压缩 LLM 务必保留的关键信息提示。
+	// 这些提示会被注入到压缩 prompt 中。
+	PreserveHints []string
+	// SkipCompress 如果为 true，表示记忆系统已处理所有信息，
+	// 可以跳过压缩（极端情况：记忆系统已保存全部信息，直接清空上下文）。
+	SkipCompress bool
+}
+
+// PostCompressInput 压缩后输入。
+type PostCompressInput struct {
+	// CompressedMessages 压缩后的完整消息列表（含摘要 + tail）。
+	CompressedMessages []llm.ChatMessage
+	// CompactionSummary LLM 生成的压缩摘要文本。
+	CompactionSummary string
+	// RemovedMessageCount 被压缩移除的消息数。
+	RemovedMessageCount int
+	// SessionID 当前会话 ID。
+	SessionID string
+}

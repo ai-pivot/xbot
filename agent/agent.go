@@ -582,6 +582,10 @@ type Agent struct {
 	// singleUser enables single-user mode: all senders share one identity.
 	singleUser bool
 
+	// memoryProvider stores the resolved memory provider type ("flat", "letta", "xbot", "none").
+	// Used by SubAgent memory construction to match the parent's provider.
+	memoryProvider string
+
 	// identityResolver resolves channel-specific senderID to canonical user_id.
 	// IdentityResolver is accessed via a.userSys.identityResolver (no direct field).
 	// nil in standalone CLI mode (no multi-user DB).
@@ -1612,6 +1616,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	contextMode := resolveContextMode(cfg)
 
 	memoryProvider := resolveMemoryProvider(cfg.MemoryProvider)
+	a.memoryProvider = memoryProvider
 
 	multiSession.SetMCPConfigPath(mcpConfigPath)
 
@@ -1635,6 +1640,14 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 			registry.RegisterCore(tool)
 		}
 		log.Info("Flat memory tools registered (core)")
+	}
+
+	// Xbot 模式：注册 xbot memory tools（memory_search/add/manage）
+	if memoryProvider == "xbot" {
+		for _, tool := range tools.XbotMemoryTools() {
+			registry.RegisterCore(tool)
+		}
+		log.Info("Xbot memory tools registered (core)")
 	}
 
 	log.Info("Knowledge tools removed — project knowledge is managed via AGENTS.md + docs/agent/")
