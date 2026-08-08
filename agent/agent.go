@@ -3716,6 +3716,18 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	// to render duplicate iterations across turns (e.g. turn 27's iter 1-2
 	// appearing inside turn 28's assistant message).
 	// Skip for resume (InjectInboundResume) — it continues the same turn.
+	//
+	// Concurrency safety: emitTurnStarted is called from chatProcessLoop
+	// (line 2901) BEFORE processMessage (line 2951). The previous turn's
+	// Run() has already returned (chatProcessLoop is serial — it waits for
+	// processMessage to complete before dequeuing the next message). No
+	// concurrent snapshotCompletedIteration or attachIterationDelta can be
+	// writing to iterationHistories at this point. GetActiveProgress (frontend
+	// request) reads iterationHistories via sync.Map Load — it may observe
+	// the Delete (empty result) but never a torn state (sync.Map operations
+	// are atomic). The turn_started SSE event is emitted AFTER this Delete,
+	// so the frontend's reload (triggered by turn_started) sees the clean
+	// state.
 	if msg.Metadata == nil || msg.Metadata["resume_turn"] != "true" {
 		a.iterationHistories.Delete(progressKey)
 	}
