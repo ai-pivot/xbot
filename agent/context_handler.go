@@ -365,16 +365,16 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 			}
 		}
 	}
-	// Stream timing stats from the most recent LLM call (from lastProgressSnapshot)
+	// Stream timing stats from the most recent LLM call (persists across turns)
 	progressKey := msg.Channel + ":" + msg.ChatID
-	if v, ok := a.lastProgressSnapshot.Load(progressKey); ok {
-		if snap, ok := v.(*protocol.ProgressEvent); ok && snap.StreamStats != nil {
-			fmt.Fprintf(&sb, "| TTFT | %d ms |\n", snap.StreamStats.TTFTMs)
-			if snap.StreamStats.TPOTMs > 0 {
-				fmt.Fprintf(&sb, "| TPOT | %d ms |\n", snap.StreamStats.TPOTMs)
+	if v, ok := a.lastStreamStats.Load(progressKey); ok {
+		if stats, ok := v.(*protocol.StreamStats); ok && stats != nil {
+			fmt.Fprintf(&sb, "| TTFT | %d ms |\n", stats.TTFTMs)
+			if stats.TPOTMs > 0 {
+				fmt.Fprintf(&sb, "| TPOT | %d ms |\n", stats.TPOTMs)
 			}
-			fmt.Fprintf(&sb, "| Stream Duration | %d ms |\n", snap.StreamStats.TotalMs)
-			fmt.Fprintf(&sb, "| Output Chunks | %d |\n", snap.StreamStats.Chunks)
+			fmt.Fprintf(&sb, "| Stream Duration | %d ms |\n", stats.TotalMs)
+			fmt.Fprintf(&sb, "| Output Chunks | %d |\n", stats.Chunks)
 		}
 	}
 

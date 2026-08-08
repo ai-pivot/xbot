@@ -14,6 +14,7 @@ import (
 	"xbot/llm"
 	"xbot/memory"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
@@ -267,6 +268,12 @@ type RunConfig struct {
 	// user message in the session. Called after each LLM API call returns,
 	// enabling rewind to restore precise token counts from DB.
 	SaveContextTokens func(promptTokens int64)
+
+	// SaveStreamStats stores the most recent LLM stream timing stats (TTFT,
+	// TPOT, total duration, chunk count) for the session. Persists across
+	// turns (unlike lastProgressSnapshot which is deleted on turn end).
+	// Used by /info command to display timing even after the turn completes.
+	SaveStreamStats func(stats *protocol.StreamStats)
 
 	// BgTaskManager 后台任务管理器（nil = 不支持后台任务）
 	BgTaskManager *tools.BackgroundTaskManager

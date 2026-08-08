@@ -476,6 +476,12 @@ type Agent struct {
 	// key: "channel:chatID" -> *protocol.ProgressEvent
 	lastProgressSnapshot sync.Map
 
+	// lastStreamStats stores the most recent LLM stream timing stats per session.
+	// Unlike lastProgressSnapshot (deleted on turn end), this persists across
+	// turns so /info can display TTFT/TPOT even after the turn completes.
+	// key: "channel:chatID" -> *protocol.StreamStats
+	lastStreamStats sync.Map
+
 	// waitingUserSessions stores pending AskUser prompts per chat.
 	// Set when buildWaitingUserOutbound fires; deleted when the answer arrives.
 	// Used by GetPendingAskUser to resend ask_user on WS reconnect.

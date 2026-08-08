@@ -598,6 +598,15 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 				Chunks:  response.StreamStats.Chunks,
 			}
 		}
+		// Persist stream stats to session-level storage (survives turn end)
+		if s.cfg.SaveStreamStats != nil && response.StreamStats != nil {
+			s.cfg.SaveStreamStats(&protocol.StreamStats{
+				TTFTMs:  response.StreamStats.TTFTMs,
+				TPOTMs:  response.StreamStats.TPOTMs,
+				TotalMs: response.StreamStats.TotalMs,
+				Chunks:  response.StreamStats.Chunks,
+			})
+		}
 		s.localInputTokens += int(response.Usage.PromptTokens)
 		s.localOutputTokens += int(response.Usage.CompletionTokens)
 		s.updateTokenUsage()
