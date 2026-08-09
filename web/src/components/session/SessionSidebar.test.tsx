@@ -92,6 +92,26 @@ vi.mock('@/components/ui/scroll-area', () => ({
   ),
 }))
 
+vi.mock('@/components/sidebar/SessionInfo', () => ({
+  SessionInfo: () => <div data-testid="session-info">session-info</div>,
+}))
+
+vi.mock('@/components/sidebar/FileExplorer', () => ({
+  FileExplorer: () => <div data-testid="file-explorer">file-explorer</div>,
+}))
+
+vi.mock('@/components/sidebar/FileSearch', () => ({
+  FileSearch: () => <div data-testid="file-search">file-search</div>,
+}))
+
+vi.mock('@/components/sidebar/TasksPanel', () => ({
+  TasksPanel: () => <div data-testid="tasks-panel">tasks-panel</div>,
+}))
+
+vi.mock('@/components/sidebar/TerminalList', () => ({
+  TerminalList: () => <div data-testid="terminal-list">terminal-list</div>,
+}))
+
 const tabManager = {
   tabs: [],
   activeTabId: null,
@@ -103,9 +123,27 @@ const tabManager = {
   bindApi: vi.fn(),
 } satisfies TabManager
 
+const terminalManager = {
+  terminals: [],
+  activeTerminalId: null,
+  createTerminal: vi.fn(),
+  killTerminal: vi.fn(),
+  write: vi.fn(),
+  setActiveTerminal: vi.fn(),
+} as any
+
+const sidebarProps = {
+  tabManager,
+  terminalManager,
+  activePanel: 'info' as const,
+  onPanelChange: vi.fn(),
+  bottomCollapsed: false,
+  onToggleBottom: vi.fn(),
+}
+
 describe('SessionSidebar', () => {
   it('switches main sessions and only opens Agent tabs for SubAgents', () => {
-    renderWithProviders(<SessionSidebar tabManager={tabManager} />)
+    renderWithProviders(<SessionSidebar {...sidebarProps} />)
 
     fireEvent.click(screen.getByText('Agent-main'))
     expect(switchSession).toHaveBeenCalledWith('/repo:Agent-main', 'cli')
@@ -127,12 +165,27 @@ describe('SessionSidebar', () => {
 
   it('uses parsed SubAgent identity for tab titles when backend label is default', () => {
     openTab.mockClear()
-    renderWithProviders(<SessionSidebar tabManager={tabManager} />)
+    renderWithProviders(<SessionSidebar {...sidebarProps} />)
 
     fireEvent.click(screen.getByText('review/1'))
 
     expect(openTab).toHaveBeenCalledWith(expect.objectContaining({
       title: 'review/1',
     }))
+  })
+
+  it('renders bottom panel with active panel content', () => {
+    renderWithProviders(<SessionSidebar {...sidebarProps} activePanel="info" />)
+    expect(screen.getByTestId('session-info')).toBeInTheDocument()
+  })
+
+  it('switches panel content when activePanel changes', () => {
+    renderWithProviders(<SessionSidebar {...sidebarProps} activePanel="tasks" />)
+    expect(screen.getByTestId('tasks-panel')).toBeInTheDocument()
+  })
+
+  it('hides panel content when bottomCollapsed is true', () => {
+    renderWithProviders(<SessionSidebar {...sidebarProps} bottomCollapsed={true} />)
+    expect(screen.queryByTestId('session-info')).not.toBeInTheDocument()
   })
 })

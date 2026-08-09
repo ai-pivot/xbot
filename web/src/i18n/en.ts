@@ -17,6 +17,8 @@ const en: Translations = {
     loading: 'Loading...',
     error: 'Error',
     retry: 'Retry',
+    expand: 'Expand',
+    collapse: 'Collapse',
   },
   sidebar: {
     sessions: 'Sessions',

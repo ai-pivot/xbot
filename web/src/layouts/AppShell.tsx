@@ -1,27 +1,25 @@
 /**
- * AppShell — unified three-column layout (Spec 2 + Spec 4 + Spec 6 + Spec 7).
+ * AppShell — unified two-column layout.
  *
  *   ActivityBar (48px) · SessionSidebar (260px, collapsible) ·
- *   Dockview workspace (flex-1) · RightSidebar (0–280px, animated, collapsible) ·
- *   RightActivityBar (48px)
+ *   Dockview workspace (flex-1)
  *
- * The left ActivityBar owns session-list toggle + settings. Settings opens
- * a SettingsDialog Sheet (Spec 7) — NOT a sidebar view. The right sidebar hosts
- * file browser / search / info / tasks panels, each switchable via its
- * own RightActivityBar (Spec 6).
+ * The left ActivityBar owns session-list toggle + settings. The left
+ * SessionSidebar hosts the session list (top) and a bottom panel section
+ * with tab switching between Info / Tasks / Terminal / Files / Search.
+ * The old right sidebar and right activity bar have been removed.
  */
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
-import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
-import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
-import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
+import { SidebarControlContext, type SidebarPanel } from '@/components/sidebar/RightSidebarControl'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabManager } from '@/hooks/useTabManager'
 import { useSessionStore } from '@/hooks/useSessionStore'
+import { useTerminal } from '@/hooks/useTerminal'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 
@@ -39,7 +37,9 @@ export function AppShell() {
   const isMobile = useIsMobile()
   const tabManager = useTabManager()
   const sessionStore = useSessionStore()
-  const [activePanel, setActivePanel] = useState<SidebarPanel | null>(null)
+  const terminalManager = useTerminal(tabManager)
+  const [activePanel, setActivePanel] = useState<SidebarPanel>('info')
+  const [bottomCollapsed, setBottomCollapsed] = useState(false)
   const [leftWidth, setLeftWidth] = useState(() => {
     const stored = localStorage.getItem(LEFT_WIDTH_KEY)
     if (stored) {
@@ -49,7 +49,6 @@ export function AppShell() {
     return adaptiveLeftWidth()
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsVersion, setSettingsVersion] = useState(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const leftDragging = useRef(false)
   const leftUserSized = useRef(localStorage.getItem(LEFT_WIDTH_KEY) !== null)
@@ -58,17 +57,15 @@ export function AppShell() {
   // Persist and restore tab layout per session (Child 5 §3).
   useLayoutPersistence(tabManager, sessionStore)
 
-  const togglePanel = useCallback((panel: SidebarPanel) => {
-    setActivePanel((cur) => (cur === panel ? null : panel))
-  }, [])
-
   const openPanel = useCallback((panel: SidebarPanel) => {
     setActivePanel(panel)
+    setBottomCollapsed(false)
   }, [])
+
   // Memoize so the context value is stable — prevents DockviewContainer's
   // ctxValue from changing on every AppShell render (e.g. sidebar toggle),
   // which would force panel.update() on ALL dockview panels.
-  const rightSidebarControl = useMemo(() => ({ openPanel }), [openPanel])
+  const sidebarControl = useMemo(() => ({ openPanel }), [openPanel])
 
   const onLeftResizeStart = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
@@ -132,18 +129,24 @@ export function AppShell() {
       {/* Left ActivityBar */}
       <ActivityBar
         onOpenSettings={() => setSettingsOpen(true)}
-        settingsVersion={settingsVersion}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
       />
 
-      {/* Left sidebar — session list (collapsible) */}
+      {/* Left sidebar — session list + bottom panels (collapsible) */}
       {!sidebarCollapsed && (
         <div
           className="relative h-full shrink-0"
           style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
         >
-          <SessionSidebar tabManager={tabManager} />
+          <SessionSidebar
+            tabManager={tabManager}
+            terminalManager={terminalManager}
+            activePanel={activePanel}
+            onPanelChange={setActivePanel}
+            bottomCollapsed={bottomCollapsed}
+            onToggleBottom={() => setBottomCollapsed((v) => !v)}
+          />
           <div
             role="separator"
             aria-orientation="vertical"
@@ -154,22 +157,12 @@ export function AppShell() {
         </div>
       )}
 
-      <RightSidebarControlContext.Provider value={rightSidebarControl}>
+      <SidebarControlContext.Provider value={sidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="relative h-full min-w-0 flex-1">
           <DockviewContainer tabManager={tabManager} />
         </main>
-      </RightSidebarControlContext.Provider>
-
-      {/* Right sidebar overlays the workspace (like Settings dialog),
-          doesn't squeeze it. Outside main so it's not constrained by it. */}
-      <RightSidebar
-        activePanel={activePanel}
-        tabManager={tabManager}
-      />
-
-      {/* Right ActivityBar — always visible, toggles right panels. */}
-      <RightActivityBar activePanel={activePanel} onTogglePanel={togglePanel} />
+      </SidebarControlContext.Provider>
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
       <Suspense fallback={null}>
@@ -177,7 +170,6 @@ export function AppShell() {
           open={settingsOpen}
           onOpenChange={(open) => {
             setSettingsOpen(open)
-            if (!open) setSettingsVersion((v) => v + 1)
           }}
         />
       </Suspense>
