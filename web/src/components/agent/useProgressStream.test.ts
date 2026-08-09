@@ -963,11 +963,12 @@ describe('cancel: assistant message must not vanish', () => {
     )
     // First turn: TurnID=5
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 5, chat_id: 'web:c1' } })
-    // Second turn: TurnID=3 (REGRESSION)
+    // Second turn: TurnID=3 (REGRESSION — stale turn_started)
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 3, chat_id: 'web:c1' } })
+    // The stale guard drops the event with a TURN_ID_INVARIANT_VIOLATION error.
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('TURN_ID_INVARIANT_VIOLATION'),
-      expect.objectContaining({ prev: 5, next: 3 }),
+      expect.objectContaining({ prev: 5, stale: 3 }),
     )
     warnSpy.mockRestore()
   })

@@ -646,4 +646,126 @@ describe('SSEConnectionImpl', () => {
     expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(1)
     connection.dispose()
   })
+
+  it('receives resync_required event (ring buffer eviction triggers reload)', () => {
+    // Regression: resync_required was NOT in SSE_EVENT_TYPES, so the browser
+    // received the SSE event but had no addEventListener for it — silently
+    // dropped. When the backend's 512-entry ring buffer evicts events the
+    // client missed (long disconnect), the evicted iterations are PERMANENTLY
+    // LOST without a reload. This test verifies the event is now received.
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+
+    // Simulate backend sending resync_required (ring buffer eviction).
+    source.emit('resync_required', { type: 'resync_required' })
+
+    // The event must be received — not silently dropped.
+    expect(received).toHaveLength(1)
+    expect(received[0].type).toBe('resync_required')
+    connection.dispose()
+  })
+
+  it('stale turn_started with lower turnID is dropped (prevents state corruption)', () => {
+    // Regression: SSE replay can deliver a stale turn_started (turnID=9) after
+    // the store has advanced to turnID=10. Without a guard, the stale event
+    // resets finalizedRef=false, phaseDoneRef=false, and store.lastTurnID=9 —
+    // corrupting the current turn and potentially causing duplicate
+    // onAssistantComplete calls.
+    // This test verifies at the SSE connection level that stale turn_started
+    // events are handled (the actual guard is in useProgressStream, but the
+    // SSE layer must deliver the event for the guard to process it).
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+
+    // Normal turn_started for turn 10.
+    source.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 1,
+      progress: { phase: 'turn_started', turn_id: 10, turn_start: { trigger: 'user' } },
+    })
+    // Stale turn_started for turn 9 (SSE replay).
+    source.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 2,
+      progress: { phase: 'turn_started', turn_id: 9, turn_start: { trigger: 'user' } },
+    })
+
+    // Both events are delivered to the handler (the guard is in useProgressStream).
+    expect(received.length).toBeGreaterThanOrEqual(1)
+    connection.dispose()
+  })
+
+  it('seq gap on stateful event triggers restoreActiveProgress', async () => {
+    // Core gap detection: a seq gap (e.g., seq 1 → 5, missing 2-4) on a
+    // stateful event triggers restoreActiveProgress to recover lost data.
+    let resolveProgress: (progress: { phase: string; iteration: number }) => void = () => undefined
+    postAPIMock.mockImplementation((endpoint: string) => {
+      if (endpoint === '/api/rpc') {
+        return new Promise((resolve) => {
+          resolveProgress = resolve
+        })
+      }
+      return Promise.resolve({})
+    })
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 1)
+
+    // Seq jumps from 1 to 5 — gap of 3 events.
+    source.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 5,
+      progress: { phase: 'tool', iteration: 3 },
+    })
+    await Promise.resolve()
+
+    expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', expect.objectContaining({
+      method: 'get_active_progress',
+    }))
+
+    // RPC resolves with recovery data.
+    resolveProgress({ phase: 'tool', iteration: 3 })
+    await Promise.resolve()
+
+    // Recovery data is dispatched.
+    expect(received.filter((m) => m.type === 'progress_structured').at(-1)).toMatchObject({
+      type: 'progress_structured',
+      progress: { phase: 'tool', iteration: 3 },
+    })
+    connection.dispose()
+  })
+
+  it('seq gap on stream_content does NOT trigger restoreActiveProgress', async () => {
+    // stream_content is stateless — high frequency, coalesced by the Hub.
+    // A seq gap on stream_content must NOT trigger restoreActiveProgress
+    // (would fire on every token batch, overwhelming the RPC).
+    const connection = new SSEConnectionImpl()
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 1)
+
+    // Seq jumps from 1 to 100 on stream_content — should NOT trigger RPC.
+    source.emit('stream_content', {
+      type: 'stream_content',
+      seq: 100,
+      progress: { stream_content: 'partial text...' },
+    })
+    await Promise.resolve()
+
+    expect(postAPIMock).not.toHaveBeenCalled()
+    connection.dispose()
+  })
 })

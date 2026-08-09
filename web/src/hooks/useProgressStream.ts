@@ -502,6 +502,20 @@ function handleProgressMessage(
       // inject_user side-channel — the notification user message is delivered
       // atomically with the TurnID through the progress stream.
       if (p.phase === 'turn_started') {
+        // ── Stale turn_started guard ──
+        // SSE replay can deliver a stale turn_started (turnID=9) after the
+        // store has already advanced to turnID=10. Without this guard, the
+        // stale event resets finalizedRef=false, phaseDoneRef=false, and
+        // store.lastTurnID=9 — corrupting the current turn's state and
+        // potentially causing duplicate onAssistantComplete calls.
+        if (p.turn_id && p.turn_id > 0 && store.lastTurnID > 0 && p.turn_id < store.lastTurnID) {
+          console.error('[TURN_ID_INVARIANT_VIOLATION] Stale turn_started dropped', {
+            prev: store.lastTurnID,
+            stale: p.turn_id,
+            chatID: p.chat_id,
+          })
+          return
+        }
         // ── Consistency check: TurnID must be strictly monotonic ──
         // AskUser answer (trigger=resume) reuses the same TurnID as the original
         // turn — turnID == lastTurnID is expected and NOT a violation.

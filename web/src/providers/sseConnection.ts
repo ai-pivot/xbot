@@ -33,6 +33,7 @@ export const SSE_EVENT_TYPES = [
   'session',
   'runner_status',
   'sync_progress',
+  'resync_required',
 ] as const
 
 type Handler<T> = (payload: T) => void
