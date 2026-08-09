@@ -56,38 +56,6 @@ type iterToolSnap struct {
 	Detail    string `json:"detail,omitempty"`
 }
 
-// isDegenerateCancelDetail reports whether a Detail JSON represents a
-// degenerate restart-recovery snapshot: every iteration is a synthetic
-// user_cancelled tool with no real content/reasoning/other tools. This is the
-// ONLY case where ConvertMessagesToHistory should fall back to pendingIters
-// (accumulated from tool_calls) — the resumed Run after a restart completed no
-// iterations, so its Detail carries nothing but user_cancelled.
-//
-// A NORMAL Detail always has real iteration ids (e.g. 47, 48) with content or
-// actual tools. The old `len(iters) < len(pendingIters)` check incorrectly
-// fired on normal turns (2 intermediate tool_calls → pendingIters=2, Detail=1
-// real iteration) and REPLACED the real ids with fabricated 1, 2 — the
-// "加载会话后 iter 带着错误的 iter id" bug.
-func isDegenerateCancelDetail(snaps []iterSnapshot) bool {
-	if len(snaps) == 0 {
-		return true
-	}
-	for _, snap := range snaps {
-		if snap.Content != "" || snap.Reasoning != "" {
-			return false // has real content → not degenerate
-		}
-		if len(snap.Tools) == 0 {
-			continue // empty iteration — not real
-		}
-		for _, t := range snap.Tools {
-			if t.Name != "user_cancelled" {
-				return false // has a real tool → not degenerate
-			}
-		}
-	}
-	return true
-}
-
 // truncateLabel safely truncates a string to maxRunes.
 // Appends "..." if truncated and maxRunes > 3.
 // If maxRunes <= 0 or the string already fits, returns original unchanged.
@@ -362,36 +330,28 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						})
 					}
 
-					// Restart recovery: ONLY when the Detail is degenerate — every
-					// iteration is a synthetic user_cancelled tool with no real
-					// content/reasoning/tools (the resumed Run after a restart
-					// completed no iterations, so out.IterationHistory was empty
-					// and handleCancelledRun fell back to user_cancelled only) —
-					// should we use the pendingIters accumulated from tool_calls
-					// (which carry the real pre-restart iterations).
-					//
-					// CRITICAL: the old check `len(iters) < len(pendingIters)` was
-					// WRONG — a normal turn with 2 intermediate tool_calls assistant
-					// messages accumulates 2 pendingIters (fabricated ids 1, 2) while
-					// the Detail has 1 REAL iteration (e.g. 47). `1 < 2` triggered the
-					// branch and REPLACED the real iteration id (47) with fabricated
-					// sequential ids (1, 2) — the "加载会话后 iter 带着错误的 iter id"
-					// bug. Only a truly degenerate Detail (all user_cancelled, no real
-					// content) warrants the fallback.
-					if isDegenerateCancelDetail(snaps) && len(pendingIters) > 0 {
-						last := &pendingIters[len(pendingIters)-1]
-						for _, snap := range snaps {
-							for _, t := range snap.Tools {
-								label := t.Label
-								if label == "" {
-									label = t.Name
+					// Restart recovery: if Detail has fewer iterations than the
+					// accumulated pendingIters (from tool_calls), the Detail only
+					// has the cancel tool (out.IterationHistory was empty because
+					// the resumed Run hadn't completed any iterations). Use the
+					// pendingIters (which have the real iterations from tool_calls)
+					// and append the cancel tools from Detail to the last iteration.
+					if len(iters) < len(pendingIters) {
+						if len(pendingIters) > 0 {
+							last := &pendingIters[len(pendingIters)-1]
+							for _, snap := range snaps {
+								for _, t := range snap.Tools {
+									label := t.Label
+									if label == "" {
+										label = t.Name
+									}
+									last.Tools = append(last.Tools, protocol.ToolProgress{
+										Name:      t.Name,
+										Label:     label,
+										Status:    t.Status,
+										Iteration: last.Iteration,
+									})
 								}
-								last.Tools = append(last.Tools, protocol.ToolProgress{
-									Name:      t.Name,
-									Label:     label,
-									Status:    t.Status,
-									Iteration: last.Iteration,
-								})
 							}
 						}
 						iters = pendingIters
