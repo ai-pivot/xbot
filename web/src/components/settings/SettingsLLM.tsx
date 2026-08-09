@@ -946,21 +946,27 @@ export function SettingsLLM({ settings }: SettingsLLMProps) {
               value={data.tierVanguard}
               options={tierOptions}
               disabled={disabled}
-              onChange={(v) => void setTier('vanguard', v)}
+              onChange={(v) => void setTier('vanguard', v).then((ok) => {
+                if (!ok) toast.error(t('settings.saveFailed'))
+              })}
             />
             <TierSelector
               label={t('settings.tierBalance')}
               value={data.tierBalance}
               options={tierOptions}
               disabled={disabled}
-              onChange={(v) => void setTier('balance', v)}
+              onChange={(v) => void setTier('balance', v).then((ok) => {
+                if (!ok) toast.error(t('settings.saveFailed'))
+              })}
             />
             <TierSelector
               label={t('settings.tierSwift')}
               value={data.tierSwift}
               options={tierOptions}
               disabled={disabled}
-              onChange={(v) => void setTier('swift', v)}
+              onChange={(v) => void setTier('swift', v).then((ok) => {
+                if (!ok) toast.error(t('settings.saveFailed'))
+              })}
             />
           </div>
         )}

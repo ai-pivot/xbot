@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
+import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { useAskUser } from '@/hooks/useAskUser'
@@ -315,6 +316,12 @@ export function AgentPanel({ params }: PanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {!ws.connected && !isSubAgent && (
+        <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
+          <Loader2 className="size-3 animate-spin" />
+          <span>{t('agent.reconnecting') || 'Reconnecting…'}</span>
+        </div>
+      )}
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}

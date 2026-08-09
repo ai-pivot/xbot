@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Settings2, Search, Check } from 'lucide-react'
+import { Settings2, Search, Check, Loader2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -119,17 +119,22 @@ export function ModelStatusBar({
     return acc
   }, {})
 
+  const [switchingModel, setSwitchingModel] = useState(false)
+
   const handleSelectModel = async (entry: ModelEntry) => {
     if (entry.status === 'disabled') return
     if (!chatID) return
+    setSwitchingModel(true)
+    setPopoverOpen(false)
     try {
       await selectModel(ws, channel, entry.sub_id, entry.model, chatID)
       setCurrentSubID(entry.sub_id)
       setCurrentModel(entry.model)
-      setPopoverOpen(false)
       toast.success(t('settings.saved'))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t('settings.saveFailed'))
+    } finally {
+      setSwitchingModel(false)
     }
   }
 
@@ -143,7 +148,11 @@ export function ModelStatusBar({
             className="flex items-center gap-1 hover:text-foreground transition-colors"
             disabled={!chatID}
           >
-            {currentModel || '—'}
+            {switchingModel ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              currentModel || '—'
+            )}
             {currentSubName && (
               <span className="text-muted-foreground/70">({currentSubName})</span>
             )}

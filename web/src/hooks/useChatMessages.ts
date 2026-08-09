@@ -787,6 +787,7 @@ export function useChatMessages({
           turnID: 0,
           persisted: false,
           requestID,
+          sending: true,
         }
         messageMutationGenRef.current += 1
         setMessages((prev) => {
@@ -834,6 +835,7 @@ export function useChatMessages({
               const next = prev.map((m) => m.id === sentID ? {
                 ...m,
                 persisted: true,
+                sending: false,
                 ...(msgID ? { dbID: msgID } : {}),
                 ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
                 ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),
