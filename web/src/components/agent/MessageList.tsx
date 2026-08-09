@@ -128,7 +128,11 @@ export function buildMessageRows(
     //    the new user. Falling through to the turnID scan skipped the unbound
     //    user (turnID=0) and inserted the reply ABOVE the user — the "reply
     //    rendered above my user msg" linear-consistency violation.
-    const turnExists = messages.some((m) => m.turnID === liveMessage.turnID)
+    //  - turnID=0 (frozen live message after cancel): NEVER match — turnID=0
+    //    means "unbound", not a real turn. Appending at the end keeps the
+    //    frozen live content below the newest user msg until the committed
+    //    message replaces it.
+    const turnExists = liveMessage.turnID > 0 && messages.some((m) => m.turnID === liveMessage.turnID)
     if (turnExists) {
       let insertIdx = messages.length
       for (let i = messages.length - 1; i >= 0; i--) {

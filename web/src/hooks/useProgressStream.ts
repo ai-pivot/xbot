@@ -322,14 +322,14 @@ export function useProgressStream({
   const liveMessage = useMemo<ChatMessage | null>(() => {
     const snap = progressSnapshot
     if (!hasVisibleProgress(snap)) return null
-    // 'done' and 'frozen' phases: the turn is over. The committed message
-    // (from appendAssistant) has already been added to the messages array.
-    // Rendering a live message here would show stale content ABOVE the new
-    // user message (frozen turnID matches an old turn → buildMessageRows
-    // inserts it at the old turn's position, above the new user).
-    // Return null so only the committed message is visible.
-    if (snap.phase === 'done' || snap.phase === 'frozen') return null
-    const tid = snap.turnID || store.lastTurnID || 0
+    if (snap.phase === 'done') return null
+    // 'frozen' phase: turn is over (cancel/commit). Keep the live message
+    // visible with turnID=0 so buildMessageRows appends it at the END
+    // (below the newest user msg). The committed message (from
+    // appendAssistant in flushSync) will replace it on the next render.
+    // Using the real turnID here caused buildMessageRows to insert the
+    // frozen live row at the old turn's position (ABOVE the new user msg).
+    const tid = snap.phase === 'frozen' ? 0 : (snap.turnID || store.lastTurnID || 0)
     return {
       id: `turn-${tid}-live`,
       role: 'assistant',
