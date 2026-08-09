@@ -2046,6 +2046,73 @@ func TestConvert_AskUserDuplication(t *testing.T) {
 	}
 }
 
+func TestConvert_NormalTurnPreservesRealIterationIDs(t *testing.T) {
+	// Regression: loading a session showed fabricated iteration ids (1, 2)
+	// instead of the real ids stored in the DB (e.g. 47).
+	//
+	// Root cause: the old restart-recovery check `len(iters) < len(pendingIters)`
+	// fired on NORMAL turns. A turn with 2 intermediate tool_calls assistant
+	// messages accumulates 2 pendingIters (fabricated ids 1, 2 via curIterIdx++),
+	// while the final assistant's Detail has 1 REAL iteration (47). `1 < 2`
+	// triggered the branch and REPLACED the real id (47) with fabricated (1, 2).
+	//
+	// Fix: only a DEGENERATE Detail (all user_cancelled, no real content/tools)
+	// warrants the pendingIters fallback. A normal Detail keeps its real ids.
+
+	// Real Detail from the DB: iteration 47 with real content + a Shell tool.
+	realDetail := makeDetail([]iterSnapshot{
+		{
+			Iteration: 47,
+			Content:   "部署已调度。注意到这个 system-reminder...",
+			Tools: []iterToolSnap{
+				{Name: "Shell", Label: "cd /home/smith/src/xbot &amp;…", Status: "done", ElapsedMS: 2500},
+			},
+		},
+	})
+
+	// Turn 83: user → 2 intermediate tool_calls assistants (accumulate pendingIters
+	// ids 1, 2) → final assistant with the real Detail (iteration 47).
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "部署一下", TurnID: 83},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Shell", Arguments: "{}"}}, TurnID: 83},
+		{Role: "tool", ToolCallID: "c1", ToolName: "Shell", ToolArguments: "{}", Content: "ok", TurnID: 83},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c2", Name: "Shell", Arguments: "{}"}}, TurnID: 83},
+		{Role: "tool", ToolCallID: "c2", ToolName: "Shell", ToolArguments: "{}", Content: "ok", TurnID: 83},
+		{Role: "assistant", Content: "部署已调度。注意到这个 system-reminder...", Detail: realDetail, TurnID: 83},
+	}
+	history := channel.ConvertMessagesToHistory(msgs)
+
+	// Find the final assistant message with iterations.
+	var assistantMsg *channel.HistoryMessage
+	for i := range history {
+		if history[i].Role == "assistant" && len(history[i].Iterations) > 0 {
+			assistantMsg = &history[i]
+			break
+		}
+	}
+	if assistantMsg == nil {
+		t.Fatal("no assistant message with iterations found")
+	}
+
+	// CRITICAL: the real iteration id (47) MUST be preserved — not replaced
+	// with the fabricated pendingIters ids (1, 2).
+	if len(assistantMsg.Iterations) == 0 {
+		t.Fatal("expected iterations to be present")
+	}
+	got := assistantMsg.Iterations[0].Iteration
+	if got != 47 {
+		t.Fatalf("real iteration id replaced: got %d, want 47 (fabricated 1,2 bug)", got)
+	}
+
+	// The real iteration must keep its content and tool.
+	if assistantMsg.Iterations[0].Content == "" {
+		t.Error("real iteration content lost")
+	}
+	if len(assistantMsg.Iterations[0].Tools) != 1 || assistantMsg.Iterations[0].Tools[0].Name != "Shell" {
+		t.Errorf("real iteration tools lost: %+v", assistantMsg.Iterations[0].Tools)
+	}
+}
+
 func TestConvert_RestartCancelPreservesIterations(t *testing.T) {
 	// Bug: after server restart, the resumed Run has empty iterationSnapshots.
 	// handleCancelledRun creates [interrupted] with Detail = only user_cancelled.
