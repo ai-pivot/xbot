@@ -902,17 +902,17 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			}
 		}
 
-		// Record the final iteration snapshot (content + reasoning, no tools).
-		// snapshotCompletedIteration was called after executeToolCalls — at that
-		// point Content/ReasoningContent were empty (set above, not before).
-		// This snapshot captures the final reply's content for iteration_history.
+		// Write the final iteration to iteration_history (content + reasoning,
+		// no tools). snapshotCompletedIteration was called after executeToolCalls
+		// — at that point Content/ReasoningContent were empty (set above, not
+		// before). This writes the final iteration's content/reasoning directly
+		// to iteration_history, completing the iteration record.
 		if s.structuredProgress != nil && s.structuredProgress.Iteration > 0 {
-			snap := IterationSnapshot{
+			s.writeIterationHistory(s.structuredProgress.Iteration, IterationSnapshot{
 				Iteration: s.structuredProgress.Iteration,
 				Content:   s.structuredProgress.Content,
 				Reasoning: s.structuredProgress.ReasoningContent,
-			}
-			s.iterationSnapshots = append(s.iterationSnapshots, snap)
+			})
 		}
 
 		out := s.buildOutput(&channel.OutboundMsg{
@@ -1627,17 +1627,6 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		out.Error = fmt.Errorf("append session history: %w", persistErr)
 		return out
 	}
-
-	// --- Structured iteration history (v55) ---
-	// After IncrementalPersist, the intermediate assistant message's .ID is
-	// populated with the DB message_id. Write THIS iteration's snapshot to
-	// iteration_history, linked to the intermediate message. Each message
-	// carries exactly ONE iteration record — the final message's record is
-	// written by handleRunOutput (final iteration only, not all iterations).
-	// ConvertMessagesToHistoryWithIterations queries by turn_id to merge all
-	// records into one HistoryMessage.
-	s.persistIterationHistory(ctx, iteration)
-
 	s.validateInvariantsAt(ctx, "post_persist")
 
 	// --- Background notification draining (bg tasks + bg subagents) ---

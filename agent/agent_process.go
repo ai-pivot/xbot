@@ -12,7 +12,6 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/session"
-	"xbot/storage/sqlite"
 	"xbot/tools"
 
 	"github.com/google/uuid"
@@ -397,11 +396,8 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		log.Ctx(ctx).Infof("Cancelled: prepared %d un-persisted engine messages", len(out.EngineMessages))
 	}
 	// Save iteration history as an assistant message with detail,
-	// so web UI can restore it on page refresh without showing "loading".
-	// Serialize iteration history once and reuse to avoid duplicate JSON marshal
 	// Use out.IterationHistory directly (run-local snapshots from THIS Run only) —
 	// see handleRunOutput for why mergeIterationHistory must not be used here.
-	var iterationHistoryJSON string
 	iterHistory := out.IterationHistory
 
 	// Restart recovery: after a graceful-shutdown restart, the resumed Run's
@@ -443,69 +439,23 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	appendCancelTool(cancelAssistantMsg, cancelToolMsg, cancelSnapshot)
 
 	if len(iterHistory) > 0 {
-		if jsonBytes, err := json.Marshal(iterHistory); err == nil {
-			iterationHistoryJSON = string(jsonBytes)
-		}
-	}
-	if len(iterHistory) > 0 {
 		cancelMsg := llm.NewAssistantMessage("[interrupted]")
-		// Set TurnID from the active turn so the frontend can dedup
-		// the live progress (same-turn match in appendLiveMessage).
-		// handleCancelledRun is called from chatProcessLoop which has
-		// already set the active turn. msg.Metadata["turn_id"] is set
-		// by chatProcessLoop at line 2825.
 		if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
 			cancelMsg.TurnID = tid
 		}
-		// NOT DisplayOnly — this message carries Detail (iteration history)
-		// that GetAllMessages must return so ConvertMessagesToHistory can
-		// parse it. With DisplayOnly=true, GetAllMessages filters it out,
-		// the detail is lost, and ConvertMessagesToHistory falls back to
-		// ToolCalls-only mode — losing final content and merging turns.
-		// The "[interrupted]" content is handled by ConvertMessagesToHistory
-		// which renders it with empty content (isInterrupted check at line 276).
-		if iterationHistoryJSON != "" {
-			cancelMsg.Detail = iterationHistoryJSON
-		}
+		// Detail JSON is no longer written — iteration_history table is the
+		// single source of truth (v55+). Detail remains only for old data.
 		batch = append(batch, cancelMsg)
 	}
 	if tenantSession != nil {
-		historyIDs, err := tenantSession.AppendMessages(batch)
+		_, err := tenantSession.AppendMessages(batch)
 		if err != nil {
-			// Drained notifications are no longer reachable through bgRunPending.
-			// Restore them before returning so a later turn can retry the batch.
 			a.requeueDrainedBgNotifications(sessionKey)
 			return nil, fmt.Errorf("append cancelled run batch: %w", err)
 		}
-		// v54: write structured iteration_history for the cancelled turn's
-		// [interrupted] message. Without this, the cancelled turn's iterations
-		// are only in Detail JSON (backward compat) — the structured table
-		// has no record, and ConvertMessagesToHistoryWithIterations falls back
-		// to Detail (which works, but new data should use the structured path).
-		if len(iterHistory) > 0 && len(historyIDs) > 0 {
-			// The [interrupted] message is the last in the batch.
-			cancelMsgID := historyIDs[len(historyIDs)-1]
-			var turnID uint64
-			if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
-				turnID = tid
-			}
-			for _, snap := range iterHistory {
-				toolsJSON := "[]"
-				if len(snap.Tools) > 0 {
-					if data, err := json.Marshal(snap.Tools); err == nil {
-						toolsJSON = string(data)
-					}
-				}
-				_ = tenantSession.AppendIterationHistory(cancelMsgID, turnID, sqlite.IterationRecord{
-					MessageID: cancelMsgID,
-					TurnID:    turnID,
-					Iteration: snap.Iteration,
-					Content:   snap.Content,
-					Reasoning: snap.Reasoning,
-					Tools:     toolsJSON,
-				})
-			}
-		}
+		// iteration_history is already written by snapshotCompletedIteration
+		// (called after each executeToolCalls). handleCancelledRun does NOT
+		// write additional records — no duplication.
 	}
 	// Pending notifications and the per-run drained ledger are acknowledgements:
 	// clear them only after the interrupted turn is durably committed.
@@ -515,11 +465,6 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	}
 	// Send a minimal outbound so the web channel knows processing ended.
 	meta := map[string]string{"cancelled": "true"}
-	if len(iterHistory) > 0 {
-		if iterationHistoryJSON != "" {
-			meta["progress_history"] = iterationHistoryJSON
-		}
-	}
 	return &channel.OutboundMsg{
 		Channel:  msg.Channel,
 		ChatID:   msg.ChatID,
@@ -543,19 +488,12 @@ func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *
 		meta["request_id"] = uuid.NewString()
 	}
 	// Persist iteration history to session so it survives restarts.
-	// NOT DisplayOnly — GetAllMessages filters display_only messages, which
-	// would cause the iteration history to be invisible to ConvertMessagesToHistory
-	// on history reload (both web and TUI). A regular empty-content assistant
-	// message with Detail is handled correctly by ConvertMessagesToHistory
-	// (it merges with the next content-bearing assistant message).
+	// iteration_history is already written by snapshotCompletedIteration
+	// (called after each executeToolCalls). No Detail JSON needed (v55+).
 	if len(out.IterationHistory) > 0 {
-		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
-			histMsg := llm.NewAssistantMessage("")
-			histMsg.Detail = string(jsonBytes)
-			if err := tenantSession.AddMessage(histMsg); err != nil {
-				log.Ctx(ctx).WithError(err).Warn("Failed to save waitingUser iteration history")
-			}
-			meta["progress_history"] = string(jsonBytes)
+		histMsg := llm.NewAssistantMessage("")
+		if err := tenantSession.AddMessage(histMsg); err != nil {
+			log.Ctx(ctx).WithError(err).Warn("Failed to save waitingUser iteration history")
 		}
 	}
 	return &channel.OutboundMsg{
@@ -647,49 +585,11 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
 		assistantMsg.TurnID = tid
 	}
-	iterHistory := out.IterationHistory
-	if len(iterHistory) > 0 {
-		if jsonBytes, err := json.Marshal(iterHistory); err == nil {
-			assistantMsg.Detail = string(jsonBytes)
-		}
-	}
-	// Use AddMessageWithID to get the DB auto-increment ID — needed to link
-	// iteration_history records to this message.
-	finalMsgID, err := tenantSession.AddMessageWithID(assistantMsg)
-	if err != nil {
+	// Detail JSON is no longer written — iteration_history table is the
+	// single source of truth for iteration data (v55+). Detail JSON remains
+	// only as a backward-compat fallback for old data pre-v55.
+	if err := tenantSession.AddMessage(assistantMsg); err != nil {
 		return nil, fmt.Errorf("append assistant message: %w", err)
-	}
-
-	// --- Structured iteration history (v55) ---
-	// Write ONLY the final iteration (content + reasoning, no tools) to
-	// iteration_history, linked to the final assistant message.
-	// Intermediate iterations were already written by persistIterationHistory
-	// (one record per intermediate message). The final iteration's snapshot
-	// was added to s.iterationSnapshots in handleFinalResponse (after
-	// Content/ReasoningContent were set, not before like snapshotCompletedIteration).
-	// ConvertMessagesToHistoryWithIterations queries by turn_id to merge all
-	// records (intermediate + final) into one HistoryMessage.
-	// Detail JSON is still written above for backward compat with old clients.
-	if len(iterHistory) > 0 && finalMsgID > 0 {
-		var turnID uint64
-		if assistantMsg.TurnID > 0 {
-			turnID = assistantMsg.TurnID
-		}
-		// The last snapshot is the final iteration (content + reasoning, no tools).
-		// It was appended in handleFinalResponse AFTER Content was set.
-		lastSnap := iterHistory[len(iterHistory)-1]
-		toolsJSON := "[]"
-		// Final iteration has no tools — toolsJSON stays "[]".
-		if err := tenantSession.AppendIterationHistory(finalMsgID, turnID, sqlite.IterationRecord{
-			MessageID: finalMsgID,
-			TurnID:    turnID,
-			Iteration: lastSnap.Iteration,
-			Content:   lastSnap.Content,
-			Reasoning: lastSnap.Reasoning,
-			Tools:     toolsJSON,
-		}); err != nil {
-			log.WithError(err).WithField("iteration", lastSnap.Iteration).Warn("Failed to persist final iteration_history")
-		}
 	}
 
 	// Send via sendMessage (reuses session message tracking)
