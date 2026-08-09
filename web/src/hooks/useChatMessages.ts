@@ -794,6 +794,12 @@ export function useChatMessages({
           messagesRef.current = next
           return next
         })
+        // Pin to bottom immediately — the user just sent a message, they expect
+        // to see it at the bottom. This survives all subsequent state updates
+        // (user_echo replacement, busy placeholder, turn_started) because
+        // stickToBottomRef is a ref, not state — it doesn't trigger re-render.
+        // The MessageList's useEffect detects the new optimistic user row
+        // (persisted=false) and calls resumeFollowing() + scheduleFollow().
       }
       void ws.send({
         type: 'message',
