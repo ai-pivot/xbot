@@ -70,7 +70,13 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   const liveProgress: LiveProgress | null = hasLiveProgress ? progress : null
 
   const isStreaming = message.isPartial || hasLiveProgress
-  const effectiveLevel: CollapseLevel = isStreaming ? 'minimal' : collapseLevel
+  // Do NOT change collapseLevel based on streaming state. The old code used
+  // `isStreaming ? 'minimal' : collapseLevel` — this caused a height jump
+  // when the turn completed (streaming→committed switched from 'minimal' to
+  // 'all', folding all iterations into a summary line). The user sees their
+  // content suddenly collapse — "人机对抗". Always use the user's preferred
+  // collapseLevel for both streaming and committed messages.
+  const effectiveLevel: CollapseLevel = collapseLevel
 
   const hasReasoning = Boolean(progress?.reasoningStreamContent || progress?.lastReasoning)
   const hasToolInProgress = progress

@@ -323,14 +323,20 @@ export function useProgressStream({
     const snap = progressSnapshot
     if (!hasVisibleProgress(snap)) return null
     if (snap.phase === 'done') return null
+    const tid = snap.turnID || store.lastTurnID || 0
     return {
-      id: `live-${chatID ?? 'unknown'}`,
+      // Key by turnID so buildMessageRows can dedup against committed messages
+      // with the same turnID. Using 'live-' prefix avoids collision with
+      // committed message keys (seq-N, db-N). When the committed message
+      // arrives (same turnID), buildMessageRows' hasCommitted check fires
+      // and the live row is dropped — no duplicate rendering.
+      id: `turn-${tid}-live`,
       role: 'assistant',
       content: snap.streamContent || snap.content || '',
       iterations: snap.iterationHistory,
       timestamp: new Date().toISOString(),
       isPartial: true,
-      turnID: snap.turnID || store.lastTurnID,
+      turnID: tid,
     }
   }, [progressSnapshot, chatID])
 
@@ -341,7 +347,14 @@ export function useProgressStream({
     resetProgress: () => {
       finalizedRef.current = true
       phaseDoneRef.current = false
-      store.reset()
+      // Freeze instead of reset: keep the live content visible until the
+      // committed message (from appendAssistant) replaces it. reset() clears
+      // streamContent/iterations → liveMessage becomes null → content
+      // disappears for one frame before the committed message renders.
+      // freeze() sets phase='done' so liveMessage returns null (phase==='done'
+      // check), but the committed message (already added via flushSync in the
+      // same render) takes its place immediately — no gap.
+      store.freeze()
     },
   }
 }
@@ -437,7 +450,14 @@ function commitLiveProgressAndReset(
       complete?.(commitText, commitIters, undefined, snap.turnID || newTurnID || store.lastTurnID, true)
     }
   }
-  store.reset()
+  // Only freeze if complete?.() didn't already freeze (via resetProgress).
+  // resetProgress (called inside onAssistantComplete) calls store.freeze().
+  // Calling freeze() again here is redundant when complete was called, and
+  // could modify the snapshot that complete?.()'s callback already read.
+  // When complete is nil (no onAssistantComplete callback), freeze here.
+  if (!complete) {
+    store.freeze()
+  }
 }
 
 /** Dispatch one WSMessage into the progress store. Shared with history hydration. */
