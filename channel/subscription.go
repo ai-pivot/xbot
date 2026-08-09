@@ -294,12 +294,11 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, iterDataMap 
 			lastAssistantTS = m.Timestamp
 			lastAssistantID = m.ID
 
-			// v54: check structured iteration_history first.
+			// v55: check structured iteration_history first.
 			if m.ID > 0 {
 				if recs, ok := iterDataMap[m.ID]; ok && len(recs) > 0 {
 					// Structured data available — use it as authoritative source.
 					finishCurIter()
-					pendingIters = nil // discard fabricated pending (structured is authoritative)
 
 					iters := make([]HistoryIteration, 0, len(recs))
 					for _, rec := range recs {
@@ -334,9 +333,26 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, iterDataMap 
 						})
 					}
 
-					if len(iters) > 0 {
-						isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
-						if m.Content != "" && !isInterrupted {
+					// Determine if this is the FINAL assistant message of the turn
+					// (has content, no tool_calls) or an INTERMEDIATE one (has
+					// tool_calls, may have partial content).
+					// - FINAL: flush pending, emit a HistoryMessage with ALL
+					//   iterations (from structured data). This is the turn's
+					//   complete iteration history.
+					// - INTERMEDIATE: accumulate into pendingIters. The final
+					//   message's structured data will contain ALL iterations
+					//   (including these), so we don't emit separate
+					//   HistoryMessages for intermediate ones — that would cause
+					//   duplicate rendering (each intermediate message rendered
+					//   as a separate block instead of merged into one turn).
+					isFinal := len(m.ToolCalls) == 0 && m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]")
+					isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
+
+					if isFinal {
+						// Final message: flush any pending (fabricated) iters,
+						// then emit with structured data as the complete set.
+						pendingIters = nil
+						if len(iters) > 0 {
 							history = append(history, HistoryMessage{
 								ID:         m.ID,
 								Role:       "assistant",
@@ -347,24 +363,36 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, iterDataMap 
 							})
 						} else {
 							history = append(history, HistoryMessage{
-								ID:         m.ID,
-								Role:       "assistant",
-								Content:    "",
-								Timestamp:  m.Timestamp,
-								TurnID:     m.TurnID,
-								Iterations: iters,
+								ID:        m.ID,
+								Role:      "assistant",
+								Content:   m.Content,
+								Timestamp: m.Timestamp,
+								TurnID:    m.TurnID,
 							})
 						}
-					} else if m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]") {
+					} else if isInterrupted {
+						// [interrupted] message: flush pending, emit with
+						// structured data (same as final but empty content).
+						pendingIters = nil
 						history = append(history, HistoryMessage{
-							ID:        m.ID,
-							Role:      "assistant",
-							Content:   m.Content,
-							Timestamp: m.Timestamp,
-							TurnID:    m.TurnID,
+							ID:         m.ID,
+							Role:       "assistant",
+							Content:    "",
+							Timestamp:  m.Timestamp,
+							TurnID:     m.TurnID,
+							Iterations: iters,
 						})
+					} else {
+						// Intermediate message: accumulate structured iters
+						// into pendingIters. The final message's structured
+						// data will contain ALL iterations, so we don't emit
+						// a separate HistoryMessage here. If the turn ends
+						// without a final message (crash), flushPending will
+						// emit the accumulated pendingIters.
+						pendingIters = append(pendingIters, iters...)
+						pendingTurnID = m.TurnID
 					}
-					continue // structured data handled, skip Detail/pending logic
+					continue
 				}
 			}
 
