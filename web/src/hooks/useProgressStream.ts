@@ -322,14 +322,15 @@ export function useProgressStream({
   const liveMessage = useMemo<ChatMessage | null>(() => {
     const snap = progressSnapshot
     if (!hasVisibleProgress(snap)) return null
-    if (snap.phase === 'done') return null
+    // 'done' and 'frozen' phases: the turn is over. The committed message
+    // (from appendAssistant) has already been added to the messages array.
+    // Rendering a live message here would show stale content ABOVE the new
+    // user message (frozen turnID matches an old turn → buildMessageRows
+    // inserts it at the old turn's position, above the new user).
+    // Return null so only the committed message is visible.
+    if (snap.phase === 'done' || snap.phase === 'frozen') return null
     const tid = snap.turnID || store.lastTurnID || 0
     return {
-      // Key by turnID so buildMessageRows can dedup against committed messages
-      // with the same turnID. Using 'live-' prefix avoids collision with
-      // committed message keys (seq-N, db-N). When the committed message
-      // arrives (same turnID), buildMessageRows' hasCommitted check fires
-      // and the live row is dropped — no duplicate rendering.
       id: `turn-${tid}-live`,
       role: 'assistant',
       content: snap.streamContent || snap.content || '',
