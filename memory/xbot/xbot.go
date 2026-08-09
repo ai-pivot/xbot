@@ -111,30 +111,31 @@ CREATE TABLE IF NOT EXISTS xbot_long_term_memories (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    file_path TEXT
+    file_path TEXT,
+    search_text TEXT NOT NULL DEFAULT ''   -- CJK 逐字空格切分后的检索文本
 );
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_user ON xbot_long_term_memories(user_id);
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_type ON xbot_long_term_memories(type);
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_heat ON xbot_long_term_memories(heat_score);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS xbot_long_term_memories_fts USING fts5(
-    content, keywords, tags,
+    content, keywords, tags, search_text,
     content='xbot_long_term_memories', content_rowid='id',
     tokenize='unicode61'
 );
 CREATE TRIGGER IF NOT EXISTS xbot_ltm_ai AFTER INSERT ON xbot_long_term_memories BEGIN
-    INSERT INTO xbot_long_term_memories_fts(rowid, content, keywords, tags)
-    VALUES (new.id, new.content, new.keywords, new.tags);
+    INSERT INTO xbot_long_term_memories_fts(rowid, content, keywords, tags, search_text)
+    VALUES (new.id, new.content, new.keywords, new.tags, new.search_text);
 END;
 CREATE TRIGGER IF NOT EXISTS xbot_ltm_ad AFTER DELETE ON xbot_long_term_memories BEGIN
-    INSERT INTO xbot_long_term_memories_fts(xbot_long_term_memories_fts, rowid, content, keywords, tags)
-    VALUES('delete', old.id, old.content, old.keywords, old.tags);
+    INSERT INTO xbot_long_term_memories_fts(xbot_long_term_memories_fts, rowid, content, keywords, tags, search_text)
+    VALUES('delete', old.id, old.content, old.keywords, old.tags, old.search_text);
 END;
 CREATE TRIGGER IF NOT EXISTS xbot_ltm_au AFTER UPDATE ON xbot_long_term_memories BEGIN
-    INSERT INTO xbot_long_term_memories_fts(xbot_long_term_memories_fts, rowid, content, keywords, tags)
-    VALUES('delete', old.id, old.content, old.keywords, old.tags);
-    INSERT INTO xbot_long_term_memories_fts(rowid, content, keywords, tags)
-    VALUES (new.id, new.content, new.keywords, new.tags);
+    INSERT INTO xbot_long_term_memories_fts(xbot_long_term_memories_fts, rowid, content, keywords, tags, search_text)
+    VALUES('delete', old.id, old.content, old.keywords, old.tags, old.search_text);
+    INSERT INTO xbot_long_term_memories_fts(rowid, content, keywords, tags, search_text)
+    VALUES (new.id, new.content, new.keywords, new.tags, new.search_text);
 END;
 `
 
@@ -321,6 +322,77 @@ func (m *XbotMemory) migrateLegacyTenantData() {
 		SET user_id = (SELECT owner_user_id FROM tenants WHERE tenants.id = xbot_short_term_memories.tenant_id)
 		WHERE user_id = 0 AND tenant_id IN (SELECT id FROM tenants WHERE owner_user_id IS NOT NULL)
 	`)
+
+	// Step 3: ensure search_text column exists (CJK-aware FTS indexing).
+	// Added for Chinese retrieval support. Existing rows are backfilled with
+	// buildSearchText(content, keywords, tags) — the same transform applied on
+	// new writes, so the FTS index and query transform stay symmetric.
+	var hasSearchText bool
+	rows, err := m.db.Query("PRAGMA table_info(xbot_long_term_memories)")
+	if err == nil {
+		for rows.Next() {
+			var cid int
+			var name, typ string
+			var notNull, pk int
+			var dflt any
+			if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil && name == "search_text" {
+				hasSearchText = true
+			}
+		}
+		rows.Close()
+	}
+	if !hasSearchText {
+		if _, err := m.db.Exec("ALTER TABLE xbot_long_term_memories ADD COLUMN search_text TEXT NOT NULL DEFAULT ''"); err != nil {
+			log.WithError(err).Warn("xbot-memory: failed to add search_text column")
+		} else {
+			log.Info("xbot-memory: added search_text column")
+		}
+	}
+
+	// Backfill search_text for rows where it's empty. Idempotent: only fills
+	// empty values, safe every startup. Uses a Go-side backfill because the
+	// CJK spacing transform is a Go function (buildSearchText), not expressible
+	// in pure SQL.
+	m.backfillSearchText()
+}
+
+// backfillSearchText fills search_text for rows that have an empty value.
+// Only the current provider's scope (user_id or tenant_id) is touched.
+func (m *XbotMemory) backfillSearchText() {
+	rows, err := m.db.Query(`
+		SELECT id, content, keywords, tags
+		FROM xbot_long_term_memories
+		WHERE `+m.scopeWhere("")+` AND (search_text = '' OR search_text IS NULL)
+		LIMIT 500
+	`, m.scopeArg())
+	if err != nil {
+		log.WithError(err).Debug("xbot-memory: search_text backfill query failed")
+		return
+	}
+	defer rows.Close()
+
+	type row struct {
+		id       int64
+		content  string
+		keywords string
+		tags     string
+	}
+	var pending []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.content, &r.keywords, &r.tags); err == nil {
+			pending = append(pending, r)
+		}
+	}
+	for _, r := range pending {
+		m.db.Exec(
+			`UPDATE xbot_long_term_memories SET search_text = ? WHERE id = ?`,
+			buildSearchText(r.content, r.keywords, r.tags), r.id,
+		)
+	}
+	if len(pending) > 0 {
+		log.WithField("backfilled", len(pending)).Info("xbot-memory: backfilled search_text")
+	}
 }
 
 // --- MemoryProvider interface ---
@@ -401,12 +473,22 @@ func truncateForLog(s string, max int) string {
 // wrap each token in double quotes (FTS5 string literal — everything inside
 // is literal, no operator interpretation), joining with implicit AND.
 //
+// Chinese: unicode61 tokenizer treats a run of CJK characters as ONE token
+// (no whitespace between them), so a query like "记忆" can't match content
+// "记忆系统" — different single tokens. We space-separate CJK runs (each char
+// becomes its own token) in BOTH the query and the indexed search_text column,
+// so "记忆系统" → "记 忆 系 统" and "记忆" → "记 忆" overlap on "记" + "忆".
+// For a 2-char query this is a substring match; longer queries still require
+// every CJK char to appear (implicit AND), which is strict but predictable.
+//
 // Example:
 //
-//	`foo bar "baz"`  →  `"foo" AND "bar" AND "baz"`
+//	`foo 记忆 bar`  →  `"foo" AND "记 忆" AND "bar"`
 //
 // Quotes inside a token are escaped by doubling (FTS5 string literal escape).
 func fts5SafeQuery(raw string) string {
+	// Space-separate CJK runs so Chinese substrings become matchable tokens.
+	raw = cjkSpaceRuns(raw)
 	fields := strings.Fields(raw)
 	if len(fields) == 0 {
 		return `""` // match nothing safely
@@ -418,6 +500,60 @@ func fts5SafeQuery(raw string) string {
 		quoted = append(quoted, `"`+f+`"`)
 	}
 	return strings.Join(quoted, " AND ")
+}
+
+// cjkSpaceRuns inserts a space between adjacent CJK characters so the FTS5
+// unicode61 tokenizer treats each CJK char as an individual token. It also
+// inserts a space at CJK↔ASCII boundaries ("GLM模型" → "GLM 模 型") so an
+// ASCII word and a following CJK char do not fuse into one token. Non-CJK
+// characters (ASCII, digits, punctuation) keep their natural word boundaries.
+func cjkSpaceRuns(s string) string {
+	var sb strings.Builder
+	prevIsCJK := false
+	prevIsASCIIWord := false
+	for _, r := range s {
+		isCJK := isCJKRune(r)
+		isASCIIWord := isASCIIWordRune(r)
+		// Space between two CJK chars.
+		if isCJK && prevIsCJK {
+			sb.WriteByte(' ')
+		}
+		// Space at CJK↔ASCII-word boundary so tokens don't fuse.
+		if (isCJK && prevIsASCIIWord) || (isASCIIWord && prevIsCJK) {
+			sb.WriteByte(' ')
+		}
+		sb.WriteRune(r)
+		prevIsCJK = isCJK
+		prevIsASCIIWord = isASCIIWord
+	}
+	return sb.String()
+}
+
+// isASCIIWordRune reports whether r is an ASCII letter or digit (part of a
+// natural English/numeric word token).
+func isASCIIWordRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
+// isCJKRune reports whether r is a CJK ideograph (Han) — the primary script
+// used in Chinese. Covers CJK Unified Ideographs, Ext A, Compatibility,
+// and CJK Extension B/C/D planes.
+func isCJKRune(r rune) bool {
+	switch {
+	case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified Ideographs
+		return true
+	case r >= 0x3400 && r <= 0x4DBF: // CJK Extension A
+		return true
+	case r >= 0xF900 && r <= 0xFAFF: // CJK Compatibility Ideographs
+		return true
+	case r >= 0x20000 && r <= 0x2A6DF: // CJK Extension B
+		return true
+	case r >= 0x2A700 && r <= 0x2B73F: // CJK Extension C
+		return true
+	case r >= 0x2B740 && r <= 0x2B81F: // CJK Extension D
+		return true
+	}
+	return false
 }
 
 // Memorize processes conversation messages and stores memories.
@@ -769,10 +905,10 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 	}
 
 	result, err := m.db.Exec(`
-		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.UserID, entry.TenantID, entry.Type, entry.Content, entry.Keywords, entry.Tags,
-		entry.SourceSession, entry.Importance)
+		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags))
 	if err != nil {
 		return err
 	}
@@ -787,6 +923,13 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 		"type": entry.Type,
 	}).Debug("xbot-memory: long-term memory added")
 	return nil
+}
+
+// buildSearchText concatenates content + keywords + tags into the FTS search
+// column with CJK runs space-separated (each Chinese char becomes its own
+// token), matching the query-side cjkSpaceRuns transform in fts5SafeQuery.
+func buildSearchText(parts ...string) string {
+	return cjkSpaceRuns(strings.Join(parts, " "))
 }
 
 func (m *XbotMemory) writeMemoryFile(id int64, entry LongTermMemory) {
@@ -1324,10 +1467,10 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 	}
 
 	result, err := m.db.Exec(`
-		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.UserID, entry.TenantID, entry.Type, entry.Content, entry.Keywords, entry.Tags,
-		entry.SourceSession, entry.Importance)
+		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags))
 	if err != nil {
 		return 0, err
 	}
@@ -1409,9 +1552,10 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywords, tags string, importance float64) error {
 	_, err := m.db.Exec(`
 		UPDATE xbot_long_term_memories
-		SET content = ?, keywords = ?, tags = ?, importance = ?, updated_at = CURRENT_TIMESTAMP
+		SET content = ?, keywords = ?, tags = ?, importance = ?,
+		    search_text = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND `+m.scopeWhere("")+`
-	`, content, keywords, tags, importance, id, m.scopeArg())
+	`, content, keywords, tags, importance, buildSearchText(content, keywords, tags), id, m.scopeArg())
 	return err
 }
 
