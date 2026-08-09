@@ -323,8 +323,18 @@ export function useProgressStream({
     const snap = progressSnapshot
     if (!hasVisibleProgress(snap)) return null
     if (snap.phase === 'done') return null
+    // Use the same key format as committed messages (seq-${eventSeq}) so
+    // TanStack Virtual reuses the same DOM element when the live message is
+    // replaced by the committed message. Without this, the live message has
+    // key `live-${chatID}` and the committed message has key `seq-${eventSeq}`
+    // — different keys cause unmount+mount (flicker) on turn completion.
+    // When eventSeq is available (from the last structured event), use it;
+    // otherwise fall back to the live- prefix (first iteration, no seq yet).
+    const liveKey = snap.eventSeq != null
+      ? `seq-${snap.eventSeq}`
+      : `live-${chatID ?? 'unknown'}`
     return {
-      id: `live-${chatID ?? 'unknown'}`,
+      id: liveKey,
       role: 'assistant',
       content: snap.streamContent || snap.content || '',
       iterations: snap.iterationHistory,
