@@ -13,6 +13,7 @@ import (
 	"xbot/protocol"
 
 	"xbot/llm"
+	"xbot/storage/sqlite"
 
 	"xbot/channel"
 
@@ -2139,6 +2140,116 @@ func assertRole(t *testing.T, msg channel.HistoryMessage, want string) {
 	t.Helper()
 	if msg.Role != want {
 		t.Errorf("expected role=%q, got %q", want, msg.Role)
+	}
+}
+
+// TestConvert_WithIterations_AllIterationsRendered is a regression test for
+// the "iterations lost after reload" bug. It verifies that
+// ConvertMessagesToHistoryWithIterations renders ALL iterations for a turn
+// (intermediate + final) as a single HistoryMessage with the complete
+// iteration list — not split across multiple HistoryMessages or missing
+// intermediate iterations.
+func TestConvert_WithIterations_AllIterationsRendered(t *testing.T) {
+	// Simulate a turn with 3 iterations:
+	//   iter 1: Shell tool (intermediate, message #100)
+	//   iter 2: Read tool (intermediate, message #102)
+	//   iter 3: final content "done" (final, message #104, no tool_calls)
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "do it", TurnID: 5},
+		{ID: 100, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Shell", Arguments: "{}"}}, TurnID: 5},
+		{Role: "tool", ToolCallID: "c1", ToolName: "Shell", Content: "ok", TurnID: 5},
+		{ID: 102, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c2", Name: "Read", Arguments: "{}"}}, TurnID: 5},
+		{Role: "tool", ToolCallID: "c2", ToolName: "Read", Content: "file", TurnID: 5},
+		{ID: 104, Role: "assistant", Content: "done", TurnID: 5},
+	}
+
+	// Structured iteration_history: 3 records for turn 5.
+	// iter 1 (intermediate, linked to msg 100): Shell tool
+	// iter 2 (intermediate, linked to msg 102): Read tool
+	// iter 3 (final, linked to msg 104): content "done", no tools
+	turnIterMap := map[uint64][]sqlite.IterationRecord{
+		5: {
+			{MessageID: 100, TurnID: 5, Iteration: 1, Content: "", Tools: `[{"name":"Shell","status":"done"}]`},
+			{MessageID: 102, TurnID: 5, Iteration: 2, Content: "", Tools: `[{"name":"Read","status":"done"}]`},
+			{MessageID: 104, TurnID: 5, Iteration: 3, Content: "done", Tools: "[]"},
+		},
+	}
+
+	history := channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)
+
+	// Must produce exactly 1 assistant HistoryMessage (not 3).
+	var assistantMsgs []channel.HistoryMessage
+	for _, h := range history {
+		if h.Role == "assistant" {
+			assistantMsgs = append(assistantMsgs, h)
+		}
+	}
+	if len(assistantMsgs) != 1 {
+		t.Fatalf("expected 1 assistant HistoryMessage, got %d", len(assistantMsgs))
+	}
+
+	// The single assistant HistoryMessage must have ALL 3 iterations.
+	am := assistantMsgs[0]
+	if len(am.Iterations) != 3 {
+		t.Fatalf("expected 3 iterations, got %d", len(am.Iterations))
+	}
+
+	// Verify iteration numbers are 1, 2, 3 (not duplicated or missing).
+	for i, want := range []int{1, 2, 3} {
+		if am.Iterations[i].Iteration != want {
+			t.Errorf("iteration[%d].Iteration = %d, want %d", i, am.Iterations[i].Iteration, want)
+		}
+	}
+
+	// Verify tools: iter 1 has Shell, iter 2 has Read, iter 3 has none.
+	if len(am.Iterations[0].Tools) != 1 || am.Iterations[0].Tools[0].Name != "Shell" {
+		t.Errorf("iter 1 tools: expected [Shell], got %v", am.Iterations[0].Tools)
+	}
+	if len(am.Iterations[1].Tools) != 1 || am.Iterations[1].Tools[0].Name != "Read" {
+		t.Errorf("iter 2 tools: expected [Read], got %v", am.Iterations[1].Tools)
+	}
+	if len(am.Iterations[2].Tools) != 0 {
+		t.Errorf("iter 3 tools: expected none, got %v", am.Iterations[2].Tools)
+	}
+
+	// Verify final iteration has content "done".
+	if am.Iterations[2].Content != "done" {
+		t.Errorf("iter 3 content: expected 'done', got %q", am.Iterations[2].Content)
+	}
+
+	// Verify the HistoryMessage content is "done" (final reply).
+	if am.Content != "done" {
+		t.Errorf("HistoryMessage content: expected 'done', got %q", am.Content)
+	}
+}
+
+// TestConvert_WithIterations_FallbackToDetailWhenNoStructuredData verifies
+// that ConvertMessagesToHistoryWithIterations falls back to the legacy
+// ConvertMessagesToHistory path (Detail JSON) when no structured data exists
+// for any turn (old data pre-v55).
+func TestConvert_WithIterations_FallbackToDetailWhenNoStructuredData(t *testing.T) {
+	detail := makeDetail([]iterSnapshot{
+		{Iteration: 1, Tools: []iterToolSnap{{Name: "Shell", Status: "done"}}},
+		{Iteration: 2, Content: "result"},
+	})
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "go", TurnID: 1},
+		{ID: 10, Role: "assistant", Content: "result", Detail: detail, TurnID: 1},
+	}
+	// No structured data — should fall back to Detail JSON.
+	history := channel.ConvertMessagesToHistoryWithIterations(msgs, nil)
+
+	var assistantMsgs []channel.HistoryMessage
+	for _, h := range history {
+		if h.Role == "assistant" {
+			assistantMsgs = append(assistantMsgs, h)
+		}
+	}
+	if len(assistantMsgs) != 1 {
+		t.Fatalf("expected 1 assistant, got %d", len(assistantMsgs))
+	}
+	if len(assistantMsgs[0].Iterations) != 2 {
+		t.Fatalf("expected 2 iterations from Detail, got %d", len(assistantMsgs[0].Iterations))
 	}
 }
 

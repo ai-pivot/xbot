@@ -661,9 +661,12 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	}
 
 	// --- Structured iteration history (v55) ---
-	// Write ONLY the final iteration to iteration_history, linked to the final
-	// assistant message. Intermediate iterations were already written by
-	// persistIterationHistory (one record per intermediate message).
+	// Write ONLY the final iteration (content + reasoning, no tools) to
+	// iteration_history, linked to the final assistant message.
+	// Intermediate iterations were already written by persistIterationHistory
+	// (one record per intermediate message). The final iteration's snapshot
+	// was added to s.iterationSnapshots in handleFinalResponse (after
+	// Content/ReasoningContent were set, not before like snapshotCompletedIteration).
 	// ConvertMessagesToHistoryWithIterations queries by turn_id to merge all
 	// records (intermediate + final) into one HistoryMessage.
 	// Detail JSON is still written above for backward compat with old clients.
@@ -672,16 +675,11 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		if assistantMsg.TurnID > 0 {
 			turnID = assistantMsg.TurnID
 		}
-		// Only write the LAST iteration (the final one with content, no tools).
-		// Intermediate iterations are already in iteration_history via
-		// persistIterationHistory.
+		// The last snapshot is the final iteration (content + reasoning, no tools).
+		// It was appended in handleFinalResponse AFTER Content was set.
 		lastSnap := iterHistory[len(iterHistory)-1]
 		toolsJSON := "[]"
-		if len(lastSnap.Tools) > 0 {
-			if data, err := json.Marshal(lastSnap.Tools); err == nil {
-				toolsJSON = string(data)
-			}
-		}
+		// Final iteration has no tools — toolsJSON stays "[]".
 		if err := tenantSession.AppendIterationHistory(finalMsgID, turnID, sqlite.IterationRecord{
 			MessageID: finalMsgID,
 			TurnID:    turnID,
