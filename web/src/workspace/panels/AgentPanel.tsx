@@ -25,8 +25,8 @@ import { useTodos } from '@/hooks/useTodos'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
-import { rewindHistory } from '@/components/agent/api'
-import { resolveUserMessageDBID } from '@/components/agent/rewind'
+import { rewindHistory, fetchHistory } from '@/components/agent/api'
+import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 
 import { AskUserPanel } from '@/components/agent/AskUserPanel'
 import { ContextRing } from '@/components/agent/ContextRing'
@@ -269,13 +269,14 @@ export function AgentPanel({ params }: PanelProps) {
     if (!chatID || isSubAgent) return
     // User messages rendered from user_echo SSE carry persisted=true but no
     // dbID — the DB id is assigned when the agent loop persists the message,
-    // AFTER the echo is sent at queue-admission time. Only a history reload
-    // carries it. The message IS persisted; resolve the id from a fresh
-    // snapshot instead of failing outright.
+    // AFTER the echo is sent at queue-admission time. Resolve the id from a
+    // direct history API call — bypass chat.reload() which can return null
+    // due to requestIsSuperseded() race conditions when SSE events fire
+    // during the await.
     let dbID = originalMessage.dbID
     if (!dbID) {
-      const fresh = await chat.reload()
-      dbID = fresh ? resolveUserMessageDBID(fresh, originalMessage) : undefined
+      const data = await fetchHistory(ws, { channel: messageChannel, chatID }, { limit: 100 })
+      dbID = resolveUserMessageDBIDFromHistMsgs(data.messages ?? [], originalMessage)
     }
     if (!dbID) {
       toast.error(t('agent.rewindUnavailable'))
@@ -302,7 +303,7 @@ export function AgentPanel({ params }: PanelProps) {
       // Keep edit mode active when the rewind request fails.
       toast.error(e instanceof Error ? e.message : t('agent.rewindFailed'))
     }
-  }, [chatID, isSubAgent, messageChannel, chat, t, sendMessage])
+  }, [chatID, isSubAgent, messageChannel, chat, ws, t, sendMessage])
 
   const rewindLatest = useCallback(() => {
     if (busy) return

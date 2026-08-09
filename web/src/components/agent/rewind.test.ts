@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { resolveUserMessageDBID } from './rewind'
+import { resolveUserMessageDBID, resolveUserMessageDBIDFromHistMsgs } from './rewind'
 import type { ChatMessage } from '@/types/shared'
+import type { HistMsg } from '@/components/agent/api'
 
 function userMsg(partial: Partial<ChatMessage>): ChatMessage {
   return {
@@ -85,5 +86,56 @@ describe('resolveUserMessageDBID', () => {
       userMsg({ id: 'echo-live', turnID: 5, content: 'hi', persisted: true }), // no dbID
     ]
     expect(resolveUserMessageDBID(reloadRows, echoRow)).toBeUndefined()
+  })
+})
+
+function histMsg(partial: Partial<HistMsg>): HistMsg {
+  return {
+    role: 'user',
+    content: '',
+    ...partial,
+  }
+}
+
+describe('resolveUserMessageDBIDFromHistMsgs', () => {
+  it('resolves the DB id from raw API rows by turnID+content', () => {
+    const target = { turnID: 7, content: 'hello' }
+    const rows = [
+      histMsg({ id: 101, turn_id: 7, content: 'hello', role: 'user' }),
+      histMsg({ id: 100, turn_id: 6, content: 'earlier', role: 'user' }),
+    ]
+    expect(resolveUserMessageDBIDFromHistMsgs(rows, target)).toBe(101)
+  })
+
+  it('falls back to content-only matching for turnID=0 targets', () => {
+    const target = { turnID: 0, content: 'file.pdf attached' }
+    const rows = [
+      histMsg({ id: 202, turn_id: 3, content: 'file.pdf attached', role: 'user' }),
+    ]
+    expect(resolveUserMessageDBIDFromHistMsgs(rows, target)).toBe(202)
+  })
+
+  it('content-only fallback picks the MOST RECENT occurrence', () => {
+    const target = { turnID: 0, content: 'same file.pdf' }
+    const rows = [
+      histMsg({ id: 100, turn_id: 1, content: 'same file.pdf', role: 'user' }),
+      histMsg({ id: 101, turn_id: 2, content: 'other', role: 'user' }),
+      histMsg({ id: 102, turn_id: 4, content: 'same file.pdf', role: 'user' }),
+    ]
+    expect(resolveUserMessageDBIDFromHistMsgs(rows, target)).toBe(102)
+  })
+
+  it('returns undefined when not found', () => {
+    const target = { turnID: 9, content: 'queued msg' }
+    expect(resolveUserMessageDBIDFromHistMsgs([], target)).toBeUndefined()
+  })
+
+  it('skips assistant rows and rows without id', () => {
+    const target = { turnID: 5, content: 'hi' }
+    const rows = [
+      histMsg({ id: 300, turn_id: 5, content: 'hi', role: 'assistant' }),
+      histMsg({ turn_id: 5, content: 'hi', role: 'user' }), // no id
+    ]
+    expect(resolveUserMessageDBIDFromHistMsgs(rows, target)).toBeUndefined()
   })
 })

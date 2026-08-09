@@ -1,4 +1,5 @@
 import type { ChatMessage } from '@/types/shared'
+import type { HistMsg } from '@/components/agent/api'
 
 /**
  * Resolve the DB id of a persisted user message from a fresh history snapshot.
@@ -47,6 +48,37 @@ export function resolveUserMessageDBID(
     if (m.role !== 'user' || m.dbID == null) continue
     if (m.content && m.content === target.content) {
       return m.dbID
+    }
+  }
+  return undefined
+}
+
+/**
+ * Resolve the DB id from raw API history rows (HistMsg[]).
+ *
+ * This bypasses chat.reload() — which can return null due to
+ * requestIsSuperseded() race conditions when SSE events fire
+ * during the await — by calling fetchHistory directly. The rewind
+ * flow only needs the dbID; it does not need to update UI state.
+ */
+export function resolveUserMessageDBIDFromHistMsgs(
+  rows: HistMsg[],
+  target: Pick<ChatMessage, 'turnID' | 'content'>,
+): number | undefined {
+  if (target.turnID > 0) {
+    for (const m of rows) {
+      if (m.role !== 'user' || m.id == null) continue
+      if (m.turn_id === target.turnID && m.content === target.content) {
+        return m.id
+      }
+    }
+    return undefined
+  }
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]
+    if (m.role !== 'user' || m.id == null) continue
+    if (m.content && m.content === target.content) {
+      return m.id
     }
   }
   return undefined
