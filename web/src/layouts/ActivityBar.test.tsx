@@ -1,35 +1,9 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
 import { ActivityBar } from './ActivityBar'
-import type { SessionStore } from '@/hooks/useSessionStore'
-
-vi.mock('@/hooks/useSessionStore', () => ({
-  useSessionStore: (): Partial<SessionStore> => ({
-    activeChannel: null,
-    setActiveChannel: vi.fn(),
-  }),
-}))
-
-const mockIdentities = [
-  { id: 1, channel: 'cli', channel_user_id: '张三' },
-  { id: 2, channel: 'feishu', channel_user_id: '李四' },
-]
-
-beforeEach(() => {
-  globalThis.fetch = vi.fn(() =>
-    Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve({
-        ok: true,
-        data: { identities: mockIdentities },
-        error: null,
-      }),
-    } as Response),
-  )
-})
 
 vi.mock('@/components/ui/tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -48,45 +22,77 @@ describe('ActivityBar', () => {
     expect(screen.getByLabelText('Appearance')).toBeInTheDocument()
   })
 
-  it('renders aggregate globe icon', () => {
+  it('renders sidebar toggle button', () => {
     renderWithProviders(
       <ActivityBar
         onOpenSettings={vi.fn()}
+        sidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
       />,
     )
 
-    expect(screen.getByLabelText('All Channels')).toBeInTheDocument()
+    expect(screen.getByLabelText('Toggle sidebar')).toBeInTheDocument()
   })
 
-  it('renders channel identity icons after fetch', async () => {
+  it('highlights toggle when sidebar is collapsed', () => {
+    renderWithProviders(
+      <ActivityBar
+        onOpenSettings={vi.fn()}
+        sidebarCollapsed={true}
+        onToggleSidebar={vi.fn()}
+      />,
+    )
+
+    const toggle = screen.getByLabelText('Toggle sidebar')
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('calls onToggleSidebar when toggle is clicked', async () => {
+    const onToggle = vi.fn()
+    renderWithProviders(
+      <ActivityBar
+        onOpenSettings={vi.fn()}
+        onToggleSidebar={onToggle}
+      />,
+    )
+
+    const toggle = screen.getByLabelText('Toggle sidebar')
+    await toggle.click()
+    expect(onToggle).toHaveBeenCalledOnce()
+  })
+
+  it('calls onOpenSettings when settings is clicked', async () => {
+    const onOpenSettings = vi.fn()
+    renderWithProviders(
+      <ActivityBar
+        onOpenSettings={onOpenSettings}
+      />,
+    )
+
+    const settings = screen.getByLabelText('Appearance')
+    await settings.click()
+    expect(onOpenSettings).toHaveBeenCalledOnce()
+  })
+
+  it('does not render sidebar toggle when onToggleSidebar is not provided', () => {
     renderWithProviders(
       <ActivityBar
         onOpenSettings={vi.fn()}
       />,
     )
 
-    // After fetch resolves, CLI and Feishu icons should appear
-    expect(await screen.findByLabelText('CLI')).toBeInTheDocument()
-    expect(screen.getByLabelText('Feishu')).toBeInTheDocument()
-    expect(globalThis.fetch).toHaveBeenCalledWith(
+    expect(screen.queryByLabelText('Toggle sidebar')).not.toBeInTheDocument()
+  })
+
+  it('does not fetch identities (channel filtering removed)', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    renderWithProviders(
+      <ActivityBar onOpenSettings={vi.fn()} />,
+    )
+
+    expect(fetchSpy).not.toHaveBeenCalledWith(
       '/api/account/identities/list',
-      expect.objectContaining({ method: 'POST' }),
+      expect.anything(),
     )
-  })
-
-  it('renders badge with first character of channel_user_id', async () => {
-    renderWithProviders(
-      <ActivityBar
-        onOpenSettings={vi.fn()}
-      />,
-    )
-
-    // Wait for identities to load
-    await screen.findByLabelText('CLI')
-
-    // Badge should show first character of channel_user_id
-    const cliButton = screen.getByLabelText('CLI')
-    const badge = cliButton.querySelector('.text-\\[8px\\]')
-    expect(badge).toHaveTextContent('张')
   })
 })

@@ -4,9 +4,12 @@
  * Replaces Spec 2's empty left-sidebar body for the "sessions" view.
  * Wires useSessionStore to the search box, category switcher, the list, and
  * the new-session dialog. Pure presentational composition on top of the store.
+ *
+ * The bottom section embeds SessionInfo (session metadata + model info),
+ * which was moved here from the right sidebar.
  */
-import { useCallback, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Globe, LayoutGrid, Loader2, Plus, Terminal, MessageCircle, MessageSquare, Bot, Server, CheckSquare, X, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, ChevronUp, Globe, LayoutGrid, Loader2, Plus, Terminal, MessageCircle, MessageSquare, Bot, Server, CheckSquare, X, Trash2, Info, Files, Search, ListChecks, SquareTerminal } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -28,9 +31,16 @@ import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shar
 import type { ExportFormat } from '@/components/agent/api'
 import { downloadSession } from '@/components/agent/api'
 import type { TabManager } from '@/hooks/useTabManager'
+import type { TerminalManager } from '@/hooks/useTerminal'
+import type { SidebarPanel } from '@/components/sidebar/RightSidebarControl'
 import { SessionSearch } from './SessionSearch'
 import { SessionList } from './SessionList'
 import { NewSessionDialog } from './NewSessionDialog'
+import { SessionInfo as SessionInfoPanel } from '@/components/sidebar/SessionInfo'
+import { FileExplorer } from '@/components/sidebar/FileExplorer'
+import { FileSearch } from '@/components/sidebar/FileSearch'
+import { TasksPanel } from '@/components/sidebar/TasksPanel'
+import { TerminalList } from '@/components/sidebar/TerminalList'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -48,12 +58,31 @@ const ALL_CHANNEL_ORDER = ['web', 'cli', 'feishu', 'qq', 'napcat']
 
 const CATEGORIES = ['time', 'status', 'path'] as const
 
+/** Tab definitions for the bottom panel section. */
+const PANEL_TABS: { panel: SidebarPanel; icon: IconComponent; labelKey: string }[] = [
+  { panel: 'info', icon: Info, labelKey: 'sidebar.info' },
+  { panel: 'tasks', icon: ListChecks, labelKey: 'sidebar.tasks' },
+  { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
+  { panel: 'files', icon: Files, labelKey: 'sidebar.files' },
+  { panel: 'search', icon: Search, labelKey: 'sidebar.search' },
+]
+
 interface SessionSidebarProps {
   /** Tab manager for opening SubAgent conversation tabs (Child 5). */
   tabManager: TabManager
+  /** Terminal manager for the terminal list panel. */
+  terminalManager: TerminalManager
+  /** Active bottom panel. */
+  activePanel: SidebarPanel
+  /** Switch the active bottom panel. */
+  onPanelChange: (panel: SidebarPanel) => void
+  /** Whether the bottom panel section is collapsed. */
+  bottomCollapsed: boolean
+  /** Toggle the bottom panel section. */
+  onToggleBottom: () => void
 }
 
-export function SessionSidebar({ tabManager }: SessionSidebarProps) {
+export function SessionSidebar({ tabManager, terminalManager, activePanel, onPanelChange, bottomCollapsed, onToggleBottom }: SessionSidebarProps) {
   const { t } = useI18n()
   const store = useSessionStore()
   const [search, setSearch] = useState('')
@@ -66,6 +95,64 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
   const lastSelectedKey = useRef<string | null>(null)
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
+
+  // Bottom panel height (resizable via drag handle)
+  const BOTTOM_HEIGHT_KEY = 'xbot:bottomPanelHeight'
+  const MIN_BOTTOM_HEIGHT = 80
+  const MAX_BOTTOM_RATIO = 0.7
+  const [bottomHeight, setBottomHeight] = useState(() => {
+    const stored = localStorage.getItem(BOTTOM_HEIGHT_KEY)
+    if (stored) {
+      const h = Number(stored)
+      if (!Number.isNaN(h)) return clampBottomHeight(h)
+    }
+    return Math.min(280, Math.round(window.innerHeight * 0.35))
+  })
+  const bottomDragging = useRef(false)
+  const bottomHeightRef = useRef(bottomHeight)
+
+  const onBottomResizeStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    bottomDragging.current = true
+    document.body.style.userSelect = 'none'
+  }, [])
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!bottomDragging.current) return
+      // The sidebar is a flex-col; the bottom panel is at the bottom.
+      // We need the sidebar element to calculate relative position.
+      // Instead, use the sidebar's bounding rect from the event target.
+      const sidebar = (e.target as HTMLElement)?.closest?.('[data-sidebar-root]') as HTMLElement | null
+      if (!sidebar) return
+      const rect = sidebar.getBoundingClientRect()
+      // Distance from pointer to bottom of sidebar = desired bottom panel height
+      const next = rect.bottom - e.clientY
+      bottomHeightRef.current = clampBottomHeight(next)
+      setBottomHeight(bottomHeightRef.current)
+    }
+    const onUp = () => {
+      if (!bottomDragging.current) return
+      bottomDragging.current = false
+      document.body.style.userSelect = ''
+      localStorage.setItem(BOTTOM_HEIGHT_KEY, String(bottomHeightRef.current))
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [])
+
+  // Re-clamp on viewport resize
+  useEffect(() => {
+    const onResize = () => {
+      setBottomHeight((h) => clampBottomHeight(h))
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   // Channel-filtered sessions
   const filteredSessions = useMemo(() => {
@@ -201,7 +288,7 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
   }, [filteredSessions])
 
   return (
-    <div className="flex h-full w-full flex-col bg-bg-secondary">
+    <div className="flex h-full w-full flex-col bg-bg-secondary" data-sidebar-root>
       {/* Header: channel filter + new-session button */}
       <header
         className="flex h-9 shrink-0 items-center justify-between px-2"
@@ -359,6 +446,67 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
         )}
       </div>
 
+      {/* Bottom panel section — tabbed Info/Tasks/Terminal/Files/Search */}
+      <div className="flex shrink-0 flex-col" style={{ borderTop: '1px solid var(--border)', height: bottomCollapsed ? undefined : bottomHeight }}>
+        {/* Drag handle — resize the bottom panel vertically */}
+        {!bottomCollapsed && (
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize bottom panel"
+            onPointerDown={onBottomResizeStart}
+            className="h-1 w-full shrink-0 cursor-row-resize bg-transparent transition-colors hover:bg-app-accent/40"
+          />
+        )}
+        {/* Panel content — fills space between drag handle and tab bar */}
+        {!bottomCollapsed && (
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {renderBottomPanel(activePanel, tabManager, terminalManager)}
+          </div>
+        )}
+        {/* Tab bar — pinned at the very bottom */}
+        <div className="flex h-8 shrink-0 items-center justify-between px-1">
+          <div className="flex items-center gap-0.5">
+            {PANEL_TABS.map(({ panel, icon: Icon, labelKey }) => {
+              const active = activePanel === panel
+              return (
+                <Tooltip key={panel}>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={t(labelKey)}
+                      aria-pressed={active}
+                      onClick={() => onPanelChange(panel)}
+                      className="flex size-6 items-center justify-center rounded transition-colors hover:bg-bg-tertiary"
+                      style={{ color: active ? 'var(--accent)' : 'var(--text-secondary)' }}
+                    >
+                      <Icon className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">{t(labelKey)}</TooltipContent>
+                </Tooltip>
+              )
+            })}
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={bottomCollapsed ? t('common.expand') : t('common.collapse')}
+                onClick={onToggleBottom}
+                className="flex size-6 items-center justify-center rounded transition-colors hover:bg-bg-tertiary"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {bottomCollapsed
+                  ? <ChevronUp className="size-3.5" />
+                  : <ChevronDown className="size-3.5" />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">{bottomCollapsed ? t('common.expand') : t('common.collapse')}</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+
       {/* Batch operation bar — shown when multi-select is active and items are selected */}
       {multiSelectMode && selectedIds.size > 0 && (
         <div
@@ -488,4 +636,29 @@ function labelForCategory(
     case 'path':
       return t('session.byPath')
   }
+}
+
+function renderBottomPanel(
+  panel: SidebarPanel,
+  tabManager: TabManager,
+  terminalManager: TerminalManager,
+) {
+  switch (panel) {
+    case 'info':
+      return <SessionInfoPanel tabManager={tabManager} />
+    case 'files':
+      return <FileExplorer tabManager={tabManager} />
+    case 'search':
+      return <FileSearch tabManager={tabManager} />
+    case 'tasks':
+      return <TasksPanel tabManager={tabManager} />
+    case 'terminal':
+      return <TerminalList terminalManager={terminalManager} />
+  }
+}
+
+function clampBottomHeight(height: number): number {
+  const min = 80
+  const max = typeof window === 'undefined' ? 600 : Math.round(window.innerHeight * 0.7)
+  return Math.round(Math.max(min, Math.min(max, height)))
 }

@@ -26,7 +26,7 @@ import { useTabManager } from '@/hooks/useTabManager'
 import { useTheme } from '@/hooks/useTheme'
 import { useWSConnection } from '@/providers/WSProvider'
 import { useTerminal } from '@/hooks/useTerminal'
-import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
+import type { SidebarPanel } from '@/components/sidebar/RightSidebarControl'
 import type { PanelProps } from '@/workspace/panels/types'
 
 type MobileView = 'agent' | 'detail' | 'terminal'

@@ -1,12 +1,24 @@
 import { createContext, useContext } from 'react'
-import type { SidebarPanel } from './RightSidebar'
 
-export interface RightSidebarControl {
+/**
+ * Panel identifiers for the bottom panel section of the left sidebar.
+ * Replaces the old right-sidebar panel system.
+ */
+export type SidebarPanel = 'files' | 'search' | 'info' | 'tasks' | 'terminal'
+
+export interface SidebarControl {
   openPanel: (panel: SidebarPanel) => void
 }
 
-export const RightSidebarControlContext = createContext<RightSidebarControl | null>(null)
+export const SidebarControlContext = createContext<SidebarControl | null>(null)
 
-export function useRightSidebarControl(): RightSidebarControl | null {
-  return useContext(RightSidebarControlContext)
+export function useSidebarControl(): SidebarControl | null {
+  return useContext(SidebarControlContext)
+}
+
+// --- Legacy aliases (for gradual migration) ---
+export type RightSidebarControl = SidebarControl
+export const RightSidebarControlContext = SidebarControlContext
+export function useRightSidebarControl(): SidebarControl | null {
+  return useContext(SidebarControlContext)
 }
