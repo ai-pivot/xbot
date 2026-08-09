@@ -86,9 +86,14 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if queued {
 		// QUEUED: the chat was already busy; the message will be handled after
-		// the current turn. Deliberately OMIT turn_id — the frontend shows a
-		// queued marker and binds the turn via turn_started when processing
-		// begins (turn_id is not yet meaningful while queued).
+		// the current turn. turn_id IS already allocated (admitToMsgCh calls
+		// ss.nextTurnID() at queue-admission time) — return it so the frontend
+		// can bind the optimistic user row immediately (no need to wait for
+		// turn_started). The turn_id is stable: queued messages are FIFO,
+		// no insertion possible.
+		if turnID != 0 {
+			resp["turn_id"] = turnID
+		}
 	} else if turnID == 0 && !isSlashCommand(request.Content) {
 		// INSERTED (non-queued): the response MUST carry a non-zero turn_id —
 		// EXCEPT slash commands (e.g. /help, /new), which are handled

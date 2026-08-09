@@ -475,6 +475,58 @@ describe('dedupMessages', () => {
     ]
     expect(dedupMessages(msgs)).toEqual([msgs[1]])
   })
+
+  it('content-dedupes a live-committed message (turnID=0) against a DB message (turnID>0) with same content', () => {
+    // Regression: commitLiveProgressAndReset commits with turnID=0 when
+    // snap.turnID=0 and store.lastTurnID=0 (e.g. after session switch
+    // hydration). The DB version arrives with the correct turnID. Without
+    // content-based dedup, both survive → duplicate rendering.
+    const liveIters = [{ iteration: 1, thinking: '', reasoning: '', content: '', tools: [tool({ name: 'Shell' })], toolCount: 1 }]
+    const dbIters = [{ iteration: 1, thinking: '', reasoning: '', content: '', tools: [], toolCount: 0 }]
+    const msgs = [
+      { turnID: 1087, role: 'assistant', id: 'db-1197744', content: 'same reply', iterations: dbIters, dbID: 1197744, eventSeq: undefined },
+      { turnID: 0, role: 'assistant', id: 'seq-21883', content: 'same reply', iterations: liveIters, dbID: undefined, eventSeq: 21883, persisted: false },
+    ]
+    const result = dedupMessages(msgs)
+    expect(result).toHaveLength(1)
+    // DB version (turnID>0) is the base; live iterations are merged in
+    expect(result[0].id).toBe('db-1197744')
+    expect(result[0].turnID).toBe(1087)
+    expect(result[0].iterations).toHaveLength(1)
+    expect(result[0].iterations[0].tools[0].name).toBe('Shell')
+  })
+
+  it('content-dedup works regardless of arrival order (live first, DB second)', () => {
+    // The live-committed message may arrive before the DB version (e.g.
+    // appendAssistant fires before reload). dedupMessages must catch it
+    // in both orders.
+    const msgs = [
+      { turnID: 0, role: 'assistant', id: 'seq-100', content: 'hello', iterations: [], eventSeq: 100 },
+      { turnID: 5, role: 'assistant', id: 'db-50', content: 'hello', iterations: [], dbID: 50, eventSeq: undefined },
+    ]
+    const result = dedupMessages(msgs)
+    expect(result).toHaveLength(1)
+    expect(result[0].id).toBe('db-50')
+    expect(result[0].turnID).toBe(5)
+  })
+
+  it('does NOT content-dedup messages with different content', () => {
+    const msgs = [
+      { turnID: 1087, role: 'assistant', id: 'db-1', content: 'reply A', iterations: [], dbID: 1 },
+      { turnID: 0, role: 'assistant', id: 'seq-2', content: 'reply B', iterations: [], eventSeq: 2 },
+    ]
+    const result = dedupMessages(msgs)
+    expect(result).toHaveLength(2)
+  })
+
+  it('does NOT content-dedup user messages (only assistant)', () => {
+    const msgs = [
+      { turnID: 1087, role: 'user', id: 'db-1', content: 'hello', dbID: 1 },
+      { turnID: 0, role: 'user', id: 'seq-2', content: 'hello', eventSeq: 2 },
+    ]
+    const result = dedupMessages(msgs)
+    expect(result).toHaveLength(2)
+  })
 })
 
 describe('continuousIterations — linear-consistency guard (weak-network iteration gaps)', () => {

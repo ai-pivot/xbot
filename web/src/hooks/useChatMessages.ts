@@ -27,7 +27,7 @@ import {
   type UploadResponse,
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
-import { dedupMessages, assertIterationContinuity } from '@/components/agent/progressStore'
+import { dedupMessages, mergeIterations, assertIterationContinuity } from '@/components/agent/progressStore'
 import { getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
@@ -193,6 +193,71 @@ function newMessageRequestID(): string {
   return id ? id.replaceAll('-', '') : `web-${Date.now()}-${echoSeq++}`
 }
 
+/**
+ * Incremental dedup: assumes the existing array (excluding newMsgIdx) is
+ * already linearly consistent (previously deduped). Only the NEW message at
+ * newMsgIdx can conflict — scan the array for a match by:
+ * 1. turnID:role (same turn + role → merge iterations, prefer DB version)
+ * 2. eventSeq (same SSE seq → replace)
+ * 3. content:role (same content → content-based dedup for turnID=0 commits)
+ *
+ * If no conflict, returns the array unchanged. If conflict, merges in-place
+ * and removes the duplicate. O(n) worst case but typically O(1) — the
+ * conflicting message is almost always the last few rows (same turn).
+ *
+ * This replaces the previous O(n) dedupMessages(withMsg) call that re-scanned
+ * the entire array on every appendAssistant invocation.
+ */
+function incrementalDedup<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number; dbID?: number; persisted?: boolean; iterations?: WebIteration[] }>(
+  arr: T[],
+  newMsgIdx: number,
+): T[] {
+  const msg = arr[newMsgIdx]
+  // Check for conflicts only against the new message
+  for (let i = 0; i < arr.length; i++) {
+    if (i === newMsgIdx) continue
+    const existing = arr[i]
+    // 1. Same turnID:role (turnID > 0)
+    if (msg.turnID > 0 && existing.turnID === msg.turnID && existing.role === msg.role) {
+      const merged = mergeIterations(existing.iterations ?? [], msg.iterations ?? [])
+      const result = [...arr]
+      result[i] = {
+        ...existing,
+        iterations: merged.length > 0 ? merged : (existing.iterations ?? []),
+        content: (existing.content ?? '') !== '' ? existing.content : (msg.content ?? ''),
+      }
+      result.splice(newMsgIdx, 1)
+      return result
+    }
+    // 2. Same eventSeq (SSE replay)
+    if (msg.eventSeq != null && existing.eventSeq === msg.eventSeq) {
+      const result = [...arr]
+      result[i] = msg // replace with newer version
+      result.splice(newMsgIdx, 1)
+      return result
+    }
+    // 3. Content-based dedup: same content + role='assistant'
+    // (turnID=0 live commit vs turnID>0 DB message)
+    const msgContent = msg.content ?? ''
+    if (msgContent && msg.role === 'assistant' && existing.role === 'assistant' &&
+        (existing.content ?? '') === msgContent) {
+      // Prefer the DB version (turnID > 0) as base
+      const base = existing.turnID > 0 ? existing : msg
+      const other = existing.turnID > 0 ? msg : existing
+      const merged = mergeIterations(base.iterations ?? [], other.iterations ?? [])
+      const result = [...arr]
+      result[i] = {
+        ...base,
+        iterations: merged.length > 0 ? merged : (base.iterations ?? []),
+      }
+      result.splice(newMsgIdx, 1)
+      return result
+    }
+  }
+  // No conflict — array is already consistent
+  return arr
+}
+
 /** SubAgent message from get_session_messages RPC (agent.SessionMessage). */
 interface SubAgentMsg {
   role: string
@@ -286,6 +351,12 @@ function reconcileHistoryWithLiveRows(
     if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
     // Content+role fallback for messages without turnID (user_echo).
     if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
+    // Content-based dedup for assistant messages with turnID=0 (live commit
+    // from commitLiveProgressAndReset with snap.turnID=0). The DB version
+    // arrives with the correct turnID but different content may exist —
+    // match by content:role to drop the stale live commit.
+    if (message.turnID === 0 && message.role === 'assistant' && message.content &&
+        historyContentKeys.has(`assistant:${message.content}`)) return false
     return true
   })
   return [...history, ...liveRows]
@@ -643,10 +714,10 @@ export function useChatMessages({
       setMessages((prev) => {
         if (activeMessageCacheKeyRef.current !== listenerCacheKey) return prev
         messageMutationGenRef.current += 1
-        // Deterministic: the backend echoes every accepted user message with
-        // its authoritative turn_id (NO optimistic rendering, NO
-        // bindLastUserToTurn). Dedup by requestID for SSE replay.
-        if (requestID && prev.some((m) => m.requestID === requestID)) return prev
+        // Dedup by requestID for SSE replay — skip if a PERSISTED message
+        // with the same requestID already exists. An optimistic (persisted=false)
+        // message with the same requestID should be REPLACED, not skipped.
+        if (requestID && prev.some((m) => m.requestID === requestID && m.persisted !== false)) return prev
         const newMsg: ChatMessage = {
           id,
           role: 'user',
@@ -658,6 +729,21 @@ export function useChatMessages({
           persisted: true,
           eventSeq: msg.seq,
           requestID,
+        }
+        // If there's an optimistic message with the same requestID (from
+        // sendMessage), replace it with the authoritative echo version
+        // (persisted=true, turnID from server, dbID from DB). This updates
+        // the existing row in-place instead of appending a duplicate.
+        if (requestID) {
+          const optimisticIdx = prev.findIndex(
+            (m) => m.requestID === requestID && m.persisted === false,
+          )
+          if (optimisticIdx >= 0) {
+            const copy = [...prev]
+            copy[optimisticIdx] = { ...newMsg, id: prev[optimisticIdx].id }
+            messagesRef.current = copy
+            return copy
+          }
         }
         const next = [...prev, newMsg]
         messagesRef.current = next
@@ -672,10 +758,35 @@ export function useChatMessages({
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
       const requestID = newMessageRequestID()
-      // NO optimistic rendering: the backend echoes every accepted user
-      // message as user_echo WITH its authoritative turn_id (web_inbound.go
-      // dispatchUserMessage). The frontend renders the user message
-      // deterministically from that echo only.
+      // Optimistic rendering: show the user message immediately.
+      // No "sending" spinner — the REST response is typically <200ms, and
+      // the spinner's height change (appear → disappear) causes the user
+      // message bubble to resize, which triggers TanStack Virtual remeasurement
+      // → scroll correction → visible jitter. The message appearing is enough
+      // feedback; the busy state (from onSendSuccess) provides the rest.
+      const resetCommand = text === '/new' && !attachments?.uploadKeys.length
+      let optimisticID: string | null = null
+      if (!resetCommand) {
+        const id = `user-${Date.now()}-${echoSeq++}`
+        optimisticID = id
+        const newMsg: ChatMessage = {
+          id,
+          role: 'user',
+          content: text,
+          iterations: [],
+          timestamp: new Date().toISOString(),
+          isPartial: false,
+          turnID: 0,
+          persisted: false,
+          requestID,
+        }
+        messageMutationGenRef.current += 1
+        setMessages((prev) => {
+          const next = [...prev, newMsg]
+          messagesRef.current = next
+          return next
+        })
+      }
       void ws.send({
         type: 'message',
         id: requestID,
@@ -687,10 +798,49 @@ export function useChatMessages({
         file_sizes: attachments?.fileSizes,
         file_mimes: attachments?.fileMimes,
       })
-        .then(() => {
+        .then((resp) => {
+          // Call onSendSuccess BEFORE setMessages so the busy placeholder
+          // appears in the same render cycle as the message update. Otherwise
+          // (onSendSuccess after setMessages) there are two separate renders:
+          // 1) message update (no height change since no spinner)
+          // 2) busy placeholder appears (height increases)
+          // Two renders with different scroll heights = visible jitter.
+          // Calling onSendSuccess first lets both updates land in the same
+          // React batch (React 18 automatic batching for promises).
           onSendSuccess?.()
+          if (optimisticID && resp) {
+            const sentID = optimisticID
+            const respTurnID = resp.turn_id
+            const respQueued = resp.queued === true
+            const msgID = resp.message_id
+            const serverTs = resp.timestamp
+            const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
+            messageMutationGenRef.current += 1
+            setMessages((prev) => {
+              const next = prev.map((m) => m.id === sentID ? {
+                ...m,
+                persisted: true,
+                ...(msgID ? { dbID: msgID } : {}),
+                ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
+                ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),
+                ...(respQueued ? { queued: true } : {}),
+              } : m)
+              messagesRef.current = next
+              return next
+            })
+          }
         })
         .catch((error: unknown) => {
+          // Remove the optimistic message on send failure
+          if (optimisticID) {
+            const failedID = optimisticID
+            messageMutationGenRef.current += 1
+            setMessages((prev) => {
+              const next = prev.filter((m) => m.id !== failedID)
+              messagesRef.current = next
+              return next
+            })
+          }
           toast.error(error instanceof Error ? error.message : 'message send failed')
         })
     },
@@ -745,22 +895,28 @@ export function useChatMessages({
       // one that triggered the commit, so this always restores turn order.
       let insertIdx = prev.length
       if (insertBeforeLastUser) {
-        // Prefer THIS TURN's user (turnID match) → insert AFTER it. This is
-        // the AskUser answer case: the answer is persisted as a user message
-        // with the SAME turnID as the iterations that follow, and it may be
-        // the last user in the list — inserting before it would render the
-        // new iterations ABOVE the answer (broken order). Fall back to
-        // "before the last user" (classic turn_started(N+1) case, where the
-        // last user belongs to the NEXT turn).
+        // Two-step insertion:
+        // 1. If turnID > 0: first scan for the assistant's OWN turn user
+        //    (role=user && turnID matches) and insert AFTER it. This correctly
+        //    positions the assistant even when the next turn's user hasn't been
+        //    added to the messages array yet (race: turn_started arrives before
+        //    sendMessage's setMessages is applied). Without this, the scan finds
+        //    user1 (the ONLY user) and inserts BEFORE it: [assistant1, user1].
+        // 2. Fallback: insert before the LAST user message (persisted or not).
+        //    The newest user is the one that triggered the commit, so this
+        //    restores turn order when the assistant's own turn user is unbound
+        //    (turn_started was lost, turnID=0).
+        let foundOwnTurnUser = false
         if (turnID) {
           for (let i = prev.length - 1; i >= 0; i--) {
             if (prev[i].role === 'user' && prev[i].turnID === turnID) {
               insertIdx = i + 1
+              foundOwnTurnUser = true
               break
             }
           }
         }
-        if (insertIdx === prev.length) {
+        if (!foundOwnTurnUser) {
           for (let i = prev.length - 1; i >= 0; i--) {
             if (prev[i].role === 'user') {
               insertIdx = i
@@ -770,7 +926,11 @@ export function useChatMessages({
         }
       }
       const withMsg = [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)]
-      const next = dedupMessages(withMsg)
+      // Incremental dedup: the existing array (prev) is already linearly
+      // consistent (previously deduped). Only the NEW message can conflict.
+      // Check in O(1): scan for a match by turnID:role, eventSeq, or
+      // content:role (content-based fallback for turnID=0 live commits).
+      const next = incrementalDedup(withMsg, insertIdx)
       messagesRef.current = next
       return next
     })

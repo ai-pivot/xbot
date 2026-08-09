@@ -108,6 +108,7 @@ type UserContext struct {
 	ResolveActiveSub func(chatID string) (*sqlite.LLMSubscription, string, error)
 	SelectModel      func(chatID, subID, model string) error
 	RefreshModels    func() ([]protocol.ModelEntry, []RefreshResult)
+	ListModels       func() []protocol.ModelEntry
 
 	// factory is the internal bridge to LLMFactory for SubAgent model-specific
 	// resolution. Callers use ResolveLLMForModel, never access this directly.

@@ -476,6 +476,12 @@ type Agent struct {
 	// key: "channel:chatID" -> *protocol.ProgressEvent
 	lastProgressSnapshot sync.Map
 
+	// lastStreamStats stores the most recent LLM stream timing stats per session.
+	// Unlike lastProgressSnapshot (deleted on turn end), this persists across
+	// turns so /info can display TTFT/TPOT even after the turn completes.
+	// key: "channel:chatID" -> *protocol.StreamStats
+	lastStreamStats sync.Map
+
 	// waitingUserSessions stores pending AskUser prompts per chat.
 	// Set when buildWaitingUserOutbound fires; deleted when the answer arrives.
 	// Used by GetPendingAskUser to resend ask_user on WS reconnect.
@@ -3709,6 +3715,28 @@ func (a *Agent) getActiveIteration(sessionKey string) int {
 func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	progressKey := qualifyChatID(msg.Channel, msg.ChatID)
 
+	// Clear iteration history from the previous turn. iterationHistories is
+	// per-session (not per-turn) — without clearing, GetActiveProgress returns
+	// old turn's iterations mixed with the new turn's, causing the frontend
+	// to render duplicate iterations across turns (e.g. turn 27's iter 1-2
+	// appearing inside turn 28's assistant message).
+	// Skip for resume (InjectInboundResume) — it continues the same turn.
+	//
+	// Concurrency safety: emitTurnStarted is called from chatProcessLoop
+	// (line 2901) BEFORE processMessage (line 2951). The previous turn's
+	// Run() has already returned (chatProcessLoop is serial — it waits for
+	// processMessage to complete before dequeuing the next message). No
+	// concurrent snapshotCompletedIteration or attachIterationDelta can be
+	// writing to iterationHistories at this point. GetActiveProgress (frontend
+	// request) reads iterationHistories via sync.Map Load — it may observe
+	// the Delete (empty result) but never a torn state (sync.Map operations
+	// are atomic). The turn_started SSE event is emitted AFTER this Delete,
+	// so the frontend's reload (triggered by turn_started) sees the clean
+	// state.
+	if msg.Metadata == nil || msg.Metadata["resume_turn"] != "true" {
+		a.iterationHistories.Delete(progressKey)
+	}
+
 	trigger := "user"
 	content := ""
 	if msg.Metadata != nil {
@@ -3718,11 +3746,12 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 		} else if msg.Metadata["resume_turn"] == "true" {
 			trigger = "resume"
 		} else if msg.Metadata["ask_user_answered"] == "true" {
-			// AskUser answer is a CONTINUATION of the same turn, not a new turn.
-			// Use trigger="resume" so the frontend preserves iterationHistory
-			// from before the AskUser call — the answer's Run continues the
-			// same logical turn.
-			trigger = "resume"
+			// AskUser answer is a NEW turn (new turnID allocated by chatProcessLoop).
+			// trigger="user" so the frontend does commitLiveProgressAndReset
+			// (commits old turn's live content, resets store). Using "resume"
+			// was wrong — it preserved old iterationHistory (resetStreamingState)
+			// and lost the old turn's live content.
+			trigger = "user"
 		}
 	}
 

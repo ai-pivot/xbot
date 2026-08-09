@@ -14,6 +14,7 @@ import (
 	"xbot/llm"
 	"xbot/memory"
 	"xbot/plugin"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
@@ -267,6 +268,12 @@ type RunConfig struct {
 	// user message in the session. Called after each LLM API call returns,
 	// enabling rewind to restore precise token counts from DB.
 	SaveContextTokens func(promptTokens int64)
+
+	// SaveStreamStats stores the most recent LLM stream timing stats (TTFT,
+	// TPOT, total duration, chunk count) for the session. Persists across
+	// turns (unlike lastProgressSnapshot which is deleted on turn end).
+	// Used by /info command to display timing even after the turn completes.
+	SaveStreamStats func(stats *protocol.StreamStats)
 
 	// BgTaskManager 后台任务管理器（nil = 不支持后台任务）
 	BgTaskManager *tools.BackgroundTaskManager
@@ -1335,6 +1342,162 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 			return cfg.ListLLMSubs(cfg.Channel, cfg.OriginUserID)
 		}
 		return nil
+	}
+
+	// Inject LLM model & subscription management closures (for config tool).
+	// All access goes through UserContext — never directly to a.userSys.llmFactory.
+	if uc != nil {
+		// ── Model management ──
+		tc.SelectModelFn = func(subID, model string) error {
+			return uc.SelectModel(cfg.ChatID, subID, model)
+		}
+		tc.GetActiveModelFn = func() (string, string, error) {
+			sub, model, err := uc.ResolveActiveSub(cfg.ChatID)
+			if err != nil {
+				return "", "", fmt.Errorf("no active subscription: %w", err)
+			}
+			if sub == nil {
+				return "", "", fmt.Errorf("no active subscription for this session")
+			}
+			return sub.ID, model, nil
+		}
+		tc.ListModelsFn = func() []tools.ModelInfo {
+			entries := uc.ListModels()
+			result := make([]tools.ModelInfo, 0, len(entries))
+			for _, e := range entries {
+				result = append(result, tools.ModelInfo{
+					SubID: e.SubID, SubName: e.SubName,
+					Model: e.Model, Status: e.Status,
+				})
+			}
+			return result
+		}
+		tc.RefreshModelsFn = func() []tools.ModelInfo {
+			entries, _ := uc.RefreshModels()
+			result := make([]tools.ModelInfo, 0, len(entries))
+			for _, e := range entries {
+				result = append(result, tools.ModelInfo{
+					SubID: e.SubID, SubName: e.SubName,
+					Model: e.Model, Status: e.Status,
+				})
+			}
+			return result
+		}
+		// ── Per-model config & subscription CRUD ──
+		if uc.SubSvc != nil {
+			svc := uc.SubSvc
+
+			tc.SetModelContextFn = func(subID, model string, maxContext int) error {
+				if err := svc.SetModelMaxContext(subID, model, maxContext); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+			tc.SetModelOutputFn = func(subID, model string, maxOutput int) error {
+				if err := svc.SetModelMaxOutput(subID, model, maxOutput); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+			tc.SetModelEnabledFn = func(subID, model string, enabled bool) error {
+				if err := svc.SetModelEnabled(subID, model, enabled); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+			tc.UpsertModelFn = func(subID, model string, maxContext, maxOutput int, apiType string) error {
+				if err := svc.UpsertModel(subID, model, maxContext, maxOutput, "", apiType); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+			tc.RemoveModelFn = func(subID, model string) error {
+				if err := svc.RemoveModel(subID, model); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+			tc.AddSubscriptionFn = func(params tools.SubscriptionCreateParams) (string, error) {
+				sub := &sqlite.LLMSubscription{
+					Name:            params.Name,
+					Provider:        params.Provider,
+					BaseURL:         params.BaseURL,
+					APIKey:          params.APIKey,
+					Model:           params.Model,
+					MaxOutputTokens: params.MaxOutputTokens,
+					SenderID:        cfg.OriginUserID,
+					IsDefault:       params.IsDefault,
+				}
+				if err := svc.Add(sub); err != nil {
+					return "", err
+				}
+				uc.InvalidateLLM()
+				return sub.ID, nil
+			}
+			tc.RemoveSubscriptionFn = func(subID string) error {
+				if err := svc.Remove(subID); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+			tc.UpdateSubscriptionFieldsFn = func(subID string, params tools.SubscriptionUpdateParams) error {
+				// Get→modify→Update pattern preserves credentials (reads real DB values).
+				sub, err := svc.Get(subID)
+				if err != nil {
+					return fmt.Errorf("subscription not found: %w", err)
+				}
+				if params.Name != "" {
+					sub.Name = params.Name
+				}
+				if params.Provider != "" {
+					sub.Provider = params.Provider
+				}
+				if params.BaseURL != "" {
+					sub.BaseURL = params.BaseURL
+				}
+				if params.APIKey != "" {
+					sub.APIKey = params.APIKey
+				}
+				if params.Model != "" {
+					sub.Model = params.Model
+				}
+				if params.MaxOutputTokens > 0 {
+					sub.MaxOutputTokens = params.MaxOutputTokens
+				}
+				if err := svc.Update(sub); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+			tc.SetDefaultSubscriptionFn = func(subID string) error {
+				if err := svc.SetDefault(subID); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+			tc.SetSubscriptionEnabledFn = func(subID string, enabled bool) error {
+				if err := svc.SetSubscriptionEnabled(subID, enabled); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+			tc.RenameSubscriptionFn = func(subID, name string) error {
+				if err := svc.Rename(subID, name); err != nil {
+					return err
+				}
+				uc.InvalidateLLM()
+				return nil
+			}
+		}
 	}
 
 	// Inject runner CRUD callbacks (for config tool).

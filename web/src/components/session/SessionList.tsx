@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/providers/i18n'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
+import type { ExportFormat } from '@/components/agent/api'
 import { SessionGroup } from './SessionGroup'
 import { SessionItem } from './SessionItem'
 import { SessionEmptyState } from './SessionEmptyState'
@@ -53,6 +54,7 @@ interface SessionListProps {
   onToggleStar: (id: string) => void
   onRename: (id: string, channel: string, label: string) => Promise<boolean>
   onDelete: (id: string, channel: string) => Promise<boolean>
+  onExport?: (session: SessionInfo, format: ExportFormat) => void
   /** Multi-select mode props. */
   multiSelectMode?: boolean
   selectedIds?: Set<string>
@@ -76,6 +78,7 @@ export function SessionList({
   onToggleStar,
   onRename,
   onDelete,
+  onExport,
   multiSelectMode = false,
   selectedIds,
   onToggleSelect,
@@ -187,6 +190,7 @@ export function SessionList({
                   onToggleStar={onToggleStar}
                   onRename={openRename}
                   onDelete={openDelete}
+                  onExport={onExport}
                   multiSelectMode={multiSelectMode}
                   selected={selectedIds?.has(sessionKey(s)) ?? false}
                   onToggleSelect={onToggleSelect}
@@ -223,6 +227,7 @@ export function SessionList({
                 onToggleStar={onToggleStar}
                 onRename={openRename}
                 onDelete={openDelete}
+                onExport={onExport}
                 multiSelectMode={multiSelectMode}
                 selectedIds={selectedIds}
                 onToggleSelect={onToggleSelect}

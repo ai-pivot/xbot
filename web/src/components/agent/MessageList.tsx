@@ -109,7 +109,15 @@ export function buildMessageRows(
     const hasCommitted = messages.some(
       (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
     )
-    if (hasCommitted) return messages
+    if (hasCommitted) {
+      // The live message has a committed counterpart — liveProgress flows
+      // to it via liveId (MessageList.tsx). AssistantMessage ignores
+      // message.iterations when hasLiveProgress is true (it uses
+      // progress.iterationHistory exclusively), so merging iterations here
+      // would be wasted work that breaks MessageItem memo (new object ref
+      // every frame). Just return messages as-is.
+      return messages
+    }
     // Distinguish the two live-row kinds by whether its turnID already exists
     // in the committed list:
     //  - EXISTS (e.g. a frozen row from a CANCELLED previous turn whose user is
@@ -308,7 +316,10 @@ export function MessageList({
       if (el) {
         let attempts = 0
         const tryScroll = () => {
-          if (!stickToBottomRef.current || gen !== followGenRef.current || ++attempts > 15) return
+          // Increase from 15 to 30 attempts (~500ms at 60fps) — TanStack
+          // Virtual's lazy measurement (measureElement via ResizeObserver) can
+          // take >250ms for large lists with markdown/code highlighting.
+          if (!stickToBottomRef.current || gen !== followGenRef.current || ++attempts > 30) return
           programmaticScrollRef.current = true
           const prev = el.scrollHeight
           el.scrollTop = el.scrollHeight
@@ -524,7 +535,20 @@ export function MessageList({
     lastRowCountRef.current = rows.length
     lastFollowResetTokenRef.current = followResetToken
     if (!el || rows.length === 0 || (!chatChanged && !initialLoad && !followReset && !newMessagesAdded)) return
-    if (newMessagesAdded && !stickToBottomRef.current) return
+    if (newMessagesAdded) {
+      // User sent a message (optimistic, not yet persisted) — always resume
+      // following and scroll to bottom, even if the user had scrolled up.
+      // Only for optimistic user messages (persisted=false), NOT for DB
+      // messages loaded via reload (those don't represent user action).
+      const lastRow = rows[rows.length - 1]
+      if (lastRow?.role === 'user' && lastRow?.persisted === false) {
+        resumeFollowing()
+        scheduleFollow()
+        return
+      }
+      // Assistant/streaming or DB messages: only follow if already sticky
+      if (!stickToBottomRef.current) return
+    }
     resumeFollowing()
     scheduleFollow()
   }, [chatKey, followResetToken, rows.length, resumeFollowing, scheduleFollow, virtualizer, loading])
@@ -666,6 +690,7 @@ export function MessageList({
                     data-turn-id={row.turnID || undefined}
                     data-message-id={row.id}
                     data-role={row.role}
+                    data-iter-count={row.iterations?.length ?? 0}
                   >
                     <MessageItem
                       message={row}

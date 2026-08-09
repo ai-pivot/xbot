@@ -831,6 +831,42 @@ func (s *LLMSubscriptionService) SetModelEnabled(subID, model string, enabled bo
 	return nil
 }
 
+// SetModelMaxContext updates only the max_context field for a specific model,
+// preserving existing max_output_tokens, thinking_mode, and api_type.
+func (s *LLMSubscriptionService) SetModelMaxContext(subID, model string, maxCtx int) error {
+	conn := s.db.Conn()
+	res, err := conn.Exec(`
+		UPDATE subscription_models SET max_context = ?, updated_at = datetime('now')
+		WHERE subscription_id = ? AND model = ?
+	`, maxCtx, subID, model)
+	if err != nil {
+		return fmt.Errorf("set model max_context: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Row doesn't exist yet — insert with only max_context set
+		return s.UpsertModel(subID, model, maxCtx, 0, "", "")
+	}
+	return nil
+}
+
+// SetModelMaxOutput updates only the max_output_tokens field for a specific model,
+// preserving existing max_context, thinking_mode, and api_type.
+func (s *LLMSubscriptionService) SetModelMaxOutput(subID, model string, maxOut int) error {
+	conn := s.db.Conn()
+	res, err := conn.Exec(`
+		UPDATE subscription_models SET max_output_tokens = ?, updated_at = datetime('now')
+		WHERE subscription_id = ? AND model = ?
+	`, maxOut, subID, model)
+	if err != nil {
+		return fmt.Errorf("set model max_output: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Row doesn't exist yet — insert with only max_output set
+		return s.UpsertModel(subID, model, 0, maxOut, "", "")
+	}
+	return nil
+}
+
 // RemoveModel deletes a model from subscription_models. Unlike SetModelEnabled
 // (which only toggles enabled), this permanently removes the model record.
 func (s *LLMSubscriptionService) RemoveModel(subID, model string) error {

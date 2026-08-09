@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
 )
@@ -285,4 +287,317 @@ func (a *Agent) handleUsage(ctx context.Context, msg bus.InboundMessage) (*chann
 		ChatID:  msg.ChatID,
 		Content: sb.String(),
 	}, nil
+}
+
+// handleSessionInfo handles /info command: shows current session info.
+func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	uc := UserContextFromContext(ctx)
+	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
+	if err != nil {
+		return &channel.OutboundMsg{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+			Content: fmt.Sprintf("获取会话失败: %v", err),
+		}, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📋 会话信息\n\n")
+
+	// Session identity
+	fmt.Fprintf(&sb, "| 项目 | 值 |\n|---|---|\n")
+	fmt.Fprintf(&sb, "| Channel | %s |\n", msg.Channel)
+	fmt.Fprintf(&sb, "| Chat ID | %s |\n", msg.ChatID)
+	fmt.Fprintf(&sb, "| Tenant ID | %d |\n", tenantSession.TenantID())
+
+	// CWD
+	if cwd := tenantSession.GetCurrentDir(); cwd != "" {
+		fmt.Fprintf(&sb, "| 工作目录 | `%s` |\n", cwd)
+	}
+
+	// LLM info
+	_, model, maxCtx, thinkingMode, maxOut := uc.ResolveLLM(msg.ChatID)
+	if model != "" {
+		fmt.Fprintf(&sb, "| 模型 | %s |\n", model)
+	}
+	sub, _, _ := uc.ResolveActiveSub(msg.ChatID)
+	if sub != nil {
+		fmt.Fprintf(&sb, "| 订阅 | %s |\n", sub.Name)
+	}
+	if maxCtx > 0 {
+		fmt.Fprintf(&sb, "| Max Context | %d |\n", maxCtx)
+	}
+	if maxOut > 0 {
+		fmt.Fprintf(&sb, "| Max Output | %d |\n", maxOut)
+	}
+	if thinkingMode != "" {
+		fmt.Fprintf(&sb, "| Thinking Mode | %s |\n", thinkingMode)
+	}
+
+	// Message count
+	msgs, err := tenantSession.GetMessages()
+	if err == nil {
+		userCount := 0
+		assistantCount := 0
+		toolCount := 0
+		for _, m := range msgs {
+			switch m.Role {
+			case "user":
+				userCount++
+			case "assistant":
+				assistantCount++
+			case "tool":
+				toolCount++
+			}
+		}
+		fmt.Fprintf(&sb, "| 消息总数 | %d |\n", len(msgs))
+		fmt.Fprintf(&sb, "| 用户消息 | %d |\n", userCount)
+		fmt.Fprintf(&sb, "| 助手消息 | %d |\n", assistantCount)
+		fmt.Fprintf(&sb, "| 工具消息 | %d |\n", toolCount)
+	}
+
+	// Token usage + stream timing stats
+	if tenantSession != nil {
+		if memSvc := tenantSession.MemoryService(); memSvc != nil {
+			if pt, ct, err := memSvc.GetTokenState(ctx, tenantSession.TenantID()); err == nil && pt > 0 {
+				fmt.Fprintf(&sb, "| Prompt Tokens | %s |\n", formatTokenCount(pt))
+				fmt.Fprintf(&sb, "| Completion Tokens | %s |\n", formatTokenCount(ct))
+			}
+		}
+	}
+	// Stream timing stats from the most recent LLM call (persists across turns)
+	progressKey := msg.Channel + ":" + msg.ChatID
+	if v, ok := a.lastStreamStats.Load(progressKey); ok {
+		if stats, ok := v.(*protocol.StreamStats); ok && stats != nil {
+			fmt.Fprintf(&sb, "| TTFT | %d ms |\n", stats.TTFTMs)
+			if stats.TPOTMs > 0 {
+				fmt.Fprintf(&sb, "| TPOT | %d ms |\n", stats.TPOTMs)
+			}
+			if stats.TokensPerSec > 0 {
+				fmt.Fprintf(&sb, "| Gen Speed | %d tok/s |\n", stats.TokensPerSec)
+			}
+			if stats.SSEIntervalMs > 0 {
+				fmt.Fprintf(&sb, "| SSE Interval | %d ms |\n", stats.SSEIntervalMs)
+			}
+			fmt.Fprintf(&sb, "| Stream Duration | %d ms |\n", stats.TotalMs)
+			fmt.Fprintf(&sb, "| Output Chunks | %d |\n", stats.Chunks)
+		}
+	}
+
+	// Sandbox mode
+	if a.sandboxMode != "" {
+		fmt.Fprintf(&sb, "| Sandbox | %s |\n", a.sandboxMode)
+	}
+
+	return &channel.OutboundMsg{
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+		Content: sb.String(),
+	}, nil
+}
+
+// handleExportSession handles /export command: exports current session in the specified format.
+// Formats: native (default), openai, codex
+func (a *Agent) handleExportSession(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
+	content := strings.TrimSpace(msg.Content)
+	format := "native"
+	if strings.HasPrefix(strings.ToLower(content), "/export ") {
+		format = strings.TrimSpace(strings.TrimPrefix(content, "/export "))
+		format = strings.ToLower(format)
+	}
+	switch format {
+	case "native", "openai", "codex":
+		// valid
+	case "":
+		format = "native"
+	default:
+		return &channel.OutboundMsg{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+			Content: "无效的导出格式。可选: native, openai, codex\n\n用法:\n- `/export` — xbot 原生格式 (JSON)\n- `/export openai` — OpenAI Chat Completions 请求格式\n- `/export codex` — Codex JSONL 格式",
+		}, nil
+	}
+
+	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
+	if err != nil {
+		return &channel.OutboundMsg{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+			Content: fmt.Sprintf("获取会话失败: %v", err),
+		}, nil
+	}
+
+	msgs, err := tenantSession.GetMessages()
+	if err != nil {
+		return &channel.OutboundMsg{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+			Content: fmt.Sprintf("获取消息失败: %v", err),
+		}, nil
+	}
+
+	// Resolve model
+	uc := UserContextFromContext(ctx)
+	_, model, _, _, _ := uc.ResolveLLM(msg.ChatID)
+
+	session, err := protocol.ExportSession(msg.ChatID, model, msgs)
+	if err != nil {
+		return &channel.OutboundMsg{
+			Channel: msg.Channel,
+			ChatID:  msg.ChatID,
+			Content: fmt.Sprintf("导出失败: %v", err),
+		}, nil
+	}
+
+	// Complete append-only history → Records
+	if a.multiSession != nil {
+		if db := a.multiSession.DB(); db != nil {
+			if tenantID := tenantSession.TenantID(); tenantID > 0 {
+				if records, err := sqlite.NewSessionService(db).GetFullHistory(tenantID); err == nil {
+					session.Records = make([]protocol.ExportedRecord, 0, len(records))
+					for _, r := range records {
+						session.Records = append(session.Records, historyRecordToExported(r))
+					}
+				}
+			}
+		}
+	}
+
+	var exported []byte
+	switch format {
+	case "openai":
+		// Construct an OpenAI Chat Completions request body
+		var messages []map[string]interface{}
+		if session.SystemInstructions != "" {
+			messages = append(messages, map[string]interface{}{
+				"role":    "system",
+				"content": session.SystemInstructions,
+			})
+		}
+		for _, m := range session.Messages {
+			entry := map[string]interface{}{
+				"role":    m.Role,
+				"content": m.ContentToString(),
+			}
+			if len(m.ToolCalls) > 0 {
+				calls := make([]map[string]interface{}, 0, len(m.ToolCalls))
+				for _, tc := range m.ToolCalls {
+					calls = append(calls, map[string]interface{}{
+						"id":   tc.ID,
+						"type": tc.Type,
+						"function": map[string]interface{}{
+							"name":      tc.Function.Name,
+							"arguments": tc.Function.Arguments,
+						},
+					})
+				}
+				entry["tool_calls"] = calls
+			}
+			if m.ToolCallID != "" {
+				entry["tool_call_id"] = m.ToolCallID
+			}
+			if m.Name != "" {
+				entry["name"] = m.Name
+			}
+			messages = append(messages, entry)
+		}
+		body := map[string]interface{}{
+			"model":    model,
+			"messages": messages,
+		}
+		exported, _ = json.MarshalIndent(body, "", "  ")
+
+	case "codex":
+		// Codex JSONL: one JSON object per line
+		var lines []string
+		if session.SystemInstructions != "" {
+			line, _ := json.Marshal(map[string]interface{}{
+				"type": "message",
+				"role": "system",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": session.SystemInstructions},
+				},
+			})
+			lines = append(lines, string(line))
+		}
+		for _, m := range session.Messages {
+			text := m.ContentToString()
+			contentType := "input_text"
+			if m.Role == "assistant" {
+				contentType = "output_text"
+			}
+			entry := map[string]interface{}{
+				"type": "message",
+				"role": m.Role,
+				"content": []map[string]interface{}{
+					{"type": contentType, "text": text},
+				},
+			}
+			if m.Reasoning != "" {
+				entry["reasoning"] = m.Reasoning
+			}
+			if len(m.ToolCalls) > 0 {
+				entry["tool_calls"] = m.ToolCalls
+			}
+			if m.ToolCallID != "" {
+				entry["tool_call_id"] = m.ToolCallID
+			}
+			if m.Name != "" {
+				entry["name"] = m.Name
+			}
+			line, _ := json.Marshal(entry)
+			lines = append(lines, string(line))
+		}
+		exported = []byte(strings.Join(lines, "\n"))
+
+	default:
+		// native: full xbot portable JSON
+		exported, _ = json.MarshalIndent(session, "", "  ")
+	}
+
+	// IM channels (feishu, qq) have message length limits (~30KB for feishu).
+	// Web channel has no limit (renders in browser). Truncate for IM channels.
+	exportStr := string(exported)
+	if msg.Channel != "web" && msg.Channel != "cli" && len(exportStr) > 28000 {
+		exportStr = exportStr[:28000] + "\n\n... (内容过长已截断，请使用 Web 渠道或 /export 命令获取完整导出)"
+	}
+
+	return &channel.OutboundMsg{
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+		Content: fmt.Sprintf("```json\n%s\n```", exportStr),
+		Metadata: map[string]string{
+			"export_format": format,
+		},
+	}, nil
+}
+
+// historyRecordToExported converts a raw append-only history record
+// (session_messages row) to the portable export format.
+func historyRecordToExported(r sqlite.HistoryRecord) protocol.ExportedRecord {
+	rec := protocol.ExportedRecord{
+		HistoryID:       r.HistoryID,
+		RecordType:      string(r.Type),
+		TargetHistoryID: r.TargetHistoryID,
+		RecordData:      r.Data,
+		CreatedAt:       r.CreatedAt,
+	}
+	if r.Type == sqlite.HistoryRecordMessage {
+		m := r.Message
+		rec.Role = m.Role
+		rec.Content = m.Content
+		rec.ToolCallID = m.ToolCallID
+		rec.ToolName = m.ToolName
+		rec.ToolArguments = m.ToolArguments
+		rec.Detail = m.Detail
+		rec.Reasoning = m.ReasoningContent
+		rec.DisplayOnly = m.DisplayOnly
+		rec.TurnID = m.TurnID
+		if len(m.ToolCalls) > 0 {
+			if data, err := json.Marshal(m.ToolCalls); err == nil {
+				rec.ToolCalls = data
+			}
+		}
+	}
+	return rec
 }

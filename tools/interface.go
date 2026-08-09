@@ -138,6 +138,58 @@ type ToolContext struct {
 	// ListSubscriptions returns all LLM subscriptions for the current user.
 	ListSubscriptions func() []SubscriptionInfo
 
+	// ── LLM Model Management (for config tool) ──
+
+	// SelectModel switches the current session's model (per-session, not user-level).
+	SelectModelFn func(subID, model string) error
+
+	// ListModels returns all available models across all subscriptions.
+	ListModelsFn func() []ModelInfo
+
+	// RefreshModels live-fetches /models from all enabled subscriptions.
+	RefreshModelsFn func() []ModelInfo
+
+	// GetActiveModel returns the current session's (subID, model).
+	GetActiveModelFn func() (subID, model string, err error)
+
+	// ── Per-Model Config (for config tool) ──
+
+	// SetModelContext sets max_context for a specific (subID, model) pair.
+	SetModelContextFn func(subID, model string, maxContext int) error
+
+	// SetModelOutput sets max_output_tokens for a specific (subID, model) pair.
+	SetModelOutputFn func(subID, model string, maxOutput int) error
+
+	// SetModelEnabled enables/disables a specific model.
+	SetModelEnabledFn func(subID, model string, enabled bool) error
+
+	// UpsertModel registers a new model or updates its per-model config.
+	UpsertModelFn func(subID, model string, maxContext, maxOutput int, apiType string) error
+
+	// RemoveModel permanently deletes a model from subscription_models.
+	RemoveModelFn func(subID, model string) error
+
+	// ── Subscription CRUD (for config tool) ──
+
+	// AddSubscription creates a new LLM subscription and returns its ID.
+	AddSubscriptionFn func(params SubscriptionCreateParams) (string, error)
+
+	// RemoveSubscription deletes a subscription by ID.
+	RemoveSubscriptionFn func(subID string) error
+
+	// UpdateSubscriptionFields updates specific fields on an existing subscription.
+	// Only non-empty fields are updated; credentials are preserved (Get→modify→Update).
+	UpdateSubscriptionFieldsFn func(subID string, params SubscriptionUpdateParams) error
+
+	// SetDefaultSubscription sets the user-level default subscription.
+	SetDefaultSubscriptionFn func(subID string) error
+
+	// SetSubscriptionEnabled enables/disables a subscription.
+	SetSubscriptionEnabledFn func(subID string, enabled bool) error
+
+	// RenameSubscription renames a subscription.
+	RenameSubscriptionFn func(subID, name string) error
+
 	// ── Runner CRUD (for config tool) ──
 
 	// RunnerCreate creates a new runner and returns the token.
@@ -183,6 +235,36 @@ type SubscriptionInfo struct {
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 	IsDefault bool   `json:"is_default"`
+}
+
+// ModelInfo describes a selectable model for the config tool.
+type ModelInfo struct {
+	SubID   string `json:"sub_id"`
+	SubName string `json:"sub_name"`
+	Model   string `json:"model"`
+	Status  string `json:"status"` // normal | offline | disabled
+}
+
+// SubscriptionCreateParams holds fields for creating a new subscription.
+type SubscriptionCreateParams struct {
+	Name            string `json:"name"`
+	Provider        string `json:"provider"`
+	BaseURL         string `json:"base_url"`
+	APIKey          string `json:"api_key"`
+	Model           string `json:"model"`
+	MaxOutputTokens int    `json:"max_output_tokens"`
+	IsDefault       bool   `json:"is_default"`
+}
+
+// SubscriptionUpdateParams holds fields for updating a subscription.
+// Only non-empty/non-zero fields are updated.
+type SubscriptionUpdateParams struct {
+	Name            string `json:"name"`
+	Provider        string `json:"provider"`
+	BaseURL         string `json:"base_url"`
+	APIKey          string `json:"api_key"`
+	Model           string `json:"model"`
+	MaxOutputTokens int    `json:"max_output_tokens"`
 }
 
 // SubAgentManager SubAgent 管理接口，避免循环依赖

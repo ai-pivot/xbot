@@ -678,7 +678,19 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			return "", fmt.Errorf("database not available")
 		}
 		cs := sqlite.NewChatService(webDB)
-		return cs.CreateChatOwned("web", senderID, label, canonicalUserID)
+		chatID, err := cs.CreateChatOwned("web", senderID, label, canonicalUserID)
+		if err != nil {
+			return "", err
+		}
+		// Immediately create a session-level model binding for the new session.
+		// This prevents cross-session model leak: without this, the new session
+		// has no per-session binding until the first ResolveLLM call. If the user
+		// switches model in another session (which calls SetUserDefaultModel),
+		// this session inherits the wrong model via ensureSessionModel.
+		// ensureSessionModel is idempotent — it checks GetSessionSubscription
+		// first and returns immediately if a binding already exists.
+		ag.LLMFactory().EnsureSessionModelBinding(senderID, chatID, "web")
+		return chatID, nil
 	}
 	callbacks.ChatDelete = func(senderID, channel, chatID string) error {
 		if webDB == nil {
