@@ -323,13 +323,18 @@ export function useProgressStream({
     const snap = progressSnapshot
     if (!hasVisibleProgress(snap)) return null
     if (snap.phase === 'done') return null
-    // 'frozen' phase: turn is over (cancel/commit). Keep the live message
-    // visible with turnID=0 so buildMessageRows appends it at the END
-    // (below the newest user msg). The committed message (from
-    // appendAssistant in flushSync) will replace it on the next render.
-    // Using the real turnID here caused buildMessageRows to insert the
-    // frozen live row at the old turn's position (ABOVE the new user msg).
-    const tid = snap.phase === 'frozen' ? 0 : (snap.turnID || store.lastTurnID || 0)
+    // 'frozen' phase: turn is over (cancel/commit). The committed message
+    // (from appendAssistant in flushSync) is already in the messages array.
+    // Rendering a live message here would duplicate the turn's iterations
+    // (committed message has them from iteration_history, live message has
+    // them from snap.iterationHistory — same data, rendered twice).
+    // Return null so only the committed message is visible.
+    // The previous approach (turnID=0 to append at end) caused SSE reconnect
+    // to render duplicate iterations: restoreActiveProgress repopulated
+    // snap.iterationHistory, liveMessage rendered them, AND the committed
+    // message also had them from iteration_history.
+    if (snap.phase === 'frozen') return null
+    const tid = snap.turnID || store.lastTurnID || 0
     return {
       id: `turn-${tid}-live`,
       role: 'assistant',
