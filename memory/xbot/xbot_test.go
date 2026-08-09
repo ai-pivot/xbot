@@ -1,6 +1,7 @@
 package xbot
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -54,5 +55,41 @@ func TestBuildSearchText(t *testing.T) {
 	want := "记 忆 系 统 很 强 大 GLM, DCP 部 署"
 	if got != want {
 		t.Errorf("buildSearchText() = %q, want %q", got, want)
+	}
+}
+
+func TestFts5SafeQueryLongMessage(t *testing.T) {
+	// A pasted document / log dump must not blow up into an unbounded MATCH
+	// expression or truncate a UTF-8 char mid-sequence.
+	long := "这是一个非常长的中文文档，包含大量无意义内容。" + string(make([]rune, 5000))
+	q := fts5SafeQuery(long)
+	if q == "" {
+		t.Fatal("long query produced empty MATCH expression")
+	}
+	// Token cap: no more than maxQueryTokens AND terms.
+	tokens := strings.Count(q, " AND ") + 1
+	if tokens > 25 {
+		t.Errorf("long query produced %d tokens, want <= 25 (capped)", tokens)
+	}
+	// Must be valid FTS5: every token is a quoted literal, no raw operators.
+	if !strings.HasPrefix(q, `"`) || !strings.HasSuffix(q, `"`) {
+		t.Errorf("query not fully quoted: %q", q)
+	}
+}
+
+func TestTruncateRunes(t *testing.T) {
+	// Chinese 3-byte chars must not be split mid-sequence.
+	s := "记忆系统很强大"
+	got := truncateRunes(s, 3)
+	if got != "记忆系..." {
+		t.Errorf("truncateRunes(%q, 3) = %q, want %q", s, got, "记忆系...")
+	}
+	// Short string unchanged.
+	if truncateRunes("ab", 5) != "ab" {
+		t.Error("short string should be unchanged")
+	}
+	// Max <= 0 → empty.
+	if truncateRunes("abc", 0) != "" {
+		t.Error("max 0 should return empty")
 	}
 }

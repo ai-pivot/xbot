@@ -457,11 +457,29 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 }
 
 // truncateForLog truncates a string for log output, adding an ellipsis.
+// Rune-safe: never splits a UTF-8 multibyte char (Chinese would break).
 func truncateForLog(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max] + "..."
+	return string(runes[:max]) + "..."
+}
+
+// truncateRunes truncates a string to at most max runes, appending "...".
+// Rune-safe: a UTF-8 Chinese char is never split mid-sequence.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
 }
 
 // fts5SafeQuery converts a raw user query into a SQLite FTS5 MATCH expression
@@ -493,13 +511,62 @@ func fts5SafeQuery(raw string) string {
 	if len(fields) == 0 {
 		return `""` // match nothing safely
 	}
-	quoted := make([]string, 0, len(fields))
+	// Cap the number of tokens: an extremely long user message (pasted code,
+	// log dump, document) could produce hundreds of AND terms — the MATCH
+	// expression would exceed SQLite limits or degrade to meaningless AND of
+	// every char. Keep the most distinctive tokens: skip common stopwords and
+	// cap at maxQueryTokens. This keeps recall relevant and the query bounded.
+	const maxQueryTokens = 24
+	var quoted []string
+	kept := 0
 	for _, f := range fields {
+		if kept >= maxQueryTokens {
+			break
+		}
+		if isStopToken(f) {
+			continue
+		}
 		// FTS5 string literal: double the double-quote to escape it.
 		f = strings.ReplaceAll(f, `"`, `""`)
 		quoted = append(quoted, `"`+f+`"`)
+		kept++
+	}
+	if len(quoted) == 0 {
+		// All tokens were stopwords — fall back to the first raw token so the
+		// query still has SOME anchor instead of matching nothing.
+		f := strings.ReplaceAll(fields[0], `"`, `""`)
+		return `"` + f + `"`
 	}
 	return strings.Join(quoted, " AND ")
+}
+
+// isStopToken reports whether a token is a common noise word that adds no
+// retrieval value. Chinese is space-separated into SINGLE chars by
+// cjkSpaceRuns, so a Chinese char like 会 is ambiguous (开会 vs 我会) — only
+// pure particles (的/了/吗/呢/吧/啊) are dropped. English multi-char
+// stopwords (the/a/is/to) are filtered normally. Skipping noise keeps long
+// queries bounded and relevant.
+func isStopToken(tok string) bool {
+	// Pure Chinese particles — safe to drop even as single chars.
+	switch tok {
+	case "的", "了", "吗", "呢", "吧", "啊", "么", "着", "过":
+		return true
+	}
+	// Any remaining CJK char is a real token (never a stopword).
+	for _, r := range tok {
+		if isCJKRune(r) {
+			return false
+		}
+	}
+	// ASCII multi-char stopwords.
+	switch tok {
+	case "the", "a", "an", "is", "are", "was", "were", "be", "been", "to", "of",
+		"in", "on", "at", "for", "with", "and", "or", "but", "this", "that",
+		"it", "you", "i", "we", "they", "he", "she", "can", "could", "would",
+		"should", "do", "does", "did", "have", "has", "had", "not", "no", "yes":
+		return true
+	}
+	return false
 }
 
 // cjkSpaceRuns inserts a space between adjacent CJK characters so the FTS5
@@ -1097,8 +1164,8 @@ func (m *XbotMemory) generateSessionSummary(ctx context.Context, messages []llm.
 	for _, msg := range messages {
 		role := msg.Role
 		content := msg.Content
-		if len(content) > 500 {
-			content = content[:500] + "..."
+		if len([]rune(content)) > 500 {
+			content = truncateRunes(content, 500)
 		}
 		fmt.Fprintf(&msgSB, "[%s] %s\n", role, content)
 	}
@@ -1196,8 +1263,8 @@ func (m *XbotMemory) extractAtomicMemories(ctx context.Context, messages []llm.C
 		if strings.TrimSpace(content) == "" {
 			continue
 		}
-		if len(content) > 800 {
-			content = content[:800] + "..."
+		if len([]rune(content)) > 800 {
+			content = truncateRunes(content, 800)
 		}
 
 		// Tag new vs old so the LLM focuses on the incremental window while
