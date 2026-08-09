@@ -1148,22 +1148,28 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			if err != nil {
 				return nil, err
 			}
-			// v54: load structured iteration_history for all assistant messages.
-			// Falls back to Detail JSON (ConvertMessagesToHistory) when no
-			// structured data exists (old data pre-v54).
-			var iterDataMap map[int64][]sqlite.IterationRecord
-			var msgIDs []int64
-			for _, m := range msgs {
-				if m.Role == "assistant" && m.ID > 0 {
-					msgIDs = append(msgIDs, m.ID)
+			// v55: load structured iteration_history by turn_id.
+			var turnIterMap map[uint64][]sqlite.IterationRecord
+			tenantID := sess.TenantID()
+			if tenantID > 0 {
+				turnSet := make(map[uint64]bool)
+				for _, m := range msgs {
+					if m.Role == "assistant" && m.TurnID > 0 {
+						turnSet[m.TurnID] = true
+					}
+				}
+				if len(turnSet) > 0 {
+					svc := sqlite.NewSessionService(ms.DB())
+					turnIterMap = make(map[uint64][]sqlite.IterationRecord)
+					for turnID := range turnSet {
+						recs, _ := svc.GetIterationHistoryByTurn(tenantID, turnID)
+						if len(recs) > 0 {
+							turnIterMap[turnID] = recs
+						}
+					}
 				}
 			}
-			if len(msgIDs) > 0 {
-				// Use the session's DB to query iteration_history
-				svc := sqlite.NewSessionService(ms.DB())
-				iterDataMap, _ = svc.GetIterationHistoryForMessages(msgIDs)
-			}
-			return channel.ConvertMessagesToHistoryWithIterations(msgs, iterDataMap), nil
+			return channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap), nil
 		}()
 		if err != nil {
 			return nil, err

@@ -661,33 +661,36 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	}
 
 	// --- Structured iteration history (v55) ---
-	// Write ALL iteration snapshots to the iteration_history table, linked to
-	// the final assistant message. This replaces Detail JSON as the authoritative
-	// source for iteration data — every iteration (including intermediate ones
-	// that were previously lost) is now a structured row.
+	// Write ONLY the final iteration to iteration_history, linked to the final
+	// assistant message. Intermediate iterations were already written by
+	// persistIterationHistory (one record per intermediate message).
+	// ConvertMessagesToHistoryWithIterations queries by turn_id to merge all
+	// records (intermediate + final) into one HistoryMessage.
 	// Detail JSON is still written above for backward compat with old clients.
 	if len(iterHistory) > 0 && finalMsgID > 0 {
 		var turnID uint64
 		if assistantMsg.TurnID > 0 {
 			turnID = assistantMsg.TurnID
 		}
-		for _, snap := range iterHistory {
-			toolsJSON := "[]"
-			if len(snap.Tools) > 0 {
-				if data, err := json.Marshal(snap.Tools); err == nil {
-					toolsJSON = string(data)
-				}
+		// Only write the LAST iteration (the final one with content, no tools).
+		// Intermediate iterations are already in iteration_history via
+		// persistIterationHistory.
+		lastSnap := iterHistory[len(iterHistory)-1]
+		toolsJSON := "[]"
+		if len(lastSnap.Tools) > 0 {
+			if data, err := json.Marshal(lastSnap.Tools); err == nil {
+				toolsJSON = string(data)
 			}
-			if err := tenantSession.AppendIterationHistory(finalMsgID, turnID, sqlite.IterationRecord{
-				MessageID: finalMsgID,
-				TurnID:    turnID,
-				Iteration: snap.Iteration,
-				Content:   snap.Content,
-				Reasoning: snap.Reasoning,
-				Tools:     toolsJSON,
-			}); err != nil {
-				log.WithError(err).WithField("iteration", snap.Iteration).Warn("Failed to persist final iteration_history")
-			}
+		}
+		if err := tenantSession.AppendIterationHistory(finalMsgID, turnID, sqlite.IterationRecord{
+			MessageID: finalMsgID,
+			TurnID:    turnID,
+			Iteration: lastSnap.Iteration,
+			Content:   lastSnap.Content,
+			Reasoning: lastSnap.Reasoning,
+			Tools:     toolsJSON,
+		}); err != nil {
+			log.WithError(err).WithField("iteration", lastSnap.Iteration).Warn("Failed to persist final iteration_history")
 		}
 	}
 

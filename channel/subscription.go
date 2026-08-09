@@ -201,21 +201,25 @@ func formatToolLabel(name, argsJSON string) string {
 //  2. Cancelled/interrupted turn: intermediate assistant(ToolCalls) without Detail → pending tool_summary
 //  3. Mixed: some turns completed, last one cancelled
 //
-// ConvertMessagesToHistoryWithIterations is the v54+ version that uses
+// ConvertMessagesToHistoryWithIterations is the v55+ version that uses
 // structured iteration_history table data instead of parsing Detail JSON.
-// iterDataMap maps session_messages.id → []IterationRecord (from DB).
-// When a message has structured iteration records, they are used as the
-// authoritative source; Detail JSON is only used as a fallback for old data.
-func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, iterDataMap map[int64][]sqlite.IterationRecord) []HistoryMessage {
+// turnIterMap maps turn_id → []IterationRecord (from DB, queried by turn_id).
+// Intermediate messages (with tool_calls) go through the same flushPending
+// flow as ConvertMessagesToHistory — they are NOT rendered as separate
+// HistoryMessages. Only the final/[interrupted] message gets structured
+// iteration data attached (queried by turn_id, merging all intermediate +
+// final records into one complete list).
+// Detail JSON is only used as a fallback for old data pre-v55.
+func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord) []HistoryMessage {
 	// If no structured data, fall back to the legacy path.
-	if iterDataMap == nil {
+	if turnIterMap == nil {
 		return ConvertMessagesToHistory(msgs)
 	}
-	// Check if any message has structured iteration data.
+	// Check if any turn has structured iteration data.
 	hasStructured := false
 	for _, m := range msgs {
-		if m.ID > 0 {
-			if recs, ok := iterDataMap[m.ID]; ok && len(recs) > 0 {
+		if m.TurnID > 0 {
+			if recs, ok := turnIterMap[m.TurnID]; ok && len(recs) > 0 {
 				hasStructured = true
 				break
 			}
@@ -294,12 +298,21 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, iterDataMap 
 			lastAssistantTS = m.Timestamp
 			lastAssistantID = m.ID
 
-			// v54: check structured iteration_history first.
-			if m.ID > 0 {
-				if recs, ok := iterDataMap[m.ID]; ok && len(recs) > 0 {
-					// Structured data available — use it as authoritative source.
+			// v55: structured iteration_history.
+			// Intermediate messages (with tool_calls) go through the SAME
+			// flushPending flow as ConvertMessagesToHistory — they are NOT
+			// rendered as separate HistoryMessages. Only the FINAL message
+			// (no tool_calls, has content) or [interrupted] message gets
+			// structured iteration data attached, queried by turn_id (which
+			// merges all intermediate + final records into one list).
+			isIntermediate := len(m.ToolCalls) > 0
+			if !isIntermediate && m.TurnID > 0 {
+				if recs, ok := turnIterMap[m.TurnID]; ok && len(recs) > 0 {
+					// Structured data available for this turn — use as
+					// authoritative source. Build HistoryIteration list from
+					// ALL records for this turn (intermediate + final).
 					finishCurIter()
-					pendingIters = nil // discard fabricated pending (structured is authoritative)
+					pendingIters = nil
 
 					iters := make([]HistoryIteration, 0, len(recs))
 					for _, rec := range recs {
@@ -364,7 +377,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, iterDataMap 
 							TurnID:    m.TurnID,
 						})
 					}
-					continue // structured data handled, skip Detail/pending logic
+					continue
 				}
 			}
 

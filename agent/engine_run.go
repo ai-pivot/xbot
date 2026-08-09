@@ -1615,13 +1615,14 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		return out
 	}
 
-	// --- Structured iteration history (v54) ---
+	// --- Structured iteration history (v55) ---
 	// After IncrementalPersist, the intermediate assistant message's .ID is
-	// populated with the DB message_id. Write the current iteration's snapshot
-	// to iteration_history so ConvertMessagesToHistory can read structured
-	// iteration data (iter id, reasoning, tools) from the table instead of
-	// parsing Detail JSON. This ensures every intermediate assistant message
-	// has its iteration record — not just the final message.
+	// populated with the DB message_id. Write THIS iteration's snapshot to
+	// iteration_history, linked to the intermediate message. Each message
+	// carries exactly ONE iteration record — the final message's record is
+	// written by handleRunOutput (final iteration only, not all iterations).
+	// ConvertMessagesToHistoryWithIterations queries by turn_id to merge all
+	// records into one HistoryMessage.
 	s.persistIterationHistory(ctx, iteration)
 
 	s.validateInvariantsAt(ctx, "post_persist")
