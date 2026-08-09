@@ -342,13 +342,7 @@ function reconcileHistoryWithLiveRows(
     // Below watermark: always superseded by history.
     if (message.eventSeq < historyWatermark) return false
     // Same turnID:role already in history — drop the live row.
-    // This is the PRIMARY dedup for cancel acks and final replies: the
-    // locally-committed message (streaming content) and the DB message
-    // ([interrupted] or normal reply) share the same turnID but have
-    // different content/eventSeq, so content matching alone fails.
     if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
-    // Content+role fallback for messages without turnID (user_echo).
-    if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
     // Content-based dedup for assistant messages with turnID=0 (live commit
     // from commitLiveProgressAndReset with snap.turnID=0). The DB version
     // arrives with the correct turnID but different content may exist —
@@ -357,7 +351,28 @@ function reconcileHistoryWithLiveRows(
         historyContentKeys.has(`assistant:${message.content}`)) return false
     return true
   })
-  return [...history, ...liveRows]
+
+  // Merge liveRows into history at the correct position (by turnID), NOT
+  // simply appended at the end. Appending at the end causes user messages
+  // to appear at the bottom ("最近几个 user msg 变得全在最底下" bug) when
+  // liveRows contains persisted user echoes that the DB snapshot doesn't
+  // have yet (racing reload). Insert each liveRow after the last history
+  // message with turnID <= liveRow.turnID (or at the end if no match).
+  const result = [...history]
+  for (const live of liveRows) {
+    let insertIdx = result.length // default: append at end
+    if (live.turnID > 0) {
+      // Find the last message with turnID <= live.turnID
+      for (let i = result.length - 1; i >= 0; i--) {
+        if (result[i].turnID > 0 && result[i].turnID <= live.turnID) {
+          insertIdx = i + 1
+          break
+        }
+      }
+    }
+    result.splice(insertIdx, 0, live)
+  }
+  return result
 }
 
 /** Parse SubAgent messages (simple role/content) into ChatMessage[]. */
