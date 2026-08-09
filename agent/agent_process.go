@@ -653,17 +653,20 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 			assistantMsg.Detail = string(jsonBytes)
 		}
 	}
-	if err := tenantSession.AddMessage(assistantMsg); err != nil {
+	// Use AddMessageWithID to get the DB auto-increment ID — needed to link
+	// iteration_history records to this message.
+	finalMsgID, err := tenantSession.AddMessageWithID(assistantMsg)
+	if err != nil {
 		return nil, fmt.Errorf("append assistant message: %w", err)
 	}
 
-	// --- Structured iteration history (v54) ---
+	// --- Structured iteration history (v55) ---
 	// Write ALL iteration snapshots to the iteration_history table, linked to
 	// the final assistant message. This replaces Detail JSON as the authoritative
 	// source for iteration data — every iteration (including intermediate ones
 	// that were previously lost) is now a structured row.
 	// Detail JSON is still written above for backward compat with old clients.
-	if len(iterHistory) > 0 && assistantMsg.ID > 0 {
+	if len(iterHistory) > 0 && finalMsgID > 0 {
 		var turnID uint64
 		if assistantMsg.TurnID > 0 {
 			turnID = assistantMsg.TurnID
@@ -675,8 +678,8 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 					toolsJSON = string(data)
 				}
 			}
-			if err := tenantSession.AppendIterationHistory(assistantMsg.ID, turnID, sqlite.IterationRecord{
-				MessageID: assistantMsg.ID,
+			if err := tenantSession.AppendIterationHistory(finalMsgID, turnID, sqlite.IterationRecord{
+				MessageID: finalMsgID,
 				TurnID:    turnID,
 				Iteration: snap.Iteration,
 				Content:   snap.Content,
