@@ -264,6 +264,45 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 	flushPending := func() {
 		finishCurIter()
 		if len(pendingIters) > 0 {
+			// v55: if structured iteration_history data exists for this turn,
+			// use it as the authoritative source instead of the fabricated
+			// pendingIters (which have curIterIdx++ ids, not real ones).
+			// This covers the case where a turn has NO final message (all
+			// messages have tool_calls — e.g. cancelled turn, or turn still
+			// in progress). Without this, structured data is never used and
+			// the turn renders with fabricated 1-based ids instead of real ones.
+			iters := pendingIters
+			if pendingTurnID > 0 {
+				if recs, ok := turnIterMap[pendingTurnID]; ok && len(recs) > 0 {
+					iters = make([]HistoryIteration, 0, len(recs))
+					for _, rec := range recs {
+						var tools []protocol.ToolProgress
+						if rec.Tools != "" && rec.Tools != "[]" {
+							var snaps []iterToolSnap
+							if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
+								tools = make([]protocol.ToolProgress, len(snaps))
+								for i, t := range snaps {
+									label := t.Label
+									if label == "" {
+										label = t.Name
+									}
+									tools[i] = protocol.ToolProgress{
+										Name: t.Name, Label: label, Status: t.Status,
+										Elapsed: t.ElapsedMS, Iteration: rec.Iteration,
+										Summary: t.Summary, Args: t.Args, Detail: t.Detail,
+									}
+								}
+							}
+						}
+						iters = append(iters, HistoryIteration{
+							Iteration: rec.Iteration,
+							Content:   rec.Content,
+							Reasoning: rec.Reasoning,
+							Tools:     tools,
+						})
+					}
+				}
+			}
 			ts := lastAssistantTS
 			if ts.IsZero() {
 				ts = time.Date(2024, 1, 1, 0, 0, 0, syntheticIdx, time.UTC)
@@ -275,7 +314,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 				Role:       "assistant",
 				Content:    "",
 				Timestamp:  ts,
-				Iterations: pendingIters,
+				Iterations: iters,
 				TurnID:     pendingTurnID,
 			})
 			pendingIters = nil
