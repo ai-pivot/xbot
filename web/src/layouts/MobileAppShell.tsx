@@ -197,7 +197,7 @@ export function MobileAppShell() {
               <SheetHeader className="sr-only">
                 <SheetTitle>{t('sidebar.sessions')}</SheetTitle>
               </SheetHeader>
-              <SessionSidebar tabManager={tabManager} />
+              <SessionSidebar tabManager={tabManager} onSessionSelected={() => setDrawerOpen(false)} />
             </SheetContent>
           </Sheet>
 
