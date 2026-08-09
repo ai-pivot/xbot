@@ -368,7 +368,28 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 	// 4. Tool hint
 	sb.WriteString("Use `memory_search` to find more memories, `memory_add` to save new ones.\n")
 
+	// Injectable content length (excluding the static header + tool hint) so
+	// operators can confirm memory injection actually fired per turn.
+	injectedRunes := len([]rune(sb.String()))
+	if injectedRunes > 0 {
+		log.WithFields(log.Fields{
+			"query":          truncateForLog(query, 120),
+			"short_term":     len(shortTermMems),
+			"long_term":      len(longTermMems),
+			"has_core":       coreSummary != "",
+			"injected_chars": injectedRunes,
+		}).Info("xbot-memory: Recall injected memories into prompt")
+	}
+
 	return sb.String(), nil
+}
+
+// truncateForLog truncates a string for log output, adding an ellipsis.
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 // fts5SafeQuery converts a raw user query into a SQLite FTS5 MATCH expression
