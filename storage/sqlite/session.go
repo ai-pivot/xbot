@@ -337,3 +337,128 @@ func (s *SessionService) GetTenantCWD(tenantID int64) (string, error) {
 	}
 	return "", nil
 }
+
+// IterationRecord is a structured iteration history entry (v54+).
+// Replaces the Detail JSON blob — every intermediate assistant message now
+// has its iteration data in a dedicated table row, not just the final message.
+type IterationRecord struct {
+	MessageID int64  `json:"message_id"`
+	TurnID    uint64 `json:"turn_id"`
+	Iteration int    `json:"iteration"`
+	Content   string `json:"content"`
+	Reasoning string `json:"reasoning"`
+	Tools     string `json:"tools"` // JSON array of tool snapshots
+}
+
+// AppendIterationHistory inserts a single iteration record linked to a message.
+func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec IterationRecord) error {
+	conn, err := s.conn()
+	if err != nil {
+		return err
+	}
+	_, err = conn.Exec(`
+		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools)
+	if err != nil {
+		return fmt.Errorf("append iteration_history: %w", err)
+	}
+	return nil
+}
+
+// GetIterationHistoryByMessage returns all iteration records for a given
+// session_messages.id, ordered by iteration number.
+func (s *SessionService) GetIterationHistoryByMessage(msgID int64) ([]IterationRecord, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools
+		FROM iteration_history
+		WHERE message_id = ?
+		ORDER BY iteration ASC
+	`, msgID)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration_history by message: %w", err)
+	}
+	defer rows.Close()
+	return scanIterationRecords(rows)
+}
+
+// GetIterationHistoryByTurn returns all iteration records for a given
+// (tenant_id, turn_id) pair, ordered by iteration number. Used by
+// ConvertMessagesToHistory to reconstruct the full iteration list for a turn
+// from the structured table instead of parsing Detail JSON.
+func (s *SessionService) GetIterationHistoryByTurn(tenantID int64, turnID uint64) ([]IterationRecord, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools
+		FROM iteration_history
+		WHERE tenant_id = ? AND turn_id = ?
+		ORDER BY iteration ASC
+	`, tenantID, turnID)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration_history by turn: %w", err)
+	}
+	defer rows.Close()
+	return scanIterationRecords(rows)
+}
+
+// GetIterationHistoryForMessages returns a map of message_id → iteration records
+// for a batch of message IDs. Used by ConvertMessagesToHistory to efficiently
+// load iteration data for all assistant messages in one query instead of N queries.
+func (s *SessionService) GetIterationHistoryForMessages(msgIDs []int64) (map[int64][]IterationRecord, error) {
+	if len(msgIDs) == 0 {
+		return nil, nil
+	}
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	// Build placeholders
+	placeholders := ""
+	args := make([]any, 0, len(msgIDs))
+	for i, id := range msgIDs {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args = append(args, id)
+	}
+	rows, err := conn.Query(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools
+		FROM iteration_history
+		WHERE message_id IN (`+placeholders+`)
+		ORDER BY message_id, iteration ASC
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration_history for messages: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64][]IterationRecord)
+	for rows.Next() {
+		var rec IterationRecord
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools); err != nil {
+			continue
+		}
+		result[rec.MessageID] = append(result[rec.MessageID], rec)
+	}
+	return result, nil
+}
+
+func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {
+	var records []IterationRecord
+	for rows.Next() {
+		var rec IterationRecord
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools); err != nil {
+			continue
+		}
+		records = append(records, rec)
+	}
+	return records, nil
+}

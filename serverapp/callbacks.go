@@ -351,8 +351,20 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			// dropping `done + todos:[]` made the client unable to learn that
 			// the server cleared its todos, so stale items survived reloads.
 		}
+		// v54: load structured iteration_history for all assistant messages.
+		var iterDataMap map[int64][]sqlite.IterationRecord
+		var msgIDs []int64
+		for _, m := range msgs {
+			if m.Role == "assistant" && m.ID > 0 {
+				msgIDs = append(msgIDs, m.ID)
+			}
+		}
+		if len(msgIDs) > 0 {
+			svc := sqlite.NewSessionService(ag.MultiSession().DB())
+			iterDataMap, _ = svc.GetIterationHistoryForMessages(msgIDs)
+		}
 		return web.HistorySnapshot{
-			Messages:       channel.ConvertMessagesToHistory(msgs),
+			Messages:       channel.ConvertMessagesToHistoryWithIterations(msgs, iterDataMap),
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,

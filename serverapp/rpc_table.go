@@ -1148,7 +1148,22 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			if err != nil {
 				return nil, err
 			}
-			return channel.ConvertMessagesToHistory(msgs), nil
+			// v54: load structured iteration_history for all assistant messages.
+			// Falls back to Detail JSON (ConvertMessagesToHistory) when no
+			// structured data exists (old data pre-v54).
+			var iterDataMap map[int64][]sqlite.IterationRecord
+			var msgIDs []int64
+			for _, m := range msgs {
+				if m.Role == "assistant" && m.ID > 0 {
+					msgIDs = append(msgIDs, m.ID)
+				}
+			}
+			if len(msgIDs) > 0 {
+				// Use the session's DB to query iteration_history
+				svc := sqlite.NewSessionService(ms.DB())
+				iterDataMap, _ = svc.GetIterationHistoryForMessages(msgIDs)
+			}
+			return channel.ConvertMessagesToHistoryWithIterations(msgs, iterDataMap), nil
 		}()
 		if err != nil {
 			return nil, err

@@ -12,6 +12,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/storage/sqlite"
 	"xbot/tools"
 
 	"github.com/google/uuid"
@@ -624,6 +625,37 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	}
 	if err := tenantSession.AddMessage(assistantMsg); err != nil {
 		return nil, fmt.Errorf("append assistant message: %w", err)
+	}
+
+	// --- Structured iteration history (v54) ---
+	// Write ALL iteration snapshots to the iteration_history table, linked to
+	// the final assistant message. This replaces Detail JSON as the authoritative
+	// source for iteration data — every iteration (including intermediate ones
+	// that were previously lost) is now a structured row.
+	// Detail JSON is still written above for backward compat with old clients.
+	if len(iterHistory) > 0 && assistantMsg.ID > 0 {
+		var turnID uint64
+		if assistantMsg.TurnID > 0 {
+			turnID = assistantMsg.TurnID
+		}
+		for _, snap := range iterHistory {
+			toolsJSON := "[]"
+			if len(snap.Tools) > 0 {
+				if data, err := json.Marshal(snap.Tools); err == nil {
+					toolsJSON = string(data)
+				}
+			}
+			if err := tenantSession.AppendIterationHistory(assistantMsg.ID, turnID, sqlite.IterationRecord{
+				MessageID: assistantMsg.ID,
+				TurnID:    turnID,
+				Iteration: snap.Iteration,
+				Content:   snap.Content,
+				Reasoning: snap.Reasoning,
+				Tools:     toolsJSON,
+			}); err != nil {
+				log.WithError(err).WithField("iteration", snap.Iteration).Warn("Failed to persist final iteration_history")
+			}
+		}
 	}
 
 	// Send via sendMessage (reuses session message tracking)

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -375,7 +376,12 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 	if s.autoNotify && !s.batchProgressByIteration && s.structuredProgress != nil {
 		s.notifyProgress("")
 	}
-	if s.structuredProgress != nil && len(s.structuredProgress.CompletedTools) > 0 {
+	// Record the iteration snapshot — ALWAYS, not just when CompletedTools > 0.
+	// A reasoning-only iteration (no tools, but has Content/Reasoning) is a
+	// valid iteration that must be persisted. The old `len(CompletedTools) > 0`
+	// guard skipped reasoning-only iterations, causing them to be lost from
+	// the Detail JSON and iteration_history table (the "missing iterations" bug).
+	if s.structuredProgress != nil {
 		snap := IterationSnapshot{
 			Iteration: iteration,
 			Content:   s.structuredProgress.Content,
@@ -400,6 +406,77 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 	}
 	if s.autoNotify && s.batchProgressByIteration {
 		s.notifyProgress("")
+	}
+}
+
+// persistIterationHistory writes the current iteration's snapshot to the
+// iteration_history table (v54+). Called after IncrementalPersist so the
+// intermediate assistant message's .ID (DB message_id) is already populated.
+//
+// This ensures EVERY intermediate assistant message (with tool_calls) has
+// its iteration record (iter id, reasoning, tools) in the structured table —
+// not just the final assistant message's Detail JSON. Without this, reload
+// loses all intermediate iteration data (the "missing iterations" bug).
+func (s *runState) persistIterationHistory(ctx context.Context, iteration int) {
+	if s.cfg.Session == nil || len(s.iterationSnapshots) == 0 {
+		return
+	}
+	// Find the latest snapshot for this iteration.
+	var snap *IterationSnapshot
+	for i := len(s.iterationSnapshots) - 1; i >= 0; i-- {
+		if s.iterationSnapshots[i].Iteration == iteration {
+			snap = &s.iterationSnapshots[i]
+			break
+		}
+	}
+	if snap == nil {
+		return
+	}
+
+	// Find the last persisted assistant message with tool_calls (this iteration's
+	// intermediate assistant). Its .ID was set by IncrementalPersist.commitPending.
+	var msgID int64
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		msg := s.messages[i]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 && msg.ID > 0 {
+			msgID = msg.ID
+			break
+		}
+	}
+	if msgID == 0 {
+		return
+	}
+
+	// Serialize tools to JSON.
+	toolsJSON := "[]"
+	if len(snap.Tools) > 0 {
+		if data, err := json.Marshal(snap.Tools); err == nil {
+			toolsJSON = string(data)
+		}
+	}
+
+	// Get tenantID from the session.
+	tenantID := s.cfg.Session.TenantID()
+	if tenantID == 0 {
+		return
+	}
+
+	// Get turnID from the message metadata or runState.
+	var turnID uint64
+	if s.structuredProgress != nil {
+		turnID = s.structuredProgress.TurnID
+	}
+
+	err := s.cfg.Session.AppendIterationHistory(msgID, turnID, sqlite.IterationRecord{
+		MessageID: msgID,
+		TurnID:    turnID,
+		Iteration: snap.Iteration,
+		Content:   snap.Content,
+		Reasoning: snap.Reasoning,
+		Tools:     toolsJSON,
+	})
+	if err != nil {
+		log.Ctx(ctx).WithError(err).WithField("iteration", iteration).Warn("Failed to persist iteration_history")
 	}
 }
 

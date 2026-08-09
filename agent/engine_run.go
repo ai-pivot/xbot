@@ -1614,6 +1614,16 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		out.Error = fmt.Errorf("append session history: %w", persistErr)
 		return out
 	}
+
+	// --- Structured iteration history (v54) ---
+	// After IncrementalPersist, the intermediate assistant message's .ID is
+	// populated with the DB message_id. Write the current iteration's snapshot
+	// to iteration_history so ConvertMessagesToHistory can read structured
+	// iteration data (iter id, reasoning, tools) from the table instead of
+	// parsing Detail JSON. This ensures every intermediate assistant message
+	// has its iteration record — not just the final message.
+	s.persistIterationHistory(ctx, iteration)
+
 	s.validateInvariantsAt(ctx, "post_persist")
 
 	// --- Background notification draining (bg tasks + bg subagents) ---
