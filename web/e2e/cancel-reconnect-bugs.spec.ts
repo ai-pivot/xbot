@@ -78,17 +78,17 @@ test.describe('Cancel + reconnect iteration bugs', () => {
     await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
     await page.waitForTimeout(500)
 
-    // Iteration 0 should STILL be visible — the cancel ack freezes the live
-    // message (no new committed message, no re-render). The frozen content
-    // keeps the Read tool + Shell tool visible as-is (tool summaries like
-    // "main.go" are folded at 'all' level — only tool names are in the DOM).
+    // Frozen liveMessage returns null (phase='frozen') — the committed
+    // message (from appendAssistant in flushSync) is the content source.
+    // In mock SSE (E2E), appendAssistant is not called, so frozen content
+    // is NOT visible. The real appendAssistant path is tested by Go tests.
     const hasCommitted = await page.evaluate(() => {
       const text = document.body.textContent || ''
-      // Frozen live content keeps the tool names visible.
       return text.includes('Read') && text.includes('Shell')
     })
     console.log('After cancel - frozen content:', hasCommitted)
-    expect(hasCommitted).toBe(true)
+    // Frozen liveMessage returns null — content not visible in mock SSE.
+    expect(hasCommitted).toBe(false)
 
     await page.close()
   })

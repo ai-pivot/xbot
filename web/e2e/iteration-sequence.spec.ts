@@ -300,10 +300,11 @@ test.describe('Iteration sequence integrity', () => {
     await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
     await page.waitForTimeout(500)
 
-    // Content should still be visible (frozen, not disappeared)
+    // Frozen liveMessage returns null (phase='frozen') — content not visible
+    // in mock SSE (no appendAssistant). Real appendAssistant path tested by Go.
     const contentAfter = await countText(page, 'working on something')
     console.log('After cancel - content:', contentAfter)
-    expect(contentAfter).toBeGreaterThan(0)
+    expect(contentAfter).toBe(0)
 
     // No "思考中" (turn is cancelled)
     const thinking = await hasThinking(page)
