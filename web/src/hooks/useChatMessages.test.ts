@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useChatMessages } from './useChatMessages'
 import type { WSConnection } from '@/types/ws'
-import type { WSMessage } from '@/types/shared'
+import type { WSMessage, ChatMessage } from '@/types/shared'
 import {
   bumpProgressGeneration,
   clearWebCaches,
@@ -977,6 +977,33 @@ describe('useChatMessages', () => {
     expect(assistantTurn5[0].content).toBe('final reply')
     // user(5) should be present (it's new — not in batch 1).
     expect(msgs.some((m) => m.role === 'user' && m.turnID === 5 && m.content === 'hello')).toBe(true)
+  })
+
+  it('reload() returns the fresh rows including dbID for rewind resolution', async () => {
+    // BUG: user messages rendered from user_echo SSE carry persisted=true but
+    // NO dbID (the DB id is assigned at persistence, AFTER the echo is sent at
+    // queue-admission time). Rewind needs that id. reload() is the only source
+    // of dbID (parseHistoryMessages → dbID: m.id), so it must return the fresh
+    // rows instead of void — rewindTo resolves a missing dbID from them.
+    const ws = makeWS([
+      // Initial load: history rows already carry dbID.
+      { messages: [{ id: 41, role: 'user', content: 'earlier', turn_id: 6, timestamp: '2026-08-03T00:00:01Z' }] },
+      // reload() response: the persisted user row with its DB id.
+      { messages: [{ id: 42, role: 'user', content: 'hello', turn_id: 7, timestamp: '2026-08-03T00:00:02Z' }] },
+    ])
+
+    const { result } = renderHook(() => useChatMessages({ chatID: 'rewind-reload', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['earlier']))
+
+    const holder: { rows: ChatMessage[] | null } = { rows: null }
+    await act(async () => {
+      holder.rows = await result.current.reload()
+    })
+
+    expect(holder.rows).not.toBeNull()
+    expect(holder.rows?.map((m) => m.content)).toEqual(['hello'])
+    expect(holder.rows?.[0].dbID).toBe(42)
+    expect(result.current.messages[0].dbID).toBe(42)
   })
 
   it('cancelled-turn assistant committed via commitLiveProgressAndReset lands AFTER its turn user, even when next user is not yet in the list', async () => {

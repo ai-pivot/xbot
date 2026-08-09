@@ -25,7 +25,8 @@ import { useTodos } from '@/hooks/useTodos'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
-import { rewindHistory } from '@/components/agent/api'
+import { rewindHistory, fetchHistory } from '@/components/agent/api'
+import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 
 import { AskUserPanel } from '@/components/agent/AskUserPanel'
 import { ContextRing } from '@/components/agent/ContextRing'
@@ -266,12 +267,29 @@ export function AgentPanel({ params }: PanelProps) {
   // the edited content as a new message.
   const rewindTo = useCallback(async (editedContent: string, originalMessage: ChatMessage) => {
     if (!chatID || isSubAgent) return
-    if (!originalMessage.dbID) {
-      toast.error(t('agent.rewindUnavailable'))
-      return
-    }
+    // User messages rendered from user_echo SSE carry persisted=true but no
+    // dbID — the DB id is assigned when the agent loop persists the message,
+    // AFTER the echo is sent at queue-admission time. Resolve the id from a
+    // direct history API call — bypass chat.reload() which can return null
+    // due to requestIsSuperseded() race conditions when SSE events fire
+    // during the await.
     try {
-      await rewindHistory<RewindHistoryResponse>({ channel: messageChannel, chatID }, originalMessage.dbID)
+      // User messages rendered from user_echo SSE carry persisted=true but no
+      // dbID — the DB id is assigned when the agent loop persists the message,
+      // AFTER the echo is sent at queue-admission time. Resolve the id from a
+      // direct history API call — bypass chat.reload() which can return null
+      // due to requestIsSuperseded() race conditions when SSE events fire
+      // during the await.
+      let dbID = originalMessage.dbID
+      if (!dbID) {
+        const data = await fetchHistory(ws, { channel: messageChannel, chatID }, { limit: 100 })
+        dbID = resolveUserMessageDBIDFromHistMsgs(data.messages ?? [], originalMessage)
+      }
+      if (!dbID) {
+        toast.error(t('agent.rewindUnavailable'))
+        return
+      }
+      await rewindHistory<RewindHistoryResponse>({ channel: messageChannel, chatID }, dbID)
       // Exit edit mode
       setEditingMessageId(null)
       // Rewind is destructive: clear the visible/cache rows before reload so
@@ -291,7 +309,7 @@ export function AgentPanel({ params }: PanelProps) {
       // Keep edit mode active when the rewind request fails.
       toast.error(e instanceof Error ? e.message : t('agent.rewindFailed'))
     }
-  }, [chatID, isSubAgent, messageChannel, chat, t, sendMessage])
+  }, [chatID, isSubAgent, messageChannel, chat, ws, t, sendMessage])
 
   const rewindLatest = useCallback(() => {
     if (busy) return

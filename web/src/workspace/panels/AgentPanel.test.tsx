@@ -31,7 +31,7 @@ const mocks = vi.hoisted(() => {
     liveMessage: null,
     isStreaming: false,
   }
-  return { chat, context, order, progress, rewindHistory: vi.fn() }
+  return { chat, context, order, progress, rewindHistory: vi.fn(), fetchHistory: vi.fn() }
 })
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -64,7 +64,10 @@ vi.mock('@/hooks/useLLMSettings', () => ({
     setThinkingMode: vi.fn(),
   }),
 }))
-vi.mock('@/components/agent/api', () => ({ rewindHistory: (...args: unknown[]) => mocks.rewindHistory(...args) }))
+vi.mock('@/components/agent/api', () => ({
+  rewindHistory: (...args: unknown[]) => mocks.rewindHistory(...args),
+  fetchHistory: (...args: unknown[]) => mocks.fetchHistory(...args),
+}))
 vi.mock('@/components/agent/AskUserPanel', () => ({ AskUserPanel: () => null }))
 vi.mock('@/components/agent/ContextRing', () => ({ ContextRing: () => null }))
 vi.mock('@/components/agent/MessageInput', () => ({ MessageInput: () => null }))
@@ -87,6 +90,19 @@ vi.mock('@/components/agent/MessageList', () => ({
       >
         rewind
       </button>
+      <button
+        type="button"
+        onClick={() => props.onRewind?.('edited echo', {
+          id: 'echo-1',
+          role: 'user',
+          content: 'echo message',
+          timestamp: '2026-07-08T00:00:02Z',
+          turnID: 7,
+          persisted: true,
+        })}
+      >
+        rewind-echo
+      </button>
     </div>
   ),
 }))
@@ -100,6 +116,8 @@ describe('AgentPanel rewind', () => {
     mocks.order.length = 0
     mocks.rewindHistory.mockReset()
     mocks.rewindHistory.mockResolvedValue({})
+    mocks.fetchHistory.mockReset()
+    mocks.fetchHistory.mockResolvedValue({ messages: [] })
     mocks.chat.clearMessages.mockClear()
     mocks.chat.reload.mockClear()
     mocks.chat.sendMessage.mockClear()
@@ -128,6 +146,46 @@ describe('AgentPanel rewind', () => {
     expect(mocks.chat.clearMessages).not.toHaveBeenCalled()
     expect(mocks.chat.reload).not.toHaveBeenCalled()
     expect(mocks.chat.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('resolves missing dbID via fetchHistory when message has no dbID (echo row)', async () => {
+    mocks.fetchHistory.mockResolvedValue({
+      messages: [{ id: 99, role: 'user', content: 'echo message', turn_id: 7, timestamp: '2026-07-08T00:00:02Z' }],
+    })
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'rewind-echo' }))
+
+    await waitFor(() => expect(mocks.fetchHistory).toHaveBeenCalled())
+    await waitFor(() => expect(mocks.rewindHistory).toHaveBeenCalledWith(
+      { channel: 'web', chatID: 'chat-1' },
+      99,
+    ))
+    expect(mocks.order).toEqual(['clear', 'reload', 'send'])
+  })
+
+  it('shows rewindUnavailable toast when fetchHistory returns no matching message', async () => {
+    mocks.fetchHistory.mockResolvedValue({ messages: [] })
+    const { toast } = await import('sonner')
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'rewind-echo' }))
+
+    await waitFor(() => expect(mocks.fetchHistory).toHaveBeenCalled())
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('agent.rewindUnavailable'))
+    expect(mocks.rewindHistory).not.toHaveBeenCalled()
+    expect(mocks.chat.clearMessages).not.toHaveBeenCalled()
+  })
+
+  it('shows rewindFailed toast when fetchHistory throws a network error', async () => {
+    mocks.fetchHistory.mockRejectedValueOnce(new Error('network error'))
+    const { toast } = await import('sonner')
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'rewind-echo' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('network error'))
+    expect(mocks.rewindHistory).not.toHaveBeenCalled()
   })
 })
 

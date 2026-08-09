@@ -69,8 +69,10 @@ export interface UseChatMessagesResult {
   processing: boolean
   /** The chat_id reported by the most recent history load (server's active chat). */
   resolvedChatID: string | null
-  /** Reload history for the current chatID. */
-  reload: () => Promise<void>
+  /** Reload history for the current chatID. Resolves to the fresh rows (with
+   *  dbID) or null when superseded/failed — rewind resolves a missing dbID
+   *  from them. */
+  reload: () => Promise<ChatMessage[] | null>
   /** Send a user message (+ optional uploaded file references). */
   sendMessage: (content: string, attachments?: Attachments) => void
   /** Cancel the running agent (sends a `cancel` WS message). */
@@ -500,7 +502,7 @@ export function useChatMessages({
         const dump = await w.rpc<AgentSessionDump>('get_agent_session_dump_by_full_key', {
           full_key: agentChatID,
         })
-        if (requestIsSuperseded() || requestHasDestructiveMutation()) return
+        if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
         const dumpMessages = Array.isArray(dump?.messages) ? dump.messages : []
         const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
@@ -511,7 +513,7 @@ export function useChatMessages({
           setMessages(next)
           setInitialProgress(null)
       setProcessing(false)
-          return
+          return next
         }
       }
       // Live SubAgent mode: same runtime tuple as TUI.
@@ -522,7 +524,7 @@ export function useChatMessages({
           role: subAgentRole,
           instance: subAgentInstance ?? '',
         })
-        if (requestIsSuperseded() || requestHasDestructiveMutation()) return
+        if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
         const dumpMessages = Array.isArray(dump?.messages) ? dump.messages : []
         const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
@@ -532,7 +534,7 @@ export function useChatMessages({
           messagesRef.current = next
           setMessages(next)
           setInitialProgress(null)
-          return
+          return next
         }
         const msgs = await w.rpc<SubAgentMsg[]>('get_session_messages', {
           channel,
@@ -540,18 +542,18 @@ export function useChatMessages({
           role: subAgentRole,
           instance: subAgentInstance ?? '',
         })
-        if (requestIsSuperseded() || requestHasDestructiveMutation()) return
+        if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
         const parsed = parseSubAgentMessages(Array.isArray(msgs) ? msgs : [])
         const mutated = requestHasMessageMutation()
         const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
         messagesRef.current = next
         setMessages(next)
         setInitialProgress(null)
-        return
+        return next
       }
       // Normal mode: load via Web history snapshot (paginated: last 100 messages).
       const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100 })
-      if (requestIsSuperseded() || requestHasDestructiveMutation()) return
+      if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
       const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
       const cursorChatID = data.chat_id ?? chatID
@@ -600,14 +602,16 @@ export function useChatMessages({
       // because the delta only has 0-1 iterations while the server has all.
       setInitialProgress(data.active_progress ?? null)
       if (data.chat_id) setResolvedChatID(data.chat_id)
+      return next
     } catch (e) {
-      if (requestIsSuperseded() || requestHasDestructiveMutation()) return
+      if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
       setError(e instanceof Error ? e.message : String(e))
       if (!sameTarget && !requestHasMessageMutation()) {
         messagesRef.current = []
         setMessages([])
       }
       setInitialProgress(null)
+      return null
     } finally {
       if (gen === reloadGenRef.current) setLoading(false)
     }
