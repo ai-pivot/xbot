@@ -135,6 +135,7 @@ export type WSMessageType =
   | 'sync_progress'
   | 'genui'
   | 'replay_gap'
+  | 'resync_required'
   | '__pong__'
 
 /** Client operations mapped to REST endpoints by the connection adapter. */

@@ -722,7 +722,6 @@ function newMessageRequestID(): string {
 
 function isProgressLifecycleEvent(msg: WSMessage): boolean {
   if (
-    msg.type === 'stream_content' ||
     msg.type === 'progress_structured' ||
     msg.type === 'sync_progress' ||
     msg.type === 'text'

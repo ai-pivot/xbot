@@ -700,6 +700,18 @@ export function useChatMessages({
         void reload()
         return
       }
+      // resync_required: the backend's SSE ring buffer evicted events the
+      // client missed (disconnect lasted longer than the buffer window, or
+      // the buffer overflowed with high-frequency stream events). The events
+      // (including progress_structured with iterationHistory deltas) are
+      // PERMANENTLY LOST — no seq replay can recover them. Must reload from
+      // DB to restore the authoritative iteration history; otherwise the
+      // live message keeps an incomplete iteration list (漏 iter).
+      if (msg.type === 'resync_required') {
+        setLoading(true)
+        void reload()
+        return
+      }
       if (!matchesChatID(msg, listenerChatID, channel)) return
       if (msg.type !== 'user_echo' && msg.type !== 'inject_user') return
       const content = msg.content ?? msg.original_content ?? ''

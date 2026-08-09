@@ -529,6 +529,55 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('applies delayed recovery after later stream_content events (SSE reconnect while streaming)', async () => {
+    // Regression: isProgressLifecycleEvent previously included stream_content.
+    // During an SSE reconnect, the agent is usually STILL STREAMING — the
+    // restoreActiveProgress RPC is in-flight while stream_content events
+    // arrive at ~20/sec. Each one bumped progressVersion, so the RPC's
+    // progressVersion !== progressVersion check ALWAYS failed → recovery was
+    // dropped → iterations completed during the disconnect were permanently
+    // lost (漏 iter). stream_content is a pure stream delta, NOT a lifecycle
+    // event — it must not invalidate the recovery.
+    let resolveProgress: (progress: { phase: string; iteration: number }) => void = () => undefined
+    postAPIMock.mockImplementation((endpoint: string) => {
+      if (endpoint === '/api/rpc') {
+        return new Promise((resolve) => {
+          resolveProgress = resolve
+        })
+      }
+      return Promise.resolve({})
+    })
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 1)
+
+    // Seq gap on a stateful event triggers restoreActiveProgress (RPC in flight).
+    source.emit('progress_structured', { type: 'progress_structured', seq: 4, progress: { phase: 'tool', iteration: 2 } })
+    await Promise.resolve()
+    expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', expect.objectContaining({
+      method: 'get_active_progress',
+    }))
+
+    // While the RPC is in flight, stream_content events arrive (agent streaming).
+    // These must NOT invalidate the pending recovery.
+    source.emit('stream_content', { type: 'stream_content', seq: 5, progress: { stream_content: 'partial reasoning...' } })
+    source.emit('stream_content', { type: 'stream_content', seq: 6, progress: { stream_content: 'more text' } })
+
+    // RPC resolves — the recovery MUST be applied despite the stream_content events.
+    resolveProgress({ phase: 'tool', iteration: 7 })
+    await Promise.resolve()
+
+    expect(received.filter((m) => m.type === 'progress_structured').at(-1)).toMatchObject({
+      type: 'progress_structured',
+      progress: { phase: 'tool', iteration: 7 },
+    })
+    connection.dispose()
+  })
+
   it('requests active progress when an event sequence gap reveals replay overflow', async () => {
     postAPIMock.mockImplementation(async (endpoint: string) => {
       if (endpoint === '/api/rpc') return { phase: 'tool', iteration: 3 }
