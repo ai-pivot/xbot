@@ -117,9 +117,20 @@ test.describe('Cancel does not re-render', () => {
         { iteration: 0, thinking: 'I am thinking about this...', completed_tools: [], user_cancelled: true },
       ]),
     })
+    // Simulate the committed [interrupted] message arriving (in real app,
+    // appendAssistant in flushSync adds this synchronously with the cancel ack).
+    // The frozen liveMessage returns null (phase='frozen') — the committed
+    // message is the only source of the content.
+    await emitSSE(page, 'text', {
+      type: 'text',
+      content: 'I am thinking about this...',
+      seq: 4,
+      turn_id: 1,
+      chat_id: 'web:chat-1',
+    })
     await page.waitForTimeout(500)
 
-    // ── Verify: streamed content STAYS visible (frozen, not disappeared) ──
+    // ── Verify: streamed content STAYS visible (in committed message) ──
     const contentVisible = await page.evaluate(() =>
       document.body.textContent?.includes('I am thinking about this') ?? false)
     console.log('Content visible after cancel:', contentVisible)

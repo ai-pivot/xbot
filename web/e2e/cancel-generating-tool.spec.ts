@@ -149,6 +149,15 @@ test.describe('Cancel clears generating tool', () => {
         streaming_tools: [{ name: 'Shell', status: 'generating' }],
       },
     })
+    // Simulate committed message arriving (in real app, appendAssistant in
+    // flushSync adds this synchronously with the cancel ack).
+    await emitSSE(page, 'text', {
+      type: 'text',
+      content: 'Let me run a command to check the build.',
+      seq: 4,
+      turn_id: 1,
+      chat_id: 'web:chat-1',
+    })
     await page.waitForTimeout(500)
 
     // ── Verify: generating tool should disappear (not real content) ──
