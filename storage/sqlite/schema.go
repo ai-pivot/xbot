@@ -117,7 +117,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (54);
+INSERT INTO schema_version (version) VALUES (55);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations)
 CREATE TABLE user_llm_subscriptions (

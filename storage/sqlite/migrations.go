@@ -318,46 +318,50 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
-	// v54: structured iteration history table. Replaces Detail JSON for
-	// iteration data — every intermediate assistant message now has its
-	// iteration record (iter id, reasoning, tools) in a dedicated table,
-	// not just the final assistant message's Detail blob. This fixes the
-	// "missing iterations after reload" bug where intermediate tool_calls
-	// assistant messages had no Detail (iter id lost).
-	if from < 54 {
-		if err := migrateV53ToV54(db.Conn()); err != nil {
-			return fmt.Errorf("migrate to v54: %w", err)
-		}
-	}
+ // v54: structured iteration history table. Replaces Detail JSON for
+ // iteration data — every intermediate assistant message now has its
+ // iteration record (iter id, reasoning, tools) in a dedicated table,
+ // not just the final assistant message's Detail blob. This fixes the
+ // "missing iterations after reload" bug where intermediate tool_calls
+ // assistant messages had no Detail (iter id lost).
+ //
+ // NOTE: v54 was previously used for identity merge. This migration uses v55
+ // to avoid collision — databases already at v54 (from identity merge)
+ // will run this migration and create the iteration_history table.
+ if from < 55 {
+ if err := migrateV54ToV55(db.Conn()); err != nil {
+  return fmt.Errorf("migrate to v55: %w", err)
+ }
+ }
 
-	return nil
+ return nil
 }
 
-// migrateV53ToV54 creates the iteration_history table for structured
+// migrateV54ToV55 creates the iteration_history table for structured
 // iteration storage. Existing Detail JSON is left as-is for backward compat.
-func migrateV53ToV54(conn *sql.DB) error {
-	migration := `
-	CREATE TABLE IF NOT EXISTS iteration_history (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	message_id INTEGER NOT NULL,
-	tenant_id INTEGER NOT NULL,
-	turn_id INTEGER NOT NULL DEFAULT 0,
-	iteration INTEGER NOT NULL,
-	content TEXT NOT NULL DEFAULT '',
-	reasoning TEXT NOT NULL DEFAULT '',
-	tools TEXT NOT NULL DEFAULT '[]',
-	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-	FOREIGN KEY (message_id) REFERENCES session_messages(id) ON DELETE CASCADE
-	);
-	CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);
-	CREATE INDEX IF NOT EXISTS idx_iter_history_turn ON iteration_history(tenant_id, turn_id);
-	UPDATE schema_version SET version = 54;
-	`
-	if _, err := conn.Exec(migration); err != nil {
-		return fmt.Errorf("migrate v53->v54: %w", err)
-	}
-	log.Info("Database migrated to v54 (added iteration_history table)")
-	return nil
+func migrateV54ToV55(conn *sql.DB) error {
+ migration := `
+CREATE TABLE IF NOT EXISTS iteration_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id INTEGER NOT NULL,
+  tenant_id INTEGER NOT NULL,
+  turn_id INTEGER NOT NULL DEFAULT 0,
+  iteration INTEGER NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  reasoning TEXT NOT NULL DEFAULT '',
+  tools TEXT NOT NULL DEFAULT '[]',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (message_id) REFERENCES session_messages(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);
+CREATE INDEX IF NOT EXISTS idx_iter_history_turn ON iteration_history(tenant_id, turn_id);
+UPDATE schema_version SET version = 55;
+`
+ if _, err := conn.Exec(migration); err != nil {
+ return fmt.Errorf("migrate v54->v55: %w", err)
+ }
+ log.Info("Database migrated to v55 (added iteration_history table)")
+ return nil
 }
 
 // migrateV1ToV2 adds the user_profiles table.
