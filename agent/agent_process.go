@@ -470,11 +470,41 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		batch = append(batch, cancelMsg)
 	}
 	if tenantSession != nil {
-		if _, err := tenantSession.AppendMessages(batch); err != nil {
+		historyIDs, err := tenantSession.AppendMessages(batch)
+		if err != nil {
 			// Drained notifications are no longer reachable through bgRunPending.
 			// Restore them before returning so a later turn can retry the batch.
 			a.requeueDrainedBgNotifications(sessionKey)
 			return nil, fmt.Errorf("append cancelled run batch: %w", err)
+		}
+		// v54: write structured iteration_history for the cancelled turn's
+		// [interrupted] message. Without this, the cancelled turn's iterations
+		// are only in Detail JSON (backward compat) — the structured table
+		// has no record, and ConvertMessagesToHistoryWithIterations falls back
+		// to Detail (which works, but new data should use the structured path).
+		if len(iterHistory) > 0 && len(historyIDs) > 0 {
+			// The [interrupted] message is the last in the batch.
+			cancelMsgID := historyIDs[len(historyIDs)-1]
+			var turnID uint64
+			if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
+				turnID = tid
+			}
+			for _, snap := range iterHistory {
+				toolsJSON := "[]"
+				if len(snap.Tools) > 0 {
+					if data, err := json.Marshal(snap.Tools); err == nil {
+						toolsJSON = string(data)
+					}
+				}
+				_ = tenantSession.AppendIterationHistory(cancelMsgID, turnID, sqlite.IterationRecord{
+					MessageID: cancelMsgID,
+					TurnID:    turnID,
+					Iteration: snap.Iteration,
+					Content:   snap.Content,
+					Reasoning: snap.Reasoning,
+					Tools:     toolsJSON,
+				})
+			}
 		}
 	}
 	// Pending notifications and the per-run drained ledger are acknowledgements:

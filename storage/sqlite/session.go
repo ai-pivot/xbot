@@ -170,6 +170,8 @@ func (s *SessionService) Clear(tenantID int64) error {
 	if err != nil {
 		return err
 	}
+	// Delete iteration_history first (no FK cascade when foreign_keys=OFF).
+	_, _ = conn.Exec("DELETE FROM iteration_history WHERE tenant_id = ?", tenantID)
 	result, err := conn.Exec("DELETE FROM session_messages WHERE tenant_id = ?", tenantID)
 	if err != nil {
 		return fmt.Errorf("clear session messages: %w", err)

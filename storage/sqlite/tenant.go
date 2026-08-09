@@ -214,6 +214,8 @@ func (s *TenantService) DeleteTenant(tenantID int64) error {
 		return fmt.Errorf("tenant service not initialized")
 	}
 	conn := s.db.Conn()
+	// Delete iteration_history first (no FK cascade when foreign_keys=OFF).
+	_, _ = conn.Exec("DELETE FROM iteration_history WHERE tenant_id = ?", tenantID)
 	result, err := conn.Exec("DELETE FROM tenants WHERE id = ?", tenantID)
 	if err != nil {
 		return fmt.Errorf("delete tenant: %w", err)
