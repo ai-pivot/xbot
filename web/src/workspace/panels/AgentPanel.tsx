@@ -273,16 +273,22 @@ export function AgentPanel({ params }: PanelProps) {
     // direct history API call — bypass chat.reload() which can return null
     // due to requestIsSuperseded() race conditions when SSE events fire
     // during the await.
-    let dbID = originalMessage.dbID
-    if (!dbID) {
-      const data = await fetchHistory(ws, { channel: messageChannel, chatID }, { limit: 100 })
-      dbID = resolveUserMessageDBIDFromHistMsgs(data.messages ?? [], originalMessage)
-    }
-    if (!dbID) {
-      toast.error(t('agent.rewindUnavailable'))
-      return
-    }
     try {
+      // User messages rendered from user_echo SSE carry persisted=true but no
+      // dbID — the DB id is assigned when the agent loop persists the message,
+      // AFTER the echo is sent at queue-admission time. Resolve the id from a
+      // direct history API call — bypass chat.reload() which can return null
+      // due to requestIsSuperseded() race conditions when SSE events fire
+      // during the await.
+      let dbID = originalMessage.dbID
+      if (!dbID) {
+        const data = await fetchHistory(ws, { channel: messageChannel, chatID }, { limit: 100 })
+        dbID = resolveUserMessageDBIDFromHistMsgs(data.messages ?? [], originalMessage)
+      }
+      if (!dbID) {
+        toast.error(t('agent.rewindUnavailable'))
+        return
+      }
       await rewindHistory<RewindHistoryResponse>({ channel: messageChannel, chatID }, dbID)
       // Exit edit mode
       setEditingMessageId(null)
