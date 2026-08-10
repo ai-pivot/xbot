@@ -391,7 +391,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 					}
 
 					if len(iters) > 0 {
-						isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
+						isInterrupted := m.Interrupted
 						if m.Content != "" && !isInterrupted {
 							history = append(history, HistoryMessage{
 								ID:         m.ID,
@@ -411,7 +411,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 								Iterations: iters,
 							})
 						}
-					} else if m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]") {
+					} else if m.Content != "" && !m.Interrupted {
 						history = append(history, HistoryMessage{
 							ID:        m.ID,
 							Role:      "assistant",
@@ -478,7 +478,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 					pendingIters = nil
 
 					if len(iters) > 0 {
-						isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
+						isInterrupted := m.Interrupted
 						if m.Content != "" && !isInterrupted {
 							history = append(history, HistoryMessage{
 								ID:         m.ID,
@@ -498,7 +498,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 								Iterations: iters,
 							})
 						}
-					} else if m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]") {
+					} else if m.Content != "" && !m.Interrupted {
 						history = append(history, HistoryMessage{
 							ID:        m.ID,
 							Role:      "assistant",
@@ -778,10 +778,10 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 					pendingIters = nil
 
 					if len(iters) > 0 {
-						// [interrupted] messages carry cancelled-turn iteration history
-						// with full elapsed data. Use empty Content so the UI shows
-						// only the progress block, not the "[interrupted]" marker text.
-						isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
+						// Interrupted messages (m.Interrupted=true) carry cancelled-turn
+						// iteration history. Use empty Content so the UI shows only the
+						// progress block, not the "[interrupted]" marker text.
+						isInterrupted := m.Interrupted
 						if m.Content != "" && !isInterrupted {
 							history = append(history, HistoryMessage{
 								ID:         m.ID,
@@ -803,7 +803,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 								Iterations: iters,
 							})
 						}
-					} else if m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]") {
+					} else if m.Content != "" && !m.Interrupted {
 						history = append(history, HistoryMessage{
 							ID:        m.ID,
 							Role:      "assistant",

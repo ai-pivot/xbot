@@ -437,6 +437,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 
 	if len(iterHistory) > 0 {
 		cancelMsg := llm.NewAssistantMessage("[interrupted]")
+		cancelMsg.Interrupted = true
 		if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
 			cancelMsg.TurnID = tid
 		}
