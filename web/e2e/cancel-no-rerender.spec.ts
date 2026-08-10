@@ -119,7 +119,8 @@ test.describe('Cancel does not re-render', () => {
     })
     // Simulate the committed [interrupted] message arriving (in real app,
     // appendAssistant in flushSync adds this synchronously with the cancel ack).
-    // The frozen liveMessage returns null (phase='frozen') — the committed
+    // The frozen liveMessage stays visible (phase='frozen', content preserved) —
+    // the committed
     // message is the only source of the content.
     await emitSSE(page, 'text', {
       type: 'text',

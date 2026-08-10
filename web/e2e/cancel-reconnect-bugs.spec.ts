@@ -81,7 +81,7 @@ test.describe('Cancel + reconnect iteration bugs', () => {
     // Frozen liveMessage returns null (phase='frozen') — the committed
     // message (from appendAssistant in flushSync) is the content source.
     // In mock SSE (E2E), appendAssistant is not called, so frozen content
-    // is NOT visible. The real appendAssistant path is tested by Go tests.
+    // is preserved (frozen liveMessage keeps it visible — user requirement).
     const hasCommitted = await page.evaluate(() => {
       const text = document.body.textContent || ''
       return text.includes('Read') && text.includes('Shell')

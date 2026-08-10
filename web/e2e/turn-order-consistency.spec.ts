@@ -187,7 +187,7 @@ test.describe('Turn order consistency', () => {
     // Check: content is preserved (not empty)
     // Frozen liveMessage returns null (phase='frozen') — content is in the
     // committed message (from appendAssistant in flushSync). In mock SSE
-    // (E2E), appendAssistant is not called, so frozen content is NOT visible.
+    // (E2E), the frozen liveMessage keeps content visible (user requirement).
     // The real appendAssistant path is tested by Go integration tests.
     const assistantElements = await page.locator('[data-role="assistant"]').all()
     let foundContent = false
