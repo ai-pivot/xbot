@@ -130,22 +130,19 @@ test.describe('Cancel does not re-render', () => {
     })
     await page.waitForTimeout(500)
 
-    // ── Verify: streamed content is NOT visible in frozen liveMessage ──
-    // In real app, cancel triggers appendAssistant (flushSync) which adds the
-    // committed [interrupted] message with the content. In mock SSE (E2E),
-    // appendAssistant is not called — frozen liveMessage returns null
-    // (phase='frozen'), so content is NOT visible. This is correct behavior:
-    // the content lives in the committed message, not the frozen liveMessage.
-    // The E2E test verifies that frozen liveMessage does NOT render (no
-    // duplicate content). The real appendAssistant path is tested by the
-    // Go integration tests.
+    // ── Verify: streamed content stays visible (frozen liveMessage) ──
+    // User requirement: already-rendered content NEVER disappears after cancel.
+    // The frozen live message keeps 'I am thinking about this...' visible
+    // (store.freeze() keeps streamContent). The committed message replaces it
+    // when appendAssistant runs (real app); in mock SSE the frozen live row
+    // is the content source. NO duplicate assistant is appended — the second
+    // text event is dropped (finalizedRef guard).
     const contentVisible = await page.evaluate(() =>
       document.body.textContent?.includes('I am thinking about this') ?? false)
     console.log('Content visible after cancel:', contentVisible)
 
-    // Frozen liveMessage returns null — content is NOT in the live row.
-    // It will appear when the committed message arrives (appendAssistant).
-    expect(contentVisible).toBe(false)
+    // Content stays visible (already-rendered content never disappears).
+    expect(contentVisible).toBe(true)
 
     // ── Verify: no streaming animation (typewriter stopped) ──
     const hasStreamingAnim = await page.evaluate(() =>
