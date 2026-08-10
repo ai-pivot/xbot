@@ -117,7 +117,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (55);
+INSERT INTO schema_version (version) VALUES (56);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations)
 CREATE TABLE user_llm_subscriptions (
@@ -309,15 +309,14 @@ INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES
 -- v54: structured iteration history (replaces Detail JSON for iteration data)
 CREATE TABLE IF NOT EXISTS iteration_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    message_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL DEFAULT 0,
     tenant_id INTEGER NOT NULL,
     turn_id INTEGER NOT NULL DEFAULT 0,
     iteration INTEGER NOT NULL,
     content TEXT NOT NULL DEFAULT '',
     reasoning TEXT NOT NULL DEFAULT '',
     tools TEXT NOT NULL DEFAULT '[]',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (message_id) REFERENCES session_messages(id) ON DELETE CASCADE
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);
 CREATE INDEX IF NOT EXISTS idx_iter_history_turn ON iteration_history(tenant_id, turn_id);
