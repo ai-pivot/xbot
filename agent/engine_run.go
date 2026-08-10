@@ -898,6 +898,18 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 		output := cleanContent
 		if response.FinishReason == llm.FinishReasonLength {
 			output += "\n\n⚠️ Output was truncated (reached max output token limit). Use /set-llm max_output_tokens=<n> to increase."
+			// Record a 'truncated' fake tool so the iteration history shows
+			// that the output was cut short — structurally identical to a
+			// normal tool call (name, status, summary, detail).
+			if s.structuredProgress != nil {
+				s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
+					Name:    "truncated",
+					Label:   "truncated",
+					Status:  ToolError,
+					Summary: "Output truncated (max output token limit reached)",
+					Detail:  fmt.Sprintf("finish_reason=length, content_len=%d, max_output=%d", len(cleanContent), s.cfg.MaxOutputTokens),
+				})
+			}
 		}
 		// content_filter: model output was filtered by safety system
 		if response.FinishReason == llm.FinishReasonContentFilter {
@@ -940,11 +952,27 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 		// — at that point Content/ReasoningContent were empty (set above, not
 		// before). This writes the final iteration's content/reasoning directly
 		// to iteration_history, completing the iteration record.
+		// IMPORTANT: write cleanContent (the raw LLM output BEFORE appending
+		// truncation/content_filter warnings). The warnings are UI-only —
+		// iteration_history should preserve the actual LLM output. The
+		// 'truncated'/'content_filter' fake tools (added above) carry the
+		// warning metadata.
 		if s.structuredProgress != nil && s.structuredProgress.Iteration > 0 {
 			s.writeIterationHistory(s.structuredProgress.Iteration, IterationSnapshot{
 				Iteration: s.structuredProgress.Iteration,
-				Content:   s.structuredProgress.Content,
+				Content:   cleanContent,
 				Reasoning: s.structuredProgress.ReasoningContent,
+				Tools: func() []IterationToolSnapshot {
+					// Include the truncated/content_filter fake tool if added.
+					tools := make([]IterationToolSnapshot, 0, len(s.structuredProgress.CompletedTools))
+					for _, t := range s.structuredProgress.CompletedTools {
+						tools = append(tools, IterationToolSnapshot{
+							Name: t.Name, Label: t.Label, Status: string(t.Status),
+							Summary: t.Summary, Detail: t.Detail,
+						})
+					}
+					return tools
+				}(),
 			})
 		}
 
