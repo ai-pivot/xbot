@@ -11,8 +11,30 @@ export function sessionCacheKey(channel: string | null | undefined, chatID: stri
   return `${channel || 'web'}:${chatID}`
 }
 
-/** Per-conversation rendered messages, keyed by sessionCacheKey. */
-export const messagesCache = new Map<string, ChatMessage[]>()
+/** Per-conversation rendered messages, keyed by sessionCacheKey.
+ *  Value carries the progress generation at write time — a cached entry whose
+ *  generation no longer matches the current one is stale (the session had
+ *  progress/turn updates since the cache was written) and is dropped on read.
+ *  This keeps session-switch cache rendering consistent: the cache is only
+ *  shown when it reflects the session's current progress state. */
+export interface MessagesCacheEntry {
+  messages: ChatMessage[]
+  progressGen: number
+}
+export const messagesCache = new Map<string, MessagesCacheEntry>()
+
+/** Read a cached message list only when it is NOT stale (progress generation
+ *  unchanged since write). Stale entries are evicted — the caller falls back
+ *  to a network reload instead of rendering outdated data. */
+export function getCachedMessages(key: string): ChatMessage[] | null {
+  const entry = messagesCache.get(key)
+  if (!entry) return null
+  if (entry.progressGen !== getProgressGeneration(key)) {
+    messagesCache.delete(key)
+    return null
+  }
+  return entry.messages
+}
 /** Last SSE sequence processed for each channel-qualified session. */
 export const lastSeqCache = new Map<string, number>()
 /** Latest structured progress event for each channel-qualified session. */

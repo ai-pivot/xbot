@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   bumpProgressGeneration,
   clearWebCaches,
+  getCachedMessages,
   getProgressGeneration,
   lastSeqCache,
   loadSessionTreeCache,
@@ -54,7 +55,7 @@ describe('web caches', () => {
   it('clears local and in-memory cache layers together', () => {
     localStorage.setItem(SESSION_TREE_CACHE_KEY, '{}')
     const cacheKey = sessionCacheKey('web', 'chat-1')
-    messagesCache.set(cacheKey, [])
+    messagesCache.set(cacheKey, { messages: [], progressGen: 0 })
     lastSeqCache.set(cacheKey, 4)
     progressSnapshotCache.set(cacheKey, { phase: 'tool' })
     bumpProgressGeneration(cacheKey)
@@ -66,5 +67,24 @@ describe('web caches', () => {
     expect(lastSeqCache.size).toBe(0)
     expect(progressSnapshotCache.size).toBe(0)
     expect(getProgressGeneration(cacheKey)).toBe(0)
+  })
+
+  it('getCachedMessages returns null for a stale entry (progress generation changed)', () => {
+    const cacheKey = sessionCacheKey('web', 'chat-1')
+    messagesCache.set(cacheKey, { messages: [{ id: 'a', role: 'assistant', content: 'old', iterations: [], timestamp: '', isPartial: false, turnID: 1 }], progressGen: 0 })
+    expect(getCachedMessages(cacheKey)).not.toBeNull()
+    bumpProgressGeneration(cacheKey)
+    expect(getCachedMessages(cacheKey)).toBeNull()
+    expect(messagesCache.has(cacheKey)).toBe(false)
+  })
+
+  it('getCachedMessages returns the entry when the generation matches', () => {
+    const cacheKey = sessionCacheKey('web', 'chat-2')
+    const entry = { messages: [{ id: 'a', role: 'assistant' as const, content: 'x', iterations: [], timestamp: '', isPartial: false, turnID: 2 }], progressGen: 3 }
+    bumpProgressGeneration(cacheKey)
+    bumpProgressGeneration(cacheKey)
+    bumpProgressGeneration(cacheKey)
+    messagesCache.set(cacheKey, entry)
+    expect(getCachedMessages(cacheKey)).toEqual(entry.messages)
   })
 })

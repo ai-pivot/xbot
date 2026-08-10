@@ -19,6 +19,8 @@ import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucid
 
 import { MessageItem } from './MessageItem'
 import { ShimmerThinking } from './ShimmerThinking'
+import { bindTurnIDs, orderMessageRows, assertRowConsistency } from './messageOrder'
+import { mergeIterations } from './progressStore'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -97,96 +99,84 @@ export function buildMessageRows(
   messages: ChatMessage[],
   liveMessage: ChatMessage | null,
 ): ChatMessage[] {
-  // Order = the message array's accumulation order (append-only — mirrors the
-  // backend's DB row order). NO turnID re-sorting: user rows keep their
-  // natural order, and a turn_id=0 user must NOT be grouped with other users.
-  // The committed assistant's position is fixed by appendAssistant at commit
-  // time (inserted before the newest user), so the array is already ordered.
-  if (!liveMessage) return messages.length > 0 ? messages : []
-  // The live message for a turn that already has a committed assistant is
-  // merged into it (liveProgress flows via liveId) — never rendered twice.
-  if (liveMessage.turnID > 0) {
-    const hasCommitted = messages.some(
-      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role && !m.isPartial,
-    )
-    if (hasCommitted) {
-      return messages
-    }
-    // Text event may arrive WITHOUT turn_id (backend gap / restart recovery) —
-    // the committed message then has turnID=0 and the exact match above fails,
-    // duplicating the final reply (live + committed both render the same text,
-    // user report: "最终 iter 重复渲染"). Fall back to content match: the same
-    // non-empty content committed by appendAssistant = the same message.
-    const hasContentMatch = messages.some(
-      (m) =>
-        m.role === 'assistant' &&
-        !m.isPartial &&
-        m.content &&
-        liveMessage.content &&
-        m.content === liveMessage.content,
-    )
-    if (hasContentMatch) {
-      return messages
-    }
-  }
-  // Check if ANY committed assistant message exists in messages. If so,
-  // and the live message is frozen (turnID=0), skip it — the committed
-  // message (from appendAssistant in flushSync) already has the content.
-  if (liveMessage.turnID === 0) {
-    // Only skip when the committed assistant's CONTENT or ITERATIONS match
-    // the live message — the cancel commit path commits the SAME text and
-    // progress_history iterations. A normal streaming live message (no
-    // turn_started yet → turnID=0, e.g. legacy backend or turn_started lost)
-    // has NEW content not present in any committed message — it must render.
-    // The old `hasAnyCommittedAssistant` check skipped ANY turnID=0 live row
-    // whenever history contained a committed assistant, hiding legitimate
-    // streaming (regression: stream-jitter E2E "Starting..." never rendered).
-    const hasMatchingCommitted = messages.some(
-      (m) =>
-        m.role === 'assistant' &&
-        !m.isPartial &&
-        ((m.content && liveMessage.content && m.content === liveMessage.content) ||
-          (m.iterations &&
-            m.iterations.length > 0 &&
-            liveMessage.iterations &&
-            liveMessage.iterations.length === m.iterations.length &&
-            m.iterations.every((it, i) => it.iteration === liveMessage.iterations![i]?.iteration))),
-    )
-    if (hasMatchingCommitted) {
-      return messages
-    }
-  }
-  // Frozen live row from a cancelled previous turn: turnID > 0, no committed
-  // assistant with same turnID (hasCommitted=false above). Insert AFTER the
-  // last message with the SAME turnID (exact match, not <=). This places
-  // the frozen content at the end of its turn — above newer messages from
-  // later turns (including the new user msg with turnID=0).
+  // Single render choke point. All paths (history reload, live append, cancel,
+  // notification, session switch, weak-network reorder) funnel through here.
   //
-  // CRITICAL: use EXACT turnID match (===), not <=. The old code used <=
-  // which scanned backwards and found messages from OLDER turns (turnID < N),
-  // inserting the live row at the wrong position (before the user msg of
-  // the current turn). Exact match ensures the live row is placed right
-  // after the last message of its own turn.
+  // Performance contract (streaming hot path: committed rows unchanged, only
+  // liveMessage updates every frame):
+  //  - `messages` may be the cached committed list (see MessageList's useMemo);
+  //    bindTurnIDs/orderMessageRows/dedupLiveRows all have zero-copy fast
+  //    paths when nothing needs binding/sorting/deduping.
+  //  - The only per-frame allocation is the single `[...messages, live]` copy
+  //    needed to append the live row; when the live row duplicates a committed
+  //    one (same content / iterations) we return `messages` directly (zero
+  //    copy).
   //
-  // Also: match ANY role (user OR assistant). A frozen live row from a
-  // cancelled turn may only have the user message in the committed list
-  // (committed [interrupted] not yet arrived). Matching user messages
-  // ensures the frozen row is inserted after the user message of its turn.
-  if (liveMessage.turnID > 0) {
-    let insertIdx = -1
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].turnID === liveMessage.turnID) {
-        insertIdx = i + 1
-        break
-      }
+  // Correctness steps (in order):
+  //   1. bindTurnIDs — derive deterministic turn_id for turnID=0 committed rows.
+  //   2. dedupLiveRows — a live row that duplicates a committed row (same
+  //      content/iterations) is dropped.
+  //   3. orderMessageRows — strict (turnID, role) sort. R2: a larger turn_id
+  //      NEVER renders above a smaller one. Within a turn user precedes
+  //      assistant; ties keep input order (= iteration order).
+  //   4. assertRowConsistency — diagnostic invariants (turn monotonic, iter
+  //      contiguous); never blocks rendering.
+  if (!liveMessage) return orderMessageRows(bindTurnIDs(messages))
+  if (messages.length === 0) return [liveMessage]
+  // Single O(N) scan classifies the live row against the committed rows:
+  //  - SAME turnID + role: the live row is the pre-commit / frozen phase of an
+  //    already-committed assistant. MERGE the live row's iterations (the
+  //    in-flight iteration is NOT in the committed list — a cancelled turn's
+  //    running tool lives only in the live snapshot) into the committed row
+  //    and drop the live row. This preserves already-rendered content
+  //    (user requirement) while avoiding duplicate rows. Committed content
+  //    wins (complete reply); live content fills an empty committed row
+  //    (the [interrupted] marker has no text).
+  //  - EXACT content/iteration match with a committed row of a DIFFERENT turn
+  //    (committed turnID=0 because the text event lost its turn_id): the live
+  //    row is the same message — drop it.
+  //  - Otherwise: the live row is genuinely new streaming content — keep it.
+  const live = liveMessage
+  let sameTurnIdx = -1
+  let exactDup = false
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    if (m.isPartial || m.role !== live.role) continue
+    if (live.turnID > 0 && m.turnID === live.turnID) {
+      sameTurnIdx = i
+      break
     }
-    if (insertIdx >= 0) {
-      return [...messages.slice(0, insertIdx), liveMessage, ...messages.slice(insertIdx)]
+    if (
+      (m.content && live.content && m.content === live.content) ||
+      (m.iterations.length > 0 &&
+        live.iterations.length > 0 &&
+        m.iterations.length === live.iterations.length &&
+        m.iterations.every((it, k) => it.iteration === live.iterations[k]?.iteration))
+    ) {
+      exactDup = true
+      break
     }
   }
-  // Normal streaming reply (turnID not in committed list yet) or turnID=0
-  // with no committed assistant: append at the END (below the newest user msg).
-  return [...messages, liveMessage]
+  if (sameTurnIdx >= 0) {
+    const committed = messages[sameTurnIdx]
+    // Merge live's iterations (in-flight iteration included) into committed,
+    // preserving committed's complete content (or the live text when committed
+    // is an empty [interrupted] marker). One copy; the live row is removed.
+    const merged = mergeIterations(committed.iterations, live.iterations)
+    const result = [...messages]
+    result[sameTurnIdx] = {
+      ...committed,
+      content: committed.content || live.content,
+      iterations: merged,
+    }
+    return result
+  }
+  if (exactDup) return messages // zero copy — the committed row already renders it
+  const all = [...messages, liveMessage]
+  const bound = bindTurnIDs(all) // fast path: committed already bound, live skipped
+  const ordered = orderMessageRows(bound) // fast path: already ordered
+  assertRowConsistency(ordered)
+  return ordered
 }
 
 export function MessageList({
@@ -251,7 +241,20 @@ export function MessageList({
   // Only the LAST assistant after the last user message is kept; all earlier
   // ones are absorbed (their tools are in the snapshot or in the last
   // assistant's iterations).
-  const rows = useMemo<ChatMessage[]>(() => buildMessageRows(messages, liveMessage), [messages, liveMessage])
+  // Committed rows are order-stable between frames — bind+sort them ONCE per
+  // `messages` change (history reload, appendAssistant, injectUserMessage).
+  // Streaming updates only change liveMessage; the rows memo below recomputes
+  // cheaply via buildMessageRows' zero-copy fast paths (bind/sort/dedup all
+  // no-op when the committed list is already bound+ordered) instead of
+  // re-binding and re-sorting all committed rows on every animation frame.
+  const committedRows = useMemo<ChatMessage[]>(
+    () => orderMessageRows(bindTurnIDs(messages)),
+    [messages],
+  )
+  const rows = useMemo<ChatMessage[]>(
+    () => buildMessageRows(committedRows, liveMessage),
+    [committedRows, liveMessage],
+  )
   // Latest-rows ref: closures (IntersectionObserver, loadMore anchor restore)
   // must read the CURRENT rows, not a stale snapshot captured in effect deps —
   // after onLoadMore prepends older rows, the effect closure's `rows` is still

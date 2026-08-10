@@ -926,6 +926,36 @@ describe('useChatMessages', () => {
     expect(result.current.messages).toHaveLength(2)
   })
 
+  it('reconcileHistoryWithLiveRows keeps a notification user message (eventSeq=-1) when history lacks it', async () => {
+    // Scenario 1 (weak network): a bg notification turn starts, the notification
+    // user message is injected (eventSeq=-1 marker), then a racing reload
+    // returns history WITHOUT the row yet (eager-save in flight). The old
+    // watermark rule (eventSeq=-1 < last_seq) dropped the notification until
+    // refresh. Fix: eventSeq=-1 notifications are kept unless history already
+    // covers the same turnID:role.
+    const ws = makeWS([
+      {
+        messages: [{
+          id: 90, role: 'assistant', content: 'older reply', turn_id: 54,
+          timestamp: '2026-08-03T00:00:00Z',
+          iterations: [],
+        }],
+        last_seq: 200, oldest_id: 90, has_more: false,
+      },
+    ])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'notif-reconcile', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.length).toBeGreaterThan(0))
+    // Inject a notification whose DB row does not exist yet (racing reload).
+    act(() => result.current.injectUserMessage('bg task done', 55, true))
+    expect(result.current.messages.some((m) => m.isNotification && m.turnID === 55)).toBe(true)
+    // Reload: history (last_seq=200) lacks the notification row; the eventSeq=-1
+    // marker must NOT be dropped by the watermark rule.
+    await act(async () => { await result.current.reload() })
+    const notif = result.current.messages.find((m) => m.isNotification)
+    expect(notif).toBeDefined()
+    expect(notif?.turnID).toBe(55)
+  })
+
   it('loadMore deduplicates by turnID:role across batch boundaries', async () => {
     // BUG: ConvertMessagesToHistory processes each batch independently.
     // When the batch boundary cuts mid-turn, batch 1 has the turn's END (final

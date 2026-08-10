@@ -28,7 +28,7 @@ import {
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
 import { dedupMessages, mergeIterations, assertIterationContinuity } from '@/components/agent/progressStore'
-import { getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
+import { getCachedMessages, getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
 import type { ChatMessage, WebIteration } from '@/types/shared'
@@ -339,6 +339,14 @@ function reconcileHistoryWithLiveRows(
     }
     // Unpersisted live rows (streaming assistant, cancel acks, frozen content).
     if (message.eventSeq == null) return false
+    // Notifications (injectUserMessage) carry eventSeq=-1 as a marker — a
+    // racing reload may lack the DB row (eager-save still in flight), and the
+    // watermark rule would drop the notification user message until refresh.
+    // Keep it unless history already covers the same turnID:role.
+    if (message.eventSeq === -1) {
+      if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
+      return true
+    }
     // Below watermark: always superseded by history.
     if (message.eventSeq < historyWatermark) return false
     // Same turnID:role already in history — drop the live row.
@@ -490,7 +498,7 @@ export function useChatMessages({
     // to avoid collision between parent session and SubAgent panels which
     // share the same channel+chatID but display different messages.
     if (!sameTarget) {
-      const cached = activeMessageCacheKey ? messagesCache.get(activeMessageCacheKey) : null
+      const cached = activeMessageCacheKey ? getCachedMessages(activeMessageCacheKey) : null
       if (cached && cached.length > 0) {
         messagesRef.current = cached
         setMessages(cached)
@@ -597,9 +605,14 @@ export function useChatMessages({
       setMessages(next)
       // Cache messages for instant render on next session switch (LRU).
       // Use activeMessageCacheKey to match the read path (avoids collision
-      // between parent session and SubAgent panels).
+      // between parent session and SubAgent panels). Store the progress
+      // generation at write time — getCachedMessages drops stale entries
+      // (progress/turn updates since the cache was written).
       if (activeMessageCacheKey) {
-        messagesCache.set(activeMessageCacheKey, next)
+        messagesCache.set(activeMessageCacheKey, {
+          messages: next,
+          progressGen: progressCacheKey ? getProgressGeneration(progressCacheKey) : 0,
+        })
         // LRU eviction: keep at most 5 sessions cached
         if (messagesCache.size > 5) {
           const oldestKey = messagesCache.keys().next().value

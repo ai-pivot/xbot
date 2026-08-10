@@ -880,13 +880,115 @@ describe('buildMessageRows — turnID=0 live dedup (regression: 0ac17e66 was too
     expect(rows.some((r) => r.id === 'turn-1311-live')).toBe(false)
   })
 
-  it('keeps a turnID>0 live message when NO committed assistant matches content (different text)', () => {
+  it('keeps a turnID>0 live message when NO committed assistant shares its turn (different turn content)', () => {
+    // committed is a legacy row with NO preceding turn to bind to → it stays
+    // turnID=0; the live row is turnID=1311 (a different turn). Same-turn
+    // dedup does NOT apply and content differs → the live row must render.
     const messages: ChatMessage[] = [
+      base({ id: 'seq-80810', role: 'assistant', content: 'legacy committed text', turnID: 0, persisted: true }),
       base({ id: 'u1', role: 'user', content: 'question', turnID: 1311 }),
-      base({ id: 'seq-80810', role: 'assistant', content: 'committed different text', turnID: 0, persisted: true }),
     ]
     const live: ChatMessage = base({ id: 'turn-1311-live', content: 'streaming partial text', isPartial: true, turnID: 1311 })
     const rows = buildMessageRows(messages, live)
-    expect(rows).toHaveLength(3) // user + committed + live (streaming not committed yet)
+    expect(rows).toHaveLength(3) // legacy + user + live (streaming not committed yet)
+    expect(rows.some((r) => r.id === 'turn-1311-live')).toBe(true)
+  })
+})
+
+describe('buildMessageRows — linear consistency (extreme scenarios)', () => {
+  const base = (over: Partial<ChatMessage>): ChatMessage => ({
+    id: 'x', role: 'assistant', content: '', iterations: [], timestamp: '', isPartial: false, turnID: 0, ...over,
+  })
+
+  it('reorders out-of-order committed rows (SSE weak-network: turn 5 text arrived before turn 4)', () => {
+    // R2: a larger turn_id must NEVER render above a smaller one.
+    const rows = buildMessageRows([
+      base({ id: 'a5', role: 'assistant', content: 'five', turnID: 5 }),
+      base({ id: 'a4', role: 'assistant', content: 'four', turnID: 4 }),
+      base({ id: 'u4', role: 'user', content: 'q4', turnID: 4 }),
+      base({ id: 'u5', role: 'user', content: 'q5', turnID: 5 }),
+    ], null)
+    expect(rows.map((m) => m.id)).toEqual(['u4', 'a4', 'u5', 'a5'])
+  })
+
+  it('interleaves a notification turn and a user turn in strict turn order', () => {
+    // Scenario 1: system notification (turn 1) overlaps a user input turn (2).
+    const rows = buildMessageRows([
+      base({ id: 'notif-u1', role: 'user', content: 'bg task done', turnID: 1, isNotification: true }),
+      base({ id: 'notif-a1', role: 'assistant', content: 'notification reply', turnID: 1 }),
+      base({ id: 'u2', role: 'user', content: 'user input', turnID: 2 }),
+      base({ id: 'a2', role: 'assistant', content: 'user reply', turnID: 2 }),
+    ], null)
+    expect(rows.map((m) => m.turnID)).toEqual([1, 1, 2, 2])
+    expect(rows[0].isNotification).toBe(true)
+  })
+
+  it('places a cancelled frozen live (turn N) inside its own turn, above the new user (turn N+1)', () => {
+    // Scenario 2: user msg → cancel (frozen live turn 3) → user sends a new msg (turn 4).
+    const messages = [
+      base({ id: 'u3', role: 'user', content: 'q3', turnID: 3 }),
+      base({ id: 'a3', role: 'assistant', content: 'cancelled partial', turnID: 3 }),
+      base({ id: 'u4', role: 'user', content: 'new input', turnID: 4 }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-3-live', role: 'assistant', content: 'cancelled partial', isPartial: true, turnID: 3 })
+    const rows = buildMessageRows(messages, live)
+    // live content equals committed a3 → exact dedup → only committed renders.
+    expect(rows.map((m) => m.id)).toEqual(['u3', 'a3', 'u4'])
+    // turn 3 rows all above turn 4 user — never below.
+    expect(rows.map((m) => m.turnID)).toEqual([3, 3, 4])
+  })
+
+  it('places a DIFFERENT frozen live (turn N, no committed match) above the new user (turn N+1)', () => {
+    const messages = [
+      base({ id: 'u3', role: 'user', content: 'q3', turnID: 3 }),
+      base({ id: 'u4', role: 'user', content: 'new input', turnID: 4 }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-3-live', role: 'assistant', content: 'cancelled reasoning', isPartial: true, turnID: 3 })
+    const rows = buildMessageRows(messages, live)
+    expect(rows.map((m) => m.turnID)).toEqual([3, 3, 4]) // live inside turn 3, above turn 4
+    expect(rows[1].id).toBe('turn-3-live')
+  })
+
+  it('binds a turnID=0 committed assistant to its turn (text event without turn_id)', () => {
+    // R1: every element has a deterministic turn_id after binding.
+    const rows = buildMessageRows([
+      base({ id: 'u3', role: 'user', content: 'q3', turnID: 3 }),
+      base({ id: 'a3', role: 'assistant', content: 'final', turnID: 0, persisted: true }),
+    ], null)
+    expect(rows.map((m) => m.turnID)).toEqual([3, 3])
+  })
+
+  it('binds a legacy user_echo row (turnID=0, persisted) to its following turn', () => {
+    const rows = buildMessageRows([
+      base({ id: 'legacy-u', role: 'user', content: 'old question', turnID: 0, persisted: true }),
+      base({ id: 'a5', role: 'assistant', content: 'old reply', turnID: 5 }),
+      base({ id: 'u5', role: 'user', content: 'q5', turnID: 5 }),
+    ], null)
+    // legacy user binds to turn 5; order: [legacy-u, a5, u5] — both turn 5,
+    // user precedes assistant, stable input order keeps a5 before u5? No —
+    // user(0) ranks before assistant(1), so u5 comes before a5:
+    expect(rows.map((m) => m.id)).toEqual(['legacy-u', 'u5', 'a5'])
+  })
+
+  it('pins an optimistic unbound user (turnID=0, persisted=false) at the bottom', () => {
+    const rows = buildMessageRows([
+      base({ id: 'u3', role: 'user', content: 'q3', turnID: 3 }),
+      base({ id: 'a3', role: 'assistant', content: 'reply', turnID: 3 }),
+      base({ id: 'opt-u', role: 'user', content: 'typing...', turnID: 0, persisted: false, sending: true }),
+    ], null)
+    expect(rows.map((m) => m.id)).toEqual(['u3', 'a3', 'opt-u'])
+  })
+
+  it('keeps all committed rows and appends the live row in turn order', () => {
+    const messages = [
+      base({ id: 'u1', role: 'user', content: 'q1', turnID: 1 }),
+      base({ id: 'a1', role: 'assistant', content: 'r1', turnID: 1 }),
+      base({ id: 'u2', role: 'user', content: 'q2', turnID: 2 }),
+      base({ id: 'a2', role: 'assistant', content: 'r2', turnID: 2 }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-3-live', role: 'assistant', content: 'streaming r3', isPartial: true, turnID: 3 })
+    const rows = buildMessageRows(messages, live)
+    expect(rows.map((m) => m.turnID)).toEqual([1, 1, 2, 2, 3])
+    expect(rows[4].isPartial).toBe(true)
   })
 })
