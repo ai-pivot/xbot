@@ -379,6 +379,7 @@
 - `exec.ExitError.ExitCode()` is cross-platform; avoid `syscall.WaitStatus` type assertion.
 - `signal.Notify(sigCh, syscall.SIGTSTP)` doesn't compile on Windows — use build-tagged files.
 - PowerShell env output is newline-delimited, not null-delimited.
+- **Windows CI hook command tests need generous timeouts (`agent/hooks/executor_command_test.go` `testTimeout=60s`).** powershell.exe has a 5-10s cold-start (.NET CLR) on CI runners, and a loaded runner can push an echo round-trip past 30s — `TestCommandExecutor_Success` timed out at 30.57s on a Test (Windows) job while the identical code passed on the next run (flaky). Tests that assert successful execution must NOT use tight timeouts; tests that deliberately exercise the timeout path use their own short values.
 
 ### Worktree
 - **`RegisterPeer` always uses role="peer" — no primary concept.** Every session is an equal peer for awareness purposes. `WorktreeTool.init` and `AutoDetectAndInit` both create physical worktrees for each session. Only worktree creation requires `git worktree add` which uses `--detach HEAD` (works on dirty trees too).
