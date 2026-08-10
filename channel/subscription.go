@@ -265,18 +265,46 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 		finishCurIter()
 		if len(pendingIters) > 0 {
 			// v55: if structured iteration_history data exists for this turn,
-			// SKIP flushPending — the final/[interrupted] message's
-			// !isIntermediate branch will render ALL iterations from
-			// turnIterMap. If flushPending also renders pendingIters (fabricated
-			// curIterIdx++ ids), the user sees TWO HistoryMessages: one with
-			// fabricated ids (1, 2) and one with real ids (1-6). Only the
-			// first (fabricated) is visible because it's rendered first.
-			// Skipping flushPending when turnIterMap has data ensures only
-			// the final/[interrupted] message renders (with real iteration ids).
+			// use it as the authoritative source instead of fabricated pendingIters.
+			// This handles BOTH cases:
+			// 1. Turn with [interrupted] message: flushPending renders with
+			//    turnIterMap data (real iteration ids), then [interrupted]
+			//    message's !isIntermediate branch also renders — but
+			//    hasCommitted check (same turnID + role + !isPartial) skips
+			//    the duplicate.
+			// 2. Turn WITHOUT [interrupted] message (cancelled mid-stream,
+			//    no final message): flushPending is the ONLY render path —
+			//    skipping it would lose ALL iterations.
+			iters := pendingIters
 			if pendingTurnID > 0 {
 				if recs, ok := turnIterMap[pendingTurnID]; ok && len(recs) > 0 {
-					pendingIters = nil
-					return // Skip — final/[interrupted] message will render with turnIterMap
+					iters = make([]HistoryIteration, 0, len(recs))
+					for _, rec := range recs {
+						var tools []protocol.ToolProgress
+						if rec.Tools != "" && rec.Tools != "[]" {
+							var snaps []iterToolSnap
+							if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
+								tools = make([]protocol.ToolProgress, len(snaps))
+								for i, t := range snaps {
+									label := t.Label
+									if label == "" {
+										label = t.Name
+									}
+									tools[i] = protocol.ToolProgress{
+										Name: t.Name, Label: label, Status: t.Status,
+										Elapsed: t.ElapsedMS, Iteration: rec.Iteration,
+										Summary: t.Summary, Args: t.Args, Detail: t.Detail,
+									}
+								}
+							}
+						}
+						iters = append(iters, HistoryIteration{
+							Iteration: rec.Iteration,
+							Content:   rec.Content,
+							Reasoning: rec.Reasoning,
+							Tools:     tools,
+						})
+					}
 				}
 			}
 			ts := lastAssistantTS
@@ -290,7 +318,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 				Role:       "assistant",
 				Content:    "",
 				Timestamp:  ts,
-				Iterations: pendingIters,
+				Iterations: iters,
 				TurnID:     pendingTurnID,
 			})
 			pendingIters = nil
