@@ -336,13 +336,28 @@ export class SSEConnectionImpl implements WSConnection {
       // cachedProgress.iteration (current in-progress iteration) would skip
       // a just-completed iteration with the same number. Derive from
       // iteration_history's last entry; fall back to 0 (all iterations).
+      //
+      // CRITICAL: use the last entry's iteration number MINUS 1, not the
+      // last entry itself. The last entry in iteration_history is the LAST
+      // COMPLETED iteration — but the backend's from_iteration filter is
+      // `iteration > from_iteration` (exclusive). If we pass the last
+      // completed iteration as from_iteration, the backend returns only
+      // iterations AFTER it — but the last completed iteration's delta may
+      // have been lost during the SSE gap. Using last-1 ensures the last
+      // completed iteration is re-fetched (deduped by appendIterations).
+      // This fixes "SSE reconnect sometimes loses 1-2 iterations" — the
+      // watermark was too high, skipping the last 1-2 completed iterations
+      // whose deltas were lost during the disconnect.
       let fromIteration = 0
       if (cachedProgress) {
         const hist = cachedProgress.iteration_history
         if (Array.isArray(hist) && hist.length > 0) {
           const last = hist[hist.length - 1] as { iteration?: number } | undefined
           if (typeof last?.iteration === 'number' && last.iteration > 0) {
-            fromIteration = last.iteration
+            // Use last - 1 to re-fetch the last completed iteration (in case
+            // its delta was lost during SSE gap). appendIterations dedups by
+            // iteration number, so re-fetching is safe.
+            fromIteration = Math.max(0, last.iteration - 1)
           }
         }
       }

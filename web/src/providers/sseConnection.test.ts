@@ -631,6 +631,80 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('uses from_iteration = last_completed - 1 to re-fetch last iteration (SSE gap recovery)', async () => {
+    // Regression: from_iteration was set to the last completed iteration
+    // (exclusive filter: iteration > from_iteration). If the last completed
+    // iteration's delta was lost during SSE gap, it was NOT re-fetched —
+    // the iteration was permanently missing until manual refresh.
+    // Fix: from_iteration = last_completed - 1, so the backend returns
+    // iteration > (last_completed - 1) = iteration >= last_completed,
+    // re-fetching the last completed iteration (deduped by appendIterations).
+    postAPIMock.mockImplementation(async (endpoint: string, params?: unknown) => {
+      if (endpoint === '/api/rpc' && (params as { method?: string })?.method === 'get_active_progress') {
+        // Verify from_iteration = last_completed - 1 = 4 - 1 = 3
+        expect((params as { params?: { from_iteration?: number } }).params?.from_iteration).toBe(3)
+        return {
+          phase: 'tool',
+          iteration: 5,
+          iteration_history: [
+            { iteration: 4, tools: [{ name: 'Shell', status: 'done' }] },
+            { iteration: 5, tools: [{ name: 'Read', status: 'done' }] },
+          ],
+        }
+      }
+      return {}
+    })
+    const connection = new SSEConnectionImpl()
+    connection.subscribe('chat-gap')
+    const source = MockEventSource.instances[0]
+    source.open()
+    lastSeqCache.set(sessionCacheKey('web', 'chat-gap'), 1)
+
+    // Simulate cached progress with iteration_history = [1, 2, 3, 4]
+    // (last completed = 4). from_iteration should be 3 (4 - 1).
+    progressSnapshotCache.set(sessionCacheKey('web', 'chat-gap'), {
+      phase: 'tool',
+      iteration: 5,
+      iteration_history: [
+        { iteration: 1 },
+        { iteration: 2 },
+        { iteration: 3 },
+        { iteration: 4 },
+      ],
+    } as Record<string, unknown>)
+    // Also set lastSeq so the seq gap triggers restoreActiveProgress
+    lastSeqCache.set(sessionCacheKey('web', 'chat-gap'), 1)
+
+    // Seq gap triggers restoreActiveProgress. The emit's progress must include
+    // iteration_history so dispatch() doesn't overwrite the cached snapshot
+    // with a version that lacks it (dispatch runs before restoreActiveProgress).
+    source.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 10,
+      progress: {
+        phase: 'tool',
+        iteration: 5,
+        iteration_history: [
+          { iteration: 1 },
+          { iteration: 2 },
+          { iteration: 3 },
+          { iteration: 4 },
+        ],
+      },
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // RPC was called with from_iteration=3 (last_completed - 1)
+    expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', expect.objectContaining({
+      method: 'get_active_progress',
+      params: expect.objectContaining({
+        from_iteration: 3,
+      }),
+    }))
+    connection.dispose()
+  })
+
   it('accepts a lower sequence after the server sequence restarts', () => {
     const connection = new SSEConnectionImpl()
     const received: WSMessage[] = []
