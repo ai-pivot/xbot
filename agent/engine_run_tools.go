@@ -418,10 +418,25 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 // table. Called by snapshotCompletedIteration for EVERY iteration — the single
 // write path. No other function writes iteration_history.
 func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) {
-	if s.cfg.Session == nil {
+	// Use PersistenceBridge's session if available (primary path — normal Run).
+	// Fall back to cfg.Session (SubAgent path).
+	// If neither is available (early restart recovery), skip — the iteration
+	// will be written when the session is fully initialized.
+	var tenantID int64
+	var appendFn func(msgID int64, turnID uint64, rec sqlite.IterationRecord) error
+
+	if s.persistence != nil && s.persistence.session != nil {
+		// Primary path: PersistenceBridge has a live TenantSession
+		tenantID = s.persistence.session.TenantID()
+		appendFn = s.persistence.session.AppendIterationHistory
+	} else if s.cfg.Session != nil {
+		// Fallback: cfg.Session (SubAgent or early Run)
+		tenantID = s.cfg.Session.TenantID()
+		appendFn = s.cfg.Session.AppendIterationHistory
+	} else {
+		// No session available — skip (early restart recovery)
 		return
 	}
-	tenantID := s.cfg.Session.TenantID()
 	if tenantID == 0 {
 		return
 	}
@@ -438,7 +453,7 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	// message_id=0: we don't link to a specific message — iteration_history
 	// is queried by turn_id on read. This avoids the dependency on
 	// IncrementalPersist populating message IDs.
-	if err := s.cfg.Session.AppendIterationHistory(0, turnID, sqlite.IterationRecord{
+	if err := appendFn(0, turnID, sqlite.IterationRecord{
 		MessageID: 0,
 		TurnID:    turnID,
 		Iteration: snap.Iteration,

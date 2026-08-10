@@ -189,3 +189,77 @@ func TestIterationHistory_WriteAndRead(t *testing.T) {
 	// The integration is covered by the Convert tests above.
 	_ = json.Marshal // keep import
 }
+
+// TestConvert_WithIterations_RestartTurnBoundary is the regression test for
+// the "fancy memory" bug (tenant 134262, turn 219/220): a turn interrupted by
+// server restart has NO final assistant message — only intermediate messages
+// with tool_calls. After restart the recovery turn (new turn_id) continues with
+// more intermediate messages, so two turns' intermediate messages sit back to
+// back with NO user message between them. flushPending must flush the previous
+// turn at the turn boundary — otherwise pendingIters mixes both turns and
+// flushPending replaces ALL of them with the LAST turn's turnIterMap records,
+// dropping every iteration of the pre-restart turn from the rendered history.
+func TestConvert_WithIterations_RestartTurnBoundary(t *testing.T) {
+	msgs := []llm.ChatMessage{
+		// Pre-restart turn 219: user + 3 intermediate assistants, NO final message
+		// (restart killed the turn mid-execution).
+		{Role: "user", Content: "fix live progress", TurnID: 219},
+		{ID: 300, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Read", Arguments: "{}"}}, TurnID: 219},
+		{Role: "tool", ToolCallID: "c1", ToolName: "Read", Content: "file", TurnID: 219},
+		{ID: 302, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c2", Name: "FileReplace", Arguments: "{}"}}, TurnID: 219},
+		{Role: "tool", ToolCallID: "c2", ToolName: "FileReplace", Content: "ok", TurnID: 219},
+		{ID: 304, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c3", Name: "Shell", Arguments: "{}"}}, TurnID: 219},
+		{Role: "tool", ToolCallID: "c3", ToolName: "Shell", Content: "ok", TurnID: 219},
+		// Post-restart recovery turn 220: intermediate + final, NO user message
+		// (auto-recovery of the interrupted turn).
+		{ID: 306, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c4", Name: "Shell", Arguments: "{}"}}, TurnID: 220},
+		{Role: "tool", ToolCallID: "c4", ToolName: "Shell", Content: "pushed", TurnID: 220},
+		{ID: 308, Role: "assistant", Content: "已推送并部署。", TurnID: 220},
+	}
+
+	turnIterMap := map[uint64][]sqlite.IterationRecord{
+		219: {
+			{TurnID: 219, Iteration: 1, Tools: `[{"name":"Read","status":"done"}]`},
+			{TurnID: 219, Iteration: 2, Tools: `[{"name":"FileReplace","status":"done"}]`},
+			{TurnID: 219, Iteration: 3, Tools: `[{"name":"Shell","status":"done"}]`},
+		},
+		220: {
+			{TurnID: 220, Iteration: 1, Tools: `[{"name":"Shell","status":"done"}]`},
+			{TurnID: 220, Iteration: 2, Content: "已推送并部署。", Tools: "[]"},
+		},
+	}
+
+	history := ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)
+
+	// Expected render order:
+	//   0: user turn 219
+	//   1: assistant turn 219 (empty content, 3 iterations from turnIterMap[219]
+	//      — flushed at the turn boundary, NOT swallowed by turn 220)
+	//   2: assistant turn 220 ("已推送并部署。", 2 iterations from turnIterMap[220],
+	//      final reply rendered via the !isIntermediate structured branch)
+	if len(history) != 3 {
+		t.Fatalf("expected 3 HistoryMessages (user219, asst219, final220), got %d", len(history))
+	}
+	if history[0].Role != "user" || history[0].TurnID != 219 {
+		t.Fatalf("history[0]: expected user turn 219, got role=%s turn=%d", history[0].Role, history[0].TurnID)
+	}
+	// history[1] must be turn 219's assistant with ALL 3 pre-restart iterations.
+	if history[1].Role != "assistant" || history[1].TurnID != 219 {
+		t.Fatalf("history[1]: expected assistant turn 219, got role=%s turn=%d", history[1].Role, history[1].TurnID)
+	}
+	if len(history[1].Iterations) != 3 {
+		t.Fatalf("expected 3 pre-restart iterations for turn 219, got %d (pre-restart iterations lost at turn boundary)", len(history[1].Iterations))
+	}
+	for i, want := range []int{1, 2, 3} {
+		if history[1].Iterations[i].Iteration != want {
+			t.Errorf("turn 219 iter[%d] = %d, want %d", i, history[1].Iterations[i].Iteration, want)
+		}
+	}
+	// history[2] is turn 220's final reply with its 2 recovery iterations.
+	if history[2].Role != "assistant" || history[2].TurnID != 220 || history[2].Content != "已推送并部署。" {
+		t.Fatalf("history[2]: expected assistant turn 220 final reply, got role=%s turn=%d content=%q", history[2].Role, history[2].TurnID, history[2].Content)
+	}
+	if len(history[2].Iterations) != 2 {
+		t.Fatalf("expected 2 recovery iterations for turn 220, got %d", len(history[2].Iterations))
+	}
+}

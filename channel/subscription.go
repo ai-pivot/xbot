@@ -263,6 +263,10 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 
 	flushPending := func() {
 		finishCurIter()
+		// Reset the fabricated iteration counter — a flush always ends a turn
+		// (turn boundary flush, user message, or final assistant). The next
+		// turn's fallback (no turnIterMap) iteration numbers restart at 1.
+		curIterIdx = 0
 		if len(pendingIters) > 0 {
 			// v55: if structured iteration_history data exists for this turn,
 			// use it as the authoritative source instead of fabricated pendingIters.
@@ -510,6 +514,16 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 				}
 			} else if len(m.ToolCalls) > 0 {
 				// Intermediate assistant with tool_calls — accumulate into pending.
+				// Turn boundary: two turns' intermediate messages can sit back to
+				// back with NO user message between them (restart auto-recovery
+				// continues an interrupted turn with a NEW turn_id). Without
+				// flushing here, pendingIters mixes both turns and flushPending
+				// replaces ALL of them with the LAST turn's turnIterMap records —
+				// dropping every iteration of the earlier turn (fancy memory bug:
+				// tenant 134262, turn 219 pre-restart iterations vanished).
+				if pendingTurnID > 0 && m.TurnID != pendingTurnID {
+					flushPending()
+				}
 				finishCurIter()
 				curIterIdx++
 				pendingTurnID = m.TurnID
