@@ -6,6 +6,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	ch "xbot/channel"
+	"xbot/protocol"
 )
 
 // handleTabComplete 处理 Tab 补全（§8：/ 命令补全，§8b：@ 文件路径补全）
@@ -56,13 +59,36 @@ func (m *cliModel) getCommandCompletions(prefix string) []string {
 		}
 	}
 
-	addMatches(cliLocalCommands)
-	if m.commandNamesFn != nil {
-		addMatches(m.commandNamesFn())
+	for _, info := range m.commandCatalog() {
+		addMatches([]string{info.Name})
+		addMatches(info.Aliases)
 	}
 	m.refreshPluginCmdNames()
 	addMatches(m.pluginCmdNames)
 	return matches
+}
+
+// commandCatalog is the single presentation catalog for built-in TUI and
+// Agent commands. It does not participate in command dispatch.
+func (m *cliModel) commandCatalog() []protocol.CommandInfo {
+	var agentCommands []protocol.CommandInfo
+	if m.commandCatalogFn != nil {
+		agentCommands = m.commandCatalogFn()
+	} else if m.commandNamesFn != nil {
+		for _, name := range m.commandNamesFn() {
+			agentCommands = append(agentCommands, protocol.CommandInfo{Name: name, Usage: name})
+		}
+	}
+	return protocol.MergeCommandInfoLists(ch.TUICommandList(), agentCommands)
+}
+
+func (m *cliModel) commandDescription(info protocol.CommandInfo) string {
+	for _, localized := range m.locale.HelpCmds {
+		if localized.Cmd == info.Name {
+			return localized.Desc
+		}
+	}
+	return info.Description
 }
 
 // detectAtPrefix 检测输入文本末尾是否有 @ 触发文件补全。

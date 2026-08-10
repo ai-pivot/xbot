@@ -356,7 +356,7 @@ Server 模式安装时自动配置，一般不需要手动修改。
 
 ### 多 LLM 订阅（CLI 模式）
 
-CLI 模式支持在 `config.json` 中配置多个 LLM 订阅，通过 `Ctrl+N`（LLM 面板）或 `/set-model <model>` 实时切换。
+CLI 模式支持多个 LLM 订阅，通过 `Ctrl+N`（LLM 面板）或 `/set-model <订阅名> <模型名>` 实时切换。
 
 订阅的完整字段见上方「LLM 订阅配置」节。
 

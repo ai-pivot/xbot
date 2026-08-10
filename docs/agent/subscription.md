@@ -11,7 +11,7 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 
 设计原则：**model 是一等实体，subscription 是模型的凭据来源**。agent 只关心 model 层；订阅只提供凭据和 per-model 配置。模型可被禁用，订阅也可被整体禁用（v40）。
 
-**UI 后果**：TUI 不再有"切换订阅"动作，也不再有独立的订阅面板/Ctrl+P/Ctrl+N。**单一 LLM 面板**（Ctrl+N）是唯一入口，模型切换**跨订阅**——选中属于别的订阅的模型时，后端 `ResolveSubscriptionForModel` 自动解析 owner 订阅并配对凭据。面板内订阅行只支持 **添加 / 禁用 / 删除 / 编辑凭证**，不支持切换。
+**UI 后果**：TUI 不再有"切换订阅"动作，也不再有独立的订阅面板/Ctrl+P；**单一 LLM 面板**（Ctrl+N）是唯一入口，模型切换**跨订阅**——选中属于别的订阅的模型时，后端 `ResolveSubscriptionForModel` 自动解析 owner 订阅并配对凭据。面板内订阅行只支持 **添加 / 禁用 / 删除 / 编辑凭证**，不支持切换。
 
 ### 新增 DB（v39 迁移，rebase 后与 master 的 v38 runner_id 并存）
 
@@ -94,7 +94,7 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 - `protocol.PerModelConfig.Enabled` 是读侧投射字段，`mergeSubscriptionModels` 把 `subscription_models.enabled` 透传到客户端，供 UI 显示。`protocol.Subscription.Enabled`（v40）由 `subToChannel` / `LLMGetSubscription` 从 `user_llm_subscriptions.enabled` 透传。
 - 订阅编辑面板（`editQuickSwitchEntry`）每个模型行有 Enabled/Disabled 下拉，保存时按差异调 `SetModelEnabled`。
 - 订阅管理面板（`cli_panel_quickswitch.go`，"subscription" 模式）**不再有切换动作**：Enter = 启用/禁用该订阅（调 `SetSubscriptionEnabled`，面板保持打开以便连续管理），E = 编辑，D = 删除，末尾 `➕ Add subscription`。删除当前活跃订阅会被拒绝（提示先切模型）。
-- **统一 LLM 面板**（`Ctrl+N` / 点状态栏模型名 / palette "Models & Subscriptions"）：单一面板，把订阅 + 模型 + 添加动作合并为一个扁平 `[]qsRow` 列表（`qsSection`/`qsSub`/`qsModel`/`qsAddSub`/`qsAddModel`）。**不再有独立的订阅面板，也不再有 `Ctrl+P`/`Ctrl+N`**。模型行用 `ListAllModelEntries()` 返回 `[]{SubID, SubName, Model, Status}`（权威：服务端 `ListAllModelEntriesForUser`，**DB 驱动**——列 `sub.CachedModels` ∪ `sub.Model` ∪ `subscription_models` 行的全部记录），列表项显示 **`订阅名 · 模型名`** + 状态标签（`normal` 无标 / `offline` 置灰 `(offline)` / `disabled` 置灰 `(disabled)`）。订阅行只做管理（添加/禁用/删除），模型行跨订阅切换。
+- **统一 LLM 面板**（`Ctrl+N` / 点状态栏模型名 / palette "Models & Subscriptions"）：单一面板，把订阅 + 模型 + 添加动作合并为一个扁平 `[]qsRow` 列表（`qsSection`/`qsSub`/`qsModel`/`qsAddSub`/`qsAddModel`）。**不再有独立的订阅面板，也不再有 `Ctrl+P`；`Ctrl+N` 只负责打开统一面板**。模型行用 `ListAllModelEntries()` 返回 `[]{SubID, SubName, Model, Status}`（权威：服务端 `ListAllModelEntriesForUser`，**DB 驱动**——列 `sub.CachedModels` ∪ `sub.Model` ∪ `subscription_models` 行的全部记录），列表项显示 **`订阅名 · 模型名`** + 状态标签（`normal` 无标 / `offline` 置灰 `(offline)` / `disabled` 置灰 `(disabled)`）。订阅行只做管理（添加/禁用/删除），模型行跨订阅切换。
   - **键位**（命令模式，无过滤时）：`↑↓` 导航（跳过 section 行），`Enter` = 行动作（订阅→启停，模型→切换，添加行→开添加面板），`E` 编辑当前行（订阅凭证 / 模型参数），`D` 禁用或删除（模型→启停，订阅→删除），`N` 添加模型（按光标行预填 owner 订阅），`S` 切换 `quickSwitchShowAll`，`/` 进入过滤模式，`Esc` 关闭。**`/` 切换过滤模式**使命令字母 `e`/`d`/`n`/`s` 不与打字冲突——取代旧的 Ctrl 组合命令（`Ctrl+E`/`Ctrl+A`/`Ctrl+T`，它们与全局 `Ctrl+E` 折叠、`Ctrl+T` 会话冲突）。
   - **`E` 编辑模型参数**：在模型行按 `E` → `openEditModelPanel` 打开 mini 面板编辑 `max_context`/`max_output`/`api_type`/`enabled`，提交时 `UpdatePerModelConfig`（走 `UpsertModel`，**只增不减**——以 (订阅,模型) 为键 INSERT OR REPLACE，禁用即 enabled=0，永不 DELETE）+ `SetModelEnabled`（仅当 enabled 状态变更）。保存后 `reopenLLMPanelOn(model)` 用 DB 快照重开面板，状态标签即时刷新。
   - **`N` 添加模型**：按 `N` → `openAddModelPanel` 打开 mini 面板：选择启用订阅 + 输入模型名 + 可选 `max_context`/`max_output`/`api_type`，提交 `UpdatePerModelConfig`/`UpsertModel`（只增）。新模型以 `offline` 出现（直到 provider `/models` 列出它），立即可选。
@@ -492,7 +492,7 @@ master #179 用了 v38（`tenants.runner_id`）；model-first 重设计也用了
 
 ### 14. 统一面板不切换订阅；模型切换跨订阅必须回读 owner
 
-`cli_panel_quickswitch.go` 现在是**单一面板**（`Ctrl+N` / 点状态栏模型名 / palette "Models & Subscriptions"），合并订阅+模型+添加动作为一个扁平 `[]qsRow` 列表。订阅行只管理（添加/禁用/删除，`Enter` 启停、`E` 编辑、`D` 删除），不再有"切换订阅"动作（旧 `SwitchLLM` 异步 + `cliSwitchLLMDoneMsg` 仅留作启动恢复）。**不再有 `Ctrl+P`/`Ctrl+N`**。模型切换（模型行 `Enter`）跨订阅时，`applyModelSwitch` 在 `SwitchModel` 之后**必须**用 `GetSessionSubscription` 回读 owner 订阅修正 `activeSubID`——否则 `activeSubID` 停留在旧订阅，上下文上限/输出上限/settings 面板都显示错误订阅的配置。
+`cli_panel_quickswitch.go` 现在是**单一面板**（`Ctrl+N` / 点状态栏模型名 / palette "Models & Subscriptions"），合并订阅+模型+添加动作为一个扁平 `[]qsRow` 列表。订阅行只管理（添加/禁用/删除，`Enter` 启停、`E` 编辑、`D` 删除），不再有"切换订阅"动作（旧 `SwitchLLM` 异步 + `cliSwitchLLMDoneMsg` 仅留作启动恢复）。**不再有 `Ctrl+P`；`Ctrl+N` 只负责打开统一面板**。模型切换（模型行 `Enter`）跨订阅时，`applyModelSwitch` 在 `SwitchModel` 之后**必须**用 `GetSessionSubscription` 回读 owner 订阅修正 `activeSubID`——否则 `activeSubID` 停留在旧订阅，上下文上限/输出上限/settings 面板都显示错误订阅的配置。
 
 ### 15. 面板用 `ListAllModelEntries`（带 owner 名 + Status）；列表 DB 驱动
 

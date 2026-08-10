@@ -99,11 +99,11 @@ personal DeepSeek) and switch per session. Re-run the wizard anytime with
 | Feature | How |
 |---------|-----|
 | **Command palette** | `Ctrl+K` — fuzzy search all commands |
-| **Sessions** | Sidebar shows all sessions; `/new` or `Ctrl+K → New Session` |
-| **Themes** | `Ctrl+K → Theme` or `/palette theme`; supports custom themes |
-| **Model switch** | `Ctrl+N` cycle model, `Ctrl+P` switch subscription |
-| **Context** | `/context` view token usage, `/clear` clear conversation |
-| **SubAgents** | Sidebar shows live sub-agent progress (`Ctrl+T`) |
+| **Sessions** | Sidebar shows all sessions; `Ctrl+T` opens the Sessions panel; `/new` resets the current conversation |
+| **Themes** | `/settings` changes the theme; custom themes are supported |
+| **Models & subscriptions** | `Ctrl+N` opens the unified panel for per-session model switching and subscription management |
+| **Context** | `/context` views token usage; `/clear` clears the current TUI display |
+| **SubAgents** | Sidebar and the `Ctrl+T` Sessions panel show live sub-agent progress |
 | **Mouse** | Click sidebar, scroll messages, click settings |
 
 Type `/` in the TUI to see all slash commands.

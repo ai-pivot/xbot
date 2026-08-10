@@ -424,7 +424,13 @@ func registerGenUIHandlers(t RPCTable, h *RPCContext) {
 }
 
 func registerCommandHandlers(t RPCTable, h *RPCContext) {
-	t["list_command_names"] = rpc0(func(ctx context.Context) any {
+	t[agent.MethodListCommands] = rpc0(func(ctx context.Context) any {
+		if h.Ag == nil || h.Ag.Commands() == nil {
+			return []agent.CommandInfo{}
+		}
+		return h.Ag.Commands().CommandList()
+	})
+	t[agent.MethodListCommandNames] = rpc0(func(ctx context.Context) any {
 		if h.Ag == nil {
 			return []string{}
 		}

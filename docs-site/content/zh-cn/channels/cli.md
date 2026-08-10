@@ -53,12 +53,12 @@ Remote 模式下，你的 CLI 和其他用户的 CLI / 飞书 / Web 共享同一
 | `/channel` | **频道配置面板** — 可视化配置 Web/飞书/QQ/NapCat 频道 |
 | `/llm` | 查看当前解析到的订阅与模型 |
 | `/models` | 列出可选模型（带正常/离线/禁用状态） |
-| `/set-model <model>` | 跨订阅切换当前模型 |
-| `/set-llm` | 创建/更新个人 LLM 订阅 |
-| `/unset-llm` | 删除个人默认订阅 |
-| `/new` | 开始新对话 |
+| `/set-model <订阅名> <模型名>` | 切换当前会话模型 |
+| `/set-llm <订阅名> provider=<provider> base_url=<url> api_key=<key>` | 创建/更新个人 LLM 订阅 |
+| `/unset-llm <订阅名>` | 删除指定个人订阅 |
+| `/new` | 归档记忆并重置当前对话 |
 | `/rewind` | 回退对话 |
-| `/clear` | 清空对话和记忆 |
+| `/clear` | 仅清空当前 TUI 显示 |
 
 ## 主题
 

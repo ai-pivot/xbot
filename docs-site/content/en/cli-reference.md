@@ -15,7 +15,7 @@ Complete reference for the xbot CLI terminal interface.
 |----------|--------|
 | `Ctrl+K` | Open command palette (fuzzy search all commands) |
 | `Ctrl+C` | Cancel current generation / interrupt |
-| `Ctrl+N` | Open the unified LLM panel — switch model + manage subscriptions in one place (`订阅名 · 模型名`, cross-subscription, per-session, persists). In-panel: `↑↓` navigate, `Enter` select/toggle, `E` edit, `D` disable/delete, `N` add model, `S` show all noise models, `/` filter, `Esc` close) |
+| `Ctrl+N` | Open the unified LLM panel — switch model + manage subscriptions in one place (`subscription · model`, cross-subscription, per-session, persists). In-panel: `↑↓` navigate, `Enter` select/toggle, `E` edit, `D` disable/delete, `N` add model, `S` show all noise models, `/` filter, `Esc` close) |
 | `Ctrl+T` | Open Sessions panel |
 
 ### Input
@@ -23,7 +23,7 @@ Complete reference for the xbot CLI terminal interface.
 | Shortcut | Action |
 |----------|--------|
 | `Enter` | Send message |
-| `Shift+Enter` | New line |
+| `Ctrl+J` / `Ctrl+Enter` | New line |
 | `↑` / `↓` | Navigate input history |
 | `Tab` | Autocomplete |
 
@@ -37,7 +37,10 @@ Complete reference for the xbot CLI terminal interface.
 
 ## Slash commands
 
-Type `/` in the input box to see all commands. Here's the complete list:
+Type `/` in the input box to complete commands. `/help`, Tab completion, and
+the `Ctrl+K` command palette share the built-in TUI and Agent command catalog;
+completion and the palette may also include contextual contributions such as
+skills and custom commands. Common built-in commands are listed below:
 
 ### Setup & Config
 
@@ -45,7 +48,6 @@ Type `/` in the input box to see all commands. Here's the complete list:
 |---------|-------------|
 | `/setup` | Open the Setup wizard (LLM, sandbox, theme) |
 | `/settings` | Open settings panels (appearance, sessions, LLM, etc.) |
-| `/config` | View/edit config (alias for settings) |
 | `/context` | Show current token usage and context bar |
 | `/usage` | Show token usage details |
 
@@ -53,18 +55,18 @@ Type `/` in the input box to see all commands. Here's the complete list:
 
 | Command | Description |
 |---------|-------------|
-| `/new` | Start a new session |
-| `/sessions` | List and switch sessions |
+| `/new` | Archive memory and reset the current conversation |
+| `/sessions` | Open the Sessions panel |
 | `/su` | Switch session (quick) |
 | `/chat` | Chat management |
-| `/ss` | Session status |
+| `/ss` | Open the Sessions panel (short form of `/sessions`) |
 | `/rewind` | Rewind to a previous message in the conversation |
 
 ### Conversation
 
 | Command | Description |
 |---------|-------------|
-| `/clear` | Clear the conversation history |
+| `/clear` | Clear the current TUI display without deleting backend history |
 | `/compress` | Manually compress the context |
 | `/cancel` | Cancel the current generation |
 | `/search` | Search message history |
@@ -74,10 +76,10 @@ Type `/` in the input box to see all commands. Here's the complete list:
 | Command | Description |
 |---------|-------------|
 | `/help` | Show all available commands |
-| `/commands` | List all commands |
+| `/commands` | Open the command palette |
 | `/version` | Show version information |
-| `/update` | Check for and install updates |
-| `/debug` | Toggle debug mode |
+| `/update` | Check for updates |
+| `/debug` | Show runtime diagnostic subcommands |
 | `/tasks` | View background tasks |
 | `/channel` | Open channel configuration panel |
 | `/plugin` | Manage plugins |
@@ -103,7 +105,7 @@ The TUI supports full mouse interaction:
 
 ## Themes
 
-Switch themes via `Ctrl+K → Theme` or `/palette theme`. xbot includes 9 built-in
+Switch themes via `/settings`. xbot includes 9 built-in
 themes and supports custom themes (JSON files in `~/.xbot/themes/`).
 
 {{< hint type=tip >}}

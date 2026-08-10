@@ -113,6 +113,22 @@ channel/napcat/       # NapCat HTTP API
 | `i18n.go` | Internationalization: zh/en UI strings (~1390 lines) |
 | `mermaid.go` | Mermaid → ASCII chart rendering |
 
+## Command metadata
+
+Command execution remains split by scope: TUI-local commands are dispatched in
+`channel/cli/cli_slash.go`, while Agent commands are dispatched by
+`agent.CommandRegistry`. Their presentation metadata is unified:
+
+- `protocol.CommandInfo` is the shared transport DTO.
+- `channel.TUICommandList()` is the TUI-local metadata source.
+- `CommandRegistry.CommandList()` is the Agent and plugin metadata source.
+- RPC `list_commands` returns complete Agent metadata; legacy
+  `list_command_names` remains available for older clients, and new clients
+  fall back to it when connected to an older server.
+- The CLI merges both lists and uses the result for `/help`, Tab completion,
+  and catalog-only Ctrl+K entries. This merge never changes handler selection or
+  registration-order match priority.
+
 ## Capabilities
 
 Optional channel capabilities via interfaces in `capability.go`:
@@ -239,7 +255,7 @@ The context bar (top border of input box) replaces the default lipgloss border w
 **Rendering rules:**
 - Returns `""` (plain border) only when `cachedMaxContextTokens <= 0` — meaning the token budget is unknown
 - Once `cachedMaxContextTokens > 0`, the bar ALWAYS renders: filled when `lastTokenUsage` has data, empty (0%) when nil
-- `lastTokenUsage` is only cleared by explicit delete RPCs (`/clear`, `/cancel`, session reset); a zero prompt count during normal operation just means no LLM call has completed yet
+- `lastTokenUsage` is cleared on conversation/session reset and session switching; `/clear` only clears rendered messages. A zero prompt count during normal operation just means no LLM call has completed yet
 
 **Token state restoration:**
 - **Startup**: `TokenStateLoader` (in `cli.go:Start()`) restores `lastTokenUsage` from DB

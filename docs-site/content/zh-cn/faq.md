@@ -134,8 +134,8 @@ make build
 
 ### 如何切换会话？
 
-打开侧边栏（默认始终可见），点击任意会话切换。或用 `/sessions` 列出，
-`/su` 切换，`/new` 新建。
+打开侧边栏（默认始终可见），点击任意会话切换。也可用 `/sessions` 打开面板，
+用 `/su` 切换，用 `/chat new [名称]` 创建会话。`/new` 只重置当前对话。
 
 ### 应该用哪个模型？
 
@@ -148,11 +148,11 @@ make build
 
 ### 如何更换主题？
 
-`Ctrl+K → Theme`，或输入 `/palette theme`。也可以创建自定义主题。
+打开 `/settings` 修改主题。也可以创建自定义主题。
 
 ### Agent 响应慢，如何查看 token 用量？
 
-输入 `/context` 查看当前 prompt token 用量和上下文条。用 `/clear` 重置对话，
+输入 `/context` 查看当前 prompt token 用量和上下文条。用 `/new` 重置对话，
 或 `/compress` 手动压缩。
 
 ## 沙箱
@@ -196,7 +196,7 @@ Agent 的工作目录通过 `work_dir` 配置或从启动 `xbot-cli` 的目录�
 
 ### 上下文填得太快
 
-用 `/compress` 总结旧消息释放上下文空间。要从头开始，用 `/clear`。用 `/context`
+用 `/compress` 总结旧消息释放上下文空间。要从头开始，用 `/new`。用 `/context`
 查看 token 用量。长会话考虑用子 Agent 委派工作——它们有独立的上下文窗口。
 
 ### 如何导出对话
@@ -211,7 +211,7 @@ SQLite 数据库中。API Key 在你的配置文件中，永远不会发送给�
 
 ### Agent 重复同样的操作
 
-如果 Agent 陷入循环，用 `Ctrl+C` 中断，然后 `/clear` 重置对话。也可以用
+如果 Agent 陷入循环，用 `Ctrl+C` 中断，然后 `/new` 重置对话。也可以用
 `context_edit` 删除可能导致循环的特定消息。
 
 ### 如何备份 xbot 数据

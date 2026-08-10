@@ -9,10 +9,10 @@ Advanced usage patterns and power-user tips for xbot.
 
 ## Conversations
 
-### Use `/clear` liberally
+### Use `/new` for a fresh conversation
 
 Long conversations fill the context window. When you switch to a new task,
-run `/clear` to start fresh. The agent's memory system retains important
+run `/new` to archive memory and reset the conversation. The agent's memory system retains important
 context across sessions.
 
 ### Compress instead of clearing

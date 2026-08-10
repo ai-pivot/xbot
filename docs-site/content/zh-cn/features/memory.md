@@ -33,7 +33,7 @@ LLM_EMBEDDING_MODEL=text-embedding-3-small
 
 ## Flat Provider（默认）
 
-所有长期记忆存储为单个文本块，每次请求时注入系统提示词。当你通过 `/new` 开启新会话时，LLM 会合并和压缩记忆块。
+所有长期记忆存储为单个文本块，每次请求时注入系统提示词。当你通过 `/new` 归档记忆并重置当前对话时，LLM 会合并和压缩记忆块。
 
 **工具:** `memory_write`、`memory_list`
 
@@ -78,7 +78,7 @@ LLM_EMBEDDING_MODEL=text-embedding-3-small
 
 ## 记忆合并
 
-当开启新会话（`/new` 命令）时：
+当使用 `/new` 重置当前对话时：
 
 | Provider | 行为 |
 |----------|------|

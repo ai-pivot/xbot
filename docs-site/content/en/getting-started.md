@@ -107,9 +107,9 @@ Type `/` to see all slash commands. A few essentials:
 |---------|-------------|
 | `/setup` | Reconfigure LLM, sandbox, theme |
 | `/context` | Inspect token usage |
-| `/clear` | Clear the conversation |
-| `/new` | Start a new session |
-| `/sessions` | List / switch sessions |
+| `/clear` | Clear only the current TUI display |
+| `/new` | Archive memory and reset the current conversation |
+| `/sessions` | Open the Sessions panel |
 | `/settings` | Open settings panels |
 | `/help` | Show all commands |
 

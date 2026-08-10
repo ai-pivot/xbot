@@ -877,10 +877,28 @@ func (c *Client) CallRPC(method string, params any) (json.RawMessage, error) {
 	return c.transport.Call(method, payload)
 }
 
-// ListCommandNames returns visible commands registered by the backend agent.
+// ListCommands returns visible command metadata registered by the backend
+// Agent. Older servers expose names only; retain those commands with minimal
+// metadata so mixed-version CLI/server deployments do not lose completion.
+func (c *Client) ListCommands() ([]CommandInfo, error) {
+	var commands []CommandInfo
+	if err := c.call(MethodListCommands, nil, &commands); err != nil {
+		names, legacyErr := c.ListCommandNames()
+		if legacyErr != nil {
+			return nil, err
+		}
+		commands = make([]CommandInfo, 0, len(names))
+		for _, name := range names {
+			commands = append(commands, CommandInfo{Name: name, Usage: name})
+		}
+	}
+	return commands, nil
+}
+
+// ListCommandNames returns visible command names for older API consumers.
 func (c *Client) ListCommandNames() ([]string, error) {
 	var names []string
-	if err := c.call("list_command_names", nil, &names); err != nil {
+	if err := c.call(MethodListCommandNames, nil, &names); err != nil {
 		return nil, err
 	}
 	return names, nil

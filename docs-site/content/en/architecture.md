@@ -398,7 +398,7 @@ type MemoryProvider interface {
 | `letta` | Returns Core Memory structured blocks | LLM rethink → update Core + write to Archival | Complex long-term memory |
 
 **Memorize trigger timing** (⚠️ NOT triggered after every conversation):
-- `/new` command (session switch) — `ArchiveAll=true`
+- `/new` command (reset current conversation) — `ArchiveAll=true`
 - SubAgent exit — `ArchiveAll=true`
 - During compression, called by LLM via memory tools
 

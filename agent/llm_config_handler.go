@@ -13,7 +13,7 @@ import (
 
 const setLLMUsage = `设置/更新个人 LLM 订阅
 
-用法: /set-llm <订阅名> provider=<provider> base_url=<url> api_key=<key> [model=<model>] [max_context=<tokens>] [max_output_tokens=<tokens>] [thinking_mode=<mode>]
+用法: /set-llm <订阅名> provider=<provider> base_url=<url> api_key=<key> [max_context=<tokens>] [max_output_tokens=<tokens>] [thinking_mode=<mode>]
 
 说明:
   - <订阅名> 必须作为第一个参数，是位置参数（不是 key=value 形式）。
@@ -27,7 +27,6 @@ const setLLMUsage = `设置/更新个人 LLM 订阅
   api_key       - API 密钥
 
 可选参数:
-  model         - 默认模型名称（不填则由订阅自动选取）
   max_context   - 最大上下文 token 数（可选，0 表示不限制）
   max_output_tokens - 最大输出 token 数（可选）
   thinking_mode - 思考模式（可选，各厂商格式不同）:
@@ -45,22 +44,22 @@ const setLLMUsage = `设置/更新个人 LLM 订阅
 
 示例:
   # 创建名为 openai-pro 的订阅
-  /set-llm openai-pro provider=openai base_url=https://api.openai.com/v1 api_key=sk-xxx model=gpt-4
+  /set-llm openai-pro provider=openai base_url=https://api.openai.com/v1 api_key=sk-xxx
 
   # 更新已有的 openai-pro 订阅（只改 api_key，其它字段保持不变）
   /set-llm openai-pro api_key=sk-new
 
   # DeepSeek R1 (Thinking Mode)
-  /set-llm deepseek-r1 provider=deepseek base_url=https://api.deepseek.com/v1 api_key=sk-xxx model=deepseek-reasoner thinking_mode=enabled
+  /set-llm deepseek-r1 provider=deepseek base_url=https://api.deepseek.com/v1 api_key=sk-xxx thinking_mode=enabled
 
   # 智谱 GLM-5/GLM-4.7 (深度思考)
-  /set-llm glm provider=openai base_url=https://open.bigmodel.cn/api/paas/v4 api_key=xxx model=glm-5 thinking_mode=enabled
+  /set-llm glm provider=openai base_url=https://open.bigmodel.cn/api/paas/v4 api_key=xxx thinking_mode=enabled
 
   # Anthropic Claude
-  /set-llm claude provider=anthropic base_url=https://api.anthropic.com api_key=sk-ant-xxx model=claude-3-5-sonnet-20241022
+  /set-llm claude provider=anthropic base_url=https://api.anthropic.com api_key=sk-ant-xxx
 
   # 限制上下文大小
-  /set-llm local provider=openai base_url=http://localhost:8080/v1 api_key=sk-xxx model=gpt-4 max_context=8000
+  /set-llm local provider=openai base_url=http://localhost:8080/v1 api_key=sk-xxx max_context=8000
 
 注意: API Key 会被加密存储，查询时只显示前4位。请在私聊中使用，避免在群聊暴露密钥。`
 

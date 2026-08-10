@@ -140,7 +140,8 @@ This works for all channels (Feishu, QQ, NapCat).
 ### How do I switch sessions?
 
 Open the sidebar (it's always visible by default). Click any session to
-switch. Or use `/sessions` to list, `/su` to switch, `/new` to create.
+switch. Or use `/sessions` to open the panel, `/su` to switch, and
+`/chat new [name]` to create a session. `/new` resets the current conversation.
 
 ### Which model should I use?
 
@@ -153,13 +154,13 @@ Switch models per-session with `Ctrl+N` to open the LLM panel (searchable, cross
 
 ### How do I change the theme?
 
-`Ctrl+K → Theme`, or type `/palette theme`. You can also create custom
+Open `/settings` and change the theme. You can also create custom
 themes — see the [ai-config skill](/features/).
 
 ### The agent seems slow — how do I check token usage?
 
 Type `/context` to see current prompt token usage and context bar. Use
-`/clear` to reset the conversation, or `/compress` to manually compress.
+`/new` to reset the conversation, or `/compress` to manually compress.
 
 ## Sandbox
 
@@ -208,7 +209,7 @@ If files are outside the expected directory, tell the agent the full path.
 ### Context fills up too quickly
 
 Use `/compress` to summarize old messages and free up context space. For a
-fresh start, use `/clear`. Check token usage with `/context`. For long
+fresh start, use `/new`. Check token usage with `/context`. For long
 sessions, consider using SubAgents to delegate work — they have their own
 context windows.
 
@@ -226,7 +227,7 @@ sent to third parties. No telemetry or analytics are collected.
 
 ### Agent repeats the same action
 
-If the agent gets stuck in a loop, use `Ctrl+C` to interrupt, then `/clear`
+If the agent gets stuck in a loop, use `Ctrl+C` to interrupt, then `/new`
 to reset the conversation. You can also use `context_edit` to remove
 specific messages that might be causing the loop.
 
