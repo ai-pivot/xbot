@@ -357,17 +357,18 @@ export function useProgressStream({
     resetProgress: () => {
       finalizedRef.current = true
       phaseDoneRef.current = false
-      // Do NOT freeze or reset — keep the live content visible.
-      // The committed message (from appendAssistant in flushSync) will
-      // replace the live row via buildMessageRows' hasCommitted check
-      // (same turnID + role + !isPartial → skip live row).
-      // freeze() sets phase='frozen' which makes liveMessage return null
-      // (phase === 'frozen' check) — content disappears for one frame.
-      // reset() clears everything — even worse.
-      // Instead: do nothing. The live content stays visible until the
-      // committed message arrives and buildMessageRows skips the live row.
-      // If no committed message arrives (cancel without appendAssistant),
-      // the live content stays visible permanently (frozen in place).
+      // NORMAL COMPLETION (text event): the committed message was already
+      // added by appendAssistant inside the SAME flushSync — clear the live
+      // store so the live row is NOT rendered again (final-iteration
+      // duplicate: live + committed both showed the same reply when the
+      // committed message's turnID didn't match the live turnID).
+      // Cancel does NOT call this — text(cancelled) uses store.freeze() and
+      // keeps the frozen live visible (user requirement: already-rendered
+      // content never disappears). Cf81be66 made this a no-op to avoid
+      // freeze()-induced flicker; that is obsolete since f4c43a45 — the
+      // frozen-phase null check in liveMessage was removed, and reset()
+      // inside flushSync renders committed + cleared-live atomically.
+      store.reset()
     },
   }
 }

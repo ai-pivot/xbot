@@ -112,6 +112,22 @@ export function buildMessageRows(
     if (hasCommitted) {
       return messages
     }
+    // Text event may arrive WITHOUT turn_id (backend gap / restart recovery) —
+    // the committed message then has turnID=0 and the exact match above fails,
+    // duplicating the final reply (live + committed both render the same text,
+    // user report: "最终 iter 重复渲染"). Fall back to content match: the same
+    // non-empty content committed by appendAssistant = the same message.
+    const hasContentMatch = messages.some(
+      (m) =>
+        m.role === 'assistant' &&
+        !m.isPartial &&
+        m.content &&
+        liveMessage.content &&
+        m.content === liveMessage.content,
+    )
+    if (hasContentMatch) {
+      return messages
+    }
   }
   // Check if ANY committed assistant message exists in messages. If so,
   // and the live message is frozen (turnID=0), skip it — the committed

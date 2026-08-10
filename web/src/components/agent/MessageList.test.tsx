@@ -864,4 +864,29 @@ describe('buildMessageRows — turnID=0 live dedup (regression: 0ac17e66 was too
     const rows = buildMessageRows(messages, live)
     expect(rows).toHaveLength(2)
   })
+
+  it('skips a turnID>0 live message when the committed assistant has the SAME content but turnID=0 (text event without turn_id — final iter duplicate regression)', () => {
+    // User report: "最终 iter 重复渲染" — the text event arrived WITHOUT
+    // turn_id, so appendAssistant committed the final reply with turnID=0,
+    // while the frozen live row kept turnID=1311. The turnID exact match
+    // failed and BOTH rows rendered the same text. Fix: content match fallback.
+    const messages: ChatMessage[] = [
+      base({ id: 'u1', role: 'user', content: 'question', turnID: 0 }),
+      base({ id: 'seq-80810', role: 'assistant', content: 'final reply text', turnID: 0, persisted: true }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-1311-live', content: 'final reply text', isPartial: true, turnID: 1311 })
+    const rows = buildMessageRows(messages, live)
+    expect(rows).toHaveLength(2) // user + committed only — live is deduped
+    expect(rows.some((r) => r.id === 'turn-1311-live')).toBe(false)
+  })
+
+  it('keeps a turnID>0 live message when NO committed assistant matches content (different text)', () => {
+    const messages: ChatMessage[] = [
+      base({ id: 'u1', role: 'user', content: 'question', turnID: 1311 }),
+      base({ id: 'seq-80810', role: 'assistant', content: 'committed different text', turnID: 0, persisted: true }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-1311-live', content: 'streaming partial text', isPartial: true, turnID: 1311 })
+    const rows = buildMessageRows(messages, live)
+    expect(rows).toHaveLength(3) // user + committed + live (streaming not committed yet)
+  })
 })
