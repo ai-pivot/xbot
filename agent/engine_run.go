@@ -754,6 +754,39 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 			ToolsUsed: s.toolsUsed,
 		})
 	}
+
+	// Record the error iteration: snapshot any SSE data that arrived before
+	// the error (streaming content, tools), then add a reqerr fake tool with
+	// the error message. This makes the error iteration structurally identical
+	// to a normal iteration — it has content (partial), tools (reqerr), and
+	// is persisted to iteration_history. The frontend renders it like any
+	// other iteration (tool with error status + summary).
+	if s.structuredProgress != nil {
+		// Capture partial content from the stream (if any).
+		if partialResp != nil {
+			partialContent := llm.StripThinkBlocks(partialResp.Content)
+			if partialContent != "" {
+				s.structuredProgress.Content = partialContent
+			}
+			if partialResp.ReasoningContent != "" {
+				s.structuredProgress.ReasoningContent = partialResp.ReasoningContent
+			}
+		}
+		// Add a reqerr fake tool with the error message.
+		errSummary := summarizeRetryError(err)
+		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
+			Name:    "reqerr",
+			Label:   "reqerr",
+			Status:  ToolError,
+			Summary: errSummary,
+			Detail:  err.Error(),
+		})
+		// Snapshot this iteration (writes to iteration_history + s.iterationSnapshots).
+		s.snapshotCompletedIteration(iteration)
+		// Notify progress so the frontend sees the reqerr tool.
+		s.notifyProgress("")
+	}
+
 	// Use partial response content if available (stream error with partial output),
 	// otherwise fall back to lastContent from previous successful iteration.
 	partialContent := ""
