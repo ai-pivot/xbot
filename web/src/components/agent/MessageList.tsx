@@ -132,7 +132,15 @@ export function buildMessageRows(
     //    means "unbound", not a real turn. Appending at the end keeps the
     //    frozen live content below the newest user msg until the committed
     //    message replaces it.
-    const turnExists = liveMessage.turnID > 0 && messages.some((m) => m.turnID === liveMessage.turnID)
+    // CRITICAL: turnExists matches ANY role (user OR assistant) with the same
+    // turnID > 0. The previous 'assistant only' restriction broke the frozen
+    // live row case: cancel before any committed assistant → only user msg
+    // has the turnID → turnExists=false → frozen live row appended at END
+    // (below new user msg) instead of above it.
+    // The turnID > 0 guard prevents matching optimistic user msgs (turnID=0).
+    const turnExists = liveMessage.turnID > 0 && messages.some(
+      (m) => m.turnID === liveMessage.turnID,
+    )
     if (turnExists) {
       let insertIdx = messages.length
       for (let i = messages.length - 1; i >= 0; i--) {
