@@ -265,42 +265,18 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 		finishCurIter()
 		if len(pendingIters) > 0 {
 			// v55: if structured iteration_history data exists for this turn,
-			// use it as the authoritative source instead of the fabricated
-			// pendingIters (which have curIterIdx++ ids, not real ones).
-			// This covers the case where a turn has NO final message (all
-			// messages have tool_calls — e.g. cancelled turn, or turn still
-			// in progress). Without this, structured data is never used and
-			// the turn renders with fabricated 1-based ids instead of real ones.
-			iters := pendingIters
+			// SKIP flushPending — the final/[interrupted] message's
+			// !isIntermediate branch will render ALL iterations from
+			// turnIterMap. If flushPending also renders pendingIters (fabricated
+			// curIterIdx++ ids), the user sees TWO HistoryMessages: one with
+			// fabricated ids (1, 2) and one with real ids (1-6). Only the
+			// first (fabricated) is visible because it's rendered first.
+			// Skipping flushPending when turnIterMap has data ensures only
+			// the final/[interrupted] message renders (with real iteration ids).
 			if pendingTurnID > 0 {
 				if recs, ok := turnIterMap[pendingTurnID]; ok && len(recs) > 0 {
-					iters = make([]HistoryIteration, 0, len(recs))
-					for _, rec := range recs {
-						var tools []protocol.ToolProgress
-						if rec.Tools != "" && rec.Tools != "[]" {
-							var snaps []iterToolSnap
-							if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
-								tools = make([]protocol.ToolProgress, len(snaps))
-								for i, t := range snaps {
-									label := t.Label
-									if label == "" {
-										label = t.Name
-									}
-									tools[i] = protocol.ToolProgress{
-										Name: t.Name, Label: label, Status: t.Status,
-										Elapsed: t.ElapsedMS, Iteration: rec.Iteration,
-										Summary: t.Summary, Args: t.Args, Detail: t.Detail,
-									}
-								}
-							}
-						}
-						iters = append(iters, HistoryIteration{
-							Iteration: rec.Iteration,
-							Content:   rec.Content,
-							Reasoning: rec.Reasoning,
-							Tools:     tools,
-						})
-					}
+					pendingIters = nil
+					return // Skip — final/[interrupted] message will render with turnIterMap
 				}
 			}
 			ts := lastAssistantTS
@@ -314,7 +290,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 				Role:       "assistant",
 				Content:    "",
 				Timestamp:  ts,
-				Iterations: iters,
+				Iterations: pendingIters,
 				TurnID:     pendingTurnID,
 			})
 			pendingIters = nil

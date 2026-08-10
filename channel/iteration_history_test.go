@@ -66,8 +66,10 @@ func TestConvert_WithIterations_AllIterationsRendered(t *testing.T) {
 }
 
 // TestConvert_WithIterations_CancelledTurn verifies that a cancelled turn
-// (all messages have tool_calls, no final message) renders ALL iterations
-// from structured data via flushPending.
+// (all messages have tool_calls + [interrupted] message) renders ALL iterations
+// from structured data via the [interrupted] message's !isIntermediate branch.
+// flushPending skips when turnIterMap has data (avoids duplicate HistoryMessage
+// with fabricated curIterIdx++ ids).
 func TestConvert_WithIterations_CancelledTurn(t *testing.T) {
 	msgs := []llm.ChatMessage{
 		{Role: "user", Content: "go", TurnID: 9},
@@ -77,6 +79,8 @@ func TestConvert_WithIterations_CancelledTurn(t *testing.T) {
 		{Role: "tool", ToolCallID: "c2", Content: "file", TurnID: 9},
 		{ID: 204, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c3", Name: "Grep"}}, TurnID: 9},
 		{Role: "tool", ToolCallID: "c3", Content: "results", TurnID: 9},
+		// [interrupted] message — no tool_calls, triggers !isIntermediate branch
+		{ID: 206, Role: "assistant", Content: "[interrupted]", TurnID: 9},
 	}
 
 	turnIterMap := map[uint64][]sqlite.IterationRecord{
@@ -95,8 +99,10 @@ func TestConvert_WithIterations_CancelledTurn(t *testing.T) {
 			assistantMsgs = append(assistantMsgs, h)
 		}
 	}
+	// flushPending skips (turnIterMap has data) — only [interrupted] message
+	// renders (via !isIntermediate branch with turnIterMap data).
 	if len(assistantMsgs) != 1 {
-		t.Fatalf("expected 1 assistant (flushPending merges all), got %d", len(assistantMsgs))
+		t.Fatalf("expected 1 assistant ([interrupted] with turnIterMap), got %d", len(assistantMsgs))
 	}
 	if len(assistantMsgs[0].Iterations) != 3 {
 		t.Fatalf("expected 3 iterations, got %d", len(assistantMsgs[0].Iterations))
