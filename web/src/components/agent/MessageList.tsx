@@ -107,80 +107,53 @@ export function buildMessageRows(
   // merged into it (liveProgress flows via liveId) — never rendered twice.
   if (liveMessage.turnID > 0) {
     const hasCommitted = messages.some(
-      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
+      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role && !m.isPartial,
     )
     if (hasCommitted) {
-      // The live message has a committed counterpart — liveProgress flows
-      // to it via liveId (MessageList.tsx). AssistantMessage ignores
-      // message.iterations when hasLiveProgress is true (it uses
-      // progress.iterationHistory exclusively), so merging iterations here
-      // would be wasted work that breaks MessageItem memo (new object ref
-      // every frame). Just return messages as-is.
       return messages
     }
-    // Distinguish the two live-row kinds by whether its turnID already exists
-    // in the committed list:
-    //  - EXISTS (e.g. a frozen row from a CANCELLED previous turn whose user is
-    //    in the list): insert after that turn's last message — ABOVE the newest
-    //    user. Without this, the new user flickered above the cancelled turn.
-    //  - NOT EXISTS (the CURRENT turn's reply — its user was just sent and is
-    //    still unbound / turnID not yet in the list): append at the END, below
-    //    the new user. Falling through to the turnID scan skipped the unbound
-    //    user (turnID=0) and inserted the reply ABOVE the user — the "reply
-    //    rendered above my user msg" linear-consistency violation.
-    //  - turnID=0 (frozen live message after cancel): NEVER match — turnID=0
-    //    means "unbound", not a real turn. Appending at the end keeps the
-    //    frozen live content below the newest user msg until the committed
-    //    message replaces it.
-    // CRITICAL: turnExists matches ANY role (user OR assistant) with the same
-    // turnID > 0. The previous 'assistant only' restriction broke the frozen
-    // live row case: cancel before any committed assistant → only user msg
-    // has the turnID → turnExists=false → frozen live row appended at END
-    // (below new user msg) instead of above it.
-    // The turnID > 0 guard prevents matching optimistic user msgs (turnID=0).
-    const turnExists = liveMessage.turnID > 0 && messages.some(
-      (m) => m.turnID === liveMessage.turnID,
+  }
+  // Check if ANY committed assistant message exists in messages. If so,
+  // and the live message is frozen (turnID=0), skip it — the committed
+  // message (from appendAssistant in flushSync) already has the content.
+  if (liveMessage.turnID === 0) {
+    const hasAnyCommittedAssistant = messages.some(
+      (m) => m.role === 'assistant' && !m.isPartial,
     )
-    if (turnExists) {
-      // Check if a committed ASSISTANT message with the same turnID already
-      // exists in messages. If so, the frozen live row is redundant — the
-      // committed message (from appendAssistant in flushSync) has the
-      // complete content + iterations. Skip the live row to avoid duplicate
-      // rendering (SSE reconnect duplicate iterations bug).
-      const hasCommittedAssistant = messages.some(
-        (m) => m.turnID === liveMessage.turnID && m.role === 'assistant' && !m.isPartial,
-      )
-      if (hasCommittedAssistant) {
-        // Committed message already rendered — skip frozen live row.
-        return messages
-      }
-      let insertIdx = messages.length
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i]
-        if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
-          insertIdx = i + 1
-          break
-        }
-      }
-      return [...messages.slice(0, insertIdx), liveMessage, ...messages.slice(insertIdx)]
-    }
-    // turnID=0 (frozen live message after cancel, or unbound live message):
-    // Check if ANY committed assistant message exists in messages. If so,
-    // the frozen live row is redundant — skip it. This prevents duplicate
-    // rendering when frozen liveMessage has turnID=0 (store freeze didn't
-    // preserve turnID) but committed [interrupted] message is already in
-    // messages.
-    if (liveMessage.turnID === 0) {
-      const hasAnyCommittedAssistant = messages.some(
-        (m) => m.role === 'assistant' && !m.isPartial,
-      )
-      if (hasAnyCommittedAssistant) {
-        return messages
-      }
+    if (hasAnyCommittedAssistant) {
+      return messages
     }
   }
-  // turnID=0 live, or the current turn's reply (turnID not in the committed
-  // list yet) — append at the end (below the newest user).
+  // Frozen live row from a cancelled previous turn: turnID > 0, no committed
+  // assistant with same turnID (hasCommitted=false above). Insert AFTER the
+  // last message with the SAME turnID (exact match, not <=). This places
+  // the frozen content at the end of its turn — above newer messages from
+  // later turns (including the new user msg with turnID=0).
+  //
+  // CRITICAL: use EXACT turnID match (===), not <=. The old code used <=
+  // which scanned backwards and found messages from OLDER turns (turnID < N),
+  // inserting the live row at the wrong position (before the user msg of
+  // the current turn). Exact match ensures the live row is placed right
+  // after the last message of its own turn.
+  //
+  // Also: match ANY role (user OR assistant). A frozen live row from a
+  // cancelled turn may only have the user message in the committed list
+  // (committed [interrupted] not yet arrived). Matching user messages
+  // ensures the frozen row is inserted after the user message of its turn.
+  if (liveMessage.turnID > 0) {
+    let insertIdx = -1
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].turnID === liveMessage.turnID) {
+        insertIdx = i + 1
+        break
+      }
+    }
+    if (insertIdx >= 0) {
+      return [...messages.slice(0, insertIdx), liveMessage, ...messages.slice(insertIdx)]
+    }
+  }
+  // Normal streaming reply (turnID not in committed list yet) or turnID=0
+  // with no committed assistant: append at the END (below the newest user msg).
   return [...messages, liveMessage]
 }
 
