@@ -164,6 +164,20 @@ export function buildMessageRows(
       }
       return [...messages.slice(0, insertIdx), liveMessage, ...messages.slice(insertIdx)]
     }
+    // turnID=0 (frozen live message after cancel, or unbound live message):
+    // Check if ANY committed assistant message exists in messages. If so,
+    // the frozen live row is redundant — skip it. This prevents duplicate
+    // rendering when frozen liveMessage has turnID=0 (store freeze didn't
+    // preserve turnID) but committed [interrupted] message is already in
+    // messages.
+    if (liveMessage.turnID === 0) {
+      const hasAnyCommittedAssistant = messages.some(
+        (m) => m.role === 'assistant' && !m.isPartial,
+      )
+      if (hasAnyCommittedAssistant) {
+        return messages
+      }
+    }
   }
   // turnID=0 live, or the current turn's reply (turnID not in the committed
   // list yet) — append at the end (below the newest user).
