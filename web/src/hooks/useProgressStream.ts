@@ -323,17 +323,21 @@ export function useProgressStream({
     const snap = progressSnapshot
     if (!hasVisibleProgress(snap)) return null
     if (snap.phase === 'done') return null
-    // 'frozen' phase: turn is over (cancel/commit). The committed message
-    // (from appendAssistant in flushSync) is already in the messages array.
-    // Rendering a live message here would duplicate the turn's iterations
-    // (committed message has them from iteration_history, live message has
-    // them from snap.iterationHistory — same data, rendered twice).
-    // Return null so only the committed message is visible.
-    // The previous approach (turnID=0 to append at end) caused SSE reconnect
-    // to render duplicate iterations: restoreActiveProgress repopulated
-    // snap.iterationHistory, liveMessage rendered them, AND the committed
-    // message also had them from iteration_history.
-    if (snap.phase === 'frozen') return null
+    // 'frozen' phase: turn is over (cancel/commit). Keep the live message
+    // visible with its real turnID so buildMessageRows inserts it at the
+    // correct position (above the newest user msg if the turn was cancelled).
+    // The committed message (from appendAssistant in flushSync) will replace
+    // it on the next render — but until then, the user sees the content
+    // they were looking at (no disappearing content).
+    //
+    // SSE reconnect duplicate fix: when restoreActiveProgress repopulates
+    // snap.iterationHistory during a reconnect, the frozen liveMessage would
+    // duplicate the committed message's iterations. To prevent this,
+    // buildMessageRows' turnExists check dedupes by turnID — if the
+    // committed message (same turnID) is already in the messages array,
+    // the frozen live row is NOT rendered (turnExists=true → insert at old
+    // turn position, but the committed message at that position takes
+    // precedence in the virtual list by key).
     const tid = snap.turnID || store.lastTurnID || 0
     return {
       id: `turn-${tid}-live`,

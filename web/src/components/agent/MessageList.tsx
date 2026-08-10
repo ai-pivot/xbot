@@ -142,6 +142,18 @@ export function buildMessageRows(
       (m) => m.turnID === liveMessage.turnID,
     )
     if (turnExists) {
+      // Check if a committed ASSISTANT message with the same turnID already
+      // exists in messages. If so, the frozen live row is redundant — the
+      // committed message (from appendAssistant in flushSync) has the
+      // complete content + iterations. Skip the live row to avoid duplicate
+      // rendering (SSE reconnect duplicate iterations bug).
+      const hasCommittedAssistant = messages.some(
+        (m) => m.turnID === liveMessage.turnID && m.role === 'assistant' && !m.isPartial,
+      )
+      if (hasCommittedAssistant) {
+        // Committed message already rendered — skip frozen live row.
+        return messages
+      }
       let insertIdx = messages.length
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i]
