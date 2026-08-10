@@ -357,14 +357,17 @@ export function useProgressStream({
     resetProgress: () => {
       finalizedRef.current = true
       phaseDoneRef.current = false
-      // Freeze instead of reset: keep the live content visible until the
-      // committed message (from appendAssistant) replaces it. reset() clears
-      // streamContent/iterations → liveMessage becomes null → content
-      // disappears for one frame before the committed message renders.
-      // freeze() sets phase='done' so liveMessage returns null (phase==='done'
-      // check), but the committed message (already added via flushSync in the
-      // same render) takes its place immediately — no gap.
-      store.freeze()
+      // Do NOT freeze or reset — keep the live content visible.
+      // The committed message (from appendAssistant in flushSync) will
+      // replace the live row via buildMessageRows' hasCommitted check
+      // (same turnID + role + !isPartial → skip live row).
+      // freeze() sets phase='frozen' which makes liveMessage return null
+      // (phase === 'frozen' check) — content disappears for one frame.
+      // reset() clears everything — even worse.
+      // Instead: do nothing. The live content stays visible until the
+      // committed message arrives and buildMessageRows skips the live row.
+      // If no committed message arrives (cancel without appendAssistant),
+      // the live content stays visible permanently (frozen in place).
     },
   }
 }
@@ -460,14 +463,14 @@ function commitLiveProgressAndReset(
       complete?.(commitText, commitIters, undefined, snap.turnID || newTurnID || store.lastTurnID, true)
     }
   }
-  // Only freeze if complete?.() didn't already freeze (via resetProgress).
-  // resetProgress (called inside onAssistantComplete) calls store.freeze().
-  // Calling freeze() again here is redundant when complete was called, and
-  // could modify the snapshot that complete?.()'s callback already read.
-  // When complete is nil (no onAssistantComplete callback), freeze here.
-  if (!complete) {
-    store.freeze()
-  }
+  // Do NOT freeze or reset — keep live content visible.
+  // The committed message (from appendAssistant in flushSync) will replace
+  // the live row via buildMessageRows' hasCommitted check.
+  // If no committed message arrives (cancel without appendAssistant),
+  // the live content stays visible permanently (frozen in place).
+  // Previously: store.freeze() set phase='frozen' → liveMessage returned null
+  // → content disappeared for one frame before committed message rendered.
+  // Now: do nothing — live content stays until committed message replaces it.
 }
 
 /** Dispatch one WSMessage into the progress store. Shared with history hydration. */
