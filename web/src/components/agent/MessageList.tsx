@@ -117,10 +117,26 @@ export function buildMessageRows(
   // and the live message is frozen (turnID=0), skip it — the committed
   // message (from appendAssistant in flushSync) already has the content.
   if (liveMessage.turnID === 0) {
-    const hasAnyCommittedAssistant = messages.some(
-      (m) => m.role === 'assistant' && !m.isPartial,
+    // Only skip when the committed assistant's CONTENT or ITERATIONS match
+    // the live message — the cancel commit path commits the SAME text and
+    // progress_history iterations. A normal streaming live message (no
+    // turn_started yet → turnID=0, e.g. legacy backend or turn_started lost)
+    // has NEW content not present in any committed message — it must render.
+    // The old `hasAnyCommittedAssistant` check skipped ANY turnID=0 live row
+    // whenever history contained a committed assistant, hiding legitimate
+    // streaming (regression: stream-jitter E2E "Starting..." never rendered).
+    const hasMatchingCommitted = messages.some(
+      (m) =>
+        m.role === 'assistant' &&
+        !m.isPartial &&
+        ((m.content && liveMessage.content && m.content === liveMessage.content) ||
+          (m.iterations &&
+            m.iterations.length > 0 &&
+            liveMessage.iterations &&
+            liveMessage.iterations.length === m.iterations.length &&
+            m.iterations.every((it, i) => it.iteration === liveMessage.iterations![i]?.iteration))),
     )
-    if (hasAnyCommittedAssistant) {
+    if (hasMatchingCommitted) {
       return messages
     }
   }

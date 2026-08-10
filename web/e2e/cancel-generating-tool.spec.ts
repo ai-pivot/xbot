@@ -172,12 +172,13 @@ test.describe('Cancel clears generating tool', () => {
     })
     console.log('After cancel result:', JSON.stringify(result))
 
-    // Generating tool disappears (it's not real content — never completed)
-    expect(result.hasShell).toBe(false)
-    // In mock SSE (E2E), frozen liveMessage returns null — content is NOT
-    // visible. In real app, appendAssistant (flushSync) adds the committed
-    // message with content. The real path is tested by Go integration tests.
-    // We only verify the generating tool is gone (not stuck in 'generating').
+    // User requirement: already-rendered content NEVER disappears after cancel.
+    // The latest in-flight iteration's generating tool (Shell, status=generating
+    // at cancel time) is preserved by store.freeze() — marked error (cancelled),
+    // NOT cleared. It is real rendered content the user already saw.
+    expect(result.hasShell).toBe(true)
+    // The streamed text also stays visible (frozen live keeps streamContent).
+    expect(result.hasContent).toBe(true)
 
     await page.close()
   })

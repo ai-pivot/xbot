@@ -573,7 +573,11 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.streaming = false
       draft.phase = 'frozen'
-      draft.streamingTools = []
+      // Do NOT clear streamingTools — a generating tool (tool name already
+      // detected, arguments still streaming) is part of the latest in-flight
+      // iteration. User requirement: already-rendered content NEVER disappears
+      // on cancel. Clearing it here made the newest (unfinished) iteration's
+      // tool vanish at cancel time. Keep it, mark error (cancelled).
       // Mark all in-progress tools as error (cancelled)
       const markError = (tools: WebToolProgress[]) => {
         for (const t of tools) {

@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
-import { canRewindMessage, isCompactMarker, latestCompactBoundaryIndex, MessageList } from '@/components/agent/MessageList'
+import { canRewindMessage, isCompactMarker, latestCompactBoundaryIndex, MessageList, buildMessageRows } from '@/components/agent/MessageList'
 import { EMPTY_LIVE_PROGRESS } from '@/types/agent'
 import type { ChatMessage } from '@/types/agent'
 import { I18nProvider } from '@/providers/i18n'
@@ -811,5 +811,57 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
     const footer = container.querySelector('[data-testid="ask-footer"]')
     expect(footer).not.toBeNull()
     expect(contentElement(container).contains(footer)).toBe(true)
+  })
+})
+
+describe('buildMessageRows — turnID=0 live dedup (regression: 0ac17e66 was too broad)', () => {
+  const base = (over: Partial<ChatMessage>): ChatMessage => ({
+    id: 'x', role: 'assistant', content: '', iterations: [], timestamp: '', isPartial: false, turnID: 0, ...over,
+  })
+
+  it('renders a turnID=0 live message when committed assistants have DIFFERENT content (normal streaming, no turn_started yet)', () => {
+    const messages: ChatMessage[] = [
+      base({ id: 'u1', role: 'user', content: 'hi', turnID: 1 }),
+      base({ id: 'a1', role: 'assistant', content: 'history reply', turnID: 1 }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-0-live', content: 'Starting...', isPartial: true })
+    const rows = buildMessageRows(messages, live)
+    // The old hasAnyCommittedAssistant check skipped the live row because
+    // 'history reply' is a committed assistant → 'Starting...' never rendered
+    // (stream-jitter E2E regression: 100 history messages hid the stream).
+    expect(rows).toHaveLength(3)
+    expect(rows[2].content).toBe('Starting...')
+  })
+
+  it('skips a turnID=0 live message when a committed assistant has the SAME content (cancel commit path)', () => {
+    const messages: ChatMessage[] = [
+      base({ id: 'a1', content: 'final text', turnID: 1 }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-0-live', content: 'final text', isPartial: true })
+    const rows = buildMessageRows(messages, live)
+    expect(rows).toHaveLength(1)
+  })
+
+  it('skips a turnID=0 live message when committed iterations match (cancel [interrupted] with same progress_history)', () => {
+    const tool = { name: 'Shell', label: 'Shell', status: 'error' as const, elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '' }
+    const iter = { iteration: 1, thinking: '', reasoning: '', tools: [tool], toolCount: 1 }
+    const messages: ChatMessage[] = [
+      base({ id: 'a1', content: '', turnID: 1, iterations: [iter] }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-0-live', content: '', isPartial: true, iterations: [{ ...iter }] })
+    const rows = buildMessageRows(messages, live)
+    expect(rows).toHaveLength(1)
+  })
+
+  it('renders a turnID=0 live message when committed iterations DIFFER (different iteration numbers)', () => {
+    const tool = { name: 'Shell', label: 'Shell', status: 'error' as const, elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '' }
+    const iter1 = { iteration: 1, thinking: '', reasoning: '', tools: [{ ...tool, name: 'Read', label: 'Read', status: 'done' as const }], toolCount: 1 }
+    const iter2 = { iteration: 2, thinking: '', reasoning: '', tools: [tool], toolCount: 1 }
+    const messages: ChatMessage[] = [
+      base({ id: 'a1', content: '', turnID: 1, iterations: [iter1] }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-0-live', content: '', isPartial: true, iterations: [{ ...iter2 }] })
+    const rows = buildMessageRows(messages, live)
+    expect(rows).toHaveLength(2)
   })
 })

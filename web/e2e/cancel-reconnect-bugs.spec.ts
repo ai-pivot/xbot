@@ -87,8 +87,12 @@ test.describe('Cancel + reconnect iteration bugs', () => {
       return text.includes('Read') && text.includes('Shell')
     })
     console.log('After cancel - frozen content:', hasCommitted)
-    // Frozen liveMessage returns null — content not visible in mock SSE.
-    expect(hasCommitted).toBe(false)
+    // User requirement: already-rendered content NEVER disappears after cancel.
+    // The cancel ack commits the frozen live content (progress_history →
+    // committed [interrupted] message with the same iterations), so Read + Shell
+    // remain visible. Frozen liveMessage renders until the committed message
+    // replaces it (buildMessageRows' hasCommitted/content-match check).
+    expect(hasCommitted).toBe(true)
 
     await page.close()
   })

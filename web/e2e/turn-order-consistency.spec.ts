@@ -198,8 +198,10 @@ test.describe('Turn order consistency', () => {
         break
       }
     }
-    // Frozen liveMessage returns null — content not visible in mock SSE.
-    expect(foundContent).toBe(false)
+    // User requirement: already-rendered content NEVER disappears after cancel.
+    // The frozen live message keeps 'partial reply' visible (store.freeze()
+    // keeps content + the committed message replaces it when it arrives).
+    expect(foundContent).toBe(true)
 
     await page.close()
   })
