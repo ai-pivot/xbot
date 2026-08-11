@@ -59,6 +59,10 @@ Zero-dependency memory provider (no embedding API) built on SQLite FTS5 BM25.
   throttled to once per 10 min per session, incremental (watermark `LastConsolidated`),
   passes the FULL message list (never slices — protects provider prefix cache) with
   `[NEW]`/`[old]` markers in the prompt. `Memorize(ArchiveAll=true)` still runs on /new.
+  The goroutine is tracked by `Agent.lifecycleWG` and cancelled on `Agent.Close()` via
+  `lifecycleStopCh` (NOT `agentCtx`, which dies at end of every Run) so consolidation
+  never touches a closed DB. It receives a shallow copy of `out.Messages` — in-place
+  mutation by `ConsolidateTurn` must never affect the caller's slice.
 - **Garbage filtering**: `stripInjectedBlocks` removes `<context>`/`<system-reminder>`/
   `<dynamic-context>` XML blocks + injection-marker lines (📂 workdir, 👥 peers, ✅ tool
   stats, 行为提醒, timestamps, sender) before LLM extraction. Prompt demands DURABLE,
