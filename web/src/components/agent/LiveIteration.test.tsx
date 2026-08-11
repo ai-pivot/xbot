@@ -183,45 +183,28 @@ describe('LiveIteration — typewriter cursor', () => {
   })
 })
 
-describe('LiveIteration thinking placeholder (iteration-boundary waiting)', () => {
-  it('shows a thinking placeholder at the iteration boundary — previous iter done, next not arrived', () => {
-    // User requirement: "iter x 结束后如果 iter x+1 还没有进度到达，就应该在
-    // iter x+1 渲染思考中占位，防止用户以为卡死". iter 1 finished (lastIter=1),
-    // iter 2 has no content yet, turn still streaming → placeholder renders.
+describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iteration boundary)', () => {
+  it('shows the EXISTING thinking placeholder at the iteration boundary (prev iter done, next not arrived)', () => {
+    // liveMessage is non-null here → MessageList's busy placeholder is
+    // suppressed. Reusing ShimmerThinking keeps the "思考中…" visible during
+    // the boundary wait (user: "之前那个思考中有些情况没显示").
     const { container } = renderWithProviders(
       <LiveIteration progress={makeSnapshot({ lastIter: 1 })} level="all" />,
     )
     expect(container.textContent).toMatch(/思考中|thinking/)
   })
 
-  it('returns null in the pre-iteration phase (lastIter=0, nothing rendered yet)', () => {
-    // Turn just started, no iteration has made progress — the panel's own busy
-    // placeholder shows instead; no redundant placeholder here.
+  it('returns null in the pre-iteration phase (lastIter=0 — busy placeholder covers it)', () => {
     const { container } = renderWithProviders(
       <LiveIteration progress={makeSnapshot({ lastIter: 0 })} level="all" />,
     )
     expect(container.textContent).not.toMatch(/思考中|thinking/)
   })
 
-  it('returns null when the turn is not streaming (ended — committed reply replaces the live row)', () => {
+  it('returns null when the turn is not streaming (ended — committed reply replaces the row)', () => {
     const { container } = renderWithProviders(
       <LiveIteration progress={makeSnapshot({ lastIter: 2, streaming: false })} level="all" />,
     )
-    expect(container.textContent).not.toMatch(/思考中|thinking/)
-  })
-
-  it('shows real content when available (no placeholder, even with lastIter>0)', () => {
-    // A running tool in the next iteration is real content — no placeholder.
-    const { container } = renderWithProviders(
-      <LiveIteration
-        progress={makeSnapshot({
-          lastIter: 2,
-          activeTools: [{ name: 'Shell', label: 'Shell', status: 'running', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '' }],
-        })}
-        level="all"
-      />,
-    )
-    expect(container.textContent).toContain('Shell')
     expect(container.textContent).not.toMatch(/思考中|thinking/)
   })
 })

@@ -16,6 +16,7 @@ import { FoldedToolGroup } from './FoldedToolGroup'
 import { GenUIBlock } from './GenUIBlock'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
+import { ShimmerThinking } from './ShimmerThinking'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
 import { SweepText } from './SweepText'
 import { isToolInProgress } from './statusVisual'
@@ -121,20 +122,14 @@ export const LiveIteration = memo(function LiveIteration({
   if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) {
     // Iteration boundary / waiting for the next iteration's first delta: the
     // previous iteration just finished (lastIter >= 1) but the next iteration's
-    // content hasn't arrived yet (slow SSE — the boundary clear is often a
-    // phase:undefined stream delta with no iteration_history). Show a
-    // "thinking…" placeholder so the user knows the agent is STILL WORKING
-    // (not stuck) — user requirement: "iter x 结束后如果 iter x+1 还没有进度
-    // 到达，就应该在 iter x+1 渲染思考中占位，防止用户以为卡死". The
-    // pre-iteration phase (lastIter=0, turn just started) keeps the panel's own
-    // busy placeholder instead.
+    // content hasn't arrived yet (slow SSE). liveMessage is non-null here, so
+    // MessageList's busy placeholder ("思考中…") is suppressed — without this
+    // the boundary shows a BLANK current-iteration area (user: "之前那个思考中
+    // 有些情况没显示"). Reuse the SAME ShimmerThinking ("思考中…") component —
+    // NOT a second indicator: it shows here when the live row exists, and in
+    // the busy placeholder when the live row doesn't (mutually exclusive).
     if (progress.streaming && progress.lastIter >= 1) {
-      return (
-        <div className="flex items-center gap-1.5 px-1 py-0.5 text-xs text-text-muted">
-          <span className="animate-pulse">…</span>
-          <span>{t('agent.reasoningStreaming')}</span>
-        </div>
-      )
+      return <ShimmerThinking />
     }
     return null
   }
