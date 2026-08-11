@@ -66,6 +66,11 @@ type ChannelPluginTransport struct {
 	// Allows the caller (server/main) to register the prompt provider with the Agent.
 	onChannelPrompt func(provider ChannelPromptProvider)
 
+	// Callback invoked when the channel process sends a "web_ui" message with
+	// web UI component declarations. The caller stores them in the Agent's
+	// WebUIRegistry and triggers a widget push to web clients.
+	onChannelUI func(decls []plugin.WebUIComponent)
+
 	// Lifecycle
 	writeMu   sync.Mutex // serializes writes to stdin (Call + PushEvent)
 	closeCh   chan struct{}
@@ -147,6 +152,11 @@ type ChannelPluginTransportConfig struct {
 	// declaration. The caller should register the provider with the Agent via
 	// AddChannelPromptProvider. Optional: may be nil.
 	OnChannelPrompt func(provider ChannelPromptProvider)
+
+	// OnChannelUI is called when the channel process sends a "web_ui"
+	// declaration with web UI components. The caller stores them in the
+	// Agent's WebUIRegistry. Optional: may be nil.
+	OnChannelUI func(decls []plugin.WebUIComponent)
 }
 
 // NewChannelPluginTransport creates a new ChannelPluginTransport from config.
@@ -163,6 +173,7 @@ func NewChannelPluginTransport(cfg ChannelPluginTransportConfig) *ChannelPluginT
 		// Initialize the prompt provider; plugin can update it via channel_prompt message later.
 		channelPromptProvider: newChannelPluginPromptProvider(cfg.Name),
 		onChannelPrompt:       cfg.OnChannelPrompt,
+		onChannelUI:           cfg.OnChannelUI,
 	}
 	return t
 }
@@ -457,6 +468,12 @@ func (t *ChannelPluginTransport) handleIncoming(raw json.RawMessage) {
 		return
 	}
 
+	// Web UI component declaration (type-based, no id/method)
+	if peek.Type == protocol.MsgTypeWebUI {
+		t.handleChannelUI(raw)
+		return
+	}
+
 	if peek.Method != "" {
 		// RPC request from plugin → dispatch to RPCTable
 		t.handlePluginRPC(peek.ID, peek.Method, raw)
@@ -516,6 +533,24 @@ func (t *ChannelPluginTransport) handleChannelPrompt(raw json.RawMessage) {
 	}
 
 	log.WithField("channel", t.name).WithField("parts", len(msg.SystemParts)).Info("Channel prompt registered")
+}
+
+// handleChannelUI processes a "web_ui" declaration from the channel process.
+// It stores the declared web UI components and invokes the OnChannelUI callback
+// so the caller can register them with the Agent's WebUIRegistry.
+// Sending a new "web_ui" message replaces the previous set (hot-update).
+func (t *ChannelPluginTransport) handleChannelUI(raw json.RawMessage) {
+	var msg struct {
+		UI []plugin.WebUIComponent `json:"ui"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		log.WithField("channel", t.name).WithError(err).Warn("Failed to parse web_ui message")
+		return
+	}
+	if t.onChannelUI != nil {
+		t.onChannelUI(msg.UI)
+	}
+	log.WithField("channel", t.name).WithField("count", len(msg.UI)).Info("Channel web UI registered")
 }
 
 // ChannelPromptProvider returns the ChannelPromptProvider for this transport.

@@ -595,6 +595,8 @@ type Agent struct {
 
 	// PluginManager manages the plugin system lifecycle
 	pluginMgr *plugin.PluginManager
+	// webUIReg stores channel-plugin web UI component declarations (web_ui protocol).
+	webUIReg *plugin.WebUIRegistry
 	bgTaskMgr *tools.BackgroundTaskManager
 
 	// bgRunPending buffers bg notifications by session. The Run loop drains the
@@ -1878,6 +1880,7 @@ func New(cfg Config) (*Agent, error) {
 	// 5c. Initialize plugin system (if enabled in config)
 	if cfg.PluginEnabled {
 		agent.pluginMgr = plugin.NewPluginManager(cfg.XbotHome)
+		agent.webUIReg = plugin.NewWebUIRegistry()
 		agent.pluginMgr.SetRuntimeFactory(plugin.NewCompositeRuntimeFactory())
 		// Set the agent's working directory so script plugins (e.g. git-info)
 		// run in the user's workspace, not the plugin install dir.
@@ -1984,43 +1987,19 @@ func New(cfg Config) (*Agent, error) {
 		// Debounce widget push: coalesce rapid updates (e.g. multiple PostToolUse
 		// triggers in a single agent iteration) into a single WebSocket message.
 		pm.WidgetRegistry().SetDebounce(200 * time.Millisecond)
+		// Broadcast widget updates to every channel implementing WidgetSubscriber.
+		// Each channel decides its own rendering (CLI → ANSI, Web → structured JSON)
+		// and push target. Local CLI mode overrides this via CLIChannel.SetWidgetRegistry
+		// (it registers its own OnUpdated with the asyncCh callback).
 		pm.WidgetRegistry().OnUpdated(func() {
-			if agent.channelFinder == nil {
+			if agent.channelRange == nil {
 				return
 			}
-			ch, ok := agent.channelFinder("cli")
-			if !ok {
-				return
-			}
-			rcli, ok := ch.(*web.RemoteCLIChannel)
-			if !ok {
-				return // local CLIChannel handles its own OnUpdated
-			}
-			// Per-session rendering: each chatID may have a different workDir.
-			// Uses plugin.RenderSessionWidgets — shared with plugin_widgets RPC handler
-			// to ensure consistent rendering across push and pull paths.
-			ms := agent.multiSession
-			wr := pm.WidgetRegistry()
-			rcli.PushPluginWidgetsPerSession(func(chatID string) map[string]string {
-				getCWD := func(cid string) string {
-					cwd := ""
-					if ms != nil && cid != "" {
-						if sess, err := ms.GetOrCreateSession("cli", cid); err == nil {
-							cwd = sess.GetCurrentDir()
-						}
-					}
-					// Fallback: if session CWD is empty, use persisted WorktreeRegistry entry
-					if cwd == "" {
-						sessKey := "cli:" + cid
-						if entry := tools.GlobalWorktreeRegistry.GetBySession(sessKey); entry != nil && entry.WorktreeDir != "" {
-							cwd = entry.WorktreeDir
-						}
-					}
-					return cwd
+			agent.channelRange(func(_ string, ch channel.Channel) bool {
+				if ws, ok := ch.(channel.WidgetSubscriber); ok {
+					ws.NotifyWidgetsUpdated()
 				}
-				zones := plugin.RenderSessionWidgets(wr, getCWD, chatID)
-				log.Debugf("[widget-push] chatID=%s cwd=%s infoBar=%q footer=%q", chatID, getCWD(chatID), zones["infoBar"], zones["footer"])
-				return zones
+				return true
 			})
 		})
 		log.Infof("Plugin system initialized: %d active plugins", agent.pluginMgr.ActiveCount())
@@ -2301,6 +2280,42 @@ func (a *Agent) Close() error {
 // Returns nil if the plugin system is not initialized.
 func (a *Agent) PluginManager() *plugin.PluginManager {
 	return a.pluginMgr
+}
+
+// WebUIRegistry returns the web UI component registry (web_ui protocol).
+// Returns nil when the plugin system is disabled.
+func (a *Agent) WebUIRegistry() *plugin.WebUIRegistry {
+	return a.webUIReg
+}
+
+// RegisterChannelWebUI stores web UI component declarations from a channel
+// plugin (hot-update replaces the channel's previous set).
+func (a *Agent) RegisterChannelWebUI(channel string, decls []plugin.WebUIComponent) {
+	if a.webUIReg == nil {
+		return
+	}
+	a.webUIReg.SetChannel(channel, decls)
+	if a.pluginMgr != nil {
+		// Notify web subscribers so the new components render immediately.
+		a.pluginMgr.WidgetRegistry().NotifyUpdated()
+	}
+}
+
+// ChannelPluginCall sends an RPC to a channel plugin transport by channel name.
+// Returns an error if the channel is not a ChannelPluginTransport.
+func (a *Agent) ChannelPluginCall(channel string, method string, payload json.RawMessage) (json.RawMessage, error) {
+	if a.channelFinder == nil {
+		return nil, fmt.Errorf("channel finder unavailable")
+	}
+	ch, ok := a.channelFinder(channel)
+	if !ok {
+		return nil, fmt.Errorf("channel %q not found", channel)
+	}
+	exec, ok := ch.(plugin.ChannelToolExecutor)
+	if !ok {
+		return nil, fmt.Errorf("channel %q does not support RPC calls", channel)
+	}
+	return exec.Call(method, payload)
 }
 
 // CommandNames returns visible slash/bang commands from the registry.

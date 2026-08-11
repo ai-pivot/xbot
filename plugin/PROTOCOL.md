@@ -387,6 +387,48 @@ The `result` string is injected into the system prompt as:
 
 ---
 
+### 4.6 `web_ui_action`
+
+Called when a user interacts with a web UI component contributed by this plugin
+(`web_ui` protocol, Web Plugin System). Sent from the web frontend via the
+`web_ui_action` RPC → routed to the owning channel plugin's transport.
+
+**Request**:
+```json
+{
+  "method": "web_ui_action",
+  "params": {
+    "widgetId": "ci-monitor",
+    "action": "retry",
+    "data": "{\"buildId\":\"#127\"}",
+    "chatId": "/home/smith/src/xbot"
+  }
+}
+```
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `widgetId` | string | The web UI component's widget_id (as declared in `web_ui`) |
+| `action` | string | The action name (from `data-action` on the clicked element) |
+| `data` | string | JSON string of the interaction data (from `data-*` attributes) |
+| `chatId` | string | The chat/session where the widget is rendered |
+
+**Response (success)**:
+```json
+{"result": "ok"}
+```
+
+**Response (error)**:
+```json
+{"error": "unknown action"}
+```
+
+The plugin may trigger widget refreshes (via its own mechanisms) to reflect
+the action's effects; the updated component state flows back to clients through
+the normal `web_widgets` push path.
+
+---
+
 ## 5. Hook Events
 
 ### 5.1 Valid Event Names

@@ -360,6 +360,9 @@ func (c *sdkMockContext) OnPluginError(callback PluginErrorCallback) error { ret
 func (c *sdkMockContext) ContributeUI(widgetID, zone string, widget UIWidget, priority int) error {
 	return nil
 }
+func (c *sdkMockContext) RegisterWebActionHandler(widgetID string, handler WebActionHandler) error {
+	return nil
+}
 func (c *sdkMockContext) UpdateWidget(widgetID string) error                        { return nil }
 func (c *sdkMockContext) SetWidgetRegistry(wr *WidgetRegistry)                      {}
 func (c *sdkMockContext) EnrichContext(name string, enricher ContextEnricher) error { return nil }

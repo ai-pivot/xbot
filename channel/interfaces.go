@@ -1,6 +1,9 @@
 package channel
 
-import "xbot/protocol"
+import (
+	"xbot/plugin"
+	"xbot/protocol"
+)
 
 // ProgressSender is implemented by channels that transport the shared
 // protocol.ProgressEvent to remote or in-process clients. The agent's single
@@ -40,4 +43,22 @@ type SessionStateSender interface {
 // @all mentions, NapCat which doesn't support patching).
 type PreReplyNotifier interface {
 	PreReplyNotify() bool
+}
+
+// WidgetSubscriber is implemented by channels that receive plugin widget/UI
+// updates (WidgetRegistry content changes). The agent's single widget producer
+// broadcasts a notification to every WidgetSubscriber channel; each channel
+// decides how to render (ANSI for TUI, structured JSON for Web) and which of
+// its own clients to push to.
+//
+// This mirrors the ProgressSender / SessionStateSender pattern: the agent
+// stays channel-agnostic and never hard-codes channel-specific push logic.
+type WidgetSubscriber interface {
+	// SetWidgetRegistry injects the widget rendering registry. Called once at
+	// channel registration time (when the plugin system is available).
+	SetWidgetRegistry(wr *plugin.WidgetRegistry)
+	// NotifyWidgetsUpdated tells the channel that widget content changed.
+	// The channel decides which sessions to render and how to deliver the
+	// update to its clients.
+	NotifyWidgetsUpdated()
 }

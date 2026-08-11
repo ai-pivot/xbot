@@ -267,3 +267,82 @@ plugin/context.go
 - `PluginManager.Close()` calls `logMgr.CloseAll()` to stop cleanup goroutine + close writers
 - AuditLogger uses `newRotateWriterWithSuffix(dir, "audit", ".jsonl")` for daily rotation
 
+## Web UI Plugin System (web_ui protocol)
+
+Web 插件系统让**插件**（而非 agent/LLM）为 web 界面贡献炫酷 UI 组件，复用并扩展现有插件协议。
+三层能力，自由度和复杂度递增：
+
+| 层次 | 方式 | 自由度 | 示例 |
+|------|------|--------|------|
+| 1. 结构化 widget | script plugin 输出 `style\|text` → web 结构化渲染 | 文本+语义色 | 状态栏 Git 状态、infoBar CI 徽章 |
+| 2. 声明式组件 | `web_ui` 声明 `{type, props}` | 8 种内置组件 | sparkline 走势、table 构建历史、metric 指标卡 |
+| 3. 自由代码 | `web_ui` 声明 `code`/`src` | **完全自主**（iframe 沙箱） | 任意 TSX/HTML 组件、ECharts 大盘 |
+
+### 渠道自订阅架构（WidgetSubscriber）
+
+`channel/interfaces.go` 新增 `WidgetSubscriber` 接口，与 `ProgressSender`/`SessionStateSender` 同构：
+
+```go
+type WidgetSubscriber interface {
+    SetWidgetRegistry(wr *plugin.WidgetRegistry) // 创建时注入一次
+    NotifyWidgetsUpdated()                        // 通知：widget 更新了，渠道自己决定怎么做
+}
+```
+
+- **agent 只做通知**：`agent.go` 的 OnUpdated 回调遍历所有 channel，类型断言 `WidgetSubscriber` 后调用
+  `NotifyWidgetsUpdated()` —— 不再硬编码 CLI/Web 分支
+- **渠道自己决定**：CLI channel 渲染 ANSI（`plugin_widgets` 消息），Web channel 渲染结构化 JSON
+  （`web_widgets` 消息），未来新渠道实现接口即获得能力
+- **WebChannel** 实现：`NotifyWidgetsUpdated` 遍历 web 订阅的 chatID → `RenderSessionWebWidgets`
+  （结构化 spans，非 ANSI）→ 增量 diff 后推 `web_widgets` SSE/WS 消息
+
+### 结构化 widget 数据（WebWidgetSpan）
+
+`plugin/web_widget.go` 定义 `WebWidgetSpan{Text, Style, Icon, Href}` —— web 专用结构化 span。
+`RenderSessionWebWidgets(wr, getCWD, chatID)` 返回 `map[zone][]WebWidgetSpan`，与 CLI 的
+`RenderSessionWidgets`（ANSI 字符串）并列。StyleRaw 内容（终端转义）对 web 端**跳过**。
+
+### web_ui 组件声明协议
+
+Channel plugin 通过 `web_ui` 消息声明 web 组件（热更新覆盖式，同 channel_tools 语义）：
+
+```json
+{"type":"web_ui","ui":[
+  {"widget_id":"ci-monitor","title":"CI","slot":"right_sidebar","refresh":"30s",
+   "component":{"type":"sparkline","props":{"data":[1,5,3,8],"color":"#22c55e"}}}
+]}
+```
+
+- 后端：`ChannelPluginTransport.handleChannelUI` → `Agent.RegisterChannelWebUI` → `WebUIRegistry`
+- 前端：`web_widgets` 消息携带 `{zones, components}` → `PluginWidgetProvider` → `PluginComponentPanel`
+  按 slot 渲染（right_sidebar / panel / status_bar_left / info_bar 等）
+- 内置组件：`badge` / `progress` / `metric` / `sparkline` / `table` / `list` / `markdown`
+- **自由代码**：`code` 字段传任意 TSX 源码 → 前端 `SandboxedUI`（泛化自 `GenUIBlock`）在
+  iframe 沙箱内 sucrase 编译 + 独立 React root 渲染；`src` 字段加载外部可信 URL
+
+### web_ui_action 交互协议
+
+组件交互（点击/输入）回传给插件：
+
+```
+前端组件 data-action 点击
+  → PluginComponentPanel.onAction → POST /api/rpc {method:"web_ui_action"}
+  → serverapp rpc_table.go：
+      1. WebUIRegistry.Owner(widgetID) 找到归属 channel
+      2. Agent.ChannelPluginCall(owner, "web_ui_action", params) → channel plugin transport RPC
+      3. 无归属 → native 插件 handler（PluginContext.RegisterWebActionHandler）
+      4. 都无 → 注入 agent loop（同 genui_action）
+```
+
+- Channel plugin 端：stdio `Handler.WebUIAction`（dispatch case `web_ui_action`）
+- Native 插件端：`PluginContext.RegisterWebActionHandler(widgetID, handler)`
+
+### 安全边界
+
+- 声明式组件：props 全走 React 文本节点渲染（自动转义），类型防御性校验
+- 自由代码：`SandboxedUI` iframe `sandbox="allow-scripts allow-same-origin"`，插件代码无法访问
+  父页面 DOM/Cookie/token（同 GenUIBlock 机制）
+- `src` 外部 URL 建议仅可信源（file:/javascript:/data: 被浏览器 sandbox 拒绝）
+- 插件信任模型：插件本就有 `execute_tool` 可执行任意命令，iframe 隔离是防御纵深而非信任基础
+
+

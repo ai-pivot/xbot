@@ -1664,3 +1664,20 @@ func (pm *PluginManager) Close() {
 		pm.logMgr = nil
 	}
 }
+
+// WebActionHandlerForWidget returns the native plugin handler registered for a
+// web UI widget (via PluginContext.RegisterWebActionHandler). It searches all
+// active plugin contexts. Returns ok=false when no plugin registered a handler.
+func (pm *PluginManager) WebActionHandlerForWidget(widgetID string) (WebActionHandler, bool) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	for _, entry := range pm.entries {
+		if entry == nil || entry.Context == nil {
+			continue
+		}
+		if h, ok := entry.Context.webActionHandler(widgetID); ok {
+			return h, true
+		}
+	}
+	return nil, false
+}

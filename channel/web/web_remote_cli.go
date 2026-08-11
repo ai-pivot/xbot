@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	ch "xbot/channel"
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/protocol"
 )
 
@@ -66,6 +67,10 @@ func (c *RemoteCLIChannel) deliverTUIResponse(id string, payload *protocol.TUICo
 type RemoteCLIChannel struct {
 	hub *Hub
 
+	// Plugin widget registry (injected via WidgetSubscriber).
+	widgetReg    *plugin.WidgetRegistry
+	widgetGetCWD func(chatID string) string
+
 	// Per-chatID widget zone cache for incremental updates.
 	lastWidgetMu    sync.Mutex
 	lastWidgetZones map[string]map[string]string // chatID → zone → content
@@ -73,6 +78,32 @@ type RemoteCLIChannel struct {
 	// TUI control pending requests (keyed by request ID)
 	tuiPendingMu sync.Mutex
 	tuiPending   map[string]chan *protocol.TUIControlPayload
+}
+
+// Compile-time interface assertion.
+var _ ch.WidgetSubscriber = (*RemoteCLIChannel)(nil)
+
+// SetWidgetRegistry implements ch.WidgetSubscriber.
+func (c *RemoteCLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
+	c.widgetReg = wr
+}
+
+// SetWidgetGetCWD injects a per-chatID CWD resolver used for session-specific
+// widget rendering (git branch, worktree, etc.).
+func (c *RemoteCLIChannel) SetWidgetGetCWD(fn func(chatID string) string) {
+	c.widgetGetCWD = fn
+}
+
+// NotifyWidgetsUpdated implements ch.WidgetSubscriber. Renders ANSI widget
+// zones per subscribed CLI chatID and pushes via PushPluginWidgetsPerSession.
+func (c *RemoteCLIChannel) NotifyWidgetsUpdated() {
+	if c.widgetReg == nil {
+		return
+	}
+	getCWD := c.widgetGetCWD
+	c.PushPluginWidgetsPerSession(func(chatID string) map[string]string {
+		return plugin.RenderSessionWidgets(c.widgetReg, getCWD, chatID)
+	})
 }
 
 // NewRemoteCLIChannel creates a virtual CLI channel that shares the given hub.

@@ -23,6 +23,7 @@ import (
 	"xbot/bus"
 	ch "xbot/channel"
 	log "xbot/logger"
+	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/tools"
 
@@ -379,6 +380,17 @@ type WebChannel struct {
 	// singleUser mirrors config.Experimental.SingleUser — when true, all
 	// web users are treated as admin (no identity isolation).
 	singleUser bool
+
+	// Plugin widget registry (injected via WidgetSubscriber). Non-nil only
+	// when the plugin system is enabled and this channel was wired.
+	widgetReg     *plugin.WidgetRegistry
+	widgetZonesMu sync.Mutex
+	lastWebZones  map[string]plugin.WebWidgetZones // chatID → structured zones (incremental push)
+
+	// Web UI component registry (web_ui protocol, phase 2). Injected from the
+	// agent's WebUIRegistry; read during NotifyWidgetsUpdated and merged into
+	// the web_widgets push.
+	webUIReg *plugin.WebUIRegistry
 }
 
 type sessionInfo struct {
@@ -388,8 +400,127 @@ type sessionInfo struct {
 	expires      time.Time
 }
 
-// Compile-time interface assertion.
+// Compile-time interface assertions.
 var _ ch.SessionStateSender = (*WebChannel)(nil)
+var _ ch.WidgetSubscriber = (*WebChannel)(nil)
+
+// SetWidgetRegistry implements ch.WidgetSubscriber. Injects the plugin widget
+// registry used for structured (non-ANSI) web rendering.
+func (wc *WebChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
+	wc.widgetReg = wr
+}
+
+// SetWebUIRegistry injects the web UI component registry (web_ui protocol).
+// Declared components are merged into the web_widgets push alongside zones.
+func (wc *WebChannel) SetWebUIRegistry(reg *plugin.WebUIRegistry) {
+	wc.webUIReg = reg
+}
+
+// NotifyWidgetsUpdated implements ch.WidgetSubscriber. Renders structured
+// widget zones per web-subscribed chatID and pushes incremental updates via
+// the SSE/WS hub (MsgTypeWebWidgets).
+func (wc *WebChannel) NotifyWidgetsUpdated() {
+	if wc.widgetReg == nil {
+		return
+	}
+	// Collect web-subscribed chatIDs from the shared hub.
+	wc.hub.mu.RLock()
+	chatIDs := make([]string, 0, len(wc.hub.subs))
+	for routeKey := range wc.hub.subs {
+		channelName, chatID, ok := parseSessionRouteKey(routeKey)
+		if !ok || channelName != "web" {
+			continue
+		}
+		chatIDs = append(chatIDs, chatID)
+	}
+	wc.hub.mu.RUnlock()
+
+	for _, chatID := range chatIDs {
+		zones := plugin.RenderSessionWebWidgets(wc.widgetReg, wc.widgetCWDFor, chatID)
+
+		// Merge web UI component declarations (web_ui protocol) into the push.
+		var components []plugin.WebUIComponent
+		if wc.webUIReg != nil {
+			components = wc.webUIReg.Components()
+		}
+
+		// Incremental: skip if nothing changed for this chatID.
+		wc.widgetZonesMu.Lock()
+		changed := true
+		if prev, ok := wc.lastWebZones[chatID]; ok {
+			changed = !webWidgetZonesEqual(prev, zones)
+		}
+		if !changed && len(components) == 0 {
+			wc.widgetZonesMu.Unlock()
+			continue
+		}
+		if wc.lastWebZones == nil {
+			wc.lastWebZones = make(map[string]plugin.WebWidgetZones)
+		}
+		wc.lastWebZones[chatID] = zones
+		wc.widgetZonesMu.Unlock()
+
+		payload := struct {
+			Zones      plugin.WebWidgetZones    `json:"zones,omitempty"`
+			Components []plugin.WebUIComponent  `json:"components,omitempty"`
+			Revision   int                      `json:"revision,omitempty"`
+		}{Zones: zones, Components: components}
+		b, _ := json.Marshal(payload)
+		wsMsg := protocol.WSMessage{
+			Type:    protocol.MsgTypeWebWidgets,
+			TS:      time.Now().Unix(),
+			ChatID:  chatID,
+			Content: string(b),
+		}
+		_ = wc.hub.sendToSession("web", chatID, wsMsg) // best-effort push
+	}
+}
+
+// widgetCWDFor resolves the working directory for a web session using the
+// injected GetCWD callback (best-effort; empty on error or missing callback).
+func (wc *WebChannel) widgetCWDFor(chatID string) string {
+	if wc.callbacks.GetCWD == nil {
+		return ""
+	}
+	// Find a client subscribed to this chatID to use as the sender identity.
+	senderID := ""
+	wc.hub.mu.RLock()
+	routeKey := sessionRouteKey("web", chatID)
+	for cid := range wc.hub.subs[routeKey] {
+		if c := wc.hub.conns[cid]; c != nil && c.userID != "" {
+			senderID = c.userID
+			break
+		}
+	}
+	wc.hub.mu.RUnlock()
+	if senderID == "" {
+		return ""
+	}
+	cwd, err := wc.callbacks.GetCWD(senderID, SessionSelector{Channel: "web", ChatID: chatID})
+	if err != nil {
+		return ""
+	}
+	return cwd
+}
+
+// webWidgetZonesEqual compares two structured zone maps (order-insensitive).
+func webWidgetZonesEqual(a, b plugin.WebWidgetZones) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if av[i] != bv[i] {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 // SendSessionState implements ch.SessionStateSender.
 // Events are route-scoped. SubAgent lifecycle also reaches the canonical child

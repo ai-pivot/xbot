@@ -131,6 +131,7 @@ export type WSMessageType =
   | 'inject_user'
   | 'card'
   | 'plugin_widgets'
+  | 'web_widgets'
   | 'runner_status'
   | 'sync_progress'
   | 'genui'
@@ -461,4 +462,44 @@ export interface ModelEntry {
   sub_name: string
   model: string
   status: 'normal' | 'offline' | 'disabled'
+}
+
+// ---------------------------------------------------------------------------
+// Plugin Web Widget types (Web Plugin System — web_widgets / web_ui protocol).
+// ---------------------------------------------------------------------------
+
+/**
+ * A structured styled text segment for plugin widget zones. Mirrors
+ * plugin.WebWidgetSpan (plugin/web_widget.go). Style values match StyleClass
+ * constants: normal|dim|accent|success|warning|error|info|muted.
+ */
+export interface WebWidgetSpan {
+  text: string
+  style?: string
+  icon?: string
+  href?: string
+}
+
+/** Maps a widget zone name (status_bar_left, info_bar, ...) to its spans. */
+export type WebWidgetZones = Record<string, WebWidgetSpan[]>
+
+/** A declarative web UI component (web_ui protocol, phase 2). */
+export interface WebUIComponentDecl {
+  widget_id: string
+  title?: string
+  slot: string
+  refresh?: string
+  triggers?: string[]
+  /** Declarative component: { type: 'badge'|'progress'|..., props: {...} }. */
+  component?: { type: string; props: Record<string, unknown> }
+  /** Free-form source code mode (code: TSX/JS) or external URL (custom). */
+  code?: string
+  src?: string
+}
+
+/** Full payload of a web_widgets message. */
+export interface WebWidgetsPayload {
+  zones?: WebWidgetZones
+  components?: WebUIComponentDecl[]
+  revision?: number
 }

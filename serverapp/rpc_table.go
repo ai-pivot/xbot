@@ -423,6 +423,54 @@ func registerGenUIHandlers(t RPCTable, h *RPCContext) {
 		h.Ag.InjectAsyncMessage("web", p.ChatID, "", content, tools.AsyncSourceUIAction)
 		return map[string]any{"ok": true}, nil
 	})
+
+	// web_ui_action: user interacted with a plugin-contributed web UI component.
+	// Routes to the channel plugin that declared the widget (via its transport
+	// RPC "web_ui_action"); if no owner is found, falls back to injecting the
+	// action into the agent (same as genui_action).
+	t["web_ui_action"] = rpc1(func(ctx context.Context, p struct {
+		ChatID   string `json:"chat_id"`
+		WidgetID string `json:"widget_id"`
+		Action   string `json:"action"`
+		Data     string `json:"data"`
+	}) (any, error) {
+		if p.Action == "" {
+			return nil, fmt.Errorf("action is required")
+		}
+		if p.WidgetID == "" {
+			return nil, fmt.Errorf("widget_id is required")
+		}
+		// Route to the owning channel plugin if one declared this widget.
+		owner := ""
+		if reg := h.Ag.WebUIRegistry(); reg != nil {
+			owner, _ = reg.Owner(p.WidgetID)
+		}
+		if owner != "" {
+			payload, err := json.Marshal(map[string]string{
+				"widgetId": p.WidgetID,
+				"action":   p.Action,
+				"data":     p.Data,
+				"chatId":   p.ChatID,
+			})
+			if err == nil {
+				if _, callErr := h.Ag.ChannelPluginCall(owner, "web_ui_action", payload); callErr == nil {
+					return map[string]any{"ok": true, "routed": owner}, nil
+				}
+			}
+		}
+		// Native plugin handler (PluginContext.RegisterWebActionHandler).
+		if pm := h.Ag.PluginManager(); pm != nil {
+			if handler, found := pm.WebActionHandlerForWidget(p.WidgetID); found {
+				if result, err := handler(p.Action, p.Data); err == nil {
+					return map[string]any{"ok": true, "routed": "native", "result": result}, nil
+				}
+			}
+		}
+		// Fallback: inject into the agent loop.
+		content := fmt.Sprintf("🖱️ [Web UI Action] %s (widget: %s)\n\nState: %s", p.Action, p.WidgetID, p.Data)
+		h.Ag.InjectAsyncMessage("web", p.ChatID, "", content, tools.AsyncSourceUIAction)
+		return map[string]any{"ok": true, "routed": "agent"}, nil
+	})
 }
 
 func registerCommandHandlers(t RPCTable, h *RPCContext) {
@@ -1732,6 +1780,8 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 
 	t["plugin_widgets"] = rpc1(func(ctx context.Context, p struct {
 		ChatID string `json:"chat_id"`
+		// Structured requests structured (non-ANSI) zone output for web clients.
+		Structured bool `json:"structured"`
 	}) (any, error) {
 		pm := h.Ag.PluginManager()
 		if pm == nil {
@@ -1752,6 +1802,16 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 			return cwd
 		}
 		wr := pm.WidgetRegistry()
+
+		// Structured output for web clients (spans with style semantics).
+		if p.Structured {
+			zones := plugin.RenderSessionWebWidgets(wr, getCWD, p.ChatID)
+			return map[string]any{
+				"zones": zones,
+				"infos": pm.WidgetInfoForWorkDir(getCWD(p.ChatID)),
+				"count": wr.Count(),
+			}, nil
+		}
 
 		// Render per-workDir using shared function — same logic as WS push path.
 		zones := plugin.RenderSessionWidgets(wr, getCWD, p.ChatID)
