@@ -775,8 +775,21 @@ export class ProgressStore {
           draft.genuiContent = ''
           draft.content = ''
           draft.streamingTools = []
-          draft.activeTools = []
-          draft.completedTools = []
+          // ALREADY-RENDERED CONTENT NEVER DISAPPEARS (user requirement).
+          // Keep activeTools/completedTools across the iteration boundary —
+          // the clearing event is often a phase:undefined stream delta that
+          // carries NO iteration_history, so the previous iteration's tools
+          // would vanish until the NEXT structured event appends the history
+          // (an empty window that lasts as long as SSE is slow — user report:
+          // "agent turn 消失然后又出现，sse 到的慢会有比较久的错误状态").
+          // Mark running/generating tools as done (visually "completed", not
+          // "still running" — no misleading state); the new iteration's
+          // structured event replaces them (line: draft.activeTools = ...).
+          for (const t of draft.activeTools) {
+            if (t.status === 'running' || t.status === 'generating' || t.status === 'pending') {
+              t.status = 'done'
+            }
+          }
           draft.subAgents = []
           draft.lastReasoning = ''
         }

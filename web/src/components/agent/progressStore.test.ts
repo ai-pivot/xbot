@@ -701,4 +701,43 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     expect(snap.iteration).toBe(2) // NOT rolled back to 1
     expect(snap.activeTools.map((t) => t.name)).toEqual(['Shell']) // NOT replaced by iter-1 tools
   })
+
+  it('keeps already-rendered tools across the iteration boundary (no vanish window)', () => {
+    // User report: "agent turn 消失然后又出现" — at the iteration boundary the
+    // previous iteration's activeTools were cleared, but the clearing event is
+    // often a phase:undefined stream delta carrying NO iteration_history, so
+    // the tools vanished until the NEXT structured event appended the history
+    // (an empty window lasting as long as SSE is slow). Already-rendered
+    // content must never disappear: keep activeTools (mark running as done),
+    // the new iteration's structured event replaces them.
+    const store = new ProgressStore()
+    // Iteration 1: active tool
+    store.setStructuredTools({
+      eventSeq: 1,
+      phase: 'tool_exec',
+      iteration: 1,
+      activeTools: [tool({ name: 'Shell', status: 'running' })],
+    })
+    flushRaf()
+    expect(store.getSnapshot().activeTools.map((t) => t.name)).toEqual(['Shell'])
+
+    // Iteration 2 boundary via a phase:undefined stream delta (no iteration_history)
+    store.setStructuredTools({ eventSeq: 2, iteration: 2 })
+    flushRaf()
+
+    const boundary = store.getSnapshot()
+    expect(boundary.activeTools.length).toBe(1) // kept — not cleared
+    expect(boundary.activeTools[0].name).toBe('Shell')
+    expect(boundary.activeTools[0].status).toBe('done') // visually completed, not still running
+
+    // New iteration's structured event replaces the old tool
+    store.setStructuredTools({
+      eventSeq: 3,
+      phase: 'tool_exec',
+      iteration: 2,
+      activeTools: [tool({ name: 'Read', status: 'running' })],
+    })
+    flushRaf()
+    expect(store.getSnapshot().activeTools.map((t) => t.name)).toEqual(['Read'])
+  })
 })
