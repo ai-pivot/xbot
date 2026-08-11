@@ -115,6 +115,10 @@ func FlatMemoryTools() []Tool {
 	}
 }
 
+func init() {
+	RegisterMemoryTools("flat", func() []Tool { return FlatMemoryTools() })
+}
+
 // flatMemoryDir returns the user's flat memory directory path.
 // Uses XbotHome/memory/{tenantID}/ layout (numeric ID, filesystem-safe).
 func flatMemoryDir(ctx *ToolContext) string {

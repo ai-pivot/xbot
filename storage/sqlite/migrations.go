@@ -318,6 +318,97 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v54: structured iteration history table. Replaces Detail JSON for
+	// iteration data — every intermediate assistant message now has its
+	// iteration record (iter id, reasoning, tools) in a dedicated table,
+	// not just the final assistant message's Detail blob. This fixes the
+	// "missing iterations after reload" bug where intermediate tool_calls
+	// assistant messages had no Detail (iter id lost).
+	//
+	// NOTE: v54 was previously used for identity merge. This migration uses v55
+	// to avoid collision — databases already at v54 (from identity merge)
+	// will run this migration and create the iteration_history table.
+	if from < 55 {
+		if err := migrateV54ToV55(db.Conn()); err != nil {
+			return fmt.Errorf("migrate to v55: %w", err)
+		}
+	}
+
+	// v56: remove FK constraint from iteration_history (message_id=0 is valid —
+	// iteration records are linked by turn_id, not message_id). The FK
+	// constraint caused "FOREIGN KEY constraint failed" when writeIterationHistory
+	// inserted message_id=0 (no associated session_messages row). This silently
+	// dropped ALL iteration_history writes — iterations 1-38+ were lost.
+	if from < 56 {
+		if err := migrateV55ToV56(conn); err != nil {
+			return fmt.Errorf("migrate to v56: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV55ToV56 recreates iteration_history without the FK constraint.
+// The old table had FOREIGN KEY (message_id) REFERENCES session_messages(id)
+// which rejected message_id=0 (valid value — iterations are linked by
+// turn_id, not message_id). SQLite cannot ALTER TABLE to drop FK, so we
+// recreate the table.
+func migrateV55ToV56(conn *sql.DB) error {
+	migration := `
+	-- Save existing data
+	CREATE TABLE IF NOT EXISTS _iteration_history_backup AS SELECT * FROM iteration_history;
+	-- Drop old table (has FK constraint)
+	DROP TABLE IF EXISTS iteration_history;
+	-- Recreate without FK
+	CREATE TABLE iteration_history (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+message_id INTEGER NOT NULL DEFAULT 0,
+tenant_id INTEGER NOT NULL,
+turn_id INTEGER NOT NULL DEFAULT 0,
+iteration INTEGER NOT NULL,
+content TEXT NOT NULL DEFAULT '',
+reasoning TEXT NOT NULL DEFAULT '',
+tools TEXT NOT NULL DEFAULT '[]',
+created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);
+CREATE INDEX IF NOT EXISTS idx_iter_history_turn ON iteration_history(tenant_id, turn_id);
+-- Restore data (skip FK-violating rows — message_id=0 is now valid)
+INSERT INTO iteration_history SELECT * FROM _iteration_history_backup;
+-- Cleanup
+DROP TABLE _iteration_history_backup;
+UPDATE schema_version SET version = 56;
+`
+	if _, err := conn.Exec(migration); err != nil {
+		return fmt.Errorf("migrate v55->v56: %w", err)
+	}
+	log.Info("Database migrated to v56 (removed FK constraint from iteration_history)")
+	return nil
+}
+
+// migrateV54ToV55 creates the iteration_history table for structured
+// iteration storage. Existing Detail JSON is left as-is for backward compat.
+func migrateV54ToV55(conn *sql.DB) error {
+	migration := `
+CREATE TABLE IF NOT EXISTS iteration_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id INTEGER NOT NULL DEFAULT 0,
+  tenant_id INTEGER NOT NULL,
+  turn_id INTEGER NOT NULL DEFAULT 0,
+  iteration INTEGER NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  reasoning TEXT NOT NULL DEFAULT '',
+  tools TEXT NOT NULL DEFAULT '[]',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);
+CREATE INDEX IF NOT EXISTS idx_iter_history_turn ON iteration_history(tenant_id, turn_id);
+UPDATE schema_version SET version = 55;
+`
+	if _, err := conn.Exec(migration); err != nil {
+		return fmt.Errorf("migrate v54->v55: %w", err)
+	}
+	log.Info("Database migrated to v55 (added iteration_history table)")
 	return nil
 }
 

@@ -469,3 +469,7 @@ func LettaMemoryTools() []Tool {
 		&RecallMemorySearchTool{},
 	}
 }
+
+func init() {
+	RegisterMemoryTools("letta", func() []Tool { return LettaMemoryTools() })
+}

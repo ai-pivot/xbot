@@ -300,7 +300,9 @@ test.describe('Iteration sequence integrity', () => {
     await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
     await page.waitForTimeout(500)
 
-    // Content should still be visible (frozen, not disappeared)
+    // User requirement: already-rendered content NEVER disappears after cancel.
+    // The frozen live message keeps the streamed text visible (store.freeze()
+    // keeps content; the committed message replaces it when it arrives).
     const contentAfter = await countText(page, 'working on something')
     console.log('After cancel - content:', contentAfter)
     expect(contentAfter).toBeGreaterThan(0)

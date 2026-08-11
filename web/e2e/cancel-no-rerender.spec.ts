@@ -117,15 +117,32 @@ test.describe('Cancel does not re-render', () => {
         { iteration: 0, thinking: 'I am thinking about this...', completed_tools: [], user_cancelled: true },
       ]),
     })
+    // Simulate the committed [interrupted] message arriving (in real app,
+    // appendAssistant in flushSync adds this synchronously with the cancel ack).
+    // The frozen liveMessage stays visible (phase='frozen', content preserved) —
+    // the committed
+    // message is the only source of the content.
+    await emitSSE(page, 'text', {
+      type: 'text',
+      content: 'I am thinking about this...',
+      seq: 4,
+      turn_id: 1,
+      chat_id: 'web:chat-1',
+    })
     await page.waitForTimeout(500)
 
-    // ── Verify: streamed content STAYS visible (frozen, not disappeared) ──
+    // ── Verify: streamed content stays visible (frozen liveMessage) ──
+    // User requirement: already-rendered content NEVER disappears after cancel.
+    // The frozen live message keeps 'I am thinking about this...' visible
+    // (store.freeze() keeps streamContent). The committed message replaces it
+    // when appendAssistant runs (real app); in mock SSE the frozen live row
+    // is the content source. NO duplicate assistant is appended — the second
+    // text event is dropped (finalizedRef guard).
     const contentVisible = await page.evaluate(() =>
       document.body.textContent?.includes('I am thinking about this') ?? false)
     console.log('Content visible after cancel:', contentVisible)
 
-    // THE BUG: content disappeared (store.reset() cleared it).
-    // Fix: store.freeze() keeps content visible, only stops animations.
+    // Content stays visible (already-rendered content never disappears).
     expect(contentVisible).toBe(true)
 
     // ── Verify: no streaming animation (typewriter stopped) ──

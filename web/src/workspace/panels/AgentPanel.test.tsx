@@ -5,7 +5,7 @@ import '@testing-library/jest-dom'
 const mocks = vi.hoisted(() => {
   const order: string[] = []
   const chat = {
-    messages: [],
+    messages: [] as Array<{ id: string; role: string; content: string; isPartial?: boolean; turnID?: number }>,
     loading: false,
     error: null,
     resolvedChatID: 'chat-1',
@@ -74,9 +74,18 @@ vi.mock('@/components/agent/MessageInput', () => ({ MessageInput: () => null }))
 vi.mock('@/components/agent/ModelSelector', () => ({ ModelSelector: () => null }))
 vi.mock('@/components/agent/MessageList', () => ({
   latestCompactBoundaryIndex: () => -1,
-  MessageList: (props: { onRewind?: (content: string, message: unknown) => void; busy?: boolean }) => (
+  MessageList: (props: {
+    onRewind?: (content: string, message: unknown) => void
+    busy?: boolean
+    liveMessage?: unknown
+    liveProgress?: unknown
+    messages?: unknown[]
+    loading?: boolean
+  }) => (
     <div>
       <div data-testid="message-list-busy">{String(props.busy ?? false)}</div>
+      <div data-testid="message-list-live">{props.liveMessage ? 'live-visible' : 'live-hidden'}</div>
+      <div data-testid="message-list-live-progress">{props.liveProgress ? 'progress-visible' : 'progress-hidden'}</div>
       <button
         type="button"
         onClick={() => props.onRewind?.('edited message', {
@@ -235,5 +244,49 @@ describe('AgentPanel busy state', () => {
     mocks.progress.progressSnapshot = { todos: [], tokenUsage: null }
     render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
     expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
+  })
+})
+
+describe('AgentPanel liveMessage visibility during reload', () => {
+  beforeEach(() => {
+    mocks.progress.progressSnapshot = { todos: [], tokenUsage: null, streaming: true, phase: 'thinking' }
+    mocks.progress.liveMessage = { id: 'turn-live', role: 'assistant', isPartial: true }
+  })
+
+  it('KEEPS the live turn visible during a reload that blanks messages (loading=true, messages=[])', () => {
+    // User report + [RENDER_LOSS_ROWS] rowsLen:0: a turn with heavy reasoning
+    // floods SSE events → ring buffer overflow → resync_required →
+    // useChatMessages setLoading(true)+reload() → reload BLANKS messages
+    // (setMessages([]) in the no-cache path). The earlier gate
+    // `chat.loading ? null : liveMessage` (then refined to
+    // `loading && messages.length===0`) hid the ENTIRE live turn for the ~1s
+    // reload — rows collapsed from 65 to 0, user could not scroll down. The
+    // live store (useProgressStream) is INDEPENDENT of useChatMessages'
+    // history loading; gating live on loading is architecturally wrong. The
+    // live turn must stay visible whenever the store has liveMessage.
+    mocks.chat.messages = [] // reload just blanked history
+    mocks.chat.loading = true
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-live').textContent).toBe('live-visible')
+    expect(screen.getByTestId('message-list-live-progress').textContent).toBe('progress-visible')
+  })
+
+  it('shows live even when messages are still empty during initial load', () => {
+    // Even on the very first load the live store is authoritative: if it has a
+    // hydrated liveMessage (refresh mid-turn → active_progress), it MUST render
+    // immediately. Hiding it on loading caused the turn to vanish whenever a
+    // reload coincided with an active turn (the reported bug).
+    mocks.chat.messages = []
+    mocks.chat.loading = true
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-live').textContent).toBe('live-visible')
+    expect(screen.getByTestId('message-list-live-progress').textContent).toBe('progress-visible')
+  })
+
+  it('shows live when not loading (normal streaming)', () => {
+    mocks.chat.messages = [{ id: 'u1', role: 'user', content: 'hi' }]
+    mocks.chat.loading = false
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-live').textContent).toBe('live-visible')
   })
 })

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useMemo, useState } from 'react'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Loader2 } from 'lucide-react'
 import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal } from 'lucide-react'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
@@ -156,7 +156,7 @@ export function MobileAppShell() {
                   </span>
                 </div>
                 <div className="min-h-0 flex-1">
-                  <Suspense fallback={null}>
+                  <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>
                     <TerminalPanel {...mobileTerminalProps(activeTerminalId)} />
                   </Suspense>
                 </div>
@@ -197,7 +197,7 @@ export function MobileAppShell() {
               <SheetHeader className="sr-only">
                 <SheetTitle>{t('sidebar.sessions')}</SheetTitle>
               </SheetHeader>
-              <SessionSidebar tabManager={tabManager} />
+              <SessionSidebar tabManager={tabManager} onSessionSelected={() => setDrawerOpen(false)} />
             </SheetContent>
           </Sheet>
 

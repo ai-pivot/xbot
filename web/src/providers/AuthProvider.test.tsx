@@ -51,7 +51,7 @@ describe('AuthProvider cache isolation', () => {
 
     localStorage.setItem(SESSION_TREE_CACHE_KEY, '{"version":1,"sessions":[],"subAgents":[]}')
     const cacheKey = sessionCacheKey('web', 'chat-a')
-    messagesCache.set(cacheKey, [])
+    messagesCache.set(cacheKey, { messages: [], progressGen: 0 })
     lastSeqCache.set(cacheKey, 7)
     progressSnapshotCache.set(cacheKey, { phase: 'tool' })
 

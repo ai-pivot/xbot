@@ -170,6 +170,8 @@ func (s *SessionService) Clear(tenantID int64) error {
 	if err != nil {
 		return err
 	}
+	// Delete iteration_history first (no FK cascade when foreign_keys=OFF).
+	_, _ = conn.Exec("DELETE FROM iteration_history WHERE tenant_id = ?", tenantID)
 	result, err := conn.Exec("DELETE FROM session_messages WHERE tenant_id = ?", tenantID)
 	if err != nil {
 		return fmt.Errorf("clear session messages: %w", err)
@@ -336,4 +338,65 @@ func (s *SessionService) GetTenantCWD(tenantID int64) (string, error) {
 		return cwd.String, nil
 	}
 	return "", nil
+}
+
+// IterationRecord is a structured iteration history entry (v54+).
+// Replaces the Detail JSON blob — every intermediate assistant message now
+// has its iteration data in a dedicated table row, not just the final message.
+type IterationRecord struct {
+	MessageID int64  `json:"message_id"`
+	TurnID    uint64 `json:"turn_id"`
+	Iteration int    `json:"iteration"`
+	Content   string `json:"content"`
+	Reasoning string `json:"reasoning"`
+	Tools     string `json:"tools"` // JSON array of tool snapshots
+}
+
+// AppendIterationHistory inserts a single iteration record linked to a message.
+func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec IterationRecord) error {
+	conn, err := s.conn()
+	if err != nil {
+		return err
+	}
+	_, err = conn.Exec(`
+		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools)
+	if err != nil {
+		return fmt.Errorf("append iteration_history: %w", err)
+	}
+	return nil
+}
+
+// GetIterationHistoryByTurn returns all iteration records for a given
+// (tenant_id, turn_id) pair, ordered by iteration number. This is the
+// ONLY query method used by ConvertMessagesToHistoryWithIterations.
+func (s *SessionService) GetIterationHistoryByTurn(tenantID int64, turnID uint64) ([]IterationRecord, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools
+		FROM iteration_history
+		WHERE tenant_id = ? AND turn_id = ?
+		ORDER BY iteration ASC
+	`, tenantID, turnID)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration_history by turn: %w", err)
+	}
+	defer rows.Close()
+	return scanIterationRecords(rows)
+}
+
+func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {
+	var records []IterationRecord
+	for rows.Next() {
+		var rec IterationRecord
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools); err != nil {
+			continue
+		}
+		records = append(records, rec)
+	}
+	return records, nil
 }

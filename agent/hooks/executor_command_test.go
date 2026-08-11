@@ -12,9 +12,12 @@ import (
 
 // testTimeout is the timeout used for hook command tests that expect the
 // command to succeed. On Windows, powershell.exe has a 5-10s cold-start
-// (loading .NET CLR) on CI runners, so the timeout must be generous.
-// Tests that deliberately exercise the timeout path use their own short value.
-const testTimeout = 30
+// (loading .NET CLR) on CI runners, and loaded runners can push an echo
+// round-trip past 30s (observed: TestCommandExecutor_Success timed out at
+// 30.57s on a Test (Windows) CI job while the identical code passed on the
+// next run). The timeout must be generous — these tests assert successful
+// execution, not timing.
+const testTimeout = 60
 
 // ---------------------------------------------------------------------------
 // testEvent is a minimal Event implementation for testing.

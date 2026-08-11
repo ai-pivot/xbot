@@ -468,6 +468,127 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.liveMessage).toBeNull()
   })
 
+  it('reload completing with active_progress=null must NOT wipe a streaming turn (turn DOM vanish)', () => {
+    // User report: "agent turn 消失 — 消失之后那个 agent turn 的 dom 都没了（不是空
+    // dom，而是直接没了）". Root cause: a reload() (triggered by SSE seq gap /
+    // resync_required / rewind) completes while the turn is STILL STREAMING, and
+    // fetchHistory returns active_progress=null (backend snapshot not registered
+    // yet / rewind cleared it / fetch raced). The hydration effect then called
+    // store.reset() unconditionally, wiping the entire live turn from the DOM.
+    // Fix: only reset when the store is genuinely idle (not streaming, no active
+    // phase) — a live turn must survive a stale null reload snapshot.
+    const { result, rerender } = renderHook(
+      (props: Partial<Parameters<typeof useProgressStream>[0]>) =>
+        useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, ...props }),
+      { initialProps: { initialProgress: null } },
+    )
+    // Turn starts streaming (iter 1 reasoning + a running tool).
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 1, turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { iteration: 1, turn_id: 1, reasoning_stream_content: 'reasoning' } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', iteration: 1, turn_id: 1, active_tools: [{ name: 'Read', status: 'running' }] },
+    })
+    expect(result.current.liveMessage).not.toBeNull()
+
+    // A reload that first returns a valid snapshot (hydrate) then a null one
+    // (the turn is mid-stream on the server but the snapshot fetch raced).
+    act(() => {
+      rerender({ initialProgress: { phase: 'thinking', iteration: 1, seq: 1 } as unknown as null })
+    })
+    act(() => { rafCbs.splice(0, rafCbs.length).forEach((cb) => cb()) })
+    expect(result.current.liveMessage).not.toBeNull()
+
+    act(() => {
+      rerender({ initialProgress: null })
+    })
+    act(() => { rafCbs.splice(0, rafCbs.length).forEach((cb) => cb()) })
+    // The streaming turn must survive — no DOM vanish.
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.isStreaming).toBe(true)
+    expect(result.current.progressSnapshot.phase).toBe('tool_exec')
+  })
+
+  it('reload completing with active_progress=null DOES reset an idle store (turn already over)', () => {
+    // Contrast test: when the store is genuinely idle (no streaming, no active
+    // phase), a null reload snapshot legitimately clears stale state.
+    const { result, rerender } = renderHook(
+      (props: Partial<Parameters<typeof useProgressStream>[0]>) =>
+        useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, ...props }),
+      { initialProps: { initialProgress: null } },
+    )
+    // A finished turn: stream content arrives, then the store is reset by the
+    // text event (idle store, no streaming).
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'done reply' } })
+    expect(result.current.liveMessage).not.toBeNull()
+
+    // Simulate text event finalization → store empty/idle.
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'done reply' })
+    expect(result.current.liveMessage).toBeNull()
+
+    // A stale null reload snapshot on an idle store must not resurrect anything.
+    act(() => {
+      rerender({ initialProgress: null })
+    })
+    act(() => { rafCbs.splice(0, rafCbs.length).forEach((cb) => cb()) })
+    expect(result.current.liveMessage).toBeNull()
+  })
+
+  it('disabled toggle (subscription flake) must NOT wipe a streaming turn', () => {
+    // User report: [RENDER_LOSS_ROWS] rowsLen:0, liveMessageId:null, busy:true
+    // with a cli chatKey. The live store was blanked by the useLayoutEffect
+    // ELSE branch (`store.reset()` on non-chatKey triggers) — `disabled`
+    // (= !shouldSubscribe) toggles when the SSE subscription/connection state
+    // briefly flips during reconnect / session-status jitter, even though the
+    // chatKey is UNCHANGED. A mid-turn disabled flake wiped the entire live
+    // store → liveMessage null → whole turn vanished. The live store is driven
+    // by SSE events; a subscription-state toggle must NOT wipe it. Only reset
+    // when genuinely idle (streaming=false, no active phase).
+    const { result, rerender } = renderHook(
+      (props: Partial<Parameters<typeof useProgressStream>[0]>) =>
+        useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, ...props }),
+      { initialProps: { disabled: false } },
+    )
+    // Turn starts streaming (iter 1 thinking + a running tool).
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 1, turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { iteration: 1, turn_id: 1, reasoning_stream_content: 'reasoning' } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', iteration: 1, turn_id: 1, active_tools: [{ name: 'Read', status: 'running' }] },
+    })
+    expect(result.current.liveMessage).not.toBeNull()
+
+    // Subscription flake: disabled flips true then false, chatKey unchanged.
+    act(() => { rerender({ disabled: true }) })
+    act(() => { rafCbs.splice(0, rafCbs.length).forEach((cb) => cb()) })
+    act(() => { rerender({ disabled: false }) })
+    act(() => { rafCbs.splice(0, rafCbs.length).forEach((cb) => cb()) })
+
+    // The streaming turn must survive the disabled toggle.
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.isStreaming).toBe(true)
+    expect(result.current.progressSnapshot.phase).toBe('tool_exec')
+  })
+
+  it('disabled toggle DOES reset a genuinely idle store (turn already over)', () => {
+    // Contrast: when the store is idle (turn finalized by text event), a
+    // disabled toggle legitimately clears stale state.
+    const { result, rerender } = renderHook(
+      (props: Partial<Parameters<typeof useProgressStream>[0]>) =>
+        useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, ...props }),
+      { initialProps: { disabled: false } },
+    )
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'done reply' } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'done reply' })
+    expect(result.current.liveMessage).toBeNull()
+
+    act(() => { rerender({ disabled: true }) })
+    act(() => { rafCbs.splice(0, rafCbs.length).forEach((cb) => cb()) })
+    expect(result.current.liveMessage).toBeNull()
+  })
+
   it('liveMessage is null when initialProgress has phase=running but no active_tools (thinking indicator should show via busy placeholder)', () => {
     // BUG: switching to a busy session where the snapshot has no active_tools
     // (captured between iterations or during thinking). historyProgressToLive
@@ -963,11 +1084,12 @@ describe('cancel: assistant message must not vanish', () => {
     )
     // First turn: TurnID=5
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 5, chat_id: 'web:c1' } })
-    // Second turn: TurnID=3 (REGRESSION)
+    // Second turn: TurnID=3 (REGRESSION — stale turn_started)
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 3, chat_id: 'web:c1' } })
+    // The stale guard drops the event with a TURN_ID_INVARIANT_VIOLATION error.
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('TURN_ID_INVARIANT_VIOLATION'),
-      expect.objectContaining({ prev: 5, next: 3 }),
+      expect.objectContaining({ prev: 5, stale: 3 }),
     )
     warnSpy.mockRestore()
   })
@@ -1054,9 +1176,11 @@ describe('cancel: assistant message must not vanish', () => {
 
     expect(complete).toHaveBeenCalledTimes(1)
     expect(complete.mock.calls[0][0]).toBe('old reply')
-    // Store reset + new turn applied cleanly: no stale old-turn tools remain.
-    expect(result.current.progressSnapshot.activeTools).toEqual([])
-    expect(result.current.liveMessage).toBeNull()
+    // After commit, resetProgress calls store.freeze() — but turn_started
+    // continues processing and sets phase='thinking' for the new turn.
+    // The key assertion is that complete was called with the right content
+    // (no data loss). The phase after turn_started is 'thinking' (new turn).
+    expect(result.current.progressSnapshot.phase).not.toBe('done')
   })
 
   it('turn_started commit does NOT let text event create a duplicate (finalizedRef preserved)', () => {

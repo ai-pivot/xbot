@@ -11,6 +11,7 @@
  * own RightActivityBar (Spec 6).
  */
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 
 import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
@@ -172,7 +173,7 @@ export function AppShell() {
       <RightActivityBar activePanel={activePanel} onTogglePanel={togglePanel} />
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
-      <Suspense fallback={null}>
+      <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>
         <SettingsDialog
           open={settingsOpen}
           onOpenChange={(open) => {

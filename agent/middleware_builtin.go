@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"xbot/memory"
-	"xbot/prompt"
 
 	log "xbot/logger"
 )
@@ -396,7 +395,9 @@ func (m *PermissionControlMiddleware) Process(mc *MessageContext) error {
 	return nil
 }
 
-// MemoryMiddleware 注入长期记忆。
+// MemoryMiddleware 注入长期记忆到用户消息后面的 <system-reminder> 块中。
+// 不注入到 SystemParts（system prompt），以保持 system prompt 稳定，
+// 最大化 LLM prefix cache 命中率。
 // 从 MessageContext.Extra[ExtraKeyMemoryProvider] 读取动态 MemoryProvider。
 type MemoryMiddleware struct{}
 
@@ -404,12 +405,19 @@ func NewMemoryMiddleware() *MemoryMiddleware {
 	return &MemoryMiddleware{}
 }
 
-func (m *MemoryMiddleware) Name() string  { return "memory" }
-func (m *MemoryMiddleware) Priority() int { return 120 }
+func (m *MemoryMiddleware) Name() string { return "memory" }
+
+// Priority 250: 在 UserMessageMiddleware (200) 之后执行，
+// 将记忆追加到已构建的 mc.UserMessage 末尾。
+func (m *MemoryMiddleware) Priority() int { return 250 }
 
 func (m *MemoryMiddleware) Process(mc *MessageContext) error {
 	mem, ok := GetExtraTyped[memory.MemoryProvider](mc, ExtraKeyMemoryProvider)
 	if !ok || mem == nil {
+		return nil
+	}
+	// Resume turn: user message is empty, skip memory injection.
+	if mc.UserMessage == "" {
 		return nil
 	}
 	ctx := mc.Ctx
@@ -421,7 +429,9 @@ func (m *MemoryMiddleware) Process(mc *MessageContext) error {
 		return fmt.Errorf("recall memory: %w", err)
 	}
 	if memCtx != "" {
-		mc.SystemParts["20_memory"] = "# Memory\n\n" + memCtx + "\n"
+		// 追加到 user message 末尾作为 <system-reminder> 块。
+		// 不注入 SystemParts → system prompt 保持稳定 → prefix cache 命中。
+		mc.UserMessage += "\n\n<system-reminder>\n" + memCtx + "\n</system-reminder>"
 		GlobalMetrics.MemoryRecalls.Add(1)
 	}
 	return nil
@@ -498,16 +508,9 @@ func (m *LanguageMiddleware) Process(mc *MessageContext) error {
 
 // --- Priority 200-299: 用户消息处理 ---
 
-// buildSystemGuideText 根据记忆模式生成系统引导文本。
-// letta 模式下包含 search_tools 引导，flat 模式下不包含。
-func buildSystemGuideText(memoryProvider string) string {
-	if memoryProvider == "letta" {
-		return prompt.UserMessageGuideLetta
-	}
-	return prompt.UserMessageGuideFlat
-}
-
-// UserMessageMiddleware 构建最终的用户消息（注入时间戳、发送者标识、系统引导）
+// UserMessageMiddleware 构建最终的用户消息。
+// 仅注入时间戳和发送者信息，使用 XML 标签包裹，不注入工具引导文本。
+// 工具引导已由 system prompt 中的 prompt 片段覆盖，无需在用户消息中重复。
 type UserMessageMiddleware struct {
 	memoryProvider string
 }
@@ -528,20 +531,22 @@ func (m *UserMessageMiddleware) Process(mc *MessageContext) error {
 
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
 
-	var userMsg string
+	// Build user message with XML-wrapped metadata.
+	// Only time and sender info — no tool guides, no system guides.
+	// Tool usage instructions are in the system prompt (prompt/modes/*.md).
+	var sb strings.Builder
+	sb.WriteString("<context>\n")
+	fmt.Fprintf(&sb, "<time>%s</time>\n", now)
 	if mc.SenderName != "" {
-		userMsg = fmt.Sprintf("[%s] [%s]\n%s", now, mc.SenderName, mc.UserContent)
-	} else {
-		userMsg = fmt.Sprintf("[%s]\n%s", now, mc.UserContent)
+		fmt.Fprintf(&sb, "<sender>%s</sender>\n", mc.SenderName)
 	}
+	sb.WriteString("</context>\n\n")
+	sb.WriteString(mc.UserContent)
 
-	guide := buildSystemGuideText(m.memoryProvider)
-	userMsg = fmt.Sprintf("%s\n\n%s\n现在时间：%s\n", userMsg, guide, now)
+	userMsg := sb.String()
 
 	// Inject rename hint on the first user message when session name is auto-generated.
 	// This is a one-time hint; subsequent rounds don't repeat it.
-	// Check by counting user messages in history (history may be non-empty due
-	// to system messages loaded from persistence).
 	if sessionName, ok := mc.GetExtraString(ExtraKeySessionName); ok {
 		if strings.HasPrefix(sessionName, "Agent-") {
 			hasUserMsg := false
@@ -553,8 +558,7 @@ func (m *UserMessageMiddleware) Process(mc *MessageContext) error {
 			}
 			if !hasUserMsg {
 				userMsg += fmt.Sprintf(
-					"\n⚠️ 当前会话名 %q 是自动生成的。你必须先根据用户消息内容推断一个简短的会话名（中英文数字连字符，1-64字符），用 config 工具完成改名，然后再回复用户。不要在回复中提及改名。例如：\n"+
-						"config(action=\"set\", key=\"session_name\", value=\"askuser-scrollbar-fix\")\n",
+					"\n\n<system-reminder>\n当前会话名 %q 是自动生成的。请根据用户消息内容推断一个简短的会话名（中英文数字连字符，1-64字符），用 config 工具完成改名后再回复用户。不要在回复中提及改名。\n</system-reminder>",
 					sessionName,
 				)
 			}

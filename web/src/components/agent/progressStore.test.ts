@@ -604,4 +604,180 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     flushRaf()
     expect(store.getSnapshot().iterationHistory.map((i) => i.iteration)).toEqual([1, 2])
   })
+
+  // ── SSE reconnect linear-consistency regression tests ──
+  // After an SSE disconnect/reconnect, restoreActiveProgress can deliver a
+  // STALE snapshot (seq <= current.eventSeq) while live events have already
+  // advanced the store. The stale branch must append missing iterations but
+  // must NOT roll back phase/iteration/content/activeTools — otherwise the
+  // newer live state is overwritten by the older snapshot (linear-consistency
+  // violation: history jumps backward after reconnect).
+
+  it('stale snapshot (seq <= current) appends iterations but does NOT roll back newer live state', () => {
+    const store = new ProgressStore()
+
+    // Live events advance the store to iteration 2, seq 10 (arrived via SSE
+    // before the recovery RPC returned).
+    store.setStructuredTools({ eventSeq: 9, iteration: 1, phase: 'tool_exec',
+      activeTools: [tool({ name: 'Read', status: 'done', iteration: 1 })] })
+    flushRaf()
+    store.setStructuredTools({ eventSeq: 10, iteration: 2, phase: 'tool_exec',
+      content: 'NEW live content for iter 2',
+      activeTools: [tool({ name: 'Shell', status: 'running', iteration: 2 })],
+      iterationHistory: [mkIter(1)] })
+    flushRaf()
+    const before = store.getSnapshot()
+    expect(before.iteration).toBe(2)
+    expect(before.phase).toBe('tool_exec')
+    expect(before.activeTools[0].name).toBe('Shell')
+
+    // Stale recovery snapshot (seq 8 < current 10) from restoreActiveProgress.
+    store.setStructuredTools({
+      eventSeq: 8,
+      phase: 'tool_exec',
+      iteration: 1, // OLD iteration — must NOT roll back
+      content: 'OLD content from stale snapshot',
+      activeTools: [tool({ name: 'Read', status: 'done', iteration: 1 })],
+      iterationHistory: [mkIter(3)], // NEW iteration — should still be appended
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    // Phase/iteration/content must NOT be rolled back to the stale snapshot.
+    expect(snap.phase).toBe('tool_exec')
+    expect(snap.content).toBe('NEW live content for iter 2')
+    expect(snap.activeTools[0].name).toBe('Shell')
+    // Iteration history from the stale event is still appended (dedup by num).
+    expect(snap.iterationHistory.map((i) => i.iteration)).toContain(3)
+  })
+
+  it('stale snapshot does NOT change streaming flag or revert to done', () => {
+    const store = new ProgressStore()
+
+    // Live event: turn running at iter 1, seq 5.
+    store.setStructuredTools({ eventSeq: 5, iteration: 1, phase: 'running',
+      content: 'live', activeTools: [] })
+    flushRaf()
+    expect(store.getSnapshot().phase).toBe('running')
+
+    // Stale done-ish snapshot at seq 3 — must not turn the live state into done.
+    store.setStructuredTools({ eventSeq: 3, phase: 'done', iteration: 0 })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.phase).toBe('running') // NOT rolled back to 'done'
+    expect(snap.streaming).toBe(true)
+  })
+
+  it('ignores iteration-regressed stream deltas (phase:undefined) — does NOT roll back active/completed/iteration', () => {
+    // User report: "迭代到一半最新 turn 突然消失" + ITER_ID_INVARIANT_VIOLATION
+    // {prev:4, next:2, phase:undefined}. A phase:undefined stream delta (Web
+    // channel forwards stream_content as progress_structured) carries the
+    // backend's CURRENT iteration, which can legitimately LAG the snapshot
+    // (iter-2 stream text arriving after the snapshot advanced to 4). Applying
+    // its activeTools/completedTools/iteration would roll the snapshot back to
+    // the older iteration, wiping the newest iteration's tools.
+    const store = new ProgressStore()
+    // Iteration 2 active (structured)
+    store.setStructuredTools({
+      eventSeq: 1,
+      phase: 'tool_exec',
+      iteration: 2,
+      activeTools: [tool({ name: 'Shell', status: 'running' })],
+    })
+    flushRaf()
+    expect(store.getSnapshot().iteration).toBe(2)
+    expect(store.getSnapshot().activeTools.map((t) => t.name)).toEqual(['Shell'])
+
+    // A lagging stream delta for iteration 1 (phase:undefined, regressed)
+    store.setStructuredTools({
+      eventSeq: 2,
+      iteration: 1,
+      activeTools: [tool({ name: 'Read', status: 'running' })],
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iteration).toBe(2) // NOT rolled back to 1
+    expect(snap.activeTools.map((t) => t.name)).toEqual(['Shell']) // NOT replaced by iter-1 tools
+  })
+
+  it('keeps already-rendered tools across the iteration boundary (no vanish window)', () => {
+    // User report: "agent turn 消失然后又出现" — at the iteration boundary the
+    // previous iteration's activeTools were cleared, but the clearing event is
+    // often a phase:undefined stream delta carrying NO iteration_history, so
+    // the tools vanished until the NEXT structured event appended the history
+    // (an empty window lasting as long as SSE is slow). Already-rendered
+    // content must never disappear: keep activeTools (mark running as done),
+    // the new iteration's structured event replaces them.
+    const store = new ProgressStore()
+    // Iteration 1: active tool
+    store.setStructuredTools({
+      eventSeq: 1,
+      phase: 'tool_exec',
+      iteration: 1,
+      activeTools: [tool({ name: 'Shell', status: 'running' })],
+    })
+    flushRaf()
+    expect(store.getSnapshot().activeTools.map((t) => t.name)).toEqual(['Shell'])
+
+    // Iteration 2 via a phase:undefined stream delta (no iteration_history) —
+    // stream deltas do NOT advance lastIter (their iteration is the backend's
+    // CURRENT iteration, which can lead the structured stream) and therefore do
+    // NOT trigger the iteration boundary. Already-rendered tools stay as-is.
+    store.setStructuredTools({ eventSeq: 2, iteration: 2 })
+    flushRaf()
+
+    const boundary = store.getSnapshot()
+    expect(boundary.activeTools.length).toBe(1) // kept — not cleared
+    expect(boundary.activeTools[0].name).toBe('Shell')
+    expect(boundary.activeTools[0].status).toBe('running') // boundary NOT triggered by stream delta
+
+    // New iteration's STRUCTURED event triggers the boundary (mark done) and replaces the old tool
+    store.setStructuredTools({
+      eventSeq: 3,
+      phase: 'tool_exec',
+      iteration: 2,
+      activeTools: [tool({ name: 'Read', status: 'running' })],
+    })
+    flushRaf()
+    expect(store.getSnapshot().activeTools.map((t) => t.name)).toEqual(['Read'])
+  })
+
+  it('does NOT advance lastIter from a phase:undefined stream delta — later structured iterations are NOT dropped as regressed', () => {
+    // User report: committed assistant appeared with iter-range 1-1 after a
+    // 1-second turn vanish (already-rendered iterations lost) + ITER_ID_
+    // INVARIANT_VIOLATION prev:48 next:29. A stream delta carrying the backend's
+    // CURRENT iteration (48, leading the structured stream) advanced lastIter,
+    // so the later structured iteration 29 was treated as REGRESSED and dropped
+    // from iterationHistory → commit had only the early iterations.
+    const store = new ProgressStore()
+    store.setStructuredTools({
+      eventSeq: 1,
+      phase: 'tool_exec',
+      iteration: 1,
+      activeTools: [tool({ name: 'Shell', status: 'running' })],
+      iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    flushRaf()
+    expect(store.getSnapshot().lastIter).toBe(1)
+
+    // A leading stream delta (phase:undefined, iteration=48)
+    store.setStructuredTools({ eventSeq: 2, iteration: 48 })
+    flushRaf()
+    expect(store.getSnapshot().lastIter).toBe(1) // NOT advanced by the stream delta
+
+    // The structured iteration 29 (which is > 1) must NOT be treated as regressed
+    store.setStructuredTools({
+      eventSeq: 3,
+      phase: 'tool_exec',
+      iteration: 29,
+      activeTools: [tool({ name: 'Grep', status: 'running' })],
+      iterationHistory: [{ iteration: 29, thinking: 't29', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    flushRaf()
+    const snap = store.getSnapshot()
+    expect(snap.lastIter).toBe(29) // structured event advances lastIter
+    expect(snap.iterationHistory.length).toBe(2) // iter 1 + iter 29 both kept
+  })
 })

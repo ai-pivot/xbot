@@ -33,6 +33,7 @@ export const SSE_EVENT_TYPES = [
   'session',
   'runner_status',
   'sync_progress',
+  'resync_required',
 ] as const
 
 type Handler<T> = (payload: T) => void
@@ -335,13 +336,28 @@ export class SSEConnectionImpl implements WSConnection {
       // cachedProgress.iteration (current in-progress iteration) would skip
       // a just-completed iteration with the same number. Derive from
       // iteration_history's last entry; fall back to 0 (all iterations).
+      //
+      // CRITICAL: use the last entry's iteration number MINUS 1, not the
+      // last entry itself. The last entry in iteration_history is the LAST
+      // COMPLETED iteration — but the backend's from_iteration filter is
+      // `iteration > from_iteration` (exclusive). If we pass the last
+      // completed iteration as from_iteration, the backend returns only
+      // iterations AFTER it — but the last completed iteration's delta may
+      // have been lost during the SSE gap. Using last-1 ensures the last
+      // completed iteration is re-fetched (deduped by appendIterations).
+      // This fixes "SSE reconnect sometimes loses 1-2 iterations" — the
+      // watermark was too high, skipping the last 1-2 completed iterations
+      // whose deltas were lost during the disconnect.
       let fromIteration = 0
       if (cachedProgress) {
         const hist = cachedProgress.iteration_history
         if (Array.isArray(hist) && hist.length > 0) {
           const last = hist[hist.length - 1] as { iteration?: number } | undefined
           if (typeof last?.iteration === 'number' && last.iteration > 0) {
-            fromIteration = last.iteration
+            // Use last - 1 to re-fetch the last completed iteration (in case
+            // its delta was lost during SSE gap). appendIterations dedups by
+            // iteration number, so re-fetching is safe.
+            fromIteration = Math.max(0, last.iteration - 1)
           }
         }
       }
@@ -354,39 +370,49 @@ export class SSEConnectionImpl implements WSConnection {
         this._channel !== channel ||
         this._chatID !== chatID ||
         this.sessionVersion !== sessionVersion ||
-        this.progressVersion !== progressVersion ||
         this.recoveryRequestVersion !== recoveryRequestVersion
       ) return
+
+      // ── Turn ended on the server (or get_active_progress returned null) ──
+      // The committed reply (text event) may have been lost during the SSE
+      // gap; the DB is authoritative. ALWAYS reload from DB so the complete
+      // turn (user + assistant) renders. This must run BEFORE the
+      // progressVersion check below: any event arriving during the reconnect
+      // window bumps progressVersion, and without this unconditional reload
+      // the live row is cleared (phase=done) with no committed replacement —
+      // the in-progress turn "vanishes" until a manual refresh (user report:
+      // "重连之后 user msg 后进行中的 turn 消失了，刷新才能看到").
+      if (!progress || progress.phase === 'done') {
+        // Turn ended on the server (or get_active_progress returned null —
+        // e.g. an active turn momentarily not registered). The committed
+        // reply may have been lost during the SSE gap; the DB is authoritative
+        // — reload from it.
+        // CRITICAL: do NOT dispatch phase='done' / session(idle) here. They
+        // clear the live store (liveMessage returns null on phase='done'), and
+        // with a slow reload the already-rendered turn would VANISH until the
+        // reload lands (user report: "这后面原本有十几个迭代，突然消失，过一
+        // 会出现"). Keep the live row; the reload brings the committed message
+        // and buildMessageRows' same-turn merge carries the live iterations
+        // over. The sidebar busy state is cleared by the backend's own
+        // session(idle) event once the turn really ends.
+        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
+        return
+      }
+      // progressVersion changed during the fetch: newer events already arrived
+      // (SSE replay delivers the live state), so the snapshot restore below
+      // would be stale — skip it. The unconditional reload decision above is
+      // unaffected (turn is still running here, so no reload needed).
+      if (this.progressVersion !== progressVersion) return
       bumpProgressGeneration(cacheKey)
       this.progressVersion += 1
 
-      // ── Detect real data loss: TurnID changed or turn ended during gap ──
+      // ── Detect real data loss: TurnID changed or large iteration gap ──
       // SSE event gaps are normal (stateless coalescing, buffer drops), but
-      // TurnID changes or turn-end-during-gap mean committed messages (reply,
-      // notification) were lost. Signal useChatMessages to reload from DB.
+      // TurnID changes mean committed messages (reply, notification) were
+      // lost. Signal useChatMessages to reload from DB.
       const turnIDChanged = cachedProgress && progress &&
         typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
         cachedProgress.turn_id !== progress.turn_id
-      // turnEndedDuringGap: the turn ended (or is done) on the server side.
-      // ALWAYS reload when the server reports done/null — the DB has the
-      // authoritative iteration history (Detail JSON), while the live SSE
-      // snapshot may be incomplete (SSE dropped structured events during
-      // disconnect). Without this reload, the live message (seq-NNNN) keeps
-      // its incomplete SSE-accumulated iterations forever, never replaced by
-      // the complete DB message.
-      // Previous condition (cachedProgress.phase !== 'done') skipped reload
-      // when PhaseDone had already arrived before disconnect — but PhaseDone
-      // arriving doesn't mean the text event (with progress_history) also
-      // arrived. If SSE dropped the text event, the live message has
-      // incomplete iterations and is never replaced by the DB version.
-      const turnEndedDuringGap = cachedProgress &&
-        (!progress || progress.phase === 'done')
-
-      // ── Detect large iteration gap within the same turn ──
-      // If the iteration gap is large (many iterations lost during SSE disconnect),
-      // delta-fill via get_active_progress may be incomplete or slow. A full reload
-      // with a spinner is better UX than a partial iteration history.
-      // Threshold: if the gap between cached and current iteration is > 10, reload.
       const sameTurn = cachedProgress && progress &&
         typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
         cachedProgress.turn_id === progress.turn_id
@@ -394,27 +420,15 @@ export class SSEConnectionImpl implements WSConnection {
       const newIter = progress?.iteration ?? 0
       const largeGap = sameTurn && cachedIter > 0 && newIter > 0 && (newIter - cachedIter) > 10
 
-      if (turnIDChanged || turnEndedDuringGap || largeGap) {
+      if (turnIDChanged || largeGap) {
         // force_reload=true: show a loading spinner during reload. For cross-turn
         // and large gaps, the UI is too stale to render incrementally — a clean
         // reload is better than a partially-inconsistent view.
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
       }
-
-      if (!progress || progress.phase === 'done') {
-        this.dispatch({
-          type: 'progress_structured',
-          chat_id: chatID,
-          progress: { phase: 'done' },
-        })
-        // Also dispatch idle so the sidebar recovers from a stale busy state
-        // after an SSE reconnect gap.
-        this.dispatch({
-          type: 'session',
-          session: { channel, chat_id: chatID, action: 'idle' },
-        })
-        return
-      }
+      // Recovery snapshot — carry its seq so setStructuredTools can apply the
+      // stale watermark check (an old snapshot must not roll back a newer
+      // live state that SSE already delivered during the reconnect window).
       this.dispatch({
         type: 'progress_structured',
         chat_id: chatID,
@@ -712,7 +726,6 @@ function newMessageRequestID(): string {
 
 function isProgressLifecycleEvent(msg: WSMessage): boolean {
   if (
-    msg.type === 'stream_content' ||
     msg.type === 'progress_structured' ||
     msg.type === 'sync_progress' ||
     msg.type === 'text'

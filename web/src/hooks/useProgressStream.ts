@@ -175,6 +175,67 @@ export function useProgressStream({
   // every chat switch (we just reset it).
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
+
+  // ── Cross-session global state pollution guard ──
+  // store (ProgressStore) is a useRef created ONCE — it survives chatID changes
+  // (AgentPanel does NOT remount useProgressStream on session switch; there is
+  // no key on the hook). The OLD session's lastIter/iterationHistory/lastTurnID
+  // and the finalized/phaseDone/turnCommitted refs stay behind and POISON the
+  // NEW session's event handling: iterations mis-judged as regressed, late
+  // events dropped by the finalized/phaseDone guards, iterationHistory mixed
+  // with the old session — the new session's turn vanishes (user report:
+  // "怀疑和不同 session 之间全局状态污染有关"; only a full page refresh,
+  // which rebuilds everything, clears it). Reset everything on chat switch.
+  // fullReset() clears lastTurnID + lastIter + all iteration state so the
+  // hydration effect can restore the new session cleanly.
+  const prevChatIDRef = useRef(chatID)
+  useEffect(() => {
+    if (prevChatIDRef.current !== chatID) {
+      prevChatIDRef.current = chatID
+      store.fullReset()
+      finalizedRef.current = false
+      phaseDoneRef.current = false
+      turnCommittedRef.current = false
+    }
+  }, [chatID, store])
+
+  // ── RENDER_LOSS diagnostic ──
+  // Catch the "already-rendered content vanished during streaming" bug class
+  // (turn-vanish reports) at the exact mutation: any streaming turn whose
+  // iterationHistory or lastIter drops to zero means already-rendered
+  // iterations disappeared from the live row. This MUST never happen — the log
+  // pinpoints the corrupting event so the root cause can be fixed at the source
+  // instead of patching symptoms. Non-streaming (turn ended) is excluded — the
+  // committed reply replaces the live row legitimately.
+  useEffect(() => {
+    let prevIterCount = store.getSnapshot().iterationHistory.length
+    let prevLastIter = store.getSnapshot().lastIter
+    return store.subscribe(() => {
+      const s = store.getSnapshot()
+      if (s.streaming) {
+        if (prevIterCount > 0 && s.iterationHistory.length === 0) {
+          console.error('[RENDER_LOSS] iterationHistory cleared during streaming', {
+            prev: prevIterCount,
+            lastIter: s.lastIter,
+            phase: s.phase,
+            turnID: s.turnID,
+            chatID,
+          })
+        }
+        if (prevLastIter > 0 && s.lastIter === 0) {
+          console.error('[RENDER_LOSS] lastIter reset during streaming', {
+            prev: prevLastIter,
+            phase: s.phase,
+            turnID: s.turnID,
+            chatID,
+          })
+        }
+      }
+      prevIterCount = s.iterationHistory.length
+      prevLastIter = s.lastIter
+    })
+  }, [store, chatID])
+
   const progressCacheKey = chatID ? sessionCacheKey(channel, chatID) : null
 
   const progressSnapshot = useSyncExternalStore(
@@ -212,7 +273,25 @@ export function useProgressStream({
         store.fullReset()
       }
     } else {
-      store.reset()
+      // CRITICAL: NEVER wipe a turn that is actively streaming. This branch
+      // fires when `disabled` toggles (SSE subscription/connection state flips)
+      // while the chatKey is unchanged. The OLD code called store.reset()
+      // unconditionally — a mid-turn disabled flake (subscribe toggling during
+      // reconnect, session-status jitter) BLANKED the entire live store →
+      // liveMessage null → the whole live turn vanished from the DOM for the
+      // duration (user report: [RENDER_LOSS_ROWS] rowsLen:0, liveMessageId:
+      // null, busy:true). The live store is driven by SSE events and has its
+      // own lifecycle — a subscription-state toggle must not wipe it. Only
+      // reset when the store is genuinely idle (turn over: streaming=false and
+      // no active/running phase), mirroring the hydration-effect guard.
+      const snap = store.getSnapshot()
+      const storeActive =
+        snap.streaming ||
+        snap.phase === 'thinking' ||
+        snap.phase === 'tool_exec' ||
+        snap.phase === 'running' ||
+        snap.phase === 'frozen'
+      if (!storeActive) store.reset()
     }
     if (disabled) {
       return
@@ -225,8 +304,25 @@ export function useProgressStream({
   // session's data triggers hydration (Spec 5 §2.7).
   useEffect(() => {
     if (disabled) return
+    const snap = store.getSnapshot()
+    // CRITICAL: NEVER wipe a turn that is actively streaming. reload() may
+    // complete mid-turn with active_progress=null (rewind cleared the server
+    // snapshot, or the fetch raced the snapshot registration, or the reload was
+    // triggered by an SSE seq gap). Resetting here makes the ENTIRE live turn
+    // vanish from the DOM (user report: "agent turn 消失" — the turn's rows
+    // disappear completely, not a blank area) until the next SSE event refills
+    // the store. If SSE is still pushing events (streaming=true or an active
+    // phase), the reload snapshot is STALE — let the live events drive. Only
+    // reset when the store is genuinely idle (turn over: streaming=false and
+    // no active/running phase).
+    const storeActive =
+      snap.streaming ||
+      snap.phase === 'thinking' ||
+      snap.phase === 'tool_exec' ||
+      snap.phase === 'running' ||
+      snap.phase === 'frozen'
     if (!initialProgress || !initialProgress.phase) {
-      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      if (hasVisibleProgress(snap) && !storeActive) store.reset()
       return
     }
     if (initialProgress.phase === 'done') {
@@ -234,7 +330,7 @@ export function useProgressStream({
       // survive session switch (todos persist across turns in the todoManager).
       if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
       finalizedRef.current = false
-      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      if (hasVisibleProgress(snap) && !storeActive) store.reset()
       // Unconditionally replace todos when the server explicitly returned an
       // array — INCLUDING an empty one. GetActiveProgress returns
       // `{phase:'done', todos}` after a turn (turn-end cleanupTodos clears the
@@ -323,14 +419,38 @@ export function useProgressStream({
     const snap = progressSnapshot
     if (!hasVisibleProgress(snap)) return null
     if (snap.phase === 'done') return null
+    // 'frozen' phase: turn is over (cancel/commit). Keep the live message
+    // visible with its real turnID so buildMessageRows inserts it at the
+    // correct position (above the newest user msg if the turn was cancelled).
+    // The committed message (from appendAssistant in flushSync) will replace
+    // it on the next render — but until then, the user sees the content
+    // they were looking at (no disappearing content).
+    //
+    // SSE reconnect duplicate fix: when restoreActiveProgress repopulates
+    // snap.iterationHistory during a reconnect, the frozen liveMessage would
+    // duplicate the committed message's iterations. To prevent this,
+    // buildMessageRows' turnExists check dedupes by turnID — if the
+    // committed message (same turnID) is already in the messages array,
+    // the frozen live row is NOT rendered (turnExists=true → insert at old
+    // turn position, but the committed message at that position takes
+    // precedence in the virtual list by key).
+    // turnID: snapshot's authoritative turn, falling back to store.lastTurnID
+    // ONLY for the frozen (cancelled) phase — a frozen live row must render
+    // inside its own turn (above the next user msg). A STREAMING live with
+    // snap.turnID=0 (turn_started lost to SSE coalescing) must NOT fall back:
+    // store.lastTurnID is the PREVIOUS turn, and buildMessageRows' same-turn
+    // merge would absorb the streaming live into the old committed assistant —
+    // the turn "vanishes" mid-stream (user report). turnID=0 sorts the live to
+    // the bottom (it IS the newest content).
+    const tid = snap.turnID || (snap.phase === 'frozen' ? store.lastTurnID : 0) || 0
     return {
-      id: `live-${chatID ?? 'unknown'}`,
+      id: `turn-${tid}-live`,
       role: 'assistant',
       content: snap.streamContent || snap.content || '',
       iterations: snap.iterationHistory,
       timestamp: new Date().toISOString(),
       isPartial: true,
-      turnID: snap.turnID || store.lastTurnID,
+      turnID: tid,
     }
   }, [progressSnapshot, chatID])
 
@@ -341,12 +461,23 @@ export function useProgressStream({
     resetProgress: () => {
       finalizedRef.current = true
       phaseDoneRef.current = false
+      // NORMAL COMPLETION (text event): the committed message was already
+      // added by appendAssistant inside the SAME flushSync — clear the live
+      // store so the live row is NOT rendered again (final-iteration
+      // duplicate: live + committed both showed the same reply when the
+      // committed message's turnID didn't match the live turnID).
+      // Cancel does NOT call this — text(cancelled) uses store.freeze() and
+      // keeps the frozen live visible (user requirement: already-rendered
+      // content never disappears). Cf81be66 made this a no-op to avoid
+      // freeze()-induced flicker; that is obsolete since f4c43a45 — the
+      // frozen-phase null check in liveMessage was removed, and reset()
+      // inside flushSync renders committed + cleared-live atomically.
       store.reset()
     },
   }
 }
 
-function hasVisibleProgress(snap: ProgressSnapshot): boolean {
+export function hasVisibleProgress(snap: ProgressSnapshot): boolean {
   return Boolean(
     snap.streamContent ||
       snap.content ||
@@ -355,6 +486,17 @@ function hasVisibleProgress(snap: ProgressSnapshot): boolean {
       snap.completedTools.length ||
       snap.streamingTools.length ||
       snap.iterationHistory.length ||
+      // Iteration-boundary instant: the previous iteration's active/completed
+      // tools were JUST cleared (a new iteration started — the clearing event
+      // is often a phase:undefined stream delta which carries NO
+      // iteration_history), but the new iteration's iterationHistory delta has
+      // not arrived yet. Every visible field is momentarily empty → without
+      // this guard the live row VANISHES for a frame (user report: "agent
+      // turn 消失然后又出现"). Already-rendered content must never disappear:
+      // as long as the turn has made progress (lastIter > 0) the live row
+      // stays. Turn end (text event) resets the store (lastIter=0), and the
+      // pre-iteration "thinking" phase has lastIter=0 — both unaffected.
+      snap.lastIter > 0 ||
       snap.lastReasoning ||
       snap.subAgents.length,
   )
@@ -437,7 +579,22 @@ function commitLiveProgressAndReset(
       complete?.(commitText, commitIters, undefined, snap.turnID || newTurnID || store.lastTurnID, true)
     }
   }
-  store.reset()
+  // After committing: reset the iteration state for a NORMAL new turn / session
+  // switch — the already-rendered content is now in the committed message
+  // (appendAssistant in flushSync; buildMessageRows' hasCommitted skips the
+  // live row), so resetting only clears the live iteration counters. This is
+  // REQUIRED: without it the previous turn's lastIter (e.g. 48) stays, and the
+  // new turn's iteration (e.g. 29) is dropped by setStructuredTools'
+  // iteration-regression guard — the new turn's live NEVER updates → the turn
+  // vanishes (user report: ITER_ID_INVARIANT_VIOLATION prev:48 next:29
+  // phase:'tool_exec' when switching sessions).
+  // frozen (cancelled) phase does NOT reset — the already-rendered cancel
+  // content stays visible (user requirement; cancel itself goes through
+  // store.freeze() in text(cancelled), but a turn_id change on top of a frozen
+  // live must preserve it).
+  if (snap.phase !== 'frozen') {
+    store.reset()
+  }
 }
 
 /** Dispatch one WSMessage into the progress store. Shared with history hydration. */
@@ -502,6 +659,38 @@ function handleProgressMessage(
       // inject_user side-channel — the notification user message is delivered
       // atomically with the TurnID through the progress stream.
       if (p.phase === 'turn_started') {
+        // ── Stale turn_started guard ──
+        // SSE replay can deliver a stale turn_started (turnID=9) after the
+        // store has already advanced to turnID=10. Without this guard, the
+        // stale event resets finalizedRef=false, phaseDoneRef=false, and
+        // store.lastTurnID=9 — corrupting the current turn's state and
+        // potentially causing duplicate onAssistantComplete calls.
+        if (p.turn_id && p.turn_id > 0 && store.lastTurnID > 0 && p.turn_id < store.lastTurnID) {
+          console.error('[TURN_ID_INVARIANT_VIOLATION] Stale turn_started dropped', {
+            prev: store.lastTurnID,
+            stale: p.turn_id,
+            chatID: p.chat_id,
+          })
+          return
+        }
+        // ── Duplicate turn_started for the CURRENT turn guard ──
+        // A turn_started with turn_id === store.lastTurnID (and NOT a resume)
+        // is a duplicate/spurious re-emission (SSE reconnect replay of the same
+        // turn, a notification turn_started arriving twice, or the backend
+        // re-sending it). The turn is ALREADY active — running the commit path
+        // again clears the live row (lastIter=0) AND sets finalizedRef=true,
+        // which then DROPS every subsequent iteration (the live turn vanishes
+        // permanently — user report: "最新 turn 不断消失又出现"). Ignore it.
+        // AskUser resume (trigger='resume') legitimately reuses the same TurnID
+        // (continuation of the same turn) and must NOT be ignored.
+        if (p.turn_id && p.turn_id > 0 && p.turn_id === store.lastTurnID && p.turn_start?.trigger !== 'resume') {
+          console.warn('[TURN_STARTED_DUP] Duplicate turn_started for active turn ignored', {
+            turnID: p.turn_id,
+            chatID: p.chat_id,
+            trigger: p.turn_start?.trigger,
+          })
+          return
+        }
         // ── Consistency check: TurnID must be strictly monotonic ──
         // AskUser answer (trigger=resume) reuses the same TurnID as the original
         // turn — turnID == lastTurnID is expected and NOT a violation.
@@ -762,7 +951,15 @@ function handleProgressMessage(
 
       // ── Consistency check: iteration must advance by exactly 1 within a turn ──
       // Iterations are 1-based: 0 = uninitialized, 1 = first iteration.
-      if (iteration !== undefined && iteration >= 1) {
+      // STRUCTURED events only (phase set). phase:undefined events are stream
+      // deltas (stream_content/reasoning forwarded by the Web channel) carrying
+      // the backend's CURRENT iteration — legitimately 1 while reasoning
+      // streams before the loop starts, or LAGGING a prior iteration's deltas
+      // (iter 2 stream text arriving after the snapshot advanced to 4).
+      // Comparing them against lastIter false-alarms ITER_ID_INVARIANT_VIOLATION
+      // (prev=4 next=2) on every such event and carries no iteration-order
+      // semantics — skip the check entirely.
+      if (phase !== undefined && iteration !== undefined && iteration >= 1) {
         if (store.lastIter >= 1 && iteration < store.lastIter) {
           console.error('[ITER_ID_INVARIANT_VIOLATION] iteration went backwards', {
             prev: store.lastIter,

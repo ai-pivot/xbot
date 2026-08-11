@@ -666,7 +666,7 @@ describe('normalizeSessionTree', () => {
     const { result } = renderHook(() => useSessionStoreImpl())
     await waitFor(() => expect(result.current.sessions).toHaveLength(2))
     const cliCacheKey = sessionCacheKey('cli', 'shared')
-    messagesCache.set(cliCacheKey, [])
+    messagesCache.set(cliCacheKey, { messages: [], progressGen: 0 })
     lastSeqCache.set(cliCacheKey, 9)
     progressSnapshotCache.set(cliCacheKey, { phase: 'tool' })
 

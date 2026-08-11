@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -367,6 +368,11 @@ func (s *runState) executeSubAgentOps(ctx context.Context, ops []toolCallEntry, 
 }
 
 // snapshotCompletedIteration records the completed iteration snapshot for structured progress.
+// It also writes the iteration directly to the iteration_history table (v55+).
+// This is the primary write path for TOOL iterations. handleFinalResponse
+// (engine_run.go) also writes the final (content-only) iteration via
+// writeIterationHistory. No other code path writes iteration_history — not
+// handleRunOutput, not handleCancelledRun. Detail JSON is no longer written.
 func (s *runState) snapshotCompletedIteration(iteration int) {
 	if s.structuredProgress != nil {
 		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, s.structuredProgress.ActiveTools...)
@@ -375,7 +381,7 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 	if s.autoNotify && !s.batchProgressByIteration && s.structuredProgress != nil {
 		s.notifyProgress("")
 	}
-	if s.structuredProgress != nil && len(s.structuredProgress.CompletedTools) > 0 {
+	if s.structuredProgress != nil {
 		snap := IterationSnapshot{
 			Iteration: iteration,
 			Content:   s.structuredProgress.Content,
@@ -397,9 +403,66 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 		if s.cfg.OnIterationSnapshot != nil {
 			s.cfg.OnIterationSnapshot(snap)
 		}
+
+		// Write directly to iteration_history table. This is the SINGLE write
+		// path — every iteration (tool, reasoning-only, final) is recorded here.
+		// No dependency on IncrementalPersist or message_id — the record is
+		// linked by turn_id (queried by turn_id on read).
+		s.writeIterationHistory(iteration, snap)
 	}
 	if s.autoNotify && s.batchProgressByIteration {
 		s.notifyProgress("")
+	}
+}
+
+// writeIterationHistory writes one iteration record to the iteration_history
+// table. Called by snapshotCompletedIteration for EVERY iteration — the single
+// write path. No other function writes iteration_history.
+func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) {
+	// Use PersistenceBridge's session if available (primary path — normal Run).
+	// Fall back to cfg.Session (SubAgent path).
+	// If neither is available (early restart recovery), skip — the iteration
+	// will be written when the session is fully initialized.
+	var tenantID int64
+	var appendFn func(msgID int64, turnID uint64, rec sqlite.IterationRecord) error
+
+	if s.persistence != nil && s.persistence.session != nil {
+		// Primary path: PersistenceBridge has a live TenantSession
+		tenantID = s.persistence.session.TenantID()
+		appendFn = s.persistence.session.AppendIterationHistory
+	} else if s.cfg.Session != nil {
+		// Fallback: cfg.Session (SubAgent or early Run)
+		tenantID = s.cfg.Session.TenantID()
+		appendFn = s.cfg.Session.AppendIterationHistory
+	} else {
+		// No session available — skip (early restart recovery)
+		return
+	}
+	if tenantID == 0 {
+		return
+	}
+	var turnID uint64
+	if s.structuredProgress != nil {
+		turnID = s.structuredProgress.TurnID
+	}
+	toolsJSON := "[]"
+	if len(snap.Tools) > 0 {
+		if data, err := json.Marshal(snap.Tools); err == nil {
+			toolsJSON = string(data)
+		}
+	}
+	// message_id=0: we don't link to a specific message — iteration_history
+	// is queried by turn_id on read. This avoids the dependency on
+	// IncrementalPersist populating message IDs.
+	if err := appendFn(0, turnID, sqlite.IterationRecord{
+		MessageID: 0,
+		TurnID:    turnID,
+		Iteration: snap.Iteration,
+		Content:   snap.Content,
+		Reasoning: snap.Reasoning,
+		Tools:     toolsJSON,
+	}); err != nil {
+		log.WithError(err).WithField("iteration", iteration).Warn("Failed to write iteration_history")
 	}
 }
 

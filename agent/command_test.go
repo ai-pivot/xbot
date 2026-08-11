@@ -164,6 +164,7 @@ func TestCommandConcurrency(t *testing.T) {
 		"/uninstall":    true,
 		"/goal":         true,
 		"/goal clear":   true,
+		"/prompt":       true, // needs UserContext (only available in processMessage path)
 	}
 
 	// Commands that are stateless/read-only should be concurrent
@@ -173,7 +174,6 @@ func TestCommandConcurrency(t *testing.T) {
 		"/llm":         true,
 		"/llms":        true,
 		"/models":      true,
-		"/prompt":      true,
 		"/context":     true,
 		"!":            true,
 		"/browse":      true,

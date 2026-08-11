@@ -28,7 +28,7 @@ import {
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
 import { dedupMessages, mergeIterations, assertIterationContinuity } from '@/components/agent/progressStore'
-import { getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
+import { getCachedMessages, getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
 import type { ChatMessage, WebIteration } from '@/types/shared'
@@ -341,16 +341,18 @@ function reconcileHistoryWithLiveRows(
     }
     // Unpersisted live rows (streaming assistant, cancel acks, frozen content).
     if (message.eventSeq == null) return false
+    // Notifications (injectUserMessage) carry eventSeq=-1 as a marker — a
+    // racing reload may lack the DB row (eager-save still in flight), and the
+    // watermark rule would drop the notification user message until refresh.
+    // Keep it unless history already covers the same turnID:role.
+    if (message.eventSeq === -1) {
+      if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
+      return true
+    }
     // Below watermark: always superseded by history.
     if (message.eventSeq < historyWatermark) return false
     // Same turnID:role already in history — drop the live row.
-    // This is the PRIMARY dedup for cancel acks and final replies: the
-    // locally-committed message (streaming content) and the DB message
-    // ([interrupted] or normal reply) share the same turnID but have
-    // different content/eventSeq, so content matching alone fails.
     if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
-    // Content+role fallback for messages without turnID (user_echo).
-    if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
     // Content-based dedup for assistant messages with turnID=0 (live commit
     // from commitLiveProgressAndReset with snap.turnID=0). The DB version
     // arrives with the correct turnID but different content may exist —
@@ -359,7 +361,28 @@ function reconcileHistoryWithLiveRows(
         historyContentKeys.has(`assistant:${message.content}`)) return false
     return true
   })
-  return [...history, ...liveRows]
+
+  // Merge liveRows into history at the correct position (by turnID), NOT
+  // simply appended at the end. Appending at the end causes user messages
+  // to appear at the bottom ("最近几个 user msg 变得全在最底下" bug) when
+  // liveRows contains persisted user echoes that the DB snapshot doesn't
+  // have yet (racing reload). Insert each liveRow after the last history
+  // message with turnID <= liveRow.turnID (or at the end if no match).
+  const result = [...history]
+  for (const live of liveRows) {
+    let insertIdx = result.length // default: append at end
+    if (live.turnID > 0) {
+      // Find the last message with turnID <= live.turnID
+      for (let i = result.length - 1; i >= 0; i--) {
+        if (result[i].turnID > 0 && result[i].turnID <= live.turnID) {
+          insertIdx = i + 1
+          break
+        }
+      }
+    }
+    result.splice(insertIdx, 0, live)
+  }
+  return result
 }
 
 /** Parse SubAgent messages (simple role/content) into ChatMessage[]. */
@@ -477,7 +500,7 @@ export function useChatMessages({
     // to avoid collision between parent session and SubAgent panels which
     // share the same channel+chatID but display different messages.
     if (!sameTarget) {
-      const cached = activeMessageCacheKey ? messagesCache.get(activeMessageCacheKey) : null
+      const cached = activeMessageCacheKey ? getCachedMessages(activeMessageCacheKey) : null
       if (cached && cached.length > 0) {
         messagesRef.current = cached
         setMessages(cached)
@@ -584,9 +607,14 @@ export function useChatMessages({
       setMessages(next)
       // Cache messages for instant render on next session switch (LRU).
       // Use activeMessageCacheKey to match the read path (avoids collision
-      // between parent session and SubAgent panels).
+      // between parent session and SubAgent panels). Store the progress
+      // generation at write time — getCachedMessages drops stale entries
+      // (progress/turn updates since the cache was written).
       if (activeMessageCacheKey) {
-        messagesCache.set(activeMessageCacheKey, next)
+        messagesCache.set(activeMessageCacheKey, {
+          messages: next,
+          progressGen: progressCacheKey ? getProgressGeneration(progressCacheKey) : 0,
+        })
         // LRU eviction: keep at most 5 sessions cached
         if (messagesCache.size > 5) {
           const oldestKey = messagesCache.keys().next().value
@@ -704,6 +732,18 @@ export function useChatMessages({
         void reload()
         return
       }
+      // resync_required: the backend's SSE ring buffer evicted events the
+      // client missed (disconnect lasted longer than the buffer window, or
+      // the buffer overflowed with high-frequency stream events). The events
+      // (including progress_structured with iterationHistory deltas) are
+      // PERMANENTLY LOST — no seq replay can recover them. Must reload from
+      // DB to restore the authoritative iteration history; otherwise the
+      // live message keeps an incomplete iteration list (漏 iter).
+      if (msg.type === 'resync_required') {
+        setLoading(true)
+        void reload()
+        return
+      }
       if (!matchesChatID(msg, listenerChatID, channel)) return
       if (msg.type !== 'user_echo' && msg.type !== 'inject_user') return
       const content = msg.content ?? msg.original_content ?? ''
@@ -779,6 +819,7 @@ export function useChatMessages({
           turnID: 0,
           persisted: false,
           requestID,
+          sending: true,
         }
         messageMutationGenRef.current += 1
         setMessages((prev) => {
@@ -786,6 +827,12 @@ export function useChatMessages({
           messagesRef.current = next
           return next
         })
+        // Pin to bottom immediately — the user just sent a message, they expect
+        // to see it at the bottom. This survives all subsequent state updates
+        // (user_echo replacement, busy placeholder, turn_started) because
+        // stickToBottomRef is a ref, not state — it doesn't trigger re-render.
+        // The MessageList's useEffect detects the new optimistic user row
+        // (persisted=false) and calls resumeFollowing() + scheduleFollow().
       }
       void ws.send({
         type: 'message',
@@ -820,6 +867,7 @@ export function useChatMessages({
               const next = prev.map((m) => m.id === sentID ? {
                 ...m,
                 persisted: true,
+                sending: false,
                 ...(msgID ? { dbID: msgID } : {}),
                 ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
                 ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),

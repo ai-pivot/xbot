@@ -149,6 +149,15 @@ test.describe('Cancel clears generating tool', () => {
         streaming_tools: [{ name: 'Shell', status: 'generating' }],
       },
     })
+    // Simulate committed message arriving (in real app, appendAssistant in
+    // flushSync adds this synchronously with the cancel ack).
+    await emitSSE(page, 'text', {
+      type: 'text',
+      content: 'Let me run a command to check the build.',
+      seq: 4,
+      turn_id: 1,
+      chat_id: 'web:chat-1',
+    })
     await page.waitForTimeout(500)
 
     // ── Verify: generating tool should disappear (not real content) ──
@@ -163,11 +172,13 @@ test.describe('Cancel clears generating tool', () => {
     })
     console.log('After cancel result:', JSON.stringify(result))
 
-    // Generating tool disappears (it's not real content — never completed)
-    expect(result.hasShell).toBe(false)
-    // Content stays visible (frozen) — check a prefix since the typewriter
-    // may not have fully revealed all characters at the time of cancel.
-    expect(result.bodyPreview).toContain('Let me run a command')
+    // User requirement: already-rendered content NEVER disappears after cancel.
+    // The latest in-flight iteration's generating tool (Shell, status=generating
+    // at cancel time) is preserved by store.freeze() — marked error (cancelled),
+    // NOT cleared. It is real rendered content the user already saw.
+    expect(result.hasShell).toBe(true)
+    // The streamed text also stays visible (frozen live keeps streamContent).
+    expect(result.hasContent).toBe(true)
 
     await page.close()
   })

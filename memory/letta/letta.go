@@ -10,6 +10,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/memory"
+	"xbot/prompt"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
 )
@@ -51,6 +52,33 @@ type LettaMemory struct {
 
 var _ memory.MemoryProvider = (*LettaMemory)(nil)
 var _ memory.ToolIndexer = (*LettaMemory)(nil)
+
+// Name returns the provider's unique identifier.
+func (m *LettaMemory) Name() string { return "letta" }
+
+// Deps holds the dependencies for creating a LettaMemory instance.
+// Used by the provider factory to avoid importing sqlite/vectordb in the memory package.
+type Deps struct {
+	CoreSvc      *sqlite.CoreMemoryService
+	ArchivalSvc  *vectordb.ArchivalService
+	MemorySvc    *sqlite.MemoryService
+	ToolIndexSvc *vectordb.ToolIndexService
+}
+
+func init() {
+	memory.RegisterProviderFactory("letta", func(deps memory.ProviderDeps) memory.MemoryProvider {
+		lettaDeps, ok := deps.LettaDeps.(*Deps)
+		if !ok || lettaDeps == nil {
+			return nil
+		}
+		return New(deps.TenantID, lettaDeps.CoreSvc, lettaDeps.ArchivalSvc, lettaDeps.MemorySvc, lettaDeps.ToolIndexSvc)
+	})
+	memory.RegisterPromptParts("letta", memory.PromptParts{
+		ToolsPrompt:  prompt.ToolsLetta,
+		MemoryPrompt: prompt.MemoryLetta,
+		UserGuide:    prompt.UserMessageGuideLetta,
+	})
+}
 
 // New creates a LettaMemory instance.
 // NOTE: senderID is NOT passed here. Per-user human block is handled dynamically

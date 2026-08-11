@@ -573,7 +573,11 @@ export class ProgressStore {
     this.mutate((draft) => {
       draft.streaming = false
       draft.phase = 'frozen'
-      draft.streamingTools = []
+      // Do NOT clear streamingTools — a generating tool (tool name already
+      // detected, arguments still streaming) is part of the latest in-flight
+      // iteration. User requirement: already-rendered content NEVER disappears
+      // on cancel. Clearing it here made the newest (unfinished) iteration's
+      // tool vanish at cancel time. Keep it, mark error (cancelled).
       // Mark all in-progress tools as error (cancelled)
       const markError = (tools: WebToolProgress[]) => {
         for (const t of tools) {
@@ -704,6 +708,15 @@ export class ProgressStore {
     // Note: phase==='done' is handled by useProgressStream BEFORE calling
     // setStructuredTools (it only forwards eventSeq + todos, never phase).
     // So opts.phase === 'done' is never true here — no dead branch needed.
+    //
+    // STALE-WATERMARK SEMANTICS: an event at or below current.eventSeq is
+    // OLDER than the installed live state. We append missing iterationHistory
+    // and apply todos (both are monotonic / safe to merge), but we must NOT
+    // overwrite phase/iteration/content/activeTools — those would ROLL BACK
+    // a newer live state to an older snapshot. This was the linear-consistency
+    // violation: after an SSE reconnect, restoreActiveProgress could deliver
+    // a stale snapshot (seq=8) while the store had already advanced to
+    // seq=10 via live events — the stale branch overwrote the newer state.
     if (opts.eventSeq !== undefined && opts.eventSeq <= this.current.eventSeq) {
       if (opts.todos !== undefined) {
         this.current.todos = opts.todos
@@ -711,30 +724,37 @@ export class ProgressStore {
       if (opts.iterationHistory && opts.iterationHistory.length > 0) {
         this.mutate((draft) => {
           appendIterations(draft, opts.iterationHistory!)
-          // Recovery snapshot (from restoreActiveProgress) is authoritative —
-          // also update structured fields so the current iteration's tools,
-          // phase, and content are restored. Without this, only iterationHistory
-          // is appended but the current iteration's activeTools/completedTools
-          // remain stale (from the last live event before disconnect), causing
-          // the current iteration to show incomplete tool state.
-          if (opts.phase !== undefined) {
-            draft.phase = opts.phase
-            draft.streaming = opts.phase !== 'done'
-          }
-          if (opts.iteration !== undefined) draft.iteration = opts.iteration
-          if (opts.activeTools) draft.activeTools = dedupTools(opts.activeTools)
-          if (opts.completedTools) {
-            const currentIter = opts.iteration ?? draft.iteration
-            const filtered = currentIter > 0
-              ? opts.completedTools.filter((t) => t.iteration === undefined || t.iteration === currentIter)
-              : opts.completedTools
-            draft.completedTools = dedupTools(filtered)
-          }
-          if (opts.content !== undefined) draft.content = opts.content
-          if (opts.reasoning) draft.lastReasoning = opts.reasoning
-          if (opts.todos !== undefined) draft.todos = opts.todos
-          if (opts.subAgents !== undefined) draft.subAgents = mergeSubAgentTrees(draft.subAgents, opts.subAgents)
-          if (opts.tokenUsage !== undefined && opts.tokenUsage !== null) draft.tokenUsage = opts.tokenUsage
+        })
+      }
+      return
+    }
+
+    // ── iteration-regression guard ──
+    // phase:undefined stream deltas (stream_content / reasoning forwarded as
+    // progress_structured by the Web channel) carry the backend's CURRENT
+    // iteration (`getActiveIteration`), which can legitimately LAG the snapshot
+    // — a prior iteration's stream text may still be arriving while the
+    // snapshot already advanced (e.g. iter 4 active while a delayed iter-2
+    // stream delta lands). They can also LEAD the structured stream (a tool's
+    // stream text arrives with iteration=48 while the structured loop is at 29).
+    // Applying such an event's activeTools/completedTools/iteration would ROLL
+    // THE SNAPSHOT BACK to the older iteration, wiping the newest iteration's
+    // tools/text — the "迭代到一半最新 turn 消失" report.
+    // Compare against `lastIter` (the semantic watermark, advanced ONLY by
+    // structured events) — NOT `draft.iteration` (a display value that stream
+    // deltas can set ahead, e.g. 48, which would falsely regress the later
+    // structured iteration 29 and drop it from iterationHistory).
+    // Only append monotonic data (iterationHistory, todos); skip the rest.
+    const regressed =
+      opts.iteration !== undefined &&
+      opts.iteration > 0 &&
+      this.current.lastIter > 0 &&
+      opts.iteration < this.current.lastIter
+    if (regressed) {
+      if (opts.todos !== undefined) this.current.todos = opts.todos
+      if (opts.iterationHistory && opts.iterationHistory.length > 0) {
+        this.mutate((draft) => {
+          appendIterations(draft, opts.iterationHistory!)
         })
       }
       return
@@ -749,7 +769,17 @@ export class ProgressStore {
       // second log entry while advancing the current snapshot: after reconnect,
       // the installed snapshot and replayed delta can overlap, and local
       // snapshotting would render the same tool group twice.
-      if (opts.iteration !== undefined && opts.iteration > draft.lastIter) {
+      // lastIter advances ONLY on STRUCTURED events (phase set). phase:undefined
+      // stream deltas carry the backend's CURRENT iteration (getActiveIteration)
+      // which can legitimately LEAD the structured stream (a tool's stream text
+      // arrives with iteration=48 while the structured iteration loop is still
+      // at 29). Advancing lastIter from a stream delta made the later structured
+      // iteration (29 < 48) look REGRESSED and dropped it from iterationHistory
+      // — the committed message then had only the early iterations and the
+      // already-rendered iterations VANISHED on commit (user report: committed
+      // with iter-range 1-1 after a 1-second turn vanish; ITER_ID_INVARIANT_
+      // VIOLATION prev:48 next:29).
+      if (opts.phase !== undefined && opts.iteration !== undefined && opts.iteration > draft.lastIter) {
         const hadPreviousIteration = draft.lastIter >= 1
         draft.lastIter = opts.iteration
         // Clear stream/structured fields from the previous iteration so the
@@ -761,8 +791,21 @@ export class ProgressStore {
           draft.genuiContent = ''
           draft.content = ''
           draft.streamingTools = []
-          draft.activeTools = []
-          draft.completedTools = []
+          // ALREADY-RENDERED CONTENT NEVER DISAPPEARS (user requirement).
+          // Keep activeTools/completedTools across the iteration boundary —
+          // the clearing event is often a phase:undefined stream delta that
+          // carries NO iteration_history, so the previous iteration's tools
+          // would vanish until the NEXT structured event appends the history
+          // (an empty window that lasts as long as SSE is slow — user report:
+          // "agent turn 消失然后又出现，sse 到的慢会有比较久的错误状态").
+          // Mark running/generating tools as done (visually "completed", not
+          // "still running" — no misleading state); the new iteration's
+          // structured event replaces them (line: draft.activeTools = ...).
+          for (const t of draft.activeTools) {
+            if (t.status === 'running' || t.status === 'generating' || t.status === 'pending') {
+              t.status = 'done'
+            }
+          }
           draft.subAgents = []
           draft.lastReasoning = ''
         }
@@ -980,7 +1023,52 @@ export class ProgressStore {
       tokenUsage: this.current.tokenUsage,
       turnID: this.current.turnID,
     }
+    this.assertInvariants()
     this.listeners.forEach((l) => l())
+  }
+
+  /** Development-only invariant assertions — the SINGLE choke point where every
+   *  state mutation lands (all mutators go through mutate → flush). Any
+   *  event-sequence bug (iteration regression, iterationHistory cleared
+   *  mid-stream, phase/streaming inconsistency, cross-session pollution) will
+   *  be caught HERE at the exact moment the state corrupts — never blocks
+   *  rendering, just logs the violation so the next bug report comes with the
+   *  precise corruption point instead of a vanished turn. */
+  private assertInvariants(): void {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.PROD) return
+    const s = this.current
+    // iterationHistory iteration numbers must be strictly increasing (no dupes,
+    // no rollback). Gaps are allowed (incremental deltas may be lost).
+    let prevIter = 0
+    for (const iter of s.iterationHistory) {
+      if (iter.iteration <= prevIter) {
+        console.error('[STORE_INVARIANT] iterationHistory not monotonic', {
+          prev: prevIter,
+          next: iter.iteration,
+          lastIter: s.lastIter,
+          phase: s.phase,
+        })
+        break
+      }
+      prevIter = iter.iteration
+    }
+    // lastIter must be >= the max iteration recorded in iterationHistory.
+    const maxIter = s.iterationHistory.reduce((m, i) => Math.max(m, i.iteration), 0)
+    if (s.lastIter > 0 && maxIter > s.lastIter) {
+      console.error('[STORE_INVARIANT] lastIter behind iterationHistory', {
+        lastIter: s.lastIter,
+        maxIter,
+        phase: s.phase,
+      })
+    }
+    // phase='done' implies the turn ended — must not still be streaming.
+    if (s.phase === 'done' && s.streaming) {
+      console.error('[STORE_INVARIANT] phase=done but streaming=true', {
+        phase: s.phase,
+        streaming: s.streaming,
+        lastIter: s.lastIter,
+      })
+    }
   }
 }
 

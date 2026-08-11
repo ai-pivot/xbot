@@ -185,8 +185,10 @@ test.describe('Turn order consistency', () => {
     expect(copyButtons).toBe(0)
 
     // Check: content is preserved (not empty)
-    // The frozen live message should still be visible in the DOM.
-    // Use textContent from all assistant elements (virtual list may truncate).
+    // Frozen liveMessage returns null (phase='frozen') — content is in the
+    // committed message (from appendAssistant in flushSync). In mock SSE
+    // (E2E), the frozen liveMessage keeps content visible (user requirement).
+    // The real appendAssistant path is tested by Go integration tests.
     const assistantElements = await page.locator('[data-role="assistant"]').all()
     let foundContent = false
     for (const el of assistantElements) {
@@ -196,6 +198,9 @@ test.describe('Turn order consistency', () => {
         break
       }
     }
+    // User requirement: already-rendered content NEVER disappears after cancel.
+    // The frozen live message keeps 'partial reply' visible (store.freeze()
+    // keeps content + the committed message replaces it when it arrives).
     expect(foundContent).toBe(true)
 
     await page.close()

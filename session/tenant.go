@@ -40,6 +40,12 @@ func (s *TenantSession) AddMessageWithID(msg llm.ChatMessage) (int64, error) {
 	return s.sessionSvc.AddMessageWithID(s.tenantID, msg)
 }
 
+// AppendIterationHistory writes a structured iteration record (v54+).
+// Replaces Detail JSON as the authoritative source for iteration data.
+func (s *TenantSession) AppendIterationHistory(msgID int64, turnID uint64, rec sqlite.IterationRecord) error {
+	return s.sessionSvc.AppendIterationHistory(s.tenantID, msgID, turnID, rec)
+}
+
 // AppendMessage appends a message and returns its stable history ID.
 func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
 	return s.sessionSvc.AppendMessage(s.tenantID, msg)

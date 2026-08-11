@@ -70,7 +70,13 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   const liveProgress: LiveProgress | null = hasLiveProgress ? progress : null
 
   const isStreaming = message.isPartial || hasLiveProgress
-  const effectiveLevel: CollapseLevel = isStreaming ? 'minimal' : collapseLevel
+  // Do NOT change collapseLevel based on streaming state. The old code used
+  // `isStreaming ? 'minimal' : collapseLevel` — this caused a height jump
+  // when the turn completed (streaming→committed switched from 'minimal' to
+  // 'all', folding all iterations into a summary line). The user sees their
+  // content suddenly collapse — "人机对抗". Always use the user's preferred
+  // collapseLevel for both streaming and committed messages.
+  const effectiveLevel: CollapseLevel = collapseLevel
 
   const hasReasoning = Boolean(progress?.reasoningStreamContent || progress?.lastReasoning)
   const hasToolInProgress = progress
@@ -91,7 +97,26 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // snapshot briefly has no tools — but phase=tool_exec tells us tools are
   // coming, so we must NOT show the thinking placeholder.
   const isThinkingPhase = !progress || progress.phase === '' || progress.phase === 'thinking'
-  const showThinkingIndicator = isStreaming && isThinkingPhase && !progress?.streamContent && !hasReasoning && !hasToolInProgress && !hasAnyTools
+  // MUTUAL EXCLUSION with LiveIteration's boundary placeholder: LiveIteration
+  // (rendered inside TurnBody) shows "思考中…" at a NON-FIRST iteration
+  // boundary when `streaming && lastIter >= 1 && iterationHistory.length > 0`.
+  // If the snapshot has completed iterations, LiveIteration is in charge of
+  // the placeholder — rendering it here too produces TWO "思考中…" indicators
+  // after a session switch (progress.completedTools is empty because the tools
+  // live in iterationHistory's iterations, so hasAnyTools=false and the old
+  // condition alone was insufficient; user report: "切换会话后渲染两个思考中").
+  const liveIterationShowsPlaceholder =
+    Boolean(progress?.streaming) &&
+    (progress?.lastIter ?? 0) >= 1 &&
+    (progress?.iterationHistory?.length ?? 0) > 0
+  const showThinkingIndicator =
+    isStreaming &&
+    isThinkingPhase &&
+    !progress?.streamContent &&
+    !hasReasoning &&
+    !hasToolInProgress &&
+    !hasAnyTools &&
+    !liveIterationShowsPlaceholder
   const emptyResponse = isEmptyResponseContent(message.content)
   const finalContent = !emptyResponse && shouldRenderFinalContent(message.content, iterations)
     ? message.content
@@ -105,10 +130,15 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     })
   }, [message.content, t])
 
-  // Action bar shown only for completed (non-streaming) messages with
-  // non-duplicate final content. When shouldRenderFinalContent returns false,
-  // the content is an iteration's thinking duplicate — no copy button.
-  const showActions = !isStreaming && !!finalContent && !message.displayOnly
+  // Action bar shown for completed (non-streaming) messages with content.
+  // Use `message.content` (the authoritative final reply), NOT `finalContent`:
+  // finalContent is empty when the content duplicates an iteration's thinking
+  // (render dedup — same text on both paths). In that case the final reply is
+  // still the user's content and MUST be copyable — a copy button that
+  // "appears then disappears" when an iteration's thinking catches up to the
+  // reply (user report) is a regression. `message.content` non-empty is the
+  // correct condition.
+  const showActions = !isStreaming && !!message.content && !message.displayOnly
 
   // 'all' level + committed: fold all intermediate content (iterations' thinking/O),
   // show only the last TEXT output. Last TEXT = message.content, or fall back to

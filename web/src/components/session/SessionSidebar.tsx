@@ -51,9 +51,12 @@ const CATEGORIES = ['time', 'status', 'path'] as const
 interface SessionSidebarProps {
   /** Tab manager for opening SubAgent conversation tabs (Child 5). */
   tabManager: TabManager
+  /** Called after a session is selected. MobileAppShell uses this to close
+   * the drawer automatically after switching sessions on mobile. */
+  onSessionSelected?: () => void
 }
 
-export function SessionSidebar({ tabManager }: SessionSidebarProps) {
+export function SessionSidebar({ tabManager, onSessionSelected }: SessionSidebarProps) {
   const { t } = useI18n()
   const store = useSessionStore()
   const [search, setSearch] = useState('')
@@ -111,8 +114,9 @@ export function SessionSidebar({ tabManager }: SessionSidebarProps) {
       } else {
         void store.switchSession(id, channel)
       }
+      onSessionSelected?.()
     },
-    [store.sessions, store.subAgents, store.switchSession, tabManager],
+    [store.sessions, store.subAgents, store.switchSession, tabManager, onSessionSelected],
   )
 
   // Export handler: download a session in the specified format

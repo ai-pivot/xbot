@@ -351,8 +351,34 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			// dropping `done + todos:[]` made the client unable to learn that
 			// the server cleared its todos, so stale items survived reloads.
 		}
+		// v55: load structured iteration_history by turn_id.
+		// Each turn's iterations are spread across multiple messages (one per
+		// intermediate assistant + one final). Querying by turn_id merges them
+		// into a complete list. Falls back to Detail JSON when no structured
+		// data exists (old data pre-v55).
+		var turnIterMap map[uint64][]sqlite.IterationRecord
+		tenantID := sess.TenantID()
+		if tenantID > 0 {
+			// Collect unique turn_ids
+			turnSet := make(map[uint64]bool)
+			for _, m := range msgs {
+				if m.Role == "assistant" && m.TurnID > 0 {
+					turnSet[m.TurnID] = true
+				}
+			}
+			if len(turnSet) > 0 {
+				svc := sqlite.NewSessionService(ag.MultiSession().DB())
+				turnIterMap = make(map[uint64][]sqlite.IterationRecord)
+				for turnID := range turnSet {
+					recs, _ := svc.GetIterationHistoryByTurn(tenantID, turnID)
+					if len(recs) > 0 {
+						turnIterMap[turnID] = recs
+					}
+				}
+			}
+		}
 		return web.HistorySnapshot{
-			Messages:       channel.ConvertMessagesToHistory(msgs),
+			Messages:       channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap),
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,

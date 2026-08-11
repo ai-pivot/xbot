@@ -19,6 +19,8 @@ import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucid
 
 import { MessageItem } from './MessageItem'
 import { ShimmerThinking } from './ShimmerThinking'
+import { bindTurnIDs, orderMessageRows, assertRowConsistency } from './messageOrder'
+import { mergeIterations } from './progressStore'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -97,53 +99,89 @@ export function buildMessageRows(
   messages: ChatMessage[],
   liveMessage: ChatMessage | null,
 ): ChatMessage[] {
-  // Order = the message array's accumulation order (append-only — mirrors the
-  // backend's DB row order). NO turnID re-sorting: user rows keep their
-  // natural order, and a turn_id=0 user must NOT be grouped with other users.
-  // The committed assistant's position is fixed by appendAssistant at commit
-  // time (inserted before the newest user), so the array is already ordered.
-  if (!liveMessage) return messages.length > 0 ? messages : []
-  // The live message for a turn that already has a committed assistant is
-  // merged into it (liveProgress flows via liveId) — never rendered twice.
-  if (liveMessage.turnID > 0) {
-    const hasCommitted = messages.some(
-      (m) => m.turnID === liveMessage.turnID && m.role === liveMessage.role,
-    )
-    if (hasCommitted) {
-      // The live message has a committed counterpart — liveProgress flows
-      // to it via liveId (MessageList.tsx). AssistantMessage ignores
-      // message.iterations when hasLiveProgress is true (it uses
-      // progress.iterationHistory exclusively), so merging iterations here
-      // would be wasted work that breaks MessageItem memo (new object ref
-      // every frame). Just return messages as-is.
-      return messages
+  // Single render choke point. All paths (history reload, live append, cancel,
+  // notification, session switch, weak-network reorder) funnel through here.
+  //
+  // Performance contract (streaming hot path: committed rows unchanged, only
+  // liveMessage updates every frame):
+  //  - `messages` may be the cached committed list (see MessageList's useMemo);
+  //    bindTurnIDs/orderMessageRows/dedupLiveRows all have zero-copy fast
+  //    paths when nothing needs binding/sorting/deduping.
+  //  - The only per-frame allocation is the single `[...messages, live]` copy
+  //    needed to append the live row; when the live row duplicates a committed
+  //    one (same content / iterations) we return `messages` directly (zero
+  //    copy).
+  //
+  // Correctness steps (in order):
+  //   1. bindTurnIDs — derive deterministic turn_id for turnID=0 committed rows.
+  //   2. dedupLiveRows — a live row that duplicates a committed row (same
+  //      content/iterations) is dropped.
+  //   3. orderMessageRows — strict (turnID, role) sort. R2: a larger turn_id
+  //      NEVER renders above a smaller one. Within a turn user precedes
+  //      assistant; ties keep input order (= iteration order).
+  //   4. assertRowConsistency — diagnostic invariants (turn monotonic, iter
+  //      contiguous); never blocks rendering.
+  if (!liveMessage) return orderMessageRows(bindTurnIDs(messages))
+  if (messages.length === 0) return [liveMessage]
+  // Single O(N) scan classifies the live row against the committed rows:
+  //  - SAME turnID + role: the live row is the pre-commit / frozen phase of an
+  //    already-committed assistant. MERGE the live row's iterations (the
+  //    in-flight iteration is NOT in the committed list — a cancelled turn's
+  //    running tool lives only in the live snapshot) into the committed row
+  //    and drop the live row. This preserves already-rendered content
+  //    (user requirement) while avoiding duplicate rows. Committed content
+  //    wins (complete reply); live content fills an empty committed row
+  //    (the [interrupted] marker has no text).
+  //  - EXACT content/iteration match with a committed row of a DIFFERENT turn
+  //    (committed turnID=0 because the text event lost its turn_id): the live
+  //    row is the same message — drop it.
+  //  - Otherwise: the live row is genuinely new streaming content — keep it.
+  const live = liveMessage
+  let sameTurnIdx = -1
+  let exactDup = false
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    if (m.isPartial || m.role !== live.role) continue
+    if (live.turnID > 0 && m.turnID === live.turnID) {
+      // Same-turn merge: the live row is the pre-commit / frozen phase of THIS
+      // committed row. Unconditional on turnID — a mis-bound live (turn_started
+      // lost → live.turnID falls back) is prevented upstream in
+      // useProgressStream (streaming live keeps turnID=0, never the previous
+      // turn), so a turnID match here is authoritative.
+      sameTurnIdx = i
+      break
     }
-    // Distinguish the two live-row kinds by whether its turnID already exists
-    // in the committed list:
-    //  - EXISTS (e.g. a frozen row from a CANCELLED previous turn whose user is
-    //    in the list): insert after that turn's last message — ABOVE the newest
-    //    user. Without this, the new user flickered above the cancelled turn.
-    //  - NOT EXISTS (the CURRENT turn's reply — its user was just sent and is
-    //    still unbound / turnID not yet in the list): append at the END, below
-    //    the new user. Falling through to the turnID scan skipped the unbound
-    //    user (turnID=0) and inserted the reply ABOVE the user — the "reply
-    //    rendered above my user msg" linear-consistency violation.
-    const turnExists = messages.some((m) => m.turnID === liveMessage.turnID)
-    if (turnExists) {
-      let insertIdx = messages.length
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i]
-        if (m.turnID > 0 && m.turnID <= liveMessage.turnID) {
-          insertIdx = i + 1
-          break
-        }
-      }
-      return [...messages.slice(0, insertIdx), liveMessage, ...messages.slice(insertIdx)]
+    if (
+      (m.content && live.content && m.content === live.content) ||
+      (m.iterations.length > 0 &&
+        live.iterations.length > 0 &&
+        m.iterations.length === live.iterations.length &&
+        m.iterations.every((it, k) => it.iteration === live.iterations[k]?.iteration))
+    ) {
+      exactDup = true
+      break
     }
   }
-  // turnID=0 live, or the current turn's reply (turnID not in the committed
-  // list yet) — append at the end (below the newest user).
-  return [...messages, liveMessage]
+  if (sameTurnIdx >= 0) {
+    const committed = messages[sameTurnIdx]
+    // Merge live's iterations (in-flight iteration included) into committed,
+    // preserving committed's complete content (or the live text when committed
+    // is an empty [interrupted] marker). One copy; the live row is removed.
+    const merged = mergeIterations(committed.iterations, live.iterations)
+    const result = [...messages]
+    result[sameTurnIdx] = {
+      ...committed,
+      content: committed.content || live.content,
+      iterations: merged,
+    }
+    return result
+  }
+  if (exactDup) return messages // zero copy — the committed row already renders it
+  const all = [...messages, liveMessage]
+  const bound = bindTurnIDs(all) // fast path: committed already bound, live skipped
+  const ordered = orderMessageRows(bound) // fast path: already ordered
+  assertRowConsistency(ordered)
+  return ordered
 }
 
 export function MessageList({
@@ -208,7 +246,20 @@ export function MessageList({
   // Only the LAST assistant after the last user message is kept; all earlier
   // ones are absorbed (their tools are in the snapshot or in the last
   // assistant's iterations).
-  const rows = useMemo<ChatMessage[]>(() => buildMessageRows(messages, liveMessage), [messages, liveMessage])
+  // Committed rows are order-stable between frames — bind+sort them ONCE per
+  // `messages` change (history reload, appendAssistant, injectUserMessage).
+  // Streaming updates only change liveMessage; the rows memo below recomputes
+  // cheaply via buildMessageRows' zero-copy fast paths (bind/sort/dedup all
+  // no-op when the committed list is already bound+ordered) instead of
+  // re-binding and re-sorting all committed rows on every animation frame.
+  const committedRows = useMemo<ChatMessage[]>(
+    () => orderMessageRows(bindTurnIDs(messages)),
+    [messages],
+  )
+  const rows = useMemo<ChatMessage[]>(
+    () => buildMessageRows(committedRows, liveMessage),
+    [committedRows, liveMessage],
+  )
   // Latest-rows ref: closures (IntersectionObserver, loadMore anchor restore)
   // must read the CURRENT rows, not a stale snapshot captured in effect deps —
   // after onLoadMore prepends older rows, the effect closure's `rows` is still
@@ -284,6 +335,84 @@ export function MessageList({
       return item.end < (instance.scrollOffset ?? 0)
     }
   }, [virtualizer])
+
+  // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
+  // User report: "agent turn 消失" — the live tail row vanishes from the DOM
+  // until the next iteration's first SSE event. rows is the FULL array
+  // (committed + live); a live tail row disappearing WITHOUT a committed
+  // replacement while the turn is still busy is REAL data loss — not
+  // virtualization (getVirtualItems only returns the visible window, so its
+  // length shrinking on scroll is NORMAL and must NOT be treated as a signal).
+  // This effect also watches getVirtualItems() tail-index regression while
+  // sticking to the bottom (the user's originally requested monitor).
+  const prevRowsTailRef = useRef<{
+    id: string | null
+    turnID: number
+    isPartial: boolean
+    chatKey: string | null | undefined
+    len: number
+  } | null>(null)
+  useEffect(() => {
+    const tail = rows.length > 0 ? rows[rows.length - 1] : null
+    const prev = prevRowsTailRef.current
+    prevRowsTailRef.current = {
+      id: tail?.id ?? null,
+      turnID: tail?.turnID ?? 0,
+      isPartial: tail?.isPartial ?? false,
+      chatKey,
+      len: rows.length,
+    }
+    if (!prev || prev.chatKey !== chatKey) return // session switch → rows replaced legitimately
+    // 1) ROWS-LEVEL: live tail row vanished without committed replacement.
+    const liveVanished = prev.isPartial && prev.id !== null && !rows.some((r) => r.id === prev.id)
+    if (liveVanished && busy) {
+      // Legal replacement paths: (a) normal text-event finalize — a committed
+      // assistant with the same turnID appears; (b) commitLiveProgressAndReset
+      // (turn_started/commit) — a committed assistant appears. If rows contain
+      // NO committed assistant at all, the live content was wiped with nothing
+      // taking its place → the "turn 消失只剩 user msg" report.
+      const sameTurnCommitted = prev.turnID > 0 &&
+        rows.some((r) => r.role === 'assistant' && !r.isPartial && r.turnID === prev.turnID)
+      const anyCommittedAssistant = rows.some((r) => r.role === 'assistant' && !r.isPartial)
+      if (!sameTurnCommitted && !anyCommittedAssistant) {
+        console.error('[RENDER_LOSS_ROWS] live turn vanished without committed replacement', {
+          prevTailId: prev.id,
+          prevTurnID: prev.turnID,
+          prevLen: prev.len,
+          rowsLen: rows.length,
+          busy,
+          chatKey,
+          lastRow: tail ? { id: tail.id, role: tail.role, turnID: tail.turnID, isPartial: tail.isPartial } : null,
+          liveMessageId: liveMessage?.id ?? null,
+          rowIds: rows.map((r) => r.id).slice(-5),
+        })
+        console.error(new Error('[RENDER_LOSS_ROWS] stack'))
+      }
+    }
+    // 2) VIRTUALIZER-LEVEL: only alarm when the LAST row is the LIVE row
+    // (isPartial=true) yet getVirtualItems() does not cover it while sticking
+    // to the bottom. Historical committed rows sitting outside the viewport is
+    // NORMAL virtualization (refresh lands at the top) — NOT a bug. The live
+    // tail row being unrendered is the "agent turn 消失" symptom.
+    const lastRow = rows.length > 0 ? rows[rows.length - 1] : null
+    if (lastRow?.isPartial && stickToBottomRef.current) {
+      const items = virtualizer.getVirtualItems()
+      if (items.length > 0) {
+        const lastItemIdx = items[items.length - 1].index
+        if (lastItemIdx < rows.length - 1) {
+          console.error('[VIRTUALIZER_TAIL_DROP] getVirtualItems() does not cover the LIVE last row while sticking to bottom', {
+            lastItemIdx,
+            rowsLen: rows.length,
+            itemsLen: items.length,
+            lastRowId: lastRow.id,
+            lastRowRole: lastRow.role,
+            busy,
+          })
+          console.error(new Error('[VIRTUALIZER_TAIL_DROP] stack'))
+        }
+      }
+    }
+  }, [rows, busy, chatKey, liveMessage, virtualizer])
 
   const cancelPendingFollow = useCallback(() => {
     if (pendingFollowRafRef.current === null) return
@@ -504,10 +633,18 @@ export function MessageList({
     // scrollTop to the new scrollHeight. Using RAF (scheduleFollow) here causes
     // an active loop: the RAF cancels/reschedules faster than it can execute.
     //
-    // OPTIMIZATION: Only observe scrollElement (not content). content height
-    // changes are reflected in scrollElement.scrollHeight automatically.
-    // Observing both caused duplicate callbacks (each item resize fired
-    // twice), leading to redundant forced reflows (scrollTop = scrollHeight).
+    // CRITICAL: observe CONTENT, not scrollElement. ResizeObserver reports the
+    // element's contentRect (clientWidth/clientHeight) — NOT its scrollHeight.
+    // scrollElement is an overflow-y-auto container whose clientHeight stays
+    // fixed at the viewport height, so content growth (live row height changes,
+    // iteration history append, code highlighting) changes ONLY scrollHeight —
+    // the ResizeObserver on scrollElement NEVER fires, the scrollTop stays at
+    // the old position, and the last row (the live turn) is pushed below the
+    // viewport → the virtualizer does not render it → the whole turn vanishes
+    // from the DOM until the next SSE event happens to trigger the
+    // liveProgress-driven follow effect. contentRef wraps the virtualizer's
+    // sizing div (height = totalSize), so its contentRect DOES track content
+    // height and fires on every growth.
     const observer = new ResizeObserver(() => {
       if (!stickToBottomRef.current) return
       const el = scrollRef.current
@@ -517,7 +654,7 @@ export function MessageList({
         queueMicrotask(() => { programmaticScrollRef.current = false })
       }
     })
-    observer.observe(scrollElement)
+    observer.observe(content)
     return () => {
       observer.disconnect()
       cancelPendingFollow()

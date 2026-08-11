@@ -26,6 +26,8 @@ import (
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
+
+	"github.com/google/uuid"
 )
 
 // rpcContext holds shared dependencies for RPC handlers.
@@ -963,6 +965,140 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		return svc.Rename(p.ID, p.Name)
 	})
 	t["set_subscription_model"] = rpc1void(h.setSubscriptionModel)
+	t["export_subscriptions"] = rpc1(func(ctx context.Context, p struct {
+		IDs []string `json:"ids"`
+	}) (any, error) {
+		svc, err := h.requireSubscriptionSvc()
+		if err != nil {
+			return nil, err
+		}
+		uid := rpcUserID(ctx)
+		var subs []*sqlite.LLMSubscription
+		if len(p.IDs) > 0 {
+			for _, id := range p.IDs {
+				sub, err := svc.Get(id)
+				if err != nil {
+					continue
+				}
+				if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
+					continue
+				}
+				subs = append(subs, sub)
+			}
+		} else {
+			all, err := svc.ListByUserID(uid)
+			if err != nil {
+				return nil, err
+			}
+			subs = all
+		}
+		// Mask API keys: keep first 4 chars + ****
+		type exportSub struct {
+			ID              string                             `json:"id"`
+			Name            string                             `json:"name"`
+			Provider        string                             `json:"provider"`
+			BaseURL         string                             `json:"base_url"`
+			APIKey          string                             `json:"api_key"`
+			Model           string                             `json:"model"`
+			MaxOutputTokens int                                `json:"max_output_tokens"`
+			ThinkingMode    string                             `json:"thinking_mode"`
+			PerModelConfigs map[string]protocol.PerModelConfig `json:"per_model_configs"`
+		}
+		result := make([]exportSub, 0, len(subs))
+		for _, s := range subs {
+			maskedKey := s.APIKey
+			if len(maskedKey) > 4 {
+				maskedKey = maskedKey[:4] + "****"
+			} else if maskedKey != "" {
+				maskedKey = "****"
+			}
+			pmc := make(map[string]protocol.PerModelConfig, len(s.PerModelConfigs))
+			for model, cfg := range s.PerModelConfigs {
+				pmc[model] = protocol.PerModelConfig(cfg)
+			}
+			result = append(result, exportSub{
+				ID:              s.ID,
+				Name:            s.Name,
+				Provider:        s.Provider,
+				BaseURL:         s.BaseURL,
+				APIKey:          maskedKey,
+				Model:           s.Model,
+				MaxOutputTokens: s.MaxOutputTokens,
+				ThinkingMode:    s.ThinkingMode,
+				PerModelConfigs: pmc,
+			})
+		}
+		return map[string]any{"subscriptions": result, "version": 1}, nil
+	})
+	t["import_subscriptions"] = rpc1(func(ctx context.Context, p struct {
+		Subs []struct {
+			Name            string                             `json:"name"`
+			Provider        string                             `json:"provider"`
+			BaseURL         string                             `json:"base_url"`
+			APIKey          string                             `json:"api_key"`
+			Model           string                             `json:"model"`
+			MaxOutputTokens int                                `json:"max_output_tokens"`
+			ThinkingMode    string                             `json:"thinking_mode"`
+			PerModelConfigs map[string]protocol.PerModelConfig `json:"per_model_configs"`
+		} `json:"subs"`
+		Overwrite bool `json:"overwrite"`
+	}) (any, error) {
+		svc, err := h.requireSubscriptionSvc()
+		if err != nil {
+			return nil, err
+		}
+		uid := rpcUserID(ctx)
+		bizID := rpcBizID(ctx)
+		imported := 0
+		skipped := 0
+		for _, imp := range p.Subs {
+			// Skip masked keys (****) — user must fill in real key
+			if strings.Contains(imp.APIKey, "****") {
+				imp.APIKey = ""
+			}
+			// Check for duplicate name if not overwrite
+			if !p.Overwrite {
+				existing, _ := svc.ListByUserID(uid)
+				dup := false
+				for _, e := range existing {
+					if e.Name == imp.Name {
+						dup = true
+						break
+					}
+				}
+				if dup {
+					skipped++
+					continue
+				}
+			}
+			newID := uuid.New().String()
+			dbSub := &sqlite.LLMSubscription{
+				ID:              newID,
+				Name:            imp.Name,
+				Provider:        imp.Provider,
+				BaseURL:         imp.BaseURL,
+				APIKey:          imp.APIKey,
+				Model:           imp.Model,
+				MaxOutputTokens: imp.MaxOutputTokens,
+				ThinkingMode:    imp.ThinkingMode,
+				SenderID:        bizID,
+			}
+			if len(imp.PerModelConfigs) > 0 {
+				dbSub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(imp.PerModelConfigs))
+				for model, cfg := range imp.PerModelConfigs {
+					dbSub.PerModelConfigs[model] = sqlite.PerModelConfig(cfg)
+				}
+			}
+			if err := svc.Add(dbSub); err != nil {
+				continue
+			}
+			if uid > 0 {
+				svc.SetSubscriptionUserID(newID, uid)
+			}
+			imported++
+		}
+		return map[string]any{"imported": imported, "skipped": skipped}, nil
+	})
 }
 
 // ── Memory / session / history / status ──
@@ -1148,7 +1284,28 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			if err != nil {
 				return nil, err
 			}
-			return channel.ConvertMessagesToHistory(msgs), nil
+			// v55: load structured iteration_history by turn_id.
+			var turnIterMap map[uint64][]sqlite.IterationRecord
+			tenantID := sess.TenantID()
+			if tenantID > 0 {
+				turnSet := make(map[uint64]bool)
+				for _, m := range msgs {
+					if m.Role == "assistant" && m.TurnID > 0 {
+						turnSet[m.TurnID] = true
+					}
+				}
+				if len(turnSet) > 0 {
+					svc := sqlite.NewSessionService(ms.DB())
+					turnIterMap = make(map[uint64][]sqlite.IterationRecord)
+					for turnID := range turnSet {
+						recs, _ := svc.GetIterationHistoryByTurn(tenantID, turnID)
+						if len(recs) > 0 {
+							turnIterMap[turnID] = recs
+						}
+					}
+				}
+			}
+			return channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap), nil
 		}()
 		if err != nil {
 			return nil, err

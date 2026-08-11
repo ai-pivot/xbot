@@ -56,6 +56,38 @@ type iterToolSnap struct {
 	Detail    string `json:"detail,omitempty"`
 }
 
+// isDegenerateCancelDetail reports whether a Detail JSON represents a
+// degenerate restart-recovery snapshot: every iteration is a synthetic
+// user_cancelled tool with no real content/reasoning/other tools. This is the
+// ONLY case where ConvertMessagesToHistory should fall back to pendingIters
+// (accumulated from tool_calls) — the resumed Run after a restart completed no
+// iterations, so its Detail carries nothing but user_cancelled.
+//
+// A NORMAL Detail always has real iteration ids (e.g. 47, 48) with content or
+// actual tools. The old `len(iters) < len(pendingIters)` check incorrectly
+// fired on normal turns (2 intermediate tool_calls → pendingIters=2, Detail=1
+// real iteration) and REPLACED the real ids with fabricated 1, 2 — the
+// "加载会话后 iter 带着错误的 iter id" bug.
+func isDegenerateCancelDetail(snaps []iterSnapshot) bool {
+	if len(snaps) == 0 {
+		return true
+	}
+	for _, snap := range snaps {
+		if snap.Content != "" || snap.Reasoning != "" {
+			return false // has real content → not degenerate
+		}
+		if len(snap.Tools) == 0 {
+			continue // empty iteration — not real
+		}
+		for _, t := range snap.Tools {
+			if t.Name != "user_cancelled" {
+				return false // has a real tool → not degenerate
+			}
+		}
+	}
+	return true
+}
+
 // truncateLabel safely truncates a string to maxRunes.
 // Appends "..." if truncated and maxRunes > 3.
 // If maxRunes <= 0 or the string already fits, returns original unchanged.
@@ -168,6 +200,397 @@ func formatToolLabel(name, argsJSON string) string {
 //  1. Normal completed turn: assistant with Detail → one tool_summary + assistant
 //  2. Cancelled/interrupted turn: intermediate assistant(ToolCalls) without Detail → pending tool_summary
 //  3. Mixed: some turns completed, last one cancelled
+//
+// ConvertMessagesToHistoryWithIterations is the v55+ version that uses
+// structured iteration_history table data instead of parsing Detail JSON.
+// turnIterMap maps turn_id → []IterationRecord (from DB, queried by turn_id).
+// Intermediate messages (with tool_calls) go through the same flushPending
+// flow as ConvertMessagesToHistory — they are NOT rendered as separate
+// HistoryMessages. Only the final/[interrupted] message gets structured
+// iteration data attached (queried by turn_id, merging all intermediate +
+// final records into one complete list).
+// Detail JSON is only used as a fallback for old data pre-v55.
+func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord) []HistoryMessage {
+	// If no structured data, fall back to the legacy path.
+	if turnIterMap == nil {
+		return ConvertMessagesToHistory(msgs)
+	}
+	// Check if any turn has structured iteration data.
+	hasStructured := false
+	for _, m := range msgs {
+		if m.TurnID > 0 {
+			if recs, ok := turnIterMap[m.TurnID]; ok && len(recs) > 0 {
+				hasStructured = true
+				break
+			}
+		}
+	}
+	if !hasStructured {
+		return ConvertMessagesToHistory(msgs)
+	}
+
+	// Copy so the derivation below never mutates the caller's slice.
+	msgs = append([]llm.ChatMessage(nil), msgs...)
+
+	// Derive turn_id for legacy rows (same logic as ConvertMessagesToHistory).
+	deriveTurnIDs(msgs)
+
+	var history []HistoryMessage
+	var pendingIters []HistoryIteration
+	var curIterTools []protocol.ToolProgress
+	var curIterIdx int
+	var curIterThinking string
+	var curIterReasoning string
+
+	finishCurIter := func() {
+		if len(curIterTools) > 0 || curIterThinking != "" || curIterReasoning != "" {
+			pendingIters = append(pendingIters, HistoryIteration{
+				Iteration: curIterIdx,
+				Content:   curIterThinking,
+				Reasoning: curIterReasoning,
+				Tools:     curIterTools,
+			})
+		}
+		curIterTools = nil
+		curIterThinking = ""
+		curIterReasoning = ""
+	}
+
+	var lastAssistantTS time.Time
+	var pendingTurnID uint64
+	var lastAssistantID int64
+	var syntheticIdx int
+
+	flushPending := func() {
+		finishCurIter()
+		// Reset the fabricated iteration counter — a flush always ends a turn
+		// (turn boundary flush, user message, or final assistant). The next
+		// turn's fallback (no turnIterMap) iteration numbers restart at 1.
+		curIterIdx = 0
+		if len(pendingIters) > 0 {
+			// v55: if structured iteration_history data exists for this turn,
+			// use it as the authoritative source instead of fabricated pendingIters.
+			// This handles BOTH cases:
+			// 1. Turn with [interrupted] message: flushPending renders with
+			//    turnIterMap data (real iteration ids), then [interrupted]
+			//    message's !isIntermediate branch also renders — but
+			//    hasCommitted check (same turnID + role + !isPartial) skips
+			//    the duplicate.
+			// 2. Turn WITHOUT [interrupted] message (cancelled mid-stream,
+			//    no final message): flushPending is the ONLY render path —
+			//    skipping it would lose ALL iterations.
+			iters := pendingIters
+			if pendingTurnID > 0 {
+				if recs, ok := turnIterMap[pendingTurnID]; ok && len(recs) > 0 {
+					iters = make([]HistoryIteration, 0, len(recs))
+					for _, rec := range recs {
+						var tools []protocol.ToolProgress
+						if rec.Tools != "" && rec.Tools != "[]" {
+							var snaps []iterToolSnap
+							if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
+								tools = make([]protocol.ToolProgress, len(snaps))
+								for i, t := range snaps {
+									label := t.Label
+									if label == "" {
+										label = t.Name
+									}
+									tools[i] = protocol.ToolProgress{
+										Name: t.Name, Label: label, Status: t.Status,
+										Elapsed: t.ElapsedMS, Iteration: rec.Iteration,
+										Summary: t.Summary, Args: t.Args, Detail: t.Detail,
+									}
+								}
+							}
+						}
+						iters = append(iters, HistoryIteration{
+							Iteration: rec.Iteration,
+							Content:   rec.Content,
+							Reasoning: rec.Reasoning,
+							Tools:     tools,
+						})
+					}
+				}
+			}
+			ts := lastAssistantTS
+			if ts.IsZero() {
+				ts = time.Date(2024, 1, 1, 0, 0, 0, syntheticIdx, time.UTC)
+				syntheticIdx++
+			}
+			history = append(history, HistoryMessage{
+				ID:         lastAssistantID,
+				HistoryID:  lastAssistantID,
+				Role:       "assistant",
+				Content:    "",
+				Timestamp:  ts,
+				Iterations: iters,
+				TurnID:     pendingTurnID,
+			})
+			pendingIters = nil
+		}
+	}
+
+	// Pre-scan tool messages for status fallback.
+	toolResults := make(map[string]string)
+	for _, m := range msgs {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			toolResults[m.ToolCallID] = m.Content
+		}
+	}
+
+	for _, m := range msgs {
+		switch m.Role {
+		case "tool":
+			continue
+		case "assistant":
+			lastAssistantTS = m.Timestamp
+			lastAssistantID = m.ID
+
+			// v55: structured iteration_history.
+			// Intermediate messages (with tool_calls) go through the SAME
+			// flushPending flow as ConvertMessagesToHistory — they are NOT
+			// rendered as separate HistoryMessages. Only the FINAL message
+			// (no tool_calls, has content) or [interrupted] message gets
+			// structured iteration data attached, queried by turn_id (which
+			// merges all intermediate + final records into one list).
+			isIntermediate := len(m.ToolCalls) > 0
+			if !isIntermediate && m.TurnID > 0 {
+				if recs, ok := turnIterMap[m.TurnID]; ok && len(recs) > 0 {
+					// Structured data available for this turn — use as
+					// authoritative source. Build HistoryIteration list from
+					// ALL records for this turn (intermediate + final).
+					finishCurIter()
+					pendingIters = nil
+
+					iters := make([]HistoryIteration, 0, len(recs))
+					for _, rec := range recs {
+						var tools []protocol.ToolProgress
+						if rec.Tools != "" && rec.Tools != "[]" {
+							var snaps []iterToolSnap
+							if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
+								tools = make([]protocol.ToolProgress, len(snaps))
+								for i, t := range snaps {
+									label := t.Label
+									if label == "" {
+										label = t.Name
+									}
+									tools[i] = protocol.ToolProgress{
+										Name:      t.Name,
+										Label:     label,
+										Status:    t.Status,
+										Elapsed:   t.ElapsedMS,
+										Iteration: rec.Iteration,
+										Summary:   t.Summary,
+										Args:      t.Args,
+										Detail:    t.Detail,
+									}
+								}
+							}
+						}
+						iters = append(iters, HistoryIteration{
+							Iteration: rec.Iteration,
+							Content:   rec.Content,
+							Reasoning: rec.Reasoning,
+							Tools:     tools,
+						})
+					}
+
+					if len(iters) > 0 {
+						isInterrupted := m.Interrupted
+						if m.Content != "" && !isInterrupted {
+							history = append(history, HistoryMessage{
+								ID:         m.ID,
+								Role:       "assistant",
+								Content:    m.Content,
+								Timestamp:  m.Timestamp,
+								TurnID:     m.TurnID,
+								Iterations: iters,
+							})
+						} else {
+							history = append(history, HistoryMessage{
+								ID:         m.ID,
+								Role:       "assistant",
+								Content:    "",
+								Timestamp:  m.Timestamp,
+								TurnID:     m.TurnID,
+								Iterations: iters,
+							})
+						}
+					} else if m.Content != "" && !m.Interrupted {
+						history = append(history, HistoryMessage{
+							ID:        m.ID,
+							Role:      "assistant",
+							Content:   m.Content,
+							Timestamp: m.Timestamp,
+							TurnID:    m.TurnID,
+						})
+					}
+					continue
+				}
+			}
+
+			// Fallback: Detail JSON (old data without structured iteration_history)
+			if m.Detail != "" {
+				finishCurIter()
+
+				var snaps []iterSnapshot
+				if jsonErr := json.Unmarshal([]byte(m.Detail), &snaps); jsonErr == nil {
+					iters := make([]HistoryIteration, 0, len(snaps))
+					for _, snap := range snaps {
+						toolList := make([]protocol.ToolProgress, len(snap.Tools))
+						for i, t := range snap.Tools {
+							label := t.Label
+							if label == "" {
+								label = t.Name
+							}
+							toolList[i] = protocol.ToolProgress{
+								Name:      t.Name,
+								Label:     label,
+								Status:    t.Status,
+								Elapsed:   t.ElapsedMS,
+								Iteration: snap.Iteration,
+								Summary:   t.Summary,
+								Args:      t.Args,
+								Detail:    t.Detail,
+							}
+						}
+						iters = append(iters, HistoryIteration{
+							Iteration: snap.Iteration,
+							Content:   snap.Content,
+							Reasoning: snap.Reasoning,
+							Tools:     toolList,
+						})
+					}
+
+					if isDegenerateCancelDetail(snaps) && len(pendingIters) > 0 {
+						last := &pendingIters[len(pendingIters)-1]
+						for _, snap := range snaps {
+							for _, t := range snap.Tools {
+								label := t.Label
+								if label == "" {
+									label = t.Name
+								}
+								last.Tools = append(last.Tools, protocol.ToolProgress{
+									Name:      t.Name,
+									Label:     label,
+									Status:    t.Status,
+									Iteration: last.Iteration,
+								})
+							}
+						}
+						iters = pendingIters
+					}
+					pendingIters = nil
+
+					if len(iters) > 0 {
+						isInterrupted := m.Interrupted
+						if m.Content != "" && !isInterrupted {
+							history = append(history, HistoryMessage{
+								ID:         m.ID,
+								Role:       "assistant",
+								Content:    m.Content,
+								Timestamp:  m.Timestamp,
+								TurnID:     m.TurnID,
+								Iterations: iters,
+							})
+						} else {
+							history = append(history, HistoryMessage{
+								ID:         m.ID,
+								Role:       "assistant",
+								Content:    "",
+								Timestamp:  m.Timestamp,
+								TurnID:     m.TurnID,
+								Iterations: iters,
+							})
+						}
+					} else if m.Content != "" && !m.Interrupted {
+						history = append(history, HistoryMessage{
+							ID:        m.ID,
+							Role:      "assistant",
+							Content:   m.Content,
+							Timestamp: m.Timestamp,
+							TurnID:    m.TurnID,
+						})
+					}
+				}
+			} else if len(m.ToolCalls) > 0 {
+				// Intermediate assistant with tool_calls — accumulate into pending.
+				// Turn boundary: two turns' intermediate messages can sit back to
+				// back with NO user message between them (restart auto-recovery
+				// continues an interrupted turn with a NEW turn_id). Without
+				// flushing here, pendingIters mixes both turns and flushPending
+				// replaces ALL of them with the LAST turn's turnIterMap records —
+				// dropping every iteration of the earlier turn (fancy memory bug:
+				// tenant 134262, turn 219 pre-restart iterations vanished).
+				if pendingTurnID > 0 && m.TurnID != pendingTurnID {
+					flushPending()
+				}
+				finishCurIter()
+				curIterIdx++
+				pendingTurnID = m.TurnID
+				curIterThinking = m.Content
+				curIterReasoning = m.ReasoningContent
+				for _, tc := range m.ToolCalls {
+					status := "done"
+					if result, ok := toolResults[tc.ID]; ok && strings.HasPrefix(result, "Error:") {
+						status = "error"
+					}
+					curIterTools = append(curIterTools, protocol.ToolProgress{
+						Name:      tc.Name,
+						Label:     tc.Name,
+						Status:    status,
+						Iteration: curIterIdx,
+					})
+				}
+			} else if m.Content != "" {
+				flushPending()
+				history = append(history, HistoryMessage{
+					ID:        m.ID,
+					Role:      "assistant",
+					Content:   m.Content,
+					Timestamp: m.Timestamp,
+					TurnID:    m.TurnID,
+				})
+			}
+		case "user":
+			flushPending()
+			content := m.Content
+			history = append(history, HistoryMessage{
+				ID:        m.ID,
+				Role:      "user",
+				Content:   content,
+				Timestamp: m.Timestamp,
+				TurnID:    m.TurnID,
+			})
+		}
+	}
+	flushPending()
+	return history
+}
+
+// deriveTurnIDs derives turn_id for legacy rows (turn_id=0).
+// Extracted from ConvertMessagesToHistory for reuse.
+func deriveTurnIDs(msgs []llm.ChatMessage) {
+	// Pass 1 (forward, user only): assign the first turn_id>0 to preceding user rows.
+	nextTurnID := uint64(0)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" && msgs[i].TurnID > 0 {
+			nextTurnID = msgs[i].TurnID
+		}
+		if msgs[i].Role == "user" && msgs[i].TurnID == 0 && nextTurnID > 0 {
+			msgs[i].TurnID = nextTurnID
+		}
+	}
+	// Pass 2 (backward): assign nearest preceding turn_id>0 to assistant/tool rows.
+	var lastTurnID uint64
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].TurnID > 0 {
+			lastTurnID = msgs[i].TurnID
+		} else if lastTurnID > 0 {
+			msgs[i].TurnID = lastTurnID
+		}
+	}
+}
+
 func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	// Copy so the derivation below never mutates the caller's slice.
 	msgs = append([]llm.ChatMessage(nil), msgs...)
@@ -330,13 +753,23 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 						})
 					}
 
-					// Restart recovery: if Detail has fewer iterations than the
-					// accumulated pendingIters (from tool_calls), the Detail only
-					// has the cancel tool (out.IterationHistory was empty because
-					// the resumed Run hadn't completed any iterations). Use the
-					// pendingIters (which have the real iterations from tool_calls)
-					// and append the cancel tools from Detail to the last iteration.
-					if len(iters) < len(pendingIters) {
+					// Restart recovery: ONLY when the Detail is degenerate — every
+					// iteration is a synthetic user_cancelled tool with no real
+					// content/reasoning/tools (the resumed Run after a restart
+					// completed no iterations, so out.IterationHistory was empty
+					// and handleCancelledRun fell back to user_cancelled only) —
+					// should we use the pendingIters accumulated from tool_calls
+					// (which carry the real pre-restart iterations).
+					//
+					// CRITICAL: the old check `len(iters) < len(pendingIters)` was
+					// WRONG — a normal turn with 2 intermediate tool_calls assistant
+					// messages accumulates 2 pendingIters (fabricated ids 1, 2 via
+					// curIterIdx++) while the Detail has 1 REAL iteration (e.g. 47).
+					// `1 < 2` triggered the branch and REPLACED the real id (47) with
+					// fabricated sequential ids (1, 2) — the "加载会话后 iter 带着错误
+					// 的 iter id" bug. Only a truly degenerate Detail (all
+					// user_cancelled, no real content) warrants the fallback.
+					if isDegenerateCancelDetail(snaps) && len(pendingIters) > 0 {
 						if len(pendingIters) > 0 {
 							last := &pendingIters[len(pendingIters)-1]
 							for _, snap := range snaps {
@@ -359,10 +792,10 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 					pendingIters = nil
 
 					if len(iters) > 0 {
-						// [interrupted] messages carry cancelled-turn iteration history
-						// with full elapsed data. Use empty Content so the UI shows
-						// only the progress block, not the "[interrupted]" marker text.
-						isInterrupted := strings.HasPrefix(m.Content, "[interrupted]")
+						// Interrupted messages (m.Interrupted=true) carry cancelled-turn
+						// iteration history. Use empty Content so the UI shows only the
+						// progress block, not the "[interrupted]" marker text.
+						isInterrupted := m.Interrupted
 						if m.Content != "" && !isInterrupted {
 							history = append(history, HistoryMessage{
 								ID:         m.ID,
@@ -384,7 +817,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 								Iterations: iters,
 							})
 						}
-					} else if m.Content != "" && !strings.HasPrefix(m.Content, "[interrupted]") {
+					} else if m.Content != "" && !m.Interrupted {
 						history = append(history, HistoryMessage{
 							ID:        m.ID,
 							Role:      "assistant",

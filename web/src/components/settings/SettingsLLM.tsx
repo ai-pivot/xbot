@@ -12,11 +12,12 @@
  *   │   └── [+ 添加订阅]
  *   └── 当前会话模型（只读）
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
   ChevronDown,
   ChevronRight,
+  Download,
   Loader2,
   Pencil,
   Plus,
@@ -25,6 +26,7 @@ import {
   Star,
   Trash2,
   Lock,
+  Upload,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -46,6 +48,7 @@ import {
 } from '@/components/ui/collapsible'
 import { useI18n } from '@/providers/i18n'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
+import { useWSConnection } from '@/hooks/useWSConnection'
 import { isMaskedAPIKey } from '@/components/agent/api'
 import type { Subscription, ModelEntry, PerModelConfig } from '@/types/shared'
 
@@ -624,6 +627,7 @@ function AddModelForm({
 
 export function SettingsLLM({ settings }: SettingsLLMProps) {
   const { t } = useI18n()
+  const conn = useWSConnection()
   const {
     data,
     loading,
@@ -819,6 +823,69 @@ export function SettingsLLM({ settings }: SettingsLLMProps) {
     })
   }
 
+  // ── Export / Import subscriptions ──
+  const [exporting, setExporting] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleExport = () => {
+    setExporting(true)
+    conn.rpc('export_subscriptions', { ids: [] })
+      .then((resp: unknown) => {
+        const r = resp as { subscriptions?: Array<Record<string, unknown>> }
+        const subs = r?.subscriptions ?? []
+        if (subs.length === 0) {
+          toast.info('No subscriptions to export')
+          return
+        }
+        const json = JSON.stringify(resp, null, 2)
+        const blob = new Blob([json], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `xbot-subscriptions-${new Date().toISOString().slice(0, 10)}.json`
+        a.click()
+        URL.revokeObjectURL(url)
+        toast.success(`Exported ${subs.length} subscription(s)`)
+      })
+      .catch(() => toast.error('Export failed'))
+      .finally(() => setExporting(false))
+  }
+
+  const handleImport = (file: File) => {
+    setImporting(true)
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string) as { subscriptions?: Array<Record<string, unknown>>; subs?: Array<Record<string, unknown>> }
+        const subs = data?.subscriptions ?? data?.subs ?? []
+        if (!Array.isArray(subs) || subs.length === 0) {
+          toast.error('No subscriptions found in file')
+          setImporting(false)
+          return
+        }
+        conn.rpc('import_subscriptions', { subs, overwrite: false })
+          .then((resp: unknown) => {
+            const r = resp as { imported?: number; skipped?: number }
+            const imported = r?.imported ?? 0
+            const skipped = r?.skipped ?? 0
+            toast.success(`Imported ${imported}, skipped ${skipped} (duplicate name)`)
+            if (imported > 0) void reload()
+          })
+          .catch(() => toast.error('Import failed'))
+          .finally(() => setImporting(false))
+      } catch {
+        toast.error('Invalid JSON file')
+        setImporting(false)
+      }
+    }
+    reader.onerror = () => {
+      toast.error('Failed to read file')
+      setImporting(false)
+    }
+    reader.readAsText(file)
+  }
+
   return (
     <div className="flex flex-col">
       {/* Model & Inference (user-level) */}
@@ -879,21 +946,27 @@ export function SettingsLLM({ settings }: SettingsLLMProps) {
               value={data.tierVanguard}
               options={tierOptions}
               disabled={disabled}
-              onChange={(v) => void setTier('vanguard', v)}
+              onChange={(v) => void setTier('vanguard', v).then((ok) => {
+                if (!ok) toast.error(t('settings.saveFailed'))
+              })}
             />
             <TierSelector
               label={t('settings.tierBalance')}
               value={data.tierBalance}
               options={tierOptions}
               disabled={disabled}
-              onChange={(v) => void setTier('balance', v)}
+              onChange={(v) => void setTier('balance', v).then((ok) => {
+                if (!ok) toast.error(t('settings.saveFailed'))
+              })}
             />
             <TierSelector
               label={t('settings.tierSwift')}
               value={data.tierSwift}
               options={tierOptions}
               disabled={disabled}
-              onChange={(v) => void setTier('swift', v)}
+              onChange={(v) => void setTier('swift', v).then((ok) => {
+                if (!ok) toast.error(t('settings.saveFailed'))
+              })}
             />
           </div>
         )}
@@ -922,6 +995,45 @@ export function SettingsLLM({ settings }: SettingsLLMProps) {
             )}
             {refreshing ? t('settings.refreshing') : t('settings.refreshModels')}
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 gap-1 text-xs"
+            disabled={exporting || disabled}
+            onClick={handleExport}
+          >
+            {exporting ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Download className="size-3" />
+            )}
+            Export
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 gap-1 text-xs"
+            disabled={importing || disabled}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {importing ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Upload className="size-3" />
+            )}
+            Import
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) handleImport(file)
+              e.target.value = ''
+            }}
+          />
         </div>
 
         {loading ? (

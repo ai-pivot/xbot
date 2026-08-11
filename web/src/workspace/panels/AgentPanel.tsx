@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
+import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { useAskUser } from '@/hooks/useAskUser'
@@ -209,12 +210,22 @@ export function AgentPanel({ params }: PanelProps) {
   resetProgressRef.current = progress.resetProgress
   const progressSnapshot = progress.progressSnapshot
   const liveMessage = progress.liveMessage
-  // Don't show liveMessage during initial loading — wait for history to load
-  // first, then show everything at once. Without this gate, SSE-delivered live
-  // progress appears before history (partial data), then flickers when history
-  // replaces the view. After loading, liveMessage is hydrated synchronously
-  // (useLayoutEffect + flushSync) so it appears in the same paint as history.
-  const visibleLiveMessage = chat.loading ? null : liveMessage
+  // liveMessage comes from useProgressStream's live store — its visibility is
+  // governed by the store's own hydration/reset lifecycle (initialProgress →
+  // historyProgressToLive → store.replace, SSE-driven updates, reset on
+  // turn_end/session-idle). It must NOT be gated on useChatMessages' loading:
+  //
+  // CRITICAL: a turn mid-stream can trigger resync_required (SSE ring-buffer
+  // overflow with high-frequency reasoning events) / replay_gap(force) →
+  // useChatMessages setLoading(true) + reload(). The reload BLANKS messages
+  // (`setMessages([])` in the no-cache path) and sets loading=true. If we hid
+  // liveMessage on `chat.loading` (or even `loading && messages.length === 0`),
+  // the ENTIRE live turn (with all its already-rendered iterations) vanished
+  // from the DOM for the ~1s reload duration — rows collapsed from 65 to 0
+  // (user report + [RENDER_LOSS_ROWS] rowsLen:0). The live store stays
+  // authoritative during reload; buildMessageRows merges the live row into the
+  // refreshed committed rows when history lands. NEVER gate live on loading.
+  const visibleLiveMessage = liveMessage
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
@@ -333,6 +344,12 @@ export function AgentPanel({ params }: PanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {!ws.connected && !isSubAgent && (
+        <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
+          <Loader2 className="size-3 animate-spin" />
+          <span>{t('agent.reconnecting') || 'Reconnecting…'}</span>
+        </div>
+      )}
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}

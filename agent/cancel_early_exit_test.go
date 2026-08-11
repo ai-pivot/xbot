@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"xbot/bus"
@@ -64,32 +63,12 @@ func TestHandleCancelledRun_EarlyExit_PreservesUserCancelled(t *testing.T) {
 		t.Errorf("expected cancelled=true in metadata, got %+v", out.Metadata)
 	}
 
-	// progress_history must be present (contains user_cancelled)
-	progressHistory := out.Metadata["progress_history"]
-	if progressHistory == "" {
-		t.Fatal("expected non-empty progress_history, got empty")
-	}
-
-	// Verify progress_history contains user_cancelled
-	var iters []IterationSnapshot
-	if err := json.Unmarshal([]byte(progressHistory), &iters); err != nil {
-		t.Fatalf("failed to unmarshal progress_history: %v", err)
-	}
-	if len(iters) == 0 {
-		t.Fatal("expected at least 1 iteration in progress_history")
-	}
-
-	// The last iteration should contain user_cancelled
-	lastIter := iters[len(iters)-1]
-	foundUserCancelled := false
-	for _, tool := range lastIter.Tools {
-		if tool.Name == "user_cancelled" {
-			foundUserCancelled = true
-		}
-	}
-	if !foundUserCancelled {
-		t.Error("expected user_cancelled tool in the last iteration")
-	}
+	// v55: iteration_history is the single source of truth — progress_history
+	// (Detail JSON via metadata) is no longer written. The [interrupted]
+	// message is persisted to DB; iteration_history records (if any) were
+	// written by snapshotCompletedIteration during the Run.
+	// For early-exit (empty RunOutput), there are no iterations — just
+	// verify the [interrupted] message was persisted.
 
 	// Verify the [interrupted] message was persisted to the DB
 	dbMsgs, err := sess.GetMessages()
@@ -101,9 +80,8 @@ func TestHandleCancelledRun_EarlyExit_PreservesUserCancelled(t *testing.T) {
 	for _, m := range dbMsgs {
 		if m.Role == "assistant" && m.Content == "[interrupted]" {
 			foundInterrupted = true
-			if m.Detail == "" {
-				t.Error("[interrupted] message has empty Detail")
-			}
+			// v55: Detail is no longer written — iteration_history table is
+			// the single source of truth. Don't check Detail.
 		}
 	}
 	if !foundInterrupted {

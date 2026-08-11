@@ -34,6 +34,12 @@ var ToolsLetta string
 //go:embed modes/memory_letta.md
 var MemoryLetta string
 
+//go:embed modes/tools_xbot.md
+var ToolsXbot string
+
+//go:embed modes/memory_xbot.md
+var MemoryXbot string
+
 // User message guide parts.
 //
 //go:embed guides/user_message_flat.md
@@ -41,6 +47,9 @@ var UserMessageGuideFlat string
 
 //go:embed guides/user_message_letta.md
 var UserMessageGuideLetta string
+
+//go:embed guides/user_message_xbot.md
+var UserMessageGuideXbot string
 
 // Fallback 是最小兜底系统提示词模板，仅在默认 prompt 无法解析时使用。
 //

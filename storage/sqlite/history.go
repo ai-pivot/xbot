@@ -818,6 +818,12 @@ func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 			`, tenantID, historyID).Scan(&turnIdx); err != nil {
 			return fmt.Errorf("resolve rewind turn: %w", err)
 		}
+		// Delete iteration_history for the truncated messages first (no FK cascade
+		// when foreign_keys=OFF). Get the message IDs to delete, then delete their
+		// iteration_history rows.
+		_, _ = store.Exec(`DELETE FROM iteration_history WHERE message_id IN (
+			SELECT id FROM session_messages WHERE tenant_id = ? AND id >= ?
+		)`, tenantID, historyID)
 		result, err := store.Exec(`DELETE FROM session_messages WHERE tenant_id = ? AND id >= ?`, tenantID, historyID)
 		if err != nil {
 			return fmt.Errorf("truncate history at history_id %d: %w", historyID, err)

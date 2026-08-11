@@ -12,6 +12,7 @@ import (
 	"xbot/channel"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/memory"
 	"xbot/protocol"
 
 	"xbot/tools"
@@ -753,6 +754,39 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 			ToolsUsed: s.toolsUsed,
 		})
 	}
+
+	// Record the error iteration: snapshot any SSE data that arrived before
+	// the error (streaming content, tools), then add a reqerr fake tool with
+	// the error message. This makes the error iteration structurally identical
+	// to a normal iteration — it has content (partial), tools (reqerr), and
+	// is persisted to iteration_history. The frontend renders it like any
+	// other iteration (tool with error status + summary).
+	if s.structuredProgress != nil {
+		// Capture partial content from the stream (if any).
+		if partialResp != nil {
+			partialContent := llm.StripThinkBlocks(partialResp.Content)
+			if partialContent != "" {
+				s.structuredProgress.Content = partialContent
+			}
+			if partialResp.ReasoningContent != "" {
+				s.structuredProgress.ReasoningContent = partialResp.ReasoningContent
+			}
+		}
+		// Add a reqerr fake tool with the error message.
+		errSummary := summarizeRetryError(err)
+		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
+			Name:    "reqerr",
+			Label:   "reqerr",
+			Status:  ToolError,
+			Summary: errSummary,
+			Detail:  err.Error(),
+		})
+		// Snapshot this iteration (writes to iteration_history + s.iterationSnapshots).
+		s.snapshotCompletedIteration(iteration)
+		// Notify progress so the frontend sees the reqerr tool.
+		s.notifyProgress("")
+	}
+
 	// Use partial response content if available (stream error with partial output),
 	// otherwise fall back to lastContent from previous successful iteration.
 	partialContent := ""
@@ -864,6 +898,18 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 		output := cleanContent
 		if response.FinishReason == llm.FinishReasonLength {
 			output += "\n\n⚠️ Output was truncated (reached max output token limit). Use /set-llm max_output_tokens=<n> to increase."
+			// Record a 'truncated' fake tool so the iteration history shows
+			// that the output was cut short — structurally identical to a
+			// normal tool call (name, status, summary, detail).
+			if s.structuredProgress != nil {
+				s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
+					Name:    "truncated",
+					Label:   "truncated",
+					Status:  ToolError,
+					Summary: "Output truncated (max output token limit reached)",
+					Detail:  fmt.Sprintf("finish_reason=length, content_len=%d, max_output=%d", len(cleanContent), s.cfg.MaxOutputTokens),
+				})
+			}
 		}
 		// content_filter: model output was filtered by safety system
 		if response.FinishReason == llm.FinishReasonContentFilter {
@@ -899,6 +945,35 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			if response.ReasoningContent != "" {
 				s.structuredProgress.ReasoningContent = response.ReasoningContent
 			}
+		}
+
+		// Write the final iteration to iteration_history (content + reasoning,
+		// no tools). snapshotCompletedIteration was called after executeToolCalls
+		// — at that point Content/ReasoningContent were empty (set above, not
+		// before). This writes the final iteration's content/reasoning directly
+		// to iteration_history, completing the iteration record.
+		// IMPORTANT: write cleanContent (the raw LLM output BEFORE appending
+		// truncation/content_filter warnings). The warnings are UI-only —
+		// iteration_history should preserve the actual LLM output. The
+		// 'truncated'/'content_filter' fake tools (added above) carry the
+		// warning metadata.
+		if s.structuredProgress != nil && s.structuredProgress.Iteration > 0 {
+			s.writeIterationHistory(s.structuredProgress.Iteration, IterationSnapshot{
+				Iteration: s.structuredProgress.Iteration,
+				Content:   cleanContent,
+				Reasoning: s.structuredProgress.ReasoningContent,
+				Tools: func() []IterationToolSnapshot {
+					// Include the truncated/content_filter fake tool if added.
+					tools := make([]IterationToolSnapshot, 0, len(s.structuredProgress.CompletedTools))
+					for _, t := range s.structuredProgress.CompletedTools {
+						tools = append(tools, IterationToolSnapshot{
+							Name: t.Name, Label: t.Label, Status: string(t.Status),
+							Summary: t.Summary, Detail: t.Detail,
+						})
+					}
+					return tools
+				}(),
+			})
 		}
 
 		out := s.buildOutput(&channel.OutboundMsg{
@@ -1131,6 +1206,37 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		sessionCM.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
 	}
 
+	// --- Memory system integration: PreCompress ---
+	// If the memory provider implements CompressionAware, extract critical
+	// information from messages about to be compressed before they're lost.
+	var preserveHints []string
+	if mem, ok := s.cfg.Memory.(memory.CompressionAware); ok && mem != nil {
+		// Split messages: approximate the toCompress/tail boundary
+		// (the actual split is done inside compactMessages, but we need
+		// to pass the full set to PreCompress — it will extract what it can)
+		preResult, err := mem.PreCompress(ctx, memory.PreCompressInput{
+			MessagesToCompress: s.messages,
+			SessionID:          s.cfg.ChatID,
+			LLMClient:          s.cfg.LLMClient,
+			Model:              s.cfg.Model,
+		})
+		if err != nil {
+			log.Ctx(ctx).WithError(err).Warn("PreCompress failed, continuing with compression")
+		} else {
+			preserveHints = preResult.PreserveHints
+			if preResult.SavedCount > 0 {
+				log.Ctx(ctx).WithField("saved_count", preResult.SavedCount).Info("PreCompress: saved memories before compression")
+			}
+			if preResult.SkipCompress {
+				log.Ctx(ctx).Info("PreCompress: memory system requested skip, skipping compression")
+				if s.structuredProgress != nil {
+					s.structuredProgress.Phase = PhaseThinking
+				}
+				return nil
+			}
+		}
+	}
+
 	pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
 		CM:                sessionCM,
 		Messages:          s.messages,
@@ -1143,6 +1249,9 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		MaskStore:         s.cfg.MaskStore,
 		AccumulateUsage:   s.accumulateCompressUsage,
 		SyncMessages:      s.syncMessages,
+		Memory:            s.cfg.Memory,
+		SessionID:         s.cfg.ChatID,
+		PreserveHints:     preserveHints,
 	})
 	if compressErr != nil {
 		log.Ctx(ctx).WithError(compressErr).Warn("Auto context compaction failed")
@@ -1182,6 +1291,33 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			Trigger:              "token_limit",
 			EstimatedTokensAfter: pipelineResult.NewTokenCount,
 		})
+	}
+
+	// --- Memory system integration: PostCompress ---
+	// If the memory provider implements CompressionAware, save the compaction
+	// summary and update memory state after compression completes.
+	if mem, ok := s.cfg.Memory.(memory.CompressionAware); ok && mem != nil {
+		// Extract compaction summary from the compressed messages
+		compactionSummary := ""
+		for _, msg := range pipelineResult.NewMessages {
+			if msg.Role == "user" && strings.Contains(msg.Content, "[Compacted context]") {
+				compactionSummary = msg.Content
+				break
+			}
+		}
+		removedCount := len(s.messages) - len(pipelineResult.NewMessages)
+		if removedCount < 0 {
+			removedCount = 0
+		}
+		err := mem.PostCompress(ctx, memory.PostCompressInput{
+			CompressedMessages:  pipelineResult.NewMessages,
+			CompactionSummary:   compactionSummary,
+			RemovedMessageCount: removedCount,
+			SessionID:           s.cfg.ChatID,
+		})
+		if err != nil {
+			log.Ctx(ctx).WithError(err).Warn("PostCompress failed")
+		}
 	}
 
 	if s.structuredProgress != nil {

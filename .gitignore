@@ -63,7 +63,8 @@ data-work/
 # Go build cache (usually in user home, but just in case)
 .cache/
 
-xbot
+# Root-level compiled binary (NOT memory/xbot/ — anchor to repo root only!)
+/xbot
 xbot.tar
 CODEBUDDY.md
 .xbot/*

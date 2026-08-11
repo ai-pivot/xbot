@@ -11,7 +11,7 @@
  */
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { LogOut } from 'lucide-react'
+import { Loader2, LogOut } from 'lucide-react'
 
 import {
   Sheet,
@@ -58,9 +58,15 @@ function SettingsLLMPanel() {
 function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
   const { t } = useI18n()
   const { user, logout } = useAuth()
+  const [loggingOut, setLoggingOut] = useState(false)
 
   const handleLogout = async () => {
-    await logout()
+    setLoggingOut(true)
+    try {
+      await logout()
+    } catch {
+      // ignore — logout() navigates to /login regardless
+    }
     onLoggedOut()
   }
 
@@ -75,9 +81,10 @@ function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
             variant="outline"
             size="sm"
             onClick={handleLogout}
+            disabled={loggingOut}
             className="w-fit gap-2"
           >
-            <LogOut className="size-4" />
+            {loggingOut ? <Loader2 className="size-4 animate-spin" /> : <LogOut className="size-4" />}
             {t('auth.logout')}
           </Button>
         </div>

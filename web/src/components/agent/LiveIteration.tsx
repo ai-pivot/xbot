@@ -16,6 +16,7 @@ import { FoldedToolGroup } from './FoldedToolGroup'
 import { GenUIBlock } from './GenUIBlock'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
+import { ShimmerThinking } from './ShimmerThinking'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
 import { SweepText } from './SweepText'
 import { isToolInProgress } from './statusVisual'
@@ -119,17 +120,20 @@ export const LiveIteration = memo(function LiveIteration({
   const hasGenUI = Boolean(progress.genuiContent)
 
   if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) {
-    // Show a "thinking..." placeholder when the live iteration has no content
-    // yet (agent is between iterations — reasoning hasn't started streaming,
-    // no tools running). Without this, the live div renders empty and the
-    // user sees a blank area with no feedback.
-    if (progress.streaming || progress.phase === 'thinking') {
-      return (
-        <div className="flex items-center gap-2 py-1 text-xs text-text-muted">
-          <span className="inline-block size-3.5 animate-spin rounded-full border-2 border-text-muted border-t-transparent" />
-          <span>{t('agent.reasoningStreaming')}</span>
-        </div>
-      )
+    // Iteration boundary / waiting for the next iteration's first delta: the
+    // previous iteration just finished (lastIter >= 1) but the next iteration's
+    // content hasn't arrived yet (slow SSE). liveMessage is non-null here, so
+    // MessageList's busy placeholder ("思考中…") is suppressed — without this
+    // the boundary shows a BLANK current-iteration area (user: "之前那个思考中
+    // 有些情况没显示"). Reuse the SAME ShimmerThinking ("思考中…") component —
+    // NOT a second indicator: it shows here when the live row exists, and in
+    // the busy placeholder when the live row doesn't (mutually exclusive).
+    // The FIRST iteration is special (user): iterationHistory is EMPTY (no
+    // predecessor) — the busy placeholder already covers the pre-first-iter /
+    // before-first-SSE window, so requiring iterationHistory.length > 0 here
+    // keeps exactly ONE thinking indicator in every state.
+    if (progress.streaming && progress.lastIter >= 1 && progress.iterationHistory.length > 0) {
+      return <ShimmerThinking />
     }
     return null
   }
