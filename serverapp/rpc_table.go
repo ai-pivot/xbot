@@ -1504,6 +1504,70 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		return map[string]any{"imported": len(msgs)}, nil
 	})
 
+	// export_session_jsonl — exports the current session in the benchmark
+	// JSONL format (HLE / mint-bench compatible): one record per user turn,
+	// each with uuid/question/answer/domain/messages/correct/judge_applied.
+	t["export_session_jsonl"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedHistorySession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		ms := h.Ag.MultiSession()
+		if ms == nil {
+			return nil, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ms.GetOrCreateSession(channelName, chatID)
+		if err != nil {
+			return nil, err
+		}
+		msgs, err := sess.GetMessages()
+		if err != nil {
+			return nil, err
+		}
+		records := protocol.ExportSessionJSONL(chatID, msgs)
+		log.WithFields(log.Fields{
+			"channel": channelName, "chat_id": chatID, "records": len(records),
+		}).Info("RPC export_session_jsonl")
+		return map[string]any{"records": records, "count": len(records)}, nil
+	})
+
+	// import_session_jsonl — imports benchmark JSONL records (inverse of
+	// export_session_jsonl) into the session.
+	t["import_session_jsonl"] = rpc1(func(ctx context.Context, p struct {
+		Channel string                 `json:"channel"`
+		ChatID  string                 `json:"chat_id"`
+		Records []protocol.DemoRecord  `json:"records"`
+	}) (any, error) {
+		if len(p.Records) == 0 {
+			return nil, fmt.Errorf("records are required")
+		}
+		channelName, chatID, err := h.resolveOwnedHistorySession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		ms := h.Ag.MultiSession()
+		if ms == nil {
+			return nil, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ms.GetOrCreateSession(channelName, chatID)
+		if err != nil {
+			return nil, err
+		}
+		msgs := protocol.ImportSessionJSONL(p.Records)
+		if len(msgs) == 0 {
+			return nil, fmt.Errorf("no messages to import")
+		}
+		_, err = sess.AppendMessages(msgs)
+		if err != nil {
+			return nil, err
+		}
+		log.WithFields(log.Fields{"channel": channelName, "chat_id": chatID, "imported": len(msgs)}).Info("RPC import_session_jsonl")
+		return map[string]any{"imported": len(msgs)}, nil
+	})
+
 	// ── Status ──
 	t["is_processing"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`

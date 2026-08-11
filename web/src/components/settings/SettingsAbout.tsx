@@ -2,7 +2,7 @@
  * SettingsAbout — about / PWA install panel with diagnostics + dev tools.
  */
 import { useState } from 'react'
-import { Download, Check, AlertCircle, RefreshCw, Terminal } from 'lucide-react'
+import { Download, Check, AlertCircle, RefreshCw, Terminal, FileJson } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { usePwaInstall } from '@/hooks/usePwaInstall'
 import { exportSession } from '@/components/agent/api'
@@ -218,6 +218,35 @@ export function SettingsAbout() {
           >
             <Download className="size-4" />
             {devExporting ? '导出中…' : '导出 Turn+Iter 顺序'}
+          </Button>
+
+          <div className="mt-1 flex items-center gap-2">
+            <FileJson className="size-4 shrink-0 text-text-muted" />
+            <span className="text-text-secondary">导出当前会话为 benchmark JSONL（HLE / mint-bench 格式）</span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-fit gap-2"
+            disabled={devExporting || !sessionStore.activeSession}
+            onClick={async () => {
+              const s = sessionStore.activeSession
+              if (!s) return
+              setDevExporting(true)
+              setDevExportResult('')
+              try {
+                await downloadSession({ channel: s.channel, chatID: s.chatID }, 'benchmark')
+                setDevExportResult('已导出 benchmark JSONL 会话')
+              } catch (err) {
+                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+              } finally {
+                setDevExporting(false)
+              }
+            }}
+          >
+            <Download className="size-4" />
+            {devExporting ? '导出中…' : '导出当前会话 JSONL'}
           </Button>
           {devExportResult && (
             <span className="text-text-muted">{devExportResult}</span>
