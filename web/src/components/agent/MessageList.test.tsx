@@ -991,4 +991,35 @@ describe('buildMessageRows — linear consistency (extreme scenarios)', () => {
     expect(rows.map((m) => m.turnID)).toEqual([1, 1, 2, 2, 3])
     expect(rows[4].isPartial).toBe(true)
   })
+
+  it('reorders user messages after a long SSE-gap reload (user msgs no longer all at the bottom)', () => {
+    // User report: after a long SSE disconnect + reconnect, ALL user messages
+    // appeared at the bottom. Reload can return rows with user/assistant
+    // interleaved out of order (echo watermark retention). The render sort
+    // must place every user inside its own turn by turn_id.
+    const rows = buildMessageRows([
+      base({ id: 'a1', role: 'assistant', content: 'r1', turnID: 1, persisted: true }),
+      base({ id: 'a2', role: 'assistant', content: 'r2', turnID: 2, persisted: true }),
+      base({ id: 'u1', role: 'user', content: 'q1', turnID: 1, persisted: true }),
+      base({ id: 'u2', role: 'user', content: 'q2', turnID: 2, persisted: true }),
+    ], null)
+    expect(rows.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
+  })
+
+  it('does NOT pin an unbound persisted user (SSE-gap echo) at the top — binds to last turn', () => {
+    // The reload retained a user_echo (turnID=0, persisted=true, no following
+    // turn yet). bindTurnIDs' prevTurn fallback binds it to the last known
+    // turn so it renders in turn order, never at the very top.
+    const rows = buildMessageRows([
+      base({ id: 'u1', role: 'user', content: 'q1', turnID: 1 }),
+      base({ id: 'a1', role: 'assistant', content: 'r1', turnID: 1 }),
+      base({ id: 'echo-u2', role: 'user', content: 'new question', turnID: 0, persisted: true }),
+    ], null)
+    // echo-u2 binds to turn 1 (prevTurn) and sorts after a1 (same turn, user
+    // first? No — user(0) ranks before assistant(1), so within turn 1 the
+    // order is u1, then... both users rank 0; stable order: u1, echo-u2, a1.
+    const ids = rows.map((m) => m.id)
+    expect(ids[ids.length - 1]).not.toBe('echo-u2') // not pinned to the bottom by legacy sort
+    expect(ids.indexOf('echo-u2')).toBeGreaterThan(ids.indexOf('u1'))
+  })
 })

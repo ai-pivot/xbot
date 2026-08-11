@@ -59,6 +59,32 @@ describe('bindTurnIDs', () => {
     const bound = bindTurnIDs(rows)
     expect(bound.every((m) => m.turnID === 0)).toBe(true)
   })
+
+  it('binds a persisted user row with NO following turn to the nearest PRECEDING turn (long SSE-gap reload)', () => {
+    // SSE disconnected for a long time; on reconnect the reload keeps a
+    // user_echo (persisted=true, turnID=0, no following turn in the committed
+    // list — its turn_started was lost). Without the prevTurn fallback this
+    // row keeps turnID=0 and sortKey pins it at the TOP, breaking order.
+    const rows = [
+      msg({ id: 'u1', role: 'user', turnID: 1 }),
+      msg({ id: 'a1', role: 'assistant', turnID: 1 }),
+      msg({ id: 'u2', role: 'user', turnID: 2 }),
+      msg({ id: 'a2', role: 'assistant', turnID: 2 }),
+      msg({ id: 'echo-u3', role: 'user', turnID: 0, persisted: true }), // new user, no turn yet
+    ]
+    const bound = bindTurnIDs(rows)
+    expect(bound[4].turnID).toBe(2) // binds to the last known turn, not 0
+  })
+
+  it('keeps an optimistic user (persisted=false) at turnID=0 (bottom placeholder)', () => {
+    const rows = [
+      msg({ id: 'u1', role: 'user', turnID: 1 }),
+      msg({ id: 'a1', role: 'assistant', turnID: 1 }),
+      msg({ id: 'opt-u', role: 'user', turnID: 0, persisted: false, sending: true }),
+    ]
+    const bound = bindTurnIDs(rows)
+    expect(bound[2].turnID).toBe(0)
+  })
 })
 
 describe('orderMessageRows', () => {
