@@ -176,21 +176,62 @@ export async function exportSession(session: SessionSelector): Promise<ExportedS
 }
 
 /** Export format options for downloadSession. */
-export type ExportFormat = 'native' | 'openai' | 'codex'
+export type ExportFormat = 'native' | 'openai' | 'codex' | 'benchmark'
+
+// ---------------------------------------------------------------------------
+// Benchmark JSONL format (HLE / mint-bench compatible).
+// Mirrors protocol.DemoRecord — one JSON object per line.
+// ---------------------------------------------------------------------------
+
+export interface DemoPart {
+  part_kind: string // user-prompt | thinking | text | tool-call | tool-return
+  content: string
+  tool_name: string
+  tool_call_id: string
+  args: string
+}
+
+export interface DemoMessage {
+  kind: string // request | response
+  parts: DemoPart[]
+}
+
+export interface DemoRecord {
+  uuid: string
+  question: string
+  answer: string
+  domain: string
+  messages: DemoMessage[]
+  correct: boolean
+  judge_applied: boolean
+}
 
 /**
  * Export a session and trigger a browser download in the specified format.
  * - native: xbot portable JSON (full ExportedSession with records)
  * - openai: OpenAI Chat Completions request body ({model, messages:[...]})
  * - codex: Codex JSONL (one JSON object per line, Codex CLI session format)
+ * - benchmark: HLE / mint-bench JSONL (one record per user turn, with
+ *   uuid/question/answer/domain/messages/correct/judge_applied)
  */
 export async function downloadSession(session: SessionSelector, format: ExportFormat = 'native'): Promise<void> {
-  const data = await exportSession(session)
   let content: string
   let mime: string
   let ext: string
 
-  switch (format) {
+  if (format === 'benchmark') {
+    // Benchmark JSONL comes from the dedicated RPC (per-turn records).
+    const res = await postAPI<{ records?: DemoRecord[]; count?: number }>('/api/rpc', {
+      method: 'export_session_jsonl',
+      params: sessionBody(session),
+    })
+    const records = res.records ?? []
+    content = records.map((r) => JSON.stringify(r)).join('\n') + (records.length ? '\n' : '')
+    mime = 'application/x-jsonlines'
+    ext = 'jsonl'
+  } else {
+    const data = await exportSession(session)
+    switch (format) {
     case 'openai': {
       // Construct an OpenAI Chat Completions API request body.
       const messages: Array<Record<string, unknown>> = []
@@ -265,6 +306,7 @@ export async function downloadSession(session: SessionSelector, format: ExportFo
       mime = 'application/json'
       ext = 'json'
       break
+    }
     }
   }
 
