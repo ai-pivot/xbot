@@ -721,16 +721,19 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     flushRaf()
     expect(store.getSnapshot().activeTools.map((t) => t.name)).toEqual(['Shell'])
 
-    // Iteration 2 boundary via a phase:undefined stream delta (no iteration_history)
+    // Iteration 2 via a phase:undefined stream delta (no iteration_history) —
+    // stream deltas do NOT advance lastIter (their iteration is the backend's
+    // CURRENT iteration, which can lead the structured stream) and therefore do
+    // NOT trigger the iteration boundary. Already-rendered tools stay as-is.
     store.setStructuredTools({ eventSeq: 2, iteration: 2 })
     flushRaf()
 
     const boundary = store.getSnapshot()
     expect(boundary.activeTools.length).toBe(1) // kept — not cleared
     expect(boundary.activeTools[0].name).toBe('Shell')
-    expect(boundary.activeTools[0].status).toBe('done') // visually completed, not still running
+    expect(boundary.activeTools[0].status).toBe('running') // boundary NOT triggered by stream delta
 
-    // New iteration's structured event replaces the old tool
+    // New iteration's STRUCTURED event triggers the boundary (mark done) and replaces the old tool
     store.setStructuredTools({
       eventSeq: 3,
       phase: 'tool_exec',
@@ -739,5 +742,42 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     })
     flushRaf()
     expect(store.getSnapshot().activeTools.map((t) => t.name)).toEqual(['Read'])
+  })
+
+  it('does NOT advance lastIter from a phase:undefined stream delta — later structured iterations are NOT dropped as regressed', () => {
+    // User report: committed assistant appeared with iter-range 1-1 after a
+    // 1-second turn vanish (already-rendered iterations lost) + ITER_ID_
+    // INVARIANT_VIOLATION prev:48 next:29. A stream delta carrying the backend's
+    // CURRENT iteration (48, leading the structured stream) advanced lastIter,
+    // so the later structured iteration 29 was treated as REGRESSED and dropped
+    // from iterationHistory → commit had only the early iterations.
+    const store = new ProgressStore()
+    store.setStructuredTools({
+      eventSeq: 1,
+      phase: 'tool_exec',
+      iteration: 1,
+      activeTools: [tool({ name: 'Shell', status: 'running' })],
+      iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    flushRaf()
+    expect(store.getSnapshot().lastIter).toBe(1)
+
+    // A leading stream delta (phase:undefined, iteration=48)
+    store.setStructuredTools({ eventSeq: 2, iteration: 48 })
+    flushRaf()
+    expect(store.getSnapshot().lastIter).toBe(1) // NOT advanced by the stream delta
+
+    // The structured iteration 29 (which is > 1) must NOT be treated as regressed
+    store.setStructuredTools({
+      eventSeq: 3,
+      phase: 'tool_exec',
+      iteration: 29,
+      activeTools: [tool({ name: 'Grep', status: 'running' })],
+      iterationHistory: [{ iteration: 29, thinking: 't29', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    flushRaf()
+    const snap = store.getSnapshot()
+    expect(snap.lastIter).toBe(29) // structured event advances lastIter
+    expect(snap.iterationHistory.length).toBe(2) // iter 1 + iter 29 both kept
   })
 })

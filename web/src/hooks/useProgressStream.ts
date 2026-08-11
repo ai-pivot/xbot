@@ -175,6 +175,30 @@ export function useProgressStream({
   // every chat switch (we just reset it).
   const chatIDRef = useRef(chatID)
   chatIDRef.current = chatID
+
+  // ── Cross-session global state pollution guard ──
+  // store (ProgressStore) is a useRef created ONCE — it survives chatID changes
+  // (AgentPanel does NOT remount useProgressStream on session switch; there is
+  // no key on the hook). The OLD session's lastIter/iterationHistory/lastTurnID
+  // and the finalized/phaseDone/turnCommitted refs stay behind and POISON the
+  // NEW session's event handling: iterations mis-judged as regressed, late
+  // events dropped by the finalized/phaseDone guards, iterationHistory mixed
+  // with the old session — the new session's turn vanishes (user report:
+  // "怀疑和不同 session 之间全局状态污染有关"; only a full page refresh,
+  // which rebuilds everything, clears it). Reset everything on chat switch.
+  // fullReset() clears lastTurnID + lastIter + all iteration state so the
+  // hydration effect can restore the new session cleanly.
+  const prevChatIDRef = useRef(chatID)
+  useEffect(() => {
+    if (prevChatIDRef.current !== chatID) {
+      prevChatIDRef.current = chatID
+      store.fullReset()
+      finalizedRef.current = false
+      phaseDoneRef.current = false
+      turnCommittedRef.current = false
+    }
+  }, [chatID, store])
+
   const progressCacheKey = chatID ? sessionCacheKey(channel, chatID) : null
 
   const progressSnapshot = useSyncExternalStore(

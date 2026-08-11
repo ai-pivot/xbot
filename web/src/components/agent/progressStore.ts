@@ -735,15 +735,21 @@ export class ProgressStore {
     // iteration (`getActiveIteration`), which can legitimately LAG the snapshot
     // — a prior iteration's stream text may still be arriving while the
     // snapshot already advanced (e.g. iter 4 active while a delayed iter-2
-    // stream delta lands). Applying such an event's activeTools/completedTools/
-    // iteration would ROLL THE SNAPSHOT BACK to the older iteration, wiping the
-    // newest iteration's tools/text — the "迭代到一半最新 turn 消失" report.
+    // stream delta lands). They can also LEAD the structured stream (a tool's
+    // stream text arrives with iteration=48 while the structured loop is at 29).
+    // Applying such an event's activeTools/completedTools/iteration would ROLL
+    // THE SNAPSHOT BACK to the older iteration, wiping the newest iteration's
+    // tools/text — the "迭代到一半最新 turn 消失" report.
+    // Compare against `lastIter` (the semantic watermark, advanced ONLY by
+    // structured events) — NOT `draft.iteration` (a display value that stream
+    // deltas can set ahead, e.g. 48, which would falsely regress the later
+    // structured iteration 29 and drop it from iterationHistory).
     // Only append monotonic data (iterationHistory, todos); skip the rest.
     const regressed =
       opts.iteration !== undefined &&
       opts.iteration > 0 &&
-      this.current.iteration > 0 &&
-      opts.iteration < this.current.iteration
+      this.current.lastIter > 0 &&
+      opts.iteration < this.current.lastIter
     if (regressed) {
       if (opts.todos !== undefined) this.current.todos = opts.todos
       if (opts.iterationHistory && opts.iterationHistory.length > 0) {
@@ -763,7 +769,17 @@ export class ProgressStore {
       // second log entry while advancing the current snapshot: after reconnect,
       // the installed snapshot and replayed delta can overlap, and local
       // snapshotting would render the same tool group twice.
-      if (opts.iteration !== undefined && opts.iteration > draft.lastIter) {
+      // lastIter advances ONLY on STRUCTURED events (phase set). phase:undefined
+      // stream deltas carry the backend's CURRENT iteration (getActiveIteration)
+      // which can legitimately LEAD the structured stream (a tool's stream text
+      // arrives with iteration=48 while the structured iteration loop is still
+      // at 29). Advancing lastIter from a stream delta made the later structured
+      // iteration (29 < 48) look REGRESSED and dropped it from iterationHistory
+      // — the committed message then had only the early iterations and the
+      // already-rendered iterations VANISHED on commit (user report: committed
+      // with iter-range 1-1 after a 1-second turn vanish; ITER_ID_INVARIANT_
+      // VIOLATION prev:48 next:29).
+      if (opts.phase !== undefined && opts.iteration !== undefined && opts.iteration > draft.lastIter) {
         const hadPreviousIteration = draft.lastIter >= 1
         draft.lastIter = opts.iteration
         // Clear stream/structured fields from the previous iteration so the
