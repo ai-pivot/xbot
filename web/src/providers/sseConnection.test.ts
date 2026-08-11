@@ -410,6 +410,77 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('reloads from DB when active-progress recovery returns null — turn ended during the gap, no cached snapshot', async () => {
+    // User report: "重连之后 user msg 后进行中的 turn 消失了，刷新才能看到".
+    // get_active_progress returned null (turn ended on the server / no active
+    // progress) and progressSnapshotCache was EMPTY (turn started right before
+    // the disconnect). The old turnEndedDuringGap = cachedProgress && ... never
+    // fired (cachedProgress undefined), so no reload happened — the live row
+    // was cleared (phase=done) with no committed replacement → the turn
+    // vanished until a manual refresh. Fix: the done/null branch ALWAYS
+    // dispatches replay_gap (useChatMessages reloads from the authoritative DB).
+    vi.useFakeTimers()
+    postAPIMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/rpc') return null
+      return {}
+    })
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    source.fail()
+    source.open()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(received).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'replay_gap' }),
+        expect.objectContaining({
+          type: 'progress_structured',
+          progress: { phase: 'done' },
+        }),
+      ]),
+    )
+    connection.dispose()
+  })
+
+  it('reloads from DB when recovery returns done even if a newer SSE event bumped progressVersion', async () => {
+    // The done/null reload must run BEFORE the progressVersion check: an event
+    // arriving during the reconnect window bumps progressVersion and the old
+    // code returned early (skipping the reload) — the turn vanished.
+    vi.useFakeTimers()
+    let resolveProgress: (progress: { phase: string; iteration: number } | null) => void = () => undefined
+    postAPIMock.mockImplementation((endpoint: string) => {
+      if (endpoint === '/api/rpc') {
+        return new Promise((resolve) => {
+          resolveProgress = resolve as (p: { phase: string; iteration: number } | null) => void
+        })
+      }
+      return Promise.resolve({})
+    })
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    source.fail()
+    source.open()
+
+    // A newer event arrives while get_active_progress is in flight (bumps
+    // progressVersion) — the reload decision must still fire.
+    source.emit('session', { type: 'session', seq: 5, session: { action: 'busy', chat_id: 'chat-a' } })
+    resolveProgress({ phase: 'done', iteration: 3 })
+    await vi.advanceTimersByTimeAsync(1_000)
+    await Promise.resolve()
+
+    expect(received.some((m) => m.type === 'replay_gap')).toBe(true)
+    connection.dispose()
+  })
+
   it('does not apply delayed recovery after a newer SSE event', async () => {
     let resolveProgress: (progress: { phase: string; iteration: number }) => void = () => undefined
     postAPIMock.mockImplementation((endpoint: string) => {
