@@ -28,3 +28,20 @@ func TestTUICommandListHasCompleteMetadataAndReturnsCopy(t *testing.T) {
 		t.Fatal("TUICommandList returned mutable catalog storage")
 	}
 }
+
+// TestTUICommandMetadataHasNoOrphanEntries guards against dead metadata:
+// every key in tuiCommandMetadata must be reachable from the command name
+// lists. An orphan entry is silently dead — TUICommandList never emits it —
+// and signals a name-list/metadata drift (e.g. a command renamed in one place
+// but not the other).
+func TestTUICommandMetadataHasNoOrphanEntries(t *testing.T) {
+	reachable := make(map[string]struct{})
+	for _, name := range append(append([]string(nil), TUISlashCommands...), additionalTUICommands...) {
+		reachable[name] = struct{}{}
+	}
+	for name := range tuiCommandMetadata {
+		if _, ok := reachable[name]; !ok {
+			t.Errorf("tuiCommandMetadata has orphan entry %q not in TUISlashCommands/additionalTUICommands", name)
+		}
+	}
+}

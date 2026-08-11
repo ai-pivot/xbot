@@ -195,3 +195,32 @@ func TestPluginContributionKeepsCategoryWithoutCatalogDuplicate(t *testing.T) {
 		t.Fatalf("/deploy entry = %#v, want manifest category and insertion text preserved", matches[0])
 	}
 }
+
+// TestPaletteIncludesCatalogSubcommandWithParent guards the present-map logic
+// against subcommand collisions: a catalog subcommand ("/context mode") whose
+// parent ("/context") is a rich action must still get its own insert-text
+// entry, and the parent must not be duplicated.
+func TestPaletteIncludesCatalogSubcommandWithParent(t *testing.T) {
+	m := newCLIModel()
+	m.commandCatalogFn = func() []protocol.CommandInfo {
+		return []protocol.CommandInfo{
+			{Name: "/context", Usage: "/context", Description: "view context stats"},
+			{Name: "/context mode", Usage: "/context mode [phase1|none|default]", Description: "switch compression mode"},
+		}
+	}
+
+	var insertText []string
+	for _, item := range m.buildPaletteCommands() {
+		if item.ActionKind == paletteActionInsertText && strings.HasPrefix(item.ActionData, "/context") {
+			insertText = append(insertText, item.ActionData)
+		}
+	}
+	if len(insertText) != 1 || insertText[0] != "/context mode" {
+		t.Fatalf("catalog subcommand insert entries = %v, want exactly [/context mode]", insertText)
+	}
+
+	// The rich "context" action must still be present as the parent sender.
+	if !paletteHasActionData(m.buildPaletteCommands(), "/context") {
+		t.Fatal("rich palette action for /context is missing")
+	}
+}

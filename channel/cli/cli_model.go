@@ -165,6 +165,11 @@ type cliModel struct {
 	commandCatalogFn func() []protocol.CommandInfo
 	commandNamesFn   func() []string // deprecated name-only provider compatibility
 
+	// commandCatalog cache: rebuilt only when the Agent provider output changes.
+	// Consumers must treat the returned slice as read-only.
+	commandCatalogCache []protocol.CommandInfo
+	catalogAgentCmds    []protocol.CommandInfo
+
 	// --- §8b @ 文件引用补全 ---
 	fileCompletions []string // @ 文件路径补全候选项
 	fileCompIdx     int      // 当前选中的文件补全索引

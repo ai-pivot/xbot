@@ -383,6 +383,8 @@ func LocaleZH() *UILocale {
 			{Cmd: "/goal clear", Desc: "清除当前目标"},
 			{Cmd: "/goal status", Desc: "查看当前目标状态"},
 			{Cmd: "/goal", Desc: "设定长期目标"},
+			{Cmd: "/info", Desc: "查看当前会话信息"},
+			{Cmd: "/export", Desc: "导出当前会话"},
 			{Cmd: "!", Desc: "直接在 sandbox 中执行命令"},
 		},
 		HelpKeys: []HelpKeyEntry{
@@ -823,6 +825,8 @@ func localeEN() *UILocale {
 			{Cmd: "/goal clear", Desc: "Clear the current goal"},
 			{Cmd: "/goal status", Desc: "Show current goal status"},
 			{Cmd: "/goal", Desc: "Set a long-running goal"},
+			{Cmd: "/info", Desc: "Show current session info"},
+			{Cmd: "/export", Desc: "Export current conversation"},
 			{Cmd: "!", Desc: "Run a command directly in the sandbox"},
 		},
 		HelpKeys: []HelpKeyEntry{
@@ -1262,6 +1266,8 @@ func localeJA() *UILocale {
 			{Cmd: "/goal clear", Desc: "現在の目標をクリア"},
 			{Cmd: "/goal status", Desc: "現在の目標状態を表示"},
 			{Cmd: "/goal", Desc: "長期目標を設定"},
+			{Cmd: "/info", Desc: "現在のセッション情報を表示"},
+			{Cmd: "/export", Desc: "現在の会話をエクスポート"},
 			{Cmd: "!", Desc: "sandbox でコマンドを直接実行"},
 		},
 		HelpKeys: []HelpKeyEntry{

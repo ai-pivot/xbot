@@ -11,7 +11,7 @@ func TestHelpTranslationsCoverBuiltinCommandCatalog(t *testing.T) {
 		"/new", "/version", "/help", "/prompt", "/set-llm", "/unset-llm",
 		"/llm", "/llms", "/compress", "/continue", "/usage", "/context mode",
 		"/context", "/models", "/set-model", "!", "/settings", "/plugin reload-all",
-		"/app", "/goal clear", "/goal status", "/goal",
+		"/app", "/goal clear", "/goal status", "/goal", "/info", "/export",
 	} {
 		names[name] = struct{}{}
 	}
