@@ -37,6 +37,12 @@ export function getCachedMessages(key: string): ChatMessage[] | null {
 }
 /** Last SSE sequence processed for each channel-qualified session. */
 export const lastSeqCache = new Map<string, number>()
+/** Last progress_structured iteration seen for each channel-qualified session.
+ *  Used to detect "gap crosses an iteration boundary" — if a seq gap spans a
+ *  change in iteration id, an iteration's completion delta may have been lost
+ *  (the ONLY real-data-loss signal; iteration deltas cannot be backfilled by
+ *  later snapshots). */
+export const lastIterationCache = new Map<string, number>()
 /** Latest structured progress event for each channel-qualified session. */
 export const progressSnapshotCache = new Map<string, ProgressEvent>()
 const progressGenerationCache = new Map<string, number>()
@@ -85,6 +91,20 @@ export function setLastSeq(cacheKey: string, seq: number): void {
 
 export function resetLastSeq(cacheKey: string): void {
   lastSeqCache.delete(cacheKey)
+}
+
+/** Last progress_structured iteration seen for a session (for cross-iteration
+ *  gap detection). 0 = none seen yet. */
+export function getLastIteration(cacheKey: string): number {
+  return lastIterationCache.get(cacheKey) ?? 0
+}
+
+export function setLastIteration(cacheKey: string, iteration: number): void {
+  lastIterationCache.set(cacheKey, iteration)
+}
+
+export function resetLastIteration(cacheKey: string): void {
+  lastIterationCache.delete(cacheKey)
 }
 
 export function getProgressGeneration(cacheKey: string): number {

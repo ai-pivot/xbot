@@ -204,6 +204,13 @@ export function AgentPanel({ params }: PanelProps) {
       void chat.reload()
       void sessionContext.refresh()
     },
+    onIterationGap: isSubAgent ? undefined : () => {
+      // iterationHistory 内部迭代 id 断裂 = 增量 delta 在传输中丢失。SSE 快照
+      // 只携带新迭代，后面的覆盖补不回来丢失的迭代；continuousIterations 只是
+      // 渲染层隐藏断裂尾部。必须 reload 从 DB 拿权威完整历史。
+      void chat.reload()
+      void sessionContext.refresh()
+    },
     disabled: false, // Always enabled — SSE subscription managed by useActiveSSESubscription
   })
   // Wire resetProgress to the ref so the onSession effect can call it.

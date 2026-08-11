@@ -535,6 +535,47 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.liveMessage).toBeNull()
   })
 
+  it('reload hydration must NOT overwrite a streaming store with a stale/laconic snapshot', () => {
+    // User report: "回复显示到一半突然消失" (same as prior RENDER_LOSS_ROWS
+    // rowsLen:0 reports). reload() completes MID-STREAM (resync_required /
+    // replay_gap / seq-gap reload while the agent is still streaming), and the
+    // server snapshot can be stale or laconic vs. the live SSE-driven store:
+    // from_iteration delta filtering returns only NEW iterations, an
+    // iteration-boundary snapshot has visible fields cleared by
+    // historyProgressToLive, or the snapshot simply lags SSE. The hydration
+    // effect's store.replace(live) OVERWROTE the streaming store with it —
+    // leaving no visible fields → liveMessage null → the entire live turn
+    // vanished (rowsLen:0). Same bug class as the reset guards: only hydrate
+    // a genuinely idle store; let SSE events drive.
+    const { result, rerender } = renderHook(
+      (props: Partial<Parameters<typeof useProgressStream>[0]>) =>
+        useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, ...props }),
+      { initialProps: { initialProgress: null as ProgressEvent | null } },
+    )
+    // Turn starts streaming (iter 1 thinking + a running tool + stream content).
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 1, turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'half of the reply...' } })
+    emitAndFlush({
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', iteration: 1, turn_id: 1, active_tools: [{ name: 'Read', status: 'running' }] },
+    })
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.progressSnapshot.streamContent).toContain('half of the reply')
+
+    // reload completes mid-stream: server snapshot is LACONIC — phase set but
+    // no visible fields (iteration-boundary snapshot / delta-filtered history).
+    act(() => {
+      rerender({ initialProgress: { phase: 'tool_exec', iteration: 2, turn_id: 1 } as ProgressEvent | null })
+    })
+    act(() => { rafCbs.splice(0, rafCbs.length).forEach((cb) => cb()) })
+
+    // The streaming turn must survive — hydration must not replace the live store.
+    expect(result.current.liveMessage).not.toBeNull()
+    expect(result.current.progressSnapshot.streamContent).toContain('half of the reply')
+    expect(result.current.isStreaming).toBe(true)
+  })
+
   it('disabled toggle (subscription flake) must NOT wipe a streaming turn', () => {
     // User report: [RENDER_LOSS_ROWS] rowsLen:0, liveMessageId:null, busy:true
     // with a cli chatKey. The live store was blanked by the useLayoutEffect
@@ -1248,5 +1289,51 @@ describe('cancel: assistant message must not vanish', () => {
     emitAndFlush({ type: 'text', content: 'resumed reply', chat_id: 'c1', turn_id: 1 })
     expect(complete).toHaveBeenCalledTimes(2)
     expect(complete.mock.calls[1][0]).toBe('resumed reply')
+  })
+})
+
+describe('iterationHistory id gap → reload (incremental delta loss is REAL data loss)', () => {
+  it('fires onIterationGap once when an internal iteration id is missing, and re-arms after repair', () => {
+    const onIterationGap = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onIterationGap, ws: currentWS as unknown as WSConnection }),
+    )
+
+    // Iterations 1, 2, 3 arrive contiguously.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 3, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 1 }, { iteration: 2 }, { iteration: 3 }] } })
+    expect(onIterationGap).not.toHaveBeenCalled()
+    expect(result.current.progressSnapshot.iterationHistory.map((i) => i.iteration)).toEqual([1, 2, 3])
+
+    // Iteration 5's delta arrives but 4's was DROPPED on the wire →
+    // iterationHistory [1,2,3,5] has an internal id gap. SSE snapshots carry
+    // only NEW iterations — no later snapshot can backfill iteration 4. The
+    // DB is authoritative: reload (one-shot).
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 5, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 5 }] } })
+    expect(onIterationGap).toHaveBeenCalledTimes(1)
+    expect(result.current.progressSnapshot.iterationHistory.map((i) => i.iteration)).toEqual([1, 2, 3, 5])
+
+    // The gap persists on subsequent events — must NOT re-fire (reload storm).
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 5, turn_id: 1, chat_id: 'web:c1', active_tools: [{ name: 'Shell', status: 'running', iteration: 5 }] } })
+    expect(onIterationGap).toHaveBeenCalledTimes(1)
+
+    // reload backfills iteration 4 → history contiguous → re-arm the one-shot.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 5, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 4 }] } })
+    expect(onIterationGap).toHaveBeenCalledTimes(1)
+    expect(result.current.progressSnapshot.iterationHistory.map((i) => i.iteration)).toEqual([1, 2, 3, 4, 5])
+
+    // A NEW gap (7 missing 6) after repair fires again.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 7, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 7 }] } })
+    expect(onIterationGap).toHaveBeenCalledTimes(2)
+  })
+
+  it('does NOT fire for a legitimately offset contiguous history ([5,6,7])', () => {
+    const onIterationGap = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onIterationGap, ws: currentWS as unknown as WSConnection }),
+    )
+    // A history subset starting at 5 is contiguous (earlier iterations may have
+    // been compressed/merged) — no internal jump, no reload.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 7, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 5 }, { iteration: 6 }, { iteration: 7 }] } })
+    expect(onIterationGap).not.toHaveBeenCalled()
   })
 })

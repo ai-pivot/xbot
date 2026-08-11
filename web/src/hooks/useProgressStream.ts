@@ -68,6 +68,12 @@ interface UseProgressStreamOptions {
   /** Called when the server signals a slash-command session reset (/new). */
   onSessionReset?: () => void
   /**
+   * Called when the live iterationHistory develops an internal id gap (an
+   * iteration's delta was dropped on the wire — incremental data loss that no
+   * later SSE snapshot can backfill). The caller should reload from DB.
+   */
+  onIterationGap?: () => void
+  /**
    * Optional live-progress snapshot from history (active_progress). When the
    * tracked chat is busy (phase != done) this hydrates the store so a page
    * refresh resumes the progress panel instead of showing an empty stream.
@@ -128,6 +134,7 @@ export function useProgressStream({
   onInjectUserMessage,
   onTurnStarted,
   onSessionReset,
+  onIterationGap,
   initialProgress,
   ws,
   disabled = false,
@@ -152,6 +159,11 @@ export function useProgressStream({
   injectRef.current = onInjectUserMessage
   const turnStartedRef = useRef(onTurnStarted)
   turnStartedRef.current = onTurnStarted
+  const iterationGapRef = useRef(onIterationGap)
+  iterationGapRef.current = onIterationGap
+  // One-shot per store-lifetime: iterationHistory gap (incremental delta lost)
+  // fires reload once; reset only when the history becomes contiguous again.
+  const iterationGapFiredRef = useRef(false)
 
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
@@ -371,6 +383,20 @@ export function useProgressStream({
     // (from the reset effect) may have a higher eventSeq (updated by live SSE
     // events), which would block the server's authoritative data and cause
     // incomplete iteration recovery on session switch.
+    //
+    // CRITICAL: NEVER overwrite a store that is actively streaming. reload()
+    // completes mid-turn (resync_required / replay_gap / seq-gap reload while
+    // the agent is still streaming), and the server snapshot can be STALE or
+    // LACONIC vs. the live SSE-driven store: (a) from_iteration delta filtering
+    // returns only NEW iterations, (b) an iteration-boundary snapshot has its
+    // visible fields cleared by historyProgressToLive (content/completedTools
+    // dropped to avoid duplication), (c) the server snapshot simply lags the
+    // SSE events. Replacing a streaming store with it leaves the store with no
+    // visible fields → liveMessage null → the ENTIRE live turn vanishes from
+    // the DOM (rowsLen:0 — same bug class as the reset guards above; user
+    // report: "回复显示到一半突然消失"). Let SSE events drive; only hydrate a
+    // genuinely idle store. Mirrors the storeActive guard used for reset().
+    if (storeActive) return
     if (live.phase) {
       store.replace(live)
       // Ensure turnID is tracked for same-turn dedup (MessageList uses
@@ -408,7 +434,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef)
     })
     return offMessage
   }, [store, disabled, channel])
@@ -610,6 +636,8 @@ function handleProgressMessage(
   turnStartedRef?: React.MutableRefObject<UseProgressStreamOptions['onTurnStarted']>,
   cancelCompleteRef?: React.MutableRefObject<UseProgressStreamOptions['onCancelComplete']>,
   turnCommittedRef?: React.MutableRefObject<boolean>,
+  iterationGapRef?: React.MutableRefObject<UseProgressStreamOptions['onIterationGap']>,
+  iterationGapFiredRef?: React.MutableRefObject<boolean>,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -1019,6 +1047,24 @@ function handleProgressMessage(
         tokenUsage,
         turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : undefined,
       })
+      // ── Iteration-id gap → REAL incremental data loss → reload ──
+      // iterationHistory is an incremental delta feed (0-1 entries per push):
+      // an internal id jump (1→3 missing 2) means an iteration's delta was
+      // dropped on the wire and NO later SSE snapshot can backfill it —
+      // snapshots carry only NEW iterations. continuousIterations hides the
+      // broken tail at RENDER time only; the DB is authoritative. One-shot:
+      // fire reload once per broken history, re-arm when the history becomes
+      // contiguous again (the reload's active_progress backfill repairs it).
+      // hasIterationGapNow() reads the SYNCHRONOUS current (getSnapshot is
+      // RAF-throttled and would lag one event).
+      if (store.hasIterationGapNow()) {
+        if (iterationGapFiredRef && !iterationGapFiredRef.current) {
+          iterationGapFiredRef.current = true
+          iterationGapRef?.current?.()
+        }
+      } else if (iterationGapFiredRef) {
+        iterationGapFiredRef.current = false
+      }
       return
     }
 
