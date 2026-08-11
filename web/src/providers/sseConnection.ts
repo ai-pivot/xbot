@@ -2,11 +2,14 @@ import { postAPI } from '@/lib/api'
 import {
   bumpProgressGeneration,
   clearProgressSnapshot,
+  getLastIteration,
   getLastSeq,
   hasLastSeq,
   progressSnapshotCache,
+  resetLastIteration,
   resetLastSeq,
   sessionCacheKey,
+  setLastIteration,
   setLastSeq,
 } from '@/lib/webCache'
 import type {
@@ -230,14 +233,25 @@ export class SSEConnectionImpl implements WSConnection {
     const channel = this._channel
     const cacheKey = chatID ? sessionCacheKey(channel, chatID) : null
     let replayGap = false
+    // Gap CROSSED an iteration boundary → an iteration's completion delta may
+    // have been lost in the gap. This is the ONLY real-data-loss case for
+    // iterations: iterationHistory is an incremental delta feed and no later
+    // SSE snapshot carries lost iterations. Reload from DB immediately.
+    let crossedIteration = false
     if (cacheKey && seq > 0) {
       let previousSeq = getLastSeq(cacheKey)
       if (seq < previousSeq) {
         resetLastSeq(cacheKey)
+        resetLastIteration(cacheKey)
         previousSeq = 0
       } else if (seq === previousSeq) {
         return
       }
+      // Track the last progress_structured iteration id for cross-iteration
+      // gap detection (stateless events don't carry iterations).
+      const isStateless = msg.type === 'stream_content'
+        || msg.type === 'sync_progress'
+        || msg.type === 'runner_status'
       if (seq > previousSeq + 1) {
         // Only trigger recovery for stateful events. Stateless events
         // (stream_content, sync_progress, runner_status) are coalesced by the
@@ -247,15 +261,22 @@ export class SSEConnectionImpl implements WSConnection {
         // restoreActiveProgress here caused an RPC storm: LLM streams at
         // ~20 tokens/sec, each coalesced stream_content triggered a
         // get_active_progress RPC.
-        const isStateless = msg.type === 'stream_content'
-          || msg.type === 'sync_progress'
-          || msg.type === 'runner_status'
         if (!isStateless) {
           replayGap = true
+          if (msg.type === 'progress_structured') {
+            const curIter = typeof msg.progress?.iteration === 'number' ? msg.progress.iteration : 0
+            const prevIter = getLastIteration(cacheKey)
+            if (prevIter > 0 && curIter > prevIter) {
+              crossedIteration = true
+            }
+          }
         }
       }
       msg.seq = seq
       setLastSeq(cacheKey, seq)
+      if (msg.type === 'progress_structured' && typeof msg.progress?.iteration === 'number' && msg.progress.iteration > 0) {
+        setLastIteration(cacheKey, msg.progress.iteration)
+      }
     }
     this.eventsSinceOpen += 1
     if (cacheKey && isProgressLifecycleEvent(msg)) {
@@ -263,7 +284,21 @@ export class SSEConnectionImpl implements WSConnection {
       bumpProgressGeneration(cacheKey)
     }
     this.dispatch(msg)
-    if (chatID && replayGap) void this.restoreActiveProgress(channel, chatID)
+    if (chatID && replayGap) {
+      if (crossedIteration) {
+        // Gap crossed an iteration boundary (e.g. iteration 3's events, then a
+        // seq gap, then iteration 4's events). Iteration 3's COMPLETION delta
+        // may be lost — no later snapshot backfills it, so the DB is
+        // authoritative. Reload immediately (force_reload shows a spinner);
+        // restoreActiveProgress is skipped — its recovery snapshot cannot
+        // repair a lost delta and would race the reload.
+        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
+      } else {
+        // Gap on the SAME iteration: lost events were snapshots (reasoning /
+        // tool updates) — the recovery snapshot below covers them. No reload.
+        void this.restoreActiveProgress(channel, chatID)
+      }
+    }
   }
 
   private dispatch(msg: WSMessage): void {
@@ -406,10 +441,20 @@ export class SSEConnectionImpl implements WSConnection {
       bumpProgressGeneration(cacheKey)
       this.progressVersion += 1
 
-      // ── Detect real data loss: TurnID changed or large iteration gap ──
-      // SSE event gaps are normal (stateless coalescing, buffer drops), but
-      // TurnID changes mean committed messages (reply, notification) were
-      // lost. Signal useChatMessages to reload from DB.
+      // ── Detect real data loss: TurnID changed or COARSE iteration gap ──
+      // SSE event gaps are normal (stateless coalescing, buffer drops) and the
+      // recovery snapshot below covers most of them — progress_structured is a
+      // SNAPSHOT, later events supersede earlier ones.
+      //
+      // This check is deliberately COARSE: cachedProgress.iteration_history is
+      // only the LAST event's delta, NOT the cumulative history — it CANNOT
+      // prove that iteration 3 is complete when the server is at 4 (a
+      // difference of exactly 1 does NOT mean 3's delta arrived; it may have
+      // been dropped while 4's events kept coming). The precise completeness
+      // check lives in useProgressStream/progressStore (hasIterationGapNow:
+      // the store's CUMULATIVE iterationHistory must cover up to lastIter-1)
+      // and triggers a reload there. This check only catches large server
+      // advances (>1) early as a fast path.
       const turnIDChanged = cachedProgress && progress &&
         typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
         cachedProgress.turn_id !== progress.turn_id
@@ -418,12 +463,12 @@ export class SSEConnectionImpl implements WSConnection {
         cachedProgress.turn_id === progress.turn_id
       const cachedIter = cachedProgress?.iteration ?? 0
       const newIter = progress?.iteration ?? 0
-      const largeGap = sameTurn && cachedIter > 0 && newIter > 0 && (newIter - cachedIter) > 10
+      const iterationGap = sameTurn && cachedIter > 0 && newIter > 0 && (newIter - cachedIter) > 1
 
-      if (turnIDChanged || largeGap) {
+      if (turnIDChanged || iterationGap) {
         // force_reload=true: show a loading spinner during reload. For cross-turn
-        // and large gaps, the UI is too stale to render incrementally — a clean
-        // reload is better than a partially-inconsistent view.
+        // and iteration-id gaps, the UI is too stale to render incrementally — a
+        // clean reload is better than a partially-inconsistent view.
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
       }
       // Recovery snapshot — carry its seq so setStructuredTools can apply the

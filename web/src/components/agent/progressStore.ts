@@ -72,9 +72,12 @@ function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
  * A gap (e.g. 1 → 148) indicates a bug — typically iteration history was lost
  * during a backend restart + cancel, or the DB Detail was incomplete.
  * Non-blocking: logs a console.error with diagnostic context.
+ * Returns true when a gap is found (callers may trigger a DB reload — an
+ * iterationHistory gap is REAL incremental data loss that no later SSE
+ * snapshot can backfill).
  */
-export function assertIterationContinuity(iters: WebIteration[]) {
-  if (iters.length < 2) return
+export function assertIterationContinuity(iters: WebIteration[]): boolean {
+  if (iters.length < 2) return false
   for (let i = 1; i < iters.length; i++) {
     const prev = iters[i - 1].iteration
     const curr = iters[i].iteration
@@ -85,9 +88,29 @@ export function assertIterationContinuity(iters: WebIteration[]) {
           `This indicates lost iteration history — check backend restart + cancel handling.`,
         { iterations: iters.map((it) => it.iteration) },
       )
-      break // report first gap only
+      return true // report first gap only
     }
   }
+  return false
+}
+
+/**
+ * Report whether iterationHistory contains a NON-CONTIGUOUS jump
+ * (adjacent entries whose iteration ids differ by more than 1).
+ *
+ * iterationHistory is an INCREMENTAL delta feed — a gap (1→3 missing 2) means
+ * an iteration's delta was dropped on the wire and NO later SSE snapshot can
+ * recover it (snapshots carry only NEW iterations). The rendering layer hides
+ * the tail via continuousIterations, but that is NOT a fix: the DB is
+ * authoritative and a reload is required to restore the missing iterations.
+ * (A history starting at an offset like [5,6,7] is legitimately contiguous —
+ * only internal jumps count.)
+ */
+export function hasIterationGap(iters: WebIteration[]): boolean {
+  for (let i = 1; i < iters.length; i++) {
+    if (iters[i].iteration !== iters[i - 1].iteration + 1) return true
+  }
+  return false
 }
 
 /**
@@ -453,6 +476,35 @@ export class ProgressStore {
 
   /** Current snapshot. Stable between notifies (same reference). */
   getSnapshot = (): ProgressSnapshot => this.snapshot
+
+  /**
+   * Synchronously report whether the CURRENT (not throttled) iterationHistory
+   * has an iteration-id gap. Unlike getSnapshot() (RAF-throttled), this reads
+   * this.current so callers can react immediately after setStructuredTools.
+   *
+   * Two independent loss modes:
+   * 1. INTERNAL jump — [1,2,4] missing 3 (hasIterationGap).
+   * 2. TRAILING loss — the server has advanced to lastIter=N but the iteration
+   *    N-1 delta never arrived ([1,2] with lastIter=4). An iteration-number
+   *    difference of 1 (3→4) does NOT prove iteration 3's delta is complete:
+   *    its completion delta may have been dropped in an SSE gap while the
+   *    next iteration's events kept arriving. The only reliable signal is
+   *    "history covers up to lastIter-1".
+   */
+  hasIterationGapNow(): boolean {
+    const hist = this.current.iterationHistory
+    if (hasIterationGap(hist)) return true
+    // Trail check: the semantic watermark advanced to N ⇒ iteration N-1's delta
+    // must be present (it completes before iteration N can start). A last entry
+    // BELOW N-1 means that delta was lost — reload is required (the DB is
+    // authoritative; no later SSE snapshot carries it). Use `<` (not `!==`):
+    // a last entry == N (current iteration's delta already arrived) is legal.
+    if (this.current.lastIter > 1 && hist.length > 0) {
+      const last = hist[hist.length - 1].iteration
+      if (last < this.current.lastIter - 1) return true
+    }
+    return false
+  }
 
   /** Apply a mutation under the hood; schedules a throttled notify. */
   mutate(mutator: Mutator): void {
