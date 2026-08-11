@@ -236,7 +236,11 @@ func (m *XbotMemory) scopeWhere(alias string) string {
 // scopeArg returns the argument for the scope WHERE clause.
 // If userID is 0, returns 0 — matching only ownerless (user_id=0) rows.
 // Never returns tenantID: that would scatter memories across tenants.
+// Must hold RLock: SetOwnerUserID writes m.userID under Lock from a different
+// goroutine (auto-memorize ConsolidateTurn runs concurrently with processMessage).
 func (m *XbotMemory) scopeArg() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.userID
 }
 

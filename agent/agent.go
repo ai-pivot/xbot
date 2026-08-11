@@ -3448,11 +3448,34 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			"provider":          mem.Name(),
 			"last_consolidated": lastConsolidated,
 		}).Info("Auto-memorize: starting incremental consolidation")
+		a.lifecycleWG.Add(1)
 		go func(mem memory.MemoryProvider, messages []llm.ChatMessage, chatID string, llmClient llm.LLM, model string, lastCons int) {
-			// Use a fresh context — the original ctx may be cancelled after response.
-			memCtx := context.Background()
+			defer a.lifecycleWG.Done()
+
+			// Cancel when the Agent is closed (lifecycleStopCh is closed by
+			// Close()) so consolidation never touches a closed DB / released
+			// LLM client. NOT derived from agentCtx — that is cancelled at the
+			// end of every Run(), which would kill the consolidation before it
+			// starts. The watch goroutine exits when either side fires.
+			memCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if a.lifecycleStopCh != nil {
+				go func() {
+					select {
+					case <-a.lifecycleStopCh:
+						cancel()
+					case <-memCtx.Done():
+					}
+				}()
+			}
+
+			// Shallow-copy the slice: out.Messages' backing array is shared with
+			// the caller, and ConsolidateTurn may mutate elements in place.
+			messagesCopy := make([]llm.ChatMessage, len(messages))
+			copy(messagesCopy, messages)
+
 			input := memory.MemorizeInput{
-				Messages:         messages,
+				Messages:         messagesCopy,
 				LastConsolidated: lastCons,
 				LLMClient:        llmClient,
 				Model:            model,

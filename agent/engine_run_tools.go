@@ -369,9 +369,10 @@ func (s *runState) executeSubAgentOps(ctx context.Context, ops []toolCallEntry, 
 
 // snapshotCompletedIteration records the completed iteration snapshot for structured progress.
 // It also writes the iteration directly to the iteration_history table (v55+).
-// This is the SINGLE write path for iteration data — no other function writes
-// iteration_history (not handleRunOutput, not handleCancelledRun, not
-// persistIterationHistory). Detail JSON is no longer written.
+// This is the primary write path for TOOL iterations. handleFinalResponse
+// (engine_run.go) also writes the final (content-only) iteration via
+// writeIterationHistory. No other code path writes iteration_history — not
+// handleRunOutput, not handleCancelledRun. Detail JSON is no longer written.
 func (s *runState) snapshotCompletedIteration(iteration int) {
 	if s.structuredProgress != nil {
 		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, s.structuredProgress.ActiveTools...)
