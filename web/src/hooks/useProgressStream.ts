@@ -818,7 +818,15 @@ function handleProgressMessage(
 
       // ── Consistency check: iteration must advance by exactly 1 within a turn ──
       // Iterations are 1-based: 0 = uninitialized, 1 = first iteration.
-      if (iteration !== undefined && iteration >= 1) {
+      // STRUCTURED events only (phase set). phase:undefined events are stream
+      // deltas (stream_content/reasoning forwarded by the Web channel) carrying
+      // the backend's CURRENT iteration — legitimately 1 while reasoning
+      // streams before the loop starts, or LAGGING a prior iteration's deltas
+      // (iter 2 stream text arriving after the snapshot advanced to 4).
+      // Comparing them against lastIter false-alarms ITER_ID_INVARIANT_VIOLATION
+      // (prev=4 next=2) on every such event and carries no iteration-order
+      // semantics — skip the check entirely.
+      if (phase !== undefined && iteration !== undefined && iteration >= 1) {
         if (store.lastIter >= 1 && iteration < store.lastIter) {
           console.error('[ITER_ID_INVARIANT_VIOLATION] iteration went backwards', {
             prev: store.lastIter,

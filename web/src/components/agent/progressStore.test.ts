@@ -668,4 +668,37 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     expect(snap.phase).toBe('running') // NOT rolled back to 'done'
     expect(snap.streaming).toBe(true)
   })
+
+  it('ignores iteration-regressed stream deltas (phase:undefined) — does NOT roll back active/completed/iteration', () => {
+    // User report: "迭代到一半最新 turn 突然消失" + ITER_ID_INVARIANT_VIOLATION
+    // {prev:4, next:2, phase:undefined}. A phase:undefined stream delta (Web
+    // channel forwards stream_content as progress_structured) carries the
+    // backend's CURRENT iteration, which can legitimately LAG the snapshot
+    // (iter-2 stream text arriving after the snapshot advanced to 4). Applying
+    // its activeTools/completedTools/iteration would roll the snapshot back to
+    // the older iteration, wiping the newest iteration's tools.
+    const store = new ProgressStore()
+    // Iteration 2 active (structured)
+    store.setStructuredTools({
+      eventSeq: 1,
+      phase: 'tool_exec',
+      iteration: 2,
+      activeTools: [tool({ name: 'Shell', status: 'running' })],
+    })
+    flushRaf()
+    expect(store.getSnapshot().iteration).toBe(2)
+    expect(store.getSnapshot().activeTools.map((t) => t.name)).toEqual(['Shell'])
+
+    // A lagging stream delta for iteration 1 (phase:undefined, regressed)
+    store.setStructuredTools({
+      eventSeq: 2,
+      iteration: 1,
+      activeTools: [tool({ name: 'Read', status: 'running' })],
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iteration).toBe(2) // NOT rolled back to 1
+    expect(snap.activeTools.map((t) => t.name)).toEqual(['Shell']) // NOT replaced by iter-1 tools
+  })
 })

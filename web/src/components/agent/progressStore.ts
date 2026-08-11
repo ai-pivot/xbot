@@ -729,6 +729,31 @@ export class ProgressStore {
       return
     }
 
+    // ── iteration-regression guard ──
+    // phase:undefined stream deltas (stream_content / reasoning forwarded as
+    // progress_structured by the Web channel) carry the backend's CURRENT
+    // iteration (`getActiveIteration`), which can legitimately LAG the snapshot
+    // — a prior iteration's stream text may still be arriving while the
+    // snapshot already advanced (e.g. iter 4 active while a delayed iter-2
+    // stream delta lands). Applying such an event's activeTools/completedTools/
+    // iteration would ROLL THE SNAPSHOT BACK to the older iteration, wiping the
+    // newest iteration's tools/text — the "迭代到一半最新 turn 消失" report.
+    // Only append monotonic data (iterationHistory, todos); skip the rest.
+    const regressed =
+      opts.iteration !== undefined &&
+      opts.iteration > 0 &&
+      this.current.iteration > 0 &&
+      opts.iteration < this.current.iteration
+    if (regressed) {
+      if (opts.todos !== undefined) this.current.todos = opts.todos
+      if (opts.iterationHistory && opts.iterationHistory.length > 0) {
+        this.mutate((draft) => {
+          appendIterations(draft, opts.iterationHistory!)
+        })
+      }
+      return
+    }
+
     this.mutate((draft) => {
       if (opts.eventSeq !== undefined) draft.eventSeq = opts.eventSeq
       if (opts.turnID !== undefined && opts.turnID > 0) draft.turnID = opts.turnID
