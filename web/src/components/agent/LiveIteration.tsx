@@ -119,9 +119,23 @@ export const LiveIteration = memo(function LiveIteration({
   const hasGenUI = Boolean(progress.genuiContent)
 
   if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) {
-    // No content yet — return null instead of showing a spinner placeholder.
-    // The progress panel itself shows iteration status; a separate "thinking…"
-    // spinner here is redundant visual noise.
+    // Iteration boundary / waiting for the next iteration's first delta: the
+    // previous iteration just finished (lastIter >= 1) but the next iteration's
+    // content hasn't arrived yet (slow SSE — the boundary clear is often a
+    // phase:undefined stream delta with no iteration_history). Show a
+    // "thinking…" placeholder so the user knows the agent is STILL WORKING
+    // (not stuck) — user requirement: "iter x 结束后如果 iter x+1 还没有进度
+    // 到达，就应该在 iter x+1 渲染思考中占位，防止用户以为卡死". The
+    // pre-iteration phase (lastIter=0, turn just started) keeps the panel's own
+    // busy placeholder instead.
+    if (progress.streaming && progress.lastIter >= 1) {
+      return (
+        <div className="flex items-center gap-1.5 px-1 py-0.5 text-xs text-text-muted">
+          <span className="animate-pulse">…</span>
+          <span>{t('agent.reasoningStreaming')}</span>
+        </div>
+      )
+    }
     return null
   }
 
