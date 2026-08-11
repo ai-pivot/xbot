@@ -569,6 +569,24 @@ function handleProgressMessage(
           })
           return
         }
+        // ── Duplicate turn_started for the CURRENT turn guard ──
+        // A turn_started with turn_id === store.lastTurnID (and NOT a resume)
+        // is a duplicate/spurious re-emission (SSE reconnect replay of the same
+        // turn, a notification turn_started arriving twice, or the backend
+        // re-sending it). The turn is ALREADY active — running the commit path
+        // again clears the live row (lastIter=0) AND sets finalizedRef=true,
+        // which then DROPS every subsequent iteration (the live turn vanishes
+        // permanently — user report: "最新 turn 不断消失又出现"). Ignore it.
+        // AskUser resume (trigger='resume') legitimately reuses the same TurnID
+        // (continuation of the same turn) and must NOT be ignored.
+        if (p.turn_id && p.turn_id > 0 && p.turn_id === store.lastTurnID && p.turn_start?.trigger !== 'resume') {
+          console.warn('[TURN_STARTED_DUP] Duplicate turn_started for active turn ignored', {
+            turnID: p.turn_id,
+            chatID: p.chat_id,
+            trigger: p.turn_start?.trigger,
+          })
+          return
+        }
         // ── Consistency check: TurnID must be strictly monotonic ──
         // AskUser answer (trigger=resume) reuses the same TurnID as the original
         // turn — turnID == lastTurnID is expected and NOT a violation.
