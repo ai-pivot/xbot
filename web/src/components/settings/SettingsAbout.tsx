@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { Download, Check, AlertCircle, RefreshCw, Terminal, FileJson } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { usePwaInstall } from '@/hooks/usePwaInstall'
-import { exportSession } from '@/components/agent/api'
+import { exportSession, downloadSession } from '@/components/agent/api'
 import { useSessionStore } from '@/hooks/useSessionStore'
 
 /** One diagnostic row with a pass/fail indicator. */
