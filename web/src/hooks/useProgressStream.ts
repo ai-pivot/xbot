@@ -338,7 +338,15 @@ export function useProgressStream({
     // the frozen live row is NOT rendered (turnExists=true → insert at old
     // turn position, but the committed message at that position takes
     // precedence in the virtual list by key).
-    const tid = snap.turnID || store.lastTurnID || 0
+    // turnID: snapshot's authoritative turn, falling back to store.lastTurnID
+    // ONLY for the frozen (cancelled) phase — a frozen live row must render
+    // inside its own turn (above the next user msg). A STREAMING live with
+    // snap.turnID=0 (turn_started lost to SSE coalescing) must NOT fall back:
+    // store.lastTurnID is the PREVIOUS turn, and buildMessageRows' same-turn
+    // merge would absorb the streaming live into the old committed assistant —
+    // the turn "vanishes" mid-stream (user report). turnID=0 sorts the live to
+    // the bottom (it IS the newest content).
+    const tid = snap.turnID || (snap.phase === 'frozen' ? store.lastTurnID : 0) || 0
     return {
       id: `turn-${tid}-live`,
       role: 'assistant',

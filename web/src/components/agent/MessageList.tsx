@@ -143,6 +143,11 @@ export function buildMessageRows(
     const m = messages[i]
     if (m.isPartial || m.role !== live.role) continue
     if (live.turnID > 0 && m.turnID === live.turnID) {
+      // Same-turn merge: the live row is the pre-commit / frozen phase of THIS
+      // committed row. Unconditional on turnID — a mis-bound live (turn_started
+      // lost → live.turnID falls back) is prevented upstream in
+      // useProgressStream (streaming live keeps turnID=0, never the previous
+      // turn), so a turnID match here is authoritative.
       sameTurnIdx = i
       break
     }

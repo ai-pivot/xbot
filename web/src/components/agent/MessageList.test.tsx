@@ -1006,6 +1006,27 @@ describe('buildMessageRows — linear consistency (extreme scenarios)', () => {
     expect(rows.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
   })
 
+  it('keeps a STREAMING live when turn_started was lost (live.turnID=0) — no vanish, renders at bottom', () => {
+    // User report: "turn 在 streaming 过程中突然消失，显示还是 busy 但只看得到
+    // 最后一个 user msg". liveMessage.turnID is `snap.turnID || (frozen ?
+    // store.lastTurnID : 0)`. When the current turn's turn_started was lost
+    // (SSE coalescing/gap), snap.turnID=0 and the OLD code fell back to
+    // store.lastTurnID = the PREVIOUS turn — buildMessageRows' same-turn merge
+    // then absorbed the streaming live into the OLD committed assistant and the
+    // turn vanished. Fix: streaming live keeps turnID=0 → no same-turn merge,
+    // sorted to the bottom (it IS the newest content).
+    const messages = [
+      base({ id: 'a5', role: 'assistant', content: 'old reply', turnID: 5, persisted: true }),
+      base({ id: 'u6', role: 'user', content: 'new question', turnID: 6 }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-0-live', role: 'assistant', content: 'streaming new reply', isPartial: true, turnID: 0 })
+    const rows = buildMessageRows(messages, live)
+    expect(rows.some((r) => r.id === 'turn-0-live')).toBe(true)
+    // The live row renders BELOW its own user (bottom — newest content).
+    const ids = rows.map((m) => m.id)
+    expect(ids.indexOf('turn-0-live')).toBeGreaterThan(ids.indexOf('u6'))
+  })
+
   it('does NOT pin an unbound persisted user (SSE-gap echo) at the top — binds to last turn', () => {
     // The reload retained a user_echo (turnID=0, persisted=true, no following
     // turn yet). bindTurnIDs' prevTurn fallback binds it to the last known
