@@ -159,10 +159,16 @@ type cliModel struct {
 	lastContent string // 最后一次迭代的 thinking_content，在 progress 清除前捕获
 
 	// --- §8 Tab 补全 ---
-	completions    []string // 当前补全候选项
-	compIdx        int      // 当前选中的补全索引
-	pluginCmdNames []string // 插件注册的命令名（/xxx 格式），合并到 Tab 补全
-	commandNamesFn func() []string
+	completions      []string // 当前补全候选项
+	compIdx          int      // 当前选中的补全索引
+	pluginCmdNames   []string // 插件注册的命令名（/xxx 格式），合并到 Tab 补全
+	commandCatalogFn func() []protocol.CommandInfo
+	commandNamesFn   func() []string // deprecated name-only provider compatibility
+
+	// commandCatalog cache: rebuilt only when the Agent provider output changes.
+	// Consumers must treat the returned slice as read-only.
+	commandCatalogCache []protocol.CommandInfo
+	catalogAgentCmds    []protocol.CommandInfo
 
 	// --- §8b @ 文件引用补全 ---
 	fileCompletions []string // @ 文件路径补全候选项

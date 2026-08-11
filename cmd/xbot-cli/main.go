@@ -555,48 +555,50 @@ type cliApp struct {
 	valuesCacheMu sync.RWMutex
 	valuesCache   map[string]string
 
-	// Async cache for command names used by Tab completion.
-	commandNamesMu    sync.RWMutex
-	commandNamesCache []string
-	commandNamesStop  context.CancelFunc
+	// Async cache for command metadata used by help, completion, and palette.
+	commandCatalogMu    sync.RWMutex
+	commandCatalogCache []agent.CommandInfo
+	commandCatalogStop  context.CancelFunc
 
 	// Remote-mode background goroutine cancel
 
 }
 
-func (app *cliApp) refreshCommandNamesCache() {
-	var names []string
+func (app *cliApp) refreshCommandCatalogCache() {
+	var commands []agent.CommandInfo
 	if app.localAg != nil {
-		names = app.localAg.CommandNames()
+		if app.localAg.Commands() != nil {
+			commands = app.localAg.Commands().CommandList()
+		}
 	} else if app.client != nil {
 		var err error
-		names, err = app.client.ListCommandNames()
+		commands, err = app.client.ListCommands()
 		if err != nil {
-			log.WithError(err).Debug("Failed to refresh command names cache")
+			log.WithError(err).Debug("Failed to refresh command catalog cache")
 			return
 		}
 	} else {
 		return
 	}
-	app.commandNamesMu.Lock()
-	app.commandNamesCache = append([]string(nil), names...)
-	app.commandNamesMu.Unlock()
+	app.commandCatalogMu.Lock()
+	app.commandCatalogCache = append([]agent.CommandInfo(nil), commands...)
+	app.commandCatalogMu.Unlock()
 }
 
-func (app *cliApp) startCommandNamesRefresh(interval time.Duration) {
-	if app.commandNamesStop != nil {
-		app.commandNamesStop()
+func (app *cliApp) startCommandCatalogRefresh(interval time.Duration) {
+	if app.commandCatalogStop != nil {
+		app.commandCatalogStop()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	app.commandNamesStop = cancel
+	app.commandCatalogStop = cancel
 	go func() {
-		app.refreshCommandNamesCache()
+		app.refreshCommandCatalogCache()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				app.refreshCommandNamesCache()
+				app.refreshCommandCatalogCache()
 			case <-ctx.Done():
 				return
 			}
@@ -604,10 +606,10 @@ func (app *cliApp) startCommandNamesRefresh(interval time.Duration) {
 	}()
 }
 
-func (app *cliApp) getCommandNamesCache() []string {
-	app.commandNamesMu.RLock()
-	defer app.commandNamesMu.RUnlock()
-	return append([]string(nil), app.commandNamesCache...)
+func (app *cliApp) getCommandCatalogCache() []agent.CommandInfo {
+	app.commandCatalogMu.RLock()
+	defer app.commandCatalogMu.RUnlock()
+	return append([]agent.CommandInfo(nil), app.commandCatalogCache...)
 }
 
 // isFirstRun 检测是否是首次运行（config.json 不存在或 API Key 未配置，且未完成 CLI setup）
@@ -672,10 +674,8 @@ func (a *cliApp) buildPaletteExternalCommands() []cli.PaletteExternalCommand {
 	}
 
 	// 2. Plugin commands from local ~/.xbot/plugins/*/plugin.json
-	// NOTE: This reads plugin.json directly to discover commands. In remote mode,
-	// plugin manifests are also synced locally via the plugin system. A future
-	// improvement would be to fetch commands via RPC (list_plugin_commands) for
-	// consistency with the PluginManager, but this approach is correct and simple.
+	// This existing local contribution keeps plugin entries immediately visible
+	// and categorized; the Agent catalog adds registered remote-only commands.
 	if entries, err := os.ReadDir(xbotDir + "/plugins"); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
@@ -895,8 +895,8 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 
 // Close 释放资源。
 func (app *cliApp) Close() {
-	if app.commandNamesStop != nil {
-		app.commandNamesStop()
+	if app.commandCatalogStop != nil {
+		app.commandCatalogStop()
 	}
 	if app.client != nil {
 		app.client.Stop()
@@ -1583,8 +1583,8 @@ func main() {
 			}
 			return result, nil
 		},
-		CommandNamesProvider: func() []string {
-			return app.getCommandNamesCache()
+		CommandCatalogProvider: func() []protocol.CommandInfo {
+			return app.getCommandCatalogCache()
 		},
 		PaletteContributor: func() []cli.PaletteExternalCommand {
 			return app.buildPaletteExternalCommands()
@@ -1854,7 +1854,7 @@ func main() {
 	// ── Post-Start initialization (unified for all modes) ─────────────
 	// Both local and remote modes run the same initialization.
 	// Only a few items are remote-specific (reconnect, conn_state).
-	app.startCommandNamesRefresh(30 * time.Second)
+	app.startCommandCatalogRefresh(30 * time.Second)
 
 	// Seed thinking_mode (config.json / --thinking-mode flag) into user_settings
 	// so the agent loop's userThinkingMode() uses it. Fresh DB has empty

@@ -287,10 +287,6 @@ func newGlamourRenderer(wrapWidth int) *glamour.TermRenderer {
 	return r
 }
 
-// cliLocalCommands are CLI-only commands handled before messages reach Agent.
-// Agent-level commands are supplied by CLIChannelConfig.CommandNamesProvider.
-var cliLocalCommands = ch.TUISlashCommands
-
 // --- Unified Unicode icons ---
 // 避免 emoji/ASCII/Unicode 混用，统一视觉风格。
 const (
@@ -410,14 +406,18 @@ type CLIChannelConfig struct {
 	ConsumeLinkCodeFn      func(code string) (string, error)                                                                                                                            // 消费关联码，返回关联结果
 	ListIdentitiesFn       func() (any, error)                                                                                                                                          // 列出当前用户已关联的身份
 	ListAllTenantsFn       func() ([]AllSessionInfo, error)                                                                                                                             // 列出后端所有 session（所有渠道，用于 /list-sessions）
-	CommandNamesProvider   func() []string                                                                                                                                              // supplies registered Agent command names for Tab completion
-	PaletteContributor     PaletteContributor                                                                                                                                           // supplies external commands for command palette
-	SidebarWidthOverride   int                                                                                                                                                          // --sidebar-width N (0 = use setting/default)
-	NoSidebar              bool                                                                                                                                                         // --no-sidebar
-	TodoManager            *cliTodoManager                                                                                                                                              // per-session todo persistence
-	SetCWDFn               func(channelName, chatID, dir string) error                                                                                                                  // 会话切换时初始化 CWD
-	BindChatFn             func(chatID string) error                                                                                                                                    // 订阅 Hub 路由，使服务器推送事件（progress/stream/outbound）到达客户端
-	Ephemeral              bool                                                                                                                                                         // --ephemeral: no sessions.json, no DB persistence, clean slate for benchmarking
+	CommandCatalogProvider func() []protocol.CommandInfo                                                                                                                                // supplies registered Agent command metadata for help/completion/palette
+	// CommandNamesProvider is retained for source compatibility. It is used only
+	// when CommandCatalogProvider is nil.
+	// Deprecated: use CommandCatalogProvider.
+	CommandNamesProvider func() []string
+	PaletteContributor   PaletteContributor                          // supplies external commands for command palette
+	SidebarWidthOverride int                                         // --sidebar-width N (0 = use setting/default)
+	NoSidebar            bool                                        // --no-sidebar
+	TodoManager          *cliTodoManager                             // per-session todo persistence
+	SetCWDFn             func(channelName, chatID, dir string) error // 会话切换时初始化 CWD
+	BindChatFn           func(chatID string) error                   // 订阅 Hub 路由，使服务器推送事件（progress/stream/outbound）到达客户端
+	Ephemeral            bool                                        // --ephemeral: no sessions.json, no DB persistence, clean slate for benchmarking
 }
 
 type AgentPanelEntry struct {

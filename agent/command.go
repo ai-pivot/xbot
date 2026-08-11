@@ -8,6 +8,7 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/protocol"
 )
 
 // Command defines the interface for slash commands and other quick commands
@@ -106,15 +107,8 @@ type DescribedCommand interface {
 	Description() string
 }
 
-// CommandInfo is a lightweight, JSON-friendly description of a registered
-// command, suitable for external consumers such as the web UI Tab-completion.
-type CommandInfo struct {
-	Name        string   `json:"name"`
-	Aliases     []string `json:"aliases,omitempty"`
-	Usage       string   `json:"usage,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Hidden      bool     `json:"-"`
-}
+// CommandInfo is the shared, JSON-friendly description of a registered command.
+type CommandInfo = protocol.CommandInfo
 
 // CommandInfoProvider is implemented by commands that can describe themselves.
 type CommandInfoProvider interface {

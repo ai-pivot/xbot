@@ -151,7 +151,7 @@ Core tool (always loaded). AI reads/modifies xbot configuration.
 
 **Runner routing**: Session-level binding via `SandboxRouter.sessionRunners` sync.Map. `config switch` writes `"channel:chatID" → runnerName`. Per-tool-call sandbox re-resolution in `buildToolExecutor` (engine_wire.go) and `defaultToolExecutor` (engine.go) ensures all tools (Shell, Read, Grep, Glob, FileReplace...) immediately use the new runner after switch. CWD auto-resets to runner's live workspace from `GetConnectionInfo`.
 
-**LLM model operations**: To switch model → tell user to run `/set-model <model>`. To configure custom LLM → tell user to run `/set-llm`. To view usage → tell user to run `/usage`. All these are agent-level commands handled natively. Do NOT use `send_slash` or `config set` for these — they have dedicated paths.
+**LLM model operations**: To switch model → tell user to run `/set-model <subscription> <model>`. To configure custom LLM → tell user to run `/set-llm <name> provider=<provider> base_url=<url> api_key=<key>`. To view usage → tell user to run `/usage`. All these are agent-level commands handled natively. Do NOT use `send_slash` or `config set` for these — they have dedicated paths.
 
 **Injection**: `buildToolContext` auto-injects `ConfigGet`/`ConfigSet` from `cfg.SettingsSvc`, and `RunnerCreate`/`RunnerList`/`RunnerDelete`/`RunnerGetActive`/`RunnerSetActive` from `tools.RunnerTokenStore` via `tools.GetRunnerTokenDB()`. Works in ALL modes (local + remote via RPC). Does NOT rely on Agent `SetTUICallbacks`.
 

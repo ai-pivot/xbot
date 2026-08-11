@@ -118,7 +118,7 @@ func TestCommandRegistry_HelpTextUsesRegisteredCommands(t *testing.T) {
 	help := r.HelpText()
 	for _, want := range []string{
 		"/new — 开始新对话",
-		"/set-model <订阅名> <模型名> — 切换当前会话模型",
+		"/set-model <subscription> <model> — 切换当前会话模型",
 		"/plugin reload-all — 重新加载所有插件",
 		"/deploy — 部署当前项目",
 	} {

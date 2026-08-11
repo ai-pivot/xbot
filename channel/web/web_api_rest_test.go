@@ -709,7 +709,7 @@ func TestRESTRPCDispatchesThroughCallback(t *testing.T) {
 }
 
 func TestRESTRPCAllowsFrontendRecoveryMethods(t *testing.T) {
-	methods := []string{"list_command_names", "set_cwd", "continue_interactive_session"}
+	methods := []string{"list_commands", "list_command_names", "set_cwd", "continue_interactive_session"}
 	for _, wantMethod := range methods {
 		t.Run(wantMethod, func(t *testing.T) {
 			wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())

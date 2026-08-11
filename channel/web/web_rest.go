@@ -244,6 +244,7 @@ var nonAdminRESTRPCMethods = map[string]struct{}{
 	"set_cwd":                            {},
 	"get_settings":                       {},
 	"list_command_names":                 {},
+	"list_commands":                      {},
 	"set_setting":                        {},
 	"get_default_model":                  {},
 	"get_user_max_context":               {},

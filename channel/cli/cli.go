@@ -4,7 +4,7 @@
 // featuring:
 //   - Incremental streaming rendering (markdown + code blocks)
 //   - Tool call visualization with live status indicators
-//   - Built-in slash commands: /model, /models, /context, /new
+//   - Built-in slash commands with shared help/completion/palette metadata
 //   - Tab completion for commands and input history
 //   - /rewind conversation rewind
 //   - Non-interactive (pipe) mode with streaming output
@@ -1003,6 +1003,9 @@ func (c *CLIChannel) updateBgTaskCountFn() {
 	}
 	if c.config.IsAdminFn != nil {
 		c.model.isAdminFn = c.config.IsAdminFn
+	}
+	if c.config.CommandCatalogProvider != nil {
+		c.model.commandCatalogFn = c.config.CommandCatalogProvider
 	}
 	if c.config.CommandNamesProvider != nil {
 		c.model.commandNamesFn = c.config.CommandNamesProvider

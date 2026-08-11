@@ -209,7 +209,7 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	// - handleAgentMessage: after the reply is processed (via startAgentTurn
 	//   for the next turn, or explicitly when the turn is fully done)
 	// - startAgentTurn → resetProgressState: when a new turn begins
-	// - /clear, session switch: full state reset
+	// - conversation reset and session switch: full state reset
 	m.typingStartTime = time.Time{}
 	m.progressState.twVisible = 0
 	m.progressState.rwVisible = 0

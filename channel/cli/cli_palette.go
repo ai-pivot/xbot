@@ -8,6 +8,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/sahilm/fuzzy"
+
+	"xbot/protocol"
 )
 
 // ---------------------------------------------------------------------------
@@ -84,6 +86,12 @@ const paletteMaxVisible = 12
 // Commands are grouped by category (tab-switchable) and presented as a flat searchable list.
 func (m *cliModel) buildPaletteCommands() []paletteCommand {
 	var cmds []paletteCommand
+	catalog := m.commandCatalog()
+	var externalCommands []PaletteExternalCommand
+	if m.paletteContributor != nil {
+		m.pluginCmdNames = nil
+		externalCommands = m.paletteContributor()
+	}
 
 	// --- System ---
 	cmds = append(cmds, paletteCommand{
@@ -107,7 +115,7 @@ func (m *cliModel) buildPaletteCommands() []paletteCommand {
 		Category: PaletteCategorySystem, ActionKind: paletteActionOpenPanel, ActionData: "channel",
 	})
 	cmds = append(cmds, paletteCommand{
-		ID: "clear", Title: "Clear Chat", Description: "start a fresh conversation",
+		ID: "clear", Title: "Clear Display", Description: "clear the current TUI display",
 		Shortcut: "/clear", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/clear",
 	})
 	cmds = append(cmds, paletteCommand{
@@ -163,7 +171,7 @@ func (m *cliModel) buildPaletteCommands() []paletteCommand {
 		Shortcut: "/models", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/models",
 	})
 	cmds = append(cmds, paletteCommand{
-		ID: "new", Title: "New Session", Description: "start a fresh chat session",
+		ID: "new", Title: "Reset Conversation", Description: "archive memory and reset this conversation",
 		Shortcut: "/new", Category: PaletteCategorySystem, ActionKind: paletteActionSendText, ActionData: "/new",
 	})
 	cmds = append(cmds, paletteCommand{
@@ -179,10 +187,77 @@ func (m *cliModel) buildPaletteCommands() []paletteCommand {
 		Shortcut: "Ctrl+Z", Category: PaletteCategorySystem, ActionKind: paletteActionQuit,
 	})
 
+	// Rich actions keep their specialized behavior and friendly titles, while
+	// command descriptions come from the same catalog as Help and completion.
+	richCommandNames := map[string]string{
+		"sessions":       "/sessions",
+		"channel":        "/channel",
+		"clear":          "/clear",
+		"compress":       "/compress",
+		"search":         "/search",
+		"settings":       "/settings",
+		"reload_plugins": "/plugin reload-all",
+		"help":           "/help",
+		"update":         "/update",
+		"context":        "/context",
+		"setup":          "/setup",
+		"models":         "/models",
+		"new":            "/new",
+		"rewind":         "/rewind",
+		"cancel":         "/cancel",
+		"quit":           "/quit",
+	}
+	catalogByName := make(map[string]protocol.CommandInfo, len(catalog))
+	for _, info := range catalog {
+		catalogByName[info.Name] = info
+	}
+	for i := range cmds {
+		name, ok := richCommandNames[cmds[i].ID]
+		if !ok {
+			continue
+		}
+		if info, exists := catalogByName[name]; exists {
+			cmds[i].Description = m.commandDescription(info)
+		}
+	}
+
+	// Add every catalog command that does not already have a richer palette
+	// action above or an external contribution below. Catalog-only entries insert
+	// their command text so argument-taking commands are never executed empty.
+	present := make(map[string]struct{})
+	for _, name := range richCommandNames {
+		present[name] = struct{}{}
+	}
+	for _, cmd := range cmds {
+		if strings.HasPrefix(cmd.ActionData, "/") {
+			present[strings.TrimSpace(cmd.ActionData)] = struct{}{}
+		}
+	}
+	for _, ext := range externalCommands {
+		if strings.HasPrefix(ext.Content, "/") {
+			present[strings.SplitN(strings.TrimSpace(ext.Content), " ", 2)[0]] = struct{}{}
+		}
+	}
+	for _, info := range catalog {
+		if !strings.HasPrefix(info.Name, "/") {
+			continue
+		}
+		if _, exists := present[info.Name]; exists {
+			continue
+		}
+		cmds = append(cmds, paletteCommand{
+			ID:          "command:" + info.Name,
+			Title:       info.Name,
+			Description: m.commandDescription(info),
+			Category:    PaletteCategorySystem,
+			ActionKind:  paletteActionInsertText,
+			ActionData:  info.Name,
+		})
+	}
+
 	// --- External contributions (plugins, skills, agents, custom commands) ---
-	if m.paletteContributor != nil {
-		m.pluginCmdNames = nil // reset
-		for _, ext := range m.paletteContributor() {
+	if len(externalCommands) > 0 {
+		for _, ext := range externalCommands {
 			kind := paletteActionInsertText
 			if ext.Send {
 				kind = paletteActionSendText

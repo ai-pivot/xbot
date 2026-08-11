@@ -539,9 +539,9 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&newCmd{}, CommandInfo{Usage: "/new", Description: "开始新对话（归档记忆后重置）"})
 	r.Register(&versionCmd{}, CommandInfo{Usage: "/version", Description: "显示版本信息"})
 	r.Register(&helpCmd{}, CommandInfo{Usage: "/help", Description: "显示帮助"})
-	r.Register(&promptCmd{}, CommandInfo{Usage: "/prompt <query>", Description: "预览完整提示词（不调用 LLM）"})
-	r.Register(&setLLMCmd{}, CommandInfo{Usage: "/set-llm provider=<p> base_url=<url> api_key=<key> [model=<m>]", Description: "创建/更新个人 LLM 订阅"})
-	r.Register(&unsetLLMCmd{}, CommandInfo{Usage: "/unset-llm <订阅名>", Description: "删除指定订阅"})
+	r.Register(&promptCmd{}, CommandInfo{Usage: "/prompt [query]", Description: "预览完整提示词（不调用 LLM）"})
+	r.Register(&setLLMCmd{}, CommandInfo{Usage: "/set-llm <name> provider=<p> base_url=<url> api_key=<key>", Description: "创建/更新个人 LLM 订阅"})
+	r.Register(&unsetLLMCmd{}, CommandInfo{Usage: "/unset-llm <name>", Description: "删除指定订阅"})
 	r.Register(&getLLMCmd{}, CommandInfo{Usage: "/llm", Description: "查看当前解析到的订阅与模型"})
 	r.Register(&listLLMsCmd{}, CommandInfo{Usage: "/llms", Description: "列出所有个人 LLM 订阅"})
 	r.Register(&compressCmd{}, CommandInfo{Usage: "/compress", Description: "手动触发上下文压缩"})
@@ -550,7 +550,7 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&contextModeCmd{}, CommandInfo{Usage: "/context mode [phase1|none|default]", Description: "查看/切换压缩模式"}) // 先注册（更精确的匹配优先）
 	r.Register(&contextInfoCmd{}, CommandInfo{Usage: "/context", Description: "查看上下文统计"})                              // 后注册（更宽泛的匹配）
 	r.Register(&modelsCmd{}, CommandInfo{Usage: "/models", Description: "列出可选模型（带正常/离线/禁用状态）"})
-	r.Register(&setModelCmd{}, CommandInfo{Usage: "/set-model <订阅名> <模型名>", Description: "切换当前会话模型"})
+	r.Register(&setModelCmd{}, CommandInfo{Usage: "/set-model <subscription> <model>", Description: "切换当前会话模型"})
 	r.Register(&bangCmd{}, CommandInfo{Usage: "!<command>", Description: "快捷执行命令（跳过 LLM，直接在 sandbox 中运行）"})
 
 	// Registry & settings commands
@@ -561,7 +561,7 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	// Goal commands
 	r.Register(&goalClearCmd{}, CommandInfo{Usage: "/goal clear", Description: "清除当前目标"}) // 先注册（更精确的匹配优先）
 	r.Register(&goalStatusCmd{}, CommandInfo{Usage: "/goal status", Description: "查看当前目标状态"})
-	r.Register(&goalCmd{}, CommandInfo{Usage: "/goal <目标描述>", Description: "设定长期目标，Agent 自动持续工作直到完成"}) // 后注册（匹配 /goal <任意内容>）
+	r.Register(&goalCmd{}, CommandInfo{Usage: "/goal <description>", Description: "设定长期目标，Agent 自动持续工作直到完成"}) // 后注册（匹配 /goal <任意内容>）
 
 	// Session info & export
 	r.Register(&infoCmd{}, CommandInfo{Usage: "/info", Description: "查看当前会话信息"})

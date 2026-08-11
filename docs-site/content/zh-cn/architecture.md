@@ -395,7 +395,7 @@ type MemoryProvider interface {
 | `letta` | 返回 Core Memory 结构化块 | LLM rethink → 更新 Core + 写入 Archival | 复杂长期记忆 |
 
 **Memorize 触发时机**（⚠️ 不在每次对话结束后触发）:
-- `/new` 命令（切换会话）— `ArchiveAll=true`
+- `/new` 命令（重置当前对话）— `ArchiveAll=true`
 - SubAgent 退出 — `ArchiveAll=true`
 - 压缩时通过 memory tools 由 LLM 自主调用
 

@@ -95,6 +95,8 @@ const (
 	MethodAppInstallURL                = "app_install_url"
 	MethodAppUninstall                 = "app_uninstall"
 	MethodAppList                      = "app_list"
+	MethodListCommands                 = "list_commands"
+	MethodListCommandNames             = "list_command_names"
 )
 
 // --- Settings ---

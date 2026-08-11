@@ -60,13 +60,13 @@ Type these in the TUI:
 | `/channel` | **Channel configuration panel** — visually manage Web/Feishu/QQ/NapCat channels |
 | `/llm` | Show the currently resolved subscription and model |
 | `/models` | List selectable models (with normal/offline/disabled status) |
-| `/set-model <model>` | Switch the current model across subscriptions |
-| `/set-llm` | Create/update a personal LLM subscription |
-| `/unset-llm` | Delete the personal default subscription |
+| `/set-model <subscription> <model>` | Switch the current session's model |
+| `/set-llm <name> provider=<provider> base_url=<url> api_key=<key>` | Create/update a personal LLM subscription |
+| `/unset-llm <name>` | Delete a named personal subscription |
 | `/context` | Inspect token usage |
-| `/clear` | Clear conversation and memory |
-| `/new` | Start a new conversation |
-| `/sessions` | List or switch sessions |
+| `/clear` | Clear only the current TUI display |
+| `/new` | Archive memory and reset the current conversation |
+| `/sessions` | Open the Sessions panel |
 | `/rewind` | Rewind the conversation |
 | `/help` | Show all commands |
 

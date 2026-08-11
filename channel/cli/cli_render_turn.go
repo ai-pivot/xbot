@@ -670,6 +670,7 @@ func (m *cliModel) renderHelpPanel() string {
 	s := &m.styles
 	titleStyle := s.HelpTitle
 	cmdStyle := s.HelpCmd
+	usageStyle := s.HelpCmd.UnsetWidth()
 	descStyle := s.HelpDesc
 	groupStyle := s.HelpGroup
 	keyStyle := s.HelpKey
@@ -681,8 +682,15 @@ func (m *cliModel) renderHelpPanel() string {
 
 	sb.WriteString(groupStyle.Render(m.locale.HelpCommandsTitle))
 	sb.WriteString("\n")
-	for _, c := range m.locale.HelpCmds {
-		sb.WriteString("  " + cmdStyle.Render(c.Cmd) + " " + descStyle.Render(c.Desc))
+	for _, command := range m.commandCatalog() {
+		description := m.commandDescription(command)
+		sb.WriteString("  " + cmdStyle.Render(command.Name))
+		if description != "" {
+			sb.WriteString(" " + descStyle.Render(description))
+		}
+		if command.Usage != "" && command.Usage != command.Name {
+			sb.WriteString("\n    " + usageStyle.Render(command.Usage))
+		}
 		sb.WriteString("\n")
 	}
 
