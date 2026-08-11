@@ -383,25 +383,19 @@ export class SSEConnectionImpl implements WSConnection {
       // the in-progress turn "vanishes" until a manual refresh (user report:
       // "重连之后 user msg 后进行中的 turn 消失了，刷新才能看到").
       if (!progress || progress.phase === 'done') {
+        // Turn ended on the server (or get_active_progress returned null —
+        // e.g. an active turn momentarily not registered). The committed
+        // reply may have been lost during the SSE gap; the DB is authoritative
+        // — reload from it.
+        // CRITICAL: do NOT dispatch phase='done' / session(idle) here. They
+        // clear the live store (liveMessage returns null on phase='done'), and
+        // with a slow reload the already-rendered turn would VANISH until the
+        // reload lands (user report: "这后面原本有十几个迭代，突然消失，过一
+        // 会出现"). Keep the live row; the reload brings the committed message
+        // and buildMessageRows' same-turn merge carries the live iterations
+        // over. The sidebar busy state is cleared by the backend's own
+        // session(idle) event once the turn really ends.
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
-        // CRITICAL: carry the cached snapshot's seq so the stale PhaseDone
-        // guard in useProgressStream works. Without a seq, the guard
-        // (seq <= store.eventSeq) is skipped and phaseDoneRef gets set to
-        // true — then the NEXT turn's stream_content / turn_started events
-        // are discarded (phaseDoneRef?.current check), breaking linear
-        // consistency after reconnect.
-        const doneSeq = typeof cachedProgress?.seq === 'number' ? cachedProgress.seq : undefined
-        this.dispatch({
-          type: 'progress_structured',
-          chat_id: chatID,
-          progress: doneSeq ? { phase: 'done', seq: doneSeq } : { phase: 'done' },
-        })
-        // Also dispatch idle so the sidebar recovers from a stale busy state
-        // after an SSE reconnect gap.
-        this.dispatch({
-          type: 'session',
-          session: { channel, chat_id: chatID, action: 'idle' },
-        })
         return
       }
       // progressVersion changed during the fetch: newer events already arrived

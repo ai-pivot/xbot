@@ -380,7 +380,13 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
-  it('ignores a completed active-progress recovery snapshot', async () => {
+  it('reloads from DB when active-progress recovery returns done — does NOT clear the live row', async () => {
+    // User report: "这后面原本有十几个迭代，突然消失，过一会出现". The done/null
+    // branch MUST reload (replay_gap → DB is authoritative) but MUST NOT
+    // dispatch phase='done' / session(idle) — they clear the live store, and
+    // with a slow reload the already-rendered turn vanishes until the reload
+    // lands. Keep the live row; the reload's committed message merges via
+    // buildMessageRows same-turn merge.
     vi.useFakeTimers()
     postAPIMock.mockImplementation(async (endpoint: string) => {
       if (endpoint === '/api/rpc') return { phase: 'done', iteration: 2 }
@@ -400,13 +406,15 @@ describe('SSEConnectionImpl', () => {
 
     expect(received).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          type: 'progress_structured',
-          progress: { phase: 'done' },
-        }),
+        expect.objectContaining({ type: 'replay_gap' }),
       ]),
     )
-    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
+    // The live row must NOT be cleared: no phase='done', no session(idle).
+    expect(received.some((m) => m.type === 'progress_structured' && (m as { progress?: { phase?: string } }).progress?.phase === 'done')).toBe(false)
+    expect(received.some((m) => m.type === 'session' && (m as { session?: { action?: string } }).session?.action === 'idle')).toBe(false)
+    // Snapshot cache is NOT cleared either (no terminal progress event) — the
+    // live row keeps rendering until the reload's committed message lands.
+    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(true)
     connection.dispose()
   })
 
@@ -438,12 +446,10 @@ describe('SSEConnectionImpl', () => {
     expect(received).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: 'replay_gap' }),
-        expect.objectContaining({
-          type: 'progress_structured',
-          progress: { phase: 'done' },
-        }),
       ]),
     )
+    // No phase='done' / session(idle) — the live row is preserved.
+    expect(received.some((m) => m.type === 'progress_structured' && (m as { progress?: { phase?: string } }).progress?.phase === 'done')).toBe(false)
     connection.dispose()
   })
 
