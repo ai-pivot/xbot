@@ -566,7 +566,7 @@ describe('useProgressStream event dispatch', () => {
     // reload completes mid-stream: server snapshot is LACONIC — phase set but
     // no visible fields (iteration-boundary snapshot / delta-filtered history).
     act(() => {
-      rerender({ initialProgress: { phase: 'tool_exec', iteration: 2, turn_id: 1 } as ProgressEvent })
+      rerender({ initialProgress: { phase: 'tool_exec', iteration: 2, turn_id: 1 } as ProgressEvent | null })
     })
     act(() => { rafCbs.splice(0, rafCbs.length).forEach((cb) => cb()) })
 
