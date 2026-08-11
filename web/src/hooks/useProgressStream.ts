@@ -381,7 +381,7 @@ export function useProgressStream({
   }
 }
 
-function hasVisibleProgress(snap: ProgressSnapshot): boolean {
+export function hasVisibleProgress(snap: ProgressSnapshot): boolean {
   return Boolean(
     snap.streamContent ||
       snap.content ||
@@ -390,6 +390,17 @@ function hasVisibleProgress(snap: ProgressSnapshot): boolean {
       snap.completedTools.length ||
       snap.streamingTools.length ||
       snap.iterationHistory.length ||
+      // Iteration-boundary instant: the previous iteration's active/completed
+      // tools were JUST cleared (a new iteration started — the clearing event
+      // is often a phase:undefined stream delta which carries NO
+      // iteration_history), but the new iteration's iterationHistory delta has
+      // not arrived yet. Every visible field is momentarily empty → without
+      // this guard the live row VANISHES for a frame (user report: "agent
+      // turn 消失然后又出现"). Already-rendered content must never disappear:
+      // as long as the turn has made progress (lastIter > 0) the live row
+      // stays. Turn end (text event) resets the store (lastIter=0), and the
+      // pre-iteration "thinking" phase has lastIter=0 — both unaffected.
+      snap.lastIter > 0 ||
       snap.lastReasoning ||
       snap.subAgents.length,
   )
