@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"xbot/channel"
+	"xbot/plugin"
 	"xbot/protocol"
 )
 
@@ -625,5 +626,89 @@ func TestChannelPluginTransport_HandleChannelPrompt_EmptyParts(t *testing.T) {
 	parts := provider.ChannelSystemParts(context.Background(), "chat1", "user1")
 	if parts != nil {
 		t.Errorf("expected nil parts for empty declaration, got %v", parts)
+	}
+}
+
+// TestChannelPluginTransport_HandleChannelUI verifies that a "web_ui"
+// declaration invokes the OnChannelUI callback with the declared components.
+func TestChannelPluginTransport_HandleChannelUI(t *testing.T) {
+	pio := newMockProcessIO()
+	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal("ok")
+	}
+	eventCh := make(chan protocol.WSMessage, 10)
+
+	var captured []plugin.WebUIComponent
+	transport := NewChannelPluginTransportWithIO("telegram", pio, dispatch, eventCh)
+	transport.onChannelUI = func(decls []plugin.WebUIComponent) {
+		captured = decls
+	}
+	defer transport.Stop()
+
+	raw, _ := json.Marshal(map[string]interface{}{
+		"type": "web_ui",
+		"ui": []map[string]interface{}{
+			{
+				"widget_id": "ci-monitor",
+				"slot":      "right_sidebar",
+				"component": map[string]interface{}{"type": "sparkline", "props": map[string]interface{}{"data": []int{1, 2, 3}}},
+			},
+		},
+	})
+	transport.handleChannelUI(json.RawMessage(raw))
+
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 component callback, got %d", len(captured))
+	}
+	c := captured[0]
+	if c.WidgetID != "ci-monitor" {
+		t.Errorf("expected widget_id 'ci-monitor', got %q", c.WidgetID)
+	}
+	if c.Slot != "right_sidebar" {
+		t.Errorf("expected slot 'right_sidebar', got %q", c.Slot)
+	}
+	if c.Component == nil || c.Component.Type != "sparkline" {
+		t.Errorf("expected sparkline component, got %+v", c.Component)
+	}
+}
+
+// TestChannelPluginTransport_HandleChannelUI_NoCallback verifies web_ui
+// declaration works without OnChannelUI set (no panic).
+func TestChannelPluginTransport_HandleChannelUI_NoCallback(t *testing.T) {
+	pio := newMockProcessIO()
+	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal("ok")
+	}
+	eventCh := make(chan protocol.WSMessage, 10)
+	transport := NewChannelPluginTransportWithIO("telegram", pio, dispatch, eventCh)
+	defer transport.Stop()
+
+	raw, _ := json.Marshal(map[string]interface{}{
+		"type": "web_ui",
+		"ui":   []map[string]interface{}{},
+	})
+	transport.handleChannelUI(json.RawMessage(raw)) // must not panic
+}
+
+// TestChannelPluginTransport_HandleChannelUI_Empty verifies an empty ui array
+// clears the previous set via callback.
+func TestChannelPluginTransport_HandleChannelUI_Empty(t *testing.T) {
+	pio := newMockProcessIO()
+	dispatch := func(ctx context.Context, method string, payload json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal("ok")
+	}
+	eventCh := make(chan protocol.WSMessage, 10)
+
+	var captured []plugin.WebUIComponent
+	transport := NewChannelPluginTransportWithIO("telegram", pio, dispatch, eventCh)
+	transport.onChannelUI = func(decls []plugin.WebUIComponent) {
+		captured = decls
+	}
+	defer transport.Stop()
+
+	raw, _ := json.Marshal(map[string]interface{}{"type": "web_ui", "ui": []map[string]interface{}{}})
+	transport.handleChannelUI(json.RawMessage(raw))
+	if captured == nil || len(captured) != 0 {
+		t.Errorf("expected empty callback list, got %v", captured)
 	}
 }

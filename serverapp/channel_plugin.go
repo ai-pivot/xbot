@@ -93,6 +93,17 @@ func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus
 		}
 	}
 
+	// Set up the OnChannelUI callback to store web UI components in the Agent's
+	// WebUIRegistry (which pushes them to web clients via NotifyWidgetsUpdated).
+	var onChannelUI func(decls []plugin.WebUIComponent)
+	if p.agentGetter != nil {
+		onChannelUI = func(decls []plugin.WebUIComponent) {
+			if ag := p.agentGetter(); ag != nil {
+				ag.RegisterChannelWebUI(p.decl.Name, decls)
+			}
+		}
+	}
+
 	transport := agent.NewChannelPluginTransport(agent.ChannelPluginTransportConfig{
 		Name:            p.decl.Name,
 		Stdin:           proc.stdinPipe,
@@ -101,6 +112,7 @@ func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus
 		EventCh:         eventCh,
 		Registry:        reg,
 		OnChannelPrompt: onChannelPrompt,
+		OnChannelUI:     onChannelUI,
 	})
 
 	p.mu.Lock()

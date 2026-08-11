@@ -377,6 +377,14 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				}
 			}
 			disp.Register(webCh)
+			// Inject the plugin widget registry (WidgetSubscriber). Structured
+			// web widgets are pushed per web-subscribed chatID on update.
+			if pm := ag.PluginManager(); pm != nil {
+				webCh.SetWidgetRegistry(pm.WidgetRegistry())
+				if reg := ag.WebUIRegistry(); reg != nil {
+					webCh.SetWebUIRegistry(reg)
+				}
+			}
 		} else {
 			log.Warn("Web channel enabled but no database available, skipping")
 		}
@@ -824,7 +832,31 @@ func Run(args []string) error {
 	// This makes the dispatcher aware of channel=cli so all outbound messages
 	// (including raw bus.Outbound calls) route correctly to WS clients.
 	if webCh != nil {
-		disp.Register(web.NewRemoteCLIChannel(webCh.Hub()))
+		rcli := web.NewRemoteCLIChannel(webCh.Hub())
+		// Inject the plugin widget registry (WidgetSubscriber). Per-session
+		// rendering resolves CWD from the multi-session manager, falling back
+		// to the persisted WorktreeRegistry entry (same as the pre-migration
+		// agent.go logic).
+		if pm := ag.PluginManager(); pm != nil {
+			rcli.SetWidgetRegistry(pm.WidgetRegistry())
+			ms := ag.MultiSession()
+			rcli.SetWidgetGetCWD(func(chatID string) string {
+				cwd := ""
+				if ms != nil && chatID != "" {
+					if sess, err := ms.GetOrCreateSession("cli", chatID); err == nil {
+						cwd = sess.GetCurrentDir()
+					}
+				}
+				if cwd == "" {
+					sessKey := "cli:" + chatID
+					if entry := tools.GlobalWorktreeRegistry.GetBySession(sessKey); entry != nil && entry.WorktreeDir != "" {
+						cwd = entry.WorktreeDir
+					}
+				}
+				return cwd
+			})
+		}
+		disp.Register(rcli)
 	}
 
 	// sessionStateHandler and ChatRenameFn are now handled internally by Agent.

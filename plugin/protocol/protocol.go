@@ -96,6 +96,21 @@ type EnrichParams struct {
 	EnricherName string `json:"enricherName"`
 }
 
+// WebUIActionParams is the params object for the "web_ui_action" method.
+// Sent when a user interacts with a web UI component contributed by this plugin.
+type WebUIActionParams struct {
+	WidgetID string `json:"widgetId"`
+	Action   string `json:"action"`
+	Data     string `json:"data"`
+	ChatID   string `json:"chatId"`
+}
+
+// WebUIActionResult is the result of handling a web UI action. Optional
+// Component carries a new component declaration (JSON) to push to clients.
+type WebUIActionResult struct {
+	Result string `json:"result,omitempty"`
+}
+
 // DeactivateParams is the params object for the "deactivate" method (empty).
 type DeactivateParams struct{}
 
@@ -182,6 +197,11 @@ type Handler struct {
 
 	// Enrich is called to collect dynamic content for the system prompt.
 	Enrich func(params *EnrichParams) (*EnrichResult, error)
+
+	// WebUIAction is called when a user interacts with a web UI component
+	// contributed by this plugin (web_ui protocol). Params carry the widget,
+	// the action name, and arbitrary JSON data.
+	WebUIAction func(params *WebUIActionParams) (*WebUIActionResult, error)
 
 	// Deactivate is called before the process is killed.
 	Deactivate func()
@@ -288,6 +308,22 @@ func dispatch(h *Handler, enc *json.Encoder, method string, params json.RawMessa
 			json.Unmarshal(params, &p)
 		}
 		resp, err := h.Enrich(&p)
+		if err != nil {
+			writeErr(enc, err.Error())
+			return
+		}
+		writeMsg(enc, resp)
+
+	case "web_ui_action":
+		if h.WebUIAction == nil {
+			writeErr(enc, "web_ui_action not implemented")
+			return
+		}
+		var p WebUIActionParams
+		if params != nil {
+			json.Unmarshal(params, &p)
+		}
+		resp, err := h.WebUIAction(&p)
 		if err != nil {
 			writeErr(enc, err.Error())
 			return

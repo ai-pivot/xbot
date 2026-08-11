@@ -593,6 +593,7 @@ func isSSEEventType(msgType string) bool {
 		protocol.MsgTypeUserEcho,
 		protocol.MsgTypeInjectUser,
 		protocol.MsgTypePluginWidgets,
+		protocol.MsgTypeWebWidgets,
 		protocol.MsgTypeSession,
 		protocol.MsgTypeRunnerStatus,
 		protocol.MsgTypeSyncProgress,

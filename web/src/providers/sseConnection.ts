@@ -30,6 +30,7 @@ export const SSE_EVENT_TYPES = [
   'user_echo',
   'inject_user',
   'plugin_widgets',
+  'web_widgets',
   'session',
   'runner_status',
   'sync_progress',

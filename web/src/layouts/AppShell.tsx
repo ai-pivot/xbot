@@ -18,6 +18,7 @@ import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
+import { InfoBar } from '@/plugins/InfoBar'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
@@ -158,6 +159,8 @@ export function AppShell() {
       <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="relative h-full min-w-0 flex-1">
+          {/* Plugin widget info bar (info_bar zone). */}
+          <InfoBar />
           <DockviewContainer tabManager={tabManager} />
         </main>
       </RightSidebarControlContext.Provider>

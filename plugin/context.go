@@ -84,7 +84,16 @@ type UIContributor interface {
 	RegisterOverlay(id string, provider OverlayProvider) error
 	ShowOverlay(id string) error
 	HideOverlay() error
+
+	// RegisterWebActionHandler registers a handler for user interactions with
+	// a web UI component contributed by this plugin (web_ui protocol). The
+	// handler receives the action name and JSON data; it returns an optional
+	// result string. Widgets are addressed by widgetID.
+	RegisterWebActionHandler(widgetID string, handler WebActionHandler) error
 }
+
+// WebActionHandler handles a user interaction with a web UI component.
+type WebActionHandler func(action string, data string) (string, error)
 
 // CronScheduler provides cron scheduling for plugins.
 type CronScheduler interface {
@@ -240,6 +249,10 @@ type pluginContextImpl struct {
 
 	// UI widget registry (set by PluginManager before Activate)
 	widgetRegistry *WidgetRegistry
+
+	// webActionHandlers maps widgetID → handler for web_ui interactions
+	// (registered via RegisterWebActionHandler).
+	webActionHandlers map[string]WebActionHandler
 
 	// Context values — session-scoped in-memory key-value store
 	contextValues map[string]any
@@ -683,6 +696,28 @@ func (pc *pluginContextImpl) UpdateWidget(widgetID string) error {
 	}
 	// Use default width 0 (unbounded) — TUI will refresh with real width on resize.
 	return pc.widgetRegistry.RefreshWidget(pc.pluginID, widgetID, 0, nil)
+}
+
+// RegisterWebActionHandler implements UIContributor.
+func (pc *pluginContextImpl) RegisterWebActionHandler(widgetID string, handler WebActionHandler) error {
+	if handler == nil {
+		return fmt.Errorf("web action handler must not be nil")
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pc.webActionHandlers == nil {
+		pc.webActionHandlers = make(map[string]WebActionHandler)
+	}
+	pc.webActionHandlers[widgetID] = handler
+	return nil
+}
+
+// webActionHandler returns the handler registered for the given widgetID.
+func (pc *pluginContextImpl) webActionHandler(widgetID string) (WebActionHandler, bool) {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	h, ok := pc.webActionHandlers[widgetID]
+	return h, ok
 }
 
 // getWidgetRegistry returns the underlying WidgetRegistry. Used internally by

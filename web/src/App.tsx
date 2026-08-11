@@ -13,6 +13,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { WSProvider } from '@/providers/WSProvider'
 import { CwdProvider } from '@/providers/CwdProvider'
 import { SessionStoreProvider } from '@/hooks/useSessionStore'
+import { PluginWidgetProvider } from '@/plugins/PluginWidgetProvider'
 import { AppShell } from '@/layouts/AppShell'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { LoginPage } from '@/pages/LoginPage'
@@ -32,7 +33,9 @@ export default function App() {
                 <WSProvider>
                   <SessionStoreProvider>
                     <CwdProvider>
-                      <AppShell />
+                      <PluginWidgetProvider>
+                        <AppShell />
+                      </PluginWidgetProvider>
                     </CwdProvider>
                   </SessionStoreProvider>
                 </WSProvider>

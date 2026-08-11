@@ -17,6 +17,7 @@ const (
 	MsgTypeUserEcho       = "user_echo"
 	MsgTypeInjectUser     = "inject_user"
 	MsgTypePluginWidgets  = "plugin_widgets"
+	MsgTypeWebWidgets     = "web_widgets"
 	MsgTypeTUIControlReq  = "tui_control_req"
 	MsgTypeRunnerStatus   = "runner_status"
 	MsgTypeSyncProgress   = "sync_progress"
@@ -30,6 +31,9 @@ const (
 
 	// Channel Plugin → xbot: prompt declaration
 	MsgTypeChannelPrompt = "channel_prompt"
+
+	// Channel Plugin → xbot: web UI component declarations
+	MsgTypeWebUI = "web_ui"
 )
 
 // Client → Server message types

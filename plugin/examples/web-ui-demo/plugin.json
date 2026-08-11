@@ -1,0 +1,25 @@
+{
+  "id": "com.example.web-ui-demo",
+  "name": "Web UI Demo",
+  "version": "1.0.0",
+  "description": "Example channel plugin demonstrating the web_ui protocol: declarative web components (sparkline/table/badge), free-form code mode, and web_ui_action interactions.",
+  "author": "xbot",
+  "runtime": "grpc",
+  "entry": "python3 main.py",
+  "activationEvents": ["onStart"],
+  "permissions": ["channels.register"],
+  "contributes": {
+    "channelProvider": {
+      "name": "webui-demo",
+      "config_schema": [
+        {
+          "key": "enabled",
+          "label": "Enable",
+          "description": "Enable the web UI demo channel",
+          "type": "toggle",
+          "default_value": "true"
+        }
+      ]
+    }
+  }
+}
