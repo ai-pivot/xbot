@@ -199,6 +199,43 @@ export function useProgressStream({
     }
   }, [chatID, store])
 
+  // ── RENDER_LOSS diagnostic ──
+  // Catch the "already-rendered content vanished during streaming" bug class
+  // (turn-vanish reports) at the exact mutation: any streaming turn whose
+  // iterationHistory or lastIter drops to zero means already-rendered
+  // iterations disappeared from the live row. This MUST never happen — the log
+  // pinpoints the corrupting event so the root cause can be fixed at the source
+  // instead of patching symptoms. Non-streaming (turn ended) is excluded — the
+  // committed reply replaces the live row legitimately.
+  useEffect(() => {
+    let prevIterCount = store.getSnapshot().iterationHistory.length
+    let prevLastIter = store.getSnapshot().lastIter
+    return store.subscribe(() => {
+      const s = store.getSnapshot()
+      if (s.streaming) {
+        if (prevIterCount > 0 && s.iterationHistory.length === 0) {
+          console.error('[RENDER_LOSS] iterationHistory cleared during streaming', {
+            prev: prevIterCount,
+            lastIter: s.lastIter,
+            phase: s.phase,
+            turnID: s.turnID,
+            chatID,
+          })
+        }
+        if (prevLastIter > 0 && s.lastIter === 0) {
+          console.error('[RENDER_LOSS] lastIter reset during streaming', {
+            prev: prevLastIter,
+            phase: s.phase,
+            turnID: s.turnID,
+            chatID,
+          })
+        }
+      }
+      prevIterCount = s.iterationHistory.length
+      prevLastIter = s.lastIter
+    })
+  }, [store, chatID])
+
   const progressCacheKey = chatID ? sessionCacheKey(channel, chatID) : null
 
   const progressSnapshot = useSyncExternalStore(

@@ -1023,7 +1023,52 @@ export class ProgressStore {
       tokenUsage: this.current.tokenUsage,
       turnID: this.current.turnID,
     }
+    this.assertInvariants()
     this.listeners.forEach((l) => l())
+  }
+
+  /** Development-only invariant assertions — the SINGLE choke point where every
+   *  state mutation lands (all mutators go through mutate → flush). Any
+   *  event-sequence bug (iteration regression, iterationHistory cleared
+   *  mid-stream, phase/streaming inconsistency, cross-session pollution) will
+   *  be caught HERE at the exact moment the state corrupts — never blocks
+   *  rendering, just logs the violation so the next bug report comes with the
+   *  precise corruption point instead of a vanished turn. */
+  private assertInvariants(): void {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.PROD) return
+    const s = this.current
+    // iterationHistory iteration numbers must be strictly increasing (no dupes,
+    // no rollback). Gaps are allowed (incremental deltas may be lost).
+    let prevIter = 0
+    for (const iter of s.iterationHistory) {
+      if (iter.iteration <= prevIter) {
+        console.error('[STORE_INVARIANT] iterationHistory not monotonic', {
+          prev: prevIter,
+          next: iter.iteration,
+          lastIter: s.lastIter,
+          phase: s.phase,
+        })
+        break
+      }
+      prevIter = iter.iteration
+    }
+    // lastIter must be >= the max iteration recorded in iterationHistory.
+    const maxIter = s.iterationHistory.reduce((m, i) => Math.max(m, i.iteration), 0)
+    if (s.lastIter > 0 && maxIter > s.lastIter) {
+      console.error('[STORE_INVARIANT] lastIter behind iterationHistory', {
+        lastIter: s.lastIter,
+        maxIter,
+        phase: s.phase,
+      })
+    }
+    // phase='done' implies the turn ended — must not still be streaming.
+    if (s.phase === 'done' && s.streaming) {
+      console.error('[STORE_INVARIANT] phase=done but streaming=true', {
+        phase: s.phase,
+        streaming: s.streaming,
+        lastIter: s.lastIter,
+      })
+    }
   }
 }
 
