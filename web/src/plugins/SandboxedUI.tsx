@@ -13,7 +13,7 @@
  * The src/code split is a top-level component selection (no hooks inside the
  * conditional branches), so hook ordering is stable across renders.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { transform } from 'sucrase'
 

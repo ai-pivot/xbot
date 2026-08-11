@@ -53,7 +53,7 @@ vi.mock('@/hooks/useSessionStore', () => ({
 }))
 
 // Mock the initial pull RPC (skip network in tests).
-vi.spyOn(global, 'fetch').mockResolvedValue({
+vi.spyOn(globalThis, 'fetch').mockResolvedValue({
   ok: true,
   json: async () => ({ zones: {} }),
 } as Response)
