@@ -128,7 +128,11 @@ export const LiveIteration = memo(function LiveIteration({
     // 有些情况没显示"). Reuse the SAME ShimmerThinking ("思考中…") component —
     // NOT a second indicator: it shows here when the live row exists, and in
     // the busy placeholder when the live row doesn't (mutually exclusive).
-    if (progress.streaming && progress.lastIter >= 1) {
+    // The FIRST iteration is special (user): iterationHistory is EMPTY (no
+    // predecessor) — the busy placeholder already covers the pre-first-iter /
+    // before-first-SSE window, so requiring iterationHistory.length > 0 here
+    // keeps exactly ONE thinking indicator in every state.
+    if (progress.streaming && progress.lastIter >= 1 && progress.iterationHistory.length > 0) {
       return <ShimmerThinking />
     }
     return null

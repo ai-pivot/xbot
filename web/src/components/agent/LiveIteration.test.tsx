@@ -184,14 +184,32 @@ describe('LiveIteration — typewriter cursor', () => {
 })
 
 describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iteration boundary)', () => {
-  it('shows the EXISTING thinking placeholder at the iteration boundary (prev iter done, next not arrived)', () => {
+  it('shows the EXISTING thinking placeholder at a NON-first iteration boundary (prev iter done, next not arrived)', () => {
     // liveMessage is non-null here → MessageList's busy placeholder is
     // suppressed. Reusing ShimmerThinking keeps the "思考中…" visible during
-    // the boundary wait (user: "之前那个思考中有些情况没显示").
+    // the boundary wait (user: "之前那个思考中有些情况没显示"). Requires a
+    // predecessor iteration (iterationHistory non-empty) — the FIRST iteration
+    // is special: busy placeholder covers the pre-first-iter window.
+    const { container } = renderWithProviders(
+      <LiveIteration
+        progress={makeSnapshot({
+          lastIter: 2,
+          iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+        })}
+        level="all"
+      />,
+    )
+    expect(container.textContent).toMatch(/思考中|thinking/)
+  })
+
+  it('returns null for the FIRST iteration (iterationHistory empty — busy placeholder covers it)', () => {
+    // User: "第一个 iter 是特殊的" — no predecessor iteration, so the busy
+    // placeholder (MessageList ShimmerThinking) covers the window; rendering
+    // ShimmerThinking here would show TWO thinking indicators.
     const { container } = renderWithProviders(
       <LiveIteration progress={makeSnapshot({ lastIter: 1 })} level="all" />,
     )
-    expect(container.textContent).toMatch(/思考中|thinking/)
+    expect(container.textContent).not.toMatch(/思考中|thinking/)
   })
 
   it('returns null in the pre-iteration phase (lastIter=0 — busy placeholder covers it)', () => {
@@ -203,7 +221,14 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
 
   it('returns null when the turn is not streaming (ended — committed reply replaces the row)', () => {
     const { container } = renderWithProviders(
-      <LiveIteration progress={makeSnapshot({ lastIter: 2, streaming: false })} level="all" />,
+      <LiveIteration
+        progress={makeSnapshot({
+          lastIter: 2,
+          streaming: false,
+          iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+        })}
+        level="all"
+      />,
     )
     expect(container.textContent).not.toMatch(/思考中|thinking/)
   })
