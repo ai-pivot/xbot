@@ -99,20 +99,19 @@ export function bindTurnIDs(messages: ChatMessage[]): ChatMessage[] {
     if (m.role === 'assistant' && prevTurn[i] > 0) {
       m.turnID = prevTurn[i]
     } else if (m.role === 'user') {
-      // Optimistic rows (persisted=false) stay 0 — they are unbound sends
-      // awaiting their own turn_started; orderMessageRows pins them at the
-      // BOTTOM (newest). Persisted user rows (history echoes) bind:
-      //  - to the nearest FOLLOWING turn (the turn they triggered), else
-      //  - to the nearest PRECEDING turn (a user_echo whose turn_started was
-      //    lost and whose turn already ended — e.g. after a long SSE gap the
-      //    reload keeps the echo above the watermark and no following turn
-      //    exists in the committed list). Without the prevTurn fallback these
-      //    rows keep turnID=0 and sort to the TOP, recreating the "user msgs
-      //    all at the bottom/top after SSE reconnect" ordering bug.
-      if (m.persisted === false) continue
+      // Users bind to the nearest FOLLOWING turn (the turn they triggered).
+      // This applies to optimistic rows too: buildMessageRows runs binding on
+      // [messages, live] together, so an optimistic user whose reply is
+      // streaming (live, turnID=2) binds to 2 and sorts user-before-assistant
+      // — "reply below my user msg" (linear consistency).
       if (nextTurn[i] > 0) {
         m.turnID = nextTurn[i]
-      } else if (prevTurn[i] > 0) {
+      } else if (m.persisted !== false && prevTurn[i] > 0) {
+        // Persisted user_echo with NO following turn (its turn_started was
+        // lost / AskUser answer): bind to the nearest PRECEDING turn — keeps
+        // it in turn order instead of pinning at the top. Optimistic rows
+        // (persisted=false) stay 0 → sorted to the bottom (awaiting their own
+        // turn_started).
         m.turnID = prevTurn[i]
       }
     }
