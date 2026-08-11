@@ -461,9 +461,9 @@ func (wc *WebChannel) NotifyWidgetsUpdated() {
 		wc.widgetZonesMu.Unlock()
 
 		payload := struct {
-			Zones      plugin.WebWidgetZones    `json:"zones,omitempty"`
-			Components []plugin.WebUIComponent  `json:"components,omitempty"`
-			Revision   int                      `json:"revision,omitempty"`
+			Zones      plugin.WebWidgetZones   `json:"zones,omitempty"`
+			Components []plugin.WebUIComponent `json:"components,omitempty"`
+			Revision   int                     `json:"revision,omitempty"`
 		}{Zones: zones, Components: components}
 		b, _ := json.Marshal(payload)
 		wsMsg := protocol.WSMessage{
@@ -474,6 +474,41 @@ func (wc *WebChannel) NotifyWidgetsUpdated() {
 		}
 		_ = wc.hub.sendToSession("web", chatID, wsMsg) // best-effort push
 	}
+}
+
+// pushWidgetsForChat force-pushes the full widget snapshot for one chatID,
+// ignoring the incremental cache (used on client connect for initial load).
+func (wc *WebChannel) pushWidgetsForChat(chatID string) {
+	if wc.widgetReg == nil || chatID == "" {
+		return
+	}
+	zones := plugin.RenderSessionWebWidgets(wc.widgetReg, wc.widgetCWDFor, chatID)
+
+	var components []plugin.WebUIComponent
+	if wc.webUIReg != nil {
+		components = wc.webUIReg.Components()
+	}
+
+	wc.widgetZonesMu.Lock()
+	if wc.lastWebZones == nil {
+		wc.lastWebZones = make(map[string]plugin.WebWidgetZones)
+	}
+	wc.lastWebZones[chatID] = zones
+	wc.widgetZonesMu.Unlock()
+
+	payload := struct {
+		Zones      plugin.WebWidgetZones   `json:"zones,omitempty"`
+		Components []plugin.WebUIComponent `json:"components,omitempty"`
+		Revision   int                     `json:"revision,omitempty"`
+	}{Zones: zones, Components: components}
+	b, _ := json.Marshal(payload)
+	wsMsg := protocol.WSMessage{
+		Type:    protocol.MsgTypeWebWidgets,
+		TS:      time.Now().Unix(),
+		ChatID:  chatID,
+		Content: string(b),
+	}
+	_ = wc.hub.sendToSession("web", chatID, wsMsg) // best-effort push
 }
 
 // widgetCWDFor resolves the working directory for a web session using the
@@ -1095,6 +1130,11 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 	if !isCLI {
 		chatID := senderID // p2p mode: chatID == senderID
 		wc.hub.subscribe(client.id, sessionRouteKey("web", chatID))
+		// Push the current widget snapshot on connect (initial load). This
+		// replaces the frontend pull-on-mount fetch: the backend pushes once
+		// when the client subscribes, avoiding an unauthenticated /api/rpc
+		// round-trip in embedded/E2E contexts.
+		wc.pushWidgetsForChat(chatID)
 	}
 
 	log.WithFields(log.Fields{

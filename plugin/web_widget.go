@@ -85,14 +85,14 @@ type WebComponent struct {
 
 // validWebSlots lists the web UI layout slots accepted from plugins.
 var validWebSlots = map[string]bool{
-	"title_bar_left":  true,
-	"title_bar_right": true,
-	"status_bar_left": true,
+	"title_bar_left":   true,
+	"title_bar_right":  true,
+	"status_bar_left":  true,
 	"status_bar_right": true,
-	"info_bar":        true,
-	"right_sidebar":   true,
-	"panel":           true,
-	"tool_hint":       true,
+	"info_bar":         true,
+	"right_sidebar":    true,
+	"panel":            true,
+	"tool_hint":        true,
 }
 
 // WebUIComponent is a web UI declaration from a channel plugin.
@@ -102,14 +102,14 @@ var validWebSlots = map[string]bool{
 //   - Code:      free-form TSX/JS source compiled in an iframe sandbox.
 //   - Src:       external URL rendered in a sandboxed iframe.
 type WebUIComponent struct {
-	WidgetID  string         `json:"widget_id"`
-	Title     string         `json:"title,omitempty"`
-	Slot      string         `json:"slot"`
-	Refresh   string         `json:"refresh,omitempty"`
-	Triggers  []string       `json:"triggers,omitempty"`
-	Component *WebComponent  `json:"component,omitempty"`
-	Code      string         `json:"code,omitempty"`
-	Src       string         `json:"src,omitempty"`
+	WidgetID  string        `json:"widget_id"`
+	Title     string        `json:"title,omitempty"`
+	Slot      string        `json:"slot"`
+	Refresh   string        `json:"refresh,omitempty"`
+	Triggers  []string      `json:"triggers,omitempty"`
+	Component *WebComponent `json:"component,omitempty"`
+	Code      string        `json:"code,omitempty"`
+	Src       string        `json:"src,omitempty"`
 
 	// owner is the channel name that declared this component (not serialized).
 	owner string `json:"-"`

@@ -23,8 +23,6 @@ import { useWSConnection } from '@/hooks/useWSConnection'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import type { WebUIComponentDecl, WebWidgetZones } from '@/types/shared'
 
-const PLUGIN_WIDGETS_RPC_URL = '/api/rpc'
-
 export interface PluginWidgetsContextValue {
   /** Structured widget zones for the active session (zone → spans). */
   zones: WebWidgetZones
@@ -54,7 +52,6 @@ export function PluginWidgetProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!activeSession) return
     const listenerChannel = activeSession.channel
-    const listenerChatID = activeSession.chatID
     const off = ws.onMessage((msg) => {
       if (msg.type !== 'web_widgets' && msg.type !== 'web_ui') return
       const cur = activeRef.current
@@ -83,42 +80,11 @@ export function PluginWidgetProvider({ children }: { children: ReactNode }) {
   }, [activeSession, ws])
 
   // Reset on session switch (avoid cross-session leak).
+  // Initial full snapshot is pushed by the backend when the client subscribes
+  // (WebChannel pushes web_widgets on connect); here we only clear stale state.
   useEffect(() => {
     setZones({})
     setComponents([])
-    // Pull initialization: fetch a full snapshot once per session via RPC
-    // (structured output), then rely on SSE pushes for incremental updates.
-    if (!activeSession) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch(PLUGIN_WIDGETS_RPC_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            method: 'plugin_widgets',
-            params: {
-              channel: activeSession.channel,
-              chat_id: activeSession.chatID,
-              structured: true,
-            },
-          }),
-        })
-        if (!res.ok) return
-        const data = (await res.json()) as {
-          zones?: WebWidgetZones
-          components?: WebUIComponentDecl[]
-        }
-        if (cancelled) return
-        if (data.zones) setZones(data.zones)
-        if (Array.isArray(data.components)) setComponents(data.components)
-      } catch {
-        // Best-effort pull; SSE pushes will fill the state.
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
   }, [activeSession?.chatID, activeSession?.channel])
 
   const value = useMemo(

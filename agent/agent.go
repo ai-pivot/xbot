@@ -596,7 +596,7 @@ type Agent struct {
 	// PluginManager manages the plugin system lifecycle
 	pluginMgr *plugin.PluginManager
 	// webUIReg stores channel-plugin web UI component declarations (web_ui protocol).
-	webUIReg *plugin.WebUIRegistry
+	webUIReg  *plugin.WebUIRegistry
 	bgTaskMgr *tools.BackgroundTaskManager
 
 	// bgRunPending buffers bg notifications by session. The Run loop drains the

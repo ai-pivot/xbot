@@ -24,7 +24,6 @@ export function PluginComponentPanel({ slot, empty = null, className }: PluginCo
   const { components } = usePluginWidgets()
   const [busy, setBusy] = useState(false)
   const list = components.filter((c) => c.slot === slot)
-  if (list.length === 0) return <>{empty}</>
 
   // Route a component interaction to the backend (web_ui_action RPC).
   const onAction = useCallback(
@@ -40,6 +39,8 @@ export function PluginComponentPanel({ slot, empty = null, className }: PluginCo
     },
     [],
   )
+
+  if (list.length === 0) return <>{empty}</>
 
   return (
     <div className={`flex flex-col gap-3 ${className ?? ''}`}>

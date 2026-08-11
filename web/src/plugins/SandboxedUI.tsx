@@ -9,6 +9,9 @@
  *
  * Interactions: `data-action="..."` elements bubble up → onAction(action, data)
  * which the parent routes to the web_ui_action RPC (→ plugin process).
+ *
+ * The src/code split is a top-level component selection (no hooks inside the
+ * conditional branches), so hook ordering is stable across renders.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -25,35 +28,57 @@ export interface SandboxedUIProps {
   className?: string
 }
 
-/** Message types allowed across the iframe boundary (whitelist). */
-type UIRequestMessage =
-  | { type: 'ui_action'; action: string; data: string }
-  | { type: 'ui_resize'; height: number }
-  | { type: 'ui_wheel'; deltaY: number }
+export function SandboxedUI(props: SandboxedUIProps) {
+  // Static branch selection: both children keep stable hook order.
+  if (props.src && !props.code) {
+    return <SourcedUI {...props} />
+  }
+  return <CodeUI {...props} />
+}
 
-export function SandboxedUI({ code, src, widgetId, onAction, className }: SandboxedUIProps) {
+/** src mode: plain sandboxed iframe pointing at an external URL. */
+function SourcedUI({ src, widgetId, className }: SandboxedUIProps) {
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+  const [height, setHeight] = useState(0)
+
+  // Height measurement via ResizeObserver.
+  useEffect(() => {
+    const iframe = iframeRef.current
+    if (!iframe) return
+    const doc = iframe.contentDocument
+    if (!doc?.body) return
+    const measure = () => {
+      const h = doc.body.scrollHeight
+      if (Math.abs(h - height) <= 2) return
+      setHeight(h)
+    }
+    const ro = new ResizeObserver(measure)
+    ro.observe(doc.body)
+    measure()
+    return () => ro.disconnect()
+  }, [height])
+
+  return (
+    <iframe
+      ref={iframeRef}
+      src={src}
+      className={`w-full rounded-lg border border-slate-200 ${className ?? ''}`}
+      style={{ height: height > 0 ? `${height}px` : '320px', backgroundColor: '#fff' }}
+      sandbox="allow-scripts allow-same-origin"
+      title={`plugin-ui-${widgetId ?? 'widget'}`}
+    />
+  )
+}
+
+/** code mode: compile TSX + separate React root inside the iframe. */
+function CodeUI({ code, widgetId, onAction, className }: SandboxedUIProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const rootRef = useRef<Root | null>(null)
   const [height, setHeight] = useState(0)
-
-  // ─── src mode: plain iframe load ───────────────────────────────
-  if (src && !code) {
-    return (
-      <iframe
-        ref={iframeRef}
-        src={src}
-        className={`w-full rounded-lg border border-slate-200 ${className ?? ''}`}
-        style={{ height: height > 0 ? `${height}px` : '320px', backgroundColor: '#fff' }}
-        sandbox="allow-scripts allow-same-origin"
-        title={`plugin-ui-${widgetId ?? 'widget'}`}
-      />
-    )
-  }
-
-  // ─── code mode: compile + separate React root ──────────────────
   const [component, setComponent] = useState<React.ComponentType | null>(null)
   const compileSeqRef = useRef(0)
 
+  // Compile TSX → JS with sucrase (React injected as a parameter).
   useEffect(() => {
     if (!code || code.trim().length < 10) return
     const seq = ++compileSeqRef.current
