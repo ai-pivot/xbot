@@ -273,7 +273,25 @@ export function useProgressStream({
         store.fullReset()
       }
     } else {
-      store.reset()
+      // CRITICAL: NEVER wipe a turn that is actively streaming. This branch
+      // fires when `disabled` toggles (SSE subscription/connection state flips)
+      // while the chatKey is unchanged. The OLD code called store.reset()
+      // unconditionally — a mid-turn disabled flake (subscribe toggling during
+      // reconnect, session-status jitter) BLANKED the entire live store →
+      // liveMessage null → the whole live turn vanished from the DOM for the
+      // duration (user report: [RENDER_LOSS_ROWS] rowsLen:0, liveMessageId:
+      // null, busy:true). The live store is driven by SSE events and has its
+      // own lifecycle — a subscription-state toggle must not wipe it. Only
+      // reset when the store is genuinely idle (turn over: streaming=false and
+      // no active/running phase), mirroring the hydration-effect guard.
+      const snap = store.getSnapshot()
+      const storeActive =
+        snap.streaming ||
+        snap.phase === 'thinking' ||
+        snap.phase === 'tool_exec' ||
+        snap.phase === 'running' ||
+        snap.phase === 'frozen'
+      if (!storeActive) store.reset()
     }
     if (disabled) {
       return
@@ -286,8 +304,25 @@ export function useProgressStream({
   // session's data triggers hydration (Spec 5 §2.7).
   useEffect(() => {
     if (disabled) return
+    const snap = store.getSnapshot()
+    // CRITICAL: NEVER wipe a turn that is actively streaming. reload() may
+    // complete mid-turn with active_progress=null (rewind cleared the server
+    // snapshot, or the fetch raced the snapshot registration, or the reload was
+    // triggered by an SSE seq gap). Resetting here makes the ENTIRE live turn
+    // vanish from the DOM (user report: "agent turn 消失" — the turn's rows
+    // disappear completely, not a blank area) until the next SSE event refills
+    // the store. If SSE is still pushing events (streaming=true or an active
+    // phase), the reload snapshot is STALE — let the live events drive. Only
+    // reset when the store is genuinely idle (turn over: streaming=false and
+    // no active/running phase).
+    const storeActive =
+      snap.streaming ||
+      snap.phase === 'thinking' ||
+      snap.phase === 'tool_exec' ||
+      snap.phase === 'running' ||
+      snap.phase === 'frozen'
     if (!initialProgress || !initialProgress.phase) {
-      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      if (hasVisibleProgress(snap) && !storeActive) store.reset()
       return
     }
     if (initialProgress.phase === 'done') {
@@ -295,7 +330,7 @@ export function useProgressStream({
       // survive session switch (todos persist across turns in the todoManager).
       if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
       finalizedRef.current = false
-      if (hasVisibleProgress(store.getSnapshot())) store.reset()
+      if (hasVisibleProgress(snap) && !storeActive) store.reset()
       // Unconditionally replace todos when the server explicitly returned an
       // array — INCLUDING an empty one. GetActiveProgress returns
       // `{phase:'done', todos}` after a turn (turn-end cleanupTodos clears the

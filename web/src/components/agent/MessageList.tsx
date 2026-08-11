@@ -336,6 +336,84 @@ export function MessageList({
     }
   }, [virtualizer])
 
+  // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
+  // User report: "agent turn 消失" — the live tail row vanishes from the DOM
+  // until the next iteration's first SSE event. rows is the FULL array
+  // (committed + live); a live tail row disappearing WITHOUT a committed
+  // replacement while the turn is still busy is REAL data loss — not
+  // virtualization (getVirtualItems only returns the visible window, so its
+  // length shrinking on scroll is NORMAL and must NOT be treated as a signal).
+  // This effect also watches getVirtualItems() tail-index regression while
+  // sticking to the bottom (the user's originally requested monitor).
+  const prevRowsTailRef = useRef<{
+    id: string | null
+    turnID: number
+    isPartial: boolean
+    chatKey: string | null | undefined
+    len: number
+  } | null>(null)
+  useEffect(() => {
+    const tail = rows.length > 0 ? rows[rows.length - 1] : null
+    const prev = prevRowsTailRef.current
+    prevRowsTailRef.current = {
+      id: tail?.id ?? null,
+      turnID: tail?.turnID ?? 0,
+      isPartial: tail?.isPartial ?? false,
+      chatKey,
+      len: rows.length,
+    }
+    if (!prev || prev.chatKey !== chatKey) return // session switch → rows replaced legitimately
+    // 1) ROWS-LEVEL: live tail row vanished without committed replacement.
+    const liveVanished = prev.isPartial && prev.id !== null && !rows.some((r) => r.id === prev.id)
+    if (liveVanished && busy) {
+      // Legal replacement paths: (a) normal text-event finalize — a committed
+      // assistant with the same turnID appears; (b) commitLiveProgressAndReset
+      // (turn_started/commit) — a committed assistant appears. If rows contain
+      // NO committed assistant at all, the live content was wiped with nothing
+      // taking its place → the "turn 消失只剩 user msg" report.
+      const sameTurnCommitted = prev.turnID > 0 &&
+        rows.some((r) => r.role === 'assistant' && !r.isPartial && r.turnID === prev.turnID)
+      const anyCommittedAssistant = rows.some((r) => r.role === 'assistant' && !r.isPartial)
+      if (!sameTurnCommitted && !anyCommittedAssistant) {
+        console.error('[RENDER_LOSS_ROWS] live turn vanished without committed replacement', {
+          prevTailId: prev.id,
+          prevTurnID: prev.turnID,
+          prevLen: prev.len,
+          rowsLen: rows.length,
+          busy,
+          chatKey,
+          lastRow: tail ? { id: tail.id, role: tail.role, turnID: tail.turnID, isPartial: tail.isPartial } : null,
+          liveMessageId: liveMessage?.id ?? null,
+          rowIds: rows.map((r) => r.id).slice(-5),
+        })
+        console.error(new Error('[RENDER_LOSS_ROWS] stack'))
+      }
+    }
+    // 2) VIRTUALIZER-LEVEL: only alarm when the LAST row is the LIVE row
+    // (isPartial=true) yet getVirtualItems() does not cover it while sticking
+    // to the bottom. Historical committed rows sitting outside the viewport is
+    // NORMAL virtualization (refresh lands at the top) — NOT a bug. The live
+    // tail row being unrendered is the "agent turn 消失" symptom.
+    const lastRow = rows.length > 0 ? rows[rows.length - 1] : null
+    if (lastRow?.isPartial && stickToBottomRef.current) {
+      const items = virtualizer.getVirtualItems()
+      if (items.length > 0) {
+        const lastItemIdx = items[items.length - 1].index
+        if (lastItemIdx < rows.length - 1) {
+          console.error('[VIRTUALIZER_TAIL_DROP] getVirtualItems() does not cover the LIVE last row while sticking to bottom', {
+            lastItemIdx,
+            rowsLen: rows.length,
+            itemsLen: items.length,
+            lastRowId: lastRow.id,
+            lastRowRole: lastRow.role,
+            busy,
+          })
+          console.error(new Error('[VIRTUALIZER_TAIL_DROP] stack'))
+        }
+      }
+    }
+  }, [rows, busy, chatKey, liveMessage, virtualizer])
+
   const cancelPendingFollow = useCallback(() => {
     if (pendingFollowRafRef.current === null) return
     cancelAnimationFrame(pendingFollowRafRef.current)
@@ -555,10 +633,18 @@ export function MessageList({
     // scrollTop to the new scrollHeight. Using RAF (scheduleFollow) here causes
     // an active loop: the RAF cancels/reschedules faster than it can execute.
     //
-    // OPTIMIZATION: Only observe scrollElement (not content). content height
-    // changes are reflected in scrollElement.scrollHeight automatically.
-    // Observing both caused duplicate callbacks (each item resize fired
-    // twice), leading to redundant forced reflows (scrollTop = scrollHeight).
+    // CRITICAL: observe CONTENT, not scrollElement. ResizeObserver reports the
+    // element's contentRect (clientWidth/clientHeight) — NOT its scrollHeight.
+    // scrollElement is an overflow-y-auto container whose clientHeight stays
+    // fixed at the viewport height, so content growth (live row height changes,
+    // iteration history append, code highlighting) changes ONLY scrollHeight —
+    // the ResizeObserver on scrollElement NEVER fires, the scrollTop stays at
+    // the old position, and the last row (the live turn) is pushed below the
+    // viewport → the virtualizer does not render it → the whole turn vanishes
+    // from the DOM until the next SSE event happens to trigger the
+    // liveProgress-driven follow effect. contentRef wraps the virtualizer's
+    // sizing div (height = totalSize), so its contentRect DOES track content
+    // height and fires on every growth.
     const observer = new ResizeObserver(() => {
       if (!stickToBottomRef.current) return
       const el = scrollRef.current
@@ -568,7 +654,7 @@ export function MessageList({
         queueMicrotask(() => { programmaticScrollRef.current = false })
       }
     })
-    observer.observe(scrollElement)
+    observer.observe(content)
     return () => {
       observer.disconnect()
       cancelPendingFollow()
