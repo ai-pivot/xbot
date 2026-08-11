@@ -483,14 +483,22 @@ function commitLiveProgressAndReset(
       complete?.(commitText, commitIters, undefined, snap.turnID || newTurnID || store.lastTurnID, true)
     }
   }
-  // Do NOT freeze or reset — keep live content visible.
-  // The committed message (from appendAssistant in flushSync) will replace
-  // the live row via buildMessageRows' hasCommitted check.
-  // If no committed message arrives (cancel without appendAssistant),
-  // the live content stays visible permanently (frozen in place).
-  // Previously: store.freeze() set phase='frozen' → liveMessage returned null
-  // → content disappeared for one frame before committed message rendered.
-  // Now: do nothing — live content stays until committed message replaces it.
+  // After committing: reset the iteration state for a NORMAL new turn / session
+  // switch — the already-rendered content is now in the committed message
+  // (appendAssistant in flushSync; buildMessageRows' hasCommitted skips the
+  // live row), so resetting only clears the live iteration counters. This is
+  // REQUIRED: without it the previous turn's lastIter (e.g. 48) stays, and the
+  // new turn's iteration (e.g. 29) is dropped by setStructuredTools'
+  // iteration-regression guard — the new turn's live NEVER updates → the turn
+  // vanishes (user report: ITER_ID_INVARIANT_VIOLATION prev:48 next:29
+  // phase:'tool_exec' when switching sessions).
+  // frozen (cancelled) phase does NOT reset — the already-rendered cancel
+  // content stays visible (user requirement; cancel itself goes through
+  // store.freeze() in text(cancelled), but a turn_id change on top of a frozen
+  // live must preserve it).
+  if (snap.phase !== 'frozen') {
+    store.reset()
+  }
 }
 
 /** Dispatch one WSMessage into the progress store. Shared with history hydration. */
