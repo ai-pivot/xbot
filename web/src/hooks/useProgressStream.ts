@@ -1058,11 +1058,11 @@ function handleProgressMessage(
       // hasIterationGapNow() reads the SYNCHRONOUS current (getSnapshot is
       // RAF-throttled and would lag one event).
       if (store.hasIterationGapNow()) {
-        if (!iterationGapFiredRef.current) {
+        if (iterationGapFiredRef && !iterationGapFiredRef.current) {
           iterationGapFiredRef.current = true
-          iterationGapRef.current?.()
+          iterationGapRef?.current?.()
         }
-      } else {
+      } else if (iterationGapFiredRef) {
         iterationGapFiredRef.current = false
       }
       return

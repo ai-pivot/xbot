@@ -550,7 +550,7 @@ describe('useProgressStream event dispatch', () => {
     const { result, rerender } = renderHook(
       (props: Partial<Parameters<typeof useProgressStream>[0]>) =>
         useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, ...props }),
-      { initialProps: { initialProgress: null } },
+      { initialProps: { initialProgress: null as ProgressEvent | null } },
     )
     // Turn starts streaming (iter 1 thinking + a running tool + stream content).
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
