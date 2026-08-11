@@ -1537,9 +1537,9 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 	// import_session_jsonl — imports benchmark JSONL records (inverse of
 	// export_session_jsonl) into the session.
 	t["import_session_jsonl"] = rpc1(func(ctx context.Context, p struct {
-		Channel string                 `json:"channel"`
-		ChatID  string                 `json:"chat_id"`
-		Records []protocol.DemoRecord  `json:"records"`
+		Channel string                `json:"channel"`
+		ChatID  string                `json:"chat_id"`
+		Records []protocol.DemoRecord `json:"records"`
 	}) (any, error) {
 		if len(p.Records) == 0 {
 			return nil, fmt.Errorf("records are required")

@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"xbot/llm"
@@ -177,10 +176,6 @@ func TestExportSessionJSONL_JSONLSerializable(t *testing.T) {
 		lines = append(lines, string(b))
 	}
 	// Each line must be valid standalone JSON (benchmark jsonl format).
-	joined := strings.Join(lines, "\n")
-	if !strings.HasSuffix(joined, "\n") {
-		// we join without trailing newline in the in-memory check; that's fine
-	}
 	for _, line := range lines {
 		var check map[string]any
 		if err := json.Unmarshal([]byte(line), &check); err != nil {
