@@ -610,7 +610,6 @@ export function hasVisibleProgress(snap: ProgressSnapshot): boolean {
 function commitLiveProgressAndReset(
   store: ProgressStore,
   complete: ((finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => void) | undefined,
-  newTurnID?: number,
 ): void {
   const snap = store.getSnapshot()
   if (hasVisibleProgress(snap)) {
@@ -671,7 +670,7 @@ function commitLiveProgressAndReset(
         )
         commitText = ''
       }
-      complete?.(commitText, commitIters, undefined, snap.turnID || newTurnID || store.lastTurnID, true)
+      complete?.(commitText, commitIters, undefined, store.lastTurnID, true)
     }
   }
   // After committing: reset the iteration state for a NORMAL new turn / session
@@ -864,11 +863,10 @@ function handleProgressMessage(
           }
         }
         // NOTE: store.lastTurnID is NOT updated here — it must remain the OLD
-        // value (previous turn's ID) so that commitLiveProgressAndReset can use
-        // it as a fallback when snap.turnID is 0 (cancelled turn with no
-        // structured events). Updating it before the commit causes
-        // snap.turnID || store.lastTurnID to resolve to the NEW turn's ID,
-        // giving the committed assistant the wrong turnID.
+        // value (previous turn's ID) so that commitLiveProgressAndReset commits
+        // the old turn's live content to the CORRECT slot (store.lastTurnID).
+        // Updating it before the commit would hand the committed assistant the
+        // NEW turn's ID, re-rendering the old turn below the new user msg.
         // store.lastTurnID is updated AFTER the commit, below.
         const ts = p.turn_start
         // For "resume" trigger (InjectInboundResume — NOT AskUser answer),
@@ -896,7 +894,7 @@ function handleProgressMessage(
           // content is the ONLY display of the old turn's reply; committing it
           // before the reset keeps it visible at the same position (no flicker,
           // no data loss) instead of vanishing in one frame.
-          commitLiveProgressAndReset(store, completeRef?.current, p.turn_id)
+          commitLiveProgressAndReset(store, completeRef?.current)
           store.lastIter = 0
           // 旧 turn（lastTurnID，turn_started 尚未更新）的 live 已 commit（finalize）。
           // 记录 finalizedTurnID：旧 turn 的迟到 text/progress_structured 据此丢弃
@@ -1036,6 +1034,27 @@ function handleProgressMessage(
         }
         if (finalizedRef?.current && evTurnID === 0) {
           return // turn_id 缺失 + finalized（兼容旧逻辑：无 turn_id 事件）
+        }
+        // PhaseDone 已到（turn 结束，等 text/cancel ack）：同 turn 的非 done
+        // progress_structured 是迟到事件，只保留 todos（monotonic），不覆盖
+        // phase/streaming/content/tools —— 否则 setStructuredTools 的
+        // `streaming = phase !== 'done'` 会把 streaming 设回 true，覆盖 PhaseDone
+        // 的 stopStreaming，导致 busy 残留（输入框 idle 但"思考中…"还在）。
+        // 与 stream_content 分支的 `if (phaseDoneRef?.current) return` 保持一致：
+        // PhaseDone 之后的合法事件只有 text（final reply）/ cancel ack /
+        // session(idle)，任何 progress_structured 都是迟到重放。
+        if (phaseDoneRef?.current) {
+          if (Array.isArray(p.todos)) {
+            store.setStructuredTools({
+              eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
+              todos: p.todos.map((t) => ({
+                id: typeof t.id === 'number' ? t.id : 0,
+                text: typeof t.text === 'string' ? t.text : '',
+                done: Boolean(t.done),
+              })),
+            })
+          }
+          return
         }
       }
 
@@ -1398,6 +1417,14 @@ function handleProgressMessage(
       // (normal or cancel ack) is the authoritative finalizer. Skip defensive
       // finalize to avoid committing content the backend already persisted.
       if (action === 'idle') {
+        // idle is one of the AUTHORITATIVE turn-end signals. Streaming must stop
+        // regardless of what happens below — even when there is no visible
+        // progress to reset (e.g. a turn that started with phase='thinking' sets
+        // streaming=true, then ends abnormally with both PhaseDone and text lost:
+        // hasVisibleProgress=false → no reset → streaming stays true → busy ghost
+        // "思考中…" lingers after the input box went idle). stopStreaming is a
+        // no-op on frozen (already false) and on PhaseDone (already stopped).
+        store.stopStreaming()
         if (finalizedRef?.current || phaseDoneRef?.current) {
           // If the store is frozen (cancel), DON'T reset — frozen content
           // must stay visible. Only reset for normal finalize (text event

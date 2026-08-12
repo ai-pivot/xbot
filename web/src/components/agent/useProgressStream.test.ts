@@ -1440,3 +1440,63 @@ describe('SSE dump replay (record → reproduce → pin regression)', () => {
     expect(result.current.progressSnapshot.iterationHistory.map((i) => i.iteration)).toEqual([1, 2])
   })
 })
+
+describe('turn-id ownership on turn boundary (turn duplication regression)', () => {
+  it('commits old turn live to its OWN turnID (not the new turn) when text event was lost', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection }),
+    )
+    // Turn 1 starts, then streams content via a stream_content event that does
+    // NOT carry turn_id (the snapshot.turnID field is therefore still 0 — only
+    // store.lastTurnID knows it belongs to turn 1).
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'old reply text' } })
+
+    // Turn 1's text event was LOST (SSE drop). The user sends a new message →
+    // turn_started(2). The commit of turn 1's live content must go to turnID 1,
+    // NOT turnID 2 — otherwise the old turn re-renders below the new user msg
+    // and the new turn's iterations attach to the duplicated old turn row.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 2, chat_id: 'web:c1' } })
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    // Args: (finalText, iterations, eventSeq, turnID, insertBeforeLastUser)
+    expect(complete).toHaveBeenCalledWith(expect.any(String), expect.any(Array), undefined, 1, true)
+  })
+
+  it('does NOT restart streaming from a late progress_structured after PhaseDone (busy ghost)', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 1, turn_id: 1, chat_id: 'web:c1', active_tools: [{ name: 'Shell', status: 'running', iteration: 1 }] } })
+
+    // PhaseDone ends the turn → stopStreaming (streaming=false).
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done', turn_id: 1, chat_id: 'web:c1' } })
+    expect(result.current.progressSnapshot.streaming).toBe(false)
+
+    // A late progress_structured (SSE reorder) after PhaseDone must NOT set
+    // streaming back to true — otherwise busy stays true and "思考中…" lingers
+    // below the history even after the input box turned idle.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 2, turn_id: 1, chat_id: 'web:c1', active_tools: [{ name: 'Read', status: 'running', iteration: 2 }] } })
+    expect(result.current.progressSnapshot.streaming).toBe(false)
+  })
+
+  it('stops streaming on session(idle) even when there is no visible progress to reset', () => {
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    // Turn starts with phase='thinking' — sets streaming=true but has NO visible
+    // progress yet (no iteration, no stream content, no tools).
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', turn_id: 1, chat_id: 'web:c1' } })
+    expect(result.current.progressSnapshot.streaming).toBe(true)
+
+    // Turn ends abnormally (PhaseDone and text both lost) — only session(idle)
+    // arrives. hasVisibleProgress is false (no content), so no reset happens —
+    // but streaming MUST still be cleared, otherwise busy stays true and
+    // "思考中…" lingers below the history after the input box turned idle.
+    emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
+    expect(result.current.progressSnapshot.streaming).toBe(false)
+  })
+})
