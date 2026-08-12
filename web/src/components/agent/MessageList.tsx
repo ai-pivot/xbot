@@ -152,12 +152,24 @@ export function buildMessageRows(
       break
     }
     if (
-      (m.content && live.content && m.content === live.content) ||
-      (m.iterations.length > 0 &&
-        live.iterations.length > 0 &&
-        m.iterations.length === live.iterations.length &&
-        m.iterations.every((it, k) => it.iteration === live.iterations[k]?.iteration))
+      (m.turnID === 0 || live.turnID === 0) &&
+      ((m.content && live.content && m.content === live.content) ||
+        (m.iterations.length > 0 &&
+          live.iterations.length > 0 &&
+          m.iterations.length === live.iterations.length &&
+          m.iterations.every((it, k) => it.iteration === live.iterations[k]?.iteration)))
     ) {
+      // EXACT content/iteration match ONLY when the committed row OR the live
+      // row is turnID=0 — i.e. they COULD be the same logical message (the
+      // text event lost its turn_id → committed turnID=0; or turn_started was
+      // lost → live turnID=0). NEVER when both carry real, DIFFERENT turnIDs:
+      // iteration numbers reset every turn, so a previous turn's committed
+      // assistant ([1,2]) naturally shares the same iteration numbers as the
+      // current turn's live ([1,2]). Matching them here dedupes a LIVE turn
+      // against a COMMITTED row of a DIFFERENT turn — the current turn
+      // "vanishes" (user report: turn 360's live disappeared the moment it
+      // reached 2 iterations, matching turn 359's committed 2; only the user
+      // message remained).
       exactDup = true
       break
     }

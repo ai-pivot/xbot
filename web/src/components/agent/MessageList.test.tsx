@@ -896,6 +896,53 @@ describe('buildMessageRows — turnID=0 live dedup (regression: 0ac17e66 was too
     expect(rows).toHaveLength(3) // legacy + user + live (streaming not committed yet)
     expect(rows.some((r) => r.id === 'turn-1311-live')).toBe(true)
   })
+
+  it('KEEPS the live row when a DIFFERENT turn committed assistant has the same iteration NUMBERS — cross-turn exactDup must never fire (turn-vanish P0: REC replay 360)', () => {
+    // REAL reproduction (sse-dump 2026-08-12T04-51-11 + state snapshots):
+    // turn 359's committed assistant has iterations [1,2]; turn 360's LIVE row
+    // also has iterations [1,2] (iteration numbers reset every turn). The old
+    // exactDup compared iteration numbers WITHOUT checking turnID — 2===2 and
+    // [1,2]===[1,2] matched, the live row was dropped, and turn 360 rendered
+    // ONLY its user message ("assistant 完全不见了，turn 360 只剩下 user").
+    // START was fine (live had 1 iteration, turn 359 had 2 → no match); the
+    // turn vanished exactly when the live reached 2 iterations.
+    const tool = { name: 'Shell', label: 'Shell', status: 'done' as const, elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '' }
+    const iter1 = { iteration: 1, thinking: 'turn 359 iter1', reasoning: '', tools: [], toolCount: 0 }
+    const iter2 = { iteration: 2, thinking: 'turn 359 iter2', reasoning: '', tools: [tool], toolCount: 1 }
+    const messages: ChatMessage[] = [
+      base({ id: 'u359', role: 'user', content: '继续', turnID: 359 }),
+      base({ id: 'asst-359', role: 'assistant', content: '', turnID: 359, iterations: [iter1, iter2], persisted: false }),
+      base({ id: 'u360', role: 'user', content: '继续', turnID: 360 }),
+    ]
+    const live: ChatMessage = base({
+      id: 'turn-360-live',
+      role: 'assistant',
+      content: '',
+      turnID: 360,
+      isPartial: true,
+      iterations: [
+        { iteration: 1, thinking: 'turn 360 iter1 (PR #299 CI...)', reasoning: '', tools: [], toolCount: 0 },
+        { iteration: 2, thinking: 'turn 360 iter2 (git push...)', reasoning: '', tools: [{ ...tool }], toolCount: 1 },
+      ],
+    })
+    const rows = buildMessageRows(messages, live)
+    expect(rows.some((r) => r.id === 'turn-360-live')).toBe(true) // live MUST render
+    expect(rows).toHaveLength(4) // u359 + asst-359 + u360 + live
+  })
+
+  it('still dedupes a turnID=0 committed row against a live row with the same iterations (text event lost turn_id)', () => {
+    // Guard: the turnID=0 committed row (text event lost its turn_id) must
+    // STILL be deduped by iteration match — the fix narrowed exactDup to
+    // "m.turnID===0 || live.turnID===0", it must not break this path.
+    const iter1 = { iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }
+    const messages: ChatMessage[] = [
+      base({ id: 'seq-80810', role: 'assistant', content: '', turnID: 0, persisted: true, iterations: [iter1] }),
+    ]
+    const live: ChatMessage = base({ id: 'turn-1311-live', content: '', isPartial: true, turnID: 1311, iterations: [{ ...iter1 }] })
+    const rows = buildMessageRows(messages, live)
+    expect(rows.some((r) => r.id === 'turn-1311-live')).toBe(false) // deduped
+    expect(rows).toHaveLength(1)
+  })
 })
 
 describe('buildMessageRows — linear consistency (extreme scenarios)', () => {
