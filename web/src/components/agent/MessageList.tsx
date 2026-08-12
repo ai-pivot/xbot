@@ -19,8 +19,7 @@ import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucid
 
 import { MessageItem } from './MessageItem'
 import { ShimmerThinking } from './ShimmerThinking'
-import { bindTurnIDs, orderMessageRows, assertRowConsistency } from './messageOrder'
-import { mergeIterations } from './progressStore'
+import { bindTurnIDs, orderMessageRows } from './messageOrder'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -30,12 +29,11 @@ interface MessageListProps {
   /** Increment to force TUI-style follow mode after local user actions. */
   followResetToken?: number
   messages: ChatMessage[]
-  /** Transient streaming assistant message appended as the last row, or null. */
-  liveMessage: ChatMessage | null
-  /** Live progress snapshot handed only to the streaming row. */
+  /** Live progress snapshot handed only to the streaming row (方案 A：live 行
+   *  已在 messages 里，liveId 匹配 isPartial 行）。 */
   liveProgress: LiveProgress | null
   /** Whether the agent is busy (thinking/processing) — shows placeholder when
-   *  no liveMessage yet (e.g. session just started, no iterations arrived). */
+   *  no live row yet (e.g. session just started, no iterations arrived). */
   busy?: boolean
   collapseLevel: 'all' | 'minimal' | 'none'
   /** Whether to merge consecutive tools. Default true. */
@@ -76,119 +74,11 @@ export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boo
   return row.role === 'user' && row.content.trimStart().startsWith('[Compacted context]')
 }
 
-/**
- * Build the combined row list: committed messages + optional live streaming row.
- *
- * ALWAYS remove intermediate assistant messages after the last user message.
- * ConvertMessagesToHistory can split one turn into multiple assistant
- * messages (when a Content assistant appears between ToolCalls). Without
- * this, both assistants render the same tools — once from DB iterations
- * and once from the progress snapshot — causing duplicates. Only the LAST
- * assistant after the last user message is kept.
- *
- * Live insertion order (turn-aware):
- *  - Same turnID:role committed message exists → merge (no separate row).
- *  - Otherwise insert at the correct turn position. The live assistant must
- *    render AFTER its own turn's user message. If the optimistic user row
- *    (turnID=0, persisted=false) is still unbound — turn_started was lost
- *    (SSE drop/coalesce) so bindLastUserToTurn never ran — insert after it.
- *    Without this, the live assistant lands after the PREVIOUS turn's
- *    assistant and renders inside the wrong turn.
- */
-export function buildMessageRows(
-  messages: ChatMessage[],
-  liveMessage: ChatMessage | null,
-): ChatMessage[] {
-  // Single render choke point. All paths (history reload, live append, cancel,
-  // notification, session switch, weak-network reorder) funnel through here.
-  //
-  // Performance contract (streaming hot path: committed rows unchanged, only
-  // liveMessage updates every frame):
-  //  - `messages` may be the cached committed list (see MessageList's useMemo);
-  //    bindTurnIDs/orderMessageRows/dedupLiveRows all have zero-copy fast
-  //    paths when nothing needs binding/sorting/deduping.
-  //  - The only per-frame allocation is the single `[...messages, live]` copy
-  //    needed to append the live row; when the live row duplicates a committed
-  //    one (same content / iterations) we return `messages` directly (zero
-  //    copy).
-  //
-  // Correctness steps (in order):
-  //   1. bindTurnIDs — derive deterministic turn_id for turnID=0 committed rows.
-  //   2. dedupLiveRows — a live row that duplicates a committed row (same
-  //      content/iterations) is dropped.
-  //   3. orderMessageRows — strict (turnID, role) sort. R2: a larger turn_id
-  //      NEVER renders above a smaller one. Within a turn user precedes
-  //      assistant; ties keep input order (= iteration order).
-  //   4. assertRowConsistency — diagnostic invariants (turn monotonic, iter
-  //      contiguous); never blocks rendering.
-  if (!liveMessage) return orderMessageRows(bindTurnIDs(messages))
-  if (messages.length === 0) return [liveMessage]
-  // Single O(N) scan classifies the live row against the committed rows:
-  //  - SAME turnID + role: the live row is the pre-commit / frozen phase of an
-  //    already-committed assistant. MERGE the live row's iterations (the
-  //    in-flight iteration is NOT in the committed list — a cancelled turn's
-  //    running tool lives only in the live snapshot) into the committed row
-  //    and drop the live row. This preserves already-rendered content
-  //    (user requirement) while avoiding duplicate rows. Committed content
-  //    wins (complete reply); live content fills an empty committed row
-  //    (the [interrupted] marker has no text).
-  //  - EXACT content/iteration match with a committed row of a DIFFERENT turn
-  //    (committed turnID=0 because the text event lost its turn_id): the live
-  //    row is the same message — drop it.
-  //  - Otherwise: the live row is genuinely new streaming content — keep it.
-  const live = liveMessage
-  let sameTurnIdx = -1
-  let exactDup = false
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i]
-    if (m.isPartial || m.role !== live.role) continue
-    if (live.turnID > 0 && m.turnID === live.turnID) {
-      // Same-turn merge: the live row is the pre-commit / frozen phase of THIS
-      // committed row. Unconditional on turnID — a mis-bound live (turn_started
-      // lost → live.turnID falls back) is prevented upstream in
-      // useProgressStream (streaming live keeps turnID=0, never the previous
-      // turn), so a turnID match here is authoritative.
-      sameTurnIdx = i
-      break
-    }
-    if (
-      (m.content && live.content && m.content === live.content) ||
-      (m.iterations.length > 0 &&
-        live.iterations.length > 0 &&
-        m.iterations.length === live.iterations.length &&
-        m.iterations.every((it, k) => it.iteration === live.iterations[k]?.iteration))
-    ) {
-      exactDup = true
-      break
-    }
-  }
-  if (sameTurnIdx >= 0) {
-    const committed = messages[sameTurnIdx]
-    // Merge live's iterations (in-flight iteration included) into committed,
-    // preserving committed's complete content (or the live text when committed
-    // is an empty [interrupted] marker). One copy; the live row is removed.
-    const merged = mergeIterations(committed.iterations, live.iterations)
-    const result = [...messages]
-    result[sameTurnIdx] = {
-      ...committed,
-      content: committed.content || live.content,
-      iterations: merged,
-    }
-    return result
-  }
-  if (exactDup) return messages // zero copy — the committed row already renders it
-  const all = [...messages, liveMessage]
-  const bound = bindTurnIDs(all) // fast path: committed already bound, live skipped
-  const ordered = orderMessageRows(bound) // fast path: already ordered
-  assertRowConsistency(ordered)
-  return ordered
-}
 
 export function MessageList({
   chatKey,
   followResetToken = 0,
   messages,
-  liveMessage,
   liveProgress,
   busy = false,
   collapseLevel,
@@ -212,6 +102,8 @@ export function MessageList({
   // tryScroll loop checks it to know if it's the latest follow (cancel
   // old loops when a new scheduleFollow supersedes them).
   const followGenRef = useRef(0)
+  // Double-rAF cleanup ref for loadMore anchor restore (inner rAF).
+  const cleanupRafRef = useRef<number | null>(null)
   // Marks scrolls caused by our own scheduleFollow (el.scrollTop = scrollHeight).
   // Set before the write and cleared via queueMicrotask after — so the flag is
   // only true during the synchronous scroll event our write dispatches, not
@@ -248,17 +140,14 @@ export function MessageList({
   // assistant's iterations).
   // Committed rows are order-stable between frames — bind+sort them ONCE per
   // `messages` change (history reload, appendAssistant, injectUserMessage).
-  // Streaming updates only change liveMessage; the rows memo below recomputes
-  // cheaply via buildMessageRows' zero-copy fast paths (bind/sort/dedup all
-  // no-op when the committed list is already bound+ordered) instead of
-  // re-binding and re-sorting all committed rows on every animation frame.
-  const committedRows = useMemo<ChatMessage[]>(
+  // 方案 A：messages 含 live 行（store.toRows() 输出，useChatMessages 订阅
+  // store 每帧 syncMessages）。注意：不使用 useSyncExternalStore —— 它对
+  // 高频流式 store 写（live 每帧变化 → getSnapshot 每帧新引用）会触发额外
+  // re-render 循环（E2E assistantRows=0 / stream-jitter 超时）。props.messages
+  // 由 useChatMessages 的订阅驱动，每帧更新即可。
+  const rows = useMemo<ChatMessage[]>(
     () => orderMessageRows(bindTurnIDs(messages)),
     [messages],
-  )
-  const rows = useMemo<ChatMessage[]>(
-    () => buildMessageRows(committedRows, liveMessage),
-    [committedRows, liveMessage],
   )
   // Latest-rows ref: closures (IntersectionObserver, loadMore anchor restore)
   // must read the CURRENT rows, not a stale snapshot captured in effect deps —
@@ -276,28 +165,15 @@ export function MessageList({
   // followed by "thinking…" would imply the completed turn is still running.
   // A committed assistant is isPartial=false with final content (approximation
   // of shouldRenderFinalContent at the row level).
-  const lastIsFinishedAssistant =
-    rows.length > 0 &&
-    rows[rows.length - 1].role === 'assistant' &&
-    rows[rows.length - 1].isPartial === false &&
-    !!rows[rows.length - 1].content
-  // liveId points to the row that receives liveProgress. Scan ALL rows
-  // for a match by turnID:role (the committed message that liveProgress
-  // should be passed to). If no match, liveMessage has its own row.
+  // busy placeholder 不再使用 lastIsFinishedAssistant —— committed assistant
+  // 后面也可能有新 iter 在跑（busy=true），需要显示 placeholder。
+  // const lastIsFinishedAssistant = ...  // 已删除
+  // liveId 指向接收 liveProgress 的行（方案 A：live 行已在 messages 里，
+  // isPartial 行）。没有 live 行时返回 null（liveProgress 不传给任何行）。
   const liveId = useMemo(() => {
-    if (!liveMessage) return null
-    if (liveMessage.turnID > 0) {
-      // Check if rows contains a committed message with same turnID:role
-      // (merge case — liveProgress goes to that message, not liveMessage).
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const r = rows[i]
-        if (r.turnID === liveMessage.turnID && r.role === liveMessage.role && r.id !== liveMessage.id) {
-          return r.id
-        }
-      }
-    }
-    return liveMessage.id
-  }, [rows, liveMessage])
+    const liveRow = rows.find((r) => r.isPartial)
+    return liveRow?.id ?? null
+  }, [rows])
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
@@ -355,6 +231,17 @@ export function MessageList({
   useEffect(() => {
     const tail = rows.length > 0 ? rows[rows.length - 1] : null
     const prev = prevRowsTailRef.current
+    if (prev && prev.chatKey !== chatKey) {
+      // Session switch: chatKey updates on the React render BEFORE the rows
+      // are reloaded (useChatMessages still holds the OLD session's rows in
+      // the same frame). Comparing the old session's live tail against the
+      // new session's (still empty) rows would false-fire RENDER_LOSS_ROWS
+      // (observed: chatKey=web:chat_A91F476D963A, prevTail=turn-337-live,
+      // rowsLen=0 right after switching). Reset the baseline so the new
+      // session's first rows start clean.
+      prevRowsTailRef.current = null
+      return
+    }
     prevRowsTailRef.current = {
       id: tail?.id ?? null,
       turnID: tail?.turnID ?? 0,
@@ -383,7 +270,7 @@ export function MessageList({
           busy,
           chatKey,
           lastRow: tail ? { id: tail.id, role: tail.role, turnID: tail.turnID, isPartial: tail.isPartial } : null,
-          liveMessageId: liveMessage?.id ?? null,
+          liveId,
           rowIds: rows.map((r) => r.id).slice(-5),
         })
         console.error(new Error('[RENDER_LOSS_ROWS] stack'))
@@ -412,7 +299,7 @@ export function MessageList({
         }
       }
     }
-  }, [rows, busy, chatKey, liveMessage, virtualizer])
+  }, [rows, busy, chatKey, liveId, virtualizer])
 
   const cancelPendingFollow = useCallback(() => {
     if (pendingFollowRafRef.current === null) return
@@ -525,6 +412,12 @@ export function MessageList({
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
+          // Guard: skip if anchor restore is in progress (double-rAF pending).
+          // During anchor restore the viewport briefly shows the top (sentinel
+          // visible) → without this guard, IntersectionObserver fires again
+          // → recursive loadMore (user report: "加载完后视角变到新内容最上方，
+          // 导致再次触发加载").
+          if (loadMoreAnchorIdRef.current !== null) return
           // Capture the first VISIBLE row id BEFORE onLoadMore prepends older
           // rows — this is the scroll anchor we restore after the load lands,
           // so the viewport stays on the same content (not jumping to top).
@@ -550,18 +443,36 @@ export function MessageList({
   // older rows sit above it, so the scrollbar lands mid-list (not at the top).
   // Guarded by loadMoreAnchorIdRef so this is a no-op during normal streaming
   // (the ref is only set in the IntersectionObserver callback right before a load).
+  //
+  // Double-rAF: TanStack Virtual needs TWO frames after prepend — frame 1 mounts
+  // the new rows (estimated heights), frame 2 lets ResizeObserver measure real
+  // heights. Single rAF scrolls against estimated heights → wrong position →
+  // sentinel visible → recursive loadMore (user report: "加载完后视角变到新内容
+  // 最上方，导致再次触发加载").
+  // During the anchor restore, the IntersectionObserver is disabled (via
+  // loadMoreAnchorIdRef non-null check in the observer callback) to prevent
+  // the recursive trigger.
   useEffect(() => {
     const anchorId = loadMoreAnchorIdRef.current
     if (!anchorId) return
     const newIdx = rowsRef.current.findIndex((m) => m.id === anchorId)
     if (newIdx < 0) return
-    // rAF: let the virtualizer mount + measure the freshly prepended rows so
-    // scrollToIndex positions against real (not estimated) row heights.
-    const raf = requestAnimationFrame(() => {
-      loadMoreAnchorIdRef.current = null
-      virtualizer.scrollToIndex(newIdx, { align: 'start' })
+    // Double rAF: frame 1 = mount + estimate, frame 2 = measure + scroll
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => {
+        loadMoreAnchorIdRef.current = null
+        virtualizer.scrollToIndex(newIdx, { align: 'start' })
+      })
+      // Store raf2 for cleanup
+      cleanupRafRef.current = raf2
     })
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf1)
+      if (cleanupRafRef.current !== null) {
+        cancelAnimationFrame(cleanupRafRef.current)
+        cleanupRafRef.current = null
+      }
+    }
   }, [rows, virtualizer])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
@@ -856,7 +767,16 @@ export function MessageList({
               completed turn is still running (linear-consistency
               violation). The placeholder only appears when the last row is
               a user message (new turn) or nothing at all. */}
-          {busy && !liveMessage && !lastIsFinishedAssistant && !(loading && rows.length === 0) && (
+          {busy && !(loading && rows.length === 0) &&
+            (liveId === null || rows.length === 0 || rows[rows.length - 1].role === 'user') && (
+            // busy placeholder 显示条件（方案 A）：
+            // 1. 没有 live 行（liveId=null）—— 新 iter 还没到达，或切换会话后
+            //    live 还没渲染。即使最后一个 row 是 committed assistant（turn
+            //    还在跑），也应该显示"思考中"——否则用户看到卡死。
+            // 2. 最后一个 row 是 user —— 新 turn 刚发，live 还没到。
+            // 3. rows 为空 —— 首次加载 + busy。
+            // 不再检查 lastIsFinishedAssistant：committed assistant 后面也可能
+            // 有新 iter 在跑（busy=true），需要显示 placeholder。
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">

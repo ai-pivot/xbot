@@ -442,20 +442,21 @@ export class SSEConnectionImpl implements WSConnection {
       bumpProgressGeneration(cacheKey)
       this.progressVersion += 1
 
-      // ── Detect real data loss: TurnID changed or COARSE iteration gap ──
+      // ── Detect real data loss: TurnID changed or iteration advanced in gap ──
       // SSE event gaps are normal (stateless coalescing, buffer drops) and the
       // recovery snapshot below covers most of them — progress_structured is a
       // SNAPSHOT, later events supersede earlier ones.
       //
       // This check is deliberately COARSE: cachedProgress.iteration_history is
       // only the LAST event's delta, NOT the cumulative history — it CANNOT
-      // prove that iteration 3 is complete when the server is at 4 (a
-      // difference of exactly 1 does NOT mean 3's delta arrived; it may have
-      // been dropped while 4's events kept coming). The precise completeness
-      // check lives in useProgressStream/progressStore (hasIterationGapNow:
-      // the store's CUMULATIVE iterationHistory must cover up to lastIter-1)
-      // and triggers a reload there. This check only catches large server
-      // advances (>1) early as a fast path.
+      // prove that iteration 3 is complete when the server is at 4. A difference
+      // of exactly 1 (3→4) does NOT mean 3's delta arrived: it may have been
+      // dropped in the gap while 4's events kept coming. So ANY advance
+      // (> 0) during a gap is treated as possible loss → force reload; the DB
+      // is authoritative. handleEvent's crossedIteration already covers the
+      // common case (gap followed by a higher-iteration progress_structured);
+      // this catches the rest (e.g. the first post-gap structured event is not
+      // the one that advanced).
       const turnIDChanged = cachedProgress && progress &&
         typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
         cachedProgress.turn_id !== progress.turn_id
@@ -464,7 +465,7 @@ export class SSEConnectionImpl implements WSConnection {
         cachedProgress.turn_id === progress.turn_id
       const cachedIter = cachedProgress?.iteration ?? 0
       const newIter = progress?.iteration ?? 0
-      const iterationGap = sameTurn && cachedIter > 0 && newIter > 0 && (newIter - cachedIter) > 1
+      const iterationGap = sameTurn && cachedIter > 0 && newIter > 0 && newIter > cachedIter
 
       if (turnIDChanged || iterationGap) {
         // force_reload=true: show a loading spinner during reload. For cross-turn

@@ -9,7 +9,6 @@
  * 3. dedupMessages: same turnID:role → merge iterations + prefer non-empty content
  */
 import { describe, it, expect } from 'vitest'
-import { dedupMessages } from './progressStore'
 import type { ChatMessage } from '@/types/agent'
 import type { WebIteration, ProgressSnapshot } from '@/types/shared'
 
@@ -43,71 +42,6 @@ function iter(n: number, content: string, tools: string[] = []): WebIteration {
 }
 
 describe('Linear consistency — turnID+iteration dedup/merge', () => {
-  describe('dedupMessages: same turnID:role merges iterations', () => {
-    it('merges iterations from two messages with same turnID:role (batch boundary)', () => {
-      // Batch 1 (newer): final assistant with iteration 2 (final reply)
-      const batch1 = msg('db-106', 'assistant', 5, {
-        content: 'final reply',
-        iterations: [iter(2, 'final reply')],
-        persisted: true,
-        dbID: 106,
-      })
-      // Batch 2 (older): tool_summary with iteration 1 (tool calls)
-      const batch2 = msg('db-99', 'assistant', 5, {
-        content: '',
-        iterations: [iter(1, '', ['Shell'])],
-        persisted: true,
-        dbID: 99,
-      })
-
-      const result = dedupMessages([batch1, batch2])
-      expect(result).toHaveLength(1)
-      // Merged message should have BOTH iterations
-      expect(result[0].iterations).toHaveLength(2)
-      expect(result[0].iterations.map((i) => i.iteration)).toEqual([1, 2])
-      // Content from the non-empty message
-      expect(result[0].content).toBe('final reply')
-    })
-
-    it('merges iterations even when content differs (tool_summary + final reply)', () => {
-      const finalReply = msg('db-200', 'assistant', 10, {
-        content: 'Here is the answer',
-        iterations: [iter(2, 'Here is the answer')],
-        persisted: true,
-        dbID: 200,
-      })
-      const toolSummary = msg('db-150', 'assistant', 10, {
-        content: '',
-        iterations: [iter(1, 'Let me check...', ['Read', 'Shell'])],
-        persisted: true,
-        dbID: 150,
-      })
-      const result = dedupMessages([finalReply, toolSummary])
-      expect(result).toHaveLength(1)
-      expect(result[0].iterations).toHaveLength(2)
-      expect(result[0].iterations[0].tools.map((t) => t.name)).toEqual(['Read', 'Shell'])
-      expect(result[0].iterations[1].thinking).toBe('Here is the answer')
-      expect(result[0].content).toBe('Here is the answer')
-    })
-
-    it('prefers persisted (dbID) message as the base for merge', () => {
-      const live = msg('seq-100', 'assistant', 7, {
-        content: 'streaming text',
-        iterations: [],
-        persisted: false,
-      })
-      const db = msg('db-100', 'assistant', 7, {
-        content: 'final reply from DB',
-        iterations: [iter(1, 'final reply from DB')],
-        persisted: true,
-        dbID: 100,
-      })
-      const result = dedupMessages([live, db])
-      expect(result).toHaveLength(1)
-      expect(result[0].content).toBe('final reply from DB')
-      expect(result[0].dbID).toBe(100)
-    })
-  })
 
   describe('loadMore merge across batch boundary', () => {
     // This is tested via useChatMessages.test.ts integration tests.

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { ProgressStore, dedupMessages, normalizeWebSubAgent, continuousIterations } from './progressStore'
+import { ProgressStore, normalizeWebSubAgent, continuousIterations } from './progressStore'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
 
 // Helper: create a tool with defaults
@@ -39,13 +39,13 @@ describe('ProgressStore basic', () => {
     const calls = vi.fn()
     const unsub = store.subscribe(calls)
 
-    // 1000 token appends — each is a cumulative SET, last one wins
+    // 1000 token deltas — each APPENDS (bandwidth optimization: backend pushes
+    // O(n) deltas), so all accumulate
     for (let i = 0; i < 1000; i++) store.appendStreamContent('a')
     expect(calls).not.toHaveBeenCalled()
     flushRaf()
     expect(calls).toHaveBeenCalledTimes(1)
-    // appendStreamContent uses assignment (=), so last value wins
-    expect(store.getSnapshot().streamContent).toBe('a')
+    expect(store.getSnapshot().streamContent).toBe('a'.repeat(1000))
 
     unsub()
     store.dispose()
@@ -65,8 +65,8 @@ describe('ProgressStore basic', () => {
     flushRaf()
     const c = store.getSnapshot()
     expect(c).not.toBe(a)
-    // appendStreamContent is assignment, so 'hi!' replaces 'hi'
-    expect(c.streamContent).toBe('hi!')
+    // appendStreamContent APPENDS deltas, so 'hi' + 'hi!' = 'hihi!'
+    expect(c.streamContent).toBe('hihi!')
 
     unsub()
     store.dispose()
@@ -83,13 +83,17 @@ describe('ProgressStore basic', () => {
     store.dispose()
   })
 
-  it('appendReasoningContent sets cumulative reasoning value', () => {
+  it('appendReasoningContent appends deltas (delta/checkpoint scheme)', () => {
     const store = new ProgressStore()
-    // Server sends cumulative values: first "foo ", then "foo bar"
+    // Server pushes O(n) deltas: "foo " then "bar"
     store.appendReasoningContent('foo ')
-    store.appendReasoningContent('foo bar')
+    store.appendReasoningContent('bar')
     flushRaf()
     expect(store.getSnapshot().reasoningStreamContent).toBe('foo bar')
+    // A checkpoint (setReasoningContent) replaces the accumulated text.
+    store.setReasoningContent('full reasoning')
+    flushRaf()
+    expect(store.getSnapshot().reasoningStreamContent).toBe('full reasoning')
     store.dispose()
   })
 
@@ -425,110 +429,6 @@ describe('ProgressStore tool dedup', () => {
   })
 })
 
-// ── Message dedup ──
-describe('dedupMessages', () => {
-  it('keeps only the last message with the same turnID+role', () => {
-    const msgs = [
-      { turnID: 1, role: 'assistant', id: 'a1' },
-      { turnID: 1, role: 'user', id: 'u1' },
-      { turnID: 1, role: 'assistant', id: 'a2' },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(2)
-    expect(result.find((m) => m.role === 'assistant')!.id).toBe('a2')
-  })
-
-  it('keeps all history messages with turnID=0 and DB ids', () => {
-    const msgs = [
-      { turnID: 0, role: 'user', id: '1' },
-      { turnID: 0, role: 'assistant', id: '2', content: 'hello' },
-      { turnID: 0, role: 'user', id: '3' },
-      { turnID: 0, role: 'assistant', id: '4', content: 'hello' }, // same content, different DB id
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(4) // all kept — DB ids don't start with 'asst-'
-  })
-
-  it('does not infer identity from generated ids or repeated content', () => {
-    const msgs = [
-      { turnID: 0, role: 'assistant', id: 'asst-100-0', content: 'hello' },
-      { turnID: 0, role: 'assistant', id: 'asst-101-1', content: 'hello' },
-      { turnID: 0, role: 'assistant', id: 'asst-102-2', content: 'world' },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toEqual(msgs)
-  })
-
-  it('keeps equal live content when it came from distinct event occurrences', () => {
-    const msgs = [
-      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'hello' },
-      { turnID: 0, role: 'assistant', eventSeq: 11, content: 'hello' },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(2)
-  })
-
-  it('dedupes a replay of the same event occurrence', () => {
-    const msgs = [
-      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'partial' },
-      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'final' },
-    ]
-    expect(dedupMessages(msgs)).toEqual([msgs[1]])
-  })
-
-  it('content-dedupes a live-committed message (turnID=0) against a DB message (turnID>0) with same content', () => {
-    // Regression: commitLiveProgressAndReset commits with turnID=0 when
-    // snap.turnID=0 and store.lastTurnID=0 (e.g. after session switch
-    // hydration). The DB version arrives with the correct turnID. Without
-    // content-based dedup, both survive → duplicate rendering.
-    const liveIters = [{ iteration: 1, thinking: '', reasoning: '', content: '', tools: [tool({ name: 'Shell' })], toolCount: 1 }]
-    const dbIters = [{ iteration: 1, thinking: '', reasoning: '', content: '', tools: [], toolCount: 0 }]
-    const msgs = [
-      { turnID: 1087, role: 'assistant', id: 'db-1197744', content: 'same reply', iterations: dbIters, dbID: 1197744, eventSeq: undefined },
-      { turnID: 0, role: 'assistant', id: 'seq-21883', content: 'same reply', iterations: liveIters, dbID: undefined, eventSeq: 21883, persisted: false },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(1)
-    // DB version (turnID>0) is the base; live iterations are merged in
-    expect(result[0].id).toBe('db-1197744')
-    expect(result[0].turnID).toBe(1087)
-    expect(result[0].iterations).toHaveLength(1)
-    expect(result[0].iterations[0].tools[0].name).toBe('Shell')
-  })
-
-  it('content-dedup works regardless of arrival order (live first, DB second)', () => {
-    // The live-committed message may arrive before the DB version (e.g.
-    // appendAssistant fires before reload). dedupMessages must catch it
-    // in both orders.
-    const msgs = [
-      { turnID: 0, role: 'assistant', id: 'seq-100', content: 'hello', iterations: [], eventSeq: 100 },
-      { turnID: 5, role: 'assistant', id: 'db-50', content: 'hello', iterations: [], dbID: 50, eventSeq: undefined },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(1)
-    expect(result[0].id).toBe('db-50')
-    expect(result[0].turnID).toBe(5)
-  })
-
-  it('does NOT content-dedup messages with different content', () => {
-    const msgs = [
-      { turnID: 1087, role: 'assistant', id: 'db-1', content: 'reply A', iterations: [], dbID: 1 },
-      { turnID: 0, role: 'assistant', id: 'seq-2', content: 'reply B', iterations: [], eventSeq: 2 },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(2)
-  })
-
-  it('does NOT content-dedup user messages (only assistant)', () => {
-    const msgs = [
-      { turnID: 1087, role: 'user', id: 'db-1', content: 'hello', dbID: 1 },
-      { turnID: 0, role: 'user', id: 'seq-2', content: 'hello', eventSeq: 2 },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(2)
-  })
-})
-
 describe('continuousIterations — linear-consistency guard (weak-network iteration gaps)', () => {
   function iters(nums: number[]): WebIteration[] {
     return nums.map((n) => ({ iteration: n, thinking: '', reasoning: '', content: '', tools: [], toolCount: 0 }))
@@ -779,5 +679,60 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     const snap = store.getSnapshot()
     expect(snap.lastIter).toBe(29) // structured event advances lastIter
     expect(snap.iterationHistory.length).toBe(2) // iter 1 + iter 29 both kept
+  })
+})
+
+describe('ProgressStore.dumpFullState', () => {
+  let rafSpy: ReturnType<typeof vi.spyOn>
+  let rafCallbacks: Array<() => void>
+
+  beforeEach(() => {
+    rafCallbacks = []
+    rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      rafCallbacks.push(cb as () => void)
+      return rafCallbacks.length
+    })
+  })
+
+  afterEach(() => {
+    rafSpy.mockRestore()
+  })
+
+  it('exposes the un-throttled current state + store-level watermark fields', () => {
+    const store = new ProgressStore()
+    store.setStructuredTools({
+      eventSeq: 3,
+      phase: 'tool_exec',
+      iteration: 2,
+      activeTools: [tool({ name: 'Shell', status: 'running' })],
+      iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    // Do NOT flushRaf: the RAF-throttled snapshot is stale, but dumpFullState
+    // must read the CURRENT internal state directly.
+    const dump = store.dumpFullState()
+    expect(dump.current.phase).toBe('tool_exec')
+    expect(dump.current.iteration).toBe(2)
+    expect(dump.current.iterationHistory).toHaveLength(1)
+    expect(dump.current.activeTools?.[0]?.name).toBe('Shell')
+    // lastTurnID is the store-level field NOT in the snapshot
+    expect(typeof dump.lastTurnID).toBe('number')
+    // The real iteration watermark lives in current.lastIter — advanced by the
+    // structured event (2 > 0)
+    expect(dump.current.lastIter).toBe(2)
+  })
+
+  it('is JSON-serializable (no circular refs) — the REC dump contract', () => {
+    const store = new ProgressStore()
+    store.setStructuredTools({
+      eventSeq: 1,
+      phase: 'thinking',
+      iteration: 1,
+      iterationHistory: [{ iteration: 1, thinking: 't', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    const dump = store.dumpFullState()
+    expect(() => JSON.stringify(dump)).not.toThrow()
+    const round = JSON.parse(JSON.stringify(dump)) as ReturnType<ProgressStore['dumpFullState']>
+    expect(round.current.phase).toBe('thinking')
+    expect(round.current.iterationHistory).toHaveLength(1)
   })
 })

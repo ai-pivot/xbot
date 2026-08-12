@@ -2864,6 +2864,9 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 
 			// Mark session busy so chatWorker skips notification drain
 			ss.busy.Store(true)
+			// 同步 worktree registry：该 session 正在迭代中（peer 协作提示依据，
+			// busy/idle = 是否在迭代中，而非时间推断）。
+			tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), true)
 
 			// 停止上一次的 idle timer（收到新消息，重置计时）
 			if idleTimer != nil {
@@ -2924,6 +2927,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			case sem <- struct{}{}:
 			case <-ctx.Done():
 				ss.busy.Store(false)
+				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return false
 			}
 
@@ -3039,6 +3043,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				// pending bg notifications in the interrupted turn, without starting a
 				// fresh bg-notification turn after the cancel ack.
 				ss.busy.Store(false)
+				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return true
 			}
 
@@ -3058,6 +3063,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				// append succeeds. Put any unacknowledged items back before retrying.
 				a.requeueDrainedBgNotifications(chatKey)
 				ss.busy.Store(false)
+				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				a.drainAndProcessNotifications(chatKey)
 				return true
 			}
@@ -3114,10 +3120,15 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// AskUser panel is showing. The answer message will be dequeued next
 			// and processed as a continuation of this turn.
 			if response != nil && response.WaitingUser {
+				// WaitingUser: turn PAUSED waiting for user input — the session is
+				// NOT iterating. Mark the peer idle for collaboration hints
+				// (ss.busy stays true for chatWorker notification-drain semantics).
+				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return true
 			}
 			ss.clearDrainedThisRun()
 			ss.busy.Store(false)
+			tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 			a.drainAndProcessNotifications(chatKey)
 			return true
 		}()

@@ -27,7 +27,8 @@ import {
   type UploadResponse,
 } from '@/components/agent/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
-import { dedupMessages, mergeIterations, assertIterationContinuity } from '@/components/agent/progressStore'
+import { MessageStore } from '@/components/agent/messageStore'
+import { assertIterationContinuity } from '@/components/agent/progressStore'
 import { getCachedMessages, getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
@@ -57,6 +58,9 @@ interface UseChatMessagesOptions {
   onSendSuccess?: () => void
   /** Called when cancel is successfully sent (for optimistic idle trigger). */
   onCancelSuccess?: () => void
+  /** 外部共享 MessageStore（方案 A Step 3：与 useProgressStream 共享同一实例）。
+   *  不传则内部自建。 */
+  messageStore?: MessageStore
 }
 
 export interface UseChatMessagesResult {
@@ -193,71 +197,6 @@ function newMessageRequestID(): string {
   return id ? id.replaceAll('-', '') : `web-${Date.now()}-${echoSeq++}`
 }
 
-/**
- * Incremental dedup: assumes the existing array (excluding newMsgIdx) is
- * already linearly consistent (previously deduped). Only the NEW message at
- * newMsgIdx can conflict — scan the array for a match by:
- * 1. turnID:role (same turn + role → merge iterations, prefer DB version)
- * 2. eventSeq (same SSE seq → replace)
- * 3. content:role (same content → content-based dedup for turnID=0 commits)
- *
- * If no conflict, returns the array unchanged. If conflict, merges in-place
- * and removes the duplicate. O(n) worst case but typically O(1) — the
- * conflicting message is almost always the last few rows (same turn).
- *
- * This replaces the previous O(n) dedupMessages(withMsg) call that re-scanned
- * the entire array on every appendAssistant invocation.
- */
-function incrementalDedup<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number; dbID?: number; persisted?: boolean; iterations?: WebIteration[] }>(
-  arr: T[],
-  newMsgIdx: number,
-): T[] {
-  const msg = arr[newMsgIdx]
-  // Check for conflicts only against the new message
-  for (let i = 0; i < arr.length; i++) {
-    if (i === newMsgIdx) continue
-    const existing = arr[i]
-    // 1. Same turnID:role (turnID > 0)
-    if (msg.turnID > 0 && existing.turnID === msg.turnID && existing.role === msg.role) {
-      const merged = mergeIterations(existing.iterations ?? [], msg.iterations ?? [])
-      const result = [...arr]
-      result[i] = {
-        ...existing,
-        iterations: merged.length > 0 ? merged : (existing.iterations ?? []),
-        content: (existing.content ?? '') !== '' ? existing.content : (msg.content ?? ''),
-      }
-      result.splice(newMsgIdx, 1)
-      return result
-    }
-    // 2. Same eventSeq (SSE replay)
-    if (msg.eventSeq != null && existing.eventSeq === msg.eventSeq) {
-      const result = [...arr]
-      result[i] = msg // replace with newer version
-      result.splice(newMsgIdx, 1)
-      return result
-    }
-    // 3. Content-based dedup: same content + role='assistant'
-    // (turnID=0 live commit vs turnID>0 DB message)
-    const msgContent = msg.content ?? ''
-    if (msgContent && msg.role === 'assistant' && existing.role === 'assistant' &&
-        (existing.content ?? '') === msgContent) {
-      // Prefer the DB version (turnID > 0) as base
-      const base = existing.turnID > 0 ? existing : msg
-      const other = existing.turnID > 0 ? msg : existing
-      const merged = mergeIterations(base.iterations ?? [], other.iterations ?? [])
-      const result = [...arr]
-      result[i] = {
-        ...base,
-        iterations: merged.length > 0 ? merged : (base.iterations ?? []),
-      }
-      result.splice(newMsgIdx, 1)
-      return result
-    }
-  }
-  // No conflict — array is already consistent
-  return arr
-}
-
 /** SubAgent message from get_session_messages RPC (agent.SessionMessage). */
 interface SubAgentMsg {
   role: string
@@ -284,106 +223,6 @@ function messageCacheKey(
 }
 
 
-// reconcileHistoryWithLiveRows merges server history with live (unpersisted)
-// rows. A live row is kept only if its eventSeq is ABOVE the history
-// watermark (last_seq) — meaning it was delivered via SSE after the history
-// snapshot was taken, so it's not yet in history. Rows at or below the
-// watermark are already covered by history. Rows without an eventSeq
-// (optimistic user messages from sendMessage) are always dropped — the
-// server persists them before/during the turn.
-function reconcileHistoryWithLiveRows(
-  history: ChatMessage[],
-  current: ChatMessage[],
-  historyWatermark: number,
-): ChatMessage[] {
-  // Build lookup sets from history for O(1) dedup checks.
-  const historyTurnRoles = new Set<string>()
-  const historyContentKeys = new Set<string>()
-  let newestUserTurn = 0
-  for (const m of history) {
-    if (m.turnID > 0) {
-      historyTurnRoles.add(`${m.turnID}:${m.role}`)
-    }
-    // Content+role fallback for messages without turnID (user_echo, etc.)
-    if (m.content) {
-      historyContentKeys.add(`${m.role}:${m.content}`)
-    }
-    if (m.role === 'user' && m.turnID > newestUserTurn) {
-      newestUserTurn = m.turnID
-    }
-  }
-
-  const liveRows = current.filter((message) => {
-    // Persisted rows: normally covered by history. BUT user_echo rows carry
-    // eventSeq=undefined (the backend echo has no seq), so the eventSeq guard
-    // below would drop them even when the racing DB snapshot does NOT contain
-    // the row yet — the user message vanishes until refresh. Keep persisted
-    // USER rows that are NEWER than the snapshot's newest user turn (a racing
-    // reload during the current turn); drop everything else per dedup rules.
-    if (message.persisted !== false) {
-      if (message.role !== 'user') return false
-      if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
-      if (message.content && historyContentKeys.has(`${message.role}:${message.content}`)) return false
-      // Echoes carrying an eventSeq follow the watermark rule: below it they
-      // are covered by history; at/above it they are post-snapshot data and
-      // kept (SSE replay echo / reconnect recovery).
-      if (message.eventSeq != null) {
-        if (message.eventSeq < historyWatermark) return false
-        return true
-      }
-      // No eventSeq (web_inbound.go echoes have none): a racing reload may
-      // lack the row entirely (eager-save still in flight) — the user message
-      // vanished until refresh. Keep it ONLY when its turn is newer than the
-      // snapshot's newest user turn; a same-or-older turn is superseded by
-      // the DB (e.g. same-session background reload replacing old content).
-      if (message.turnID <= newestUserTurn) return false
-      return true
-    }
-    // Unpersisted live rows (streaming assistant, cancel acks, frozen content).
-    if (message.eventSeq == null) return false
-    // Notifications (injectUserMessage) carry eventSeq=-1 as a marker — a
-    // racing reload may lack the DB row (eager-save still in flight), and the
-    // watermark rule would drop the notification user message until refresh.
-    // Keep it unless history already covers the same turnID:role.
-    if (message.eventSeq === -1) {
-      if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
-      return true
-    }
-    // Below watermark: always superseded by history.
-    if (message.eventSeq < historyWatermark) return false
-    // Same turnID:role already in history — drop the live row.
-    if (message.turnID > 0 && historyTurnRoles.has(`${message.turnID}:${message.role}`)) return false
-    // Content-based dedup for assistant messages with turnID=0 (live commit
-    // from commitLiveProgressAndReset with snap.turnID=0). The DB version
-    // arrives with the correct turnID but different content may exist —
-    // match by content:role to drop the stale live commit.
-    if (message.turnID === 0 && message.role === 'assistant' && message.content &&
-        historyContentKeys.has(`assistant:${message.content}`)) return false
-    return true
-  })
-
-  // Merge liveRows into history at the correct position (by turnID), NOT
-  // simply appended at the end. Appending at the end causes user messages
-  // to appear at the bottom ("最近几个 user msg 变得全在最底下" bug) when
-  // liveRows contains persisted user echoes that the DB snapshot doesn't
-  // have yet (racing reload). Insert each liveRow after the last history
-  // message with turnID <= liveRow.turnID (or at the end if no match).
-  const result = [...history]
-  for (const live of liveRows) {
-    let insertIdx = result.length // default: append at end
-    if (live.turnID > 0) {
-      // Find the last message with turnID <= live.turnID
-      for (let i = result.length - 1; i >= 0; i--) {
-        if (result[i].turnID > 0 && result[i].turnID <= live.turnID) {
-          insertIdx = i + 1
-          break
-        }
-      }
-    }
-    result.splice(insertIdx, 0, live)
-  }
-  return result
-}
 
 /** Parse SubAgent messages (simple role/content) into ChatMessage[]. */
 function parseSubAgentMessages(rows: SubAgentMsg[], rawIterations?: unknown[]): ChatMessage[] {
@@ -438,6 +277,7 @@ export function useChatMessages({
   agentChatID,
   onSendSuccess,
   onCancelSuccess,
+  messageStore,
 }: UseChatMessagesOptions): UseChatMessagesResult {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
@@ -471,6 +311,37 @@ export function useChatMessages({
   const messagesRef = useRef(messages)
   messagesRef.current = messages
 
+  // ── MessageStore（方案 A）：committed 消息的唯一容器 ──
+  // 每 turn 恰好 1 user + 1 assistant 槽位，live 由 useProgressStream 写入
+  // （Step 3 接入）。唯一性由 Map 结构保证 —— 渲染层零去重。
+  const storeRef = useRef<MessageStore | null>(null)
+  if (storeRef.current === null) {
+    storeRef.current = messageStore ?? new MessageStore()
+  }
+  const store = storeRef.current
+  /** 从 store 同步 messages state + messagesRef（所有写操作后的统一出口）。 */
+  const syncMessages = useCallback(() => {
+    const rows = store.toRows()
+    messagesRef.current = rows
+    setMessages(rows)
+  }, [store])
+  // session 切换：清空 store（新会话从零开始，由 reload mergeHistory 重建）
+  const prevStoreChatIDRef = useRef(chatID)
+  if (prevStoreChatIDRef.current !== chatID) {
+    prevStoreChatIDRef.current = chatID
+    store.clear()
+  }
+  // 订阅 store 变化：useProgressStream 写 live（共享 store）时触发 syncMessages，
+  // 使 chat.messages 包含 live 行（渲染层读 store.toRows() 的行）。每帧更新
+  // （live 高频）；不使用 committedVersion gate —— 那样 messages 不含 live，
+  // MessageList 需 useSyncExternalStore 订阅 store（对高频流式写触发 re-render
+  // 循环，E2E 失败）。
+  useEffect(() => {
+    return store.subscribe(() => {
+      syncMessages()
+    })
+  }, [store, syncMessages])
+
 
   // Hold ws in a ref — its methods delegate to a stable MultiSSEManager instance,
   // so we don't need ws in the reload deps. Including ws would cause an infinite
@@ -502,11 +373,14 @@ export function useChatMessages({
     if (!sameTarget) {
       const cached = activeMessageCacheKey ? getCachedMessages(activeMessageCacheKey) : null
       if (cached && cached.length > 0) {
-        messagesRef.current = cached
-        setMessages(cached)
+        // 缓存恢复：store 重建（cached 有 turnID → mergeHistory 建 slot）
+        store.clear()
+        store.mergeHistory(cached, { replace: true })
+        syncMessages()
         // Don't set loading — we have content to show immediately
         setLoading(false)
       } else {
+        store.clear()
         messagesRef.current = []
         setMessages([])
         setHasMore(false)
@@ -530,13 +404,13 @@ export function useChatMessages({
         const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
           const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
-          const mutated = requestHasMessageMutation()
-          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
-          messagesRef.current = next
-          setMessages(next)
+          // SubAgent dump 是完整权威列表 → 替换语义（clear + mergeHistory）
+          store.clear()
+          store.mergeHistory(parsed)
+          syncMessages()
           setInitialProgress(null)
       setProcessing(false)
-          return next
+          return parsed
         }
       }
       // Live SubAgent mode: same runtime tuple as TUI.
@@ -552,12 +426,12 @@ export function useChatMessages({
         const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
         if (dumpMessages.length > 0 || dumpIterations.length > 0) {
           const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
-          const mutated = requestHasMessageMutation()
-          const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
-          messagesRef.current = next
-          setMessages(next)
+          // SubAgent dump 是完整权威列表 → 替换语义
+          store.clear()
+          store.mergeHistory(parsed)
+          syncMessages()
           setInitialProgress(null)
-          return next
+          return parsed
         }
         const msgs = await w.rpc<SubAgentMsg[]>('get_session_messages', {
           channel,
@@ -567,12 +441,11 @@ export function useChatMessages({
         })
         if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
         const parsed = parseSubAgentMessages(Array.isArray(msgs) ? msgs : [])
-        const mutated = requestHasMessageMutation()
-        const next = mutated ? reconcileHistoryWithLiveRows(parsed, messagesRef.current, 0) : parsed
-        messagesRef.current = next
-        setMessages(next)
+        store.clear()
+        store.mergeHistory(parsed)
+        syncMessages()
         setInitialProgress(null)
-        return next
+        return parsed
       }
       // Normal mode: load via Web history snapshot (paginated: last 100 messages).
       const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100 })
@@ -594,17 +467,15 @@ export function useChatMessages({
       }
       const rows = data.messages ?? []
       const parsed = parseHistoryMessages(rows)
-      // ALWAYS reconcile (not only when `mutated`): markDestructiveMutation
-      // (cancel) increments the gen BEFORE the next reload captures it, so
-      // `mutated` is false for a cancel-triggered reload and the plain
-      // `parsed` replacement would drop persisted user_echo rows when the
-      // racing DB snapshot does not contain them yet — the user message
-      // vanishes until refresh. reconcile keeps persisted USER rows that the
-      // snapshot lacks (dedup by turnID:role / content:role) and drops
-      // everything else per its rules, so it is safe unconditionally.
-      const next = reconcileHistoryWithLiveRows(parsed, messagesRef.current, data.last_seq ?? 0)
-      messagesRef.current = next
-      setMessages(next)
+      // destructive（rewind/cancel）：DB 快照重建（丢弃本地提交）；否则
+      // mergeHistory 保留 store 已有 slot（进行中 turn 的 live/提交/乐观 user）
+      // 并回填 DB 字段 —— store 的槽位结构天然保证 persisted user / notification
+      // 在竞态 reload 时不消失（等价于现有 reconcile 的保护规则）。
+      if (requestHasDestructiveMutation()) {
+        store.clear()
+      }
+      store.mergeHistory(parsed, { replace: true, watermark: data.last_seq ?? 0 })
+      syncMessages()
       // Cache messages for instant render on next session switch (LRU).
       // Use activeMessageCacheKey to match the read path (avoids collision
       // between parent session and SubAgent panels). Store the progress
@@ -612,7 +483,7 @@ export function useChatMessages({
       // (progress/turn updates since the cache was written).
       if (activeMessageCacheKey) {
         messagesCache.set(activeMessageCacheKey, {
-          messages: next,
+          messages: messagesRef.current,
           progressGen: progressCacheKey ? getProgressGeneration(progressCacheKey) : 0,
         })
         // LRU eviction: keep at most 5 sessions cached
@@ -630,7 +501,7 @@ export function useChatMessages({
       // because the delta only has 0-1 iterations while the server has all.
       setInitialProgress(data.active_progress ?? null)
       if (data.chat_id) setResolvedChatID(data.chat_id)
-      return next
+      return messagesRef.current // syncMessages 已更新为 store.toRows()（含 dbID）
     } catch (e) {
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
       setError(e instanceof Error ? e.message : String(e))
@@ -685,10 +556,10 @@ export function useChatMessages({
         setHasMore(false)
         return false
       }
-      // Second pass: merge by turnID:role — dedupMessages handles iteration union
-      const next = dedupMessages([...noExactDups, ...prev])
-      messagesRef.current = next
-      setMessages(next)
+      // Second pass: merge by turnID:role — store.mergeHistory 内置迭代 union
+      // （batch 边界拆 turn 时保留两侧迭代数据，等价原 dedupMessages 语义）
+      store.mergeHistory(noExactDups)
+      syncMessages()
       setHasMore(Boolean(data.has_more))
       oldestIdRef.current = data.oldest_id ?? null
       return true
@@ -754,10 +625,6 @@ export function useChatMessages({
       setMessages((prev) => {
         if (activeMessageCacheKeyRef.current !== listenerCacheKey) return prev
         messageMutationGenRef.current += 1
-        // Dedup by requestID for SSE replay — skip if a PERSISTED message
-        // with the same requestID already exists. An optimistic (persisted=false)
-        // message with the same requestID should be REPLACED, not skipped.
-        if (requestID && prev.some((m) => m.requestID === requestID && m.persisted !== false)) return prev
         const newMsg: ChatMessage = {
           id,
           role: 'user',
@@ -770,24 +637,20 @@ export function useChatMessages({
           eventSeq: msg.seq,
           requestID,
         }
-        // If there's an optimistic message with the same requestID (from
-        // sendMessage), replace it with the authoritative echo version
-        // (persisted=true, turnID from server, dbID from DB). This updates
-        // the existing row in-place instead of appending a duplicate.
+        // 有 optimistic（同 requestID, persisted=false）→ 原地替换（保留 id，
+        // TanStack Virtual key 稳定）；已 persisted → SSE replay 跳过。
         if (requestID) {
-          const optimisticIdx = prev.findIndex(
-            (m) => m.requestID === requestID && m.persisted === false,
-          )
-          if (optimisticIdx >= 0) {
-            const copy = [...prev]
-            copy[optimisticIdx] = { ...newMsg, id: prev[optimisticIdx].id }
-            messagesRef.current = copy
-            return copy
+          const existing = store.findUserByRequestID(requestID)
+          if (existing) {
+            if (existing.persisted) return prev
+            store.patchUserById(existing.id, { ...newMsg, id: existing.id })
+            syncMessages()
+            return prev // syncMessages 已 setMessages；返回 prev 避免二次更新
           }
         }
-        const next = [...prev, newMsg]
-        messagesRef.current = next
-        return next
+        store.setUser(msg.turn_id ?? 0, newMsg)
+        syncMessages()
+        return prev
       })
     })
     return off
@@ -822,11 +685,8 @@ export function useChatMessages({
           sending: true,
         }
         messageMutationGenRef.current += 1
-        setMessages((prev) => {
-          const next = [...prev, newMsg]
-          messagesRef.current = next
-          return next
-        })
+        store.setUser(0, newMsg)
+        syncMessages()
         // Pin to bottom immediately — the user just sent a message, they expect
         // to see it at the bottom. This survives all subsequent state updates
         // (user_echo replacement, busy placeholder, turn_started) because
@@ -863,19 +723,15 @@ export function useChatMessages({
             const serverTs = resp.timestamp
             const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
             messageMutationGenRef.current += 1
-            setMessages((prev) => {
-              const next = prev.map((m) => m.id === sentID ? {
-                ...m,
-                persisted: true,
-                sending: false,
-                ...(msgID ? { dbID: msgID } : {}),
-                ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
-                ...(respTurnID && respTurnID > 0 && !m.turnID ? { turnID: respTurnID } : {}),
-                ...(respQueued ? { queued: true } : {}),
-              } : m)
-              messagesRef.current = next
-              return next
+            store.patchUserById(sentID, {
+              persisted: true,
+              sending: false,
+              ...(msgID ? { dbID: msgID } : {}),
+              ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
+              ...(respTurnID && respTurnID > 0 ? { turnID: respTurnID } : {}),
+              ...(respQueued ? { queued: true } : {}),
             })
+            syncMessages()
           }
         })
         .catch((error: unknown) => {
@@ -883,11 +739,8 @@ export function useChatMessages({
           if (optimisticID) {
             const failedID = optimisticID
             messageMutationGenRef.current += 1
-            setMessages((prev) => {
-              const next = prev.filter((m) => m.id !== failedID)
-              messagesRef.current = next
-              return next
-            })
+            store.removeById(failedID)
+            syncMessages()
           }
           toast.error(error instanceof Error ? error.message : 'message send failed')
         })
@@ -912,131 +765,55 @@ export function useChatMessages({
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
-  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => {
+  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, _insertBeforeLastUser?: boolean) => {
     if (!content && !iterations.length) return
     messageMutationGenRef.current += 1
-    // Use the same id format as parseHistoryMessages (seq-${eventSeq}) so that
-    // when reload returns and the server version replaces this optimistic row,
-    // TanStack Virtual's getItemKey returns the same key — React reuses the
-    // existing component instead of unmounting/remounting.
-    const id = eventSeq != null ? `seq-${eventSeq}` : `asst-${Date.now()}-${echoSeq++}`
-    const newMsg: ChatMessage = {
-      id,
-      role: 'assistant',
-      content,
-      iterations,
-      timestamp: new Date().toISOString(),
-      isPartial: false,
-      turnID: turnID ?? 0,
-      persisted: false,
-      eventSeq,
-    }
-    setMessages((prev) => {
-      // DEFAULT: append to the end. This preserves turn order — the assistant
-      // reply belongs AFTER its user message.
-      //
-      // insertBeforeLastUser=true (turn_started(N+1) / turn_id-change fallback
-      // commit path): the committed assistant belongs to the turn BEFORE the
-      // newest user — it must land ABOVE that user, never below it. The rule
-      // is deterministic and turn_id-independent: insert before the LAST user
-      // message in the list (persisted or not). The newest user is exactly the
-      // one that triggered the commit, so this always restores turn order.
-      let insertIdx = prev.length
-      if (insertBeforeLastUser) {
-        // Two-step insertion:
-        // 1. If turnID > 0: first scan for the assistant's OWN turn user
-        //    (role=user && turnID matches) and insert AFTER it. This correctly
-        //    positions the assistant even when the next turn's user hasn't been
-        //    added to the messages array yet (race: turn_started arrives before
-        //    sendMessage's setMessages is applied). Without this, the scan finds
-        //    user1 (the ONLY user) and inserts BEFORE it: [assistant1, user1].
-        // 2. Fallback: insert before the LAST user message (persisted or not).
-        //    The newest user is the one that triggered the commit, so this
-        //    restores turn order when the assistant's own turn user is unbound
-        //    (turn_started was lost, turnID=0).
-        let foundOwnTurnUser = false
-        if (turnID) {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i].role === 'user' && prev[i].turnID === turnID) {
-              insertIdx = i + 1
-              foundOwnTurnUser = true
-              break
-            }
-          }
-        }
-        if (!foundOwnTurnUser) {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            if (prev[i].role === 'user') {
-              insertIdx = i
-              break
-            }
-          }
-        }
-      }
-      const withMsg = [...prev.slice(0, insertIdx), newMsg, ...prev.slice(insertIdx)]
-      // Incremental dedup: the existing array (prev) is already linearly
-      // consistent (previously deduped). Only the NEW message can conflict.
-      // Check in O(1): scan for a match by turnID:role, eventSeq, or
-      // content:role (content-based fallback for turnID=0 live commits).
-      const next = incrementalDedup(withMsg, insertIdx)
-      messagesRef.current = next
-      return next
-    })
-  }, [])
+    // store.commitAssistant 把 live → assistant 状态迁移（同一逻辑消息），
+    // 按 turnID 路由到对应 slot —— 顺序由 turnIDs 排序保证，insertBeforeLastUser
+    // 不再需要（结构上不可能插错位置）。
+    store.commitAssistant(turnID ?? 0, content, iterations, eventSeq)
+    syncMessages()
+  }, [store, syncMessages])
 
   // injectUserMessage: display a bg-notification/cron user message.
   // Called by useProgressStream when a turn_started event with trigger
   // "notification" or "resume" arrives. The message is tagged with the
   // backend TurnID so the assistant response can be associated correctly.
   const injectUserMessage = useCallback((content: string, turnID: number, isNotification: boolean) => {
-    setMessages((prev) => {
-      // Dedup: if a notification with the same turnID already exists (from a
-      // previous turn_started replay — SSE reconnect replays buffered
-      // progress_structured events including turn_started), don't create a
-      // duplicate. The ring buffer (web_hub.go isStatefulMsg) keeps
-      // progress_structured events and replays them on reconnect, so
-      // turn_started with trigger=notification can arrive twice.
-      if (turnID > 0) {
-        const existing = prev.find(m => m.turnID === turnID && m.role === 'user' && m.isNotification)
-        if (existing) return prev
-      }
-      messageMutationGenRef.current += 1
-      const id = `notif-${turnID}-${echoSeq++}`
-      const newMsg: ChatMessage = {
-        id,
-        role: 'user',
-        content,
-        iterations: [],
-        timestamp: new Date().toISOString(),
-        isPartial: false,
-        turnID,
-        isNotification,
-        persisted: false,
-        eventSeq: -1, // marker: dedup against history by turnID:role in reconcile
-      }
-      const next = [...prev, newMsg]
-      messagesRef.current = next
-      return next
-    })
-  }, [])
+    // Dedup by turnID:role 由 store 的 slot 唯一性保证（每 turn 恰好 1 user）。
+    // SSE reconnect 重放的重复 turn_started 不会产生重复行。
+    messageMutationGenRef.current += 1
+    const newMsg: ChatMessage = {
+      id: `notif-${turnID}-${echoSeq++}`,
+      role: 'user',
+      content,
+      iterations: [],
+      timestamp: new Date().toISOString(),
+      isPartial: false,
+      turnID,
+      isNotification,
+      persisted: false,
+      eventSeq: -1, // marker: dedup against history by turnID:role
+    }
+    store.setUser(turnID, newMsg)
+    syncMessages()
+  }, [store, syncMessages])
 
   const removeMessage = useCallback((id: string) => {
     messageMutationGenRef.current += 1
     destructiveMutationGenRef.current += 1
-    setMessages((prev) => {
-      const next = prev.filter((m) => m.id !== id)
-      messagesRef.current = next
-      return next
-    })
-  }, [])
+    store.removeById(id)
+    syncMessages()
+  }, [store, syncMessages])
 
   const clearMessages = useCallback(() => {
     messageMutationGenRef.current += 1
     destructiveMutationGenRef.current += 1
+    store.clear()
     messagesRef.current = []
     setMessages([])
     setInitialProgress(null)
-  }, [])
+  }, [store])
 
   const markDestructiveMutation = useCallback(() => {
     messageMutationGenRef.current += 1

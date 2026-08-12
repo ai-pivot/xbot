@@ -24,7 +24,7 @@ func TestSSEAskUser_PendingMissingConsumed(t *testing.T) {
 	// After the prompt is answered/cancelled the pending is gone: the event
 	// is consumed (not replayed) and must NOT be sent again on reconnect.
 	recorder := httptest.NewRecorder()
-	client := &Client{w: recorder, flusher: recorder}
+	client := &Client{w: recorder, flusher: recorder, sseEncWriter: recorder}
 	wc := &WebChannel{}
 	wc.callbacks.WithPendingAskUser = func(ch, chatID string, fn func(*protocol.ProgressEvent) bool) bool {
 		return false // resolved — no pending
@@ -45,7 +45,7 @@ func TestSSEAskUser_PendingExistsSends(t *testing.T) {
 	// ask_user reaches the client while the prompt is pending (typical live
 	// case — pending lookup succeeds).
 	recorder := httptest.NewRecorder()
-	client := &Client{w: recorder, flusher: recorder}
+	client := &Client{w: recorder, flusher: recorder, sseEncWriter: recorder}
 	wc := &WebChannel{}
 	wc.callbacks.WithPendingAskUser = func(ch, chatID string, fn func(*protocol.ProgressEvent) bool) bool {
 		return fn(&protocol.ProgressEvent{RequestID: "req-1"})
@@ -61,7 +61,7 @@ func TestSSEAskUser_PendingExistsSends(t *testing.T) {
 
 func TestWriteSSEEventFormat(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	client := &Client{w: recorder, flusher: recorder}
+	client := &Client{w: recorder, flusher: recorder, sseEncWriter: recorder}
 	msg := protocol.WSMessage{
 		Type:    protocol.MsgTypeText,
 		Seq:     42,
@@ -89,7 +89,7 @@ func TestWriteSSEHeartbeat(t *testing.T) {
 		t.Fatalf("heartbeat interval = %s, want 15s", sseHeartbeatInterval)
 	}
 	recorder := httptest.NewRecorder()
-	client := &Client{w: recorder, flusher: recorder}
+	client := &Client{w: recorder, flusher: recorder, sseEncWriter: recorder}
 
 	if err := writeSSEHeartbeat(client); err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestWriteSSEHeartbeat(t *testing.T) {
 
 func TestWriteSSECursor(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	client := &Client{w: recorder, flusher: recorder}
+	client := &Client{w: recorder, flusher: recorder, sseEncWriter: recorder}
 
 	if err := writeSSECursor(client, 42); err != nil {
 		t.Fatal(err)
@@ -2036,13 +2036,14 @@ func TestWebChannelStopInterruptsBlockedSSEWrite(t *testing.T) {
 	writer := newDeadlineBlockingResponseWriter()
 	defer writer.release()
 	client := &Client{
-		connType: clientConnTypeSSE,
-		w:        writer,
-		flusher:  writer,
-		sendCh:   make(chan protocol.WSMessage, 1),
-		done:     make(chan struct{}),
-		chatID:   "web-1",
-		id:       "blocked-sse",
+		connType:     clientConnTypeSSE,
+		w:            writer,
+		flusher:      writer,
+		sendCh:       make(chan protocol.WSMessage, 1),
+		done:         make(chan struct{}),
+		chatID:       "web-1",
+		id:           "blocked-sse",
+		sseEncWriter: writer,
 	}
 	wc.hub.addClient(client.id, client)
 	wc.hub.subscribe(client.id, client.chatID)

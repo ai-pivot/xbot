@@ -138,67 +138,54 @@ test.describe('Iteration sequence integrity', () => {
       type: 'progress_structured',
       progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'user', request_id: 'r1' }, chat_id: 'web:chat-1' },
     })
-    // Iteration 0: thinking
+    // Iteration 1: thinking (iterations are 1-based; 0 = uninitialized)
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'thinking', iteration: 0, seq: 2, turn_id: 1, chat_id: 'web:chat-1' },
+      progress: { phase: 'thinking', iteration: 1, seq: 2, turn_id: 1, chat_id: 'web:chat-1' },
     })
-    await page.waitForTimeout(200)
 
-    // "思考中" should show
-    const thinking1 = await hasThinking(page)
-    console.log('Iter 0 thinking:', thinking1)
-    expect(thinking1).toBe(true)
+    // "思考中" should show (wait for live row to render, not fixed timeout)
+    await expect.poll(async () => hasThinking(page), { timeout: 10_000, intervals: [100] }).toBe(true)
 
-    // Iteration 0: tool running
+    // Iteration 1: tool running
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'tool_exec', iteration: 0, seq: 3, turn_id: 1, chat_id: 'web:chat-1',
-        active_tools: [{ name: 'Read', status: 'running', iteration: 0 }] },
+      progress: { phase: 'tool_exec', iteration: 1, seq: 3, turn_id: 1, chat_id: 'web:chat-1',
+        active_tools: [{ name: 'Read', status: 'running', iteration: 1 }] },
     })
-    // Iteration 1: thinking (delta push with iteration 0 completed)
+    // Iteration 2: thinking (delta push with iteration 1 completed)
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'thinking', iteration: 1, seq: 4, turn_id: 1, chat_id: 'web:chat-1',
-        completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }],
-        iteration_history: [{ iteration: 0, thinking: 'Reading', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }] }],
+      progress: { phase: 'thinking', iteration: 2, seq: 4, turn_id: 1, chat_id: 'web:chat-1',
+        completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }],
+        iteration_history: [{ iteration: 1, thinking: 'Reading', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }] }],
       },
     })
-    await page.waitForTimeout(200)
 
-    // "思考中" should still show (iteration 1)
-    const thinking2 = await hasThinking(page)
-    console.log('Iter 1 thinking:', thinking2)
-    expect(thinking2).toBe(true)
+    // "思考中" should still show (iteration 2)
+    await expect.poll(async () => hasThinking(page), { timeout: 10_000, intervals: [100] }).toBe(true)
 
     // Done + text
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'done', iteration: 1, seq: 5, turn_id: 1, chat_id: 'web:chat-1',
+      progress: { phase: 'done', iteration: 2, seq: 5, turn_id: 1, chat_id: 'web:chat-1',
         iteration_history: [
-          { iteration: 0, thinking: 'Reading', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }] },
-          { iteration: 1, thinking: 'Done', completed_tools: [] },
+          { iteration: 1, thinking: 'Reading', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }] },
+          { iteration: 2, thinking: 'Done', completed_tools: [] },
         ],
       },
     })
     await emitSSE(page, 'text', {
       type: 'text', content: 'All done.', seq: 6, turn_id: 1, chat_id: 'web:chat-1',
       progress_history: JSON.stringify([
-        { iteration: 0, thinking: 'Reading', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }] },
-        { iteration: 1, thinking: 'Done', completed_tools: [] },
+        { iteration: 1, thinking: 'Reading', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }] },
+        { iteration: 2, thinking: 'Done', completed_tools: [] },
       ]),
     })
     await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
-    await page.waitForTimeout(500)
 
-    // "思考中" should NOT show (turn is done)
-    const thinkingAfter = await hasThinking(page)
-    console.log('After done thinking:', thinkingAfter)
-
-    // Only ONE assistant row (no duplicate)
-    const assistantRows = await countAssistantRows(page)
-    console.log('Assistant rows:', assistantRows)
-    expect(assistantRows).toBe(1)
+    // "思考中" should NOT show (turn is done) — wait for assistant row
+    await expect.poll(async () => countAssistantRows(page), { timeout: 10_000, intervals: [100] }).toBe(1)
 
     await page.close()
   })

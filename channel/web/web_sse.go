@@ -9,18 +9,37 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	log "xbot/logger"
 	"xbot/protocol"
 
 	"github.com/google/uuid"
+	"github.com/klauspost/compress/gzip"
+	"github.com/klauspost/compress/zstd"
 )
 
 const (
 	sseHeartbeatInterval = 15 * time.Second
 	sseWriteTimeout      = 2 * time.Second
 )
+
+// SSE encoder pools (zstd + gzip). Encoders are expensive to create;
+// pool them for reuse across SSE connections.
+var sseZstdPool = sync.Pool{
+	New: func() interface{} {
+		enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+		return enc
+	},
+}
+
+var sseGzipPool = sync.Pool{
+	New: func() interface{} {
+		w, _ := gzip.NewWriterLevel(nil, gzip.DefaultCompression)
+		return w
+	},
+}
 
 // handleSSE streams server events for one authenticated Web session.
 func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +80,33 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
+	// SSE compression: detect Accept-Encoding and wrap the writer.
+	// zstd preferred (20x compression on SSE), gzip fallback (Safari etc.).
+	// The encoder wraps client.w — all fmt.Fprintf(client.w, ...) calls
+	// go through compression automatically. flushSSE flushes the encoder
+	// first (flush compressed block to TCP), then the underlying writer.
+	acceptEnc := r.Header.Get("Accept-Encoding")
+	var sseWriter io.Writer = w
+	var sseEncFlush func() error
+	var sseEncClose func()
+	if strings.Contains(acceptEnc, "zstd") {
+		enc := sseZstdPool.Get().(*zstd.Encoder)
+		enc.Reset(w)
+		sseWriter = enc
+		sseEncFlush = func() error { return enc.Flush() }
+		sseEncClose = func() { enc.Close(); sseZstdPool.Put(enc) }
+		w.Header().Set("Content-Encoding", "zstd")
+		w.Header().Set("Vary", "Accept-Encoding")
+	} else if strings.Contains(acceptEnc, "gzip") {
+		enc := sseGzipPool.Get().(*gzip.Writer)
+		enc.Reset(w)
+		sseWriter = enc
+		sseEncFlush = func() error { return enc.Flush() }
+		sseEncClose = func() { enc.Close(); sseGzipPool.Put(enc) }
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+	}
+
 	client := &Client{
 		connType:       clientConnTypeSSE,
 		w:              w,
@@ -74,6 +120,9 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		id:             strings.ReplaceAll(uuid.New().String(), "-", ""),
 		lastSentSeq:    lastSeq,
 		statelessSig:   make(chan struct{}, 1),
+		sseEncWriter:   sseWriter,
+		sseEncFlush:    sseEncFlush,
+		sseEncClose:    sseEncClose,
 	}
 
 	// Sequence high-water selection and subscription are one transaction: an
@@ -87,6 +136,20 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		// The server restarted and its in-memory sequence restarted from zero.
 		client.lastSentSeq = 0
 	}
+	// Defer cleanup BEFORE addClient/subscribe — if subscribe fails (early
+	// return below), the encoder must still be released to the pool.
+	defer func() {
+		client.closeDone()
+		if client.sseEncClose != nil {
+			client.sseEncClose()
+		}
+		wc.hub.removeClient(client.id)
+		log.WithFields(log.Fields{
+			"sender_id": senderID,
+			"chat_id":   chatID,
+			"client_id": client.id,
+		}).Info("SSE client disconnected")
+	}()
 	registered := wc.hub.addClient(client.id, client)
 	subscribed := registered && wc.hub.subscribe(client.id, routeKey)
 	wc.hub.seqMu.Unlock()
@@ -96,15 +159,6 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	defer func() {
-		client.closeDone()
-		wc.hub.removeClient(client.id)
-		log.WithFields(log.Fields{
-			"sender_id": senderID,
-			"chat_id":   chatID,
-			"client_id": client.id,
-		}).Info("SSE client disconnected")
-	}()
 
 	log.WithFields(log.Fields{
 		"sender_id": senderID,
@@ -484,7 +538,7 @@ func writeSSEEvent(client *Client, msg protocol.WSMessage) error {
 	}
 	armSSEWriteDeadline(client)
 	defer clearSSEWriteDeadline(client)
-	if _, err := fmt.Fprintf(client.w, "id:%d\nevent:%s\ndata:%s\n\n", msg.Seq, msg.Type, data); err != nil {
+	if _, err := fmt.Fprintf(client.sseWriter(), "id:%d\nevent:%s\ndata:%s\n\n", msg.Seq, msg.Type, data); err != nil {
 		return fmt.Errorf("write SSE event: %w", err)
 	}
 	if err := flushSSE(client); err != nil {
@@ -497,7 +551,7 @@ func writeSSEEvent(client *Client, msg protocol.WSMessage) error {
 func writeSSEHeartbeat(client *Client) error {
 	armSSEWriteDeadline(client)
 	defer clearSSEWriteDeadline(client)
-	if _, err := io.WriteString(client.w, ":heartbeat\n\n"); err != nil {
+	if _, err := io.WriteString(client.sseWriter(), ":heartbeat\n\n"); err != nil {
 		return fmt.Errorf("write SSE heartbeat: %w", err)
 	}
 	return flushSSE(client)
@@ -506,7 +560,7 @@ func writeSSEHeartbeat(client *Client) error {
 func writeSSECursor(client *Client, seq uint64) error {
 	armSSEWriteDeadline(client)
 	defer clearSSEWriteDeadline(client)
-	if _, err := fmt.Fprintf(client.w, "id:%d\n\n", seq); err != nil {
+	if _, err := fmt.Fprintf(client.sseWriter(), "id:%d\n\n", seq); err != nil {
 		return fmt.Errorf("write SSE cursor: %w", err)
 	}
 	return flushSSE(client)
@@ -529,7 +583,7 @@ func writeSSEResyncRequired(client *Client, sel SessionSelector) error {
 	}
 	armSSEWriteDeadline(client)
 	defer clearSSEWriteDeadline(client)
-	if _, err := fmt.Fprintf(client.w, "id:%d\nevent:%s\ndata:%s\n\n", client.lastSentSeq, msg.Type, data); err != nil {
+	if _, err := fmt.Fprintf(client.sseWriter(), "id:%d\nevent:%s\ndata:%s\n\n", client.lastSentSeq, msg.Type, data); err != nil {
 		return fmt.Errorf("write SSE resync control: %w", err)
 	}
 	return flushSSE(client)
@@ -541,7 +595,24 @@ func flushSSEResponse(client *Client) error {
 	return flushSSE(client)
 }
 
+// sseWriter returns the SSE event writer (compressed or plain).
+// Falls back to client.w if sseEncWriter is nil (tests / no compression).
+func (c *Client) sseWriter() io.Writer {
+	if c.sseEncWriter != nil {
+		return c.sseEncWriter
+	}
+	return c.w
+}
+
+// flushSSE flushes the SSE encoder (if any) then the underlying writer.
 func flushSSE(client *Client) error {
+	// Flush encoder first (flush compressed block to underlying writer),
+	// then flush the underlying writer (flush TCP).
+	if client.sseEncFlush != nil {
+		if err := client.sseEncFlush(); err != nil {
+			return fmt.Errorf("flush SSE encoder: %w", err)
+		}
+	}
 	if err := http.NewResponseController(client.w).Flush(); err != nil {
 		return fmt.Errorf("flush SSE response: %w", err)
 	}

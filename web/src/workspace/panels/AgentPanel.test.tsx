@@ -81,10 +81,14 @@ vi.mock('@/components/agent/MessageList', () => ({
     liveProgress?: unknown
     messages?: unknown[]
     loading?: boolean
-  }) => (
+  }) => {
+    // 方案 A：live 行在 messages 里（isPartial）——模拟真实 MessageList 的
+    // liveId 检测（liveMessage prop 恒 null）
+    const hasLive = (props.messages ?? []).some((m) => (m as { isPartial?: boolean }).isPartial)
+    return (
     <div>
       <div data-testid="message-list-busy">{String(props.busy ?? false)}</div>
-      <div data-testid="message-list-live">{props.liveMessage ? 'live-visible' : 'live-hidden'}</div>
+      <div data-testid="message-list-live">{hasLive ? 'live-visible' : 'live-hidden'}</div>
       <div data-testid="message-list-live-progress">{props.liveProgress ? 'progress-visible' : 'progress-hidden'}</div>
       <button
         type="button"
@@ -113,7 +117,8 @@ vi.mock('@/components/agent/MessageList', () => ({
         rewind-echo
       </button>
     </div>
-  ),
+    )
+  },
 }))
 vi.mock('@/workspace/types', () => ({ useDockviewContext: () => mocks.context }))
 vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
@@ -264,7 +269,10 @@ describe('AgentPanel liveMessage visibility during reload', () => {
     // live store (useProgressStream) is INDEPENDENT of useChatMessages'
     // history loading; gating live on loading is architecturally wrong. The
     // live turn must stay visible whenever the store has liveMessage.
-    mocks.chat.messages = [] // reload just blanked history
+    // live store stays authoritative during reload：Step 3 后 live 行由
+    // store.toRows() 保留在 messages 里（mergeHistory replace 不清进行中
+    // turn 的 live），与 loading 无关。
+    mocks.chat.messages = [{ id: 'turn-live', role: 'assistant', content: '', isPartial: true }]
     mocks.chat.loading = true
     render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
     expect(screen.getByTestId('message-list-live').textContent).toBe('live-visible')
@@ -276,7 +284,7 @@ describe('AgentPanel liveMessage visibility during reload', () => {
     // hydrated liveMessage (refresh mid-turn → active_progress), it MUST render
     // immediately. Hiding it on loading caused the turn to vanish whenever a
     // reload coincided with an active turn (the reported bug).
-    mocks.chat.messages = []
+    mocks.chat.messages = [{ id: 'turn-live', role: 'assistant', content: '', isPartial: true }]
     mocks.chat.loading = true
     render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
     expect(screen.getByTestId('message-list-live').textContent).toBe('live-visible')
@@ -284,7 +292,10 @@ describe('AgentPanel liveMessage visibility during reload', () => {
   })
 
   it('shows live when not loading (normal streaming)', () => {
-    mocks.chat.messages = [{ id: 'u1', role: 'user', content: 'hi' }]
+    mocks.chat.messages = [
+      { id: 'u1', role: 'user', content: 'hi' },
+      { id: 'turn-live', role: 'assistant', content: '', isPartial: true },
+    ]
     mocks.chat.loading = false
     render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
     expect(screen.getByTestId('message-list-live').textContent).toBe('live-visible')

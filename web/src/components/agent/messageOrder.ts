@@ -176,6 +176,13 @@ export function assertRowConsistency(rows: ChatMessage[]): void {
       for (let i = 1; i < row.iterations.length; i++) {
         const prevIter = row.iterations[i - 1].iteration
         const currIter = row.iterations[i].iteration
+        if (currIter === prevIter) {
+          // Duplicate iteration record (dual-server double-write / replayed
+          // delta) — NOT a gap. Mirrors the store-layer guards
+          // (continuousIterations / hasIterationGap / assertIterationContinuity):
+          // a duplicate must never be reported as LOST iteration history.
+          continue
+        }
         if (currIter !== prevIter + 1) {
           console.error('[ITER_GAP_INVARIANT] iteration gap within a turn', {
             turnID: row.turnID,

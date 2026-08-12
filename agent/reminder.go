@@ -128,10 +128,18 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 			repoPath = entry.RepoPath
 		}
 		peers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
-		// Filter: only show peers with actual worktrees (real collaboration).
+		// Filter: only show peers with actual worktrees (real collaboration)
+		// AND currently BUSY — Busy means the session's chatProcessLoop is
+		// processing a turn (an iteration is running), set via
+		// WorktreeRegistry.SetBusy alongside ss.busy.Store (agent.go
+		// chatProcessLoop). A registered session lingers in the registry for the
+		// process lifetime; without the live iterating signal every peer (even
+		// one idle for hours) is reported as "collaborating", falsely implying
+		// concurrent work and distracting the agent (user report: "peer 已 idle
+		// 仍被提示协作中"). busy/idle = 是否在迭代中 — not time-based.
 		var activePeers []*tools.WorktreeEntry
 		for _, p := range peers {
-			if p.WorktreeDir != "" {
+			if p.WorktreeDir != "" && p.Busy {
 				activePeers = append(activePeers, p)
 			}
 		}

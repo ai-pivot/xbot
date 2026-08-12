@@ -872,6 +872,13 @@ export function useSessionStoreImpl(): SessionStore {
       if (executingKeys.has(sessionKey(node))) {
         return { ...node, status: 'running', running: true, children }
       }
+      // SSE idle cooldown: if prev's status was set by SSE to idle (not
+      // running), and HTTP says running=true, trust SSE (not HTTP). HTTP has
+      // inherent latency — the session-tree RPC reads chatCancelCh which may
+      // not have been updated yet (race between SSE idle event and RPC handler).
+      if (node.running && carried.status === 'idle') {
+        return { ...node, status: 'idle', running: false, children }
+      }
       // SubAgents: the backend's IsProcessingByChannel checks chatCancelCh,
       // but one-shot SubAgents don't register there. So the HTTP response
       // may report running=false even while the SubAgent is actively running.

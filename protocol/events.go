@@ -74,18 +74,28 @@ type ProgressEvent struct {
 	ElapsedWall int64              `json:"elapsed_wall"`
 
 	// Extended fields
-	ChatID                 string            `json:"chat_id,omitempty"`
-	Seq                    uint64            `json:"seq,omitempty"`
-	Phase                  string            `json:"phase,omitempty"`
-	ActiveTools            []ToolProgress    `json:"active_tools,omitempty"`
-	CompletedTools         []ToolProgress    `json:"completed_tools,omitempty"`
-	SubAgents              []SubAgentInfo    `json:"sub_agents,omitempty"`
-	Todos                  []TodoItem        `json:"todos"`
-	TokenUsage             *TokenUsage       `json:"token_usage,omitempty"`
-	Questions              []AskUserQuestion `json:"questions,omitempty"`
-	RequestID              string            `json:"request_id,omitempty"`
-	StreamContent          string            `json:"stream_content,omitempty"`
-	ReasoningStreamContent string            `json:"reasoning_stream_content,omitempty"`
+	ChatID         string            `json:"chat_id,omitempty"`
+	Seq            uint64            `json:"seq,omitempty"`
+	Phase          string            `json:"phase,omitempty"`
+	ActiveTools    []ToolProgress    `json:"active_tools,omitempty"`
+	CompletedTools []ToolProgress    `json:"completed_tools,omitempty"`
+	SubAgents      []SubAgentInfo    `json:"sub_agents,omitempty"`
+	Todos          []TodoItem        `json:"todos"`
+	TokenUsage     *TokenUsage       `json:"token_usage,omitempty"`
+	Questions      []AskUserQuestion `json:"questions,omitempty"`
+	RequestID      string            `json:"request_id,omitempty"`
+	StreamContent  string            `json:"stream_content,omitempty"`
+	// StreamDelta carries the INCREMENTAL text since the last stream_content
+	// event (bandwidth optimization: pushing the full cumulative text every
+	// token is O(n²); delta pushes are O(n) with the iteration-end checkpoint
+	// (StreamContent set) providing the alignment/repair point). Frontend
+	// appends delta to its accumulated streamContent; when StreamContent is set
+	// (checkpoint) it REPLACES the accumulated text. Stream-only field — must
+	// NOT enter structured snapshots.
+	StreamDelta            string `json:"stream_delta,omitempty"`
+	ReasoningStreamContent string `json:"reasoning_stream_content,omitempty"`
+	// ReasoningStreamDelta — same delta/checkpoint scheme as StreamDelta.
+	ReasoningStreamDelta string `json:"reasoning_stream_delta,omitempty"`
 	// GenUIContent carries streaming HTML from display_html tool arguments.
 	// Stream-only field like StreamContent — must NOT enter structured snapshots.
 	GenUIContent string `json:"genui_content,omitempty"`

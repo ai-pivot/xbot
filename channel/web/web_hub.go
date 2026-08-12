@@ -1,6 +1,7 @@
 package web
 
 import (
+	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -573,6 +574,12 @@ type Client struct {
 	webUserID        int    // browser user ID for legacy admin fallback
 	routeReplay      bool   // eventStream cursor is the replay source
 	sseWriteCanceled atomic.Bool
+
+	// SSE compression: wraps client.w with zstd/gzip encoder for compressed
+	// SSE streams. nil = no compression (plain SSE).
+	sseEncFlush  func() error // encoder.Flush (nil = plain)
+	sseEncClose  func()       // encoder.Close + return to pool (nil = plain)
+	sseEncWriter io.Writer    // writer for SSE events (encoder or client.w)
 
 	// statelessSlot holds the latest stateless message per type (progress,
 	// stream_content, etc.).  Each type is kept at most once — newer values

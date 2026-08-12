@@ -52,19 +52,21 @@ type Mutator = (draft: ProgressSnapshot) => void
  */
 function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
   if (incoming.length === 0) return
-  // O(N+M) dedup using a Set instead of O(N*M) Array.some() per incoming item.
-  // For long-running agents with 50+ iterations, this avoids 2500+ comparisons.
-  const existing = new Set<number>()
+  // O(N+M) union + dedup via Map keyed by iteration number. Dedups BOTH the
+  // incoming deltas AND any pre-existing duplicates in draft.iterationHistory
+  // (a replayed/duplicated delta would otherwise leave [1,1,2,2,...], tripping
+  // assertIterationContinuity's 1→1 check — a FALSE ITERATION_GAP report).
+  const merged = new Map<number, WebIteration>()
   for (const iter of draft.iterationHistory) {
-    existing.add(iter.iteration)
+    merged.set(iter.iteration, iter)
   }
-  const newIters = incoming.filter((iter) => !existing.has(iter.iteration))
-  if (newIters.length > 0) {
-    draft.iterationHistory = [...draft.iterationHistory, ...newIters].sort(
-      (a, b) => a.iteration - b.iteration,
-    )
-    assertIterationContinuity(draft.iterationHistory)
+  for (const iter of incoming) {
+    if (!merged.has(iter.iteration)) {
+      merged.set(iter.iteration, iter)
+    }
   }
+  draft.iterationHistory = [...merged.values()].sort((a, b) => a.iteration - b.iteration)
+  assertIterationContinuity(draft.iterationHistory)
 }
 
 /**
@@ -81,6 +83,13 @@ export function assertIterationContinuity(iters: WebIteration[]): boolean {
   for (let i = 1; i < iters.length; i++) {
     const prev = iters[i - 1].iteration
     const curr = iters[i].iteration
+    if (curr === prev) {
+      // Duplicate iteration record (e.g. double-write by a brief dual-server
+      // window, or a replayed delta that bypassed dedup) — NOT a gap. Skip:
+      // dedup happens at assignment/render time; a duplicate must never be
+      // reported as LOST iteration history (false ITERATION_GAP alarm).
+      continue
+    }
     if (curr !== prev + 1) {
       console.error(
         `[ITERATION_GAP] Iteration continuity broken: ${prev} → ${curr} (expected ${prev + 1}). ` +
@@ -108,6 +117,10 @@ export function assertIterationContinuity(iters: WebIteration[]): boolean {
  */
 export function hasIterationGap(iters: WebIteration[]): boolean {
   for (let i = 1; i < iters.length; i++) {
+    if (iters[i].iteration === iters[i - 1].iteration) {
+      // Duplicate record — not a gap (see assertIterationContinuity).
+      continue
+    }
     if (iters[i].iteration !== iters[i - 1].iteration + 1) return true
   }
   return false
@@ -137,6 +150,13 @@ export function continuousIterations(iters: WebIteration[]): WebIteration[] {
   for (let i = 1; i < iters.length; i++) {
     const prev = out[out.length - 1]
     const curr = iters[i]
+    if (curr.iteration === prev.iteration) {
+      // Duplicate iteration record (dual-server double-write, replayed delta).
+      // Skip — a duplicate is NOT a gap and must NOT truncate the rendered
+      // prefix (otherwise [1,1,2,2,...,10] would render as just iteration 1:
+      // "重启后之前的 iter 消失").
+      continue
+    }
     if (curr.iteration !== prev.iteration + 1) break
     out.push(curr)
   }
@@ -290,127 +310,6 @@ export function dedupTools(tools: WebToolProgress[]): WebToolProgress[] {
   return result
 }
 
-/**
- * Dedup messages by stable identity — no string matching.
- *
- * Strategy:
- * 1. Messages with turnID > 0: dedup by turnID:role (one message per turn per role).
- * 2. Messages with eventSeq: dedup by eventSeq (SSE sequence is globally unique).
- * 3. Messages with neither (history messages): never deduped — they have unique DB IDs.
- */
-export function dedupMessages<T extends { turnID: number; role: string; content?: string; id?: string; eventSeq?: number; dbID?: number; persisted?: boolean; iterations?: WebIteration[] }>(
-  messages: T[],
-): T[] {
-  const turnSeen = new Map<string, number>()
-  const seqSeen = new Set<number>()
-  // Content+role index for ALL assistant messages with non-empty content.
-  // Handles both arrival orders (DB-first and live-first) for content-based
-  // dedup of turnID=0 live commits against turnID>0 DB messages.
-  const contentSeen = new Map<string, number>()
-  const result: T[] = []
-  for (let i = 0; i < messages.length; i++) {
-    // Dedup by turnID:role for tracked turns
-    if (messages[i].turnID > 0) {
-      const key = `${messages[i].turnID}:${messages[i].role}`
-      const existing = turnSeen.get(key)
-      if (existing !== undefined) {
-        // MERGE instead of replace: union iterations by iteration number.
-        const existingHasDB = result[existing].dbID != null
-        const incomingHasDB = messages[i].dbID != null
-        const existingHasContent = (result[existing].content ?? '') !== ''
-        const incomingHasContent = (messages[i].content ?? '') !== ''
-        const existingHasIters = (result[existing].iterations ?? []).length > 0
-        const incomingHasIters = (messages[i].iterations ?? []).length > 0
-        const existingHasData = existingHasDB || existingHasContent || existingHasIters
-        const incomingHasData = incomingHasDB || incomingHasContent || incomingHasIters
-        let base: T
-        let other: T
-        if (!existingHasData && !incomingHasData) {
-          base = messages[i]
-          other = result[existing]
-        } else if (existingHasDB && !incomingHasDB) {
-          base = result[existing]
-          other = messages[i]
-        } else if (!existingHasDB && incomingHasDB) {
-          base = messages[i]
-          other = result[existing]
-        } else if (incomingHasContent && !existingHasContent) {
-          base = messages[i]
-          other = result[existing]
-        } else {
-          base = result[existing]
-          other = messages[i]
-        }
-        const mergedIters = mergeIterations(base.iterations ?? [], other.iterations ?? [])
-        result[existing] = {
-          ...base,
-          iterations: mergedIters.length > 0 ? mergedIters : (base.iterations ?? []),
-          content: (base.content ?? '') !== '' ? base.content : (other.content ?? ''),
-        } as T
-      } else {
-        // Content-based dedup: check if a turnID=0 live commit with the same
-        // content already exists (live-first arrival order). Replace it
-        // in-place with the DB version (turnID>0), merging iterations.
-        const content = messages[i].content ?? ''
-        if (content && messages[i].role === 'assistant') {
-          const contentKey = `assistant:${content}`
-          const existingIdx = contentSeen.get(contentKey)
-          if (existingIdx !== undefined && result[existingIdx].turnID === 0) {
-            const live = result[existingIdx]
-            const mergedIters = mergeIterations(messages[i].iterations ?? [], live.iterations ?? [])
-            result[existingIdx] = {
-              ...messages[i],
-              iterations: mergedIters.length > 0 ? mergedIters : (messages[i].iterations ?? []),
-            } as T
-            turnSeen.set(key, existingIdx)
-            continue
-          }
-        }
-        turnSeen.set(key, result.length)
-        if (content && messages[i].role === 'assistant') {
-          contentSeen.set(`assistant:${content}`, result.length)
-        }
-        result.push(messages[i])
-      }
-      continue
-    }
-    // Dedup by eventSeq for live messages that have one
-    const seqVal = messages[i].eventSeq
-    if (seqVal != null) {
-      const seq = seqVal
-      if (seqSeen.has(seq)) {
-        const existingIdx = result.findIndex((m) => m.eventSeq === seq)
-        if (existingIdx >= 0) {
-          result[existingIdx] = messages[i]
-        }
-        continue
-      }
-      seqSeen.add(seq)
-    }
-    // Content-based dedup: a live-committed message (turnID=0) with the same
-    // content+role as a DB message (turnID>0, indexed in contentSeen) is a
-    // duplicate. Only matches against turnID>0 entries — two turnID=0
-    // messages with the same content are NOT deduped (distinct occurrences).
-    const content = messages[i].content ?? ''
-    if (content && messages[i].role === 'assistant') {
-      const contentKey = `assistant:${content}`
-      const existingIdx = contentSeen.get(contentKey)
-      if (existingIdx !== undefined && result[existingIdx].turnID > 0) {
-        const existing = result[existingIdx]
-        const mergedIters = mergeIterations(existing.iterations ?? [], messages[i].iterations ?? [])
-        result[existingIdx] = {
-          ...existing,
-          iterations: mergedIters.length > 0 ? mergedIters : (existing.iterations ?? []),
-        } as T
-        continue
-      }
-      // Also index turnID=0 messages so a later turnID>0 message can find them
-      contentSeen.set(contentKey, result.length)
-    }
-    result.push(messages[i])
-  }
-  return result
-}
 
 /**
  * Merge two arrays of WebIteration by iteration number (union).
@@ -478,32 +377,43 @@ export class ProgressStore {
   getSnapshot = (): ProgressSnapshot => this.snapshot
 
   /**
+   * Full internal-state dump for the REC developer tool — enables 100%
+   * frontend reconstruction. Unlike getSnapshot() (the RAF-throttled snapshot),
+   * this returns the CURRENT (un-throttled) internal ProgressSnapshot — whose
+   * `lastIter` is the real iteration watermark advanced by structured events —
+   * PLUS the store-level `lastTurnID` (tracks across turns; reset() preserves
+   * it, so it is the only store field not derivable from the snapshot).
+   * JSON-serializable — safe to console.log into [SSE_DUMP_STATE_*].
+   */
+  dumpFullState(): { current: ProgressSnapshot; lastTurnID: number } {
+    return {
+      current: { ...this.current },
+      lastTurnID: this.lastTurnID,
+    }
+  }
+
+  /**
    * Synchronously report whether the CURRENT (not throttled) iterationHistory
    * has an iteration-id gap. Unlike getSnapshot() (RAF-throttled), this reads
    * this.current so callers can react immediately after setStructuredTools.
    *
-   * Two independent loss modes:
-   * 1. INTERNAL jump — [1,2,4] missing 3 (hasIterationGap).
-   * 2. TRAILING loss — the server has advanced to lastIter=N but the iteration
-   *    N-1 delta never arrived ([1,2] with lastIter=4). An iteration-number
-   *    difference of 1 (3→4) does NOT prove iteration 3's delta is complete:
-   *    its completion delta may have been dropped in an SSE gap while the
-   *    next iteration's events kept arriving. The only reliable signal is
-   *    "history covers up to lastIter-1".
+   * ONLY the INTERNAL-jump signal is used ([1,2,4] missing 3): a delta arrived
+   * for a LATER iteration while an earlier one is absent — an unambiguous loss.
+   *
+   * Deliberately NOT checked: the "trailing loss" heuristic
+   * `last < lastIter - 1` (server advanced to N but history ends below N-1).
+   * It is a FALSE-POSITIVE SOURCE that made the live turn vanish for a full
+   * iteration: Delta Push attaches the completion delta to the ADVANCE event,
+   * but a stream delta may still land a beat later (0-1 entries per push) and
+   * legitimately-offset histories ([5,6,7] after compaction) are valid subsets
+   * — both trip the heuristic. Each false positive fired onIterationGap →
+   * reload, and the hydration storeActive guard skipped the repair replace →
+   * the gap never healed → reload loop → "turn 消失维持一个完整的迭代".
+   * The trailing-loss case is covered by handleEvent's "gap crossed an
+   * iteration boundary → force reload" (SSEConnection) instead.
    */
   hasIterationGapNow(): boolean {
-    const hist = this.current.iterationHistory
-    if (hasIterationGap(hist)) return true
-    // Trail check: the semantic watermark advanced to N ⇒ iteration N-1's delta
-    // must be present (it completes before iteration N can start). A last entry
-    // BELOW N-1 means that delta was lost — reload is required (the DB is
-    // authoritative; no later SSE snapshot carries it). Use `<` (not `!==`):
-    // a last entry == N (current iteration's delta already arrived) is legal.
-    if (this.current.lastIter > 1 && hist.length > 0) {
-      const last = hist[hist.length - 1].iteration
-      if (last < this.current.lastIter - 1) return true
-    }
-    return false
+    return hasIterationGap(this.current.iterationHistory)
   }
 
   /** Apply a mutation under the hood; schedules a throttled notify. */
@@ -575,9 +485,15 @@ export class ProgressStore {
         : next.completedTools
       this.current.completedTools = dedupTools(filtered)
     }
-    if (next.eventSeq !== undefined && next.eventSeq > this.current.eventSeq) {
-      this.current.eventSeq = next.eventSeq
-    }
+    // NOTE: eventSeq is deliberately NOT taken from the replaced snapshot.
+    // eventSeq is the SSE progress.seq watermark — it must be driven ONLY by
+    // live SSE events. active_progress.eventSeq is the SERVER's high watermark
+    // (global progress counter) which can be far larger than the per-stream
+    // progress.seq of subsequent events; taking the max here made every later
+    // stream_content/progress_structured event (small progress.seq) look STALE
+    // and get dropped → the store froze → the turn vanished (rowsLen=0,
+    // observed right after a session switch with hydration replace).
+    void _es
     Object.assign(this.current, rest)
     // Single snapshot + single notification
     this.snapshot = { ...this.current }
@@ -659,15 +575,18 @@ export class ProgressStore {
   /** Set streamed assistant text (cumulative value from stream_content events).
    *  The value is the FULL cumulative stream content (not a delta) — uses
    *  assignment, not append. */
+  /** Append a stream delta (bandwidth optimization: backend pushes O(n) deltas;
+   *  the iteration-end checkpoint uses setStreamContent to realign). */
   appendStreamContent(delta: string): void {
     if (!delta) return
     this.mutate((draft) => {
-      draft.streamContent = delta  // cumulative value, use assignment not append
+      draft.streamContent = (draft.streamContent || '') + delta
       draft.streaming = true
     })
   }
 
-  /** Replace streamContent (single source of truth, no accumulation). */
+  /** Replace streamContent with the FULL cumulative text (checkpoint / legacy
+   *  full-push events). Single source of truth for the accumulated text. */
   setStreamContent(content: string): void {
     if (!content) return
     this.mutate((draft) => {
@@ -676,16 +595,16 @@ export class ProgressStore {
     })
   }
 
-  /** Set streamed reasoning text (cumulative value from reasoning_stream_content events). */
+  /** Append a reasoning delta (same delta/checkpoint scheme as streamContent). */
   appendReasoningContent(delta: string): void {
     if (!delta) return
     this.mutate((draft) => {
-      draft.reasoningStreamContent = delta  // cumulative value, use assignment not append
+      draft.reasoningStreamContent = (draft.reasoningStreamContent || '') + delta
       draft.streaming = true
     })
   }
 
-  /** Replace reasoningStreamContent (single source of truth, no accumulation). */
+  /** Replace reasoningStreamContent with the FULL cumulative text (checkpoint). */
   setReasoningContent(content: string): void {
     if (!content) return
     this.mutate((draft) => {

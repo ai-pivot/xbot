@@ -26,6 +26,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useSyncExternalStore } from 'react'
 
 import { ProgressStore, mergeIterations, normalizeWebSubAgents, normalizeWebTools } from '@/components/agent/progressStore'
+import { MessageStore } from '@/components/agent/messageStore'
 import {
   historyProgressToLive,
   normalizeWebIteration,
@@ -84,6 +85,9 @@ interface UseProgressStreamOptions {
   ws: WSConnection
   /** Disable subscriptions for read-only panes such as SubAgent history tabs. */
   disabled?: boolean
+  /** 共享 MessageStore（方案 A Step 3）：live 事件写入 MessageStore（渲染行由
+   *  store.toRows() 输出含 live 行）；不传则仅用 progressStore（旧路径）。 */
+  messageStore?: MessageStore
 }
 
 export interface UseProgressStreamResult {
@@ -93,6 +97,9 @@ export interface UseProgressStreamResult {
   liveMessage: ChatMessage | null
   /** True while there is accumulated streaming content. */
   isStreaming: boolean
+  /** Full internal ProgressStore state (un-throttled current + lastTurnID) —
+   *  for the REC developer tool's 100%-frontend-reconstruction state dump. */
+  dumpFullState: () => { current: ProgressSnapshot; lastTurnID: number }
   /** Reset the progress store (clear live message + iterations). */
   resetProgress: () => void
 }
@@ -137,6 +144,7 @@ export function useProgressStream({
   onIterationGap,
   initialProgress,
   ws,
+  messageStore,
   disabled = false,
 }: UseProgressStreamOptions): UseProgressStreamResult {
   const storeRef = useRef<ProgressStore | null>(null)
@@ -164,10 +172,22 @@ export function useProgressStream({
   // One-shot per store-lifetime: iterationHistory gap (incremental delta lost)
   // fires reload once; reset only when the history becomes contiguous again.
   const iterationGapFiredRef = useRef(false)
+  // True right after a session switch (chatID changed → store.fullReset). The
+  // store is BLANK at that moment and the server's active_progress is the ONLY
+  // source of the session's full iterationHistory — the storeActive guard must
+  // NOT block the first hydration replace, or the pre-switch iterations stay
+  // lost forever (user report: "来回切换会话后迭代消失"). Cleared after the
+  // first successful replace.
+  const sessionSwitchedRef = useRef(false)
 
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
   const finalizedRef = useRef(false)
+  // 最后一次 finalize 的 turnID：text/cancel 时记录。finalized guard 用它区分
+  // 旧 turn（turn_id <= finalizedTurnID，迟到事件丢弃）与新 turn（turn_id 更大，
+  // 放行 —— 用户场景：cancel 后新 turn 的 progress_structured 不能被
+  // finalized 状态阻塞，否则 live 永不渲染卡"思考中"）。
+  const finalizedTurnIDRef = useRef(0)
   // Set when commitLiveProgressAndReset commits old turn's content (turn_started
   // with hadVisibleProgress=true). Prevents initialProgress hydration from
   // re-introducing old turn's iterationHistory into the new turn's store.
@@ -263,7 +283,17 @@ export function useProgressStream({
     // Full reset on chatID change (including todos — different session).
     // On non-chatID triggers (disabled toggle), preserve todos via reset().
     if (progressCacheKey !== prevProgressCacheKeyRef.current) {
+      const prevKey = prevProgressCacheKeyRef.current
       prevProgressCacheKeyRef.current = progressCacheKey
+      // Session switch: the store is blanked and the server's active_progress
+      // is the ONLY source of the session's full iterationHistory. Let the
+      // first hydration replace run even if new SSE events make the store
+      // look active — otherwise pre-switch iterations are lost forever
+      // ("来回切换会话后迭代消失"). Only when switching (prevKey was set);
+      // first mount must NOT bypass the storeActive guard.
+      if (prevKey !== null) {
+        sessionSwitchedRef.current = true
+      }
       // Restore todos from progressSnapshotCache — switchSession writes
       // the /switch response todos here so they appear immediately,
       // before /api/history's active_progress arrives (which may return
@@ -396,16 +426,48 @@ export function useProgressStream({
     // the DOM (rowsLen:0 — same bug class as the reset guards above; user
     // report: "回复显示到一半突然消失"). Let SSE events drive; only hydrate a
     // genuinely idle store. Mirrors the storeActive guard used for reset().
-    if (storeActive) return
+    //
+    // EXCEPTION: when iterationHistory has an INTERNAL jump (delta lost —
+    // unambiguous loss), allow the replace even while streaming: the reload was
+    // triggered BY that gap (onIterationGap), and the server snapshot carries
+    // the authoritative full iterationHistory — replacing repairs the broken
+    // history. Without this exception the gap never healed and onIterationGap
+    // re-fired every event → reload loop → "turn 消失维持一个完整的迭代".
+    // storeActive guard 只保护 progressStore（避免覆盖正在流式的 live state）。
+    // MessageStore 的 live 写入不受此 guard 影响 —— 切换会话时 progressStore
+    // 可能有旧数据（storeActive=true），但 MessageStore 是空的（session 切换
+    // clear 了），必须写入 hydration 的 live 否则 live 行不渲染（用户报告：
+    // 切换会话后不显示"思考中"，刷新后正常）。
+    const skipProgressStore = storeActive && !sessionSwitchedRef.current && !store.hasIterationGapNow()
     if (live.phase) {
-      store.replace(live)
+      if (!skipProgressStore) {
+        store.replace(live)
+        sessionSwitchedRef.current = false
+      }
       // Ensure turnID is tracked for same-turn dedup (MessageList uses
       // liveMessage.turnID to match committed history messages).
       if (live.turnID > 0) {
         store.lastTurnID = live.turnID
       }
+      // MessageStore 同步（方案 A）：hydration 的 live（active_progress）必须
+      // 写入共享 MessageStore，否则 chat.messages（store.toRows()）不含 live
+      // 行 → MessageList 不渲染 assistant（切换会话后 turn 消失，用户报告）。
+      // 不受 storeActive guard 影响（MessageStore 独立于 progressStore）。
+      if (messageStore && live.turnID > 0) {
+        messageStore.updateLive(live.turnID, {
+          eventSeq: typeof live.eventSeq === 'number' ? live.eventSeq : 0,
+          phase: live.phase,
+          content: live.streamContent || live.content || '',
+          reasoningStreamContent: live.reasoningStreamContent || '',
+          iterations: live.iterationHistory ?? [],
+          activeTools: live.activeTools ?? [],
+          completedTools: live.completedTools ?? [],
+          streamingTools: live.streamingTools ?? [],
+          lastIter: typeof live.lastIter === 'number' ? live.lastIter : 0,
+        })
+      }
     }
-  }, [store, initialProgress, disabled, progressCacheKey])
+  }, [store, initialProgress, disabled, progressCacheKey, messageStore])
 
   // Dispose on unmount.
   useEffect(() => {
@@ -434,10 +496,10 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, finalizedTurnIDRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore)
     })
     return offMessage
-  }, [store, disabled, channel])
+  }, [store, disabled, channel, messageStore])
 
   // Derive a transient streaming message from the snapshot. Only the snapshot's
   // streamContent/streaming drives this, so it updates at frame rate (not per token).
@@ -484,8 +546,15 @@ export function useProgressStream({
     progressSnapshot: progressSnapshot ?? EMPTY_PROGRESS_SNAPSHOT,
     liveMessage,
     isStreaming: hasVisibleProgress(progressSnapshot),
+    /** Full internal ProgressStore state (un-throttled current + lastTurnID) —
+     *  for the REC developer tool's 100%-frontend-reconstruction state dump.
+     *  current.lastIter is the real iteration watermark (snapshot-level field
+     *  advanced by structured events); lastTurnID is the only store-level field
+     *  not derivable from the snapshot. */
+    dumpFullState: () => store.dumpFullState(),
     resetProgress: () => {
       finalizedRef.current = true
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = store.lastTurnID
       phaseDoneRef.current = false
       // NORMAL COMPLETION (text event): the committed message was already
       // added by appendAssistant inside the SAME flushSync — clear the live
@@ -624,6 +693,47 @@ function commitLiveProgressAndReset(
 }
 
 /** Dispatch one WSMessage into the progress store. Shared with history hydration. */
+/**
+ * 把 progressStore 的最新 live 状态镜像到 MessageStore（方案 A Step 3）。
+ * MessageStore 的 live 行供渲染（store.toRows() 输出），progressStore 的
+ * ProgressSnapshot 供 liveProgress/context bar。两者并行，事件后同步。
+ */
+function writeLiveToMessageStore(
+  ms: MessageStore | undefined,
+  store: ProgressStore,
+  p: { turn_id?: number; seq?: number },
+): void {
+  if (!ms) return
+  let turnID = typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : store.lastTurnID
+  if (turnID <= 0) {
+    // 早期流事件（stream_content 无 turn_id + 无 turn_started）：方案 A 前 live
+    // 由 progressStore 派生（无 turn_id 也能渲染）；现在 live 在 MessageStore，
+    // 需要归属。归到 turn 1（首个 turn 的流）；后续带 turn_id 的事件（turn_started/
+    // progress_structured）会修正 slot 归属。
+    turnID = 1
+  }
+  const cur = store.dumpFullState().current
+  const prevLive = ms.getLive(turnID)
+  const newContent = cur.streamContent || cur.content || ''
+  const newReasoning = cur.reasoningStreamContent || ''
+  ms.updateLive(turnID, {
+    eventSeq: cur.eventSeq,
+    phase: cur.phase,
+    content: newContent || prevLive?.content || '',
+    reasoningStreamContent: newReasoning || prevLive?.reasoningStreamContent || '',
+    iterations: cur.iterationHistory,
+    activeTools: cur.activeTools,
+    completedTools: cur.completedTools,
+    streamingTools: cur.streamingTools,
+    lastIter: cur.lastIter,
+  })
+  // cancel（frozen phase）：MessageStore 冻结 live —— 已渲染内容永不消失
+  // （toRows 里 assistant + frozen live 合并渲染）
+  if (cur.phase === 'frozen') {
+    ms.freeze(turnID)
+  }
+}
+
 function handleProgressMessage(
   msg: WSMessage,
   store: ProgressStore,
@@ -631,6 +741,7 @@ function handleProgressMessage(
   compactedRef: React.MutableRefObject<UseProgressStreamOptions['onHistoryCompacted']>,
   resetRef: React.MutableRefObject<UseProgressStreamOptions['onSessionReset']>,
   finalizedRef?: React.MutableRefObject<boolean>,
+  finalizedTurnIDRef?: React.MutableRefObject<number>,
   phaseDoneRef?: React.MutableRefObject<boolean>,
   injectRef?: React.MutableRefObject<UseProgressStreamOptions['onInjectUserMessage']>,
   turnStartedRef?: React.MutableRefObject<UseProgressStreamOptions['onTurnStarted']>,
@@ -638,6 +749,7 @@ function handleProgressMessage(
   turnCommittedRef?: React.MutableRefObject<boolean>,
   iterationGapRef?: React.MutableRefObject<UseProgressStreamOptions['onIterationGap']>,
   iterationGapFiredRef?: React.MutableRefObject<boolean>,
+  messageStore?: MessageStore,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -663,10 +775,19 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
 
-      // Set cumulative text (stream-only, does not replace the snapshot)
-      if (p.stream_content) store.appendStreamContent(String(p.stream_content))
-      if (p.reasoning_stream_content) {
-        store.appendReasoningContent(p.reasoning_stream_content)
+      // Set cumulative text (stream-only, does not replace the snapshot).
+      // Delta pushes (bandwidth optimization: O(n) total per iteration)
+      // APPEND to the accumulated text; checkpoint pushes (iteration-end
+      // realignment / legacy full-push) REPLACE via setStreamContent.
+      if (p.stream_delta) {
+        store.appendStreamContent(String(p.stream_delta))
+      } else if (p.stream_content) {
+        store.setStreamContent(String(p.stream_content))
+      }
+      if (p.reasoning_stream_delta) {
+        store.appendReasoningContent(String(p.reasoning_stream_delta))
+      } else if (p.reasoning_stream_content) {
+        store.setReasoningContent(String(p.reasoning_stream_content))
       }
       // GenUI streaming HTML (from display_html tool arguments)
       if (p.genui_content) store.setGenUIContent(p.genui_content)
@@ -676,6 +797,8 @@ function handleProgressMessage(
           streamingTools: normalizeWebTools(p.streaming_tools as unknown[]),
         })
       }
+      // MessageStore live 同步（方案 A Step 3）
+      writeLiveToMessageStore(messageStore, store, p)
       return
     }
 
@@ -757,16 +880,13 @@ function handleProgressMessage(
         if (ts?.trigger === 'resume') {
           store.resetStreamingState()
           if (finalizedRef) finalizedRef.current = false
+          // AskUser 续跑（同 turnID）：旧 finalized 状态作废 —— 重置
+          // finalizedTurnID，放行同 turn 的后续 text（否则 1 <= 1 被误杀）。
+          if (finalizedTurnIDRef) finalizedTurnIDRef.current = 0
         } else {
           // Capture whether the store has visible progress BEFORE the commit.
           // If it does, commitLiveProgressAndReset will call onAssistantComplete
-          // → resetProgress → finalizedRef = true. We must NOT reset
-          // finalizedRef to false afterward (line 546) — otherwise the text
-          // event sees finalizedRef=false and calls appendAssistant again,
-          // creating a duplicate (the committed message has turnID=0 + live
-          // content, the text event has turnID=N + final content —
-          // incrementalDedup can't match them because both turnID and
-          // content differ).
+          // → resetProgress → finalizedRef = true.
           const hadVisibleProgress = hasVisibleProgress(store.getSnapshot())
           // Commit any uncommitted live content from the previous turn, then
           // reset. Unconditional commit (the helper no-ops on an empty store):
@@ -778,26 +898,29 @@ function handleProgressMessage(
           // no data loss) instead of vanishing in one frame.
           commitLiveProgressAndReset(store, completeRef?.current, p.turn_id)
           store.lastIter = 0
-          // If the commit happened (store had visible content), set
-          // finalizedRef = true DIRECTLY — do NOT rely on onAssistantComplete's
-          // side-effect (resetProgress) to set it. The text event for the
-          // previous turn may arrive after turn_started; if finalizedRef is
-          // false, the text event calls onAssistantComplete again → duplicate
-          // message with different turnID + content → incrementalDedup can't
-          // match them → duplicate rendering.
-          // If the store was empty (no commit), reset finalizedRef for the new
-          // turn — the text event is expected and will finalize.
+          // 旧 turn（lastTurnID，turn_started 尚未更新）的 live 已 commit（finalize）。
+          // 记录 finalizedTurnID：旧 turn 的迟到 text/progress_structured 据此丢弃
+          // （防重复），新 turn（turn_id 更大）放行。
+          if (finalizedTurnIDRef && store.lastTurnID > 0) {
+            finalizedTurnIDRef.current = store.lastTurnID
+          }
+          // turn_started 是权威的新 turn 边界：无条件重置 finalizedRef=false，
+          // 允许新 turn 的所有事件（progress_structured/stream_content）正常处理。
+          // 旧 turn 的迟到 text 由 MessageStore 的 slot 唯一性保证幂等覆盖
+          // （同 turnID 覆盖，不产生第二行），不需要 finalizedRef 防重复。
+          // ⚠️ 不能在这里设 finalizedRef=true：cancel 后 store 有 frozen live
+          // （hadVisibleProgress=true），旧逻辑设 true 会让新 turn 的所有
+          // progress_structured 被 finalized guard 丢弃 → live 永不渲染 →
+          // 前端卡"思考中"（用户报告：cancel 后发新消息，SSE 已出现但不渲染）。
+          if (finalizedRef) finalizedRef.current = false
+          // Block initialProgress hydration from re-introducing old turn's
+          // iterationHistory. reload()'s active_progress may still carry
+          // the old turn's data (server hasn't cleaned up yet). Without
+          // this flag, session(busy) resets finalizedRef=false, then
+          // initialProgress hydration calls store.replace() with old
+          // iterationHistory → cross-turn iteration leak.
           if (hadVisibleProgress) {
-            if (finalizedRef) finalizedRef.current = true
-            // Block initialProgress hydration from re-introducing old turn's
-            // iterationHistory. reload()'s active_progress may still carry
-            // the old turn's data (server hasn't cleaned up yet). Without
-            // this flag, session(busy) resets finalizedRef=false, then
-            // initialProgress hydration calls store.replace() with old
-            // iterationHistory → cross-turn iteration leak.
             if (turnCommittedRef) turnCommittedRef.current = true
-          } else {
-            if (finalizedRef) finalizedRef.current = false
           }
         }
         if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
@@ -809,6 +932,8 @@ function handleProgressMessage(
         if (p.turn_id) {
           turnStartedRef?.current?.(p.turn_id, ts?.trigger ?? 'user')
           store.lastTurnID = p.turn_id
+          // MessageStore：新 turn 开始（AskUser resume 保留 iterations）
+          messageStore?.beginTurn(p.turn_id, { resume: ts?.trigger === 'resume' })
         }
         // Reset phaseDone guard for the new turn. finalizedRef was already
         // handled above (kept true if commit happened, reset to false otherwise).
@@ -852,6 +977,21 @@ function handleProgressMessage(
         // "思考中…" until the text event arrives. DO NOT reset the store: tools
         // and iterations stay visible until the text event commits atomically.
         store.stopStreaming()
+        // ── Final-reply loss guard (root cause of "某个迭代结束 agent turn 消失了") ──
+        // The complete reply travels ONLY in the text event (authoritative
+        // finalizer). On a stateless SSE stream that event can be dropped
+        // (sendCh coalescing / reconnect gap). When it is lost, the store keeps
+        // only the iteration records — streamContent was cleared at the last
+        // iteration boundary and no new text arrived — so liveMessage stays
+        // non-null (RENDER_LOSS_ROWS stays silent!) but renders EMPTY: the
+        // user sees the turn's reply "vanish". Detect it here: visible progress
+        // with NO accumulated reply text → the text event was likely lost →
+        // reload from DB (authoritative complete reply). The committed reply
+        // then merges with the live row via buildMessageRows' same-turn merge.
+        const doneSnap = store.getSnapshot()
+        if (hasVisibleProgress(doneSnap) && !doneSnap.streamContent && !doneSnap.content) {
+          iterationGapRef?.current?.()
+        }
         // Update todos if the PhaseDone event carries them. Do NOT clear
         // tools here — clearing causes a 4-5s gap where tools disappear
         // between PhaseDone and the text event. The text event (or cancel
@@ -885,8 +1025,18 @@ function handleProgressMessage(
       // new state into the already-reset store, making liveMessage reappear
       // ("思考中…" spinner below the committed reply). This mirrors master's
       // turnDoneRef guard.
-      if (finalizedRef?.current && !p.history_compacted && p.phase !== 'done') {
-        return
+      // 只丢弃旧 turn（turn_id <= finalizedTurnID）的迟到事件；新 turn（turn_id
+      // 更大）放行 —— 否则 cancel 后新 turn 的 progress_structured 被 finalized
+      // 状态阻塞，live 永不渲染（用户报告：cancel 后发新消息卡"思考中"）。
+      if (!p.history_compacted && p.phase !== 'done') {
+        const evTurnID = typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : 0
+        const finalizedTurn = finalizedTurnIDRef?.current ?? 0
+        if (finalizedTurn > 0 && evTurnID > 0 && evTurnID <= finalizedTurn) {
+          return // 旧 turn 的迟到 progress_structured —— 丢弃
+        }
+        if (finalizedRef?.current && evTurnID === 0) {
+          return // turn_id 缺失 + finalized（兼容旧逻辑：无 turn_id 事件）
+        }
       }
 
       // New turn's first structured event — clear turnCommittedRef.
@@ -1032,6 +1182,24 @@ function handleProgressMessage(
         }
       }
 
+      // Web channel forwards stream_content events as progress_structured
+      // (type is normalized to progress_structured on the wire) — handle the
+      // delta/checkpoint stream fields here too, mirroring the stream_content
+      // branch. Without this, Web clients NEVER render streaming content
+      // (only tool events; content/reasoning appear only as structured
+      // snapshots after the tool completes — user report: "前端不再渲染
+      // reason 和 content 的 stream 事件").
+      if (p.stream_delta) {
+        store.appendStreamContent(String(p.stream_delta))
+      } else if (p.stream_content) {
+        store.setStreamContent(String(p.stream_content))
+      }
+      if (p.reasoning_stream_delta) {
+        store.appendReasoningContent(String(p.reasoning_stream_delta))
+      } else if (p.reasoning_stream_content) {
+        store.setReasoningContent(String(p.reasoning_stream_content))
+      }
+
       // Apply structured event with carry-forward (stream-only fields preserved)
       store.setStructuredTools({
         eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
@@ -1047,6 +1215,8 @@ function handleProgressMessage(
         tokenUsage,
         turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : undefined,
       })
+      // MessageStore live 同步（方案 A Step 3）
+      writeLiveToMessageStore(messageStore, store, p)
       // ── Iteration-id gap → REAL incremental data loss → reload ──
       // iterationHistory is an incremental delta feed (0-1 entries per push):
       // an internal id jump (1→3 missing 2) means an iteration's delta was
@@ -1071,6 +1241,7 @@ function handleProgressMessage(
     case 'text': {
       if (msg.session_reset || msg.metadata?.session_reset === 'true') {
         if (finalizedRef) finalizedRef.current = true
+        if (finalizedTurnIDRef) finalizedTurnIDRef.current = store.lastTurnID
         store.reset()
         resetRef.current?.()
         return
@@ -1083,6 +1254,7 @@ function handleProgressMessage(
       // (session switch or page refresh).
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
+        if (finalizedTurnIDRef) finalizedTurnIDRef.current = msg.turn_id ?? store.lastTurnID
         if (phaseDoneRef) phaseDoneRef.current = true
         // Freeze: mark all in-progress tools as error, stop streaming/reasoning animations.
         // Do NOT reset the store — frozen content stays visible until the next turn.
@@ -1097,9 +1269,14 @@ function handleProgressMessage(
       // Final assistant message: commit then clear the live stream.
       // Guard against duplicate onAssistantComplete within the same turn
       // (e.g. text + session(idle) arriving before RAF flushes).
-      // Cross-reconnect replay is handled by dedupMessages in appendAssistant.
-      if (finalizedRef?.current) return
+      // 按 turnID 区分：旧 turn（turn_id <= finalizedTurnID）的迟到 text 丢弃
+      // （防重复）；新 turn 的 text 放行（turn_started 已重置 finalizedRef）。
+      const textTurnID = typeof msg.turn_id === 'number' && msg.turn_id > 0 ? msg.turn_id : 0
+      const finalizedTurnID = finalizedTurnIDRef?.current ?? 0
+      if (textTurnID > 0 && finalizedTurnID > 0 && textTurnID <= finalizedTurnID) return
+      if (finalizedRef?.current && textTurnID === 0) return
       if (finalizedRef) finalizedRef.current = true
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = msg.turn_id ?? store.lastTurnID
       const finalText = msg.content ?? ''
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()

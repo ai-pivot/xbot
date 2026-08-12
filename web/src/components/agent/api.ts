@@ -147,6 +147,7 @@ export interface ExportedMessage {
   tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>
   tool_call_id?: string
   name?: string
+  timestamp?: string
 }
 
 export interface ExportedRecord {
@@ -176,7 +177,7 @@ export async function exportSession(session: SessionSelector): Promise<ExportedS
 }
 
 /** Export format options for downloadSession. */
-export type ExportFormat = 'native' | 'openai' | 'codex' | 'benchmark'
+export type ExportFormat = 'native' | 'openai' | 'codex' | 'benchmark' | 'multica'
 
 // ---------------------------------------------------------------------------
 // Benchmark JSONL format (HLE / mint-bench compatible).
@@ -296,6 +297,102 @@ export async function downloadSession(session: SessionSelector, format: ExportFo
         lines.push(JSON.stringify(entry))
       }
       content = lines.join('\n')
+      mime = 'application/x-jsonlines'
+      ext = 'jsonl'
+      break
+    }
+    case 'multica': {
+      // Multica JSONL: one JSON object per line, with parentId chain.
+      // Format: {type, id, parentId, timestamp, message?: {role, content: [{type, text?}], ...}}
+      // Types: session, model_change, thinking_level_change, message
+      const lines: string[] = []
+      // Session header
+      lines.push(JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: data.id || crypto.randomUUID(),
+        timestamp: data.created_at || new Date().toISOString(),
+        cwd: '',
+      }))
+      // Model change
+      if (data.model) {
+        lines.push(JSON.stringify({
+          type: 'model_change',
+          id: crypto.randomUUID().slice(0, 8),
+          parentId: null,
+          timestamp: data.created_at || new Date().toISOString(),
+          provider: 'macaronai',
+          modelId: data.model,
+        }))
+      }
+      // Messages with parentId chain
+      let prevId: string | null = null
+      for (const msg of data.messages) {
+        const id = crypto.randomUUID().slice(0, 8)
+        const ts = msg.timestamp || new Date().toISOString()
+        // Build content parts in Multica format
+        const contentParts: unknown[] = []
+        // Reasoning → thinking part
+        if (msg.reasoning) {
+          contentParts.push({ type: 'thinking', thinking: msg.reasoning })
+        }
+        // Tool calls → toolCall parts
+        if (msg.tool_calls?.length) {
+          for (const tc of msg.tool_calls) {
+            let args: unknown = tc.function.arguments
+            try { args = JSON.parse(tc.function.arguments) } catch { /* keep string */ }
+            contentParts.push({
+              type: 'toolCall',
+              id: tc.id,
+              name: tc.function.name,
+              arguments: args,
+            })
+          }
+        }
+        // Text content
+        if (typeof msg.content === 'string' && msg.content) {
+          contentParts.push({ type: 'text', text: msg.content })
+        } else if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (part.type === 'text' && part.text) {
+              contentParts.push({ type: 'text', text: part.text })
+            }
+          }
+        }
+        // Tool result
+        if (msg.tool_call_id) {
+          const entry: Record<string, unknown> = {
+            type: 'message',
+            id,
+            parentId: prevId,
+            timestamp: ts,
+            message: {
+              role: 'toolResult',
+              toolCallId: msg.tool_call_id,
+              toolName: msg.name || '',
+              content: contentParts.length > 0 ? contentParts : [{ type: 'text', text: typeof msg.content === 'string' ? msg.content : '' }],
+              isError: false,
+              timestamp: Date.now(),
+            },
+          }
+          lines.push(JSON.stringify(entry))
+        } else {
+          const entry: Record<string, unknown> = {
+            type: 'message',
+            id,
+            parentId: prevId,
+            timestamp: ts,
+            message: {
+              role: msg.role,
+              content: contentParts.length > 0 ? contentParts : [{ type: 'text', text: typeof msg.content === 'string' ? msg.content : '' }],
+              timestamp: Date.now(),
+            },
+          }
+          lines.push(JSON.stringify(entry))
+        }
+        prevId = id
+      }
+      content = lines.join('\n') + '\n'
       mime = 'application/x-jsonlines'
       ext = 'jsonl'
       break

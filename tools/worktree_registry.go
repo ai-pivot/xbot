@@ -20,6 +20,13 @@ type WorktreeEntry struct {
 	Branch      string // branch name
 	CreatedAt   time.Time
 	Status      string // "working" | "merge-ready" | "done"
+	// Busy is true while the session's chatProcessLoop is processing a turn
+	// (an iteration is running). This is the authoritative "是否在迭代中"
+	// signal: BuildSystemReminder shows a peer as collaborating ONLY while it
+	// is actively iterating. Runtime-only, NOT persisted — a registry loaded
+	// from disk starts with Busy=false until the session next marks itself
+	// busy via SetBusy (agent.go calls it alongside ss.busy.Store).
+	Busy bool
 }
 
 // WorktreeRegistry is a process-level registry of active worktrees.
@@ -70,6 +77,20 @@ func (r *WorktreeRegistry) Register(entry *WorktreeEntry) error {
 	r.byRepo[entry.RepoPath] = append(r.byRepo[entry.RepoPath], entry)
 	r.saveRepoLocked(entry.RepoPath)
 	return nil
+}
+
+// SetBusy marks a session as actively iterating (busy=true) or idle
+// (busy=false). The agent loop calls it alongside `ss.busy.Store` in
+// chatProcessLoop (turn start / every turn-exit path). This is the exact
+// "是否在迭代中" signal — BuildSystemReminder shows a peer as collaborating
+// only while Busy is true, so a peer that stopped iterating disappears
+// immediately (no time-based staleness window). Runtime-only, not persisted.
+func (r *WorktreeRegistry) SetBusy(sessionKey string, busy bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.bySess[sessionKey]; ok {
+		e.Busy = busy
+	}
 }
 
 // Deregister removes an entry and cleans up empty repo buckets.
