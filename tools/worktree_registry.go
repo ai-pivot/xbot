@@ -20,33 +20,13 @@ type WorktreeEntry struct {
 	Branch      string // branch name
 	CreatedAt   time.Time
 	Status      string // "working" | "merge-ready" | "done"
-	// LastActive is the last time this session was observed doing work
-	// (updated by Touch, called from buildPrompt / the agent loop). Peers whose
-	// LastActive is older than peerIdleThreshold are considered idle and must
-	// NOT be shown as "collaborating" — a peer-awareness entry lingers forever
-	// (sessions never deregister), so without an activity signal every registered
-	// peer is reported as actively working even when it has been idle for hours.
-	// Zero value (persisted registry loaded before the field existed) means
-	// "unknown activity" → treated as idle until the session next calls Touch.
-	LastActive time.Time
-}
-
-// peerIdleThreshold is how long a peer may go without activity before it is
-// considered idle and hidden from collaboration hints. buildPrompt runs once
-// per turn, so a working session updates LastActive at least this often while
-// it is processing turns; a session that stopped (user left it open, agent
-// finished) stops touching and crosses the threshold shortly after.
-const peerIdleThreshold = 15 * time.Minute
-
-// IsActive reports whether the entry is recently active (LastActive within
-// peerIdleThreshold). A registered session lingers in the registry until it is
-// explicitly cleaned up — without the activity signal every peer (even one idle
-// for hours) would be reported as collaborating. Zero LastActive (persisted
-// registry loaded before the field existed, or a peer that never touched) is
-// treated as INACTIVE: it only becomes visible again after the session calls
-// Touch on its next turn.
-func (e *WorktreeEntry) IsActive() bool {
-	return e != nil && !e.LastActive.IsZero() && time.Since(e.LastActive) <= peerIdleThreshold
+	// Busy is true while the session's chatProcessLoop is processing a turn
+	// (an iteration is running). This is the authoritative "是否在迭代中"
+	// signal: BuildSystemReminder shows a peer as collaborating ONLY while it
+	// is actively iterating. Runtime-only, NOT persisted — a registry loaded
+	// from disk starts with Busy=false until the session next marks itself
+	// busy via SetBusy (agent.go calls it alongside ss.busy.Store).
+	Busy bool
 }
 
 // WorktreeRegistry is a process-level registry of active worktrees.
@@ -93,30 +73,23 @@ func (r *WorktreeRegistry) Register(entry *WorktreeEntry) error {
 		return fmt.Errorf("worktree: session %q already registered", entry.SessionKey)
 	}
 
-	if entry.LastActive.IsZero() {
-		entry.LastActive = time.Now()
-	}
 	r.bySess[entry.SessionKey] = entry
 	r.byRepo[entry.RepoPath] = append(r.byRepo[entry.RepoPath], entry)
 	r.saveRepoLocked(entry.RepoPath)
 	return nil
 }
 
-// Touch records that the session is actively doing work. Called from the agent
-// loop (buildPrompt — every processed turn). Peers whose LastActive is older
-// than peerIdleThreshold are considered idle and hidden from collaboration
-// hints (a registered session may sit idle for hours without deregistering).
-func (r *WorktreeRegistry) Touch(sessionKey string) {
+// SetBusy marks a session as actively iterating (busy=true) or idle
+// (busy=false). The agent loop calls it alongside `ss.busy.Store` in
+// chatProcessLoop (turn start / every turn-exit path). This is the exact
+// "是否在迭代中" signal — BuildSystemReminder shows a peer as collaborating
+// only while Busy is true, so a peer that stopped iterating disappears
+// immediately (no time-based staleness window). Runtime-only, not persisted.
+func (r *WorktreeRegistry) SetBusy(sessionKey string, busy bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if e, ok := r.bySess[sessionKey]; ok {
-		e.LastActive = time.Now()
-		// Persist only physical-worktree entries (peer-awareness entries are
-		// runtime-only by design). Persisted LastActive survives restarts —
-		// a stale timestamp hides the peer until it touches again.
-		if e.WorktreeDir != "" {
-			r.saveRepoLocked(e.RepoPath)
-		}
+		e.Busy = busy
 	}
 }
 
@@ -274,7 +247,6 @@ func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
 		WorktreeDir: "",
 		Branch:      "",
 		Status:      "working",
-		LastActive:  time.Now(),
 	}
 	r.bySess[sessionKey] = entry
 	r.byRepo[repoPath] = append(r.byRepo[repoPath], entry)
