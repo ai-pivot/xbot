@@ -566,10 +566,9 @@ describe('MessageList virtualization', () => {
     expect(container.textContent).toContain('thinking')
   })
 
-  it('does NOT show the thinking placeholder below a FINISHED assistant (copy-button turn, invariant)', () => {
-    // INVARIANT: a finished assistant (isPartial=false + final content →
-    // renders a copy button) must never be followed by "思考中…" — that would
-    // imply the completed turn is still running (linear-consistency violation).
+  it('DOES show the thinking placeholder below a FINISHED assistant when busy (new iter in progress, live not yet rendered)', () => {
+    // 方案 A：busy=true 时即使最后一个 row 是 committed assistant（turn 还在跑，
+    // 新 iter 还没到达），也应该显示"思考中"——否则用户看到卡死。
     const messages: ChatMessage[] = [
       { id: 'u1', role: 'user', content: 'hello', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0 },
       { id: 'a1', role: 'assistant', content: 'hi', iterations: [], timestamp: '2026-07-08T00:00:01Z', isPartial: false, turnID: 0 },
@@ -579,12 +578,12 @@ describe('MessageList virtualization', () => {
         messages={messages}
         liveProgress={null}
         collapseLevel="all"
-        loading={true}
+        loading={false}
         error={null}
         busy={true}
       />,
     )
-    expect(container.textContent).not.toContain('thinking')
+    expect(container.textContent).toContain('thinking')
   })
 
   it('finds the latest compact marker for rewind eligibility', () => {

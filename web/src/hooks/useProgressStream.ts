@@ -433,10 +433,17 @@ export function useProgressStream({
     // the authoritative full iterationHistory — replacing repairs the broken
     // history. Without this exception the gap never healed and onIterationGap
     // re-fired every event → reload loop → "turn 消失维持一个完整的迭代".
-    if (storeActive && !sessionSwitchedRef.current && !store.hasIterationGapNow()) return
+    // storeActive guard 只保护 progressStore（避免覆盖正在流式的 live state）。
+    // MessageStore 的 live 写入不受此 guard 影响 —— 切换会话时 progressStore
+    // 可能有旧数据（storeActive=true），但 MessageStore 是空的（session 切换
+    // clear 了），必须写入 hydration 的 live 否则 live 行不渲染（用户报告：
+    // 切换会话后不显示"思考中"，刷新后正常）。
+    const skipProgressStore = storeActive && !sessionSwitchedRef.current && !store.hasIterationGapNow()
     if (live.phase) {
-      store.replace(live)
-      sessionSwitchedRef.current = false
+      if (!skipProgressStore) {
+        store.replace(live)
+        sessionSwitchedRef.current = false
+      }
       // Ensure turnID is tracked for same-turn dedup (MessageList uses
       // liveMessage.turnID to match committed history messages).
       if (live.turnID > 0) {
@@ -444,7 +451,8 @@ export function useProgressStream({
       }
       // MessageStore 同步（方案 A）：hydration 的 live（active_progress）必须
       // 写入共享 MessageStore，否则 chat.messages（store.toRows()）不含 live
-      // 行 → MessageList 不渲染 assistant（refresh 后 turn 消失，用户报告）。
+      // 行 → MessageList 不渲染 assistant（切换会话后 turn 消失，用户报告）。
+      // 不受 storeActive guard 影响（MessageStore 独立于 progressStore）。
       if (messageStore && live.turnID > 0) {
         messageStore.updateLive(live.turnID, {
           eventSeq: typeof live.eventSeq === 'number' ? live.eventSeq : 0,
@@ -706,18 +714,15 @@ function writeLiveToMessageStore(
   }
   const cur = store.dumpFullState().current
   const prevLive = ms.getLive(turnID)
-  // content 保留非空：迭代边界会清空 progressStore 的 streamContent（设计），
-  // 若直接镜像空值会把已渲染的 content 从 live 行抹掉 —— stream 输出完后
-  // content 消失再出现（闪烁）。保留已有非空 content，commitAssistant 时
-  // 用 live 累积内容定住（stream 完毕直接定住）。
   const newContent = cur.streamContent || cur.content || ''
+  const newReasoning = cur.reasoningStreamContent || ''
   // eslint-disable-next-line no-console
-  if (import.meta.env.DEV && typeof window !== 'undefined') console.log('[WL]', { turnID, newContent: newContent.slice(0, 40), phase: cur.phase, prevContent: prevLive?.content?.slice(0, 40) })
+  console.log('[WL]', { turnID, newContent: newContent.slice(0, 40), newReasoning: newReasoning.slice(0, 40), phase: cur.phase, prevContent: prevLive?.content?.slice(0, 40), hasPrevLive: !!prevLive, iterHist: cur.iterationHistory?.length, eventSeq: cur.eventSeq })
   ms.updateLive(turnID, {
     eventSeq: cur.eventSeq,
     phase: cur.phase,
     content: newContent || prevLive?.content || '',
-    reasoningStreamContent: cur.reasoningStreamContent || '',
+    reasoningStreamContent: newReasoning || prevLive?.reasoningStreamContent || '',
     iterations: cur.iterationHistory,
     activeTools: cur.activeTools,
     completedTools: cur.completedTools,

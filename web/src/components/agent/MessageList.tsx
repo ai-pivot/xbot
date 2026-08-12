@@ -163,11 +163,9 @@ export function MessageList({
   // followed by "thinking…" would imply the completed turn is still running.
   // A committed assistant is isPartial=false with final content (approximation
   // of shouldRenderFinalContent at the row level).
-  const lastIsFinishedAssistant =
-    rows.length > 0 &&
-    rows[rows.length - 1].role === 'assistant' &&
-    rows[rows.length - 1].isPartial === false &&
-    !!rows[rows.length - 1].content
+  // busy placeholder 不再使用 lastIsFinishedAssistant —— committed assistant
+  // 后面也可能有新 iter 在跑（busy=true），需要显示 placeholder。
+  // const lastIsFinishedAssistant = ...  // 已删除
   // liveId 指向接收 liveProgress 的行（方案 A：live 行已在 messages 里，
   // isPartial 行）。没有 live 行时返回 null（liveProgress 不传给任何行）。
   const liveId = useMemo(() => {
@@ -743,8 +741,16 @@ export function MessageList({
               completed turn is still running (linear-consistency
               violation). The placeholder only appears when the last row is
               a user message (new turn) or nothing at all. */}
-          {busy && !lastIsFinishedAssistant && !(loading && rows.length === 0) &&
-            (rows.length === 0 || rows[rows.length - 1].role === 'user') && (
+          {busy && !(loading && rows.length === 0) &&
+            (liveId === null || rows.length === 0 || rows[rows.length - 1].role === 'user') && (
+            // busy placeholder 显示条件（方案 A）：
+            // 1. 没有 live 行（liveId=null）—— 新 iter 还没到达，或切换会话后
+            //    live 还没渲染。即使最后一个 row 是 committed assistant（turn
+            //    还在跑），也应该显示"思考中"——否则用户看到卡死。
+            // 2. 最后一个 row 是 user —— 新 turn 刚发，live 还没到。
+            // 3. rows 为空 —— 首次加载 + busy。
+            // 不再检查 lastIsFinishedAssistant：committed assistant 后面也可能
+            // 有新 iter 在跑（busy=true），需要显示 placeholder。
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">
