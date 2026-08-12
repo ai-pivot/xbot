@@ -164,6 +164,13 @@ export function useProgressStream({
   // One-shot per store-lifetime: iterationHistory gap (incremental delta lost)
   // fires reload once; reset only when the history becomes contiguous again.
   const iterationGapFiredRef = useRef(false)
+  // True right after a session switch (chatID changed → store.fullReset). The
+  // store is BLANK at that moment and the server's active_progress is the ONLY
+  // source of the session's full iterationHistory — the storeActive guard must
+  // NOT block the first hydration replace, or the pre-switch iterations stay
+  // lost forever (user report: "来回切换会话后迭代消失"). Cleared after the
+  // first successful replace.
+  const sessionSwitchedRef = useRef(false)
 
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
@@ -264,6 +271,12 @@ export function useProgressStream({
     // On non-chatID triggers (disabled toggle), preserve todos via reset().
     if (progressCacheKey !== prevProgressCacheKeyRef.current) {
       prevProgressCacheKeyRef.current = progressCacheKey
+      // Session switch: the store is blanked and the server's active_progress
+      // is the ONLY source of the session's full iterationHistory. Let the
+      // first hydration replace run even if new SSE events make the store
+      // look active — otherwise pre-switch iterations are lost forever
+      // ("来回切换会话后迭代消失").
+      sessionSwitchedRef.current = true
       // Restore todos from progressSnapshotCache — switchSession writes
       // the /switch response todos here so they appear immediately,
       // before /api/history's active_progress arrives (which may return
@@ -403,9 +416,10 @@ export function useProgressStream({
     // the authoritative full iterationHistory — replacing repairs the broken
     // history. Without this exception the gap never healed and onIterationGap
     // re-fired every event → reload loop → "turn 消失维持一个完整的迭代".
-    if (storeActive && !store.hasIterationGapNow()) return
+    if (storeActive && !sessionSwitchedRef.current && !store.hasIterationGapNow()) return
     if (live.phase) {
       store.replace(live)
+      sessionSwitchedRef.current = false
       // Ensure turnID is tracked for same-turn dedup (MessageList uses
       // liveMessage.turnID to match committed history messages).
       if (live.turnID > 0) {
