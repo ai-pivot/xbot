@@ -299,24 +299,27 @@ export class MessageStore {
         if (row.role === 'user') {
           slot.user = { ...slot.user, ...row, turnID: row.turnID }
         } else if (row.role === 'assistant') {
-          // 进行中的 live（非 frozen）不覆盖 —— live 权威；否则 DB 版本权威
-          if (!slot.live || slot.live.frozen) {
-            if (slot.assistant) {
-              // 已有本地/DB 提交：合并迭代（loadMore 边界 union）。content 优先
-              // 级：replace（reload，DB 快照权威）→ DB 版本优先；增量（loadMore）
-              // → 已有优先（较新批次持有 final reply，较旧批次是 tool_summary
-              // 空 content）
-              slot.assistant = {
-                ...row,
-                turnID: row.turnID,
-                content: opts?.replace
-                  ? (row.content || slot.assistant.content)
-                  : (slot.assistant.content || row.content),
-                iterations: mergeIterations(slot.assistant.iterations, row.iterations),
-              }
-            } else {
-              slot.assistant = { ...row, turnID: row.turnID }
+          // 始终写入/合并 slot.assistant —— 即使 slot.live 存在（非 frozen）。
+          // slot.assistant 包含 DB 的已完成迭代，slot.live 只有当前迭代；
+          // toRows() 合并两者（assistant.iterations + live.iterations）显示。
+          // 旧逻辑在 slot.live 存在时跳过 assistant 写入 → 切换会话时只显示
+          // live iter（已完成迭代丢失，用户报告："只看到 live iter 而非完整
+          // turn iter"）。
+          if (slot.assistant) {
+            // 已有本地/DB 提交：合并迭代（loadMore 边界 union）。content 优先
+            // 级：replace（reload，DB 快照权威）→ DB 版本优先；增量（loadMore）
+            // → 已有优先（较新批次持有 final reply，较旧批次是 tool_summary
+            // 空 content）
+            slot.assistant = {
+              ...row,
+              turnID: row.turnID,
+              content: opts?.replace
+                ? (row.content || slot.assistant.content)
+                : (slot.assistant.content || row.content),
+              iterations: mergeIterations(slot.assistant.iterations, row.iterations),
             }
+          } else {
+            slot.assistant = { ...row, turnID: row.turnID }
           }
         }
       } else if (row.persisted !== false) {
