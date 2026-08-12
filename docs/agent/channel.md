@@ -317,6 +317,13 @@ The context bar (top border of input box) replaces the default lipgloss border w
 - **RPC registration** (8 files): `req_types.go` (constant + struct) → `backend.go` (interface) → `backend_impl.go` (method) → `local_transport.go` (handler) → `rpc_table.go` (route) → `cli_types.go` (callback) → `main.go` (wiring) → test stubs
 - **Adding new RPC methods**: add a method to `*Client` in `agent/client.go`, and handle the method in `serverapp/rpc_table.go`. For tests, update `fakeTransport` in `cmd/xbot-cli/main_test.go` to handle the new method in its `Call` switch.
 
+### Web Frontend SSE Recorder & Replay Tests
+
+- **REC 按钮（开发者工具条）**：`DebugToolbar.tsx`（AgentPanel 顶部）+ `useSSERecorder.ts`。点击 REC 用**独立** `ws.onMessage` handler 录制所有 WS/SSE 消息（`onMessage` 是注册式 API，返回 unsubscribe，不干扰 `useProgressStream`/`useChatMessages`）；STOP 下载 `sse-dump-{ts}.ev`。
+- **录制格式与后端线格式一致**：`id:{顶层 WSMessage.seq}\nevent:{type}\ndata:{完整 JSON}\n\n`——顶层 `seq` 是**传输层** seq（后端 `writeSSEEvent` 用 `msg.Seq` 写 SSE `id:`），与 `progress.seq`（语义水印）是两套体系。**诊断 turn 消失/事件丢失时，传输层与语义层 seq 不可混用**（曾导致误判 gap）。
+- **重放基础设施**：`src/test-utils/sseReplay.ts` 的 `parseSSEDump()` 解析录制文件为 `WSMessage[]`，`seq` 解析与 `handleEvent` 同构（`msg.seq ?? lastEventId`）——**录制文件可 1:1 重放进 `useProgressStream` 测试**。复现 bug → 下载 .ev → 用 `parseSSEDump` 重放写回归测试固定。
+- **turn 消失回归测试**：`useProgressStream.test.ts` 的 "SSE dump replay" describe——重放"迭代边界清 streamContent → PhaseDone 无 text 事件"的流，断言 liveMessage 不消失 + `onIterationGap` 触发（reload 从 DB 恢复权威完整回复）。
+
 ### Web Frontend Markdown Rendering
 
 - **Stack**: react-markdown v10 + remark-gfm (GFM) + remark-math/rehype-katex (math). Code blocks use a custom `code` component with highlight.js (lazy-loaded, ~300KB, `useSyncExternalStore` for ready state). Two renderers: `MarkdownRenderer.tsx` (chat, streaming-aware) and `MarkdownPreview.tsx` (file preview, non-streaming).

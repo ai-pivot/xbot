@@ -409,6 +409,7 @@
 - **`buildPrompt` 绝不恢复 CWD 到 worktree 路径。** 当 session 已注册后 `AutoDetectAndInit` 跳过，这是正确行为。agent 通过 Cd 工具主动切换的目录必须被尊重，如果在后续 buildPrompt 中强制恢复会破坏 agent 的 Cd 操作，产生人机对抗。
 - **Cd 工具绝不强制 worktree 边界。** CLI 模式下 Cd 允许 agent 自由导航到任何目录，包括主仓库。如果对 Cd 加边界限制会导致 agent 无法读取 worktree 外的文件（如 AGENTS.md、知识库、配置文件），这是严重 bug。worktree 隔离是软性的工作指引，不是硬性监狱。
 - **新会话绝不能进入老 worktree（纵深防御 6 层）。** `loadPersistedCWD` 拒绝加载 worktree 路径和不存在目录 → `autoDetectAndInitInto` 拒绝从 worktree CWD 创建 worktree + 自动清理 worktreeDir 不存在的孤儿条目 → `buildPrompt` 验证 worktree 所有权（不匹配则重置到 workspaceRoot）→ `showSessionCreateDialog` 和 `/chat new` 新建前清理 worktree registry + persisted CWD + savedSessions + todos。详见 `docs/agent/worktree.md`。
+- **Peer 提示必须按活跃度过滤（LastActive + 15min 阈值），不能只看 WorktreeDir。** session 注册到 `GlobalWorktreeRegistry` 后**从不注销**（CLI 会话可能一直挂着），如果 `BuildSystemReminder` 只按 `WorktreeDir != ""` 显示 peer，每个注册过的 peer（哪怕已 idle 数小时）都会被报为"协作中"——错误地暗示并发工作、干扰 agent（用户报告："peer 已 idle 仍被提示协作中"）。机制：`WorktreeEntry.LastActive`（`Touch()` 在 `buildPrompt` 每 turn 更新）+ `IsActive()`（`time.Since(LastActive) <= 15min`）；`BuildSystemReminder` 只显示**有真实 worktree 且最近活跃**的 peer。注意：`Touch` 只持久化物理 worktree 条目（peer-awareness 条目本就 runtime-only），`LastActive` 零值（旧 registry 加载）视为 idle 直到下次 Touch。
 
 ## Development Principles
 
