@@ -664,26 +664,6 @@ function handleProgressMessage(
   iterationGapRef?: React.MutableRefObject<UseProgressStreamOptions['onIterationGap']>,
   iterationGapFiredRef?: React.MutableRefObject<boolean>,
 ): void {
-  // ── Iteration regression guard (user requirement) ──
-  // Reject any event whose iteration regresses to 0 or below the current
-  // lastIter. Backend MUST stamp Iteration on EVERY progress event — a
-  // stream_content / streaming_tools / stream_tokens event without it
-  // serializes as iteration:0 (zero value) which corrupts the frontend's
-  // iteration state and makes the turn vanish (user report: "iter 为 0 导致
-  // turn 消失"; repro: iteration 9 → 0 stream_content event right before the
-  // turn's DOM collapsed). Rejected events are logged and DROPPED.
-  const _p = msg.progress
-  if (_p && typeof _p.iteration === 'number') {
-    const _lastIter = store.getSnapshot().lastIter
-    if ((_p.iteration === 0 && _lastIter > 0) || (_lastIter > 0 && _p.iteration < _lastIter)) {
-      console.error(
-        `[ITER_REGRESSION] rejected ${msg.type} iteration=${_p.iteration} < lastIter=${_lastIter} ` +
-          `(backend must stamp Iteration on every progress event)`,
-      )
-      return
-    }
-  }
-
   switch (msg.type) {
     case 'stream_content': {
       // If the turn is already finalized (cancel ack or text event arrived),
