@@ -83,6 +83,13 @@ export function assertIterationContinuity(iters: WebIteration[]): boolean {
   for (let i = 1; i < iters.length; i++) {
     const prev = iters[i - 1].iteration
     const curr = iters[i].iteration
+    if (curr === prev) {
+      // Duplicate iteration record (e.g. double-write by a brief dual-server
+      // window, or a replayed delta that bypassed dedup) — NOT a gap. Skip:
+      // dedup happens at assignment/render time; a duplicate must never be
+      // reported as LOST iteration history (false ITERATION_GAP alarm).
+      continue
+    }
     if (curr !== prev + 1) {
       console.error(
         `[ITERATION_GAP] Iteration continuity broken: ${prev} → ${curr} (expected ${prev + 1}). ` +
@@ -110,6 +117,10 @@ export function assertIterationContinuity(iters: WebIteration[]): boolean {
  */
 export function hasIterationGap(iters: WebIteration[]): boolean {
   for (let i = 1; i < iters.length; i++) {
+    if (iters[i].iteration === iters[i - 1].iteration) {
+      // Duplicate record — not a gap (see assertIterationContinuity).
+      continue
+    }
     if (iters[i].iteration !== iters[i - 1].iteration + 1) return true
   }
   return false
@@ -139,6 +150,13 @@ export function continuousIterations(iters: WebIteration[]): WebIteration[] {
   for (let i = 1; i < iters.length; i++) {
     const prev = out[out.length - 1]
     const curr = iters[i]
+    if (curr.iteration === prev.iteration) {
+      // Duplicate iteration record (dual-server double-write, replayed delta).
+      // Skip — a duplicate is NOT a gap and must NOT truncate the rendered
+      // prefix (otherwise [1,1,2,2,...,10] would render as just iteration 1:
+      // "重启后之前的 iter 消失").
+      continue
+    }
     if (curr.iteration !== prev.iteration + 1) break
     out.push(curr)
   }
