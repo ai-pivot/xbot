@@ -743,7 +743,8 @@ export function MessageList({
               completed turn is still running (linear-consistency
               violation). The placeholder only appears when the last row is
               a user message (new turn) or nothing at all. */}
-          {busy && liveId === null && !lastIsFinishedAssistant && !(loading && rows.length === 0) && (
+          {busy && !lastIsFinishedAssistant && !(loading && rows.length === 0) &&
+            (rows.length === 0 || rows[rows.length - 1].role === 'user') && (
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">
