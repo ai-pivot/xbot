@@ -16,6 +16,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProgressEvent, WSMessage } from '@/types/shared'
 import type { WSConnection } from '@/types/ws'
 import { clearWebCaches, progressSnapshotCache, sessionCacheKey } from '@/lib/webCache'
+import { parseSSEDump } from '@/test-utils/sseReplay'
 
 // --- stub WS connection ----------------------------------------------------
 
@@ -1401,5 +1402,41 @@ describe('iterationHistory id gap → reload (incremental delta loss is REAL dat
     // been compressed/merged) — no internal jump, no reload.
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 7, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 5 }, { iteration: 6 }, { iteration: 7 }] } })
     expect(onIterationGap).not.toHaveBeenCalled()
+  })
+})
+
+describe('SSE dump replay (record → reproduce → pin regression)', () => {
+  it('replays a recorded dump: liveMessage never vanishes; PhaseDone with EMPTY streamContent (lost text event) triggers reload', () => {
+    // Pins the "某个迭代结束 agent turn 消失了" root cause (no console error,
+    // RENDER_LOSS_ROWS silent because liveMessage stays non-null but renders
+    // EMPTY). Reconstructed from /home/smith/src/mint-bench/2.ev essentials:
+    // iteration 1 streams text → iteration 2 boundary CLEARS streamContent →
+    // PhaseDone arrives with NO text event (dropped on the stateless SSE stream)
+    // → store keeps only iteration records → reload must fire to recover the
+    // authoritative complete reply from DB.
+    const dump = [
+      `id:100\nevent:progress_structured\ndata:${JSON.stringify({ type: 'progress_structured', seq: 100, progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })}`,
+      `id:101\nevent:stream_content\ndata:${JSON.stringify({ type: 'stream_content', seq: 101, progress: { stream_content: 'partial reply...', turn_id: 1 } })}`,
+      `id:102\nevent:progress_structured\ndata:${JSON.stringify({ type: 'progress_structured', seq: 102, progress: { phase: 'tool_exec', iteration: 1, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 1 }] } })}`,
+      `id:103\nevent:progress_structured\ndata:${JSON.stringify({ type: 'progress_structured', seq: 103, progress: { phase: 'thinking', iteration: 2, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 2 }] } })}`,
+      `id:104\nevent:progress_structured\ndata:${JSON.stringify({ type: 'progress_structured', seq: 104, progress: { phase: 'done', iteration: 2, turn_id: 1, chat_id: 'web:c1' } })}`,
+      ``,
+    ].join('\n')
+    const onIterationGap = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onIterationGap, ws: currentWS as unknown as WSConnection }),
+    )
+    for (const ev of parseSSEDump(dump)) {
+      act(() => {
+        currentWS.emit(ev)
+        rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+      })
+    }
+    // The turn must NOT vanish from the DOM…
+    expect(result.current.liveMessage).not.toBeNull()
+    // …but the lost final text event must be detected → reload to recover the
+    // complete reply (buildMessageRows' same-turn merge surfaces it).
+    expect(onIterationGap).toHaveBeenCalledTimes(1)
+    expect(result.current.progressSnapshot.iterationHistory.map((i) => i.iteration)).toEqual([1, 2])
   })
 })
