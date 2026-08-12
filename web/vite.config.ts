@@ -32,7 +32,15 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+        // 不 precache HTML —— SW 缓存旧 index.html 会导致版本倒退
+        // （旧 HTML 引用旧 JS hash，SW 拦截导航返回旧 HTML → 加载旧 JS）。
+        // HTML 始终走网络（NetworkFirst），JS/CSS/assets 走 precache。
+        globPatterns: ['**/*.{js,css,svg,png,ico,woff2}'],
+        globIgnores: ['**/index.html'],
+        // 禁用 Workbox 的 NavigationRoute（createHandlerBoundToURL）——
+        // 它用 precache 的 index.html 拦截导航请求，导致版本倒退。
+        // 导航请求由 runtimeCaching 的 NetworkFirst 处理。
+        navigateFallback: null,
         // Auto-activate new SW without waiting for page message — breaks the
         // chicken-and-egg cycle where old SW caches old HTML that can't send
         // SKIP_WAITING. clientsClaim takes control of existing tabs immediately.
@@ -41,6 +49,18 @@ export default defineConfig({
         // Precache up to 8MB (monaco/katex/highlight are large but cacheable)
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [
+          // HTML (navigation): NetworkFirst —— 始终从服务器获取最新 index.html，
+          // 网络失败时才用缓存。这防止 SW 缓存旧 HTML（引用旧 JS hash）导致
+          // 版本倒退（用户报告：普通刷新后版本回退到旧 JS）。
+          {
+            urlPattern: ({ request }) => request.mode === 'navigate',
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'html-cache',
+              networkTimeoutSeconds: 3,
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
           // API requests: network-first, fall back to cache for offline reads.
           // Exclude /api/sse — SSE is a streaming response that never
           // completes normally; caching it throws "Cache.put() network error"
