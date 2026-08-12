@@ -396,7 +396,14 @@ export function useProgressStream({
     // the DOM (rowsLen:0 — same bug class as the reset guards above; user
     // report: "回复显示到一半突然消失"). Let SSE events drive; only hydrate a
     // genuinely idle store. Mirrors the storeActive guard used for reset().
-    if (storeActive) return
+    //
+    // EXCEPTION: when iterationHistory has an INTERNAL jump (delta lost —
+    // unambiguous loss), allow the replace even while streaming: the reload was
+    // triggered BY that gap (onIterationGap), and the server snapshot carries
+    // the authoritative full iterationHistory — replacing repairs the broken
+    // history. Without this exception the gap never healed and onIterationGap
+    // re-fired every event → reload loop → "turn 消失维持一个完整的迭代".
+    if (storeActive && !store.hasIterationGapNow()) return
     if (live.phase) {
       store.replace(live)
       // Ensure turnID is tracked for same-turn dedup (MessageList uses
@@ -852,6 +859,21 @@ function handleProgressMessage(
         // "思考中…" until the text event arrives. DO NOT reset the store: tools
         // and iterations stay visible until the text event commits atomically.
         store.stopStreaming()
+        // ── Final-reply loss guard (root cause of "某个迭代结束 agent turn 消失了") ──
+        // The complete reply travels ONLY in the text event (authoritative
+        // finalizer). On a stateless SSE stream that event can be dropped
+        // (sendCh coalescing / reconnect gap). When it is lost, the store keeps
+        // only the iteration records — streamContent was cleared at the last
+        // iteration boundary and no new text arrived — so liveMessage stays
+        // non-null (RENDER_LOSS_ROWS stays silent!) but renders EMPTY: the
+        // user sees the turn's reply "vanish". Detect it here: visible progress
+        // with NO accumulated reply text → the text event was likely lost →
+        // reload from DB (authoritative complete reply). The committed reply
+        // then merges with the live row via buildMessageRows' same-turn merge.
+        const doneSnap = store.getSnapshot()
+        if (hasVisibleProgress(doneSnap) && !doneSnap.streamContent && !doneSnap.content) {
+          iterationGapRef.current?.()
+        }
         // Update todos if the PhaseDone event carries them. Do NOT clear
         // tools here — clearing causes a 4-5s gap where tools disappear
         // between PhaseDone and the text event. The text event (or cancel

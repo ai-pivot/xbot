@@ -20,6 +20,33 @@ type WorktreeEntry struct {
 	Branch      string // branch name
 	CreatedAt   time.Time
 	Status      string // "working" | "merge-ready" | "done"
+	// LastActive is the last time this session was observed doing work
+	// (updated by Touch, called from buildPrompt / the agent loop). Peers whose
+	// LastActive is older than peerIdleThreshold are considered idle and must
+	// NOT be shown as "collaborating" — a peer-awareness entry lingers forever
+	// (sessions never deregister), so without an activity signal every registered
+	// peer is reported as actively working even when it has been idle for hours.
+	// Zero value (persisted registry loaded before the field existed) means
+	// "unknown activity" → treated as idle until the session next calls Touch.
+	LastActive time.Time
+}
+
+// peerIdleThreshold is how long a peer may go without activity before it is
+// considered idle and hidden from collaboration hints. buildPrompt runs once
+// per turn, so a working session updates LastActive at least this often while
+// it is processing turns; a session that stopped (user left it open, agent
+// finished) stops touching and crosses the threshold shortly after.
+const peerIdleThreshold = 15 * time.Minute
+
+// IsActive reports whether the entry is recently active (LastActive within
+// peerIdleThreshold). A registered session lingers in the registry until it is
+// explicitly cleaned up — without the activity signal every peer (even one idle
+// for hours) would be reported as collaborating. Zero LastActive (persisted
+// registry loaded before the field existed, or a peer that never touched) is
+// treated as INACTIVE: it only becomes visible again after the session calls
+// Touch on its next turn.
+func (e *WorktreeEntry) IsActive() bool {
+	return e != nil && !e.LastActive.IsZero() && time.Since(e.LastActive) <= peerIdleThreshold
 }
 
 // WorktreeRegistry is a process-level registry of active worktrees.
@@ -66,10 +93,31 @@ func (r *WorktreeRegistry) Register(entry *WorktreeEntry) error {
 		return fmt.Errorf("worktree: session %q already registered", entry.SessionKey)
 	}
 
+	if entry.LastActive.IsZero() {
+		entry.LastActive = time.Now()
+	}
 	r.bySess[entry.SessionKey] = entry
 	r.byRepo[entry.RepoPath] = append(r.byRepo[entry.RepoPath], entry)
 	r.saveRepoLocked(entry.RepoPath)
 	return nil
+}
+
+// Touch records that the session is actively doing work. Called from the agent
+// loop (buildPrompt — every processed turn). Peers whose LastActive is older
+// than peerIdleThreshold are considered idle and hidden from collaboration
+// hints (a registered session may sit idle for hours without deregistering).
+func (r *WorktreeRegistry) Touch(sessionKey string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.bySess[sessionKey]; ok {
+		e.LastActive = time.Now()
+		// Persist only physical-worktree entries (peer-awareness entries are
+		// runtime-only by design). Persisted LastActive survives restarts —
+		// a stale timestamp hides the peer until it touches again.
+		if e.WorktreeDir != "" {
+			r.saveRepoLocked(e.RepoPath)
+		}
+	}
 }
 
 // Deregister removes an entry and cleans up empty repo buckets.
@@ -226,6 +274,7 @@ func (r *WorktreeRegistry) RegisterPeer(sessionKey, workDir string) {
 		WorktreeDir: "",
 		Branch:      "",
 		Status:      "working",
+		LastActive:  time.Now(),
 	}
 	r.bySess[sessionKey] = entry
 	r.byRepo[repoPath] = append(r.byRepo[repoPath], entry)

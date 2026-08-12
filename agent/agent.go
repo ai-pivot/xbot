@@ -3582,6 +3582,11 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	} else {
 		tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)
 	}
+	// 活跃心跳：buildPrompt 在每个 turn 处理时调用（session 正在工作）。
+	// Touch 更新本 session 的 LastActive，供 peer idle 检测（reminder.go
+	// 只显示 peerIdleThreshold 内的活跃 peer）——避免"peer 已 idle 数小时
+	// 仍被提示协作中"的干扰。
+	tools.GlobalWorktreeRegistry.Touch(sessKey)
 
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.

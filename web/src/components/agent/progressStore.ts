@@ -482,28 +482,23 @@ export class ProgressStore {
    * has an iteration-id gap. Unlike getSnapshot() (RAF-throttled), this reads
    * this.current so callers can react immediately after setStructuredTools.
    *
-   * Two independent loss modes:
-   * 1. INTERNAL jump — [1,2,4] missing 3 (hasIterationGap).
-   * 2. TRAILING loss — the server has advanced to lastIter=N but the iteration
-   *    N-1 delta never arrived ([1,2] with lastIter=4). An iteration-number
-   *    difference of 1 (3→4) does NOT prove iteration 3's delta is complete:
-   *    its completion delta may have been dropped in an SSE gap while the
-   *    next iteration's events kept arriving. The only reliable signal is
-   *    "history covers up to lastIter-1".
+   * ONLY the INTERNAL-jump signal is used ([1,2,4] missing 3): a delta arrived
+   * for a LATER iteration while an earlier one is absent — an unambiguous loss.
+   *
+   * Deliberately NOT checked: the "trailing loss" heuristic
+   * `last < lastIter - 1` (server advanced to N but history ends below N-1).
+   * It is a FALSE-POSITIVE SOURCE that made the live turn vanish for a full
+   * iteration: Delta Push attaches the completion delta to the ADVANCE event,
+   * but a stream delta may still land a beat later (0-1 entries per push) and
+   * legitimately-offset histories ([5,6,7] after compaction) are valid subsets
+   * — both trip the heuristic. Each false positive fired onIterationGap →
+   * reload, and the hydration storeActive guard skipped the repair replace →
+   * the gap never healed → reload loop → "turn 消失维持一个完整的迭代".
+   * The trailing-loss case is covered by handleEvent's "gap crossed an
+   * iteration boundary → force reload" (SSEConnection) instead.
    */
   hasIterationGapNow(): boolean {
-    const hist = this.current.iterationHistory
-    if (hasIterationGap(hist)) return true
-    // Trail check: the semantic watermark advanced to N ⇒ iteration N-1's delta
-    // must be present (it completes before iteration N can start). A last entry
-    // BELOW N-1 means that delta was lost — reload is required (the DB is
-    // authoritative; no later SSE snapshot carries it). Use `<` (not `!==`):
-    // a last entry == N (current iteration's delta already arrived) is legal.
-    if (this.current.lastIter > 1 && hist.length > 0) {
-      const last = hist[hist.length - 1].iteration
-      if (last < this.current.lastIter - 1) return true
-    }
-    return false
+    return hasIterationGap(this.current.iterationHistory)
   }
 
   /** Apply a mutation under the hood; schedules a throttled notify. */

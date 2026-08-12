@@ -576,6 +576,46 @@ describe('useProgressStream event dispatch', () => {
     expect(result.current.isStreaming).toBe(true)
   })
 
+  it('hydration REPLACES a streaming store when iterationHistory is broken (repair the gap — no reload loop)', () => {
+    // User report: "turn 消失维持一个完整的迭代" — the iteration-gap detection
+    // fired onIterationGap → reload, but hydration's storeActive guard SKIPPED
+    // the replace → the broken iterationHistory never healed → onIterationGap
+    // re-fired on every subsequent event → reload loop → live turn vanished for
+    // a full iteration. Fix: the guard allows replace when hasIterationGapNow()
+    // is true — the server snapshot carries the authoritative full history and
+    // repairs the gap, terminating the loop.
+    const onIterationGap = vi.fn()
+    const { result, rerender } = renderHook(
+      (props: Partial<Parameters<typeof useProgressStream>[0]>) =>
+        useProgressStream({ chatID: 'c1', onIterationGap, ws: currentWS as unknown as WSConnection, ...props }),
+      { initialProps: { initialProgress: null } },
+    )
+    // Turn streaming with complete history [1,2,3].
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 3, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 1 }, { iteration: 2 }, { iteration: 3 }] } })
+    // Gap: iteration 5's delta arrives, iteration 4 was dropped → [1,2,3,5].
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 5, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 5 }] } })
+    expect(onIterationGap).toHaveBeenCalledTimes(1)
+    expect(result.current.progressSnapshot.iterationHistory.map((i) => i.iteration)).toEqual([1, 2, 3, 5])
+
+    // reload completes: server snapshot carries the authoritative FULL history.
+    act(() => {
+      rerender({
+        initialProgress: {
+          phase: 'tool_exec', iteration: 5, turn_id: 1,
+          iteration_history: [{ iteration: 1 }, { iteration: 2 }, { iteration: 3 }, { iteration: 4 }, { iteration: 5 }],
+        } as ProgressEvent | null,
+      })
+    })
+    act(() => { rafCbs.splice(0, rafCbs.length).forEach((cb) => cb()) })
+
+    // The gap must be REPAIRED (replace allowed despite streaming) — and the
+    // onIterationGap one-shot re-arms only once the history is contiguous.
+    expect(result.current.progressSnapshot.iterationHistory.map((i) => i.iteration)).toEqual([1, 2, 3, 4, 5])
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 5, turn_id: 1, chat_id: 'web:c1', active_tools: [{ name: 'Shell', status: 'running', iteration: 5 }] } })
+    expect(onIterationGap).toHaveBeenCalledTimes(1)
+  })
+
   it('disabled toggle (subscription flake) must NOT wipe a streaming turn', () => {
     // User report: [RENDER_LOSS_ROWS] rowsLen:0, liveMessageId:null, busy:true
     // with a cli chatKey. The live store was blanked by the useLayoutEffect
@@ -810,6 +850,32 @@ describe('useProgressStream event dispatch', () => {
       progress: { chat_id: 'web:c1', seq: 2, phase: 'done', todos: [] } as ProgressEvent,
     })
     expect(result.current.progressSnapshot.todos).toHaveLength(0)
+  })
+
+  it('PhaseDone with visible iterations but EMPTY streamContent (final text event lost) triggers reload', () => {
+    // User report: "某个迭代结束 agent turn 消失了" with NO console error.
+    // Root cause: the final reply travels ONLY in the text event; on a
+    // stateless SSE stream that event can be dropped. streamContent was cleared
+    // at the last iteration boundary, so after PhaseDone the store keeps only
+    // iteration records — liveMessage stays NON-null (RENDER_LOSS_ROWS stays
+    // silent!) but renders EMPTY → the reply "vanishes". Fix: PhaseDone with
+    // visible progress + no accumulated reply text signals the lost text event
+    // → reload from DB (authoritative complete reply).
+    const onIterationGap = vi.fn()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onIterationGap, ws: currentWS as unknown as WSConnection }),
+    )
+    // Turn streams iterations; streamContent cleared at the 1→2 boundary.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'partial reply...', turn_id: 1 } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 1, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 1 }] } })
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'thinking', iteration: 2, turn_id: 1, chat_id: 'web:c1', iteration_history: [{ iteration: 2 }] } })
+    expect(onIterationGap).not.toHaveBeenCalled()
+    // PhaseDone: streamContent was cleared by the iteration boundary, no text
+    // event arrived → the reply is lost → must trigger reload.
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'done', iteration: 2, turn_id: 1, chat_id: 'web:c1' } })
+    expect(onIterationGap).toHaveBeenCalledTimes(1)
+    expect(result.current.progressSnapshot.iterationHistory.map((i) => i.iteration)).toEqual([1, 2])
   })
 
   it('PhaseDone with todos present preserves them (not cleared)', () => {
