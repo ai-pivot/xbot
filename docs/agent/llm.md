@@ -67,3 +67,27 @@ type ModelLoader interface {
 ## OnModelsLoaded Callback
 
 `UserLLMConfig.OnModelsLoaded` is called by `NewOpenAILLM`'s async goroutine after fetching model list from API. Used to persist models to DB via `UpdateCachedModels`. Must handle case where sub ID doesn't exist in DB (config-only subs).
+
+## Per-Request Observability Headers (Codex / Claude Code style)
+
+Every LLM HTTP request carries tracing identifiers so provider-side dashboards
+(OpenAI usage, Anthropic console, gateway proxies) can attribute a call to a
+specific session/turn for debugging:
+
+| Header | Value | Source |
+|--------|-------|--------|
+| `X-Session-Id` | `channel:chatID` | `buildMainRunConfig` (`sessionKey`) |
+| `X-Request-Id` | `<session>-t<turn>-<n>` | `generateResponse` per call (`Observability.NextRequestID`) — **retries reuse it** (`RetryLLM` passes the same ctx) |
+| `X-User-Id` | senderID | `buildMainRunConfig` |
+| `X-Turn-Id` | turn number | `msg.Metadata["turn_id"]` |
+| `X-Trace-Id` | optional | distributed-trace id |
+
+**Flow**: `RunConfig.Observability` (filled in `buildMainRunConfig`) → `Run()`
+injects into ctx via `llm.WithObservability` → `generateResponse` stamps
+`RequestID` per call → transport reads `req.Context()` and sets headers
+(`openai.go` `streamCaptureTransport.RoundTrip`, `anthropic.go` both request
+paths). Empty observability attaches no headers — normal requests unaffected.
+
+Gotcha: `X-Request-Id` must be stamped ONCE per logical LLM call (in
+`generateResponse`), NOT per HTTP attempt — otherwise provider logs show one
+logical request split across retry attempts.
