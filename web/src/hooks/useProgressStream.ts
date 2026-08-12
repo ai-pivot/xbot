@@ -270,13 +270,17 @@ export function useProgressStream({
     // Full reset on chatID change (including todos — different session).
     // On non-chatID triggers (disabled toggle), preserve todos via reset().
     if (progressCacheKey !== prevProgressCacheKeyRef.current) {
+      const prevKey = prevProgressCacheKeyRef.current
       prevProgressCacheKeyRef.current = progressCacheKey
       // Session switch: the store is blanked and the server's active_progress
       // is the ONLY source of the session's full iterationHistory. Let the
       // first hydration replace run even if new SSE events make the store
       // look active — otherwise pre-switch iterations are lost forever
-      // ("来回切换会话后迭代消失").
-      sessionSwitchedRef.current = true
+      // ("来回切换会话后迭代消失"). Only when switching (prevKey was set);
+      // first mount must NOT bypass the storeActive guard.
+      if (prevKey !== null) {
+        sessionSwitchedRef.current = true
+      }
       // Restore todos from progressSnapshotCache — switchSession writes
       // the /switch response todos here so they appear immediately,
       // before /api/history's active_progress arrives (which may return
