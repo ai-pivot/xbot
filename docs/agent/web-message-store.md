@@ -77,15 +77,19 @@ store.hasLive(turnID)          // 渲染层判断 streaming
 - 每帧只有 live 变化：缓存 committed rows + 动态附加 live 行（当前 buildMessageRows 的
   fast path 行为，但由结构保证正确）。
 
-## 迁移计划
+## 迁移计划（✅ 已全部完成）
 
-| Step | 内容 | 验证 |
+| Step | 内容 | 状态 |
 |------|------|------|
-| 1 | `MessageStore` 纯状态机类（messageStore.ts）+ 单测 | 覆盖现有 MessageList.test.tsx 全部 buildMessageRows 场景 |
-| 2 | useChatMessages 内部换用 MessageStore（对外接口不变） | 现有 useChatMessages.test.ts 全过 |
-| 3 | useProgressStream 的 live 写入 MessageStore（progressSnapshot 保留给 context bar） | useProgressStream.test.ts 全过 |
-| 4 | MessageList 删除 buildMessageRows/exactDup/dedupLiveRows，改读 store.toRows() | MessageList.test.tsx 全过 |
-| 5 | 清理死代码（progressStore dedup 相关、messageOrder 合并逻辑）+ 全量验证 + 部署 + CI | vitest 全量 + tsc -b + E2E |
+| 1 | `MessageStore` 纯状态机类（messageStore.ts）+ 单测 | ✅ 21 tests |
+| 2 | useChatMessages 内部换用 MessageStore（对外接口不变） | ✅ 55 tests |
+| 3 | AgentPanel 共享 store + useProgressStream live 写入 + MessageList 读 toRows | ✅ 616 tests |
+| 4 | 删除 buildMessageRows/exactDup/dedupLiveRows/dedupMessages/liveMessage prop | ✅ 574 tests |
+| 5 | 全量验证 + 构建部署 + CI | ✅ |
+
+**最终架构**：live 行由 `MessageStore.toRows()` 输出（isPartial），MessageList 直接渲染
+`orderMessageRows(bindTurnIDs(messages))`，liveId 匹配 isPartial 行传 liveProgress。
+渲染层零去重 —— exactDup/same-turn merge 从代码库消失。
 
 ## 风险与对策
 
