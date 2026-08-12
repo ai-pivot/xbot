@@ -355,6 +355,17 @@ export function MessageList({
   useEffect(() => {
     const tail = rows.length > 0 ? rows[rows.length - 1] : null
     const prev = prevRowsTailRef.current
+    if (prev && prev.chatKey !== chatKey) {
+      // Session switch: chatKey updates on the React render BEFORE the rows
+      // are reloaded (useChatMessages still holds the OLD session's rows in
+      // the same frame). Comparing the old session's live tail against the
+      // new session's (still empty) rows would false-fire RENDER_LOSS_ROWS
+      // (observed: chatKey=web:chat_A91F476D963A, prevTail=turn-337-live,
+      // rowsLen=0 right after switching). Reset the baseline so the new
+      // session's first rows start clean.
+      prevRowsTailRef.current = null
+      return
+    }
     prevRowsTailRef.current = {
       id: tail?.id ?? null,
       turnID: tail?.turnID ?? 0,
