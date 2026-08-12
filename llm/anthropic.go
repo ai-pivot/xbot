@@ -413,6 +413,11 @@ func (a *AnthropicLLM) Generate(ctx context.Context, model string, messages []Ch
 		return nil, fmt.Errorf("anthropic: create request: %w", err)
 	}
 	a.setHeaders(httpReq)
+	// Attach observability headers (X-Session-Id / X-Request-Id / ...) from ctx
+	// so provider dashboards can attribute this call to a session/turn.
+	if o, ok := ObservabilityFromContext(ctx); ok {
+		o.ApplyHeaders(func(name, value string) { httpReq.Header.Set(name, value) })
+	}
 	startTime := time.Now()
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
@@ -523,6 +528,11 @@ func (a *AnthropicLLM) GenerateStream(ctx context.Context, model string, message
 		return nil, fmt.Errorf("anthropic: create request: %w", err)
 	}
 	a.setHeaders(httpReq)
+	// Attach observability headers (X-Session-Id / X-Request-Id / ...) from ctx
+	// so provider dashboards can attribute this call to a session/turn.
+	if o, ok := ObservabilityFromContext(ctx); ok {
+		o.ApplyHeaders(func(name, value string) { httpReq.Header.Set(name, value) })
+	}
 	startTime := time.Now()
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {

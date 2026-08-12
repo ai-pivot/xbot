@@ -256,6 +256,16 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
+	// 可观测性：把 session / user / turn 标识传给 Run，使每次 LLM HTTP 请求
+	// 携带 X-Session-Id / X-User-Id / X-Turn-Id（X-Request-Id 在 generateResponse
+	// 每次调用生成），对标 Codex / Claude Code，便于在 LLM 提供商侧按会话追踪
+	// 请求、定位接口问题。
+	cfg.Observability = llm.Observability{
+		SessionID: sessionKey,
+		UserID:    senderID,
+		TurnID:    int64(cfg.TurnID),
+	}
+
 	// Track the current iteration per session so stream callbacks can stamp it
 	// on stream_content events. The frontend uses the iteration to clear the
 	// previous iteration's content/tools when a new iteration begins with only
