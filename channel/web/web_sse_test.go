@@ -2036,13 +2036,13 @@ func TestWebChannelStopInterruptsBlockedSSEWrite(t *testing.T) {
 	writer := newDeadlineBlockingResponseWriter()
 	defer writer.release()
 	client := &Client{
-		connType: clientConnTypeSSE,
-		w:        writer,
-		flusher:  writer,
-		sendCh:   make(chan protocol.WSMessage, 1),
-		done:     make(chan struct{}),
-		chatID:   "web-1",
-		id:       "blocked-sse",
+		connType:     clientConnTypeSSE,
+		w:            writer,
+		flusher:      writer,
+		sendCh:       make(chan protocol.WSMessage, 1),
+		done:         make(chan struct{}),
+		chatID:       "web-1",
+		id:           "blocked-sse",
 		sseEncWriter: writer,
 	}
 	wc.hub.addClient(client.id, client)

@@ -24,15 +24,13 @@ import (
 //   - Small responses (<256 bytes, not worth the overhead)
 //   - Binary content types (images, fonts, wasm)
 
-const minCompressSize = 256
-
 var compressibleContentTypes = map[string]bool{
-	"text/event-stream": true, // SSE
-	"application/json":  true,
-	"text/html":         true,
-	"text/plain":        true,
-	"text/css":          true,
-	"application/javascript": true,
+	"text/event-stream":       true, // SSE
+	"application/json":        true,
+	"text/html":               true,
+	"text/plain":              true,
+	"text/css":                true,
+	"application/javascript":  true,
 	"application/x-jsonlines": true,
 }
 
@@ -60,7 +58,6 @@ type compressResponseWriter struct {
 	encoder    io.WriteCloser
 	encoding   string // "zstd" or "gzip"
 	statusCode int
-	buf        []byte // buffer for sniffing Content-Type before committing
 	headerSent bool
 }
 
@@ -129,12 +126,6 @@ func (w *compressResponseWriter) commit(tryCompress bool) {
 	ct = strings.TrimSpace(ct)
 	if !compressibleContentTypes[ct] {
 		return
-	}
-
-	// Check Content-Length — skip small responses
-	if cl := w.ResponseWriter.Header().Get("Content-Length"); cl != "" {
-		// Already set by handler — if small, skip
-		// (we can't easily parse here without strconv, just proceed)
 	}
 
 	// Already encoded?
@@ -226,7 +217,7 @@ func CompressionMiddleware(next http.Handler) http.Handler {
 		cw := &compressResponseWriter{
 			ResponseWriter: w,
 			encoding:       encoding,
-			statusCode:      200,
+			statusCode:     200,
 		}
 		defer cw.close()
 		next.ServeHTTP(cw, r)
