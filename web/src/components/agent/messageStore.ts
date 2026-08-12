@@ -435,6 +435,19 @@ export class MessageStore {
             content: slot.live.content || slot.assistant.content,
             iterations: mergeIterations(slot.live.iterations, slot.assistant.iterations),
           })
+        } else if (slot.live) {
+          // slot 同时有 committed assistant（reload 回填 DB 历史）和 live（当前
+          // 进行中的迭代）—— 合并 assistant 的已完成 iterations + live 的当前
+          // iteration，输出为 isPartial 行。否则只显示 live 的当前迭代（切换
+          // 会话时 reload 先到、hydration 后到，用户只看到 live iter 而非完整
+          // turn iter）。
+          rows.push({
+            ...slot.assistant,
+            content: slot.live.content || slot.assistant.content || '',
+            iterations: mergeIterations(slot.assistant.iterations ?? [], slot.live.iterations),
+            isPartial: true,
+            id: `turn-${tid}-live`,
+          })
         } else {
           rows.push(slot.assistant)
         }
