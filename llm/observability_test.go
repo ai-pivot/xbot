@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"xbot/logger"
 )
 
 func TestObservabilityContext(t *testing.T) {
@@ -23,6 +25,27 @@ func TestObservabilityContext(t *testing.T) {
 	}
 	if got.SessionID != "web:chat-1" || got.UserID != "admin" || got.TurnID != 42 {
 		t.Fatalf("roundtrip mismatch: %+v", got)
+	}
+
+	// WithObservability must ALSO mirror ids into the logger context so
+	// log.Ctx(ctx) lines carry session_id/turn_id/user_id.
+	if logger.SessionID(ctx) != "web:chat-1" {
+		t.Errorf("logger.SessionID = %q, want web:chat-1", logger.SessionID(ctx))
+	}
+	if logger.TurnID(ctx) != 42 {
+		t.Errorf("logger.TurnID = %d, want 42", logger.TurnID(ctx))
+	}
+	if logger.UserID(ctx) != "admin" {
+		t.Errorf("logger.UserID = %q, want admin", logger.UserID(ctx))
+	}
+}
+
+func TestObservabilityWithRequestIDMirrorsLogger(t *testing.T) {
+	// RequestID stamped per call (generateResponse) must reach logger too.
+	o := Observability{SessionID: "web:chat-1", RequestID: "rq-42", TurnID: 7}
+	ctx := WithObservability(context.Background(), o)
+	if logger.RequestID(ctx) != "rq-42" {
+		t.Errorf("logger.RequestID = %q, want rq-42", logger.RequestID(ctx))
 	}
 }
 

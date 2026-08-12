@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"sync/atomic"
+
+	"xbot/logger"
 )
 
 // Observability carries per-request tracing identifiers attached to LLM HTTP
@@ -23,8 +25,24 @@ type Observability struct {
 type observabilityKey struct{}
 
 // WithObservability attaches tracing identifiers to ctx for the LLM request.
+// It also mirrors them into the logger context (request_id / session_id /
+// turn_id / user_id) so any log.Ctx(ctx) log line — LLM calls, agent loop —
+// is greppable by the same ids that appear as HTTP headers on the request.
 func WithObservability(ctx context.Context, o Observability) context.Context {
-	return context.WithValue(ctx, observabilityKey{}, o)
+	ctx = context.WithValue(ctx, observabilityKey{}, o)
+	if o.RequestID != "" {
+		ctx = logger.WithRequestID(ctx, o.RequestID)
+	}
+	if o.SessionID != "" {
+		ctx = logger.WithSessionID(ctx, o.SessionID)
+	}
+	if o.UserID != "" {
+		ctx = logger.WithUserID(ctx, o.UserID)
+	}
+	if o.TurnID > 0 {
+		ctx = logger.WithTurnID(ctx, o.TurnID)
+	}
+	return ctx
 }
 
 // ObservabilityFromContext returns the tracing identifiers carried by ctx.
