@@ -570,9 +570,15 @@ export class ProgressStore {
         : next.completedTools
       this.current.completedTools = dedupTools(filtered)
     }
-    if (next.eventSeq !== undefined && next.eventSeq > this.current.eventSeq) {
-      this.current.eventSeq = next.eventSeq
-    }
+    // NOTE: eventSeq is deliberately NOT taken from the replaced snapshot.
+    // eventSeq is the SSE progress.seq watermark — it must be driven ONLY by
+    // live SSE events. active_progress.eventSeq is the SERVER's high watermark
+    // (global progress counter) which can be far larger than the per-stream
+    // progress.seq of subsequent events; taking the max here made every later
+    // stream_content/progress_structured event (small progress.seq) look STALE
+    // and get dropped → the store froze → the turn vanished (rowsLen=0,
+    // observed right after a session switch with hydration replace).
+    void _es
     Object.assign(this.current, rest)
     // Single snapshot + single notification
     this.snapshot = { ...this.current }
