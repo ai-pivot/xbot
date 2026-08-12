@@ -306,8 +306,20 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 
 	// Session identity
 	fmt.Fprintf(&sb, "| 项目 | 值 |\n|---|---|\n")
+	// Session ID = X-Session-Id 的值（channel:chatID），可直接用于日志 grep
+	// （session_id=...）或 LLM 提供商 dashboard 核对（X-Session-Id header）。
+	sessionID := qualifyChatID(msg.Channel, msg.ChatID)
+	fmt.Fprintf(&sb, "| Session ID | `%s` |\n", sessionID)
 	fmt.Fprintf(&sb, "| Channel | %s |\n", msg.Channel)
 	fmt.Fprintf(&sb, "| Chat ID | %s |\n", msg.ChatID)
+	// User ID = X-User-Id 的值（LLM 请求 header）。
+	if msg.SenderID != "" {
+		fmt.Fprintf(&sb, "| User ID | %s |\n", msg.SenderID)
+	}
+	// Turn ID = X-Turn-Id 的值（当前轮次）。
+	if raw := msg.Metadata["turn_id"]; raw != "" {
+		fmt.Fprintf(&sb, "| Turn ID | %s |\n", raw)
+	}
 	fmt.Fprintf(&sb, "| Tenant ID | %d |\n", tenantSession.TenantID())
 
 	// CWD
