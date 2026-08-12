@@ -136,15 +136,8 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		// The server restarted and its in-memory sequence restarted from zero.
 		client.lastSentSeq = 0
 	}
-	registered := wc.hub.addClient(client.id, client)
-	subscribed := registered && wc.hub.subscribe(client.id, routeKey)
-	wc.hub.seqMu.Unlock()
-	if !subscribed {
-		if registered {
-			wc.hub.removeClient(client.id)
-		}
-		return
-	}
+	// Defer cleanup BEFORE addClient/subscribe — if subscribe fails (early
+	// return below), the encoder must still be released to the pool.
 	defer func() {
 		client.closeDone()
 		if client.sseEncClose != nil {
@@ -157,6 +150,15 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 			"client_id": client.id,
 		}).Info("SSE client disconnected")
 	}()
+	registered := wc.hub.addClient(client.id, client)
+	subscribed := registered && wc.hub.subscribe(client.id, routeKey)
+	wc.hub.seqMu.Unlock()
+	if !subscribed {
+		if registered {
+			wc.hub.removeClient(client.id)
+		}
+		return
+	}
 
 	log.WithFields(log.Fields{
 		"sender_id": senderID,
@@ -490,32 +492,6 @@ func collectSSEBatch(ch <-chan protocol.WSMessage) ([]protocol.WSMessage, bool) 
 
 func (wc *WebChannel) writeSSEBatch(ctx context.Context, client *Client, batch []protocol.WSMessage) error {
 	sort.SliceStable(batch, func(i, j int) bool { return batch[i].Seq < batch[j].Seq })
-	// SSE buffer: when compression is enabled, batch all events into one write
-	// + one flush (instead of per-event flush). This dramatically reduces zstd
-	// block overhead (each flush = ~3-6 bytes block header) and improves
-	// compression ratio (larger input = better dictionary match).
-	if client.sseEncFlush != nil {
-		var buf strings.Builder
-		for _, msg := range batch {
-			if err := sseContextError(ctx, client); err != nil {
-				return err
-			}
-			if err := wc.writeCurrentSSEEvent(client, msg); err != nil {
-				return err
-			}
-			// writeCurrentSSEEvent already wrote to sseWriter + flushed.
-			// For batched mode we want to defer flush — but the current
-			// architecture writes+flushes per event. The buffer benefit
-			// comes from zstd's internal compression window (larger input
-			// between flushes = better ratio). Since writeSSEEvent flushes
-			// per event, the zstd encoder still benefits from cross-event
-			// dictionary (zstd maintains state across flushes within one
-			// encoder session). So the per-event flush is fine — zstd's
-			// dictionary persists across Flush() calls.
-			_ = buf // (buf reserved for future batched-write optimization)
-		}
-		return nil
-	}
 	for _, msg := range batch {
 		if err := sseContextError(ctx, client); err != nil {
 			return err

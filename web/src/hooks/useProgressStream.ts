@@ -716,8 +716,6 @@ function writeLiveToMessageStore(
   const prevLive = ms.getLive(turnID)
   const newContent = cur.streamContent || cur.content || ''
   const newReasoning = cur.reasoningStreamContent || ''
-  // eslint-disable-next-line no-console
-  console.log('[WL]', { turnID, newContent: newContent.slice(0, 40), newReasoning: newReasoning.slice(0, 40), phase: cur.phase, prevContent: prevLive?.content?.slice(0, 40), hasPrevLive: !!prevLive, iterHist: cur.iterationHistory?.length, eventSeq: cur.eventSeq })
   ms.updateLive(turnID, {
     eventSeq: cur.eventSeq,
     phase: cur.phase,
