@@ -221,6 +221,24 @@ describe('MessageStore — beginTurn 自动 commit 旧 live', () => {
   })
 })
 
+// ── subscribe/notify（Step 3 修复：useChatMessages 感知 live 更新）──
+describe('MessageStore — subscribe/notify', () => {
+  it('notifies listeners on any mutation（含 live 更新）', () => {
+    const s = new MessageStore()
+    let notified = 0
+    const off = s.subscribe(() => { notified += 1 })
+    s.setUser(360, user('u360', 'hi', 360))
+    expect(notified).toBe(1)
+    s.updateLive(360, liveState(360, { content: 'stream' }))
+    expect(notified).toBe(2) // live 更新也通知
+    s.commitAssistant(360, 'reply', [iter(1)])
+    expect(notified).toBe(3)
+    off()
+    s.clear()
+    expect(notified).toBe(3) // 取消订阅后不再通知
+  })
+})
+
 // ── mergeIterations ──
 describe('mergeIterations', () => {
   it('按迭代号合并，保留非空 thinking', () => {

@@ -440,8 +440,23 @@ export class MessageStore {
     return `${this.turnIDs.join(',')}|${this.legacy.length}|${this.pendingUsers.length}`
   }
 
+  private listeners = new Set<() => void>()
+
+  /** 订阅 store 变化（含 live 更新）。返回取消函数。 */
+  subscribe(fn: () => void): () => void {
+    this.listeners.add(fn)
+    return () => {
+      this.listeners.delete(fn)
+    }
+  }
+
+  private notify(): void {
+    for (const fn of this.listeners) fn()
+  }
+
   private invalidate(): void {
     this.cache = null
+    this.notify()
   }
 
   /** 把早于 turnID 的未提交 live commit（旧 turn text 事件丢失的兜底）。 */

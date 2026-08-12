@@ -331,6 +331,13 @@ export function useChatMessages({
     prevStoreChatIDRef.current = chatID
     store.clear()
   }
+  // 订阅 store 变化：useProgressStream 写 live（共享 store）时触发 syncMessages，
+  // 使 chat.messages 包含 live 行（渲染层读 store.toRows()）。
+  useEffect(() => {
+    return store.subscribe(() => {
+      syncMessages()
+    })
+  }, [store, syncMessages])
 
 
   // Hold ws in a ref — its methods delegate to a stable MultiSSEManager instance,
