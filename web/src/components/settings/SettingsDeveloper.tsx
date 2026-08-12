@@ -102,6 +102,35 @@ export function SettingsDeveloper() {
 
           <div className="mt-1 flex items-center gap-2">
             <FileJson className="size-4 shrink-0 text-text-muted" />
+            <span className="text-text-secondary">导出当前会话为 Multica JSONL（parentId 链式格式，兼容 Multica 导入）</span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-fit gap-2"
+            disabled={devExporting || !sessionStore.activeSession}
+            onClick={async () => {
+              const s = sessionStore.activeSession
+              if (!s) return
+              setDevExporting(true)
+              setDevExportResult('')
+              try {
+                await downloadSession({ channel: s.channel, chatID: s.chatID }, 'multica')
+                setDevExportResult('已导出 Multica JSONL 会话')
+              } catch (err) {
+                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+              } finally {
+                setDevExporting(false)
+              }
+            }}
+          >
+            <Download className="size-4" />
+            {devExporting ? '导出中…' : '导出 Multica JSONL'}
+          </Button>
+
+          <div className="mt-1 flex items-center gap-2">
+            <FileJson className="size-4 shrink-0 text-text-muted" />
             <span className="text-text-secondary">导出当前会话为 benchmark JSONL（HLE / mint-bench 格式）</span>
           </div>
           <Button
