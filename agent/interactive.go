@@ -376,22 +376,56 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 	var subAgentProgressSeq atomic.Uint64
 	cfg.ProgressSeq = &subAgentProgressSeq
 	cfg.StreamContentFunc = func(content string) {
+		delta := content
+		isFull := true
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
+			prev := s.StreamContent
+			if len(content) > len(prev) && strings.HasPrefix(content, prev) {
+				delta = content[len(prev):]
+				isFull = false
+			}
 			s.StreamContent = content
 		})
-		broadcast(&protocol.ProgressEvent{
-			ChatID:        agentProgressKey,
-			StreamContent: content,
-		})
+		iter := a.getActiveIteration(agentProgressKey)
+		if isFull {
+			broadcast(&protocol.ProgressEvent{
+				ChatID:        agentProgressKey,
+				Iteration:     iter,
+				StreamContent: content,
+			})
+		} else {
+			broadcast(&protocol.ProgressEvent{
+				ChatID:      agentProgressKey,
+				Iteration:   iter,
+				StreamDelta: delta,
+			})
+		}
 	}
 	cfg.StreamReasoningFunc = func(content string) {
+		delta := content
+		isFull := true
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
+			prev := s.ReasoningStreamContent
+			if len(content) > len(prev) && strings.HasPrefix(content, prev) {
+				delta = content[len(prev):]
+				isFull = false
+			}
 			s.ReasoningStreamContent = content
 		})
-		broadcast(&protocol.ProgressEvent{
-			ChatID:                 agentProgressKey,
-			ReasoningStreamContent: content,
-		})
+		iter := a.getActiveIteration(agentProgressKey)
+		if isFull {
+			broadcast(&protocol.ProgressEvent{
+				ChatID:                 agentProgressKey,
+				Iteration:              iter,
+				ReasoningStreamContent: content,
+			})
+		} else {
+			broadcast(&protocol.ProgressEvent{
+				ChatID:               agentProgressKey,
+				Iteration:            iter,
+				ReasoningStreamDelta: delta,
+			})
+		}
 	}
 	cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {

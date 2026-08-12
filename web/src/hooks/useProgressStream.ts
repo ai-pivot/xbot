@@ -1101,6 +1101,24 @@ function handleProgressMessage(
         }
       }
 
+      // Web channel forwards stream_content events as progress_structured
+      // (type is normalized to progress_structured on the wire) — handle the
+      // delta/checkpoint stream fields here too, mirroring the stream_content
+      // branch. Without this, Web clients NEVER render streaming content
+      // (only tool events; content/reasoning appear only as structured
+      // snapshots after the tool completes — user report: "前端不再渲染
+      // reason 和 content 的 stream 事件").
+      if (p.stream_delta) {
+        store.appendStreamContent(String(p.stream_delta))
+      } else if (p.stream_content) {
+        store.setStreamContent(String(p.stream_content))
+      }
+      if (p.reasoning_stream_delta) {
+        store.appendReasoningContent(String(p.reasoning_stream_delta))
+      } else if (p.reasoning_stream_content) {
+        store.setReasoningContent(String(p.reasoning_stream_content))
+      }
+
       // Apply structured event with carry-forward (stream-only fields preserved)
       store.setStructuredTools({
         eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
