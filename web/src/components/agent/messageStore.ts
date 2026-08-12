@@ -1,0 +1,410 @@
+/**
+ * MessageStore — 单一消息状态机（方案 A，见 docs/agent/web-message-store.md）。
+ *
+ * 取代"两套独立数据（committed messages + live progress）+ 启发式去重
+ * （buildMessageRows sameTurnIdx/exactDup）"的架构。核心保证：
+ *
+ *   每个 turn 恰好 1 个 user + 1 个 assistant 槽位；live 是 assistant 的
+ *   未完成态（同对象状态迁移 streaming→completed）。唯一性由 Map 结构保证，
+ *   渲染层零去重 —— 从结构上消除 exactDup 跨 turn 迭代号匹配误杀、content/
+ *   eventSeq 匹配漏网等整类 "turn 消失/重复" bug。
+ *
+ * 纯状态机：不依赖 React。上层（useChatMessages / useProgressStream）只喂
+ * 事件，渲染层只读 toRows()。
+ */
+import type { ChatMessage, WebIteration, WebToolProgress } from '@/types/shared'
+
+/** Live streaming state —— assistant 的未完成态。 */
+export interface LiveState {
+  eventSeq: number
+  phase: string
+  /** 累积流式文本（streamContent）或结构化 content。 */
+  content: string
+  reasoningStreamContent: string
+  iterations: WebIteration[]
+  activeTools: WebToolProgress[]
+  completedTools: WebToolProgress[]
+  streamingTools: WebToolProgress[]
+  lastIter: number
+  turnID: number
+  /** Cancel 后冻结：live 保留渲染（已渲染内容永不消失）。 */
+  frozen: boolean
+}
+
+export interface TurnSlot {
+  turnID: number
+  /** user 消息（乐观 / user_echo / DB 回填）。 */
+  user?: ChatMessage
+  /** 已提交的 assistant（text 事件 / DB reload 回填）。 */
+  assistant?: ChatMessage
+  /** streaming 进行中（commitAssistant 时清空）。 */
+  live?: LiveState
+}
+
+const EMPTY_LIVE: LiveState = {
+  eventSeq: 0,
+  phase: '',
+  content: '',
+  reasoningStreamContent: '',
+  iterations: [],
+  activeTools: [],
+  completedTools: [],
+  streamingTools: [],
+  lastIter: 0,
+  turnID: 0,
+  frozen: false,
+}
+
+/** Merge two WebIteration arrays by iteration number (union, prefer non-empty). */
+export function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIteration[] {
+  if (a.length === 0) return b
+  if (b.length === 0) return a
+  const map = new Map<number, WebIteration>()
+  for (const iter of a) map.set(iter.iteration, iter)
+  for (const iter of b) {
+    const existing = map.get(iter.iteration)
+    if (!existing) {
+      map.set(iter.iteration, iter)
+    } else {
+      const existingHasContent = (existing.thinking ?? '') !== '' || (existing.reasoning ?? '') !== ''
+      const incomingHasContent = (iter.thinking ?? '') !== '' || (iter.reasoning ?? '') !== ''
+      if (incomingHasContent && !existingHasContent) {
+        map.set(iter.iteration, iter)
+      } else if (incomingHasContent && existingHasContent) {
+        // Both have content — merge tools (union by name+label)
+        const toolMap = new Map<string, WebToolProgress>()
+        for (const t of [...existing.tools, ...iter.tools]) {
+          toolMap.set(`${t.name}\x00${t.label}`, t)
+        }
+        map.set(iter.iteration, { ...existing, tools: [...toolMap.values()] })
+      }
+      // else: keep existing
+    }
+  }
+  return [...map.values()].sort((x, y) => x.iteration - y.iteration)
+}
+
+export class MessageStore {
+  private slots = new Map<number, TurnSlot>()
+  /** 已排序 turnID（后端分配单调递增，增量维护）。 */
+  private turnIDs: number[] = []
+  /** 无 turnID 的 persisted 行（legacy）—— 渲染在顶部。 */
+  private legacy: ChatMessage[] = []
+  /** turnID=0 的乐观 user，待 turn_started 绑定。 */
+  private pendingUsers: ChatMessage[] = []
+  private echoSeq = 0
+  /** 渲染缓存：turnID 集合或任意 slot 结构变化时失效。 */
+  private cache: ChatMessage[] | null = null
+  private cacheKey = ''
+
+  // ────────────────────────── 写入（事件入口） ──────────────────────────
+
+  /**
+   * turn_started。opts.resume = AskUser 续跑（同 turnID）：保留 iterations，
+   * 只清流式字段。同时把早于新 turn 的未提交 live commit（模拟
+   * commitLiveProgressAndReset —— 旧 turn 的 text 事件可能丢失，live 是唯一
+   * 显示）。
+   */
+  beginTurn(turnID: number, opts?: { resume?: boolean }): void {
+    this.commitStaleLives(turnID)
+    const existing = this.slots.get(turnID)
+    if (existing) {
+      if (opts?.resume) {
+        // AskUser 续跑：保留 iterations，清流式字段
+        const iters = existing.live?.iterations ?? []
+        existing.live = { ...EMPTY_LIVE, turnID, iterations: iters }
+        existing.assistant = undefined
+      } else if (existing.live && !existing.live.frozen) {
+        existing.live = { ...EMPTY_LIVE, turnID }
+      }
+    } else {
+      this.slots.set(turnID, { turnID })
+      this.insertTurnID(turnID)
+    }
+    // 绑定最后一条未持久化 user（turn_started 是权威绑定点）
+    this.bindUser(turnID)
+    this.invalidate()
+  }
+
+  /** turn_started 时把最后一条未持久化 user 绑定到该 turn（原 bindLastUserToTurn）。 */
+  bindUser(turnID: number): void {
+    const slot = this.slots.get(turnID)
+    if (!slot || slot.user) return
+    for (let i = this.pendingUsers.length - 1; i >= 0; i--) {
+      const u = this.pendingUsers[i]
+      if (u.role === 'user' && !u.persisted) {
+        this.pendingUsers.splice(i, 1)
+        slot.user = { ...u, turnID }
+        return
+      }
+    }
+  }
+
+  /** user 消息（乐观 turnID=0 → pending；echo/DB → 槽位回填）。 */
+  setUser(turnID: number, msg: ChatMessage): void {
+    if (turnID <= 0) {
+      this.pendingUsers.push(msg)
+      this.invalidate()
+      return
+    }
+    let slot = this.slots.get(turnID)
+    if (!slot) {
+      slot = { turnID }
+      this.slots.set(turnID, slot)
+      this.insertTurnID(turnID)
+    }
+    // 回填 DB 权威字段，保留 optimistic 的 requestID/sending/queued
+    slot.user = { ...slot.user, ...msg, turnID }
+    this.invalidate()
+  }
+
+  /** 更新 live（progress_structured / stream_content 事件）。 */
+  updateLive(turnID: number, patch: Partial<LiveState>): void {
+    let slot = this.slots.get(turnID)
+    if (!slot) {
+      slot = { turnID }
+      this.slots.set(turnID, slot)
+      this.insertTurnID(turnID)
+    }
+    const prev = slot.live ?? { ...EMPTY_LIVE, turnID }
+    slot.live = { ...prev, ...patch, turnID }
+    // frozen live 不再被新事件修改（cancel 后迟到事件）
+    if (slot.live.frozen) return
+    this.invalidate()
+  }
+
+  /**
+   * text 事件：live → assistant 状态迁移（同一逻辑消息，不产生第二行）。
+   * content 为空时回退到 live 累积文本；iterations 与 live 合并。
+   */
+  commitAssistant(turnID: number, content: string, iterations: WebIteration[], eventSeq?: number): void {
+    let slot = this.slots.get(turnID)
+    if (!slot) {
+      slot = { turnID }
+      this.slots.set(turnID, slot)
+      this.insertTurnID(turnID)
+    }
+    const live = slot.live
+    const merged = live ? mergeIterations(iterations, live.iterations) : iterations
+    const finalContent = content || live?.content || ''
+    const id = eventSeq != null ? `seq-${eventSeq}` : `asst-${turnID}-${this.echoSeq++}`
+    slot.assistant = {
+      id,
+      role: 'assistant',
+      content: finalContent,
+      iterations: merged,
+      timestamp: new Date().toISOString(),
+      isPartial: false,
+      turnID,
+      persisted: false,
+      eventSeq,
+    }
+    // 同对象迁移 —— 结构上不可能出现双行。但 frozen live（cancel）必须保留：
+    // toRows 里 assistant + frozen live 合并渲染（已渲染内容永不消失）。
+    if (!slot.live?.frozen) {
+      slot.live = undefined
+    }
+    this.invalidate()
+  }
+
+  /** Cancel：冻结 live（保留已渲染内容）。 */
+  freeze(turnID: number): void {
+    const slot = this.slots.get(turnID)
+    if (slot?.live && !slot.live.frozen) {
+      slot.live = { ...slot.live, frozen: true }
+      this.invalidate()
+    }
+  }
+
+  /** session(idle)：清理已冻结的 live。 */
+  endTurn(turnID: number): void {
+    const slot = this.slots.get(turnID)
+    if (slot?.live?.frozen) {
+      slot.live = undefined
+      this.invalidate()
+    }
+  }
+
+  /** 无 turnID 的 persisted 行（legacy）→ 顶部。 */
+  addLegacy(msg: ChatMessage): void {
+    this.legacy.push(msg)
+    this.invalidate()
+  }
+
+  /**
+   * reload 结果回填：DB 字段权威（dbID/persisted/content），但不覆盖进行中的
+   * live（live 是权威的 streaming 状态）。无 turnID 的 persisted 行进 legacy。
+   */
+  mergeHistory(rows: ChatMessage[]): void {
+    for (const row of rows) {
+      if (row.turnID > 0) {
+        let slot = this.slots.get(row.turnID)
+        if (!slot) {
+          slot = { turnID: row.turnID }
+          this.slots.set(row.turnID, slot)
+          this.insertTurnID(row.turnID)
+        }
+        if (row.role === 'user') {
+          slot.user = { ...slot.user, ...row, turnID: row.turnID }
+        } else if (row.role === 'assistant') {
+          // 进行中的 live（非 frozen）不覆盖 —— live 权威；否则 DB 版本权威
+          if (!slot.live || slot.live.frozen) {
+            if (slot.assistant) {
+              // 已有本地提交（appendAssistant）：合并迭代（loadMore 边界 union），
+              // DB 字段回填（dbID/persisted/权威 content）
+              slot.assistant = {
+                ...row,
+                turnID: row.turnID,
+                iterations: mergeIterations(slot.assistant.iterations, row.iterations),
+              }
+            } else {
+              slot.assistant = { ...row, turnID: row.turnID }
+            }
+          }
+        }
+      } else if (row.persisted !== false) {
+        this.addLegacy(row)
+      }
+    }
+    this.invalidate()
+  }
+
+  /** 清空（session 切换 / /new）。 */
+  clear(): void {
+    this.slots.clear()
+    this.turnIDs = []
+    this.legacy = []
+    this.pendingUsers = []
+    this.cache = null
+    this.cacheKey = ''
+  }
+
+  /** REST 响应回填 optimistic user（persisted/turnID/dbID/timestamp/queued）。 */
+  patchUserById(id: string, patch: Partial<ChatMessage>): void {
+    for (let i = 0; i < this.pendingUsers.length; i++) {
+      if (this.pendingUsers[i].id === id) {
+        this.pendingUsers[i] = { ...this.pendingUsers[i], ...patch }
+        this.invalidate()
+        return
+      }
+    }
+    for (const slot of this.slots.values()) {
+      if (slot.user?.id === id) {
+        slot.user = { ...slot.user, ...patch }
+        this.invalidate()
+        return
+      }
+    }
+  }
+
+  /** 按 id 移除（sendMessage 失败 / removeMessage）。 */
+  removeById(id: string): void {
+    const pendingLen = this.pendingUsers.length
+    this.pendingUsers = this.pendingUsers.filter((u) => u.id !== id)
+    if (this.pendingUsers.length !== pendingLen) {
+      this.invalidate()
+      return
+    }
+    for (const slot of this.slots.values()) {
+      if (slot.user?.id === id) {
+        slot.user = undefined
+        this.invalidate()
+        return
+      }
+      if (slot.assistant?.id === id) {
+        slot.assistant = undefined
+        this.invalidate()
+        return
+      }
+    }
+  }
+
+  // ────────────────────────── 读取 ──────────────────────────
+
+  /** 排序后的渲染行：legacy（顶部）→ 各 turn（user + assistant/live）→ pending user。 */
+  toRows(): ChatMessage[] {
+    const key = this.renderKey()
+    if (this.cache && this.cacheKey === key) return this.cache
+    const rows: ChatMessage[] = []
+    for (const msg of this.legacy) rows.push(msg)
+    for (const tid of this.turnIDs) {
+      const slot = this.slots.get(tid)
+      if (!slot) continue
+      if (slot.user) rows.push(slot.user)
+      if (slot.assistant) {
+        if (slot.live?.frozen) {
+          // Cancel：assistant=[interrupted]，live 有流式内容 —— 合并渲染（同对象）。
+          // LIVE content 优先：已渲染的流式内容永不消失，[interrupted] 只是中断标记
+          // （现状 buildMessageRows 的 committed||live 让 [interrupted] 覆盖流式文本
+          //  —— cancel 后用户看到的内容消失，违反要求）。
+          rows.push({
+            ...slot.assistant,
+            content: slot.live.content || slot.assistant.content,
+            iterations: mergeIterations(slot.live.iterations, slot.assistant.iterations),
+          })
+        } else {
+          rows.push(slot.assistant)
+        }
+      } else if (slot.live) {
+        rows.push({
+          id: `turn-${tid}-live`,
+          role: 'assistant',
+          content: slot.live.content || '',
+          iterations: slot.live.iterations,
+          timestamp: new Date().toISOString(),
+          isPartial: true,
+          turnID: tid,
+        })
+      }
+    }
+    for (const u of this.pendingUsers) rows.push(u)
+    this.cache = rows
+    this.cacheKey = key
+    return rows
+  }
+
+  getLive(turnID: number): LiveState | undefined {
+    return this.slots.get(turnID)?.live
+  }
+
+  hasLive(turnID: number): boolean {
+    return Boolean(this.slots.get(turnID)?.live)
+  }
+
+  /** slot 结构状态（不含 live 流式字段）—— 供缓存 key 用。 */
+  private renderKey(): string {
+    return `${this.turnIDs.join(',')}|${this.legacy.length}|${this.pendingUsers.length}`
+  }
+
+  private invalidate(): void {
+    this.cache = null
+  }
+
+  /** 把早于 turnID 的未提交 live commit（旧 turn text 事件丢失的兜底）。 */
+  private commitStaleLives(newTurnID: number): void {
+    for (const tid of this.turnIDs) {
+      if (tid >= newTurnID) break
+      const slot = this.slots.get(tid)
+      if (slot?.live && !slot.live.frozen) {
+        const live = slot.live
+        slot.assistant = {
+          id: `seq-${live.eventSeq || 0}-stale`,
+          role: 'assistant',
+          content: live.content || '',
+          iterations: live.iterations,
+          timestamp: new Date().toISOString(),
+          isPartial: false,
+          turnID: tid,
+          persisted: false,
+        }
+        slot.live = undefined
+      }
+    }
+  }
+
+  private insertTurnID(turnID: number): void {
+    if (this.turnIDs.includes(turnID)) return
+    this.turnIDs.push(turnID)
+    this.turnIDs.sort((a, b) => a - b)
+  }
+}
