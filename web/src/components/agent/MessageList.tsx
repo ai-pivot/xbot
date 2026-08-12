@@ -102,6 +102,8 @@ export function MessageList({
   // tryScroll loop checks it to know if it's the latest follow (cancel
   // old loops when a new scheduleFollow supersedes them).
   const followGenRef = useRef(0)
+  // Double-rAF cleanup ref for loadMore anchor restore (inner rAF).
+  const cleanupRafRef = useRef<number | null>(null)
   // Marks scrolls caused by our own scheduleFollow (el.scrollTop = scrollHeight).
   // Set before the write and cleared via queueMicrotask after — so the flag is
   // only true during the synchronous scroll event our write dispatches, not
@@ -410,6 +412,12 @@ export function MessageList({
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
+          // Guard: skip if anchor restore is in progress (double-rAF pending).
+          // During anchor restore the viewport briefly shows the top (sentinel
+          // visible) → without this guard, IntersectionObserver fires again
+          // → recursive loadMore (user report: "加载完后视角变到新内容最上方，
+          // 导致再次触发加载").
+          if (loadMoreAnchorIdRef.current !== null) return
           // Capture the first VISIBLE row id BEFORE onLoadMore prepends older
           // rows — this is the scroll anchor we restore after the load lands,
           // so the viewport stays on the same content (not jumping to top).
@@ -435,18 +443,36 @@ export function MessageList({
   // older rows sit above it, so the scrollbar lands mid-list (not at the top).
   // Guarded by loadMoreAnchorIdRef so this is a no-op during normal streaming
   // (the ref is only set in the IntersectionObserver callback right before a load).
+  //
+  // Double-rAF: TanStack Virtual needs TWO frames after prepend — frame 1 mounts
+  // the new rows (estimated heights), frame 2 lets ResizeObserver measure real
+  // heights. Single rAF scrolls against estimated heights → wrong position →
+  // sentinel visible → recursive loadMore (user report: "加载完后视角变到新内容
+  // 最上方，导致再次触发加载").
+  // During the anchor restore, the IntersectionObserver is disabled (via
+  // loadMoreAnchorIdRef non-null check in the observer callback) to prevent
+  // the recursive trigger.
   useEffect(() => {
     const anchorId = loadMoreAnchorIdRef.current
     if (!anchorId) return
     const newIdx = rowsRef.current.findIndex((m) => m.id === anchorId)
     if (newIdx < 0) return
-    // rAF: let the virtualizer mount + measure the freshly prepended rows so
-    // scrollToIndex positions against real (not estimated) row heights.
-    const raf = requestAnimationFrame(() => {
-      loadMoreAnchorIdRef.current = null
-      virtualizer.scrollToIndex(newIdx, { align: 'start' })
+    // Double rAF: frame 1 = mount + estimate, frame 2 = measure + scroll
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => {
+        loadMoreAnchorIdRef.current = null
+        virtualizer.scrollToIndex(newIdx, { align: 'start' })
+      })
+      // Store raf2 for cleanup
+      cleanupRafRef.current = raf2
     })
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf1)
+      if (cleanupRafRef.current !== null) {
+        cancelAnimationFrame(cleanupRafRef.current)
+        cleanupRafRef.current = null
+      }
+    }
   }, [rows, virtualizer])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
