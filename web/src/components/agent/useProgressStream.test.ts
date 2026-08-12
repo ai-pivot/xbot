@@ -589,7 +589,7 @@ describe('useProgressStream event dispatch', () => {
     const { result, rerender } = renderHook(
       (props: Partial<Parameters<typeof useProgressStream>[0]>) =>
         useProgressStream({ chatID: 'c1', onIterationGap, ws: currentWS as unknown as WSConnection, ...props }),
-      { initialProps: { initialProgress: null } },
+      { initialProps: { initialProgress: null as ProgressEvent | null } },
     )
     // Turn streaming with complete history [1,2,3].
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })

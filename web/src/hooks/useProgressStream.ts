@@ -872,7 +872,7 @@ function handleProgressMessage(
         // then merges with the live row via buildMessageRows' same-turn merge.
         const doneSnap = store.getSnapshot()
         if (hasVisibleProgress(doneSnap) && !doneSnap.streamContent && !doneSnap.content) {
-          iterationGapRef.current?.()
+          iterationGapRef?.current?.()
         }
         // Update todos if the PhaseDone event carries them. Do NOT clear
         // tools here — clearing causes a 4-5s gap where tools disappear
