@@ -9,8 +9,8 @@ import type { WSConnection } from '@/types/ws'
  * (`.ev`) that the replay-test infrastructure (src/test-utils/sseReplay.ts)
  * consumes. Reproduce a bug → download → pin a regression test.
  */
-export function DebugToolbar({ ws }: { ws: WSConnection }) {
-  const { recording, count, start, stop } = useSSERecorder(ws)
+export function DebugToolbar({ ws, getStateSnapshot }: { ws: WSConnection; getStateSnapshot?: () => unknown }) {
+  const { recording, count, start, stop } = useSSERecorder(ws, getStateSnapshot)
 
   if (!recording && count === 0) {
     return (

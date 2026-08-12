@@ -360,7 +360,7 @@ export function AgentPanel({ params }: PanelProps) {
           <span>{t('agent.reconnecting') || 'Reconnecting…'}</span>
         </div>
       )}
-      {!isSubAgent && devMode && <DebugToolbar ws={ws} />}
+      {!isSubAgent && devMode && <DebugToolbar ws={ws} getStateSnapshot={() => progressSnapshot} />}
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
