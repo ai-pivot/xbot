@@ -234,8 +234,38 @@ export class MessageStore {
   /**
    * reload 结果回填：DB 字段权威（dbID/persisted/content），但不覆盖进行中的
    * live（live 是权威的 streaming 状态）。无 turnID 的 persisted 行进 legacy。
+   *
+   * opts.replace（reload 主路径）：DB 快照权威 —— 删除 DB 快照中没有的已完成
+   * turn（无 live）槽位；legacy 由快照重建；pending 乐观 user 只保留
+   * eventSeq > watermark 的（watermark 之上的 echo 是快照之后的新数据，
+   * 等价原 reconcile 的 watermark 规则）。进行中 turn（有 live）保留。
+   * loadMore（无 replace）是增量合并（迭代 union）。
    */
-  mergeHistory(rows: ChatMessage[]): void {
+  mergeHistory(rows: ChatMessage[], opts?: { replace?: boolean; watermark?: number }): void {
+    if (opts?.replace) {
+      const rowTurns = new Set<number>()
+      for (const r of rows) if (r.turnID > 0) rowTurns.add(r.turnID)
+      for (const tid of [...this.slots.keys()]) {
+        const slot = this.slots.get(tid)
+        // 进行中 turn（live 权威）保留；notification（eventSeq=-1，DB 快照可能
+        // 尚未持久化）保留；已完成但 DB 快照没有 → 删除（rewind 语义）
+        if (slot && !slot.live && !rowTurns.has(tid) &&
+            slot.user?.eventSeq !== -1 && !slot.user?.isNotification) {
+          this.slots.delete(tid)
+          this.turnIDs = this.turnIDs.filter((t) => t !== tid)
+        }
+      }
+      // DB 快照权威：legacy 由快照重建；pending 乐观 user 只保留 watermark 之上
+      // 的（快照之后的 echo/新数据，DB 尚未包含）
+      this.legacy = []
+      if (opts.watermark != null) {
+        this.pendingUsers = this.pendingUsers.filter(
+          (u) => u.eventSeq != null && u.eventSeq > opts.watermark!,
+        )
+      } else {
+        this.pendingUsers = []
+      }
+    }
     for (const row of rows) {
       if (row.turnID > 0) {
         let slot = this.slots.get(row.turnID)
@@ -250,11 +280,16 @@ export class MessageStore {
           // 进行中的 live（非 frozen）不覆盖 —— live 权威；否则 DB 版本权威
           if (!slot.live || slot.live.frozen) {
             if (slot.assistant) {
-              // 已有本地提交（appendAssistant）：合并迭代（loadMore 边界 union），
-              // DB 字段回填（dbID/persisted/权威 content）
+              // 已有本地/DB 提交：合并迭代（loadMore 边界 union）。content 优先
+              // 级：replace（reload，DB 快照权威）→ DB 版本优先；增量（loadMore）
+              // → 已有优先（较新批次持有 final reply，较旧批次是 tool_summary
+              // 空 content）
               slot.assistant = {
                 ...row,
                 turnID: row.turnID,
+                content: opts?.replace
+                  ? (row.content || slot.assistant.content)
+                  : (slot.assistant.content || row.content),
                 iterations: mergeIterations(slot.assistant.iterations, row.iterations),
               }
             } else {
@@ -279,11 +314,27 @@ export class MessageStore {
     this.cacheKey = ''
   }
 
-  /** REST 响应回填 optimistic user（persisted/turnID/dbID/timestamp/queued）。 */
+  /** REST 响应回填 optimistic user（persisted/turnID/dbID/timestamp/queued）。
+   *  turnID 从 0 变 >0 时把 user 从 pending 迁移到对应 slot（绑定）。 */
   patchUserById(id: string, patch: Partial<ChatMessage>): void {
     for (let i = 0; i < this.pendingUsers.length; i++) {
-      if (this.pendingUsers[i].id === id) {
-        this.pendingUsers[i] = { ...this.pendingUsers[i], ...patch }
+      const u = this.pendingUsers[i]
+      if (u.id === id) {
+        const updated = { ...u, ...patch }
+        if (updated.turnID > 0) {
+          // REST 响应给了 turnID → 绑定到 slot（REST 响应是权威绑定点，
+          // 早于/晚于 turn_started 都正确）
+          this.pendingUsers.splice(i, 1)
+          let slot = this.slots.get(updated.turnID)
+          if (!slot) {
+            slot = { turnID: updated.turnID }
+            this.slots.set(updated.turnID, slot)
+            this.insertTurnID(updated.turnID)
+          }
+          slot.user = updated
+        } else {
+          this.pendingUsers[i] = updated
+        }
         this.invalidate()
         return
       }
@@ -317,6 +368,19 @@ export class MessageStore {
         return
       }
     }
+  }
+
+  /** 按 requestID 查找 user（乐观或 echo）—— user_echo 替换 optimistic 用。 */
+  findUserByRequestID(requestID: string): { id: string; persisted: boolean; turnID: number } | undefined {
+    for (const u of this.pendingUsers) {
+      if (u.requestID === requestID) return { id: u.id, persisted: Boolean(u.persisted), turnID: u.turnID }
+    }
+    for (const slot of this.slots.values()) {
+      if (slot.user?.requestID === requestID) {
+        return { id: slot.user.id, persisted: Boolean(slot.user.persisted), turnID: slot.user.turnID }
+      }
+    }
+    return undefined
   }
 
   // ────────────────────────── 读取 ──────────────────────────

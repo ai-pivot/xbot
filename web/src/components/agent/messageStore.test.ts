@@ -185,7 +185,8 @@ describe('MessageStore — reload 回填', () => {
   it('mergeHistory 对已提交 turn 回填 DB 版本', () => {
     const s = new MessageStore()
     s.commitAssistant(360, 'optimistic', [iter(1)], 5)
-    s.mergeHistory([{ id: 'db-9', role: 'assistant', content: 'db version', iterations: [iter(1), iter(2)], timestamp: '', isPartial: false, turnID: 360, persisted: true, dbID: 9 }])
+    // reload（replace）→ DB 快照权威：content 覆盖本地提交
+    s.mergeHistory([{ id: 'db-9', role: 'assistant', content: 'db version', iterations: [iter(1), iter(2)], timestamp: '', isPartial: false, turnID: 360, persisted: true, dbID: 9 }], { replace: true })
     const assistant = s.toRows().find((r) => r.role === 'assistant')
     expect(assistant?.dbID).toBe(9)
     expect(assistant?.content).toBe('db version')
