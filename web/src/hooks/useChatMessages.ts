@@ -332,7 +332,10 @@ export function useChatMessages({
     store.clear()
   }
   // 订阅 store 变化：useProgressStream 写 live（共享 store）时触发 syncMessages，
-  // 使 chat.messages 包含 live 行（渲染层读 store.toRows()）。
+  // 使 chat.messages 包含 live 行（渲染层读 store.toRows() 的行）。每帧更新
+  // （live 高频）；不使用 committedVersion gate —— 那样 messages 不含 live，
+  // MessageList 需 useSyncExternalStore 订阅 store（对高频流式写触发 re-render
+  // 循环，E2E 失败）。
   useEffect(() => {
     return store.subscribe(() => {
       syncMessages()

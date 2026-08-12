@@ -138,8 +138,11 @@ export function MessageList({
   // assistant's iterations).
   // Committed rows are order-stable between frames — bind+sort them ONCE per
   // `messages` change (history reload, appendAssistant, injectUserMessage).
-  // 方案 A：messages 已含 live 行（store.toRows() 输出），无独立 liveMessage
-  // 合并 —— rows 就是 committedRows（含 isPartial 行）。
+  // 方案 A：messages 含 live 行（store.toRows() 输出，useChatMessages 订阅
+  // store 每帧 syncMessages）。注意：不使用 useSyncExternalStore —— 它对
+  // 高频流式 store 写（live 每帧变化 → getSnapshot 每帧新引用）会触发额外
+  // re-render 循环（E2E assistantRows=0 / stream-jitter 超时）。props.messages
+  // 由 useChatMessages 的订阅驱动，每帧更新即可。
   const rows = useMemo<ChatMessage[]>(
     () => orderMessageRows(bindTurnIDs(messages)),
     [messages],

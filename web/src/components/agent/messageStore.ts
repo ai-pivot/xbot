@@ -96,6 +96,18 @@ export class MessageStore {
   /** 渲染缓存：turnID 集合或任意 slot 结构变化时失效。 */
   private cache: ChatMessage[] | null = null
   private cacheKey = ''
+  /** committed 版本：只在渲染结构写（user/assistant/legacy/pending）时 ++。
+   *  live 写（updateLive）不 ++ —— useChatMessages 据此区分 committed/live
+   *  变化：committed 变化触发 setMessages（低频），live 变化由 MessageList
+   *  useSyncExternalStore 局部订阅（每帧，避免 AgentPanel 整树 re-render
+   *  卡顿 —— stream-jitter E2E 超时根因）。 */
+  private committedVersion = 0
+  getCommittedVersion(): number {
+    return this.committedVersion
+  }
+  private bumpCommitted(): void {
+    this.committedVersion++
+  }
 
   // ────────────────────────── 写入（事件入口） ──────────────────────────
 
@@ -123,6 +135,7 @@ export class MessageStore {
     }
     // 绑定最后一条未持久化 user（turn_started 是权威绑定点）
     this.bindUser(turnID)
+    this.bumpCommitted()
     this.invalidate()
   }
 
@@ -135,6 +148,7 @@ export class MessageStore {
       if (u.role === 'user' && !u.persisted) {
         this.pendingUsers.splice(i, 1)
         slot.user = { ...u, turnID }
+        this.bumpCommitted()
         return
       }
     }
@@ -144,6 +158,7 @@ export class MessageStore {
   setUser(turnID: number, msg: ChatMessage): void {
     if (turnID <= 0) {
       this.pendingUsers.push(msg)
+      this.bumpCommitted()
       this.invalidate()
       return
     }
@@ -155,6 +170,7 @@ export class MessageStore {
     }
     // 回填 DB 权威字段，保留 optimistic 的 requestID/sending/queued
     slot.user = { ...slot.user, ...msg, turnID }
+    this.bumpCommitted()
     this.invalidate()
   }
 
@@ -186,6 +202,10 @@ export class MessageStore {
     }
     const live = slot.live
     const merged = live ? mergeIterations(iterations, live.iterations) : iterations
+    // text 事件 content 权威（正常 turn 的 finalText = 完整 stream，与 live 累积
+    // 一致 → 无缝定住；cancel 的 [interrupted] 是中断标记）。live 累积 content
+    // 仅在 text 内容为空时兜底（writeLive 已保留非空，live.content 不因迭代
+    // 边界清空而消失 —— 防 "stream 完 content 消失再出现" 闪烁）。
     const finalContent = content || live?.content || ''
     const id = eventSeq != null ? `seq-${eventSeq}` : `asst-${turnID}-${this.echoSeq++}`
     slot.assistant = {
@@ -204,6 +224,7 @@ export class MessageStore {
     if (!slot.live?.frozen) {
       slot.live = undefined
     }
+    this.bumpCommitted()
     this.invalidate()
   }
 
@@ -228,6 +249,7 @@ export class MessageStore {
   /** 无 turnID 的 persisted 行（legacy）→ 顶部。 */
   addLegacy(msg: ChatMessage): void {
     this.legacy.push(msg)
+    this.bumpCommitted()
     this.invalidate()
   }
 
@@ -301,6 +323,7 @@ export class MessageStore {
         this.addLegacy(row)
       }
     }
+    this.bumpCommitted()
     this.invalidate()
   }
 
@@ -312,6 +335,7 @@ export class MessageStore {
     this.pendingUsers = []
     this.cache = null
     this.cacheKey = ''
+    this.bumpCommitted()
   }
 
   /** REST 响应回填 optimistic user（persisted/turnID/dbID/timestamp/queued）。
@@ -335,6 +359,7 @@ export class MessageStore {
         } else {
           this.pendingUsers[i] = updated
         }
+        this.bumpCommitted()
         this.invalidate()
         return
       }
@@ -342,6 +367,7 @@ export class MessageStore {
     for (const slot of this.slots.values()) {
       if (slot.user?.id === id) {
         slot.user = { ...slot.user, ...patch }
+        this.bumpCommitted()
         this.invalidate()
         return
       }
@@ -353,17 +379,20 @@ export class MessageStore {
     const pendingLen = this.pendingUsers.length
     this.pendingUsers = this.pendingUsers.filter((u) => u.id !== id)
     if (this.pendingUsers.length !== pendingLen) {
+      this.bumpCommitted()
       this.invalidate()
       return
     }
     for (const slot of this.slots.values()) {
       if (slot.user?.id === id) {
         slot.user = undefined
+        this.bumpCommitted()
         this.invalidate()
         return
       }
       if (slot.assistant?.id === id) {
         slot.assistant = undefined
+        this.bumpCommitted()
         this.invalidate()
         return
       }
@@ -442,8 +471,10 @@ export class MessageStore {
 
   private listeners = new Set<() => void>()
 
-  /** 订阅 store 变化（含 live 更新）。返回取消函数。 */
-  subscribe(fn: () => void): () => void {
+  /** 订阅 store 变化（含 live 更新）。返回取消函数。箭头函数绑定 this ——
+   *  React useSyncExternalStore 独立调用 subscribe（解引用），普通方法会丢
+   *  this（this.listeners undefined 崩溃）。 */
+  subscribe = (fn: () => void): (() => void) => {
     this.listeners.add(fn)
     return () => {
       this.listeners.delete(fn)

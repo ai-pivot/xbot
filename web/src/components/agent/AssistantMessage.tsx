@@ -70,6 +70,12 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   const liveProgress: LiveProgress | null = hasLiveProgress ? progress : null
 
   const isStreaming = message.isPartial || hasLiveProgress
+  // frozen（cancel）：live 行 isPartial=true 永远使 isStreaming=true → content
+  // 永远走 TurnBody/LiveIteration（progress），但 progress 在 frozen 时
+  // streamContent 可能为空 → 'partial reply' 不渲染（"已渲染内容永不消失"
+  // 被破坏，用户报告：cancel 后 live 内容消失）。frozen live 必须用
+  // message.content（MessageStore slot.live.content 保留的累积文本）。
+  const isFrozenLive = message.isPartial && progress?.phase === 'frozen'
   // Do NOT change collapseLevel based on streaming state. The old code used
   // `isStreaming ? 'minimal' : collapseLevel` — this caused a height jump
   // when the turn completed (streaming→committed switched from 'minimal' to
@@ -213,8 +219,10 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       {/* Final O: for committed messages, render message.content after iterations.
           For streaming, the streamContent is already in LiveIteration.
           noDebounce disables the 150ms delay so committed content renders
-          immediately (no flicker at turn completion). */}
-      {!isStreaming && finalContent && (
+          immediately (no flicker at turn completion).
+          frozen live（cancel）：content 必须显示（已渲染内容永不消失）——
+          LiveIteration 在 frozen 时可能不渲染 progress 的 content。 */}
+      {(!isStreaming || isFrozenLive) && finalContent && (
         <MarkdownRenderer content={finalContent} noDebounce />
       )}
       {!isStreaming && emptyResponseWarning && (

@@ -183,6 +183,11 @@ export function useProgressStream({
   // Guard against multiple onAssistantComplete calls per turn.
   // Reset to false when new streaming begins (stream_content arrives).
   const finalizedRef = useRef(false)
+  // 最后一次 finalize 的 turnID：text/cancel 时记录。finalized guard 用它区分
+  // 旧 turn（turn_id <= finalizedTurnID，迟到事件丢弃）与新 turn（turn_id 更大，
+  // 放行 —— 用户场景：cancel 后新 turn 的 progress_structured 不能被
+  // finalized 状态阻塞，否则 live 永不渲染卡"思考中"）。
+  const finalizedTurnIDRef = useRef(0)
   // Set when commitLiveProgressAndReset commits old turn's content (turn_started
   // with hadVisibleProgress=true). Prevents initialProgress hydration from
   // re-introducing old turn's iterationHistory into the new turn's store.
@@ -437,8 +442,24 @@ export function useProgressStream({
       if (live.turnID > 0) {
         store.lastTurnID = live.turnID
       }
+      // MessageStore 同步（方案 A）：hydration 的 live（active_progress）必须
+      // 写入共享 MessageStore，否则 chat.messages（store.toRows()）不含 live
+      // 行 → MessageList 不渲染 assistant（refresh 后 turn 消失，用户报告）。
+      if (messageStore && live.turnID > 0) {
+        messageStore.updateLive(live.turnID, {
+          eventSeq: typeof live.eventSeq === 'number' ? live.eventSeq : 0,
+          phase: live.phase,
+          content: live.streamContent || live.content || '',
+          reasoningStreamContent: live.reasoningStreamContent || '',
+          iterations: live.iterationHistory ?? [],
+          activeTools: live.activeTools ?? [],
+          completedTools: live.completedTools ?? [],
+          streamingTools: live.streamingTools ?? [],
+          lastIter: typeof live.lastIter === 'number' ? live.lastIter : 0,
+        })
+      }
     }
-  }, [store, initialProgress, disabled, progressCacheKey])
+  }, [store, initialProgress, disabled, progressCacheKey, messageStore])
 
   // Dispose on unmount.
   useEffect(() => {
@@ -467,7 +488,7 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, finalizedTurnIDRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore)
     })
     return offMessage
   }, [store, disabled, channel, messageStore])
@@ -525,6 +546,7 @@ export function useProgressStream({
     dumpFullState: () => store.dumpFullState(),
     resetProgress: () => {
       finalizedRef.current = true
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = store.lastTurnID
       phaseDoneRef.current = false
       // NORMAL COMPLETION (text event): the committed message was already
       // added by appendAssistant inside the SAME flushSync — clear the live
@@ -674,13 +696,27 @@ function writeLiveToMessageStore(
   p: { turn_id?: number; seq?: number },
 ): void {
   if (!ms) return
-  const turnID = typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : store.lastTurnID
-  if (turnID <= 0) return
+  let turnID = typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : store.lastTurnID
+  if (turnID <= 0) {
+    // 早期流事件（stream_content 无 turn_id + 无 turn_started）：方案 A 前 live
+    // 由 progressStore 派生（无 turn_id 也能渲染）；现在 live 在 MessageStore，
+    // 需要归属。归到 turn 1（首个 turn 的流）；后续带 turn_id 的事件（turn_started/
+    // progress_structured）会修正 slot 归属。
+    turnID = 1
+  }
   const cur = store.dumpFullState().current
+  const prevLive = ms.getLive(turnID)
+  // content 保留非空：迭代边界会清空 progressStore 的 streamContent（设计），
+  // 若直接镜像空值会把已渲染的 content 从 live 行抹掉 —— stream 输出完后
+  // content 消失再出现（闪烁）。保留已有非空 content，commitAssistant 时
+  // 用 live 累积内容定住（stream 完毕直接定住）。
+  const newContent = cur.streamContent || cur.content || ''
+  // eslint-disable-next-line no-console
+  if (import.meta.env.DEV && typeof window !== 'undefined') console.log('[WL]', { turnID, newContent: newContent.slice(0, 40), phase: cur.phase, prevContent: prevLive?.content?.slice(0, 40) })
   ms.updateLive(turnID, {
     eventSeq: cur.eventSeq,
     phase: cur.phase,
-    content: cur.streamContent || cur.content || '',
+    content: newContent || prevLive?.content || '',
     reasoningStreamContent: cur.reasoningStreamContent || '',
     iterations: cur.iterationHistory,
     activeTools: cur.activeTools,
@@ -702,6 +738,7 @@ function handleProgressMessage(
   compactedRef: React.MutableRefObject<UseProgressStreamOptions['onHistoryCompacted']>,
   resetRef: React.MutableRefObject<UseProgressStreamOptions['onSessionReset']>,
   finalizedRef?: React.MutableRefObject<boolean>,
+  finalizedTurnIDRef?: React.MutableRefObject<number>,
   phaseDoneRef?: React.MutableRefObject<boolean>,
   injectRef?: React.MutableRefObject<UseProgressStreamOptions['onInjectUserMessage']>,
   turnStartedRef?: React.MutableRefObject<UseProgressStreamOptions['onTurnStarted']>,
@@ -840,16 +877,13 @@ function handleProgressMessage(
         if (ts?.trigger === 'resume') {
           store.resetStreamingState()
           if (finalizedRef) finalizedRef.current = false
+          // AskUser 续跑（同 turnID）：旧 finalized 状态作废 —— 重置
+          // finalizedTurnID，放行同 turn 的后续 text（否则 1 <= 1 被误杀）。
+          if (finalizedTurnIDRef) finalizedTurnIDRef.current = 0
         } else {
           // Capture whether the store has visible progress BEFORE the commit.
           // If it does, commitLiveProgressAndReset will call onAssistantComplete
-          // → resetProgress → finalizedRef = true. We must NOT reset
-          // finalizedRef to false afterward (line 546) — otherwise the text
-          // event sees finalizedRef=false and calls appendAssistant again,
-          // creating a duplicate (the committed message has turnID=0 + live
-          // content, the text event has turnID=N + final content —
-          // incrementalDedup can't match them because both turnID and
-          // content differ).
+          // → resetProgress → finalizedRef = true.
           const hadVisibleProgress = hasVisibleProgress(store.getSnapshot())
           // Commit any uncommitted live content from the previous turn, then
           // reset. Unconditional commit (the helper no-ops on an empty store):
@@ -861,26 +895,29 @@ function handleProgressMessage(
           // no data loss) instead of vanishing in one frame.
           commitLiveProgressAndReset(store, completeRef?.current, p.turn_id)
           store.lastIter = 0
-          // If the commit happened (store had visible content), set
-          // finalizedRef = true DIRECTLY — do NOT rely on onAssistantComplete's
-          // side-effect (resetProgress) to set it. The text event for the
-          // previous turn may arrive after turn_started; if finalizedRef is
-          // false, the text event calls onAssistantComplete again → duplicate
-          // message with different turnID + content → incrementalDedup can't
-          // match them → duplicate rendering.
-          // If the store was empty (no commit), reset finalizedRef for the new
-          // turn — the text event is expected and will finalize.
+          // 旧 turn（lastTurnID，turn_started 尚未更新）的 live 已 commit（finalize）。
+          // 记录 finalizedTurnID：旧 turn 的迟到 text/progress_structured 据此丢弃
+          // （防重复），新 turn（turn_id 更大）放行。
+          if (finalizedTurnIDRef && store.lastTurnID > 0) {
+            finalizedTurnIDRef.current = store.lastTurnID
+          }
+          // turn_started 是权威的新 turn 边界：无条件重置 finalizedRef=false，
+          // 允许新 turn 的所有事件（progress_structured/stream_content）正常处理。
+          // 旧 turn 的迟到 text 由 MessageStore 的 slot 唯一性保证幂等覆盖
+          // （同 turnID 覆盖，不产生第二行），不需要 finalizedRef 防重复。
+          // ⚠️ 不能在这里设 finalizedRef=true：cancel 后 store 有 frozen live
+          // （hadVisibleProgress=true），旧逻辑设 true 会让新 turn 的所有
+          // progress_structured 被 finalized guard 丢弃 → live 永不渲染 →
+          // 前端卡"思考中"（用户报告：cancel 后发新消息，SSE 已出现但不渲染）。
+          if (finalizedRef) finalizedRef.current = false
+          // Block initialProgress hydration from re-introducing old turn's
+          // iterationHistory. reload()'s active_progress may still carry
+          // the old turn's data (server hasn't cleaned up yet). Without
+          // this flag, session(busy) resets finalizedRef=false, then
+          // initialProgress hydration calls store.replace() with old
+          // iterationHistory → cross-turn iteration leak.
           if (hadVisibleProgress) {
-            if (finalizedRef) finalizedRef.current = true
-            // Block initialProgress hydration from re-introducing old turn's
-            // iterationHistory. reload()'s active_progress may still carry
-            // the old turn's data (server hasn't cleaned up yet). Without
-            // this flag, session(busy) resets finalizedRef=false, then
-            // initialProgress hydration calls store.replace() with old
-            // iterationHistory → cross-turn iteration leak.
             if (turnCommittedRef) turnCommittedRef.current = true
-          } else {
-            if (finalizedRef) finalizedRef.current = false
           }
         }
         if (ts && (ts.trigger === 'notification' || ts.trigger === 'resume') && ts.content && p.turn_id) {
@@ -985,8 +1022,18 @@ function handleProgressMessage(
       // new state into the already-reset store, making liveMessage reappear
       // ("思考中…" spinner below the committed reply). This mirrors master's
       // turnDoneRef guard.
-      if (finalizedRef?.current && !p.history_compacted && p.phase !== 'done') {
-        return
+      // 只丢弃旧 turn（turn_id <= finalizedTurnID）的迟到事件；新 turn（turn_id
+      // 更大）放行 —— 否则 cancel 后新 turn 的 progress_structured 被 finalized
+      // 状态阻塞，live 永不渲染（用户报告：cancel 后发新消息卡"思考中"）。
+      if (!p.history_compacted && p.phase !== 'done') {
+        const evTurnID = typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : 0
+        const finalizedTurn = finalizedTurnIDRef?.current ?? 0
+        if (finalizedTurn > 0 && evTurnID > 0 && evTurnID <= finalizedTurn) {
+          return // 旧 turn 的迟到 progress_structured —— 丢弃
+        }
+        if (finalizedRef?.current && evTurnID === 0) {
+          return // turn_id 缺失 + finalized（兼容旧逻辑：无 turn_id 事件）
+        }
       }
 
       // New turn's first structured event — clear turnCommittedRef.
@@ -1191,6 +1238,7 @@ function handleProgressMessage(
     case 'text': {
       if (msg.session_reset || msg.metadata?.session_reset === 'true') {
         if (finalizedRef) finalizedRef.current = true
+        if (finalizedTurnIDRef) finalizedTurnIDRef.current = store.lastTurnID
         store.reset()
         resetRef.current?.()
         return
@@ -1203,6 +1251,7 @@ function handleProgressMessage(
       // (session switch or page refresh).
       if (msg.cancelled) {
         if (finalizedRef) finalizedRef.current = true
+        if (finalizedTurnIDRef) finalizedTurnIDRef.current = msg.turn_id ?? store.lastTurnID
         if (phaseDoneRef) phaseDoneRef.current = true
         // Freeze: mark all in-progress tools as error, stop streaming/reasoning animations.
         // Do NOT reset the store — frozen content stays visible until the next turn.
@@ -1217,9 +1266,14 @@ function handleProgressMessage(
       // Final assistant message: commit then clear the live stream.
       // Guard against duplicate onAssistantComplete within the same turn
       // (e.g. text + session(idle) arriving before RAF flushes).
-      // Cross-reconnect replay is handled by dedupMessages in appendAssistant.
-      if (finalizedRef?.current) return
+      // 按 turnID 区分：旧 turn（turn_id <= finalizedTurnID）的迟到 text 丢弃
+      // （防重复）；新 turn 的 text 放行（turn_started 已重置 finalizedRef）。
+      const textTurnID = typeof msg.turn_id === 'number' && msg.turn_id > 0 ? msg.turn_id : 0
+      const finalizedTurnID = finalizedTurnIDRef?.current ?? 0
+      if (textTurnID > 0 && finalizedTurnID > 0 && textTurnID <= finalizedTurnID) return
+      if (finalizedRef?.current && textTurnID === 0) return
       if (finalizedRef) finalizedRef.current = true
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = msg.turn_id ?? store.lastTurnID
       const finalText = msg.content ?? ''
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
