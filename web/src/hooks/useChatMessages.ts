@@ -58,6 +58,9 @@ interface UseChatMessagesOptions {
   onSendSuccess?: () => void
   /** Called when cancel is successfully sent (for optimistic idle trigger). */
   onCancelSuccess?: () => void
+  /** 外部共享 MessageStore（方案 A Step 3：与 useProgressStream 共享同一实例）。
+   *  不传则内部自建。 */
+  messageStore?: MessageStore
 }
 
 export interface UseChatMessagesResult {
@@ -274,6 +277,7 @@ export function useChatMessages({
   agentChatID,
   onSendSuccess,
   onCancelSuccess,
+  messageStore,
 }: UseChatMessagesOptions): UseChatMessagesResult {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
@@ -312,7 +316,7 @@ export function useChatMessages({
   // （Step 3 接入）。唯一性由 Map 结构保证 —— 渲染层零去重。
   const storeRef = useRef<MessageStore | null>(null)
   if (storeRef.current === null) {
-    storeRef.current = new MessageStore()
+    storeRef.current = messageStore ?? new MessageStore()
   }
   const store = storeRef.current
   /** 从 store 同步 messages state + messagesRef（所有写操作后的统一出口）。 */

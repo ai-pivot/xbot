@@ -296,19 +296,24 @@ export function MessageList({
   // liveId points to the row that receives liveProgress. Scan ALL rows
   // for a match by turnID:role (the committed message that liveProgress
   // should be passed to). If no match, liveMessage has its own row.
+  // 方案 A：liveMessage=null 时，live 行已在 messages 里（store.toRows() 的
+  // isPartial 行）—— liveProgress 传给该行。
   const liveId = useMemo(() => {
-    if (!liveMessage) return null
-    if (liveMessage.turnID > 0) {
-      // Check if rows contains a committed message with same turnID:role
-      // (merge case — liveProgress goes to that message, not liveMessage).
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const r = rows[i]
-        if (r.turnID === liveMessage.turnID && r.role === liveMessage.role && r.id !== liveMessage.id) {
-          return r.id
+    if (liveMessage) {
+      if (liveMessage.turnID > 0) {
+        // Check if rows contains a committed message with same turnID:role
+        // (merge case — liveProgress goes to that message, not liveMessage).
+        for (let i = rows.length - 1; i >= 0; i--) {
+          const r = rows[i]
+          if (r.turnID === liveMessage.turnID && r.role === liveMessage.role && r.id !== liveMessage.id) {
+            return r.id
+          }
         }
       }
+      return liveMessage.id
     }
-    return liveMessage.id
+    const liveRow = rows.find((r) => r.isPartial)
+    return liveRow?.id ?? null
   }, [rows, liveMessage])
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined

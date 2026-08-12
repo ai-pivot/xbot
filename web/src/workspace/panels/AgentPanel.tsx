@@ -22,6 +22,7 @@ import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
 import { sameSession } from "@/lib/session-grouping"
 import { useCollapseLevel, useMergeTools } from '@/hooks/useCollapseLevel'
 import { useProgressStream } from '@/hooks/useProgressStream'
+import { MessageStore } from '@/components/agent/messageStore'
 import { useTodos } from '@/hooks/useTodos'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
@@ -90,6 +91,14 @@ export function AgentPanel({ params }: PanelProps) {
       ? !!chatID
       : !!activeSession?.chatID
 
+  // 方案 A：共享 MessageStore（useChatMessages 的 committed + useProgressStream
+  // 的 live 写入同一实例，渲染读 store.toRows() 零去重）
+  const sharedStoreRef = useRef<MessageStore | null>(null)
+  if (sharedStoreRef.current === null) {
+    sharedStoreRef.current = new MessageStore()
+  }
+  const sharedStore = sharedStoreRef.current
+
   useActiveSSESubscription({
     ws,
     chatID: subscribeChatID,
@@ -107,6 +116,7 @@ export function AgentPanel({ params }: PanelProps) {
     parentChatID: params.parentChatID,
     agentChatID: params.agentChatID,
     liveEventsEnabled: shouldSubscribe,
+    messageStore: sharedStore,
     onSendSuccess: () => {
       // Optimistically mark the session as running so the UI enters busy
       // immediately — don't wait for the SSE session(busy) event which may
@@ -164,6 +174,7 @@ export function AgentPanel({ params }: PanelProps) {
     chatID: progressChatID,
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
+    messageStore: sharedStore,
     onAssistantComplete: (finalText, iterations, _eventSeq, turnID, insertBeforeLastUser) => {
       // Commit the message AND reset progress in the SAME synchronous render.
       // This eliminates the intermediate frame where content moves from
@@ -219,7 +230,6 @@ export function AgentPanel({ params }: PanelProps) {
   // Wire resetProgress to the ref so the onSession effect can call it.
   resetProgressRef.current = progress.resetProgress
   const progressSnapshot = progress.progressSnapshot
-  const liveMessage = progress.liveMessage
   // liveMessage comes from useProgressStream's live store — its visibility is
   // governed by the store's own hydration/reset lifecycle (initialProgress →
   // historyProgressToLive → store.replace, SSE-driven updates, reset on
@@ -235,7 +245,7 @@ export function AgentPanel({ params }: PanelProps) {
   // (user report + [RENDER_LOSS_ROWS] rowsLen:0). The live store stays
   // authoritative during reload; buildMessageRows merges the live row into the
   // refreshed committed rows when history lands. NEVER gate live on loading.
-  const visibleLiveMessage = liveMessage
+  // 方案 A：live 行由 store.toRows() 输出（liveMessage=null），渲染永不 gate。
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
@@ -389,8 +399,8 @@ export function AgentPanel({ params }: PanelProps) {
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
         messages={chat.messages}
-        liveMessage={visibleLiveMessage}
-        liveProgress={visibleLiveMessage ? progressSnapshot : null}
+        liveMessage={null}
+        liveProgress={progressSnapshot}
         busy={busy}
         collapseLevel={level}
         mergeTools={mergeTools}

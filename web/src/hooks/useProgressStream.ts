@@ -26,6 +26,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useSyncExternalStore } from 'react'
 
 import { ProgressStore, mergeIterations, normalizeWebSubAgents, normalizeWebTools } from '@/components/agent/progressStore'
+import { MessageStore } from '@/components/agent/messageStore'
 import {
   historyProgressToLive,
   normalizeWebIteration,
@@ -84,6 +85,9 @@ interface UseProgressStreamOptions {
   ws: WSConnection
   /** Disable subscriptions for read-only panes such as SubAgent history tabs. */
   disabled?: boolean
+  /** 共享 MessageStore（方案 A Step 3）：live 事件写入 MessageStore（渲染行由
+   *  store.toRows() 输出含 live 行）；不传则仅用 progressStore（旧路径）。 */
+  messageStore?: MessageStore
 }
 
 export interface UseProgressStreamResult {
@@ -140,6 +144,7 @@ export function useProgressStream({
   onIterationGap,
   initialProgress,
   ws,
+  messageStore,
   disabled = false,
 }: UseProgressStreamOptions): UseProgressStreamResult {
   const storeRef = useRef<ProgressStore | null>(null)
@@ -462,10 +467,10 @@ export function useProgressStream({
       if (chatIDRef.current && isTerminalProgressMessage(msg)) {
         clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore)
     })
     return offMessage
-  }, [store, disabled, channel])
+  }, [store, disabled, channel, messageStore])
 
   // Derive a transient streaming message from the snapshot. Only the snapshot's
   // streamContent/streaming drives this, so it updates at frame rate (not per token).
@@ -658,6 +663,38 @@ function commitLiveProgressAndReset(
 }
 
 /** Dispatch one WSMessage into the progress store. Shared with history hydration. */
+/**
+ * 把 progressStore 的最新 live 状态镜像到 MessageStore（方案 A Step 3）。
+ * MessageStore 的 live 行供渲染（store.toRows() 输出），progressStore 的
+ * ProgressSnapshot 供 liveProgress/context bar。两者并行，事件后同步。
+ */
+function writeLiveToMessageStore(
+  ms: MessageStore | undefined,
+  store: ProgressStore,
+  p: { turn_id?: number; seq?: number },
+): void {
+  if (!ms) return
+  const turnID = typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : store.lastTurnID
+  if (turnID <= 0) return
+  const cur = store.dumpFullState().current
+  ms.updateLive(turnID, {
+    eventSeq: cur.eventSeq,
+    phase: cur.phase,
+    content: cur.streamContent || cur.content || '',
+    reasoningStreamContent: cur.reasoningStreamContent || '',
+    iterations: cur.iterationHistory,
+    activeTools: cur.activeTools,
+    completedTools: cur.completedTools,
+    streamingTools: cur.streamingTools,
+    lastIter: cur.lastIter,
+  })
+  // cancel（frozen phase）：MessageStore 冻结 live —— 已渲染内容永不消失
+  // （toRows 里 assistant + frozen live 合并渲染）
+  if (cur.phase === 'frozen') {
+    ms.freeze(turnID)
+  }
+}
+
 function handleProgressMessage(
   msg: WSMessage,
   store: ProgressStore,
@@ -672,6 +709,7 @@ function handleProgressMessage(
   turnCommittedRef?: React.MutableRefObject<boolean>,
   iterationGapRef?: React.MutableRefObject<UseProgressStreamOptions['onIterationGap']>,
   iterationGapFiredRef?: React.MutableRefObject<boolean>,
+  messageStore?: MessageStore,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -719,6 +757,8 @@ function handleProgressMessage(
           streamingTools: normalizeWebTools(p.streaming_tools as unknown[]),
         })
       }
+      // MessageStore live 同步（方案 A Step 3）
+      writeLiveToMessageStore(messageStore, store, p)
       return
     }
 
@@ -852,6 +892,8 @@ function handleProgressMessage(
         if (p.turn_id) {
           turnStartedRef?.current?.(p.turn_id, ts?.trigger ?? 'user')
           store.lastTurnID = p.turn_id
+          // MessageStore：新 turn 开始（AskUser resume 保留 iterations）
+          messageStore?.beginTurn(p.turn_id, { resume: ts?.trigger === 'resume' })
         }
         // Reset phaseDone guard for the new turn. finalizedRef was already
         // handled above (kept true if commit happened, reset to false otherwise).
@@ -1123,6 +1165,8 @@ function handleProgressMessage(
         tokenUsage,
         turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : undefined,
       })
+      // MessageStore live 同步（方案 A Step 3）
+      writeLiveToMessageStore(messageStore, store, p)
       // ── Iteration-id gap → REAL incremental data loss → reload ──
       // iterationHistory is an incremental delta feed (0-1 entries per push):
       // an internal id jump (1→3 missing 2) means an iteration's delta was
