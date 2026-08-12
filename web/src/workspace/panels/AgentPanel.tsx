@@ -37,6 +37,7 @@ import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
 import { ModelSelector } from '@/components/agent/ModelSelector'
 import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
+import { useDeveloperMode } from '@/hooks/useDeveloperMode'
 import type { PanelProps } from '@/workspace/panels/types'
 import type { ChatMessage } from '@/types/shared'
 import { useI18n } from '@/providers/i18n'
@@ -59,6 +60,7 @@ export function AgentPanel({ params }: PanelProps) {
   const { t } = useI18n()
   const { level } = useCollapseLevel()
   const { mergeTools } = useMergeTools()
+  const { enabled: devMode } = useDeveloperMode()
   const [draft, setDraft] = useState<string | undefined>(undefined)
   const [followResetToken, setFollowResetToken] = useState(0)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
@@ -358,7 +360,7 @@ export function AgentPanel({ params }: PanelProps) {
           <span>{t('agent.reconnecting') || 'Reconnecting…'}</span>
         </div>
       )}
-      {!isSubAgent && <DebugToolbar ws={ws} />}
+      {!isSubAgent && devMode && <DebugToolbar ws={ws} />}
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
