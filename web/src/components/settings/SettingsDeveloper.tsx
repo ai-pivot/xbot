@@ -157,6 +157,64 @@ export function SettingsDeveloper() {
             <Download className="size-4" />
             {devExporting ? '导出中…' : '导出当前会话 JSONL'}
           </Button>
+
+          <div className="mt-1 flex items-center gap-2">
+            <FileJson className="size-4 shrink-0 text-text-muted" />
+            <span className="text-text-secondary">导出为 OpenAI Chat Completions 请求体（{`{model, messages:[...]}`}）</span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-fit gap-2"
+            disabled={devExporting || !sessionStore.activeSession}
+            onClick={async () => {
+              const s = sessionStore.activeSession
+              if (!s) return
+              setDevExporting(true)
+              setDevExportResult('')
+              try {
+                await downloadSession({ channel: s.channel, chatID: s.chatID }, 'openai')
+                setDevExportResult('已导出 OpenAI JSON 会话')
+              } catch (err) {
+                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+              } finally {
+                setDevExporting(false)
+              }
+            }}
+          >
+            <Download className="size-4" />
+            {devExporting ? '导出中…' : '导出 OpenAI JSON'}
+          </Button>
+
+          <div className="mt-1 flex items-center gap-2">
+            <FileJson className="size-4 shrink-0 text-text-muted" />
+            <span className="text-text-secondary">导出为 Codex CLI JSONL（每行一条消息，Codex 会话格式）</span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-fit gap-2"
+            disabled={devExporting || !sessionStore.activeSession}
+            onClick={async () => {
+              const s = sessionStore.activeSession
+              if (!s) return
+              setDevExporting(true)
+              setDevExportResult('')
+              try {
+                await downloadSession({ channel: s.channel, chatID: s.chatID }, 'codex')
+                setDevExportResult('已导出 Codex JSONL 会话')
+              } catch (err) {
+                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+              } finally {
+                setDevExporting(false)
+              }
+            }}
+          >
+            <Download className="size-4" />
+            {devExporting ? '导出中…' : '导出 Codex JSONL'}
+          </Button>
           {devExportResult && (
             <span className="text-text-muted">{devExportResult}</span>
           )}
