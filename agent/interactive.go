@@ -401,7 +401,14 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 			s.StreamTokens = usage.CompletionTokens
 		})
 		seq := subAgentProgressSeq.Add(1)
-		broadcast(&protocol.ProgressEvent{ChatID: agentProgressKey, Seq: seq, StreamTokens: usage.CompletionTokens})
+		broadcast(&protocol.ProgressEvent{
+			ChatID: agentProgressKey,
+			Seq:    seq,
+			// MUST stamp Iteration — otherwise iteration:0 breaks the frontend's
+			// regression guard (same bug class as engine_wire StreamTokens).
+			Iteration:    a.getActiveIteration(agentProgressKey),
+			StreamTokens: usage.CompletionTokens,
+		})
 	}
 }
 

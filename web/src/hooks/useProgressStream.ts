@@ -664,6 +664,26 @@ function handleProgressMessage(
   iterationGapRef?: React.MutableRefObject<UseProgressStreamOptions['onIterationGap']>,
   iterationGapFiredRef?: React.MutableRefObject<boolean>,
 ): void {
+  // ── Iteration regression guard (user requirement) ──
+  // Reject any event whose iteration regresses to 0 or below the current
+  // lastIter. Backend MUST stamp Iteration on EVERY progress event — a
+  // stream_content / streaming_tools / stream_tokens event without it
+  // serializes as iteration:0 (zero value) which corrupts the frontend's
+  // iteration state and makes the turn vanish (user report: "iter 为 0 导致
+  // turn 消失"; repro: iteration 9 → 0 stream_content event right before the
+  // turn's DOM collapsed). Rejected events are logged and DROPPED.
+  const _p = msg.progress
+  if (_p && typeof _p.iteration === 'number') {
+    const _lastIter = store.getSnapshot().lastIter
+    if ((_p.iteration === 0 && _lastIter > 0) || (_lastIter > 0 && _p.iteration < _lastIter)) {
+      console.error(
+        `[ITER_REGRESSION] rejected ${msg.type} iteration=${_p.iteration} < lastIter=${_lastIter} ` +
+          `(backend must stamp Iteration on every progress event)`,
+      )
+      return
+    }
+  }
+
   switch (msg.type) {
     case 'stream_content': {
       // If the turn is already finalized (cancel ack or text event arrived),
@@ -688,10 +708,19 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
 
-      // Set cumulative text (stream-only, does not replace the snapshot)
-      if (p.stream_content) store.appendStreamContent(String(p.stream_content))
-      if (p.reasoning_stream_content) {
-        store.appendReasoningContent(p.reasoning_stream_content)
+      // Set cumulative text (stream-only, does not replace the snapshot).
+      // Delta pushes (bandwidth optimization: O(n) total per iteration)
+      // APPEND to the accumulated text; checkpoint pushes (iteration-end
+      // realignment / legacy full-push) REPLACE via setStreamContent.
+      if (p.stream_delta) {
+        store.appendStreamContent(String(p.stream_delta))
+      } else if (p.stream_content) {
+        store.setStreamContent(String(p.stream_content))
+      }
+      if (p.reasoning_stream_delta) {
+        store.appendReasoningContent(String(p.reasoning_stream_delta))
+      } else if (p.reasoning_stream_content) {
+        store.setReasoningContent(String(p.reasoning_stream_content))
       }
       // GenUI streaming HTML (from display_html tool arguments)
       if (p.genui_content) store.setGenUIContent(p.genui_content)

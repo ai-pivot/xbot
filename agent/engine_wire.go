@@ -1788,6 +1788,24 @@ func (a *Agent) buildProgressEventHandler(chatID, originatingChannel string) fun
 			return
 		}
 		a.attachIterationDelta(progressKey, payload.Iteration, payload)
+		// Iteration checkpoint: push the FULL cumulative stream text as a
+		// stream_content event BEFORE clearStreamState wipes it. This realigns
+		// the frontend's delta-accumulated streamContent (bandwidth
+		// optimization pushes O(n) deltas) — a dropped delta mid-iteration is
+		// repaired here, keeping the same strong consistency as the old
+		// full-push scheme.
+		if prev, ok := a.lastProgressSnapshot.Load(progressKey); ok {
+			if pe, ok := prev.(*protocol.ProgressEvent); ok && pe.StreamContent != "" {
+				for _, sender := range senders {
+					sender.SendProgress(chatID, &protocol.ProgressEvent{
+						ChatID:        progressKey,
+						TurnID:        pe.TurnID,
+						Iteration:     payload.Iteration,
+						StreamContent: pe.StreamContent,
+					})
+				}
+			}
+		}
 		a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 		a.clearStreamState(progressKey)
 		for _, sender := range senders {
@@ -1841,27 +1859,73 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	// ChatID. This replaces the old SendStreamContent path which had
 	// inconsistent ChatID qualification across implementations (CLIChannel
 	// used raw, RemoteCLI/Web qualified manually).
+	//
+	// Bandwidth: stream pushes carry ONLY the delta (O(n) total per iteration)
+	// instead of the full cumulative text on every token (O(n²)). The server
+	// still keeps the FULL cumulative text in lastProgressSnapshot so:
+	//   - the iteration-end checkpoint (StreamContent set) realigns the frontend
+	//   - get_active_progress / restoreActiveProgress can repair a lost delta
+	//   - the next delta computation prefixes cleanly.
+	// The delta computation falls back to a FULL checkpoint push when the
+	// incoming text is not a strict prefix extension (reset/out-of-order) —
+	// that acts as the alignment/repair point, same strong-consistency as the
+	// old full-push scheme.
 	streamContentFunc = func(content string) {
+		delta := content
+		isFull := true
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
+			prev := s.StreamContent
+			if len(content) > len(prev) && strings.HasPrefix(content, prev) {
+				delta = content[len(prev):]
+				isFull = false
+			}
+			// Keep the full cumulative text server-side (checkpoint + recovery source).
 			s.StreamContent = content
 		})
-		broadcastProgress(&protocol.ProgressEvent{
-			ChatID:        progressKey,
-			TurnID:        turnID,
-			Iteration:     a.getActiveIteration(progressKey),
-			StreamContent: content,
-		})
+		iter := a.getActiveIteration(progressKey)
+		if isFull {
+			broadcastProgress(&protocol.ProgressEvent{
+				ChatID:        progressKey,
+				TurnID:        turnID,
+				Iteration:     iter,
+				StreamContent: content,
+			})
+		} else {
+			broadcastProgress(&protocol.ProgressEvent{
+				ChatID:      progressKey,
+				TurnID:      turnID,
+				Iteration:   iter,
+				StreamDelta: delta,
+			})
+		}
 	}
 	streamReasoningFunc = func(content string) {
+		delta := content
+		isFull := true
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
+			prev := s.ReasoningStreamContent
+			if len(content) > len(prev) && strings.HasPrefix(content, prev) {
+				delta = content[len(prev):]
+				isFull = false
+			}
 			s.ReasoningStreamContent = content
 		})
-		broadcastProgress(&protocol.ProgressEvent{
-			ChatID:                 progressKey,
-			TurnID:                 turnID,
-			Iteration:              a.getActiveIteration(progressKey),
-			ReasoningStreamContent: content,
-		})
+		iter := a.getActiveIteration(progressKey)
+		if isFull {
+			broadcastProgress(&protocol.ProgressEvent{
+				ChatID:                 progressKey,
+				TurnID:                 turnID,
+				Iteration:              iter,
+				ReasoningStreamContent: content,
+			})
+		} else {
+			broadcastProgress(&protocol.ProgressEvent{
+				ChatID:               progressKey,
+				TurnID:               turnID,
+				Iteration:            iter,
+				ReasoningStreamDelta: delta,
+			})
+		}
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
 		tools := make([]protocol.ToolProgress, 0, len(toolCalls))
@@ -1920,9 +1984,14 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		})
 		seq := progressSeq.Add(1)
 		broadcastProgress(&protocol.ProgressEvent{
-			ChatID:       progressKey,
-			TurnID:       turnID,
-			Seq:          seq,
+			ChatID: progressKey,
+			TurnID: turnID,
+			Seq:    seq,
+			// MUST stamp Iteration (same bug class as StreamingTools): a
+			// stream_tokens event without it serializes as iteration:0, and the
+			// frontend sees iteration drop to 0 mid-turn → it rejects the event
+			// (user report: "iter 为 0 导致 turn 消失").
+			Iteration:    a.getActiveIteration(progressKey),
 			StreamTokens: usage.CompletionTokens,
 		})
 	}

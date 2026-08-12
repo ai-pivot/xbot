@@ -39,13 +39,13 @@ describe('ProgressStore basic', () => {
     const calls = vi.fn()
     const unsub = store.subscribe(calls)
 
-    // 1000 token appends — each is a cumulative SET, last one wins
+    // 1000 token deltas — each APPENDS (bandwidth optimization: backend pushes
+    // O(n) deltas), so all accumulate
     for (let i = 0; i < 1000; i++) store.appendStreamContent('a')
     expect(calls).not.toHaveBeenCalled()
     flushRaf()
     expect(calls).toHaveBeenCalledTimes(1)
-    // appendStreamContent uses assignment (=), so last value wins
-    expect(store.getSnapshot().streamContent).toBe('a')
+    expect(store.getSnapshot().streamContent).toBe('a'.repeat(1000))
 
     unsub()
     store.dispose()
@@ -65,8 +65,8 @@ describe('ProgressStore basic', () => {
     flushRaf()
     const c = store.getSnapshot()
     expect(c).not.toBe(a)
-    // appendStreamContent is assignment, so 'hi!' replaces 'hi'
-    expect(c.streamContent).toBe('hi!')
+    // appendStreamContent APPENDS deltas, so 'hi' + 'hi!' = 'hihi!'
+    expect(c.streamContent).toBe('hihi!')
 
     unsub()
     store.dispose()
@@ -83,13 +83,17 @@ describe('ProgressStore basic', () => {
     store.dispose()
   })
 
-  it('appendReasoningContent sets cumulative reasoning value', () => {
+  it('appendReasoningContent appends deltas (delta/checkpoint scheme)', () => {
     const store = new ProgressStore()
-    // Server sends cumulative values: first "foo ", then "foo bar"
+    // Server pushes O(n) deltas: "foo " then "bar"
     store.appendReasoningContent('foo ')
-    store.appendReasoningContent('foo bar')
+    store.appendReasoningContent('bar')
     flushRaf()
     expect(store.getSnapshot().reasoningStreamContent).toBe('foo bar')
+    // A checkpoint (setReasoningContent) replaces the accumulated text.
+    store.setReasoningContent('full reasoning')
+    flushRaf()
+    expect(store.getSnapshot().reasoningStreamContent).toBe('full reasoning')
     store.dispose()
   })
 

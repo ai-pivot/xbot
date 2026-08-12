@@ -52,19 +52,21 @@ type Mutator = (draft: ProgressSnapshot) => void
  */
 function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
   if (incoming.length === 0) return
-  // O(N+M) dedup using a Set instead of O(N*M) Array.some() per incoming item.
-  // For long-running agents with 50+ iterations, this avoids 2500+ comparisons.
-  const existing = new Set<number>()
+  // O(N+M) union + dedup via Map keyed by iteration number. Dedups BOTH the
+  // incoming deltas AND any pre-existing duplicates in draft.iterationHistory
+  // (a replayed/duplicated delta would otherwise leave [1,1,2,2,...], tripping
+  // assertIterationContinuity's 1→1 check — a FALSE ITERATION_GAP report).
+  const merged = new Map<number, WebIteration>()
   for (const iter of draft.iterationHistory) {
-    existing.add(iter.iteration)
+    merged.set(iter.iteration, iter)
   }
-  const newIters = incoming.filter((iter) => !existing.has(iter.iteration))
-  if (newIters.length > 0) {
-    draft.iterationHistory = [...draft.iterationHistory, ...newIters].sort(
-      (a, b) => a.iteration - b.iteration,
-    )
-    assertIterationContinuity(draft.iterationHistory)
+  for (const iter of incoming) {
+    if (!merged.has(iter.iteration)) {
+      merged.set(iter.iteration, iter)
+    }
   }
+  draft.iterationHistory = [...merged.values()].sort((a, b) => a.iteration - b.iteration)
+  assertIterationContinuity(draft.iterationHistory)
 }
 
 /**
@@ -660,15 +662,18 @@ export class ProgressStore {
   /** Set streamed assistant text (cumulative value from stream_content events).
    *  The value is the FULL cumulative stream content (not a delta) — uses
    *  assignment, not append. */
+  /** Append a stream delta (bandwidth optimization: backend pushes O(n) deltas;
+   *  the iteration-end checkpoint uses setStreamContent to realign). */
   appendStreamContent(delta: string): void {
     if (!delta) return
     this.mutate((draft) => {
-      draft.streamContent = delta  // cumulative value, use assignment not append
+      draft.streamContent = (draft.streamContent || '') + delta
       draft.streaming = true
     })
   }
 
-  /** Replace streamContent (single source of truth, no accumulation). */
+  /** Replace streamContent with the FULL cumulative text (checkpoint / legacy
+   *  full-push events). Single source of truth for the accumulated text. */
   setStreamContent(content: string): void {
     if (!content) return
     this.mutate((draft) => {
@@ -677,16 +682,16 @@ export class ProgressStore {
     })
   }
 
-  /** Set streamed reasoning text (cumulative value from reasoning_stream_content events). */
+  /** Append a reasoning delta (same delta/checkpoint scheme as streamContent). */
   appendReasoningContent(delta: string): void {
     if (!delta) return
     this.mutate((draft) => {
-      draft.reasoningStreamContent = delta  // cumulative value, use assignment not append
+      draft.reasoningStreamContent = (draft.reasoningStreamContent || '') + delta
       draft.streaming = true
     })
   }
 
-  /** Replace reasoningStreamContent (single source of truth, no accumulation). */
+  /** Replace reasoningStreamContent with the FULL cumulative text (checkpoint). */
   setReasoningContent(content: string): void {
     if (!content) return
     this.mutate((draft) => {
