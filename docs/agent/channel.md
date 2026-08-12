@@ -319,7 +319,7 @@ The context bar (top border of input box) replaces the default lipgloss border w
 
 ### Web Frontend SSE Recorder & Replay Tests
 
-- **REC 按钮（开发者工具条）**：`DebugToolbar.tsx`（AgentPanel 顶部）+ `useSSERecorder.ts`。点击 REC 用**独立** `ws.onMessage` handler 录制所有 WS/SSE 消息（`onMessage` 是注册式 API，返回 unsubscribe，不干扰 `useProgressStream`/`useChatMessages`）；STOP 下载 `sse-dump-{ts}.ev`。
+- **REC 按钮（开发者专用，默认隐藏）**：`DebugToolbar.tsx`（AgentPanel 顶部）+ `useSSERecorder.ts`。入口在 **Settings → 开发者** tab：开启"开发者工具"开关（`useDeveloperMode`，localStorage 持久化 + window CustomEvent 跨组件同步）后，AgentPanel 才渲染 REC 工具栏。点击 REC 用**独立** `ws.onMessage` handler 录制所有 WS/SSE 消息（`onMessage` 是注册式 API，返回 unsubscribe，不干扰 `useProgressStream`/`useChatMessages`）；STOP 下载 `sse-dump-{ts}.ev`。开发者专属调试/导出功能（REC、Turn+Iter 导出、benchmark JSONL）都集中在 Settings → 开发者 tab，不暴露给普通用户。
 - **录制格式与后端线格式一致**：`id:{顶层 WSMessage.seq}\nevent:{type}\ndata:{完整 JSON}\n\n`——顶层 `seq` 是**传输层** seq（后端 `writeSSEEvent` 用 `msg.Seq` 写 SSE `id:`），与 `progress.seq`（语义水印）是两套体系。**诊断 turn 消失/事件丢失时，传输层与语义层 seq 不可混用**（曾导致误判 gap）。
 - **重放基础设施**：`src/test-utils/sseReplay.ts` 的 `parseSSEDump()` 解析录制文件为 `WSMessage[]`，`seq` 解析与 `handleEvent` 同构（`msg.seq ?? lastEventId`）——**录制文件可 1:1 重放进 `useProgressStream` 测试**。复现 bug → 下载 .ev → 用 `parseSSEDump` 重放写回归测试固定。
 - **turn 消失回归测试**：`useProgressStream.test.ts` 的 "SSE dump replay" describe——重放"迭代边界清 streamContent → PhaseDone 无 text 事件"的流，断言 liveMessage 不消失 + `onIterationGap` 触发（reload 从 DB 恢复权威完整回复）。
