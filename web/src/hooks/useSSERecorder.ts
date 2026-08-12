@@ -17,11 +17,15 @@ import type { WSMessage } from '@/types/shared'
  * file matches what a real EventSource would see — including the interplay
  * between transport seq and progress.seq that previously caused mis-diagnosis.
  *
- * On STOP it also prints the FULL current store state as JSON to the console
- * (`[SSE_DUMP_STATE] {...}`). Together the .ev dump (event stream) + the state
- * JSON reproduce a bug 100%: replay the events into a ProgressStore, compare
- * the replayed snapshot against the captured JSON — the first divergence
- * pinpoints exactly which event broke the store.
+ * On START it prints the FULL store state as JSON (`[SSE_DUMP_STATE_START]`),
+ * and on STOP the final state (`[SSE_DUMP_STATE]`) — both to the console.
+ * Together the .ev dump (event stream) + the two state snapshots reproduce a
+ * bug 100%: initialize a ProgressStore from the START snapshot, replay the
+ * events, compare the replayed state against the END snapshot — the first
+ * divergence pinpoints exactly which event broke the store. Without the START
+ * snapshot the replayed store starts empty while the real one began mid-
+ * session (hydration/initialProgress), so the comparison is wrong from the
+ * first event.
  */
 export function useSSERecorder(ws: WSConnection, getStateSnapshot?: () => unknown) {
   const [recording, setRecording] = useState(false)
@@ -32,6 +36,9 @@ export function useSSERecorder(ws: WSConnection, getStateSnapshot?: () => unknow
   // state (the closure captured an older render's function otherwise).
   const getStateSnapshotRef = useRef(getStateSnapshot)
   getStateSnapshotRef.current = getStateSnapshot
+  // START snapshot, captured once at start() and embedded into the .ev header
+  // at stop() — the replay needs this baseline to initialize the store.
+  const startStateRef = useRef<unknown>(null)
 
   useEffect(() => {
     if (!recording) return
@@ -46,6 +53,20 @@ export function useSSERecorder(ws: WSConnection, getStateSnapshot?: () => unknow
     eventsRef.current = []
     setCount(0)
     startedAtRef.current = Date.now()
+    // Capture the store state at recording START — the replay needs this
+    // initial state to initialize a ProgressStore before feeding it the .ev
+    // events; comparing the replayed end state against the STOP snapshot is
+    // only meaningful when both start from the same baseline.
+    let startState: unknown = null
+    if (getStateSnapshotRef.current) {
+      try {
+        startState = getStateSnapshotRef.current()
+        console.log('[SSE_DUMP_STATE_START]', JSON.stringify(startState))
+      } catch (err) {
+        console.error('[SSE_DUMP_STATE_START] serialization failed', err)
+      }
+    }
+    startStateRef.current = startState
     setRecording(true)
   }, [])
 
@@ -56,12 +77,43 @@ export function useSSERecorder(ws: WSConnection, getStateSnapshot?: () => unknow
       setCount(0)
       return
     }
-    const content = events
+    // END snapshot: the replayed state after feeding all events must equal
+    // this — the first divergence is the event that broke the store.
+    let endState: unknown = null
+    if (getStateSnapshotRef.current) {
+      try {
+        endState = getStateSnapshotRef.current()
+        console.log('[SSE_DUMP_STATE]', JSON.stringify(endState))
+      } catch (err) {
+        console.error('[SSE_DUMP_STATE] serialization failed', err)
+      }
+    }
+    // Embed BOTH snapshots into the .ev as SSE comment lines (a `:`-prefixed
+    // line is a comment to EventSource and ignored by parseSSEDump, so the
+    // event stream stays byte-identical to the wire) — a single downloaded
+    // file fully reconstructs the frontend without copying console output.
+    let header = ''
+    let footer = ''
+    if (startStateRef.current !== null) {
+      try {
+        header = `:state-start:${JSON.stringify(startStateRef.current)}\n\n`
+      } catch (err) {
+        console.error('[SSE_DUMP_STATE_START] serialize-to-file failed', err)
+      }
+    }
+    if (endState !== null) {
+      try {
+        footer = `:state-end:${JSON.stringify(endState)}\n\n`
+      } catch (err) {
+        console.error('[SSE_DUMP_STATE] serialize-to-file failed', err)
+      }
+    }
+    const content = header + events
       .map((ev) => {
         const id = typeof ev.seq === 'number' ? ev.seq : 0
         return `id:${id}\nevent:${ev.type}\ndata:${JSON.stringify(ev)}\n\n`
       })
-      .join('')
+      .join('') + footer
     const blob = new Blob([content], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -70,18 +122,6 @@ export function useSSERecorder(ws: WSConnection, getStateSnapshot?: () => unknow
     a.download = `sse-dump-${ts}.ev`
     a.click()
     URL.revokeObjectURL(url)
-
-    // Print the FULL current store state as JSON — combined with the .ev dump
-    // (event stream) this reproduces the bug 100%: replay the events into a
-    // ProgressStore, compare the replayed snapshot against this JSON; the first
-    // divergence pinpoints which event broke the store.
-    if (getStateSnapshotRef.current) {
-      try {
-        console.log('[SSE_DUMP_STATE]', JSON.stringify(getStateSnapshotRef.current()))
-      } catch (err) {
-        console.error('[SSE_DUMP_STATE] serialization failed', err)
-      }
-    }
     setCount(0)
   }, [])
 

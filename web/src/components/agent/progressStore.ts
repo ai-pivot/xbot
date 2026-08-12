@@ -498,6 +498,22 @@ export class ProgressStore {
   getSnapshot = (): ProgressSnapshot => this.snapshot
 
   /**
+   * Full internal-state dump for the REC developer tool — enables 100%
+   * frontend reconstruction. Unlike getSnapshot() (the RAF-throttled snapshot),
+   * this returns the CURRENT (un-throttled) internal ProgressSnapshot — whose
+   * `lastIter` is the real iteration watermark advanced by structured events —
+   * PLUS the store-level `lastTurnID` (tracks across turns; reset() preserves
+   * it, so it is the only store field not derivable from the snapshot).
+   * JSON-serializable — safe to console.log into [SSE_DUMP_STATE_*].
+   */
+  dumpFullState(): { current: ProgressSnapshot; lastTurnID: number } {
+    return {
+      current: { ...this.current },
+      lastTurnID: this.lastTurnID,
+    }
+  }
+
+  /**
    * Synchronously report whether the CURRENT (not throttled) iterationHistory
    * has an iteration-id gap. Unlike getSnapshot() (RAF-throttled), this reads
    * this.current so callers can react immediately after setStructuredTools.

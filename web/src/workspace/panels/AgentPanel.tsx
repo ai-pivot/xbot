@@ -360,7 +360,31 @@ export function AgentPanel({ params }: PanelProps) {
           <span>{t('agent.reconnecting') || 'Reconnecting…'}</span>
         </div>
       )}
-      {!isSubAgent && devMode && <DebugToolbar ws={ws} getStateSnapshot={() => progressSnapshot} />}
+      {!isSubAgent && devMode && (
+        <DebugToolbar
+          ws={ws}
+          getStateSnapshot={() => ({
+            meta: {
+              channel: messageChannel,
+              chatID: progressChatID ?? null,
+              isSubAgent: Boolean(isSubAgent),
+              capturedAt: Date.now(),
+            },
+            // Full un-throttled ProgressStore internals (current + lastTurnID +
+            // lastIter) — enough to reconstruct the live-turn state exactly.
+            progress: progress.dumpFullState(),
+            // Committed message rows as currently rendered — the other half of
+            // "100% frontend reconstruction": the turn-vanish symptom is a
+            // rendering-state divergence, so the baseline must include the
+            // committed list, not just the live store.
+            chat: {
+              messages: chat.messages,
+              resolvedChatID: chat.resolvedChatID,
+            },
+            session: { busy },
+          })}
+        />
+      )}
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}

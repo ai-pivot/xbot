@@ -93,6 +93,9 @@ export interface UseProgressStreamResult {
   liveMessage: ChatMessage | null
   /** True while there is accumulated streaming content. */
   isStreaming: boolean
+  /** Full internal ProgressStore state (un-throttled current + lastTurnID) —
+   *  for the REC developer tool's 100%-frontend-reconstruction state dump. */
+  dumpFullState: () => { current: ProgressSnapshot; lastTurnID: number }
   /** Reset the progress store (clear live message + iterations). */
   resetProgress: () => void
 }
@@ -509,6 +512,12 @@ export function useProgressStream({
     progressSnapshot: progressSnapshot ?? EMPTY_PROGRESS_SNAPSHOT,
     liveMessage,
     isStreaming: hasVisibleProgress(progressSnapshot),
+    /** Full internal ProgressStore state (un-throttled current + lastTurnID) —
+     *  for the REC developer tool's 100%-frontend-reconstruction state dump.
+     *  current.lastIter is the real iteration watermark (snapshot-level field
+     *  advanced by structured events); lastTurnID is the only store-level field
+     *  not derivable from the snapshot. */
+    dumpFullState: () => store.dumpFullState(),
     resetProgress: () => {
       finalizedRef.current = true
       phaseDoneRef.current = false

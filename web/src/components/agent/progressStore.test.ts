@@ -785,3 +785,58 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     expect(snap.iterationHistory.length).toBe(2) // iter 1 + iter 29 both kept
   })
 })
+
+describe('ProgressStore.dumpFullState', () => {
+  let rafSpy: ReturnType<typeof vi.spyOn>
+  let rafCallbacks: Array<() => void>
+
+  beforeEach(() => {
+    rafCallbacks = []
+    rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      rafCallbacks.push(cb as () => void)
+      return rafCallbacks.length
+    })
+  })
+
+  afterEach(() => {
+    rafSpy.mockRestore()
+  })
+
+  it('exposes the un-throttled current state + store-level watermark fields', () => {
+    const store = new ProgressStore()
+    store.setStructuredTools({
+      eventSeq: 3,
+      phase: 'tool_exec',
+      iteration: 2,
+      activeTools: [tool({ name: 'Shell', status: 'running' })],
+      iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    // Do NOT flushRaf: the RAF-throttled snapshot is stale, but dumpFullState
+    // must read the CURRENT internal state directly.
+    const dump = store.dumpFullState()
+    expect(dump.current.phase).toBe('tool_exec')
+    expect(dump.current.iteration).toBe(2)
+    expect(dump.current.iterationHistory).toHaveLength(1)
+    expect(dump.current.activeTools?.[0]?.name).toBe('Shell')
+    // lastTurnID is the store-level field NOT in the snapshot
+    expect(typeof dump.lastTurnID).toBe('number')
+    // The real iteration watermark lives in current.lastIter — advanced by the
+    // structured event (2 > 0)
+    expect(dump.current.lastIter).toBe(2)
+  })
+
+  it('is JSON-serializable (no circular refs) — the REC dump contract', () => {
+    const store = new ProgressStore()
+    store.setStructuredTools({
+      eventSeq: 1,
+      phase: 'thinking',
+      iteration: 1,
+      iterationHistory: [{ iteration: 1, thinking: 't', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    const dump = store.dumpFullState()
+    expect(() => JSON.stringify(dump)).not.toThrow()
+    const round = JSON.parse(JSON.stringify(dump)) as ReturnType<ProgressStore['dumpFullState']>
+    expect(round.current.phase).toBe('thinking')
+    expect(round.current.iterationHistory).toHaveLength(1)
+  })
+})
