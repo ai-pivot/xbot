@@ -1895,9 +1895,15 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		})
 		seq := progressSeq.Add(1)
 		payload := &protocol.ProgressEvent{
-			ChatID:         progressKey,
-			TurnID:         turnID,
-			Seq:            seq,
+			ChatID: progressKey,
+			TurnID: turnID,
+			Seq:    seq,
+			// MUST stamp the current iteration — without it the event serializes
+			// as iteration:0, and the frontend receives a "tool generating"
+			// stream_content whose iteration dropped to 0 mid-turn (user report:
+			// "iter id 突然变成 0 导致整个 turn 的 DOM 消失"; all repro dumps show
+			// the vanishing turn right after an iteration:0 streaming_tools event).
+			Iteration:      a.getActiveIteration(progressKey),
 			StreamingTools: tools,
 		}
 		if genuiContent != "" {
