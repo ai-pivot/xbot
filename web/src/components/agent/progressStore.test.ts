@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { ProgressStore, dedupMessages, normalizeWebSubAgent, continuousIterations } from './progressStore'
+import { ProgressStore, normalizeWebSubAgent, continuousIterations } from './progressStore'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
 
 // Helper: create a tool with defaults
@@ -426,110 +426,6 @@ describe('ProgressStore tool dedup', () => {
     flushRaf()
     expect(store.getSnapshot().completedTools).toHaveLength(3)
     store.dispose()
-  })
-})
-
-// ── Message dedup ──
-describe('dedupMessages', () => {
-  it('keeps only the last message with the same turnID+role', () => {
-    const msgs = [
-      { turnID: 1, role: 'assistant', id: 'a1' },
-      { turnID: 1, role: 'user', id: 'u1' },
-      { turnID: 1, role: 'assistant', id: 'a2' },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(2)
-    expect(result.find((m) => m.role === 'assistant')!.id).toBe('a2')
-  })
-
-  it('keeps all history messages with turnID=0 and DB ids', () => {
-    const msgs = [
-      { turnID: 0, role: 'user', id: '1' },
-      { turnID: 0, role: 'assistant', id: '2', content: 'hello' },
-      { turnID: 0, role: 'user', id: '3' },
-      { turnID: 0, role: 'assistant', id: '4', content: 'hello' }, // same content, different DB id
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(4) // all kept — DB ids don't start with 'asst-'
-  })
-
-  it('does not infer identity from generated ids or repeated content', () => {
-    const msgs = [
-      { turnID: 0, role: 'assistant', id: 'asst-100-0', content: 'hello' },
-      { turnID: 0, role: 'assistant', id: 'asst-101-1', content: 'hello' },
-      { turnID: 0, role: 'assistant', id: 'asst-102-2', content: 'world' },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toEqual(msgs)
-  })
-
-  it('keeps equal live content when it came from distinct event occurrences', () => {
-    const msgs = [
-      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'hello' },
-      { turnID: 0, role: 'assistant', eventSeq: 11, content: 'hello' },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(2)
-  })
-
-  it('dedupes a replay of the same event occurrence', () => {
-    const msgs = [
-      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'partial' },
-      { turnID: 0, role: 'assistant', eventSeq: 10, content: 'final' },
-    ]
-    expect(dedupMessages(msgs)).toEqual([msgs[1]])
-  })
-
-  it('content-dedupes a live-committed message (turnID=0) against a DB message (turnID>0) with same content', () => {
-    // Regression: commitLiveProgressAndReset commits with turnID=0 when
-    // snap.turnID=0 and store.lastTurnID=0 (e.g. after session switch
-    // hydration). The DB version arrives with the correct turnID. Without
-    // content-based dedup, both survive → duplicate rendering.
-    const liveIters = [{ iteration: 1, thinking: '', reasoning: '', content: '', tools: [tool({ name: 'Shell' })], toolCount: 1 }]
-    const dbIters = [{ iteration: 1, thinking: '', reasoning: '', content: '', tools: [], toolCount: 0 }]
-    const msgs = [
-      { turnID: 1087, role: 'assistant', id: 'db-1197744', content: 'same reply', iterations: dbIters, dbID: 1197744, eventSeq: undefined },
-      { turnID: 0, role: 'assistant', id: 'seq-21883', content: 'same reply', iterations: liveIters, dbID: undefined, eventSeq: 21883, persisted: false },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(1)
-    // DB version (turnID>0) is the base; live iterations are merged in
-    expect(result[0].id).toBe('db-1197744')
-    expect(result[0].turnID).toBe(1087)
-    expect(result[0].iterations).toHaveLength(1)
-    expect(result[0].iterations[0].tools[0].name).toBe('Shell')
-  })
-
-  it('content-dedup works regardless of arrival order (live first, DB second)', () => {
-    // The live-committed message may arrive before the DB version (e.g.
-    // appendAssistant fires before reload). dedupMessages must catch it
-    // in both orders.
-    const msgs = [
-      { turnID: 0, role: 'assistant', id: 'seq-100', content: 'hello', iterations: [], eventSeq: 100 },
-      { turnID: 5, role: 'assistant', id: 'db-50', content: 'hello', iterations: [], dbID: 50, eventSeq: undefined },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(1)
-    expect(result[0].id).toBe('db-50')
-    expect(result[0].turnID).toBe(5)
-  })
-
-  it('does NOT content-dedup messages with different content', () => {
-    const msgs = [
-      { turnID: 1087, role: 'assistant', id: 'db-1', content: 'reply A', iterations: [], dbID: 1 },
-      { turnID: 0, role: 'assistant', id: 'seq-2', content: 'reply B', iterations: [], eventSeq: 2 },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(2)
-  })
-
-  it('does NOT content-dedup user messages (only assistant)', () => {
-    const msgs = [
-      { turnID: 1087, role: 'user', id: 'db-1', content: 'hello', dbID: 1 },
-      { turnID: 0, role: 'user', id: 'seq-2', content: 'hello', eventSeq: 2 },
-    ]
-    const result = dedupMessages(msgs)
-    expect(result).toHaveLength(2)
   })
 })
 

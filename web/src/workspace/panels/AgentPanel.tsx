@@ -399,7 +399,6 @@ export function AgentPanel({ params }: PanelProps) {
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
         messages={chat.messages}
-        liveMessage={null}
         liveProgress={progressSnapshot}
         busy={busy}
         collapseLevel={level}
