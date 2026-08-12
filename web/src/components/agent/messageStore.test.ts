@@ -110,6 +110,31 @@ describe('MessageStore — cancel 冻结', () => {
     expect(s.toRows()).toHaveLength(1)
     expect(s.toRows()[0].content).toBe('[interrupted]')
   })
+
+  it('clearEmptyLives（session idle）清除空 live 壳，保留非空/冻结 live', () => {
+    const s = new MessageStore()
+    // 空 live 壳：turn 以 thinking 开始但无产出（PhaseDone/text 都丢失）
+    s.setUser(360, user('u1', 'hi', 360))
+    s.updateLive(360, liveState(360, { phase: 'thinking', lastIter: 0 }))
+    // 非空 live：应保留（defensive finalize 的职责）
+    s.setUser(361, user('u2', 'hi2', 361))
+    s.updateLive(361, liveState(361, { content: 'partial', iterations: [iter(1)] }))
+    // 冻结 live：应保留（cancel 内容永不消失）
+    s.setUser(362, user('u3', 'hi3', 362))
+    s.updateLive(362, liveState(362, { content: 'cancelled text', iterations: [iter(1)] }))
+    s.freeze(362)
+
+    s.clearEmptyLives()
+
+    const rows = s.toRows()
+    // 空 live 行（turn-360-live）必须消失，非空 live 和 frozen live 保留
+    expect(rows.some((r) => r.id === 'turn-360-live')).toBe(false)
+    expect(rows.some((r) => r.id === 'turn-361-live')).toBe(true)
+    expect(rows.some((r) => r.id === 'turn-362-live')).toBe(true)
+    expect(s.hasLive(360)).toBe(false)
+    expect(s.hasLive(361)).toBe(true)
+    expect(s.hasLive(362)).toBe(true)
+  })
 })
 
 // ── 乐观 user 绑定 ──

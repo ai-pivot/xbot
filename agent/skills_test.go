@@ -141,3 +141,39 @@ func TestSkillStore_ProjectLocalNoDir(t *testing.T) {
 		t.Fatalf("expected global skill in catalog, got: %s", catalog)
 	}
 }
+
+func TestSkillStore_DisabledSkillsBlacklist(t *testing.T) {
+	workDir := t.TempDir()
+	globalDir := filepath.Join(workDir, ".claude", "skills")
+
+	writeSkill(t, globalDir, "skill-a", "skill-a", "skill a desc")
+	writeSkill(t, globalDir, "skill-b", "skill-b", "skill b desc")
+
+	store := NewSkillStore(workDir, []string{globalDir}, nil)
+	store.SetDisabledSkills([]string{"skill-a"})
+
+	catalog := store.GetSkillsCatalog(context.Background(), "user-1")
+
+	if strings.Contains(catalog, "<name>skill-a</name>") {
+		t.Fatalf("blacklisted skill-a must be excluded from catalog, got: %s", catalog)
+	}
+	if !strings.Contains(catalog, "<name>skill-b</name>") {
+		t.Fatalf("non-blacklisted skill-b must remain in catalog, got: %s", catalog)
+	}
+}
+
+func TestSkillStore_DisabledSkillsEmptyAndWhitespace(t *testing.T) {
+	workDir := t.TempDir()
+	globalDir := filepath.Join(workDir, ".claude", "skills")
+
+	writeSkill(t, globalDir, "skill-a", "skill-a", "skill a desc")
+
+	store := NewSkillStore(workDir, []string{globalDir}, nil)
+	// 空串和空白名应被忽略，不应 panic 或影响 catalog
+	store.SetDisabledSkills([]string{"", "  ", "skill-a"})
+
+	catalog := store.GetSkillsCatalog(context.Background(), "user-1")
+	if strings.Contains(catalog, "<name>skill-a</name>") {
+		t.Fatalf("blacklisted skill-a must be excluded, got: %s", catalog)
+	}
+}

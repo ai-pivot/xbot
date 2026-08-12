@@ -21,6 +21,9 @@ type SkillStore struct {
 	globalDirs []string      // 全局只读 skills 根目录
 	workDir    string        // 用于派生用户私有 skills 目录
 	sandbox    tools.Sandbox // Sandbox 实例（nil 表示无沙箱）
+	// disabledSkills 全局 skill 黑名单：这些 skill 不注入 available_skills catalog。
+	// 用 map 提升查找效率（catalog 生成时每个 skill 查一次）。
+	disabledSkills map[string]bool
 	// per-user TTL cache (5 minutes). Uses map to support concurrent multi-user access
 	// without cache thrashing (each user's cache is independent).
 	mu         sync.RWMutex
@@ -35,6 +38,31 @@ func NewSkillStore(workDir string, globalDirs []string, sandbox tools.Sandbox) *
 		globalDirs: globalDirs,
 		sandbox:    sandbox,
 	}
+}
+
+// SetDisabledSkills sets the GLOBAL skill blacklist. Skills in this list are
+// excluded from the available_skills catalog (the LLM never sees or activates
+// them). Empty/whitespace names are ignored.
+func (s *SkillStore) SetDisabledSkills(names []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.disabledSkills = make(map[string]bool, len(names))
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			s.disabledSkills[n] = true
+		}
+	}
+}
+
+// isDisabled reports whether a skill is blacklisted.
+func (s *SkillStore) isDisabled(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.disabledSkills) == 0 {
+		return false
+	}
+	return s.disabledSkills[name]
 }
 
 // SkillInfo holds basic skill metadata parsed from SKILL.md frontmatter
@@ -197,8 +225,8 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string, proj
 
 	var sb strings.Builder
 	sb.WriteString("## Available Skills\n\n")
-	sb.WriteString("Skills are specialized guidance documents for specific tasks. Activate when the task matches by using the `Skill` tool to load detailed instructions.\n")
-	sb.WriteString("When a user's message starts with `/xxxx`, prioritize finding a matching skill name and activate it before processing the request.\n\n")
+	sb.WriteString("Skills are specialized guidance documents that capture hard-won domain knowledge, conventions, and pitfalls for specific tasks. ALWAYS scan this list BEFORE starting any task — if a skill's description matches your task (by intent or keywords, not just exact wording), activate it FIRST via the `Skill` tool (action=load) to read its SKILL.md. Loading a skill is one cheap, idempotent tool call that saves you from re-discovering known pitfalls; when in doubt, load it.\n")
+	sb.WriteString("A user message starting with `/xxxx` is an explicit skill trigger: find the matching skill name and activate it before processing anything else.\n\n")
 
 	// 注入目录路径，供 skill-creator 参考新建位置
 	if len(s.globalDirs) > 0 {
@@ -212,10 +240,16 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string, proj
 
 	sb.WriteString("<available_skills>\n")
 	for _, sk := range skills {
+		if s.isDisabled(sk.Name) {
+			continue
+		}
 		fmt.Fprintf(&sb, "  <skill>\n    <name>%s</name>\n    <description>%s</description>\n    <dir>%s</dir>\n  </skill>\n", sk.Name, sk.Description, sk.Path)
 	}
 	// Append project-local skills (not yet in the merged list)
 	for _, sk := range projectSkills {
+		if s.isDisabled(sk.Name) {
+			continue
+		}
 		fmt.Fprintf(&sb, "  <skill>\n    <name>%s</name>\n    <description>%s</description>\n    <dir>%s</dir>\n  </skill>\n", sk.Name, sk.Description, sk.Path)
 	}
 	sb.WriteString("</available_skills>\n")

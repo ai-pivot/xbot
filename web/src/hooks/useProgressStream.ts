@@ -1425,6 +1425,13 @@ function handleProgressMessage(
         // "思考中…" lingers after the input box went idle). stopStreaming is a
         // no-op on frozen (already false) and on PhaseDone (already stopped).
         store.stopStreaming()
+        // Clear empty MessageStore lives: a turn that started with thinking but
+        // produced nothing (PhaseDone/text both lost) leaves an EMPTY live shell
+        // in MessageStore → toRows() emits an isPartial assistant row whose first
+        // line renders "思考中…" (AssistantMessage misreads it as thinking phase)
+        // even though the turn is idle. Non-empty lives are preserved for the
+        // defensive-finalize path below; frozen lives stay (cancel content).
+        messageStore?.clearEmptyLives()
         if (finalizedRef?.current || phaseDoneRef?.current) {
           // If the store is frozen (cancel), DON'T reset — frozen content
           // must stay visible. Only reset for normal finalize (text event

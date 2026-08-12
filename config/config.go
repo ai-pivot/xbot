@@ -191,10 +191,18 @@ type Config struct {
 	// DisableWebSearch disables the built-in WebSearch tool. Set to true when
 	// using an external search skill (e.g. the "search" skill) to avoid
 	// duplicate tool definitions and wasted context tokens.
-	DisableWebSearch bool                 `json:"disable_web_search,omitempty"`
-	Subscriptions    []SubscriptionConfig `json:"subscriptions,omitempty"`
-	CLI              CLIConfig            `json:"cli,omitempty"`
-	Plugins          PluginConfig         `json:"plugins,omitempty"`
+	DisableWebSearch bool `json:"disable_web_search,omitempty"`
+	// DisabledTools is a GLOBAL blacklist of built-in tool names to disable
+	// (registered tools are skipped entirely — not visible, not executable).
+	// Applies to all users/channels.
+	DisabledTools []string `json:"disabled_tools,omitempty"`
+	// DisabledSkills is a GLOBAL blacklist of skill names to disable
+	// (excluded from the available_skills catalog injected into the system
+	// prompt, so the LLM never sees or activates them). Applies to all users.
+	DisabledSkills []string             `json:"disabled_skills,omitempty"`
+	Subscriptions  []SubscriptionConfig `json:"subscriptions,omitempty"`
+	CLI            CLIConfig            `json:"cli,omitempty"`
+	Plugins        PluginConfig         `json:"plugins,omitempty"`
 
 	// Channels 存储插件 channel 的配置。key 是 channel name（如 "telegram"）。
 	// 内置 channel（feishu/qq/napcat/web）使用各自的结构体字段，
