@@ -186,10 +186,25 @@ func (w *compressResponseWriter) close() {
 
 // CompressionMiddleware wraps an http.Handler with transparent zstd/gzip
 // compression. It supports SSE (text/event-stream) via Flush.
+//
+// SSE compression is handled by the SSE handler itself (web_sse.go) which
+// wraps the writer with a zstd/gzip encoder per-connection. This middleware
+// skips text/event-stream responses (the SSE handler sets Content-Encoding
+// itself). For all other compressible types (JSON, HTML, etc.) this
+// middleware applies compression transparently.
 func CompressionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip WebSocket upgrades
 		if strings.EqualFold(r.Header.Get("Connection"), "upgrade") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Skip SSE — the SSE handler does its own compression (per-connection
+		// zstd/gzip encoder with Flush support). This middleware's
+		// compressResponseWriter buffers until WriteHeader, which breaks SSE's
+		// real-time Flush requirement.
+		if strings.Contains(r.URL.Path, "/api/sse") {
 			next.ServeHTTP(w, r)
 			return
 		}
