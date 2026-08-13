@@ -57,6 +57,30 @@ describe('MessageStore — 基本 turn 生命周期', () => {
     const tids = s.toRows().map((r) => r.turnID)
     expect(tids).toEqual([358, 358, 359, 359, 360, 360])
   })
+
+  // ── API 时序竞态：active_progress 快照滞后/为空时不得清空进行中 turn 的迭代 ──
+  // 用户报告："迭代到一半 history 突然只剩 live iter，高度变低触发 load more"。
+  // 根因：reload 的 active_progress（hydration）在 turn 运行中到达，快照的
+  // iteration_history 滞后或为空 → updateLive 覆盖语义清空 slot.live.iterations。
+  // 修复：updateLive 的 iterations 永不回退（union 合并）。
+  it('updateLive 空 iterations 不覆盖已有迭代（快照滞后竞态）', () => {
+    const s = new MessageStore()
+    s.updateLive(360, liveState(360, { iterations: [iter(1), iter(2), iter(3), iter(4)], lastIter: 4 }))
+    // 竞态：active_progress 快照返回空 iteration_history → hydration updateLive
+    s.updateLive(360, liveState(360, { iterations: [], lastIter: 0 }))
+    const live = s.getLive(360)
+    expect(live?.iterations).toHaveLength(4)
+    expect(live?.iterations?.map((i) => i.iteration)).toEqual([1, 2, 3, 4])
+  })
+
+  it('updateLive 部分 iterations 与已有 union（不丢已完成迭代）', () => {
+    const s = new MessageStore()
+    s.updateLive(360, liveState(360, { iterations: [iter(1), iter(2), iter(3)], lastIter: 3 }))
+    // 竞态：reload 快照只含早期迭代（服务器 iterationHistories 重启后重累积）
+    s.updateLive(360, liveState(360, { iterations: [iter(1), iter(2)], lastIter: 2 }))
+    const live = s.getLive(360)
+    expect(live?.iterations?.map((i) => i.iteration)).toEqual([1, 2, 3])
+  })
 })
 
 // ── 跨 turn 迭代号碰撞（本轮 P0 根因回归）──

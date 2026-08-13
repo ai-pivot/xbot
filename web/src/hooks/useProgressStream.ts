@@ -433,7 +433,14 @@ export function useProgressStream({
       // 写入共享 MessageStore，否则 chat.messages（store.toRows()）不含 live
       // 行 → MessageList 不渲染 assistant（切换会话后 turn 消失，用户报告）。
       // 不受 storeActive guard 影响（MessageStore 独立于 progressStore）。
-      if (messageStore && live.turnID > 0) {
+      // 但必须加 hasLive guard：turn 运行中（MessageStore 已有该 turn 的 live，
+      // 由 SSE writeLiveToMessageStore 写入的最新状态）时，reload 的
+      // active_progress 快照可能滞后/为空 —— 覆盖会清空进行中 turn 的已完成
+      // 迭代（用户报告："迭代到一半 history 突然只剩 live iter，高度变低触发
+      // load more"）。只有 MessageStore 无该 turn live（切换会话 / 首屏加载）
+      // 时才写入 hydration 快照。ProgressStore 侧已有 storeActive guard 保护，
+      // 这里补齐 MessageStore 侧的同等保护。
+      if (messageStore && live.turnID > 0 && !messageStore.hasLive(live.turnID)) {
         messageStore.updateLive(live.turnID, {
           eventSeq: typeof live.eventSeq === 'number' ? live.eventSeq : 0,
           phase: live.phase,
