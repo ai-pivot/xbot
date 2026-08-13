@@ -480,18 +480,26 @@ export function MessageList({
     const raf1 = requestAnimationFrame(() => {
       const raf2 = requestAnimationFrame(() => {
         loadMoreAnchorIdRef.current = null
-        const item = virtualizer.getVirtualItems().find((i) => i.index === newIdx)
-        if (item) {
-          // 锚点行的新 start（新行 prepend 后 TanStack 已测量）减去加载前的
-          // 视口偏移 = 新的 scrollTop。锚点行保持在加载前的位置（用户看到的
-          // 内容不变，滚动条落在中间，新加载的旧行在锚点上方）。不要用
-          // scrollHeight 增量 —— rAF 时 scrollHeight 可能还没测量完（grown=0），
-          // 且新行 prepend 后视口顶部显示新内容（用户报告：滚动条在最顶上、
-          // 内容变成新加载内容最上方）。
-          programmaticScrollRef.current = true
-          el.scrollTop = item.start - anchorOffset
-          queueMicrotask(() => { programmaticScrollRef.current = false })
+        // align='start' 明确返回锚点行顶部 offset（item.start - scrollPaddingStart）。
+        // 默认 align='auto' 会在锚点行已在视口中时返回"当前 scrollOffset"而非其
+        // 位置（getOffsetForIndex 内部 618 行），减去 anchorOffset 后滚动位置错误
+        // （用户报告"卡一下就会跑顶上"）。
+        const applyAnchor = (attempts: number) => {
+          const off = virtualizer.getOffsetForIndex(newIdx, 'start')
+          if (off) {
+            programmaticScrollRef.current = true
+            el.scrollTop = off[0] - anchorOffset
+            queueMicrotask(() => { programmaticScrollRef.current = false })
+            return
+          }
+          // 测量未完成（getOffsetForIndex 对未测量行返回 undefined）——"卡一下"
+          // 时 ResizeObserver 可能还没触发，重试几帧等测量完成，避免锚定失效
+          // （scrollTop 保持加载前的 ≈0，视口显示新加载内容最上方）。
+          if (attempts > 0) {
+            requestAnimationFrame(() => applyAnchor(attempts - 1))
+          }
         }
+        applyAnchor(3)
       })
       // Store raf2 for cleanup
       cleanupRafRef.current = raf2
