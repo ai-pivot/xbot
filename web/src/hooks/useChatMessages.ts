@@ -29,7 +29,7 @@ import {
 import { normalizeWebIteration } from '@/components/agent/normalize'
 import { MessageStore } from '@/components/agent/messageStore'
 import { assertIterationContinuity } from '@/components/agent/progressStore'
-import { getCachedMessages, getProgressGeneration, messagesCache, sessionCacheKey } from '@/lib/webCache'
+import { getProgressGeneration, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
 import type { ChatMessage, WebIteration } from '@/types/shared'
@@ -364,31 +364,17 @@ export function useChatMessages({
     )
     const reloadKey = activeMessageCacheKey
     const sameTarget = lastReloadKeyRef.current === reloadKey
-    // Session switch: try messagesCache for instant render (LRU).
-    // The cache stores the last-seen messages for recently visited sessions.
-    // On a cache hit, render immediately while the network fetch refreshes.
-    // Use activeMessageCacheKey (includes :role:instance:agentChatID suffix)
-    // to avoid collision between parent session and SubAgent panels which
-    // share the same channel+chatID but display different messages.
+    // Session switch: NO render cache — the DB history is the single authority.
+    // A cached message list can be stale (progress/turn updates since write) and
+    // re-renders old/duplicated turns (user report: "全是缓存的错误" — turn 重复、
+    // 思考中卡死、进度跳变). Always blank and refetch.
     if (!sameTarget) {
-      const cached = activeMessageCacheKey ? getCachedMessages(activeMessageCacheKey) : null
-      if (cached && cached.length > 0) {
-        // 缓存恢复：store 重建（cached 有 turnID → mergeHistory 建 slot）
-        store.clear()
-        store.mergeHistory(cached, { replace: true })
-        syncMessages()
-        // Don't set loading — we have content to show immediately
-        setLoading(false)
-      } else {
-        store.clear()
-        messagesRef.current = []
-        setMessages([])
-        setHasMore(false)
-        oldestIdRef.current = null
-        setLoading(true)
-      }
+      store.clear()
+      messagesRef.current = []
+      setMessages([])
       setHasMore(false)
       oldestIdRef.current = null
+      setLoading(true)
     }
     setError(null)
     lastReloadKeyRef.current = reloadKey
@@ -476,22 +462,6 @@ export function useChatMessages({
       }
       store.mergeHistory(parsed, { replace: true, watermark: data.last_seq ?? 0 })
       syncMessages()
-      // Cache messages for instant render on next session switch (LRU).
-      // Use activeMessageCacheKey to match the read path (avoids collision
-      // between parent session and SubAgent panels). Store the progress
-      // generation at write time — getCachedMessages drops stale entries
-      // (progress/turn updates since the cache was written).
-      if (activeMessageCacheKey) {
-        messagesCache.set(activeMessageCacheKey, {
-          messages: messagesRef.current,
-          progressGen: progressCacheKey ? getProgressGeneration(progressCacheKey) : 0,
-        })
-        // LRU eviction: keep at most 5 sessions cached
-        if (messagesCache.size > 5) {
-          const oldestKey = messagesCache.keys().next().value
-          if (oldestKey && oldestKey !== activeMessageCacheKey) messagesCache.delete(oldestKey)
-        }
-      }
       // Track pagination cursor.
       setHasMore(Boolean(data.has_more))
       oldestIdRef.current = data.oldest_id ?? null

@@ -163,9 +163,6 @@ describe('useProgressStream event dispatch', () => {
     // the single source. A stale cache entry must NOT restore live progress.
     expect(result.current.isStreaming).toBe(false)
 
-    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'done' })
-    expect(progressSnapshotCache.has(cacheKey)).toBe(false)
-
     rerender({ chatID: 'c2' })
     rerender({ chatID: 'c1' })
     act(() => {

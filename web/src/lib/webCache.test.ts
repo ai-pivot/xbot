@@ -3,11 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   bumpProgressGeneration,
   clearWebCaches,
-  getCachedMessages,
   getProgressGeneration,
   lastSeqCache,
   loadSessionTreeCache,
-  messagesCache,
   progressSnapshotCache,
   saveSessionTreeCache,
   sessionCacheKey,
@@ -33,7 +31,6 @@ beforeEach(() => {
     removeItem: (key: string) => store.delete(key),
     clear: () => store.clear(),
   })
-  messagesCache.clear()
   lastSeqCache.clear()
   progressSnapshotCache.clear()
 })
@@ -55,7 +52,6 @@ describe('web caches', () => {
   it('clears local and in-memory cache layers together', () => {
     localStorage.setItem(SESSION_TREE_CACHE_KEY, '{}')
     const cacheKey = sessionCacheKey('web', 'chat-1')
-    messagesCache.set(cacheKey, { messages: [], progressGen: 0 })
     lastSeqCache.set(cacheKey, 4)
     progressSnapshotCache.set(cacheKey, { phase: 'tool' })
     bumpProgressGeneration(cacheKey)
@@ -63,28 +59,17 @@ describe('web caches', () => {
     clearWebCaches()
 
     expect(localStorage.getItem(SESSION_TREE_CACHE_KEY)).toBeNull()
-    expect(messagesCache.size).toBe(0)
     expect(lastSeqCache.size).toBe(0)
     expect(progressSnapshotCache.size).toBe(0)
     expect(getProgressGeneration(cacheKey)).toBe(0)
   })
 
-  it('getCachedMessages returns null for a stale entry (progress generation changed)', () => {
-    const cacheKey = sessionCacheKey('web', 'chat-1')
-    messagesCache.set(cacheKey, { messages: [{ id: 'a', role: 'assistant', content: 'old', iterations: [], timestamp: '', isPartial: false, turnID: 1 }], progressGen: 0 })
-    expect(getCachedMessages(cacheKey)).not.toBeNull()
-    bumpProgressGeneration(cacheKey)
-    expect(getCachedMessages(cacheKey)).toBeNull()
-    expect(messagesCache.has(cacheKey)).toBe(false)
-  })
-
-  it('getCachedMessages returns the entry when the generation matches', () => {
+  it('getProgressGeneration starts at 0 and bumps monotonically', () => {
     const cacheKey = sessionCacheKey('web', 'chat-2')
-    const entry = { messages: [{ id: 'a', role: 'assistant' as const, content: 'x', iterations: [], timestamp: '', isPartial: false, turnID: 2 }], progressGen: 3 }
+    expect(getProgressGeneration(cacheKey)).toBe(0)
     bumpProgressGeneration(cacheKey)
+    expect(getProgressGeneration(cacheKey)).toBe(1)
     bumpProgressGeneration(cacheKey)
-    bumpProgressGeneration(cacheKey)
-    messagesCache.set(cacheKey, entry)
-    expect(getCachedMessages(cacheKey)).toEqual(entry.messages)
+    expect(getProgressGeneration(cacheKey)).toBe(2)
   })
 })

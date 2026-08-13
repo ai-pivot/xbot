@@ -43,11 +43,7 @@ import type {
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
 import type { WSMessage, WebToolProgress } from '@/types/shared'
-import {
-  clearProgressSnapshot,
-  progressSnapshotCache,
-  sessionCacheKey,
-} from '@/lib/webCache'
+import { sessionCacheKey } from '@/lib/webCache'
 
 interface UseProgressStreamOptions {
   /** Chat ID this stream tracks (events for other chats are ignored). */
@@ -294,26 +290,11 @@ export function useProgressStream({
       if (prevKey !== null) {
         sessionSwitchedRef.current = true
       }
-      // Restore todos from progressSnapshotCache — switchSession writes
-      // the /switch response todos here so they appear immediately,
-      // before /api/history's active_progress arrives (which may return
-      // null if the backend's snapshot was already cleaned up).
-      if (progressCacheKey) {
-        const cached = progressSnapshotCache.get(progressCacheKey)
-        if (cached?.todos && cached.todos.length > 0) {
-          // Atomic reset + replace: single notification instead of two
-          // (fullReset → render → replace → render).
-          store.resetAndReplace({ todos: cached.todos.map((t) => ({
-            id: typeof t.id === 'number' ? t.id : 0,
-            text: typeof t.text === 'string' ? t.text : '',
-            done: Boolean(t.done),
-          })) })
-        } else {
-          store.fullReset()
-        }
-      } else {
-        store.fullReset()
-      }
+      // No snapshot cache — the server's active_progress (via reload) is the
+      // single authority for the session's todos/iterations. A cached snapshot
+      // can be stale and re-render wrong progress (user report: "全是缓存的错误"
+      // — 思考中卡死、进度跳变). Always full-reset and let hydration restore.
+      store.fullReset()
     } else {
       // CRITICAL: NEVER wipe a turn that is actively streaming. This branch
       // fires when `disabled` toggles (SSE subscription/connection state flips)
@@ -370,7 +351,6 @@ export function useProgressStream({
     if (initialProgress.phase === 'done') {
       // Turn ended. Clear progress but restore todos from server so they
       // survive session switch (todos persist across turns in the todoManager).
-      if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
       finalizedRef.current = false
       if (hasVisibleProgress(snap) && !storeActive) store.reset()
       // Unconditionally replace todos when the server explicitly returned an
@@ -492,9 +472,6 @@ export function useProgressStream({
       // 3-layer chatID filtering.
       if (chatIDRef.current && !matchesChatID(msg, chatIDRef.current, channel)) {
         return
-      }
-      if (chatIDRef.current && isTerminalProgressMessage(msg)) {
-        clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
       handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, finalizedTurnIDRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore)
     })
@@ -1489,11 +1466,4 @@ function handleProgressMessage(
     default:
       return
   }
-}
-
-function isTerminalProgressMessage(msg: WSMessage): boolean {
-  if (msg.type === 'text') return true
-  if (msg.progress?.phase === 'done') return true
-  if (msg.type !== 'session') return false
-  return ['busy', 'idle', 'deleted', 'HistoryCompacted'].includes(msg.session?.action ?? '')
 }
