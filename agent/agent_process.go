@@ -462,7 +462,38 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 		sessionState.clearDrainedThisRun()
 	}
 	// Send a minimal outbound so the web channel knows processing ended.
+	// cancel 后返回最新迭代信息（progress_history：已完成迭代 + 进行中迭代）——
+	// 前端用它修正状态，进行中的迭代（tool executing）不消失（用户报告：
+	// "cancel 后进行中的迭代如果正在 tool executing 会消失"）。
+	// 考虑 cancel 期间 tool 执行完迭代结束进入下一个迭代：snapshotCompletedIteration
+	// 已记录完成的迭代（iterHistory 含它们）；进行中迭代从 lastProgressSnapshot
+	// 的 ActiveTools 补为最后一个迭代（Status=error，cancel 中断）。
 	meta := map[string]string{"cancelled": "true"}
+	finalIters := iterHistory
+	if snap, ok := a.lastProgressSnapshot.Load(sessionKey); ok {
+		p := snap.(*protocol.ProgressEvent)
+		if p != nil && len(p.ActiveTools) > 0 {
+			finalTools := make([]IterationToolSnapshot, 0, len(p.ActiveTools))
+			for _, t := range p.ActiveTools {
+				finalTools = append(finalTools, IterationToolSnapshot{
+					Name: t.Name, Label: t.Label, Status: string(t.Status),
+				})
+			}
+			if len(finalIters) == 0 {
+				finalIters = []IterationSnapshot{{Iteration: p.Iteration, Tools: finalTools}}
+			} else if finalIters[len(finalIters)-1].Iteration != p.Iteration {
+				finalIters = append(finalIters, IterationSnapshot{Iteration: p.Iteration, Tools: finalTools})
+			} else {
+				idx := len(finalIters) - 1
+				finalIters[idx].Tools = append(finalIters[idx].Tools, finalTools...)
+			}
+		}
+	}
+	if len(finalIters) > 0 {
+		if jsonBytes, err := json.Marshal(finalIters); err == nil {
+			meta["progress_history"] = string(jsonBytes)
+		}
+	}
 	return &channel.OutboundMsg{
 		Channel:  msg.Channel,
 		ChatID:   msg.ChatID,

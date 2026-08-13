@@ -1319,6 +1319,15 @@ function handleProgressMessage(
         if (finalizedRef) finalizedRef.current = true
         if (finalizedTurnIDRef) finalizedTurnIDRef.current = msg.turn_id ?? store.lastTurnID
         if (phaseDoneRef) phaseDoneRef.current = true
+        // cancel ack 带最新迭代信息（progress_history：已完成迭代 + 进行中迭代，
+        // 后端 handleCancelledRun 从 lastProgressSnapshot 的 ActiveTools 补进行中
+        // 迭代）—— 注入 store，进行中的迭代（tool executing 中断）不消失。
+        // 考虑 cancel 期间 tool 执行完迭代结束进入下一迭代：progress_history 含
+        // 刚完成的迭代（snapshotCompletedIteration 已记录）+ 进行中迭代。
+        const cancelIters = parseWebIterations(msg.progress_history)
+        if (cancelIters.length > 0) {
+          store.setIterationHistory(cancelIters)
+        }
         // Freeze: mark all in-progress tools as error, stop streaming/reasoning animations.
         // Do NOT reset the store — frozen content stays visible until the next turn.
         store.freeze()

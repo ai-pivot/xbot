@@ -140,10 +140,16 @@ test.describe('Cancel flow: running tool → cancel → new turn', () => {
     })
     console.log('Message info:', JSON.stringify(msgInfo, null, 2))
 
-    // ── Verify: no live message (running tool cleared) ──
-    const hasLive = await page.evaluate(() => document.querySelector('[id*="live-"]') !== null)
-    console.log('After cancel - live message exists:', hasLive)
-    expect(hasLive).toBe(false)
+    // ── Verify: 进行中迭代保留（Shell 工具在 cancel 后仍显示，不消失）──
+    // 用户要求：cancel 后进行中的迭代（tool executing 中断）不消失。cancel ack
+    // 带最新迭代信息（progress_history）→ 前端注入迭代 → commit 后迭代保留在
+    // committed assistant 消息中（含 Shell 工具）。
+    const shellShown = await page.evaluate(() => {
+      const el = document.querySelector('[data-role="assistant"]')
+      return el ? el.textContent.includes('Shell') : false
+    })
+    console.log('After cancel - Shell tool shown in iteration:', shellShown)
+    expect(shellShown).toBe(true)
 
     // ── Start a new turn ──
     await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
