@@ -1230,13 +1230,6 @@ func (mi *messageIndex) add(id int64, index int) {
 	mi.byID[id] = append(mi.byID[id], index)
 }
 
-func (mi *messageIndex) rebuild(messages []llm.ChatMessage) {
-	mi.byID = make(map[int64][]int, len(messages))
-	for i, m := range messages {
-		mi.byID[m.ID] = append(mi.byID[m.ID], i)
-	}
-}
-
 // occurrence 返回第 occurrence 次出现的 index（与 activeMessageIndexOccurrence 等价）。
 func (mi *messageIndex) occurrence(historyID int64, occurrence int) int {
 	idxs := mi.byID[historyID]
