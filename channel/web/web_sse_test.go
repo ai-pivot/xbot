@@ -112,14 +112,14 @@ func TestSendHeartbeatLive(t *testing.T) {
 
 	// 订阅客户端（接收 hub 投递的事件）
 	sub := &Client{
-		id:            "sub",
-		connType:      clientConnTypeSSE,
-		sendCh:        make(chan protocol.WSMessage, 16),
-		done:          make(chan struct{}),
-		hub:           wc.hub,
+		id:             "sub",
+		connType:       clientConnTypeSSE,
+		sendCh:         make(chan protocol.WSMessage, 16),
+		done:           make(chan struct{}),
+		hub:            wc.hub,
 		sessionChannel: sel.Channel,
-		chatID:        sel.ChatID,
-		statelessSig:  make(chan struct{}, 1),
+		chatID:         sel.ChatID,
+		statelessSig:   make(chan struct{}, 1),
 	}
 	wc.hub.addClient("sub", sub)
 	wc.hub.subscribe("sub", routeKey)
