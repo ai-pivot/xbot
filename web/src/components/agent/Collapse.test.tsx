@@ -38,7 +38,7 @@ function makeTool(overrides: Partial<WebToolProgress> = {}): WebToolProgress {
 function makeIteration(overrides: Partial<WebIteration> = {}): WebIteration {
   return {
     iteration: 1,
-    thinking: '',
+    content: '',
     reasoning: '',
     tools: [],
     toolCount: 0,
@@ -364,7 +364,7 @@ describe('IterationGroup', () => {
     const iter = makeIteration({
       iteration: 1,
       reasoning: 'planning the approach',
-      thinking: 'Here is the output',
+      content: 'Here is the output',
       tools: [makeTool({ name: 'Read', label: 'Read' })],
       toolCount: 1,
     })
@@ -392,7 +392,7 @@ describe('IterationGroup', () => {
   it('renders O (text output) always visible', () => {
     const iter = makeIteration({
       iteration: 3,
-      thinking: 'Final answer here',
+      content: 'Final answer here',
     })
     renderWithProviders(<IterationGroup iteration={iter} level="all" />)
     expect(screen.getByText('Final answer here')).toBeInTheDocument()

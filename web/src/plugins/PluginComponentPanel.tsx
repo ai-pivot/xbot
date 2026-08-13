@@ -43,7 +43,10 @@ export function PluginComponentPanel({ slot, empty = null, className }: PluginCo
   if (list.length === 0) return <>{empty}</>
 
   return (
-    <div className={`flex flex-col gap-3 ${className ?? ''}`}>
+    // min-w-0 + overflow-hidden：flex 子项默认 min-width:auto，超宽插件内容
+    // （表格/长文本/iframe）会撑破容器导致整个窗口被挤压超过可视范围。
+    // overflow-hidden 让插件内容在面板内滚动，绝不挤压全局布局。
+    <div className={`flex min-w-0 flex-col gap-3 overflow-hidden ${className ?? ''}`}>
       {busy && <div className="text-right text-[10px] text-indigo-500">↻ 处理中…</div>}
       {list.map((decl) => (
         <PluginComponent key={decl.widget_id} decl={decl} onAction={onAction} />
@@ -84,7 +87,7 @@ function PluginComponent({
   const type = decl.component?.type ?? ''
   const props = decl.component?.props ?? {}
   return (
-    <div className="rounded-lg border border-slate-200 p-2">
+    <div className="min-w-0 rounded-lg border border-slate-200 p-2">
       {title}
       {renderDeclarativeComponent(type, props, (action, data) => onAction(decl.widget_id, action, data))}
     </div>

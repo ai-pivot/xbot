@@ -494,12 +494,17 @@ export function MessageList({
           }
           // 测量未完成（getOffsetForIndex 对未测量行返回 undefined）——"卡一下"
           // 时 ResizeObserver 可能还没触发，重试几帧等测量完成，避免锚定失效
-          // （scrollTop 保持加载前的 ≈0，视口显示新加载内容最上方）。
+          // （scrollTop 保持加载前的 ≈0，视口显示新加载内容最上方 = 跳顶）。
+          // 重试次数对齐 scheduleFollow 的 30 次（~500ms）：TanStack Virtual 的
+          // lazy measurement（measureElement via ResizeObserver）对 markdown/
+          // code highlight 大列表可 >250ms —— 旧实现只重试 3 次（~50ms），
+          // prepend 的旧消息未测量完就放弃 → 滚动条跑到最上方（用户报告
+          // "加载之后滚动条还是会跑到最上方"）。
           if (attempts > 0) {
             requestAnimationFrame(() => applyAnchor(attempts - 1))
           }
         }
-        applyAnchor(3)
+        applyAnchor(30)
       })
       // Store raf2 for cleanup
       cleanupRafRef.current = raf2

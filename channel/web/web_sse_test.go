@@ -102,6 +102,77 @@ func TestWriteSSEHeartbeat(t *testing.T) {
 	}
 }
 
+// sendHeartbeatLive：进行中 turn 推送 sync_progress 快照（防 SSE 事件丢失后
+// 前端 stream 卡住 —— heartbeat 带 live 信息，每 15s 前端至少收到一次状态）。
+func TestSendHeartbeatLive(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	sel := SessionSelector{Channel: "web", ChatID: "web-1"}
+	routeKey := sessionRouteKey(sel.Channel, sel.ChatID)
+
+	// 订阅客户端（接收 hub 投递的事件）
+	sub := &Client{
+		id:            "sub",
+		connType:      clientConnTypeSSE,
+		sendCh:        make(chan protocol.WSMessage, 16),
+		done:          make(chan struct{}),
+		hub:           wc.hub,
+		sessionChannel: sel.Channel,
+		chatID:        sel.ChatID,
+		statelessSig:  make(chan struct{}, 1),
+	}
+	wc.hub.addClient("sub", sub)
+	wc.hub.subscribe("sub", routeKey)
+
+	t.Run("进行中 turn → 推送 sync_progress 快照", func(t *testing.T) {
+		wc.SetCallbacks(WebCallbacks{
+			GetActiveProgress: func(channel, chatID string) *protocol.ProgressEvent {
+				return &protocol.ProgressEvent{Phase: "tool_exec", ChatID: "web:web-1", Iteration: 3}
+			},
+		})
+		client := &Client{sessionChannel: sel.Channel, chatID: sel.ChatID}
+		wc.sendHeartbeatLive(client)
+		select {
+		case msg := <-sub.sendCh:
+			if msg.Type != protocol.MsgTypeProgress || msg.Progress == nil || msg.Progress.Phase != "tool_exec" || msg.Progress.Iteration != 3 {
+				t.Fatalf("unexpected heartbeat live msg: %#v", msg)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("sendHeartbeatLive did not push live progress")
+		}
+	})
+
+	t.Run("phase=done → 不推送", func(t *testing.T) {
+		wc.SetCallbacks(WebCallbacks{
+			GetActiveProgress: func(channel, chatID string) *protocol.ProgressEvent {
+				return &protocol.ProgressEvent{Phase: "done"}
+			},
+		})
+		client := &Client{sessionChannel: sel.Channel, chatID: sel.ChatID}
+		wc.sendHeartbeatLive(client)
+		select {
+		case msg := <-sub.sendCh:
+			t.Fatalf("unexpected push for done phase: %#v", msg)
+		case <-time.After(50 * time.Millisecond):
+			// 期望不推送 —— OK
+		}
+	})
+
+	t.Run("无 live（nil）→ 不推送", func(t *testing.T) {
+		wc.SetCallbacks(WebCallbacks{
+			GetActiveProgress: func(channel, chatID string) *protocol.ProgressEvent { return nil },
+		})
+		client := &Client{sessionChannel: sel.Channel, chatID: sel.ChatID}
+		wc.sendHeartbeatLive(client)
+		select {
+		case msg := <-sub.sendCh:
+			t.Fatalf("unexpected push for nil progress: %#v", msg)
+		case <-time.After(50 * time.Millisecond):
+			// 期望不推送 —— OK
+		}
+	})
+}
+
 func TestWriteSSECursor(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	client := &Client{w: recorder, flusher: recorder, sseEncWriter: recorder}
