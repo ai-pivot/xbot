@@ -561,8 +561,16 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 				if old.StreamContent == "" && payload.StreamContent != "" {
 					old.StreamContent = payload.StreamContent
 				}
+				// delta push：增量追加到 structured 快照的累积 StreamContent
+				//（否则 StreamDelta 在 progressSlot 合并时丢失 → 打字机失效）。
+				if payload.StreamDelta != "" {
+					old.StreamContent += payload.StreamDelta
+				}
 				if old.ReasoningStreamContent == "" && payload.ReasoningStreamContent != "" {
 					old.ReasoningStreamContent = payload.ReasoningStreamContent
+				}
+				if payload.ReasoningStreamDelta != "" {
+					old.ReasoningStreamContent += payload.ReasoningStreamDelta
 				}
 				if len(old.StreamingTools) == 0 && len(payload.StreamingTools) > 0 {
 					old.StreamingTools = payload.StreamingTools

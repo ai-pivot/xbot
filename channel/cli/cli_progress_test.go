@@ -2835,3 +2835,31 @@ func TestConsistency_DBHistorySupersedesFinalize(t *testing.T) {
 // which held the last structured event's completed tools. This caused
 // finalTools to be empty → no snapshot → iterations empty → streaming
 // message removed → previous iteration data permanently lost.
+
+// TestHandleProgressMsg_StreamDeltaUpdatesTypewriter 复现"打字机失效"根因：
+// 后端 delta push 协议发送 StreamDelta（增量文本），但 CLI 的 handleProgressMsg
+// 的 isStreamOnly 判断不含 StreamDelta → 事件被误分类为 structured（走
+// applyProgressSnapshot，也不处理 StreamDelta）→ 增量文本完全被忽略 → 打字机
+// 失效（消息结束后 text 事件才一次性显示）。
+func TestHandleProgressMsg_StreamDeltaUpdatesTypewriter(t *testing.T) {
+	model := initTestModel()
+	model.typing = true
+	model.progressState.current = &protocol.ProgressEvent{
+		Iteration:     1,
+		StreamContent: "Hello",
+	}
+
+	// delta push：StreamDelta=增量，Iteration=当前迭代（>0）
+	model.handleProgressMsg(cliProgressMsg{payload: &protocol.ProgressEvent{
+		ChatID:      "cli:/test",
+		Iteration:   1,
+		StreamDelta: " World",
+	}})
+
+	if model.progressState.current == nil {
+		t.Fatal("progressState.current is nil")
+	}
+	if got := model.progressState.current.StreamContent; got != "Hello World" {
+		t.Fatalf("StreamContent = %q, want %q (StreamDelta 未被追加，打字机失效)", got, "Hello World")
+	}
+}

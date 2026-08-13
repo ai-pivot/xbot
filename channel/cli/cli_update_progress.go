@@ -58,8 +58,14 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 	}
 
 	// Classify event type.
-	isStreamOnly := msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
-		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
+	// StreamDelta（delta push 增量文本）也属于 stream-only —— 后端 delta push
+	// 协议（engine_wire.go streamContentFunc）在文本是前缀扩展时只发 StreamDelta
+	// 增量。旧判断不含 StreamDelta 且要求 Iteration==0，导致 StreamDelta 事件
+	// （Iteration=当前迭代>0）被误分类为 structured → 走 applyProgressSnapshot
+	// （不处理 StreamDelta）→ 增量文本被忽略 → 打字机失效（消息结束后才显示）。
+	isStreamOnly := msg.payload.Phase == "" &&
+		(msg.payload.StreamContent != "" || msg.payload.StreamDelta != "" ||
+			msg.payload.ReasoningStreamContent != "" || msg.payload.ReasoningStreamDelta != "" ||
 			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
 
 	if isStreamOnly {
@@ -76,8 +82,15 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			if msg.payload.StreamContent != "" {
 				cur.StreamContent = msg.payload.StreamContent
 			}
+			// delta push：增量文本追加到累积 StreamContent（打字机逐字显示）。
+			if msg.payload.StreamDelta != "" {
+				cur.StreamContent += msg.payload.StreamDelta
+			}
 			if msg.payload.ReasoningStreamContent != "" {
 				cur.ReasoningStreamContent = msg.payload.ReasoningStreamContent
+			}
+			if msg.payload.ReasoningStreamDelta != "" {
+				cur.ReasoningStreamContent += msg.payload.ReasoningStreamDelta
 			}
 			if len(msg.payload.StreamingTools) > 0 {
 				cur.StreamingTools = msg.payload.StreamingTools
