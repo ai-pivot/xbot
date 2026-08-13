@@ -386,8 +386,21 @@ func (wc *WebChannel) sseWriteLoopCore(ctx context.Context, client *Client) {
 	for {
 		select {
 		case <-client.statelessSig:
-			client.drainStateless()
-			if closed, err := wc.catchUpSSE(ctx, client, nil); err != nil || closed {
+			// drainStateless 取出的 stateless 事件（stream_content / sync_progress /
+			// runner_status）必须作为 initial 传给 catchUpSSE 发送 —— 不能丢弃。
+			// 否则当 ring buffer replay 因 lastSentSeq 已追上（lastSentSeq == 最新
+			// seq）而返回空时，这些 latest-wins 事件永久丢失，客户端只剩 heartbeat。
+			drained := client.drainStateless()
+			var initial []protocol.WSMessage
+			if len(drained) > 0 {
+				initial = make([]protocol.WSMessage, 0, len(drained))
+				for _, m := range drained {
+					if m != nil {
+						initial = append(initial, *m)
+					}
+				}
+			}
+			if closed, err := wc.catchUpSSE(ctx, client, initial); err != nil || closed {
 				return
 			}
 		case msg, ok := <-client.sendCh:
@@ -429,9 +442,17 @@ func watchSSEWriteCancellation(ctx context.Context, client *Client) func() {
 	}
 }
 
+// maxSSEBatchesPerCall 限制 catchUpSSE 单次调用的批次处理量。stream 高频时
+// ring buffer replay 会持续返回新事件，若不加限制，catchUpSSE 的 for 循环
+// 会一直占用 sseWriteLoopCore（同步调用），饿死 heartbeat ticker —— 客户端
+// 只收 heartbeat、收不到新事件。处理 N 批后返回，让 select 重新调度；未发完
+// 的 replay 事件会在下一次 sendCh/statelessSig 触发时继续（lastSentSeq 已推进，
+// 不会丢）。
+const maxSSEBatchesPerCall = 16
+
 func (wc *WebChannel) catchUpSSE(ctx context.Context, client *Client, initial []protocol.WSMessage) (bool, error) {
 	pending := initial
-	for {
+	for batch := 0; batch < maxSSEBatchesPerCall; batch++ {
 		if err := sseContextError(ctx, client); err != nil {
 			return false, err
 		}
@@ -461,6 +482,9 @@ func (wc *WebChannel) catchUpSSE(ctx context.Context, client *Client, initial []
 		}
 		pending = nil
 	}
+	// 批次上限已到：返回让 sseWriteLoopCore 回到 select（处理 heartbeat 和
+	// 新事件）。剩余 replay 事件由下次调用继续发送。
+	return false, nil
 }
 
 func sseContextError(ctx context.Context, client *Client) error {
