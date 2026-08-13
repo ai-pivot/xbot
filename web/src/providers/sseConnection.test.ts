@@ -982,4 +982,65 @@ describe('SSE 切会话竞态', () => {
     expect(sourceB.closed).toBe(false) // B 连接保持，未被 restartSource 误关
     expect(conn.chatID).toBe('chat-B')
   })
+
+  // 复现 SSE 永久卡死：切换会话时 reload 完成 → setLastSeq 写入缓存 Y →
+  // restartSource → 新连接带 last_event_id=Y → 服务器 forceResync（stream 暂停）
+  // → 写 resync_required（event id = lastSentSeq = Y，msg.seq=0）→ 前端
+  // handleEvent 中 seq=Y === previousSeq=Y → 被 seq 去重静默丢弃 → useChatMessages
+  // 不 reload → publishSSEFallbacks 未合成 → 前端永久收不到新事件（用户报告：
+  // "在隔壁会话 cancel 后切回，SSE 就不推送新的了，不刷新就永远这样"）。
+  it('resync_required 不被 seq===previousSeq 丢弃（restartSource 后 forceResync 场景）', () => {
+    const conn = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    conn.onMessage((message) => received.push(message))
+    conn.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+
+    // reload 完成 → setLastSeq 写入缓存 10 → restartSource（source 关闭，新连接建立）
+    conn.setLastSeq('chat-a', 10)
+    const resumed = MockEventSource.instances[1]
+    resumed.open()
+    expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(10)
+
+    // 服务器 forceResync：writeSSEResyncRequired 写 id=lastSentSeq=10（== 前端缓存），
+    // msg.Seq 为 0 —— 前端必须用 event.lastEventId 解析 seq
+    resumed.emit('resync_required', { type: 'resync_required' }, '10')
+
+    // 控制事件必须被 dispatch —— 否则 useChatMessages 不 reload，进度永久卡死
+    expect(received.map((m) => m.type)).toContain('resync_required')
+    // 业务重复事件（seq 相同）仍被丢弃
+    const dupReceived = received.length
+    resumed.emit('text', { type: 'text', seq: 10, content: 'dup' }, '10')
+    expect(received.length).toBe(dupReceived)
+    conn.dispose()
+  })
+
+  it('restartSource 后 stream 恢复的新事件正常送达（resync_required 已 dispatch 不污染缓存）', () => {
+    const conn = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    conn.onMessage((message) => received.push(message))
+    conn.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    conn.setLastSeq('chat-a', 10)
+    const resumed = MockEventSource.instances[1]
+    resumed.open()
+
+    // forceResync 的 resync_required（id=10 == 缓存）→ 必须 dispatch
+    resumed.emit('resync_required', { type: 'resync_required' }, '10')
+    expect(received.map((m) => m.type)).toContain('resync_required')
+    // 缓存保持 10（resync_required 不推进业务水位）
+    expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(10)
+
+    // stream 恢复：新事件 seq=11 必须正常送达
+    resumed.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 11,
+      progress: { phase: 'tool_exec' },
+    } as WSMessage)
+    expect(received.map((m) => m.seq)).toContain(11)
+    expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(11)
+    conn.dispose()
+  })
 })

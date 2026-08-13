@@ -934,6 +934,54 @@ describe('useProgressStream event dispatch', () => {
     emitAndFlush({ type: 'text', content: 'reply', chat_id: 'c1' })
     expect(result.current.progressSnapshot.todos).toHaveLength(0)
   })
+
+  it('ignores stale streaming_tools from a completed iteration (catchup gap replay)', () => {
+    const { result } = renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }))
+    // Turn starts; iteration 1 generates a tool
+    emitAndFlush({
+      type: 'progress_structured',
+      chat_id: 'c1',
+      progress: { turn_id: 1, phase: 'tool_exec', iteration: 1 },
+    })
+    emitAndFlush({
+      type: 'stream_content',
+      chat_id: 'c1',
+      progress: { iteration: 1, streaming_tools: [{ name: 'Bash', label: 'Bash run build', status: 'generating' }] },
+    })
+    expect(result.current.progressSnapshot.streamingTools).toHaveLength(1)
+    // Iteration 2 begins — structured event advances lastIter and clears streamingTools
+    emitAndFlush({
+      type: 'progress_structured',
+      chat_id: 'c1',
+      progress: { turn_id: 1, phase: 'thinking', iteration: 2 },
+    })
+    expect(result.current.progressSnapshot.streamingTools).toHaveLength(0)
+    // Stale stream_content from iteration 1 (SSE catchup gap replay / reorder)
+    // must NOT restore the old generating tool into iteration 2.
+    emitAndFlush({
+      type: 'stream_content',
+      chat_id: 'c1',
+      progress: { iteration: 1, streaming_tools: [{ name: 'Bash', label: 'Bash run build', status: 'generating' }] },
+    })
+    expect(result.current.progressSnapshot.streamingTools).toHaveLength(0)
+  })
+
+  it('accepts streaming_tools for the CURRENT iteration (no regression guard false-positive)', () => {
+    const { result } = renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }))
+    emitAndFlush({
+      type: 'progress_structured',
+      chat_id: 'c1',
+      progress: { turn_id: 1, phase: 'thinking', iteration: 2 },
+    })
+    // Current iteration's streaming_tools (iteration == lastIter) must apply
+    emitAndFlush({
+      type: 'stream_content',
+      chat_id: 'c1',
+      progress: { iteration: 2, streaming_tools: [{ name: 'Read', label: 'Read main.go', status: 'generating' }] },
+    })
+    expect(result.current.progressSnapshot.streamingTools).toHaveLength(1)
+    expect(result.current.progressSnapshot.streamingTools[0].name).toBe('Read')
+  })
 })
 
 describe('cancel ack: preserves live state without commit', () => {

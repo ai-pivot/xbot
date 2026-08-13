@@ -119,8 +119,9 @@ type UILocale struct {
 	SearchNavFormat   string
 
 	// --- F. Rewind ---
-	RewindTitle string // "Rewind"
-	RewindHint  string // "Select a message to rewind to. Content will be placed in input box."
+	RewindTitle       string // "Rewind"
+	RewindHint        string // "Select a message to rewind to. Content will be placed in input box."
+	RewindUnavailable string // "This message has not been persisted yet and cannot be rewound"
 
 	// --- G. Splash ---
 	SplashDesc     string // "AI-powered terminal agent"
@@ -418,8 +419,9 @@ func LocaleZH() *UILocale {
 		SearchNavFormat:   "/ %s  [%d/%d]  n next · N prev · Esc",
 
 		// --- F. Confirm dialog ---
-		RewindTitle: "Rewind",
-		RewindHint:  "选择要回退到的消息，内容将放入输入框",
+		RewindTitle:       "Rewind",
+		RewindHint:        "选择要回退到的消息，内容将放入输入框",
+		RewindUnavailable: "该消息尚未持久化，无法回溯",
 
 		// --- G. Splash ---
 		SplashDesc:     "AI 驱动的终端助手",
@@ -860,8 +862,9 @@ func localeEN() *UILocale {
 		SearchNavFormat:   "/ %s  [%d/%d]  n next · N prev · Esc",
 
 		// --- F. Confirm dialog ---
-		RewindTitle: "Rewind",
-		RewindHint:  "Select a message to rewind to. Content will be placed in input box.",
+		RewindTitle:       "Rewind",
+		RewindHint:        "Select a message to rewind to. Content will be placed in input box.",
+		RewindUnavailable: "This message has not been persisted yet and cannot be rewound",
 
 		// --- G. Splash ---
 		SplashDesc:     "AI-powered terminal agent",

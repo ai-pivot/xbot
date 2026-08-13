@@ -92,6 +92,16 @@ export const LiveIteration = memo(function LiveIteration({
   const currentActive = progress.activeTools.filter(
     (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
   )
+  // Same filter for streamingTools — a stale generating tool from a COMPLETED
+  // iteration (catchup gap residue: the backend's streamState.StreamingTools is
+  // merged into get_active_progress snapshots and can carry the previous
+  // iteration's generating tool) must NOT render on the current iteration.
+  // Previously streamingTools bypassed this filter entirely, so the old tool
+  // showed until the current iteration's real tool replaced it (user report:
+  // "过去的 generating 状态错误的在最新迭代上渲染").
+  const currentStreaming = progress.streamingTools.filter(
+    (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
+  )
   const currentCompleted = progress.completedTools.filter(
     (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
   )
@@ -109,7 +119,7 @@ export const LiveIteration = memo(function LiveIteration({
     (t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`),
   )
   const allTools = dedupTools([
-    ...progress.streamingTools,
+    ...currentStreaming,
     ...currentActive,
     ...filteredCompleted,
   ])

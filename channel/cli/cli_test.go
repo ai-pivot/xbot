@@ -1324,6 +1324,42 @@ func TestCLIModelSendMessage(t *testing.T) {
 	}
 }
 
+func TestFlushMessageQueuePreservesInputDraft(t *testing.T) {
+	// BUG: flushMessageQueue 用 textarea 作为中转发送队列消息 ——
+	// m.textarea.SetValue(msg.content) 覆盖用户正在输入的草稿，
+	// sendMessageFromQueue 的 m.textarea.Reset() 又清空它。
+	// 用户场景：发消息1执行中 → 发消息2入队 → 输入消息3 → 消息1结束
+	// flush 消息2 的瞬间，正在输入的消息3被清空。
+	model := initTestModel()
+	model.inputReady = false
+	model.typing = true
+	sent := make(chan string, 1)
+	model.sendInboundFn = func(msg channel.InboundMsg) bool {
+		sent <- msg.Content
+		return true
+	}
+	// 消息 2 已入队（用户发送时 typing=true → 排队等待）
+	model.messageQueue = []queuedMsg{{content: "消息2", chatID: model.chatID}}
+	// 用户正在输入消息 3（textarea 中的草稿）
+	model.textarea.SetValue("消息3")
+
+	// 消息 1 执行结束，flush 队列开始处理消息 2
+	model.flushMessageQueue()
+	// 输入区必须保留用户正在输入的消息 3 —— flush 队列不得清空/覆盖草稿
+	if got := model.textarea.Value(); got != "消息3" {
+		t.Fatalf("textarea = %q, want %q (queue flush must not clobber the input draft)", got, "消息3")
+	}
+	// 消息 2 应该已被发送（到达 sendInbound）
+	select {
+	case got := <-sent:
+		if got != "消息2" {
+			t.Fatalf("sent content = %q, want %q", got, "消息2")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued message 消息2 was not sent")
+	}
+}
+
 func TestCLIModelAgentSendUsesCanonicalContinuation(t *testing.T) {
 	model := newCLIModel()
 	model.handleResize(80, 24)

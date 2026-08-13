@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"xbot/channel"
 	"xbot/protocol"
 
 	tea "charm.land/bubbletea/v2"
@@ -35,10 +37,14 @@ const rewindFilesWarningPrefix = "History rewound; files were not fully restored
 // openRewindPanel collects user messages from history and opens the rewind overlay.
 // Compacted source messages remain visible and rewindable because append-only
 // history keeps every original message as a stable node.
+// Optimistic user messages (historyID==0, echoed at queue-admission time before
+// DB persistence backfills the id) are included too — applyRewind resolves the
+// real DB id from a fresh history reload when needed (mirrors the web fix in
+// web/src/components/agent/rewind.ts).
 func (m *cliModel) openRewindPanel() {
 	var items []rewindItem
 	for i, msg := range m.messages {
-		if msg.role != "user" || msg.displayOnly || (msg.recordType != "" && msg.recordType != "message") || msg.historyID == 0 {
+		if msg.role != "user" || msg.displayOnly || (msg.recordType != "" && msg.recordType != "message") {
 			continue
 		}
 		content := msg.content
@@ -240,16 +246,85 @@ func (m *cliModel) applyRewind() tea.Cmd {
 	}
 
 	rewindFn := m.channel.config.RewindHistoryFn
+	loader := m.channel.config.DynamicHistoryLoader
 	channelName, chatID := m.channelName, m.chatID
+	historyID := item.HistoryID
+	content := item.Content
+	unavailableMsg := m.locale.RewindUnavailable
+	cutIdx := item.MsgIndex
 	m.closeRewindPanel()
 	return func() tea.Msg {
-		result, err := rewindFn(channelName, chatID, item.HistoryID)
+		// Optimistic user messages (historyID==0) carry no DB id — the id is
+		// assigned when the agent loop persists the row, AFTER the echo was
+		// added at queue-admission time. Resolve it from a fresh history reload
+		// (mirrors web's resolveUserMessageDBID). Matching is content-only and
+		// reverse-scanned: the optimistic row has no turnID (TUI never binds
+		// it), and rewind semantically targets the newest message with that
+		// content.
+		if historyID == 0 {
+			if loader == nil {
+				return cliRewindDoneMsg{
+					channelName: channelName, chatID: chatID, generation: generation,
+					targetHistoryID: 0, selectedContent: content,
+					err: fmt.Errorf("rewind target resolution unavailable"),
+				}
+			}
+			history, err := loader(channelName, chatID)
+			if err != nil {
+				return cliRewindDoneMsg{
+					channelName: channelName, chatID: chatID, generation: generation,
+					targetHistoryID: 0, selectedContent: content,
+					err: fmt.Errorf("resolve rewind target: %w", err),
+				}
+			}
+			historyID = resolveUserHistoryIDFromHistory(history, content)
+			if historyID == 0 {
+				return cliRewindDoneMsg{
+					channelName: channelName, chatID: chatID, generation: generation,
+					targetHistoryID: 0, selectedContent: content,
+					err: fmt.Errorf("%s", unavailableMsg),
+				}
+			}
+		}
+		result, err := rewindFn(channelName, chatID, historyID)
 		return cliRewindDoneMsg{
 			channelName: channelName, chatID: chatID, generation: generation,
-			targetHistoryID: item.HistoryID, selectedContent: item.Content,
-			cutIdx: item.MsgIndex, result: result, err: err,
+			targetHistoryID: historyID, selectedContent: content,
+			cutIdx: cutIdx, result: result, err: err,
 		}
 	}
+}
+
+// resolveUserHistoryIDFromHistory resolves the DB id of a persisted user message
+// from a fresh history snapshot. The optimistic echo row has no turnID (TUI
+// never binds one), so matching is content-only: scan in REVERSE to hit the MOST
+// RECENT occurrence — rewind semantically targets the newest message with that
+// content; a forward scan would match the oldest same-content row when content
+// repeats.
+func resolveUserHistoryIDFromHistory(history []channel.HistoryMessage, content string) int64 {
+	if content == "" {
+		return 0
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		hm := history[i]
+		if hm.Role != "user" || hm.DisplayOnly {
+			continue
+		}
+		if rt := hm.RecordType; rt != "" && rt != "message" {
+			continue
+		}
+		if hm.Content != content {
+			continue
+		}
+		id := hm.HistoryID
+		if id == 0 {
+			id = hm.ID
+		}
+		if id > 0 {
+			return id
+		}
+	}
+	return 0
 }
 
 func (m *cliModel) handleRewindDoneMsg(done cliRewindDoneMsg) {

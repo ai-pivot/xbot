@@ -181,6 +181,93 @@ describe('LiveIteration — typewriter cursor', () => {
     // SweepText is shown when a tool is running (status === 'running')
     expect(container.querySelector('.sweep-text')).not.toBeNull()
   })
+
+  it('filters stale generating tools from COMPLETED iterations (catchup gap residue)', () => {
+    // BUG: catchup gap 后旧迭代的 generating tool（streaming_tools 事件无迭代
+    // 号、或带旧迭代号）残留在 store.streamingTools。LiveIteration 之前对
+    // streamingTools 不做迭代过滤（currentActive/completedTools 都有），
+    // 旧工具错误渲染在最新迭代上，直到最新迭代真正的 tool 出现才被替换
+    // （用户报告："过去的 generating 状态可能错误的在最新迭代上渲染"）。
+    const snapshot = makeSnapshot({
+      streaming: true,
+      phase: 'tool_exec',
+      iteration: 2,
+      lastIter: 2,
+      // Iteration 1 completed — the stale generating tool belongs to it
+      iterationHistory: [{
+        iteration: 1,
+        thinking: '',
+        reasoning: '',
+        tools: [{
+          name: 'Bash',
+          label: 'Bash run build',
+          status: 'done',
+          elapsedMs: 100,
+          summary: '',
+          detail: '',
+          args: '',
+          toolHints: '',
+          iteration: 1,
+        }],
+        toolCount: 1,
+      }],
+      // Stale generating tool from iteration 1 (catchup gap residue)
+      streamingTools: [{
+        name: 'Bash',
+        label: 'Bash run build',
+        status: 'generating',
+        elapsedMs: 0,
+        summary: '',
+        detail: '',
+        args: '',
+        toolHints: '',
+        iteration: 1,
+      }],
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
+    // The stale generating tool from a completed iteration must NOT render
+    expect(container.textContent).not.toContain('Bash')
+  })
+
+  it('keeps CURRENT-iteration generating tools visible', () => {
+    // 当前迭代（iteration 2）的 generating tool 必须渲染（不被误过滤）
+    const snapshot = makeSnapshot({
+      streaming: true,
+      phase: 'tool_exec',
+      iteration: 2,
+      lastIter: 2,
+      iterationHistory: [{
+        iteration: 1,
+        thinking: '',
+        reasoning: '',
+        tools: [{
+          name: 'Bash',
+          label: 'Bash old',
+          status: 'done',
+          elapsedMs: 100,
+          summary: '',
+          detail: '',
+          args: '',
+          toolHints: '',
+          iteration: 1,
+        }],
+        toolCount: 1,
+      }],
+      streamingTools: [{
+        name: 'Read',
+        label: 'Read main.go',
+        status: 'generating',
+        elapsedMs: 0,
+        summary: '',
+        detail: '',
+        args: '',
+        toolHints: '',
+        iteration: 2,
+      }],
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
+    expect(container.textContent).toContain('Read')
+  })
 })
 
 describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iteration boundary)', () => {

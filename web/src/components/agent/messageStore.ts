@@ -513,6 +513,31 @@ export class MessageStore {
     return this.slots.get(turnID)?.live
   }
 
+  /**
+   * 找有可见内容的 live 的 turnID（用于 commit 时对齐 turn 归属）。
+   *
+   * ProgressStore.lastTurnID 可能过时（turn_started 在 SSE 上丢失时停留在
+   * N-1），而 MessageStore 的 live 由事件 turn_id 写入正确的 slot N。
+   * commitLiveProgressAndReset 若用过时的 lastTurnID commit，cancel 内容会
+   * 同时落在旧 slot（lastTurnID）和 live slot → 重复渲染（用户报告："cancel
+   * 一个消息后发新 user msg，被 cancel 的 turn 的 live progress 在 user msg
+   * 后重复渲染"）。优先返回 frozen（cancel）live 的 turnID —— 内容已渲染的
+   * turn 归属必须与 commit 目标一致。
+   */
+  liveTurnIDWithContent(): number {
+    let best = 0
+    for (const tid of this.turnIDs) {
+      const live = this.slots.get(tid)?.live
+      if (!live) continue
+      if (!live.content && live.iterations.length === 0 && live.activeTools.length === 0 && live.streamingTools.length === 0) {
+        continue
+      }
+      if (live.frozen) return tid
+      if (tid > best) best = tid
+    }
+    return best
+  }
+
   hasLive(turnID: number): boolean {
     return Boolean(this.slots.get(turnID)?.live)
   }
