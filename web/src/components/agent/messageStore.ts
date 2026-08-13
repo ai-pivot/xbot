@@ -183,7 +183,18 @@ export class MessageStore {
       this.insertTurnID(turnID)
     }
     const prev = slot.live ?? { ...EMPTY_LIVE, turnID }
-    slot.live = { ...prev, ...patch, turnID }
+    slot.live = {
+      ...prev,
+      ...patch,
+      turnID,
+      // iterations 永不回退：union 合并（按迭代号）。reload 的 active_progress
+      // 快照（hydration）可能在 turn 运行中到达，其 iteration_history 滞后或为空
+      // （服务器 iterationHistories 重启后重累积 / fromIter 增量 / 竞态）——覆盖
+      // 语义会清空进行中 turn 的已完成迭代，用户报告"迭代到一半 history 突然只剩
+      // live iter，高度变低触发 load more"。union 保证已完成迭代永不消失；
+      // turnID 是 slot key，跨 turn 不会污染。
+      iterations: mergeIterations(prev.iterations, patch.iterations ?? []),
+    }
     // frozen live 不再被新事件修改（cancel 后迟到事件）
     if (slot.live.frozen) return
     this.invalidate()

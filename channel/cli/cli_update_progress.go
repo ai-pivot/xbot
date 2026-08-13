@@ -47,19 +47,31 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		return
 	}
 
+	// New turn's first progress clears the cancel flag. MUST run BEFORE the
+	// cancel guard below — otherwise the guard's `return` makes this unreachable
+	// dead code (user report: Ctrl+C 后新 turn 的所有 progress 被阻塞 → 打字机
+	// 失效、指令看起来无法处理；agent 报告 Bug #1/#5 cancel 死锁)。
+	// 新 turn 的权威信号是 turn_started（handleTurnStarted 清除），但它可能被
+	// coalesceProgress 吞没或延迟。fallback：用户已发新消息（typing=true）后
+	// 的任意非 PhaseDone progress 视为新 turn 开始，清除 cancel 标志。
+	if m.turnCancelled && msg.payload.Phase != "done" && m.typing {
+		m.turnCancelled = false
+	}
+
 	// Cancel guard: ignore progress after Ctrl+C (except PhaseDone).
 	if m.turnCancelled && msg.payload.Phase != "done" {
 		return
 	}
 
-	// New turn's first non-PhaseDone progress clears the cancel flag.
-	if m.turnCancelled && msg.payload.Phase != "done" && msg.payload.Phase != "" && m.typing {
-		m.turnCancelled = false
-	}
-
 	// Classify event type.
-	isStreamOnly := msg.payload.Phase == "" && msg.payload.Iteration == 0 &&
-		(msg.payload.StreamContent != "" || msg.payload.ReasoningStreamContent != "" ||
+	// StreamDelta（delta push 增量文本）也属于 stream-only —— 后端 delta push
+	// 协议（engine_wire.go streamContentFunc）在文本是前缀扩展时只发 StreamDelta
+	// 增量。旧判断不含 StreamDelta 且要求 Iteration==0，导致 StreamDelta 事件
+	// （Iteration=当前迭代>0）被误分类为 structured → 走 applyProgressSnapshot
+	// （不处理 StreamDelta）→ 增量文本被忽略 → 打字机失效（消息结束后才显示）。
+	isStreamOnly := msg.payload.Phase == "" &&
+		(msg.payload.StreamContent != "" || msg.payload.StreamDelta != "" ||
+			msg.payload.ReasoningStreamContent != "" || msg.payload.ReasoningStreamDelta != "" ||
 			len(msg.payload.StreamingTools) > 0 || msg.payload.StreamTokens > 0)
 
 	if isStreamOnly {
@@ -76,8 +88,15 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 			if msg.payload.StreamContent != "" {
 				cur.StreamContent = msg.payload.StreamContent
 			}
+			// delta push：增量文本追加到累积 StreamContent（打字机逐字显示）。
+			if msg.payload.StreamDelta != "" {
+				cur.StreamContent += msg.payload.StreamDelta
+			}
 			if msg.payload.ReasoningStreamContent != "" {
 				cur.ReasoningStreamContent = msg.payload.ReasoningStreamContent
+			}
+			if msg.payload.ReasoningStreamDelta != "" {
+				cur.ReasoningStreamContent += msg.payload.ReasoningStreamDelta
 			}
 			if len(msg.payload.StreamingTools) > 0 {
 				cur.StreamingTools = msg.payload.StreamingTools

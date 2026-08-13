@@ -115,7 +115,11 @@ func (m *cliModel) sendCancel() {
 // sendToAgent 发送命令到 agent，并添加用户消息到历史（§3 命令透传机制）
 func (m *cliModel) sendToAgent(content string) {
 	// Check if LLM is configured before sending (same check as sendMessage).
-	if m.cachedModelName == "" && m.hasNoSubscription() {
+	// 与 sendMessage 一致：仅在 sendInboundFn == nil（本地模式/测试）时检查。
+	// 无条件检查会误拦截 LLM 配置命令本身（/set-llm、/models 等）——自举悖论：
+	// 需要配置 LLM 才能使用配置 LLM 的命令（agent 报告 Bug #1：远程模式下
+	// sendInboundFn != nil，透传命令全部被拦）。
+	if m.sendInboundFn == nil && m.cachedModelName == "" && m.hasNoSubscription() {
 		m.showSystemMsg(m.locale.SetupNoLLM, feedbackWarning)
 		return
 	}

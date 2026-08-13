@@ -268,7 +268,7 @@ function renderToolGroup(
             <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
             {formatToolTitle(tools[0], !expanded)}
           </button>
-          <AnimatedCollapse open={expanded} lazy>
+          <AnimatedCollapse open={expanded} lazy unmountOnClose>
             <div className="ml-4 mt-1">
               <ToolCard tool={tools[0]} />
             </div>
@@ -299,7 +299,7 @@ function renderToolGroup(
         <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
         {formatMergedTitle(tools, !expanded)}
       </button>
-      <AnimatedCollapse open={expanded} lazy>
+      <AnimatedCollapse open={expanded} lazy unmountOnClose>
         <div className="ml-4 mt-1 flex flex-col gap-1.5">
           {tools.map((tool, i) => (
             <ToolCard key={`${tool.name}-${tool.label}-${i}`} tool={tool} />
@@ -324,7 +324,7 @@ const SingleToolFold = memo(function SingleToolFold({ tool }: { tool: WebToolPro
         <span className="shrink-0 text-text-muted select-none">{expanded ? '▾' : '▸'}</span>
         {formatToolTitle(tool, !expanded)}
       </button>
-      <AnimatedCollapse open={expanded} lazy>
+      <AnimatedCollapse open={expanded} lazy unmountOnClose>
         <div className="ml-4 mt-1">
           <ToolCard tool={tool} />
         </div>

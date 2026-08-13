@@ -214,6 +214,11 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 	m.progressState.twVisible = 0
 	m.progressState.rwVisible = 0
 	m.typing = false
+	// 允许用户输入：endAgentTurn 后 turn 已结束（typing=false），若 inputReady
+	// 保持 false，用户无法输入直到 handleAgentMessage/finalizeTurnFromSnapshot
+	// 到达（agent 报告 Bug #4：会话切换后 processing=false 但 inputReady 卡住）。
+	// finalizeTurnFromSnapshot 之后会重复设置（幂等无害）。
+	m.inputReady = true
 	m.progressState.twActive = false
 	// Clear pending user message: the turn completed, so the user's message
 	// has been persisted to DB. Keeping it set would cause handleHistoryReload

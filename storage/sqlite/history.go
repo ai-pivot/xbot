@@ -818,12 +818,16 @@ func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 			`, tenantID, historyID).Scan(&turnIdx); err != nil {
 			return fmt.Errorf("resolve rewind turn: %w", err)
 		}
-		// Delete iteration_history for the truncated messages first (no FK cascade
-		// when foreign_keys=OFF). Get the message IDs to delete, then delete their
-		// iteration_history rows.
-		_, _ = store.Exec(`DELETE FROM iteration_history WHERE message_id IN (
-			SELECT id FROM session_messages WHERE tenant_id = ? AND id >= ?
-		)`, tenantID, historyID)
+		// Delete iteration_history for the truncated turns first (no FK cascade
+		// when foreign_keys=OFF). iteration_history rows are written with
+		// message_id=0 (queried by turn_id on read — see writeIterationHistory in
+		// engine_run_tools.go), so the message_id-based delete alone never matches
+		// them and they leak across rewind. Delete by turn_id (the authoritative
+		// association), with a message_id fallback for legacy rows carrying a real id.
+		_, _ = store.Exec(`DELETE FROM iteration_history WHERE tenant_id = ? AND (
+			turn_id IN (SELECT turn_id FROM session_messages WHERE tenant_id = ? AND id >= ? AND turn_id > 0)
+			OR message_id IN (SELECT id FROM session_messages WHERE tenant_id = ? AND id >= ?)
+		)`, tenantID, tenantID, historyID, tenantID, historyID)
 		result, err := store.Exec(`DELETE FROM session_messages WHERE tenant_id = ? AND id >= ?`, tenantID, historyID)
 		if err != nil {
 			return fmt.Errorf("truncate history at history_id %d: %w", historyID, err)
@@ -895,11 +899,13 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 	}
 	result := &ReplayResult{}
 	known := make(map[int64]struct{}, len(records))
+	msgIdx := newMessageIndex(nil)
 	for recordIndex, record := range records {
 		switch record.Type {
 		case HistoryRecordMessage:
 			if !record.Message.DisplayOnly {
 				result.Messages = append(result.Messages, record.Message)
+				msgIdx.add(record.Message.ID, len(result.Messages)-1)
 			}
 		case HistoryRecordCompress, HistoryRecordPrune:
 			var snapshot ContextSnapshot
@@ -912,7 +918,7 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 			if snapshot.Messages == nil || snapshot.HistoryIDs == nil || len(snapshot.HistoryIDs) != len(snapshot.Messages) {
 				return nil, fmt.Errorf("history_id %d: invalid %s snapshot shape", record.HistoryID, record.Type)
 			}
-			previousMessages := result.Messages
+			prevMsgIdx := msgIdx // previousMessages 的 O(1) 索引（ID 覆盖前）
 			result.Messages = append([]llm.ChatMessage(nil), snapshot.Messages...)
 			occurrences := make(map[int64]int)
 			for i := range result.Messages {
@@ -924,20 +930,21 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 						return nil, fmt.Errorf("history_id %d: snapshot references unknown history_id %d", record.HistoryID, result.Messages[i].ID)
 					}
 					occurrence := occurrences[result.Messages[i].ID]
-					if activeMessageIndexOccurrence(previousMessages, result.Messages[i].ID, occurrence) < 0 {
+					if prevMsgIdx.occurrence(result.Messages[i].ID, occurrence) < 0 {
 						return nil, fmt.Errorf("history_id %d: snapshot references inactive history_id %d occurrence %d", record.HistoryID, result.Messages[i].ID, occurrence)
 					}
 					occurrences[result.Messages[i].ID] = occurrence + 1
 				}
 				known[result.Messages[i].ID] = struct{}{}
 			}
+			msgIdx = newMessageIndex(result.Messages) // 重建索引（覆盖后的新 ID）
 			if hasCheckpoint && recordIndex == 0 {
 				result.PendingAskUser = clonePendingAskUser(snapshot.PendingAskUser)
 				if result.PendingAskUser != nil {
 					known[result.PendingAskUser.HistoryID] = struct{}{}
 					known[result.PendingAskUser.ToolHistoryID] = struct{}{}
 				}
-			} else if result.PendingAskUser != nil && activeMessageIndex(result.Messages, result.PendingAskUser.ToolHistoryID) < 0 {
+			} else if result.PendingAskUser != nil && msgIdx.last(result.PendingAskUser.ToolHistoryID) < 0 {
 				return nil, fmt.Errorf("history_id %d: snapshot removes pending AskUser tool target %d", record.HistoryID, result.PendingAskUser.ToolHistoryID)
 			}
 		case HistoryRecordContextEdit:
@@ -955,7 +962,7 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 				if _, ok := known[mutation.TargetHistoryID]; !ok {
 					return nil, fmt.Errorf("history_id %d: context edit targets unknown history_id %d", record.HistoryID, mutation.TargetHistoryID)
 				}
-				idx := activeMessageIndexOccurrence(result.Messages, mutation.TargetHistoryID, mutation.TargetOccurrence)
+				idx := msgIdx.occurrence(mutation.TargetHistoryID, mutation.TargetOccurrence)
 				if idx < 0 {
 					return nil, fmt.Errorf("history_id %d: context edit target %d is not active", record.HistoryID, mutation.TargetHistoryID)
 				}
@@ -971,7 +978,7 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 				return nil, fmt.Errorf("history_id %d: mask has no mutations", record.HistoryID)
 			}
 			for _, mutation := range mutations.Mutations {
-				idx := activeMessageIndexOccurrence(result.Messages, mutation.TargetHistoryID, mutation.TargetOccurrence)
+				idx := msgIdx.occurrence(mutation.TargetHistoryID, mutation.TargetOccurrence)
 				if idx < 0 {
 					return nil, fmt.Errorf("history_id %d: mask target %d is not active", record.HistoryID, mutation.TargetHistoryID)
 				}
@@ -988,7 +995,7 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 			if record.TargetHistoryID == 0 || record.TargetHistoryID != question.ToolHistoryID {
 				return nil, fmt.Errorf("history_id %d: AskUser question target metadata mismatch", record.HistoryID)
 			}
-			idx := activeMessageIndex(result.Messages, question.ToolHistoryID)
+			idx := msgIdx.last(question.ToolHistoryID)
 			if idx < 0 {
 				return nil, fmt.Errorf("history_id %d: AskUser tool target %d is not active", record.HistoryID, question.ToolHistoryID)
 			}
@@ -1010,7 +1017,7 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 			if answer.ToolHistoryID != result.PendingAskUser.ToolHistoryID {
 				return nil, fmt.Errorf("history_id %d: AskUser answer tool target %d does not match pending target %d", record.HistoryID, answer.ToolHistoryID, result.PendingAskUser.ToolHistoryID)
 			}
-			idx := activeMessageIndex(result.Messages, answer.ToolHistoryID)
+			idx := msgIdx.last(answer.ToolHistoryID)
 			if idx < 0 {
 				return nil, fmt.Errorf("history_id %d: AskUser answer tool target %d is not active", record.HistoryID, answer.ToolHistoryID)
 			}
@@ -1200,4 +1207,43 @@ func activeMessageIndexOccurrence(messages []llm.ChatMessage, historyID int64, o
 		seen++
 	}
 	return -1
+}
+
+// messageIndex 是 Replay 内 HistoryID → 出现位置列表 的 O(1) 查找索引。
+// Replay 处理大量 mask/context_edit 记录时，activeMessageIndexOccurrence 的
+// O(N) 线性扫描构成 O(N²) 瓶颈（1169 条 mask × 27442 条消息 = 秒级延迟，
+// 用户报告"切会话时历史过几秒才渲染"——每次 fetchHistory 都全量 Replay）。
+// 索引在消息追加/压缩重建时同步维护，查找从 O(N) 降到 O(1)。
+type messageIndex struct {
+	byID map[int64][]int // HistoryID → 所有出现位置（升序）
+}
+
+func newMessageIndex(messages []llm.ChatMessage) *messageIndex {
+	mi := &messageIndex{byID: make(map[int64][]int, len(messages))}
+	for i, m := range messages {
+		mi.byID[m.ID] = append(mi.byID[m.ID], i)
+	}
+	return mi
+}
+
+func (mi *messageIndex) add(id int64, index int) {
+	mi.byID[id] = append(mi.byID[id], index)
+}
+
+// occurrence 返回第 occurrence 次出现的 index（与 activeMessageIndexOccurrence 等价）。
+func (mi *messageIndex) occurrence(historyID int64, occurrence int) int {
+	idxs := mi.byID[historyID]
+	if occurrence < 0 || occurrence >= len(idxs) {
+		return -1
+	}
+	return idxs[occurrence]
+}
+
+// last 返回最后一次出现的 index（与 activeMessageIndex 等价）。
+func (mi *messageIndex) last(historyID int64) int {
+	idxs := mi.byID[historyID]
+	if len(idxs) == 0 {
+		return -1
+	}
+	return idxs[len(idxs)-1]
 }

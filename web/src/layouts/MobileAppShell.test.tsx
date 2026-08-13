@@ -112,6 +112,9 @@ describe('MobileAppShell', () => {
     // Panel buttons use i18n labels (English in test env navigator.language)
     fireEvent.click(screen.getByLabelText('Info'))
     expect(screen.getByText('info-panel')).toBeInTheDocument()
+    // Agent 面板必须保持挂载（display:none 隐藏）——卸载会销毁
+    // MessageStore/ProgressStore，切回时依赖网络恢复，迭代可能少
+    expect(screen.getByText('agent-panel')).toBeInTheDocument()
 
     // Return to the agent view via the bottom nav "会话" button
     fireEvent.click(screen.getByText('会话'))

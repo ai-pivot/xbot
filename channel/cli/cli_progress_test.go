@@ -2835,3 +2835,63 @@ func TestConsistency_DBHistorySupersedesFinalize(t *testing.T) {
 // which held the last structured event's completed tools. This caused
 // finalTools to be empty → no snapshot → iterations empty → streaming
 // message removed → previous iteration data permanently lost.
+
+// TestHandleProgressMsg_StreamDeltaUpdatesTypewriter 复现"打字机失效"根因：
+// 后端 delta push 协议发送 StreamDelta（增量文本），但 CLI 的 handleProgressMsg
+// 的 isStreamOnly 判断不含 StreamDelta → 事件被误分类为 structured（走
+// applyProgressSnapshot，也不处理 StreamDelta）→ 增量文本完全被忽略 → 打字机
+// 失效（消息结束后 text 事件才一次性显示）。
+func TestHandleProgressMsg_StreamDeltaUpdatesTypewriter(t *testing.T) {
+	model := initTestModel()
+	model.typing = true
+	model.progressState.current = &protocol.ProgressEvent{
+		Iteration:     1,
+		StreamContent: "Hello",
+	}
+
+	// delta push：StreamDelta=增量，Iteration=当前迭代（>0）
+	model.handleProgressMsg(cliProgressMsg{payload: &protocol.ProgressEvent{
+		ChatID:      "cli:/test",
+		Iteration:   1,
+		StreamDelta: " World",
+	}})
+
+	if model.progressState.current == nil {
+		t.Fatal("progressState.current is nil")
+	}
+	if got := model.progressState.current.StreamContent; got != "Hello World" {
+		t.Fatalf("StreamContent = %q, want %q (StreamDelta 未被追加，打字机失效)", got, "Hello World")
+	}
+}
+
+// TestCancelGuard_ClearedByNewTurnProgress 复现"cancel guard 死代码"：
+// 旧代码把清除 turnCancelled 的逻辑放在 cancel guard 的 return 之后 —— 永远
+// 不可达。用户 Ctrl+C 后（turnCancelled=true），新 turn 的所有 progress 被
+// guard 阻塞 → 打字机失效、工具进度不可见（agent 报告 Bug #1/#5）。
+// 修复：清除逻辑移到 guard 之前（typing=true 时新 turn 的第一个 progress
+// 清除 cancel 标志）。
+func TestCancelGuard_ClearedByNewTurnProgress(t *testing.T) {
+	model := initTestModel()
+	model.typing = true // 用户已发新消息（startAgentTurn 设置）
+	model.turnCancelled = true
+	model.progressState.current = &protocol.ProgressEvent{Iteration: 1, StreamContent: "Hello"}
+
+	// 新 turn 的 stream-only progress（Phase=""）—— 应清除 cancel 标志并放行
+	model.handleProgressMsg(cliProgressMsg{payload: &protocol.ProgressEvent{
+		ChatID:      "cli:/test",
+		Iteration:   1,
+		StreamDelta: " new turn streaming",
+	}})
+
+	if model.turnCancelled {
+		t.Fatal("turnCancelled 未被新 turn progress 清除（cancel guard 死代码）")
+	}
+	if model.progressState.current == nil || model.progressState.current.StreamContent != "Hello new turn streaming" {
+		t.Fatalf("新 turn 的 progress 被 cancel guard 阻塞，StreamContent=%q", func() string {
+			if model.progressState.current == nil {
+				return "<nil>"
+			}
+			return model.progressState.current.StreamContent
+		}())
+	}
+}

@@ -137,9 +137,17 @@ export function MobileAppShell() {
           </header>
 
           <main className="min-h-0 flex-1 overflow-hidden">
-            {view === 'agent' ? (
+            {/* Agent 面板始终挂载（display:none 切换视图）。条件渲染卸载会
+                销毁 AgentPanel 的 MessageStore/ProgressStore（useRef 随组件
+                卸载丢失），切回会话时重建空 store → 依赖 fetchHistory +
+                hydration 恢复，API 竞态下迭代可能少（用户报告："切换工具按钮
+                再切回会话按钮，历史有可能少一些迭代"）。保持挂载则流式状态
+                持续更新，切回立即显示完整历史。 */}
+            <div className="h-full" style={{ display: view === 'agent' ? undefined : 'none' }}>
               <AgentPanel {...mobilePanelProps} />
-            ) : view === 'terminal' && activeTerminalId ? (
+            </div>
+            {view !== 'agent' && (
+              view === 'terminal' && activeTerminalId ? (
               <div className="flex h-full flex-col">
                 <div className="flex shrink-0 items-center gap-2 border-b border-border px-2" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(2.5rem + var(--safe-area-top))' }}>
                   <Button
@@ -161,13 +169,14 @@ export function MobileAppShell() {
                   </Suspense>
                 </div>
               </div>
-            ) : (
+              ) : (
               <MobileDetail
                 activePanel={activePanel}
                 onPanelChange={setActivePanel}
                 tabManager={tabManager}
                 terminalManager={terminalManager}
               />
+              )
             )}
           </main>
 

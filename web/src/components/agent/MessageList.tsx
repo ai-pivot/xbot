@@ -160,6 +160,10 @@ export function MessageList({
   // so the user's visible region stays put — new older rows appear above it,
   // which pushes the scrollbar toward the middle (not the top).
   const loadMoreAnchorIdRef = useRef<string | null>(null)
+  // 锚点行加载前顶部到视口顶部的偏移（item.start - scrollTop）。加载后
+  // el.scrollTop = 锚点行的新 start - 该偏移，让锚点行保持在视口中的原位置
+  // （用户看到的内容不变，滚动条落在中间）。
+  const loadMoreAnchorOffsetRef = useRef<number>(0)
   // Invariant guard: the "thinking…" busy placeholder must never render below
   // a FINISHED assistant (copy button shown — turn complete). A finished turn
   // followed by "thinking…" would imply the completed turn is still running.
@@ -426,6 +430,9 @@ export function MessageList({
           if (firstVisible) {
             const anchorRow = rowsRef.current[firstVisible.index]
             loadMoreAnchorIdRef.current = anchorRow?.id ?? null
+            // 记录锚点行顶部到视口顶部的偏移，加载后用它恢复锚点行位置。
+            const scroller = scrollRef.current
+            loadMoreAnchorOffsetRef.current = scroller ? firstVisible.start - scroller.scrollTop : 0
           }
           void onLoadMore()
         }
@@ -456,12 +463,43 @@ export function MessageList({
     const anchorId = loadMoreAnchorIdRef.current
     if (!anchorId) return
     const newIdx = rowsRef.current.findIndex((m) => m.id === anchorId)
-    if (newIdx < 0) return
-    // Double rAF: frame 1 = mount + estimate, frame 2 = measure + scroll
+    if (newIdx < 0) {
+      // 锚点行被 turnID:role merge 掉了（id 变了）——必须清 guard，否则
+      // loadMoreAnchorIdRef 永久非 null，IntersectionObserver 永远跳过，
+      // 滚动加载只触发一次（用户报告）。
+      loadMoreAnchorIdRef.current = null
+      return
+    }
+    const el = scrollRef.current
+    if (!el) {
+      loadMoreAnchorIdRef.current = null
+      return
+    }
+    const anchorOffset = loadMoreAnchorOffsetRef.current
+    // Double rAF: frame 1 = mount + estimate, frame 2 = measure real heights.
     const raf1 = requestAnimationFrame(() => {
       const raf2 = requestAnimationFrame(() => {
         loadMoreAnchorIdRef.current = null
-        virtualizer.scrollToIndex(newIdx, { align: 'start' })
+        // align='start' 明确返回锚点行顶部 offset（item.start - scrollPaddingStart）。
+        // 默认 align='auto' 会在锚点行已在视口中时返回"当前 scrollOffset"而非其
+        // 位置（getOffsetForIndex 内部 618 行），减去 anchorOffset 后滚动位置错误
+        // （用户报告"卡一下就会跑顶上"）。
+        const applyAnchor = (attempts: number) => {
+          const off = virtualizer.getOffsetForIndex(newIdx, 'start')
+          if (off) {
+            programmaticScrollRef.current = true
+            el.scrollTop = off[0] - anchorOffset
+            queueMicrotask(() => { programmaticScrollRef.current = false })
+            return
+          }
+          // 测量未完成（getOffsetForIndex 对未测量行返回 undefined）——"卡一下"
+          // 时 ResizeObserver 可能还没触发，重试几帧等测量完成，避免锚定失效
+          // （scrollTop 保持加载前的 ≈0，视口显示新加载内容最上方）。
+          if (attempts > 0) {
+            requestAnimationFrame(() => applyAnchor(attempts - 1))
+          }
+        }
+        applyAnchor(3)
       })
       // Store raf2 for cleanup
       cleanupRafRef.current = raf2
