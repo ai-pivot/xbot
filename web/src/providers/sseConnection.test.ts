@@ -971,7 +971,6 @@ describe('SSE 切会话竞态', () => {
     const conn = new SSEConnectionImpl()
     conn.subscribe('chat-A')
     MockEventSource.instances[0].open()
-    const sourceA = MockEventSource.instances[0]
 
     // 切到 B（sourceA 关闭，sourceB 活跃）
     conn.subscribe('chat-B')
