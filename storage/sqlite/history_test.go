@@ -1126,3 +1126,48 @@ func TestHistorySemanticLocksUseBoundedStripes(t *testing.T) {
 		t.Fatal("tenant IDs in the same stripe did not share the bounded lock")
 	}
 }
+
+// TestReplayMaskPerformance 复现"切会话历史延迟"根因：Replay 处理大量 mask
+// 记录时 activeMessageIndexOccurrence 的 O(N) 线性扫描构成 O(N²)（1169 条
+// mask × 27442 条消息 = 秒级）。修复后 Replay 用 messageIndex O(1) 查找。
+func TestReplayMaskPerformance(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	defer db.Close()
+	const n = 6000
+	// 插入 n 条消息
+	ids := make([]int64, n)
+	for i := 0; i < n; i++ {
+		id, err := svc.AppendMessage(tenantID, llm.NewAssistantMessage("msg"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
+	}
+	// 每条消息一条 mask 记录（O(N²) 下 3000×3000 = 900 万次扫描）
+	masks := make([]MaskMutation, n)
+	for i, id := range ids {
+		masks[i] = MaskMutation{TargetHistoryID: id, Content: "[masked]"}
+	}
+	if err := svc.AppendMasks(tenantID, masks); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	replayed, err := svc.Replay(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+	if len(replayed.Messages) != n {
+		t.Fatalf("replayed %d messages, want %d", len(replayed.Messages), n)
+	}
+	for _, m := range replayed.Messages {
+		if m.Content != "[masked]" {
+			t.Fatalf("mask not applied: %q", m.Content)
+		}
+	}
+	// O(N) 修复后 3000 条 < 1s；O(N²) 需要 ~分钟级
+	if elapsed > 2*time.Second {
+		t.Fatalf("Replay with %d masks took %v (O(N²) linear scan not fixed)", n, elapsed)
+	}
+	t.Logf("Replay with %d messages + %d masks: %v", n, n, elapsed)
+}
