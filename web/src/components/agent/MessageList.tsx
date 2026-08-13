@@ -160,6 +160,10 @@ export function MessageList({
   // so the user's visible region stays put — new older rows appear above it,
   // which pushes the scrollbar toward the middle (not the top).
   const loadMoreAnchorIdRef = useRef<string | null>(null)
+  // 锚点行加载前顶部到视口顶部的偏移（item.start - scrollTop）。加载后
+  // el.scrollTop = 锚点行的新 start - 该偏移，让锚点行保持在视口中的原位置
+  // （用户看到的内容不变，滚动条落在中间）。
+  const loadMoreAnchorOffsetRef = useRef<number>(0)
   // Invariant guard: the "thinking…" busy placeholder must never render below
   // a FINISHED assistant (copy button shown — turn complete). A finished turn
   // followed by "thinking…" would imply the completed turn is still running.
@@ -426,6 +430,9 @@ export function MessageList({
           if (firstVisible) {
             const anchorRow = rowsRef.current[firstVisible.index]
             loadMoreAnchorIdRef.current = anchorRow?.id ?? null
+            // 记录锚点行顶部到视口顶部的偏移，加载后用它恢复锚点行位置。
+            const scroller = scrollRef.current
+            loadMoreAnchorOffsetRef.current = scroller ? firstVisible.start - scroller.scrollTop : 0
           }
           void onLoadMore()
         }
@@ -468,19 +475,21 @@ export function MessageList({
       loadMoreAnchorIdRef.current = null
       return
     }
-    // 记录加载前视口位置。加载后旧行 prepend 在上方，scrollHeight 增加 ——
-    // scrollTop 按增量调整，让用户看到的内容不变（滚动条落在中间，锚点行
-    // 保持在加载前的位置），而不是跳到最上方。
-    const prevScrollTop = el.scrollTop
-    const prevScrollHeight = el.scrollHeight
-    // Double rAF: frame 1 = mount + estimate, frame 2 = measure + adjust
+    const anchorOffset = loadMoreAnchorOffsetRef.current
+    // Double rAF: frame 1 = mount + estimate, frame 2 = measure real heights.
     const raf1 = requestAnimationFrame(() => {
       const raf2 = requestAnimationFrame(() => {
         loadMoreAnchorIdRef.current = null
-        const grown = el.scrollHeight - prevScrollHeight
-        if (grown !== 0 || el.scrollTop !== prevScrollTop) {
+        const item = virtualizer.getVirtualItems().find((i) => i.index === newIdx)
+        if (item) {
+          // 锚点行的新 start（新行 prepend 后 TanStack 已测量）减去加载前的
+          // 视口偏移 = 新的 scrollTop。锚点行保持在加载前的位置（用户看到的
+          // 内容不变，滚动条落在中间，新加载的旧行在锚点上方）。不要用
+          // scrollHeight 增量 —— rAF 时 scrollHeight 可能还没测量完（grown=0），
+          // 且新行 prepend 后视口顶部显示新内容（用户报告：滚动条在最顶上、
+          // 内容变成新加载内容最上方）。
           programmaticScrollRef.current = true
-          el.scrollTop = prevScrollTop + grown
+          el.scrollTop = item.start - anchorOffset
           queueMicrotask(() => { programmaticScrollRef.current = false })
         }
       })
