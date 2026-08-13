@@ -159,6 +159,68 @@ describe('MessageStore — cancel 冻结', () => {
     expect(s.hasLive(361)).toBe(true)
     expect(s.hasLive(362)).toBe(true)
   })
+
+  // 复现用户 bug：cancel 一个 turn 后发新 user msg，被 cancel 的 turn 的
+  // live progress 在新 user msg 后重复渲染。
+  // 根因：ProgressStore.lastTurnID 可能过时（turn_started 在 SSE 上丢失时
+  // 停留在 N-1），而 MessageStore 的 live 由事件 turn_id 写入正确 slot N。
+  // commitLiveProgressAndReset 用过时的 lastTurnID commit → cancel 内容同时
+  // 落在旧 slot（lastTurnID）和 live slot → 重复。修复：commit 时用
+  // liveTurnIDWithContent() 对齐（优先 frozen live 的 turnID）。
+  it('liveTurnIDWithContent：优先返回 frozen（cancel）live 的 turnID，用于 commit 对齐', () => {
+    const s = new MessageStore()
+    // 无 live → 0
+    expect(s.liveTurnIDWithContent()).toBe(0)
+    // 普通 live（内容非空）
+    s.updateLive(360, liveState(360, { content: 'streaming', iterations: [iter(1)] }))
+    expect(s.liveTurnIDWithContent()).toBe(360)
+    // frozen（cancel）live → 优先返回其 turnID（即使有更新的非 frozen live）
+    s.freeze(360)
+    s.updateLive(361, liveState(361, { content: 'new turn', iterations: [iter(1)] }))
+    expect(s.liveTurnIDWithContent()).toBe(360)
+    // 空 live 壳不参与（无内容）
+    const s2 = new MessageStore()
+    s2.updateLive(360, liveState(360, { phase: 'thinking', lastIter: 0 }))
+    expect(s2.liveTurnIDWithContent()).toBe(0)
+  })
+
+  // 修复后行为：commit 到正确 turnID（frozen live 的 slot）→ 合并渲染单行
+  it('cancel 后发新消息：commit 到 frozen live 的 turnID → 合并渲染不重复', () => {
+    const s = new MessageStore()
+    s.setUser(360, user('u360', 'msg1', 360))
+    s.updateLive(360, liveState(360, { content: 'cancelled partial', iterations: [iter(1)] }))
+    s.freeze(360)
+    // 修复后：commitLiveProgressAndReset 用 liveTurnIDWithContent()=360 对齐
+    // （而非过时的 lastTurnID）→ commitAssistant(360)
+    s.commitAssistant(360, 'cancelled partial', [iter(1)])
+    s.beginTurn(361)
+    s.setUser(361, user('u361', 'msg2', 361))
+    const rows = s.toRows()
+    // cancel 内容只出现一次（slot 360 的 assistant + frozen live 合并单行）
+    expect(rows.filter((r) => r.content === 'cancelled partial')).toHaveLength(1)
+    expect(rows.some((r) => r.id === 'turn-360-live')).toBe(false)
+    // 新 user msg 在被 cancel 的 turn 之后
+    const idxCancelled = rows.findIndex((r) => r.content === 'cancelled partial')
+    const idxUser2 = rows.findIndex((r) => r.content === 'msg2')
+    expect(idxUser2).toBeGreaterThan(idxCancelled)
+  })
+
+  // 正常场景（turn_started 到达，lastTurnID 正确）：cancel 内容只渲染一次
+  it('cancel 后发新消息：lastTurnID 正确时被 cancel 的 turn 合并渲染单行', () => {
+    const s = new MessageStore()
+    s.setUser(360, user('u360', 'msg1', 360))
+    s.updateLive(360, liveState(360, { content: 'cancelled partial', iterations: [iter(1)] }))
+    s.freeze(360)
+    // commitLiveProgressAndReset 用正确 lastTurnID=360
+    s.commitAssistant(360, 'cancelled partial', [iter(1)])
+    s.beginTurn(361)
+    s.setUser(361, user('u361', 'msg2', 361))
+    const rows = s.toRows()
+    expect(rows.filter((r) => r.content === 'cancelled partial')).toHaveLength(1)
+    // slot 360 的 assistant + frozen live 合并渲染为一行（不产生第二行）
+    expect(rows.filter((r) => r.turnID === 360)).toHaveLength(2) // user + assistant
+    expect(rows.some((r) => r.id === 'turn-360-live')).toBe(false)
+  })
 })
 
 // ── 乐观 user 绑定 ──

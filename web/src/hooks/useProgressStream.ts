@@ -594,6 +594,7 @@ export function hasVisibleProgress(snap: ProgressSnapshot): boolean {
 function commitLiveProgressAndReset(
   store: ProgressStore,
   complete: ((finalText: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => void) | undefined,
+  messageStore?: MessageStore,
 ): void {
   const snap = store.getSnapshot()
   if (hasVisibleProgress(snap)) {
@@ -654,7 +655,20 @@ function commitLiveProgressAndReset(
         )
         commitText = ''
       }
-      complete?.(commitText, commitIters, undefined, store.lastTurnID, true)
+      // 用 MessageStore 中实际 live 的 turnID 对齐 commit 目标 —— ProgressStore
+      // lastTurnID 可能过时（turn_started 在 SSE 上丢失时停留在旧值），而
+      // MessageStore 的 live（含 frozen cancel live）由事件 turn_id 写入正确
+      // slot。若用过时的 lastTurnID commit，被 cancel 的 turn 内容会同时落在
+      // 旧 slot（lastTurnID）和 live slot → 重复渲染（用户报告："cancel 一个
+      // 消息后发新 user msg，被 cancel 的 turn 的 live progress 在 user msg
+      // 后重复渲染"）。liveTurnIDWithContent() 优先返回 frozen live 的 turnID
+      // （cancel 内容已渲染的 turn 归属必须与 commit 目标一致）。
+      let commitTurnID = store.lastTurnID
+      if (messageStore) {
+        const liveTurn = messageStore.liveTurnIDWithContent()
+        if (liveTurn > 0) commitTurnID = liveTurn
+      }
+      complete?.(commitText, commitIters, undefined, commitTurnID, true)
     }
   }
   // After committing: reset the iteration state for a NORMAL new turn / session
@@ -900,7 +914,7 @@ function handleProgressMessage(
           // content is the ONLY display of the old turn's reply; committing it
           // before the reset keeps it visible at the same position (no flicker,
           // no data loss) instead of vanishing in one frame.
-          commitLiveProgressAndReset(store, completeRef?.current)
+          commitLiveProgressAndReset(store, completeRef?.current, messageStore)
           store.lastIter = 0
           // 旧 turn（lastTurnID，turn_started 尚未更新）的 live 已 commit（finalize）。
           // 记录 finalizedTurnID：旧 turn 的迟到 text/progress_structured 据此丢弃
@@ -1196,7 +1210,7 @@ function handleProgressMessage(
         // directly makes it vanish in one frame (flicker). Hand it to the
         // committed message list first, then reset cleanly.
         if (store.lastTurnID > 0 && hasVisibleProgress(store.getSnapshot())) {
-          commitLiveProgressAndReset(store, completeRef?.current)
+          commitLiveProgressAndReset(store, completeRef?.current, messageStore)
         }
         store.lastTurnID = p.turn_id
         // NO optimistic user messages: user rows come from backend user_echo
