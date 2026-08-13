@@ -818,12 +818,16 @@ func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 			`, tenantID, historyID).Scan(&turnIdx); err != nil {
 			return fmt.Errorf("resolve rewind turn: %w", err)
 		}
-		// Delete iteration_history for the truncated messages first (no FK cascade
-		// when foreign_keys=OFF). Get the message IDs to delete, then delete their
-		// iteration_history rows.
-		_, _ = store.Exec(`DELETE FROM iteration_history WHERE message_id IN (
-			SELECT id FROM session_messages WHERE tenant_id = ? AND id >= ?
-		)`, tenantID, historyID)
+		// Delete iteration_history for the truncated turns first (no FK cascade
+		// when foreign_keys=OFF). iteration_history rows are written with
+		// message_id=0 (queried by turn_id on read — see writeIterationHistory in
+		// engine_run_tools.go), so the message_id-based delete alone never matches
+		// them and they leak across rewind. Delete by turn_id (the authoritative
+		// association), with a message_id fallback for legacy rows carrying a real id.
+		_, _ = store.Exec(`DELETE FROM iteration_history WHERE tenant_id = ? AND (
+			turn_id IN (SELECT turn_id FROM session_messages WHERE tenant_id = ? AND id >= ? AND turn_id > 0)
+			OR message_id IN (SELECT id FROM session_messages WHERE tenant_id = ? AND id >= ?)
+		)`, tenantID, tenantID, historyID, tenantID, historyID)
 		result, err := store.Exec(`DELETE FROM session_messages WHERE tenant_id = ? AND id >= ?`, tenantID, historyID)
 		if err != nil {
 			return fmt.Errorf("truncate history at history_id %d: %w", historyID, err)

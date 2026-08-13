@@ -237,6 +237,57 @@ func TestRewindAtomicallyRestoresTokenState(t *testing.T) {
 	}
 }
 
+// TestRewindDeletesIterationHistoryByTurnID 复现用户报告："被 rewind 掉的 iter 没删除"。
+// writeIterationHistory 写入 iteration_history 时 message_id=0（按 turn_id 查询），
+// 旧版 RewindToHistoryID 只按 message_id 删除 → message_id=0 的行永远删不掉，残留到
+// 后续 turn（server 重启后 turn_id 复用），导致两个 turn 的 iterations 混在一起。
+func TestRewindDeletesIterationHistoryByTurnID(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+
+	keepUser := llm.NewUserMessage("keep")
+	keepUser.TurnID = 100
+	if _, err := svc.AppendMessage(tenantID, keepUser); err != nil {
+		t.Fatal(err)
+	}
+
+	target := llm.NewUserMessage("rewrite")
+	target.TurnID = 200
+	targetID, err := svc.AppendMessage(tenantID, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := llm.NewAssistantMessage("future")
+	future.TurnID = 200
+	if _, err := svc.AppendMessage(tenantID, future); err != nil {
+		t.Fatal(err)
+	}
+
+	// writeIterationHistory 的写入形态：message_id=0，仅 turn_id 关联。
+	for _, turnID := range []uint64{100, 200} {
+		if err := svc.AppendIterationHistory(tenantID, 0, turnID, IterationRecord{
+			MessageID: 0, TurnID: turnID, Iteration: 1, Content: "x",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, _, err := svc.RewindToHistoryID(tenantID, targetID); err != nil {
+		t.Fatal(err)
+	}
+
+	if recs, err := svc.GetIterationHistoryByTurn(tenantID, 200); err != nil {
+		t.Fatal(err)
+	} else if len(recs) != 0 {
+		t.Fatalf("rewind 后 turn 200 的 iteration_history 残留 %d 条", len(recs))
+	}
+	if recs, err := svc.GetIterationHistoryByTurn(tenantID, 100); err != nil {
+		t.Fatal(err)
+	} else if len(recs) != 1 {
+		t.Fatalf("turn 100 的 iteration_history 应保留 1 条，实际 %d", len(recs))
+	}
+	_ = db
+}
+
 func TestRewindRollsBackHistoryWhenTokenStateUpdateFails(t *testing.T) {
 	db, svc, tenantID := newHistoryTestService(t)
 	if _, err := svc.AppendMessage(tenantID, llm.NewUserMessage("previous")); err != nil {
