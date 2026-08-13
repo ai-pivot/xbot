@@ -368,11 +368,20 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			}
 			if len(turnSet) > 0 {
 				svc := sqlite.NewSessionService(ag.MultiSession().DB())
-				turnIterMap = make(map[uint64][]sqlite.IterationRecord)
+				// 批量查询所有 turn 的 iteration_history —— 一次 IN 查询替代
+				// 循环单查（每 turn 一次 DB 查询是 history 接口慢的主要根源：
+				// 100 条消息可能 10-30 个 turn → 10-30 次 SQLite 查询）。
+				turnIDs := make([]uint64, 0, len(turnSet))
 				for turnID := range turnSet {
-					recs, _ := svc.GetIterationHistoryByTurn(tenantID, turnID)
-					if len(recs) > 0 {
-						turnIterMap[turnID] = recs
+					turnIDs = append(turnIDs, turnID)
+				}
+				batch, _ := svc.GetIterationHistoryByTurns(tenantID, turnIDs)
+				if len(batch) > 0 {
+					turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(batch))
+					for turnID, recs := range batch {
+						if len(recs) > 0 {
+							turnIterMap[turnID] = recs
+						}
 					}
 				}
 			}

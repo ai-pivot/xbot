@@ -288,6 +288,46 @@ func TestRewindDeletesIterationHistoryByTurnID(t *testing.T) {
 	_ = db
 }
 
+func TestGetIterationHistoryByTurns(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	// 写入 3 个 turn 的迭代（每 turn 2 条）
+	for _, turnID := range []uint64{100, 200, 300} {
+		for i := 1; i <= 2; i++ {
+			if err := svc.AppendIterationHistory(tenantID, 0, turnID, IterationRecord{
+				MessageID: 0, TurnID: turnID, Iteration: i, Content: fmt.Sprintf("t%d-i%d", turnID, i),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// 批量查询（一次 IN 查询替代循环单查）
+	got, err := svc.GetIterationHistoryByTurns(tenantID, []uint64{100, 200, 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("批量查询 turn 数 = %d, want 3", len(got))
+	}
+	for _, turnID := range []uint64{100, 200, 300} {
+		recs := got[turnID]
+		if len(recs) != 2 {
+			t.Fatalf("turn %d 迭代 = %d, want 2", turnID, len(recs))
+		}
+		if recs[0].Iteration != 1 || recs[1].Iteration != 2 {
+			t.Fatalf("turn %d 迭代顺序错误: %v", turnID, recs)
+		}
+	}
+	// 空输入 → 空结果
+	empty, err := svc.GetIterationHistoryByTurns(tenantID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("空输入应返回空，实际 %d", len(empty))
+	}
+	_ = db
+}
+
 func TestRewindRollsBackHistoryWhenTokenStateUpdateFails(t *testing.T) {
 	db, svc, tenantID := newHistoryTestService(t)
 	if _, err := svc.AppendMessage(tenantID, llm.NewUserMessage("previous")); err != nil {

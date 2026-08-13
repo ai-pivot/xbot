@@ -3578,6 +3578,41 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 // buildPrompt 构建完整的 LLM 消息列表（共用逻辑：processMessage 和 handlePromptQuery 都调用）。
 // 使用 Agent 持有的 pipeline 实例，通过 MessageContext.Extra 传递动态数据。
+// fillAssistantContentFromIterations 为 content 空的 assistant 消息补充迭代内容
+// （LLM 上下文构建用）。v55+ 数据模型：assistant 回复不写 session_messages.content
+// （msg 是 iter 组成的集合），回复文本在 iteration_history 的最终迭代。
+// 迭代 content 是权威数据源，没有才 fallback 到 msg.content（旧数据不受影响）。
+func (a *Agent) fillAssistantContentFromIterations(msgs []llm.ChatMessage, tenantSession *session.TenantSession) {
+	var turnIDs []uint64
+	for _, m := range msgs {
+		if m.Role == "assistant" && m.Content == "" && m.TurnID > 0 {
+			turnIDs = append(turnIDs, m.TurnID)
+		}
+	}
+	if len(turnIDs) == 0 {
+		return
+	}
+	recs, err := tenantSession.GetIterationHistoryByTurns(turnIDs)
+	if err != nil {
+		return // 补充失败：保持 content 空（前端/CLI 从迭代取）
+	}
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Role != "assistant" || m.Content != "" || m.TurnID == 0 {
+			continue
+		}
+		iterRecs, ok := recs[m.TurnID]
+		if !ok || len(iterRecs) == 0 {
+			continue
+		}
+		// 最终迭代的 content 就是该 turn 的回复文本（最后回复 = 最终 iter）
+		last := iterRecs[len(iterRecs)-1]
+		if last.Content != "" {
+			m.Content = last.Content
+		}
+	}
+}
+
 func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantSession *session.TenantSession) ([]llm.ChatMessage, error) {
 	userCtx := UserContextFromContext(ctx)
 
@@ -3585,10 +3620,11 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	if err != nil {
 		return nil, fmt.Errorf("replay session history: %w", err)
 	}
-
-	// Auto worktree detection: if multiple sessions share the same git repo,
-	// automatically create an isolated worktree to prevent file conflicts.
-	// Gated behind auto_worktree user setting (default: false).
+	// v55+ 数据模型：assistant 回复不再写 session_messages.content（msg 是
+	// iter 组成的集合，content 是历史遗留字段）。回复文本在 iteration_history
+	// 的最终迭代 —— LLM 上下文构建时从迭代取（迭代 content 是权威数据源，
+	// 没有才 fallback 到 msg.content，即旧数据不受影响）。
+	a.fillAssistantContentFromIterations(history, tenantSession)
 	sessKey := qualifyChatID(msg.Channel, msg.ChatID)
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.workspaceRoot(sbUID)

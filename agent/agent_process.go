@@ -566,6 +566,13 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// with content + reasoning; iteration data lives in iteration_history.
 	assistantMsg := llm.NewAssistantMessage(finalContent)
 	assistantMsg.ReasoningContent = out.ReasoningContent
+	// v55+ 数据模型：assistant 回复不再写 session_messages.content —— 回复文本
+	// 在 iteration_history 的最终迭代（msg 是 iter 组成的集合，content 是历史
+	// 遗留字段）。内存 cfg.Messages 保留 content（同 Run 内 LLM 上下文需要），
+	// DB 持久化不写 —— 读取时 buildPrompt 从迭代 fallback（迭代权威），前端
+	// 从迭代渲染。
+	persistMsg := assistantMsg // struct 值复制
+	persistMsg.Content = ""
 	// Set TurnID from the active turn so the frontend can dedup the live SSE
 	// message against the DB-persisted message by turnID:role. Without this,
 	// the DB row has turn_id=0 while the SSE text event carries the real
@@ -575,11 +582,12 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// handleCancelledRun already does this; handleRunOutput must too.
 	if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
 		assistantMsg.TurnID = tid
+		persistMsg.TurnID = tid
 	}
 	// Detail JSON is no longer written — iteration_history table is the
 	// single source of truth for iteration data (v55+). Detail JSON remains
 	// only as a backward-compat fallback for old data pre-v55.
-	if err := tenantSession.AddMessage(assistantMsg); err != nil {
+	if err := tenantSession.AddMessage(persistMsg); err != nil {
 		return nil, fmt.Errorf("append assistant message: %w", err)
 	}
 
@@ -592,6 +600,16 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	sendMeta := map[string]string{}
 	if tid := msg.Metadata["turn_id"]; tid != "" {
 		sendMeta["turn_id"] = tid
+	}
+	// text 事件带 progress_history（权威迭代数据，含最后迭代 content）——
+	// 否则前端 commit 的 iterations 只依赖 snap.iterationHistory（progress
+	// 事件的时序增量，最后迭代 content 可能缺失 → typing 完成后 content
+	// 消失；刷新后从 DB 恢复正常，用户报告）。web.go 用
+	// msg.Metadata["progress_history"] 填充 WSMessage.ProgressHistory。
+	if len(out.IterationHistory) > 0 {
+		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+			sendMeta["progress_history"] = string(jsonBytes)
+		}
 	}
 	if err := a.sendMessage(msg.Channel, msg.ChatID, finalContent, sendMeta); err != nil {
 		log.Ctx(ctx).WithError(err).Error("Failed to send final response via sendMessage")

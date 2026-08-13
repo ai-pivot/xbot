@@ -948,32 +948,20 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 		}
 
 		// Write the final iteration to iteration_history (content + reasoning,
-		// no tools). snapshotCompletedIteration was called after executeToolCalls
-		// — at that point Content/ReasoningContent were empty (set above, not
-		// before). This writes the final iteration's content/reasoning directly
-		// to iteration_history, completing the iteration record.
-		// IMPORTANT: write cleanContent (the raw LLM output BEFORE appending
-		// truncation/content_filter warnings). The warnings are UI-only —
-		// iteration_history should preserve the actual LLM output. The
-		// 'truncated'/'content_filter' fake tools (added above) carry the
-		// warning metadata.
+		// no tools). snapshotCompletedIteration was NOT called for this final
+		// text-only iteration (no tool execution) — call it now that
+		// Content/ReasoningContent are set (above), so BOTH:
+		//   1. iteration_history (DB) gets the final content — refresh shows it
+		//   2. the frontend progress event (OnIterationSnapshot → IterationHistory)
+		//      carries the final content — WITHOUT this, the live iteration's
+		//      content is empty in the frontend ProgressStore, and after the
+		//      text event commits the iterations the final content VANISHES
+		//      (user report: "刷新前看不到最后的迭代 content，content stream 完
+		//      之后会消失；刷新后恢复").
+		// snapshotCompletedIteration uses structuredProgress.Content (set above)
+		// and appends CompletedTools as tools; it writes iteration_history once.
 		if s.structuredProgress != nil && s.structuredProgress.Iteration > 0 {
-			s.writeIterationHistory(s.structuredProgress.Iteration, IterationSnapshot{
-				Iteration: s.structuredProgress.Iteration,
-				Content:   cleanContent,
-				Reasoning: s.structuredProgress.ReasoningContent,
-				Tools: func() []IterationToolSnapshot {
-					// Include the truncated/content_filter fake tool if added.
-					tools := make([]IterationToolSnapshot, 0, len(s.structuredProgress.CompletedTools))
-					for _, t := range s.structuredProgress.CompletedTools {
-						tools = append(tools, IterationToolSnapshot{
-							Name: t.Name, Label: t.Label, Status: string(t.Status),
-							Summary: t.Summary, Detail: t.Detail,
-						})
-					}
-					return tools
-				}(),
-			})
+			s.snapshotCompletedIteration(s.structuredProgress.Iteration)
 		}
 
 		out := s.buildOutput(&channel.OutboundMsg{
