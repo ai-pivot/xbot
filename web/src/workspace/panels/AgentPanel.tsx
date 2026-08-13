@@ -174,6 +174,12 @@ export function AgentPanel({ params }: PanelProps) {
     chatID: progressChatID,
     channel: progressChannel,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
+    // historyReady gate：切换会话/首屏加载（fetchHistory 未完成）时 live 延迟
+    // 写入 MessageStore —— 避免 live progress 先于 history 渲染（用户要求两个
+    // 数据都拿到后一起渲染）。fetchHistory 完成后 hydration + 后续 SSE 一起渲染。
+    // 同会话 reload（resync_required/replay_gap）保持 historyReady=true —— 已渲染
+    // 的 live 不得消失（RENDER_LOSS_ROWS 教训）。
+    historyReady: chat.historyReady,
     messageStore: sharedStore,
     onAssistantComplete: (finalText, iterations, _eventSeq, turnID, insertBeforeLastUser) => {
       // Commit the message AND reset progress in the SAME synchronous render.

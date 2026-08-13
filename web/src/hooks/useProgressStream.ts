@@ -77,6 +77,14 @@ interface UseProgressStreamOptions {
    * Spec 4 §3.8.
    */
   initialProgress?: HistProgress | null
+  /**
+   * 历史（fetchHistory 的 committed messages）是否已 ready。切换会话 / 首次
+   * 加载时 history 未 ready（loading=true），此时 SSE 的 live 事件必须延迟写入
+   * MessageStore —— 否则 live 行先于 history 渲染（用户要求：必须两个数据都
+   * 拿到后一起渲染）。history ready 后由 hydration（active_progress）+ 后续
+   * SSE 恢复 live。
+   */
+  historyReady?: boolean
   /** The realtime connection (injected from DockviewContext for isolated roots). */
   ws: WSConnection
   /** Disable subscriptions for read-only panes such as SubAgent history tabs. */
@@ -142,12 +150,19 @@ export function useProgressStream({
   ws,
   messageStore,
   disabled = false,
+  historyReady = true,
 }: UseProgressStreamOptions): UseProgressStreamResult {
   const storeRef = useRef<ProgressStore | null>(null)
   if (storeRef.current === null) {
     storeRef.current = new ProgressStore()
   }
   const store = storeRef.current
+
+  // historyReady gate：history（fetchHistory committed）未 ready 时，SSE live
+  // 事件延迟写入 MessageStore（避免 live 先于 history 渲染）。ref 化避免
+  // onMessage handler 重订阅。
+  const historyReadyRef = useRef(historyReady)
+  historyReadyRef.current = historyReady
 
   // Keep the latest callbacks in refs so the effect's handlers don't re-subscribe
   // whenever the parent re-renders.
@@ -480,7 +495,7 @@ export function useProgressStream({
       if (chatIDRef.current && !matchesChatID(msg, chatIDRef.current, channel)) {
         return
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, finalizedTurnIDRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, finalizedTurnIDRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore, historyReadyRef.current)
     })
     return offMessage
   }, [store, disabled, channel, messageStore])
@@ -699,8 +714,16 @@ function writeLiveToMessageStore(
   ms: MessageStore | undefined,
   store: ProgressStore,
   p: { turn_id?: number; seq?: number },
+  historyReady = true,
 ): void {
   if (!ms) return
+  // historyReady gate：history（fetchHistory committed）未 ready 时延迟 live
+  // 写入 —— 否则切换会话/首屏加载时 SSE live 事件先于 history 渲染（只有
+  // turn-N-live 行，没有完整的 committed 历史，用户报告："很多时候 live
+  // progress 先于 history 渲染"，要求必须两个数据都拿到后一起渲染）。
+  // ProgressStore 正常更新（gate 只拦 MessageStore 渲染层）；history ready 后
+  // 由 hydration（active_progress）+ 后续 SSE 事件恢复 live。
+  if (!historyReady) return
   let turnID = typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : store.lastTurnID
   if (turnID <= 0) {
     // 早期流事件（stream_content 无 turn_id + 无 turn_started）：方案 A 前 live
@@ -747,6 +770,7 @@ function handleProgressMessage(
   iterationGapRef?: React.MutableRefObject<UseProgressStreamOptions['onIterationGap']>,
   iterationGapFiredRef?: React.MutableRefObject<boolean>,
   messageStore?: MessageStore,
+  historyReady = true,
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -817,7 +841,7 @@ function handleProgressMessage(
         }
       }
       // MessageStore live 同步（方案 A Step 3）
-      writeLiveToMessageStore(messageStore, store, p)
+      writeLiveToMessageStore(messageStore, store, p, historyReady)
       return
     }
 
@@ -1255,7 +1279,7 @@ function handleProgressMessage(
         turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : undefined,
       })
       // MessageStore live 同步（方案 A Step 3）
-      writeLiveToMessageStore(messageStore, store, p)
+      writeLiveToMessageStore(messageStore, store, p, historyReady)
       // ── Iteration-id gap → REAL incremental data loss → reload ──
       // iterationHistory is an incremental delta feed (0-1 entries per push):
       // an internal id jump (1→3 missing 2) means an iteration's delta was
