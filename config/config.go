@@ -289,6 +289,12 @@ type AgentConfig struct {
 
 	PurgeOldMessages bool `json:"purge_old_messages"`
 
+	// DeltaPush 启用流式 delta push（增量文本，带宽优化）。默认 false = 每次
+	// 推送完整累积文本（简单可靠，gap 追赶无需特殊处理）。delta push 曾引入
+	// 多个问题（stateless gap 不恢复、三层 isStreamOnly 分类不一致、迭代边界
+	// 前缀判断）——默认关闭，需显式开启。
+	DeltaPush bool `json:"delta_push"`
+
 	MaxSubAgentDepth int `json:"max_sub_agent_depth"`
 
 	// Experimental features

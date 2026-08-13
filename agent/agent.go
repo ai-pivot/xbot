@@ -424,6 +424,9 @@ type Agent struct {
 	globalSkillDirs []string      // 全局 skill 目录（宿主机路径）
 	agentsDir       string
 	xbotHome        string // global xbot config dir (e.g. ~/.xbot), used for mcp.json etc.
+	// deltaPush 启用流式 delta push（增量文本）。默认 false = 每次推送完整
+	// 累积文本（streamContentFunc/streamReasoningFunc 用）。见 Config.DeltaPush。
+	deltaPush bool
 
 	// 上下文管理配置
 	contextManagerConfig *ContextManagerConfig
@@ -1471,6 +1474,9 @@ type Config struct {
 	WorkDir         string        // 工作目录（所有文件相对此目录）
 	PromptFile      string        // 系统提示词模板文件路径（空则使用内置默认值）
 	DirectWorkspace string        `json:"-"` // 非空时直接作为 workspaceRoot（CLI 模式使用）
+	// DeltaPush 启用流式 delta push（增量文本）。默认 false = 每次推送完整
+	// 累积文本（简单可靠）。见 config.AgentConfig.DeltaPush。
+	DeltaPush bool
 	SandboxMode     string        // 沙箱模式: "none" 或 "docker"（默认 "docker"）
 	Sandbox         tools.Sandbox // Sandbox 实例引用（V4 新增）
 
@@ -1839,6 +1845,7 @@ func New(cfg Config) (*Agent, error) {
 		maxIterations:    cfg.MaxIterations,
 		maxConcurrency:   cfg.MaxConcurrency,
 		purgeOldMessages: cfg.PurgeOldMessages,
+		deltaPush:        cfg.DeltaPush,
 
 		skills:             skillStore,
 		agents:             agentStore,

@@ -1860,17 +1860,34 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	// inconsistent ChatID qualification across implementations (CLIChannel
 	// used raw, RemoteCLI/Web qualified manually).
 	//
-	// Bandwidth: stream pushes carry ONLY the delta (O(n) total per iteration)
-	// instead of the full cumulative text on every token (O(n²)). The server
-	// still keeps the FULL cumulative text in lastProgressSnapshot so:
+	// Bandwidth: delta push（a.deltaPush=true）时 stream pushes carry ONLY the
+	// delta (O(n) total per iteration) instead of the full cumulative text on
+	// every token (O(n²)). The server still keeps the FULL cumulative text in
+	// lastProgressSnapshot so:
 	//   - the iteration-end checkpoint (StreamContent set) realigns the frontend
 	//   - get_active_progress / restoreActiveProgress can repair a lost delta
 	//   - the next delta computation prefixes cleanly.
 	// The delta computation falls back to a FULL checkpoint push when the
-	// incoming text is not a strict prefix extension (reset/out-of-order) —
-	// that acts as the alignment/repair point, same strong-consistency as the
-	// old full-push scheme.
+	// incoming text is not a strict prefix extension (reset/out-of-order).
+	//
+	// delta push 默认关闭（a.deltaPush=false）：每次推送完整累积文本 —— 简单
+	// 可靠，gap 追赶无需特殊处理。delta push 曾引入多个问题（stateless gap
+	// 不恢复导致打字机缺字、三层 isStreamOnly 分类不一致、迭代边界前缀判断、
+	// 服务器重启拼接），需显式开启（config delta_push: true）。
 	streamContentFunc = func(content string) {
+		iter := a.getActiveIteration(progressKey)
+		if !a.deltaPush {
+			a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
+				s.StreamContent = content
+			})
+			broadcastProgress(&protocol.ProgressEvent{
+				ChatID:        progressKey,
+				TurnID:        turnID,
+				Iteration:     iter,
+				StreamContent: content,
+			})
+			return
+		}
 		delta := content
 		isFull := true
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
@@ -1882,7 +1899,6 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			// Keep the full cumulative text server-side (checkpoint + recovery source).
 			s.StreamContent = content
 		})
-		iter := a.getActiveIteration(progressKey)
 		if isFull {
 			broadcastProgress(&protocol.ProgressEvent{
 				ChatID:        progressKey,
@@ -1900,6 +1916,19 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 	}
 	streamReasoningFunc = func(content string) {
+		iter := a.getActiveIteration(progressKey)
+		if !a.deltaPush {
+			a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
+				s.ReasoningStreamContent = content
+			})
+			broadcastProgress(&protocol.ProgressEvent{
+				ChatID:                 progressKey,
+				TurnID:                 turnID,
+				Iteration:              iter,
+				ReasoningStreamContent: content,
+			})
+			return
+		}
 		delta := content
 		isFull := true
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
@@ -1910,7 +1939,6 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			}
 			s.ReasoningStreamContent = content
 		})
-		iter := a.getActiveIteration(progressKey)
 		if isFull {
 			broadcastProgress(&protocol.ProgressEvent{
 				ChatID:                 progressKey,
