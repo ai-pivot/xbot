@@ -1525,3 +1525,26 @@ describe('late stream_content from a finalized turn must be dropped', () => {
     expect(result.current.progressSnapshot.streaming).toBe(false)
   })
 })
+
+describe('text event turn_id from metadata.turn_id', () => {
+  it('commits the final reply to metadata.turn_id when top-level turn_id is absent', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, onAssistantComplete: complete }),
+    )
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1368, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'reply text', turn_id: 1368 } })
+    // The final reply's text event carries turn_id in metadata.turn_id (string),
+    // NOT in the top-level turn_id field (omitempty, absent when 0).
+    emitAndFlush({
+      type: 'text',
+      seq: 653,
+      content: 'reply text',
+      metadata: { turn_id: '1368' },
+    })
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    // Args: (finalText, iterations, eventSeq, turnID, insertBeforeLastUser)
+    expect(complete).toHaveBeenCalledWith('reply text', expect.any(Array), 653, 1368)
+  })
+})

@@ -1278,12 +1278,24 @@ function handleProgressMessage(
       // (e.g. text + session(idle) arriving before RAF flushes).
       // 按 turnID 区分：旧 turn（turn_id <= finalizedTurnID）的迟到 text 丢弃
       // （防重复）；新 turn 的 text 放行（turn_started 已重置 finalizedRef）。
-      const textTurnID = typeof msg.turn_id === 'number' && msg.turn_id > 0 ? msg.turn_id : 0
+      // turn_id lives in msg.turn_id (number) for most events, but the final
+      // reply's text event carries it in metadata.turn_id (string) because the
+      // WSMessage top-level turn_id field is omitempty and absent when 0.
+      // Fall back to metadata.turn_id so the reply is committed to the CORRECT
+      // turn — committing to turn 0 leaves the real turn's live shell behind
+      // (empty DOM) and commitStaleLives then re-commits the same reply as a
+      // `seq-*-stale` duplicate.
+      const metaTurnID = Number(msg.metadata?.turn_id ?? '')
+      const textTurnID = msg.turn_id && msg.turn_id > 0 ? msg.turn_id : (metaTurnID > 0 ? metaTurnID : 0)
+      // commitTurnID keeps the original undefined semantics for callers when no
+      // turn_id exists anywhere (bang/slash commands), but falls back to
+      // metadata.turn_id for the final reply (whose top-level turn_id is absent).
+      const commitTurnID = textTurnID > 0 ? textTurnID : undefined
       const finalizedTurnID = finalizedTurnIDRef?.current ?? 0
       if (textTurnID > 0 && finalizedTurnID > 0 && textTurnID <= finalizedTurnID) return
       if (finalizedRef?.current && textTurnID === 0) return
       if (finalizedRef) finalizedRef.current = true
-      if (finalizedTurnIDRef) finalizedTurnIDRef.current = msg.turn_id ?? store.lastTurnID
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = textTurnID || store.lastTurnID
       const finalText = msg.content ?? ''
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
@@ -1318,7 +1330,7 @@ function handleProgressMessage(
           }
         }
       }
-      completeRef.current?.(finalText, mergedIterations, msg.seq, msg.turn_id)
+      completeRef.current?.(finalText, mergedIterations, msg.seq, commitTurnID)
       // onAssistantComplete calls store.reset() synchronously inside flushSync.
       // Fallback: if onAssistantComplete did not reset (e.g., not set), reset here.
       // The reset is idempotent — if onAssistantComplete already cleared the

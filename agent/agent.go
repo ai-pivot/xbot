@@ -4082,6 +4082,7 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 		Content:  msg.Content,
 		Media:    msg.Media,
 		Metadata: msg.Metadata,
+		TurnID:   msg.TurnID,
 	}:
 		return nil
 	default:
