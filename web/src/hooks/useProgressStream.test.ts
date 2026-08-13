@@ -61,3 +61,50 @@ describe('hasVisibleProgress', () => {
     ).toBe(true)
   })
 })
+
+// ── 切换会话 hydration 还原 live iter 状态 ──
+// 用户需求：切换会话必须还原 live iter（已完成迭代 + 进行中工具），否则
+// SSE 在执行 tool 很久没有新事件时会一直卡着（无进度显示）。
+// hydration effect 从 active_progress 恢复 ProgressStore + MessageStore。
+import { renderHook, waitFor } from '@testing-library/react'
+import { MessageStore } from '@/components/agent/messageStore'
+import { useProgressStream } from '@/hooks/useProgressStream'
+import type { WSConnection } from '@/types/ws'
+
+describe('切换会话 hydration 还原 live iter', () => {
+  it('从 active_progress 恢复进行中 turn 的 live（已完成迭代 + 进行中工具）', async () => {
+    const ms = new MessageStore()
+    const ws = {
+      onMessage: () => () => {},
+      rpc: vi.fn(),
+      send: vi.fn(),
+      onConnectionChange: () => () => {},
+      connected: false,
+    } as unknown as WSConnection
+    const initialProgress = {
+      phase: 'tool_exec',
+      turn_id: 360,
+      iteration: 2,
+      active_tools: [{ name: 'Shell', label: 'Shell: 长时间任务', status: 'running', iteration: 2 }],
+      completed_tools: [{ name: 'WebSearch', label: 'WebSearch', status: 'done', iteration: 1 }],
+      iteration_history: [
+        { iteration: 1, content: '第一步完成', reasoning: '', tools: [], tool_count: 0 },
+      ],
+      content: '',
+    }
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'chat-1',
+        initialProgress,
+        ws,
+        messageStore: ms,
+      }),
+    )
+    // hydration 恢复：MessageStore 的 live 含已完成迭代 + 进行中工具
+    await waitFor(() => expect(ms.getLive(360)).toBeDefined())
+    const live = ms.getLive(360)
+    expect(live?.iterations?.map((i) => i.iteration)).toEqual([1])
+    expect(live?.activeTools?.map((t) => t.name)).toEqual(['Shell'])
+    expect(live?.phase).toBe('tool_exec')
+  })
+})
