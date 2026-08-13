@@ -1471,14 +1471,14 @@ type Config struct {
 	DisabledSkills []string
 	// DisabledTools 全局内置 tool 黑名单：这些 tool 跳过注册（不可见、不可执行）。
 	DisabledTools   []string
-	WorkDir         string        // 工作目录（所有文件相对此目录）
-	PromptFile      string        // 系统提示词模板文件路径（空则使用内置默认值）
-	DirectWorkspace string        `json:"-"` // 非空时直接作为 workspaceRoot（CLI 模式使用）
+	WorkDir         string // 工作目录（所有文件相对此目录）
+	PromptFile      string // 系统提示词模板文件路径（空则使用内置默认值）
+	DirectWorkspace string `json:"-"` // 非空时直接作为 workspaceRoot（CLI 模式使用）
 	// DeltaPush 启用流式 delta push（增量文本）。默认 false = 每次推送完整
 	// 累积文本（简单可靠）。见 config.AgentConfig.DeltaPush。
-	DeltaPush bool
-	SandboxMode     string        // 沙箱模式: "none" 或 "docker"（默认 "docker"）
-	Sandbox         tools.Sandbox // Sandbox 实例引用（V4 新增）
+	DeltaPush   bool
+	SandboxMode string        // 沙箱模式: "none" 或 "docker"（默认 "docker"）
+	Sandbox     tools.Sandbox // Sandbox 实例引用（V4 新增）
 
 	SandboxIdleTimeout time.Duration // 沙箱空闲超时（0 禁用）
 

@@ -69,11 +69,11 @@ func (m *mockProgressChannel2) SendProgress(_ string, payload *protocol.Progress
 	defer m.mu.Unlock()
 	m.events = append(m.events, payload)
 }
-func (m *mockProgressChannel2) SendStreamContent(_, _, _ string) {}
+func (m *mockProgressChannel2) SendStreamContent(_, _, _ string)         {}
 func (m *mockProgressChannel2) Send(channel.OutboundMsg) (string, error) { return "", nil }
-func (m *mockProgressChannel2) Name() string                     { return "mock" }
-func (m *mockProgressChannel2) Start() error                     { return nil }
-func (m *mockProgressChannel2) Stop()                            {}
+func (m *mockProgressChannel2) Name() string                             { return "mock" }
+func (m *mockProgressChannel2) Start() error                             { return nil }
+func (m *mockProgressChannel2) Stop()                                    {}
 func (m *mockProgressChannel2) getEvents() []*protocol.ProgressEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
