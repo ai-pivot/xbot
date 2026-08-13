@@ -13,6 +13,8 @@ import (
 	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
+	"xbot/tools"
+	"xbot/version"
 )
 
 // formatTokenCount formats a token count for display (e.g. 1234567 → "1.2M").
@@ -306,9 +308,56 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 
 	// Session identity
 	fmt.Fprintf(&sb, "| 项目 | 值 |\n|---|---|\n")
+	// Session ID = X-Session-Id 的值（channel:chatID），可直接用于日志 grep
+	// （session_id=...）或 LLM 提供商 dashboard 核对（X-Session-Id header）。
+	sessionID := qualifyChatID(msg.Channel, msg.ChatID)
+	fmt.Fprintf(&sb, "| Session ID | `%s` |\n", sessionID)
 	fmt.Fprintf(&sb, "| Channel | %s |\n", msg.Channel)
 	fmt.Fprintf(&sb, "| Chat ID | %s |\n", msg.ChatID)
+	// User ID = X-User-Id 的值（LLM 请求 header）。
+	if msg.SenderID != "" {
+		fmt.Fprintf(&sb, "| User ID | %s |\n", msg.SenderID)
+	}
+	// Turn ID = X-Turn-Id 的值（当前轮次）。
+	if raw := msg.Metadata["turn_id"]; raw != "" {
+		fmt.Fprintf(&sb, "| Turn ID | %s |\n", raw)
+	}
+	// User Role（admin/user，来自 UserContext）
+	if uc != nil && uc.Role != "" {
+		fmt.Fprintf(&sb, "| User Role | %s |\n", uc.Role)
+	}
+	// Request ID 格式说明：X-Request-Id = <session>-t<turn>-<n>，每次 LLM 调用
+	// 唯一（重试复用）。grep 日志用 request_id=<session>-t<turn>- 前缀即可
+	// 找到该 turn 的全部 LLM 调用。
+	turnTag := ""
+	if raw := msg.Metadata["turn_id"]; raw != "" {
+		turnTag = "t" + raw
+	}
+	fmt.Fprintf(&sb, "| Request ID 前缀 | `%s-%s-N` |\n", sessionID, turnTag)
 	fmt.Fprintf(&sb, "| Tenant ID | %d |\n", tenantSession.TenantID())
+
+	// 会话状态（最后活跃 / 最大 Turn / 是否迭代中 / worktree）
+	if la := tenantSession.LastActive(); !la.IsZero() {
+		fmt.Fprintf(&sb, "| 最后活跃 | %s |\n", la.Format("2006-01-02 15:04:05"))
+	}
+	if maxTurn, err := tenantSession.GetMaxTurnID(); err == nil && maxTurn > 0 {
+		fmt.Fprintf(&sb, "| 最大 Turn | %d |\n", maxTurn)
+	}
+	if v, ok := a.bgSessionStates.Load(sessionID); ok {
+		if ss, ok := v.(*bgSessionState); ok {
+			if ss.busy.Load() {
+				fmt.Fprintf(&sb, "| 状态 | 🔄 迭代中 |\n")
+			} else {
+				fmt.Fprintf(&sb, "| 状态 | 空闲 |\n")
+			}
+		}
+	}
+	if entry := tools.GlobalWorktreeRegistry.GetBySession(sessionID); entry != nil && entry.WorktreeDir != "" {
+		fmt.Fprintf(&sb, "| Worktree | `%s` |\n", entry.WorktreeDir)
+		if entry.Branch != "" {
+			fmt.Fprintf(&sb, "| 分支 | %s |\n", entry.Branch)
+		}
+	}
 
 	// CWD
 	if cwd := tenantSession.GetCurrentDir(); cwd != "" {
@@ -322,7 +371,7 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 	}
 	sub, _, _ := uc.ResolveActiveSub(msg.ChatID)
 	if sub != nil {
-		fmt.Fprintf(&sb, "| 订阅 | %s |\n", sub.Name)
+		fmt.Fprintf(&sb, "| 订阅 | %s (`%s`) |\n", sub.Name, sub.ID)
 	}
 	if maxCtx > 0 {
 		fmt.Fprintf(&sb, "| Max Context | %d |\n", maxCtx)
@@ -388,6 +437,8 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 	if a.sandboxMode != "" {
 		fmt.Fprintf(&sb, "| Sandbox | %s |\n", a.sandboxMode)
 	}
+	// 运行环境
+	fmt.Fprintf(&sb, "| 版本 | %s |\n", version.Version)
 
 	return &channel.OutboundMsg{
 		Channel: msg.Channel,

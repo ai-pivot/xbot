@@ -1317,6 +1317,13 @@ type streamCaptureTransport struct {
 }
 
 func (t *streamCaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Attach observability headers (X-Session-Id / X-Request-Id / X-User-Id /
+	// X-Turn-Id / X-Trace-Id) from ctx — the agent loop injects them via
+	// llm.WithObservability before each LLM call, so provider dashboards can
+	// attribute this request to a session/turn for debugging.
+	if o, ok := ObservabilityFromContext(req.Context()); ok {
+		o.ApplyHeaders(func(name, value string) { req.Header.Set(name, value) })
+	}
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
 		return resp, err

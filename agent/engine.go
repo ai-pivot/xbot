@@ -64,6 +64,14 @@ type RunConfig struct {
 	UserID       int64  // Canonical user ID (from IdentityResolver, 0 in standalone mode)
 	Role         string // User role ("admin" | "user", from IdentityResolver)
 
+	// === 可观测性 ===
+	// Observability carries tracing identifiers attached to every LLM HTTP
+	// request (X-Session-Id / X-Request-Id / X-User-Id / X-Turn-Id / X-Trace-Id),
+	// mirroring Codex / Claude Code so provider dashboards can attribute calls
+	// to a session/turn for debugging. RequestID is generated per call in
+	// generateResponse; the rest are filled here.
+	Observability llm.Observability
+
 	// === 工作区 & 沙箱 ===
 	WorkingDir          string   // Agent 工作目录（宿主机）
 	WorkspaceRoot       string   // 用户可读写工作区根目录（宿主机路径）
@@ -466,6 +474,13 @@ func readArgsHasOffsetOrLimit(argsJSON string) bool {
 // the SSE connection. This ensures mid-stream errors (disconnects, server 5xx
 // during generation) are also retried with exponential backoff.
 func generateResponse(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string, stream bool, streamContentFn func(string), streamReasoningFn func(string), streamToolCallFn func([]llm.ToolCallDelta), streamUsageFn func(*llm.TokenUsage)) (*llm.LLMResponse, error) {
+	// Stamp a per-call request id (retries of this call reuse it — RetryLLM
+	// passes the same ctx) so provider logs show one logical request across
+	// retry attempts. The transport attaches it as X-Request-Id.
+	if o, ok := llm.ObservabilityFromContext(ctx); ok && o.RequestID == "" {
+		o.RequestID = o.NextRequestID()
+		ctx = llm.WithObservability(ctx, o)
+	}
 	if stream {
 		if sc, ok := client.(llm.StreamingLLM); ok {
 			// Prefer the retry-enabled full stream cycle when available.
@@ -496,6 +511,13 @@ func generateResponse(ctx context.Context, client llm.LLM, model string, message
 //   - SubAgent: ToolExecutor=simpleExecutor, ProgressNotifier=nil, ContextManager=independent_phase1, ...
 func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	s := newRunState(cfg)
+
+	// Inject observability identifiers into ctx so every LLM call
+	// (generateResponse → transport) attaches X-Session-Id / X-Request-Id /
+	// X-User-Id / X-Turn-Id headers to the HTTP request.
+	if cfg.Observability.SessionID != "" {
+		ctx = llm.WithObservability(ctx, cfg.Observability)
+	}
 
 	// Inject mutable SessionContext into context so plugin hooks can read
 	// current model/token data. Updated after each LLM call and compression.
