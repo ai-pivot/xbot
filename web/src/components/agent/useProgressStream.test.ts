@@ -1500,3 +1500,31 @@ describe('turn-id ownership on turn boundary (turn duplication regression)', () 
     expect(result.current.progressSnapshot.streaming).toBe(false)
   })
 })
+
+describe('late stream_content from a finalized turn must be dropped', () => {
+  it('does NOT re-fill the store with a stale turn-1 stream_content after turn_started(2)', () => {
+    // User report: "user1 agent1 → 发 user2 → user1 agent1 user2 agent2(processing) agent1".
+    // A late stream_content from turn 1 (SSE reorder) arrives AFTER turn_started(2)
+    // reset finalizedRef=false. stream_content lacked the finalizedTurnIDRef guard
+    // that progress_structured has — it re-filled ProgressStore.streamContent and
+    // wrote the OLD turn's slot, resurrecting agent1 as a live row below agent2.
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    // turn 1 completes
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'agent1 reply', turn_id: 1 } })
+    emitAndFlush({ type: 'text', seq: 10, turn_id: 1, content: 'agent1 reply' })
+    expect(result.current.progressSnapshot.streamContent).toBe('')
+
+    // turn 2 begins (resets finalizedRef=false, finalizedTurnIDRef=1)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 2, chat_id: 'web:c1' } })
+
+    // late stream_content from turn 1 (stale, turn_id=1)
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'late agent1 token', turn_id: 1 } })
+
+    // The stale token must NOT resurrect the old turn's stream content.
+    expect(result.current.progressSnapshot.streamContent).toBe('')
+    expect(result.current.progressSnapshot.streaming).toBe(false)
+  })
+})

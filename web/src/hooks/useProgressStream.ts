@@ -774,6 +774,17 @@ function handleProgressMessage(
       const p = msg.progress
       if (!p) return
 
+      // 旧 turn 的迟到 stream_content（turn_id <= finalizedTurnID）必须丢弃 ——
+      // 否则它重新填充 ProgressStore.streamContent 并 writeLiveToMessageStore 写
+      // 旧 turn slot，把已完成的 assistant 复活成 live 行（用户报告："发 user2
+      // 之后变成 user1 agent1 user2 agent2(processing) agent1"——agent1 在最后
+      // 重复渲染）。与 progress_structured 分支的 finalizedTurnID 检查一致。
+      const streamTurnID = typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : 0
+      const finalizedTurn = finalizedTurnIDRef?.current ?? 0
+      if (finalizedTurn > 0 && streamTurnID > 0 && streamTurnID <= finalizedTurn) {
+        return
+      }
+
       // Set cumulative text (stream-only, does not replace the snapshot).
       // Delta pushes (bandwidth optimization: O(n) total per iteration)
       // APPEND to the accumulated text; checkpoint pushes (iteration-end
