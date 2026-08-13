@@ -72,6 +72,8 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		DBPath:                dbPath,
 		SkillsDir:             filepath.Join(xbotHome, "skills"),
 		AgentsDir:             filepath.Join(xbotHome, "agents"),
+		DisabledSkills:        cfg.DisabledSkills,
+		DisabledTools:         cfg.DisabledTools,
 		WorkDir:               workDir,
 		XbotHome:              xbotHome,
 		PromptFile:            cfg.Agent.PromptFile,
@@ -128,6 +130,10 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	if !cfg.DisableWebSearch {
 		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 	}
+
+	// 全局 tool 黑名单：覆盖在 agent.New 之后注册的 tool（DownloadFileTool /
+	// WebSearchTool），initStores 里已对内置 tool 应用过一次。
+	ag.DisableTools(cfg.DisabledTools)
 
 	ag.IndexGlobalTools()
 

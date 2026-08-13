@@ -1,8 +1,4 @@
-import type {
-  ChatMessage,
-  ProgressEvent,
-  SessionInfo,
-} from '@/types/shared'
+import type { ProgressEvent, SessionInfo } from '@/types/shared'
 
 export const SESSION_TREE_CACHE_KEY = 'xbot_session_tree'
 
@@ -11,30 +7,6 @@ export function sessionCacheKey(channel: string | null | undefined, chatID: stri
   return `${channel || 'web'}:${chatID}`
 }
 
-/** Per-conversation rendered messages, keyed by sessionCacheKey.
- *  Value carries the progress generation at write time — a cached entry whose
- *  generation no longer matches the current one is stale (the session had
- *  progress/turn updates since the cache was written) and is dropped on read.
- *  This keeps session-switch cache rendering consistent: the cache is only
- *  shown when it reflects the session's current progress state. */
-export interface MessagesCacheEntry {
-  messages: ChatMessage[]
-  progressGen: number
-}
-export const messagesCache = new Map<string, MessagesCacheEntry>()
-
-/** Read a cached message list only when it is NOT stale (progress generation
- *  unchanged since write). Stale entries are evicted — the caller falls back
- *  to a network reload instead of rendering outdated data. */
-export function getCachedMessages(key: string): ChatMessage[] | null {
-  const entry = messagesCache.get(key)
-  if (!entry) return null
-  if (entry.progressGen !== getProgressGeneration(key)) {
-    messagesCache.delete(key)
-    return null
-  }
-  return entry.messages
-}
 /** Last SSE sequence processed for each channel-qualified session. */
 export const lastSeqCache = new Map<string, number>()
 /** Last progress_structured iteration seen for each channel-qualified session.
@@ -43,7 +15,9 @@ export const lastSeqCache = new Map<string, number>()
  *  (the ONLY real-data-loss signal; iteration deltas cannot be backfilled by
  *  later snapshots). */
 export const lastIterationCache = new Map<string, number>()
-/** Latest structured progress event for each channel-qualified session. */
+/** Latest structured progress event for each channel-qualified session — SSE
+ *  reconnect recovery (restoreActiveProgress) uses it to replay the newest
+ *  snapshot when the ring buffer evicted events. NOT a render cache. */
 export const progressSnapshotCache = new Map<string, ProgressEvent>()
 const progressGenerationCache = new Map<string, number>()
 let webCacheEpoch = 0
@@ -123,7 +97,6 @@ export function clearProgressSnapshot(cacheKey: string): void {
 
 /** Remove every in-memory cache entry owned by one channel-qualified session. */
 export function clearSessionCaches(cacheKey: string): void {
-  messagesCache.delete(cacheKey)
   lastSeqCache.delete(cacheKey)
   progressSnapshotCache.delete(cacheKey)
   progressGenerationCache.delete(cacheKey)
@@ -141,7 +114,6 @@ export function clearWebCaches(): void {
   } catch {
     // Memory caches still need to be cleared when storage is unavailable.
   }
-  messagesCache.clear()
   lastSeqCache.clear()
   progressSnapshotCache.clear()
   progressGenerationCache.clear()

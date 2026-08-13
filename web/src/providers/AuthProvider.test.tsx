@@ -5,7 +5,6 @@ import { useContext, type ReactNode } from 'react'
 import { postAPI } from '@/lib/api'
 import {
   lastSeqCache,
-  messagesCache,
   progressSnapshotCache,
   sessionCacheKey,
   SESSION_TREE_CACHE_KEY,
@@ -30,7 +29,6 @@ beforeEach(() => {
     removeItem: vi.fn((key: string) => store.delete(key)),
     clear: vi.fn(() => store.clear()),
   })
-  messagesCache.clear()
   lastSeqCache.clear()
   progressSnapshotCache.clear()
   postAPIMock.mockReset()
@@ -51,7 +49,6 @@ describe('AuthProvider cache isolation', () => {
 
     localStorage.setItem(SESSION_TREE_CACHE_KEY, '{"version":1,"sessions":[],"subAgents":[]}')
     const cacheKey = sessionCacheKey('web', 'chat-a')
-    messagesCache.set(cacheKey, { messages: [], progressGen: 0 })
     lastSeqCache.set(cacheKey, 7)
     progressSnapshotCache.set(cacheKey, { phase: 'tool' })
 
@@ -60,7 +57,6 @@ describe('AuthProvider cache isolation', () => {
     })
 
     expect(localStorage.getItem(SESSION_TREE_CACHE_KEY)).toBeNull()
-    expect(messagesCache.size).toBe(0)
     expect(lastSeqCache.size).toBe(0)
     expect(progressSnapshotCache.size).toBe(0)
     expect(result.current?.user).toBeNull()

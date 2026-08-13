@@ -1455,14 +1455,19 @@ func buildToolMessageContent(result *tools.ToolResult) string {
 
 // Config Agent 配置
 type Config struct {
-	Bus             *bus.MessageBus
-	LLM             llm.LLM
-	Model           string
-	MaxIterations   int           // 单次对话最大工具调用迭代次数
-	MaxConcurrency  int           // 最大并发会话处理数（默认 3）
-	DBPath          string        // SQLite 数据库路径（空则使用默认路径）
-	SkillsDir       string        // Skills 目录
-	AgentsDir       string        // Agents 目录（空则使用 WorkDir/.xbot/agents）
+	Bus            *bus.MessageBus
+	LLM            llm.LLM
+	Model          string
+	MaxIterations  int    // 单次对话最大工具调用迭代次数
+	MaxConcurrency int    // 最大并发会话处理数（默认 3）
+	DBPath         string // SQLite 数据库路径（空则使用默认路径）
+	SkillsDir      string // Skills 目录
+	AgentsDir      string // Agents 目录（空则使用 WorkDir/.xbot/agents）
+	// DisabledSkills 全局 skill 黑名单：这些 skill 不会出现在 available_skills
+	// catalog 中（LLM 不可见、不可激活）。
+	DisabledSkills []string
+	// DisabledTools 全局内置 tool 黑名单：这些 tool 跳过注册（不可见、不可执行）。
+	DisabledTools   []string
 	WorkDir         string        // 工作目录（所有文件相对此目录）
 	PromptFile      string        // 系统提示词模板文件路径（空则使用内置默认值）
 	DirectWorkspace string        `json:"-"` // 非空时直接作为 workspaceRoot（CLI 模式使用）
@@ -1580,6 +1585,17 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 	// Clean up expired waiting cards from previous runs (TTL: 24h)
 	if n := cardBuilder.CleanupExpiredWaitingCards(24 * time.Hour); n > 0 {
 		log.WithField("count", n).Info("Cleaned up expired waiting cards")
+	}
+
+	// 全局黑名单：skill 从 catalog 排除，内置 tool 从 registry 注销。
+	// 注意：DownloadFileTool / WebSearchTool 在 agent.New 返回后才注册
+	// （server_core.go），需在调用方对它们再做一次 DisableTools。
+	skillStore.SetDisabledSkills(cfg.DisabledSkills)
+	for _, name := range cfg.DisabledTools {
+		if name = strings.TrimSpace(name); name != "" {
+			registry.Unregister(name)
+			log.WithField("tool", name).Info("Tool disabled by blacklist")
+		}
 	}
 
 	return skillStore, agentStore, chatHistory, registry, cardBuilder
@@ -3769,6 +3785,21 @@ func (a *Agent) RegisterToolForChannel(channel string, tool tools.Tool) {
 	log.WithField("tool", tool.Name()).WithField("channel", channel).Info("Channel tool registered")
 }
 
+// DisableTools unregisters the given GLOBAL tool blacklist. These tools become
+// invisible AND unexecutable (AsDefinitions skips them, so the LLM never sees
+// them; GetForSession returns not-found, so they can never run). Empty/unknown
+// names are no-ops.
+func (a *Agent) DisableTools(names []string) {
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		a.tools.Unregister(name)
+		log.WithField("tool", name).Info("Tool disabled by blacklist")
+	}
+}
+
 // Tools returns the agent's tool registry.
 func (a *Agent) Tools() *tools.Registry {
 	return a.tools
@@ -3989,9 +4020,18 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 		msg.Metadata = make(map[string]string)
 	}
 
-	// Stamp the active turn's TurnID so the frontend can associate this reply
-	// with the correct user message (by TurnID, not arrival order).
-	msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
+	// Stamp the TurnID so the frontend can associate this reply with the correct
+	// user message. Prefer the caller-supplied turn_id (authoritative, parsed
+	// from RunConfig.TurnID in handleRunOutput); fall back to getActiveTurnID
+	// for callers that don't pass one (e.g. tool-initiated sends mid-turn).
+	if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
+		if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
+			msg.TurnID = tid
+		}
+	}
+	if msg.TurnID == 0 {
+		msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
+	}
 
 	isFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
 
@@ -4042,6 +4082,7 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 		Content:  msg.Content,
 		Media:    msg.Media,
 		Metadata: msg.Metadata,
+		TurnID:   msg.TurnID,
 	}:
 		return nil
 	default:

@@ -117,6 +117,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     (progress?.iterationHistory?.length ?? 0) > 0
   const showThinkingIndicator =
     isStreaming &&
+    Boolean(progress?.streaming) &&
     isThinkingPhase &&
     !progress?.streamContent &&
     !hasReasoning &&
@@ -203,12 +204,6 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // 'minimal'/'none' level or streaming: render full TurnBody.
   return (
     <div className="group/msg px-1">
-      {isStreaming && liveProgress?.phase === 'compressing' && (
-        <div className="mb-2 flex items-center gap-2 text-xs text-text-muted">
-          <Loader2 className="size-3.5 animate-spin" />
-          <span>{t('agent.compressing')}</span>
-        </div>
-      )}
       <TurnBody
         iterations={iterations}
         liveProgress={liveProgress}
@@ -238,6 +233,16 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       )}
       {/* Shimmer "thinking" indicator during streaming */}
       {showThinkingIndicator && <ShimmerThinking />}
+      {/* Compressing indicator at the TAIL (after all turn content), not at the
+          top — a compression spinner on the first line of the agent message made
+          it look like the turn had just started; it belongs at the end where the
+          context is actually being rewritten. */}
+      {isStreaming && liveProgress?.phase === 'compressing' && (
+        <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">
+          <Loader2 className="size-3.5 animate-spin" />
+          <span>{t('agent.compressing')}</span>
+        </div>
+      )}
       {showActions && <AssistantActions onCopy={handleCopy} t={t} />}
     </div>
   )

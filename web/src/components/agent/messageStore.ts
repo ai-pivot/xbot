@@ -246,6 +246,32 @@ export class MessageStore {
     }
   }
 
+  /** session(idle)：清理无内容的空 live。空 live 是 turn 以 thinking 开始但
+   *  无内容产出（PhaseDone/text 都丢失）时的残留壳 —— toRows() 输出 isPartial
+   *  assistant 行，AssistantMessage 把它误判为 thinking phase 渲染"思考中…"
+   *  （用户报告：idle 后思考中渲染在 agent 消息第一行）。非空 live 不清 ——
+   *  defensive finalize（complete → commitAssistant）的职责；frozen live 不清
+   *  —— cancel 已渲染内容永不消失。 */
+  clearEmptyLives(): void {
+    let changed = false
+    for (const tid of this.turnIDs) {
+      const slot = this.slots.get(tid)
+      const live = slot?.live
+      if (!live || live.frozen) continue
+      const empty = !live.content &&
+        !live.reasoningStreamContent &&
+        live.iterations.length === 0 &&
+        live.activeTools.length === 0 &&
+        live.completedTools.length === 0 &&
+        live.streamingTools.length === 0
+      if (empty) {
+        slot.live = undefined
+        changed = true
+      }
+    }
+    if (changed) this.invalidate()
+  }
+
   /** 无 turnID 的 persisted 行（legacy）→ 顶部。 */
   addLegacy(msg: ChatMessage): void {
     this.legacy.push(msg)

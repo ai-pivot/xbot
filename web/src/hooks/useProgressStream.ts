@@ -43,11 +43,7 @@ import type {
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
 import type { WSMessage, WebToolProgress } from '@/types/shared'
-import {
-  clearProgressSnapshot,
-  progressSnapshotCache,
-  sessionCacheKey,
-} from '@/lib/webCache'
+import { sessionCacheKey } from '@/lib/webCache'
 
 interface UseProgressStreamOptions {
   /** Chat ID this stream tracks (events for other chats are ignored). */
@@ -294,26 +290,11 @@ export function useProgressStream({
       if (prevKey !== null) {
         sessionSwitchedRef.current = true
       }
-      // Restore todos from progressSnapshotCache — switchSession writes
-      // the /switch response todos here so they appear immediately,
-      // before /api/history's active_progress arrives (which may return
-      // null if the backend's snapshot was already cleaned up).
-      if (progressCacheKey) {
-        const cached = progressSnapshotCache.get(progressCacheKey)
-        if (cached?.todos && cached.todos.length > 0) {
-          // Atomic reset + replace: single notification instead of two
-          // (fullReset → render → replace → render).
-          store.resetAndReplace({ todos: cached.todos.map((t) => ({
-            id: typeof t.id === 'number' ? t.id : 0,
-            text: typeof t.text === 'string' ? t.text : '',
-            done: Boolean(t.done),
-          })) })
-        } else {
-          store.fullReset()
-        }
-      } else {
-        store.fullReset()
-      }
+      // No snapshot cache — the server's active_progress (via reload) is the
+      // single authority for the session's todos/iterations. A cached snapshot
+      // can be stale and re-render wrong progress (user report: "全是缓存的错误"
+      // — 思考中卡死、进度跳变). Always full-reset and let hydration restore.
+      store.fullReset()
     } else {
       // CRITICAL: NEVER wipe a turn that is actively streaming. This branch
       // fires when `disabled` toggles (SSE subscription/connection state flips)
@@ -370,7 +351,6 @@ export function useProgressStream({
     if (initialProgress.phase === 'done') {
       // Turn ended. Clear progress but restore todos from server so they
       // survive session switch (todos persist across turns in the todoManager).
-      if (progressCacheKey) clearProgressSnapshot(progressCacheKey)
       finalizedRef.current = false
       if (hasVisibleProgress(snap) && !storeActive) store.reset()
       // Unconditionally replace todos when the server explicitly returned an
@@ -492,9 +472,6 @@ export function useProgressStream({
       // 3-layer chatID filtering.
       if (chatIDRef.current && !matchesChatID(msg, chatIDRef.current, channel)) {
         return
-      }
-      if (chatIDRef.current && isTerminalProgressMessage(msg)) {
-        clearProgressSnapshot(sessionCacheKey(channel, chatIDRef.current))
       }
       handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, finalizedTurnIDRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore)
     })
@@ -773,6 +750,17 @@ function handleProgressMessage(
       // Also carries streaming_tools (generating status, for tool name detection).
       const p = msg.progress
       if (!p) return
+
+      // 旧 turn 的迟到 stream_content（turn_id <= finalizedTurnID）必须丢弃 ——
+      // 否则它重新填充 ProgressStore.streamContent 并 writeLiveToMessageStore 写
+      // 旧 turn slot，把已完成的 assistant 复活成 live 行（用户报告："发 user2
+      // 之后变成 user1 agent1 user2 agent2(processing) agent1"——agent1 在最后
+      // 重复渲染）。与 progress_structured 分支的 finalizedTurnID 检查一致。
+      const streamTurnID = typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : 0
+      const finalizedTurn = finalizedTurnIDRef?.current ?? 0
+      if (finalizedTurn > 0 && streamTurnID > 0 && streamTurnID <= finalizedTurn) {
+        return
+      }
 
       // Set cumulative text (stream-only, does not replace the snapshot).
       // Delta pushes (bandwidth optimization: O(n) total per iteration)
@@ -1290,12 +1278,24 @@ function handleProgressMessage(
       // (e.g. text + session(idle) arriving before RAF flushes).
       // 按 turnID 区分：旧 turn（turn_id <= finalizedTurnID）的迟到 text 丢弃
       // （防重复）；新 turn 的 text 放行（turn_started 已重置 finalizedRef）。
-      const textTurnID = typeof msg.turn_id === 'number' && msg.turn_id > 0 ? msg.turn_id : 0
+      // turn_id lives in msg.turn_id (number) for most events, but the final
+      // reply's text event carries it in metadata.turn_id (string) because the
+      // WSMessage top-level turn_id field is omitempty and absent when 0.
+      // Fall back to metadata.turn_id so the reply is committed to the CORRECT
+      // turn — committing to turn 0 leaves the real turn's live shell behind
+      // (empty DOM) and commitStaleLives then re-commits the same reply as a
+      // `seq-*-stale` duplicate.
+      const metaTurnID = Number(msg.metadata?.turn_id ?? '')
+      const textTurnID = msg.turn_id && msg.turn_id > 0 ? msg.turn_id : (metaTurnID > 0 ? metaTurnID : 0)
+      // commitTurnID keeps the original undefined semantics for callers when no
+      // turn_id exists anywhere (bang/slash commands), but falls back to
+      // metadata.turn_id for the final reply (whose top-level turn_id is absent).
+      const commitTurnID = textTurnID > 0 ? textTurnID : undefined
       const finalizedTurnID = finalizedTurnIDRef?.current ?? 0
       if (textTurnID > 0 && finalizedTurnID > 0 && textTurnID <= finalizedTurnID) return
       if (finalizedRef?.current && textTurnID === 0) return
       if (finalizedRef) finalizedRef.current = true
-      if (finalizedTurnIDRef) finalizedTurnIDRef.current = msg.turn_id ?? store.lastTurnID
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = textTurnID || store.lastTurnID
       const finalText = msg.content ?? ''
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
@@ -1330,7 +1330,7 @@ function handleProgressMessage(
           }
         }
       }
-      completeRef.current?.(finalText, mergedIterations, msg.seq, msg.turn_id)
+      completeRef.current?.(finalText, mergedIterations, msg.seq, commitTurnID)
       // onAssistantComplete calls store.reset() synchronously inside flushSync.
       // Fallback: if onAssistantComplete did not reset (e.g., not set), reset here.
       // The reset is idempotent — if onAssistantComplete already cleared the
@@ -1425,6 +1425,13 @@ function handleProgressMessage(
         // "思考中…" lingers after the input box went idle). stopStreaming is a
         // no-op on frozen (already false) and on PhaseDone (already stopped).
         store.stopStreaming()
+        // Clear empty MessageStore lives: a turn that started with thinking but
+        // produced nothing (PhaseDone/text both lost) leaves an EMPTY live shell
+        // in MessageStore → toRows() emits an isPartial assistant row whose first
+        // line renders "思考中…" (AssistantMessage misreads it as thinking phase)
+        // even though the turn is idle. Non-empty lives are preserved for the
+        // defensive-finalize path below; frozen lives stay (cancel content).
+        messageStore?.clearEmptyLives()
         if (finalizedRef?.current || phaseDoneRef?.current) {
           // If the store is frozen (cancel), DON'T reset — frozen content
           // must stay visible. Only reset for normal finalize (text event
@@ -1471,11 +1478,4 @@ function handleProgressMessage(
     default:
       return
   }
-}
-
-function isTerminalProgressMessage(msg: WSMessage): boolean {
-  if (msg.type === 'text') return true
-  if (msg.progress?.phase === 'done') return true
-  if (msg.type !== 'session') return false
-  return ['busy', 'idle', 'deleted', 'HistoryCompacted'].includes(msg.session?.action ?? '')
 }

@@ -163,9 +163,6 @@ describe('useProgressStream event dispatch', () => {
     // the single source. A stale cache entry must NOT restore live progress.
     expect(result.current.isStreaming).toBe(false)
 
-    emitAndFlush({ type: 'text', chat_id: 'c1', content: 'done' })
-    expect(progressSnapshotCache.has(cacheKey)).toBe(false)
-
     rerender({ chatID: 'c2' })
     rerender({ chatID: 'c1' })
     act(() => {
@@ -1498,5 +1495,56 @@ describe('turn-id ownership on turn boundary (turn duplication regression)', () 
     // "思考中…" lingers below the history after the input box turned idle.
     emitAndFlush({ type: 'session', session: { action: 'idle', chat_id: 'c1' } })
     expect(result.current.progressSnapshot.streaming).toBe(false)
+  })
+})
+
+describe('late stream_content from a finalized turn must be dropped', () => {
+  it('does NOT re-fill the store with a stale turn-1 stream_content after turn_started(2)', () => {
+    // User report: "user1 agent1 → 发 user2 → user1 agent1 user2 agent2(processing) agent1".
+    // A late stream_content from turn 1 (SSE reorder) arrives AFTER turn_started(2)
+    // reset finalizedRef=false. stream_content lacked the finalizedTurnIDRef guard
+    // that progress_structured has — it re-filled ProgressStore.streamContent and
+    // wrote the OLD turn's slot, resurrecting agent1 as a live row below agent2.
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
+    )
+    // turn 1 completes
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'agent1 reply', turn_id: 1 } })
+    emitAndFlush({ type: 'text', seq: 10, turn_id: 1, content: 'agent1 reply' })
+    expect(result.current.progressSnapshot.streamContent).toBe('')
+
+    // turn 2 begins (resets finalizedRef=false, finalizedTurnIDRef=1)
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 2, chat_id: 'web:c1' } })
+
+    // late stream_content from turn 1 (stale, turn_id=1)
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'late agent1 token', turn_id: 1 } })
+
+    // The stale token must NOT resurrect the old turn's stream content.
+    expect(result.current.progressSnapshot.streamContent).toBe('')
+    expect(result.current.progressSnapshot.streaming).toBe(false)
+  })
+})
+
+describe('text event turn_id from metadata.turn_id', () => {
+  it('commits the final reply to metadata.turn_id when top-level turn_id is absent', () => {
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, onAssistantComplete: complete }),
+    )
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1368, chat_id: 'web:c1' } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: 'reply text', turn_id: 1368 } })
+    // The final reply's text event carries turn_id in metadata.turn_id (string),
+    // NOT in the top-level turn_id field (omitempty, absent when 0).
+    emitAndFlush({
+      type: 'text',
+      seq: 653,
+      content: 'reply text',
+      metadata: { turn_id: '1368' },
+    })
+
+    expect(complete).toHaveBeenCalledTimes(1)
+    // Args: (finalText, iterations, eventSeq, turnID, insertBeforeLastUser)
+    expect(complete).toHaveBeenCalledWith('reply text', expect.any(Array), 653, 1368)
   })
 })

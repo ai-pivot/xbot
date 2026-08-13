@@ -176,6 +176,9 @@ type OutboundMessage struct {
 	// === 元数据 ===
 	Metadata map[string]string // 附加元数据
 
+	// === TurnID（final reply 关联到 user 消息）===
+	TurnID uint64 // 该回复所属的 turn ID（0 = 未关联/工具中途发送）
+
 	// === 流式输出 ===
 	IsPartial bool // 是否为流式输出的部分消息（true=追加，false=完成）
 

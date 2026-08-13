@@ -53,6 +53,7 @@ func (d *Dispatcher) Run() {
 				Content:     msg.Content,
 				Media:       msg.Media,
 				Metadata:    msg.Metadata,
+				TurnID:      msg.TurnID,
 				IsPartial:   msg.IsPartial,
 				WaitingUser: msg.WaitingUser,
 				ToolsUsed:   msg.ToolsUsed,

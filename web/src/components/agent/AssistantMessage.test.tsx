@@ -150,4 +150,68 @@ describe('AssistantMessage thinking indicator (mutual exclusion with LiveIterati
     const { container } = renderMsg(<AssistantMessage message={m} collapseLevel="none" />)
     expect(container.querySelectorAll('.sweep-text').length).toBe(0)
   })
+
+  it('does NOT render "思考中…" for a stale isPartial live row whose turn is already idle (streaming=false)', () => {
+    // User report: "idle之后（思考中…）渲染在最新turn的agent消息第一行".
+    // A turn that started with thinking but produced nothing (PhaseDone/text both
+    // lost) leaves an EMPTY live shell in MessageStore → toRows() emits an
+    // isPartial assistant row. The progress snapshot has already been reset
+    // (streaming=false, empty content), but isStreaming = message.isPartial=true
+    // made showThinkingIndicator true → a ghost "思考中…" on the first line of
+    // the agent message. showThinkingIndicator must require progress.streaming.
+    const m = msg({ isPartial: true, iterations: [] })
+    const { container } = renderMsg(
+      <AssistantMessage
+        message={m}
+        collapseLevel="none"
+        progress={progress({ phase: '', streaming: false, iterationHistory: [], lastIter: 0 })}
+      />,
+    )
+    expect(container.querySelectorAll('.sweep-text').length).toBe(0)
+  })
+})
+
+describe('AssistantMessage compressing indicator position', () => {
+  const compressing = (over: Record<string, unknown> = {}) => ({
+    eventSeq: 0,
+    phase: 'compressing',
+    iteration: 1,
+    lastIter: 1,
+    streaming: true,
+    streamContent: '',
+    content: '',
+    reasoningStreamContent: '',
+    genuiContent: '',
+    lastReasoning: '',
+    streamTokens: 0,
+    tokenUsage: null,
+    turnID: 1,
+    activeTools: [] as WebToolProgress[],
+    completedTools: [] as WebToolProgress[],
+    streamingTools: [] as WebToolProgress[],
+    iterationHistory: [
+      { iteration: 1, thinking: 'done work', reasoning: '', tools: [], toolCount: 0 },
+    ],
+    subAgents: [],
+    todos: [],
+    ...over,
+  })
+
+  it('renders the compressing indicator AFTER turn content (tail), not at the top', () => {
+    const m = msg({ isPartial: true, iterations: [] })
+    const { container } = renderMsg(
+      <AssistantMessage message={m} collapseLevel="none" progress={compressing()} />,
+    )
+    // The compressing indicator (Loader2 + "compressing") must come after the
+    // turn body content. Its container is a sibling placed at the tail of
+    // .group/msg, so its index must be greater than the TurnBody's content.
+    const group = container.querySelector('.group\\/msg')
+    expect(group).not.toBeNull()
+    const children = Array.from(group!.children)
+    const compressingIdx = children.findIndex((el) => el.textContent?.includes('compressing') || el.querySelector('.animate-spin'))
+    // There must be a child rendered for the turn body before the indicator.
+    expect(compressingIdx).toBeGreaterThan(0)
+    // The indicator must NOT be the FIRST child (that would be the "turn top").
+    expect(compressingIdx).not.toBe(0)
+  })
 })

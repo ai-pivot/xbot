@@ -85,6 +85,24 @@ func TestMaybeOffload_EmptyResult(t *testing.T) {
 	}
 }
 
+func TestMaybeOffload_SkillNeverOffloaded(t *testing.T) {
+	dir := t.TempDir()
+	store := NewOffloadStore(OffloadConfig{
+		StoreDir:        dir,
+		MaxResultTokens: 10, // very low threshold
+		MaxResultBytes:  10,
+	})
+
+	// A SKILL.md is an instruction the LLM must read IN FULL — offloading it to a
+	// summary marker would defeat the Skill tool. It must never be offloaded even
+	// when it exceeds the result thresholds.
+	largeSkill := strings.Repeat("# skill instructions\n", 500)
+	_, wasOffloaded := store.MaybeOffload(context.Background(), "test:session", "Skill", `{"name":"debug"}`, largeSkill, "", "", "")
+	if wasOffloaded {
+		t.Fatal("Skill tool results must never be offloaded")
+	}
+}
+
 func TestRecall(t *testing.T) {
 	dir := t.TempDir()
 	store := NewOffloadStore(OffloadConfig{

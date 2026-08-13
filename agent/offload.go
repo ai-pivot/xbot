@@ -159,8 +159,12 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 
 	// Never offload recall-type tools — their results are already retrieved content
 	// and offloading them would create infinite recursion (offload → recall → offload → ...)
+	// Also never offload Skill loads — the SKILL.md content is an instruction that the
+	// LLM must read IN FULL in-context; offloading it to disk and substituting a summary
+	// marker defeats the purpose of the Skill tool (the model cannot follow a skill it
+	// only sees a truncated marker for).
 	switch toolName {
-	case "offload_recall", "recall_masked":
+	case "offload_recall", "recall_masked", "Skill":
 		return OffloadedResult{}, false
 	}
 
