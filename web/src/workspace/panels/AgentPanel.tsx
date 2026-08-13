@@ -326,6 +326,12 @@ export function AgentPanel({ params }: PanelProps) {
       // Rewind is destructive: clear the visible/cache rows before reload so
       // an empty truncated history is not mistaken for a background refresh.
       chat.clearMessages()
+      // Rewind MUST also reset the ProgressStore — otherwise the pre-rewind
+      // turn's live/lastTurnID residue is committed by commitLiveProgressAndReset
+      // on the next turn_started (the sendMessage below), re-rendering the
+      // rewind-deleted assistant below the new turn (user report: turn 重复、
+      // 进度跳变、思考中卡死；只有 rewind 过的会话能一直复现，刷新后才正常).
+      resetProgressRef.current?.()
       // Reload FIRST to fetch the truncated history from the server.
       // This must happen BEFORE sendMessage — otherwise sendMessage increments
       // messageMutationGenRef, the subsequent reload captures the incremented
