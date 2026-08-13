@@ -246,7 +246,15 @@ export class SSEConnectionImpl implements WSConnection {
         resetLastIteration(cacheKey)
         previousSeq = 0
       } else if (seq === previousSeq) {
-        return
+        // resync_required 是控制事件（ring-buffer eviction / forceResync 恢复指令），
+        // 不能参与业务 seq 去重。触发场景：切换会话时 reload 完成 → setLastSeq
+        // 写入缓存 Y → restartSource → 新连接带 last_event_id=Y → 服务器
+        // forceResync（stream 恰好暂停）→ writeSSEResyncRequired 写 id=lastSentSeq=Y
+        // （== 前端缓存）。旧代码在此处 return 静默丢弃，useChatMessages 不 reload，
+        // publishSSEFallbacks 又未合成 → 前端永久收不到新事件（用户报告：隔壁会话
+        // cancel 后切回，SSE 停止推送，不刷新永远卡死）。resync_required 必须始终
+        // dispatch（触发 useChatMessages reload 从 DB 恢复）。
+        if (msg.type !== 'resync_required') return
       }
       // Track the last progress_structured iteration id for cross-iteration
       // gap detection (stateless events don't carry iterations).
