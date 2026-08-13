@@ -4020,9 +4020,18 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 		msg.Metadata = make(map[string]string)
 	}
 
-	// Stamp the active turn's TurnID so the frontend can associate this reply
-	// with the correct user message (by TurnID, not arrival order).
-	msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
+	// Stamp the TurnID so the frontend can associate this reply with the correct
+	// user message. Prefer the caller-supplied turn_id (authoritative, parsed
+	// from RunConfig.TurnID in handleRunOutput); fall back to getActiveTurnID
+	// for callers that don't pass one (e.g. tool-initiated sends mid-turn).
+	if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
+		if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
+			msg.TurnID = tid
+		}
+	}
+	if msg.TurnID == 0 {
+		msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
+	}
 
 	isFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
 

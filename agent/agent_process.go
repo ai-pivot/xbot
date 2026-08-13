@@ -583,8 +583,16 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		return nil, fmt.Errorf("append assistant message: %w", err)
 	}
 
-	// Send via sendMessage (reuses session message tracking)
+	// Send via sendMessage (reuses session message tracking).
+	// Pass the authoritative turn_id (from RunConfig.TurnID, parsed out of
+	// msg.Metadata) so sendMessage stamps it on the SSE text event. Without this,
+	// sendMessage falls back to getActiveTurnID which can return 0 (the reply
+	// would be committed to turn 0 while the live progress was written to the
+	// real turn — leaving an empty live shell + a turn-0 assistant row).
 	sendMeta := map[string]string{}
+	if tid := msg.Metadata["turn_id"]; tid != "" {
+		sendMeta["turn_id"] = tid
+	}
 	if err := a.sendMessage(msg.Channel, msg.ChatID, finalContent, sendMeta); err != nil {
 		log.Ctx(ctx).WithError(err).Error("Failed to send final response via sendMessage")
 		return &channel.OutboundMsg{
