@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -332,22 +331,11 @@ func (m *cliModel) flushMessageQueue() tea.Cmd {
 	m.messageQueue = m.messageQueue[1:]
 	m.queueEditing = false
 	m.queueEditBuf = ""
-	// Put message into textarea and trigger send
-	m.textarea.SetValue(msg.content)
-	return m.sendMessageFromQueue()
-}
-
-// sendMessageFromQueue sends the current textarea content as a queued message.
-// The returned command must be scheduled by the caller; Agent continuations
-// use it to perform their RPC outside BubbleTea's Update path.
-func (m *cliModel) sendMessageFromQueue() tea.Cmd {
-	content := strings.TrimSpace(m.textarea.Value())
-	if content == "" {
-		return nil
-	}
-	m.textarea.Reset()
-	m.autoExpandInput()
-	return m.sendMessage(content)
+	// 直接发送队列消息，不经过 textarea 中转。旧实现把消息塞进 textarea
+	// （SetValue）再发送（sendMessageFromQueue → Reset），会覆盖并清空用户
+	// 正在输入的草稿 —— 用户场景：发消息1执行中 → 发消息2入队 → 输入消息3 →
+	// 消息1结束 flush 消息2 的瞬间，正在输入的消息3被清空。
+	return m.sendMessage(msg.content)
 }
 
 // applyThemeAndRebuild applies a theme change synchronously: sets the theme,
