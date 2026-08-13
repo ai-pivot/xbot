@@ -76,7 +76,8 @@ export interface IterationTool {
 /** One iteration snapshot from the `detail` JSON of an assistant message. */
 export interface IterationSnapshot {
   iteration: number
-  thinking?: string
+  /** 迭代文本输出（thinking 已彻底删除，统一 content）。 */
+  content?: string
   reasoning?: string
   /** Wall-clock duration of this iteration (ms), from `elapsed_wall` in the JSON. */
   elapsedMs?: number

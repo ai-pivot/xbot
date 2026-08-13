@@ -25,7 +25,7 @@ import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
-import type { WebIteration, WebToolProgress } from '@/types/shared'
+import type { WebToolProgress } from '@/types/shared'
 import { parseArgs } from './ToolRender'
 
 interface AssistantMessageProps {
@@ -125,7 +125,18 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     !hasAnyTools &&
     !liveIterationShowsPlaceholder
   const emptyResponse = isEmptyResponseContent(message.content)
-  const finalContent = !emptyResponse && shouldRenderFinalContent(message.content, iterations)
+  // "一个 iter 的内容只能渲染在 iter 内"（禁止任何字符串比较/内容判断 hack）：
+  // - 行有迭代（iterations 非空，结构判断）：内容（含最终输出的 content）由
+  //   TurnBody/IterationGroup 在迭代内渲染，message.content 是最终回复的权威
+  //   副本（copy/actions/rewind 用），迭代块外不重复渲染 —— 无论迭代 content
+  //   是否与 message.content 相同，都只在迭代内渲染一次。
+  // - 行无迭代：message.content 是唯一内容源 → 渲染（最终回复）。
+  // - turn-live（isPartial）行：LiveIteration 在迭代内渲染 progress 内容
+  //   （liveHasContent）→ 不渲染；progress 空（frozen 后 reset）→ message.content
+  //   渲染（"已渲染内容永不消失"—— MessageStore slot.live.content 保留的累积文本）。
+  const hasIterations = iterations.length > 0
+  const liveHasContent = hasLiveProgress && Boolean(progress?.streamContent || progress?.content)
+  const finalContent = !emptyResponse && !hasIterations && !liveHasContent
     ? message.content
     : ''
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
@@ -156,7 +167,11 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     const totalTools = iterations.reduce((sum, iter) => sum + iter.toolCount, 0)
     const showSummary = iterations.length > 0
     const lastIteration = iterations[iterations.length - 1]
-    const lastText = finalContent || lastIteration?.thinking || ''
+    // finalContent 在有迭代时为空（内容由 TurnBody 迭代内渲染）—— 'all' 折叠
+    // 模式显示"最后文本"必须 fallback 到最后迭代的 content（最终输出），再退
+    // thinking，否则折叠后只显示推理摘要、丢失最终回复。content 是文本输出
+    // （thinking 已彻底删除）。
+    const lastText = finalContent || lastIteration?.content || lastIteration?.reasoning || ''
 
     // Extract GenUI tools from all iterations — render outside the fold
     const genuiTools: WebToolProgress[] = []
@@ -246,12 +261,6 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       {showActions && <AssistantActions onCopy={handleCopy} t={t} />}
     </div>
   )
-}
-
-function shouldRenderFinalContent(content: string, iterations: WebIteration[]): boolean {
-  const finalText = content.trim()
-  if (!finalText) return false
-  return !iterations.some((iter) => (iter.thinking || '').trim() === finalText)
 }
 
 function isEmptyResponseContent(content: string): boolean {

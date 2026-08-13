@@ -44,8 +44,8 @@ function flattenIterations(iterations: WebIteration[]): ContentBlock[] {
     if (iter.reasoning) {
       blocks.push({ kind: 'reasoning', text: iter.reasoning, iteration: iterNum })
     }
-    if (iter.thinking) {
-      blocks.push({ kind: 'text', content: iter.thinking, iteration: iterNum })
+    if (iter.content) {
+      blocks.push({ kind: 'text', content: iter.content, iteration: iterNum })
     }
     if (iter.tools.length > 0) {
       // Merge with previous block if it's also tools

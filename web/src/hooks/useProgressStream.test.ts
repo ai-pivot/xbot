@@ -54,7 +54,7 @@ describe('hasVisibleProgress', () => {
       hasVisibleProgress(
         snap({
           iterationHistory: [
-            { iteration: 1, thinking: 't', reasoning: '', tools: [], toolCount: 0 },
+            { iteration: 1, content: 't', reasoning: '', tools: [], toolCount: 0 },
           ],
         }),
       ),

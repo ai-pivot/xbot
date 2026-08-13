@@ -21,7 +21,7 @@ function tool(name: string, status: string, iter?: number): WebToolProgress {
 }
 
 function iter(n: number, tools: WebToolProgress[]): WebIteration {
-  return { iteration: n, thinking: '', reasoning: '', tools, toolCount: tools.length }
+  return { iteration: n, content: '', reasoning: '', tools, toolCount: tools.length }
 }
 
 describe('iterationHistory preservation — NEVER disappear during tool execution', () => {

@@ -326,9 +326,9 @@ export function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIterat
     if (!existing) {
       map.set(iter.iteration, iter)
     } else {
-      // Prefer the one with non-empty thinking/content, or more tools
-      const existingHasContent = (existing.thinking ?? '') !== '' || (existing.reasoning ?? '') !== ''
-      const incomingHasContent = (iter.thinking ?? '') !== '' || (iter.reasoning ?? '') !== ''
+      // Prefer the one with non-empty content, or more tools
+      const existingHasContent = (existing.content ?? '') !== '' || (existing.reasoning ?? '') !== ''
+      const incomingHasContent = (iter.content ?? '') !== '' || (iter.reasoning ?? '') !== ''
       if (incomingHasContent && !existingHasContent) {
         map.set(iter.iteration, iter)
       } else if (existingHasContent && !incomingHasContent) {

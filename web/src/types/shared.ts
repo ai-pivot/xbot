@@ -306,10 +306,11 @@ export interface WebToolProgress {
   iteration?: number
 }
 
-/** Iteration snapshot — one completed iteration's reasoning + tools. */
+/** Iteration snapshot — one completed iteration's reasoning + tools + text output. */
 export interface WebIteration {
   iteration: number
-  thinking: string
+  /** 迭代的文本输出（最终回复 = 最终 iter 的 content）。thinking 字段已彻底删除。 */
+  content: string
   reasoning: string
   tools: WebToolProgress[]
   toolCount: number

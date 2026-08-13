@@ -130,8 +130,8 @@ describe('orderMessageRows', () => {
 
   it('keeps same-turn assistants in input order (iteration order)', () => {
     const rows = [
-      msg({ id: 'a3-iter1', role: 'assistant', turnID: 3, iterations: [{ iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }] }),
-      msg({ id: 'a3-iter2', role: 'assistant', turnID: 3, iterations: [{ iteration: 2, thinking: '', reasoning: '', tools: [], toolCount: 0 }] }),
+      msg({ id: 'a3-iter1', role: 'assistant', turnID: 3, iterations: [{ iteration: 1, content: '', reasoning: '', tools: [], toolCount: 0 }] }),
+      msg({ id: 'a3-iter2', role: 'assistant', turnID: 3, iterations: [{ iteration: 2, content: '', reasoning: '', tools: [], toolCount: 0 }] }),
     ]
     const ordered = orderMessageRows(rows)
     expect(ordered.map((m) => m.id)).toEqual(['a3-iter1', 'a3-iter2'])

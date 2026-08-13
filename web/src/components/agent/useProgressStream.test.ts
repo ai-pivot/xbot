@@ -13,7 +13,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProgressEvent, WSMessage } from '@/types/shared'
+import type { ProgressEvent, WSMessage, WebIteration } from '@/types/shared'
 import type { WSConnection } from '@/types/ws'
 import { MessageStore } from '@/components/agent/messageStore'
 import { clearWebCaches, progressSnapshotCache, sessionCacheKey } from '@/lib/webCache'
@@ -1113,7 +1113,7 @@ describe('busy: no iteration lost under packet loss', () => {
     emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
       phase: 'tool_exec', iteration: 2,
       active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }],
-      iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
+      iteration_history: [{ iteration: 1, content: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
     } })
 
     // iter 1 must survive in iterationHistory
@@ -1138,7 +1138,7 @@ describe('busy: no iteration lost under packet loss', () => {
     emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
       phase: 'tool_exec', iteration: 2,
       active_tools: [{ name: 'Grep', status: 'running', iteration: 2 }],
-      iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
+      iteration_history: [{ iteration: 1, content: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
     } })
     // Delta for iter 2 DROPPED
 
@@ -1146,7 +1146,7 @@ describe('busy: no iteration lost under packet loss', () => {
     emitAndFlush({ type: 'progress_structured', seq: 5, progress: {
       phase: 'tool_exec', iteration: 3,
       active_tools: [{ name: 'Shell', status: 'running', iteration: 3 }],
-      iteration_history: [{ iteration: 2, thinking: '', reasoning: '', tools: [{ name: 'Grep', status: 'done', iteration: 2 }], toolCount: 1 }],
+      iteration_history: [{ iteration: 2, content: '', reasoning: '', tools: [{ name: 'Grep', status: 'done', iteration: 2 }], toolCount: 1 }],
     } })
 
     const iters = result.current.progressSnapshot.iterationHistory.map(i => i.iteration).sort()
@@ -1179,7 +1179,7 @@ describe('busy: no iteration lost under packet loss', () => {
     emitAndFlush({ type: 'progress_structured', seq: 3, progress: {
       phase: 'tool_exec', iteration: 2,
       active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }],
-      iteration_history: [{ iteration: 1, thinking: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
+      iteration_history: [{ iteration: 1, content: '', reasoning: '', tools: [{ name: 'Read', status: 'done', iteration: 1 }], toolCount: 1 }],
     } })
 
     const snap = result.current.progressSnapshot
@@ -1667,5 +1667,249 @@ describe('useProgressStream historyReady gate（live 不先于 history 渲染）
     })
     expect(ms.hasLive(1)).toBe(true)
     expect(ms.toRows().some((r) => r.id === 'turn-1-live')).toBe(true)
+  })
+
+  // 复现用户 bug：cancel 后发新消息 100% 触发 thinking consistency check ——
+  // 思考中下方出现 turnID=0/null 的 committed assistant（seq-600180）。
+  // 根因假设：commitLiveProgressAndReset 的 commitTurnID 解析失败（MessageStore
+  // 无该 turn 的 live → liveTurnIDWithContent()=0 且 store.lastTurnID=0）→
+  // commitAssistant(0) → turnID=null 的行排到 live 之后。
+  it('cancel 后发新消息：commit 到正确 turnID，toRows 无 turnID=0 行', () => {
+    const ms = new MessageStore()
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        ws: currentWS as unknown as WSConnection,
+        messageStore: ms,
+        onAssistantComplete: complete,
+        historyReady: true,
+      }),
+    )
+    // turn 1404 开始 + stream（live 写入 MessageStore）
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1404, phase: 'turn_started' } })
+    emitAndFlush({ type: 'stream_content', chat_id: 'c1', progress: { turn_id: 1404, stream_content: 'partial', iteration: 1 } })
+    expect(ms.hasLive(1404)).toBe(true)
+    // cancel
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, turn_id: 1404 })
+    // 发新消息 → turn_started(1405) → commitLiveProgressAndReset
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1405, phase: 'turn_started' } })
+    // commit 的 turnID 应为 1404（cancel 的 turn），不能是 0
+    const commitTurnID = complete.mock.calls[0]?.[3]
+    expect(commitTurnID).toBe(1404)
+    // MessageStore 不得产生 turnID=0/null 的 committed assistant
+    const rows = ms.toRows()
+    expect(rows.some((r) => r.role === 'assistant' && !r.turnID)).toBe(false)
+  })
+
+  // historyReady=false 期间 cancel（SSE live 未写入 MessageStore）：commitTurnID
+  // 必须 fallback 到 store.lastTurnID（不得为 0）
+  it('cancel 时 MessageStore 无 live（gate 期间）：commit fallback 到 store.lastTurnID', () => {
+    const ms = new MessageStore()
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        ws: currentWS as unknown as WSConnection,
+        messageStore: ms,
+        onAssistantComplete: complete,
+        historyReady: false, // 切换会话/加载期间，SSE live 不写入 MessageStore
+      }),
+    )
+    // turn 1404 的 turn_started 到达（beginTurn 不受 gate 影响，lastTurnID=1404）
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1404, phase: 'turn_started' } })
+    // stream 事件被 gate 跳过（MessageStore 无 live），但 ProgressStore 更新
+    emitAndFlush({ type: 'stream_content', chat_id: 'c1', progress: { turn_id: 1404, stream_content: 'partial', iteration: 1 } })
+    expect(ms.hasLive(1404)).toBe(false) // gate：live 未写入
+    // cancel
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, turn_id: 1404 })
+    // history ready 后发新消息 → turn_started(1405)
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1405, phase: 'turn_started' } })
+    // commitTurnID 应 fallback 到 store.lastTurnID=1404（不得为 0）
+    const commitTurnID = complete.mock.calls[0]?.[3]
+    expect(commitTurnID).toBe(1404)
+    const rows = ms.toRows()
+    expect(rows.some((r) => r.role === 'assistant' && !r.turnID)).toBe(false)
+  })
+
+  // 复现用户 bug：cancel 后发新消息，cancel 的 turn 的迟到 text（turn_id 缺失）
+  // → commitTurnID=undefined → commitAssistant(0) → turnID=0 幽灵行（seq-600180）
+  // → thinking consistency check 触发（思考中下方出现 turnID=null 的 committed assistant）。
+  it('cancel 后迟到 text（turn_id 缺失）不 commit 到 turnID=0', () => {
+    const ms = new MessageStore()
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        ws: currentWS as unknown as WSConnection,
+        messageStore: ms,
+        onAssistantComplete: complete,
+        historyReady: true,
+      }),
+    )
+    // turn 1404 开始 + stream + cancel
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1404, phase: 'turn_started' } })
+    emitAndFlush({ type: 'stream_content', chat_id: 'c1', progress: { turn_id: 1404, stream_content: 'partial', iteration: 1 } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, turn_id: 1404 })
+    // 新 turn 1405
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1405, phase: 'turn_started' } })
+    // 迟到 text：turn_id 缺失（SSE 丢 turn_id），eventSeq=600180 —— cancel 的 turn 的最终 reply
+    emitAndFlush({ type: 'text', chat_id: 'c1', seq: 600180, content: 'final reply', progress_history: '[]' })
+    // complete 不应收到 turnID=undefined/0（否则 commitAssistant(0) 产生幽灵行）
+    const turnIDs = complete.mock.calls.map((c) => c[3])
+    expect(turnIDs).not.toContain(undefined)
+    expect(turnIDs).not.toContain(0)
+    // MessageStore 无 turnID=0 的 committed assistant
+    const rows = ms.toRows()
+    expect(rows.some((r) => r.role === 'assistant' && !r.turnID)).toBe(false)
+  })
+
+  // cancel 时 MessageStore 的 live 应 freeze（commitStaleLives 不得覆盖
+  // commitAssistant 的结果为 seq-*-stale）
+  it('cancel 时 MessageStore live 被 freeze（commitStaleLives 不产生 seq-*-stale）', () => {
+    const ms = new MessageStore()
+    const complete = vi.fn()
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        ws: currentWS as unknown as WSConnection,
+        messageStore: ms,
+        onAssistantComplete: complete,
+        historyReady: true,
+      }),
+    )
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1404, phase: 'turn_started' } })
+    emitAndFlush({ type: 'stream_content', chat_id: 'c1', progress: { turn_id: 1404, stream_content: 'partial', iteration: 1 } })
+    // cancel → MessageStore 的 live 必须 freeze（与 ProgressStore 同步）
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, turn_id: 1404 })
+    expect(ms.getLive(1404)?.frozen).toBe(true)
+    // 新 turn → beginTurn → commitStaleLives 不得覆盖 slot 1404 的 live 为 stale assistant
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1405, phase: 'turn_started' } })
+    const rows = ms.toRows()
+    expect(rows.some((r) => typeof r.id === 'string' && r.id.includes('-stale'))).toBe(false)
+  })
+})
+
+// ── 消息渲染全面正确性审查（卡死/缺迭代/重复渲染/缺turn/位置错乱）──
+describe('message render consistency（渲染完整性综合审查）', () => {
+  // 模拟真实 appendAssistant（guard + commitAssistant 的 live fallback）
+  function setupAppend(ms: MessageStore): ReturnType<typeof vi.fn> {
+    const complete = vi.fn((text: string, iters: WebIteration[] | undefined, seq?: number, turnID?: number) => {
+      const hasLive = ms.getLive(turnID ?? 0) !== undefined
+      if (!text && !iters?.length && !hasLive) return
+      ms.commitAssistant(turnID ?? 0, text, iters ?? [], seq)
+    })
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        ws: currentWS as unknown as WSConnection,
+        messageStore: ms,
+        onAssistantComplete: complete,
+        historyReady: true,
+      }),
+    )
+    return complete
+  }
+
+  it('完整 turn（2 迭代 + 工具 + 文本）：无缺迭代 / 无重复 / 顺序正确', () => {
+    const ms = new MessageStore()
+    ms.setUser(1404, { id: 'u1404', role: 'user', content: 'q', turnID: 1404, iterations: [], timestamp: '', isPartial: false, persisted: true } as never)
+    setupAppend(ms)
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1404, phase: 'turn_started' } })
+    // 迭代1：reasoning + 工具
+    emitAndFlush({ type: 'stream_content', chat_id: 'c1', progress: { turn_id: 1404, reasoning_stream_content: '思考1', iteration: 1 } })
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1404, phase: 'tool_exec', iteration: 1, active_tools: [{ name: 'Shell', status: 'running' }] } })
+    // 迭代1 完成，迭代2 开始
+    emitAndFlush({
+      type: 'progress_structured',
+      chat_id: 'c1',
+      progress: {
+        turn_id: 1404, phase: 'thinking', iteration: 2,
+        iteration_history: [{ iteration: 1, reasoning: '思考1', tools: [{ name: 'Shell', status: 'done' }] }],
+      },
+    })
+    emitAndFlush({ type: 'stream_content', chat_id: 'c1', progress: { turn_id: 1404, stream_content: '回复', iteration: 2 } })
+    // text：服务器完整 progress_history（2 迭代）
+    const serverHistory = JSON.stringify([
+      { iteration: 1, reasoning: '思考1', tools: [{ name: 'Shell', status: 'done' }] },
+      { iteration: 2, content: '回复', tools: [] },
+    ])
+    emitAndFlush({ type: 'text', chat_id: 'c1', seq: 500, content: '回复', turn_id: 1404, progress_history: serverHistory })
+    const rows = ms.toRows()
+    // 无缺 turn：user + assistant 各 1
+    expect(rows.filter((r) => r.role === 'user')).toHaveLength(1)
+    expect(rows.filter((r) => r.role === 'assistant')).toHaveLength(1)
+    // 无缺迭代：committed assistant 有 2 迭代
+    const assistant = rows.find((r) => r.role === 'assistant')!
+    expect(assistant.iterations).toHaveLength(2)
+    expect(assistant.iterations!.map((i) => i.iteration)).toEqual([1, 2])
+    // 顺序正确：user 在前，assistant 在后
+    expect(rows[0].role).toBe('user')
+    expect(rows[1].role).toBe('assistant')
+    // 无残留 live（commit 后 live 清除）
+    expect(ms.hasLive(1404)).toBe(false)
+  })
+
+  it('cancel 后发新消息：无重复渲染 / 无 turnID=0 幽灵行 / 位置正确', () => {
+    const ms = new MessageStore()
+    ms.setUser(1404, { id: 'u1404', role: 'user', content: 'q1', turnID: 1404, iterations: [], timestamp: '', isPartial: false, persisted: true } as never)
+    setupAppend(ms)
+    // turn 1404 stream + cancel
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1404, phase: 'turn_started' } })
+    emitAndFlush({ type: 'stream_content', chat_id: 'c1', progress: { turn_id: 1404, stream_content: '被取消内容', iteration: 1 } })
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, turn_id: 1404 })
+    // 新消息 turn 1405
+    ms.setUser(1405, { id: 'u1405', role: 'user', content: 'q2', turnID: 1405, iterations: [], timestamp: '', isPartial: false, persisted: true } as never)
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 1405, phase: 'turn_started' } })
+    emitAndFlush({ type: 'stream_content', chat_id: 'c1', progress: { turn_id: 1405, stream_content: '新内容', iteration: 1 } })
+    const rows = ms.toRows()
+    // 无 turnID=0 幽灵行
+    expect(rows.some((r) => !r.turnID)).toBe(false)
+    // 1404 的取消内容只渲染 1 次（无重复）
+    const c1404 = rows.filter((r) => r.turnID === 1404 && r.role === 'assistant')
+    expect(c1404).toHaveLength(1)
+    // 位置正确：1404 在 1405 之前
+    const idx1404 = rows.findIndex((r) => r.turnID === 1404)
+    const idx1405 = rows.findIndex((r) => r.turnID === 1405)
+    expect(idx1404).toBeGreaterThan(-1)
+    expect(idx1405).toBeGreaterThan(idx1404)
+  })
+
+  it('SSE 事件乱序：toRows 仍严格 (turnID, role) 排序，无位置错乱', () => {
+    const ms = new MessageStore()
+    // 乱序插入 turn：先 1405，再 1403，再 1404
+    ms.setUser(1405, { id: 'u1405', role: 'user', content: 'c', turnID: 1405, iterations: [], timestamp: '', isPartial: false, persisted: true } as never)
+    ms.commitAssistant(1405, 'r5', [])
+    ms.setUser(1403, { id: 'u1403', role: 'user', content: 'a', turnID: 1403, iterations: [], timestamp: '', isPartial: false, persisted: true } as never)
+    ms.commitAssistant(1403, 'r3', [])
+    ms.setUser(1404, { id: 'u1404', role: 'user', content: 'b', turnID: 1404, iterations: [], timestamp: '', isPartial: false, persisted: true } as never)
+    ms.commitAssistant(1404, 'r4', [])
+    const tids = ms.toRows().map((r) => r.turnID)
+    expect(tids).toEqual([1403, 1403, 1404, 1404, 1405, 1405])
+  })
+
+  it('historyReady gate 后 live 恢复：不卡死，iterationHistory 完整', () => {
+    const ms = new MessageStore()
+    const { rerender } = renderHook(
+      ({ ready }) =>
+        useProgressStream({
+          chatID: 'c1',
+          ws: currentWS as unknown as WSConnection,
+          messageStore: ms,
+          historyReady: ready,
+        }),
+      { initialProps: { ready: false } },
+    )
+    // gate 期间：迭代 1 + 工具
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 10, phase: 'turn_started' } })
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 10, phase: 'tool_exec', iteration: 1, iteration_history: [{ iteration: 1, tools: [{ name: 'Shell', status: 'done' }] }] } })
+    expect(ms.hasLive(10)).toBe(false) // gate：live 不写入
+    // history ready → live 恢复（后续 SSE 写入）
+    rerender({ ready: true })
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 10, phase: 'thinking', iteration: 2, iteration_history: [{ iteration: 1, tools: [{ name: 'Shell', status: 'done' }] }] } })
+    expect(ms.hasLive(10)).toBe(true)
+    const live = ms.getLive(10)!
+    // 不卡死：live 有内容/迭代
+    expect(live.iterations.length).toBeGreaterThan(0)
   })
 })
