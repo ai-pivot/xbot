@@ -920,3 +920,67 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 })
+
+// ── 切会话竞态验证：错误取消订阅活跃 stream？ ──
+// 用户报告：SSE 有概率中途卡住不再更新（最后事件 seq=9731），怀疑多次切会话
+// 竞争错误取消活跃 stream。以下测试验证 subscribe/disconnect/connect 的 guard。
+describe('SSE 切会话竞态', () => {
+  it('快速切会话 A→B→A：旧连接全部关闭，最终 A 活跃（无泄漏无误关）', () => {
+    const conn = new SSEConnectionImpl()
+    conn.subscribe('chat-A')
+    MockEventSource.instances[0].open()
+    const sourceA = MockEventSource.instances[0]
+
+    conn.subscribe('chat-B')
+    expect(sourceA.closed).toBe(true) // A 被正确关闭
+    MockEventSource.instances[1].open()
+    const sourceB = MockEventSource.instances[1]
+
+    conn.subscribe('chat-A')
+    expect(sourceB.closed).toBe(true) // B 被正确关闭
+    const sourceA2 = MockEventSource.instances[2]
+    expect(sourceA2.closed).toBe(false) // 新 A 活跃
+    expect(conn.chatID).toBe('chat-A')
+  })
+
+  it('restartSource 与切会话交错：迟到的旧连接事件不干扰新连接', () => {
+    const conn = new SSEConnectionImpl()
+    conn.subscribe('chat-A')
+    MockEventSource.instances[0].open()
+    const sourceA = MockEventSource.instances[0]
+
+    // setLastSeq 触发 restartSource：关 sourceA + 开 sourceA2（CONNECTING）
+    conn.setLastSeq('chat-A', 10)
+    expect(sourceA.closed).toBe(true)
+    const sourceA2 = MockEventSource.instances[1]
+    expect(sourceA2.closed).toBe(false) // CONNECTING，未关闭
+
+    // 切到 B：disconnect 关闭 sourceA2（即使 CONNECTING）
+    conn.subscribe('chat-B')
+    expect(sourceA2.closed).toBe(true)
+    const sourceB = MockEventSource.instances[2]
+
+    // sourceA2 的迟到 open/事件：this.source !== sourceA2（sourceB）→ 丢弃
+    sourceA2.open()
+    sourceA2.emit('text', { type: 'text', seq: 1, content: 'stale-A' } as WSMessage)
+    expect(conn.chatID).toBe('chat-B')
+    expect(sourceB.closed).toBe(false) // 新连接 B 活跃，未被干扰
+  })
+
+  it('切会话后旧 chatID 的 setLastSeq 不触发 restart（guard _chatID === chatID）', () => {
+    const conn = new SSEConnectionImpl()
+    conn.subscribe('chat-A')
+    MockEventSource.instances[0].open()
+    const sourceA = MockEventSource.instances[0]
+
+    // 切到 B（sourceA 关闭，sourceB 活跃）
+    conn.subscribe('chat-B')
+    MockEventSource.instances[1].open()
+    const sourceB = MockEventSource.instances[1]
+
+    // 旧会话 A 的迟到 setLastSeq：_chatID='chat-B' !== 'chat-A' → 不 restart
+    conn.setLastSeq('chat-A', 999)
+    expect(sourceB.closed).toBe(false) // B 连接保持，未被 restartSource 误关
+    expect(conn.chatID).toBe('chat-B')
+  })
+})
