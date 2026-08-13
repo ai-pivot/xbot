@@ -66,6 +66,10 @@ interface UseChatMessagesOptions {
 export interface UseChatMessagesResult {
   messages: ChatMessage[]
   loading: boolean
+  /** 当前会话的 history（fetchHistory committed）是否已 ready。切换会话/首次
+   *  加载时为 false（live 延迟写入，与 history 一起渲染）；同会话 reload
+   *  （resync_required/replay_gap）保持 true（已渲染 live 不得消失）。 */
+  historyReady: boolean
   error: string | null
   /** Active progress snapshot from history (for resuming a busy session). */
   initialProgress: HistProgress | null
@@ -281,6 +285,10 @@ export function useChatMessages({
 }: UseChatMessagesOptions): UseChatMessagesResult {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
+  // historyReady：当前会话 history 是否已 ready。切换会话/首次加载时 false
+  // （live 延迟写入，与 history 一起渲染）；fetchHistory 完成后 true；同会话
+  // reload（resync_required/replay_gap）不重置（已渲染 live 不得消失）。
+  const [historyReady, setHistoryReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
@@ -375,6 +383,10 @@ export function useChatMessages({
       setHasMore(false)
       oldestIdRef.current = null
       setLoading(true)
+      // 切换会话/首次加载：history 未 ready —— live 延迟写入 MessageStore，
+      // 与 history（fetchHistory committed）一起渲染（用户要求：live progress
+      // 不得先于 history 渲染）。同会话 reload 不重置（已渲染 live 不得消失）。
+      setHistoryReady(false)
     }
     setError(null)
     lastReloadKeyRef.current = reloadKey
@@ -395,6 +407,7 @@ export function useChatMessages({
           store.mergeHistory(parsed)
           syncMessages()
           setInitialProgress(null)
+          setHistoryReady(true)
       setProcessing(false)
           return parsed
         }
@@ -417,6 +430,7 @@ export function useChatMessages({
           store.mergeHistory(parsed)
           syncMessages()
           setInitialProgress(null)
+          setHistoryReady(true)
           return parsed
         }
         const msgs = await w.rpc<SubAgentMsg[]>('get_session_messages', {
@@ -431,6 +445,7 @@ export function useChatMessages({
         store.mergeHistory(parsed)
         syncMessages()
         setInitialProgress(null)
+        setHistoryReady(true)
         return parsed
       }
       // Normal mode: load via Web history snapshot (paginated: last 100 messages).
@@ -471,6 +486,9 @@ export function useChatMessages({
       // because the delta only has 0-1 iterations while the server has all.
       setInitialProgress(data.active_progress ?? null)
       if (data.chat_id) setResolvedChatID(data.chat_id)
+      // history ready：committed（mergeHistory）已写入、hydration（initialProgress）
+      // 已触发 —— 之后的 SSE live 事件恢复写入 MessageStore，与 history 一起渲染。
+      setHistoryReady(true)
       return messagesRef.current // syncMessages 已更新为 store.toRows()（含 dbID）
     } catch (e) {
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
@@ -480,6 +498,8 @@ export function useChatMessages({
         setMessages([])
       }
       setInitialProgress(null)
+      // 加载失败也放行 live（否则 live 永不渲染 —— 卡死）；history 下次 reload 重试。
+      setHistoryReady(true)
       return null
     } finally {
       if (gen === reloadGenRef.current) setLoading(false)
@@ -805,6 +825,7 @@ export function useChatMessages({
   return {
     messages,
     loading,
+    historyReady,
     error,
     initialProgress,
     processing,

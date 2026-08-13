@@ -15,6 +15,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProgressEvent, WSMessage } from '@/types/shared'
 import type { WSConnection } from '@/types/ws'
+import { MessageStore } from '@/components/agent/messageStore'
 import { clearWebCaches, progressSnapshotCache, sessionCacheKey } from '@/lib/webCache'
 import { parseSSEDump } from '@/test-utils/sseReplay'
 
@@ -1594,5 +1595,77 @@ describe('text event turn_id from metadata.turn_id', () => {
     expect(complete).toHaveBeenCalledTimes(1)
     // Args: (finalText, iterations, eventSeq, turnID, insertBeforeLastUser)
     expect(complete).toHaveBeenCalledWith('reply text', expect.any(Array), 653, 1368)
+  })
+})
+
+// ── historyReady gate：live progress 必须与 history 一起渲染 ──
+describe('useProgressStream historyReady gate（live 不先于 history 渲染）', () => {
+  it('historyReady=false（切换会话 loading）时 SSE live 事件不写入 MessageStore', () => {
+    const ms = new MessageStore()
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        ws: currentWS as unknown as WSConnection,
+        messageStore: ms,
+        historyReady: false, // 切换会话，fetchHistory 未完成
+      }),
+    )
+    emitAndFlush({
+      type: 'stream_content',
+      chat_id: 'c1',
+      progress: { turn_id: 1, stream_content: 'partial text', iteration: 1 },
+    })
+    // live 不得先于 history 渲染 —— MessageStore 无 live 行
+    expect(ms.hasLive(1)).toBe(false)
+    expect(ms.toRows().some((r) => r.id === 'turn-1-live')).toBe(false)
+  })
+
+  it('historyReady=true 时 SSE live 事件正常写入 MessageStore', () => {
+    const ms = new MessageStore()
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'c1',
+        ws: currentWS as unknown as WSConnection,
+        messageStore: ms,
+        historyReady: true,
+      }),
+    )
+    emitAndFlush({
+      type: 'stream_content',
+      chat_id: 'c1',
+      progress: { turn_id: 1, stream_content: 'partial text', iteration: 1 },
+    })
+    expect(ms.hasLive(1)).toBe(true)
+    expect(ms.toRows().some((r) => r.id === 'turn-1-live')).toBe(true)
+  })
+
+  it('historyReady 从 false 变 true 后 SSE live 恢复写入（hydration 一起渲染）', () => {
+    const ms = new MessageStore()
+    const { rerender } = renderHook(
+      ({ ready }) =>
+        useProgressStream({
+          chatID: 'c1',
+          ws: currentWS as unknown as WSConnection,
+          messageStore: ms,
+          historyReady: ready,
+        }),
+      { initialProps: { ready: false } },
+    )
+    // loading 期间：live 不写入
+    emitAndFlush({
+      type: 'stream_content',
+      chat_id: 'c1',
+      progress: { turn_id: 1, stream_content: 'partial', iteration: 1 },
+    })
+    expect(ms.hasLive(1)).toBe(false)
+    // history ready（fetchHistory 完成 + hydration）→ 后续 SSE 正常写入
+    rerender({ ready: true })
+    emitAndFlush({
+      type: 'stream_content',
+      chat_id: 'c1',
+      progress: { turn_id: 1, stream_content: 'partial v2', iteration: 1 },
+    })
+    expect(ms.hasLive(1)).toBe(true)
+    expect(ms.toRows().some((r) => r.id === 'turn-1-live')).toBe(true)
   })
 })
