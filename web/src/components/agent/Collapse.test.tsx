@@ -64,10 +64,11 @@ describe('FoldedLine', () => {
     await waitFor(() => expect(container.querySelector('.fold-container')).toHaveClass('open'))
     expect(container.querySelector('.fold-arrow')).toHaveClass('open')
 
-    // Collapse again: the mounted content remains available for smooth reversal.
+    // Collapse again: content UNMOUNTS after the collapse animation (perf fix —
+    // folded heavy content no longer participates in streaming re-renders).
     fireEvent.click(screen.getByRole('button'))
     await waitFor(() => expect(container.querySelector('.fold-container')).not.toHaveClass('open'))
-    expect(screen.getByText('content')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('content')).not.toBeInTheDocument())
   })
 
   it('starts open when defaultOpen=true', () => {

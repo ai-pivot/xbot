@@ -59,7 +59,7 @@ export const FoldedLine = memo(function FoldedLine({
         <span className={cn('fold-arrow shrink-0 text-text-muted select-none', open && 'open')}>▸</span>
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </button>
-      <AnimatedCollapse open={open} lazy className="ml-4" contentClassName={contentClassName}>
+      <AnimatedCollapse open={open} lazy unmountOnClose className="ml-4" contentClassName={contentClassName}>
         {children}
       </AnimatedCollapse>
     </div>
