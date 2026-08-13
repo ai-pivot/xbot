@@ -55,6 +55,55 @@ func TestSessionService_GetMaxTurnID(t *testing.T) {
 	}
 }
 
+// TestGetMaxTurnID_ConsidersIterationHistory 回归测试：rewind 残留的
+// iteration_history（turn_id 在 session_messages 中已被删除）必须被 GetMaxTurnID
+// 计入，否则 server 重启后 restoreTurnIDSeq 会复用残留的 turn_id，把旧 iterations
+// 混进新 turn（用户报告："两个 agent turn 混一起，user1 消失"）。
+func TestGetMaxTurnID_ConsidersIterationHistory(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	tenantSvc := NewTenantService(db)
+	sessionSvc := NewSessionService(db)
+
+	tenantID, err := tenantSvc.GetOrCreateTenantID("test", "chat1")
+	if err != nil {
+		t.Fatalf("Failed to create tenant: %v", err)
+	}
+
+	// session_messages 最大 turn_id = 100
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "hello", TurnID: 100},
+		{Role: "assistant", Content: "hi", TurnID: 100},
+	}
+	for _, m := range msgs {
+		if err := sessionSvc.AddMessage(tenantID, m); err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+	}
+
+	// 残留 iteration_history：turn_id=150 在 session_messages 中无对应消息
+	//（rewind 删了消息但旧版本没删 iteration_history）。GetMaxTurnID 必须返回 150，
+	// 否则新 turn 复用 101-150 时会混入残留 iterations。
+	if err := sessionSvc.AppendIterationHistory(tenantID, 0, 150, IterationRecord{
+		MessageID: 0, TurnID: 150, Iteration: 1, Content: "orphaned",
+	}); err != nil {
+		t.Fatalf("AppendIterationHistory: %v", err)
+	}
+
+	maxID, err := sessionSvc.GetMaxTurnID(tenantID)
+	if err != nil {
+		t.Fatalf("GetMaxTurnID: %v", err)
+	}
+	if maxID != 150 {
+		t.Errorf("expected max turn_id=150 (must consider iteration_history), got %d", maxID)
+	}
+}
+
 func TestMigrateV50ToV51_DetailIterationUpgrade(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 	db, err := Open(dbPath)

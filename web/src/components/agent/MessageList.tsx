@@ -456,12 +456,33 @@ export function MessageList({
     const anchorId = loadMoreAnchorIdRef.current
     if (!anchorId) return
     const newIdx = rowsRef.current.findIndex((m) => m.id === anchorId)
-    if (newIdx < 0) return
-    // Double rAF: frame 1 = mount + estimate, frame 2 = measure + scroll
+    if (newIdx < 0) {
+      // 锚点行被 turnID:role merge 掉了（id 变了）——必须清 guard，否则
+      // loadMoreAnchorIdRef 永久非 null，IntersectionObserver 永远跳过，
+      // 滚动加载只触发一次（用户报告）。
+      loadMoreAnchorIdRef.current = null
+      return
+    }
+    const el = scrollRef.current
+    if (!el) {
+      loadMoreAnchorIdRef.current = null
+      return
+    }
+    // 记录加载前视口位置。加载后旧行 prepend 在上方，scrollHeight 增加 ——
+    // scrollTop 按增量调整，让用户看到的内容不变（滚动条落在中间，锚点行
+    // 保持在加载前的位置），而不是跳到最上方。
+    const prevScrollTop = el.scrollTop
+    const prevScrollHeight = el.scrollHeight
+    // Double rAF: frame 1 = mount + estimate, frame 2 = measure + adjust
     const raf1 = requestAnimationFrame(() => {
       const raf2 = requestAnimationFrame(() => {
         loadMoreAnchorIdRef.current = null
-        virtualizer.scrollToIndex(newIdx, { align: 'start' })
+        const grown = el.scrollHeight - prevScrollHeight
+        if (grown !== 0 || el.scrollTop !== prevScrollTop) {
+          programmaticScrollRef.current = true
+          el.scrollTop = prevScrollTop + grown
+          queueMicrotask(() => { programmaticScrollRef.current = false })
+        }
       })
       // Store raf2 for cleanup
       cleanupRafRef.current = raf2

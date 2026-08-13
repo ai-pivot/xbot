@@ -284,26 +284,42 @@ ORDER BY id DESC LIMIT 1
 	return 0, nil
 }
 
-// GetMaxTurnID returns the highest turn_id for a tenant's messages.
-// Used by chatProcessLoop to restore the per-session turn ID counter
-// after a server restart, ensuring turn_id remains globally monotonic.
-// Returns 0 if no messages have a turn_id (new or legacy sessions).
+// GetMaxTurnID returns the highest turn_id for a tenant across BOTH
+// session_messages and iteration_history. Used by chatProcessLoop to restore
+// the per-session turn ID counter after a server restart, ensuring turn_id
+// remains globally monotonic.
+//
+// It MUST include iteration_history: rewind truncates session_messages but (before
+// the v56 fix) left orphaned iteration_history rows behind; restoring from
+// session_messages alone would reuse those orphaned turn_ids and mix stale
+// iterations into new turns. Taking the max over both tables keeps the counter
+// past any orphaned turn_id.
+// Returns 0 if neither table has a turn_id (new or legacy sessions).
 func (s *SessionService) GetMaxTurnID(tenantID int64) (uint64, error) {
 	conn, err := s.conn()
 	if err != nil {
 		return 0, err
 	}
-	var maxTurnID sql.NullInt64
-	err = conn.QueryRow(
+	var msgMax sql.NullInt64
+	if err := conn.QueryRow(
 		"SELECT MAX(turn_id) FROM session_messages WHERE tenant_id = ?", tenantID,
-	).Scan(&maxTurnID)
-	if err != nil {
+	).Scan(&msgMax); err != nil {
 		return 0, fmt.Errorf("get max turn_id: %w", err)
 	}
-	if maxTurnID.Valid {
-		return uint64(maxTurnID.Int64), nil
+	var iterMax sql.NullInt64
+	if err := conn.QueryRow(
+		"SELECT MAX(turn_id) FROM iteration_history WHERE tenant_id = ?", tenantID,
+	).Scan(&iterMax); err != nil {
+		return 0, fmt.Errorf("get max iteration turn_id: %w", err)
 	}
-	return 0, nil
+	max := uint64(0)
+	if msgMax.Valid {
+		max = uint64(msgMax.Int64)
+	}
+	if iterMax.Valid && uint64(iterMax.Int64) > max {
+		max = uint64(iterMax.Int64)
+	}
+	return max, nil
 }
 
 // SetTenantCWD persists a session's current working directory in the tenants
