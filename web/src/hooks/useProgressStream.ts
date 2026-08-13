@@ -787,9 +787,20 @@ function handleProgressMessage(
       if (p.genui_content) store.setGenUIContent(p.genui_content)
       // Streaming tools (generating status) — patch only, no snapshot replace
       if (p.streaming_tools) {
-        store.setStreamOnlyFields({
-          streamingTools: normalizeWebTools(p.streaming_tools as unknown[]),
-        })
+        // Iteration regression guard (mirrors setStructuredTools): the backend
+        // stamps the event's CURRENT iteration (getActiveIteration). A stale
+        // event from a completed iteration (SSE catchup gap replay / reorder)
+        // carries iteration < store.lastIter and must NOT overwrite the current
+        // iteration's streamingTools — otherwise the old generating tool renders
+        // on the newest iteration until the real tool appears (user report:
+        // "过去的 generating 状态错误的在最新迭代上渲染").
+        const streamIter = typeof p.iteration === 'number' ? p.iteration : 0
+        const staleIteration = streamIter > 0 && store.lastIter > 0 && streamIter < store.lastIter
+        if (!staleIteration) {
+          store.setStreamOnlyFields({
+            streamingTools: normalizeWebTools(p.streaming_tools as unknown[]),
+          })
+        }
       }
       // MessageStore live 同步（方案 A Step 3）
       writeLiveToMessageStore(messageStore, store, p)

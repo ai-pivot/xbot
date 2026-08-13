@@ -1964,6 +1964,15 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 					Name:     tc.Name,
 					Status:   "generating",
 					GenChars: len(tc.Arguments),
+					// Each tool must stamp the current iteration too — the event's
+					// Iteration field (below) is NOT copied into the per-tool entries.
+					// Without it, a stale generating tool from a completed iteration
+					// (surviving via streamState merge into get_active_progress
+					// snapshots / catchup gap replay) carries no iteration marker and
+					// the frontend cannot filter it from the current iteration's live
+					// rendering (user report: "过去的 generating 状态错误的在最新
+					// 迭代上渲染，直到最新迭代真正的 tool 出现").
+					Iteration: a.getActiveIteration(progressKey),
 				})
 				// Extract streaming HTML from display_html tool arguments.
 				// tc.Arguments is accumulated partial JSON like {"code":"<div cla...
