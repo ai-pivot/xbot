@@ -47,14 +47,20 @@ func (m *cliModel) handleProgressMsg(msg cliProgressMsg) {
 		return
 	}
 
+	// New turn's first progress clears the cancel flag. MUST run BEFORE the
+	// cancel guard below — otherwise the guard's `return` makes this unreachable
+	// dead code (user report: Ctrl+C 后新 turn 的所有 progress 被阻塞 → 打字机
+	// 失效、指令看起来无法处理；agent 报告 Bug #1/#5 cancel 死锁)。
+	// 新 turn 的权威信号是 turn_started（handleTurnStarted 清除），但它可能被
+	// coalesceProgress 吞没或延迟。fallback：用户已发新消息（typing=true）后
+	// 的任意非 PhaseDone progress 视为新 turn 开始，清除 cancel 标志。
+	if m.turnCancelled && msg.payload.Phase != "done" && m.typing {
+		m.turnCancelled = false
+	}
+
 	// Cancel guard: ignore progress after Ctrl+C (except PhaseDone).
 	if m.turnCancelled && msg.payload.Phase != "done" {
 		return
-	}
-
-	// New turn's first non-PhaseDone progress clears the cancel flag.
-	if m.turnCancelled && msg.payload.Phase != "done" && msg.payload.Phase != "" && m.typing {
-		m.turnCancelled = false
 	}
 
 	// Classify event type.

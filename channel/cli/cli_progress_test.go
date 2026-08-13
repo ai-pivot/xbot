@@ -2863,3 +2863,35 @@ func TestHandleProgressMsg_StreamDeltaUpdatesTypewriter(t *testing.T) {
 		t.Fatalf("StreamContent = %q, want %q (StreamDelta 未被追加，打字机失效)", got, "Hello World")
 	}
 }
+
+// TestCancelGuard_ClearedByNewTurnProgress 复现"cancel guard 死代码"：
+// 旧代码把清除 turnCancelled 的逻辑放在 cancel guard 的 return 之后 —— 永远
+// 不可达。用户 Ctrl+C 后（turnCancelled=true），新 turn 的所有 progress 被
+// guard 阻塞 → 打字机失效、工具进度不可见（agent 报告 Bug #1/#5）。
+// 修复：清除逻辑移到 guard 之前（typing=true 时新 turn 的第一个 progress
+// 清除 cancel 标志）。
+func TestCancelGuard_ClearedByNewTurnProgress(t *testing.T) {
+	model := initTestModel()
+	model.typing = true // 用户已发新消息（startAgentTurn 设置）
+	model.turnCancelled = true
+	model.progressState.current = &protocol.ProgressEvent{Iteration: 1, StreamContent: "Hello"}
+
+	// 新 turn 的 stream-only progress（Phase=""）—— 应清除 cancel 标志并放行
+	model.handleProgressMsg(cliProgressMsg{payload: &protocol.ProgressEvent{
+		ChatID:      "cli:/test",
+		Iteration:   1,
+		StreamDelta: " new turn streaming",
+	}})
+
+	if model.turnCancelled {
+		t.Fatal("turnCancelled 未被新 turn progress 清除（cancel guard 死代码）")
+	}
+	if model.progressState.current == nil || model.progressState.current.StreamContent != "Hello new turn streaming" {
+		t.Fatalf("新 turn 的 progress 被 cancel guard 阻塞，StreamContent=%q", func() string {
+			if model.progressState.current == nil {
+				return "<nil>"
+			}
+			return model.progressState.current.StreamContent
+		}())
+	}
+}

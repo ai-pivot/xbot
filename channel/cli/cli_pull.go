@@ -338,8 +338,10 @@ func (m *cliModel) finalizeTurnFromSnapshot(snapshot *protocol.ProgressEvent) {
 	wasCancelled := m.turnCancelled
 	m.endAgentTurn(turnID)
 	// Restore turnCancelled: endAgentTurn resets it to false, but cancel path
-	// needs it to stay true until the cancel ack arrives. Otherwise stale
-	// progress events trigger auto-start, creating phantom turns.
+	// needs it to stay true until the new turn's first progress clears it
+	// (handleProgressMsg 的 cancel guard 清除逻辑已移到 guard 前，typing=true
+	// 时新 turn 的第一个 progress 会清除 —— 不死锁)。保持 true 防止 cancel 后
+	// 旧 turn 的 stale progress 触发 auto-start（假 turn）。
 	if wasCancelled {
 		m.turnCancelled = true
 	}

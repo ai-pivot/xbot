@@ -535,7 +535,12 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 	//   - Stream-only merging into stream-only: merge stream fields.
 	c.progressMu.Lock()
 	old := c.progressSlot
-	isStreamOnly := payload.Phase == "" && payload.Iteration == 0
+	// stream-only 判断统一为 Phase==""（与 handleProgressMsg 一致）。
+	// 后端 delta push 事件（streamContentFunc）Phase=="" 但 Iteration=当前迭代
+	// (>0) —— 旧判断要求 Iteration==0 会把 delta push 误分类为 structured，
+	// 与消费者（handleProgressMsg 用 Phase==""）不一致 → progressSlot 层面
+	// 驱逐真正的 structured 事件、StreamDelta 丢失（agent 报告 Bug #2）。
+	isStreamOnly := payload.Phase == ""
 
 	if old == nil {
 		c.progressSlot = payload
@@ -543,7 +548,10 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 		oldIsStreamOnly := old.Phase == "" && old.Iteration == 0
 		if oldIsStreamOnly {
 			// Both stream-only: merge fields, old wins when new doesn't have it.
-			if payload.StreamContent == "" && old.StreamContent != "" {
+			// delta push（StreamDelta 非空）：不回填 old.StreamContent ——
+			// handleProgressMsg 会追加 delta 到 cur 的累积 StreamContent，
+			// 回填旧值会覆盖 cur 的更长累积（丢失/双重计数，agent 报告 Bug #5）。
+			if payload.StreamDelta == "" && payload.StreamContent == "" && old.StreamContent != "" {
 				payload.StreamContent = old.StreamContent
 			}
 			if payload.ReasoningStreamContent == "" && old.ReasoningStreamContent != "" {
@@ -1230,9 +1238,13 @@ func coalesceProgress(a, b cliProgressMsg) cliProgressMsg {
 	pb := b.payload
 
 	// Start from b if structured, else from a (preserve structured state).
+	// 分类统一为 Phase!=""（与 handleProgressMsg/SendProgress 一致）。旧判断
+	// `|| Iteration > 0` 会把 delta push 事件（Phase=="" Iteration=当前迭代>0）
+	// 误判为 structured → 覆盖真正 structured 事件的 Phase/ActiveTools/
+	// CompletedTools/Content（agent 报告 Bug #1：工具标签消失）。
 	var result protocol.ProgressEvent
-	bStructured := pb.Phase != "" || pb.Iteration > 0
-	aStructured := pa.Phase != "" || pa.Iteration > 0
+	bStructured := pb.Phase != ""
+	aStructured := pa.Phase != ""
 
 	if bStructured {
 		result = *pb
@@ -1273,6 +1285,13 @@ func coalesceProgress(a, b cliProgressMsg) cliProgressMsg {
 	if pb.StreamTokens > result.StreamTokens {
 		result.StreamTokens = pb.StreamTokens
 	}
+
+	// Merge StreamDelta: delta push 增量必须合并，否则 asyncCh 合并时增量丢失
+	// （agent 报告 Bug #3：打字机缺字）。a 较早 b 较新（FIFO），追加顺序正确。
+	// 若 a 为全量 StreamContent、b 为后续 delta，则 result 保留 a 的全量 +
+	// b 的 delta —— handleProgressMsg 先设全量再追加 delta，不丢失不重复。
+	result.StreamDelta = pa.StreamDelta + pb.StreamDelta
+	result.ReasoningStreamDelta = pa.ReasoningStreamDelta + pb.ReasoningStreamDelta
 
 	// If b is structured, copy its structured fields (authoritative).
 	if bStructured {
