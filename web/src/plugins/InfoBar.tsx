@@ -12,7 +12,6 @@ export function InfoBar() {
   if (!hasContent) return null
   return (
     <div className="flex h-6 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-xs">
-      <WidgetZone zone="infoBar" className="min-w-0 flex-1" />
-    </div>
+      <WidgetZone zone="infoBar" className="min-w-0 flex-1" />    </div>
   )
 }
