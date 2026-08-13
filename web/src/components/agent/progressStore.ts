@@ -50,8 +50,7 @@ type Mutator = (draft: ProgressSnapshot) => void
  * after the union keeps the array ordered; continuousIterations then
  * truncates at the first gap for linear consistency.
  */
-function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
-  if (incoming.length === 0) return
+function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {  if (incoming.length === 0) return
   // O(N+M) union + dedup via Map keyed by iteration number. Dedups BOTH the
   // incoming deltas AND any pre-existing duplicates in draft.iterationHistory
   // (a replayed/duplicated delta would otherwise leave [1,1,2,2,...], tripping
@@ -536,19 +535,6 @@ export class ProgressStore {
    *  Synchronously flushes the snapshot (like reset()) so session(idle) can
    *  immediately read phase='frozen' and skip the reset that would clear
    *  the frozen content. */
-  /** Replace the entire iterationHistory (used by cancel-ack injection).
-   *  cancel ack 带最新迭代信息（progress_history：已完成迭代 + 进行中迭代），
-   *  注入 store 后 freeze —— 进行中的迭代（tool executing 中断）不消失。 */
-  setIterationHistory(iters: WebIteration[]): void {
-    if (this.disposed) return
-    this.mutate((draft) => {
-      if (iters.length > 0) {
-        draft.iterationHistory = iters
-        draft.lastIter = iters[iters.length - 1].iteration
-      }
-    })
-  }
-
   freeze(): void {
     if (this.disposed) return
     this.mutate((draft) => {
