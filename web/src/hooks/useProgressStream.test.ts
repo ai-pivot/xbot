@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { hasVisibleProgress } from '@/hooks/useProgressStream'
 import type { ProgressSnapshot } from '@/types/shared'
