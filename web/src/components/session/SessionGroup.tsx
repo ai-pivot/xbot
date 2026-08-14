@@ -160,7 +160,12 @@ function SubAgentTreeItem({
 }
 
 function isVisibleSubAgent(session: SessionInfo): boolean {
-  return session.running === true || session.status === 'running' || session.status === 'waiting_input' || session.status === 'pending'
+  // Always show sub-agents (running AND completed) so users can open and review
+  // them. Previously this filtered to running/waiting_input/pending only — a
+  // completed sub-agent vanished from the sidebar immediately, and with the
+  // (now fixed) unreliable running flag even active ones could disappear.
+  // Only historical legacy rows are hidden.
+  return session.historical !== true
 }
 
 function groupTitle(

@@ -54,9 +54,13 @@ interface SessionSidebarProps {
   /** Called after a session is selected. MobileAppShell uses this to close
    * the drawer automatically after switching sessions on mobile. */
   onSessionSelected?: () => void
+  /** Optional callback for SubAgent selection on clients without a Dockview
+   * tab container (mobile). When provided it REPLACES tabManager.openTab for
+   * SubAgent rows; the caller renders the SubAgent view itself. */
+  onSubAgentSelect?: (subAgent: SessionInfo) => void
 }
 
-export function SessionSidebar({ tabManager, onSessionSelected }: SessionSidebarProps) {
+export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect }: SessionSidebarProps) {
   const { t } = useI18n()
   const store = useSessionStore()
   const [search, setSearch] = useState('')
@@ -98,25 +102,31 @@ export function SessionSidebar({ tabManager, onSessionSelected }: SessionSidebar
       const matched = findSessionInTree(store.sessions, selector) ?? store.subAgents.find((sa) => sameSession(sa, selector))
       if (matched && isSubAgentSession(matched)) {
         const subAgent = withParsedAgentFields(matched)
-        tabManager.openTab({
-          type: 'agent',
-          title: subAgentTitle(subAgent),
-          icon: 'bot',
-          closable: true,
-          data: {
-            subAgentRole: subAgent.role,
-            subAgentInstance: subAgent.instance,
-            parentChatID: subAgent.parentChatID,
-            parentChannel: subAgent.parentChannel,
-            agentChatID: subAgent.fullKey || subAgent.agentChatID,
-          },
-        })
+        if (onSubAgentSelect) {
+          // Clients without a Dockview tab container (mobile) render the
+          // SubAgent view themselves.
+          onSubAgentSelect(subAgent)
+        } else {
+          tabManager.openTab({
+            type: 'agent',
+            title: subAgentTitle(subAgent),
+            icon: 'bot',
+            closable: true,
+            data: {
+              subAgentRole: subAgent.role,
+              subAgentInstance: subAgent.instance,
+              parentChatID: subAgent.parentChatID,
+              parentChannel: subAgent.parentChannel,
+              agentChatID: subAgent.fullKey || subAgent.agentChatID,
+            },
+          })
+        }
       } else {
         void store.switchSession(id, channel)
       }
       onSessionSelected?.()
     },
-    [store.sessions, store.subAgents, store.switchSession, tabManager, onSessionSelected],
+    [store.sessions, store.subAgents, store.switchSession, tabManager, onSessionSelected, onSubAgentSelect],
   )
 
   // Export handler: download a session in the specified format

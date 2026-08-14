@@ -50,8 +50,23 @@ func (a *Agent) SetCWD(ch, chatID, dir string) error {
 // IsProcessingByChannel returns true if there is an active Run for the given channel:chatID.
 func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 	key := ch + ":" + chatID
-	_, found := a.chatCancelCh.Load(key)
-	return found
+	if _, found := a.chatCancelCh.Load(key); found {
+		return true
+	}
+	// Agent (sub-agent) sessions: one-shot/interactive sub-agents run directly
+	// via Run() and do NOT register chatCancelCh — check the interactive session
+	// running state instead so the web sidebar shows running sub-agents reliably.
+	if ch == "agent" {
+		if value, ok := a.interactiveSubAgents.Load(chatID); ok {
+			if ia, ok := value.(*interactiveAgent); ok && ia != nil {
+				ia.mu.Lock()
+				running := ia.running
+				ia.mu.Unlock()
+				return running
+			}
+		}
+	}
+	return false
 }
 
 // GetActiveProgress returns the latest progress snapshot for the given channel:chatID.

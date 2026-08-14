@@ -41,12 +41,14 @@ func (t *TaskStatusTool) Execute(toolCtx *ToolContext, input string) (*ToolResul
 		return nil, err
 	}
 
-	task, err := toolCtx.BgTaskManager.Status(params.TaskID)
-	if err != nil {
-		return nil, err
+	// Shell background task first, then background sub-agent task.
+	if task, err := toolCtx.BgTaskManager.Status(params.TaskID); err == nil {
+		return NewResult(formatTask(task)), nil
 	}
-
-	return NewResult(formatTask(task)), nil
+	if subTask, err := toolCtx.BgTaskManager.SubAgentStatus(params.TaskID); err == nil {
+		return NewResult(formatSubAgentTask(subTask)), nil
+	}
+	return nil, fmt.Errorf("task %s not found", params.TaskID)
 }
 
 // TaskKillTool terminates a running background task.
@@ -79,12 +81,20 @@ func (t *TaskKillTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 		return nil, err
 	}
 
-	if err := toolCtx.BgTaskManager.Kill(params.TaskID); err != nil {
-		return NewErrorResult(fmt.Sprintf("Failed to kill task %s: %s", params.TaskID, err.Error())), nil
+	// Shell background task first.
+	if err := toolCtx.BgTaskManager.Kill(params.TaskID); err == nil {
+		log.WithField("task_id", params.TaskID).Info("Background task killed by user")
+		return NewResult(fmt.Sprintf("Task %s killed successfully.", params.TaskID)), nil
 	}
-
-	log.WithField("task_id", params.TaskID).Info("Background task killed by user")
-	return NewResult(fmt.Sprintf("Task %s killed successfully.", params.TaskID)), nil
+	// Background sub-agent task: cancel its context (interrupt).
+	if subTask, serr := toolCtx.BgTaskManager.SubAgentStatus(params.TaskID); serr == nil {
+		if subTask.cancel != nil {
+			subTask.cancel()
+		}
+		log.WithFields(log.Fields{"task_id": params.TaskID, "role": subTask.Role}).Info("Background sub-agent task cancelled by user")
+		return NewResult(fmt.Sprintf("Sub-agent task %s cancelled (interrupting role %q).", params.TaskID, subTask.Role)), nil
+	}
+	return NewErrorResult(fmt.Sprintf("Failed to kill task %s: task not found", params.TaskID)), nil
 }
 
 // TaskReadTool reads the full output of a completed (or running) background task.
@@ -174,7 +184,37 @@ func formatTask(task *BackgroundTask) string {
 	return sb.String()
 }
 
-// FormatBgTaskCompletion formats a completed background task notification for injection.
+// formatSubAgentTask formats a background sub-agent task for display.
+func formatSubAgentTask(task *SubAgentTask) string {
+	elapsed := time.Since(task.StartedAt).Round(time.Second)
+	if task.FinishedAt != nil {
+		elapsed = task.FinishedAt.Sub(task.StartedAt).Round(time.Second)
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Sub-Agent Task: %s\n", task.ID)
+	label := task.Role
+	if task.Instance != "" {
+		label = fmt.Sprintf("%s (instance=%s)", task.Role, task.Instance)
+	}
+	fmt.Fprintf(&sb, "Sub-Agent: %s\n", label)
+	fmt.Fprintf(&sb, "Status: %s\n", task.Status)
+	fmt.Fprintf(&sb, "Elapsed: %s\n", elapsed)
+
+	if task.Status == BgTaskRunning {
+		fmt.Fprintf(&sb, "\n⏳ Sub-agent is still running. Use task_wait to wait for completion, or continue with other work.\n")
+	}
+
+	if task.Content != "" {
+		preview := task.Content
+		if len(preview) > 500 {
+			preview = "... " + preview[len(preview)-497:]
+		}
+		fmt.Fprintf(&sb, "Result Preview:\n%s\n", preview)
+	}
+
+	return sb.String()
+}
 // This is used by the engine to inject the task result into the conversation as a tool message.
 func FormatBgTaskCompletion(task *BackgroundTask, outputOverride string) string {
 	if task.FinishedAt == nil {
