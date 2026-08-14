@@ -451,4 +451,79 @@ describe('切换会话 hydration 还原 live iter', () => {
       expect(iters[iters.length - 1].content).toContain('这是最终回复的完整内容')
     })
   })
+
+  it('PhaseDone 必须把后端附带的 iteration_history（最后迭代）写入 store —— 否则最后 iter 消失再出现（闪烁回归）', async () => {
+    // 用户报告："最后一个 iter 结束之后，最后一个 iter 会消失再出现造成闪烁。
+    // iter 产生了就不要消失"。
+    // 根因链：
+    //  1. 最后一个迭代完成后，后端 attachIterationDelta 只在【推进到下一迭代】
+    //     时记录前一个迭代；最后一个迭代没有"下一迭代"，所以它从不通过普通
+    //     结构化事件进入 IterationHistory。
+    //  2. 后端在 PhaseDone 时 recordFinalIteration 补记，并把它 attach 到
+    //     PhaseDone 事件的 iteration_history（engine_wire.go:1908-1918）。
+    //  3. 前端 PhaseDone 分支只调 store.stopStreaming() + 处理 todos，
+    //     【从不把 p.iteration_history 传给 setStructuredTools】→ 最后一个
+    //     迭代从未进入 store.iterationHistory → live 渲染从 UI 消失。
+    //  4. text 事件到达 → completeRef 用 parseWebIterations(progress_history)
+    //     重建 → 最后一个迭代重新出现 → 闪烁。
+    // 修复：PhaseDone 分支把 p.iteration_history 传给 store.setStructuredTools。
+    const ms = new MessageStore()
+    let onMessageCb: ((msg: unknown) => void) | undefined
+    const ws = {
+      onMessage: (cb: (msg: unknown) => void) => { onMessageCb = cb; return () => {} },
+      rpc: vi.fn(),
+      send: vi.fn(),
+      onConnectionChange: () => () => {},
+      connected: false,
+    } as unknown as WSConnection & { onMessage: (cb: (msg: unknown) => void) => () => void }
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'chat-1',
+        ws,
+        messageStore: ms,
+      }),
+    )
+    // turn 1：单个迭代（最后迭代）完成。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'user', content: 'hi' }, chat_id: 'chat-1' },
+    })
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', turn_id: 1, iteration: 1, seq: 2, chat_id: 'chat-1', content: '最后回复内容' },
+    })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // PhaseDone 携带最后迭代快照（后端 recordFinalIteration attach）。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: {
+        phase: 'done',
+        turn_id: 1,
+        iteration: 1,
+        seq: 3,
+        chat_id: 'chat-1',
+        iteration_history: [
+          {
+            iteration: 1,
+            phase: 'done',
+            content: '最后回复内容',
+            reasoning: '',
+            tools: [],
+          },
+        ],
+      },
+    })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // 修复后：store.iterationHistory 必须包含最后迭代（iteration 1）——
+    // 否则 live 渲染中最后 iter 消失（闪烁）。
+    const snap = ms.getLive(1)
+    // 通过 toRows 断言 committed/live 行保留了最后迭代 content。
+    const rows = ms.toRows()
+    const turn1 = rows.find((r) => r.turnID === 1 && r.role === 'assistant')
+    const liveIters = snap?.iterations ?? []
+    const rowIters = turn1?.iterations ?? []
+    const hasLastIter = (iters: Array<{ iteration?: number; content?: string }>) =>
+      iters.some((it) => it.iteration === 1 && String(it.content ?? '').includes('最后回复内容'))
+    expect(hasLastIter(liveIters) || hasLastIter(rowIters)).toBe(true)
+  })
 })

@@ -1175,6 +1175,25 @@ function handleProgressMessage(
         if (doneTodos !== undefined) {
           store.setStructuredTools({ eventSeq: typeof p.seq === 'number' ? p.seq : undefined, todos: doneTodos })
         }
+        // ⚠️ PhaseDone 必须把后端附带的 iteration_history（最后一个迭代快照）
+        // 写入 store —— 否则最后 iter 消失再出现（闪烁）：
+        //   · attachIterationDelta 只在【推进到下一迭代】时记录前一个迭代；
+        //     最后一个迭代没有"下一迭代"，从不通过普通事件进入 history。
+        //   · 后端在 PhaseDone 时 recordFinalIteration 补记并 attach 到
+        //     p.iteration_history（engine_wire.go:1908-1918）。
+        //   · 若不传入，最后迭代从未进入 store.iterationHistory → live 消失；
+        //     text 事件才从 progress_history 重建 → 闪烁（用户报告："最后一个
+        //     iter 结束之后消失再出现造成闪烁，iter 产生了就不要消失"）。
+        if (Array.isArray(p.iteration_history) && p.iteration_history.length > 0) {
+          store.setStructuredTools({
+            eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
+            iterationHistory: p.iteration_history as WebIteration[],
+          })
+          // 同步 MessageStore live（方案 A Step 3）—— 普通结构化事件在事件末尾
+          // 调 writeLiveToMessageStore，PhaseDone 分支若不同步，最后迭代只存在于
+          // ProgressStore，MessageStore 的 live 行缺它 → 渲染消失 → 闪烁。
+          writeLiveToMessageStore(messageStore, store, p, historyReady)
+        }
         return
       }
       // Do NOT reset finalizedRef here. A non-done structured event may be a
