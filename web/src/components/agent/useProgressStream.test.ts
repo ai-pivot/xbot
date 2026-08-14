@@ -1229,6 +1229,51 @@ describe('cancel: assistant message must not vanish', () => {
     expect(complete).not.toHaveBeenCalled()
   })
 
+  it('cancel → new user msg: committed iterations KEEP the frozen in-flight iteration (content/reasoning/tools)', () => {
+    // 用户报告：cancel 后发新 user msg，被 cancel 的 turn 的最新 iter 瞬间消失。
+    // 根因：turn_started(N+1) 的 commitLiveProgressAndReset 只 fold iterationHistory
+    // （不含进行中 iter k+1 —— 它在 current 的流式字段 + activeTools 里，且 freeze()
+    // 已把工具 markError）；随后 resetProgress 无条件 store.reset() 清空 frozen
+    // 快照 → iter k+1 彻底丢失。
+    const complete = vi.fn()
+    const ms = new MessageStore()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection, messageStore: ms }),
+    )
+
+    // turn 1: iter1 完成（Grep）→ iter2 开始（Read running）+ 流式文本
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'c1' } })
+    emitAndFlush({ type: 'progress_structured', seq: 2, progress: {
+      phase: 'tool_exec', iteration: 2, turn_id: 1, chat_id: 'c1',
+      active_tools: [{ name: 'Read', status: 'running', iteration: 2 }],
+      completed_tools: [{ name: 'Grep', status: 'done', iteration: 1 }],
+      iteration_history: [{ iteration: 1, content: '', reasoning: '思考1', tools: [{ name: 'Grep', status: 'done' }], toolCount: 1 }],
+    } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: '进行中文本', turn_id: 1, iteration: 2 } })
+    emitAndFlush({ type: 'stream_content', progress: { reasoning_stream_content: '思考2', turn_id: 1, iteration: 2 } })
+    expect(result.current.progressSnapshot.phase).not.toBe('frozen')
+
+    // cancel ack → store.freeze()（frozen 保留最新 iter）
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, turn_id: 1 })
+    expect(result.current.progressSnapshot.phase).toBe('frozen')
+
+    // 发新 user msg → turn_started(2) → commitLiveProgressAndReset
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 2, turn_start: { trigger: 'user', content: '继续' }, chat_id: 'c1' } })
+
+    // committed iterations = [iter1, iter2(folded 完整)] —— iter2 含 content + reasoning + Read 工具
+    expect(complete).toHaveBeenCalledTimes(1)
+    const [finalText, iterations] = complete.mock.calls[0]
+    expect(finalText).toBe('')
+    expect(iterations).toHaveLength(2)
+    expect(iterations[0].iteration).toBe(1)
+    expect(iterations[1].iteration).toBe(2)
+    expect(iterations[1].content).toBe('进行中文本')
+    expect(iterations[1].reasoning).toBe('思考2')
+    expect(iterations[1].tools.some((t: { name: string }) => t.name === 'Read')).toBe(true)
+    // frozen 快照保留（resetProgress 冻结保护）——LiveIteration 仍可渲染 current
+    expect(result.current.progressSnapshot.phase).toBe('frozen')
+  })
+
   // ── Turn-ID / Iteration-ID continuity assertions ──
 
   it('warns on TurnID regression (backwards)', () => {

@@ -566,7 +566,17 @@ export function useProgressStream({
       // freeze()-induced flicker; that is obsolete since f4c43a45 — the
       // frozen-phase null check in liveMessage was removed, and reset()
       // inside flushSync renders committed + cleared-live atomically.
-      store.reset()
+      // FROZEN guard: turn_started's commit path also calls complete →
+      // resetProgress, but a cancelled (frozen) store must NOT be wiped here —
+      // commitLiveProgressAndReset already folded the in-flight iteration into
+      // the committed message, and the frozen snapshot is the only live record
+      // of it (wiping it made the latest iteration vanish the moment the user
+      // sent the next message — user report: cancel 后发新 user msg 最新 iter
+      // 瞬间消失). commitLiveProgressAndReset's own frozen guard (phase !==
+      // frozen) runs AFTER this callback, so it cannot protect the store.
+      if (store.getSnapshot().phase !== 'frozen') {
+        store.reset()
+      }
     },
   }
 }
@@ -594,6 +604,20 @@ export function hasVisibleProgress(snap: ProgressSnapshot): boolean {
       snap.lastReasoning ||
       snap.subAgents.length,
   )
+}
+
+// dedupToolsByName removes duplicate tools (by name) from an array — used when
+// folding the frozen/cancelled iteration's tools from multiple live arrays
+// (activeTools ∪ completedTools ∪ streamingTools may overlap).
+function dedupToolsByName(tools: WebToolProgress[]): WebToolProgress[] {
+  const seen = new Set<string>()
+  const out: WebToolProgress[] = []
+  for (const t of tools) {
+    if (!t || !t.name || seen.has(t.name)) continue
+    seen.add(t.name)
+    out.push(t)
+  }
+  return out
 }
 
 /**
@@ -661,17 +685,40 @@ function commitLiveProgressAndReset(
     if (text || iters.length > 0) {
       let commitText = text
       let commitIters = iters
-      // Fold the live text into the last committed iteration's content.
-      // v55 rendering: when a message HAS iterations, the top-level content is
-      // NOT rendered — content must live inside an iteration. This is the
-      // fallback for turn_started-lost commits AND the AskUser WaitingUser
-      // case: there iterationHistory is EMPTY (no next iteration triggered
-      // attachIterationDelta, so the completed iteration's delta never reached
-      // the frontend) — the iteration's text/reasoning live only in
-      // snap.content / snap.reasoning and MUST be folded here or they vanish
-      // after the turn commits (user report: "askuser 渲染后迭代的 content 和
-      // reasoning 消失").
-      if (text && commitIters.length === 0) {
+      // ── FROZEN (cancelled turn) — fold the in-flight iteration (k+1) into a
+      // COMPLETE new entry. It is NOT in iterationHistory (it only lives in the
+      // live snapshot: content/reasoning + tools — freeze() marks the tools
+      // error, so the running/generating filter above never catches them).
+      // Without this the committed message drops the latest iteration entirely
+      // (user report: cancel 后发新 user msg 最新 iter 瞬间消失).
+      if (snap.phase === 'frozen') {
+        const maxIter = commitIters.reduce((m, it) => Math.max(m, it.iteration), 0)
+        const inFlightTools: WebToolProgress[] = dedupToolsByName([
+          ...snap.activeTools,
+          ...snap.completedTools,
+          ...snap.streamingTools,
+        ])
+        commitIters = [
+          ...commitIters,
+          {
+            iteration: maxIter + 1,
+            content: text,
+            reasoning: liveReasoning,
+            tools: inFlightTools,
+            toolCount: inFlightTools.length,
+          },
+        ]
+        commitText = ''
+      } else if (text && commitIters.length === 0) {
+        // v55 rendering: when a message HAS iterations, the top-level content is
+        // NOT rendered — content must live inside an iteration. This is the
+        // fallback for turn_started-lost commits AND the AskUser WaitingUser
+        // case: there iterationHistory is EMPTY (no next iteration triggered
+        // attachIterationDelta, so the completed iteration's delta never reached
+        // the frontend) — the iteration's text/reasoning live only in
+        // snap.content / snap.reasoning and MUST be folded here or they vanish
+        // after the turn commits (user report: "askuser 渲染后迭代的 content 和
+        // reasoning 消失").
         commitIters = [{ iteration: 1, content: text, reasoning: liveReasoning, tools: [], toolCount: 0 }]
         commitText = ''
       } else if (text && commitIters.length > 0 && !commitIters[commitIters.length - 1].content) {
