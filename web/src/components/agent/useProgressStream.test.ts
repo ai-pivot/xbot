@@ -1238,17 +1238,17 @@ describe('cancel: assistant message must not vanish', () => {
     // 到下一 turn → 新 turn live 渲染旧 turn 迭代（重复渲染 bug）。
     // 现在 resetProgress 无条件 reset —— committed 已含完整数据，快照必须清。
     let lastComplete: [string, WebIteration[]] | undefined
-    let resetProgressRef: (() => void) | undefined
+    const completeCtx: { resetProgress?: () => void } = {}
     const complete = vi.fn((finalText: string, iterations: WebIteration[]) => {
       lastComplete = [finalText, iterations]
       // 模拟 AgentPanel.onAssistantComplete：commit 后同步调用 resetProgress
-      resetProgressRef?.()
+      completeCtx.resetProgress?.()
     })
     const ms = new MessageStore()
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection, messageStore: ms }),
     )
-    resetProgressRef = result.current.resetProgress
+    completeCtx.resetProgress = result.current.resetProgress
 
     // turn 1: iter1 完成（Grep）→ iter2 开始（Read running）+ 流式文本
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'c1' } })
