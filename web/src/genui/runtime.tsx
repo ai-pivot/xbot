@@ -49,7 +49,11 @@ export function detectDarkMode(): boolean {
 }
 
 // ─── Icons (lucide-react subset) ───────────────────────────────
-export { Icon } from './icons'
+// Import (not just re-export) so the local binding exists for the XBOT_UI
+// aggregate object below — a bare `export { Icon } from './icons'` does NOT
+// introduce a local binding, making the shorthand `Icon,` a compile error.
+import { Icon } from './icons'
+export { Icon }
 
 // ─── Typography / Layout helpers ───────────────────────────────
 
