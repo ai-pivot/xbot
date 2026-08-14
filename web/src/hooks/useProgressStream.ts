@@ -1395,6 +1395,20 @@ function handleProgressMessage(
       // merge it here, the committed message loses all reasoning.
       const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
       let mergedIterations = iterations
+      // v55: 最终回复 = 最终 iter 的 content（msg 不携带 content，msg 是 iter 集合）。
+      // text 事件顶层 content（finalText）是最终回复的权威来源（handleRunOutput 的
+      // finalContent）。后端 progress_history 最后迭代 content 可能为空或为旧格式
+      // thinking fallback（如 "Searching"）—— 渲染层 hasIterations=true 时不渲染
+      // message.content，若 finalText 不合并进最后迭代，最终回复丢失（v55 回归：
+      // notification E2E "Done processing notification." 断言失败）。结构保证：
+      // finalText 非空即作为最后迭代的权威 content（非字符串比较 hack —— 顶层
+      // content 是最终回复的唯一权威值）。
+      if (finalText && mergedIterations.length > 0) {
+        const lastIdx = mergedIterations.length - 1
+        mergedIterations = mergedIterations.map((it, i) =>
+          i === lastIdx ? { ...it, content: finalText } : it
+        )
+      }
       if (liveReasoning) {
         if (mergedIterations.length === 0) {
           // No iterations at all — create a synthetic one to carry the reasoning.
