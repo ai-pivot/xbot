@@ -16,8 +16,8 @@ function makePrompt(questions: AskUserPrompt['questions']): AskUserPrompt {
 }
 
 describe('AskUserPanel', () => {
-  let onRespond: ReturnType<typeof vi.fn>
-  let onCancel: ReturnType<typeof vi.fn>
+  let onRespond: (answers: Record<string, string>) => void
+  let onCancel: () => void
 
   beforeEach(() => {
     onRespond = vi.fn()
