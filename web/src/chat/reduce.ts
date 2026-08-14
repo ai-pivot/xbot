@@ -251,20 +251,78 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       return { ...s, turns, activeTurn: null, busy: false }
     }
 
-    // ── history_replaced：全量替换（reload / hydration / rewind —— 同一转移） ──
+    // ── history_replaced：merge 语义（reload / hydration / rewind —— 同一转移） ──
+    // ⚠️ 不能盲替换（用户报告两个 P0）：
+    //  1) "发送 user msg 会导致上一个 turn 的 agent 消息消失" —— text_final 的
+    //     committed turn 只存在于状态机（useChatMessages 的 messages 不再被
+    //     appendAssistant 同步），盲替换会抹掉 DB 快照还没有的唯一数据源。
+    //  2) "打字机没了" —— user_echo 触发 messages 变化 → history_replaced 若抹掉
+    //     turn_started 刚建的 live turn（echo 与 turn_started 的 listener 时序可
+    //     颠倒），activeTurn=null → 后续 stream 事件全被丢弃。
+    // merge 规则：DB 权威覆盖它【有】的 turn（带 dbID）；状态机持有的
+    //  in-flight（live）与 post-fetch commit（DB 快照缺失）保留；hydration
+    //  的 ev.active 在无 live turn 时创建之（刷新恢复 live 此前也是坏的）。
     case 'history_replaced': {
       const turns = new Map<TurnID, Turn>()
-      for (const t of ev.turns) turns.set(t.id, t)
-      return {
-        chatID: s.chatID,
-        turns,
-        legacy: ev.legacy,
-        activeTurn: ev.active ? ev.active.turnID : null,
-        lastSeq: ev.lastSeq,
-        busy: s.busy,
-        // 切换会话/首屏：pending 清空（乐观行属于旧 chat —— Bug 2 根治点）。
-        pendingUsers: [],
+      const incomingIds = new Set(ev.turns.map((t) => t.id))
+
+      // 1. incoming（DB 权威）—— 同 turnID 状态机有 live（in-flight）时 live 胜
+      //    （SSE 比快照新）；live 缺 user 时从 DB 行嫁接（拿 dbID，rewind 需要）。
+      for (const h of ev.turns) {
+        const cur = s.turns.get(h.id)
+        if (cur && cur.phase.kind === 'live') {
+          turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
+        } else {
+          turns.set(h.id, h)
+        }
       }
+
+      // 2. 状态机独有（DB 快照缺失）—— 有数据则保留（live / committed /
+      //    frozen-with-output；空壳 frozen 舍弃）。
+      for (const [id, t] of s.turns) {
+        if (incomingIds.has(id)) continue
+        const keep =
+          t.phase.kind === 'live' ||
+          t.phase.kind === 'committed' ||
+          (t.phase.kind === 'frozen' && hasOutput(t.phase.data))
+        if (keep) turns.set(id, t)
+      }
+
+      // 3. activeTurn：保留下来的 live 优先；否则 hydration 的 ev.active
+      //    （无该 turn 则创建 live —— 刷新恢复）。
+      let activeTurn: TurnID | null = null
+      if (s.activeTurn !== null) {
+        const t = turns.get(s.activeTurn)
+        if (t && t.phase.kind === 'live') activeTurn = s.activeTurn
+      }
+      if (activeTurn === null && ev.active !== null) {
+        const tid = ev.active.turnID
+        const existing = turns.get(tid)
+        if (existing && existing.phase.kind === 'live') {
+          activeTurn = tid
+        } else if (!existing) {
+          turns.set(tid, {
+            id: tid,
+            user: null,
+            phase: { kind: 'live', data: ev.active.snapshot },
+            requestID: null,
+          })
+          activeTurn = tid
+        }
+      }
+
+      // 4. lastSeq：保留了 active turn 时维持 per-run seq 连续性（否则重放检测
+      //    基准丢失）。无 active 时用事件携带值。
+      const lastSeq = activeTurn !== null ? s.lastSeq : ev.lastSeq
+
+      // 5. pendingUsers：已被合并 turns 绑定的（turnHint/requestID 命中）剔除。
+      const pendingUsers = s.pendingUsers.filter(
+        (u) =>
+          !(u.turnHint !== undefined && turns.has(turnID(u.turnHint))) &&
+          !(u.requestID !== null && [...turns.values()].some((t) => t.user?.requestID === u.requestID)),
+      )
+
+      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

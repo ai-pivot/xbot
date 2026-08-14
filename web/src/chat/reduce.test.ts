@@ -353,4 +353,94 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(rows[0].kind === 'user' && rows[0].content).toBe('旧消息1')
     expect(rows[1].kind === 'committed' && rows[1].content).toBe('旧回复1')
   })
+
+  it('history_replaced MERGE：committed turn 不在 DB 快照里也保留（发 user msg 后 agent 消息不消失）', () => {
+    // turn 1 经 text_final commit（只存在于状态机 —— messages 未同步）。
+    const s0 = run([
+      started(T1),
+      { type: 'stream', turnID: T1, seq: null, content: 'turn1 回复', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      textFinal(T1, 'turn1 回复'),
+    ])
+    expect(s0.turns.get(T1)?.phase.kind).toBe('committed')
+    // 用户发新消息 → user_echo → messages 变化 → history_replaced（不含 turn 1）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [], // DB 快照还没有 turn 1（appendAssistant 接线已移除）
+      active: null,
+      lastSeq: null,
+    })
+    // 修复后：turn 1 的 committed 数据保留（不消失）。
+    const t1 = s1.turns.get(T1)
+    expect(t1).toBeDefined()
+    expect(t1?.phase.kind).toBe('committed')
+    const rows = deriveRows(s1)
+    expect(rows.some((r) => r.kind === 'committed' && r.content === 'turn1 回复')).toBe(true)
+  })
+
+  it('history_replaced MERGE：live turn + activeTurn 存活（echo 竞态不打断打字机）', () => {
+    // turn_started 建 live → echo 触发的 history_replaced 到达（时序颠倒）。
+    const s0 = run([
+      started(T1),
+      { type: 'stream', turnID: T1, seq: 5 as never, content: '流式前半', reasoning: undefined, streamingTools: undefined, genui: undefined },
+    ])
+    const s1 = reduce(s0, { type: 'history_replaced', legacy: [], turns: [], active: null, lastSeq: null })
+    // 修复后：live turn 存活 + activeTurn 保持 → 后续 stream 继续接收。
+    expect(s1.activeTurn).toBe(T1)
+    expect(s1.turns.get(T1)?.phase.kind).toBe('live')
+    const s2 = reduce(s1, {
+      type: 'stream',
+      turnID: T1,
+      seq: 6 as never,
+      content: '流式后半（打字机继续）',
+      reasoning: undefined,
+      streamingTools: undefined,
+      genui: undefined,
+    })
+    const t = s2.turns.get(T1)
+    if (t?.phase.kind === 'live') expect(t.phase.data.content).toBe('流式后半（打字机继续）')
+    else throw new Error('live turn died across history_replaced')
+  })
+
+  it('history_replaced hydration：ev.active 创建 live turn（刷新恢复 in-flight）', () => {
+    const s = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [],
+      active: {
+        turnID: turnID(7),
+        snapshot: {
+          iter: iterNum(2),
+          streaming: true,
+          content: '刷新前流到一半的内容',
+          reasoning: '',
+          iterations: [{ iteration: 1, content: '已完成迭代', reasoning: '', tools: [], toolCount: 0 }],
+          activeTools: [],
+          streamingTools: [],
+          genui: '',
+          subAgents: [],
+          todos: [],
+          tokenUsage: null,
+        },
+      },
+      lastSeq: null,
+    })
+    expect(s.activeTurn).toBe(turnID(7))
+    const t = s.turns.get(turnID(7))
+    if (t?.phase.kind !== 'live') throw new Error('hydration must create a live turn')
+    expect(t.phase.data.content).toBe('刷新前流到一半的内容')
+    // 后续 stream 事件继续喂养（恢复后打字机继续）。
+    const s2 = reduce(s, {
+      type: 'stream',
+      turnID: turnID(7),
+      seq: null,
+      content: '恢复后的流式内容',
+      reasoning: undefined,
+      streamingTools: undefined,
+      genui: undefined,
+    })
+    const t2 = s2.turns.get(turnID(7))
+    if (t2?.phase.kind === 'live') expect(t2.phase.data.content).toBe('恢复后的流式内容')
+    else throw new Error('hydrated live turn must accept stream events')
+  })
 })
