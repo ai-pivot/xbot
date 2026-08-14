@@ -158,7 +158,7 @@ export function AppShell() {
 
       <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
-        <main className="relative h-full min-w-0 flex-1">
+        <main className="relative flex h-full min-w-0 flex-1 flex-col">
           {/* Plugin widget info bar (info_bar zone). */}
           <InfoBar />
           <DockviewContainer tabManager={tabManager} />
