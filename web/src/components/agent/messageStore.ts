@@ -66,8 +66,8 @@ export function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIterat
     if (!existing) {
       map.set(iter.iteration, iter)
     } else {
-      const existingHasContent = (existing.thinking ?? '') !== '' || (existing.reasoning ?? '') !== ''
-      const incomingHasContent = (iter.thinking ?? '') !== '' || (iter.reasoning ?? '') !== ''
+      const existingHasContent = (existing.content ?? '') !== '' || (existing.reasoning ?? '') !== ''
+      const incomingHasContent = (iter.content ?? '') !== '' || (iter.reasoning ?? '') !== ''
       if (incomingHasContent && !existingHasContent) {
         map.set(iter.iteration, iter)
       } else if (incomingHasContent && existingHasContent) {

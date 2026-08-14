@@ -1043,4 +1043,44 @@ describe('SSE 切会话竞态', () => {
     expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(11)
     conn.dispose()
   })
+
+  it('reloads from DB when active-progress recovery returns resync_required (gap too large)', async () => {
+    // Gap-too-large guard: GetActiveProgress returns resync_required=true when
+    // an incremental pull (from_iteration) would transfer more than the server
+    // cap. The client MUST reload from DB (authoritative) instead of consuming
+    // the huge delta — dispatch replay_gap, same as the done/null branch.
+    vi.useFakeTimers()
+    postAPIMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/rpc') {
+        return {
+          iteration: 41,
+          phase: 'tool_exec',
+          iteration_history: [],
+          resync_required: true,
+        }
+      }
+      return {}
+    })
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    source.fail()
+    source.open()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    // replay_gap → useChatMessages reloads from DB.
+    expect(received).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'replay_gap' }),
+      ]),
+    )
+    // Must NOT dispatch progress_structured with the resync snapshot (its
+    // iterationHistory is empty — applying it would clear the live store).
+    expect(received.some((m) => m.type === 'progress_structured')).toBe(false)
+    connection.dispose()
+  })
 })

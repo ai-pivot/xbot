@@ -54,7 +54,13 @@ export const LiveIteration = memo(function LiveIteration({
     ? progress.iterationHistory[progress.iterationHistory.length - 1]
     : null
   const rawTextContent = progress.streamContent || progress.content || ''
-  const textContent = (lastIter && rawTextContent && rawTextContent === lastIter.thinking)
+  // effectiveStreamContent: suppress streamContent that equals the last
+  // completed iteration's content — the same final text arrives in BOTH
+  // streamContent (streaming push) and the completed iteration's content
+  // (snapshot); TurnBody renders the iteration text, so LiveIteration must
+  // not render streamContent again. content field is the text output
+  // (thinking 已彻底删除，无字符串比较 —— 直接取字段)。
+  const textContent = (lastIter && rawTextContent && rawTextContent === lastIter.content)
     ? ''
     : rawTextContent
   const hasStreamContent = Boolean(textContent)

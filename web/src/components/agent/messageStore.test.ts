@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { MessageStore, mergeIterations, type LiveState } from '@/components/agent/messageStore'
 import type { ChatMessage, WebIteration } from '@/types/shared'
 
-function iter(n: number, thinking = `t${n}`): WebIteration {
-  return { iteration: n, thinking, reasoning: '', tools: [], toolCount: 0 }
+function iter(n: number, content = `t${n}`): WebIteration {
+  return { iteration: n, content, reasoning: '', tools: [], toolCount: 0 }
 }
 
 function user(id: string, content: string, turnID: number, over: Partial<ChatMessage> = {}): ChatMessage {
@@ -352,13 +352,13 @@ describe('MessageStore — subscribe/notify', () => {
 
 // ── mergeIterations ──
 describe('mergeIterations', () => {
-  it('按迭代号合并，保留非空 thinking', () => {
+  it('按迭代号合并，保留非空 content', () => {
     const a = [iter(1, 't1'), iter(2, '')]
     const b = [iter(1, ''), iter(2, 't2-full')]
     const merged = mergeIterations(a, b)
     expect(merged.map((i) => i.iteration)).toEqual([1, 2])
-    expect(merged[0].thinking).toBe('t1')
-    expect(merged[1].thinking).toBe('t2-full')
+    expect(merged[0].content).toBe('t1')
+    expect(merged[1].content).toBe('t2-full')
   })
 })
 

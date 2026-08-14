@@ -46,6 +46,14 @@ func (s *TenantSession) AppendIterationHistory(msgID int64, turnID uint64, rec s
 	return s.sessionSvc.AppendIterationHistory(s.tenantID, msgID, turnID, rec)
 }
 
+// GetIterationHistoryByTurns 批量查询多个 turn 的迭代（一次 IN 查询）。
+// LLM 上下文构建用：assistant 消息不写 content（msg 是 iter 组成的集合，
+// content 是历史遗留字段），回复文本从迭代取 —— 迭代 content 是权威数据源，
+// 没有才 fallback 到 msg.content。
+func (s *TenantSession) GetIterationHistoryByTurns(turnIDs []uint64) (map[uint64][]sqlite.IterationRecord, error) {
+	return s.sessionSvc.GetIterationHistoryByTurns(s.tenantID, turnIDs)
+}
+
 // AppendMessage appends a message and returns its stable history ID.
 func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
 	return s.sessionSvc.AppendMessage(s.tenantID, msg)

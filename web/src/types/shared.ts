@@ -232,6 +232,10 @@ export interface ProgressEvent {
   tool_hints?: string
   /** TODO list from TodoWrite tool (mirrors Go protocol.ProgressEvent.Todos). */
   todos?: TodoItem[]
+  /** Server signals the client to reload from DB — the incremental iteration
+   *  gap is too large to transfer (GetActiveProgress gap-too-large guard).
+   *  Consumer (restoreActiveProgress) treats it like replay_gap → reload. */
+  resync_required?: boolean
   /** Structured SubAgent progress tree (mirrors Go protocol.SubAgentInfo). */
   sub_agents?: unknown[]
   /** TurnID from the backend — uniquely identifies the agent turn. */
@@ -306,10 +310,11 @@ export interface WebToolProgress {
   iteration?: number
 }
 
-/** Iteration snapshot — one completed iteration's reasoning + tools. */
+/** Iteration snapshot — one completed iteration's reasoning + tools + text output. */
 export interface WebIteration {
   iteration: number
-  thinking: string
+  /** 迭代的文本输出（最终回复 = 最终 iter 的 content）。thinking 字段已彻底删除。 */
+  content: string
   reasoning: string
   tools: WebToolProgress[]
   toolCount: number

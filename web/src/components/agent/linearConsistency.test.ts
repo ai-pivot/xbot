@@ -34,7 +34,7 @@ function msg(
 function iter(n: number, content: string, tools: string[] = []): WebIteration {
   return {
     iteration: n,
-    thinking: content,
+    content,
     reasoning: '',
     tools: tools.map((t) => ({ name: t, label: t, status: 'done' as const, elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '' })),
     toolCount: tools.length,
@@ -99,10 +99,10 @@ describe('Linear consistency — turnID+iteration dedup/merge', () => {
         genuiContent: '',
       }
       // The effectiveStreamContent logic: if streamContent equals the last
-      // iteration's thinking, it's already rendered by TurnBody — suppress it.
+      // iteration's content, it's already rendered by TurnBody — suppress it.
       const lastIter = snapshot.iterationHistory[snapshot.iterationHistory.length - 1]
       const effectiveStreamContent =
-        snapshot.streamContent === lastIter.thinking ? '' : snapshot.streamContent
+        snapshot.streamContent === lastIter.content ? '' : snapshot.streamContent
       expect(effectiveStreamContent).toBe('')
     })
 
@@ -129,7 +129,7 @@ describe('Linear consistency — turnID+iteration dedup/merge', () => {
       }
       const lastIter = snapshot.iterationHistory[snapshot.iterationHistory.length - 1]
       const effectiveStreamContent =
-        snapshot.streamContent === lastIter.thinking ? '' : snapshot.streamContent
+        snapshot.streamContent === lastIter.content ? '' : snapshot.streamContent
       expect(effectiveStreamContent).toBe('new streaming text')
     })
 
@@ -157,7 +157,7 @@ describe('Linear consistency — turnID+iteration dedup/merge', () => {
       // No last iteration to compare against — streamContent is empty, so no issue
       const lastIter = snapshot.iterationHistory[snapshot.iterationHistory.length - 1]
       const effectiveStreamContent = lastIter
-        ? (snapshot.streamContent === lastIter.thinking ? '' : snapshot.streamContent)
+        ? (snapshot.streamContent === lastIter.content ? '' : snapshot.streamContent)
         : snapshot.streamContent
       expect(effectiveStreamContent).toBe('')
     })

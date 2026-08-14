@@ -640,7 +640,7 @@ function commitLiveProgressAndReset(
       : []
     if (liveTools.length > 0) {
       if (iters.length === 0) {
-        iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: liveTools, toolCount: liveTools.length }]
+        iters = [{ iteration: 1, content: '', reasoning: liveReasoning, tools: liveTools, toolCount: liveTools.length }]
       } else {
         const last = iters[iters.length - 1]
         iters = [
@@ -651,7 +651,7 @@ function commitLiveProgressAndReset(
     }
     if (liveReasoning) {
       if (iters.length === 0) {
-        iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
+        iters = [{ iteration: 1, content: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
       } else if (liveReasoning.length > (iters[iters.length - 1].reasoning || '').length) {
         iters = iters.map((it, i) =>
           i === iters.length - 1 ? { ...it, reasoning: liveReasoning } : it
@@ -662,11 +662,11 @@ function commitLiveProgressAndReset(
       let commitText = text
       let commitIters = iters
       if (snap.phase === 'frozen' && text && iters.length === 0) {
-        commitIters = [{ iteration: 1, thinking: text, reasoning: liveReasoning, tools: [], toolCount: 0 }]
+        commitIters = [{ iteration: 1, content: text, reasoning: liveReasoning, tools: [], toolCount: 0 }]
         commitText = ''
-      } else if (snap.phase === 'frozen' && text && iters.length > 0 && !iters[iters.length - 1].thinking) {
+      } else if (snap.phase === 'frozen' && text && iters.length > 0 && !iters[iters.length - 1].content) {
         commitIters = iters.map((it, i) =>
-          i === iters.length - 1 ? { ...it, thinking: text } : it
+          i === iters.length - 1 ? { ...it, content: text } : it
         )
         commitText = ''
       }
@@ -1319,9 +1319,20 @@ function handleProgressMessage(
         if (finalizedRef) finalizedRef.current = true
         if (finalizedTurnIDRef) finalizedTurnIDRef.current = msg.turn_id ?? store.lastTurnID
         if (phaseDoneRef) phaseDoneRef.current = true
+        // cancel ack 只带 cancelled=true（不传迭代大数据）。
+        // 进行中迭代（tool executing 中断）通过前端已有的 SSE gap 恢复机制
+        // 获取：detect 迭代 gap → get_active_progress（from_iteration）请求 →
+        // 后端返回进行中迭代（lastProgressSnapshot 保留 ActiveTools）。
         // Freeze: mark all in-progress tools as error, stop streaming/reasoning animations.
         // Do NOT reset the store — frozen content stays visible until the next turn.
         store.freeze()
+        // 同步 freeze MessageStore 的 live —— 否则下一个 beginTurn 的
+        // commitStaleLives 把它 commit 成 seq-*-stale，覆盖 commitLiveProgressAndReset
+        // 已 commit 的 assistant（cancel 后发消息 → 内容被 stale 行污染/重复）。
+        if (messageStore) {
+          const liveTurn = messageStore.liveTurnIDWithContent()
+          if (liveTurn > 0) messageStore.freeze(liveTurn)
+        }
         cancelCompleteRef?.current?.()
         // Do NOT dispatch agent-idle here — it would trigger the session(idle)
         // handler's defensive finalize, which calls completeRef + store.reset(),
@@ -1343,15 +1354,28 @@ function handleProgressMessage(
       // `seq-*-stale` duplicate.
       const metaTurnID = Number(msg.metadata?.turn_id ?? '')
       const textTurnID = msg.turn_id && msg.turn_id > 0 ? msg.turn_id : (metaTurnID > 0 ? metaTurnID : 0)
+      const finalizedTurnID = finalizedTurnIDRef?.current ?? 0
+      // 迟到 text（turn_id 完全缺失）在 cancel frozen 状态下 → 丢弃。否则
+      // commitTurnID=undefined → commitAssistant(0) 产生 turnID=0 幽灵行
+      // （seq-600180，iterCount=88）—— cancel 后发消息时它排到 live 行之后，
+      // thinking consistency check 100% 触发（用户报告："思考中下方出现
+      // turnID=null 的 committed assistant"）。cancel 后 ProgressStore 保持
+      // frozen 直到新 turn 的第一个 structured 事件；此窗口内的 turn_id=0
+      // text 是 cancel 的 turn 的迟到 reply。
+      const snapNow = store.getSnapshot()
+      if (textTurnID === 0 && snapNow.phase === 'frozen') return
+      // turn_id 缺失但非 frozen（新 turn 已推进）：fallback 到当前 lastTurnID
+      // （避免 commit 到 0 —— 幽灵行）。正常 text 事件总带 turn_id 或
+      // metadata.turn_id，此 fallback 只兜底异常/迟到事件。
+      const effTextTurnID = textTurnID > 0 ? textTurnID : (store.lastTurnID > 0 ? store.lastTurnID : 0)
       // commitTurnID keeps the original undefined semantics for callers when no
       // turn_id exists anywhere (bang/slash commands), but falls back to
       // metadata.turn_id for the final reply (whose top-level turn_id is absent).
-      const commitTurnID = textTurnID > 0 ? textTurnID : undefined
-      const finalizedTurnID = finalizedTurnIDRef?.current ?? 0
-      if (textTurnID > 0 && finalizedTurnID > 0 && textTurnID <= finalizedTurnID) return
-      if (finalizedRef?.current && textTurnID === 0) return
+      const commitTurnID = effTextTurnID > 0 ? effTextTurnID : undefined
+      if (effTextTurnID > 0 && finalizedTurnID > 0 && effTextTurnID <= finalizedTurnID) return
+      if (finalizedRef?.current && effTextTurnID === 0) return
       if (finalizedRef) finalizedRef.current = true
-      if (finalizedTurnIDRef) finalizedTurnIDRef.current = textTurnID || store.lastTurnID
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = effTextTurnID || store.lastTurnID
       const finalText = msg.content ?? ''
       const parsedIterations = parseWebIterations(msg.progress_history)
       const snap = store.getSnapshot()
@@ -1371,10 +1395,24 @@ function handleProgressMessage(
       // merge it here, the committed message loses all reasoning.
       const liveReasoning = snap.reasoningStreamContent || snap.lastReasoning || ''
       let mergedIterations = iterations
+      // v55: 最终回复 = 最终 iter 的 content（msg 不携带 content，msg 是 iter 集合）。
+      // text 事件顶层 content（finalText）是最终回复的权威来源（handleRunOutput 的
+      // finalContent）。后端 progress_history 最后迭代 content 可能为空或为旧格式
+      // thinking fallback（如 "Searching"）—— 渲染层 hasIterations=true 时不渲染
+      // message.content，若 finalText 不合并进最后迭代，最终回复丢失（v55 回归：
+      // notification E2E "Done processing notification." 断言失败）。结构保证：
+      // finalText 非空即作为最后迭代的权威 content（非字符串比较 hack —— 顶层
+      // content 是最终回复的唯一权威值）。
+      if (finalText && mergedIterations.length > 0) {
+        const lastIdx = mergedIterations.length - 1
+        mergedIterations = mergedIterations.map((it, i) =>
+          i === lastIdx ? { ...it, content: finalText } : it
+        )
+      }
       if (liveReasoning) {
         if (mergedIterations.length === 0) {
           // No iterations at all — create a synthetic one to carry the reasoning.
-          mergedIterations = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
+          mergedIterations = [{ iteration: 1, content: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
         } else {
           const lastIter = mergedIterations[mergedIterations.length - 1]
           // Always use live streamed reasoning if it's longer than what the
@@ -1517,7 +1555,7 @@ function handleProgressMessage(
           let iters = snap.iterationHistory
           if (liveReasoning) {
             if (iters.length === 0) {
-              iters = [{ iteration: 1, thinking: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
+              iters = [{ iteration: 1, content: '', reasoning: liveReasoning, tools: [], toolCount: 0 }]
             } else if (liveReasoning.length > (iters[iters.length - 1].reasoning || '').length) {
               iters = iters.map((it, i) =>
                 i === iters.length - 1 ? { ...it, reasoning: liveReasoning } : it

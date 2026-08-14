@@ -100,8 +100,7 @@ type ProgressEvent struct {
 	// Stream-only field like StreamContent — must NOT enter structured snapshots.
 	GenUIContent string `json:"genui_content,omitempty"`
 	// StreamingTools carries tool names detected during LLM streaming,
-	// before arguments finish generating. Each entry has Status="generating".
-	// This is a stream-only field (like StreamContent) — it must NOT enter
+	// before arguments finish generating. Each entry has Status="generating".	// This is a stream-only field (like StreamContent) — it must NOT enter
 	// snapshotIterationChange or any structured snapshot path.
 	StreamingTools []ToolProgress `json:"streaming_tools,omitempty"`
 	// StreamTokens carries incremental completion token count during LLM streaming.
@@ -113,6 +112,14 @@ type ProgressEvent struct {
 	IterationHistory []ProgressEvent `json:"iteration_history,omitempty"`
 	HistoryCompacted bool            `json:"history_compacted,omitempty"`
 	CWD              string          `json:"cwd,omitempty"`
+
+	// ResyncRequired signals the client to reload from DB instead of consuming
+	// a huge incremental iterationHistory. Set by GetActiveProgress when the
+	// gap between the caller's from_iteration watermark and the server's
+	// current iteration is too large (SSE gap / reconnect after long absence) —
+	// transferring dozens of iterations is wasteful and error-prone; the DB is
+	// authoritative and the client already knows how to reload (replay_gap).
+	ResyncRequired bool `json:"resync_required,omitempty"`
 
 	// TurnID uniquely identifies the agent turn that produced this event.
 	// Assigned by chatProcessLoop (per-session monotonic counter) and carried

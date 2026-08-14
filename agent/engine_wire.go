@@ -1797,6 +1797,24 @@ func (a *Agent) buildProgressEventHandler(chatID, originatingChannel string) fun
 		if payload == nil {
 			return
 		}
+		// PhaseDone（turn 结束）：最后迭代没有"推进到下一迭代"的事件，
+		// attachIterationDelta（条件 nextIteration > prev.Iteration）不会记录
+		// 它 → 前端 progress 事件的 IterationHistory 缺最后迭代 content →
+		// text 事件 commit 后内容消失（DB 有 content，刷新恢复，用户报告
+		// "刷新前看不到最后的迭代 content，content stream 完之后会消失"）。
+		// PhaseDone 时强制记录最后迭代，并把它附加到事件本身。
+		if payload.Phase == string(PhaseDone) {
+			a.recordFinalIteration(progressKey)
+			if hist, ok := a.iterationHistories.Load(progressKey); ok {
+				h := *hist.(*[]protocol.ProgressEvent)
+				if len(h) > 0 {
+					last := h[len(h)-1]
+					if last.Iteration == payload.Iteration {
+						payload.IterationHistory = []protocol.ProgressEvent{last}
+					}
+				}
+			}
+		}
 		a.attachIterationDelta(progressKey, payload.Iteration, payload)
 		// Iteration checkpoint: push the FULL cumulative stream text as a
 		// stream_content event BEFORE clearStreamState wipes it. This realigns

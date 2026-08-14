@@ -22,7 +22,7 @@ describe('parseIterations', () => {
     const json = JSON.stringify([
       {
         iteration: 1,
-        thinking: 'plan',
+        content: 'plan',
         reasoning: 'why',
         tools: [
           { name: 'Read', label: 'Read', status: 'done', elapsed_ms: 12, summary: 'ok' },
@@ -34,7 +34,7 @@ describe('parseIterations', () => {
     const out = parseIterations(json)
     expect(out).toHaveLength(2)
     expect(out[0].iteration).toBe(1)
-    expect(out[0].thinking).toBe('plan')
+    expect(out[0].content).toBe('plan')
     expect(out[0].tools).toHaveLength(2)
     expect(out[0].tools[0]).toEqual({
       name: 'Read',
@@ -55,7 +55,7 @@ describe('parseIterations', () => {
 
   it('skips non-object entries', () => {
     expect(parseIterations(JSON.stringify([null, 1, 'x', { iteration: 5, tools: [] }]))).toEqual([
-      { iteration: 5, thinking: undefined, reasoning: undefined, tools: [] },
+      { iteration: 5, content: undefined, reasoning: undefined, tools: [] },
     ])
   })
 })
@@ -96,7 +96,7 @@ describe('normalizeIteration', () => {
   it('handles missing tools array', () => {
     expect(normalizeIteration({ iteration: 3 })).toEqual({
       iteration: 3,
-      thinking: undefined,
+      content: undefined,
       reasoning: undefined,
       elapsedMs: undefined,
       tools: [],

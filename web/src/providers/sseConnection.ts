@@ -442,6 +442,16 @@ export class SSEConnectionImpl implements WSConnection {
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
         return
       }
+      // Gap-too-large guard: the incremental iteration gap between our
+      // watermark and the server's current iteration exceeds the transfer
+      // threshold — the server signals resync instead of shipping dozens of
+      // iteration-history entries. Reload from DB (authoritative), same as
+      // replay_gap. Do NOT dispatch progress_structured with the resync
+      // snapshot (its iterationHistory is intentionally nil).
+      if (progress.resync_required) {
+        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
+        return
+      }
       // progressVersion changed during the fetch: newer events already arrived
       // (SSE replay delivers the live state), so the snapshot restore below
       // would be stale — skip it. The unconditional reload decision above is

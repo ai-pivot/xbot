@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { hasVisibleProgress } from '@/hooks/useProgressStream'
-import type { ProgressSnapshot } from '@/types/shared'
+import type { ProgressSnapshot, WebIteration } from '@/types/shared'
 
 function snap(over: Partial<ProgressSnapshot>): ProgressSnapshot {
   return {
@@ -54,7 +54,7 @@ describe('hasVisibleProgress', () => {
       hasVisibleProgress(
         snap({
           iterationHistory: [
-            { iteration: 1, thinking: 't', reasoning: '', tools: [], toolCount: 0 },
+            { iteration: 1, content: 't', reasoning: '', tools: [], toolCount: 0 },
           ],
         }),
       ),
@@ -106,5 +106,57 @@ describe('切换会话 hydration 还原 live iter', () => {
     expect(live?.iterations?.map((i) => i.iteration)).toEqual([1])
     expect(live?.activeTools?.map((t) => t.name)).toEqual(['Shell'])
     expect(live?.phase).toBe('tool_exec')
+  })
+
+  it('text 事件顶层 content（最终回复）合并进最后迭代 content（v55 架构）', async () => {
+    // v55 回归：text 事件带顶层 content（最终回复）+ progress_history（旧格式
+    // thinking 字段 / 最后迭代 content 为空）。渲染层 hasIterations=true 时不渲染
+    // message.content —— 若不把 finalText 合并进最后迭代 content，最终回复丢失
+    // （notification E2E "Done processing notification." 断言失败）。
+    const ms = new MessageStore()
+    let onMessageCb: ((msg: unknown) => void) | undefined
+    let completeArgs: [string, WebIteration[]] | undefined
+    const ws = {
+      onMessage: (cb: (msg: unknown) => void) => { onMessageCb = cb; return () => {} },
+      rpc: vi.fn(),
+      send: vi.fn(),
+      onConnectionChange: () => () => {},
+      connected: false,
+    } as unknown as WSConnection & { onMessage: (cb: (msg: unknown) => void) => () => void }
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'chat-1',
+        ws,
+        messageStore: ms,
+        onAssistantComplete: (finalText, iterations) => {
+          completeArgs = [finalText, iterations]
+        },
+      }),
+    )
+    // 前置状态：turn_started + structured 事件（text 事件处理依赖 turn_id 上下文）
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'notification', content: '⏰ bg task done' }, chat_id: 'web:chat-1' },
+    })
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', iteration: 1, seq: 2, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Grep', status: 'running', iteration: 1 }] },
+    })
+    // text 事件（模拟后端 sendMessage）：顶层 content + progress_history（thinking 旧格式）
+    onMessageCb?.({
+      type: 'text',
+      content: 'Done processing notification.',
+      turn_id: 1,
+      chat_id: 'chat-1',
+      progress_history: JSON.stringify([
+        { iteration: 0, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 0 }] },
+        { iteration: 1, thinking: 'Searching', completed_tools: [{ name: 'Grep', status: 'done', iteration: 1 }] },
+      ]),
+    })
+    // v55: 最终回复 = 最终 iter 的 content —— text 事件顶层 content 合并进最后迭代
+    await waitFor(() => expect(completeArgs).toBeDefined())
+    expect(completeArgs![0]).toBe('Done processing notification.')
+    expect(completeArgs![1]).toHaveLength(2)
+    expect(completeArgs![1][completeArgs![1].length - 1].content).toBe('Done processing notification.')
   })
 })

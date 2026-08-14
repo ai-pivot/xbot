@@ -756,7 +756,14 @@ export function useChatMessages({
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
   const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, _insertBeforeLastUser?: boolean) => {
-    if (!content && !iterations.length) return
+    // 空 content + 空 iterations：仍可能通过 commitAssistant 的 live.content
+    // fallback 保留流式内容 —— 快速回复场景：text 事件 content='' 且
+    // progress_history 空，但 live（stream_content）已有回复文本。旧代码在此
+    // return 跳过 commit → live 残留 + ProgressStore reset → agent msg 消失
+    // （用户报告："回答极快且只有一个 agent iter，turn 结束后看不到 agent msg"）。
+    // 只有 content/iterations/live 全空才跳过（防止空 assistant 幽灵行）。
+    const hasLive = store.getLive(turnID ?? 0) !== undefined
+    if (!content && !iterations.length && !hasLive) return
     messageMutationGenRef.current += 1
     // store.commitAssistant 把 live → assistant 状态迁移（同一逻辑消息），
     // 按 turnID 路由到对应 slot —— 顺序由 turnIDs 排序保证，insertBeforeLastUser

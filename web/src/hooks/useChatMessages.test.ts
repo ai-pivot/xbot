@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChatMessages } from './useChatMessages'
 import type { WSConnection } from '@/types/ws'
 import type { WSMessage, ChatMessage } from '@/types/shared'
+import { MessageStore } from '@/components/agent/messageStore'
 import {
   bumpProgressGeneration,
   clearWebCaches,
@@ -605,7 +606,7 @@ describe('useChatMessages', () => {
         iterations: [
           {
             iteration: 1,
-            thinking: 'thinking',
+            content: 'thinking',
             completed_tools: [{ name: 'Read', status: 'done', summary: 'ok' }],
           },
         ],
@@ -678,6 +679,30 @@ describe('useChatMessages', () => {
     expect(result.current.messages[0].iterations[0].tools[0].name).toBe('Shell')
   })
 
+  it('appendAssistant 空 content + live 有流式内容：commit 保留 live 内容（快速回复不消失）', async () => {
+    // 用户 bug：回答极快且只有一个 agent iter，turn 结束后看不到 agent msg。
+    // 快速回复时 text 事件 content='' + progress_history='[]' → appendAssistant('', [])
+    // 的 `if (!content && !iterations.length) return` 跳过 commit → live 残留 +
+    // ProgressStore reset → agent msg 消失。修复：live 有内容时不跳过（commitAssistant
+    // 内部 fallback live.content）。
+    const ms = new MessageStore()
+    const ws = makeWS([])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'fast-chat', channel: 'web', ws, messageStore: ms }))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    // renderHook 后设置 live（模拟 SSE 流式内容 —— useChatMessages 初始化会
+    // clear store，所以必须在初始化后设置）
+    ms.setUser(100, { id: 'u100', role: 'user', content: 'hi', turnID: 100, iterations: [], timestamp: '', isPartial: false, persisted: true } as ChatMessage)
+    ms.updateLive(100, { turnID: 100, content: '好的', iterations: [] })
+    act(() => {
+      // 模拟 text 事件：content 空 + iterations 空（快速回复）
+      result.current.appendAssistant('', [], 600180, 100)
+    })
+    const rows = ms.toRows()
+    // committed assistant 必须保留 live 内容（content='好的'，非 isPartial）
+    expect(rows.some((r) => r.role === 'assistant' && r.content === '好的' && !r.isPartial)).toBe(true)
+    expect(rows.some((r) => r.id === 'turn-100-live')).toBe(false)
+  })
+
   it('cancel: appendAssistant survives reload — assistant message does not vanish', async () => {
     const ws = makeWS([
       // First fetch: user message only (no assistant yet)
@@ -704,7 +729,7 @@ describe('useChatMessages', () => {
           messages: [
             { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 },
             { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:01Z', seq: 2,
-              iterations: [{ iteration: 1, thinking: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
+              iterations: [{ iteration: 1, content: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
           ],
           chat_id: 'cancel-chat', last_seq: 2,
         },
@@ -754,7 +779,7 @@ describe('useChatMessages', () => {
           messages: [
             { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1, turn_id: 1 },
             { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:02Z', seq: 3, turn_id: 2,
-              iterations: [{ iteration: 1, thinking: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
+              iterations: [{ iteration: 1, content: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
           ],
           chat_id: 'cancel-user-chat', last_seq: 3,
         },
@@ -796,7 +821,7 @@ describe('useChatMessages', () => {
           messages: [
             { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 },
             { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:01Z', seq: 2, turn_id: 3,
-              iterations: [{ iteration: 1, thinking: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
+              iterations: [{ iteration: 1, content: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
           ],
           chat_id: 'dup-chat', last_seq: 2,
         },

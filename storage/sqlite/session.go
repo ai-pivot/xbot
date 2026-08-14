@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"xbot/llm"
 	log "xbot/logger"
@@ -403,6 +404,46 @@ func (s *SessionService) GetIterationHistoryByTurn(tenantID int64, turnID uint64
 	}
 	defer rows.Close()
 	return scanIterationRecords(rows)
+}
+
+// GetIterationHistoryByTurns 批量查询多个 turn 的 iteration_history —— 一次
+// IN 查询替代循环单查。history 接口原来对每个 turn 单查一次 DB（100 条消息
+// 可能 10-30 个 turn → 10-30 次 SQLite 查询），是接口慢的主要根源。
+func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []uint64) (map[uint64][]IterationRecord, error) {
+	result := make(map[uint64][]IterationRecord)
+	if len(turnIDs) == 0 {
+		return result, nil
+	}
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	placeholders := make([]string, len(turnIDs))
+	args := make([]any, 0, len(turnIDs)+1)
+	args = append(args, tenantID)
+	for i, id := range turnIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	query := fmt.Sprintf(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools
+		FROM iteration_history
+		WHERE tenant_id = ? AND turn_id IN (%s)
+		ORDER BY turn_id ASC, iteration ASC
+	`, strings.Join(placeholders, ","))
+	rows, err := conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration_history by turns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rec IterationRecord
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools); err != nil {
+			continue
+		}
+		result[rec.TurnID] = append(result[rec.TurnID], rec)
+	}
+	return result, nil
 }
 
 func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {

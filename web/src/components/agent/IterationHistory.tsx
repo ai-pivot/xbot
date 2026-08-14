@@ -45,9 +45,9 @@ export const IterationGroup = memo(function IterationGroup({
       )}
 
       {/* O: text output (always shown) */}
-      {iteration.thinking && (
+      {iteration.content && (
         <MarkdownRenderer
-          content={iteration.thinking}
+          content={iteration.content}
           className="text-sm text-text-primary"
         />
       )}
@@ -58,7 +58,7 @@ export const IterationGroup = memo(function IterationGroup({
       )}
 
       {/* Fallback: if nothing in this iteration, show a subtle hint */}
-      {!iteration.reasoning && iteration.tools.length === 0 && !iteration.thinking && (
+      {!iteration.reasoning && iteration.tools.length === 0 && !iteration.content && (
         <span className="text-xs text-text-muted">{t('agent.none')}</span>
       )}
     </div>

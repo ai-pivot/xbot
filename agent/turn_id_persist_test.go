@@ -53,13 +53,17 @@ func TestHandleRunOutput_PersistsTurnID(t *testing.T) {
 	}
 	var assistantMsg *llm.ChatMessage
 	for i := range msgs {
-		if msgs[i].Role == "assistant" && msgs[i].Content == "test reply" {
+		// v55+：assistant 回复不再写 session_messages.content（迭代是权威文本源）
+		if msgs[i].Role == "assistant" {
 			assistantMsg = &msgs[i]
 			break
 		}
 	}
 	if assistantMsg == nil {
 		t.Fatal("assistant message not found in DB")
+	}
+	if assistantMsg.Content != "" {
+		t.Fatalf("v55+ assistant message content should be empty (iterations are the authoritative text source), got %q", assistantMsg.Content)
 	}
 	if assistantMsg.TurnID != 42 {
 		t.Fatalf("assistant message TurnID = %d, want 42 — handleRunOutput must set TurnID from msg.Metadata[\"turn_id\"] so the frontend can dedup DB row against SSE live message", assistantMsg.TurnID)

@@ -260,6 +260,41 @@ func (a *Agent) recordIterationSnapshot(key string, shouldAppend func(prev *prot
 	}
 }
 
+// recordFinalIteration 在 turn 结束（PhaseDone）时把最后迭代强制记录到
+// iterationHistories。attachIterationDelta 只在"迭代推进"（nextIteration >
+// prev.Iteration）时记录前一个迭代 —— 最后迭代没有下一个迭代，从未被记录，
+// 前端 progress 事件的 IterationHistory 因此缺最后迭代 content → commit 后
+// 内容消失（DB 有 content，刷新恢复）。PhaseDone 时强制补记，让最后迭代
+// （含 content）进入 progress 事件，前端 live 阶段即可见。
+func (a *Agent) recordFinalIteration(key string) {
+	prevSnap, loaded := a.lastProgressSnapshot.Load(key)
+	if !loaded {
+		return
+	}
+	prev := progressSnapshotWithoutHistory(prevSnap.(*protocol.ProgressEvent))
+	if prev.Iteration < 1 {
+		return
+	}
+	for {
+		histPtr, _ := a.iterationHistories.LoadOrStore(key, &[]protocol.ProgressEvent{})
+		hist := progressHistoryWithoutNested(*histPtr.(*[]protocol.ProgressEvent))
+		already := false
+		for _, h := range hist {
+			if h.Iteration == prev.Iteration {
+				already = true
+				break
+			}
+		}
+		if already {
+			return
+		}
+		updated := append(hist, *prev)
+		if a.iterationHistories.CompareAndSwap(key, histPtr, &updated) {
+			return
+		}
+	}
+}
+
 // attachIterationDelta records the previous iteration (if iteration advanced) and
 // attaches ONLY the newly completed iteration to the payload — not the full
 // cumulative history. The TUI appends this delta to its local iteration list.

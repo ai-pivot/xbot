@@ -99,8 +99,8 @@ describe('ProgressStore basic', () => {
 
   it('setIterationHistory appends snapshots', () => {
     const store = new ProgressStore()
-    store.setIterationHistory([{ iteration: 1, thinking: '', reasoning: '', tools: [], toolCount: 0 }])
-    store.setIterationHistory([{ iteration: 2, thinking: '', reasoning: '', tools: [tool({ name: 'Read' })], toolCount: 1 }])
+    store.setIterationHistory([{ iteration: 1, content: '', reasoning: '', tools: [], toolCount: 0 }])
+    store.setIterationHistory([{ iteration: 2, content: '', reasoning: '', tools: [tool({ name: 'Read' })], toolCount: 1 }])
     flushRaf()
     expect(store.getSnapshot().iterationHistory).toHaveLength(1)
     store.dispose()
@@ -208,7 +208,7 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
       iteration: 2,
       iterationHistory: [{
         iteration: 1,
-        thinking: '',
+        content: '',
         reasoning: 'iter1 reasoning',
         tools: [tool({ name: 'Read', status: 'done', summary: 'ok' })],
         toolCount: 1,
@@ -245,7 +245,7 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
     const store = new ProgressStore()
     const skillIteration = {
       iteration: 1,
-      thinking: '',
+      content: '',
       reasoning: '',
       tools: [
         tool({ name: 'Skill', label: 'debug', status: 'done' }),
@@ -431,7 +431,7 @@ describe('ProgressStore tool dedup', () => {
 
 describe('continuousIterations — linear-consistency guard (weak-network iteration gaps)', () => {
   function iters(nums: number[]): WebIteration[] {
-    return nums.map((n) => ({ iteration: n, thinking: '', reasoning: '', content: '', tools: [], toolCount: 0 }))
+    return nums.map((n) => ({ iteration: n, content: '', reasoning: '', tools: [], toolCount: 0 }))
   }
 
   it('keeps a fully contiguous sequence as-is', () => {
@@ -478,7 +478,7 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
     rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
   }
   function mkIter(n: number): WebIteration {
-    return { iteration: n, thinking: '', reasoning: '', tools: [], toolCount: 0 }
+    return { iteration: n, content: '', reasoning: '', tools: [], toolCount: 0 }
   }
 
   it('sorts iterations regardless of arrival order (old 1 arriving between 100 and 101)', () => {
@@ -657,7 +657,7 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
       phase: 'tool_exec',
       iteration: 1,
       activeTools: [tool({ name: 'Shell', status: 'running' })],
-      iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+      iterationHistory: [{ iteration: 1, content: 't1', reasoning: '', tools: [], toolCount: 0 }],
     })
     flushRaf()
     expect(store.getSnapshot().lastIter).toBe(1)
@@ -673,7 +673,7 @@ describe('appendIterations — ordered union (reconnect out-of-order delivery)',
       phase: 'tool_exec',
       iteration: 29,
       activeTools: [tool({ name: 'Grep', status: 'running' })],
-      iterationHistory: [{ iteration: 29, thinking: 't29', reasoning: '', tools: [], toolCount: 0 }],
+      iterationHistory: [{ iteration: 29, content: 't29', reasoning: '', tools: [], toolCount: 0 }],
     })
     flushRaf()
     const snap = store.getSnapshot()
@@ -705,7 +705,7 @@ describe('ProgressStore.dumpFullState', () => {
       phase: 'tool_exec',
       iteration: 2,
       activeTools: [tool({ name: 'Shell', status: 'running' })],
-      iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+      iterationHistory: [{ iteration: 1, content: 't1', reasoning: '', tools: [], toolCount: 0 }],
     })
     // Do NOT flushRaf: the RAF-throttled snapshot is stale, but dumpFullState
     // must read the CURRENT internal state directly.
@@ -727,7 +727,7 @@ describe('ProgressStore.dumpFullState', () => {
       eventSeq: 1,
       phase: 'thinking',
       iteration: 1,
-      iterationHistory: [{ iteration: 1, thinking: 't', reasoning: '', tools: [], toolCount: 0 }],
+      iterationHistory: [{ iteration: 1, content: 't', reasoning: '', tools: [], toolCount: 0 }],
     })
     const dump = store.dumpFullState()
     expect(() => JSON.stringify(dump)).not.toThrow()

@@ -28,8 +28,8 @@ function copyButton() {
   return screen.queryByTitle(/Copy Markdown|复制 Markdown/)
 }
 
-function iter(thinking: string, iteration = 1): WebIteration {
-  return { iteration, thinking, reasoning: '', tools: [], toolCount: 0 }
+function iter(content: string, iteration = 1): WebIteration {
+  return { iteration, content, reasoning: '', tools: [], toolCount: 0 }
 }
 
 describe('AssistantMessage copy button (showActions)', () => {
@@ -53,6 +53,66 @@ describe('AssistantMessage copy button (showActions)', () => {
     })
     renderMsg(<AssistantMessage message={m} collapseLevel="none" />)
     expect(copyButton()).not.toBeNull()
+  })
+
+  it('turn-live（isPartial）行：LiveIteration 渲染 progress content，迭代块外不重复 message.content', () => {
+    // 用户报告：cancel 后迭代重复渲染 —— turn-38-live 的迭代 1 内容在迭代块外
+    // markdown-body 又渲染一次。设计原则："一个 iter 的内容只能渲染在 iter 内"：
+    // LiveIteration 在迭代内渲染 progress.streamContent，message.content 是流式
+    // 冗余副本，不得在迭代块外重复渲染。禁止串操作去重（比较 message.content
+    // 与迭代内容相等再隐藏）—— 用结构判断：live 行 + progress 有内容（LiveIteration
+    // 已渲染）→ message.content 不渲染。
+    const m = msg({
+      content: '继续优化。',
+      isPartial: true, // turn-live 行
+      iterations: [],
+    })
+    const liveProgress = {
+      eventSeq: 1,
+      phase: 'frozen',
+      iteration: 1,
+      lastIter: 1,
+      streaming: false,
+      streamContent: '继续优化。', // LiveIteration 在迭代内渲染
+      content: '',
+      reasoningStreamContent: '',
+      genuiContent: '',
+      lastReasoning: '',
+      streamTokens: 0,
+      tokenUsage: null,
+      turnID: 38,
+      activeTools: [] as WebToolProgress[],
+      completedTools: [] as WebToolProgress[],
+      streamingTools: [] as WebToolProgress[],
+      iterationHistory: [{
+        iteration: 1, content: '思考了 1628 字符', reasoning: '', tools: [], toolCount: 0,
+      }],
+      subAgents: [],
+      todos: [],
+    }
+    const { container } = renderMsg(<AssistantMessage message={m} progress={liveProgress} collapseLevel="none" />)
+    // "继续优化。" 只出现一次（LiveIteration 在迭代内渲染），迭代块外不重复
+    expect(container.textContent.match(/继续优化。/g) ?? []).toHaveLength(1)
+  })
+
+  it('committed 行有迭代：迭代外不重复渲染 message.content（内容只在迭代内）', () => {
+    // 用户报告：committed 行最后迭代的 content（== 最终回复）在 TurnBody 迭代内
+    // 渲染（markdown-body），finalContent 又在迭代外重复。设计原则："一个 iter
+    // 的内容只能渲染在 iter 内" —— 行有迭代（iterations 非空，结构判断）时内容
+    // 由 TurnBody 在迭代内渲染，message.content 不重复渲染。禁止任何字符串
+    // 比较/内容判断（不能靠"最后迭代 content 非空"判断 —— 万一 content 真的写
+    // 两遍且各自有效会错误隐藏）。
+    const m = msg({
+      content: '最终回复',
+      iterations: [
+        { iteration: 1, content: '推理1', reasoning: '', tools: [], toolCount: 0 },
+        // 最后迭代 thinking（后端 IterationRecord.Content 映射）== message.content
+        { iteration: 2, content: '最终回复', reasoning: '', tools: [], toolCount: 0 },
+      ],
+    })
+    const { container } = renderMsg(<AssistantMessage message={m} collapseLevel="none" />)
+    // "最终回复" 只出现一次（最后迭代在 TurnBody 内渲染），迭代块外不重复
+    expect(container.textContent.match(/最终回复/g) ?? []).toHaveLength(1)
   })
 
   it('hides the copy button for an empty message', () => {
@@ -87,8 +147,8 @@ describe('AssistantMessage thinking indicator (mutual exclusion with LiveIterati
     completedTools: [] as WebToolProgress[],
     streamingTools: [] as WebToolProgress[],
     iterationHistory: [
-      { iteration: 1, thinking: 'a', reasoning: '', tools: [], toolCount: 0 },
-      { iteration: 2, thinking: 'b', reasoning: '', tools: [], toolCount: 0 },
+      { iteration: 1, content: 'a', reasoning: '', tools: [], toolCount: 0 },
+      { iteration: 2, content: 'b', reasoning: '', tools: [], toolCount: 0 },
     ],
     subAgents: [],
     todos: [],
@@ -110,14 +170,14 @@ describe('AssistantMessage thinking indicator (mutual exclusion with LiveIterati
       iterations: [
         {
           iteration: 1,
-          thinking: 'a',
+          content: 'a',
           reasoning: '',
           tools: [{ name: 'Read', status: 'done' as const, iteration: 1, label: '', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '' }],
           toolCount: 1,
         },
         {
           iteration: 2,
-          thinking: 'b',
+          content: 'b',
           reasoning: '',
           tools: [{ name: 'FileReplace', status: 'done' as const, iteration: 2, label: '', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '' }],
           toolCount: 1,
@@ -190,7 +250,7 @@ describe('AssistantMessage compressing indicator position', () => {
     completedTools: [] as WebToolProgress[],
     streamingTools: [] as WebToolProgress[],
     iterationHistory: [
-      { iteration: 1, thinking: 'done work', reasoning: '', tools: [], toolCount: 0 },
+      { iteration: 1, content: 'done work', reasoning: '', tools: [], toolCount: 0 },
     ],
     subAgents: [],
     todos: [],

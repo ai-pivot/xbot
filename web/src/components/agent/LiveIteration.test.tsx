@@ -147,7 +147,7 @@ describe('LiveIteration — typewriter cursor', () => {
       // Iteration 1 is completed — has Shell(done)
       iterationHistory: [{
         iteration: 1,
-        thinking: '',
+        content: '',
         reasoning: '',
         tools: [{
           name: 'Shell',
@@ -196,7 +196,7 @@ describe('LiveIteration — typewriter cursor', () => {
       // Iteration 1 completed — the stale generating tool belongs to it
       iterationHistory: [{
         iteration: 1,
-        thinking: '',
+        content: '',
         reasoning: '',
         tools: [{
           name: 'Bash',
@@ -238,7 +238,7 @@ describe('LiveIteration — typewriter cursor', () => {
       lastIter: 2,
       iterationHistory: [{
         iteration: 1,
-        thinking: '',
+        content: '',
         reasoning: '',
         tools: [{
           name: 'Bash',
@@ -281,7 +281,7 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
       <LiveIteration
         progress={makeSnapshot({
           lastIter: 2,
-          iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+          iterationHistory: [{ iteration: 1, content: 't1', reasoning: '', tools: [], toolCount: 0 }],
         })}
         level="all"
       />,
@@ -312,7 +312,7 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
         progress={makeSnapshot({
           lastIter: 2,
           streaming: false,
-          iterationHistory: [{ iteration: 1, thinking: 't1', reasoning: '', tools: [], toolCount: 0 }],
+          iterationHistory: [{ iteration: 1, content: 't1', reasoning: '', tools: [], toolCount: 0 }],
         })}
         level="all"
       />,

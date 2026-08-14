@@ -411,6 +411,12 @@ func (wc *WebChannel) sseWriteLoopCore(ctx context.Context, client *Client) {
 				return
 			}
 		case <-ticker.C:
+			// Heartbeat 带上 live 信息：SSE 事件（stream_content/progress_structured）
+			// 可能因 sendCh 满 / statelessSig 信号丢失 / 连接抖动而中断，前端 stream
+			// 停在最后一次事件 → 用户看到"永久卡住"。heartbeat 周期（15s）推送进行中
+			// turn 的 live 快照（sync_progress，stateless latest-wins）—— 前端每 15s
+			// 至少收到一次 live 状态，stream 恢复显示（不再卡死）。
+			wc.sendHeartbeatLive(client)
 			if err := writeSSEHeartbeat(client); err != nil {
 				return
 			}
@@ -579,6 +585,38 @@ func writeSSEHeartbeat(client *Client) error {
 		return fmt.Errorf("write SSE heartbeat: %w", err)
 	}
 	return flushSSE(client)
+}
+
+// sendHeartbeatLive 在 heartbeat 时推送进行中 turn 的 live 快照（sync_progress）。
+//
+// 防止 SSE 事件丢失后前端 stream 卡住：stream_content / progress_structured 是
+// 增量推送，若 sendCh 满（网络慢）或 statelessSig 信号丢失，前端收不到新事件，
+// live 停在最后一次状态 → 用户看 stream 一直卡住。heartbeat 周期（15s）推送
+// 当前快照（stateless latest-wins），前端每 15s 至少收到一次 live 状态更新，
+// 即使增量事件丢失也能从周期快照恢复显示。
+//
+// 只推送"进行中"turn（Phase 非空非 done）：空闲会话普通 heartbeat 即可。
+// 快照经 sendSSEEventIf 走 ring buffer（seq 分配 + 持久化），断线重连也能恢复。
+func (wc *WebChannel) sendHeartbeatLive(client *Client) {
+	if wc.callbacks.GetActiveProgress == nil || client.sessionChannel == "" || client.chatID == "" {
+		return
+	}
+	sel := SessionSelector{Channel: client.sessionChannel, ChatID: client.chatID}
+	p := wc.callbacks.GetActiveProgress(sel.Channel, sel.ChatID)
+	if p == nil || p.Phase == "" || p.Phase == "done" {
+		return // 无进行中 turn —— 普通 heartbeat
+	}
+	wc.hub.sendSSEEventIf(sessionRouteKey(sel.Channel, sel.ChatID), func() (protocol.WSMessage, bool) {
+		return protocol.WSMessage{
+			Type:         protocol.MsgTypeProgress,
+			TS:           time.Now().Unix(),
+			Channel:      sel.Channel,
+			ChatID:       sel.ChatID,
+			RouteChannel: sel.Channel,
+			RouteChatID:  sel.ChatID,
+			Progress:     p,
+		}, true
+	})
 }
 
 func writeSSECursor(client *Client, seq uint64) error {

@@ -27,9 +27,11 @@ export function normalizeWebIteration(raw: unknown): WebIteration | null {
   const tools = rawTools.map(normalizeWebTool).filter(Boolean) as WebToolProgress[]
   return {
     iteration: typeof r.iteration === 'number' ? r.iteration : 0,
-    // Backend sends "content" (HistoryIteration.Content), but older progress
-    // snapshots use "thinking". Accept both.
-    thinking: typeof r.thinking === 'string' ? r.thinking : typeof r.content === 'string' ? r.content : '',
+    // 文本输出以 "content" 为准（后端 HistoryIteration.Content = 迭代文本输出，
+    // 最终回复 = 最终 iter 的 content）。旧快照可能用 "thinking" —— 兼容 fallback。
+    content: typeof r.content === 'string' && r.content !== ''
+      ? r.content
+      : typeof r.thinking === 'string' ? r.thinking : '',
     reasoning: typeof r.reasoning === 'string' ? r.reasoning : '',
     tools,
     toolCount: tools.length,
@@ -58,7 +60,9 @@ export function normalizeIteration(raw: unknown): IterationSnapshot | null {
   const rawTools = Array.isArray(r.tools) ? r.tools : Array.isArray(r.completed_tools) ? r.completed_tools : []
   return {
     iteration: typeof r.iteration === 'number' ? r.iteration : 0,
-    thinking: typeof r.thinking === 'string' ? r.thinking : undefined,
+    content: typeof r.content === 'string' && r.content !== ''
+      ? r.content
+      : typeof r.thinking === 'string' ? r.thinking : undefined,
     reasoning: typeof r.reasoning === 'string' ? r.reasoning : undefined,
     elapsedMs: typeof r.elapsed_wall === 'number' ? r.elapsed_wall : undefined,
     tools: rawTools.map(normalizeIterationTool).filter(Boolean) as IterationTool[],

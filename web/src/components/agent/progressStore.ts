@@ -50,8 +50,7 @@ type Mutator = (draft: ProgressSnapshot) => void
  * after the union keeps the array ordered; continuousIterations then
  * truncates at the first gap for linear consistency.
  */
-function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {
-  if (incoming.length === 0) return
+function appendIterations(draft: ProgressSnapshot, incoming: WebIteration[]) {  if (incoming.length === 0) return
   // O(N+M) union + dedup via Map keyed by iteration number. Dedups BOTH the
   // incoming deltas AND any pre-existing duplicates in draft.iterationHistory
   // (a replayed/duplicated delta would otherwise leave [1,1,2,2,...], tripping
@@ -326,9 +325,9 @@ export function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIterat
     if (!existing) {
       map.set(iter.iteration, iter)
     } else {
-      // Prefer the one with non-empty thinking/content, or more tools
-      const existingHasContent = (existing.thinking ?? '') !== '' || (existing.reasoning ?? '') !== ''
-      const incomingHasContent = (iter.thinking ?? '') !== '' || (iter.reasoning ?? '') !== ''
+      // Prefer the one with non-empty content, or more tools
+      const existingHasContent = (existing.content ?? '') !== '' || (existing.reasoning ?? '') !== ''
+      const incomingHasContent = (iter.content ?? '') !== '' || (iter.reasoning ?? '') !== ''
       if (incomingHasContent && !existingHasContent) {
         map.set(iter.iteration, iter)
       } else if (existingHasContent && !incomingHasContent) {
