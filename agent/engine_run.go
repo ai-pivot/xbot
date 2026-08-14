@@ -135,7 +135,7 @@ func newRunState(cfg RunConfig) *runState {
 		batchProgressByIteration: batchProgressByIteration,
 		messages:                 messages,
 		initialMsgCount:          len(messages),
-		persistence:              NewPersistenceBridge(cfg.Session, len(messages)),
+		persistence:              NewPersistenceBridgeWithTurnID(cfg.Session, len(messages), cfg.TurnID),
 		tokenTracker:             NewTokenTracker(cfg.LastPromptTokens, cfg.LastCompletionTokens),
 	}
 	if cfg.ContextEditor != nil {

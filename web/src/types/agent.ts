@@ -103,6 +103,10 @@ export interface ToolProgress {
 export interface AskUserQuestion {
   question: string
   options?: string[]
+  /** options may be multi-selected. */
+  multiSelect?: boolean
+  /** free-text "other" input allowed alongside options. */
+  allowOther?: boolean
 }
 
 /** An active ask-user interaction awaiting a response. */

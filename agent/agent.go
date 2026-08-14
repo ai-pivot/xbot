@@ -2922,8 +2922,9 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			ss.setActiveTurn(turnID)
 			// Consistency check: TurnID must be strictly monotonic per session.
 			// A gap or regression indicates a bug in the turn lifecycle.
-			// AskUser answer reuses the same TurnID (turnID == prev) — this is
-			// expected, not a regression. Only turnID < prev is a real violation.
+			// AskUser answer is its OWN turn with a fresh turn_id (nextTurnID,
+			// allocated above) — never a reuse of the previous active turn.
+			// Only turnID < prev is a real violation.
 			if prev := ss.lastTurnID.Load(); prev > 0 {
 				if turnID < prev {
 					log.WithFields(log.Fields{
@@ -3322,10 +3323,27 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// AskUser 回答：记录 Q&A + 清理 pending + 持久化回答为正常 user 消息。
 	askUserAnswered := msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true"
 	if askUserAnswered {
-		// Append the answer before mutating prompt or pending state.
-		if _, err := tenantSession.AppendAskAnswer(msg.Content); err != nil {
-			return nil, fmt.Errorf("append AskUser answer: %w", err)
+		// Append the answer (control record) AND the answer user row in ONE
+		// atomic transaction — crash between the two separate writes would
+		// leave an ask_answer control without a user anchor (broken history).
+		// The user row is a NORMAL user message bound to this turn so the web
+		// history has a real "user replied" row (turn anchor for the iterations
+		// that follow). Non-display-only: GetHistory/Replay excludes display_only
+		// rows, so the frontend would never see it and the order would break.
+		answerHistoryID, askErr := func() (int64, error) {
+			if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
+				if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
+					answerMsg := llm.NewUserMessage(msg.Content)
+					answerMsg.TurnID = tid
+					return tenantSession.AppendAskAnswerWithUserMessage(msg.Content, answerMsg)
+				}
+			}
+			return tenantSession.AppendAskAnswer(msg.Content)
+		}()
+		if askErr != nil {
+			return nil, fmt.Errorf("append AskUser answer: %w", askErr)
 		}
+		_ = answerHistoryID
 		a.ClearPendingAskUser(msg.Channel, msg.ChatID)
 		// Remove last user message appended by Assemble
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
@@ -3350,20 +3368,6 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		}
 		if !foundAskUserTool {
 			log.Ctx(ctx).Warn("AskUser answer received but no matching AskUser tool message found in prompt history")
-		}
-		// Persist the answer as a NORMAL user message bound to this turn so the
-		// web history has a real "user replied" row (turn anchor for the
-		// iterations that follow). Non-display-only: GetHistory/Replay excludes
-		// display_only rows, so the frontend would never see it and the order
-		// would still break.
-		if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
-			if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
-				answerMsg := llm.NewUserMessage(msg.Content)
-				answerMsg.TurnID = tid
-				if _, err := tenantSession.AppendMessage(answerMsg); err != nil {
-					log.Ctx(ctx).WithError(err).Warn("failed to persist AskUser answer user message")
-				}
-			}
 		}
 	}
 

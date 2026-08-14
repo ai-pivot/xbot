@@ -57,8 +57,10 @@ type TokenUsage struct {
 
 // AskUserQuestion represents a single question in the AskUser flow.
 type AskUserQuestion struct {
-	Question string   `json:"question"`
-	Options  []string `json:"options,omitempty"`
+	Question    string   `json:"question"`
+	Options     []string `json:"options,omitempty"`
+	MultiSelect bool     `json:"multi_select,omitempty"` // options may be multi-selected
+	AllowOther  bool     `json:"allow_other,omitempty"`  // free-text "other" input allowed alongside options
 }
 
 // ProgressEvent is the comprehensive structured progress payload.

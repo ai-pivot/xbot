@@ -567,6 +567,31 @@ func (s *SessionService) AppendAskAnswer(tenantID int64, answer string) (int64, 
 	return s.appendAskAnswerLocked(tenantID, answer)
 }
 
+// AppendAskAnswerWithUserMessage atomically appends the ask_answer control record
+// AND the answer user message in ONE immediate transaction. Crash-consistency:
+// without this, a crash between the two separate writes leaves an ask_answer
+// control (Replay clears PendingAskUser, rewrites tool content) but NO answer
+// user row — history shows the answer only inside the tool message with no
+// user anchor.
+func (s *SessionService) AppendAskAnswerWithUserMessage(tenantID int64, answer string, answerMsg llm.ChatMessage) (int64, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	var historyID int64
+	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		id, err := validateAndAppendAskAnswerWith(store, tenantID, answer)
+		if err != nil {
+			return err
+		}
+		historyID = id
+		if _, err := appendMessageWith(store, tenantID, answerMsg); err != nil {
+			return fmt.Errorf("append AskUser answer user message: %w", err)
+		}
+		return nil
+	})
+	return historyID, err
+}
+
 func (s *SessionService) appendAskAnswerLocked(tenantID int64, answer string) (int64, error) {
 	var historyID int64
 	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {

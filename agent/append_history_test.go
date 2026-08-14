@@ -707,3 +707,88 @@ func TestAgentOwnedUserAppendIsNotDuplicatedByRun(t *testing.T) {
 		t.Fatalf("user rows=%d history=%+v", userCount, records)
 	}
 }
+
+// TestRunWaitingUserPersistsTurnID guards the AskUser history-misalignment fix:
+// incrementally persisted intermediate messages (assistant tool_calls + tool
+// results, and the empty waiting-user assistant) MUST carry the run's TurnID.
+// Without the stamp they are turn_id=0, and deriveTurnIDs mis-attributes them
+// to the ANSWER turn — producing a forged assistant row before the answer user
+// message (web history 错乱/错位).
+func TestRunWaitingUserPersistsTurnID(t *testing.T) {
+	_, sess := newAgentHistorySession(t)
+	userID, err := sess.AppendMessage(llm.NewUserMessage("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock := &mockLLM{responses: []llm.LLMResponse{{
+		FinishReason: llm.FinishReasonToolCalls,
+		ToolCalls:    []llm.ToolCall{{ID: "ask-1", Name: "AskUser", Arguments: `{}`}},
+	}}}
+	out := Run(context.Background(), RunConfig{
+		LLMClient: mock, Model: "test", Session: sess, AgentID: "main",
+		TurnID: 42,
+		Tools:  newTestRegistry(&mockTool{name: "AskUser"}),
+		Messages: []llm.ChatMessage{
+			llm.NewSystemMessage("system"), {ID: userID, Role: "user", Content: "hello"},
+		},
+		ToolExecutor: func(context.Context, llm.ToolCall) (*tools.ToolResult, error) {
+			return &tools.ToolResult{Summary: "waiting", WaitingUser: true, Metadata: map[string]string{"request_id": "r1"}}, nil
+		},
+	})
+	if out.Error != nil || !out.WaitingUser {
+		t.Fatalf("Run output=%+v", out)
+	}
+	active, err := sess.GetMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assistantRows, toolRows int
+	for _, m := range active {
+		if m.Role != "assistant" && m.Role != "tool" {
+			continue
+		}
+		if m.Role == "assistant" {
+			assistantRows++
+		} else {
+			toolRows++
+		}
+		if m.TurnID != 42 {
+			t.Errorf("%s message turn_id=%d, want 42 (content=%q)", m.Role, m.TurnID, m.Content)
+		}
+	}
+	if assistantRows == 0 || toolRows == 0 {
+		t.Fatalf("expected assistant+tool rows persisted, got assistant=%d tool=%d", assistantRows, toolRows)
+	}
+}
+
+// TestPersistenceBridgeWithTurnIDStampsDirectly verifies the PersistenceBridge
+// turnID stamp on IncrementalPersist without the full Run path.
+func TestPersistenceBridgeWithTurnIDStampsDirectly(t *testing.T) {
+	_, sess := newAgentHistorySession(t)
+	if _, err := sess.AppendMessage(llm.NewUserMessage("seed")); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := sess.GetMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := NewPersistenceBridgeWithTurnID(sess, len(loaded), 7)
+	if err := bridge.IncrementalPersist([]llm.ChatMessage{
+		{Role: "user", Content: "seed"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Read", Arguments: "{}"}}},
+		{Role: "tool", ToolCallID: "c1", ToolName: "Read", Content: "ok"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	active, err := sess.GetMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range active {
+		if m.Role == "assistant" || m.Role == "tool" {
+			if m.TurnID != 7 {
+				t.Errorf("%s turn_id=%d, want 7", m.Role, m.TurnID)
+			}
+		}
+	}
+}
