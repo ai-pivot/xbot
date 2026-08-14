@@ -372,4 +372,83 @@ describe('切换会话 hydration 还原 live iter', () => {
       expect(live?.content).toContain('新会话的思考内容')
     })
   })
+
+  it('发送 user msg 后，上一个 turn 最后迭代 content 不丢失（迟到 text 权威 finalizer 不被 finalizedTurnID 拦截）', async () => {
+    // P0 回归：用户报告"发送 user msg 之后，上一个 agent turn 最后一个迭代的
+    // content 消失，刷新后正常"。
+    // 根因链：
+    //  1. turn 1 正常结束，text 事件（权威 finalizer，携带最终回复 content +
+    //     progress_history）在 SSE 上【迟到】（尚未到达前端）。
+    //  2. 用户发送新 user msg → turn_started(2) 到达 → beginTurn →
+    //     commitStaleLives 用不完整 live（text 未到，最后迭代 content 为空）提前
+    //     commit turn 1；turn_started 分支设 finalizedTurnIDRef = 1。
+    //  3. 迟到的 text(turn_id=1) 到达 → line 1495 `effTextTurnID(1) <=
+    //     finalizedTurnID(1)` → return 丢弃 —— 权威 content 永久丢失。
+    //  4. 刷新后 DB 权威数据恢复 → "刷新后正常"。
+    // 修复：finalizedTurnID 拦截只对【严格更早】turn 的迟到 text（`<`）生效；
+    //  当前/未 finalize turn 的迟到 text 放行（commitAssistant 按 turnID 幂等
+    //  覆盖 slot，不产生第二行 —— 见 AGENTS.md "旧 turn 的迟到 text 由
+    //  MessageStore 的 slot 唯一性保证幂等覆盖"）。
+    const ms = new MessageStore()
+    let onMessageCb: ((msg: unknown) => void) | undefined
+    const ws = {
+      onMessage: (cb: (msg: unknown) => void) => { onMessageCb = cb; return () => {} },
+      rpc: vi.fn(),
+      send: vi.fn(),
+      onConnectionChange: () => () => {},
+      connected: false,
+    } as unknown as WSConnection & { onMessage: (cb: (msg: unknown) => void) => () => void }
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'chat-1',
+        ws,
+        messageStore: ms,
+        onAssistantComplete: (content, iterations, _eventSeq, turnID) => {
+          ms.commitAssistant(turnID ?? 0, content, iterations)
+        },
+      }),
+    )
+    // turn 1：turn_started + 结构化事件（最后迭代 content 尚未由 text 填充）。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'user', content: 'hi' }, chat_id: 'chat-1' },
+    })
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', turn_id: 1, iteration: 1, seq: 2, chat_id: 'chat-1', active_tools: [{ name: 'Shell', status: 'done', iteration: 1 }] },
+    })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // 用户发送新消息 → turn_started(2)（turn 1 的 text 尚未到达）。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 2, turn_start: { trigger: 'user', content: '继续' }, chat_id: 'chat-1' },
+    })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // turn 1 的 text（权威 finalizer）迟到到达：携带最终回复 content + progress_history。
+    onMessageCb?.({
+      type: 'text',
+      content: '这是最终回复的完整内容',
+      progress_history: JSON.stringify([
+        {
+          iteration: 1,
+          phase: 'done',
+          content: '这是最终回复的完整内容',
+          reasoning: '',
+          tools: [{ name: 'Shell', label: 'Shell', status: 'done', elapsed_ms: 10, iteration: 1 }],
+        },
+      ]),
+      turn_id: 1,
+      chat_id: 'chat-1',
+    })
+    // 修复后：turn 1 的 committed assistant 最后迭代 content 必须保留最终回复
+    // （迟到 text 未被 finalizedTurnID 拦截）。
+    await waitFor(() => {
+      const rows = ms.toRows()
+      const turn1 = rows.find((r) => r.turnID === 1 && r.role === 'assistant')
+      expect(turn1).toBeDefined()
+      const iters = turn1?.iterations ?? []
+      expect(iters.length).toBeGreaterThan(0)
+      expect(iters[iters.length - 1].content).toContain('这是最终回复的完整内容')
+    })
+  })
 })

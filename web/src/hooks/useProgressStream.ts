@@ -1021,20 +1021,33 @@ function handleProgressMessage(
           // If it does, commitLiveProgressAndReset will call onAssistantComplete
           // → resetProgress → finalizedRef = true.
           const hadVisibleProgress = hasVisibleProgress(store.getSnapshot())
-          // Commit any uncommitted live content from the previous turn, then
-          // reset. Unconditional commit (the helper no-ops on an empty store):
-          // a store with visible content is by definition un-finalized — the
-          // text event (the authoritative finalizer) resets it on arrival. If
-          // the text event was lost (SSE coalescing/disconnect), the live
-          // content is the ONLY display of the old turn's reply; committing it
-          // before the reset keeps it visible at the same position (no flicker,
-          // no data loss) instead of vanishing in one frame.
+          // Capture whether the store's live has SUBSTANTIVE content (text /
+          // streamContent / content) BEFORE the commit. This distinguishes
+          // two cases:
+          //   1. store has content (streaming reply arrived) → commit is
+          //      COMPLETE → finalizedTurnIDRef can be set → a late text for
+          //      this turn is a DUPLICATE and is dropped.
+          //   2. store has iterations/tools but NO content (v55: the final
+          //      reply lives ONLY in the text event's content/progress_history,
+          //      and that text is LATE — SSE lag/coalescing) → commit is
+          //      INCOMPLETE → finalizedTurnIDRef must NOT be set → the late
+          //      text is the AUTHORITATIVE finalizer and must be allowed to
+          //      commit (MessageStore.commitAssistant idempotently overwrites
+          //      the slot by turnID — no duplicate row).
+          // Without case 2, sending a new user msg after a turn whose text
+          // arrived late permanently loses the last iteration's content
+          // (user report: "发送 user msg 之后，上一个 agent turn 最后一个迭代
+          // 的 content 消失，刷新后正常" — refresh recovers from DB).
+          const snapBefore = store.getSnapshot()
+          const hadSubstantiveContent = !!snapBefore.streamContent || !!snapBefore.content
           commitLiveProgressAndReset(store, completeRef?.current, messageStore)
           store.lastIter = 0
           // 旧 turn（lastTurnID，turn_started 尚未更新）的 live 已 commit（finalize）。
           // 记录 finalizedTurnID：旧 turn 的迟到 text/progress_structured 据此丢弃
           // （防重复），新 turn（turn_id 更大）放行。
-          if (finalizedTurnIDRef && store.lastTurnID > 0) {
+          // ⚠️ 只在 commit 内容【完整】（store 有实质 content）时设置 —— 否则
+          // 迟到 text（权威 finalizer）会被拦截，最后迭代 content 永久丢失。
+          if (finalizedTurnIDRef && store.lastTurnID > 0 && hadSubstantiveContent) {
             finalizedTurnIDRef.current = store.lastTurnID
           }
           // turn_started 是权威的新 turn 边界：无条件重置 finalizedRef=false，
@@ -1492,6 +1505,11 @@ function handleProgressMessage(
       // turn_id exists anywhere (bang/slash commands), but falls back to
       // metadata.turn_id for the final reply (whose top-level turn_id is absent).
       const commitTurnID = effTextTurnID > 0 ? effTextTurnID : undefined
+      // 旧 turn（turn_id <= finalizedTurnID）的迟到 text 丢弃（防重复）。
+      // 是否拦截由 finalizedTurnIDRef 决定：turn_started 提前 commit 时只在
+      // commit 内容【完整】（store 有 content）才设 finalizedTurnIDRef ——
+      // 完整 commit 后迟到 text 是重复；不完整（content 空，权威值还在迟到
+      // text 里）不设，放行幂等覆盖（见 turn_started 分支）。
       if (effTextTurnID > 0 && finalizedTurnID > 0 && effTextTurnID <= finalizedTurnID) return
       if (finalizedRef?.current && effTextTurnID === 0) return
       if (finalizedRef) finalizedRef.current = true
