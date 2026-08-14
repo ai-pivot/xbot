@@ -27,6 +27,8 @@
 - `docs/agent/plugin.md` — plugin system architecture, runtimes, integration, RPC bridge
 - `docs/agent/worktree.md` — git worktree-based multi-agent workspace isolation, WorktreeRegistry, AutoDetectAndInit, peer discovery, path security
 - `docs/agent/web-message-store.md` — **Web 消息渲染架构（方案 A）**: MessageStore 单一消息状态机（Map<turnID, TurnSlot>，每 turn 1 user + 1 assistant，live 是 assistant 的未完成态）。取代 "两套数据 + buildMessageRows 启发式去重" —— 唯一性由结构保证，渲染层零去重，从根上消除 "turn 消失/重复" 整类 bug（exactDup 跨 turn 迭代号匹配等）。buildMessageRows/liveMessage prop/dedupMessages 已删除
+- `docs/agent/web-consistency-design.md` — **Web 消息一致性设计（Raft 模型）**: Log（eventStream ring + DB）→ Snapshot（get_history/active_progress）→ State Machine（ProgressStore/MessageStore）映射；两个独立 seq 序列（SSE envelope per-route vs ProgressEvent.Seq per-Run，混用即 bug）；已保证的一致性（渲染线性一致性/turn 边界原子性/三路 DB reload 修复链）；弱网风险点 V1-V4 + 修复优先级
+- `docs/agent/web-linearizability.md` — **Web 前端形式化证明（Raft 模型）**: 状态 S=(M,P,L,W)；不变量 I1-I7 + 引理 L1-L7 + 定理 T1-T7（渲染线性一致性/turn 边界无闪烁/顺序正确/reload 一致性/追赶收敛/gap 修复/跨 turn 隔离）；诚实标注 4 个已知前提违反点 V1-V4（修复前最终一致，修复后无条件线性一致）
 
 ## Gotchas — MUST READ Before Any Code Change
 
