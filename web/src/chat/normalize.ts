@@ -29,17 +29,6 @@ import {
   type UserRow,
 } from './types'
 
-/** raw WS/SSE 消息的信封（channel/web 转发的形状）。 */
-interface RawEnvelope {
-  type?: unknown
-  content?: unknown
-  progress?: unknown
-  progress_history?: unknown
-  cancelled?: unknown
-  turn_id?: unknown
-  chat_id?: unknown
-}
-
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
 }
@@ -131,7 +120,7 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
     if (!turn || !seq) return null
     // 后端 recordFinalIteration attach 的最后迭代快照（可能 null/缺失）。
     const rawHist = Array.isArray(p.iteration_history) ? p.iteration_history : []
-    const normalized = rawHist.map(normalizeWebIteration).filter(Boolean)
+    const normalized = rawHist.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null)
     const finalIteration = normalized.length > 0 ? normalized[normalized.length - 1] : null
     return {
       type: 'phase_done',
@@ -165,7 +154,7 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
     // Go nil slice → JSON null → []（I6：normalize 之后无 null 数组）
     activeTools: normalizeWebTools(Array.isArray(p.active_tools) ? p.active_tools : []),
     completedTools: normalizeWebTools(Array.isArray(p.completed_tools) ? p.completed_tools : []),
-    iterationsDelta: rawDelta.map(normalizeWebIteration).filter(Boolean),
+    iterationsDelta: rawDelta.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null),
     todos: optTodos(p.todos),
     subAgents: Array.isArray(p.sub_agents)
       ? normalizeWebSubAgents(p.sub_agents as unknown[])

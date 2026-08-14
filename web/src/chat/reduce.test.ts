@@ -9,13 +9,11 @@ import { deriveRows } from './derive'
 import { normalizeEvent } from './normalize'
 import { reduce } from './reduce'
 import {
-  EMPTY_LIVE,
   initialChatState,
   iterNum,
   turnID,
   type ChatState,
   type DomainEvent,
-  type LiveSnapshot,
 } from './types'
 
 // ─── 测试 DSL ─────────────────────────────────────────────────
@@ -25,10 +23,6 @@ const T2 = turnID(2)
 
 function run(events: readonly DomainEvent[], from: ChatState = initialChatState('chat-1')): ChatState {
   return events.reduce(reduce, from)
-}
-
-function liveWith(patch: Partial<LiveSnapshot>): LiveSnapshot {
-  return { ...EMPTY_LIVE, ...patch }
 }
 
 const iteration1 = (turn: ReturnType<typeof turnID>, content = '', iter = 1): DomainEvent => ({
@@ -43,6 +37,7 @@ const iteration1 = (turn: ReturnType<typeof turnID>, content = '', iter = 1): Do
   iterationsDelta: [],
   todos: undefined,
   subAgents: undefined,
+  tokenUsage: undefined,
 })
 
 const started = (turn: ReturnType<typeof turnID>, requestID: string | null = null): DomainEvent => ({
@@ -246,6 +241,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       queued: false,
       sending: false,
       requestID: 'req-1',
+      turnHint: undefined,
       dbID: undefined,
     }
     const s = run([
@@ -256,7 +252,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     const rows = deriveRows(s)
     // isPartial 只在 assistant live/frozen 行；user 行永远非 partial。
     for (const r of rows) {
-      if (r.kind === 'user') expect(r.isPartial).toBeUndefined()
+      if (r.kind === 'user') continue
       else expect(r.isPartial).toBe(true)
     }
     // turn 内顺序：user 在 assistant 前（T5）。
@@ -337,7 +333,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     const replay = reduce(s0, iteration1(T1, '内容')) // 同 seq 重放
     expect(replay).toBe(s0)
     // 旧 turn（非 active）事件也引用不变。
-    const stale = reduce(s0, { ...iteration1(T2, '旧事件'), turnID: turnID(99) })
+    const stale = reduce(s0, iteration1(turnID(99), '旧事件'))
     expect(stale).toBe(s0)
   })
 

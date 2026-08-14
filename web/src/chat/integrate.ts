@@ -24,7 +24,6 @@ import type { Row } from './derive'
 export function historyToReplaced(
   messages: readonly ChatMessage[],
   initialProgress: unknown,
-  chatID: string,
 ): DomainEvent {
   const legacy: LegacyRow[] = []
   const byTurn = new Map<number, { user: ChatMessage | null; assistants: ChatMessage[] }>()
@@ -63,6 +62,7 @@ export function historyToReplaced(
           queued: false,
           sending: false,
           requestID: slot.user.requestID ?? null,
+          turnHint: undefined,
           dbID: slot.user.dbID,
         }
       : null

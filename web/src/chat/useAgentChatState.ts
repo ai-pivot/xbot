@@ -79,7 +79,7 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
   useEffect(() => {
     if (!historyReady) return
     historyVersion.current = historyMessages.length
-    const ev = historyToReplaced(historyMessages, initialProgress, progressChatID ?? 'none')
+    const ev = historyToReplaced(historyMessages, initialProgress)
     store.dispatch(ev)
   }, [historyReady, historyMessages, initialProgress, progressChatID, store])
 

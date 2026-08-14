@@ -11,7 +11,7 @@
  *   P5  T3 跟踪：已进入 iterations 的迭代号集合单调不减（append-only）
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, it } from 'vitest'
 import { deriveRows } from './derive'
 import { reduce } from './reduce'
 import { initialChatState, iterNum, turnID, type DomainEvent } from './types'
@@ -38,7 +38,6 @@ function generateEvents(rng: () => number, o: GenOptions): DomainEvent[] {
   const evs: DomainEvent[] = []
   let nextTurn = 1
   let seq = 100
-  const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rng() * xs.length)]
 
   for (let i = 0; i < o.length; i++) {
     const kind = rng()
@@ -65,6 +64,7 @@ function generateEvents(rng: () => number, o: GenOptions): DomainEvent[] {
         iterationsDelta: rng() < 0.5 ? [{ iteration: 1 + Math.floor(rng() * 3), content: `迭代-${i}`, reasoning: '', tools: [], toolCount: 0 }] : [],
         todos: undefined,
         subAgents: undefined,
+        tokenUsage: undefined,
       })
     } else if (kind < 0.55) {
       // stream
@@ -114,6 +114,7 @@ function generateEvents(rng: () => number, o: GenOptions): DomainEvent[] {
           queued: false,
           sending: false,
           requestID: `req-${i}`,
+          turnHint: undefined,
           dbID: undefined,
         },
       })
