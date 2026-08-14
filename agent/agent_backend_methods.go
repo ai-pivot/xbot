@@ -7,6 +7,12 @@ import (
 	"xbot/protocol"
 )
 
+// maxIncrementalIterations caps how many iteration-history entries
+// GetActiveProgress transfers for an incremental pull (from_iter >= 0).
+// Beyond this, the gap is too large for delta transfer — the client is
+// signalled to reload from DB instead (ResyncRequired).
+const maxIncrementalIterations = 30
+
 // SetCWD sets the current working directory for a session.
 // It refreshes plugin workDir with the correct tenantID.
 func (a *Agent) SetCWD(ch, chatID, dir string) error {
@@ -130,6 +136,18 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 				if fetch.Filter(h.Iteration) {
 					filtered = append(filtered, h)
 				}
+			}
+			// Gap-too-large guard: when the caller's from_iteration watermark is
+			// far behind the server's current iteration (long SSE disconnect /
+			// reconnect gap), transferring dozens of iterations is wasteful and
+			// error-prone. Signal the client to reload from DB (authoritative)
+			// instead — the client already handles resync_required via replay_gap.
+			// Only applies to incremental pulls (from_iter >= 0); FetchAll
+			// (from_iter=-1, /su switch / initial restore) always returns all.
+			if fetch.ToFromIter() >= 0 && len(filtered) > maxIncrementalIterations {
+				result.ResyncRequired = true
+				result.IterationHistory = nil
+				return &result
 			}
 			result.IterationHistory = filtered
 			return &result
