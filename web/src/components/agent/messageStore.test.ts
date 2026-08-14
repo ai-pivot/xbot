@@ -125,6 +125,33 @@ describe('MessageStore — cancel 冻结', () => {
     expect(rows.some((r) => r.id === 'turn-360-live')).toBe(false)
   })
 
+  it('cancel 后 frozen 合并行必须 isPartial=true（V5：进行中 activeTools 才被 liveProgress 渲染）', () => {
+    // 用户报告：cancel 后最新 iter（正在执行 tool）消失。
+    // 根因：toRows() 的 frozen 分支 `{...slot.assistant}` 继承 isPartial=false，
+    // MessageList 的 liveId = rows.find(r => r.isPartial) 匹配不到该行 →
+    // liveProgress 不传给该行 → LiveIteration 不渲染 activeTools → 正在执行的
+    // tool（最新 iter）从 UI 消失。非 frozen live 分支（else if slot.live）有
+    // isPartial:true + id=turn-{tid}-live —— frozen 分支必须一致。
+    const s = new MessageStore()
+    s.setUser(360, user('u360', '继续', 360))
+    // 进行中迭代：activeTools 有 running tool（iteration 2 > maxCompletedIter 1）
+    s.updateLive(360, liveState(360, {
+      content: 'streamed partial',
+      iterations: [iter(1)],
+      activeTools: [{ name: 'Shell', label: '', status: 'running', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '', iteration: 2 }],
+    }))
+    s.freeze(360)
+    // DB reload 回填 [interrupted] assistant（cancel 后常见：fetchHistory 回来）
+    s.commitAssistant(360, '[interrupted]', [iter(1)])
+    const rows = s.toRows()
+    const merged = rows[1]
+    // 合并行必须 isPartial=true —— 否则 MessageList 不把 liveProgress 传给该行，
+    // LiveIteration 无法渲染 activeTools（进行中 tool 消失）。
+    expect(merged.isPartial).toBe(true)
+    // id 稳定（assistant 的 id，不是 turn-360-live）—— 供 liveId 匹配
+    expect(merged.id).not.toBe('turn-360-live')
+  })
+
   it('endTurn（session idle）清理冻结 live，但 assistant 保留', () => {
     const s = new MessageStore()
     s.updateLive(360, liveState(360, { content: 'x', iterations: [iter(1)] }))

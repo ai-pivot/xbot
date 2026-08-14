@@ -487,10 +487,17 @@ export class MessageStore {
           // LIVE content 优先：已渲染的流式内容永不消失，[interrupted] 只是中断标记
           // （现状 buildMessageRows 的 committed||live 让 [interrupted] 覆盖流式文本
           //  —— cancel 后用户看到的内容消失，违反要求）。
+          // ⚠️ isPartial:true 必须保留（V5）：否则 MessageList 的
+          // liveId = rows.find(r => r.isPartial) 匹配不到该行 → liveProgress 不传给
+          // 该行 → LiveIteration 不渲染 activeTools → cancel 后正在执行的 tool
+          // （最新 iter）从 UI 消失（用户报告）。与非 frozen live 分支（else if
+          // slot.live，isPartial:true + id=turn-{tid}-live）保持一致；frozen 行
+          // 保留 assistant 的 id（同对象，不产生 turn-360-live 第二行）。
           rows.push({
             ...slot.assistant,
             content: slot.live.content || slot.assistant.content,
             iterations: mergeIterations(slot.live.iterations, slot.assistant.iterations),
+            isPartial: true,
           })
         } else if (slot.live) {
           // slot 同时有 committed assistant（reload 回填 DB 历史）和 live（当前
