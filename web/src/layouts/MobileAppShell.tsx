@@ -8,6 +8,7 @@ const TerminalPanel = lazy(() =>
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
+import type { SessionInfo as SessionInfoType } from '@/types/shared'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
@@ -154,7 +155,7 @@ export function MobileAppShell() {
     }
   }
 
-  const handleSubAgentSelect = (subAgent: SessionInfo) => {
+  const handleSubAgentSelect = (subAgent: SessionInfoType) => {
     setSubAgentView({
       subAgentRole: subAgent.role,
       subAgentInstance: subAgent.instance,

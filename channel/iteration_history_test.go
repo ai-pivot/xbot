@@ -271,9 +271,10 @@ func TestConvert_WithIterations_RestartTurnBoundary(t *testing.T) {
 // before the answer user message.
 //
 // DB append order (all rows carry real turn ids after the fix):
-//   user(question, N=5) → asst(AskUser tc, 5) → tool(AskUser, 5)
-//   → asst(empty histMsg, 5) → user(answer, N+1=6)
-//   → asst(Shell tc, 6) → tool(Shell, 6) → asst(final, 6)
+//
+//	user(question, N=5) → asst(AskUser tc, 5) → tool(AskUser, 5)
+//	→ asst(empty histMsg, 5) → user(answer, N+1=6)
+//	→ asst(Shell tc, 6) → tool(Shell, 6) → asst(final, 6)
 //
 // Expected render: user(5) | assistant(5, empty content, 1 iteration) |
 // user(6, answer) | assistant(6, final content, 2 iterations).
@@ -337,8 +338,8 @@ func TestConvert_WithIterations_AskUserUnstampedRowsMisalign(t *testing.T) {
 	msgs := []llm.ChatMessage{
 		{Role: "user", Content: "choose a theme", TurnID: 5},
 		{ID: 500, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "ask", Name: "AskUser", Arguments: "{}"}}}, // unstamped (pre-fix)
-		{Role: "tool", ToolCallID: "ask", ToolName: "AskUser", Content: "Asked 1 question(s)"},                // unstamped
-		{ID: 503, Role: "assistant", Content: ""},                                                               // unstamped
+		{Role: "tool", ToolCallID: "ask", ToolName: "AskUser", Content: "Asked 1 question(s)"},                 // unstamped
+		{ID: 503, Role: "assistant", Content: ""},                                                              // unstamped
 		{Role: "user", Content: "Q0: dark", TurnID: 6},
 		{ID: 505, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Shell", Arguments: "{}"}}, TurnID: 6},
 		{Role: "tool", ToolCallID: "c1", ToolName: "Shell", Content: "ok", TurnID: 6},

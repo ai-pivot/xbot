@@ -585,15 +585,6 @@ func bgTaskID(t *tools.SubAgentTask) string {
 	return t.ID
 }
 
-// bgTaskClose closes a background sub-agent task (nil-safe). Used on unload /
-// shutdown paths where the parent triggered the termination explicitly.
-func bgTaskClose(m *tools.BackgroundTaskManager, t *tools.SubAgentTask, status tools.BgTaskStatus, content string) {
-	if m == nil || t == nil {
-		return
-	}
-	m.CloseSubAgentTask(t.ID, status, content)
-}
-
 // syncInteractiveSessionAfterRewind replaces the viewer/run cache with the
 // DB-authoritative prefix after an agent-session rewind. The caller holds the
 // session operation gate, so no Run can publish a newer state concurrently.

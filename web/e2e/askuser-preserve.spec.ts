@@ -130,8 +130,8 @@ test.describe('AskUser answer preserves iterations', () => {
     expect(hasReadBefore).toBe(true)
 
     // ── Phase 3: User answers the AskUser ──
-    // Click "yes" option
-    await page.getByRole('button', { name: 'yes' }).click()
+    // Click "yes" option (AskUserPanel single-select renders role=radio)
+    await page.getByRole('radio', { name: 'yes' }).click()
     await page.waitForTimeout(200)
     // Click submit
     await page.locator('button:has-text("确认"), button:has-text("Submit"), button:has-text("确定")').click().catch(async () => {

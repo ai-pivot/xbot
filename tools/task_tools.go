@@ -215,6 +215,7 @@ func formatSubAgentTask(task *SubAgentTask) string {
 
 	return sb.String()
 }
+
 // This is used by the engine to inject the task result into the conversation as a tool message.
 func FormatBgTaskCompletion(task *BackgroundTask, outputOverride string) string {
 	if task.FinishedAt == nil {
