@@ -143,10 +143,14 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     }
 
     // ── stream：仅 active turn；全量替换（无追加/回退歧义） ──
+    // ⚠️ 不做 seq gate：stream 是【累积全量推送】（delta_push 默认关闭），
+    // 旧前端明确把 stream 字段处理放在 seq 检查【之前】（"stream deltas are
+    // cumulative, not ordered by seq"）。seq gate 会按到达序误杀打字机帧。
+    // ⚠️ turnID 缺失（后端 gap）回退 activeTurn —— 事件属于当前流。
     case 'stream': {
-      if (ev.turnID !== s.activeTurn) return s
-      if (ev.seq !== null && s.lastSeq !== null && ev.seq <= s.lastSeq) return s
-      const t = s.turns.get(ev.turnID)
+      const target = ev.turnID !== null ? ev.turnID : s.activeTurn
+      if (target === null) return s
+      const t = s.turns.get(target)
       if (!t || t.phase.kind !== 'live') return s
       const prev = t.phase.data
       const data: LiveSnapshot = {
@@ -156,9 +160,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         streamingTools: ev.streamingTools ?? prev.streamingTools,
         genui: ev.genui !== undefined ? ev.genui : prev.genui,
       }
-      // I5 基准推进（stream 可无 seq —— 仅在携带时推进）。
-      const next = withTurn(s, ev.turnID, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
-      return ev.seq !== null ? { ...next, lastSeq: ev.seq } : next
+      return withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
     }
 
     // ── phase_done：仅 active turn；fold 最后迭代（T3 根治点）+ 停流 ──

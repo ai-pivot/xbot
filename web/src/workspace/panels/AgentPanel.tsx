@@ -164,6 +164,10 @@ export function AgentPanel({ params }: PanelProps) {
     ws,
     historyMessages: chat.messages,
     historyReady: chat.historyReady,
+    // 属主门控：resolvedChatID（fetch 成功才更新）≠ 当前 chatID 时跳过
+    // history dispatch —— 切会话窗口期旧会话 messages 不得灌入新 store。
+    historyOwner: chat.resolvedChatID,
+    historyChatID: chatID,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
     resetKey: `${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`,
   })

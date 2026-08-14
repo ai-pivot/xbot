@@ -225,7 +225,8 @@ export type DomainEvent =
     }
   | {
       readonly type: 'stream'
-      readonly turnID: TurnID
+      /** null = 事件未携带 turn_id（已知后端 gap）→ reduce 回退 activeTurn。 */
+      readonly turnID: TurnID | null
       readonly seq: EventSeq | null
       /** 全量累积文本（覆盖语义 —— 后端 delta_push 默认关闭）。 */
       readonly content: string | undefined

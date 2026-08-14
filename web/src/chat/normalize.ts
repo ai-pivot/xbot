@@ -168,11 +168,13 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
 function normalizeStream(env: Record<string, unknown>): DomainEvent | null {
   const p = asRecord(env.progress)
   if (!p) return null
+  // turn_id 缺失（已知后端 gap：部分 stream 事件无 turn_id）不丢弃 ——
+  // 透传 null，reduce 回退 activeTurn。旧前端对 stream 事件同样无 turn_id
+  // 要求（打字机依赖此宽容性）。
   const turn = optTurnID(p.turn_id)
-  if (!turn) return null
   return {
     type: 'stream',
-    turnID: turnID(turn),
+    turnID: turn !== null ? turnID(turn) : null,
     seq: typeof p.seq === 'number' ? eventSeq(p.seq) : null,
     content: optStr(p.stream_content),
     reasoning: optStr(p.reasoning_stream_content),
