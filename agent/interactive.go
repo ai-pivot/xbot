@@ -63,6 +63,7 @@ type interactiveAgent struct {
 	completionTokens int64               // last known completion token count (for TUI status bar)
 	pendingMessages  []pendingUserMsg    // messages queued while Run is in progress
 	subID            string              // subscription ID for TUI status bar display
+	bgTask           *tools.SubAgentTask // waitable background task (registered on background spawn) — closed on ALL completion paths
 }
 
 // drainPendingMessages drains all pending user messages queued while the SubAgent
@@ -519,6 +520,18 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 // offload data, and mask data on disk.
 // This ensures the next SubAgent with the same role/instance starts with a clean slate.
 func (a *Agent) destroyInteractiveSession(key string) {
+	// Close the waitable task (done channel) if this session had one — covers
+	// ALL destroy paths (panic, unload, shutdown, cleanup) so task_wait never
+	// blocks until timeout on a destroyed session. Idempotent.
+	if val, ok := a.interactiveSubAgents.Load(key); ok {
+		if ia, ok := val.(*interactiveAgent); ok && ia != nil {
+			ia.mu.Lock()
+			if ia.bgTask != nil && a.bgTaskMgr != nil {
+				a.bgTaskMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "session destroyed")
+			}
+			ia.mu.Unlock()
+		}
+	}
 	// Auto-cleanup group membership: remove this agent from its group,
 	// delete the group if no members remain.
 	if val, ok := a.interactiveSubAgents.Load(key); ok {
@@ -960,10 +973,15 @@ func (a *Agent) SpawnInteractiveSession(
 
 		// Register this background sub-agent as a waitable task so the parent
 		// agent can task_wait / task_status it (same as Shell background tasks).
-		// task_id is returned in the spawn message below.
+		// task_id is returned in the spawn message below. Stored on the session
+		// so unload/shutdown paths can close its done channel (otherwise
+		// task_wait would block until timeout).
 		var bgTask *tools.SubAgentTask
 		if notifyMgr != nil {
 			bgTask = notifyMgr.RegisterSubAgentTask("", sessionKey, originSender, roleName, instance, runCancel)
+			placeholder.mu.Lock()
+			placeholder.bgTask = bgTask
+			placeholder.mu.Unlock()
 		}
 
 		go func() {
@@ -1143,6 +1161,11 @@ func (a *Agent) SpawnInteractiveSession(
 				// already cleaned up this session, preventing duplicate cleanup.
 				if _, ok := a.interactiveSubAgents.Load(key); !ok {
 					return
+				}
+				// Close the waitable task so a pending task_wait unblocks instead
+				// of blocking until its timeout (unload/shutdown = task killed).
+				if bgTask != nil {
+					notifyMgr.CloseSubAgentTask(bgTask.ID, tools.BgTaskKilled, "background session cancelled (unload)")
 				}
 				a.cancelChildSessions(key)
 				a.destroyInteractiveSession(key)
@@ -2260,6 +2283,11 @@ func (a *Agent) UnloadInteractiveSession(
 	// Cancel any running bg goroutine to prevent leaks
 	if ia.cancelCurrent != nil {
 		ia.cancelCurrent()
+	}
+	// Close the waitable task so a pending task_wait unblocks immediately
+	// instead of blocking until its timeout (the parent triggered the unload).
+	if ia.bgTask != nil && a.bgTaskMgr != nil {
+		a.bgTaskMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "interactive session unloaded")
 	}
 	messages := make([]llm.ChatMessage, len(ia.messages))
 	copy(messages, ia.messages)
