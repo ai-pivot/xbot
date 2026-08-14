@@ -174,9 +174,18 @@ export function MessageList({
   // const lastIsFinishedAssistant = ...  // 已删除
   // liveId 指向接收 liveProgress 的行（方案 A：live 行已在 messages 里，
   // isPartial 行）。没有 live 行时返回 null（liveProgress 不传给任何行）。
+  // ⚠️ 必须匹配【最后一个】isPartial 行（最新 live），不能用 find（第一个）：
+  // V5 让 cancel 后的 frozen 合并行也 isPartial=true，cancel 后发新消息时
+  // rows 同时存在旧 frozen 行 + 新 live 行两个 isPartial。find 返回旧的
+  // frozen 行 → 新 turn 的 streaming liveProgress（liveId 匹配的那行拿到的
+  // 是 progress）传给旧行 → 旧行（user msg 上方）的 LiveIteration 渲染
+  // "思考中…"（用户报告：cancel 后思考中显示在最新 user msg 上方）。最新的
+  // isPartial 才是真正在接收 live 进度的行。
   const liveId = useMemo(() => {
-    const liveRow = rows.find((r) => r.isPartial)
-    return liveRow?.id ?? null
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].isPartial) return rows[i].id
+    }
+    return null
   }, [rows])
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined

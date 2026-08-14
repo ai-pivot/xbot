@@ -222,4 +222,98 @@ describe('切换会话 hydration 还原 live iter', () => {
     expect(completeArgs![1][0].content).toBe('我需要确认一下你的选择')
     expect(completeArgs![1][0].reasoning).toBe('用户需要做决定')
   })
+
+  it('cancel ack 后新 turn 的 stream_content 不被 finalized/phaseDone guard 卡死（SSE 更新但前端卡死回归）', async () => {
+    // 用户报告："sse在dev tool里显示一直更新，但是web前端进度卡死"。
+    // 根因：cancel ack（text cancelled）无条件设置 finalizedRef/phaseDoneRef=true。
+    // 若 turn_started 丢失（SSE gap），新 turn 的 stream_content 到达时：
+    //   - stream_content 分支 line 853/859 在 turn_id 检查之前 `if (finalizedRef?
+    //     .current) return` 无条件拦截 → 新 turn 流内容永不渲染。
+    //   - progress_structured 分支 line 1169 `if (phaseDoneRef?.current)` 只保留
+    //     todos → 新 turn 迭代/工具也永不渲染。
+    // 修复：finalized/phaseDone guard 必须带 turn_id 条件 —— 只拦截旧 turn
+    // （turn_id <= finalizedTurnID），新 turn（turn_id 更大）放行。
+    const ms = new MessageStore()
+    let onMessageCb: ((msg: unknown) => void) | undefined
+    const ws = {
+      onMessage: (cb: (msg: unknown) => void) => { onMessageCb = cb; return () => {} },
+      rpc: vi.fn(),
+      send: vi.fn(),
+      onConnectionChange: () => () => {},
+      connected: false,
+    } as unknown as WSConnection & { onMessage: (cb: (msg: unknown) => void) => () => void }
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'chat-1',
+        ws,
+        messageStore: ms,
+      }),
+    )
+    // Turn 1: turn_started + 一个结构化事件。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'user', content: 'hi' }, chat_id: 'chat-1' },
+    })
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', turn_id: 1, iteration: 1, seq: 2, chat_id: 'chat-1', active_tools: [{ name: 'Shell', status: 'running', iteration: 1 }] },
+    })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // cancel ack（turn 1）。
+    onMessageCb?.({ type: 'text', cancelled: true, turn_id: 1, chat_id: 'chat-1' })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // turn_started(2) 丢失（SSE gap）—— 新 turn 的第一个 stream_content 直接到达。
+    onMessageCb?.({
+      type: 'stream_content',
+      progress: { turn_id: 2, iteration: 1, stream_content: '新 turn 流式内容' },
+    })
+    // 修复后：新 turn 的流内容必须写入 MessageStore live（turn 2）。
+    await waitFor(() => {
+      const live = ms.getLive(2)
+      expect(live).toBeDefined()
+      expect(live?.content).toContain('新 turn 流式内容')
+    })
+  })
+
+  it('cancel ack 后新 turn 的 progress_structured 不被 phaseDoneRef 卡死（SSE 更新但前端卡死回归）', async () => {
+    const ms = new MessageStore()
+    let onMessageCb: ((msg: unknown) => void) | undefined
+    const ws = {
+      onMessage: (cb: (msg: unknown) => void) => { onMessageCb = cb; return () => {} },
+      rpc: vi.fn(),
+      send: vi.fn(),
+      onConnectionChange: () => () => {},
+      connected: false,
+    } as unknown as WSConnection & { onMessage: (cb: (msg: unknown) => void) => () => void }
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'chat-1',
+        ws,
+        messageStore: ms,
+      }),
+    )
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'user', content: 'hi' }, chat_id: 'chat-1' },
+    })
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', turn_id: 1, iteration: 1, seq: 2, chat_id: 'chat-1', active_tools: [{ name: 'Shell', status: 'running', iteration: 1 }] },
+    })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // cancel ack（turn 1）。
+    onMessageCb?.({ type: 'text', cancelled: true, turn_id: 1, chat_id: 'chat-1' })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // turn_started(2) 丢失 —— 新 turn 的第一个 progress_structured 直接到达。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', turn_id: 2, iteration: 1, seq: 5, chat_id: 'chat-1', active_tools: [{ name: 'Grep', status: 'running', iteration: 1 }] },
+    })
+    // 修复后：新 turn 的工具必须写入 MessageStore live（turn 2）。
+    await waitFor(() => {
+      const live = ms.getLive(2)
+      expect(live).toBeDefined()
+      expect(live?.activeTools?.map((t) => t.name)).toContain('Grep')
+    })
+  })
 })

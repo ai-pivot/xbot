@@ -847,22 +847,6 @@ function handleProgressMessage(
 ): void {
   switch (msg.type) {
     case 'stream_content': {
-      // If the turn is already finalized (cancel ack or text event arrived),
-      // discard late stream_content — it reopens the store and re-displays
-      // generating tools / streaming text that the user already saw cancelled.
-      if (finalizedRef?.current) return
-      // If PhaseDone already fired, the turn is ending — the text event or
-      // cancel ack will arrive next with the final content. Late stream_content
-      // is stale and would re-set streamingTools, causing iteration duplication
-      // (the generating tool renders alongside the same iteration's "done" entry
-      // in iterationHistory).
-      if (phaseDoneRef?.current) return
-
-      // New turn's first stream event — clear turnCommittedRef (set by
-      // turn_started when it committed old turn's live content). This
-      // unblocks initialProgress hydration for future reloads.
-      if (turnCommittedRef) turnCommittedRef.current = false
-
       // stream_content carries content deltas in progress.stream_content /
       // progress.reasoning_stream_content (channel/web/web.go SendStreamContent).
       // Also carries streaming_tools (generating status, for tool name detection).
@@ -879,6 +863,27 @@ function handleProgressMessage(
       if (finalizedTurn > 0 && streamTurnID > 0 && streamTurnID <= finalizedTurn) {
         return
       }
+
+      // If the turn is already finalized (cancel ack or text event arrived),
+      // discard late stream_content — it reopens the store and re-displays
+      // generating tools / streaming text that the user already saw cancelled.
+      // MUST be AFTER the turn_id check: cancel ack 设置 finalizedRef=true 后，
+      // 若 turn_started 丢失（SSE gap），新 turn（turn_id > finalizedTurn）的
+      // stream_content 必须放行 —— 否则前端进度卡死（用户报告："sse在dev tool里
+      // 显示一直更新，但是web前端进度卡死"）。只有 turn_id=0（无归属）或旧 turn
+      // （已被上面 turn_id 检查拦截）才受 finalized/phaseDone 限制。
+      if (finalizedRef?.current && streamTurnID === 0) return
+      // If PhaseDone already fired, the turn is ending — the text event or
+      // cancel ack will arrive next with the final content. Late stream_content
+      // is stale and would re-set streamingTools, causing iteration duplication
+      // (the generating tool renders alongside the same iteration's "done" entry
+      // in iterationHistory). 同样只在 turn_id=0 时生效（新 turn 放行）。
+      if (phaseDoneRef?.current && streamTurnID === 0) return
+
+      // New turn's first stream event — clear turnCommittedRef (set by
+      // turn_started when it committed old turn's live content). This
+      // unblocks initialProgress hydration for future reloads.
+      if (turnCommittedRef) turnCommittedRef.current = false
 
       // Set cumulative text (stream-only, does not replace the snapshot).
       // Delta pushes (bandwidth optimization: O(n) total per iteration)
@@ -1088,6 +1093,18 @@ function handleProgressMessage(
           return
         }
         if (phaseDoneRef) phaseDoneRef.current = true
+        // PhaseDone 是 turn 结束的权威信号：记录当前 turn 为 finalized，让同 turn
+        // 的迟到 progress_structured（turn_id <= finalizedTurnID）被上面 guard 的
+        // turn_id 检查拦截（防 busy ghost），同时新 turn（turn_id 更大）放行。
+        // 若只设 phaseDoneRef 不设 finalizedTurnIDRef，同 turn 迟到事件（turn_id
+        // > 0）会绕过 turn_id 检查、被 phaseDoneRef guard 无条件拦截（旧行为）
+        // —— 但 cancel 场景下 phaseDoneRef 可能由 cancel ack 设置而 turn 未真正
+        // done，导致新 turn 事件也被拦（SSE 卡死）。设置 finalizedTurnIDRef 让
+        // turn_id 检查成为第一道闸（精确区分新旧 turn），phaseDoneRef 只兜底
+        // turn_id=0 的事件。
+        if (finalizedTurnIDRef && (p.turn_id ?? store.lastTurnID) > 0) {
+          finalizedTurnIDRef.current = p.turn_id ?? store.lastTurnID
+        }
         // Dispatch agent-idle so the sidebar clears the busy indicator.
         window.dispatchEvent(new CustomEvent('agent-idle', {
           detail: { chatID: p.chat_id ?? undefined, channel: undefined },
@@ -1166,7 +1183,13 @@ function handleProgressMessage(
         // 与 stream_content 分支的 `if (phaseDoneRef?.current) return` 保持一致：
         // PhaseDone 之后的合法事件只有 text（final reply）/ cancel ack /
         // session(idle)，任何 progress_structured 都是迟到重放。
-        if (phaseDoneRef?.current) {
+        // ⚠️ 必须带 evTurnID===0 条件：cancel ack 设置 phaseDoneRef=true 后，
+        // 若 turn_started 丢失（SSE gap），新 turn（evTurnID > finalizedTurn，
+        // 已在上面通过 finalizedTurnID 检查）的 progress_structured 必须放行
+        // —— 否则新 turn 的迭代/工具永不渲染（用户报告："sse在dev tool里显示
+        // 一直更新，但是web前端进度卡死"）。只有 turn_id=0（无归属）的迟到
+        // 事件才受 phaseDoneRef 限制。
+        if (phaseDoneRef?.current && evTurnID === 0) {
           if (Array.isArray(p.todos)) {
             store.setStructuredTools({
               eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
