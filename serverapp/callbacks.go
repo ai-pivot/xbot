@@ -708,7 +708,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		applyWebRunningStatuses(ag, subagents)
 		return buildSessionTree(mains, subagents), nil
 	}
-	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64) (string, error) {
+	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64, model string) (string, error) {
 		if webDB == nil {
 			return "", fmt.Errorf("database not available")
 		}
@@ -724,7 +724,24 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// this session inherits the wrong model via ensureSessionModel.
 		// ensureSessionModel is idempotent — it checks GetSessionSubscription
 		// first and returns immediately if a binding already exists.
-		ag.LLMFactory().EnsureSessionModelBinding(senderID, chatID, "web")
+		if model != "" {
+			// Explicit model override: resolve the subscription that serves this
+			// model and bind the new session to it. Resolution/binding failures
+			// are non-fatal — the session is created regardless and falls back
+			// to the default binding (Balance tier first).
+			llmFactory := ag.LLMFactory()
+			if sub, rerr := llmFactory.ResolveSubscriptionForModel(senderID, model); rerr == nil && sub != nil {
+				if serr := llmFactory.SelectModel(senderID, chatID, "web", sub.ID, model); serr != nil {
+					log.WithError(serr).WithField("model", model).Warn("ChatCreate: failed to bind explicit model, falling back to default")
+					llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
+				}
+			} else {
+				log.WithError(rerr).WithField("model", model).Warn("ChatCreate: failed to resolve model, falling back to default")
+				llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
+			}
+		} else {
+			ag.LLMFactory().EnsureSessionModelBinding(senderID, chatID, "web")
+		}
 		return chatID, nil
 	}
 	callbacks.ChatDelete = func(senderID, channel, chatID string) error {

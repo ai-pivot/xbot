@@ -557,7 +557,7 @@ func TestChatsCreateSetsCurrentSession(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
 	wc.SetCallbacks(WebCallbacks{
-		ChatCreate: func(senderID, label string, canonicalUserID int64) (string, error) {
+		ChatCreate: func(senderID, label string, canonicalUserID int64, model string) (string, error) {
 			return "created-chat", nil
 		},
 	})
@@ -577,6 +577,39 @@ func TestChatsCreateSetsCurrentSession(t *testing.T) {
 	}
 	if current := wc.GetCurrentSession("web-1"); current.Channel != "web" || current.ChatID != "created-chat" {
 		t.Fatalf("current session not updated: %#v", current)
+	}
+}
+
+func TestChatsCreateForwardsModelParam(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	var gotLabel, gotModel string
+	wc.SetCallbacks(WebCallbacks{
+		ChatCreate: func(senderID, label string, canonicalUserID int64, model string) (string, error) {
+			gotLabel = label
+			gotModel = model
+			return "created-chat", nil
+		},
+	})
+	server := startTestServer(t, wc)
+	sessionCookie := loginTestAdmin(t, server.URL)
+
+	req, _ := http.NewRequest("POST", server.URL+"/api/chats", strings.NewReader(`{"label":"my-chat","model":"gpt-4o"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(sessionCookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if gotLabel != "my-chat" {
+		t.Fatalf("label not forwarded, got %q", gotLabel)
+	}
+	if gotModel != "gpt-4o" {
+		t.Fatalf("model not forwarded, got %q", gotModel)
 	}
 }
 

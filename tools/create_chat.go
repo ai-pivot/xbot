@@ -51,6 +51,7 @@ type CreateChatParams struct {
 	Instance  string `json:"instance,omitempty" jsonschema:"description=Unique instance ID (for agent type)"`
 	Task      string `json:"task,omitempty" jsonschema:"description=Initial task message (for agent type, optional)"`
 	ModelTier string `json:"model_tier,omitempty" jsonschema:"description=Model tier: vanguard/swift/balance (for agent type)"`
+	Model     string `json:"model,omitempty" jsonschema:"description=Explicit model name for the new session (optional). Takes priority over model_tier. When both are empty, defaults to balance tier."`
 	// --- Group params ---
 	Members   []string `json:"members,omitempty" jsonschema:"description=Member addresses for group (e.g. [\"agent:reviewer\",\"agent:tester\"])"`
 	MaxRounds int      `json:"max_rounds,omitempty" jsonschema:"description=Max conversation rounds for group (default 10)"`
@@ -63,6 +64,7 @@ func (t *CreateChatTool) Parameters() []llm.ToolParam {
 		{Name: "instance", Type: "string", Description: "Unique instance ID (for agent type)"},
 		{Name: "task", Type: "string", Description: "Initial task message (for agent type, optional)"},
 		{Name: "model_tier", Type: "string", Description: "Model tier: vanguard/swift/balance (for agent type)"},
+		{Name: "model", Type: "string", Description: "Explicit model name for the new session (optional). Takes priority over model_tier; defaults to balance tier."},
 		{Name: "members", Type: "array", Description: "Member addresses for group", Items: &llm.ToolParamItems{Type: "string"}},
 		{Name: "max_rounds", Type: "integer", Description: "Max conversation rounds for group (default 10)"},
 	}
@@ -103,7 +105,10 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 		return nil, fmt.Errorf("unknown role: %s, see <available_agents> in system prompt", params.Role)
 	}
 
-	effectiveModel := params.ModelTier
+	effectiveModel := params.Model
+	if effectiveModel == "" {
+		effectiveModel = params.ModelTier
+	}
 	if effectiveModel == "" {
 		effectiveModel = role.Model
 	}
@@ -195,7 +200,10 @@ func (t *CreateChatTool) createGroupChat(ctx *ToolContext, params *CreateChatPar
 			spawnWarnings = append(spawnWarnings, fmt.Sprintf("[WARN] unknown role %q for %s", role, memberAddr))
 			continue
 		}
-		effectiveModel := roleDef.Model
+		effectiveModel := params.Model
+		if effectiveModel == "" {
+			effectiveModel = roleDef.Model
+		}
 		if effectiveModel == "" {
 			effectiveModel = "balance"
 		}

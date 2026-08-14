@@ -1066,13 +1066,14 @@ func (wc *WebChannel) handleChats(w http.ResponseWriter, r *http.Request) {
 		}
 		var body struct {
 			Label string `json:"label"`
+			Model string `json:"model"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			jsonErrorResponse(w, http.StatusBadRequest, "invalid body")
 			return
 		}
 		identity := wc.inboundIdentityFromRequest(r)
-		chatID, err := wc.callbacks.ChatCreate(senderID, body.Label, identity.CanonicalUserID)
+		chatID, err := wc.callbacks.ChatCreate(senderID, body.Label, identity.CanonicalUserID, body.Model)
 		if err != nil {
 			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 			return

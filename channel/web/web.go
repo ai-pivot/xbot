@@ -174,7 +174,9 @@ type WebCallbacks struct {
 	// SessionTree returns Web-only main sessions with SubAgent children already attached.
 	SessionTree func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error)
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
-	ChatCreate func(senderID, label string, canonicalUserID int64) (string, error)
+	// model is an optional explicit model name for the new session; when empty
+	// the backend falls back to the default binding (Balance tier first).
+	ChatCreate func(senderID, label string, canonicalUserID int64, model string) (string, error)
 	// ChatDelete deletes a chatroom (except the default one).
 	ChatDelete func(senderID, channel, chatID string) error
 	// ChatRename renames a chatroom.
