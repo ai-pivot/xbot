@@ -101,6 +101,24 @@ describe('useAgentChatState 全链路', () => {
     await waitFor(() => expect(h.result.current.liveProgress.streamContent).toContain('无 turn_id 的流式'))
   })
 
+  it('A4: 真实 SSE 形状 —— progress_structured + phase 缺失 + stream_content 字段 = 打字机帧（不得误判为 iteration）', async () => {
+    // Web channel 把所有 ProgressEvent 转发为 type='progress_structured'（无独立
+    // stream_content 消息类型）。打字机帧的 phase 为空、载荷在 stream_content
+    // 字段。误判为 iteration 会丢弃 stream_content → 打字机死掉（用户报告）。
+    const ws = makeWS()
+    const h = mountHook(ws)
+    ws.emit({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 33, seq: 1 }, chat_id: 'chat-1' })
+    // 三帧真实形状的打字机事件。
+    ws.emit({ type: 'progress_structured', progress: { turn_id: 33, iteration: 1, seq: 2, stream_content: '真实形状第' }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamContent).toContain('真实形状第'))
+    ws.emit({ type: 'progress_structured', progress: { turn_id: 33, iteration: 1, seq: 3, stream_content: '真实形状第一' }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamContent).toContain('真实形状第一'))
+    ws.emit({ type: 'progress_structured', progress: { turn_id: 33, iteration: 1, seq: 4, reasoning_stream_content: '思考流式' }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.reasoningStreamContent).toContain('思考流式'))
+    // turn 仍 live（未误入 committed/frozen）。
+    expect(h.result.current.liveProgress.turnID).toBe(33)
+  })
+
   it('A3: stream 低 seq 不被 gate 误杀（累积全量不按 seq 排序 —— 旧前端语义）', async () => {
     const ws = makeWS()
     const h = mountHook(ws)

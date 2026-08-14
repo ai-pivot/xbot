@@ -115,6 +115,34 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
     return { type: 'turn_started', turnID: turnID(turn), requestID: optStr(ts?.request_id) ?? null, trigger }
   }
 
+  // ── stream 帧（打字机）──
+  // ⚠️ Web channel 把【所有】ProgressEvent 转发为 type='progress_structured'
+  // （旧 useProgressStream 注释："the Web channel forwards ALL ProgressEvents
+  // as type=progress_structured, including stream callbacks"）—— 不存在独立的
+  // 'stream_content' 消息类型！打字机帧 = progress_structured + phase='' +
+  // stream_content/reasoning_stream_content/genui_content 字段。
+  // 必须在 iteration fallback 之前分流：否则被误判为 iteration 事件，
+  // stream_content 字段被完全忽略 → 打字机死掉，iter 结束才整体渲染
+  // （用户报告："看不到打字机，iter 结束后瞬间完整渲染"）。
+  const hasStreamPayload =
+    p.stream_content !== undefined ||
+    p.reasoning_stream_content !== undefined ||
+    p.genui_content !== undefined ||
+    p.streaming_tools !== undefined
+  if (phase === '' && hasStreamPayload) {
+    return {
+      type: 'stream',
+      turnID: turn !== null ? turnID(turn) : null,
+      seq,
+      content: optStr(p.stream_content),
+      reasoning: optStr(p.reasoning_stream_content),
+      streamingTools: Array.isArray(p.streaming_tools)
+        ? normalizeWebTools(p.streaming_tools)
+        : undefined,
+      genui: optStr(p.genui_content),
+    }
+  }
+
   // ── phase_done（PhaseDone：turn 结束，text/cancel ack 随后到） ──
   if (phase === 'done') {
     if (!turn || !seq) return null
