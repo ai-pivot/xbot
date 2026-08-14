@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { hasVisibleProgress } from '@/hooks/useProgressStream'
-import type { ProgressSnapshot } from '@/types/shared'
+import type { ProgressSnapshot, WebIteration } from '@/types/shared'
 
 function snap(over: Partial<ProgressSnapshot>): ProgressSnapshot {
   return {
