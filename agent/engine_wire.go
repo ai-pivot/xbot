@@ -1729,6 +1729,35 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 
 		go func() {
 			defer bgCancel()
+			// Panic recovery: a panic inside runOneshot (Run(), persistence,
+			// session destroy) would crash the whole process AND leave the
+			// waitable task open (task_wait blocks until timeout). Mirror the
+			// interactive background goroutine's recover() — close the task and
+			// notify the parent so nothing leaks.
+			defer func() {
+				if r := recover(); r != nil {
+					log.WithFields(log.Fields{
+						"role":     roleName,
+						"instance": oneshotInstance,
+						"panic":    r,
+					}).Error("Background one-shot subagent panicked")
+					if notifyMgr == nil {
+						return
+					}
+					content := fmt.Sprintf("Sub-agent panicked: %v", r)
+					if bgTask != nil {
+						notifyMgr.CloseSubAgentTask(bgTask.ID, tools.BgTaskError, content)
+					}
+					notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+						Key:      sessionKey,
+						Type:     tools.SubAgentBgNotifyCompleted,
+						Role:     roleName,
+						Instance: oneshotInstance,
+						Content:  content,
+						Sid:      originSender,
+					})
+				}
+			}()
 			outMsg, runErr := runOneshot(bgCtx)
 			if notifyMgr == nil {
 				return

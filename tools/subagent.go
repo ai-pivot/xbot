@@ -73,8 +73,7 @@ Persistent multi-turn session. Create once, send multiple messages, unload when 
 | SubAgent(task, role, instance="...", action="interrupt") | Interrupt the current iteration of an interactive sub-agent |
 
 ## Background rule
-Only interactive sub-agents support blocking (background=false). Background sub-agents
-report progress automatically; when one finishes, the result is injected into your
+Background sub-agents report progress automatically; when one finishes, the result is injected into your
 conversation and you can also await it with task_wait(task_id=...). Use action="inspect"
 to check progress, action="send" to send messages, action="interrupt" to stop,
 action="unload" to terminate.

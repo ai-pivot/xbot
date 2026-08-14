@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"xbot/llm"
 	log "xbot/logger"
@@ -172,10 +173,11 @@ func formatTask(task *BackgroundTask) string {
 		fmt.Fprintf(&sb, "Error: %s\n", task.Error)
 	}
 
-	// Show last 500 chars of output as preview
+	// Show last 500 chars of output as preview (UTF-8 safe — byte slicing can
+	// cut mid-rune for CJK/multibyte content, producing invalid UTF-8).
 	preview := task.Output
 	if len(preview) > 500 {
-		preview = "... " + preview[len(preview)-497:]
+		preview = truncateTailPreview(preview, 500)
 	}
 	if preview != "" {
 		fmt.Fprintf(&sb, "Output Preview:\n%s\n", preview)
@@ -208,12 +210,28 @@ func formatSubAgentTask(task *SubAgentTask) string {
 	if task.Content != "" {
 		preview := task.Content
 		if len(preview) > 500 {
-			preview = "... " + preview[len(preview)-497:]
+			preview = truncateTailPreview(preview, 500)
 		}
 		fmt.Fprintf(&sb, "Result Preview:\n%s\n", preview)
 	}
 
 	return sb.String()
+}
+
+// truncateTailPreview keeps the TAIL of s (up to maxBytes bytes) with a
+// "... " prefix, adjusting the cut to a UTF-8 rune boundary so CJK/multibyte
+// characters are never sliced mid-rune (invalid UTF-8). Inputs shorter than
+// maxBytes are returned unchanged.
+func truncateTailPreview(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	tail := s[len(s)-(maxBytes-4):] // reserve 4 bytes for the "... " prefix
+	// Drop leading bytes until the slice starts on a UTF-8 rune boundary.
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	return "... " + tail
 }
 
 // This is used by the engine to inject the task result into the conversation as a tool message.
