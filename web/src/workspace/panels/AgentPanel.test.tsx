@@ -41,8 +41,17 @@ vi.mock('@/hooks/useCollapseLevel', () => ({
   useCollapseLevel: () => ({ level: 'all' }),
   useMergeTools: () => ({ mergeTools: false }),
 }))
-vi.mock('@/hooks/useProgressStream', () => ({
-  useProgressStream: () => mocks.progress,
+vi.mock('@/chat/useAgentChatState', () => ({
+  // M4：新状态机 hook 的测试替身 —— messages/liveProgress 直通 mocks
+  //（与旧 useProgressStream mock 同语义：busy 测试改 progressSnapshot，
+  // live 可见性测试改 chat.messages 的 isPartial 行）。
+  useAgentChatState: () => ({
+    messages: mocks.chat.messages,
+    liveProgress: mocks.progress.progressSnapshot,
+    busyFallback: false,
+    tokenPrompt: null,
+    reset: vi.fn(),
+  }),
 }))
 vi.mock('@/hooks/useTodos', () => ({ useTodos: () => ({ total: 0 }) }))
 vi.mock('@/hooks/useActiveSSESubscription', () => ({ useActiveSSESubscription: vi.fn() }))

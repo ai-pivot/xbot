@@ -13,7 +13,6 @@
  *   - SubAgent tabs are fixed to their parent chat + role/instance params.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -21,8 +20,7 @@ import { useAskUser } from '@/hooks/useAskUser'
 import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
 import { sameSession } from "@/lib/session-grouping"
 import { useCollapseLevel, useMergeTools } from '@/hooks/useCollapseLevel'
-import { useProgressStream } from '@/hooks/useProgressStream'
-import { MessageStore } from '@/components/agent/messageStore'
+import { useAgentChatState } from '@/chat/useAgentChatState'
 import { useTodos } from '@/hooks/useTodos'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
@@ -91,14 +89,6 @@ export function AgentPanel({ params }: PanelProps) {
       ? !!chatID
       : !!activeSession?.chatID
 
-  // 方案 A：共享 MessageStore（useChatMessages 的 committed + useProgressStream
-  // 的 live 写入同一实例，渲染读 store.toRows() 零去重）
-  const sharedStoreRef = useRef<MessageStore | null>(null)
-  if (sharedStoreRef.current === null) {
-    sharedStoreRef.current = new MessageStore()
-  }
-  const sharedStore = sharedStoreRef.current
-
   useActiveSSESubscription({
     ws,
     chatID: subscribeChatID,
@@ -116,7 +106,6 @@ export function AgentPanel({ params }: PanelProps) {
     parentChatID: params.parentChatID,
     agentChatID: params.agentChatID,
     liveEventsEnabled: shouldSubscribe,
-    messageStore: sharedStore,
     onSendSuccess: () => {
       // Optimistically mark the session as running so the UI enters busy
       // immediately — don't wait for the SSE session(busy) event which may
@@ -137,9 +126,6 @@ export function AgentPanel({ params }: PanelProps) {
   })
   const reloadChat = chat.reload
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
-  // Ref to hold resetProgress so the onSession effect can call it without
-  // depending on the progress object (which is defined later).
-  const resetProgressRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     const wasSubscribed = wasSubscribedRef.current
@@ -160,7 +146,7 @@ export function AgentPanel({ params }: PanelProps) {
       // events directly (those carry the parent's chatID), so the store
       // would stay in finalizing state forever without this reset.
       if (ev.action !== 'busy') {
-        resetProgressRef.current()
+        resetAgentChatRef.current()
         // Reload to fetch the SubAgent's final persisted messages. SubAgent
         // panels may never receive a `text` event (those carry the parent's
         // chatID), so onAssistantComplete won't fire — reload is the only way
@@ -170,72 +156,21 @@ export function AgentPanel({ params }: PanelProps) {
     })
   }, [isSubAgent, params.agentChatID, params.parentChatID, params.subAgentInstance, params.subAgentRole, reloadChat, ws])
 
-  const progress = useProgressStream({
-    chatID: progressChatID,
-    channel: progressChannel,
-    initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
-    // historyReady gate：切换会话/首屏加载（fetchHistory 未完成）时 live 延迟
-    // 写入 MessageStore —— 避免 live progress 先于 history 渲染（用户要求两个
-    // 数据都拿到后一起渲染）。fetchHistory 完成后 hydration + 后续 SSE 一起渲染。
-    // 同会话 reload（resync_required/replay_gap）保持 historyReady=true —— 已渲染
-    // 的 live 不得消失（RENDER_LOSS_ROWS 教训）。
-    historyReady: chat.historyReady,
-    messageStore: sharedStore,
-    onAssistantComplete: (finalText, iterations, _eventSeq, turnID, insertBeforeLastUser) => {
-      // Commit the message AND reset progress in the SAME synchronous render.
-      // This eliminates the intermediate frame where content moves from
-      // LiveIteration to MarkdownRenderer.
-      flushSync(() => {
-        chat.appendAssistant(finalText, iterations, _eventSeq, turnID, insertBeforeLastUser)
-        resetProgressRef.current?.()
-      })
-      void sessionContext.refresh()
-    },
-    onCancelComplete: () => {
-      // Cancel: onAssistantComplete already committed the message + reset
-      // the store via flushSync. Mark a destructive mutation so the next
-      // reload (session switch / refresh) DISCARDS the locally-committed
-      // message and replaces it with the server's version — the server has
-      // the same data (cancelMsg has Detail with progress_history). Without
-      // this, the locally-committed message and the DB version coexist →
-      // duplicate rendering.
-      chat.markDestructiveMutation?.()
-    },
-    onInjectUserMessage: (content, turnID, isNotification) => {
-      chat.injectUserMessage(content, turnID, isNotification)
-    },
-    onTurnStarted: (_turnID, _trigger) => {
-      // Optimistically mark the session as running so the input box switches
-      // to cancel mode immediately. session(busy) may be lost or delayed by
-      // SSE coalescing — turn_started is the earliest reliable signal.
-      if (chatID) {
-        store.setStatus({ channel: messageChannel, chatID }, 'running')
-      }
-      // NO optimistic user messages — user rows come from the backend user_echo
-      // (authoritative turn_id). Nothing to bind here.
-    },
+  // ── M4：新状态机（web/src/chat/）作为唯一渲染数据源 ──
+  // 全部 SSE 事件 → normalizeEvent → reduce；DB 历史 → history_replaced。
+  // 旧 useProgressStream（1742 行）+ MessageStore（622 行）双轨协调已移除。
+  const agentChat = useAgentChatState({
+    progressChatID,
     ws,
-    onHistoryCompacted: isSubAgent ? undefined : () => {
-      void chat.reload()
-      void sessionContext.refresh()
-    },
-    onSessionReset: isSubAgent ? undefined : () => {
-      chat.clearMessages()
-      void chat.reload()
-      void sessionContext.refresh()
-    },
-    onIterationGap: isSubAgent ? undefined : () => {
-      // iterationHistory 内部迭代 id 断裂 = 增量 delta 在传输中丢失。SSE 快照
-      // 只携带新迭代，后面的覆盖补不回来丢失的迭代；continuousIterations 只是
-      // 渲染层隐藏断裂尾部。必须 reload 从 DB 拿权威完整历史。
-      void chat.reload()
-      void sessionContext.refresh()
-    },
-    disabled: false, // Always enabled — SSE subscription managed by useActiveSSESubscription
+    historyMessages: chat.messages,
+    historyReady: chat.historyReady,
+    initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
+    resetKey: `${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`,
   })
-  // Wire resetProgress to the ref so the onSession effect can call it.
-  resetProgressRef.current = progress.resetProgress
-  const progressSnapshot = progress.progressSnapshot
+  // SubAgent idle/done 时重置（SubAgent 面板收不到 text/session(idle)）。
+  const resetAgentChatRef = useRef(agentChat.reset)
+  resetAgentChatRef.current = agentChat.reset
+  const progressSnapshot = agentChat.liveProgress
   // liveMessage comes from useProgressStream's live store — its visibility is
   // governed by the store's own hydration/reset lifecycle (initialProgress →
   // historyProgressToLive → store.replace, SSE-driven updates, reset on
@@ -332,12 +267,10 @@ export function AgentPanel({ params }: PanelProps) {
       // Rewind is destructive: clear the visible/cache rows before reload so
       // an empty truncated history is not mistaken for a background refresh.
       chat.clearMessages()
-      // Rewind MUST also reset the ProgressStore — otherwise the pre-rewind
-      // turn's live/lastTurnID residue is committed by commitLiveProgressAndReset
-      // on the next turn_started (the sendMessage below), re-rendering the
-      // rewind-deleted assistant below the new turn (user report: turn 重复、
-      // 进度跳变、思考中卡死；只有 rewind 过的会话能一直复现，刷新后才正常).
-      resetProgressRef.current?.()
+      // Rewind MUST also reset the state machine — otherwise the pre-rewind
+      // turn's live residue is committed on the next turn_started,
+      // re-rendering the rewind-deleted assistant below the new turn.
+      resetAgentChatRef.current()
       // Reload FIRST to fetch the truncated history from the server.
       // This must happen BEFORE sendMessage — otherwise sendMessage increments
       // messageMutationGenRef, the subsequent reload captures the incremented
@@ -356,7 +289,7 @@ export function AgentPanel({ params }: PanelProps) {
 
   const rewindLatest = useCallback(() => {
     if (busy) return
-    const candidates = rewindCandidates(chat.messages)
+    const candidates = rewindCandidates(agentChat.messages)
     if (candidates.length === 0) {
       toast.error(t('agent.noUserMessageToRewind'))
       return
@@ -364,7 +297,7 @@ export function AgentPanel({ params }: PanelProps) {
     // Enter edit mode for the latest rewindable user message
     const latest = candidates[candidates.length - 1]
     setEditingMessageId(latest.id)
-  }, [busy, chat.messages, t])
+  }, [busy, agentChat.messages, t])
 
   const handleStartEdit = useCallback((messageId: string) => {
     setEditingMessageId(messageId)
@@ -392,9 +325,8 @@ export function AgentPanel({ params }: PanelProps) {
               isSubAgent: Boolean(isSubAgent),
               capturedAt: Date.now(),
             },
-            // Full un-throttled ProgressStore internals (current + lastTurnID +
-            // lastIter) — enough to reconstruct the live-turn state exactly.
-            progress: progress.dumpFullState(),
+            // New state-machine snapshot (liveProgress + derived rows).
+            chatState: { liveProgress: progressSnapshot, messages: agentChat.messages, busy },
             // Committed message rows as currently rendered — the other half of
             // "100% frontend reconstruction": the turn-vanish symptom is a
             // rendering-state divergence, so the baseline must include the
@@ -410,7 +342,7 @@ export function AgentPanel({ params }: PanelProps) {
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
-        messages={chat.messages}
+        messages={agentChat.messages}
         liveProgress={progressSnapshot}
         busy={busy}
         collapseLevel={level}

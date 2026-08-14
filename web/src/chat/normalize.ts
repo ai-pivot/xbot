@@ -78,9 +78,10 @@ export function normalizeEvent(raw: unknown, chatID: string): DomainEvent | null
   const env = asRecord(raw)
   if (!env) return null
 
-  // chat 过滤：消息携带的 chat_id 不匹配本 chat → 丢弃。
+  // chat 过滤：消息携带的 chat_id 不匹配本 chat → 丢弃。双剥 channel 前缀
+  // （本地可能带 "web:" 前缀而远端 bare，或反之 —— 两个方向都兼容）。
   const msgChat = optStr(env.chat_id)
-  if (msgChat && msgChat !== chatID && msgChat !== stripChannel(chatID)) return null
+  if (msgChat && stripChannel(msgChat) !== stripChannel(chatID)) return null
 
   switch (typeof env.type === 'string' ? env.type : '') {
     case 'progress_structured':
@@ -91,6 +92,9 @@ export function normalizeEvent(raw: unknown, chatID: string): DomainEvent | null
       return normalizeText(env)
     case 'session':
       return normalizeSession(env)
+    case 'user_echo':
+    case 'inject_user':
+      return normalizeUserEcho(env)
     default:
       return null
   }
@@ -141,6 +145,16 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
   // ── iteration（普通结构化事件：thinking / tool_exec / …） ──
   if (!turn || !seq) return null
   const rawDelta = Array.isArray(p.iteration_history) ? p.iteration_history : []
+  // token_usage（ContextRing/会话上下文刷新）。
+  const rawTU = asRecord(p.token_usage)
+  const tokenUsage =
+    rawTU && typeof rawTU.prompt_tokens === 'number'
+      ? {
+          promptTokens: rawTU.prompt_tokens,
+          completionTokens: typeof rawTU.completion_tokens === 'number' ? rawTU.completion_tokens : 0,
+          totalTokens: typeof rawTU.total_tokens === 'number' ? rawTU.total_tokens : 0,
+        }
+      : undefined
   return {
     type: 'iteration',
     turnID: turnID(turn),
@@ -156,6 +170,7 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
     subAgents: Array.isArray(p.sub_agents)
       ? normalizeWebSubAgents(p.sub_agents as unknown[])
       : undefined,
+    tokenUsage,
   }
 }
 
@@ -201,6 +216,28 @@ function normalizeSession(env: Record<string, unknown>): DomainEvent | null {
   const action = optStr(s?.action)
   if (action !== 'busy' && action !== 'idle') return null
   return { type: 'session', busy: action === 'busy' }
+}
+
+// ─── user_echo / inject_user → user_echo ──
+
+function normalizeUserEcho(env: Record<string, unknown>): DomainEvent | null {
+  const content = typeof env.content === 'string' ? env.content : ''
+  if (content === '') return null
+  const turn = optTurnID(env.turn_id)
+  return {
+    type: 'user_echo',
+    row: {
+      id: `echo-${turn ?? 'x'}-${Date.now()}`,
+      content: content as never,
+      timestamp: new Date().toISOString(),
+      isNotification: env.is_notification === true,
+      queued: false,
+      sending: false,
+      requestID: optStr(env.request_id) ?? null,
+      turnHint: turn ?? undefined,
+      dbID: undefined,
+    },
+  }
 }
 
 // ─── 本地事件构造器（非 SSE —— UI 侧直接构造已规范化的 DomainEvent） ──

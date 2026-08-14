@@ -90,15 +90,20 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       }
 
       // 新 turn 槽（I1：Map set —— 槽位唯一）。
-      // requestID 精确绑定（V2 语义）：匹配 pendingUsers；失配留在 pending。
+      // requestID 精确绑定（V2 语义）→ turnHint 绑定（user_echo 先于
+      // turn_started 到达时，echo 行带 turn_id 提示）。失配留在 pending。
       let user = null as Turn['user']
       let pending = s.pendingUsers
+      let idx = -1
       if (ev.requestID !== null) {
-        const idx = s.pendingUsers.findIndex((u) => u.requestID === ev.requestID)
-        if (idx >= 0) {
-          user = s.pendingUsers[idx]
-          pending = s.pendingUsers.filter((_, i) => i !== idx)
-        }
+        idx = s.pendingUsers.findIndex((u) => u.requestID === ev.requestID)
+      }
+      if (idx < 0) {
+        idx = s.pendingUsers.findIndex((u) => u.turnHint !== undefined && u.turnHint === ev.turnID)
+      }
+      if (idx >= 0) {
+        user = s.pendingUsers[idx]
+        pending = s.pendingUsers.filter((_, i) => i !== idx)
       }
       const turns = new Map(next.turns)
       turns.set(ev.turnID, {
@@ -130,6 +135,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         activeTools: ev.activeTools,
         todos: ev.todos ?? prev.todos,
         subAgents: ev.subAgents ?? prev.subAgents,
+        tokenUsage: ev.tokenUsage ?? prev.tokenUsage,
       }
       // I5 基准推进：成功处理后 lastSeq = ev.seq（重放检测的比较基准）。
       const next = withTurn(s, ev.turnID, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
@@ -264,6 +270,24 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     // ── user_sent：乐观行入 pending 队列 ──
     case 'user_sent': {
       return { ...s, pendingUsers: [...s.pendingUsers, ev.row] }
+    }
+
+    // ── user_echo：后端权威回声（带 turn_id）。turn 已存在 → 直接挂 user；
+    //     turn 未创建（echo 先于 turn_started）→ 入 pending（turnHint 绑定）。 ──
+    case 'user_echo': {
+      const hint = ev.row.turnHint
+      if (hint !== undefined) {
+        const tid = turnID(hint)
+        const t = s.turns.get(tid)
+        if (t && t.user === null) {
+          return withTurn(s, tid, (tt) => ({ ...tt, user: ev.row }))
+        }
+      }
+      // 去重：同 requestID 的乐观行已被 echo 取代（echo 是权威）。
+      const filtered = ev.row.requestID !== null
+        ? s.pendingUsers.filter((u) => u.requestID !== ev.row.requestID)
+        : s.pendingUsers
+      return { ...s, pendingUsers: [...filtered, ev.row] }
     }
 
     // ── user_ack：requestID 匹配回填 dbID（pending 或已绑定 turn.user） ──

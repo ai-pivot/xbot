@@ -73,6 +73,8 @@ export interface LiveSnapshot {
   readonly subAgents: readonly WebSubAgentProgress[]
   /** TODO 列表（monotonic 更新）。 */
   readonly todos: readonly TodoItem[]
+  /** Token 用量（iteration 事件携带，ContextRing/会话上下文刷新用）。 */
+  readonly tokenUsage: { readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number } | null
 }
 
 export const EMPTY_LIVE: LiveSnapshot = {
@@ -86,6 +88,7 @@ export const EMPTY_LIVE: LiveSnapshot = {
   genui: '',
   subAgents: [],
   todos: [],
+  tokenUsage: null,
 }
 
 // ─── TurnPhase：三态判别联合（核心不变量 I1） ─────────────────
@@ -141,6 +144,8 @@ export interface UserRow {
   readonly queued: boolean
   readonly sending: boolean
   readonly requestID: string | null
+  /** turn_id 提示（user_echo 在 turn_started 之前到达时用于绑定）。 */
+  readonly turnHint: number | undefined
   readonly dbID: number | undefined
 }
 
@@ -255,6 +260,11 @@ export type DomainEvent =
   | {
       /** 乐观 user 创建（本地事件，非 SSE）。 */
       readonly type: 'user_sent'
+      readonly row: UserRow
+    }
+  | {
+      /** 后端 queue-admission 的 user 回声（带权威 turn_id，可能先于 turn_started）。 */
+      readonly type: 'user_echo'
       readonly row: UserRow
     }
   | {
