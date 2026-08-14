@@ -308,6 +308,12 @@ export interface WebToolProgress {
    * cross-iteration tool pollution — completedTools should only contain
    * tools from the CURRENT iteration, not all iterations. */
   iteration?: number
+  /** UI capability mode from the tool's UIDecl metadata (e.g. "genui").
+   * Frontend renders via GenUIBlock — metadata-driven, never tool-name-driven.
+   * (see docs/agent/genui-plugin-design.md §9) */
+  uiMode?: string
+  /** Global libraries the UI needs (echarts/three/motion). */
+  uiLibs?: string[]
 }
 
 /** Iteration snapshot — one completed iteration's reasoning + tools + text output. */

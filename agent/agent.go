@@ -1585,8 +1585,9 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 		registry.RegisterForChannel("feishu", t)
 	}
 
-	// display_html: web channel only — renders streaming HTML+Tailwind UI
-	registry.RegisterForChannel("web", tools.NewDisplayHTMLTool())
+	// GenUI (display_html) 已插件化：由 stdio channel 插件 xbot-genui 声明
+	// `display_html` 工具（channels:["web"] + ui 元数据），主仓库不再内置注册。
+	// 见 docs/agent/genui-plugin-design.md。
 
 	// Clean up expired waiting cards from previous runs (TTL: 24h)
 	if n := cardBuilder.CleanupExpiredWaitingCards(24 * time.Hour); n > 0 {

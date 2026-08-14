@@ -23,6 +23,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
+import { isGenUITool } from './genui'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
@@ -173,11 +174,12 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     // （thinking 已彻底删除）。
     const lastText = finalContent || lastIteration?.content || lastIteration?.reasoning || ''
 
-    // Extract GenUI tools from all iterations — render outside the fold
+    // Extract GenUI tools from all iterations — render outside the fold.
+    // Metadata-driven (ui.mode === 'genui') with legacy display_html fallback.
     const genuiTools: WebToolProgress[] = []
     for (const iter of iterations) {
       for (const tool of iter.tools) {
-        if (tool.name === 'display_html') {
+        if (isGenUITool(tool)) {
           genuiTools.push(tool)
         }
       }

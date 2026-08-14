@@ -455,7 +455,7 @@ func (a *Agent) buildMainRunConfig(
 		if a.channelFinder != nil {
 			var progressSeq atomic.Uint64
 			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID)
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
 		}
 	}
 
@@ -1959,7 +1959,7 @@ func (a *Agent) buildProgressEventHandler(chatID, originatingChannel string) fun
 // delivery layer (sendCh batching + ring-buffer mergeStatelessEvent).
 // Tool calls and token usage are low-frequency, also not throttled.
 // All callbacks also write to atomic streamState for GetActiveProgress reconnect.
-func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64, turnID uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
+func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64, turnID uint64, sessionKey string, tenantID int64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
 	// Use ONLY the originating channel — its SendProgress broadcasts to ALL
 	// Hub subscribers (including other channels' clients via shared Hub).
 	var sender channelpkg.ProgressSender
@@ -2086,11 +2086,18 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
-		tools := make([]protocol.ToolProgress, 0, len(toolCalls))
+		toolProgs := make([]protocol.ToolProgress, 0, len(toolCalls))
 		var genuiContent string
 		for _, tc := range toolCalls {
 			if tc.Name != "" {
-				tools = append(tools, protocol.ToolProgress{
+				// Look up UI metadata once per tool name — populates both the
+				// streaming GenUI extraction and the ToolProgress UIMode/UILibs
+				// (frontend renders metadata-driven, never tool-name-driven).
+				var ui *tools.UIDecl
+				if ui = a.toolUIDecl(sessionKey, tenantID, tc.Name); ui != nil && ui.Mode == "genui" {
+					genuiContent = extractPartialParam(tc.Arguments, ui.Param)
+				}
+				tp := protocol.ToolProgress{
 					Name:     tc.Name,
 					Status:   "generating",
 					GenChars: len(tc.Arguments),
@@ -2103,15 +2110,15 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 					// rendering (user report: "过去的 generating 状态错误的在最新
 					// 迭代上渲染，直到最新迭代真正的 tool 出现").
 					Iteration: a.getActiveIteration(progressKey),
-				})
-				// Extract streaming HTML from display_html tool arguments.
-				// tc.Arguments is accumulated partial JSON like {"code":"<div cla...
-				if tc.Name == "display_html" {
-					genuiContent = extractPartialCodeFromArgs(tc.Arguments)
 				}
+				if ui != nil {
+					tp.UIMode = ui.Mode
+					tp.UILibs = ui.Libs
+				}
+				toolProgs = append(toolProgs, tp)
 			}
 		}
-		if len(tools) == 0 && genuiContent == "" {
+		if len(toolProgs) == 0 && genuiContent == "" {
 			return
 		}
 
@@ -2119,7 +2126,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		// throttles compilation to 100ms. Server-side throttle would drop
 		// intermediate updates and potentially the final code.
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
-			s.StreamingTools = tools
+			s.StreamingTools = toolProgs
 			if genuiContent != "" {
 				s.GenUIContent = genuiContent
 			}
@@ -2135,7 +2142,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			// "iter id 突然变成 0 导致整个 turn 的 DOM 消失"; all repro dumps show
 			// the vanishing turn right after an iteration:0 streaming_tools event).
 			Iteration:      a.getActiveIteration(progressKey),
-			StreamingTools: tools,
+			StreamingTools: toolProgs,
 		}
 		if genuiContent != "" {
 			payload.GenUIContent = genuiContent
@@ -2165,17 +2172,36 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc
 }
 
-// extractPartialCodeFromArgs extracts the "code" field value from a partial JSON
-// string like {"code":"<div class='...'>...}. The JSON may be incomplete (streaming),
-// so we use a string scan instead of json.Unmarshal.
-func extractPartialCodeFromArgs(args string) string {
-	// Find "code":" or "code": "
-	idx := strings.Index(args, `"code"`)
+// toolUIDecl looks up the tool's UI declaration (UIDeclProvider) by session
+// context. Returns nil if the tool is unknown or has no UI capability.
+// This is the single metadata-driven lookup — no hardcoded tool names.
+func (a *Agent) toolUIDecl(sessionKey string, tenantID int64, toolName string) *tools.UIDecl {
+	if a.tools == nil || toolName == "" {
+		return nil
+	}
+	tool, ok := a.tools.GetForSession(toolName, tenantID, sessionKey)
+	if !ok {
+		return nil
+	}
+	if p, ok := tool.(tools.UIDeclProvider); ok {
+		return p.UIDecl()
+	}
+	return nil
+}
+
+// extractPartialParam extracts the named field value from a partial JSON
+// string like {"code":"<div class='...'>...}. The JSON may be incomplete
+// (streaming), so we use a string scan instead of json.Unmarshal.
+// Returns "" if the field is absent or not a quoted string.
+func extractPartialParam(args, paramName string) string {
+	// Find "paramName":" or "paramName": "
+	needle := `"` + paramName + `"`
+	idx := strings.Index(args, needle)
 	if idx == -1 {
 		return ""
 	}
-	// Skip past "code"
-	rest := args[idx+6:]
+	// Skip past "paramName"
+	rest := args[idx+len(needle):]
 	// Skip whitespace and colon
 	for len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n' || rest[0] == ':') {
 		rest = rest[1:]

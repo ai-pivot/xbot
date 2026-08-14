@@ -32,7 +32,7 @@ func TestStreamContentFullPush_Default(t *testing.T) {
 		},
 	}
 	var seq atomic.Uint64
-	contentFunc, reasoningFunc, _, _ := a.buildStreamCallbacks("chat-1", "mock", &seq, 1)
+	contentFunc, reasoningFunc, _, _ := a.buildStreamCallbacks("chat-1", "mock", &seq, 1, "mock:chat-1", 0)
 
 	// 两次调用，第二次是第一次的前缀扩展 —— 全量模式下必须都发全量
 	contentFunc("Hello")

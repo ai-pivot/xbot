@@ -16,6 +16,7 @@ import {
 import type { WebToolProgress } from '@/types/shared'
 import { ToolCallBlock } from './ToolCallBlock'
 import { GenUIBlock } from './GenUIBlock'
+import { isGenUITool } from './genui'
 
 interface ToolRenderProps {
   tool: WebToolProgress
@@ -79,9 +80,12 @@ export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
       return <GrepRender tool={tool} summary={summary} detail={detail} />
     case 'Glob':
       return <GlobRender tool={tool} summary={summary} />
-    case 'display_html':
-      return <DisplayHTMLRender tool={tool} />
     default:
+      // GenUI: metadata-driven (ui.mode === 'genui'); legacy display_html name
+      // fallback for pre-metadata history rows.
+      if (isGenUITool(tool)) {
+        return <DisplayHTMLRender tool={tool} />
+      }
       return <ToolCallBlock tool={tool} />
   }
 })

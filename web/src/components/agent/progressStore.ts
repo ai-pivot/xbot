@@ -180,6 +180,7 @@ export function isStreamOnly(payload: ProgressEvent): boolean {
 export function normalizeWebTool(raw: unknown): WebToolProgress | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
+  const uiLibs = Array.isArray(r.ui_libs) ? (r.ui_libs as unknown[]).map((l) => String(l)).filter(Boolean) : undefined
   return {
     name: typeof r.name === 'string' ? r.name : '',
     label: typeof r.label === 'string' ? r.label : '',
@@ -190,6 +191,8 @@ export function normalizeWebTool(raw: unknown): WebToolProgress | null {
     args: typeof r.args === 'string' ? r.args : '',
     toolHints: typeof r.tool_hints === 'string' ? r.tool_hints : '',
     iteration: typeof r.iteration === 'number' ? r.iteration : undefined,
+    uiMode: typeof r.ui_mode === 'string' ? r.ui_mode : undefined,
+    uiLibs: uiLibs && uiLibs.length > 0 ? uiLibs : undefined,
   }
 }
 

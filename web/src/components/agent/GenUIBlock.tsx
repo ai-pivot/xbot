@@ -12,6 +12,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { transform } from 'sucrase'
 import { useWSConnection } from '@/hooks/useWSConnection'
+import { XBOT_UI, detectDarkMode, GenUIThemeContext } from '@/genui/runtime'
 
 // ─── Compilation cache ─────────────────────────────────────────
 // Module-level cache: key = code hash, value = compiled component.
@@ -154,18 +155,21 @@ export function GenUIBlock({ code, chatId, uiSource, streaming = false, onAction
         .replace(/^\s*export\s+default\s+/gm, '')
         .replace(/^\s*export\s+/gm, '')
 
-      // Wrap with React injection
+      // Wrap with React + XBOT_UI injection (fancy GenUI runtime).
+      // XBOT_UI gives the LLM component primitives, charts, 3D, motion —
+      // metadata-driven, shared with SandboxedUI (see genui/runtime.tsx).
       const wrapped = `
         const React = arguments[0];
         const { createElement, useState, useEffect, useMemo, useRef, useCallback,
                 useContext, useReducer, useLayoutEffect, Fragment, forwardRef,
                 useId, useSyncExternalStore, useTransition, useDeferredValue } = React;
+        const XBOT_UI = arguments[1];
         ${noImports}
         return typeof App !== 'undefined' ? App : null;
       `
 
       const fn = new Function(wrapped)
-      const Comp = fn(React)
+      const Comp = fn(React, XBOT_UI)
 
       if (seq !== compileSeqRef.current) return
 
@@ -191,11 +195,14 @@ export function GenUIBlock({ code, chatId, uiSource, streaming = false, onAction
     if (!doc) return
     const twLink = document.querySelector('link[href*="/assets/index-"][href$=".css"]') as HTMLLinkElement | null
     const twHref = twLink?.href || ''
+    // Theme: mirror the parent's dark mode onto the iframe <html> element so
+    // Tailwind `dark:` variants work inside GenUI.
+    const dark = detectDarkMode()
     doc.open()
-    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    doc.write(`<!DOCTYPE html><html${dark ? ' class="dark"' : ''}><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
-<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}*{box-sizing:border-box}</style>
+<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}html.dark,html.dark body{background:#020617}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}*{box-sizing:border-box}</style>
 </head><body></body></html>`)
     doc.close()
 
@@ -291,14 +298,17 @@ ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
     }
   }, [ws, effectiveChatId, uiSource, onAction])
 
-  // Render component into iframe root, wrapped in error boundary
+  // Render component into iframe root, wrapped in error boundary + theme context
   useEffect(() => {
     if (!rootRef.current) return
     if (component) {
       rootRef.current.render(
         React.createElement(GenUIErrorBoundary,
           { fallback: '⚠️ Render error — check SVG/HTML syntax' },
-          React.createElement(component, { 'data-genui-root': true as const, onClick: handleClick } as Record<string, unknown>)
+          React.createElement(GenUIThemeContext.Provider,
+            { value: { dark: detectDarkMode() } },
+            React.createElement(component, { 'data-genui-root': true as const, onClick: handleClick } as Record<string, unknown>)
+          )
         )
       )
     }

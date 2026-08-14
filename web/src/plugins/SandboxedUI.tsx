@@ -16,6 +16,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { transform } from 'sucrase'
+import { XBOT_UI, detectDarkMode, GenUIThemeContext } from '@/genui/runtime'
 
 export interface SandboxedUIProps {
   /** Free-form TSX/JS source (code mode). Mutually exclusive with src. */
@@ -103,11 +104,12 @@ function CodeUI({ code, widgetId, onAction, className }: SandboxedUIProps) {
           const { createElement, useState, useEffect, useMemo, useRef, useCallback,
                   useContext, useReducer, useLayoutEffect, Fragment, forwardRef,
                   useId, useSyncExternalStore, useTransition, useDeferredValue } = React;
+          const XBOT_UI = arguments[1];
           ${noImports}
           return typeof App !== 'undefined' ? App : null;
         `
         const fn = new Function(wrapped)
-        const Comp = fn(React)
+        const Comp = fn(React, XBOT_UI)
         if (cancelled || seq !== compileSeqRef.current) return
         if (Comp && typeof Comp === 'function') setComponent(() => Comp)
       } catch {
@@ -125,10 +127,11 @@ function CodeUI({ code, widgetId, onAction, className }: SandboxedUIProps) {
     if (!iframe) return
     const doc = iframe.contentDocument
     if (!doc) return
+    const dark = detectDarkMode()
     doc.open()
-    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    doc.write(`<!DOCTYPE html><html${dark ? ' class="dark"' : ''}><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}*{box-sizing:border-box}</style>
+<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}html.dark,html.dark body{background:#020617}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}*{box-sizing:border-box}</style>
 </head><body></body></html>`)
     doc.close()
     if (!rootRef.current) {
@@ -166,9 +169,12 @@ function CodeUI({ code, widgetId, onAction, className }: SandboxedUIProps) {
   useEffect(() => {
     if (!rootRef.current || !component) return
     rootRef.current.render(
-      React.createElement(
-        component,
-        { 'data-sandboxed-ui-root': true, onClick: handleClick } as Record<string, unknown>,
+      React.createElement(GenUIThemeContext.Provider,
+        { value: { dark: detectDarkMode() } },
+        React.createElement(
+          component,
+          { 'data-sandboxed-ui-root': true, onClick: handleClick } as Record<string, unknown>,
+        ),
       ),
     )
   }, [component, handleClick])
