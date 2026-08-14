@@ -16,7 +16,7 @@ import {
 import type { WebToolProgress } from '@/types/shared'
 import { ToolCallBlock } from './ToolCallBlock'
 import { GenUIBlock } from './GenUIBlock'
-import { isGenUITool } from './genui'
+import { isGenUITool, genUICode } from './genui'
 
 interface ToolRenderProps {
   tool: WebToolProgress
@@ -253,8 +253,7 @@ function GlobRender({ tool, summary }: { tool: WebToolProgress; summary: string 
 // ── display_html ──────────────────────────────────────────────────────
 
 function DisplayHTMLRender({ tool }: { tool: WebToolProgress }) {
-  const args = parseArgs(tool)
-  const code = (args?.code as string) || tool.detail || ''
+  const code = genUICode(tool)
   if (!code) {
     return <ToolCallBlock tool={tool} />
   }

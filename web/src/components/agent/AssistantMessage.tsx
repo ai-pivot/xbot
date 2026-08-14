@@ -23,11 +23,10 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
-import { isGenUITool } from './genui'
+import { isGenUITool, genUICode } from './genui'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
-import { parseArgs } from './ToolRender'
 
 interface AssistantMessageProps {
   message: ChatMessage
@@ -206,7 +205,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
         )}
         {/* GenUI: always visible, never folded */}
         {genuiTools.map((tool, i) => (
-          <GenUIBlock key={`genui-${i}`} code={(parseArgs(tool)?.code as string) || tool.detail || ''} />
+          <GenUIBlock key={`genui-${i}`} code={genUICode(tool)} />
         ))}
         {message.displayOnly && (
           <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">
