@@ -268,10 +268,21 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
       // 1. incoming（DB 权威）—— 同 turnID 状态机有 live（in-flight）时 live 胜
       //    （SSE 比快照新）；live 缺 user 时从 DB 行嫁接（拿 dbID，rewind 需要）。
+      //    ⚠️ incoming 是【无输出空壳】（user-only 历史行组成的 frozen 空壳 ——
+      //    DB 快照还没有 assistant 行）时不得覆盖状态机的 committed /
+      //    frozen-with-output（集成测试 C 抓出：发 user msg 后上一 turn 的
+      //    agent 消息消失 —— 空壳覆盖了唯一数据源）。
       for (const h of ev.turns) {
         const cur = s.turns.get(h.id)
         if (cur && cur.phase.kind === 'live') {
           turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
+        } else if (
+          cur &&
+          cur.phase.kind !== 'live' &&
+          h.phase.kind === 'frozen' &&
+          !hasOutput(h.phase.data)
+        ) {
+          turns.set(h.id, cur) // 空壳不覆盖（状态机数据保全）
         } else {
           turns.set(h.id, h)
         }
