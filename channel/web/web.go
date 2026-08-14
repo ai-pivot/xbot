@@ -829,6 +829,15 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 		content = ch.ConvertFeishuCard(content)
 	}
 
+	// GenUI: the channel tool bridge (or a tool) pushes TSX code via SendFunc
+	// with metadata genui=true. Forward it as a dedicated "genui" WS message so
+	// the frontend renders it via GenUIBlock (NOT as a text/markdown code block).
+	// Without this, display_html's complete code is delivered as ordinary text
+	// and the committed message shows the TSX source instead of the rendered UI.
+	if msg.Metadata != nil && msg.Metadata["genui"] == "true" {
+		msgType = protocol.MsgTypeGenUI // "genui"
+	}
+
 	wsMsg := protocol.WSMessage{
 		Type:            msgType,
 		ID:              msgID,

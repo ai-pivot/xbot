@@ -800,6 +800,74 @@ func TestSendToWebSocket(t *testing.T) {
 	}
 }
 
+// TestSendGenUIForwardsAsGenuiType verifies that a SendFunc push carrying the
+// genui metadata is forwarded to the client as a "genui" WS message (NOT as
+// plain text). Without this, the complete TSX code is delivered as an ordinary
+// text message and the frontend renders it as a markdown code block after the
+// streaming preview ends (user report: "一开始 stream 期间看得到 genui，
+// genui 的 stream 结束后就变成 code block").
+func TestSendGenUIForwardsAsGenuiType(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+
+	regResp, _ := http.Post(server.URL+"/api/auth/register", "application/json", strings.NewReader(`{"username":"genui","password":"pw"}`))
+	regResp.Body.Close()
+	loginResp, err := http.Post(server.URL+"/api/auth/login", "application/json", strings.NewReader(`{"username":"genui","password":"pw"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginResp.Body.Close()
+
+	var sessionCookie *http.Cookie
+	for _, c := range loginResp.Cookies() {
+		if c.Name == webSessionCookieName {
+			sessionCookie = c
+		}
+	}
+
+	conn := makeWSConnection(t, server.URL, sessionCookie.Name+"="+sessionCookie.Value)
+	time.Sleep(50 * time.Millisecond)
+
+	wc.hub.mu.RLock()
+	var clientCID string
+	for cid := range wc.hub.conns {
+		clientCID = cid
+		break
+	}
+	wc.hub.mu.RUnlock()
+	if clientCID != "" {
+		wc.hub.subscribe(clientCID, sessionRouteKey("web", "web-1"))
+	}
+
+	// Send a genui push — same path as ChannelToolBridge.Execute's SendFunc.
+	code := `export default function App(){return <div/>}`
+	_, err = wc.Send(channel.OutboundMsg{
+		Channel:  "web",
+		ChatID:   "web-1",
+		Content:  code,
+		Metadata: map[string]string{"genui": "true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wsMsg protocol.WSMessage
+	json.Unmarshal(raw, &wsMsg)
+	if wsMsg.Type != "genui" {
+		t.Errorf("expected WS type 'genui', got '%s' — genui push leaked as text", wsMsg.Type)
+	}
+	if wsMsg.Content != code {
+		t.Errorf("expected genui content to carry TSX code, got %q", wsMsg.Content)
+	}
+}
+
 func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	db := newTestDB(t)

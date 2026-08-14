@@ -103,12 +103,9 @@ func (b *ChannelToolBridge) Execute(ctx *tools.ToolContext, input string) (*tool
 
 	// Store the full UI code in Detail so it survives in iteration history —
 	// the frontend rebuilds the UI from Detail on committed/history rendering.
-	detail := result.Content
-	if result.UICode != "" {
-		if detail != "" {
-			detail += "\n"
-		}
-		detail += result.UICode
-	}
+	// ⚠️ Detail must be the PURE TSX source (no Summary prefix): the frontend
+	// extracts the code from tool.detail and feeds it to sucrase — a prefix like
+	// "🎨 UI rendered (5929 chars)\n" makes compilation fail → blank iframe.
+	detail := result.UICode
 	return &tools.ToolResult{Summary: result.Content, Detail: detail, IsError: result.IsError}, nil
 }
