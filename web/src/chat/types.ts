@@ -46,7 +46,7 @@ export type NonEmpty<T> = readonly [T, ...T[]]
 
 export function nonEmptyArr<T>(xs: readonly T[] | null | undefined): NonEmpty<T> | null {
   if (!Array.isArray(xs) || xs.length === 0) return null
-  return xs as NonEmpty<T>
+  return xs as unknown as NonEmpty<T>
 }
 
 // ─── Live 快照（live / frozen 共享的数据形状） ────────────────
@@ -220,6 +220,8 @@ export type DomainEvent =
       readonly iterationsDelta: readonly WebIteration[]
       readonly todos: readonly TodoItem[] | undefined
       readonly subAgents: readonly WebSubAgentProgress[] | undefined
+      /** Token 用量（ContextRing/会话上下文刷新用）。 */
+      readonly tokenUsage: NonNullable<LiveSnapshot['tokenUsage']> | undefined
     }
   | {
       readonly type: 'stream'
