@@ -77,7 +77,7 @@ export interface SessionStore {
   setStatus: (selector: SessionSelector, status: SessionStatus) => void
   refresh: () => Promise<void>
   toggleStar: (id: string) => void
-  createSession: (label?: string, workPath?: string) => Promise<string | null>
+  createSession: (label?: string, workPath?: string, model?: string) => Promise<string | null>
   switchSession: (id: string, channel: string) => Promise<void>
   renameSession: (id: string, channel: string, label: string) => Promise<boolean>
   deleteSession: (id: string, channel: string) => Promise<boolean>

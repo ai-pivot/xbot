@@ -11,7 +11,7 @@
  * workspace) and the dockview host uses `min-h-0 w-full flex-1` to fill the
  * remaining vertical space instead of `h-full w-full`.
  */
-import { render, screen } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
