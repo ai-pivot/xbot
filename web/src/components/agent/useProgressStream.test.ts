@@ -1229,17 +1229,26 @@ describe('cancel: assistant message must not vanish', () => {
     expect(complete).not.toHaveBeenCalled()
   })
 
-  it('cancel → new user msg: committed iterations KEEP the frozen in-flight iteration (content/reasoning/tools)', () => {
+  it('cancel → new user msg: committed iterations KEEP the frozen in-flight iteration, and the NEXT turn is clean (no cross-turn leak)', () => {
     // 用户报告：cancel 后发新 user msg，被 cancel 的 turn 的最新 iter 瞬间消失。
-    // 根因：turn_started(N+1) 的 commitLiveProgressAndReset 只 fold iterationHistory
-    // （不含进行中 iter k+1 —— 它在 current 的流式字段 + activeTools 里，且 freeze()
-    // 已把工具 markError）；随后 resetProgress 无条件 store.reset() 清空 frozen
-    // 快照 → iter k+1 彻底丢失。
-    const complete = vi.fn()
+    // 根因（第一版修复）：commitLiveProgressAndReset 只 fold iterationHistory
+    // （不含进行中 iter k+1），随后 resetProgress 无条件 reset 清空 frozen 快照。
+    // 修复 A：frozen fold（完整保留 iter k+1 到 committed）。
+    // 修复 B 的教训：resetProgress 曾加 frozen 检查跳过 reset → frozen 快照残留
+    // 到下一 turn → 新 turn live 渲染旧 turn 迭代（重复渲染 bug）。
+    // 现在 resetProgress 无条件 reset —— committed 已含完整数据，快照必须清。
+    let lastComplete: [string, WebIteration[]] | undefined
+    let resetProgressRef: (() => void) | undefined
+    const complete = vi.fn((finalText: string, iterations: WebIteration[]) => {
+      lastComplete = [finalText, iterations]
+      // 模拟 AgentPanel.onAssistantComplete：commit 后同步调用 resetProgress
+      resetProgressRef?.()
+    })
     const ms = new MessageStore()
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection, messageStore: ms }),
     )
+    resetProgressRef = result.current.resetProgress
 
     // turn 1: iter1 完成（Grep）→ iter2 开始（Read running）+ 流式文本
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'c1' } })
@@ -1262,7 +1271,8 @@ describe('cancel: assistant message must not vanish', () => {
 
     // committed iterations = [iter1, iter2(folded 完整)] —— iter2 含 content + reasoning + Read 工具
     expect(complete).toHaveBeenCalledTimes(1)
-    const [finalText, iterations] = complete.mock.calls[0]
+    expect(lastComplete).toBeDefined()
+    const [finalText, iterations] = lastComplete!
     expect(finalText).toBe('')
     expect(iterations).toHaveLength(2)
     expect(iterations[0].iteration).toBe(1)
@@ -1270,8 +1280,11 @@ describe('cancel: assistant message must not vanish', () => {
     expect(iterations[1].content).toBe('进行中文本')
     expect(iterations[1].reasoning).toBe('思考2')
     expect(iterations[1].tools.some((t: { name: string }) => t.name === 'Read')).toBe(true)
-    // frozen 快照保留（resetProgress 冻结保护）——LiveIteration 仍可渲染 current
-    expect(result.current.progressSnapshot.phase).toBe('frozen')
+    // 修复：resetProgress 无条件 reset —— frozen 快照在 commit 后被清空
+    // （数据已在 committed iterations，快照不再残留）——新 turn 的 live 干净，
+    // 不会渲染旧 turn 的迭代（用户报告：发新消息后旧 turn 迭代在 user msg 后重复渲染）。
+    expect(result.current.progressSnapshot.phase).not.toBe('frozen')
+    expect(result.current.progressSnapshot.iterationHistory).toHaveLength(0)
   })
 
   // ── Turn-ID / Iteration-ID continuity assertions ──

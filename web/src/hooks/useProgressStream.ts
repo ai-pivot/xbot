@@ -566,17 +566,15 @@ export function useProgressStream({
       // freeze()-induced flicker; that is obsolete since f4c43a45 — the
       // frozen-phase null check in liveMessage was removed, and reset()
       // inside flushSync renders committed + cleared-live atomically.
-      // FROZEN guard: turn_started's commit path also calls complete →
-      // resetProgress, but a cancelled (frozen) store must NOT be wiped here —
-      // commitLiveProgressAndReset already folded the in-flight iteration into
-      // the committed message, and the frozen snapshot is the only live record
-      // of it (wiping it made the latest iteration vanish the moment the user
-      // sent the next message — user report: cancel 后发新 user msg 最新 iter
-      // 瞬间消失). commitLiveProgressAndReset's own frozen guard (phase !==
-      // frozen) runs AFTER this callback, so it cannot protect the store.
-      if (store.getSnapshot().phase !== 'frozen') {
-        store.reset()
-      }
+      // ⚠️ ALWAYS reset here, even for a frozen (cancelled) store: the frozen
+      // content is committed BEFORE this callback runs (commitLiveProgressAndReset
+      // folds the frozen in-flight iteration into the committed message), so
+      // the frozen snapshot is NOT the only copy of the data anymore. Keeping
+      // it would leak the previous turn's iterations into the NEXT turn's live
+      // (user report: 发新消息后上个 turn 的 agent 迭代在新 user msg 后重复
+      // 渲染 —— resetProgress frozen 检查导致 ProgressStore 残留 frozen 状态，
+      // turn N+1 的 live 渲染了 turn N 的迭代).
+      store.reset()
     },
   }
 }
