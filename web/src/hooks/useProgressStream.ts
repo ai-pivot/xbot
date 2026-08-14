@@ -661,12 +661,22 @@ function commitLiveProgressAndReset(
     if (text || iters.length > 0) {
       let commitText = text
       let commitIters = iters
-      if (snap.phase === 'frozen' && text && iters.length === 0) {
+      // Fold the live text into the last committed iteration's content.
+      // v55 rendering: when a message HAS iterations, the top-level content is
+      // NOT rendered — content must live inside an iteration. This is the
+      // fallback for turn_started-lost commits AND the AskUser WaitingUser
+      // case: there iterationHistory is EMPTY (no next iteration triggered
+      // attachIterationDelta, so the completed iteration's delta never reached
+      // the frontend) — the iteration's text/reasoning live only in
+      // snap.content / snap.reasoning and MUST be folded here or they vanish
+      // after the turn commits (user report: "askuser 渲染后迭代的 content 和
+      // reasoning 消失").
+      if (text && commitIters.length === 0) {
         commitIters = [{ iteration: 1, content: text, reasoning: liveReasoning, tools: [], toolCount: 0 }]
         commitText = ''
-      } else if (snap.phase === 'frozen' && text && iters.length > 0 && !iters[iters.length - 1].content) {
-        commitIters = iters.map((it, i) =>
-          i === iters.length - 1 ? { ...it, content: text } : it
+      } else if (text && commitIters.length > 0 && !commitIters[commitIters.length - 1].content) {
+        commitIters = commitIters.map((it, i) =>
+          i === commitIters.length - 1 ? { ...it, content: text } : it
         )
         commitText = ''
       }

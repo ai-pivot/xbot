@@ -159,4 +159,67 @@ describe('切换会话 hydration 还原 live iter', () => {
     expect(completeArgs![1]).toHaveLength(2)
     expect(completeArgs![1][completeArgs![1].length - 1].content).toBe('Done processing notification.')
   })
+
+  it('AskUser WaitingUser: committed iterations KEEP the iteration content/reasoning', async () => {
+    // 回归：AskUser WaitingUser 时 iterationHistory 为空（没有下一次迭代触发
+    // attachIterationDelta，delta 从未到前端）——迭代的 content/reasoning 只在
+    // snap.content / snap.lastReasoning。turn_started(2) commit 时必须 fold 进
+    // 迭代，否则 v55 渲染（hasIterations=true 不渲染顶层 content）下 content 消失
+    // （用户报告："askuser 渲染后迭代的 content 和 reasoning 消失"）。
+    const ms = new MessageStore()
+    let onMessageCb: ((msg: unknown) => void) | undefined
+    let completeArgs: [string, WebIteration[]] | undefined
+    const ws = {
+      onMessage: (cb: (msg: unknown) => void) => { onMessageCb = cb; return () => {} },
+      rpc: vi.fn(),
+      send: vi.fn(),
+      onConnectionChange: () => () => {},
+      connected: false,
+    } as unknown as WSConnection & { onMessage: (cb: (msg: unknown) => void) => () => void }
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'chat-1',
+        ws,
+        messageStore: ms,
+        onAssistantComplete: (finalText, iterations) => {
+          completeArgs = [finalText, iterations]
+        },
+      }),
+    )
+    // Turn 1: agent 思考（reasoning + content）→ 调用 AskUser → WaitingUser。
+    // iteration_history 为空（AskUser 迭代 delta 未 attach）；content/reasoning 在
+    // 结构化字段。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'user', content: '帮我确认一下' }, chat_id: 'chat-1' },
+    })
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: {
+        phase: 'tool_exec',
+        turn_id: 1,
+        iteration: 1,
+        seq: 2,
+        chat_id: 'chat-1',
+        content: '我需要确认一下你的选择',
+        reasoning: '用户需要做决定',
+        completed_tools: [{ name: 'AskUser', label: 'AskUser', status: 'done', iteration: 1 }],
+        // 无 iteration_history —— AskUser WaitingUser 场景
+      },
+    })
+    // getSnapshot() 是 RAF-throttled：等 mutation flush 到 snapshot，否则
+    // commitLiveProgressAndReset 读到空快照 → hasVisibleProgress=false → 不 commit。
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // 用户回答 → 新 turn 开始 → commitLiveProgressAndReset 提交 turn 1。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 2, turn_start: { trigger: 'user', content: '选 A' }, chat_id: 'chat-1' },
+    })
+    await waitFor(() => expect(completeArgs).toBeDefined())
+    // 顶层 content 被 fold 进迭代（commitText 清空）；迭代保留 content + reasoning。
+    expect(completeArgs![0]).toBe('')
+    expect(completeArgs![1]).toHaveLength(1)
+    expect(completeArgs![1][0].content).toBe('我需要确认一下你的选择')
+    expect(completeArgs![1][0].reasoning).toBe('用户需要做决定')
+  })
 })

@@ -216,7 +216,11 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                         setOtherInputs((prev) => ({ ...prev, [key]: e.target.value }))
                       }
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey && allAnswered) {
+                        // IME guard: Enter while composing (Chinese/Japanese
+                        // candidate selection) must NEVER submit — that would
+                        // fire mid-typing. isComposing is set by the browser
+                        // during IME composition.
+                        if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.shiftKey && allAnswered) {
                           e.preventDefault()
                           submit()
                         }
@@ -239,7 +243,8 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                         setFreeInputs((prev) => ({ ...prev, [key]: e.target.value }))
                       }
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey && allAnswered) {
+                        // IME guard — Enter while composing must not submit.
+                        if (e.key === 'Enter' && !e.nativeEvent.isComposing && !e.shiftKey && allAnswered) {
                           e.preventDefault()
                           submit()
                         }
@@ -254,7 +259,8 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                         setFreeInputs((prev) => ({ ...prev, [key]: e.target.value }))
                       }
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && allAnswered) {
+                        // IME guard — Ctrl+Enter while composing must not submit.
+                        if (e.key === 'Enter' && !e.nativeEvent.isComposing && (e.metaKey || e.ctrlKey) && allAnswered) {
                           e.preventDefault()
                           submit()
                         }

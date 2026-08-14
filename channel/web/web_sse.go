@@ -581,7 +581,14 @@ func writeSSEEvent(client *Client, msg protocol.WSMessage) error {
 func writeSSEHeartbeat(client *Client) error {
 	armSSEWriteDeadline(client)
 	defer clearSSEWriteDeadline(client)
-	if _, err := io.WriteString(client.sseWriter(), ":heartbeat\n\n"); err != nil {
+	// Send a REAL heartbeat event (not a comment line). EventSource treats
+	// comment lines (":heartbeat") as connection keep-alives but fires NO JS
+	// event for them — the frontend cannot detect a half-open connection
+	// (server stuck / network cut without TCP reset) where heartbeats simply
+	// stop arriving. A real `event: heartbeat` lets the frontend watchdog
+	// update its last-activity timestamp and declare the connection dead when
+	// heartbeats stop (→ reconnect + "Reconnecting…" banner).
+	if _, err := io.WriteString(client.sseWriter(), "event: heartbeat\ndata: {}\n\n"); err != nil {
 		return fmt.Errorf("write SSE heartbeat: %w", err)
 	}
 	return flushSSE(client)

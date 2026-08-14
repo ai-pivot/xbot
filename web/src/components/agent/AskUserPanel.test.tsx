@@ -136,4 +136,41 @@ describe('AskUserPanel', () => {
     )
     expect(screen.getByRole('radio', { name: 'a' })).toHaveAttribute('aria-checked', 'false')
   })
+
+  it('does NOT submit on Enter while IME is composing (Chinese input candidate selection)', () => {
+    renderWithProviders(
+      <AskUserPanel
+        prompt={makePrompt([{ question: 'Q', options: ['a', 'b'] }])}
+        onRespond={onRespond}
+        onCancel={onCancel}
+      />,
+    )
+    const free = screen.getByPlaceholderText('Type a custom reply…')
+    fireEvent.change(free, { target: { value: '中' } })
+    // IME composing Enter (candidate confirm) must NOT submit. isComposing is a
+    // direct KeyboardEvent property (fireEvent merges it onto the event object).
+    fireEvent.keyDown(free, { key: 'Enter', isComposing: true })
+    expect(onRespond).not.toHaveBeenCalled()
+    // A real Enter (not composing) with a complete answer DOES submit.
+    fireEvent.keyDown(free, { key: 'Enter', isComposing: false })
+    expect(onRespond).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT submit on plain Enter when only some questions are answered', () => {
+    renderWithProviders(
+      <AskUserPanel
+        prompt={makePrompt([
+          { question: 'Q1', options: ['a'] },
+          { question: 'Q2', options: ['x', 'y'] },
+        ])}
+        onRespond={onRespond}
+        onCancel={onCancel}
+      />,
+    )
+    // Two questions → two free inputs; use the first.
+    const free = screen.getAllByPlaceholderText('Type a custom reply…')[0]
+    fireEvent.change(free, { target: { value: 'partial' } })
+    fireEvent.keyDown(free, { key: 'Enter', isComposing: false })
+    expect(onRespond).not.toHaveBeenCalled() // Q2 unanswered → allAnswered=false
+  })
 })

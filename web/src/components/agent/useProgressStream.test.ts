@@ -1329,7 +1329,14 @@ describe('cancel: assistant message must not vanish', () => {
     })
 
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete.mock.calls[0][0]).toBe('old reply')
+    // v55: text is folded into the committed iteration's content (the top-level
+    // content is NOT rendered when the message has iterations — otherwise the
+    // reply would vanish). Assert the fold: top-level text empty, iteration
+    // content carries 'old reply'.
+    expect(complete.mock.calls[0][0]).toBe('')
+    expect(complete.mock.calls[0][1]).toHaveLength(1)
+    expect(complete.mock.calls[0][1][0].content).toBe('old reply')
+    expect(complete.mock.calls[0][1][0].tools).toHaveLength(1)
     // After commit, resetProgress calls store.freeze() — but turn_started
     // continues processing and sets phase='thinking' for the new turn.
     // The key assertion is that complete was called with the right content
@@ -1355,7 +1362,9 @@ describe('cancel: assistant message must not vanish', () => {
     // commitLiveProgressAndReset commits the live content.
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 2, chat_id: 'web:c1' } })
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete.mock.calls[0][0]).toBe('streaming reply')
+    // v55: text folded into the committed iteration's content.
+    expect(complete.mock.calls[0][0]).toBe('')
+    expect(complete.mock.calls[0][1][0].content).toBe('streaming reply')
 
     // Text event for turn 1 arrives AFTER turn_started(2).
     // Before fix: finalizedRef was reset to false → text event called
