@@ -394,4 +394,28 @@ describe('MessageStore — patchUserById / removeById / loadMore 合并', () => 
     const assistant = s.toRows().find((r) => r.role === 'assistant')
     expect(assistant?.iterations.map((i) => i.iteration)).toEqual([1, 2]) // union
   })
+
+  it('beginTurn 带 requestID → 精确绑定对应乐观 user（V2：快速连发 + REST 慢不绑错）', () => {
+    const s = new MessageStore()
+    // 两条消息连发，REST 响应都未回（都 persist=false）→ 都在 pending
+    s.setUser(0, user('opt-1', '第一条', 0, { persisted: false, requestID: 'r1' }))
+    s.setUser(0, user('opt-2', '第二条', 0, { persisted: false, requestID: 'r2' }))
+    // turn_started(msg1) 带 requestID=r1 —— 必须绑定 opt-1（msg1），不能绑最后一条 opt-2
+    s.beginTurn(361, { requestID: 'r1' })
+    const rows = s.toRows()
+    expect(rows.find((r) => r.id === 'opt-1')?.turnID).toBe(361)
+    // opt-2 仍在 pending（底部），未被错误绑定到 turn 361
+    expect(rows.find((r) => r.id === 'opt-2')?.turnID).not.toBe(361)
+    expect(rows[rows.length - 1].id).toBe('opt-2')
+  })
+
+  it('beginTurn 无 requestID → fallback 绑定最后一条未持久化 user（向后兼容）', () => {
+    const s = new MessageStore()
+    s.setUser(0, user('opt-1', '第一条', 0, { persisted: false, requestID: 'r1' }))
+    s.setUser(0, user('opt-2', '第二条', 0, { persisted: false, requestID: 'r2' }))
+    s.beginTurn(361)
+    const rows = s.toRows()
+    expect(rows.find((r) => r.id === 'opt-2')?.turnID).toBe(361)
+    expect(rows[rows.length - 1].id).toBe('opt-1')
+  })
 })

@@ -736,3 +736,52 @@ describe('ProgressStore.dumpFullState', () => {
     expect(round.current.iterationHistory).toHaveLength(1)
   })
 })
+
+// ── V1: replace() MUST NOT raise eventSeq (hydration watermark pollution) ──
+// AGENTS.md 教训 + resetAndReplace() 注释：eventSeq 是 SSE progress.seq 水印，
+// 只能由实时 SSE 事件驱动。active_progress.seq 是 per-Run 计数器（旧 Run 可达
+// 数千），下一个 Run 的 ProgressSeq 从 1 重新开始。replace() 取 max 会把
+// store.eventSeq 抬到旧 Run 水印 → 新 Run 所有事件（seq=1,2,...）被 stale-
+// watermark 检查（setStructuredTools `seq <= eventSeq`）全部丢弃 → 新 turn
+// 永不渲染（用户报告：切换会话后 turn 消失，rowsLen=0）。
+describe('replace() 不得抬高 eventSeq（V1 — hydration 水印污染）', () => {
+  let rafCbs: Array<() => void>
+  let rafSpy: ReturnType<typeof vi.spyOn>
+  beforeEach(() => {
+    rafCbs = []
+    rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      rafCbs.push(cb as () => void)
+      return rafCbs.length
+    })
+  })
+  afterEach(() => rafSpy.mockRestore())
+  function flushRaf() {
+    rafCbs.splice(0, rafCbs.length).forEach((cb) => cb())
+  }
+
+  it('hydration replace 旧 Run 快照（高 eventSeq）不得让新 Run 的 seq=1 事件被误判 stale', () => {
+    const store = new ProgressStore()
+    // 模拟 session 切换 hydration：active_progress 是旧 Run 快照（eventSeq 高，如 5000）
+    store.replace({ eventSeq: 5000, phase: 'tool_exec', iteration: 7, activeTools: [tool({ name: 'Shell', status: 'running' })] })
+    flushRaf()
+    // 新 Run 的 ProgressSeq 从 1 重新开始 —— 第一个 SSE 事件 seq=1
+    store.setStructuredTools({ eventSeq: 1, phase: 'thinking', iteration: 1 })
+    flushRaf()
+    const snap = store.getSnapshot()
+    // replace 不得抬 watermark（否则 1 <= 5000 → stale 分支 → phase 不更新 → 新 turn 消失）
+    expect(snap.phase).toBe('thinking')
+    expect(snap.iteration).toBe(1)
+    // eventSeq 由 live SSE 事件驱动（1），不是被旧 Run 快照抬高
+    expect(snap.eventSeq).toBe(1)
+  })
+
+  it('replace 自身不应改变 eventSeq（只恢复数据，不参与 stale 水印）', () => {
+    const store = new ProgressStore()
+    store.setStructuredTools({ eventSeq: 3, phase: 'thinking', iteration: 1 })
+    flushRaf()
+    store.replace({ eventSeq: 999, phase: 'tool_exec', iteration: 2 })
+    flushRaf()
+    // replace 的 eventSeq=999 不得覆盖实时水印 3
+    expect(store.getSnapshot().eventSeq).toBe(3)
+  })
+})

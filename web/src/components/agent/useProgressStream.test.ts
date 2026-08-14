@@ -1979,4 +1979,55 @@ describe('message render consistency（渲染完整性综合审查）', () => {
     // 不卡死：live 有内容/迭代
     expect(live.iterations.length).toBeGreaterThan(0)
   })
+
+  it('V3: historyReady gate 期间丢弃的早期迭代在 ready 后补写（缓冲回放）', () => {
+    const ms = new MessageStore()
+    const { rerender } = renderHook(
+      ({ ready }) =>
+        useProgressStream({
+          chatID: 'c1',
+          ws: currentWS as unknown as WSConnection,
+          messageStore: ms,
+          historyReady: ready,
+        }),
+      { initialProps: { ready: false } },
+    )
+    // gate 期间：turn_started + 迭代 1 到达（MessageStore 被 gate 丢弃，但
+    // ProgressStore 一直累积 —— 迭代 1 是增量 delta，丢弃后无其他来源可补）
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 10, phase: 'turn_started' } })
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 10, phase: 'tool_exec', iteration: 1, iteration_history: [{ iteration: 1, content: '第一步', tools: [{ name: 'Shell', status: 'done' }] }] } })
+    expect(ms.hasLive(10)).toBe(false) // gate：live 不写入（V3 根因）
+    // history ready → 补写 gate 期间被丢弃的 live（不依赖后续新事件）
+    rerender({ ready: true })
+    expect(ms.hasLive(10)).toBe(true)
+    expect(ms.getLive(10)?.iterations.map((i) => i.iteration)).toContain(1)
+    expect(ms.getLive(10)?.iterations.find((i) => i.iteration === 1)?.content).toBe('第一步')
+  })
+
+  it('V4: turn_started 丢失 → progress_structured fallback 补 beginTurn 绑定乐观 user', () => {
+    const ms = new MessageStore()
+    renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, messageStore: ms }))
+    // 乐观 user（sendMessage 后 REST 未回）在 pending
+    ms.setUser(0, { id: 'opt-2', role: 'user', content: '触发 turn 2', turnID: 0, iterations: [], timestamp: '', isPartial: false, persisted: false, requestID: 'r2' } as never)
+    // turn_started(2) 被 SSE drop/coalesce → 直接收到 progress_structured(turn_id=2)
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 2, phase: 'tool_exec', iteration: 1, active_tools: [{ name: 'Shell', status: 'running' }] } })
+    const rows = ms.toRows()
+    expect(ms.hasLive(2)).toBe(true)
+    // V4 修复前：fallback 不调 beginTurn → opt-2 保持 turnID=0 渲染到底部（违反 R2）
+    expect(rows.find((r) => r.id === 'opt-2')?.turnID).toBe(2)
+  })
+
+  it('V2 接线: turn_started 带 requestID → MessageStore 精确绑定乐观 user（不绑最后一条）', () => {
+    const ms = new MessageStore()
+    renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, messageStore: ms }))
+    // 两条乐观 user 连发（REST 都未回 → 都在 pending）
+    ms.setUser(0, { id: 'opt-1', role: 'user', content: '第一条', turnID: 0, iterations: [], timestamp: '', isPartial: false, persisted: false, requestID: 'r1' } as never)
+    ms.setUser(0, { id: 'opt-2', role: 'user', content: '第二条', turnID: 0, iterations: [], timestamp: '', isPartial: false, persisted: false, requestID: 'r2' } as never)
+    // turn_started(msg1) 带 request_id=r1 → 必须绑定 opt-1（不能绑最后一条 opt-2）
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 5, phase: 'turn_started', turn_start: { trigger: 'user', request_id: 'r1' } } })
+    const rows = ms.toRows()
+    expect(rows.find((r) => r.id === 'opt-1')?.turnID).toBe(5)
+    expect(rows.find((r) => r.id === 'opt-2')?.turnID).not.toBe(5)
+    expect(rows[rows.length - 1].id).toBe('opt-2') // opt-2 仍在 pending
+  })
 })

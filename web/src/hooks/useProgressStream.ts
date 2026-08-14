@@ -471,6 +471,24 @@ export function useProgressStream({
     }
   }, [store, initialProgress, disabled, progressCacheKey, messageStore])
 
+  // V3: historyReady false→true 时补写 gate 期间被丢弃的 live（缓冲回放）。
+  // historyReady gate（writeLiveToMessageStore 开头 return）丢弃的是 MessageStore
+  // 写入；ProgressStore 一直累积。若 turn 在 fetch 后、ready 前开始且
+  // active_progress=null（hydration 无兜底），gate 期间到达的早期迭代是增量
+  // delta —— 丢弃后无其他来源可补（onIterationGap 只查内部 gap，不覆盖
+  // "从未收到"）。ready 后立即用 ProgressStore 当前快照同步一次 MessageStore
+  // （等效 hydration），早期迭代不丢失。仅当 MessageStore 尚无该 turn 的 live
+  // 时补写（有 live = 后续 SSE 已接管，快照可能滞后，不能覆盖）。
+  useEffect(() => {
+    if (!historyReady || !messageStore || disabled) return
+    if (store.lastTurnID <= 0) return
+    const cur = store.dumpFullState().current
+    if (!hasVisibleProgress(cur)) return
+    if (messageStore.hasLive(store.lastTurnID)) return
+    writeLiveToMessageStore(messageStore, store, { turn_id: store.lastTurnID, seq: cur.eventSeq }, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyReady, messageStore, disabled])
+
   // Dispose on unmount.
   useEffect(() => {
     return () => {
@@ -1029,8 +1047,14 @@ function handleProgressMessage(
         if (p.turn_id) {
           turnStartedRef?.current?.(p.turn_id, ts?.trigger ?? 'user')
           store.lastTurnID = p.turn_id
-          // MessageStore：新 turn 开始（AskUser resume 保留 iterations）
-          messageStore?.beginTurn(p.turn_id, { resume: ts?.trigger === 'resume' })
+          // MessageStore：新 turn 开始（AskUser resume 保留 iterations）。
+          // V2：传 TurnStartInfo.RequestID（JSON tag `request_id`，protocol/
+          // events.go:155）—— beginTurn 的 bindUser 按 requestID 精确绑定乐观
+          // user（快速连发 + REST 慢不绑错）。
+          messageStore?.beginTurn(p.turn_id, {
+            resume: ts?.trigger === 'resume',
+            requestID: ts?.request_id,
+          })
         }
         // Reset phaseDone guard for the new turn. finalizedRef was already
         // handled above (kept true if commit happened, reset to false otherwise).
@@ -1292,9 +1316,14 @@ function handleProgressMessage(
           commitLiveProgressAndReset(store, completeRef?.current, messageStore)
         }
         store.lastTurnID = p.turn_id
-        // NO optimistic user messages: user rows come from backend user_echo
-        // with authoritative turn_id. turn_started only needs to notify the
-        // panel (typing/active-turn state) — nothing to bind.
+        // V4: turn_started 丢失时必须补 messageStore.beginTurn —— 否则乐观 user
+        // 永不绑定（保持 turnID=0 → sortKey 归 MAX_SAFE_INTEGER 渲染到底部，而
+        // 该 turn 的 assistant 行按真实 turnID 排中间 → user 出现在 assistant
+        // 之后，违反 R2）。beginTurn 内部 commitStaleLives 已跳过已被 commit 的
+        // 旧 turn（commitLiveProgressAndReset 清掉了非 frozen live），安全幂等。
+        // 无 ts（turn_started 丢失）→ 无法取 requestID → beginTurn 走 last-pending
+        // fallback（与 turn_started 分支语义一致，绑定触发本 turn 的乐观 user）。
+        messageStore?.beginTurn(p.turn_id)
         if (turnStartedRef?.current) {
           turnStartedRef.current(p.turn_id, 'user')
         }

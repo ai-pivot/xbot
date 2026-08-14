@@ -929,7 +929,13 @@ export class ProgressStore {
         if (maxIter > draft.lastIter) draft.lastIter = maxIter
       }
       // Assign remaining fields, but NEVER downgrade client-side tracking:
-      // - eventSeq: take max (server seq may be older than what SSE already delivered)
+      // - eventSeq: MUST NOT be taken from the replaced snapshot — eventSeq is
+      //   the SSE progress.seq watermark (per-Run counter), driven ONLY by live
+      //   SSE events. active_progress.seq is the OLD Run's counter (can reach
+      //   thousands); the NEXT Run's ProgressSeq restarts at 1. Taking the max
+      //   freezes the new Run's events (seq <= eventSeq → stale-watermark drop
+      //   → the new turn never renders — AGENTS.md "progressStore.replace()
+      //   绝不能抬高 eventSeq"). Mirrors resetAndReplace (:487-495).
       // - lastIter: already computed above from merged iterationHistory
       // - todos: preserve existing — historyProgressToLive returns todos:[] when
       //   the server omits the field, which would overwrite cached todos
@@ -937,9 +943,7 @@ export class ProgressStore {
       //   setStructuredTools or the explicit `phase==='done'` replace path,
       //   not by the general replace/Object.assign.
       const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, todos: _td, ...rest } = next
-      if (next.eventSeq !== undefined && next.eventSeq > draft.eventSeq) {
-        draft.eventSeq = next.eventSeq
-      }
+      void _es
       Object.assign(draft, rest)
     })
   }

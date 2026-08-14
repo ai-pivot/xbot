@@ -117,7 +117,7 @@ export class MessageStore {
    * commitLiveProgressAndReset —— 旧 turn 的 text 事件可能丢失，live 是唯一
    * 显示）。
    */
-  beginTurn(turnID: number, opts?: { resume?: boolean }): void {
+  beginTurn(turnID: number, opts?: { resume?: boolean; requestID?: string }): void {
     this.commitStaleLives(turnID)
     const existing = this.slots.get(turnID)
     if (existing) {
@@ -133,16 +133,33 @@ export class MessageStore {
       this.slots.set(turnID, { turnID })
       this.insertTurnID(turnID)
     }
-    // 绑定最后一条未持久化 user（turn_started 是权威绑定点）
-    this.bindUser(turnID)
+    // 绑定最后一条未持久化 user（turn_started 是权威绑定点）。
+    // V2：优先按 turn_started 携带的 requestID 精确匹配（TurnStartInfo.RequestID，
+    // protocol/events.go:155 "for user-typed: match optimistic message"）—— 否则
+    // 两条消息快速连发 + REST 响应慢时，turn_started(msg1) 会从后往前误绑 msg2
+    // （弱网下短暂顺序错乱）。无 requestID 时 fallback 最后一条（向后兼容）。
+    this.bindUser(turnID, opts?.requestID)
     this.bumpCommitted()
     this.invalidate()
   }
 
-  /** turn_started 时把最后一条未持久化 user 绑定到该 turn（原 bindLastUserToTurn）。 */
-  bindUser(turnID: number): void {
+  /** turn_started 时绑定未持久化 user 到该 turn（原 bindLastUserToTurn）。 */
+  bindUser(turnID: number, requestID?: string): void {
     const slot = this.slots.get(turnID)
     if (!slot || slot.user) return
+    if (requestID) {
+      // 精确匹配：turn_started 的 requestID 指向触发它的乐观 user。
+      for (let i = this.pendingUsers.length - 1; i >= 0; i--) {
+        const u = this.pendingUsers[i]
+        if (u.role === 'user' && !u.persisted && u.requestID === requestID) {
+          this.pendingUsers.splice(i, 1)
+          slot.user = { ...u, turnID }
+          this.bumpCommitted()
+          return
+        }
+      }
+      // requestID 没匹配到（echo/REST 已绑定或已移除）—— 回退最后一条。
+    }
     for (let i = this.pendingUsers.length - 1; i >= 0; i--) {
       const u = this.pendingUsers[i]
       if (u.role === 'user' && !u.persisted) {
