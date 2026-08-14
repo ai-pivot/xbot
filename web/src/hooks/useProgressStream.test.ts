@@ -316,4 +316,60 @@ describe('切换会话 hydration 还原 live iter', () => {
       expect(live?.activeTools?.map((t) => t.name)).toContain('Grep')
     })
   })
+
+  it('切换会话后 finalizedTurnIDRef 必须重置 —— 否则新会话所有事件被旧会话 turn_id 拦截（SSE 更新但前端卡死回归）', async () => {
+    // 用户报告："侧边栏切换会话后，dev tool 里 SSE 一直在更新进度，但是前端
+    // 卡死在特定 stream 进度（可能思考内容输出了一半，然后卡死）。gap 检测
+    // 追赶逻辑为何不生效？"
+    // 根因：turn_id 是【每会话独立】计数器（agent.go ss.turnIDSeq，DB 恢复）。
+    // 会话 A 的 turn_id 可能已到 50（finalizedTurnIDRef=50）。切换会话 B 后
+    // useProgressStream 的 chatID-change effect 只重置 finalizedRef/
+    // phaseDoneRef/turnCommittedRef，【漏了 finalizedTurnIDRef】→ 残留 50。
+    // 会话 B 的 turn_id 从 1 开始 → 所有事件 streamTurnID=1,2,...<=50 被
+    // stream_content/progress_structured 分支的 finalizedTurnID 检查无条件
+    // 丢弃 → SSE 持续到达（dev tool 可见）但前端 store 永不更新（卡死）。
+    // gap 检测不生效：事件根本没进 store，迭代号从不前进，gap 永不触发。
+    const ms = new MessageStore()
+    let onMessageCb: ((msg: unknown) => void) | undefined
+    const ws = {
+      onMessage: (cb: (msg: unknown) => void) => { onMessageCb = cb; return () => {} },
+      rpc: vi.fn(),
+      send: vi.fn(),
+      onConnectionChange: () => () => {},
+      connected: false,
+    } as unknown as WSConnection & { onMessage: (cb: (msg: unknown) => void) => () => void }
+    const { rerender } = renderHook(
+      ({ chatID }: { chatID: string }) =>
+        useProgressStream({ chatID, ws, messageStore: ms }),
+      { initialProps: { chatID: 'chat-A' } },
+    )
+    // 会话 A：turn_id 推到 50（PhaseDone 设置 finalizedTurnIDRef=50）。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 50, turn_start: { trigger: 'user', content: 'hi' }, chat_id: 'chat-A' },
+    })
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'done', turn_id: 50, iteration: 1, seq: 2, chat_id: 'chat-A' },
+    })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // 切换会话 B（turn_id 从 1 开始）。
+    rerender({ chatID: 'chat-B' })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // 会话 B：turn_started + stream_content。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'user', content: 'hello' }, chat_id: 'chat-B' },
+    })
+    onMessageCb?.({
+      type: 'stream_content',
+      progress: { turn_id: 1, iteration: 1, stream_content: '新会话的思考内容' },
+    })
+    // 修复后：会话 B 的 stream_content 必须写入 store（live content 更新）。
+    await waitFor(() => {
+      const live = ms.getLive(1)
+      expect(live).toBeDefined()
+      expect(live?.content).toContain('新会话的思考内容')
+    })
+  })
 })

@@ -239,6 +239,15 @@ export function useProgressStream({
       finalizedRef.current = false
       phaseDoneRef.current = false
       turnCommittedRef.current = false
+      // ⚠️ 必须重置 finalizedTurnIDRef —— turn_id 是【每会话独立】计数器
+      // （agent.go ss.turnIDSeq，DB 恢复）。会话 A 的 turn_id 可能已到 50，
+      // 切到会话 B（turn_id 从 1 开始）后若不重置，残留 50 会让会话 B 的
+      // 所有事件（turn_id <= 50）被 stream_content/progress_structured 分支
+      // 的 finalizedTurnID 检查无条件丢弃 → SSE 持续到达但前端永不更新
+      // （用户报告："切换会话后卡死，dev tool SSE 一直更新进度，思考内容
+      // 输出一半后卡死。gap 检测不生效"——事件根本没进 store，迭代号从不
+      // 前进，gap 永不触发）。
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = 0
     }
   }, [chatID, store])
 
@@ -310,6 +319,10 @@ export function useProgressStream({
       // can be stale and re-render wrong progress (user report: "全是缓存的错误"
       // — 思考中卡死、进度跳变). Always full-reset and let hydration restore.
       store.fullReset()
+      // ⚠️ 必须重置 finalizedTurnIDRef（同 useEffect 的 chatID 分支）：turn_id
+      // 每会话独立，旧会话残留的 turn_id 会拦截新会话所有事件（SSE 更新但
+      // 前端卡死）。
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = 0
     } else {
       // CRITICAL: NEVER wipe a turn that is actively streaming. This branch
       // fires when `disabled` toggles (SSE subscription/connection state flips)
