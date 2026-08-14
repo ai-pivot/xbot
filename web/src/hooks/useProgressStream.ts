@@ -1184,15 +1184,25 @@ function handleProgressMessage(
         //   · 若不传入，最后迭代从未进入 store.iterationHistory → live 消失；
         //     text 事件才从 progress_history 重建 → 闪烁（用户报告："最后一个
         //     iter 结束之后消失再出现造成闪烁，iter 产生了就不要消失"）。
+        // ⚠️⚠️ 必须走 normalizeWebIteration（与普通结构化事件 line 1271 一致）：
+        //   后端 Go nil slice 序列化为 JSON null（tools/todos 可能为 null）。
+        //   raw 直塞 store（`as WebIteration[]` 类型断言骗过 tsc）会让渲染层
+        //   `.tools.map()` 抛 TypeError → React 整树卸载 → 整个页面 DOM 消失
+        //   （用户报告："cancel 或 turn 结束，整个 web 页面所有 dom 消失"）。
         if (Array.isArray(p.iteration_history) && p.iteration_history.length > 0) {
-          store.setStructuredTools({
-            eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
-            iterationHistory: p.iteration_history as WebIteration[],
-          })
-          // 同步 MessageStore live（方案 A Step 3）—— 普通结构化事件在事件末尾
-          // 调 writeLiveToMessageStore，PhaseDone 分支若不同步，最后迭代只存在于
-          // ProgressStore，MessageStore 的 live 行缺它 → 渲染消失 → 闪烁。
-          writeLiveToMessageStore(messageStore, store, p, historyReady)
+          const doneIterHistory = p.iteration_history
+            .map(normalizeWebIteration)
+            .filter(Boolean) as WebIteration[]
+          if (doneIterHistory.length > 0) {
+            store.setStructuredTools({
+              eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
+              iterationHistory: doneIterHistory,
+            })
+            // 同步 MessageStore live（方案 A Step 3）—— 普通结构化事件在事件末尾
+            // 调 writeLiveToMessageStore，PhaseDone 分支若不同步，最后迭代只存在于
+            // ProgressStore，MessageStore 的 live 行缺它 → 渲染消失 → 闪烁。
+            writeLiveToMessageStore(messageStore, store, p, historyReady)
+          }
         }
         return
       }

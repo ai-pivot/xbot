@@ -29,12 +29,12 @@ describe('stripGenUIPrefix', () => {
 
 describe('genUICode', () => {
   it('returns tool.detail (prefix-stripped) for committed tools without args', () => {
-    const tool = { name: 'display_html', label: '', status: 'done' as const, elapsedMs: 10, detail: `🎨 UI rendered (42 chars)\n${TSX}` }
+    const tool = { name: 'display_html', label: '', status: 'done' as const, elapsedMs: 10, summary: '', args: '', toolHints: '', detail: `🎨 UI rendered (42 chars)\n${TSX}` }
     expect(genUICode(tool)).toBe(TSX)
   })
 
   it('returns empty for tools without detail', () => {
-    expect(genUICode({ name: 'x', label: '', status: 'done' as const, elapsedMs: 0 })).toBe('')
+    expect(genUICode({ name: 'x', label: '', status: 'done' as const, elapsedMs: 0, summary: '', args: '', toolHints: '' })).toBe('')
     expect(genUICode(null)).toBe('')
   })
 })

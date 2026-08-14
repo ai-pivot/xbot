@@ -526,4 +526,62 @@ describe('切换会话 hydration 还原 live iter', () => {
       iters.some((it) => it.iteration === 1 && String(it.content ?? '').includes('最后回复内容'))
     expect(hasLastIter(liveIters) || hasLastIter(rowIters)).toBe(true)
   })
+
+  it('PhaseDone iteration_history 必须走 normalize —— Go nil slice 序列化为 null 的 tools 直塞 store 会让渲染层 .map() 崩溃（整页 DOM 消失回归）', async () => {
+    // 用户报告："cancel 会话或者 agent turn 结束，整个 web 页面所有 dom 消失"。
+    // 根因：PhaseDone 分支曾用 `p.iteration_history as WebIteration[]` 类型断言
+    // 直塞 store（跳过 normalizeWebIteration）。后端 Go 的 nil slice 序列化为
+    // JSON null —— iteration_history[].tools 可能为 null。渲染层对 null 调
+    // .map() 抛 TypeError → React commit 阶段同步错误 → 整树卸载 → 页面空白。
+    // 修复：与普通结构化事件一致，走 .map(normalizeWebIteration).filter(Boolean)。
+    const ms = new MessageStore()
+    let onMessageCb: ((msg: unknown) => void) | undefined
+    const ws = {
+      onMessage: (cb: (msg: unknown) => void) => { onMessageCb = cb; return () => {} },
+      rpc: vi.fn(),
+      send: vi.fn(),
+      onConnectionChange: () => () => {},
+      connected: false,
+    } as unknown as WSConnection & { onMessage: (cb: (msg: unknown) => void) => () => void }
+    renderHook(() =>
+      useProgressStream({
+        chatID: 'chat-1',
+        ws,
+        messageStore: ms,
+      }),
+    )
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, turn_start: { trigger: 'user', content: 'hi' }, chat_id: 'chat-1' },
+    })
+    // PhaseDone 携带的最后迭代快照 —— tools 为 null（Go nil slice 的 JSON 序列化）。
+    onMessageCb?.({
+      type: 'progress_structured',
+      progress: {
+        phase: 'done',
+        turn_id: 1,
+        iteration: 1,
+        seq: 3,
+        chat_id: 'chat-1',
+        iteration_history: [
+          {
+            iteration: 1,
+            phase: 'done',
+            content: '最后回复内容',
+            reasoning: null,
+            tools: null,
+          },
+        ],
+      },
+    })
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    // 修复后：normalize 把 null tools 转为 []（渲染层 .map() 不崩），content 保留。
+    const snap = ms.getLive(1)
+    const iters = snap?.iterations ?? []
+    expect(iters.length).toBeGreaterThan(0)
+    expect(Array.isArray(iters[0].tools)).toBe(true)
+    expect(iters[0].tools).toEqual([])
+    // toRows()（渲染层数据源）也不能抛错 —— 模拟渲染读取路径。
+    expect(() => ms.toRows()).not.toThrow()
+  })
 })

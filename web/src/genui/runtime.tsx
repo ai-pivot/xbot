@@ -586,6 +586,10 @@ export const XBOT_UI = {
   useGenUITheme,
   // motion — framer-motion (already a dependency).
   motion,
+  // Icon — lucide subset. MUST be in the aggregate: LLM-generated code uses
+  // <XBOT_UI.Icon name="check" size={16}/> — a missing key renders undefined
+  // and React throws "Element type is invalid" at render time.
+  Icon,
 }
 
 export default XBOT_UI
