@@ -93,25 +93,28 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     expect(main).not.toBeNull()
 
     // Fix 1: main is a flex COLUMN — InfoBar spans the full row width and the
-    // dockview sits below it. Without flex-col the nowrap InfoBar and the
+    // dockview sits above it. Without flex-col the nowrap InfoBar and the
     // w-full dockview would share a row and overflow the screen.
     expect(main!.className).toContain('flex-col')
 
-    // Order: children[0] = InfoBar, children[1] = dockview host.
+    // Order: children[0] = dockview host, children[1] = InfoBar (status-bar
+    // style at the BOTTOM, VSCode-like).
     expect(main!.children.length).toBeGreaterThanOrEqual(2)
-    const infoBar = main!.children[0]
-    const dockview = main!.children[1]
-    // InfoBar is a slim fixed-height banner.
-    expect(infoBar.className).toContain('h-6')
-    // Fix 2: dockview host fills the REMAINING space (flex-1 min-h-0), not
+    const dockview = main!.children[0]
+    const infoBar = main!.children[1]
+    // Dockview host fills the REMAINING space (flex-1 min-h-0), not
     // h-full w-full — h-full would overflow since the InfoBar consumed height.
     expect(dockview.className).toContain('flex-1')
     expect(dockview.className).toContain('min-h-0')
     expect(dockview.className).toContain('w-full')
     expect(dockview.className).not.toContain('h-full')
+    // InfoBar is a slim fixed-height status bar BELOW the workspace.
+    expect(infoBar.className).toContain('h-6')
+    // It uses a TOP border (sits below the workspace), not a bottom one.
+    expect(infoBar.className).toContain('border-t')
   })
 
-  it('renders no info bar when the zone is empty', () => {
+  it('ALWAYS renders the info bar (empty zone shows a stable empty strip — no sudden pop-in)', () => {
     renderWithProviders(
       <PluginWidgetsContext.Provider value={{ zones: {}, components: [], revision: 0 }}>
         <AppShell />
@@ -121,7 +124,9 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     const main = document.querySelector('main')
     expect(main).not.toBeNull()
     expect(main!.className).toContain('flex-col')
-    // No info bar banner when there is no plugin content.
-    expect(main!.children[0].className).not.toContain('h-6')
+    // The info bar is ALWAYS rendered as a fixed-height strip, even with no
+    // plugin content — so it never suddenly pops in/out.
+    const infoBar = main!.children[1]
+    expect(infoBar.className).toContain('h-6')
   })
 })
