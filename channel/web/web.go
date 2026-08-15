@@ -1909,12 +1909,14 @@ func (wc *WebChannel) handleStatic(w http.ResponseWriter, r *http.Request) {
 //   - index.html → no-cache (must revalidate so new bundle hashes are picked up).
 //   - assets/* (content-hashed) → immutable, 1y.
 func (wc *WebChannel) serveStaticFile(w http.ResponseWriter, r *http.Request) {
+	p := strings.TrimPrefix(r.URL.Path, "/")
 	switch {
-	case r.URL.Path == "/sw.js" || r.URL.Path == "sw.js":
+	// SW 脚本（sw.js / sw2.js / 未来的 swN.js）：一律 no-store。
+	case p == "sw.js" || (strings.HasPrefix(p, "sw") && strings.HasSuffix(p, ".js") && len(p) <= 8):
 		w.Header().Set("Cache-Control", "no-store")
-	case r.URL.Path == "/index.html" || r.URL.Path == "/" || r.URL.Path == "":
+	case p == "index.html" || p == "":
 		w.Header().Set("Cache-Control", "no-cache")
-	case strings.HasPrefix(r.URL.Path, "/assets/"):
+	case strings.HasPrefix(p, "assets/"):
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	}
 	http.FileServer(http.Dir(wc.staticDir)).ServeHTTP(w, r)
