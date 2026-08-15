@@ -14,7 +14,7 @@
  *   I6 无 null   — normalize 已保证（reducer 零格式防御）
  */
 
-import type { WebIteration } from '@/types/shared'
+import type { WebIteration, WebToolProgress } from '@/types/shared'
 import {
   EMPTY_LIVE,
   commitViaFold,
@@ -25,6 +25,7 @@ import {
   turnID,
   type ChatState,
   type DomainEvent,
+  type IterNum,
   type LiveSnapshot,
   type Turn,
   type TurnID,
@@ -344,7 +345,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const live = t.phase.data
       // T3 + 权威：iterations = union(live.iterations, progressHistory)，
       // 同号 progressHistory 覆盖（后端权威），append-only。
-      const iterations = mergeIterations(live.iterations, ev.progressHistory)
+      const iterations0 = mergeIterations(live.iterations, ev.progressHistory)
+      // cancel：正在执行的工具（activeTools/streamingTools，从未完成 ——
+      // progress_history 不含它们）折进最后迭代（标 error）—— "已渲染内容
+      // 永不消失"（cancel 后正在执行的 tool 保留在最新迭代）。不折则丢失。
+      const inFlight = [...live.activeTools, ...live.streamingTools].filter((t) =>
+        t.status === 'running' || t.status === 'generating' || t.status === 'pending')
+      const iterations = inFlight.length > 0
+        ? foldInFlightTools(iterations0, inFlight, live.iter)
+        : iterations0
       // 最终回复文本：text 顶层 content（v55 唯一权威值）> cancel 定格 content。
       const finalText = ev.content !== null ? ev.content : nonEmptyStr(live.content)
 
@@ -615,6 +624,28 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       return { ...s, pendingUsers }
     }
   }
+}
+
+/** text_final(cancel) 时把正在执行的工具（标 error）折进最后迭代 ——
+ *  progress_history 不含从未完成的工具，不折会丢（"已渲染内容永不消失"）。 */
+function foldInFlightTools(
+  its: readonly WebIteration[],
+  tools: readonly WebToolProgress[],
+  lastIter: IterNum,
+): readonly WebIteration[] {
+  const errTools = tools.map((t) => ({ ...t, status: 'error' as const }))
+  const arr = [...its]
+  const idx = arr.findIndex((it) => it.iteration === lastIter)
+  if (idx >= 0) {
+    arr[idx] = {
+      ...arr[idx],
+      tools: [...arr[idx].tools, ...errTools],
+      toolCount: (arr[idx].toolCount ?? 0) + errTools.length,
+    }
+  } else {
+    arr.push({ iteration: lastIter, content: '', reasoning: '', tools: errTools, toolCount: errTools.length })
+  }
+  return arr
 }
 
 // ─── foldPhase：live 数据 → committed/frozen（turn_started 收尸） ──

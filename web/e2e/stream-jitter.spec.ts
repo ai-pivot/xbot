@@ -106,6 +106,9 @@ test.describe('Streaming scroll jitter', () => {
 
     // Start streaming: send session(busy) + initial stream_content
     await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
+    // 真实后端总在 stream 前发 turn_started —— 状态机 stream case 依赖 activeTurn
+    //（无 turn 时丢弃）。旧架构 useProgressStream 无此要求（mock 曾是平铺协议）。
+    await emitSSE(page, 'progress_structured', { type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:chat-1' } })
     await emitSSE(page, 'stream_content', { type: 'stream_content', progress: { stream_content: 'Starting...', chat_id: 'web:chat-1', streaming: true } })
 
     // Wait for live message to appear
@@ -300,6 +303,8 @@ test.describe('Streaming scroll jitter', () => {
 
     // Also simulate streaming (content grows at the bottom — shouldn't affect top)
     await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
+    // 状态机 stream case 依赖 activeTurn —— 补 turn_started（真实后端协议）。
+    await emitSSE(page, 'progress_structured', { type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:chat-1' } })
     await emitSSE(page, 'stream_content', { type: 'stream_content', progress: { stream_content: 'Streaming at bottom...', chat_id: 'web:chat-1', streaming: true } })
     await page.waitForTimeout(300)
 

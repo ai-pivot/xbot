@@ -139,6 +139,12 @@ function assistantRow(t: Turn): Row | null {
       // 空壳 frozen（完全无产出）不出行 —— Bug 6/8 的"幽灵行"根治点。
       if (!hasVisibleOutput(t.phase.data)) return null
       const d = t.phase.data
+      // cancel 时正在执行的工具（activeTools，已标 error）折进最后迭代 ——
+      // rowsToChatMessages 不向渲染层传 activeTools（liveProgress 在 frozen 时
+      // 为空），TurnBody 从 iterations 读工具。保证"已渲染内容永不消失"
+      //（cancel 后正在执行的 tool 保留在最新迭代 —— 用户/测试要求）。
+      const errTools = d.activeTools.map(markError)
+      const iterations = foldToolsIntoIterations(d.iterations, errTools, d.iter)
       return {
         kind: 'frozen',
         id: `turn-${t.id}`,
@@ -146,8 +152,8 @@ function assistantRow(t: Turn): Row | null {
         isPartial: true,
         content: d.content,
         reasoning: d.reasoning,
-        iterations: d.iterations,
-        activeTools: d.activeTools.map(markError),
+        iterations,
+        activeTools: errTools,
         genui: d.genui,
         lastIter: d.iter,
       }
@@ -213,4 +219,26 @@ function markError(t: WebToolProgress): WebToolProgress {
   return t.status === 'running' || t.status === 'generating' || t.status === 'pending'
     ? { ...t, status: 'error' }
     : t
+}
+
+/** cancel 时正在执行的工具折进最后迭代（渲染层从 iterations 读工具）。
+ *  最后迭代已存在 → 合并 tools；不存在（iterations 空）→ 追加含工具的迭代。 */
+function foldToolsIntoIterations(
+  its: readonly WebIteration[],
+  tools: readonly WebToolProgress[],
+  lastIter: number,
+): readonly WebIteration[] {
+  if (tools.length === 0) return its
+  const arr = [...its]
+  const idx = arr.findIndex((it) => it.iteration === lastIter)
+  if (idx >= 0) {
+    arr[idx] = {
+      ...arr[idx],
+      tools: [...arr[idx].tools, ...tools],
+      toolCount: (arr[idx].toolCount ?? 0) + tools.length,
+    }
+  } else {
+    arr.push({ iteration: lastIter, content: '', reasoning: '', tools: [...tools], toolCount: tools.length })
+  }
+  return arr
 }
