@@ -101,8 +101,8 @@ func TestChannelToolBridge_UICodeExecute(t *testing.T) {
 	}
 
 	ctx := &tools.ToolContext{
-		Channel: "web",
-		ChatID:  "chat-1",
+		Channel:  "web",
+		ChatID:   "chat-1",
 		SendFunc: sendFunc,
 	}
 	result, err := bridge.Execute(ctx, `{"code":"export default function App(){return <div/>}"}`)

@@ -15,7 +15,7 @@ PLUGIN_DIR := $(HOME)/.xbot/plugins/$(PLUGIN_ID)
 
 build:
 	@mkdir -p bin
-	go build -o $(BINARY) ./cmd/genui-plugin
+	go build -o $(BINARY) .
 
 test:
 	go test ./...

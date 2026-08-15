@@ -51,6 +51,9 @@ vi.mock('@/chat/useAgentChatState', () => ({
     busyFallback: false,
     tokenPrompt: null,
     reset: vi.fn(),
+    sendUser: vi.fn(),
+    ackUser: vi.fn(),
+    failUser: vi.fn(),
   }),
 }))
 vi.mock('@/hooks/useTodos', () => ({ useTodos: () => ({ total: 0 }) }))
@@ -151,7 +154,7 @@ describe('AgentPanel rewind', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'rewind' }))
 
-    await waitFor(() => expect(mocks.chat.sendMessage).toHaveBeenCalledWith('edited message', undefined))
+    await waitFor(() => expect(mocks.chat.sendMessage).toHaveBeenCalledWith('edited message', undefined, expect.any(String)))
     expect(mocks.rewindHistory).toHaveBeenCalledWith(
       { channel: 'web', chatID: 'chat-1' },
       42,

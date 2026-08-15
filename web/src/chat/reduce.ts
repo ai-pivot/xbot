@@ -526,9 +526,34 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       return { ...s, pendingUsers: [...s.pendingUsers, ev.row] }
     }
 
-    // ── user_echo：后端权威回声（带 turn_id）。turn 已存在 → 直接挂 user；
-    //     turn 未创建（echo 先于 turn_started）→ 入 pending（turnHint 绑定）。 ──
+    // ── user_echo：后端权威回显（带 turn_id）。已绑定同 request -> 幂等；
+    //     turn 已存在但 user 空 -> 挂 user；否则入 pending（turnHint 绑定）。 ──
+    // ⚠️ 核心修复（双 user 行 + 双思考中）：user_echo 是"同一条 user 消息的
+    //    权威回显"，绝不产生【第二条】渲染行 —— 渲染源是状态机 pendingUsers
+    //    （user_sent 直通）+ turns[].user（turn_started/echo 绑定）。当
+    //    turn_started 已把乐观 user（requestID=R）绑定进 turn 后，迟到且同 R
+    //    的 user_echo 若被追加进 pendingUsers，会与 turn.user 构成同消息两行
+    //    （Bug：用户看到 user msg + 思考中 完整复制两份）。幂等规则：
+    //      - 同 R 已在 turn.user       → 返回不变（权威回显，零副作用）
+    //      - 同 R 已在 pendingUsers     → 就地用 echo 替换（清 sending、收敛），不新增（仍一行）
     case 'user_echo': {
+      // ① 幂等：同 R 已在 turn.user（turn_started 已绑定乐观行）→ 权威回显，
+      //    零副作用返回（绝不再产生第二行 —— 双 user+双思考中根治）。
+      if (ev.row.requestID !== null) {
+        for (const t of s.turns.values()) {
+          if (t.user && t.user.requestID === ev.row.requestID) return s
+        }
+        // ② pending 已有同 R 行（乐观 user_sent / 更早 echo）：就地用 echo
+        // 权威字段替换（清 sending、回填 turnHint/turn 归属），不新增行 ——
+        // 仍保持单行（echo 取代乐观语义，历史的 append 副本在此收敛）。
+        const existingIdx = s.pendingUsers.findIndex((u) => u.requestID === ev.row.requestID)
+        if (existingIdx >= 0) {
+          const pendingUsers = s.pendingUsers.slice()
+          pendingUsers[existingIdx] = { ...pendingUsers[existingIdx], ...ev.row, id: pendingUsers[existingIdx].id }
+          return { ...s, pendingUsers }
+        }
+      }
+      // ③ hint 指向未绑定 turn → 直接挂 user。
       const hint = ev.row.turnHint
       if (hint !== undefined) {
         const tid = turnID(hint)
@@ -537,11 +562,8 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           return withTurn(s, tid, (tt) => ({ ...tt, user: ev.row }))
         }
       }
-      // 去重：同 requestID 的乐观行已被 echo 取代（echo 是权威）。
-      const filtered = ev.row.requestID !== null
-        ? s.pendingUsers.filter((u) => u.requestID !== ev.row.requestID)
-        : s.pendingUsers
-      return { ...s, pendingUsers: [...filtered, ev.row] }
+      // ④ 全新 user（无未绑定 pending）→ 入 pending（turnHint 后续绑定）。
+      return { ...s, pendingUsers: [...s.pendingUsers, ev.row] }
     }
 
     // ── user_ack：REST 发送成功 —— 清 sending、回填服务端信息 ──

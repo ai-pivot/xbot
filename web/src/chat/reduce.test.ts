@@ -432,6 +432,40 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     else throw new Error('live turn died across history_replaced')
   })
 
+  it('REPRO: turn 已绑定乐观 user 后,user_echo(同 request) 不得再产生 pending 行（双 user 行+双思考中）', () => {
+    // 真实发送时序：user_sent(乐观 R) → turn_started(R 绑定进 turn1.user) → user_echo(同 R)。
+    // 漏洞：user_echo 到达时 turn1.user 已非 null → 不入 turn，反被追加进 pendingUsers
+    // → deriveRows 输出两条 user（turn1.user + pending echo）→ 双 user 行 + 双思考中。
+    const opt = { id: 'opt-1', content: '用户消息', isNotification: false, queued: false, sending: false, requestID: 'req-1' }
+    const s = run([
+      { type: 'user_sent', row: { ...opt, content: '用户消息' as never, timestamp: 't', turnHint: undefined, dbID: undefined } },
+      started(T1, 'req-1'), // requestID 绑定到 turn1.user，pending 移除
+      iteration1(T1, '流式中'), // 思考中（thinking live）
+    ]) as ChatState
+    // 乐观已绑定：turn1.user 就位、pending 空。
+    expect(s.turns.get(T1)?.user?.requestID ?? null).toBe('req-1')
+    expect(s.pendingUsers).toHaveLength(0)
+    // user_echo：同 requestID、turnHint 指向已绑定 turn —— 不应再产生第二行。
+    const s2 = reduce(s, {
+      type: 'user_echo',
+      row: {
+        id: 'echo-1', content: '用户消息' as never, timestamp: 't',
+        isNotification: false, queued: false, sending: false,
+        requestID: 'req-1', turnHint: 1, dbID: undefined,
+      } ,
+    })
+    const userRows = deriveRows(s2).filter((r) => r.kind === 'user')
+    // 修复后：同一条 user 恰好一行（turn 内已绑定，echo 幂等去重）。
+    expect(userRows).toHaveLength(1)
+    expect(s2.pendingUsers).toHaveLength(0)
+    // 渲染顺序：user 在 live(思考中) 之前、无 pending 底部幽灵。
+    const idxUser = deriveRows(s2).findIndex((r) => r.kind === 'user')
+    const idxLive = deriveRows(s2).findIndex((r) => r.kind === 'live')
+    expect(idxUser).toBeGreaterThanOrEqual(0)
+    expect(idxUser).toBeLessThan(idxLive)
+    expect(deriveRows(s2)).toHaveLength(2) // user + live assistant
+  })
+
   it('history_replaced hydration：ev.active 创建 live turn（刷新恢复 in-flight）', () => {
     const s = reduce(initialChatState('chat-1'), {
       type: 'history_replaced',
