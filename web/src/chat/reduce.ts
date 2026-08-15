@@ -245,8 +245,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         tokenUsage: ev.tokenUsage ?? prev.tokenUsage,
       }
       // I5 基准推进：成功处理后 lastSeq = ev.seq（重放检测的比较基准）。
+      // 会话级 todos：事件携带时同步 state.todos（turn 结束后存活）。
       const next = withTurn(s, ev.turnID, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
-      return { ...next, lastSeq: ev.seq }
+      return { ...next, lastSeq: ev.seq, todos: ev.todos ?? s.todos }
     }
 
     // ── stream：仅 active turn；全量替换（无追加/回退歧义） ──
@@ -324,9 +325,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         streaming: false,
         todos: ev.todos ?? prev.todos,
       }
-      // I5 基准推进。
+      // I5 基准推进。会话级 todos：事件携带时同步（turn 结束后存活）。
       const next = withTurn(s, ev.turnID, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
-      return { ...next, lastSeq: ev.seq }
+      return { ...next, lastSeq: ev.seq, todos: ev.todos ?? s.todos }
     }
 
     // ── text_final：权威 finalizer —— live/frozen → committed（I2 构造） ──
@@ -418,6 +419,14 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       //    DB 快照还没有 assistant 行）时不得覆盖状态机的 committed /
       //    frozen-with-output（集成测试 C 抓出：发 user msg 后上一 turn 的
       //    agent 消息消失 —— 空壳覆盖了唯一数据源）。
+      //    ⚠️ committed/frozen-with-output：union 合并（I4 append-only）—— DB 快照
+      //    可能【过时】（reload/replay_gap 在 turn 运行中拉过一次，DB 只有中间行；
+      //    或最终行尚未持久化）。覆盖会丢最后迭代（用户报告："发新消息后上一
+      //    turn 最后一条迭代消息直接消失"—— 发新消息必然触发 REST ack patchUser
+      //    → messages 变化 → history_replaced，若 chat.messages 含 turn 的过时 DB
+      //    行即复现）。迭代 union（incoming 同号权威覆盖 —— DB 是持久化权威，
+      //    append-only 不减）；content 非空优先（状态机 SSE text 是权威 finalizer；
+      //    DB 空 content 是 tool_summary 中间行）。
       for (const h of ev.turns) {
         const cur = s.turns.get(h.id)
         if (cur && cur.phase.kind === 'live') {
@@ -429,6 +438,8 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           !hasOutput(h.phase.data)
         ) {
           turns.set(h.id, cur) // 空壳不覆盖（状态机数据保全）
+        } else if (cur && cur.phase.kind !== 'live') {
+          turns.set(h.id, mergeTurnData(cur, h)) // union 合并（不丢任何一侧迭代）
         } else {
           turns.set(h.id, h)
         }
@@ -518,7 +529,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           !(u.requestID !== null && [...turns.values()].some((t) => t.user?.requestID === u.requestID)),
       )
 
-      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers }
+      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, todos: ev.todos.length > 0 ? ev.todos : s.todos }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──
@@ -607,6 +618,32 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 }
 
 // ─── foldPhase：live 数据 → committed/frozen（turn_started 收尸） ──
+
+/**
+ * history_replaced step1 的 union 合并：状态机 committed/frozen-with-output ×
+ * incoming（DB）committed/frozen-with-output。迭代 append-only union（incoming
+ * 同号权威覆盖 —— DB 是持久化权威），content 非空优先（状态机 SSE text 是权威
+ * finalizer；DB 空 content 是 tool_summary 中间行）。user 嫁接（保留已有，补
+ * DB 的 dbID 行）。进此函数的两侧都必有输出（空壳已在 step1 前分流），构造
+ * committed 是渲染等价的安全形态。
+ */
+function mergeTurnData(cur: Turn, h: Turn): Turn {
+  const curIts = cur.phase.kind === 'committed' ? cur.phase.payload.iterations : cur.phase.data.iterations
+  const incIts = h.phase.kind === 'committed' ? h.phase.payload.iterations : h.phase.data.iterations
+  const curContent = cur.phase.kind === 'committed' ? cur.phase.payload.content : cur.phase.data.content
+  const incContent = h.phase.kind === 'committed' ? h.phase.payload.content : h.phase.data.content
+  const iterations = mergeIterations(curIts, incIts)
+  const content = curContent !== '' ? curContent : incContent
+  const text = nonEmptyStr(content)
+  const its = nonEmptyArr(iterations)
+  const phase: Turn['phase'] =
+    text !== null
+      ? { kind: 'committed', payload: commitViaText(text, iterations) }
+      : its !== null
+        ? { kind: 'committed', payload: commitViaFold(its, content) }
+        : { kind: 'frozen', data: cur.phase.kind === 'frozen' ? cur.phase.data : h.phase.kind === 'frozen' ? h.phase.data : { ...EMPTY_LIVE } }
+  return { id: h.id, user: cur.user ?? h.user, phase, requestID: cur.requestID ?? h.requestID }
+}
 
 function foldPhase(data: LiveSnapshot): Turn['phase'] {
   const its = nonEmptyArr(data.iterations)

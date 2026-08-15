@@ -130,7 +130,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       legacy: [],
       turns: [],
       active: null,
-      lastSeq: null,
+      lastSeq: null, todos: [],
     })
     // 会话 B：turn_id=1 的事件正常写入。
     const sB2 = run([started(T1), iteration1(T1, '会话B内容')], sB)
@@ -376,7 +376,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       ],
       turns: [],
       active: null,
-      lastSeq: null,
+      lastSeq: null, todos: [],
     })
     const rows = deriveRows(s)
     expect(rows).toHaveLength(2)
@@ -398,7 +398,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       legacy: [],
       turns: [], // DB 快照还没有 turn 1（appendAssistant 接线已移除）
       active: null,
-      lastSeq: null,
+      lastSeq: null, todos: [],
     })
     // 修复后：turn 1 的 committed 数据保留（不消失）。
     const t1 = s1.turns.get(T1)
@@ -414,7 +414,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       started(T1),
       { type: 'stream', turnID: T1, seq: 5 as never, content: '流式前半', reasoning: undefined, streamingTools: undefined, genui: undefined },
     ])
-    const s1 = reduce(s0, { type: 'history_replaced', legacy: [], turns: [], active: null, lastSeq: null })
+    const s1 = reduce(s0, { type: 'history_replaced', legacy: [], turns: [], active: null, lastSeq: null, todos: [] })
     // 修复后：live turn 存活 + activeTurn 保持 → 后续 stream 继续接收。
     expect(s1.activeTurn).toBe(T1)
     expect(s1.turns.get(T1)?.phase.kind).toBe('live')
@@ -513,6 +513,58 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(deriveRows(s3)).toHaveLength(2) // user + live(思考中)，无第二份
   })
 
+  it('REPRO: 发新消息后上一 turn 最后迭代消失 —— 过时 DB 中间快照不得覆盖状态机 committed', () => {
+    // 场景：turn 1 已完成（状态机 committed：iterations=[1,2] 全量，text='最终回复'）。
+    // chat.messages 里的 turn 1 DB 行是【过时中间快照】（reload/replay_gap 在 turn
+    // 运行中拉过一次，DB 只有中间行 iterations=[1]；或最终行尚未持久化）。
+    // 发新消息 → REST ack patchUser → messages 变化 → history_replaced 携带过时
+    // 快照 → step1 else 分支用 incoming 覆盖 committed → 迭代 2 丢失（用户报告：
+    // "发送新消息之后上一个 agent turn 最后一条迭代消息直接消失"）。
+    const iterEv = (turn: ReturnType<typeof turnID>, iter: number, content: string): DomainEvent => ({
+      type: 'iteration', turnID: turn, iter: iterNum(iter), seq: (10 + iter) as never,
+      content: undefined, reasoning: undefined, activeTools: [], completedTools: [],
+      iterationsDelta: [{ iteration: iter, content, reasoning: '', tools: [], toolCount: 0 }],
+      todos: undefined, subAgents: undefined, tokenUsage: undefined,
+    })
+    const s0 = run([
+      started(T1),
+      iterEv(T1, 1, '迭代1内容'),
+      iterEv(T1, 2, '迭代2内容（最后迭代）'),
+      textFinal(T1, '最终回复'),
+    ])
+    expect(s0.turns.get(T1)?.phase.kind).toBe('committed')
+    expect((s0.turns.get(T1)!.phase as { payload: { iterations: { iteration: number }[] } }).payload.iterations).toHaveLength(2)
+    // DB 过时中间快照：只有迭代 1（最终迭代 2 的行尚未持久化），非空壳。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [{
+        id: T1,
+        user: { id: 'db-u1', content: 'q1' as never, timestamp: 't', isNotification: false, queued: false, sending: false, requestID: null, turnHint: undefined, dbID: 11 },
+        phase: {
+          kind: 'committed',
+          payload: {
+            via: 'fold',
+            iterations: [{ iteration: 1, content: '迭代1内容', reasoning: '', tools: [], toolCount: 0 }] as never,
+            content: '',
+          },
+        },
+        requestID: null,
+      }],
+      active: null,
+      lastSeq: null, todos: [],
+    })
+    const t1 = s1.turns.get(T1)
+    if (t1?.phase.kind !== 'committed') throw new Error('turn 1 must stay committed')
+    // 修复后：迭代 union —— 最后迭代 2 必须保留（append-only，DB 快照落后不减数据）。
+    expect(t1.phase.payload.iterations.map((it) => it.iteration)).toEqual([1, 2])
+    expect(t1.phase.payload.iterations[1].content).toBe('迭代2内容（最后迭代）')
+    // text 的最终回复不丢（incoming 空 content 不得清空已有）。
+    if (t1.phase.payload.via === 'text') expect(t1.phase.payload.content).toBe('最终回复')
+    const rows = deriveRows(s1)
+    expect(rows.filter((r) => r.kind === 'committed')[0]?.iterations).toHaveLength(2)
+  })
+
   it('history_replaced hydration：ev.active 创建 live turn（刷新恢复 in-flight）', () => {
     const s = reduce(initialChatState('chat-1'), {
       type: 'history_replaced',
@@ -534,7 +586,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
           tokenUsage: null,
         },
       },
-      lastSeq: null,
+      lastSeq: null, todos: [],
     })
     expect(s.activeTurn).toBe(turnID(7))
     const t = s.turns.get(turnID(7))

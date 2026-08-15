@@ -165,7 +165,9 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
 
   // ── phase_done（PhaseDone：turn 结束，text/cancel ack 随后到） ──
   if (phase === 'done') {
-    if (!turn || !seq) return null
+    // seq 缺失（E2E mock 省略）宽容：事件照常产出（reduce 的 I5 对 null seq
+    // 不推进基准）。真实后端 ProgressEvent 总带 seq。
+    if (!turn) return null
     // 后端 recordFinalIteration attach 的最后迭代快照（可能 null/缺失）。
     const rawHist = Array.isArray(p.iteration_history) ? p.iteration_history : []
     const normalized = rawHist.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null)
@@ -182,7 +184,9 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
   }
 
   // ── iteration（普通结构化事件：thinking / tool_exec / …） ──
-  if (!turn || !seq) return null
+  // seq 缺失（E2E mock 省略）宽容：事件照常产出（reduce 的 I5 对 null seq
+  // 不推进基准 —— `ev.seq <= s.lastSeq` 对 null 恒 false，不误杀）。
+  if (!turn) return null
   const rawDelta = Array.isArray(p.iteration_history) ? p.iteration_history : []
   // token_usage（ContextRing/会话上下文刷新）。
   const rawTU = asRecord(p.token_usage)

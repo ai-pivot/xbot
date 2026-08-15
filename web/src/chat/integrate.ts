@@ -98,7 +98,7 @@ export function historyToReplaced(
   // 或 DB 行已 commit）；恢复成 live 会让后续事件错挂（切回会话后
   // "看不到新进度"的帮凶之一）。
   let active: { turnID: ReturnType<typeof mkTurnID>; snapshot: LiveSnapshot } | null = null
-  const hp = initialProgress as { turn_id?: number; phase?: string; iteration?: number; stream_content?: string; content?: string; reasoning_stream_content?: string; iteration_history?: unknown[]; active_tools?: unknown[]; streaming?: boolean } | null
+  const hp = initialProgress as { turn_id?: number; phase?: string; iteration?: number; stream_content?: string; content?: string; reasoning_stream_content?: string; iteration_history?: unknown[]; active_tools?: unknown[]; streaming?: boolean; todos?: unknown } | null
   if (
     hp &&
     typeof hp.turn_id === 'number' &&
@@ -109,8 +109,19 @@ export function historyToReplaced(
     const live = historyProgressToLive(hp as never)
     active = { turnID: mkTurnID(hp.turn_id), snapshot: snapshotToLive(live) }
   }
+  // 会话级 todos：快照（含 phase=done）携带的 todos 必须提取 —— turn 已结束
+  // 但 todos 存活渲染（E2E："todos survive after turn completes / session
+  // switch"；active 分支排除 done 会让 todos 随之丢失 —— 14 个 E2E 失败的
+  // 共同根因之一）。
+  const snapshotTodos = Array.isArray(hp?.todos)
+    ? (hp.todos as { id?: unknown; text?: unknown; done?: unknown }[]).map((t) => ({
+        id: typeof t.id === 'number' ? t.id : 0,
+        text: typeof t.text === 'string' ? t.text : '',
+        done: Boolean(t.done),
+      }))
+    : []
 
-  return { type: 'history_replaced', legacy, turns, active, lastSeq: null }
+  return { type: 'history_replaced', legacy, turns, active, lastSeq: null, todos: snapshotTodos }
 }
 
 function snapshotToLive(live: ProgressSnapshot): LiveSnapshot {
@@ -221,9 +232,13 @@ export function rowsToChatMessages(rows: readonly Row[]): ChatMessage[] {
  */
 export function liveProgressFromState(s: ChatState): ProgressSnapshot {
   const activeTurn = s.activeTurn
-  if (activeTurn === null) return { ...EMPTY_PROGRESS_SNAPSHOT }
+  // 会话级 todos：无 active turn（turn 已结束）时也返回 todos —— todos 在
+  // turn 生命周期外存活（E2E："todos survive after turn completes / text
+  // event / session switch"）。其余字段在无 live 时空。
+  const todos = [...s.todos]
+  if (activeTurn === null) return { ...EMPTY_PROGRESS_SNAPSHOT, todos }
   const t = s.turns.get(activeTurn)
-  if (!t || t.phase.kind !== 'live') return { ...EMPTY_PROGRESS_SNAPSHOT }
+  if (!t || t.phase.kind !== 'live') return { ...EMPTY_PROGRESS_SNAPSHOT, todos }
   const d = t.phase.data
   return {
     ...EMPTY_PROGRESS_SNAPSHOT,
@@ -240,7 +255,9 @@ export function liveProgressFromState(s: ChatState): ProgressSnapshot {
     streamingTools: [...d.streamingTools],
     iterationHistory: [...d.iterations],
     genuiContent: d.genui,
-    todos: [...d.todos],
+    // todos 统一读会话级（iteration/phase_done 事件同步写入；live data 的
+    // todos 仅作 hydration union 的中间态）。
+    todos,
     subAgents: [...d.subAgents],
     tokenUsage: d.tokenUsage,
     turnID: t.id,

@@ -188,10 +188,15 @@ export interface ChatState {
   readonly busy: boolean
   /** 待绑定的乐观 user 队列（turn_started 之前存在 —— 发送瞬间创建）。 */
   readonly pendingUsers: readonly UserRow[]
+  /** 会话级 todos —— turn 结束（text/idle）后存活（E2E 语义："todos survive
+   *  after turn completes / text event / session switch"）。progress 事件
+   * （iteration/phase_done）携带 todos 时更新；hydration（active_progress，
+   * 含 phase=done 快照）回填。渲染层（liveProgressFromState）统一读此处。 */
+  readonly todos: readonly TodoItem[]
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [] }
+  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [] }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────
@@ -211,7 +216,8 @@ export type DomainEvent =
       readonly type: 'iteration'
       readonly turnID: TurnID
       readonly iter: IterNum
-      readonly seq: EventSeq
+      /** null = 事件未携带 seq（E2E mock 省略）—— I5 基准不推进（无重放检测）。 */
+      readonly seq: EventSeq | null
       readonly content: string | undefined
       readonly reasoning: string | undefined
       readonly activeTools: readonly WebToolProgress[]
@@ -237,7 +243,8 @@ export type DomainEvent =
   | {
       readonly type: 'phase_done'
       readonly turnID: TurnID
-      readonly seq: EventSeq
+      /** null = 事件未携带 seq（E2E mock 省略）—— I5 基准不推进。 */
+      readonly seq: EventSeq | null
       /** 后端 recordFinalIteration 补记的最后迭代（normalize 后无 null 数组）。 */
       readonly finalIteration: WebIteration | null
       readonly todos: readonly TodoItem[] | undefined
@@ -259,6 +266,9 @@ export type DomainEvent =
       readonly turns: readonly Turn[]
       readonly active: { readonly turnID: TurnID; readonly snapshot: LiveSnapshot } | null
       readonly lastSeq: EventSeq | null
+      /** 会话级 todos（active_progress 快照携带 —— 含 phase=done 的快照，
+       *  turn 已结束但 todos 存活渲染）。 */
+      readonly todos: readonly TodoItem[]
     }
   | {
       /** 乐观 user 创建（本地事件，非 SSE）。 */
