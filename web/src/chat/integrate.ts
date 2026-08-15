@@ -155,8 +155,13 @@ export function rowsToChatMessages(rows: readonly Row[]): ChatMessage[] {
           iterations: [],
           timestamp: r.timestamp,
           isPartial: false,
-          turnID: r.turnID === Number.MAX_SAFE_INTEGER ? 0 : r.turnID,
-          persisted: true,
+          // pendingUsers 行的 turnID 是 MAX_SAFE_INTEGER（deriveRows 排序用）——
+          // 保持原值不改为 0：MessageList 按 turnID 排序时大值在底部（发送中
+          // 行出现在最后，与 deriveRows 的排列一致）。改为 0 会让它排到所有
+          // turn 前面（0 最小）→ 发送中行出现在最上方，发送完毕绑定真实
+          // turnID 后"瞬移"回底部（用户报告的闪烁）。
+          turnID: r.turnID,
+          persisted: r.turnID !== Number.MAX_SAFE_INTEGER,
           isNotification: r.isNotification,
           queued: r.queued,
           sending: r.sending,
