@@ -466,6 +466,53 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(deriveRows(s2)).toHaveLength(2) // user + live assistant
   })
 
+  it('REPRO: 后端真实字段(id)的 user_echo 经 normalizeEvent —— requestID 必须解析非 null（字段名不匹配 = 双行根因）', () => {
+    // 后端 web_inbound.go 把 requestID 序列化到 WSMessage.ID（json:"id"），不带
+    // request_id 字段。normalizeUserEcho 旧代码只读 env.request_id → 永远 null →
+    // 幂等检查全部跳过 → echo 无条件追加 pendingUsers → 双 user 行 + 双思考中
+    //（第二个思考中是 busy placeholder，px-3 缩进多空格 —— 用户报告）。
+    // 兜底失效场景（"概率很低"）：REST ack 先到把 MessageStore 行标 persisted →
+    // useChatMessages 的 echo 处理跳过 → history_replaced 不触发 → 状态机 echo 残留。
+    const raw = {
+      type: 'user_echo',
+      id: 'req-9',
+      content: '用户消息',
+      ts: 1723600000,
+      turn_id: 3,
+      chat_id: 'chat-1',
+    }
+    const evs = normalizeEvent(raw, 'chat-1')
+    expect(evs).not.toBeNull()
+    expect(evs).toHaveLength(1)
+    const ev = evs![0] as { type: string; row: { requestID: string | null; turnHint: number | undefined } }
+    expect(ev.type).toBe('user_echo')
+    // requestID 必须从后端的 id 字段解析出来 —— 这是幂等去重的前提。
+    expect(ev.row.requestID).toBe('req-9')
+    expect(ev.row.turnHint).toBe(3)
+  })
+
+  it('REPRO: REST ack 先到竞态 —— 真实字段 echo(id) 不产生第二行（双 user+双思考中根治）', () => {
+    // 完整时序（用户偶发场景）：user_sent → REST ack（turnHint 回填）→
+    // turn_started 绑定 → user_echo（后端 id 字段）→ 幂等，绝不双行。
+    const s0 = run([
+      { type: 'user_sent', row: { id: 'opt-1', content: '用户消息' as never, timestamp: 't', isNotification: false, queued: false, sending: false, requestID: 'req-9', turnHint: undefined, dbID: undefined } },
+      { type: 'user_ack', requestID: 'req-9', dbID: 0, turnHint: 3, queued: false },
+    ])
+    const evs = normalizeEvent({
+      type: 'user_echo', id: 'req-9', content: '用户消息', ts: 1723600000, turn_id: 3, chat_id: 'chat-1',
+    }, 'chat-1')!
+    // echo 先于 turn_started 到达（SSE 与 dequeue 竞态）→ ②替换 pending 乐观行（不新增）。
+    const s1 = evs.reduce(reduce, s0)
+    expect(s1.pendingUsers).toHaveLength(1)
+    // turn_started(R) 绑定 → pending 清空。
+    const s2 = run([started(turnID(3), 'req-9'), iteration1(turnID(3), '思考中')], s1)
+    expect(s2.pendingUsers).toHaveLength(0)
+    // 迟到的重复 echo（重连 replay）→ ①幂等返回。
+    const s3 = evs.reduce(reduce, s2)
+    expect(deriveRows(s3).filter((r) => r.kind === 'user')).toHaveLength(1)
+    expect(deriveRows(s3)).toHaveLength(2) // user + live(思考中)，无第二份
+  })
+
   it('history_replaced hydration：ev.active 创建 live turn（刷新恢复 in-flight）', () => {
     const s = reduce(initialChatState('chat-1'), {
       type: 'history_replaced',

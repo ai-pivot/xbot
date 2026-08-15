@@ -273,6 +273,16 @@ function normalizeUserEcho(env: Record<string, unknown>): readonly DomainEvent[]
   const content = typeof env.content === 'string' ? env.content : ''
   if (content === '') return null
   const turn = optTurnID(env.turn_id)
+  // ⚠️ requestID 字段兼容（双 user 行 + 双思考中根因）：后端 web_inbound.go
+  // 把 requestID 序列化到 WSMessage.ID（json:"id"），不带 request_id 字段。
+  // 旧代码只读 env.request_id → 永远 null → reduce 的幂等检查全部跳过 →
+  // echo 无条件追加进 pendingUsers → 同一 user 在 turns[].user 和 pending
+  // 各一份（双 user 行；第二个"思考中"是底部 busy placeholder，px-3 缩进
+  // 多空格 —— 用户报告）。大部分时候 useChatMessages 的 echo 处理（读 msg.id，
+  // 字段正确）触发 history_replaced → step5 按 turnHint 清理兜底；但 REST ack
+  // 先到把 MessageStore 行标 persisted 时该兜底跳过 → 偶发双行。requestID
+  // 正确解析后幂等在 reduce 层结构生效，不依赖任何兜底。
+  const requestID = optStr(env.request_id) ?? optStr(env.id) ?? null
   return [{
     type: 'user_echo',
     row: {
@@ -282,7 +292,7 @@ function normalizeUserEcho(env: Record<string, unknown>): readonly DomainEvent[]
       isNotification: env.is_notification === true,
       queued: false,
       sending: false,
-      requestID: optStr(env.request_id) ?? null,
+      requestID,
       turnHint: turn ?? undefined,
       dbID: undefined,
     },
