@@ -60,7 +60,7 @@ function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1') {
 
 const histMsg = (over: Partial<ChatMessage>): ChatMessage => ({
   id: 'm1', role: 'user', content: '历史消息', iterations: [], timestamp: 't',
-  isPartial: false, turnID: 0, persisted: true, ...over,
+  isPartial: false, turnID: 0, persisted: true, dbID: 1, ...over,
 })
 
 describe('useAgentChatState 全链路', () => {
