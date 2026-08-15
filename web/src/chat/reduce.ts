@@ -93,6 +93,16 @@ function isHollowFrozen(t: Turn | undefined): boolean {
   return !!t && t.phase.kind === 'frozen' && !hasOutput(t.phase.data)
 }
 
+/** stream 事件携带实质载荷（活动证据）：内容/思考/genui/流式工具任一非空。 */
+function hasStreamEvidence(ev: { content?: string; reasoning?: string; genui?: string; streamingTools?: readonly unknown[] }): boolean {
+  return (
+    (ev.content !== undefined && ev.content !== '') ||
+    (ev.reasoning !== undefined && ev.reasoning !== '') ||
+    (ev.genui !== undefined && ev.genui !== '') ||
+    (ev.streamingTools !== undefined && ev.streamingTools.length > 0)
+  )
+}
+
 // ─── reduce：8 case 穷尽（never 检查由 TS 判别联合保证） ───────
 
 export function reduce(s: ChatState, ev: DomainEvent): ChatState {
@@ -176,11 +186,34 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     case 'iteration': {
       if (ev.turnID !== s.activeTurn) {
         const t0 = s.turns.get(ev.turnID)
-        if (s.activeTurn !== null && t0?.phase.kind !== 'live') return s
-        if (s.activeTurn !== null && t0?.phase.kind === 'live' && s.activeTurn !== ev.turnID) return s
-        if (t0 && !isHollowFrozen(t0)) return s // committed/有输出 frozen —— 重放，丢弃
-        // 无槽（或空壳占位）且无 active → lazy 采纳/升级（切回会话场景）。
-        s = lazyAdoptLive(s, ev.turnID)
+        // ⚠️ committed 遮蔽解除（用户报告："sse 不断收到新消息但前端渲染
+        // 不变"，dump 铁证：turn-108-c committed 只含 iteration 1，SSE 还在
+        // 发 iteration 22）：DB 增量持久化的中间迭代经 history merge 组成
+        // committed turn，遮蔽仍在运行的 live。后端不会对已结束的 turn 发
+        // 新迭代 —— 迭代事件是活动的权威证据：incoming 迭代号 > committed
+        // 已有最大迭代 → 升级回 live（迭代 union 保留，content 用事件值）。
+        if (t0 && t0.phase.kind === 'committed' && s.activeTurn === null) {
+          const maxIter = t0.phase.payload.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
+          if (ev.iter > maxIter) {
+            const live: LiveSnapshot = {
+              ...EMPTY_LIVE,
+              iter: ev.iter,
+              content: t0.phase.payload.content,
+              iterations: t0.phase.payload.iterations,
+            }
+            const turns = new Map(s.turns)
+            turns.set(ev.turnID, { ...t0, phase: { kind: 'live', data: live } })
+            s = { ...s, turns, activeTurn: ev.turnID, lastSeq: null }
+          } else {
+            return s // 已含该迭代的 committed 快照 —— 重放，丢弃
+          }
+        } else {
+          if (s.activeTurn !== null && t0?.phase.kind !== 'live') return s
+          if (s.activeTurn !== null && t0?.phase.kind === 'live' && s.activeTurn !== ev.turnID) return s
+          if (t0 && !isHollowFrozen(t0)) return s // committed/有输出 frozen —— 重放，丢弃
+          // 无槽（或空壳占位）且无 active → lazy 采纳/升级（切回会话场景）。
+          s = lazyAdoptLive(s, ev.turnID)
+        }
       }
       if (s.lastSeq !== null && ev.seq <= s.lastSeq) return s // I5：重放丢弃
       const t = s.turns.get(ev.turnID)
@@ -230,9 +263,24 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       if (s.turns.has(target)) {
         const t0 = s.turns.get(target)!
         if (t0.phase.kind !== 'live') {
-          // 空壳占位（user-only 历史行）→ 升级为 live（流式事件是活动的证据）。
-          if (!isHollowFrozen(t0) || s.activeTurn !== null) return s
-          s = lazyAdoptLive(s, target)
+          // committed 遮蔽解除（同 iteration case）：DB 中间快照组成的
+          // committed 收到流式事件（活动证据）→ 升级回 live（迭代保留）。
+          // 带内容/载荷的 stream 事件只可能属于运行中的 turn。
+          if (t0.phase.kind === 'committed' && s.activeTurn === null && hasStreamEvidence(ev)) {
+            const live: LiveSnapshot = {
+              ...EMPTY_LIVE,
+              content: t0.phase.payload.content,
+              iterations: t0.phase.payload.iterations,
+            }
+            const turns = new Map(s.turns)
+            turns.set(target, { ...t0, phase: { kind: 'live', data: live } })
+            s = { ...s, turns, activeTurn: target }
+          } else if (isHollowFrozen(t0) && s.activeTurn === null) {
+            // 空壳占位（user-only 历史行）→ 升级为 live（流式事件是活动的证据）。
+            s = lazyAdoptLive(s, target)
+          } else {
+            return s
+          }
         }
       } else {
         if (s.activeTurn !== null) return s // 已有别的活动 turn —— 事件属旧 turn，丢弃

@@ -411,14 +411,24 @@ export function Toast({ show, text, kind = 'info' }: { show: boolean; text: Reac
 }
 
 // ─── ECharts (declarative, lazy CDN) ───────────────────────────
-let echartsModule: any = null
-let echartsLoading: Promise<any> | null = null
+/** ECharts 实例的最小视图（Chart 内部只用 setOption/resize/dispose）。 */
+interface EChartsInstance {
+  setOption(option: unknown): void
+  resize(): void
+  dispose(): void
+}
+/** CDN 全局 echarts 命名空间的最小视图（结构类型：宽对象可赋窄视图）。 */
+interface EChartsNS {
+  init(el: HTMLElement, theme?: string | null): EChartsInstance
+}
+let echartsModule: EChartsNS | null = null
+let echartsLoading: Promise<EChartsNS> | null = null
 
-async function loadECharts(): Promise<any> {
+async function loadECharts(): Promise<EChartsNS> {
   if (echartsModule) return echartsModule
   if (!echartsLoading) {
     echartsLoading = (async () => {
-      const win = window as unknown as { echarts?: any }
+      const win = window as unknown as { echarts?: EChartsNS }
       if (win.echarts) {
         echartsModule = win.echarts
         return win.echarts
@@ -432,8 +442,10 @@ async function loadECharts(): Promise<any> {
         s.onerror = () => reject(new Error('echarts CDN load failed'))
         document.head.appendChild(s)
       })
-      echartsModule = win.echarts
-      return win.echarts
+      const loaded = win.echarts
+      if (!loaded) throw new Error('echarts CDN loaded but window.echarts missing')
+      echartsModule = loaded
+      return loaded
     })()
   }
   return echartsLoading
@@ -448,20 +460,19 @@ export function Chart({
   option: Record<string, unknown>
   height?: number
   theme?: string
-  onReady?: (chart: unknown) => void
+  onReady?: (chart: EChartsInstance) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const chartRef = useRef<{ dispose: () => void } | null>(null)
+  const chartRef = useRef<EChartsInstance | null>(null)
   const { dark } = useGenUITheme()
 
   useEffect(() => {
     let disposed = false
-    let chart: any = null
+    let chart: EChartsInstance | null = null
     let ro: ResizeObserver | null = null
     loadECharts()
-      .then((mod) => {
+      .then((echarts) => {
         if (disposed || !ref.current) return
-        const echarts = mod
         const el = ref.current
         chart = echarts.init(el, theme === 'default' ? (dark ? 'dark' : 'default') : theme)
         chart.setOption(option)
@@ -479,18 +490,44 @@ export function Chart({
       chartRef.current?.dispose()
       chartRef.current = null
     }
-  }, [option, dark]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [option, dark])
 
   return <div ref={ref} className="w-full" style={{ height }} />
 }
 
 // ─── three.js scene hook (lazy CDN) ────────────────────────────
-let THREE_ANY: any = null
-async function loadThree(): Promise<any> {
-  if (THREE_ANY) return THREE_ANY
-  const win = window as unknown as { THREE?: any }
+/** three.js 场景对象的最小视图（useThreeScene 内部只用 add）。 */
+interface ThreeSceneLike {
+  add(obj: unknown): void
+}
+interface ThreeCameraLike {
+  position: { z: number }
+}
+interface ThreeRendererLike {
+  domElement: HTMLElement
+  setClearColor(color: number, alpha: number): void
+  setSize(w: number, h: number): void
+  render(scene: unknown, camera: unknown): void
+  dispose(): void
+}
+interface ThreeLightLike {
+  position: { set(x: number, y: number, z: number): void }
+}
+/** CDN 全局 THREE 命名空间的最小视图（LLM 代码经 new Function 调用，不受
+ *  此窄视图约束 —— 运行时拿到的是完整命名空间）。 */
+interface ThreeNS {
+  Scene: new () => ThreeSceneLike
+  PerspectiveCamera: new (fov: number, aspect: number, near: number, far: number) => ThreeCameraLike
+  WebGLRenderer: new (opts: { antialias?: boolean; alpha?: boolean }) => ThreeRendererLike
+  AmbientLight: new (color: number, intensity: number) => unknown
+  DirectionalLight: new (color: number, intensity: number) => ThreeLightLike
+}
+let THREE_CACHED: ThreeNS | null = null
+async function loadThree(): Promise<ThreeNS> {
+  if (THREE_CACHED) return THREE_CACHED
+  const win = window as unknown as { THREE?: ThreeNS }
   if (win.THREE) {
-    THREE_ANY = win.THREE
+    THREE_CACHED = win.THREE
     return win.THREE
   }
   const base = (window as unknown as { XBOT_UI_CDN?: string }).XBOT_UI_CDN || 'https://cdn.jsdelivr.net/npm/'
@@ -501,8 +538,10 @@ async function loadThree(): Promise<any> {
     s.onerror = () => reject(new Error('three CDN load failed'))
     document.head.appendChild(s)
   })
-  THREE_ANY = win.THREE
-  return win.THREE
+  const loaded = win.THREE
+  if (!loaded) throw new Error('three CDN loaded but window.THREE missing')
+  THREE_CACHED = loaded
+  return loaded
 }
 
 /**
@@ -513,11 +552,11 @@ async function loadThree(): Promise<any> {
  *   })
  *   return <div ref={ref} style={{height: 300}} />
  */
-export function useThreeScene(setup: (scene: any, THREE: any) => void, height = 300) {
+export function useThreeScene(setup: (scene: ThreeSceneLike, THREE: ThreeNS) => void, height = 300) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     let disposed = false
-    let renderer: any = null
+    let renderer: ThreeRendererLike | null = null
     let raf = 0
     loadThree()
       .then((THREE) => {
@@ -534,9 +573,10 @@ export function useThreeScene(setup: (scene: any, THREE: any) => void, height = 
         dir.position.set(1, 2, 3)
         scene.add(dir)
         setup?.(scene, THREE)
+        const r = renderer
         const animate = () => {
           raf = requestAnimationFrame(animate)
-          renderer.render(scene, camera)
+          r.render(scene, camera)
         }
         animate()
       })
@@ -547,7 +587,7 @@ export function useThreeScene(setup: (scene: any, THREE: any) => void, height = 
       renderer?.dispose()
       if (ref.current) ref.current.innerHTML = ''
     }
-  }, [height]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [height])
   return ref
 }
 

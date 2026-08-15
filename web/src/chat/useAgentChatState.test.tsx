@@ -279,8 +279,7 @@ describe('useAgentChatState 全链路', () => {
     expect(h.result.current.liveProgress.activeTools).toHaveLength(1)
   })
 
-  it('I: 切换会话竞态 —— lazy 采纳（仅切换后 delta）后 active_progress 快照 union 补全全部迭代', async () => {
-    // 用户报告："切换会话有概率最新 turn 只渲染最后一两个 live iter"。
+  it('I: 切换会话竞态 —— lazy 采纳（仅切换后 delta）后 active_progress 快照 union 补全全部迭代', async () => {    // 用户报告："切换会话有概率最新 turn 只渲染最后一两个 live iter"。
     // 根因：push 协议每事件只携带【新完成】的 0-1 个迭代；切换后 SSE delta
     // 先到（lazy 采纳，只含切换后 1-2 个迭代）→ fetchHistory 的 active_progress
     // 快照携带【完整】iterationHistory → merge step 3 只在"无 live"时使用
@@ -319,6 +318,33 @@ describe('useAgentChatState 全链路', () => {
     await waitFor(() =>
       expect(h.result.current.liveProgress.iterationHistory.map((i) => i.iteration)).toEqual([1, 2, 3, 4, 5]),
     )
+  })
+
+  it('M: committed 遮蔽解除 —— DB 中间快照组成 committed 后 SSE 继续发新迭代 → 升级回 live', async () => {
+    // 用户报告："sse 不断收到新消息但前端渲染不变"。dump 铁证：turn-108-c
+    // committed 只含 iteration 1，SSE 还在发 iteration 22 → 全被 committed
+    // return s 丢弃。根因：DB 增量持久化的中间迭代经 history merge 组成
+    // committed turn，遮蔽仍在运行的 live。修复：incoming 迭代号 > committed
+    // 已有最大迭代 → 升级回 live（迭代 union 保留）。
+    const ws = makeWS()
+    const h = mountHook(ws)
+    // history 返回 turn 50 的 committed（只含 iteration 1，DB 中间快照）。
+    act(() => h.setHistory([
+      histMsg({ id: 'u50', role: 'user', content: '跑个长任务', turnID: 50 }),
+      { ...histMsg({ id: 'a50', role: 'assistant', content: 'iter1 输出', turnID: 50 }),
+        iterations: [{ iteration: 1, content: 'iter1 输出', reasoning: '', tools: [], toolCount: 0 }] },
+    ]))
+    await waitFor(() => expect(h.result.current.messages.some((m) => m.turnID === 50 && m.role === 'assistant')).toBe(true))
+    // SSE 继续发 iteration 22（turn 50 仍在运行）。
+    ws.emit({ type: 'progress_structured', progress: { phase: 'tool_exec', turn_id: 50, iteration: 22, seq: 200, active_tools: [{ name: 'Shell', status: 'running', iteration: 22 }], iteration_history: [{ iteration: 22, content: 'iter22 输出', reasoning: '', tools: [], toolCount: 0 }] }, chat_id: 'chat-1' })
+    // 修复后：committed 升级回 live，iteration 22 被接收。
+    await waitFor(() => {
+      expect(h.result.current.liveProgress.turnID).toBe(50)
+      expect(h.result.current.liveProgress.activeTools.map((t) => t.name)).toContain('Shell')
+    })
+    // 后续 stream 继续喂养（打字机恢复）。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 50, iteration: 22, stream_content: '恢复后的流式' }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamContent).toContain('恢复后的流式'))
   })
 
   it('J: sendUser 立即渲染 sending 行 → REST 成功 ack 清 sending（成功即非发送中）', async () => {

@@ -499,7 +499,6 @@ export function useProgressStream({
     if (!hasVisibleProgress(cur)) return
     if (messageStore.hasLive(store.lastTurnID)) return
     writeLiveToMessageStore(messageStore, store, { turn_id: store.lastTurnID, seq: cur.eventSeq }, true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyReady, messageStore, disabled])
 
   // Dispose on unmount.
