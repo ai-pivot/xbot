@@ -30,6 +30,7 @@ function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1') {
   let messages: readonly ChatMessage[] = []
   let historyReady = false
   let historyOwner: string | null = null
+  let activeProgress: unknown = null
   const api = renderHook(() =>
     useAgentChatState({
       progressChatID,
@@ -38,7 +39,7 @@ function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1') {
       historyReady,
       historyOwner,
       historyChatID: 'chat-1',
-      initialProgress: null,
+      initialProgress: activeProgress,
       resetKey: 'k',
     }),
   )
@@ -48,6 +49,10 @@ function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1') {
       messages = next
       historyOwner = owner
       historyReady = ready
+      api.rerender()
+    },
+    rerenderWithActiveProgress(ap: unknown) {
+      activeProgress = ap
       api.rerender()
     },
   }
@@ -208,5 +213,70 @@ describe('useAgentChatState 全链路', () => {
     ws.emit({ type: 'stream_content', progress: { turn_id: 5, iteration: 1, stream_content: '旧 turn5 迟到' }, chat_id: 'chat-1' })
     expect(h.result.current.liveProgress.streamContent).toContain('turn8 流式')
     expect(h.result.current.liveProgress.turnID).toBe(8)
+  })
+
+  it('G: 工具长时间执行（零新 SSE 事件）→ active_progress 快照恢复 live（含运行中工具）', async () => {    // 用户报告："live 恢复现在靠新 sse 事件，但工具执行会卡非常久，用户很久
+    // 看不到 live"。恢复必须依赖【active_progress 快照】（后端
+    // lastProgressSnapshot 每事件更新、工具执行期间存活），不依赖新事件。
+    // 场景：切回/刷新 → fetchHistory 返回 user 行（turn 57）+ active_progress
+    // 声明 turn 57 正在执行 Shell（active_tools running）→ 无任何 SSE 事件
+    // 到达 → live 行必须立即可见（工具 + 已完成迭代 + 流式 content）。
+    const ws = makeWS()
+    const h = mountHook(ws)
+    act(() => h.setHistory(
+      [histMsg({ id: 'u57', role: 'user', content: '跑个长任务', turnID: 57 })],
+      'chat-1',
+    ))
+    await act(async () => {
+      h.rerenderWithActiveProgress?.({
+        turn_id: 57,
+        phase: 'tool_exec',
+        iteration: 3,
+        seq: 120,
+        stream_content: '',
+        active_tools: [{ name: 'Shell', label: 'Shell', status: 'running', elapsed_ms: 42000, iteration: 3 }],
+        completed_tools: [],
+        iteration_history: [
+          { iteration: 1, content: '迭代1输出', reasoning: '', tools: [], toolCount: 0 },
+          { iteration: 2, content: '迭代2输出', reasoning: '', tools: [], toolCount: 0 },
+        ],
+      })
+    })
+    // 无任何 SSE 事件 —— live 必须从快照恢复。
+    await waitFor(() => {
+      expect(h.result.current.liveProgress.turnID).toBe(57)
+      expect(h.result.current.liveProgress.activeTools.map((t) => t.name)).toContain('Shell')
+      expect(h.result.current.liveProgress.iterationHistory).toHaveLength(2)
+    })
+    // 渲染行：user + live（isPartial）。
+    expect(h.result.current.messages.some((m) => m.isPartial && m.turnID === 57)).toBe(true)
+    // 工具跑完后的下一个 SSE 事件正常接续（无 lazy 冲突）。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 57, iteration: 4, stream_content: '工具完成后的流式' }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamContent).toContain('工具完成后的流式'))
+  })
+
+  it('H: 同一工具不得双渲染 —— generating 残留随 running 到达清除（100% 复现回归）', async () => {
+    // 用户报告："一个执行中 tool 会同时渲染两个 tool，一个有参数（executing）
+    // 一个没参数（generating）"。根因：streamingTools（流式检测中，generating，
+    // 参数不全）与 activeTools（结构化事件，running，参数全）同名共存。
+    // 旧前端在 mergeProgressState 里做名字过滤 —— 新状态机在 reduce 层
+    // 维护 streamingTools ∩ activeTools = ∅。
+    const ws = makeWS()
+    const h = mountHook(ws)
+    ws.emit({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 12, seq: 1 }, chat_id: 'chat-1' })
+    // 1. 流式阶段：工具名已检测（generating，参数生成中）。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 12, iteration: 1, seq: 2, stream_content: '', streaming_tools: [{ name: 'Shell', label: '', status: 'generating', iteration: 1 }] }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamingTools.map((t) => t.name)).toContain('Shell'))
+    // 2. 参数生成完 → 结构化事件：Shell 进入 activeTools（running，带参数）。
+    //    streamingTools 里的同名 generating 残留必须被清除。
+    ws.emit({ type: 'progress_structured', progress: { phase: 'tool_exec', turn_id: 12, iteration: 1, seq: 3, active_tools: [{ name: 'Shell', label: 'Shell', status: 'running', elapsed_ms: 5, iteration: 1, args: 'ls -la' }] }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.activeTools.map((t) => t.name)).toContain('Shell'))
+    // 双渲染断言：Shell 只出现一次（activeTools），streamingTools 无同名。
+    expect(h.result.current.liveProgress.streamingTools.some((t) => t.name === 'Shell')).toBe(false)
+    // 3. 反向时序：activeTools 已 running，迟到的 stream 帧仍带 generating
+    //    同名 → 必须被过滤。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 12, iteration: 1, seq: 4, stream_content: '', streaming_tools: [{ name: 'Shell', label: '', status: 'generating', iteration: 1 }] }, chat_id: 'chat-1' })
+    expect(h.result.current.liveProgress.streamingTools.some((t) => t.name === 'Shell')).toBe(false)
+    expect(h.result.current.liveProgress.activeTools).toHaveLength(1)
   })
 })

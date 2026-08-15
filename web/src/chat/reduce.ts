@@ -197,6 +197,16 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         // I4：append-only 合并（dedup by iteration#，同号权威覆盖）
         iterations: mergeIterations(prev.iterations, ev.iterationsDelta),
         activeTools: ev.activeTools,
+        // 工具去重（旧前端 mergeProgressState 语义）：工具从 generating 转
+        // running 时，stream 事件残留的同名 streamingTools 条目必须清除 ——
+        // 否则同一工具渲染两个（一个 executing 带参数 + 一个 generating 无
+        // 参数，用户报告 100% 复现）。规则：streamingTools ∩ activeTools = ∅。
+        // 迭代前进时全部清空（流式字段随迭代边界重置 —— 旧语义）。
+        streamingTools: advanced
+          ? []
+          : prev.streamingTools.filter(
+              (t) => !ev.activeTools.some((a) => a.name === t.name),
+            ),
         todos: ev.todos ?? prev.todos,
         subAgents: ev.subAgents ?? prev.subAgents,
         tokenUsage: ev.tokenUsage ?? prev.tokenUsage,
@@ -235,7 +245,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         ...prev,
         content: ev.content !== undefined ? ev.content : prev.content,
         reasoning: ev.reasoning !== undefined ? ev.reasoning : prev.reasoning,
-        streamingTools: ev.streamingTools ?? prev.streamingTools,
+        // 工具去重（同名双渲染根治）：streamingTools 是流式检测中的工具
+        // （generating，参数不全），activeTools 是结构化事件的执行中工具
+        // （running，参数全）。同名共存 → 同一工具渲染两个（用户报告
+        // 100% 复现）。规则：streamingTools ∩ activeTools = ∅（旧前端
+        // mergeProgressState 同款过滤）。
+        streamingTools:
+          ev.streamingTools !== undefined
+            ? ev.streamingTools.filter((t2) => !prev.activeTools.some((a) => a.name === t2.name))
+            : prev.streamingTools,
         genui: ev.genui !== undefined ? ev.genui : prev.genui,
       }
       return withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
