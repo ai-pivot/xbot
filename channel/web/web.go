@@ -1883,18 +1883,41 @@ func (wc *WebChannel) handleStatic(w http.ResponseWriter, r *http.Request) {
 
 	// Try exact path
 	if _, err := os.Stat(absResolved); err == nil {
-		http.FileServer(http.Dir(wc.staticDir)).ServeHTTP(w, r)
+		wc.serveStaticFile(w, r)
 		return
 	}
 
 	// SPA fallback: serve index.html for non-file paths
 	if !strings.Contains(path, ".") {
 		r.URL.Path = "/"
-		http.FileServer(http.Dir(wc.staticDir)).ServeHTTP(w, r)
+		wc.serveStaticFile(w, r)
 		return
 	}
-
 	http.NotFound(w, r)
+}
+
+// serveStaticFile serves static files with cache semantics required by the
+// PWA update lifecycle:
+//
+//   - sw.js → Cache-Control: no-store. THE critical header: without it the
+//     browser heuristic-caches the SW script (up to 24h fresh) and the update
+//     check never reaches the server — the new SW never installs, the precache
+//     stays on the old bundle forever, and users keep running stale code no
+//     matter how many times they reload (user report: "修复了但完全没用";
+//     server log showed ZERO asset requests — the SW served everything from
+//     the old precache).
+//   - index.html → no-cache (must revalidate so new bundle hashes are picked up).
+//   - assets/* (content-hashed) → immutable, 1y.
+func (wc *WebChannel) serveStaticFile(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == "/sw.js" || r.URL.Path == "sw.js":
+		w.Header().Set("Cache-Control", "no-store")
+	case r.URL.Path == "/index.html" || r.URL.Path == "/" || r.URL.Path == "":
+		w.Header().Set("Cache-Control", "no-cache")
+	case strings.HasPrefix(r.URL.Path, "/assets/"):
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	http.FileServer(http.Dir(wc.staticDir)).ServeHTTP(w, r)
 }
 
 // ---------------------------------------------------------------------------

@@ -25,8 +25,19 @@ export function registerSW() {
   }
 
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js', { scope: '/' }).then((reg) => {
+    // SW 文件名带版本（sw2）—— 绕开旧 sw.js 的 HTTP 启发式缓存污染：
+    // server 曾长期不为 sw.js 发 Cache-Control，浏览器 heuristic 缓存了旧
+    // SW 脚本（24h fresh 窗口），更新检查永远命中缓存、新 SW 永不安装 →
+    // 用户永远跑旧 bundle（"修复了但完全没用"）。新 URL 无缓存 → 直接回源
+    // （server 已对 SW 发 no-store）→ 安装新 precache → skipWaiting 立即接管。
+    navigator.serviceWorker.register('/sw2.js', { scope: '/' }).then((reg) => {
       reg.update().catch(() => {})
+      // 顺手注销可能残留的旧 SW（不同 script URL 的注册会被替换，显式清理更稳）。
+      navigator.serviceWorker.getRegistrations().then((regs) => {
+        regs.forEach((r) => {
+          if (!r.active || (r.active.scriptURL.endsWith('/sw.js'))) r.unregister().catch(() => {})
+        })
+      }).catch(() => {})
     }).catch(() => {})
   })
 
