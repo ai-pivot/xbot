@@ -208,28 +208,42 @@ class ChatStore {
 - **turn 边界原子性**：commit 是 `reduce` 内的一次对象替换（live→committed 同一 `Turn` 的新实例），下一次 rAF 快照里 live 与 committed **天然同帧** —— 取代 `flushSync` 补丁（T2 无闪烁的机制基础）。
 - **流式节流**：rAF 合并通知（≤60Hz），高频 stream 事件合并为一次渲染。
 
-### 4.2 reduce 转移表（全部业务规则，穷尽）
+### 4.2 reduce 转移表（全部业务规则，穷尽 —— 与实现同步）
 
 ```typescript
 export function reduce(s: ChatState, ev: DomainEvent): ChatState {
   switch (ev.type) {
-    case 'turn_started':     // 活动 turn 有未 finalize 内容 → fold commit（数据保全）
-                             // 新 Turn 进 live 态；requestID 精确绑定 user
-    case 'iteration':        // ev.turnID !== activeTurn → return s（迟到/旧 turn 丢弃）
-                             // iter > 当前 → append iterationsDelta（dedup by iter#）
-    case 'stream':           // ev.turnID !== activeTurn → return s
-                             // 全量替换 content/reasoning（无追加/回退歧义）
-    case 'phase_done':       // finalIteration 非 null → fold 进 iterations（append-only）
-                             // streaming=false（不冻结数据）
-    case 'text_final':       // activeTurn(live|frozen) → committed（via text/fold）
-                             // cancelled=true 时先 freeze 再 commit
-    case 'session':          // busy=false 且 live 无产出 → 清空壳（idle 幽灵行灭绝）
-    case 'history_replaced': // 全量替换（rewind/reload/hydration 是同一个转移）
+    case 'turn_started':     // ① 收尸旧 active live（fold commit，数据保全）
+                             // ② 已存在同 ID turn（重放/lazy 后补）：
+                             //    live 保留 / 空壳升级 live / committed 嫁接 user 不动 phase（指针回滚）
+                             // ③ 新 turn 进 live；requestID→turnHint 双键绑定 user
+    case 'iteration':        // 非 active：已有其它 active → 丢弃；无槽且无 active → lazy 采纳；
+                             //  空壳 → 升级 live；committed/有输出 frozen → 丢弃
+                             // seq ≤ lastSeq → 丢弃（I5）；iter 前进 append delta（I4）
+                             // activeTools 到达 → 清 streamingTools 同名（I7）；迭代前进清空流式工具
+    case 'stream':           // turnID 缺失回退 activeTurn；无槽/空壳 → lazy 采纳/升级（同上）
+                             // ① seq 豁免：累积全量推送，不按 seq 排序（打字机语义）
+                             // 全量替换 content/reasoning；incoming streamingTools 对 activeTools 过滤（I7）
+    case 'phase_done':       // finalIteration fold 进 iterations（I4，T3 根治点）；streaming=false
+    case 'text_final':       // live/frozen → committed（via text | via fold，I2 构造）
+                             // 无产出分支 → frozen + 清 activeTurn（I3 修复：性质测试抓出）
+                             // progressHistory 权威覆盖同号迭代（append-only union）
+    case 'session':          // idle：live 有产出 → frozen 定格（text 迟到仍可 commit）
+                             //      无产出 → 删槽（幽灵行灭绝）
+    case 'history_replaced': // ⚠️ merge 语义（非全量替换）：
+                             //  ① incoming（DB 权威）：同 ID 状态机 live 胜（SSE 比快照新）+ 嫁接 DB user；
+                             //     空壳不覆盖状态机 committed/frozen-with-output（数据保全）
+                             //  ② 状态机独有 turn：live/committed/有输出 frozen 保留（post-fetch SSE 数据）
+                             //  ③ active：保留的 live 优先；否则 ev.active 升级空壳/建槽（快照恢复）
+                             //  ④ lastSeq 随 active 保留（per-run 连续）；pendingUsers 剔除已绑定
+    case 'user_sent':        // 乐观行入 pendingUsers
+    case 'user_echo':        // 权威回声：turn 已存在且无 user → 挂载；否则去重后入 pending（turnHint）
+    case 'user_ack':         // requestID 匹配回填 dbID（pending 或已绑定 turn.user）
   }
 }
 ```
 
-**迟到事件语义统一为一条规则**：`ev.turnID ≠ activeTurn`（且非 history_replaced）→ `return s`。旧设计的 4 个 guard、finalizedTurnID 全局残留、chatID 切换漏重置——全部被这一个显式比较取代（guard 与状态脱节的 bug 类别**结构性消失**）。
+**迟到事件语义（修订）**：事件对**非 active turn** 且不满足 lazy 采纳前提（无 active 或目标是空壳）→ `return s`（引用不变，React 零渲染）。旧设计的 4 个 guard、finalizedTurnID 全局残留、chatID 切换漏重置——被"显式指针比较 + 受控 lazy 采纳"取代。lazy 采纳是**显式建模的宽容**（切回会话时 turn_started 不会重来），不是启发式：前提（activeTurn=null / 空壳）由状态机自身判定，性质测试穷举验证其不破坏 I3/I4。
 
 ### 4.3 deriveRows（渲染模型，穷尽 + 无启发式）
 
@@ -273,20 +287,24 @@ function assistantRow(t: Turn): Row {
 
 事件序列 σ = e₁e₂…eₙ，状态轨迹 s₀ → s₁ → … → sₙ（sᵢ₊₁ = δ(sᵢ, eᵢ₊₁)）。
 
-### 5.2 不变量（每条标注保证机制）
+### 5.2 不变量（每条标注保证机制 —— 与实现同步修订）
 
-- **I1（槽位唯一）**：∀s∈S, ∀t∈s.turns：t 是唯一的，t.phase ∈ {live, frozen, committed} **恰居其一**。
+- **I1（槽位唯一）**：∀s∈S, ∀t∈s.turns：t 唯一，t.phase ∈ {live, frozen, committed} **恰居其一**。
   *保证*：`ReadonlyMap` key 语义 + 判别联合（TS 编译期）。
 - **I2（committed 可渲染）**：phase.kind='committed' → payload.via='text' ∧ |content|≥1 ∨ payload.via='fold' ∧ |iterations|≥1。
   *保证*：`CommittedPayload` 判别联合 + `NonEmptyS`/`NonEmpty<T>` 构造函数（编译期 + 唯一运行时检查点）。
-- **I3（活动唯一）**：∀s：|{t ∈ s.turns : t.phase.kind='live'}| ≤ 1，且 = activeTurn 所指。
-  *保证*：reducer 的 turn_started 转移（构造性：新 live 产生前旧 active 必须 freeze/commit —— 转移函数 8 个 case 逐一验证，见 §5.4 归纳）。
-- **I4（迭代 append-only）**：sᵢ → sᵢ₊₁ 过程中，任一 turn 的已完成迭代序列只允许 append（按 iter# dedup）与槽位迁移（live.iterations → committed/frozen 数据），**永不删除**。
-  *保证*：reducer 中只有 3 处写 iterations（iteration append / phase_done fold / commit 拷贝），均为只增；TS readonly 阻止原地修改。
-- **I5（seq 单调）**：s.lastSeq 严格递增；携带 seq 的事件若 ≤ lastSeq → δ 返回原状态。
-  *保证*：reducer 显式比较（迟到/重放丢弃）。
+- **I3（活动唯一）**：∀s：|{t ∈ s.turns : t.phase.kind='live'}| ≤ 1，且 activeTurn ≠ null 时指向的 turn 必为 live；activeTurn = null 时无 live。
+  *保证*：全部产生/消除 live 的转移点共同维护——turn_started（收尸旧 active；对已存在 turn：live 指向/空壳升级/其它指针回滚）、lazy 采纳（仅 activeTurn=null 时）、history_replaced（保留 live 优先，ev.active 升级空壳或建槽）、text_final/session（commit/freeze/删槽时清指针，含无产出分支）。归纳见 §5.4。
+- **I4（迭代 append-only）**：任一 turn 的已完成迭代序列在任意转移下只允许 append（按 iter# dedup，同号权威覆盖）与整体拷贝（live → committed/frozen/merge），**永不删除**。
+  *保证*：写 iterations 的全部 4 处（iteration append / phase_done fold / commit·freeze 拷贝 / history_replaced merge union）均为只增；性质测试 P5 以观察集单调不减逐步验证。
+- **I5（seq 单调，修订）**：s.lastSeq 严格递增；iteration/phase_done 携带 seq ≤ lastSeq → δ 返回原状态。**stream 豁免**：stream 是累积全量推送（delta_push 默认关闭），不按 seq 排序——旧实现明确的语义（"stream deltas are cumulative, not ordered by seq"），按到达序 gate 会误杀打字机帧。
+  *保证*：reducer 显式比较（iteration/phase_done 两个 case）；豁免仅限 stream case。
 - **I6（无 null）**：∀s∈S：任何数组字段非 null；∀e∈E：同。
   *保证*：`normalizeEvent` 是唯一入口，返回类型不含 null 数组；渲染层 ESLint 禁 `as`/禁访问未声明字段。
+- **I7（工具不相交，新增）**：∀s，对 active live turn：`streamingTools ∩ activeTools = ∅`（按 name 判等）。
+  *保证*：reduce 双向维护——iteration case：新 activeTools 到达清除 prev.streamingTools 同名条目（迭代前进时全清）；stream case：incoming streamingTools 对当前 activeTools 名字过滤。双向时序（generating 先到被 running 清除；running 后迟到 generating 被过滤）均覆盖，测试 H 验证。
+- **I8（空壳占位语义，新增）**：定义 hollow(t) ≡ t.phase.kind='frozen' ∧ ¬hasOutput(t.phase.data)。hollow turn 是"DB 有 user 行"的占位符而非终态数据；任何权威活动信号（turn_started / ev.active / stream / iteration lazy）将 hollow 升级为 live。**升级无损**：hollow 的 data 无任何输出（content/reasoning/iterations/tools/genui 皆空），升级为 live 不丢失数据。
+  *保证*：`isHollowFrozen` 判定 + 各转移点的升级分支；非 hollow（committed / 有输出 frozen）绝不被降级覆盖（Bug 12/13 根治）。
 
 ### 5.3 定理
 
@@ -302,7 +320,7 @@ live→committed 的迁移在**单次 React 渲染提交**内对用户可见，�
 
 **T3（已渲染迭代永不消失）**
 若迭代 k 在帧 f₁ 已由 ρ 输出（live 态），则 ∀f>f₁：ρ 输出仍含迭代 k（同 turn）。
-*证明*：归纳于事件序列。迭代 k 进入 `turn.iterations` 的唯一路径是 append（I4）；后续可能的事件中，phase_done 只增（fold finalIteration），text_final/turn_started 诱导的 commit/freeze 转移**整体拷贝** iterations 至新 phase 数据；无任何 δ 分支删除迭代。I4 保持 ⇒ 结论。∎
+*证明*：归纳于事件序列，分类所有可能接触该 turn 的转移：(a) iteration append（I4 只增）；(b) phase_done fold（只增）；(c) text_final / session 诱导的 commit/freeze **整体拷贝** iterations；(d) history_replaced merge——incoming 同 ID 时若状态机侧是 live 则 live 胜（含其 iterations），否则 DB 版本含该 turn 的 DB 迭代（DB 是 append-only 权威，见 web-linearizability.md），状态机独有的 committed/有输出 frozen **保留**（merge 第 2 步）；(e) turn_started 重放——对已存在 turn：live 保留原 phase（含 iterations）、committed/有输出 frozen 不动 phase（性质测试 seed=1/42 曾抓出违反，修复后覆盖）；(f) lazy 采纳/空壳升级仅作用于**无输出**槽（I8），不可能携带已输出迭代。所有分支迭代集单调不减 ⇒ 结论。∎
 
 （Bug 5"最后 iter 闪烁"的根治：phase_done 在 δ 内 fold finalIteration，text_final 到达前迭代已在 committed 路径的数据里——不再依赖"text 重建"这个补丁路径。）
 
@@ -312,14 +330,32 @@ live→committed 的迁移在**单次 React 渲染提交**内对用户可见，�
 
 **T5（顺序线性一致）**
 ρ 输出的行序 = (legacy 前缀) ⊕ turnID 升序 ⊕ (turn 内 user < assistant)。
-*证明*：ρ 显式排序；turnID 由后端 chatProcessLoop 单调分配（DB 恢复，见 web-linearizability.md 已证引理）；optimum user 经 requestID 绑定进 turn（V2 语义保留为 turn_started 转移的构造规则）⇒ 顺序是纯函数 ⇒ 同快照同序。∎
+*证明*：ρ 显式排序；turnID 由后端 chatProcessLoop 单调分配（DB 恢复，见 web-linearizability.md 已证引理）；user 经 requestID→turnHint 双键绑定进 turn（V2 语义，含 echo 先于 turn_started 的时序颠倒）⇒ 顺序是纯函数 ⇒ 同快照同序。∎
 
-### 5.4 归纳骨架（I1∧I3∧I4 在 δ 下保持）
+**T6（活动恢复活性 —— 工具长停机下的 live 可见性，新增）**
+设后端 turn τ 正在执行（含工具长时间无输出）。客户端经任意一条恢复路径后存在 live 槽且后续 τ 事件被接纳：(a) 收到 τ 的 stream/iteration 事件且 activeTurn=null（或 τ 为空壳）→ lazy 采纳/升级（I8：无损）；(b) fetchHistory 返回 active_progress 声明 τ → history_replaced ev.active 分支建槽/升级空壳并置 activeTurn；(c) 收到 turn_started(τ) → 标准 live 创建。
+*证明*：(a) stream case：turnID 非空 → target=τ；τ 无槽且 activeTurn=null → lazyAdoptLive 置 activeTurn=τ（I3 保持：此前无 live）；τ 为空壳 → 升级（I8）。iteration case 同型（含 seq 门控在其后，不影响采纳）。(b) merge 第 3 步：existing 为空槽/空壳 → 写入 live(snapshot)，activeTurn=τ；existing 已是 live → 指向。(c) 标准。三路径后 turns(τ).phase=live ∧ activeTurn=τ，后续事件通过 `target===s.activeTurn` 主路径写入。∎
 
-对 8 个 case 逐一 case analysis（下面列出关键两个，其余同型）：
+（Bug 11/12 的根治："切回会话/刷新后只显示 history"—— 恢复不依赖新 SSE 事件，active_progress 快照与事件 lazy 采纳双通道。）
 
-- **turn_started(ev)**：设 s 合法。若 s.activeTurn=t* 存在且 phase=live：δ 构造 t*'（committed, via:'fold'，`nonEmpty(iterations)` 成功——若失败则 fallback via 不存在 ⇒ 构造 committed 需 content 非空；两者皆空时保持 frozen 并清 active（该状态 ρ 不出空壳行，由 T1/I2）。新 turn tₙ 进 live；turns' = turns ⊕ {tₙ}，activeTurn'=tₙ.id。I1（Map 语义 + 判别联合）、I3（唯一 live）、I4（拷贝不减）保持。∎
-- **text_final(ev)**：ev.turnID ≠ activeTurn → return s（全部不变量平凡保持）。相等且 phase∈{live,frozen} → 构造 committed：content 非空→via:'text'；否则 `nonEmpty(iterations)`（I4 保证 fold 前已含本 turn 全部迭代，含 phase_done fold 的 finalIteration）→ via:'fold'。I2 由构造函数签名强制。∎
+**T7（工具单渲染，新增）**
+∀帧：live 行的工具区域中，同一 name 的工具至多渲染一个条目。
+*证明*：渲染读 (activeTools, streamingTools) 两个数组；I7 保证二者按 name 不相交 ⇒ 并集无重名 ⇒ 单渲染。I7 的保持：iteration case 写 activeTools=ev.activeTools 后，streamingTools' = 旧值过滤掉与 ev.activeTools 同名者（迭代前进时为 ∅）；stream case 写 streamingTools' = incoming 过滤掉与当前 activeTools 同名者。两 case 后 I7 成立，其余 case 不写这两个字段（frozen 的 markError 保 name）。归纳 ⇒ 全轨迹成立。∎
+
+（Bug 13"同一工具双渲染（executing+generating）"的根治；旧前端在 mergeProgressState 的同名过滤语义被提升为状态机不变量。）
+
+### 5.4 归纳骨架（I1∧I3∧I4∧I7 在 δ 下保持）
+
+对全部 case 做 case analysis（列关键的五个，其余同型或平凡）：
+
+- **turn_started(ev.τ)**：设 s 合法。
+  - *收尸*：s.activeTurn=t* 为 live → fold（有产出/user → committed via fold；否则 frozen 空壳）并清指针。I4（拷贝不减）、I3（live 数不增）保持。
+  - *已存在 τ 槽*（lazy 后补/重放）：live → 保留原 phase、指针指向（I3：恰一 live）；hollow → 升级 live（I8：无输出故无损，live 数 0→1 且指针同置）；committed/有输出 frozen → 仅嫁接 user，phase 不变，**指针与 lastSeq 显式回滚**为 s 原值（I3：不产生第二个 live；I4：不动 iterations）。
+  - *新槽*：EMPTY_LIVE 写入，指针指向。三路均 I1（Map set 单键）。
+- **stream(ev.τ)**：τ 缺失回退 activeTurn。τ 无槽且 activeTurn=null → lazy 采纳（live 0→1，指针置 τ；I3）。τ 为空壳 → 升级（I8）。否则非 live → 丢弃（引用不变）。写入路径只替换 content/reasoning/streamingTools/genui——streamingTools' 对 activeTools 过滤（I7 保持）；iterations 不动（I4 平凡）；seq 不 gate（I5 豁免，累积语义）。
+- **iteration(ev.τ)**：非 active 的处理同 stream 前置（lazy/升级/丢弃三分支，I3/I8 同上）。seq ≤ lastSeq → 丢弃（I5）。写入：iterations 只增（I4）；activeTools=ev.activeTools 且 streamingTools' 清同名/前进清空（I7）；lastSeq 推进。
+- **text_final(ev.τ)**：τ 非 active 且非目标槽 → 丢弃。live/frozen → committed（via text/fold，I2 由构造签名强制；iterations = union(live, progressHistory) 同号权威覆盖——I4：并集不减）。无产出分支 → frozen + **清 activeTurn**（I3；性质测试曾抓出指针残留指向 frozen 的违反，修复后纳入）。committed → 丢弃（幂等）。
+- **history_replaced(ev)**：merge 四步——① incoming：同 ID 状态机 live 胜（I3/I4：live 数据新于快照）+ 嫁接 DB user；incoming 空壳不覆盖状态机 committed/有输出 frozen（I4：不丢已有输出）。② 状态机独有：live/committed/有输出 frozen 保留（I4）。③ active：保留 live 优先，否则 ev.active 建槽/升级空壳（I8；I3：恰一 live 且指针一致）。④ lastSeq/pending 随属主保真。全步 I1（重建 Map，键唯一）。∎
 
 ### 5.5 诚实边界（不可证项）
 
@@ -327,7 +363,10 @@ live→committed 的迁移在**单次 React 渲染提交**内对用户可见，�
 |---|---|
 | normalizeEvent 自身的正确性 | 防御性解析 + 性质测试覆盖（raw 生成器），但类型证明止于"返回值满足类型" |
 | 渲染组件（MessageList 内部） | ρ 之后的 DOM 层由组件测试/E2E 覆盖，不在本证明范围 |
-| GenUI iframe 生命周期 | 独立子系统（本轮未动），仅保证 genui 字段随 T3 保全 |
+| GenUI iframe 生命周期 | 独立子系统，仅保证 genui 字段随 T3 保全 |
+| SSE 传输层（coalescing/gap/replay） | 状态机假设事件可能乱序/重放/丢失并以 I5+lazy+merge 容忍，但传输本身的送达性不在证明内（弱网最终一致由 reload→DB 权威兜底，见 web-consistency-design.md） |
+| SW/HTTP 缓存层 | bundle 新鲜度由 sw2.js no-store + index.html no-cache + assets immutable 保证（部署面），不在状态机证明内 |
+| history 属主门控（hook 层） | resolvedChatID ≠ chatID 时跳过 dispatch 是 hook 的前置条件，非 δ 的一部分；违反它不会破坏 I1-I8（只会延迟灌入） |
 
 ---
 
@@ -336,13 +375,20 @@ live→committed 的迁移在**单次 React 渲染提交**内对用户可见，�
 | Bug | 消灭机制 | 层 |
 |---|---|---|
 | 1 cancel guard 污染新 turn | activeTurn 唯一指针；非 active 事件 → return s（零渲染） | reducer |
-| 2 切会话 turn_id 残留 | ChatState per-chat 实例化；切换 = history_replaced 全量替换 | 架构 |
-| 3 迟到 text 被拦截丢 content | 无"拦截"概念——text_final 对 active turn 永远 commit（I2 构造） | reducer |
+| 2 切会话 turn_id 残留 | ChatState per-chat 实例化 + 属主门控（resolvedChatID≠chatID 跳过灌入）+ merge | 架构+hook |
+| 3 迟到 text 被拦截丢 content | 无"拦截"概念——text_final 对目标 turn 永远 commit（I2 构造） | reducer |
 | 4 null.tools 整树卸载 | normalizeEvent 唯一 null 处理点；类型层无 null 数组 | 类型+入口 |
 | 5 最后 iter 闪烁 | phase_done fold 进 δ；T3 append-only | reducer+证明 |
 | 6 ghost live 行 | Map 槽位唯一 + 判别联合；T4 | 类型 |
 | 7 思考中位置错 | Row.kind 判别；isPartial 语义收窄至 live/frozen | 类型 |
 | 8 发新消息旧 turn 重复 | turn_started 的 fold-commit 是唯一转移；单槽位 | reducer |
+| 9 打字机帧被误判为 iteration（Web channel 无独立 stream_content 消息类型） | normalizeProgress 按 phase=''+stream 载荷分流到 stream 事件 | normalize |
+| 10 跨会话脏灌（旧会话 messages 灌入新 store 被 merge 保留） | 属主门控：resolvedChatID ≠ chatID → 跳过 history dispatch | hook |
+| 11 切回会话看不到 live（turn_started 已过、事件无槽可写） | lazy 采纳（T6 路径 a）；I8 空壳升级 | reducer+证明 |
+| 12 刷新/切回只显示 history（active_progress 恢复被空壳挡住） | merge ev.active 升级空壳/建槽（T6 路径 b）；I8 | reducer+证明 |
+| 13 同一工具双渲染（executing + generating 并存） | I7 streamingTools ∩ activeTools = ∅ 双向过滤；T7 | reducer+证明 |
+
+另：部署层根因（sw.js 无 Cache-Control → SW 启发式缓存 → 用户永远跑旧 bundle）由 serveStaticFile（no-store/no-cache/immutable）+ sw2.js 改名根治——属传输/缓存层，不在状态机证明内（§5.5）。
 
 ---
 
@@ -378,8 +424,114 @@ web/src/chat/
 
 ---
 
-## 10. 评审决策点
+## 10. 评审决策点（已确认）
 
-1. `frozen → committed` 的触发：仅 text_final，还是新 turn_started 也可以 fold（现设计：两者都可以，后者 `via:'fold'`）—— 影响 commit 时机语义。
-2. `legacy` 前缀行是否在 M1 就并入 Turn 模型（现设计：保留独立前缀，M5 后续再统一）。
-3. shadow 运行期长度：一个迭代周期 vs 一周（M3 风险预算）。
+1. `frozen → committed` 的触发：仅 text_final，还是新 turn_started 也可以 fold（现设计：两者都可以，后者 `via:'fold'`）—— 影响 commit 时机语义。**已确认：两者皆可。**
+2. `legacy` 前缀行是否在 M1 就并入 Turn 模型（现设计：保留独立前缀，M5 后续再统一）。**已确认：保留独立只读前缀。**
+3. shadow 运行期长度：一个迭代周期 vs 一周（M3 风险预算）。**已确认：直接切 M4（旧系统 bug 太多，shadow 对比无意义）。**
+
+---
+
+## 11. 完整形式化证明（与实现同步，含 M4 后全部修订）
+
+### 11.1 模型（修订）
+
+迁移系统 **M = (S, E, δ, ρ, ι)**：
+- S = 合法 `ChatState` 值的集合
+- E = `DomainEvent` 值的集合（11 个判别分支：turn_started / iteration / stream / phase_done / text_final / session / history_replaced / user_sent / user_echo / user_ack / user_fail）
+- δ = `reduce : S × E → S`（纯、全）
+- ρ = `deriveRows : S → Row[]`（纯、全）
+- ι = `rowsToChatMessages : Row[] → ChatMessage[]`（纯、全，适配层）
+
+事件序列 σ = e₁e₂…eₙ，状态轨迹 s₀ → s₁ → … → sₙ（sᵢ₊₁ = δ(sᵢ, eᵢ₊₁)）。
+渲染轨迹 rᵢ = ι(ρ(sᵢ))。
+
+### 11.2 不变量（完整修订，I1-I9）
+
+- **I1（槽位唯一）**：∀s∈S, ∀t∈s.turns：t 唯一，t.phase ∈ {live, frozen, committed} **恰居其一**。
+  *保证*：`ReadonlyMap` key 语义 + 判别联合（TS 编译期）。
+- **I2（committed 可渲染）**：phase.kind='committed' → payload.via='text' ∧ |content|≥1 ∨ payload.via='fold' ∧ |iterations|≥1。
+  *保证*：`CommittedPayload` 判别联合 + `NonEmptyS`/`NonEmpty<T>` 构造函数。
+- **I3（活动唯一）**：∀s：|{t ∈ s.turns : t.phase.kind='live'}| ≤ 1，且 activeTurn ≠ null 时指向的 turn 必为 live；activeTurn = null 时无 live。
+  *保证*：全部产生/消除 live 的转移点共同维护——turn_started（收尸旧 active；对已存在 turn：live 指向/空壳升级/committed 遮蔽解除/其它指针回滚）、lazy 采纳（仅 activeTurn=null 时）、history_replaced（保留 live 优先，ev.active 升级空壳或建槽）、text_final/session（commit/freeze/删槽时清指针，含无产出分支）。归纳见 §11.4。
+- **I4（迭代 append-only）**：任一 turn 的已完成迭代序列在任意转移下只允许 append（按 iter# dedup，同号权威覆盖）与整体拷贝（live → committed/frozen/merge），**永不删除**。
+  *保证*：写 iterations 的全部 5 处（iteration append / phase_done fold / commit·freeze 拷贝 / history_replaced merge union / committed 遮蔽解除升级 live 时拷贝）均为只增；性质测试 P5 以观察集单调不减逐步验证。
+- **I5（seq 单调，修订）**：s.lastSeq 严格递增；iteration/phase_done 携带 seq ≤ lastSeq → δ 返回原状态。**stream 豁免**：stream 是累积全量推送，不按 seq 排序。
+  *保证*：reducer 显式比较（iteration/phase_done 两个 case）；豁免仅限 stream case。
+- **I6（无 null）**：∀s∈S：任何数组字段非 null；∀e∈E：同。
+  *保证*：`normalizeEvent` 是唯一入口，返回类型不含 null 数组；渲染层 ESLint 禁 `as`。
+- **I7（工具不相交）**：∀s，对 active live turn：`streamingTools ∩ activeTools = ∅`（按 name 判等）。
+  *保证*：reduce 双向维护——iteration case 清同名/前进清空；stream case incoming 对 activeTools 名字过滤。
+- **I8（空壳占位语义）**：hollow(t) ≡ t.phase.kind='frozen' ∧ ¬hasOutput(t.phase.data)。hollow turn 是占位符；任何权威活动信号将 hollow 升级为 live。**升级无损**：hollow 的 data 无任何输出，升级为 live 不丢失数据。
+  *保证*：`isHollowFrozen` 判定 + 各转移点的升级分支；非 hollow（committed / 有输出 frozen）绝不被降级覆盖。
+- **I9（committed 遮蔽解除，新增）**：committed turn 收到比其已有最大迭代号更大的 iteration 事件，或携带实质载荷的 stream 事件 → 升级回 live（迭代 union 保留）。
+  *保证*：iteration case 的 `ev.iter > maxIter` 分支 + stream case 的 `hasStreamEvidence` 分支。后端不会对已结束的 turn 发新迭代——迭代事件是活动的权威证据。
+
+### 11.3 定理（完整修订，T1-T9）
+
+**T1（渲染函数 total —— DOM 永不消失）**
+ρ ∘ ι 对所有 s∈S 定义且不抛异常。
+*证明*：ρ 的每一步只做（a）Map 迭代，（b）穷尽 switch（`kind` 判别联合 + `never` 检查保证编译期穷尽），（c）读取 I2/I6 保证存在的字段。ι 的每一步只做 Row → ChatMessage 的字段映射（判别联合穷尽 switch）。TS 类型 soundness（无 any/断言逃逸，由 lint 强制）⇒ 字段访问的类型即运行时形态 ⇒ 无 TypeError 可达。∎
+
+**T2（turn 边界原子性 —— 无闪烁）**
+live→committed 的迁移在**单次 React 渲染提交**内对用户可见，不存在中间帧。
+*证明*：迁移发生在 δ 内部（同步、单次 state 替换）；ρ 读同一快照 sᵢ₊₁ 时该 turn 恰处 committed（I1），live 行与 committed 行是**同一 turn 槽位的两种 phase**（非两个并存对象）⇒ 任意快照中该 turn 恰出一行 ⇒ 帧间不存在"旧行消失、新行未现"的间隙。rAF 合并保证一个快照一帧。∎
+
+**T3（已渲染迭代永不消失）**
+若迭代 k 在帧 f₁ 已由 ρ 输出（live 态），则 ∀f>f₁：ρ 输出仍含迭代 k（同 turn）。
+*证明*：归纳于事件序列，分类所有可能接触该 turn 的转移：(a) iteration append（I4 只增）；(b) phase_done fold（只增）；(c) text_final / session 诱导的 commit/freeze **整体拷贝** iterations；(d) history_replaced merge——incoming 同 ID 时若状态机侧是 live 则 live 胜（含其 iterations），否则 DB 版本含该 turn 的 DB 迭代（DB 是 append-only 权威），状态机独有的 committed/有输出 frozen **保留**（merge 第 2 步）；(e) turn_started 重放——对已存在 turn：live 保留原 phase（含 iterations）、committed/有输出 frozen 不动 phase（性质测试 seed=1/42 曾抓出违反，修复后覆盖）；(f) lazy 采纳/空壳升级仅作用于**无输出**槽（I8），不可能携带已输出迭代；(g) committed 遮蔽解除（I9）——升级回 live 时 `mergeIterations(committed.iterations, [])` = committed.iterations（不减）。所有分支迭代集单调不减 ⇒ 结论。∎
+
+**T4（无 ghost 行）**
+∀s, ∀帧：每个 turn 至多渲染一行 assistant。
+*证明*：ρ 对每 turn 恰调用一次 assistantRow（flatMap 一对一）；由 I1，该 turn 的 phase 恰居其一 ⇒ 输出一行。ghost 需要 live 行与 committed 行并存 ⇒ 需要 turn 同时处于两 phase ⇒ 与 I1 矛盾 ⇒ 不可构造。∎
+
+**T5（顺序线性一致）**
+ρ 输出的行序 = (legacy 前缀) ⊕ turnID 升序 ⊕ (turn 内 user < assistant) ⊕ pendingUsers 沉底。
+*证明*：ρ 显式排序（`[...s.turns.values()].sort((a,b) => a.id - b.id)` + `flatMap(t => t.user ? [user, assistant] : [assistant])`）；pendingUsers 追加在末尾（`turnID = MAX_SAFE_INTEGER`）；turnID 由后端 chatProcessLoop 单调分配（DB 恢复）；user 经 requestID→turnHint 双键绑定进 turn（V2 语义，含 echo 先于 turn_started 的时序颠倒）⇒ 顺序是纯函数 ⇒ 同快照同序。ι 保持 Row 顺序（顺序遍历 push）。∎
+
+**T6（活动恢复活性 —— 工具长停机下的 live 可见性）**
+设后端 turn τ 正在执行。客户端经任意一条恢复路径后存在 live 槽且后续 τ 事件被接纳：(a) 收到 τ 的 stream/iteration 事件且 activeTurn=null（或 τ 为空壳）→ lazy 采纳/升级（I8：无损）；(b) fetchHistory 返回 active_progress 声明 τ → history_replaced ev.active 分支建槽/升级空壳并置 activeTurn；(c) 收到 turn_started(τ) → 标准 live 创建；(d) committed 遮蔽解除（I9）：committed(τ) 收到 ev.iter > maxIter → 升级回 live。
+*证明*：(a) stream case：target=τ；τ 无槽且 activeTurn=null → lazyAdoptLive（I3）；τ 为空壳 → 升级（I8）。iteration case 同型。(b) merge 第 3 步：existing 为空槽/空壳 → 写入 live(snapshot)，activeTurn=τ；existing 已是 live → 指向。(c) 标准。(d) iteration case：committed(τ) + ev.iter > maxIter → 升级 live（iterations 拷贝，I4 不减）。四路径后 turns(τ).phase=live ∧ activeTurn=τ，后续事件通过 `target===s.activeTurn` 主路径写入。∎
+
+**T7（工具单渲染）**
+∀帧：live 行的工具区域中，同一 name 的工具至多渲染一个条目。
+*证明*：渲染读 (activeTools, streamingTools) 两个数组；I7 保证二者按 name 不相交 ⇒ 并集无重名 ⇒ 单渲染。I7 的保持：iteration case 写 activeTools 后清 streamingTools 同名（迭代前进时全清）；stream case 写 streamingTools' 对 activeTools 名字过滤。两 case 后 I7 成立，其余 case 不写这两个字段。归纳 ⇒ 全轨迹成立。∎
+
+**T8（乐观行单渲染 —— 无双 user 行）**
+∀帧：同一 requestID 的 user 行至多渲染一行。
+*证明*：user 行有两个来源——(a) `pendingUsers`（user_sent/user_echo 事件，deriveRows 末尾）；(b) `turns[].user`（turn_started/user_echo 绑定进 turn 槽，deriveRows 按 turnID 排序）。reducer 保证：user_echo 到达时先按 requestID 去重 pendingUsers（`filter(u => u.requestID !== ev.row.requestID)`），再 append；turn_started 按 requestID/turnHint 从 pendingUsers 绑定进 turn（移出 pending）。history_replaced 的 pendingUsers 过滤（step 5）剔除已被 turns 绑定的（`turns.values().some(t => t.user?.requestID === u.requestID)`）。ι(historyToReplaced) 过滤 `persisted !== true || dbID === undefined` 的行（useChatMessages 的乐观/echo 副本不进渲染）。三道防线保证同一 requestID 的 user 行不会同时出现在 pendingUsers 和 turns.user ⇒ ρ 输出至多一行。∎
+
+**T9（busy 活性 —— 发送成功后"思考中"必显示）**
+设 user_sent 后 REST 成功（user_ack 到达）。若 turn_started 尚未到达（activeTurn=null），则 busy 仍为 true。
+*证明*：busy = `currentSession.running ∨ progressSnapshot.streaming ∨ agentChat.busyFallback`。`busyFallback = state.activeTurn !== null`。user_ack 不改变 activeTurn（只清 pendingUser.sending）。若 turn_started 已到 → activeTurn ≠ null → busyFallback=true。若 turn_started 未到 → activeTurn=null → busyFallback=false，但 `onSendSuccess` 回调设置 `currentSession.running=true`（AgentPanel 的 `store.setStatus(selector, 'running')`）→ busy=true。两条路径覆盖。∎
+
+### 11.4 归纳骨架（I1∧I3∧I4∧I7∧I9 在 δ 下保持）
+
+对全部 11 个 case 做 case analysis：
+
+- **turn_started(ev.τ)**：设 s 合法。
+  - *收尸*：s.activeTurn=t* 为 live → fold（有产出/user → committed via fold；否则 frozen 空壳）并清指针。I4（拷贝不减）、I3（live 数不增）保持。
+  - *已存在 τ 槽*（lazy 后补/重放）：live → 保留原 phase、指针指向（I3）；hollow → 升级 live（I8：无输出故无损）；committed/有输出 frozen → 仅嫁接 user，phase 不变，**指针与 lastSeq 显式回滚**（I3：不产生第二个 live；I4：不动 iterations）。
+  - *新槽*：EMPTY_LIVE 写入，指针指向。三路均 I1（Map set 单键）。
+- **stream(ev.τ)**：τ 缺失回退 activeTurn。τ 无槽且 activeTurn=null → lazy 采纳（I3）。τ 为空壳 → 升级（I8）。committed(τ) + hasStreamEvidence → 升级回 live（I9：iterations 拷贝不减）。否则非 live → 丢弃。写入路径只替换 content/reasoning/streamingTools/genui——streamingTools' 对 activeTools 过滤（I7 保持）；iterations 不动（I4 平凡）；seq 不 gate（I5 豁免）。
+- **iteration(ev.τ)**：非 active 的处理同 stream 前置（lazy/升级/丢弃/committed 遮蔽解除四分支，I3/I8/I9 同上）。seq ≤ lastSeq → 丢弃（I5）。写入：iterations 只增（I4）；activeTools=ev.activeTools 且 streamingTools' 清同名/前进清空（I7）；lastSeq 推进。
+- **phase_done(ev.τ)**：仅 active turn；finalIteration fold 进 iterations（I4，T3 根治点）；streaming=false。
+- **text_final(ev.τ)**：τ 非 active 且非目标槽 → 丢弃。live/frozen → committed（via text/fold，I2；iterations = union(live, progressHistory) 同号权威覆盖——I4）。无产出分支 → frozen + 清 activeTurn（I3）。committed → 丢弃（幂等）。
+- **session**：idle：live 有产出 → frozen 定格；无产出 → 删槽（幽灵行灭绝）。busy → s.busy=true。
+- **history_replaced**：merge 五步——① incoming：同 ID 状态机 live 胜 + 嫁接 DB user；incoming 空壳不覆盖状态机 committed/frozen-with-output（I4）。② 状态机独有：live/committed/有输出 frozen 保留（I4）。③ active：保留 live 优先，否则 ev.active 建槽/升级空壳（I8；I3）。③.5 ev.active 与保留 live 同 ID → 快照迭代 union（I4）。④ lastSeq/pending 随属主保真。⑤ pendingUsers 剔除已绑定（T8 防线）。全步 I1（重建 Map，键唯一）。
+- **user_sent**：pendingUsers append。I1 平凡（pendingUsers 不在 turns 里）。
+- **user_echo**：turn 已存在且无 user → 挂载；否则按 requestID 去重 pending 后 append（T8 防线）。I1 平凡。
+- **user_ack**：pendingUsers 按 requestID 匹配 → 清 sending、赋 queued、补 turnHint。或已绑定 turn.user → 同。I1 平凡。
+- **user_fail**：pendingUsers 按 requestID 移除。I1 平凡。∎
+
+### 11.5 诚实边界（不可证项）
+
+| 项 | 状态 |
+|---|---|
+| normalizeEvent 自身的正确性 | 防御性解析 + 性质测试覆盖（raw 生成器），但类型证明止于"返回值满足类型" |
+| 渲染组件（MessageList 内部） | ρ ∘ ι 之后的 DOM 层由组件测试/E2E 覆盖，不在本证明范围 |
+| GenUI iframe 生命周期 | 独立子系统，仅保证 genui 字段随 T3 保全 |
+| SSE 传输层（coalescing/gap/replay） | 状态机假设事件可能乱序/重放/丢失并以 I5+lazy+merge+I9 容忍，但传输本身的送达性不在证明内（弱网最终一致由 reload→DB 权威兜底） |
+| SW/HTTP 缓存层 | bundle 新鲜度由 sw2.js no-store + index.html no-cache + assets immutable 保证（部署面），不在状态机证明内 |
+| history 属主门控（hook 层） | resolvedChatID ≠ chatID 时跳过 dispatch 是 hook 的前置条件，非 δ 的一部分；违反它不会破坏 I1-I9（只会延迟灌入） |
+| busy 的 currentSession.running 来源 | 来自 SSE session(busy) 事件或 onSendSuccess 的 setStatus（hook 层），非 δ 的一部分；T9 证明覆盖两条路径 |
