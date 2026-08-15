@@ -321,21 +321,46 @@ describe('useAgentChatState 全链路', () => {
     )
   })
 
-  it('J: sendUser 立即渲染 sending 行（零等待 —— 不等 REST/echo）', async () => {
-    // 用户报告："user msg 发送出去就应该渲染发送中，而不是过一会才出现"。
-    // 旧路径：user 行等 user_echo（带 turn_id）回来经 history 映射才出现。
-    // 新路径：sendUser → user_sent 事件 → pendingUsers → deriveRows 底部行。
+  it('J: sendUser 立即渲染 sending 行 → REST 成功 ack 清 sending（成功即非发送中）', async () => {
+    // 用户报告："开始发送到发送成功前显示发送中，已经成功了还显示发送中"。
+    // 旧缺陷：sending 只在 echo/turn_started 到达时清除，REST 几百 ms 完成
+    // 却无人清。修复：onSendSuccess 携带 requestID → ackUser 直通状态机。
     const ws = makeWS()
     const h = mountHook(ws)
+    // 1. 发送瞬间：立即渲染 sending 行（零等待）。
     h.result.current.sendUser('帮我查一下', 'req-J1')
     await waitFor(() => {
       const row = h.result.current.messages.find((m) => m.role === 'user' && m.content === '帮我查一下')
       expect(row).toBeDefined()
       expect(row?.sending).toBe(true)
     })
-    // 无任何 SSE/REST 到达 —— 行持续可见（不是闪现）。
-    await new Promise((r) => setTimeout(r, 30))
+    // 2. REST 成功（无任何 SSE 到达）：ackUser 清 sending。
+    h.result.current.ackUser('req-J1', 0, false)
+    await waitFor(() => {
+      const row = h.result.current.messages.find((m) => m.role === 'user' && m.content === '帮我查一下')
+      expect(row?.sending ?? false).toBe(false)
+      expect(row?.queued ?? false).toBe(false)
+    })
+    // 3. 行持续可见（成功后保留，非移除）。
     expect(h.result.current.messages.some((m) => m.content === '帮我查一下')).toBe(true)
+  })
+
+  it('L: ack 透传 queued / fail 移除乐观行', async () => {
+    const ws = makeWS()
+    const h = mountHook(ws)
+    // 排队场景：chat 忙 → resp.queued=true → 行显示排队中（非发送中）。
+    h.result.current.sendUser('排队消息', 'req-L1')
+    h.result.current.ackUser('req-L1', 0, true)
+    await waitFor(() => {
+      const row = h.result.current.messages.find((m) => m.content === '排队消息')
+      expect(row?.queued).toBe(true)
+      expect(row?.sending ?? false).toBe(false)
+    })
+    // 失败场景：乐观行移除。
+    h.result.current.sendUser('会失败的消息', 'req-L2')
+    await waitFor(() => expect(h.result.current.messages.some((m) => m.content === '会失败的消息')).toBe(true))
+    h.result.current.failUser('req-L2')
+    await waitFor(() => expect(h.result.current.messages.some((m) => m.content === '会失败的消息')).toBe(false))
   })
 
   it('K: 乐观行双渲染防护 + echo/turn_started 按 requestID 收敛为单行', async () => {

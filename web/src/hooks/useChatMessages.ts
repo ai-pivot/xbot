@@ -55,7 +55,11 @@ interface UseChatMessagesOptions {
   /** Full persisted agent tenant chatID for historical SubAgent tabs. */
   agentChatID?: string
   /** Called when a message is successfully sent (for optimistic busy trigger). */
-  onSendSuccess?: () => void
+  /** REST 发送成功。携带 requestID + 服务端响应（turn_id/queued）供调用方
+   *  ack 状态机乐观行（清 sending —— 成功即非发送中）。 */
+  onSendSuccess?: (info?: { requestID: string; turnID?: number; queued?: boolean }) => void
+  /** REST 发送失败（乐观行需移除）。 */
+  onSendFail?: (requestID: string) => void
   /** Called when cancel is successfully sent (for optimistic idle trigger). */
   onCancelSuccess?: () => void
   /** 外部共享 MessageStore（方案 A Step 3：与 useProgressStream 共享同一实例）。
@@ -280,6 +284,7 @@ export function useChatMessages({
   parentChatID,
   agentChatID,
   onSendSuccess,
+  onSendFail,
   onCancelSuccess,
   messageStore,
 }: UseChatMessagesOptions): UseChatMessagesResult {
@@ -707,7 +712,7 @@ export function useChatMessages({
           // Two renders with different scroll heights = visible jitter.
           // Calling onSendSuccess first lets both updates land in the same
           // React batch (React 18 automatic batching for promises).
-          onSendSuccess?.()
+          onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true })
           if (optimisticID && resp) {
             const sentID = optimisticID
             const respTurnID = resp.turn_id
@@ -735,6 +740,8 @@ export function useChatMessages({
             store.removeById(failedID)
             syncMessages()
           }
+          // 状态机乐观行同步移除。
+          onSendFail?.(rid)
           toast.error(error instanceof Error ? error.message : 'message send failed')
         })
     },

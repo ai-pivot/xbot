@@ -47,6 +47,10 @@ export interface AgentChatState {
    *  零等待 —— 不等 REST/echo）。返回 requestID 供调用方注入 REST 请求，
    *  使 echo/turn_started 能按 requestID 精确去重/绑定（V2 语义）。 */
   readonly sendUser: (content: string, requestID: string | null) => void
+  /** REST 发送成功：清 sending（成功即非发送中）、回填 queued/turnHint。 */
+  readonly ackUser: (requestID: string, turnHint?: number, queued?: boolean) => void
+  /** REST 发送失败：移除乐观行（对齐旧 removeById 语义）。 */
+  readonly failUser: (requestID: string) => void
 }
 
 export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
@@ -138,6 +142,23 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     [store],
   )
 
+  // REST 成功 ack：清 sending（用户报告："已经成功了还显示发送中"——
+  // 旧行只在 echo/turn_started 到达时才清，REST 几百 ms 就完成却无人清）。
+  const ackUser = useMemo(
+    () => (requestID: string, turnHint?: number, queued?: boolean) => {
+      store.dispatch({ type: 'user_ack', requestID, dbID: 0, turnHint, queued })
+    },
+    [store],
+  )
+
+  // REST 失败：移除乐观行（对齐旧 removeById）。
+  const failUser = useMemo(
+    () => (requestID: string) => {
+      store.dispatch({ type: 'user_fail', requestID })
+    },
+    [store],
+  )
+
   return {
     messages,
     liveProgress,
@@ -145,6 +166,8 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     tokenPrompt,
     reset,
     sendUser,
+    ackUser,
+    failUser,
   }
 }
 

@@ -106,7 +106,7 @@ export function AgentPanel({ params }: PanelProps) {
     parentChatID: params.parentChatID,
     agentChatID: params.agentChatID,
     liveEventsEnabled: shouldSubscribe,
-    onSendSuccess: () => {
+    onSendSuccess: (info) => {
       // Optimistically mark the session as running so the UI enters busy
       // immediately — don't wait for the SSE session(busy) event which may
       // arrive late or get lost.
@@ -114,6 +114,12 @@ export function AgentPanel({ params }: PanelProps) {
         const selector = { channel: messageChannel, chatID }
         store.setStatus(selector, 'running')
       }
+      // REST 成功 ack 状态机乐观行：清 sending（成功即非发送中），
+      // 回填服务端 turn_id/queued。
+      if (info?.requestID) ackUserRef.current(info.requestID, info.turnID, info.queued)
+    },
+    onSendFail: (requestID) => {
+      failUserRef.current(requestID)
     },
     onCancelSuccess: () => {
       // Optimistically mark the session as idle so the UI exits busy
@@ -236,6 +242,10 @@ export function AgentPanel({ params }: PanelProps) {
   // agentChat.sendUser 的 ref（sendMessage 回调用，避免闭包过期）。
   const sendUserRef = useRef(agentChat.sendUser)
   sendUserRef.current = agentChat.sendUser
+  const ackUserRef = useRef(agentChat.ackUser)
+  ackUserRef.current = agentChat.ackUser
+  const failUserRef = useRef(agentChat.failUser)
+  failUserRef.current = agentChat.failUser
 
   const sendMessage = useCallback((content: string, attachments?: Attachments) => {
     setFollowResetToken((v) => v + 1)

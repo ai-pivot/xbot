@@ -271,8 +271,18 @@ export type DomainEvent =
       readonly row: UserRow
     }
   | {
-      /** 乐观 user 与 echo 的 requestID 合并/DB id 回填（本地事件）。 */
+      /** REST 发送成功（ack）：清除 sending，回填服务端信息。dbID=0 表示
+       *  未知（user 行 DB id 由 agent loop 持久化后才有，history reload 回填）。 */
       readonly type: 'user_ack'
       readonly requestID: string
       readonly dbID: number
+      /** 服务端分配的 turn_id（排队消息为 0/缺失）。 */
+      readonly turnHint?: number
+      /** 消息入队（chat 忙，排队等待执行）。 */
+      readonly queued?: boolean
+    }
+  | {
+      /** REST 发送失败：移除乐观行（对齐旧 removeById 语义）。 */
+      readonly type: 'user_fail'
+      readonly requestID: string
     }

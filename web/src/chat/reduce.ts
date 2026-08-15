@@ -496,23 +496,42 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       return { ...s, pendingUsers: [...filtered, ev.row] }
     }
 
-    // ── user_ack：requestID 匹配回填 dbID（pending 或已绑定 turn.user） ──
+    // ── user_ack：REST 发送成功 —— 清 sending、回填服务端信息 ──
+    // ⚠️ queued 显式赋值（resp.queued === true 才排队；成功即非发送中）。
+    // turnHint 补填（未被 turn_started 绑定时），供后续 echo/started 嫁接。
     case 'user_ack': {
+      const dbID = ev.dbID > 0 ? ev.dbID : undefined
       const idx = s.pendingUsers.findIndex((u) => u.requestID === ev.requestID)
       if (idx >= 0) {
         const pendingUsers = s.pendingUsers.slice()
-        pendingUsers[idx] = { ...pendingUsers[idx], dbID: ev.dbID, sending: false, queued: false }
+        const u = pendingUsers[idx]
+        pendingUsers[idx] = {
+          ...u,
+          dbID: dbID ?? u.dbID,
+          sending: false,
+          queued: ev.queued === true,
+          turnHint: u.turnHint ?? ev.turnHint,
+        }
         return { ...s, pendingUsers }
       }
-      // 已绑定进 turn 的 user。
+      // 已绑定进 turn 的 user（turn_started 先于 REST 完成的时序）。
       for (const t of s.turns.values()) {
         if (t.user?.requestID === ev.requestID) {
           return withTurn(s, t.id, (tt) =>
-            tt.user ? { ...tt, user: { ...tt.user, dbID: ev.dbID, sending: false, queued: false } } : tt,
+            tt.user
+              ? { ...tt, user: { ...tt.user, dbID: dbID ?? tt.user.dbID, sending: false, queued: ev.queued === true } }
+              : tt,
           )
         }
       }
       return s
+    }
+
+    // ── user_fail：REST 发送失败 —— 移除乐观行 ──
+    case 'user_fail': {
+      const pendingUsers = s.pendingUsers.filter((u) => u.requestID !== ev.requestID)
+      if (pendingUsers.length === s.pendingUsers.length) return s
+      return { ...s, pendingUsers }
     }
   }
 }
