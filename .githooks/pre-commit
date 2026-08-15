@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# pre-commit：本地对齐 CI 的全部可执行检查。
+#
+# CI 检查矩阵（.github/workflows/ci.yml / .gitlab-ci.yml）：
+#   Lint        golangci-lint run --timeout 5m
+#   Build       go build -v ./...
+#   Test        go test -v -race ./...
+#   Frontend    前端 npm run lint / test / build
+#   E2E         Playwright（需真实 backend + 慢，单独跑）
+#   Windows     仅 Windows runner（本地 Linux 无法执行）
+#
+# 本 hook 覆盖本地可执行的等价检查。race 检测较慢，用 SKIP_RACE=1 可跳过
+# （CI 仍会跑 race）；E2E 用 RUN_E2E=1 可选跑（默认跳过 — 见下方说明）。
+
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
+
+fail() { echo "❌ $1" >&2; exit 1; }
+ok()   { echo "   ✓ $1"; }
+
+echo "═══ 预提交检查（对齐 CI）═══"
+
+# ── 1. Go 格式 / lint ──
+echo "── [1/6] golangci-lint（含 gofmt/imports 等）"
+if command -v golangci-lint >/dev/null 2>&1; then
+  (cd "$ROOT" && golangci-lint run --timeout 5m ./...) || fail "golangci-lint 失败"
+  ok "golangci-lint"
+else
+  # 降级：未安装 golangci-lint 时，至少做 gofmt + go vet 静态检查
+  echo "   （golangci-lint 未安装，降级为 gofmt + go vet）"
+  unformatted="$(cd "$ROOT" && gofmt -l .)"
+  if [ -n "$unformatted" ]; then
+    echo "未格式化文件："; echo "$unformatted"
+    fail "gofmt 检查失败（请运行 gofmt -w）"
+  fi
+  (cd "$ROOT" && go vet ./...) || fail "go vet 失败"
+  ok "gofmt + go vet"
+fi
+
+# ---- 2. Go 构建 ----
+echo "── [2/6] go build ./..."
+(cd "$ROOT" && go build ./...) || fail "go build 失败"
+ok "go build"
+
+# ---- 3. Go 测试（race 可选） ----
+echo "── [3/6] go test ./..."
+if [ "${SKIP_RACE:-0}" = "1" ]; then
+  (cd "$ROOT" && go test ./...) || fail "go test 失败"
+  ok "go test（跳过 race）"
+else
+  (cd "$ROOT" && go test -race ./...) || fail "go test -race 失败"
+  ok "go test -race"
+fi
+
+# ---- 4. 前端 lint ----
+echo "── [4/6] 前端 eslint"
+(cd "$ROOT/web" && npm run lint) || fail "前端 lint 失败"
+ok "前端 lint"
+
+# ---- 5. 前端 vitest ----
+echo "── [5/6] 前端 vitest"
+(cd "$ROOT/web" && npm run test) || fail "前端 test 失败"
+ok "前端 vitest"
+
+# ---- 6. 前端 build（tsc -b + vite） ----
+echo "── [6/6] 前端 build"
+(cd "$ROOT/web" && npm run build) || fail "前端 build 失败"
+ok "前端 build"
+
+# ---- 7. E2E（可选，默认跳过 —— 全量 Playwright 需数分钟 + 真实 backend） ----
+if [ "${RUN_E2E:-0}" = "1" ]; then
+  echo "── [7/7] 前端 E2E（Playwright）"
+  (cd "$ROOT/web" && npm run test:e2e) || fail "E2E 失败"
+  ok "E2E"
+fi
+
+echo "✅ 所有预提交检查通过"
