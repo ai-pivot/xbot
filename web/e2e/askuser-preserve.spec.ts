@@ -93,21 +93,21 @@ test.describe('AskUser answer preserves iterations', () => {
     })
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'thinking', iteration: 0, seq: 2, turn_id: 1, chat_id: 'web:chat-1' },
+      progress: { phase: 'thinking', iteration: 1, seq: 2, turn_id: 1, chat_id: 'web:chat-1' },
     })
     // Tool running → done
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'tool_exec', iteration: 0, seq: 3, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Read', status: 'running', iteration: 0 }] },
+      progress: { phase: 'tool_exec', iteration: 1, seq: 3, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Read', status: 'running', iteration: 1 }] },
     })
     // Delta push: iteration 0 completed (Read done), iteration 1 starts (AskUser)
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
       progress: {
-        phase: 'tool_exec', iteration: 1, seq: 4, turn_id: 1, chat_id: 'web:chat-1',
-        active_tools: [{ name: 'AskUser', status: 'running', iteration: 1 }],
-        completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'main.go' }],
-        iteration_history: [{ iteration: 0, thinking: 'Let me read the file.', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'main.go' }] }],
+        phase: 'tool_exec', iteration: 2, seq: 4, turn_id: 1, chat_id: 'web:chat-1',
+        active_tools: [{ name: 'AskUser', status: 'running', iteration: 2 }],
+        completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'main.go' }],
+        iteration_history: [{ iteration: 1, thinking: 'Let me read the file.', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'main.go' }] }],
       },
     })
     await page.waitForTimeout(300)
@@ -158,11 +158,16 @@ test.describe('AskUser answer preserves iterations', () => {
     await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'thinking', iteration: 0, seq: 5, turn_id: 2, chat_id: 'web:chat-1' },
+      progress: { phase: 'thinking', iteration: 1, seq: 5, turn_id: 2, chat_id: 'web:chat-1' },
     })
     await page.waitForTimeout(500)
 
     // ── Verify: "Read" tool should STILL be visible ──
+    // turn 2 started 收尸 turn 1 → committed 按偏好折叠（unmountOnClose）——
+    // 展开折叠验证迭代（Read）保留不消失。
+    if (await page.locator('[data-role="assistant"] button:has-text("Processed")').count() > 0) {
+      await page.locator('[data-role="assistant"] button:has-text("Processed")').first().click()
+    }
     const hasReadAfter = await page.evaluate(() =>
       document.body.textContent?.includes('Read') ?? false)
     console.log('After answer - Read visible:', hasReadAfter)

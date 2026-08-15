@@ -173,6 +173,7 @@ test.describe('Mermaid diagram rendering', () => {
 
     // ── Phase 1: streaming — mermaid source is incomplete ──
     await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
+    await emitSSE(page, 'progress_structured', { type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:chat-1' } })
     await emitSSE(page, 'stream_content', {
       type: 'stream_content',
       progress: { stream_content: '```mermaid\n' + VALID_MERMAID + '\n```', chat_id: 'web:chat-1', streaming: true },
@@ -182,24 +183,17 @@ test.describe('Mermaid diagram rendering', () => {
     await expect(page.locator('text=mermaid').first()).toBeVisible({ timeout: 10_000 })
     await expect(page.locator('.mermaid-container svg')).toHaveCount(0)
 
-    // ── Phase 2: streaming ends — history reload delivers the committed message ──
-    // Override the history route to return the complete mermaid message.
-    await page.route('**/api/history', (r) => r.fulfill({
-      json: { ok: true, data: {
-        messages: [{
-          role: 'assistant',
-          content: '```mermaid\n' + VALID_MERMAID + '\n```',
-          seq: 1,
-          turn_id: 1,
-          timestamp: new Date().toISOString(),
-        }],
-        chat_id: 'chat-1',
-        last_seq: 1,
-        active_progress: null,
-      } },
-    }), { times: 1 })
-
+    // ── Phase 2: streaming ends — text event delivers the final content ──
+    // 新架构 session(idle) 不触发 history reload —— committed 消息经 text 事件
+    //（权威 finalizer，携带完整 content）交付。旧 mock 用 page.route 覆盖 history
+    // 但无 reload 触发点，SVG 永不渲染。
     await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
+    await emitSSE(page, 'text', {
+      type: 'text',
+      content: '```mermaid\n' + VALID_MERMAID + '\n```',
+      turn_id: 1,
+      chat_id: 'web:chat-1',
+    })
 
     // After streaming ends: the SVG diagram should render.
     const container = page.locator('.mermaid-container')

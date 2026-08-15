@@ -88,31 +88,31 @@ test.describe('Notification turn iteration preservation', () => {
     // Iteration 0: Read tool
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'tool_exec', iteration: 0, seq: 2, turn_id: 1, chat_id: 'web:chat-1',
-        active_tools: [{ name: 'Read', status: 'running', iteration: 0 }] },
+      progress: { phase: 'tool_exec', iteration: 1, seq: 2, turn_id: 1, chat_id: 'web:chat-1',
+        active_tools: [{ name: 'Read', status: 'running', iteration: 1 }] },
     })
     // Iteration 0 done, iteration 1 starts
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'thinking', iteration: 1, seq: 3, turn_id: 1, chat_id: 'web:chat-1',
-        completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }],
-        iteration_history: [{ iteration: 0, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }] }],
+      progress: { phase: 'thinking', iteration: 2, seq: 3, turn_id: 1, chat_id: 'web:chat-1',
+        completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }],
+        iteration_history: [{ iteration: 1, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }] }],
       },
     })
     // Grep tool in iteration 1
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'tool_exec', iteration: 1, seq: 4, turn_id: 1, chat_id: 'web:chat-1',
-        active_tools: [{ name: 'Grep', status: 'running', iteration: 1 }] },
+      progress: { phase: 'tool_exec', iteration: 2, seq: 4, turn_id: 1, chat_id: 'web:chat-1',
+        active_tools: [{ name: 'Grep', status: 'running', iteration: 2 }] },
     })
     // Turn 1 done
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'done', iteration: 1, seq: 5, turn_id: 1, chat_id: 'web:chat-1',
-        completed_tools: [{ name: 'Grep', status: 'done', iteration: 1, summary: 'found 3 matches' }],
+      progress: { phase: 'done', iteration: 2, seq: 5, turn_id: 1, chat_id: 'web:chat-1',
+        completed_tools: [{ name: 'Grep', status: 'done', iteration: 2, summary: 'found 3 matches' }],
         iteration_history: [
-          { iteration: 0, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }] },
-          { iteration: 1, thinking: 'Searching', completed_tools: [{ name: 'Grep', status: 'done', iteration: 1, summary: 'found 3 matches' }] },
+          { iteration: 1, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }] },
+          { iteration: 2, thinking: 'Searching', completed_tools: [{ name: 'Grep', status: 'done', iteration: 2, summary: 'found 3 matches' }] },
         ],
       },
     })
@@ -120,8 +120,8 @@ test.describe('Notification turn iteration preservation', () => {
     await emitSSE(page, 'text', {
       type: 'text', content: 'Done processing notification.', seq: 6, turn_id: 1, chat_id: 'web:chat-1',
       progress_history: JSON.stringify([
-        { iteration: 0, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }] },
-        { iteration: 1, thinking: 'Searching', completed_tools: [{ name: 'Grep', status: 'done', iteration: 1, summary: 'found 3 matches' }] },
+        { iteration: 1, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }] },
+        { iteration: 2, thinking: 'Searching', completed_tools: [{ name: 'Grep', status: 'done', iteration: 2, summary: 'found 3 matches' }] },
       ]),
     })
     await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
@@ -139,7 +139,7 @@ test.describe('Notification turn iteration preservation', () => {
     await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'thinking', iteration: 0, seq: 7, turn_id: 2, chat_id: 'web:chat-1' },
+      progress: { phase: 'thinking', iteration: 1, seq: 7, turn_id: 2, chat_id: 'web:chat-1' },
     })
     await page.waitForTimeout(300)
 
