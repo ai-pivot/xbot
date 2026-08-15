@@ -30,6 +30,10 @@ export function historyToReplaced(
 
   for (const m of messages) {
     if (m.role === 'system') continue
+    // 乐观行（旧 hook 的 pending 副本，turnID=0 且未持久化）不进渲染 ——
+    // 渲染源是状态机 pendingUsers（user_sent 事件直通，立即出现）；这里
+    // 放行会造成同一 user 行双渲染。
+    if (m.turnID === 0 && m.persisted !== true) continue
     if (!m.turnID || m.turnID <= 0) {
       legacy.push({
         id: m.id,

@@ -647,10 +647,13 @@ export function useChatMessages({
   }, [ws, chatID, channel, activeMessageCacheKey, liveEventsEnabled])
 
   const sendMessage = useCallback(
-    (content: string, attachments?: Attachments) => {
+    (content: string, attachments?: Attachments, requestID?: string) => {
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
-      const requestID = newMessageRequestID()
+      // 注入的 requestID（AgentPanel 经 agentChat.sendUser 生成的乐观行 ID）：
+      // REST 请求 id = 状态机 pendingUser.requestID → user_echo/turn_started
+      // 按 requestID 精确去重/绑定（否则两套 id 并存 → 双行）。
+      const rid = requestID ?? newMessageRequestID()
       // Optimistic rendering: show the user message immediately.
       // No "sending" spinner — the REST response is typically <200ms, and
       // the spinner's height change (appear → disappear) causes the user
@@ -671,7 +674,7 @@ export function useChatMessages({
           isPartial: false,
           turnID: 0,
           persisted: false,
-          requestID,
+          requestID: rid,
           sending: true,
         }
         messageMutationGenRef.current += 1
@@ -686,7 +689,7 @@ export function useChatMessages({
       }
       void ws.send({
         type: 'message',
-        id: requestID,
+        id: rid,
         channel,
         chat_id: chatIDRef.current ?? undefined,
         content: text,

@@ -60,7 +60,7 @@ function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1') {
 
 const histMsg = (over: Partial<ChatMessage>): ChatMessage => ({
   id: 'm1', role: 'user', content: '历史消息', iterations: [], timestamp: 't',
-  isPartial: false, turnID: 0, ...over,
+  isPartial: false, turnID: 0, persisted: true, ...over,
 })
 
 describe('useAgentChatState 全链路', () => {
@@ -319,5 +319,49 @@ describe('useAgentChatState 全链路', () => {
     await waitFor(() =>
       expect(h.result.current.liveProgress.iterationHistory.map((i) => i.iteration)).toEqual([1, 2, 3, 4, 5]),
     )
+  })
+
+  it('J: sendUser 立即渲染 sending 行（零等待 —— 不等 REST/echo）', async () => {
+    // 用户报告："user msg 发送出去就应该渲染发送中，而不是过一会才出现"。
+    // 旧路径：user 行等 user_echo（带 turn_id）回来经 history 映射才出现。
+    // 新路径：sendUser → user_sent 事件 → pendingUsers → deriveRows 底部行。
+    const ws = makeWS()
+    const h = mountHook(ws)
+    h.result.current.sendUser('帮我查一下', 'req-J1')
+    await waitFor(() => {
+      const row = h.result.current.messages.find((m) => m.role === 'user' && m.content === '帮我查一下')
+      expect(row).toBeDefined()
+      expect(row?.sending).toBe(true)
+    })
+    // 无任何 SSE/REST 到达 —— 行持续可见（不是闪现）。
+    await new Promise((r) => setTimeout(r, 30))
+    expect(h.result.current.messages.some((m) => m.content === '帮我查一下')).toBe(true)
+  })
+
+  it('K: 乐观行双渲染防护 + echo/turn_started 按 requestID 收敛为单行', async () => {
+    const ws = makeWS()
+    const h = mountHook(ws)
+    // 1. sendUser（状态机 pending）+ 旧 hook 的乐观副本进 history（turnID=0，
+    //    persisted=false）→ 过滤后单行。
+    h.result.current.sendUser('你好', 'req-K1')
+    act(() => h.setHistory([
+      histMsg({ id: 'opt', role: 'user', content: '你好', turnID: 0, persisted: false, requestID: 'req-K1' }),
+    ]))
+    await waitFor(() => expect(h.result.current.messages.filter((m) => m.content === '你好')).toHaveLength(1))
+    // 2. user_echo（request_id = 注入的 rid）→ pending 替换（sending 清除）。
+    ws.emit({ type: 'user_echo', content: '你好', turn_id: 21, request_id: 'req-K1', chat_id: 'chat-1' })
+    await waitFor(() => {
+      const rows = h.result.current.messages.filter((m) => m.content === '你好')
+      expect(rows).toHaveLength(1)
+      expect(rows[0].sending ?? false).toBe(false)
+    })
+    // 3. turn_started（requestID 绑定）→ user 进 turn 槽，仍单行。
+    ws.emit({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 21, seq: 1, turn_start: { trigger: 'user', request_id: 'req-K1' } }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.messages.filter((m) => m.content === '你好')).toHaveLength(1))
+    // 4. history 带 echo 行（turnID=21, persisted）→ 并入 turn user，仍单行。
+    act(() => h.setHistory([
+      histMsg({ id: 'e21', role: 'user', content: '你好', turnID: 21, persisted: true, requestID: 'req-K1' }),
+    ]))
+    expect(h.result.current.messages.filter((m) => m.content === '你好')).toHaveLength(1)
   })
 })

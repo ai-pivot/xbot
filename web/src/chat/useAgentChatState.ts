@@ -43,6 +43,10 @@ export interface AgentChatState {
   readonly busyFallback: boolean
   readonly tokenPrompt: number | null
   readonly reset: () => void
+  /** 乐观发送：立即 dispatch user_sent（pendingUsers 渲染 sending 行，
+   *  零等待 —— 不等 REST/echo）。返回 requestID 供调用方注入 REST 请求，
+   *  使 echo/turn_started 能按 requestID 精确去重/绑定（V2 语义）。 */
+  readonly sendUser: (content: string, requestID: string | null) => void
 }
 
 export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
@@ -109,14 +113,42 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     [store, progressChatID],
   )
 
+  // 乐观发送：立即进状态机 pendingUsers（deriveRows 底部渲染 sending 行）。
+  // 同步 dispatch（不经 rAF 的 send 路径无需等待）—— 用户报告："user msg
+  // 发送出去就应该渲染发送中，而不是过一会才出现"（等 echo 的旧路径已废）。
+  const sendUser = useMemo(
+    () => (content: string, requestID: string | null) => {
+      const text = content.trim()
+      if (text === '') return
+      store.dispatch({
+        type: 'user_sent',
+        row: {
+          id: `local-${Date.now()}-${++localSeq}`,
+          content: text as never,
+          timestamp: new Date().toISOString(),
+          isNotification: false,
+          queued: false,
+          sending: true,
+          requestID,
+          turnHint: undefined,
+          dbID: undefined,
+        },
+      })
+    },
+    [store],
+  )
+
   return {
     messages,
     liveProgress,
     busyFallback: liveProgress.streaming && state.activeTurn !== null,
     tokenPrompt,
     reset,
+    sendUser,
   }
 }
+
+let localSeq = 0
 
 // ─── 轻量诊断（window.__xbotChatDiag） ────────────────────────
 // ring buffer（最近 200 条）：事件类型 → 状态机去向。排障时控制台直接读

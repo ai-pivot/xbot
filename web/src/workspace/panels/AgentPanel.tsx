@@ -233,10 +233,18 @@ export function AgentPanel({ params }: PanelProps) {
   // (which increments followResetToken for scroll-follow behavior)
   const sendMessageRef = useRef(chat.sendMessage)
   sendMessageRef.current = chat.sendMessage
+  // agentChat.sendUser 的 ref（sendMessage 回调用，避免闭包过期）。
+  const sendUserRef = useRef(agentChat.sendUser)
+  sendUserRef.current = agentChat.sendUser
 
   const sendMessage = useCallback((content: string, attachments?: Attachments) => {
     setFollowResetToken((v) => v + 1)
-    sendMessageRef.current(content, attachments)
+    // 乐观发送：立即 dispatch user_sent（pendingUsers 渲染 sending 行），
+    // 再走 REST。requestID 贯穿（状态机 pendingUser === REST id → echo/
+    // turn_started 按 requestID 去重/绑定）。
+    const rid = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    sendUserRef.current(content, rid)
+    sendMessageRef.current(content, attachments, rid)
   }, [])
 
   // Rewind via inline edit: rewind to the message's DB id, then send
