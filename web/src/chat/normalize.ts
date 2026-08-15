@@ -123,6 +123,7 @@ function streamEventFrom(
     type: 'stream',
     turnID: turn !== null ? turnID(turn) : null,
     seq,
+    iteration: typeof p.iteration === 'number' && p.iteration >= 1 ? iterNum(p.iteration) : null,
     content: optStr(p.stream_content),
     reasoning: optStr(p.reasoning_stream_content),
     streamingTools: Array.isArray(p.streaming_tools)
@@ -236,6 +237,7 @@ function normalizeStream(env: Record<string, unknown>): readonly DomainEvent[] |
       type: 'stream',
       turnID: turn !== null ? turnID(turn) : null,
       seq: typeof p.seq === 'number' ? eventSeq(p.seq) : null,
+      iteration: typeof p.iteration === 'number' && p.iteration >= 1 ? iterNum(p.iteration) : null,
       content: optStr(p.stream_content),
       reasoning: optStr(p.reasoning_stream_content),
       streamingTools: Array.isArray(p.streaming_tools)

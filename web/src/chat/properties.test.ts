@@ -73,6 +73,7 @@ function generateEvents(rng: () => number, o: GenOptions): DomainEvent[] {
         type: 'stream',
         turnID: t,
         seq: rng() < 0.2 ? null : (seq++ as never),
+        iteration: null,
         content: rng() < 0.8 ? `流式-${i}` : undefined,
         reasoning: undefined,
         streamingTools: undefined,

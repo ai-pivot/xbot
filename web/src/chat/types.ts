@@ -242,6 +242,11 @@ export type DomainEvent =
       /** null = 事件未携带 turn_id（已知后端 gap）→ reduce 回退 activeTurn。 */
       readonly turnID: TurnID | null
       readonly seq: EventSeq | null
+      /** 后端 stamp 的迭代号（getActiveIteration）。迭代前进时 reduce 用它
+       *  清空旧 content/reasoning —— 否则迭代 N+1 的 stream 到达时，若
+       *  content 尚未产出，迭代 N 的旧 content 残留到新迭代（"老 content
+       *  到新迭代"竞态，用户报告）。 */
+      readonly iteration: IterNum | null
       /** 全量累积文本（覆盖语义 —— 后端 delta_push 默认关闭）。 */
       readonly content: string | undefined
       readonly reasoning: string | undefined

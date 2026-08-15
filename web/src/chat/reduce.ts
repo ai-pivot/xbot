@@ -317,17 +317,24 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const t = s.turns.get(target)
       if (!t || t.phase.kind !== 'live') return s
       const prev = t.phase.data
+      // 迭代前进（后端 stamp 的 iteration > 当前 iter）：清空流式字段 —— 否则
+      // 迭代 N+1 的 stream 到达时，若 content 尚未产出，迭代 N 的旧 content
+      // /reasoning 残留到新迭代（"老 content 到新迭代"竞态，用户报告）。
+      const advanced = ev.iteration !== null && ev.iteration > prev.iter
       const data: LiveSnapshot = {
         ...prev,
-        content: ev.content !== undefined ? ev.content : prev.content,
-        reasoning: ev.reasoning !== undefined ? ev.reasoning : prev.reasoning,
+        iter: advanced ? ev.iteration : prev.iter,
+        content: advanced ? (ev.content ?? '') : (ev.content !== undefined ? ev.content : prev.content),
+        reasoning: advanced ? (ev.reasoning ?? '') : (ev.reasoning !== undefined ? ev.reasoning : prev.reasoning),
         // 工具去重（同名双渲染根治）：streamingTools 是流式检测中的工具
         // （generating，参数不全），activeTools 是结构化事件的执行中工具
         // （running，参数全）。同名共存 → 同一工具渲染两个（用户报告
         // 100% 复现）。规则：streamingTools ∩ activeTools = ∅（旧前端
-        // mergeProgressState 同款过滤）。
-        streamingTools:
-          ev.streamingTools !== undefined
+        // mergeProgressState 同款过滤）。迭代前进时全部清空（流式字段随
+        // 迭代边界重置）。
+        streamingTools: advanced
+          ? []
+          : ev.streamingTools !== undefined
             ? ev.streamingTools.filter((t2) => !prev.activeTools.some((a) => a.name === t2.name))
             : prev.streamingTools,
         genui: ev.genui !== undefined ? ev.genui : prev.genui,
