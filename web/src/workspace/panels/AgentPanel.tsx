@@ -209,8 +209,15 @@ export function AgentPanel({ params }: PanelProps) {
   // historyProgressToLive and by any stream/structured event while phase !=
   // done) so the "思考中…" placeholder still renders on refresh.
   const currentSession = store.sessions.find((s) => sameSession(s, activeSession))
+  // busy 来源（三路 OR，覆盖所有窗口）：
+  // 1. currentSession.running（SSE session(busy) 事件设置 —— 主路径）
+  // 2. progressSnapshot.streaming && phase 非 done/frozen（live turn 在跑）
+  // 3. agentChat.busyFallback（状态机 activeTurn !== null —— 覆盖 REST ack
+  //    到 turn_started 之间的窗口：sending 已清但 live turn 可能已由 lazy
+  //    采纳/stream 事件建立，session(busy) 尚未到达）
   const busy = ((currentSession?.running ?? false) ||
-    (progressSnapshot.streaming && progressSnapshot.phase !== 'done' && progressSnapshot.phase !== 'frozen')) &&
+    (progressSnapshot.streaming && progressSnapshot.phase !== 'done' && progressSnapshot.phase !== 'frozen') ||
+    agentChat.busyFallback) &&
     !askUser.prompt
 
   const llmSettings = useLLMSettings()
