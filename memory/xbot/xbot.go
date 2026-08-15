@@ -508,6 +508,12 @@ func truncateRunes(s string, max int) string {
 //	`foo 记忆 bar`  →  `"foo" AND "记 忆" AND "bar"`
 //
 // Quotes inside a token are escaped by doubling (FTS5 string literal escape).
+//
+// ⚠️ 语义分工：本函数 AND 组合，仅用于 dedup 相似度判定（addLongTermMemory
+// —— 全 token 命中才算"相似"，避免单词重合的无关记忆被误判重复）。搜索
+// 一律用 fts5OrQuery —— BM25 排序场景下 AND 会让一个缺席词（查询 "frpc"
+// vs 索引 "frps"）零化整个结果集（用户报告："2008 机器 IP 地址 frpc 转发"
+// 搜不出含 "2008" 的记忆）。
 func fts5SafeQuery(raw string) string {
 	// Space-separate CJK runs so Chinese substrings become matchable tokens.
 	raw = cjkSpaceRuns(raw)
@@ -542,6 +548,46 @@ func fts5SafeQuery(raw string) string {
 		return `"` + f + `"`
 	}
 	return strings.Join(quoted, " AND ")
+}
+
+// fts5OrQuery builds an FTS5 MATCH expression with OR semantics for SEARCH
+// (recall): any token hit recalls the row, bm25() ranks it. Multi-term BM25
+// search must not AND-combine tokens — one absent word (query "frpc" vs
+// indexed "frps") zeroes out the whole result set even when a high-IDF term
+// ("2008") matches exactly (user report). AND stays reserved for dedup
+// similarity (fts5SafeQuery) where strict full-token overlap is the point.
+func fts5OrQuery(raw string) string {
+	return strings.Join(fts5Tokens(raw), " OR ")
+}
+
+// fts5Tokens applies the same sanitization pipeline as fts5SafeQuery (CJK
+// spacing, quoting/escaping, stopword filter, token cap) and returns the
+// quoted literal tokens; the caller picks the joiner.
+func fts5Tokens(raw string) []string {
+	raw = cjkSpaceRuns(raw)
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return []string{`""`}
+	}
+	const maxQueryTokens = 24
+	var quoted []string
+	kept := 0
+	for _, f := range fields {
+		if kept >= maxQueryTokens {
+			break
+		}
+		if isStopToken(f) {
+			continue
+		}
+		f = strings.ReplaceAll(f, `"`, `""`)
+		quoted = append(quoted, `"`+f+`"`)
+		kept++
+	}
+	if len(quoted) == 0 {
+		f := strings.ReplaceAll(fields[0], `"`, `""`)
+		return []string{`"` + f + `"`}
+	}
+	return quoted
 }
 
 // isStopToken reports whether a token is a common noise word that adds no
@@ -825,7 +871,7 @@ func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, e
 		WHERE `+m.scopeWhere("ltm")+` AND xbot_long_term_memories_fts MATCH ?
 		ORDER BY score ASC
 		LIMIT ?
-	`, m.scopeArg(), fts5SafeQuery(query), topK)
+	`, m.scopeArg(), fts5OrQuery(query), topK)
 	if err != nil {
 		return nil, err
 	}
@@ -888,7 +934,7 @@ func (m *XbotMemory) searchShortTerm(query string, topK int) ([]ShortTermMemory,
 		WHERE `+m.scopeWhere("stm")+` AND xbot_short_term_memories_fts MATCH ?
 		ORDER BY score ASC
 		LIMIT ?
-	`, m.scopeArg(), fts5SafeQuery(query), topK)
+	`, m.scopeArg(), fts5OrQuery(query), topK)
 	if err != nil {
 		return nil, err
 	}
@@ -1479,7 +1525,7 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 			WHERE `+m.scopeWhere("ltm")+` AND ltm.type = ? AND xbot_long_term_memories_fts MATCH ?
 			ORDER BY score ASC
 			LIMIT ?
-		`, m.scopeArg(), memType, fts5SafeQuery(query), limit)
+		`, m.scopeArg(), memType, fts5OrQuery(query), limit)
 	} else {
 		rows, err = m.db.Query(`
 			SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
@@ -1490,7 +1536,7 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 			WHERE `+m.scopeWhere("ltm")+` AND xbot_long_term_memories_fts MATCH ?
 			ORDER BY score ASC
 			LIMIT ?
-		`, m.scopeArg(), fts5SafeQuery(query), limit)
+		`, m.scopeArg(), fts5OrQuery(query), limit)
 	}
 	if err != nil {
 		return nil, err

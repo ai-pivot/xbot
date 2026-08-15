@@ -1,8 +1,11 @@
 package xbot
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestCJKSpacing(t *testing.T) {
@@ -74,6 +77,54 @@ func TestFts5SafeQueryLongMessage(t *testing.T) {
 	// Must be valid FTS5: every token is a quoted literal, no raw operators.
 	if !strings.HasPrefix(q, `"`) || !strings.HasSuffix(q, `"`) {
 		t.Errorf("query not fully quoted: %q", q)
+	}
+}
+
+// TestFts5SearchMultiTermRecall 复现用户 bug：多词查询中只要有一个词
+// 不在记忆里（"frpc" vs 记忆里的 "frps"；"机器/地址/转发" 记忆里没有），
+// AND 语义就让整个查询零结果 —— 即使高区分度词 "2008" 精确存在。
+// 搜索是 BM25 排序场景，召回必须用 OR（任一词命中即可召回，BM25 负责
+// 把多词命中/高 IDF 的排前面）；AND 只能留给 dedup 相似度判定。
+func TestFts5SearchMultiTermRecall(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE VIRTUAL TABLE fts USING fts5(search_text)`); err != nil {
+		t.Fatal(err)
+	}
+	// 复刻 buildSearchText 的 CJK 空格化（content + keywords 都进索引）。
+	content := cjkSpaceRuns("Server 'myserver' = root@43.154.191.136:2008 (shell alias myserver). It hosts frps (port 7077), a Minecraft Fabric server, and xbot-related services.")
+	if _, err := db.Exec(`INSERT INTO fts(search_text) VALUES (?)`, content); err != nil {
+		t.Fatal(err)
+	}
+	// 无关记忆（干扰项，验证排序不崩）。
+	if _, err := db.Exec(`INSERT INTO fts(search_text) VALUES (?)`, cjkSpaceRuns("用户偏好深色主题 dark theme")); err != nil {
+		t.Fatal(err)
+	}
+
+	query := "2008 机器 IP 地址 frpc 转发" // frpc/机器/地址/转发 都不在记忆里
+	for _, tc := range []struct {
+		name string
+		expr string
+	}{
+		{"AND (旧语义)", fts5SafeQuery(query)},
+		{"OR (新语义)", fts5OrQuery(query)},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM fts WHERE fts MATCH ?`, tc.expr).Scan(&n); err != nil {
+			t.Fatalf("%s: MATCH 语法错误: %v", tc.name, err)
+		}
+		t.Logf("%s: %q → 召回 %d 条", tc.name, tc.expr, n)
+		if tc.name == "OR (新语义)" && n == 0 {
+			t.Errorf("BUG: OR 语义下查询 %q 召回 0 条 —— 含 '2008' 的记忆必须可召回", query)
+		}
+	}
+
+	// 单词查询（回归保护）："2008" 单独可命中。
+	if err := db.QueryRow(`SELECT count(*) FROM fts WHERE fts MATCH ?`, fts5OrQuery("2008")).Scan(new(int)); err != nil {
+		t.Errorf("单词 OR 查询语法错误: %v", err)
 	}
 }
 
