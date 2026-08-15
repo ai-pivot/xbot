@@ -88,9 +88,18 @@ export function historyToReplaced(
   }
 
   // active：DB 权威的 in-flight turn（刷新恢复 live）。
+  // ⚠️ phase=done 的快照不恢复 —— turn 已结束（text/idle 兜底会收尾，
+  // 或 DB 行已 commit）；恢复成 live 会让后续事件错挂（切回会话后
+  // "看不到新进度"的帮凶之一）。
   let active: { turnID: ReturnType<typeof mkTurnID>; snapshot: LiveSnapshot } | null = null
-  const hp = initialProgress as { turn_id?: number; iteration?: number; stream_content?: string; content?: string; reasoning_stream_content?: string; iteration_history?: unknown[]; active_tools?: unknown[]; streaming?: boolean } | null
-  if (hp && typeof hp.turn_id === 'number' && hp.turn_id > 0) {
+  const hp = initialProgress as { turn_id?: number; phase?: string; iteration?: number; stream_content?: string; content?: string; reasoning_stream_content?: string; iteration_history?: unknown[]; active_tools?: unknown[]; streaming?: boolean } | null
+  if (
+    hp &&
+    typeof hp.turn_id === 'number' &&
+    hp.turn_id > 0 &&
+    hp.phase !== 'done' &&
+    hp.phase !== 'frozen'
+  ) {
     const live = historyProgressToLive(hp as never)
     active = { turnID: mkTurnID(hp.turn_id), snapshot: snapshotToLive(live) }
   }

@@ -174,4 +174,39 @@ describe('useAgentChatState 全链路', () => {
     await waitFor(() => expect(h.result.current.messages.some((m) => m.content === '新会话的消息')).toBe(true))
     expect(h.result.current.messages.some((m) => m.content === '旧会话的消息')).toBe(false)
   })
+
+  it('F: 切回会话（store 空、turn_started 已过）→ stream/iteration 事件 lazy 重建 live turn → 进度可见', async () => {
+    // 用户报告："发消息后能看到打字机；切换会话切回来，看不到任何新进度"。
+    // 根因：切回后新 store 空 + turn_started 不会再发 + active_progress 恢复
+    // 失败/未完成时，stream 事件 turns.get(57)=undefined 被永久丢弃。
+    // lazy 采纳：事件带 turnID、无该槽、无 active → 重建 live turn。
+    const ws = makeWS()
+    const h = mountHook(ws)
+    // 无 turn_started（它属于切换前）—— stream 直接到达。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 57, iteration: 2, stream_content: '切回后的流式进度' }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamContent).toContain('切回后的流式进度'))
+    expect(h.result.current.liveProgress.turnID).toBe(57)
+    // 后续 stream 继续喂养（打字机持续）。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 57, iteration: 2, stream_content: '切回后的流式进度（继续）' }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamContent).toContain('（继续）'))
+    // iteration 事件（同 turn）正常处理；text 收尾完整。
+    ws.emit({ type: 'progress_structured', progress: { phase: 'tool_exec', turn_id: 57, iteration: 2, seq: 9, iteration_history: [{ iteration: 2, content: '切回后的流式进度（继续）', reasoning: '', tools: [] }] }, chat_id: 'chat-1' })
+    ws.emit({ type: 'text', content: '切回后 turn 的最终回复', turn_id: 57, chat_id: 'chat-1', progress_history: '[]' })
+    await waitFor(() => {
+      const committed = h.result.current.messages.find((m) => !m.isPartial && m.role === 'assistant' && m.turnID === 57)
+      expect(committed?.content).toBe('切回后 turn 的最终回复')
+    })
+  })
+
+  it('F2: lazy 采纳不与既有活动 turn 竞争（旧 turn 迟到事件仍丢弃）', async () => {
+    const ws = makeWS()
+    const h = mountHook(ws)
+    ws.emit({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 8, seq: 1 }, chat_id: 'chat-1' })
+    ws.emit({ type: 'stream_content', progress: { turn_id: 8, iteration: 1, stream_content: 'turn8 流式' }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamContent).toContain('turn8 流式'))
+    // 旧 turn 5 的迟到事件（有 active turn 8）→ 丢弃，不采纳、不打断。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 5, iteration: 1, stream_content: '旧 turn5 迟到' }, chat_id: 'chat-1' })
+    expect(h.result.current.liveProgress.streamContent).toContain('turn8 流式')
+    expect(h.result.current.liveProgress.turnID).toBe(8)
+  })
 })

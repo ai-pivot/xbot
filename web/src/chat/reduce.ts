@@ -66,6 +66,33 @@ const withTurn = (s: ChatState, id: TurnID, patch: (t: Turn) => Turn): ChatState
   return { ...s, turns }
 }
 
+/**
+ * lazyAdoptLive — 无 active turn 时把 turn 槽创建/升级为 live（打字机的
+ * 宽容语义）。空壳占位（frozen 无输出，user-only 历史行组成）会被升级
+ * —— 空壳没有可保数据，它只是"DB 有 user 行"的占位符。
+ *
+ * 场景（用户报告："切换或刷新后只显示 history，live progress 不显示"）：
+ *   切回 → fetchHistory → turn 57 的 user 行组成 frozen 空壳 → active_progress
+ *   恢复分支见 existing 存在就跳过 → activeTurn=null → stream 事件
+ *   turns.get(57) 是 frozen 非 live → 丢弃 → 永远只显示 history。
+ */
+function lazyAdoptLive(s: ChatState, id: TurnID, snapshot?: LiveSnapshot): ChatState {
+  const prev = s.turns.get(id)
+  const turns = new Map(s.turns)
+  turns.set(id, {
+    id,
+    user: prev?.user ?? null,
+    phase: { kind: 'live', data: snapshot ? { ...snapshot } : { ...EMPTY_LIVE } },
+    requestID: prev?.requestID ?? null,
+  })
+  return { ...s, turns, activeTurn: id, lastSeq: null }
+}
+
+/** frozen 空壳判定：无任何输出（占位符，非终态数据）。 */
+function isHollowFrozen(t: Turn | undefined): boolean {
+  return !!t && t.phase.kind === 'frozen' && !hasOutput(t.phase.data)
+}
+
 // ─── reduce：8 case 穷尽（never 检查由 TS 判别联合保证） ───────
 
 export function reduce(s: ChatState, ev: DomainEvent): ChatState {
@@ -105,7 +132,37 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         user = s.pendingUsers[idx]
         pending = s.pendingUsers.filter((_, i) => i !== idx)
       }
+      // ⚠️ 已存在同 ID turn：live（lazy 采纳过）保留数据；frozen 空壳
+      // （user-only 占位）升级为 live（turn_started 是权威开始信号）；committed
+      // /有输出 frozen 嫁接 user 不动 phase（I3：指针只指 live，保持原值）。
+      // 覆盖为空 live 会抹掉已渲染进度（性质测试 seed=1/42 抓出 T3 violated）。
+      const existing = next.turns.get(ev.turnID)
       const turns = new Map(next.turns)
+      if (existing) {
+        if (existing.phase.kind === 'live') {
+          turns.set(ev.turnID, {
+            id: ev.turnID,
+            user: existing.user ?? user,
+            phase: existing.phase,
+            requestID: existing.requestID,
+          })
+          return { ...next, turns, pendingUsers: pending, activeTurn: ev.turnID }
+        }
+        if (existing.phase.kind === 'frozen' && !hasOutput(existing.phase.data)) {
+          // 空壳占位 → 升级为 live（turn_started 是权威开始信号）。
+          turns.set(ev.turnID, {
+            id: ev.turnID,
+            user: existing.user ?? user,
+            phase: { kind: 'live', data: existing.phase.data },
+            requestID: existing.requestID,
+          })
+          return { ...next, turns, pendingUsers: pending, activeTurn: ev.turnID }
+        }
+        // committed / 有输出 frozen：嫁接 user，不动 phase（I3：指针只指
+        // live，保持原值 —— next 已被预改，须显式回滚 activeTurn/lastSeq）。
+        turns.set(ev.turnID, existing.user ? existing : { ...existing, user: user ?? existing.user })
+        return { ...next, turns, pendingUsers: pending, activeTurn: s.activeTurn, lastSeq: s.lastSeq }
+      }
       turns.set(ev.turnID, {
         id: ev.turnID,
         user,
@@ -117,7 +174,14 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
     // ── iteration：仅 active turn；迭代 append-only（I4） ──
     case 'iteration': {
-      if (ev.turnID !== s.activeTurn) return s // 迟到/旧 turn：引用不变，零渲染
+      if (ev.turnID !== s.activeTurn) {
+        const t0 = s.turns.get(ev.turnID)
+        if (s.activeTurn !== null && t0?.phase.kind !== 'live') return s
+        if (s.activeTurn !== null && t0?.phase.kind === 'live' && s.activeTurn !== ev.turnID) return s
+        if (t0 && !isHollowFrozen(t0)) return s // committed/有输出 frozen —— 重放，丢弃
+        // 无槽（或空壳占位）且无 active → lazy 采纳/升级（切回会话场景）。
+        s = lazyAdoptLive(s, ev.turnID)
+      }
       if (s.lastSeq !== null && ev.seq <= s.lastSeq) return s // I5：重放丢弃
       const t = s.turns.get(ev.turnID)
       if (!t || t.phase.kind !== 'live') return s
@@ -147,9 +211,23 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     // 旧前端明确把 stream 字段处理放在 seq 检查【之前】（"stream deltas are
     // cumulative, not ordered by seq"）。seq gate 会按到达序误杀打字机帧。
     // ⚠️ turnID 缺失（后端 gap）回退 activeTurn —— 事件属于当前流。
+    // ⚠️ lazy 采纳：切回会话（turn_started 已过、active_progress 未恢复/
+    //   失败）时从 stream 事件重建 live turn —— 否则事件永远被丢弃
+    //   （"切回来看不到任何新进度"）。
     case 'stream': {
       const target = ev.turnID !== null ? ev.turnID : s.activeTurn
       if (target === null) return s
+      if (s.turns.has(target)) {
+        const t0 = s.turns.get(target)!
+        if (t0.phase.kind !== 'live') {
+          // 空壳占位（user-only 历史行）→ 升级为 live（流式事件是活动的证据）。
+          if (!isHollowFrozen(t0) || s.activeTurn !== null) return s
+          s = lazyAdoptLive(s, target)
+        }
+      } else {
+        if (s.activeTurn !== null) return s // 已有别的活动 turn —— 事件属旧 turn，丢弃
+        s = lazyAdoptLive(s, target)
+      }
       const t = s.turns.get(target)
       if (!t || t.phase.kind !== 'live') return s
       const prev = t.phase.data
@@ -301,8 +379,12 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         if (keep) turns.set(id, t)
       }
 
-      // 3. activeTurn：保留下来的 live 优先；否则 hydration 的 ev.active
-      //    （无该 turn 则创建 live —— 刷新恢复）。
+      // 3. activeTurn：保留下来的 live 优先；否则 hydration 的 ev.active。
+      // ⚠️ 空壳占位（user-only 历史行组成的 frozen 空壳）必须升级为 live ——
+      // DB 权威快照声明该 turn 正在运行；不升级则 activeTurn=null → 后续
+      // stream 事件全部被丢弃（用户报告："切换或刷新后只显示 history，
+      // live progress 不显示"）。committed/有输出 frozen 不动（DB 行更权威，
+      // 快照可能滞后于 SSE commit）。
       let activeTurn: TurnID | null = null
       if (s.activeTurn !== null) {
         const t = turns.get(s.activeTurn)
@@ -313,12 +395,12 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         const existing = turns.get(tid)
         if (existing && existing.phase.kind === 'live') {
           activeTurn = tid
-        } else if (!existing) {
+        } else if (!existing || isHollowFrozen(existing)) {
           turns.set(tid, {
             id: tid,
-            user: null,
+            user: existing?.user ?? null,
             phase: { kind: 'live', data: ev.active.snapshot },
-            requestID: null,
+            requestID: existing?.requestID ?? null,
           })
           activeTurn = tid
         }
