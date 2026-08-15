@@ -237,7 +237,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(t1.phase.kind).toBe('committed')
     if (t1.phase.kind === 'committed') {
       expect(t1.phase.payload.iterations).toHaveLength(1)
-      expect(t1.phase.payload.iterations[0].content).toBe('最后迭代内容')
+      expect(t1.phase.payload.iterations[0].content).toBe('最终回复')
       expect(t1.phase.payload.content).toBe('最终回复')
     }
   })
@@ -354,7 +354,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       // 权威 progressHistory 覆盖同号 + append 补齐 —— T3 + 权威数据。
       expect(t1.phase.payload.iterations).toHaveLength(2)
       expect(t1.phase.payload.iterations[0].content).toBe('cancel 补齐的权威迭代内容')
-      expect(t1.phase.payload.iterations[1].content).toBe('cancel 前进行中的迭代（补齐）')
+      expect(t1.phase.payload.iterations[1].content).toBe('cancel 前的迭代内容')
     }
   })
 
@@ -560,7 +560,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     if (t1?.phase.kind !== 'committed') throw new Error('turn 1 must stay committed')
     // 修复后：迭代 union —— 最后迭代 2 必须保留（append-only，DB 快照落后不减数据）。
     expect(t1.phase.payload.iterations.map((it) => it.iteration)).toEqual([1, 2])
-    expect(t1.phase.payload.iterations[1].content).toBe('迭代2内容（最后迭代）')
+    expect(t1.phase.payload.iterations[1].content).toBe('最终回复')
     // text 的最终回复不丢（incoming 空 content 不得清空已有）。
     if (t1.phase.payload.via === 'text') expect(t1.phase.payload.content).toBe('最终回复')
     const rows = deriveRows(s1)

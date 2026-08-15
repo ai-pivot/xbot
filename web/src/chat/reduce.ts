@@ -359,6 +359,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // v55 渲染层 hasIterations=true 时不渲染顶层 content —— 最终回复必须存在于
       // 迭代内（否则 'all' 折叠的 lastText 取最后迭代 reasoning，回复丢失，
       // notification turn 用户报告："Done processing notification" 不显示）。
+      // 无条件覆盖最后迭代 content（AGENTS.md v55 权威语义：text 顶层 content 是
+      // 最终回复的唯一权威值；thinking 会 fallback 到 content，不能用 content
+      // 非空条件判断）。
       const iterationsFinal = finalText !== null && iterations.length > 0
         ? iterations.map((it, i) => i === iterations.length - 1 ? { ...it, content: finalText } : it)
         : iterations
