@@ -170,6 +170,7 @@ func TestRun_TodosCarriedInMidBusyProgress(t *testing.T) {
 
 	var midBusyTodos []TodoProgressItem
 	sawMidBusy := false
+	sawTurnID := uint64(0)
 	Run(context.Background(), RunConfig{
 		LLMClient:        mock,
 		Model:            "test",
@@ -179,12 +180,14 @@ func TestRun_TodosCarriedInMidBusyProgress(t *testing.T) {
 		Channel:          "web",
 		ChatID:           "chat1",
 		SessionKey:       "web:chat1",
+		TurnID:           9,
 		TodoManager:      &todoManagerAdapter{mgr: todoMgr},
 		ProgressNotifier: func(_ []string, _ string) {},
 		ProgressEventHandler: func(evt *ProgressEvent) {
 			if evt.Structured != nil && evt.Structured.Phase != PhaseDone && len(evt.Structured.Todos) > 0 {
 				sawMidBusy = true
 				midBusyTodos = evt.Structured.Todos
+				sawTurnID = evt.Structured.TurnID
 			}
 		},
 		ToolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
@@ -196,7 +199,10 @@ func TestRun_TodosCarriedInMidBusyProgress(t *testing.T) {
 	if !sawMidBusy {
 		t.Fatal("no mid-busy progress event carried todos — todos are missing during busy")
 	}
-	t.Logf("mid-busy todos: %+v", midBusyTodos)
+	if sawTurnID == 0 {
+		t.Errorf("BUG REPRODUCED: mid-busy progress TurnID = 0 — frontend drops iteration event (optTurnID rejects 0), todos lost")
+	}
+	t.Logf("mid-busy todos: %+v (TurnID=%d)", midBusyTodos, sawTurnID)
 	if len(midBusyTodos) != 1 || midBusyTodos[0].Text != "task A" {
 		t.Errorf("unexpected mid-busy todos: %+v", midBusyTodos)
 	}
