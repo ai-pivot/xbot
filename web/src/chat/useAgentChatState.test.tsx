@@ -411,7 +411,7 @@ describe('useAgentChatState 全链路', () => {
     await waitFor(() => expect(h.result.current.messages.filter((m) => m.content === '你好')).toHaveLength(1))
     // 4. history 带 echo 行（turnID=21, persisted）→ 并入 turn user，仍单行。
     act(() => h.setHistory([
-      histMsg({ id: 'e21', role: 'user', content: '你好', turnID: 21, persisted: true, requestID: 'req-K1' }),
+      histMsg({ id: 'e21', role: 'user', content: '你好', turnID: 21, persisted: true, requestID: 'req-K1', dbID: 125 }),
     ]))
     expect(h.result.current.messages.filter((m) => m.content === '你好')).toHaveLength(1)
   })
