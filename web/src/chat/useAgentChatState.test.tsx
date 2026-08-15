@@ -396,7 +396,7 @@ describe('useAgentChatState 全链路', () => {
     //    persisted=false）→ 过滤后单行。
     h.result.current.sendUser('你好', 'req-K1')
     act(() => h.setHistory([
-      histMsg({ id: 'opt', role: 'user', content: '你好', turnID: 0, persisted: false, requestID: 'req-K1' }),
+      histMsg({ id: 'opt', role: 'user', content: '你好', turnID: 0, persisted: false, requestID: 'req-K1', dbID: undefined }),
     ]))
     await waitFor(() => expect(h.result.current.messages.filter((m) => m.content === '你好')).toHaveLength(1))
     // 2. user_echo（request_id = 注入的 rid）→ pending 替换（sending 清除）。
