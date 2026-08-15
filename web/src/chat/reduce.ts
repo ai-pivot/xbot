@@ -424,6 +424,41 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         }
       }
 
+      // 3.5 ev.active 与已保留的 live turn 同 ID → 快照数据 union 进 live
+      // （切换会话竞态修复）：切换后 SSE delta 先到（lazy 采纳，push 协议每事件
+      // 只携带【新完成】的 0-1 个迭代），fetchHistory 的 active_progress 快照
+      // 携带【完整】iterationHistory —— live 胜出时必须吸收快照迭代，否则
+      // 最新 turn 只渲染切换后的最后一两个 live iter（用户报告："切换会话有
+      // 概率最新 turn 只渲染最后一两个 live iter"）。
+      // I4：mergeIterations union 只增（同号快照权威覆盖 —— 已完成迭代以
+      // 服务端为权威）。流式字段 live 非空优先（SSE 比快照新）。
+      if (ev.active !== null && activeTurn !== null && activeTurn === ev.active.turnID) {
+        const t = turns.get(activeTurn)
+        if (t && t.phase.kind === 'live') {
+          const snap = ev.active.snapshot
+          const d = t.phase.data
+          turns.set(activeTurn, {
+            ...t,
+            phase: {
+              kind: 'live',
+              data: {
+                ...d,
+                iter: d.iter > snap.iter ? d.iter : snap.iter,
+                content: d.content !== '' ? d.content : snap.content,
+                reasoning: d.reasoning !== '' ? d.reasoning : snap.reasoning,
+                iterations: mergeIterations(d.iterations, snap.iterations),
+                activeTools: d.activeTools.length > 0 ? d.activeTools : snap.activeTools,
+                streamingTools: d.streamingTools.length > 0 ? d.streamingTools : snap.streamingTools,
+                genui: d.genui !== '' ? d.genui : snap.genui,
+                todos: d.todos.length > 0 ? d.todos : snap.todos,
+                subAgents: d.subAgents.length > 0 ? d.subAgents : snap.subAgents,
+                tokenUsage: d.tokenUsage ?? snap.tokenUsage,
+              },
+            },
+          })
+        }
+      }
+
       // 4. lastSeq：保留了 active turn 时维持 per-run seq 连续性（否则重放检测
       //    基准丢失）。无 active 时用事件携带值。
       const lastSeq = activeTurn !== null ? s.lastSeq : ev.lastSeq

@@ -58,12 +58,18 @@ function optTodos(v: unknown): TodoItem[] | undefined {
  * 返回 null 表示事件非法或不属于本 chat（调用方直接丢弃）。
  *
  * 支持的 raw type：
- *   progress_structured → turn_started / iteration / phase_done（按 phase 分流）
+ *   progress_structured → turn_started / iteration / phase_done / stream（按 phase + 载荷分流）
  *   stream_content      → stream
  *   text                → text_final
  *   session             → session
+ *   user_echo/inject_user → user_echo
+ *
+ * 返回【事件数组】：一条 progress_structured 可能同时携带结构化载荷与流式
+ * 载荷（旧前端在同一 handler 里两者都处理 —— get_active_progress 合并
+ * streamState 的快照就是 stream_content/genui_content 与 active_tools 并存）。
+ * 此时产出 [stream, structured] 两个事件（stream 先应用）。null/空数组 = 丢弃。
  */
-export function normalizeEvent(raw: unknown, chatID: string): DomainEvent | null {
+export function normalizeEvent(raw: unknown, chatID: string): readonly DomainEvent[] | null {
   const env = asRecord(raw)
   if (!env) return null
 
@@ -95,15 +101,45 @@ function stripChannel(chatID: string): string {
   return i >= 0 ? chatID.slice(i + 1) : chatID
 }
 
-// ─── progress_structured → turn_started / iteration / phase_done ──
+// ─── progress_structured → turn_started / iteration / phase_done / stream ──
 
-function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
+/** progress 载荷是否携带流式字段（stream/genui/streamingTools）。 */
+function hasStreamPayload(p: Record<string, unknown>): boolean {
+  return (
+    p.stream_content !== undefined ||
+    p.reasoning_stream_content !== undefined ||
+    p.genui_content !== undefined ||
+    p.streaming_tools !== undefined
+  )
+}
+
+/** 从 progress 载荷构造 stream 事件。 */
+function streamEventFrom(
+  p: Record<string, unknown>,
+  turn: number | null,
+  seq: ReturnType<typeof eventSeq> | null,
+): DomainEvent {
+  return {
+    type: 'stream',
+    turnID: turn !== null ? turnID(turn) : null,
+    seq,
+    content: optStr(p.stream_content),
+    reasoning: optStr(p.reasoning_stream_content),
+    streamingTools: Array.isArray(p.streaming_tools)
+      ? normalizeWebTools(p.streaming_tools)
+      : undefined,
+    genui: optStr(p.genui_content),
+  }
+}
+
+function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[] | null {
   const p = asRecord(env.progress)
   if (!p) return null
 
   const turn = optTurnID(p.turn_id)
   const phase = typeof p.phase === 'string' ? p.phase : ''
   const seq = typeof p.seq === 'number' ? eventSeq(p.seq) : null
+  const streamPayload = hasStreamPayload(p)
 
   // ── turn_started ──
   if (phase === 'turn_started') {
@@ -112,35 +148,19 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
     const rawTrigger = optStr(ts?.trigger)
     const trigger: 'user' | 'resume' | 'notification' =
       rawTrigger === 'resume' ? 'resume' : rawTrigger === 'notification' ? 'notification' : 'user'
-    return { type: 'turn_started', turnID: turnID(turn), requestID: optStr(ts?.request_id) ?? null, trigger }
+    return [{ type: 'turn_started', turnID: turnID(turn), requestID: optStr(ts?.request_id) ?? null, trigger }]
   }
 
-  // ── stream 帧（打字机）──
+  // ── 纯流式帧（打字机/genui 流）──
   // ⚠️ Web channel 把【所有】ProgressEvent 转发为 type='progress_structured'
   // （旧 useProgressStream 注释："the Web channel forwards ALL ProgressEvents
   // as type=progress_structured, including stream callbacks"）—— 不存在独立的
   // 'stream_content' 消息类型！打字机帧 = progress_structured + phase='' +
-  // stream_content/reasoning_stream_content/genui_content 字段。
-  // 必须在 iteration fallback 之前分流：否则被误判为 iteration 事件，
-  // stream_content 字段被完全忽略 → 打字机死掉，iter 结束才整体渲染
-  // （用户报告："看不到打字机，iter 结束后瞬间完整渲染"）。
-  const hasStreamPayload =
-    p.stream_content !== undefined ||
-    p.reasoning_stream_content !== undefined ||
-    p.genui_content !== undefined ||
-    p.streaming_tools !== undefined
-  if (phase === '' && hasStreamPayload) {
-    return {
-      type: 'stream',
-      turnID: turn !== null ? turnID(turn) : null,
-      seq,
-      content: optStr(p.stream_content),
-      reasoning: optStr(p.reasoning_stream_content),
-      streamingTools: Array.isArray(p.streaming_tools)
-        ? normalizeWebTools(p.streaming_tools)
-        : undefined,
-      genui: optStr(p.genui_content),
-    }
+  // stream_content/reasoning_stream_content/genui_content 字段。必须在
+  // iteration fallback 之前分流：否则被误判为 iteration 事件，流式字段被完全
+  // 忽略 → 打字机死掉 / GenUI 流式预览不渲染（E2E genui-render 复现）。
+  if (phase === '' && streamPayload) {
+    return [streamEventFrom(p, turn, seq)]
   }
 
   // ── phase_done（PhaseDone：turn 结束，text/cancel ack 随后到） ──
@@ -150,13 +170,15 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
     const rawHist = Array.isArray(p.iteration_history) ? p.iteration_history : []
     const normalized = rawHist.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null)
     const finalIteration = normalized.length > 0 ? normalized[normalized.length - 1] : null
-    return {
+    const done: DomainEvent = {
       type: 'phase_done',
       turnID: turnID(turn),
       seq,
       finalIteration,
       todos: optTodos(p.todos),
     }
+    // 快照合并场景：done + 流式载荷并存 → stream 先应用（收尾定格流式文本）。
+    return streamPayload ? [streamEventFrom(p, turn, seq), done] : [done]
   }
 
   // ── iteration（普通结构化事件：thinking / tool_exec / …） ──
@@ -172,7 +194,7 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
           totalTokens: typeof rawTU.total_tokens === 'number' ? rawTU.total_tokens : 0,
         }
       : undefined
-  return {
+  const iter: DomainEvent = {
     type: 'iteration',
     turnID: turnID(turn),
     iter: iterNum(typeof p.iteration === 'number' && p.iteration >= 1 ? p.iteration : 1),
@@ -189,61 +211,69 @@ function normalizeProgress(env: Record<string, unknown>): DomainEvent | null {
       : undefined,
     tokenUsage,
   }
+  // 快照合并场景（get_active_progress mergeStreamState）：结构化 + 流式载荷
+  // 并存 → [stream, iteration]（stream 先应用；iteration 的 content 存在时
+  // 覆盖 stream 文本 —— 旧 DUPLICATE PREVENTION 语义）。
+  return streamPayload ? [streamEventFrom(p, turn, seq), iter] : [iter]
 }
 
 // ─── stream_content → stream ──
 
-function normalizeStream(env: Record<string, unknown>): DomainEvent | null {
+function normalizeStream(env: Record<string, unknown>): readonly DomainEvent[] | null {
   const p = asRecord(env.progress)
   if (!p) return null
   // turn_id 缺失（已知后端 gap：部分 stream 事件无 turn_id）不丢弃 ——
   // 透传 null，reduce 回退 activeTurn。旧前端对 stream 事件同样无 turn_id
   // 要求（打字机依赖此宽容性）。
   const turn = optTurnID(p.turn_id)
-  return {
-    type: 'stream',
-    turnID: turn !== null ? turnID(turn) : null,
-    seq: typeof p.seq === 'number' ? eventSeq(p.seq) : null,
-    content: optStr(p.stream_content),
-    reasoning: optStr(p.reasoning_stream_content),
-    streamingTools: Array.isArray(p.streaming_tools)
-      ? normalizeWebTools(p.streaming_tools)
-      : undefined,
-    genui: optStr(p.genui_content),
-  }
+  return [
+    {
+      type: 'stream',
+      turnID: turn !== null ? turnID(turn) : null,
+      seq: typeof p.seq === 'number' ? eventSeq(p.seq) : null,
+      content: optStr(p.stream_content),
+      reasoning: optStr(p.reasoning_stream_content),
+      streamingTools: Array.isArray(p.streaming_tools)
+        ? normalizeWebTools(p.streaming_tools)
+        : undefined,
+      genui: optStr(p.genui_content),
+    },
+  ]
 }
 
 // ─── text → text_final ──
 
-function normalizeText(env: Record<string, unknown>): DomainEvent | null {
+function normalizeText(env: Record<string, unknown>): readonly DomainEvent[] | null {
   const turn = optTurnID(env.turn_id)
   const content = typeof env.content === 'string' ? env.content : ''
   const progressHistory = parseWebIterations(optStr(env.progress_history))
-  return {
-    type: 'text_final',
-    turnID: turn !== null ? turnID(turn) : null,
-    content: nonEmptyStr(content),
-    progressHistory,
-    cancelled: env.cancelled === true,
-  }
+  return [
+    {
+      type: 'text_final',
+      turnID: turn !== null ? turnID(turn) : null,
+      content: nonEmptyStr(content),
+      progressHistory,
+      cancelled: env.cancelled === true,
+    },
+  ]
 }
 
 // ─── session → session ──
 
-function normalizeSession(env: Record<string, unknown>): DomainEvent | null {
+function normalizeSession(env: Record<string, unknown>): readonly DomainEvent[] | null {
   const s = asRecord(env.session)
   const action = optStr(s?.action)
   if (action !== 'busy' && action !== 'idle') return null
-  return { type: 'session', busy: action === 'busy' }
+  return [{ type: 'session', busy: action === 'busy' }]
 }
 
 // ─── user_echo / inject_user → user_echo ──
 
-function normalizeUserEcho(env: Record<string, unknown>): DomainEvent | null {
+function normalizeUserEcho(env: Record<string, unknown>): readonly DomainEvent[] | null {
   const content = typeof env.content === 'string' ? env.content : ''
   if (content === '') return null
   const turn = optTurnID(env.turn_id)
-  return {
+  return [{
     type: 'user_echo',
     row: {
       id: `echo-${turn ?? 'x'}-${Date.now()}`,
@@ -256,7 +286,8 @@ function normalizeUserEcho(env: Record<string, unknown>): DomainEvent | null {
       turnHint: turn ?? undefined,
       dbID: undefined,
     },
-  }
+  },
+  ]
 }
 
 // ─── 本地事件构造器（非 SSE —— UI 侧直接构造已规范化的 DomainEvent） ──

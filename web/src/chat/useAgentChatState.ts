@@ -64,15 +64,21 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
   const liveProgress = useMemo(() => liveProgressFromState(state), [state])
 
   // SSE 订阅：全部消息喂状态机（normalizeEvent 内部完成 chat 过滤 + 非法丢弃）。
-  // 附轻量诊断（window.__xbotChatDiag）：记录 事件类型→normalize 结果→
-  // 状态机去向，下次问题报告自带现场（无需用户配合抓包）。
+  // 一条 raw 可能产出多个事件（结构化 + 流式载荷并存 → [stream, iteration]）。
+  // 附轻量诊断（window.__xbotChatDiag）：记录事件类型→状态机去向，下次问题
+  // 报告自带现场（无需用户配合抓包）。
   useEffect(() => {
     if (!progressChatID) return
     const off = ws.onMessage((raw: unknown) => {
-      const ev = normalizeEvent(raw, progressChatID)
-      const rec = ev !== null ? ev.type : `drop:${diagDropReason(raw)}`
-      chatDiag(rec, ev, store)
-      if (ev !== null) store.dispatch(ev)
+      const evs = normalizeEvent(raw, progressChatID)
+      if (evs === null || evs.length === 0) {
+        chatDiag(`drop:${diagDropReason(raw)}`, null, store)
+        return
+      }
+      for (const ev of evs) {
+        chatDiag(ev.type, ev, store)
+        store.dispatch(ev)
+      }
     })
     return off
   }, [progressChatID, store, ws])

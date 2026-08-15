@@ -322,7 +322,7 @@ ${twHref ? `<link rel="stylesheet" href="${twHref}">` : ''}
       ref={iframeRef}
       className="w-full rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden transition-[height] duration-150 ease-out"
       style={{ height: iframeHeight > 0 ? `${iframeHeight}px` : '120px', backgroundColor: '#fff' }}
-      sandbox="allow-scripts"
+      sandbox="allow-scripts allow-same-origin"
       title="GenUI Preview"
     />
   )

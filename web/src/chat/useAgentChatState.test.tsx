@@ -255,8 +255,7 @@ describe('useAgentChatState 全链路', () => {
     await waitFor(() => expect(h.result.current.liveProgress.streamContent).toContain('工具完成后的流式'))
   })
 
-  it('H: 同一工具不得双渲染 —— generating 残留随 running 到达清除（100% 复现回归）', async () => {
-    // 用户报告："一个执行中 tool 会同时渲染两个 tool，一个有参数（executing）
+  it('H: 同一工具不得双渲染 —— generating 残留随 running 到达清除（100% 复现回归）', async () => {    // 用户报告："一个执行中 tool 会同时渲染两个 tool，一个有参数（executing）
     // 一个没参数（generating）"。根因：streamingTools（流式检测中，generating，
     // 参数不全）与 activeTools（结构化事件，running，参数全）同名共存。
     // 旧前端在 mergeProgressState 里做名字过滤 —— 新状态机在 reduce 层
@@ -278,5 +277,47 @@ describe('useAgentChatState 全链路', () => {
     ws.emit({ type: 'stream_content', progress: { turn_id: 12, iteration: 1, seq: 4, stream_content: '', streaming_tools: [{ name: 'Shell', label: '', status: 'generating', iteration: 1 }] }, chat_id: 'chat-1' })
     expect(h.result.current.liveProgress.streamingTools.some((t) => t.name === 'Shell')).toBe(false)
     expect(h.result.current.liveProgress.activeTools).toHaveLength(1)
+  })
+
+  it('I: 切换会话竞态 —— lazy 采纳（仅切换后 delta）后 active_progress 快照 union 补全全部迭代', async () => {
+    // 用户报告："切换会话有概率最新 turn 只渲染最后一两个 live iter"。
+    // 根因：push 协议每事件只携带【新完成】的 0-1 个迭代；切换后 SSE delta
+    // 先到（lazy 采纳，只含切换后 1-2 个迭代）→ fetchHistory 的 active_progress
+    // 快照携带【完整】iterationHistory → merge step 3 只在"无 live"时使用
+    // 快照 → live 胜出时快照迭代被整体丢弃 → 只渲染最后一两个 iter。
+    // 修复：merge step 3.5 —— ev.active 与保留 live 同 ID 时 union 快照迭代。
+    const ws = makeWS()
+    const h = mountHook(ws)
+    // 切换后：turn_started 已过 → lazy 采纳 + 迭代 delta（仅 iter 4、5 到达）。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 33, iteration: 4, stream_content: 'iter4 流式' }, chat_id: 'chat-1' })
+    ws.emit({ type: 'progress_structured', progress: { phase: 'tool_exec', turn_id: 33, iteration: 5, seq: 60, iteration_history: [{ iteration: 5, content: 'iter5', reasoning: '', tools: [] }] }, chat_id: 'chat-1' })
+    await waitFor(() => expect(h.result.current.liveProgress.turnID).toBe(33))
+    // fetchHistory 完成：user 行（turn 33）+ active_progress 快照（完整 iter 1-5）。
+    act(() => h.setHistory([histMsg({ id: 'u33', role: 'user', content: '长任务', turnID: 33 })]))
+    await act(async () => {
+      h.rerenderWithActiveProgress?.({
+        turn_id: 33,
+        phase: 'tool_exec',
+        iteration: 5,
+        seq: 55,
+        stream_content: 'iter5 流式',
+        active_tools: [],
+        completed_tools: [],
+        iteration_history: [
+          { iteration: 1, content: 'iter1', reasoning: '', tools: [], toolCount: 0 },
+          { iteration: 2, content: 'iter2', reasoning: '', tools: [], toolCount: 0 },
+          { iteration: 3, content: 'iter3', reasoning: '', tools: [], toolCount: 0 },
+          { iteration: 4, content: 'iter4', reasoning: '', tools: [], toolCount: 0 },
+          { iteration: 5, content: 'iter5', reasoning: '', tools: [], toolCount: 0 },
+        ],
+      })
+    })
+    // live 胜出（SSE 流式内容保留）+ 快照迭代 union 补全 —— 全部 5 个迭代可见。
+    // dispatch 经 rAF 合并通知 → 断言用 waitFor（同步读会拿到旧快照）。
+    await waitFor(() => expect(h.result.current.liveProgress.turnID).toBe(33))
+    await waitFor(() => expect(h.result.current.liveProgress.streamContent).toBe('iter5 流式'))
+    await waitFor(() =>
+      expect(h.result.current.liveProgress.iterationHistory.map((i) => i.iteration)).toEqual([1, 2, 3, 4, 5]),
+    )
   })
 })

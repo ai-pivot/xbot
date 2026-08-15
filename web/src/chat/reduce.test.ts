@@ -160,7 +160,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
   })
 
   it('Bug4: normalize 处理 Go nil slice（tools:null）—— 状态机永不见 null 数组', () => {
-    const ev = normalizeEvent(
+    const evs = normalizeEvent(
       {
         type: 'progress_structured',
         progress: {
@@ -175,7 +175,8 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       },
       'chat-1',
     )
-    expect(ev).not.toBeNull()
+    expect(evs).not.toBeNull()
+    const ev = evs?.[0]
     expect(ev?.type).toBe('iteration')
     if (ev?.type === 'iteration') {
       expect(ev.activeTools).toEqual([])
@@ -183,8 +184,36 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       expect(ev.iterationsDelta[0].tools).toEqual([])
     }
     // 状态机消化后 derive 不抛（渲染层无 null 可见 —— T1）。
-    const s = run([started(T1), ev!])
+    const s = run([started(T1), ...(evs ?? [])])
     expect(() => deriveRows(s)).not.toThrow()
+  })
+
+  it('Bug9+多事件: progress_structured 同时携带结构化+流式载荷 → [stream, iteration]（get_active_progress 合并快照形状）', () => {
+    const evs = normalizeEvent(
+      {
+        type: 'progress_structured',
+        progress: {
+          phase: 'tool_exec',
+          turn_id: 2,
+          iteration: 2,
+          seq: 9,
+          stream_content: '流式与结构化并存',
+          genui_content: 'export default function App(){}',
+          active_tools: [{ name: 'Shell', status: 'running' }],
+        },
+      },
+      'chat-1',
+    )
+    expect(evs).toHaveLength(2)
+    expect(evs[0].type).toBe('stream') // stream 先应用
+    expect(evs[1].type).toBe('iteration')
+    if (evs[0].type === 'stream') expect(evs[0].genui).toContain('App')
+    // 状态机消化：genui 与 activeTools 同时生效（非空 phase 不再丢流式载荷）。
+    const s = run([started(T2), ...evs])
+    const t = s.turns.get(T2)
+    if (t?.phase.kind !== 'live') throw new Error('must be live')
+    expect(t.phase.data.genui).toContain('App')
+    expect(t.phase.data.activeTools.map((x) => x.name)).toContain('Shell')
   })
 
   it('Bug5: 最后迭代经 phase_done fold —— text 到达前已保留（iter 产生了就不消失）', () => {
