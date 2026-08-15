@@ -9,7 +9,8 @@
 - Config: `~/.xbot/config.json`, env var overrides
 - Subscriptions: `~/.xbot/config.json` (CLI) or DB `user_llm_subscriptions` (Server) — the single source of truth for LLM config
 - Pre-commit: gofmt → golangci-lint → go build → go test
-- **禁止 AI agent 自行重启 xbot server**：`kill`/`pkill` xbot 进程、`nohup` 重新启动 server 等操作会中断用户正在进行的会话。除非用户明确要求重启，否则只 build 二进制 + 前端部署，由用户自行重启。前端改动 `vite build` 后 `cp dist/*` 部署即可，无需重启 server。
+- **禁止 AI agent 自行重启 xbot server**：`kill`/`pkill` xbot 进程、`nohup` 重新启动 server 等操作会中断用户正在进行的会话。除非用户明确要求重启，否则只 build 二进制 + 前端部署，由用户自行重启。前端改动 `vite build` 后 `cp dist/*` 部署即可，无需重启 server（唯一例外：改了 Go 侧静态服务/Cache-Control 时必须重启，用 `nohup bash -c 'sleep 10 && supervisorctl restart xbot-server' &` 后台异步调度，supervisorctl 不在 PATH —— 用 nix store 完整路径 `/nix/store/5mc40v8qa34jyilh5jgsfi1sc42f77hv-python3.8-supervisor-4.2.2/bin/supervisorctl`）。
+- **⚠️ 前端"修复部署了但用户说没用"先查 SW 缓存（浪费了多轮排查的真凶）**：静态服务曾用裸 `http.FileServer`（web.go）——`sw.js` 无 `Cache-Control` 响应头 → 浏览器按 RFC 9111 启发式缓存 SW 脚本（最长 24h fresh）→ SW 更新检查命中 HTTP 缓存的旧 `sw.js` → **新 SW 永不安装 → precache 永远旧 bundle → SW 拦截一切静态请求（连 index.html 都从旧 precache 出）→ 用户刷新 N 次都跑旧代码**。诊断特征：server 日志**零 assets 请求回源**（只有 `GET /`）；本地 E2E（dev 无 SW）全绿。修复三层：① `serveStaticFile`：`sw.js`→`no-store`、`index.html`→`no-cache`、`assets/*`→`immutable 1y`；② SW 改名 `sw.js`→`sw2.js`（vite `filename` + PWAUpdatePrompt 注册 URL）绕开已污染缓存的旧 URL，注册时顺带 unregister 旧 SW；③ 改 Cache-Control 是 Go 改动，**必须重启 server 才生效**。验证命令：`curl -s --noproxy '*' -D - -o /dev/null http://127.0.0.1:16000/sw2.js`（本地 curl 必须带 `--noproxy '*'`，否则 502——本地代理拦截）。
 - Issue templates: `.github/ISSUE_TEMPLATE/` — YAML forms (`*.yml`) for web UI, Markdown templates (`*.md`) for CLI/AI use with `gh issue create --template`. AI agents MUST read and fill the `.md` templates (not `.yml`) since YAML Issue Forms are web-UI-only and cannot be submitted via `gh issue create --body`.
 
 ## Knowledge Files
