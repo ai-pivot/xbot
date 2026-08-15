@@ -60,6 +60,29 @@ func (a *Agent) emitTurnStartedForTest(key string, turnID uint64) {
 	_ = sync.Mutex{}
 }
 
+func TestBuildProgressPayload_TodosSerialization(t *testing.T) {
+	a := NewTestAgent()
+	ch := &recordingProgressChannel{name: "web"}
+	a.channelRange = func(fn func(name string, ch channelpkg.Channel) bool) {
+		fn("web", ch)
+	}
+	handler := a.buildProgressEventHandler("chat-1", "web")
+	handler(&ProgressEvent{Structured: &StructuredProgress{
+		Seq: 1, Phase: PhaseThinking, Iteration: 1, TurnID: 1,
+		Todos: []TodoProgressItem{{ID: 1, Text: "任务1", Done: false}, {ID: 2, Text: "任务2", Done: true}},
+	}})
+	if len(ch.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(ch.events))
+	}
+	ev := ch.events[0]
+	if len(ev.Todos) != 2 {
+		t.Fatalf("BUG: payload.Todos = %d (want 2) — todos lost in buildProgressPayload", len(ev.Todos))
+	}
+	if ev.Todos[0].Text != "任务1" {
+		t.Errorf("payload.Todos[0].Text = %q (want 任务1)", ev.Todos[0].Text)
+	}
+}
+
 // TestGetActiveProgress_GapTooLarge_ResyncRequired verifies the gap-too-large
 // guard: when an incremental pull (from_iter >= 0) would transfer more than
 // maxIncrementalIterations iteration-history entries, GetActiveProgress
