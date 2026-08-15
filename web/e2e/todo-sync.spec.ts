@@ -121,6 +121,40 @@ test.describe('TODO sync', () => {
     await page.close()
   })
 
+  test('REPRO: turn_started + tool_exec progress 带 todos 应显示（真实后端序列）', async ({ browser }) => {
+    const page = await browser.newPage()
+    await page.addInitScript(() => {
+      const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+      const w = window as unknown as SSEMockState
+      w.__sseListeners = listeners
+      class M { readyState=1; onopen:((e:Event)=>void)|null=null; onerror:((e:Event)=>void)|null=null; constructor(public url:string){setTimeout(()=>this.onopen?.(new Event('open')),0)} addEventListener(t:string,h:(e:MessageEvent)=>void){if(!listeners[t])listeners[t]=new Set();listeners[t].add(h)} removeEventListener(){} close(){} }
+      ;(window as unknown as { EventSource: typeof M }).EventSource = M
+    })
+    await setupMock(page)
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+    await page.waitForTimeout(2000)
+
+    // 真实后端序列：turn_started → progress(tool_exec, todos)，但 progress 的
+    // turn_id=0（backend 某些路径 metadata 缺 turn_id → cfg.TurnID=0 → 前端丢弃）
+    await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 1, chat_id: 'web:chat-1', turn_start: { trigger: 'user', request_id: 'r1' } },
+    })
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: { phase: 'tool_exec', iteration: 1, seq: 1, turn_id: 0, chat_id: 'web:chat-1', todos: TEST_TODOS },
+    })
+    await page.waitForTimeout(500)
+
+    expect(await hasTodoText(page, 'Setup project')).toBe(true)
+    expect(await hasTodoText(page, 'Write tests')).toBe(true)
+    await page.close()
+  })
+
   test('todos update via live SSE progress_structured', async ({ browser }) => {
     const page = await browser.newPage()
     await page.addInitScript(() => {

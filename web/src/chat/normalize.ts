@@ -167,14 +167,15 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
   if (phase === 'done') {
     // seq 缺失（E2E mock 省略）宽容：事件照常产出（reduce 的 I5 对 null seq
     // 不推进基准）。真实后端 ProgressEvent 总带 seq。
-    if (!turn) return null
+    // turn 缺失（turn_id=0）也照常产出 —— todos 是会话级状态，不因 turn 缺失
+    // 而丢弃（turnID 置 null，reduce 回退 activeTurn）。
     // 后端 recordFinalIteration attach 的最后迭代快照（可能 null/缺失）。
     const rawHist = Array.isArray(p.iteration_history) ? p.iteration_history : []
     const normalized = rawHist.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null)
     const finalIteration = normalized.length > 0 ? normalized[normalized.length - 1] : null
     const done: DomainEvent = {
       type: 'phase_done',
-      turnID: turnID(turn),
+      turnID: turn !== null ? turnID(turn) : null,
       seq,
       finalIteration,
       todos: optTodos(p.todos),
@@ -186,7 +187,7 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
   // ── iteration（普通结构化事件：thinking / tool_exec / …） ──
   // seq 缺失（E2E mock 省略）宽容：事件照常产出（reduce 的 I5 对 null seq
   // 不推进基准 —— `ev.seq <= s.lastSeq` 对 null 恒 false，不误杀）。
-  if (!turn) return null
+  // turn 缺失（turn_id=0）也照常产出 —— todos 是会话级，不因 turn 缺失丢弃。
   const rawDelta = Array.isArray(p.iteration_history) ? p.iteration_history : []
   // token_usage（ContextRing/会话上下文刷新）。
   const rawTU = asRecord(p.token_usage)
@@ -200,7 +201,7 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
       : undefined
   const iter: DomainEvent = {
     type: 'iteration',
-    turnID: turnID(turn),
+    turnID: turn !== null ? turnID(turn) : null,
     iter: iterNum(typeof p.iteration === 'number' && p.iteration >= 1 ? p.iteration : 1),
     seq,
     content: optStr(p.content),

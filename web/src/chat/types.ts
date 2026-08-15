@@ -214,7 +214,10 @@ export type DomainEvent =
     }
   | {
       readonly type: 'iteration'
-      readonly turnID: TurnID
+      /** null = turn_id 缺失/为 0（后端某些路径 cfg.TurnID=0）→ reduce 回退
+       *  activeTurn（与 stream 事件一致）。todos 是会话级状态，不因 turn 缺失
+       *  而丢弃。 */
+      readonly turnID: TurnID | null
       readonly iter: IterNum
       /** null = 事件未携带 seq（E2E mock 省略）—— I5 基准不推进（无重放检测）。 */
       readonly seq: EventSeq | null
@@ -242,7 +245,8 @@ export type DomainEvent =
     }
   | {
       readonly type: 'phase_done'
-      readonly turnID: TurnID
+      /** null = turn_id 缺失/为 0 → reduce 回退 activeTurn。 */
+      readonly turnID: TurnID | null
       /** null = 事件未携带 seq（E2E mock 省略）—— I5 基准不推进。 */
       readonly seq: EventSeq | null
       /** 后端 recordFinalIteration 补记的最后迭代（normalize 后无 null 数组）。 */

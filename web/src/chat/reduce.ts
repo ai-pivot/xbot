@@ -185,8 +185,14 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
     // ── iteration：仅 active turn；迭代 append-only（I4） ──
     case 'iteration': {
-      if (ev.turnID !== s.activeTurn) {
-        const t0 = s.turns.get(ev.turnID)
+      // turnID null（turn_id=0 缺失）→ 回退 activeTurn（与 stream 一致）。
+      // todos 是会话级状态，不因 turn 缺失而丢弃。
+      const target = ev.turnID !== null ? ev.turnID : s.activeTurn
+      if (target === null) {
+        return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
+      }
+      if (target !== s.activeTurn) {
+        const t0 = s.turns.get(target)
         // ⚠️ committed 遮蔽解除（用户报告："sse 不断收到新消息但前端渲染
         // 不变"，dump 铁证：turn-108-c committed 只含 iteration 1，SSE 还在
         // 发 iteration 22）：DB 增量持久化的中间迭代经 history merge 组成
@@ -203,21 +209,21 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
               iterations: t0.phase.payload.iterations,
             }
             const turns = new Map(s.turns)
-            turns.set(ev.turnID, { ...t0, phase: { kind: 'live', data: live } })
-            s = { ...s, turns, activeTurn: ev.turnID, lastSeq: null }
+            turns.set(target, { ...t0, phase: { kind: "live", data: live } })
+            s = { ...s, turns, activeTurn: target, lastSeq: null }
           } else {
             return s // 已含该迭代的 committed 快照 —— 重放，丢弃
           }
         } else {
           if (s.activeTurn !== null && t0?.phase.kind !== 'live') return s
-          if (s.activeTurn !== null && t0?.phase.kind === 'live' && s.activeTurn !== ev.turnID) return s
+          if (s.activeTurn !== null && t0?.phase.kind === 'live' && s.activeTurn !== target) return s
           if (t0 && !isHollowFrozen(t0)) return s // committed/有输出 frozen —— 重放，丢弃
           // 无槽（或空壳占位）且无 active → lazy 采纳/升级（切回会话场景）。
-          s = lazyAdoptLive(s, ev.turnID)
+          s = lazyAdoptLive(s, target)
         }
       }
       if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return s // I5：重放丢弃（null seq 无基准，不比较）
-      const t = s.turns.get(ev.turnID)
+      const t = s.turns.get(target)
       if (!t || t.phase.kind !== 'live') return s
 
       const prev = t.phase.data
@@ -247,7 +253,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       }
       // I5 基准推进：成功处理后 lastSeq = ev.seq（重放检测的比较基准）。
       // 会话级 todos：事件携带时同步 state.todos（turn 结束后存活）。
-      const next = withTurn(s, ev.turnID, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
+      const next = withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
       return { ...next, lastSeq: ev.seq, todos: ev.todos ?? s.todos }
     }
 
@@ -311,10 +317,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
     // ── phase_done：仅 active turn；fold 最后迭代（T3 根治点）+ 停流 ──
     case 'phase_done': {
-      if (ev.turnID !== s.activeTurn) return s
-      if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return s
-      const t = s.turns.get(ev.turnID)
-      if (!t || t.phase.kind !== 'live') return s
+      // turnID null（turn_id=0 缺失）→ 回退 activeTurn；todos 会话级不丢弃。
+      const target = ev.turnID !== null ? ev.turnID : s.activeTurn
+      if (target === null) return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
+      if (target !== s.activeTurn) return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
+      if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
+      const t = s.turns.get(target)
+      if (!t || t.phase.kind !== 'live') return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
       const prev = t.phase.data
       // I4：finalIteration（后端 recordFinalIteration 补记的最后迭代）fold 进
       // iterations —— text 到达前它已在 committed 路径的数据里（不依赖 text 重建）。
@@ -327,7 +336,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         todos: ev.todos ?? prev.todos,
       }
       // I5 基准推进。会话级 todos：事件携带时同步（turn 结束后存活）。
-      const next = withTurn(s, ev.turnID, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
+      const next = withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
       return { ...next, lastSeq: ev.seq, todos: ev.todos ?? s.todos }
     }
 
