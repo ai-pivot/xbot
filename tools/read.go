@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,50 @@ import (
 // DefaultMaxReadLines: no default truncation — offload handles large results.
 // Only applies when the user explicitly passes max_lines > 0.
 const DefaultMaxReadLines = 0
+
+// MaxImageReadSize: images are base64-encoded (~4/3x expansion), so limit to 5MB raw.
+const MaxImageReadSize = 5 * 1024 * 1024
+
+// imageExts maps file extensions to MIME types.
+var imageExts = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".bmp":  "image/bmp",
+}
+
+// detectImageMIME returns the MIME type if the file is a supported image, else "".
+// Checks magic bytes first (reliable), falls back to extension.
+func detectImageMIME(filePath string, info os.FileInfo) string {
+	// Quick check by extension first (avoids reading non-image files)
+	ext := strings.ToLower(filepath.Ext(filePath))
+	mime, isImage := imageExts[ext]
+	if !isImage {
+		return ""
+	}
+	// Verify with magic bytes — read first 16 bytes
+	f, err := os.Open(filePath)
+	if err != nil {
+		return mime // fall back to extension
+	}
+	defer f.Close()
+	header := make([]byte, 16)
+	n, _ := f.Read(header)
+	header = header[:n]
+	switch {
+	case len(header) >= 8 && string(header[:8]) == "\x89PNG\r\n\x1a\n":
+		return "image/png"
+	case len(header) >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF:
+		return "image/jpeg"
+	case len(header) >= 6 && (string(header[:6]) == "GIF87a" || string(header[:6]) == "GIF89a"):
+		return "image/gif"
+	case len(header) >= 12 && string(header[:4]) == "RIFF" && string(header[8:12]) == "WEBP":
+		return "image/webp"
+	}
+	return mime // fall back to extension if magic bytes don't match
+}
 
 // ReadTool 读取文件工具
 type ReadTool struct{}
@@ -61,6 +106,9 @@ func (t *ReadTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 		if err != nil {
 			return nil, err
 		}
+		if len(result.Images) > 0 {
+			return result, nil // skip line numbering for images
+		}
 		return applyLineLimit(result, params.MaxLines, params.Offset), nil
 	}
 
@@ -68,6 +116,9 @@ func (t *ReadTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 	result, err := t.executeLocal(ctx, params.Path)
 	if err != nil {
 		return nil, err
+	}
+	if len(result.Images) > 0 {
+		return result, nil // skip line numbering for images
 	}
 	return applyLineLimit(result, params.MaxLines, params.Offset), nil
 }
@@ -150,6 +201,28 @@ func (t *ReadTool) executeInSandbox(ctx *ToolContext, filePath string) (*ToolRes
 		}
 	}
 
+	// Image file detection in sandbox: check extension
+	ext := strings.ToLower(filepath.Ext(sandboxPath))
+	if mimeType, isImage := imageExts[ext]; isImage {
+		// Use base64 command instead of cat for image files
+		cmd := fmt.Sprintf("base64 '%s'", shellEscape(sandboxPath))
+		output, err := RunInSandboxWithShellTimeout(ctx, cmd, ReadLocalTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read image in sandbox: %v, output: %s", err, output)
+		}
+		// base64 command output may contain newlines; strip them
+		encoded := strings.TrimSpace(strings.ReplaceAll(output, "\n", ""))
+		// Get file size via stat for the summary
+		sizeCmd := fmt.Sprintf("stat -c %%s '%s' 2>/dev/null || wc -c < '%s'", shellEscape(sandboxPath), shellEscape(sandboxPath))
+		sizeOutput, _ := RunInSandboxWithShellTimeout(ctx, sizeCmd, ReadLocalTimeout)
+		sizeStr := strings.TrimSpace(sizeOutput)
+		return &ToolResult{
+			Summary: fmt.Sprintf("(Image file: %s, %s bytes, %s)", filepath.Base(sandboxPath), sizeStr, mimeType),
+			Tips:    "Image content is provided as a native image block to the model.",
+			Images:  []llm.ImageContent{{MediaType: mimeType, Data: encoded}},
+		}, nil
+	}
+
 	// 在容器内执行 cat
 	cmd := fmt.Sprintf("cat '%s'", shellEscape(sandboxPath))
 	output, err := RunInSandboxWithShellTimeout(ctx, cmd, ReadLocalTimeout)
@@ -200,6 +273,24 @@ func (t *ReadTool) executeLocal(ctx *ToolContext, filePath string) (*ToolResult,
 	}
 	if info.Size() > MaxReadFileSize {
 		return nil, fmt.Errorf("file too large (>%d bytes): %s — use Shell with head/tail to read portions", MaxReadFileSize, resolvedPath)
+	}
+
+	// Image file detection: if the file is a supported image, base64-encode it
+	// and return via ToolResult.Images instead of raw text.
+	if mimeType := detectImageMIME(resolvedPath, info); mimeType != "" {
+		if info.Size() > MaxImageReadSize {
+			return nil, fmt.Errorf("image file too large (>%d bytes): %s", MaxImageReadSize, resolvedPath)
+		}
+		data, err := os.ReadFile(resolvedPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read image file: %w", err)
+		}
+		encoded := base64.StdEncoding.EncodeToString(data)
+		return &ToolResult{
+			Summary: fmt.Sprintf("(Image file: %s, %d bytes, %s)", filepath.Base(resolvedPath), info.Size(), mimeType),
+			Tips:    "Image content is provided as a native image block to the model.",
+			Images:  []llm.ImageContent{{MediaType: mimeType, Data: encoded}},
+		}, nil
 	}
 
 	// Read file with context-aware cancellation.
