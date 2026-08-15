@@ -30,10 +30,15 @@ export function historyToReplaced(
 
   for (const m of messages) {
     if (m.role === 'system') continue
-    // 乐观行（旧 hook 的 pending 副本，turnID=0 且未持久化）不进渲染 ——
-    // 渲染源是状态机 pendingUsers（user_sent 事件直通，立即出现）；这里
-    // 放行会造成同一 user 行双渲染。
-    if (m.turnID === 0 && m.persisted !== true) continue
+    // useChatMessages 的乐观行/echo 副本（persisted !== true）一律不进渲染 ——
+    // 渲染源是状态机 pendingUsers（user_sent 事件直通）+ turns（user_echo/
+    // turn_started 绑定）。放行会造成同一 user 行双渲染（用户报告："发 user
+    // msg 出现两个 user msg 和两个思考中"）。
+    // ⚠️ 即使 turnID > 0（echo 替换后 useChatMessages 把乐观行改成
+    // turnID=resp.turn_id, persisted=true）—— 但 persisted=true 的行也会
+    // 与状态机 turns 里的 user 行重复（同一 user 两个来源）。所以这里只放行
+    // 真正的 DB 持久化行（persisted === true 且有 dbID）。
+    if (m.persisted !== true || m.dbID === undefined) continue
     if (!m.turnID || m.turnID <= 0) {
       legacy.push({
         id: m.id,
