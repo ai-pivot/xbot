@@ -1229,6 +1229,64 @@ describe('cancel: assistant message must not vanish', () => {
     expect(complete).not.toHaveBeenCalled()
   })
 
+  it('cancel → new user msg: committed iterations KEEP the frozen in-flight iteration, and the NEXT turn is clean (no cross-turn leak)', () => {
+    // 用户报告：cancel 后发新 user msg，被 cancel 的 turn 的最新 iter 瞬间消失。
+    // 根因（第一版修复）：commitLiveProgressAndReset 只 fold iterationHistory
+    // （不含进行中 iter k+1），随后 resetProgress 无条件 reset 清空 frozen 快照。
+    // 修复 A：frozen fold（完整保留 iter k+1 到 committed）。
+    // 修复 B 的教训：resetProgress 曾加 frozen 检查跳过 reset → frozen 快照残留
+    // 到下一 turn → 新 turn live 渲染旧 turn 迭代（重复渲染 bug）。
+    // 现在 resetProgress 无条件 reset —— committed 已含完整数据，快照必须清。
+    let lastComplete: [string, WebIteration[]] | undefined
+    const completeCtx: { resetProgress?: () => void } = {}
+    const complete = vi.fn((finalText: string, iterations: WebIteration[]) => {
+      lastComplete = [finalText, iterations]
+      // 模拟 AgentPanel.onAssistantComplete：commit 后同步调用 resetProgress
+      completeCtx.resetProgress?.()
+    })
+    const ms = new MessageStore()
+    const { result } = renderHook(() =>
+      useProgressStream({ chatID: 'c1', onAssistantComplete: complete, ws: currentWS as unknown as WSConnection, messageStore: ms }),
+    )
+    completeCtx.resetProgress = result.current.resetProgress
+
+    // turn 1: iter1 完成（Grep）→ iter2 开始（Read running）+ 流式文本
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, chat_id: 'c1' } })
+    emitAndFlush({ type: 'progress_structured', seq: 2, progress: {
+      phase: 'tool_exec', iteration: 2, turn_id: 1, chat_id: 'c1',
+      active_tools: [{ name: 'Read', status: 'running', iteration: 2 }],
+      completed_tools: [{ name: 'Grep', status: 'done', iteration: 1 }],
+      iteration_history: [{ iteration: 1, content: '', reasoning: '思考1', tools: [{ name: 'Grep', status: 'done' }], toolCount: 1 }],
+    } })
+    emitAndFlush({ type: 'stream_content', progress: { stream_content: '进行中文本', turn_id: 1, iteration: 2 } })
+    emitAndFlush({ type: 'stream_content', progress: { reasoning_stream_content: '思考2', turn_id: 1, iteration: 2 } })
+    expect(result.current.progressSnapshot.phase).not.toBe('frozen')
+
+    // cancel ack → store.freeze()（frozen 保留最新 iter）
+    emitAndFlush({ type: 'text', chat_id: 'c1', content: '', cancelled: true, turn_id: 1 })
+    expect(result.current.progressSnapshot.phase).toBe('frozen')
+
+    // 发新 user msg → turn_started(2) → commitLiveProgressAndReset
+    emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 2, turn_start: { trigger: 'user', content: '继续' }, chat_id: 'c1' } })
+
+    // committed iterations = [iter1, iter2(folded 完整)] —— iter2 含 content + reasoning + Read 工具
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(lastComplete).toBeDefined()
+    const [finalText, iterations] = lastComplete!
+    expect(finalText).toBe('')
+    expect(iterations).toHaveLength(2)
+    expect(iterations[0].iteration).toBe(1)
+    expect(iterations[1].iteration).toBe(2)
+    expect(iterations[1].content).toBe('进行中文本')
+    expect(iterations[1].reasoning).toBe('思考2')
+    expect(iterations[1].tools.some((t: { name: string }) => t.name === 'Read')).toBe(true)
+    // 修复：resetProgress 无条件 reset —— frozen 快照在 commit 后被清空
+    // （数据已在 committed iterations，快照不再残留）——新 turn 的 live 干净，
+    // 不会渲染旧 turn 的迭代（用户报告：发新消息后旧 turn 迭代在 user msg 后重复渲染）。
+    expect(result.current.progressSnapshot.phase).not.toBe('frozen')
+    expect(result.current.progressSnapshot.iterationHistory).toHaveLength(0)
+  })
+
   // ── Turn-ID / Iteration-ID continuity assertions ──
 
   it('warns on TurnID regression (backwards)', () => {
@@ -1329,7 +1387,14 @@ describe('cancel: assistant message must not vanish', () => {
     })
 
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete.mock.calls[0][0]).toBe('old reply')
+    // v55: text is folded into the committed iteration's content (the top-level
+    // content is NOT rendered when the message has iterations — otherwise the
+    // reply would vanish). Assert the fold: top-level text empty, iteration
+    // content carries 'old reply'.
+    expect(complete.mock.calls[0][0]).toBe('')
+    expect(complete.mock.calls[0][1]).toHaveLength(1)
+    expect(complete.mock.calls[0][1][0].content).toBe('old reply')
+    expect(complete.mock.calls[0][1][0].tools).toHaveLength(1)
     // After commit, resetProgress calls store.freeze() — but turn_started
     // continues processing and sets phase='thinking' for the new turn.
     // The key assertion is that complete was called with the right content
@@ -1355,7 +1420,9 @@ describe('cancel: assistant message must not vanish', () => {
     // commitLiveProgressAndReset commits the live content.
     emitAndFlush({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 2, chat_id: 'web:c1' } })
     expect(complete).toHaveBeenCalledTimes(1)
-    expect(complete.mock.calls[0][0]).toBe('streaming reply')
+    // v55: text folded into the committed iteration's content.
+    expect(complete.mock.calls[0][0]).toBe('')
+    expect(complete.mock.calls[0][1][0].content).toBe('streaming reply')
 
     // Text event for turn 1 arrives AFTER turn_started(2).
     // Before fix: finalizedRef was reset to false → text event called
@@ -1911,5 +1978,56 @@ describe('message render consistency（渲染完整性综合审查）', () => {
     const live = ms.getLive(10)!
     // 不卡死：live 有内容/迭代
     expect(live.iterations.length).toBeGreaterThan(0)
+  })
+
+  it('V3: historyReady gate 期间丢弃的早期迭代在 ready 后补写（缓冲回放）', () => {
+    const ms = new MessageStore()
+    const { rerender } = renderHook(
+      ({ ready }) =>
+        useProgressStream({
+          chatID: 'c1',
+          ws: currentWS as unknown as WSConnection,
+          messageStore: ms,
+          historyReady: ready,
+        }),
+      { initialProps: { ready: false } },
+    )
+    // gate 期间：turn_started + 迭代 1 到达（MessageStore 被 gate 丢弃，但
+    // ProgressStore 一直累积 —— 迭代 1 是增量 delta，丢弃后无其他来源可补）
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 10, phase: 'turn_started' } })
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 10, phase: 'tool_exec', iteration: 1, iteration_history: [{ iteration: 1, content: '第一步', tools: [{ name: 'Shell', status: 'done' }] }] } })
+    expect(ms.hasLive(10)).toBe(false) // gate：live 不写入（V3 根因）
+    // history ready → 补写 gate 期间被丢弃的 live（不依赖后续新事件）
+    rerender({ ready: true })
+    expect(ms.hasLive(10)).toBe(true)
+    expect(ms.getLive(10)?.iterations.map((i) => i.iteration)).toContain(1)
+    expect(ms.getLive(10)?.iterations.find((i) => i.iteration === 1)?.content).toBe('第一步')
+  })
+
+  it('V4: turn_started 丢失 → progress_structured fallback 补 beginTurn 绑定乐观 user', () => {
+    const ms = new MessageStore()
+    renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, messageStore: ms }))
+    // 乐观 user（sendMessage 后 REST 未回）在 pending
+    ms.setUser(0, { id: 'opt-2', role: 'user', content: '触发 turn 2', turnID: 0, iterations: [], timestamp: '', isPartial: false, persisted: false, requestID: 'r2' } as never)
+    // turn_started(2) 被 SSE drop/coalesce → 直接收到 progress_structured(turn_id=2)
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 2, phase: 'tool_exec', iteration: 1, active_tools: [{ name: 'Shell', status: 'running' }] } })
+    const rows = ms.toRows()
+    expect(ms.hasLive(2)).toBe(true)
+    // V4 修复前：fallback 不调 beginTurn → opt-2 保持 turnID=0 渲染到底部（违反 R2）
+    expect(rows.find((r) => r.id === 'opt-2')?.turnID).toBe(2)
+  })
+
+  it('V2 接线: turn_started 带 requestID → MessageStore 精确绑定乐观 user（不绑最后一条）', () => {
+    const ms = new MessageStore()
+    renderHook(() => useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection, messageStore: ms }))
+    // 两条乐观 user 连发（REST 都未回 → 都在 pending）
+    ms.setUser(0, { id: 'opt-1', role: 'user', content: '第一条', turnID: 0, iterations: [], timestamp: '', isPartial: false, persisted: false, requestID: 'r1' } as never)
+    ms.setUser(0, { id: 'opt-2', role: 'user', content: '第二条', turnID: 0, iterations: [], timestamp: '', isPartial: false, persisted: false, requestID: 'r2' } as never)
+    // turn_started(msg1) 带 request_id=r1 → 必须绑定 opt-1（不能绑最后一条 opt-2）
+    emitAndFlush({ type: 'progress_structured', chat_id: 'c1', progress: { turn_id: 5, phase: 'turn_started', turn_start: { trigger: 'user', request_id: 'r1' } } })
+    const rows = ms.toRows()
+    expect(rows.find((r) => r.id === 'opt-1')?.turnID).toBe(5)
+    expect(rows.find((r) => r.id === 'opt-2')?.turnID).not.toBe(5)
+    expect(rows[rows.length - 1].id).toBe('opt-2') // opt-2 仍在 pending
   })
 })

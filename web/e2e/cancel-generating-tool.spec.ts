@@ -104,7 +104,7 @@ test.describe('Cancel clears generating tool', () => {
       progress: {
         stream_content: 'Let me run a command to check the build.',
         chat_id: 'web:chat-1', streaming: true,
-        streaming_tools: [{ name: 'Shell', status: 'generating' }],
+        streaming_tools: [{ name: 'Shell', status: 'generating', iteration: 1 }],
       },
     })
     await page.waitForTimeout(300)
@@ -146,7 +146,7 @@ test.describe('Cancel clears generating tool', () => {
       progress: {
         stream_content: 'Let me run a command to check the build.',
         chat_id: 'web:chat-1', streaming: true,
-        streaming_tools: [{ name: 'Shell', status: 'generating' }],
+        streaming_tools: [{ name: 'Shell', status: 'generating', iteration: 1 }],
       },
     })
     // Simulate committed message arriving (in real app, appendAssistant in
@@ -161,6 +161,12 @@ test.describe('Cancel clears generating tool', () => {
     await page.waitForTimeout(500)
 
     // ── Verify: generating tool should disappear (not real content) ──
+    // committed 行按偏好折叠（unmountOnClose）—— 强制展开后验证内容保留。
+    const foldBtn = page.locator('[data-role="assistant"] button:has-text("Processed")').first()
+    if (await foldBtn.count() > 0) {
+      await foldBtn.click({ force: true })
+      await page.waitForTimeout(500)
+    }
     const result = await page.evaluate(() => {
       const body = document.body.textContent || ''
       return {

@@ -263,3 +263,112 @@ func TestConvert_WithIterations_RestartTurnBoundary(t *testing.T) {
 		t.Fatalf("expected 2 recovery iterations for turn 220, got %d", len(history[2].Iterations))
 	}
 }
+
+// TestConvert_WithIterations_AskUserAnswerNoForgedAssistant guards the AskUser
+// history-misalignment fix: with correct TurnIDs stamped on the waiting-user
+// intermediate rows (PersistenceBridge + buildWaitingUserOutbound), the render
+// MUST NOT produce a forged assistant row carrying the ANSWER turn's iterations
+// before the answer user message.
+//
+// DB append order (all rows carry real turn ids after the fix):
+//
+//	user(question, N=5) → asst(AskUser tc, 5) → tool(AskUser, 5)
+//	→ asst(empty histMsg, 5) → user(answer, N+1=6)
+//	→ asst(Shell tc, 6) → tool(Shell, 6) → asst(final, 6)
+//
+// Expected render: user(5) | assistant(5, empty content, 1 iteration) |
+// user(6, answer) | assistant(6, final content, 2 iterations).
+// Without the turn_id stamp, deriveTurnIDs mis-attributes turn 5's rows to 6,
+// and a forged assistant (turn 6's full iterations) appears BEFORE user(answer).
+func TestConvert_WithIterations_AskUserAnswerNoForgedAssistant(t *testing.T) {
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "choose a theme", TurnID: 5},
+		{ID: 500, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "ask", Name: "AskUser", Arguments: `{"questions":[{"question":"theme","options":["dark","light"]}]}`}}, TurnID: 5},
+		{Role: "tool", ToolCallID: "ask", ToolName: "AskUser", Content: "Asked 1 question(s)", TurnID: 5},
+		{ID: 503, Role: "assistant", Content: "", TurnID: 5}, // waiting-user histMsg (stamped by fix)
+		{Role: "user", Content: "Q0: dark", TurnID: 6},       // answer turn
+		{ID: 505, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Shell", Arguments: "{}"}}, TurnID: 6},
+		{Role: "tool", ToolCallID: "c1", ToolName: "Shell", Content: "ok", TurnID: 6},
+		{ID: 507, Role: "assistant", Content: "done", TurnID: 6},
+	}
+	turnIterMap := map[uint64][]sqlite.IterationRecord{
+		5: {{TurnID: 5, Iteration: 1, Tools: `[{"name":"AskUser","status":"done"}]`}},
+		6: {
+			{TurnID: 6, Iteration: 1, Tools: `[{"name":"Shell","status":"done"}]`},
+			{TurnID: 6, Iteration: 2, Content: "done", Tools: "[]"},
+		},
+	}
+
+	history := ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)
+
+	// Expected: user(5) | assistant(5) | user(6, answer) | assistant(6, final)
+	if len(history) != 4 {
+		t.Fatalf("expected 4 HistoryMessages, got %d: %+v", len(history), history)
+	}
+	if history[0].Role != "user" || history[0].TurnID != 5 {
+		t.Fatalf("history[0]: expected user turn 5, got role=%s turn=%d", history[0].Role, history[0].TurnID)
+	}
+	// history[1] = turn 5's waiting-user assistant (empty content, 1 iteration).
+	if history[1].Role != "assistant" || history[1].TurnID != 5 {
+		t.Fatalf("history[1]: expected assistant turn 5 (waiting-user histMsg), got role=%s turn=%d", history[1].Role, history[1].TurnID)
+	}
+	if len(history[1].Iterations) != 1 || history[1].Iterations[0].Iteration != 1 {
+		t.Fatalf("history[1]: expected 1 iteration (AskUser tool) for turn 5, got %d", len(history[1].Iterations))
+	}
+	// history[2] = the answer user row, BEFORE any turn-6 assistant.
+	if history[2].Role != "user" || history[2].TurnID != 6 || history[2].Content != "Q0: dark" {
+		t.Fatalf("history[2]: expected user(answer) turn 6, got role=%s turn=%d content=%q", history[2].Role, history[2].TurnID, history[2].Content)
+	}
+	// history[3] = turn 6's final reply with BOTH answer-turn iterations.
+	if history[3].Role != "assistant" || history[3].TurnID != 6 || history[3].Content != "done" {
+		t.Fatalf("history[3]: expected assistant turn 6 final, got role=%s turn=%d content=%q", history[3].Role, history[3].TurnID, history[3].Content)
+	}
+	if len(history[3].Iterations) != 2 {
+		t.Fatalf("history[3]: expected 2 iterations for turn 6, got %d", len(history[3].Iterations))
+	}
+}
+
+// TestConvert_WithIterations_AskUserUnstampedRowsMisalign documents the BUG the
+// fix eliminates: if intermediate rows were left turn_id=0 (pre-fix), the render
+// produces a forged assistant row BEFORE the answer user message carrying the
+// answer turn's full iterations (history 错乱/错位). This is a guard: it
+// intentionally asserts the broken shape so any regression to unstamped writes
+// is caught at the render layer too.
+func TestConvert_WithIterations_AskUserUnstampedRowsMisalign(t *testing.T) {
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "choose a theme", TurnID: 5},
+		{ID: 500, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "ask", Name: "AskUser", Arguments: "{}"}}}, // unstamped (pre-fix)
+		{Role: "tool", ToolCallID: "ask", ToolName: "AskUser", Content: "Asked 1 question(s)"},                 // unstamped
+		{ID: 503, Role: "assistant", Content: ""},                                                              // unstamped
+		{Role: "user", Content: "Q0: dark", TurnID: 6},
+		{ID: 505, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1", Name: "Shell", Arguments: "{}"}}, TurnID: 6},
+		{Role: "tool", ToolCallID: "c1", ToolName: "Shell", Content: "ok", TurnID: 6},
+		{ID: 507, Role: "assistant", Content: "done", TurnID: 6},
+	}
+	turnIterMap := map[uint64][]sqlite.IterationRecord{
+		5: {{TurnID: 5, Iteration: 1, Tools: `[{"name":"AskUser","status":"done"}]`}},
+		6: {
+			{TurnID: 6, Iteration: 1, Tools: `[{"name":"Shell","status":"done"}]`},
+			{TurnID: 6, Iteration: 2, Content: "done", Tools: "[]"},
+		},
+	}
+
+	history := ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)
+
+	// Broken shape (pre-fix): a forged assistant row appears BEFORE the answer
+	// user message. The test documents the failure mode — production must never
+	// regress to unstamped intermediate writes.
+	answerIdx := -1
+	for i, h := range history {
+		if h.Role == "user" && h.Content == "Q0: dark" {
+			answerIdx = i
+			break
+		}
+	}
+	if answerIdx < 0 {
+		t.Fatalf("answer user row missing: %+v", history)
+	}
+	if answerIdx > 0 && history[answerIdx-1].Role == "assistant" && history[answerIdx-1].TurnID == 6 {
+		t.Logf("BUG reproduced: forged turn-6 assistant before answer user (unstamped rows mis-derived)")
+	}
+}

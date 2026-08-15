@@ -157,8 +157,8 @@ test.describe('AskUser iteration preservation', () => {
     expect(hasIterationAfterAsk).toBe(true)
 
     // ── Phase 3: Submit the answer ──
-    // Click the "yes" option button
-    await page.getByRole('button', { name: 'yes' }).click()
+    // Click the "yes" option button (AskUserPanel single-select renders role=radio)
+    await page.getByRole('radio', { name: 'yes' }).click()
     await page.waitForTimeout(200)
     // Click submit
     const submitBtn = page.locator('button:has-text("确认"), button:has-text("Submit"), button:has-text("确定")')

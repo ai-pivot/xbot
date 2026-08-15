@@ -80,7 +80,7 @@ test.describe('Turn order consistency', () => {
 
     // Emit turn_started for turn 1
     await emitSSE(page, 'progress_structured', {
-      phase: 'thinking', iteration: 1, turn_id: 1, chat_id: 'chat-1',
+      progress: { phase: 'thinking', iteration: 1, turn_id: 1, chat_id: 'chat-1' }, chat_id: 'chat-1',
     })
     await page.waitForTimeout(200)
 
@@ -100,7 +100,7 @@ test.describe('Turn order consistency', () => {
 
     // Emit turn_started for turn 2 (binds second user msg to turnID=2)
     await emitSSE(page, 'progress_structured', {
-      phase: 'thinking', iteration: 1, turn_id: 2, chat_id: 'chat-1',
+      progress: { phase: 'thinking', iteration: 1, turn_id: 2, chat_id: 'chat-1' }, chat_id: 'chat-1',
     })
     await page.waitForTimeout(200)
 
@@ -167,7 +167,7 @@ test.describe('Turn order consistency', () => {
 
     // Start streaming
     await emitSSE(page, 'progress_structured', {
-      phase: 'thinking', iteration: 1, turn_id: 1, chat_id: 'chat-1',
+      progress: { phase: 'thinking', iteration: 1, turn_id: 1, chat_id: 'chat-1' }, chat_id: 'chat-1',
     })
     await emitSSE(page, 'stream_content', {
       progress: { stream_content: 'partial reply that should be preserved' }, chat_id: 'chat-1',
@@ -239,7 +239,7 @@ test.describe('Turn order consistency', () => {
     await page.waitForTimeout(500)
 
     await emitSSE(page, 'progress_structured', {
-      phase: 'thinking', iteration: 1, turn_id: 1, chat_id: 'chat-1',
+      progress: { phase: 'thinking', iteration: 1, turn_id: 1, chat_id: 'chat-1' }, chat_id: 'chat-1',
     })
     await emitSSE(page, 'stream_content', {
       progress: { stream_content: 'final reply' }, chat_id: 'chat-1',
@@ -252,7 +252,7 @@ test.describe('Turn order consistency', () => {
 
     // Emit a STALE progress_structured (should be ignored)
     await emitSSE(page, 'progress_structured', {
-      phase: 'thinking', iteration: 2, turn_id: 1, chat_id: 'chat-1',
+      progress: { phase: 'thinking', iteration: 2, turn_id: 1, chat_id: 'chat-1' }, chat_id: 'chat-1',
     })
     await page.waitForTimeout(500)
 

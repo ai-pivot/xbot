@@ -94,8 +94,8 @@ func TestWriteSSEHeartbeat(t *testing.T) {
 	if err := writeSSEHeartbeat(client); err != nil {
 		t.Fatal(err)
 	}
-	if got := recorder.Body.String(); got != ":heartbeat\n\n" {
-		t.Fatalf("heartbeat = %q, want %q", got, ":heartbeat\n\n")
+	if got := recorder.Body.String(); got != "event: heartbeat\ndata: {}\n\n" {
+		t.Fatalf("heartbeat = %q, want %q", got, "event: heartbeat\ndata: {}\n\n")
 	}
 	if !recorder.Flushed {
 		t.Fatal("SSE heartbeat was not flushed")

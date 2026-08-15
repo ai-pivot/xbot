@@ -86,6 +86,12 @@ func (s *TenantSession) AppendAskAnswer(answer string) (int64, error) {
 	return s.sessionSvc.AppendAskAnswer(s.tenantID, answer)
 }
 
+// AppendAskAnswerWithUserMessage atomically appends the ask_answer control record
+// AND the answer user message in one transaction (crash consistency).
+func (s *TenantSession) AppendAskAnswerWithUserMessage(answer string, answerMsg llm.ChatMessage) (int64, error) {
+	return s.sessionSvc.AppendAskAnswerWithUserMessage(s.tenantID, answer, answerMsg)
+}
+
 func (s *TenantSession) AppendMasks(mutations []sqlite.MaskMutation) error {
 	return s.sessionSvc.AppendMasks(s.tenantID, mutations)
 }

@@ -23,6 +23,13 @@ import type { WSConnection, SendMessageResponse } from '@/types/ws'
 const STATUS_POLL_MS = 5_000
 const REPLAY_GRACE_MS = 1_000
 const SEND_RETRY_DELAYS_MS = [1_000, 2_000]
+// Half-open connection detection. The server sends an SSE `heartbeat` event
+// every 15s (sseHeartbeatInterval). If no event arrives for 3 heartbeat periods
+// (45s) while the connection "should" be alive, the connection is considered
+// dead (server stuck / silent network cut) → mark disconnected, start REST
+// polling, and reconnect. 45s = 3 missed heartbeats — resilient to jitter.
+const STALE_CONNECTION_MS = 45_000
+const WATCHDOG_CHECK_MS = 15_000
 
 export const SSE_EVENT_TYPES = [
   'text',
@@ -38,6 +45,7 @@ export const SSE_EVENT_TYPES = [
   'runner_status',
   'sync_progress',
   'resync_required',
+  'heartbeat',
 ] as const
 
 type Handler<T> = (payload: T) => void
@@ -57,6 +65,14 @@ export class SSEConnectionImpl implements WSConnection {
   private sessionVersion = 0
   private progressVersion = 0
   private recoveryRequestVersion = 0
+  // Half-open connection watchdog: the browser EventSource does NOT fire
+  // onerror when the server dies / network cuts without a TCP reset — the
+  // connection "looks" alive but no data (incl. heartbeats) arrives, so the
+  // stream freezes with no reconnect banner. We track the last time ANY SSE
+  // event (incl. the server's 15s heartbeat) arrived and declare the
+  // connection dead when it goes silent for STALE_CONNECTION_MS.
+  private lastActivityAt = 0
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null
   // Prevents concurrent restoreActiveProgress calls and the self-perpetuating
   // loop: restoreActiveProgress dispatches a progress_structured event that may
   // carry a seq gap, which would trigger restoreActiveProgress again → infinite
@@ -133,6 +149,7 @@ export class SSEConnectionImpl implements WSConnection {
     this.sessionVersion += 1
     this.clearPoll()
     this.clearReplayTimer()
+    this.clearWatchdog()
     if (this.source) {
       this.source.close()
       this.source = null
@@ -194,6 +211,8 @@ export class SSEConnectionImpl implements WSConnection {
       this.reconnecting = false
       this.eventsSinceOpen = 0
       this.clearPoll()
+      this.lastActivityAt = Date.now()
+      this.startWatchdog()
       this.setConnected(true)
       if (resumed) this.scheduleReplayFallback(source, channel, chatID)
     }
@@ -222,6 +241,9 @@ export class SSEConnectionImpl implements WSConnection {
   }
 
   private handleEvent(eventType: string, event: MessageEvent<string>): void {
+    // Any SSE event (including the 15s server heartbeat) proves the connection
+    // is alive — refresh the half-open watchdog timestamp.
+    this.lastActivityAt = Date.now()
     let msg: WSMessage
     try {
       msg = JSON.parse(event.data) as WSMessage
@@ -229,6 +251,10 @@ export class SSEConnectionImpl implements WSConnection {
       return
     }
     msg.type = eventType
+    // Heartbeat is a pure liveness signal — it proves the connection is alive
+    // (refreshing lastActivityAt above) but carries no payload. Do NOT dispatch
+    // it to business handlers (they'd re-render / reload for every 15s tick).
+    if (msg.type === 'heartbeat') return
     const seq = msg.seq ?? parseSequence(event.lastEventId)
     const chatID = this._chatID
     const channel = this._channel
@@ -553,6 +579,52 @@ export class SSEConnectionImpl implements WSConnection {
       this.pollTimer = null
     }
     this.pollRequestToken = null
+  }
+
+  /**
+   * Half-open connection watchdog. The browser EventSource does NOT fire
+   * onerror when the server dies / network cuts without a TCP reset — events
+   * (incl. the 15s heartbeat) simply stop arriving and the stream freezes with
+   * no reconnect banner. Every 15s we check whether any SSE event arrived in
+   * the last 45s (3 heartbeat periods); if not, declare the connection dead:
+   * mark disconnected (shows "Reconnecting…"), start REST polling, and force a
+   * reconnect. The next heartbeat/event refreshes lastActivityAt, so a healthy
+   * connection never trips this.
+   */
+  private startWatchdog(): void {
+    this.clearWatchdog()
+    this.watchdogTimer = setInterval(() => {
+      this.checkStaleConnection()
+    }, WATCHDOG_CHECK_MS)
+  }
+
+  private checkStaleConnection(): void {
+    if (this.disposed || !this.source) return
+    const staleFor = Date.now() - this.lastActivityAt
+    if (staleFor < STALE_CONNECTION_MS) return
+    // Connection is half-open: no event (incl. heartbeat) for 45s while we
+    // thought it was alive. Force the disconnect path.
+    console.warn(`[SSE_STALE] No SSE event for ${Math.round(staleFor / 1000)}s — declaring connection dead and reconnecting`, {
+      chatID: this._chatID,
+      channel: this._channel,
+      readyState: this.source.readyState,
+    })
+    const source = this.source
+    this.reconnecting = true
+    this.setConnected(false)
+    this.startPolling()
+    if (source && source.readyState !== 2) {
+      source.close()
+    }
+    this.source = null
+    this.connect()
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer)
+      this.watchdogTimer = null
+    }
   }
 
   private clearReplayTimer(): void {

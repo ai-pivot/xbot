@@ -103,28 +103,21 @@ export function usePwaInstall() {
   const checkForUpdate = async () => {
     if (!('serviceWorker' in navigator)) return false
 
-    // Strategy: fetch the server's latest /sw.js and extract the precached
-    // index.html revision (which is the MD5 of the current index.html). Compare
-    // it against the revision stored in the SW that's ACTUALLY controlling
-    // this page. If they differ, the server has a newer build → update available.
+    // Strategy: fetch the SW script that this page's registration ACTUALLY uses
+    // (reg.active.scriptURL — e.g. /sw2.js) and check whether the currently
+    // loaded JS bundle appears in its precache list. If not, the server has a
+    // newer build → update available.
     //
-    // We do NOT compare the revision against a hash of index.html — workbox
-    // uses MD5 for precache revisions, not SHA-1. The previous code used SHA-1
-    // (via sha1Hex) which never matched the MD5 revision, so the check always
-    // returned the wrong result.
+    // ⚠️ Never hardcode '/sw.js': dist dirs carry a STALE sw.js from older
+    // deploys (cp -r never deletes). Comparing the current bundle against the
+    // stale manifest reports "update available" forever; combined with
+    // refreshSW's old unregister+nuke path this produced an endless
+    // update→reload→update loop (user report, mobile has no force-refresh).
     try {
-      // 1. Fetch the server's latest sw.js (bypass cache).
-      const serverRes = await fetch('/sw.js', { cache: 'no-store' })
-      const serverText = await serverRes.text()
-
-      // 2. Get the revision from the currently-active SW's sw.js.
-      //    The SW caches its own sw.js in precache — but we can't read that.
-      //    Instead, compare against the index.html revision the SW has cached
-      //    by checking if a controllerchange would pick up new content.
       const reg = await navigator.serviceWorker.getRegistration('/').catch(() => null)
+      // 1. Trigger an update check first — a waiting/installing worker is the
+      //    authoritative signal (server bytes differ from active).
       if (reg) {
-        // SW registered — trigger update and check for a waiting SW.
-        // A waiting SW means the server's sw.js differs from the active one.
         let changed = false
         const onChange = () => { changed = true }
         navigator.serviceWorker.addEventListener('controllerchange', onChange, { once: true })
@@ -135,29 +128,26 @@ export function usePwaInstall() {
           navigator.serviceWorker.removeEventListener('controllerchange', onChange)
         }
         if (changed || reg.waiting) {
-          // New SW is waiting (skipWaiting will activate it) or already activated.
           setUpdateAvailable(true)
           return true
         }
       }
 
-      // 3. No SW or no waiting SW — compare the server's precache revision
-      //    against the revision embedded in the index.html the page loaded with.
-      //    The currently-loaded index.html references a specific JS bundle hash
-      //    (e.g. index-3tHn88Cu.js). The server's sw.js precaches index.html
-      //    with an MD5 revision that changes when the build changes index.html.
-      //    If the page's current JS bundle doesn't appear in the server's sw.js
-      //    precache list, the server has a newer build.
+      // 2. No waiting worker — compare the server's CURRENT SW manifest against
+      //    the bundle this page is running. Script URL from the registration
+      //    (fallback: the registered filename), fetched no-store.
+      const swUrl = reg?.active?.scriptURL || new URL('/sw2.js', location.origin).href
+      const serverRes = await fetch(swUrl, { cache: 'no-store' })
+      if (!serverRes.ok) {
+        setUpdateAvailable(false)
+        return false
+      }
+      const serverText = await serverRes.text()
       const currentScript = document.querySelector('script[src*="assets/index-"]')
       const currentJsName = currentScript?.getAttribute('src')?.split('/').pop() || ''
-      if (currentJsName) {
-        // Check if the currently-loaded JS bundle is in the server's sw.js.
-        // If it's NOT, the server has a newer build with a different JS hash.
-        const serverHasCurrent = serverText.includes(currentJsName)
-        if (!serverHasCurrent) {
-          setUpdateAvailable(true)
-          return true
-        }
+      if (currentJsName && !serverText.includes(currentJsName)) {
+        setUpdateAvailable(true)
+        return true
       }
 
       setUpdateAvailable(false)
@@ -200,20 +190,27 @@ export function usePwaInstall() {
       return
     }
     // With skipWaiting=true, the new SW activates immediately and there's
-    // never a waiting state. But the NavigationRoute (createHandlerBoundToURL)
-    // serves the OLD cached index.html on reload — the precache from the
-    // previous SW hasn't been replaced yet. We must unregister the SW and
-    // clear ALL caches so the reload fetches fresh assets from the server.
-    try {
-      if (reg) {
-        await reg.unregister()
+    // never a waiting state. DO NOT unregister + nuke caches here: assets are
+    // content-hashed and immutable, index.html is no-cache, and unregistering
+    // the registration makes the NEXT load re-register → re-activate →
+    // controllerchange toast → update-check mismatch → user taps 更新 again →
+    // infinite loop (user report: mobile, no force-refresh option). Caching is
+    // what keeps weak-network loads fast — keep it.
+    await reg?.update().catch(() => {})
+    if (reg?.waiting) {
+      let reloaded = false
+      const doReload = () => {
+        if (reloaded) return
+        reloaded = true
+        window.location.reload()
       }
-      const cacheNames = await caches.keys()
-      await Promise.all(cacheNames.map((name) => caches.delete(name)))
-    } catch {
-      // ignore — reload anyway
+      navigator.serviceWorker.addEventListener('controllerchange', doReload, { once: true })
+      setTimeout(doReload, 3000)
+      reg.waiting.postMessage({ type: 'SKIP_WAITING' })
+      return
     }
-    // Force a hard reload (bypass browser HTTP cache too)
+    // Nothing waiting: the page simply reloads — index.html (no-cache) pulls
+    // the latest bundle hashes from the server.
     window.location.reload()
   }
 

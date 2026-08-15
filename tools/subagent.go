@@ -50,31 +50,40 @@ SubAgents default to the "balance" model tier. Use model_tier to override:
 The agent role definition may also specify a model via frontmatter (model: vanguard/swift/balance).
 model_tier parameter takes priority over the role's model setting. If neither is set, defaults to "balance".
 
+## Background by default
+
+Sub-agents run in BACKGROUND by default: spawn returns immediately with a task ID,
+the sub-agent works asynchronously, and the result is injected into your conversation
+when it finishes. Use task_wait(task_id=...) to block until it completes, task_status
+to check progress, or action="inspect" to see its latest activity. Set background=false
+only when you must block synchronously and get the final reply directly.
+
 ## One-shot mode (default)
-SubAgent(task, role, instance="...") — runs once in the foreground and returns the final result.
+SubAgent(task, role, instance="...") — runs once (background by default; set background=false to block for the result).
 
 ## Interactive mode
 Persistent multi-turn session. Create once, send multiple messages, unload when done.
 
 | Call | Behavior |
 |------|----------|
-| SubAgent(task, role, instance="...", interactive=true) | Create or reuse an interactive session |
+| SubAgent(task, role, instance="...", interactive=true) | Create or reuse an interactive session (background by default) |
 | SubAgent(task, role, instance="...", action="send") | Send a new user message to an existing interactive session |
 | SubAgent(task, role, instance="...", action="unload") | End the interactive session and consolidate memory |
-| SubAgent(task, role, instance="...", interactive=true, background=true) | Start an interactive sub-agent in background mode |
 | SubAgent(task, role, instance="...", action="inspect") | Inspect recent progress/state of a sub-agent |
 | SubAgent(task, role, instance="...", action="interrupt") | Interrupt the current iteration of an interactive sub-agent |
 
 ## Background rule
-Only interactive sub-agents may run in background mode.
-Prefer foreground execution by default. Use background=true only when the sub-agent truly needs to keep running while the caller does other work; using background=true and then immediately waiting/sleeping for the result is effectively the same as foreground mode, just with more complexity.
+Background sub-agents report progress automatically; when one finishes, the result is injected into your
+conversation and you can also await it with task_wait(task_id=...). Use action="inspect"
+to check progress, action="send" to send messages, action="interrupt" to stop,
+action="unload" to terminate.
 
 Parameters (JSON):
   - task: string (required except some control actions), the task or message for the sub-agent
   - role: string (required), predefined role name
   - instance: string (REQUIRED on every call), unique instance ID used to identify the session/run
   - interactive: boolean (optional), create or reuse an interactive session
-  - background: boolean (optional), only valid when interactive=true; prefer false unless there is a concrete need to let the caller continue doing other work before checking back later
+  - background: boolean (optional), defaults to true — spawn returns immediately and the result is injected when done (await with task_wait). Set false to block for the final reply synchronously.
   - action: string (optional), one of "send", "unload", "inspect", "interrupt"
   - model_tier: string (optional), model tier for this call: "vanguard", "swift", or "balance" (default). Overrides the role's model setting.
 
@@ -89,7 +98,7 @@ func (t *SubAgentTool) Parameters() []llm.ToolParam {
 		{Name: "role", Type: "string", Description: "Predefined role name (for example: code-reviewer)", Required: true},
 		{Name: "instance", Type: "string", Description: `REQUIRED on every call. Stable unique ID for this sub-agent run/session. Never omit it. Examples: "review-1", "planner-main", "bugfix-login".`, Required: true},
 		{Name: "interactive", Type: "boolean", Description: "Create or reuse an interactive session for multi-turn conversation"},
-		{Name: "background", Type: "boolean", Description: "Run the interactive sub-agent in background mode. Only valid when interactive=true. Prefer foreground by default; use this only when the caller genuinely needs to continue other work and check back later."},
+		{Name: "background", Type: "boolean", Description: "Run the sub-agent in background mode (default: true — spawn returns immediately, completion is injected as a notification; await with task_wait). Set false to block synchronously for the final reply."},
 		{Name: "action", Type: "string", Description: `Optional control action: "send", "unload", "inspect", or "interrupt".`},
 		{Name: "tail", Type: "integer", Description: "For action=\"inspect\": number of recent iterations to show (default: 5)."},
 		{Name: "model_tier", Type: "string", Description: `Model tier for this call: "vanguard" (strongest), "swift" (fastest), or "balance" (default). Overrides the role's model setting. Use when you need a different model than the role's default for a specific task.`},
@@ -101,15 +110,27 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 		Task        string `json:"task"`
 		Role        string `json:"role"`
 		Interactive bool   `json:"interactive"`
-		Background  bool   `json:"background"`
-		Action      string `json:"action"`
-		Instance    string `json:"instance"`
-		Tail        int    `json:"tail"`
-		ModelTier   string `json:"model_tier"`
+		// *bool so "background" defaults to TRUE (background) unless the LLM
+		// explicitly passes background=false to block synchronously.
+		Background *bool  `json:"background"`
+		Action     string `json:"action"`
+		Instance   string `json:"instance"`
+		Tail       int    `json:"tail"`
+		ModelTier  string `json:"model_tier"`
 	}](input)
 	if err != nil {
 		return nil, err
 	}
+
+	// Default: BACKGROUND. Sub-agents run async by default — spawn returns
+	// immediately with a task ID, completion is injected as a notification and
+	// can be awaited via task_wait. Explicit background=false blocks the parent
+	// turn until the final reply arrives.
+	background := true
+	if params.Background != nil {
+		background = *params.Background
+	}
+	_ = background
 
 	requiresTask := params.Action == "" || params.Action == "send"
 	if requiresTask && params.Task == "" {
@@ -230,12 +251,15 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			return NewResult(fmt.Sprintf("Interactive session for role %q (instance=%q) interrupted.", params.Role, params.Instance)), nil
 
 		default:
-			// Propagate background flag via ToolContext metadata
-			if params.Background {
-				if ctx.Metadata == nil {
-					ctx.Metadata = make(map[string]string)
-				}
+			// Propagate background flag via ToolContext metadata.
+			// Default is background=true; explicit false blocks synchronously.
+			if ctx.Metadata == nil {
+				ctx.Metadata = make(map[string]string)
+			}
+			if background {
 				ctx.Metadata["background"] = "true"
+			} else {
+				ctx.Metadata["background"] = "false"
 			}
 			// action="" + interactive=true → spawn/reuse
 			result, err := im.SpawnInteractive(ctx, params.Task, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
@@ -263,11 +287,19 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 		}
 	}
 
-	if params.Background {
-		return nil, fmt.Errorf("background mode is only supported for interactive sub-agents")
+	if ctx.Metadata == nil {
+		ctx.Metadata = make(map[string]string)
+	}
+	if background {
+		ctx.Metadata["background"] = "true"
+	} else {
+		ctx.Metadata["background"] = "false"
 	}
 
-	// Default: one-shot mode
+	// One-shot mode. Background (default): the Run executes in a goroutine
+	// registered with the task manager — spawn returns immediately with a task
+	// ID the parent can task_wait on; the completion result is injected as a
+	// notification. Explicit background=false blocks until the final reply.
 	result, err := ctx.Manager.RunSubAgent(ctx, params.Task, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Role, params.Instance, effectiveModel)
 	if err != nil {
 		return nil, fmt.Errorf("sub-agent failed: %w", err)

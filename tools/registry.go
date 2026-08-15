@@ -100,6 +100,19 @@ func (r *Registry) UnregisterChannelTools(channel string) {
 	delete(r.channelTools, channel)
 }
 
+// UnregisterChannelTool 移除指定 channel 的单个工具（hot-update 时精确删除，
+// 避免清掉同 channel 其他来源的工具）。
+func (r *Registry) UnregisterChannelTool(channel, name string) {
+	r.channelToolsMu.Lock()
+	defer r.channelToolsMu.Unlock()
+	if tools, ok := r.channelTools[channel]; ok {
+		delete(tools, name)
+		if len(tools) == 0 {
+			delete(r.channelTools, channel)
+		}
+	}
+}
+
 // GetChannelTool 查找 channel 专属工具。
 func (r *Registry) GetChannelTool(channel, name string) (Tool, bool) {
 	r.channelToolsMu.RLock()

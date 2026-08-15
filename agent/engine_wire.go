@@ -455,7 +455,7 @@ func (a *Agent) buildMainRunConfig(
 		if a.channelFinder != nil {
 			var progressSeq atomic.Uint64
 			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID)
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
 		}
 	}
 
@@ -1561,136 +1561,238 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		ParentID:   originChatID,
 	})
 
-	out := Run(subCtx, cfg)
+	// runOneshot executes the synchronous one-shot Run + result handling.
+	// Shared by the foreground path (direct call) and the background path
+	// (goroutine, task_wait-able).
+	runOneshot := func(runCtx context.Context) (*channelpkg.OutboundMsg, error) {
+		out := Run(runCtx, cfg)
 
-	// Emit subagent_stopped event for instant sidebar update.
-	a.emitSessionState(protocol.SessionEvent{
-		Channel:    originChannel,
-		ChatID:     originChatID,
-		Action:     "subagent_stopped",
-		Role:       roleName,
-		Instance:   oneshotInstance,
-		SessionKey: oneshotKey,
-		ParentID:   originChatID,
-	})
+		// Emit subagent_stopped event for instant sidebar update.
+		a.emitSessionState(protocol.SessionEvent{
+			Channel:    originChannel,
+			ChatID:     originChatID,
+			Action:     "subagent_stopped",
+			Role:       roleName,
+			Instance:   oneshotInstance,
+			SessionKey: oneshotKey,
+			ParentID:   originChatID,
+		})
 
-	log.Ctx(ctx).WithFields(log.Fields{
-		"role":     roleName,
-		"instance": oneshotInstance,
-		"out_nil":  out == nil,
-		"out_len": func() int {
-			if out != nil {
-				return len(out.Content)
+		log.Ctx(runCtx).WithFields(log.Fields{
+			"role":     roleName,
+			"instance": oneshotInstance,
+			"out_nil":  out == nil,
+			"out_len": func() int {
+				if out != nil {
+					return len(out.Content)
+				}
+				return 0
+			}(),
+			"iterations": len(oneshotIA.iterationHistory),
+		}).Info("oneshot subagent Run() returned")
+
+		// Populate iteration history so inspect can show results after completion
+		oneshotIA.mu.Lock()
+		oneshotIA.running = false
+		if out != nil {
+			oneshotIA.lastReply = out.Content
+			oneshotIA.promptTokens = out.LastPromptTokens
+			oneshotIA.completionTokens = out.LastCompletionTokens
+			if len(cfg.Messages) > 0 {
+				oneshotIA.systemPrompt = cfg.Messages[0]
 			}
-			return 0
-		}(),
-		"iterations": len(oneshotIA.iterationHistory),
-	}).Info("oneshot subagent Run() returned")
-
-	// Populate iteration history so inspect can show results after completion
-	oneshotIA.mu.Lock()
-	oneshotIA.running = false
-	if out != nil {
-		oneshotIA.lastReply = out.Content
-		oneshotIA.promptTokens = out.LastPromptTokens
-		oneshotIA.completionTokens = out.LastCompletionTokens
-		if len(cfg.Messages) > 0 {
-			oneshotIA.systemPrompt = cfg.Messages[0]
-		}
-		if len(out.Messages) > 0 {
-			start := 0
-			if out.Messages[0].Role == "system" {
-				start = 1
+			if len(out.Messages) > 0 {
+				start := 0
+				if out.Messages[0].Role == "system" {
+					start = 1
+				}
+				oneshotIA.messages = make([]llm.ChatMessage, len(out.Messages)-start)
+				copy(oneshotIA.messages, out.Messages[start:])
 			}
-			oneshotIA.messages = make([]llm.ChatMessage, len(out.Messages)-start)
-			copy(oneshotIA.messages, out.Messages[start:])
+			if out.Content != "" {
+				oneshotIA.messages = append(oneshotIA.messages, llm.NewAssistantMessage(out.Content))
+			}
+			if out.Content != "" && out.ReasoningContent != "" && len(oneshotIA.messages) > 0 {
+				oneshotIA.messages[len(oneshotIA.messages)-1].ReasoningContent = out.ReasoningContent
+			}
+			if len(out.IterationHistory) > 0 {
+				oneshotIA.iterationHistory = out.IterationHistory
+			}
+			log.Ctx(runCtx).WithField("iteration_count", len(oneshotIA.iterationHistory)).Info("oneshot subagent completed")
+		} else {
+			log.Ctx(runCtx).Warn("oneshot subagent returned nil output")
+			oneshotIA.mu.Unlock()
+			a.destroyInteractiveSession(oneshotKey)
+			return &channelpkg.OutboundMsg{}, nil
 		}
-		if out.Content != "" {
-			oneshotIA.messages = append(oneshotIA.messages, llm.NewAssistantMessage(out.Content))
-		}
-		if out.Content != "" && out.ReasoningContent != "" && len(oneshotIA.messages) > 0 {
-			oneshotIA.messages[len(oneshotIA.messages)-1].ReasoningContent = out.ReasoningContent
-		}
-		if len(out.IterationHistory) > 0 {
-			oneshotIA.iterationHistory = out.IterationHistory
-		}
-		log.Ctx(ctx).WithField("iteration_count", len(oneshotIA.iterationHistory)).Info("oneshot subagent completed")
-	} else {
-		log.Ctx(ctx).Warn("oneshot subagent returned nil output")
 		oneshotIA.mu.Unlock()
-		a.destroyInteractiveSession(oneshotKey)
-		return &channelpkg.OutboundMsg{}, nil
-	}
-	oneshotIA.mu.Unlock()
-	if agentTenantSession != nil && out.Content != "" {
-		assistantMsg := llm.NewAssistantMessage(out.Content)
-		assistantMsg.ReasoningContent = out.ReasoningContent
-		if len(out.IterationHistory) > 0 {
-			if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
-				assistantMsg.Detail = string(jsonBytes)
+		if agentTenantSession != nil && out.Content != "" {
+			assistantMsg := llm.NewAssistantMessage(out.Content)
+			assistantMsg.ReasoningContent = out.ReasoningContent
+			if len(out.IterationHistory) > 0 {
+				if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+					assistantMsg.Detail = string(jsonBytes)
+				}
 			}
-		}
-		historyID, err := agentTenantSession.AppendMessage(assistantMsg)
-		if err != nil {
-			a.cancelChildSessions(oneshotKey)
-			persistErrText := fmt.Sprintf("append oneshot agent assistant message: %v", err)
+			historyID, err := agentTenantSession.AppendMessage(assistantMsg)
+			if err != nil {
+				a.cancelChildSessions(oneshotKey)
+				persistErrText := fmt.Sprintf("append oneshot agent assistant message: %v", err)
+				oneshotIA.mu.Lock()
+				oneshotIA.running = false
+				oneshotIA.lastError = persistErrText
+				if len(oneshotIA.messages) > 0 && oneshotIA.messages[len(oneshotIA.messages)-1].Role == "assistant" {
+					oneshotIA.messages = oneshotIA.messages[:len(oneshotIA.messages)-1]
+				}
+				oneshotIA.mu.Unlock()
+				return nil, fmt.Errorf("append oneshot agent assistant message: %w", err)
+			}
 			oneshotIA.mu.Lock()
-			oneshotIA.running = false
-			oneshotIA.lastError = persistErrText
 			if len(oneshotIA.messages) > 0 && oneshotIA.messages[len(oneshotIA.messages)-1].Role == "assistant" {
-				oneshotIA.messages = oneshotIA.messages[:len(oneshotIA.messages)-1]
+				oneshotIA.messages[len(oneshotIA.messages)-1].ID = historyID
 			}
 			oneshotIA.mu.Unlock()
-			return nil, fmt.Errorf("append oneshot agent assistant message: %w", err)
 		}
+		// Cascade-cancel any bg sessions spawned during this one-shot's Run(),
+		// then destroy the one-shot session immediately. Persisted agent tenant
+		// history remains available for Web history/session-tree reads.
+		a.cancelChildSessions(oneshotKey)
+		a.destroyInteractiveSession(oneshotKey)
+
+		log.Ctx(runCtx).WithFields(log.Fields{
+			"parent":    parentAgentID,
+			"role":      roleName,
+			"tools":     out.ToolsUsed,
+			"has_error": out.Error != nil,
+		}).Info("SubAgent completed (via Run)")
+
+		// Emit SubAgentStop event (notification, non-blocking)
+		if a.hookManager != nil {
+			a.hookManager.Emit(runCtx, &hooks.SubAgentStopEvent{
+				BasePayload: hooks.BasePayload{
+					SessionID: originChatID, Channel: originChannel,
+					SenderID: originSender, ChatID: originChatID,
+				},
+				AgentType: roleName,
+				Instance:  oneshotInstance,
+				Content:   out.Content,
+			})
+		}
+
+		if out.Error != nil {
+			content := out.Content
+			if content == "" {
+				content = "⚠️ SubAgent 执行失败，未产生任何输出。"
+			}
+			content += fmt.Sprintf("\n\n> ❌ SubAgent Error: %v", out.Error)
+			out.Content = content
+		}
+
+		// SubAgent 记忆整合：将本次对话的关键信息写入 SubAgent 的独立记忆
+		// 同步执行，确保记忆写入完成后再返回，避免 session 被 unload 导致记忆丢失。
+		if cfg.Memory != nil && len(out.Messages) > 0 {
+			a.consolidateSubAgentMemory(runCtx, cfg, out.Messages, task, roleName, parentAgentID)
+		}
+
+		return out.OutboundMsg, nil
+	}
+
+	// Background one-shot (default): run in a goroutine registered with the task
+	// manager, return immediately with a task ID the parent can task_wait on.
+	// The completion result is injected as a notification.
+	if msg.Metadata != nil && msg.Metadata["background"] == "true" {
+		var bgBase context.Context
+		if ctx.Value(bgSessionCtxKey{}) != nil {
+			bgBase = ctx
+		} else {
+			bgBase = a.agentCtx
+		}
+		if bgBase == nil {
+			bgBase = context.Background() // safety fallback for tests
+		}
+		bgCtx, bgCancel := context.WithCancel(bgBase)
+		bgCtx = context.WithValue(bgCtx, bgSessionCtxKey{}, true)
+		bgCtx = context.WithValue(bgCtx, bgParentKey{}, oneshotKey)
+		bgCtx = WithCallChain(bgCtx, CallChainFromContext(subCtx))
+
 		oneshotIA.mu.Lock()
-		if len(oneshotIA.messages) > 0 && oneshotIA.messages[len(oneshotIA.messages)-1].Role == "assistant" {
-			oneshotIA.messages[len(oneshotIA.messages)-1].ID = historyID
-		}
+		oneshotIA.background = true
+		oneshotIA.cancelCurrent = bgCancel
 		oneshotIA.mu.Unlock()
-	}
-	// Cascade-cancel any bg sessions spawned during this one-shot's Run(),
-	// then destroy the one-shot session immediately. Persisted agent tenant
-	// history remains available for Web history/session-tree reads.
-	a.cancelChildSessions(oneshotKey)
-	a.destroyInteractiveSession(oneshotKey)
 
-	log.Ctx(ctx).WithFields(log.Fields{
-		"parent":    parentAgentID,
-		"role":      roleName,
-		"tools":     out.ToolsUsed,
-		"has_error": out.Error != nil,
-	}).Info("SubAgent completed (via Run)")
-
-	// Emit SubAgentStop event (notification, non-blocking)
-	if a.hookManager != nil {
-		a.hookManager.Emit(ctx, &hooks.SubAgentStopEvent{
-			BasePayload: hooks.BasePayload{
-				SessionID: originChatID, Channel: originChannel,
-				SenderID: originSender, ChatID: originChatID,
-			},
-			AgentType: roleName,
-			Instance:  oneshotInstance,
-			Content:   out.Content,
-		})
-	}
-
-	if out.Error != nil {
-		content := out.Content
-		if content == "" {
-			content = "⚠️ SubAgent 执行失败，未产生任何输出。"
+		sessionKey := originChannel + ":" + originChatID
+		notifyMgr := a.bgTaskMgr
+		var bgTask *tools.SubAgentTask
+		if notifyMgr != nil {
+			bgTask = notifyMgr.RegisterSubAgentTask("", sessionKey, originSender, roleName, oneshotInstance, bgCancel)
 		}
-		content += fmt.Sprintf("\n\n> ❌ SubAgent Error: %v", out.Error)
-		out.Content = content
+
+		go func() {
+			defer bgCancel()
+			// Panic recovery: a panic inside runOneshot (Run(), persistence,
+			// session destroy) would crash the whole process AND leave the
+			// waitable task open (task_wait blocks until timeout). Mirror the
+			// interactive background goroutine's recover() — close the task and
+			// notify the parent so nothing leaks.
+			defer func() {
+				if r := recover(); r != nil {
+					log.WithFields(log.Fields{
+						"role":     roleName,
+						"instance": oneshotInstance,
+						"panic":    r,
+					}).Error("Background one-shot subagent panicked")
+					if notifyMgr == nil {
+						return
+					}
+					content := fmt.Sprintf("Sub-agent panicked: %v", r)
+					if bgTask != nil {
+						notifyMgr.CloseSubAgentTask(bgTask.ID, tools.BgTaskError, content)
+					}
+					notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+						Key:      sessionKey,
+						Type:     tools.SubAgentBgNotifyCompleted,
+						Role:     roleName,
+						Instance: oneshotInstance,
+						Content:  content,
+						Sid:      originSender,
+					})
+				}
+			}()
+			outMsg, runErr := runOneshot(bgCtx)
+			if notifyMgr == nil {
+				return
+			}
+			content := ""
+			if outMsg != nil {
+				content = outMsg.Content
+			} else if runErr != nil {
+				content = fmt.Sprintf("Error: %v", runErr)
+			}
+			if bgTask != nil {
+				status := tools.BgTaskDone
+				if runErr != nil {
+					status = tools.BgTaskError
+				}
+				notifyMgr.CloseSubAgentTask(bgTask.ID, status, content)
+			}
+			notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+				Key:      sessionKey,
+				Type:     tools.SubAgentBgNotifyCompleted,
+				Role:     roleName,
+				Instance: oneshotInstance,
+				Content:  content,
+				Sid:      originSender,
+			})
+		}()
+
+		startedMsg := fmt.Sprintf("Sub-agent %q (instance=%s) started in background.", roleName, oneshotInstance)
+		if bgTask != nil {
+			startedMsg += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=%q) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
+		}
+		return &channelpkg.OutboundMsg{Content: startedMsg}, nil
 	}
 
-	// SubAgent 记忆整合：将本次对话的关键信息写入 SubAgent 的独立记忆
-	// 同步执行，确保记忆写入完成后再返回，避免 session 被 unload 导致记忆丢失。
-	if cfg.Memory != nil && len(out.Messages) > 0 {
-		a.consolidateSubAgentMemory(ctx, cfg, out.Messages, task, roleName, parentAgentID)
-	}
-
-	return out.OutboundMsg, nil
+	return runOneshot(subCtx)
 }
 
 // resolveSubAgents extracts the SubAgent tree from a ProgressEvent.
@@ -1857,7 +1959,7 @@ func (a *Agent) buildProgressEventHandler(chatID, originatingChannel string) fun
 // delivery layer (sendCh batching + ring-buffer mergeStatelessEvent).
 // Tool calls and token usage are low-frequency, also not throttled.
 // All callbacks also write to atomic streamState for GetActiveProgress reconnect.
-func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64, turnID uint64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
+func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64, turnID uint64, sessionKey string, tenantID int64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
 	// Use ONLY the originating channel — its SendProgress broadcasts to ALL
 	// Hub subscribers (including other channels' clients via shared Hub).
 	var sender channelpkg.ProgressSender
@@ -1984,11 +2086,18 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
-		tools := make([]protocol.ToolProgress, 0, len(toolCalls))
+		toolProgs := make([]protocol.ToolProgress, 0, len(toolCalls))
 		var genuiContent string
 		for _, tc := range toolCalls {
 			if tc.Name != "" {
-				tools = append(tools, protocol.ToolProgress{
+				// Look up UI metadata once per tool name — populates both the
+				// streaming GenUI extraction and the ToolProgress UIMode/UILibs
+				// (frontend renders metadata-driven, never tool-name-driven).
+				var ui *tools.UIDecl
+				if ui = a.toolUIDecl(sessionKey, tenantID, tc.Name); ui != nil && ui.Mode == "genui" {
+					genuiContent = extractPartialParam(tc.Arguments, ui.Param)
+				}
+				tp := protocol.ToolProgress{
 					Name:     tc.Name,
 					Status:   "generating",
 					GenChars: len(tc.Arguments),
@@ -2001,15 +2110,15 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 					// rendering (user report: "过去的 generating 状态错误的在最新
 					// 迭代上渲染，直到最新迭代真正的 tool 出现").
 					Iteration: a.getActiveIteration(progressKey),
-				})
-				// Extract streaming HTML from display_html tool arguments.
-				// tc.Arguments is accumulated partial JSON like {"code":"<div cla...
-				if tc.Name == "display_html" {
-					genuiContent = extractPartialCodeFromArgs(tc.Arguments)
 				}
+				if ui != nil {
+					tp.UIMode = ui.Mode
+					tp.UILibs = ui.Libs
+				}
+				toolProgs = append(toolProgs, tp)
 			}
 		}
-		if len(tools) == 0 && genuiContent == "" {
+		if len(toolProgs) == 0 && genuiContent == "" {
 			return
 		}
 
@@ -2017,7 +2126,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		// throttles compilation to 100ms. Server-side throttle would drop
 		// intermediate updates and potentially the final code.
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
-			s.StreamingTools = tools
+			s.StreamingTools = toolProgs
 			if genuiContent != "" {
 				s.GenUIContent = genuiContent
 			}
@@ -2033,7 +2142,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			// "iter id 突然变成 0 导致整个 turn 的 DOM 消失"; all repro dumps show
 			// the vanishing turn right after an iteration:0 streaming_tools event).
 			Iteration:      a.getActiveIteration(progressKey),
-			StreamingTools: tools,
+			StreamingTools: toolProgs,
 		}
 		if genuiContent != "" {
 			payload.GenUIContent = genuiContent
@@ -2063,17 +2172,36 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc
 }
 
-// extractPartialCodeFromArgs extracts the "code" field value from a partial JSON
-// string like {"code":"<div class='...'>...}. The JSON may be incomplete (streaming),
-// so we use a string scan instead of json.Unmarshal.
-func extractPartialCodeFromArgs(args string) string {
-	// Find "code":" or "code": "
-	idx := strings.Index(args, `"code"`)
+// toolUIDecl looks up the tool's UI declaration (UIDeclProvider) by session
+// context. Returns nil if the tool is unknown or has no UI capability.
+// This is the single metadata-driven lookup — no hardcoded tool names.
+func (a *Agent) toolUIDecl(sessionKey string, tenantID int64, toolName string) *tools.UIDecl {
+	if a.tools == nil || toolName == "" {
+		return nil
+	}
+	tool, ok := a.tools.GetForSession(toolName, tenantID, sessionKey)
+	if !ok {
+		return nil
+	}
+	if p, ok := tool.(tools.UIDeclProvider); ok {
+		return p.UIDecl()
+	}
+	return nil
+}
+
+// extractPartialParam extracts the named field value from a partial JSON
+// string like {"code":"<div class='...'>...}. The JSON may be incomplete
+// (streaming), so we use a string scan instead of json.Unmarshal.
+// Returns "" if the field is absent or not a quoted string.
+func extractPartialParam(args, paramName string) string {
+	// Find "paramName":" or "paramName": "
+	needle := `"` + paramName + `"`
+	idx := strings.Index(args, needle)
 	if idx == -1 {
 		return ""
 	}
-	// Skip past "code"
-	rest := args[idx+6:]
+	// Skip past "paramName"
+	rest := args[idx+len(needle):]
 	// Skip whitespace and colon
 	for len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n' || rest[0] == ':') {
 		rest = rest[1:]

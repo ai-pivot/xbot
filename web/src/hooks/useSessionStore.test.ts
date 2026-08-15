@@ -13,12 +13,16 @@ import type { SessionInfo, WSMessage } from '@/types/shared'
 let sessionHandler: ((event: { channel?: string; chat_id?: string; session_key?: string; action?: string; role?: string; instance?: string; parent_id?: string }) => void) | null = null
 let messageHandler: ((event: WSMessage) => void) | null = null
 
+const wsMocks = vi.hoisted(() => ({
+  rpc: vi.fn(),
+}))
+
 vi.mock('@/hooks/useWSConnection', () => ({
   useWSConnection: () => ({
     connected: true,
     subscribe: vi.fn(),
     disconnect: vi.fn(),
-    rpc: vi.fn(),
+    rpc: wsMocks.rpc,
     onSession: vi.fn((handler) => {
       sessionHandler = handler
       return vi.fn()
@@ -60,6 +64,7 @@ vi.mock('@/lib/api', () => ({
 beforeEach(() => {
   sessionHandler = null
   messageHandler = null
+  wsMocks.rpc.mockReset()
   const store = new Map<string, string>()
   vi.stubGlobal('localStorage', {
     getItem: vi.fn((key: string) => store.get(key) ?? null),
@@ -1809,5 +1814,170 @@ describe('normalizeSessionTree', () => {
     expect(result.current.sessions.map((session) => session.chatID)).toEqual(['cached-chat'])
     expect(result.current.activeSession).toEqual({ channel: 'web', chatID: 'cached-chat' })
     unmount()
+  })
+
+  it('createSession defaults the new session model to the current active session model', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const body = init?.body ? JSON.parse(String(init.body)) : {}
+      if (url === '/api/chats') {
+        // createSession sends { label, model }; the session-tree refresh does not.
+        if ('model' in body) {
+          return {
+            ok: true,
+            json: async () => ({ ok: true, data: { chat_id: 'new-chat' }, error: null }),
+          } as Response
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: 'current-chat',
+              channel: 'web',
+              label: 'current',
+              last_active: '2026-07-08T00:00:00Z',
+              is_current: true,
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    wsMocks.rpc.mockResolvedValue({ model: 'gpt-4o', subscription_id: 'sub-1', subscription_name: 'Sub 1' })
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    expect(result.current.activeSession).toEqual({ channel: 'web', chatID: 'current-chat' })
+
+    let chatID: string | null = null
+    await act(async () => {
+      chatID = await result.current.createSession('my-new-session')
+    })
+    expect(chatID).toBe('new-chat')
+
+    const createCall = fetchMock.mock.calls.find(([_input, init]) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {}
+      return body?.label === 'my-new-session'
+    })
+    expect(createCall).toBeDefined()
+    const createBody = JSON.parse(String(createCall?.[1]?.body))
+    expect(createBody.label).toBe('my-new-session')
+    expect(createBody.model).toBe('gpt-4o')
+  })
+
+  it('createSession prefers an explicit model param over the current session model', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        const body = init?.body ? JSON.parse(String(init.body)) : {}
+        if (body?.model !== undefined) {
+          return {
+            ok: true,
+            json: async () => ({ ok: true, data: { chat_id: 'new-chat' }, error: null }),
+          } as Response
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: 'current-chat',
+              channel: 'web',
+              label: 'current',
+              last_active: '2026-07-08T00:00:00Z',
+              is_current: true,
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    wsMocks.rpc.mockResolvedValue({ model: 'current-session-model', subscription_id: 'sub-1' })
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    let chatID: string | null = null
+    await act(async () => {
+      chatID = await result.current.createSession(undefined, undefined, 'explicit-model')
+    })
+    expect(chatID).toBe('new-chat')
+
+    const createCall = fetchMock.mock.calls.find(([_input, init]) => {
+      try {
+        const body = init?.body ? JSON.parse(String(init.body)) : {}
+        return body?.model === 'explicit-model'
+      } catch {
+        return false
+      }
+    })
+    expect(createCall).toBeDefined()
+    const createBody = JSON.parse(String(createCall?.[1]?.body))
+    expect(createBody.model).toBe('explicit-model')
+  })
+
+  it('createSession omits the model when the current session model is unavailable', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        const body = init?.body ? JSON.parse(String(init.body)) : {}
+        if (body?.model !== undefined) {
+          return {
+            ok: true,
+            json: async () => ({ ok: true, data: { chat_id: 'new-chat' }, error: null }),
+          } as Response
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: 'current-chat',
+              channel: 'web',
+              label: 'current',
+              last_active: '2026-07-08T00:00:00Z',
+              is_current: true,
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    // get_context_usage rejects → non-fatal, model stays empty → backend falls back to Balance tier.
+    wsMocks.rpc.mockRejectedValue(new Error('not connected'))
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    let chatID: string | null = null
+    await act(async () => {
+      chatID = await result.current.createSession()
+    })
+    expect(chatID).toBe('new-chat')
+
+    const createCall = fetchMock.mock.calls.find(([_input, init]) => {
+      try {
+        const body = init?.body ? JSON.parse(String(init.body)) : {}
+        return body?.label === '' || body?.model !== undefined
+      } catch {
+        return false
+      }
+    })
+    expect(createCall).toBeDefined()
+    const createBody = JSON.parse(String(createCall?.[1]?.body))
+    expect(createBody.model).toBe('')
   })
 })

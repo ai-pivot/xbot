@@ -43,3 +43,40 @@ func TestSubAgentSessionKeyJSON(t *testing.T) {
 		t.Fatalf("SessionEvent target history ID missing: %s", eventJSON)
 	}
 }
+
+func TestAskUserQuestionJSONRoundTrip(t *testing.T) {
+	// New multi-select / allow-other fields serialize and round-trip.
+	q := AskUserQuestion{
+		Question:    "Pick options",
+		Options:     []string{"a", "b"},
+		MultiSelect: true,
+		AllowOther:  true,
+	}
+	data, err := json.Marshal(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(data)
+	for _, want := range []string{`"multi_select":true`, `"allow_other":true`} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("missing %s in %s", want, raw)
+		}
+	}
+	var back AskUserQuestion
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !back.MultiSelect || !back.AllowOther || len(back.Options) != 2 || back.Question != "Pick options" {
+		t.Fatalf("round-trip mismatch: %+v", back)
+	}
+
+	// Plain question omits the new fields (backward compatible).
+	plain := AskUserQuestion{Question: "Continue?"}
+	data, err = json.Marshal(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "multi_select") || strings.Contains(string(data), "allow_other") {
+		t.Fatalf("zero-value new fields must be omitted: %s", data)
+	}
+}

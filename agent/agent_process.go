@@ -494,6 +494,13 @@ func buildWaitingUserOutbound(ctx context.Context, msg bus.InboundMessage, out *
 	// (called after each executeToolCalls). No Detail JSON needed (v55+).
 	if len(out.IterationHistory) > 0 {
 		histMsg := llm.NewAssistantMessage("")
+		// Stamp the current turn ID so the empty waiting-user assistant row
+		// belongs to turn N — without it the row is turn_id=0 and
+		// deriveTurnIDs mis-attributes it to the ANSWER turn (N+1), producing
+		// a forged assistant row before the answer user message.
+		if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
+			histMsg.TurnID = tid
+		}
 		if err := tenantSession.AddMessage(histMsg); err != nil {
 			log.Ctx(ctx).WithError(err).Warn("Failed to save waitingUser iteration history")
 		}

@@ -1,0 +1,32 @@
+{
+  "id": "xbot.genui",
+  "name": "GenUI (display_html)",
+  "version": "1.0.0",
+  "description": "LLM 生成交互式 UI：组件库 / ECharts 图表 / three.js 3D / framer-motion 动画，流式预览 + 交互回传。display_html 工具的插件化实现（独立 Go stdio channel plugin）。",
+  "author": "xbot",
+  "runtime": "grpc",
+  "entry": "./bin/genui-plugin",
+  "activationEvents": ["onStart"],
+  "permissions": ["channels.register", "tools.register", "ui.contribute"],
+  "contributes": {
+    "channelProvider": {
+      "name": "genui",
+      "config_schema": [
+        {
+          "key": "enabled",
+          "label": "Enable",
+          "description": "Enable the GenUI channel plugin (registers display_html to web channel)",
+          "type": "toggle",
+          "default_value": "true"
+        },
+        {
+          "key": "libs_cdn",
+          "label": "Libraries CDN base",
+          "description": "Base URL for lazy-loaded chart/3D libraries (echarts/three). Empty = jsdelivr default.",
+          "type": "text",
+          "default_value": "https://cdn.jsdelivr.net/npm/"
+        }
+      ]
+    }
+  }
+}

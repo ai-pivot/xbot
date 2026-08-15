@@ -1,0 +1,611 @@
+/**
+ * reduce.test.ts — 状态机转移表测试：8 个历史 P0 各一个回归 + 不变量断言。
+ *
+ * 每个 test 的头注释标注它根治的历史 bug（design doc §6 映射表）。
+ */
+
+import { describe, expect, it } from 'vitest'
+import { deriveRows } from './derive'
+import { normalizeEvent } from './normalize'
+import { reduce } from './reduce'
+import {
+  initialChatState,
+  iterNum,
+  turnID,
+  type ChatState,
+  type DomainEvent,
+} from './types'
+
+// ─── 测试 DSL ─────────────────────────────────────────────────
+
+const T1 = turnID(1)
+const T2 = turnID(2)
+
+function run(events: readonly DomainEvent[], from: ChatState = initialChatState('chat-1')): ChatState {
+  return events.reduce(reduce, from)
+}
+
+const iteration1 = (turn: ReturnType<typeof turnID>, content = '', iter = 1): DomainEvent => ({
+  type: 'iteration',
+  turnID: turn,
+  iter: iterNum(iter),
+  seq: 10 as never,
+  content: content || undefined,
+  reasoning: undefined,
+  activeTools: [],
+  completedTools: [],
+  iterationsDelta: [],
+  todos: undefined,
+  subAgents: undefined,
+  tokenUsage: undefined,
+})
+
+const started = (turn: ReturnType<typeof turnID>, requestID: string | null = null): DomainEvent => ({
+  type: 'turn_started',
+  turnID: turn,
+  requestID,
+  trigger: 'user',
+})
+
+const textFinal = (turn: ReturnType<typeof turnID> | null, content: string | null, cancelled = false): DomainEvent => ({
+  type: 'text_final',
+  turnID: turn,
+  content: content === null ? null : (content as never),
+  progressHistory: [],
+  cancelled,
+})
+
+const phaseDone = (turn: ReturnType<typeof turnID>, finalIteration: DomainEvent extends never ? never : {
+  iteration: number
+  content: string
+  reasoning: string
+  tools: never[]
+  toolCount: number
+} | null): DomainEvent => ({
+  type: 'phase_done',
+  turnID: turn,
+  seq: 99 as never,
+  finalIteration,
+  todos: undefined,
+}) as DomainEvent
+
+// ─── I1-I6 不变量断言器（性质测试的基石） ─────────────────────
+
+export function assertInvariants(s: ChatState): void {
+  // I1 槽位唯一 + 三态互斥（类型已保证 —— 运行时复核）。
+  let liveCount = 0
+  for (const t of s.turns.values()) {
+    expect(['live', 'frozen', 'committed']).toContain(t.phase.kind)
+    if (t.phase.kind === 'live') liveCount++
+    // I2 committed 可渲染。
+    if (t.phase.kind === 'committed') {
+      const p = t.phase.payload
+      if (p.via === 'text') expect(p.content.length).toBeGreaterThan(0)
+      else expect(p.iterations.length).toBeGreaterThan(0)
+    }
+  }
+  // I3 活动唯一。
+  expect(liveCount).toBeLessThanOrEqual(1)
+  if (s.activeTurn !== null) {
+    const t = s.turns.get(s.activeTurn)
+    expect(t).toBeDefined()
+    expect(t?.phase.kind).toBe('live')
+  } else {
+    expect(liveCount).toBe(0)
+  }
+}
+
+// ─── 回归测试 ─────────────────────────────────────────────────
+
+describe('TDSM reduce — 历史 P0 回归', () => {
+  it('Bug1: cancel 后新 turn 的事件不被旧 turn guard 拦截（SSE 更新但前端卡死）', () => {
+    // turn 1 流式产出 → cancel ack（text_final cancelled）→ turn 2 正常接收事件。
+    const s = run([
+      started(T1),
+      { type: 'stream', turnID: T1, seq: null, content: '部分内容', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      iteration1(T1, '', 1),
+      textFinal(T1, null, true), // cancel ack：content null（截断）→ fold
+      started(T2),
+      iteration1(T2, '新 turn 迭代内容', 1),
+    ])
+    assertInvariants(s)
+    // turn 2 正常写入（不被任何 guard 拦截）。
+    const t2 = s.turns.get(T2)!
+    expect(t2.phase.kind).toBe('live')
+    if (t2.phase.kind === 'live') expect(t2.phase.data.content).toBe('新 turn 迭代内容')
+    // turn 1 已 committed（cancel fold，数据保全）。
+    expect(s.turns.get(T1)?.phase.kind).toBe('committed')
+  })
+
+  it('Bug2: 切换会话（history_replaced）后新会话 turn_id=1 的事件正常（无残留拦截）', () => {
+    // 会话 A：turn 50 结束。
+    const sA = run([
+      started(turnID(50)),
+      textFinal(turnID(50), '会话A的回复'),
+    ])
+    expect(sA.turns.get(turnID(50))?.phase.kind).toBe('committed')
+    // 切换会话 B：history_replaced 全量替换（旧 turns 清空 —— 无全局残留）。
+    const sB = reduce(sA, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [],
+      active: null,
+      lastSeq: null, todos: [],
+    })
+    // 会话 B：turn_id=1 的事件正常写入。
+    const sB2 = run([started(T1), iteration1(T1, '会话B内容')], sB)
+    assertInvariants(sB2)
+    const t1 = sB2.turns.get(T1)!
+    expect(t1.phase.kind).toBe('live')
+    if (t1.phase.kind === 'live') expect(t1.phase.data.content).toBe('会话B内容')
+  })
+
+  it('Bug3: turn_started 提前 fold 保全 content —— 迟到 text 到达前数据不丢', () => {
+    // turn 1 流式产出（text 未到）→ 用户发新消息 turn_started(2) fold。
+    const s = run([
+      started(T1),
+      { type: 'stream', turnID: T1, seq: null, content: '流式输出的完整回复', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      started(T2), // text 未到 —— fold commit（数据保全）
+    ])
+    assertInvariants(s)
+    const t1 = s.turns.get(T1)!
+    expect(t1.phase.kind).toBe('committed')
+    if (t1.phase.kind === 'committed') {
+      expect(t1.phase.payload.content).toBe('流式输出的完整回复')
+    }
+    // 迟到 text(1) 到达：committed 幂等（不重复、不丢）。
+    const s2 = reduce(s, textFinal(T1, '流式输出的完整回复'))
+    expect(s2).toBe(s) // 引用不变 —— 零渲染
+    expect(s2.turns.get(T1)?.phase.kind).toBe('committed')
+  })
+
+  it('Bug4: normalize 处理 Go nil slice（tools:null）—— 状态机永不见 null 数组', () => {
+    const evs = normalizeEvent(
+      {
+        type: 'progress_structured',
+        progress: {
+          phase: 'tool_exec',
+          turn_id: 1,
+          iteration: 1,
+          seq: 5,
+          active_tools: null,
+          completed_tools: null,
+          iteration_history: [{ iteration: 1, content: 'x', tools: null }],
+        },
+      },
+      'chat-1',
+    )
+    expect(evs).not.toBeNull()
+    const ev = evs?.[0]
+    expect(ev?.type).toBe('iteration')
+    if (ev?.type === 'iteration') {
+      expect(ev.activeTools).toEqual([])
+      expect(ev.iterationsDelta).toHaveLength(1)
+      expect(ev.iterationsDelta[0].tools).toEqual([])
+    }
+    // 状态机消化后 derive 不抛（渲染层无 null 可见 —— T1）。
+    const s = run([started(T1), ...(evs ?? [])])
+    expect(() => deriveRows(s)).not.toThrow()
+  })
+
+  it('Bug9+多事件: progress_structured 同时携带结构化+流式载荷 → [stream, iteration]（get_active_progress 合并快照形状）', () => {
+    const evs = normalizeEvent(
+      {
+        type: 'progress_structured',
+        progress: {
+          phase: 'tool_exec',
+          turn_id: 2,
+          iteration: 2,
+          seq: 9,
+          stream_content: '流式与结构化并存',
+          genui_content: 'export default function App(){}',
+          active_tools: [{ name: 'Shell', status: 'running' }],
+        },
+      },
+      'chat-1',
+    )
+    expect(evs).not.toBeNull()
+    if (!evs || evs.length < 2) throw new Error(`expected [stream, iteration], got ${JSON.stringify(evs)}`)
+    expect(evs[0].type).toBe('stream') // stream 先应用
+    expect(evs[1].type).toBe('iteration')
+    if (evs[0].type === 'stream') expect(evs[0].genui).toContain('App')
+    // 状态机消化：genui 与 activeTools 同时生效（非空 phase 不再丢流式载荷）。
+    const s = run([started(T2), ...evs])
+    const t = s.turns.get(T2)
+    if (t?.phase.kind !== 'live') throw new Error('must be live')
+    expect(t.phase.data.genui).toContain('App')
+    expect(t.phase.data.activeTools.map((x) => x.name)).toContain('Shell')
+  })
+
+  it('Bug5: 最后迭代经 phase_done fold —— text 到达前已保留（iter 产生了就不消失）', () => {
+    const finalIter = { iteration: 1, content: '最后迭代内容', reasoning: '', tools: [], toolCount: 0 }
+    const s = run([
+      started(T1),
+      iteration1(T1),
+      phaseDone(T1, finalIter), // PhaseDone 补记最后迭代
+    ])
+    assertInvariants(s)
+    let t1 = s.turns.get(T1)!
+    expect(t1.phase.kind).toBe('live')
+    if (t1.phase.kind === 'live') {
+      expect(t1.phase.data.iterations).toHaveLength(1)
+      expect(t1.phase.data.iterations[0].content).toBe('最后迭代内容')
+    }
+    // text 到达 → commit（iterations 保留 —— T3）。
+    const s2 = reduce(s, textFinal(T1, '最终回复'))
+    t1 = s2.turns.get(T1)!
+    expect(t1.phase.kind).toBe('committed')
+    if (t1.phase.kind === 'committed') {
+      expect(t1.phase.payload.iterations).toHaveLength(1)
+      expect(t1.phase.payload.iterations[0].content).toBe('最终回复')
+      expect(t1.phase.payload.content).toBe('最终回复')
+    }
+  })
+
+  it('Bug6: commit 后每 turn 恰一行 —— 无 ghost turn-N-live 行', () => {
+    const s = run([
+      started(T1),
+      iteration1(T1, 'iter1 内容'),
+      textFinal(T1, '最终回复'),
+      started(T2),
+      iteration1(T2, '新 turn'),
+    ])
+    const rows = deriveRows(s)
+    // turn 1 恰一行（committed）；turn 2 恰一行（live）。
+    const t1Rows = rows.filter((r) => r.turnID === 1)
+    const t2Rows = rows.filter((r) => r.turnID === 2)
+    expect(t1Rows).toHaveLength(1)
+    expect(t2Rows).toHaveLength(1)
+    expect(t1Rows[0].kind).toBe('committed')
+    expect(t2Rows[0].kind).toBe('live')
+    // 无 id 同时含 -live 与 -c 的行。
+    expect(rows.some((r) => r.kind === 'live' && r.id.includes('1-'))).toBe(false)
+  })
+
+  it('Bug7: isPartial 只在 live/frozen —— pending user 沉底、turn 内 user<assistant', () => {
+    const userRow = {
+      id: 'u1',
+      content: '用户消息' as never,
+      timestamp: '2026-01-01T00:00:00Z',
+      isNotification: false,
+      queued: false,
+      sending: false,
+      requestID: 'req-1',
+      turnHint: undefined,
+      dbID: undefined,
+    }
+    const s = run([
+      { type: 'user_sent', row: userRow },
+      started(T1, 'req-1'), // requestID 精确绑定
+      iteration1(T1, '流式中'),
+    ])
+    const rows = deriveRows(s)
+    // isPartial 只在 assistant live/frozen 行；user 行永远非 partial。
+    for (const r of rows) {
+      if (r.kind === 'user') continue
+      else expect(r.isPartial).toBe(true)
+    }
+    // turn 内顺序：user 在 assistant 前（T5）。
+    const userIdx = rows.findIndex((r) => r.kind === 'user' && r.content === '用户消息')
+    const liveIdx = rows.findIndex((r) => r.kind === 'live')
+    expect(userIdx).toBeGreaterThanOrEqual(0)
+    expect(userIdx).toBeLessThan(liveIdx)
+    // 绑定成功：pendingUsers 空。
+    expect(s.pendingUsers).toHaveLength(0)
+  })
+
+  it('Bug8: 发新消息收尸旧 turn —— 每 turn 恰一行（无重复渲染）', () => {
+    const s = run([
+      started(T1),
+      iteration1(T1, '旧 turn 内容'),
+      started(T2), // 收尸 fold
+      iteration1(T2, '新 turn 内容'),
+    ])
+    assertInvariants(s)
+    const rows = deriveRows(s)
+    const t1Rows = rows.filter((r) => r.turnID === 1)
+    expect(t1Rows).toHaveLength(1)
+    expect(t1Rows[0].kind).toBe('committed')
+    if (t1Rows[0].kind === 'committed') expect(t1Rows[0].content).toBe('旧 turn 内容')
+  })
+
+  it('session(idle) 兜底：live 有产出 → frozen 定格；无产出 → 删槽（幽灵行灭绝）', () => {
+    // 有产出的 live：PhaseDone + text 都丢 → idle → frozen 定格。
+    const sA = run([
+      started(T1),
+      { type: 'stream', turnID: T1, seq: null, content: '已产出内容', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      { type: 'session', busy: false },
+    ])
+    assertInvariants(sA)
+    const t1 = sA.turns.get(T1)!
+    expect(t1.phase.kind).toBe('frozen')
+    if (t1.phase.kind === 'frozen') expect(t1.phase.data.content).toBe('已产出内容')
+    // frozen 行渲染（isPartial 保留 activeTools 通道）。
+    const rowsA = deriveRows(sA)
+    expect(rowsA.filter((r) => r.turnID === 1)).toHaveLength(1)
+
+    // 无产出的 live：idle → 删槽。
+    const sB = run([started(T1), { type: 'session', busy: false }])
+    assertInvariants(sB)
+    expect(sB.turns.size).toBe(0)
+    expect(deriveRows(sB)).toHaveLength(0)
+  })
+
+  it('frozen 后迟到 text_final（cancel 补齐）→ committed（决策点1：text 权威路径）', () => {
+    // cancel：live → text_final(cancelled) fold commit（带 progressHistory 补齐）。
+    const s = run([
+      started(T1),
+      iteration1(T1, 'cancel 前的迭代内容'),
+      {
+        type: 'text_final',
+        turnID: T1,
+        content: null, // cancel：text 无 content
+        progressHistory: [
+          { iteration: 1, content: 'cancel 补齐的权威迭代内容', reasoning: '', tools: [], toolCount: 0 },
+          { iteration: 2, content: 'cancel 前进行中的迭代（补齐）', reasoning: '', tools: [], toolCount: 0 },
+        ],
+        cancelled: true,
+      },
+    ])
+    assertInvariants(s)
+    const t1 = s.turns.get(T1)!
+    expect(t1.phase.kind).toBe('committed')
+    if (t1.phase.kind === 'committed') {
+      // 权威 progressHistory 覆盖同号 + append 补齐 —— T3 + 权威数据。
+      expect(t1.phase.payload.iterations).toHaveLength(2)
+      expect(t1.phase.payload.iterations[0].content).toBe('cancel 补齐的权威迭代内容')
+      expect(t1.phase.payload.iterations[1].content).toBe('cancel 前的迭代内容')
+    }
+  })
+
+  it('I5: 同 turn 内 seq 重放丢弃（引用不变 —— 零渲染）', () => {
+    const s0 = run([started(T1), iteration1(T1, '内容')])
+    const replay = reduce(s0, iteration1(T1, '内容')) // 同 seq 重放
+    expect(replay).toBe(s0)
+    // 旧 turn（非 active）事件也引用不变。
+    const stale = reduce(s0, iteration1(turnID(99), '旧事件'))
+    expect(stale).toBe(s0)
+  })
+
+  it('legacy 前缀段：无 turn_id 历史按 DB 顺序渲染（决策点2：独立只读段）', () => {
+    const s = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h1', role: 'user', content: '旧消息1', iterations: [], timestamp: 't1', dbID: 1 },
+        { id: 'h2', role: 'assistant', content: '旧回复1', iterations: [], timestamp: 't2', dbID: 2 },
+      ],
+      turns: [],
+      active: null,
+      lastSeq: null, todos: [],
+    })
+    const rows = deriveRows(s)
+    expect(rows).toHaveLength(2)
+    expect(rows[0].kind === 'user' && rows[0].content).toBe('旧消息1')
+    expect(rows[1].kind === 'committed' && rows[1].content).toBe('旧回复1')
+  })
+
+  it('history_replaced MERGE：committed turn 不在 DB 快照里也保留（发 user msg 后 agent 消息不消失）', () => {
+    // turn 1 经 text_final commit（只存在于状态机 —— messages 未同步）。
+    const s0 = run([
+      started(T1),
+      { type: 'stream', turnID: T1, seq: null, content: 'turn1 回复', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      textFinal(T1, 'turn1 回复'),
+    ])
+    expect(s0.turns.get(T1)?.phase.kind).toBe('committed')
+    // 用户发新消息 → user_echo → messages 变化 → history_replaced（不含 turn 1）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [], // DB 快照还没有 turn 1（appendAssistant 接线已移除）
+      active: null,
+      lastSeq: null, todos: [],
+    })
+    // 修复后：turn 1 的 committed 数据保留（不消失）。
+    const t1 = s1.turns.get(T1)
+    expect(t1).toBeDefined()
+    expect(t1?.phase.kind).toBe('committed')
+    const rows = deriveRows(s1)
+    expect(rows.some((r) => r.kind === 'committed' && r.content === 'turn1 回复')).toBe(true)
+  })
+
+  it('history_replaced MERGE：live turn + activeTurn 存活（echo 竞态不打断打字机）', () => {
+    // turn_started 建 live → echo 触发的 history_replaced 到达（时序颠倒）。
+    const s0 = run([
+      started(T1),
+      { type: 'stream', turnID: T1, seq: 5 as never, content: '流式前半', reasoning: undefined, streamingTools: undefined, genui: undefined },
+    ])
+    const s1 = reduce(s0, { type: 'history_replaced', legacy: [], turns: [], active: null, lastSeq: null, todos: [] })
+    // 修复后：live turn 存活 + activeTurn 保持 → 后续 stream 继续接收。
+    expect(s1.activeTurn).toBe(T1)
+    expect(s1.turns.get(T1)?.phase.kind).toBe('live')
+    const s2 = reduce(s1, {
+      type: 'stream',
+      turnID: T1,
+      seq: 6 as never,
+      content: '流式后半（打字机继续）',
+      reasoning: undefined,
+      streamingTools: undefined,
+      genui: undefined,
+    })
+    const t = s2.turns.get(T1)
+    if (t?.phase.kind === 'live') expect(t.phase.data.content).toBe('流式后半（打字机继续）')
+    else throw new Error('live turn died across history_replaced')
+  })
+
+  it('REPRO: turn 已绑定乐观 user 后,user_echo(同 request) 不得再产生 pending 行（双 user 行+双思考中）', () => {
+    // 真实发送时序：user_sent(乐观 R) → turn_started(R 绑定进 turn1.user) → user_echo(同 R)。
+    // 漏洞：user_echo 到达时 turn1.user 已非 null → 不入 turn，反被追加进 pendingUsers
+    // → deriveRows 输出两条 user（turn1.user + pending echo）→ 双 user 行 + 双思考中。
+    const opt = { id: 'opt-1', content: '用户消息', isNotification: false, queued: false, sending: false, requestID: 'req-1' }
+    const s = run([
+      { type: 'user_sent', row: { ...opt, content: '用户消息' as never, timestamp: 't', turnHint: undefined, dbID: undefined } },
+      started(T1, 'req-1'), // requestID 绑定到 turn1.user，pending 移除
+      iteration1(T1, '流式中'), // 思考中（thinking live）
+    ]) as ChatState
+    // 乐观已绑定：turn1.user 就位、pending 空。
+    expect(s.turns.get(T1)?.user?.requestID ?? null).toBe('req-1')
+    expect(s.pendingUsers).toHaveLength(0)
+    // user_echo：同 requestID、turnHint 指向已绑定 turn —— 不应再产生第二行。
+    const s2 = reduce(s, {
+      type: 'user_echo',
+      row: {
+        id: 'echo-1', content: '用户消息' as never, timestamp: 't',
+        isNotification: false, queued: false, sending: false,
+        requestID: 'req-1', turnHint: 1, dbID: undefined,
+      } ,
+    })
+    const userRows = deriveRows(s2).filter((r) => r.kind === 'user')
+    // 修复后：同一条 user 恰好一行（turn 内已绑定，echo 幂等去重）。
+    expect(userRows).toHaveLength(1)
+    expect(s2.pendingUsers).toHaveLength(0)
+    // 渲染顺序：user 在 live(思考中) 之前、无 pending 底部幽灵。
+    const idxUser = deriveRows(s2).findIndex((r) => r.kind === 'user')
+    const idxLive = deriveRows(s2).findIndex((r) => r.kind === 'live')
+    expect(idxUser).toBeGreaterThanOrEqual(0)
+    expect(idxUser).toBeLessThan(idxLive)
+    expect(deriveRows(s2)).toHaveLength(2) // user + live assistant
+  })
+
+  it('REPRO: 后端真实字段(id)的 user_echo 经 normalizeEvent —— requestID 必须解析非 null（字段名不匹配 = 双行根因）', () => {
+    // 后端 web_inbound.go 把 requestID 序列化到 WSMessage.ID（json:"id"），不带
+    // request_id 字段。normalizeUserEcho 旧代码只读 env.request_id → 永远 null →
+    // 幂等检查全部跳过 → echo 无条件追加 pendingUsers → 双 user 行 + 双思考中
+    //（第二个思考中是 busy placeholder，px-3 缩进多空格 —— 用户报告）。
+    // 兜底失效场景（"概率很低"）：REST ack 先到把 MessageStore 行标 persisted →
+    // useChatMessages 的 echo 处理跳过 → history_replaced 不触发 → 状态机 echo 残留。
+    const raw = {
+      type: 'user_echo',
+      id: 'req-9',
+      content: '用户消息',
+      ts: 1723600000,
+      turn_id: 3,
+      chat_id: 'chat-1',
+    }
+    const evs = normalizeEvent(raw, 'chat-1')
+    expect(evs).not.toBeNull()
+    expect(evs).toHaveLength(1)
+    const ev = evs![0] as { type: string; row: { requestID: string | null; turnHint: number | undefined } }
+    expect(ev.type).toBe('user_echo')
+    // requestID 必须从后端的 id 字段解析出来 —— 这是幂等去重的前提。
+    expect(ev.row.requestID).toBe('req-9')
+    expect(ev.row.turnHint).toBe(3)
+  })
+
+  it('REPRO: REST ack 先到竞态 —— 真实字段 echo(id) 不产生第二行（双 user+双思考中根治）', () => {
+    // 完整时序（用户偶发场景）：user_sent → REST ack（turnHint 回填）→
+    // turn_started 绑定 → user_echo（后端 id 字段）→ 幂等，绝不双行。
+    const s0 = run([
+      { type: 'user_sent', row: { id: 'opt-1', content: '用户消息' as never, timestamp: 't', isNotification: false, queued: false, sending: false, requestID: 'req-9', turnHint: undefined, dbID: undefined } },
+      { type: 'user_ack', requestID: 'req-9', dbID: 0, turnHint: 3, queued: false },
+    ])
+    const evs = normalizeEvent({
+      type: 'user_echo', id: 'req-9', content: '用户消息', ts: 1723600000, turn_id: 3, chat_id: 'chat-1',
+    }, 'chat-1')!
+    // echo 先于 turn_started 到达（SSE 与 dequeue 竞态）→ ②替换 pending 乐观行（不新增）。
+    const s1 = evs.reduce(reduce, s0)
+    expect(s1.pendingUsers).toHaveLength(1)
+    // turn_started(R) 绑定 → pending 清空。
+    const s2 = run([started(turnID(3), 'req-9'), iteration1(turnID(3), '思考中')], s1)
+    expect(s2.pendingUsers).toHaveLength(0)
+    // 迟到的重复 echo（重连 replay）→ ①幂等返回。
+    const s3 = evs.reduce(reduce, s2)
+    expect(deriveRows(s3).filter((r) => r.kind === 'user')).toHaveLength(1)
+    expect(deriveRows(s3)).toHaveLength(2) // user + live(思考中)，无第二份
+  })
+
+  it('REPRO: 发新消息后上一 turn 最后迭代消失 —— 过时 DB 中间快照不得覆盖状态机 committed', () => {
+    // 场景：turn 1 已完成（状态机 committed：iterations=[1,2] 全量，text='最终回复'）。
+    // chat.messages 里的 turn 1 DB 行是【过时中间快照】（reload/replay_gap 在 turn
+    // 运行中拉过一次，DB 只有中间行 iterations=[1]；或最终行尚未持久化）。
+    // 发新消息 → REST ack patchUser → messages 变化 → history_replaced 携带过时
+    // 快照 → step1 else 分支用 incoming 覆盖 committed → 迭代 2 丢失（用户报告：
+    // "发送新消息之后上一个 agent turn 最后一条迭代消息直接消失"）。
+    const iterEv = (turn: ReturnType<typeof turnID>, iter: number, content: string): DomainEvent => ({
+      type: 'iteration', turnID: turn, iter: iterNum(iter), seq: (10 + iter) as never,
+      content: undefined, reasoning: undefined, activeTools: [], completedTools: [],
+      iterationsDelta: [{ iteration: iter, content, reasoning: '', tools: [], toolCount: 0 }],
+      todos: undefined, subAgents: undefined, tokenUsage: undefined,
+    })
+    const s0 = run([
+      started(T1),
+      iterEv(T1, 1, '迭代1内容'),
+      iterEv(T1, 2, '迭代2内容（最后迭代）'),
+      textFinal(T1, '最终回复'),
+    ])
+    expect(s0.turns.get(T1)?.phase.kind).toBe('committed')
+    const phase0 = s0.turns.get(T1)!.phase
+    if (phase0.kind !== 'committed') throw new Error('turn 1 must be committed')
+    expect(phase0.payload.iterations).toHaveLength(2)
+    // DB 过时中间快照：只有迭代 1（最终迭代 2 的行尚未持久化），非空壳。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [{
+        id: T1,
+        user: { id: 'db-u1', content: 'q1' as never, timestamp: 't', isNotification: false, queued: false, sending: false, requestID: null, turnHint: undefined, dbID: 11 },
+        phase: {
+          kind: 'committed',
+          payload: {
+            via: 'fold',
+            iterations: [{ iteration: 1, content: '迭代1内容', reasoning: '', tools: [], toolCount: 0 }] as never,
+            content: '',
+          },
+        },
+        requestID: null,
+      }],
+      active: null,
+      lastSeq: null, todos: [],
+    })
+    const t1 = s1.turns.get(T1)
+    if (t1?.phase.kind !== 'committed') throw new Error('turn 1 must stay committed')
+    // 修复后：迭代 union —— 最后迭代 2 必须保留（append-only，DB 快照落后不减数据）。
+    expect(t1.phase.payload.iterations.map((it) => it.iteration)).toEqual([1, 2])
+    expect(t1.phase.payload.iterations[1].content).toBe('最终回复')
+    // text 的最终回复不丢（incoming 空 content 不得清空已有）。
+    if (t1.phase.payload.via === 'text') expect(t1.phase.payload.content).toBe('最终回复')
+    const rows = deriveRows(s1)
+    expect(rows.filter((r) => r.kind === 'committed')[0]?.iterations).toHaveLength(2)
+  })
+
+  it('history_replaced hydration：ev.active 创建 live turn（刷新恢复 in-flight）', () => {
+    const s = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [],
+      active: {
+        turnID: turnID(7),
+        snapshot: {
+          iter: iterNum(2),
+          streaming: true,
+          content: '刷新前流到一半的内容',
+          reasoning: '',
+          iterations: [{ iteration: 1, content: '已完成迭代', reasoning: '', tools: [], toolCount: 0 }],
+          activeTools: [],
+          streamingTools: [],
+          genui: '',
+          subAgents: [],
+          todos: [],
+          tokenUsage: null,
+        },
+      },
+      lastSeq: null, todos: [],
+    })
+    expect(s.activeTurn).toBe(turnID(7))
+    const t = s.turns.get(turnID(7))
+    if (t?.phase.kind !== 'live') throw new Error('hydration must create a live turn')
+    expect(t.phase.data.content).toBe('刷新前流到一半的内容')
+    // 后续 stream 事件继续喂养（恢复后打字机继续）。
+    const s2 = reduce(s, {
+      type: 'stream',
+      turnID: turnID(7),
+      seq: null,
+      content: '恢复后的流式内容',
+      reasoning: undefined,
+      streamingTools: undefined,
+      genui: undefined,
+    })
+    const t2 = s2.turns.get(turnID(7))
+    if (t2?.phase.kind === 'live') expect(t2.phase.data.content).toBe('恢复后的流式内容')
+    else throw new Error('hydrated live turn must accept stream events')
+  })
+})

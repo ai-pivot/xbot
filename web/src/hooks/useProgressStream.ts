@@ -239,6 +239,15 @@ export function useProgressStream({
       finalizedRef.current = false
       phaseDoneRef.current = false
       turnCommittedRef.current = false
+      // ⚠️ 必须重置 finalizedTurnIDRef —— turn_id 是【每会话独立】计数器
+      // （agent.go ss.turnIDSeq，DB 恢复）。会话 A 的 turn_id 可能已到 50，
+      // 切到会话 B（turn_id 从 1 开始）后若不重置，残留 50 会让会话 B 的
+      // 所有事件（turn_id <= 50）被 stream_content/progress_structured 分支
+      // 的 finalizedTurnID 检查无条件丢弃 → SSE 持续到达但前端永不更新
+      // （用户报告："切换会话后卡死，dev tool SSE 一直更新进度，思考内容
+      // 输出一半后卡死。gap 检测不生效"——事件根本没进 store，迭代号从不
+      // 前进，gap 永不触发）。
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = 0
     }
   }, [chatID, store])
 
@@ -310,6 +319,10 @@ export function useProgressStream({
       // can be stale and re-render wrong progress (user report: "全是缓存的错误"
       // — 思考中卡死、进度跳变). Always full-reset and let hydration restore.
       store.fullReset()
+      // ⚠️ 必须重置 finalizedTurnIDRef（同 useEffect 的 chatID 分支）：turn_id
+      // 每会话独立，旧会话残留的 turn_id 会拦截新会话所有事件（SSE 更新但
+      // 前端卡死）。
+      if (finalizedTurnIDRef) finalizedTurnIDRef.current = 0
     } else {
       // CRITICAL: NEVER wipe a turn that is actively streaming. This branch
       // fires when `disabled` toggles (SSE subscription/connection state flips)
@@ -471,6 +484,23 @@ export function useProgressStream({
     }
   }, [store, initialProgress, disabled, progressCacheKey, messageStore])
 
+  // V3: historyReady false→true 时补写 gate 期间被丢弃的 live（缓冲回放）。
+  // historyReady gate（writeLiveToMessageStore 开头 return）丢弃的是 MessageStore
+  // 写入；ProgressStore 一直累积。若 turn 在 fetch 后、ready 前开始且
+  // active_progress=null（hydration 无兜底），gate 期间到达的早期迭代是增量
+  // delta —— 丢弃后无其他来源可补（onIterationGap 只查内部 gap，不覆盖
+  // "从未收到"）。ready 后立即用 ProgressStore 当前快照同步一次 MessageStore
+  // （等效 hydration），早期迭代不丢失。仅当 MessageStore 尚无该 turn 的 live
+  // 时补写（有 live = 后续 SSE 已接管，快照可能滞后，不能覆盖）。
+  useEffect(() => {
+    if (!historyReady || !messageStore || disabled) return
+    if (store.lastTurnID <= 0) return
+    const cur = store.dumpFullState().current
+    if (!hasVisibleProgress(cur)) return
+    if (messageStore.hasLive(store.lastTurnID)) return
+    writeLiveToMessageStore(messageStore, store, { turn_id: store.lastTurnID, seq: cur.eventSeq }, true)
+  }, [historyReady, messageStore, disabled])
+
   // Dispose on unmount.
   useEffect(() => {
     return () => {
@@ -566,6 +596,14 @@ export function useProgressStream({
       // freeze()-induced flicker; that is obsolete since f4c43a45 — the
       // frozen-phase null check in liveMessage was removed, and reset()
       // inside flushSync renders committed + cleared-live atomically.
+      // ⚠️ ALWAYS reset here, even for a frozen (cancelled) store: the frozen
+      // content is committed BEFORE this callback runs (commitLiveProgressAndReset
+      // folds the frozen in-flight iteration into the committed message), so
+      // the frozen snapshot is NOT the only copy of the data anymore. Keeping
+      // it would leak the previous turn's iterations into the NEXT turn's live
+      // (user report: 发新消息后上个 turn 的 agent 迭代在新 user msg 后重复
+      // 渲染 —— resetProgress frozen 检查导致 ProgressStore 残留 frozen 状态，
+      // turn N+1 的 live 渲染了 turn N 的迭代).
       store.reset()
     },
   }
@@ -594,6 +632,20 @@ export function hasVisibleProgress(snap: ProgressSnapshot): boolean {
       snap.lastReasoning ||
       snap.subAgents.length,
   )
+}
+
+// dedupToolsByName removes duplicate tools (by name) from an array — used when
+// folding the frozen/cancelled iteration's tools from multiple live arrays
+// (activeTools ∪ completedTools ∪ streamingTools may overlap).
+function dedupToolsByName(tools: WebToolProgress[]): WebToolProgress[] {
+  const seen = new Set<string>()
+  const out: WebToolProgress[] = []
+  for (const t of tools) {
+    if (!t || !t.name || seen.has(t.name)) continue
+    seen.add(t.name)
+    out.push(t)
+  }
+  return out
 }
 
 /**
@@ -661,12 +713,45 @@ function commitLiveProgressAndReset(
     if (text || iters.length > 0) {
       let commitText = text
       let commitIters = iters
-      if (snap.phase === 'frozen' && text && iters.length === 0) {
+      // ── FROZEN (cancelled turn) — fold the in-flight iteration (k+1) into a
+      // COMPLETE new entry. It is NOT in iterationHistory (it only lives in the
+      // live snapshot: content/reasoning + tools — freeze() marks the tools
+      // error, so the running/generating filter above never catches them).
+      // Without this the committed message drops the latest iteration entirely
+      // (user report: cancel 后发新 user msg 最新 iter 瞬间消失).
+      if (snap.phase === 'frozen') {
+        const maxIter = commitIters.reduce((m, it) => Math.max(m, it.iteration), 0)
+        const inFlightTools: WebToolProgress[] = dedupToolsByName([
+          ...snap.activeTools,
+          ...snap.completedTools,
+          ...snap.streamingTools,
+        ])
+        commitIters = [
+          ...commitIters,
+          {
+            iteration: maxIter + 1,
+            content: text,
+            reasoning: liveReasoning,
+            tools: inFlightTools,
+            toolCount: inFlightTools.length,
+          },
+        ]
+        commitText = ''
+      } else if (text && commitIters.length === 0) {
+        // v55 rendering: when a message HAS iterations, the top-level content is
+        // NOT rendered — content must live inside an iteration. This is the
+        // fallback for turn_started-lost commits AND the AskUser WaitingUser
+        // case: there iterationHistory is EMPTY (no next iteration triggered
+        // attachIterationDelta, so the completed iteration's delta never reached
+        // the frontend) — the iteration's text/reasoning live only in
+        // snap.content / snap.reasoning and MUST be folded here or they vanish
+        // after the turn commits (user report: "askuser 渲染后迭代的 content 和
+        // reasoning 消失").
         commitIters = [{ iteration: 1, content: text, reasoning: liveReasoning, tools: [], toolCount: 0 }]
         commitText = ''
-      } else if (snap.phase === 'frozen' && text && iters.length > 0 && !iters[iters.length - 1].content) {
-        commitIters = iters.map((it, i) =>
-          i === iters.length - 1 ? { ...it, content: text } : it
+      } else if (text && commitIters.length > 0 && !commitIters[commitIters.length - 1].content) {
+        commitIters = commitIters.map((it, i) =>
+          i === commitIters.length - 1 ? { ...it, content: text } : it
         )
         commitText = ''
       }
@@ -774,22 +859,6 @@ function handleProgressMessage(
 ): void {
   switch (msg.type) {
     case 'stream_content': {
-      // If the turn is already finalized (cancel ack or text event arrived),
-      // discard late stream_content — it reopens the store and re-displays
-      // generating tools / streaming text that the user already saw cancelled.
-      if (finalizedRef?.current) return
-      // If PhaseDone already fired, the turn is ending — the text event or
-      // cancel ack will arrive next with the final content. Late stream_content
-      // is stale and would re-set streamingTools, causing iteration duplication
-      // (the generating tool renders alongside the same iteration's "done" entry
-      // in iterationHistory).
-      if (phaseDoneRef?.current) return
-
-      // New turn's first stream event — clear turnCommittedRef (set by
-      // turn_started when it committed old turn's live content). This
-      // unblocks initialProgress hydration for future reloads.
-      if (turnCommittedRef) turnCommittedRef.current = false
-
       // stream_content carries content deltas in progress.stream_content /
       // progress.reasoning_stream_content (channel/web/web.go SendStreamContent).
       // Also carries streaming_tools (generating status, for tool name detection).
@@ -806,6 +875,27 @@ function handleProgressMessage(
       if (finalizedTurn > 0 && streamTurnID > 0 && streamTurnID <= finalizedTurn) {
         return
       }
+
+      // If the turn is already finalized (cancel ack or text event arrived),
+      // discard late stream_content — it reopens the store and re-displays
+      // generating tools / streaming text that the user already saw cancelled.
+      // MUST be AFTER the turn_id check: cancel ack 设置 finalizedRef=true 后，
+      // 若 turn_started 丢失（SSE gap），新 turn（turn_id > finalizedTurn）的
+      // stream_content 必须放行 —— 否则前端进度卡死（用户报告："sse在dev tool里
+      // 显示一直更新，但是web前端进度卡死"）。只有 turn_id=0（无归属）或旧 turn
+      // （已被上面 turn_id 检查拦截）才受 finalized/phaseDone 限制。
+      if (finalizedRef?.current && streamTurnID === 0) return
+      // If PhaseDone already fired, the turn is ending — the text event or
+      // cancel ack will arrive next with the final content. Late stream_content
+      // is stale and would re-set streamingTools, causing iteration duplication
+      // (the generating tool renders alongside the same iteration's "done" entry
+      // in iterationHistory). 同样只在 turn_id=0 时生效（新 turn 放行）。
+      if (phaseDoneRef?.current && streamTurnID === 0) return
+
+      // New turn's first stream event — clear turnCommittedRef (set by
+      // turn_started when it committed old turn's live content). This
+      // unblocks initialProgress hydration for future reloads.
+      if (turnCommittedRef) turnCommittedRef.current = false
 
       // Set cumulative text (stream-only, does not replace the snapshot).
       // Delta pushes (bandwidth optimization: O(n) total per iteration)
@@ -930,20 +1020,33 @@ function handleProgressMessage(
           // If it does, commitLiveProgressAndReset will call onAssistantComplete
           // → resetProgress → finalizedRef = true.
           const hadVisibleProgress = hasVisibleProgress(store.getSnapshot())
-          // Commit any uncommitted live content from the previous turn, then
-          // reset. Unconditional commit (the helper no-ops on an empty store):
-          // a store with visible content is by definition un-finalized — the
-          // text event (the authoritative finalizer) resets it on arrival. If
-          // the text event was lost (SSE coalescing/disconnect), the live
-          // content is the ONLY display of the old turn's reply; committing it
-          // before the reset keeps it visible at the same position (no flicker,
-          // no data loss) instead of vanishing in one frame.
+          // Capture whether the store's live has SUBSTANTIVE content (text /
+          // streamContent / content) BEFORE the commit. This distinguishes
+          // two cases:
+          //   1. store has content (streaming reply arrived) → commit is
+          //      COMPLETE → finalizedTurnIDRef can be set → a late text for
+          //      this turn is a DUPLICATE and is dropped.
+          //   2. store has iterations/tools but NO content (v55: the final
+          //      reply lives ONLY in the text event's content/progress_history,
+          //      and that text is LATE — SSE lag/coalescing) → commit is
+          //      INCOMPLETE → finalizedTurnIDRef must NOT be set → the late
+          //      text is the AUTHORITATIVE finalizer and must be allowed to
+          //      commit (MessageStore.commitAssistant idempotently overwrites
+          //      the slot by turnID — no duplicate row).
+          // Without case 2, sending a new user msg after a turn whose text
+          // arrived late permanently loses the last iteration's content
+          // (user report: "发送 user msg 之后，上一个 agent turn 最后一个迭代
+          // 的 content 消失，刷新后正常" — refresh recovers from DB).
+          const snapBefore = store.getSnapshot()
+          const hadSubstantiveContent = !!snapBefore.streamContent || !!snapBefore.content
           commitLiveProgressAndReset(store, completeRef?.current, messageStore)
           store.lastIter = 0
           // 旧 turn（lastTurnID，turn_started 尚未更新）的 live 已 commit（finalize）。
           // 记录 finalizedTurnID：旧 turn 的迟到 text/progress_structured 据此丢弃
           // （防重复），新 turn（turn_id 更大）放行。
-          if (finalizedTurnIDRef && store.lastTurnID > 0) {
+          // ⚠️ 只在 commit 内容【完整】（store 有实质 content）时设置 —— 否则
+          // 迟到 text（权威 finalizer）会被拦截，最后迭代 content 永久丢失。
+          if (finalizedTurnIDRef && store.lastTurnID > 0 && hadSubstantiveContent) {
             finalizedTurnIDRef.current = store.lastTurnID
           }
           // turn_started 是权威的新 turn 边界：无条件重置 finalizedRef=false，
@@ -974,8 +1077,14 @@ function handleProgressMessage(
         if (p.turn_id) {
           turnStartedRef?.current?.(p.turn_id, ts?.trigger ?? 'user')
           store.lastTurnID = p.turn_id
-          // MessageStore：新 turn 开始（AskUser resume 保留 iterations）
-          messageStore?.beginTurn(p.turn_id, { resume: ts?.trigger === 'resume' })
+          // MessageStore：新 turn 开始（AskUser resume 保留 iterations）。
+          // V2：传 TurnStartInfo.RequestID（JSON tag `request_id`，protocol/
+          // events.go:155）—— beginTurn 的 bindUser 按 requestID 精确绑定乐观
+          // user（快速连发 + REST 慢不绑错）。
+          messageStore?.beginTurn(p.turn_id, {
+            resume: ts?.trigger === 'resume',
+            requestID: ts?.request_id,
+          })
         }
         // Reset phaseDone guard for the new turn. finalizedRef was already
         // handled above (kept true if commit happened, reset to false otherwise).
@@ -1009,6 +1118,18 @@ function handleProgressMessage(
           return
         }
         if (phaseDoneRef) phaseDoneRef.current = true
+        // PhaseDone 是 turn 结束的权威信号：记录当前 turn 为 finalized，让同 turn
+        // 的迟到 progress_structured（turn_id <= finalizedTurnID）被上面 guard 的
+        // turn_id 检查拦截（防 busy ghost），同时新 turn（turn_id 更大）放行。
+        // 若只设 phaseDoneRef 不设 finalizedTurnIDRef，同 turn 迟到事件（turn_id
+        // > 0）会绕过 turn_id 检查、被 phaseDoneRef guard 无条件拦截（旧行为）
+        // —— 但 cancel 场景下 phaseDoneRef 可能由 cancel ack 设置而 turn 未真正
+        // done，导致新 turn 事件也被拦（SSE 卡死）。设置 finalizedTurnIDRef 让
+        // turn_id 检查成为第一道闸（精确区分新旧 turn），phaseDoneRef 只兜底
+        // turn_id=0 的事件。
+        if (finalizedTurnIDRef && (p.turn_id ?? store.lastTurnID) > 0) {
+          finalizedTurnIDRef.current = p.turn_id ?? store.lastTurnID
+        }
         // Dispatch agent-idle so the sidebar clears the busy indicator.
         window.dispatchEvent(new CustomEvent('agent-idle', {
           detail: { chatID: p.chat_id ?? undefined, channel: undefined },
@@ -1053,6 +1174,35 @@ function handleProgressMessage(
         if (doneTodos !== undefined) {
           store.setStructuredTools({ eventSeq: typeof p.seq === 'number' ? p.seq : undefined, todos: doneTodos })
         }
+        // ⚠️ PhaseDone 必须把后端附带的 iteration_history（最后一个迭代快照）
+        // 写入 store —— 否则最后 iter 消失再出现（闪烁）：
+        //   · attachIterationDelta 只在【推进到下一迭代】时记录前一个迭代；
+        //     最后一个迭代没有"下一迭代"，从不通过普通事件进入 history。
+        //   · 后端在 PhaseDone 时 recordFinalIteration 补记并 attach 到
+        //     p.iteration_history（engine_wire.go:1908-1918）。
+        //   · 若不传入，最后迭代从未进入 store.iterationHistory → live 消失；
+        //     text 事件才从 progress_history 重建 → 闪烁（用户报告："最后一个
+        //     iter 结束之后消失再出现造成闪烁，iter 产生了就不要消失"）。
+        // ⚠️⚠️ 必须走 normalizeWebIteration（与普通结构化事件 line 1271 一致）：
+        //   后端 Go nil slice 序列化为 JSON null（tools/todos 可能为 null）。
+        //   raw 直塞 store（`as WebIteration[]` 类型断言骗过 tsc）会让渲染层
+        //   `.tools.map()` 抛 TypeError → React 整树卸载 → 整个页面 DOM 消失
+        //   （用户报告："cancel 或 turn 结束，整个 web 页面所有 dom 消失"）。
+        if (Array.isArray(p.iteration_history) && p.iteration_history.length > 0) {
+          const doneIterHistory = p.iteration_history
+            .map(normalizeWebIteration)
+            .filter(Boolean) as WebIteration[]
+          if (doneIterHistory.length > 0) {
+            store.setStructuredTools({
+              eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
+              iterationHistory: doneIterHistory,
+            })
+            // 同步 MessageStore live（方案 A Step 3）—— 普通结构化事件在事件末尾
+            // 调 writeLiveToMessageStore，PhaseDone 分支若不同步，最后迭代只存在于
+            // ProgressStore，MessageStore 的 live 行缺它 → 渲染消失 → 闪烁。
+            writeLiveToMessageStore(messageStore, store, p, historyReady)
+          }
+        }
         return
       }
       // Do NOT reset finalizedRef here. A non-done structured event may be a
@@ -1087,7 +1237,13 @@ function handleProgressMessage(
         // 与 stream_content 分支的 `if (phaseDoneRef?.current) return` 保持一致：
         // PhaseDone 之后的合法事件只有 text（final reply）/ cancel ack /
         // session(idle)，任何 progress_structured 都是迟到重放。
-        if (phaseDoneRef?.current) {
+        // ⚠️ 必须带 evTurnID===0 条件：cancel ack 设置 phaseDoneRef=true 后，
+        // 若 turn_started 丢失（SSE gap），新 turn（evTurnID > finalizedTurn，
+        // 已在上面通过 finalizedTurnID 检查）的 progress_structured 必须放行
+        // —— 否则新 turn 的迭代/工具永不渲染（用户报告："sse在dev tool里显示
+        // 一直更新，但是web前端进度卡死"）。只有 turn_id=0（无归属）的迟到
+        // 事件才受 phaseDoneRef 限制。
+        if (phaseDoneRef?.current && evTurnID === 0) {
           if (Array.isArray(p.todos)) {
             store.setStructuredTools({
               eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
@@ -1237,9 +1393,14 @@ function handleProgressMessage(
           commitLiveProgressAndReset(store, completeRef?.current, messageStore)
         }
         store.lastTurnID = p.turn_id
-        // NO optimistic user messages: user rows come from backend user_echo
-        // with authoritative turn_id. turn_started only needs to notify the
-        // panel (typing/active-turn state) — nothing to bind.
+        // V4: turn_started 丢失时必须补 messageStore.beginTurn —— 否则乐观 user
+        // 永不绑定（保持 turnID=0 → sortKey 归 MAX_SAFE_INTEGER 渲染到底部，而
+        // 该 turn 的 assistant 行按真实 turnID 排中间 → user 出现在 assistant
+        // 之后，违反 R2）。beginTurn 内部 commitStaleLives 已跳过已被 commit 的
+        // 旧 turn（commitLiveProgressAndReset 清掉了非 frozen live），安全幂等。
+        // 无 ts（turn_started 丢失）→ 无法取 requestID → beginTurn 走 last-pending
+        // fallback（与 turn_started 分支语义一致，绑定触发本 turn 的乐观 user）。
+        messageStore?.beginTurn(p.turn_id)
         if (turnStartedRef?.current) {
           turnStartedRef.current(p.turn_id, 'user')
         }
@@ -1372,6 +1533,11 @@ function handleProgressMessage(
       // turn_id exists anywhere (bang/slash commands), but falls back to
       // metadata.turn_id for the final reply (whose top-level turn_id is absent).
       const commitTurnID = effTextTurnID > 0 ? effTextTurnID : undefined
+      // 旧 turn（turn_id <= finalizedTurnID）的迟到 text 丢弃（防重复）。
+      // 是否拦截由 finalizedTurnIDRef 决定：turn_started 提前 commit 时只在
+      // commit 内容【完整】（store 有 content）才设 finalizedTurnIDRef ——
+      // 完整 commit 后迟到 text 是重复；不完整（content 空，权威值还在迟到
+      // text 里）不设，放行幂等覆盖（见 turn_started 分支）。
       if (effTextTurnID > 0 && finalizedTurnID > 0 && effTextTurnID <= finalizedTurnID) return
       if (finalizedRef?.current && effTextTurnID === 0) return
       if (finalizedRef) finalizedRef.current = true

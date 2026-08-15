@@ -13,6 +13,10 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: false,
+      // SW 文件名带版本：sw.js 曾被 server 无 Cache-Control地下发，浏览器
+      // heuristic 缓存了旧 SW（24h fresh）→ 更新检查永不回源 → 新 SW 永不
+      // 安装 → 用户永远跑旧 bundle。换 URL 绕开污染缓存（server 现已 no-store）。
+      filename: 'sw2.js',
       includeAssets: ['favicon-48.png', 'icons.svg', 'apple-touch-icon.png', 'pwa-192.png', 'pwa-512.png'],
       manifest: {
         name: 'xbot',

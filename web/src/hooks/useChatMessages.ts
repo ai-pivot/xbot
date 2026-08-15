@@ -55,7 +55,11 @@ interface UseChatMessagesOptions {
   /** Full persisted agent tenant chatID for historical SubAgent tabs. */
   agentChatID?: string
   /** Called when a message is successfully sent (for optimistic busy trigger). */
-  onSendSuccess?: () => void
+  /** REST 发送成功。携带 requestID + 服务端响应（turn_id/queued）供调用方
+   *  ack 状态机乐观行（清 sending —— 成功即非发送中）。 */
+  onSendSuccess?: (info?: { requestID: string; turnID?: number; queued?: boolean }) => void
+  /** REST 发送失败（乐观行需移除）。 */
+  onSendFail?: (requestID: string) => void
   /** Called when cancel is successfully sent (for optimistic idle trigger). */
   onCancelSuccess?: () => void
   /** 外部共享 MessageStore（方案 A Step 3：与 useProgressStream 共享同一实例）。
@@ -82,7 +86,7 @@ export interface UseChatMessagesResult {
    *  from them. */
   reload: () => Promise<ChatMessage[] | null>
   /** Send a user message (+ optional uploaded file references). */
-  sendMessage: (content: string, attachments?: Attachments) => void
+  sendMessage: (content: string, attachments?: Attachments, requestID?: string) => void
   /** Cancel the running agent (sends a `cancel` WS message). */
   cancel: () => void
   /** True while cancel is in flight (shows spinner on cancel button). */
@@ -184,7 +188,12 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       displayOnly: false,
       persisted: true,
       eventSeq: m.seq,
-      dbID: m.id,
+      // dbID fallback：真实 DB 消息有 id（auto-increment）。E2E mock / 旧格式
+      // 消息可能没有 id —— 用 index+1 生成 synthetic dbID，使 historyToReplaced
+      // 的 dbID===undefined 过滤（防乐观/echo 副本双渲染）不会误杀 DB 历史。
+      // 乐观/echo 副本不经过 parseHistoryMessages（store.setUser 直接写入），
+      // 仍 dbID=undefined 被过滤 —— 不重新引入双行 bug。
+      dbID: m.id ?? (i + 1),
     })
   }
 
@@ -280,6 +289,7 @@ export function useChatMessages({
   parentChatID,
   agentChatID,
   onSendSuccess,
+  onSendFail,
   onCancelSuccess,
   messageStore,
 }: UseChatMessagesOptions): UseChatMessagesResult {
@@ -647,10 +657,13 @@ export function useChatMessages({
   }, [ws, chatID, channel, activeMessageCacheKey, liveEventsEnabled])
 
   const sendMessage = useCallback(
-    (content: string, attachments?: Attachments) => {
+    (content: string, attachments?: Attachments, requestID?: string) => {
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
-      const requestID = newMessageRequestID()
+      // 注入的 requestID（AgentPanel 经 agentChat.sendUser 生成的乐观行 ID）：
+      // REST 请求 id = 状态机 pendingUser.requestID → user_echo/turn_started
+      // 按 requestID 精确去重/绑定（否则两套 id 并存 → 双行）。
+      const rid = requestID ?? newMessageRequestID()
       // Optimistic rendering: show the user message immediately.
       // No "sending" spinner — the REST response is typically <200ms, and
       // the spinner's height change (appear → disappear) causes the user
@@ -671,7 +684,7 @@ export function useChatMessages({
           isPartial: false,
           turnID: 0,
           persisted: false,
-          requestID,
+          requestID: rid,
           sending: true,
         }
         messageMutationGenRef.current += 1
@@ -686,7 +699,7 @@ export function useChatMessages({
       }
       void ws.send({
         type: 'message',
-        id: requestID,
+        id: rid,
         channel,
         chat_id: chatIDRef.current ?? undefined,
         content: text,
@@ -704,7 +717,7 @@ export function useChatMessages({
           // Two renders with different scroll heights = visible jitter.
           // Calling onSendSuccess first lets both updates land in the same
           // React batch (React 18 automatic batching for promises).
-          onSendSuccess?.()
+          onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true })
           if (optimisticID && resp) {
             const sentID = optimisticID
             const respTurnID = resp.turn_id
@@ -732,6 +745,8 @@ export function useChatMessages({
             store.removeById(failedID)
             syncMessages()
           }
+          // 状态机乐观行同步移除。
+          onSendFail?.(rid)
           toast.error(error instanceof Error ? error.message : 'message send failed')
         })
     },

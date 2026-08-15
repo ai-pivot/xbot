@@ -23,7 +23,7 @@
  */
 import { createElement, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { setCwd } from '@/components/agent/api'
+import { getContextUsage, setCwd } from '@/components/agent/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { postAPI } from '@/lib/api'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
@@ -77,7 +77,7 @@ export interface SessionStore {
   setStatus: (selector: SessionSelector, status: SessionStatus) => void
   refresh: () => Promise<void>
   toggleStar: (id: string) => void
-  createSession: (label?: string, workPath?: string) => Promise<string | null>
+  createSession: (label?: string, workPath?: string, model?: string) => Promise<string | null>
   switchSession: (id: string, channel: string) => Promise<void>
   renameSession: (id: string, channel: string, label: string) => Promise<boolean>
   deleteSession: (id: string, channel: string) => Promise<boolean>
@@ -985,11 +985,25 @@ export function useSessionStoreImpl(): SessionStore {
   }, [])
 
   const createSession = useCallback(
-    async (label?: string, workPath?: string): Promise<string | null> => {
+    async (label?: string, workPath?: string, model?: string): Promise<string | null> => {
       let chatID: string
       let appliedWorkDir: string | undefined
       try {
-        const data = await postAPI<CreateChatResponse>('/api/chats/create', { label: label ?? '' })
+        // Default the new session's model to the current active session's model —
+        // new sessions inherit the model the user is currently using. An explicit
+        // model param wins; when neither is available the backend falls back to
+        // the Balance tier model.
+        let effectiveModel = model ?? ''
+        if (!effectiveModel && activeSessionRef.current) {
+          const cur = activeSessionRef.current
+          try {
+            const ctx = await getContextUsage(wsRef.current, cur.channel, cur.chatID)
+            if (ctx.model) effectiveModel = ctx.model
+          } catch {
+            // Non-fatal — the backend falls back to the Balance tier model.
+          }
+        }
+        const data = await postAPI<CreateChatResponse>('/api/chats/create', { label: label ?? '', model: effectiveModel })
         if (!data.chat_id) return null
         chatID = data.chat_id
       } catch {

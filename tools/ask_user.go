@@ -32,13 +32,15 @@ func (t *AskUserTool) Parameters() []llm.ToolParam {
 		{
 			Name:        "questions",
 			Type:        "array",
-			Description: `Array of questions to ask the user. Each item is an object with "question" (string, required, supports multi-line) and "options" (array of strings, optional) fields. Each question MUST be a separate array item — never merge multiple questions into one string. Example: [{"question":"Choose a theme","options":["dark","light"]},{"question":"Any other preferences?"}]`,
+			Description: `Array of questions to ask the user. Each item is an object with "question" (string, required, supports multi-line), "options" (array of strings, optional), "multi_select" (bool, optional — when true the user may pick MULTIPLE options), and "allow_other" (bool, optional — when true the user may type a custom answer instead of picking an option) fields. Each question MUST be a separate array item — never merge multiple questions into one string. Example: [{"question":"Choose a theme","options":["dark","light"]},{"question":"Any other preferences?"}]`,
 			Required:    true,
 			Items: &llm.ToolParamItems{
 				Type: "object",
 				Properties: map[string]any{
-					"question": map[string]any{"type": "string", "description": "The question to ask the user (supports multi-line)"},
-					"options":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional choices for multiple-choice questions"},
+					"question":     map[string]any{"type": "string", "description": "The question to ask the user (supports multi-line)"},
+					"options":      map[string]any{"type": "array", "items": map[string]string{"type": "string"}, "description": "Optional choices for multiple-choice questions"},
+					"multi_select": map[string]any{"type": "boolean", "description": "Optional: when true the user may select MULTIPLE options (default false = single choice)"},
+					"allow_other":  map[string]any{"type": "boolean", "description": "Optional: when true the user may type a custom free-text answer instead of picking one of the options (default false)"},
 				},
 				Required: []string{"question"},
 			},
@@ -51,8 +53,10 @@ type askUserArgs struct {
 }
 
 type askQItem struct {
-	Question string   `json:"question"`
-	Options  []string `json:"options,omitempty"`
+	Question    string   `json:"question"`
+	Options     []string `json:"options,omitempty"`
+	MultiSelect bool     `json:"multi_select,omitempty"`
+	AllowOther  bool     `json:"allow_other,omitempty"`
 }
 
 func (t *AskUserTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {

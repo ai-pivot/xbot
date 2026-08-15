@@ -30,6 +30,13 @@ type ToolProgress struct {
 	Args      string    `json:"args,omitempty"`
 	ToolHints string    `json:"tool_hints,omitempty"`
 	StartedAt time.Time `json:"started_at,omitempty"`
+	// UIMode is the tool's UI capability mode (from UIDecl, e.g. "genui").
+	// Populated by the engine from the tool's metadata so the frontend renders
+	// the tool's output via the fancy GenUI runtime — metadata-driven, never
+	// tool-name-driven (see docs/agent/genui-plugin-design.md §9).
+	UIMode string `json:"ui_mode,omitempty"`
+	// UILibs lists the global libraries the UI needs (echarts/three/motion).
+	UILibs []string `json:"ui_libs,omitempty"`
 	// GenChars is the accumulated argument character count for generating tools
 	// (Status="generating"). Populated from streaming tool call deltas — shows
 	// real-time progress of argument generation (e.g. "42 chars").
@@ -57,8 +64,10 @@ type TokenUsage struct {
 
 // AskUserQuestion represents a single question in the AskUser flow.
 type AskUserQuestion struct {
-	Question string   `json:"question"`
-	Options  []string `json:"options,omitempty"`
+	Question    string   `json:"question"`
+	Options     []string `json:"options,omitempty"`
+	MultiSelect bool     `json:"multi_select,omitempty"` // options may be multi-selected
+	AllowOther  bool     `json:"allow_other,omitempty"`  // free-text "other" input allowed alongside options
 }
 
 // ProgressEvent is the comprehensive structured progress payload.

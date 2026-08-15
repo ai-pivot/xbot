@@ -21,15 +21,28 @@ var dynamicContextRe = regexp.MustCompile(`\n?\n?<dynamic-context>[\s\S]*?</dyna
 type PersistenceBridge struct {
 	session            *session.TenantSession
 	lastPersistedCount int
+	// turnID is stamped onto incrementally-persisted messages (only when the
+	// message's own TurnID is 0). Without it, AskUser's WaitingUser path —
+	// which lacks a turn_id-stamped final assistant — leaves turn_id=0
+	// intermediate rows that deriveTurnIDs mis-attributes to the ANSWER turn,
+	// producing a forged assistant row before the answer user message.
+	turnID uint64
 }
 
 // NewPersistenceBridge creates a PersistenceBridge.
 // session may be nil (pure in-memory mode, no persistence).
 // initialCount is the number of messages already persisted (len(initialMessages)).
 func NewPersistenceBridge(sess *session.TenantSession, initialCount int) *PersistenceBridge {
+	return NewPersistenceBridgeWithTurnID(sess, initialCount, 0)
+}
+
+// NewPersistenceBridgeWithTurnID is NewPersistenceBridge plus a turn ID that is
+// stamped onto incrementally-persisted messages lacking their own TurnID.
+func NewPersistenceBridgeWithTurnID(sess *session.TenantSession, initialCount int, turnID uint64) *PersistenceBridge {
 	return &PersistenceBridge{
 		session:            sess,
 		lastPersistedCount: initialCount,
+		turnID:             turnID,
 	}
 }
 
@@ -83,6 +96,11 @@ func (b *PersistenceBridge) pendingMessages(messages []llm.ChatMessage) ([]llm.C
 			continue
 		}
 		persistMsg := msg
+		// Stamp the run's turn ID onto messages that lack their own — without
+		// this, AskUser's WaitingUser turn leaves turn_id=0 intermediate rows.
+		if b.turnID > 0 && persistMsg.TurnID == 0 {
+			persistMsg.TurnID = b.turnID
+		}
 		if strings.Contains(persistMsg.Content, "<system-reminder>") {
 			persistMsg.Content = stripSystemReminder(persistMsg.Content)
 		}

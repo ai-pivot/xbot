@@ -60,9 +60,9 @@ test.describe('Cancel + reconnect iteration bugs', () => {
     // Iteration 0: thinking
     await emitSSE(page, 'progress_structured', { type: 'progress_structured', progress: { phase: 'thinking', iteration: 0, seq: 2, turn_id: 1, chat_id: 'web:chat-1' } })
     // Iteration 0: tool running
-    await emitSSE(page, 'progress_structured', { type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 0, seq: 3, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Read', status: 'running', iteration: 0 }] } })
+    await emitSSE(page, 'progress_structured', { type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 0, seq: 3, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Read', status: 'running', iteration: 1 }] } })
     // Iteration 1: tool done (delta push iter 0)
-    await emitSSE(page, 'progress_structured', { type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 1, seq: 4, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Shell', status: 'running', iteration: 1 }], iteration_history: [{ iteration: 0, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'main.go' }] }] } })
+    await emitSSE(page, 'progress_structured', { type: 'progress_structured', progress: { phase: 'tool_exec', iteration: 1, seq: 4, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }], iteration_history: [{ iteration: 1, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'main.go' }] }] } })
     await page.waitForTimeout(200)
 
     // Verify iteration 0 visible (Read)
@@ -73,7 +73,7 @@ test.describe('Cancel + reconnect iteration bugs', () => {
     // Cancel ack (NO PhaseDone — cancel bypasses it)
     await emitSSE(page, 'text', {
       type: 'text', content: '', cancelled: true, seq: 5, turn_id: 1, chat_id: 'web:chat-1',
-      progress_history: JSON.stringify([{ iteration: 0, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'main.go' }] }, { iteration: 1, thinking: '', completed_tools: [], user_cancelled: true }]),
+      progress_history: JSON.stringify([{ iteration: 1, thinking: 'Reading file', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'main.go' }] }, { iteration: 2, thinking: '', completed_tools: [], user_cancelled: true }]),
     })
     await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
     await page.waitForTimeout(500)
@@ -86,13 +86,12 @@ test.describe('Cancel + reconnect iteration bugs', () => {
       const text = document.body.textContent || ''
       return text.includes('Read') && text.includes('Shell')
     })
-    console.log('After cancel - frozen content:', hasCommitted)
-    // User requirement: already-rendered content NEVER disappears after cancel.
-    // The cancel ack commits the frozen live content (progress_history →
-    // committed [interrupted] message with the same iterations), so Read + Shell
-    // remain visible. Frozen liveMessage renders until the committed message
-    // replaces it (buildMessageRows' hasCommitted/content-match check).
-    expect(hasCommitted).toBe(true)
+    console.log('After cancel - frozen content (folded):', hasCommitted)
+    // committed 行按用户偏好折叠（'all'，unmountOnClose）—— 展开折叠验证
+    // 迭代内容（Read + Shell 工具）保留不消失。
+    await page.locator('[data-role="assistant"] button:has-text("Processed")').first().click()
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Read', { timeout: 5000 })
+    await expect(page.locator('[data-role="assistant"]')).toContainText('Shell', { timeout: 5000 })
 
     await page.close()
   })
@@ -108,10 +107,10 @@ test.describe('Cancel + reconnect iteration bugs', () => {
     // Mock RPC: get_active_progress returns the snapshot
     const activeSnapshot = {
       phase: 'tool_exec', iteration: 1, seq: 10, turn_id: 1, chat_id: 'web:chat-1',
-      active_tools: [{ name: 'Shell', status: 'running', iteration: 1 }],
-      completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }],
+      active_tools: [{ name: 'Shell', status: 'running', iteration: 2 }],
+      completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }],
       iteration_history: [
-        { iteration: 0, thinking: 'Reading', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'file.go' }] },
+        { iteration: 1, thinking: 'Reading', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'file.go' }] },
       ],
     }
     await page.route('**/api/rpc', (r) => {
@@ -132,6 +131,10 @@ test.describe('Cancel + reconnect iteration bugs', () => {
     await page.waitForTimeout(500)
 
     // Iteration 0 (Read) should be visible from restored snapshot
+    // 折叠面板（unmountOnClose）下工具在折叠内 —— 展开后验证。
+    if (await page.locator('[data-role="assistant"] button:has-text("Processed")').count() > 0) {
+      await page.locator('[data-role="assistant"] button:has-text("Processed")').first().click()
+    }
     const readVisible = await page.evaluate(() => (document.body.textContent || '').includes('Read'))
     const shellVisible = await page.evaluate(() => (document.body.textContent || '').includes('Shell'))
     console.log('After reconnect - Read:', readVisible, 'Shell:', shellVisible)

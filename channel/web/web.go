@@ -174,7 +174,9 @@ type WebCallbacks struct {
 	// SessionTree returns Web-only main sessions with SubAgent children already attached.
 	SessionTree func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error)
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
-	ChatCreate func(senderID, label string, canonicalUserID int64) (string, error)
+	// model is an optional explicit model name for the new session; when empty
+	// the backend falls back to the default binding (Balance tier first).
+	ChatCreate func(senderID, label string, canonicalUserID int64, model string) (string, error)
 	// ChatDelete deletes a chatroom (except the default one).
 	ChatDelete func(senderID, channel, chatID string) error
 	// ChatRename renames a chatroom.
@@ -825,6 +827,15 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 	if strings.HasPrefix(content, "__FEISHU_CARD__") {
 		msgType = "card"
 		content = ch.ConvertFeishuCard(content)
+	}
+
+	// GenUI: the channel tool bridge (or a tool) pushes TSX code via SendFunc
+	// with metadata genui=true. Forward it as a dedicated "genui" WS message so
+	// the frontend renders it via GenUIBlock (NOT as a text/markdown code block).
+	// Without this, display_html's complete code is delivered as ordinary text
+	// and the committed message shows the TSX source instead of the rendered UI.
+	if msg.Metadata != nil && msg.Metadata["genui"] == "true" {
+		msgType = protocol.MsgTypeGenUI // "genui"
 	}
 
 	wsMsg := protocol.WSMessage{
@@ -1872,18 +1883,43 @@ func (wc *WebChannel) handleStatic(w http.ResponseWriter, r *http.Request) {
 
 	// Try exact path
 	if _, err := os.Stat(absResolved); err == nil {
-		http.FileServer(http.Dir(wc.staticDir)).ServeHTTP(w, r)
+		wc.serveStaticFile(w, r)
 		return
 	}
 
 	// SPA fallback: serve index.html for non-file paths
 	if !strings.Contains(path, ".") {
 		r.URL.Path = "/"
-		http.FileServer(http.Dir(wc.staticDir)).ServeHTTP(w, r)
+		wc.serveStaticFile(w, r)
 		return
 	}
-
 	http.NotFound(w, r)
+}
+
+// serveStaticFile serves static files with cache semantics required by the
+// PWA update lifecycle:
+//
+//   - sw.js → Cache-Control: no-store. THE critical header: without it the
+//     browser heuristic-caches the SW script (up to 24h fresh) and the update
+//     check never reaches the server — the new SW never installs, the precache
+//     stays on the old bundle forever, and users keep running stale code no
+//     matter how many times they reload (user report: "修复了但完全没用";
+//     server log showed ZERO asset requests — the SW served everything from
+//     the old precache).
+//   - index.html → no-cache (must revalidate so new bundle hashes are picked up).
+//   - assets/* (content-hashed) → immutable, 1y.
+func (wc *WebChannel) serveStaticFile(w http.ResponseWriter, r *http.Request) {
+	p := strings.TrimPrefix(r.URL.Path, "/")
+	switch {
+	// SW 脚本（sw.js / sw2.js / 未来的 swN.js）：一律 no-store。
+	case p == "sw.js" || (strings.HasPrefix(p, "sw") && strings.HasSuffix(p, ".js") && len(p) <= 8):
+		w.Header().Set("Cache-Control", "no-store")
+	case p == "index.html" || p == "":
+		w.Header().Set("Cache-Control", "no-cache")
+	case strings.HasPrefix(p, "assets/"):
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	http.FileServer(http.Dir(wc.staticDir)).ServeHTTP(w, r)
 }
 
 // ---------------------------------------------------------------------------

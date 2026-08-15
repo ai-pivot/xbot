@@ -56,6 +56,13 @@ type ChannelPluginTransport struct {
 	// they are registered here with RegisterForChannel(name, bridge).
 	registry *tools.Registry
 
+	// registeredTools tracks (channel → toolName) registered by THIS plugin's
+	// most recent channel_tools declaration, for precise hot-update cleanup.
+	// (Tools may be registered to multiple channels via decl.Channels; a plain
+	// UnregisterChannelTools(ownChannel) would leak tools in other channels.)
+	registeredTools   map[string]map[string]bool
+	registeredToolsMu sync.Mutex
+
 	// Channel-specific system prompt provider.
 	// When the channel process sends a "channel_prompt" message,
 	// the system parts are stored here and injected into agent sessions
@@ -487,6 +494,9 @@ func (t *ChannelPluginTransport) handleIncoming(raw json.RawMessage) {
 // handleChannelTools processes a "channel_tools" declaration from the channel
 // process. It registers each declared tool into the Registry with
 // RegisterForChannel, allowing the agent to discover and call them.
+// Each tool may declare explicit `channels` (e.g. a genui plugin registering
+// display_html to "web"); tools without `channels` register to the plugin's
+// own channel name (t.name).
 // Sending a new "channel_tools" message replaces the previous set (hot-update).
 func (t *ChannelPluginTransport) handleChannelTools(raw json.RawMessage) {
 	if t.registry == nil {
@@ -501,11 +511,35 @@ func (t *ChannelPluginTransport) handleChannelTools(raw json.RawMessage) {
 		return
 	}
 
-	// Hot-update: clear old tools, register new ones
-	t.registry.UnregisterChannelTools(t.name)
+	// Hot-update: clear tools from this plugin's PREVIOUS declaration (precise
+	// per-channel per-tool cleanup — tools may have been registered to multiple
+	// channels via decl.Channels, and we must not clobber other plugins' tools).
+	t.registeredToolsMu.Lock()
+	for ch, names := range t.registeredTools {
+		for name := range names {
+			if t.registry != nil {
+				t.registry.UnregisterChannelTool(ch, name)
+			}
+		}
+	}
+	t.registeredTools = make(map[string]map[string]bool)
+	t.registeredToolsMu.Unlock()
+
 	for _, decl := range msg.Tools {
 		bridge := plugin.NewChannelToolBridge(decl, t) // t implements ChannelToolExecutor via Call()
-		t.registry.RegisterForChannel(t.name, bridge)
+		channels := decl.Channels
+		if len(channels) == 0 {
+			channels = []string{t.name}
+		}
+		for _, ch := range channels {
+			t.registry.RegisterForChannel(ch, bridge)
+			t.registeredToolsMu.Lock()
+			if t.registeredTools[ch] == nil {
+				t.registeredTools[ch] = make(map[string]bool)
+			}
+			t.registeredTools[ch][decl.Name] = true
+			t.registeredToolsMu.Unlock()
+		}
 	}
 
 	log.WithField("channel", t.name).WithField("count", len(msg.Tools)).Info("Channel tools registered")

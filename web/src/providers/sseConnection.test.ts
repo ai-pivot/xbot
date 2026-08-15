@@ -1084,3 +1084,77 @@ describe('SSE 切会话竞态', () => {
     connection.dispose()
   })
 })
+
+// ==================== half-open connection watchdog ====================
+// The browser EventSource does NOT fire onerror when the server dies / network
+// cuts without a TCP reset. The watchdog declares the connection dead when no
+// SSE event (incl. the 15s heartbeat) arrives for STALE_CONNECTION_MS (45s).
+describe('half-open connection watchdog', () => {
+  it('declares the connection dead and reconnects when no SSE event arrives for 45s', () => {
+    vi.useFakeTimers()
+    try {
+      const connection = new SSEConnectionImpl()
+      const connectedStates: boolean[] = []
+      connection.onConnectionChange((c) => connectedStates.push(c))
+      connection.subscribe('chat-1', 'web')
+      const first = MockEventSource.instances[0]
+      first.open()
+      expect(connection.connected).toBe(true)
+
+      // No events at all (server stuck / silent network cut) → after 45s the
+      // watchdog must declare the connection dead and force a reconnect.
+      vi.advanceTimersByTime(45_000 + 100)
+
+      expect(connection.connected).toBe(false)
+      // A new EventSource was created (reconnect).
+      expect(MockEventSource.instances.length).toBeGreaterThanOrEqual(2)
+      expect(connectedStates).toContain(false)
+      connection.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('heartbeat events refresh lastActivityAt so the watchdog does NOT fire', () => {
+    vi.useFakeTimers()
+    try {
+      const connection = new SSEConnectionImpl()
+      connection.subscribe('chat-1', 'web')
+      const first = MockEventSource.instances[0]
+      first.open()
+
+      // Server heartbeats every 15s — liveness refreshed each time.
+      for (let i = 0; i < 5; i++) {
+        vi.advanceTimersByTime(15_000)
+        first.emit('heartbeat', { type: 'heartbeat' } as WSMessage)
+      }
+      // Advance past the stale threshold: heartbeats kept it alive.
+      vi.advanceTimersByTime(15_000)
+
+      expect(connection.connected).toBe(true)
+      expect(MockEventSource.instances.length).toBe(1) // never reconnected
+      connection.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('heartbeat events are NOT dispatched to business handlers', () => {
+    vi.useFakeTimers()
+    try {
+      const connection = new SSEConnectionImpl()
+      const messages: WSMessage[] = []
+      connection.onMessage((m) => messages.push(m))
+      connection.subscribe('chat-1', 'web')
+      const first = MockEventSource.instances[0]
+      first.open()
+
+      first.emit('heartbeat', { type: 'heartbeat' } as WSMessage)
+
+      expect(messages).toHaveLength(0)
+      connection.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
