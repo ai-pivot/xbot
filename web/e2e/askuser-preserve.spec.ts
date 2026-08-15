@@ -167,6 +167,7 @@ test.describe('AskUser answer preserves iterations', () => {
     // 展开折叠验证迭代（Read）保留不消失。
     if (await page.locator('[data-role="assistant"] button:has-text("Processed")').count() > 0) {
       await page.locator('[data-role="assistant"] button:has-text("Processed")').first().click()
+      await page.waitForTimeout(500)
     }
     const hasReadAfter = await page.evaluate(() =>
       document.body.textContent?.includes('Read') ?? false)
