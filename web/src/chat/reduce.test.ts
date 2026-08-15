@@ -204,7 +204,8 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       },
       'chat-1',
     )
-    expect(evs).toHaveLength(2)
+    expect(evs).not.toBeNull()
+    if (!evs || evs.length < 2) throw new Error(`expected [stream, iteration], got ${JSON.stringify(evs)}`)
     expect(evs[0].type).toBe('stream') // stream 先应用
     expect(evs[1].type).toBe('iteration')
     if (evs[0].type === 'stream') expect(evs[0].genui).toContain('App')
