@@ -82,7 +82,7 @@ export interface UseChatMessagesResult {
    *  from them. */
   reload: () => Promise<ChatMessage[] | null>
   /** Send a user message (+ optional uploaded file references). */
-  sendMessage: (content: string, attachments?: Attachments) => void
+  sendMessage: (content: string, attachments?: Attachments, requestID?: string) => void
   /** Cancel the running agent (sends a `cancel` WS message). */
   cancel: () => void
   /** True while cancel is in flight (shows spinner on cancel button). */
