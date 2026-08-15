@@ -52,9 +52,16 @@ Zero-dependency memory provider (no embedding API) built on SQLite FTS5 BM25.
   session summaries + long-term atomic memories (fact/preference/event/decision/skill).
 - **BM25 retrieval**: SQLite FTS5 `unicode61` with a `search_text` column. CJK runs are
   space-separated (`cjkSpaceRuns`: each Chinese char → own token, CJK↔ASCII boundary
-  split too) so Chinese substrings match ("记忆" → `"记" AND "忆"`). Query transform
-  `fts5SafeQuery` applies the SAME spacing — query and index stay symmetric. All
-  user input is wrapped in quoted tokens (FTS5 string literal) to prevent syntax errors.
+  split too) so Chinese substrings match ("记忆" → `"记" OR "忆"`). Query transform
+  `fts5OrQuery` (search paths) applies the SAME spacing — query and index stay symmetric.
+  All user input is wrapped in quoted tokens (FTS5 string literal) to prevent syntax errors.
+  ⚠️ **Search uses OR semantics** (`fts5OrQuery`, joined with ` OR `) — multi-term BM25
+  search must not AND-combine tokens: one absent word (query "frpc" vs indexed "frps")
+  zeroes the whole result set even when a high-IDF term matches exactly (user report:
+  `"2008 机器 IP 地址 frpc 转发"` returned nothing while `"2008"` alone hit). OR recalls,
+  `bm25()` ranks. **Dedup keeps AND** (`fts5SafeQuery`, joined with ` AND `): full-token
+  overlap is the similarity criterion — OR there would false-positive distinct memories
+  sharing one common word.
 - **Auto-extraction**: `ConsolidateTurn` (memory.TurnConsolidator) runs after each turn —
   throttled to once per 10 min per session, incremental (watermark `LastConsolidated`),
   passes the FULL message list (never slices — protects provider prefix cache) with
