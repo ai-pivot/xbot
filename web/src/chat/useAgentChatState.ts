@@ -162,7 +162,11 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
   return {
     messages,
     liveProgress,
-    busyFallback: liveProgress.streaming && state.activeTurn !== null,
+  // busyFallback：状态机有活动 turn 即 busy —— 不依赖 streaming（lazy 采纳
+  // 的 live turn 可能 streaming=false，但 turn 仍在运行；turn_started 建的
+  // EMPTY_LIVE streaming=true）。覆盖 REST ack 到 session(busy) 之间的窗口
+  // + 切换会话后 currentSession.running 是旧会话状态的场景。
+  busyFallback: state.activeTurn !== null,
     tokenPrompt,
     reset,
     sendUser,
