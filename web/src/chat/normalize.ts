@@ -319,6 +319,7 @@ export function historyReplacedEvent(ev: {
   turns: readonly import('./types').Turn[]
   active: { turnID: number; snapshot: import('./types').LiveSnapshot } | null
   lastSeq: number | null
+  todos?: readonly TodoItem[]
 }): DomainEvent {
   return {
     type: 'history_replaced',
@@ -326,5 +327,6 @@ export function historyReplacedEvent(ev: {
     turns: ev.turns,
     active: ev.active ? { turnID: turnID(ev.active.turnID), snapshot: ev.active.snapshot } : null,
     lastSeq: ev.lastSeq !== null ? eventSeq(ev.lastSeq) : null,
+    todos: ev.todos ?? [],
   }
 }

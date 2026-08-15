@@ -533,7 +533,9 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       textFinal(T1, '最终回复'),
     ])
     expect(s0.turns.get(T1)?.phase.kind).toBe('committed')
-    expect((s0.turns.get(T1)!.phase as { payload: { iterations: { iteration: number }[] } }).payload.iterations).toHaveLength(2)
+    const phase0 = s0.turns.get(T1)!.phase
+    if (phase0.kind !== 'committed') throw new Error('turn 1 must be committed')
+    expect(phase0.payload.iterations).toHaveLength(2)
     // DB 过时中间快照：只有迭代 1（最终迭代 2 的行尚未持久化），非空壳。
     const s1 = reduce(s0, {
       type: 'history_replaced',

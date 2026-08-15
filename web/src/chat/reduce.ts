@@ -215,7 +215,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           s = lazyAdoptLive(s, ev.turnID)
         }
       }
-      if (s.lastSeq !== null && ev.seq <= s.lastSeq) return s // I5：重放丢弃
+      if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return s // I5：重放丢弃（null seq 无基准，不比较）
       const t = s.turns.get(ev.turnID)
       if (!t || t.phase.kind !== 'live') return s
 
@@ -311,7 +311,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     // ── phase_done：仅 active turn；fold 最后迭代（T3 根治点）+ 停流 ──
     case 'phase_done': {
       if (ev.turnID !== s.activeTurn) return s
-      if (s.lastSeq !== null && ev.seq <= s.lastSeq) return s
+      if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return s
       const t = s.turns.get(ev.turnID)
       if (!t || t.phase.kind !== 'live') return s
       const prev = t.phase.data
