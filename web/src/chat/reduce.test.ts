@@ -567,6 +567,25 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(rows.filter((r) => r.kind === 'committed')[0]?.iterations).toHaveLength(2)
   })
 
+  it('REPRO: todo_write 后 history_replaced 不覆盖实时 todos（快照旧值覆盖根因）', () => {
+    // todo_write 执行 → progress 事件带新 todos → state.todos 更新。
+    // 随后 REST ack / 工具副作用触发 history_replaced，携带 active_progress
+    // 快照的【旧 todos】（快照可能滞后于实时 progress 事件）。
+    // 旧逻辑 ev.todos.length>0 ? ev.todos : s.todos 用旧值覆盖 → todo 列表消失。
+    const s0 = run([
+      { type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never, content: undefined, reasoning: undefined, activeTools: [], completedTools: [], iterationsDelta: [], todos: [{ id: 1, text: '新任务', done: false }, { id: 2, text: '任务2', done: false }], subAgents: undefined, tokenUsage: undefined },
+    ])
+    expect(s0.todos).toHaveLength(2)
+    // history_replaced 携带快照旧 todos（只有 1 条，旧值）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced', legacy: [], turns: [], active: null, lastSeq: null,
+      todos: [{ id: 1, text: '新任务', done: false }],
+    })
+    // 修复后：实时 state.todos（2 条）优先，不被快照旧值（1 条）覆盖。
+    expect(s1.todos).toHaveLength(2)
+    expect(s1.todos[1].text).toBe('任务2')
+  })
+
   it('history_replaced hydration：ev.active 创建 live turn（刷新恢复 in-flight）', () => {
     const s = reduce(initialChatState('chat-1'), {
       type: 'history_replaced',

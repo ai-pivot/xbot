@@ -547,7 +547,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           !(u.requestID !== null && [...turns.values()].some((t) => t.user?.requestID === u.requestID)),
       )
 
-      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, todos: ev.todos.length > 0 ? ev.todos : s.todos }
+      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, todos: s.todos.length > 0 ? s.todos : ev.todos }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──
