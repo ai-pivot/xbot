@@ -45,6 +45,7 @@ const started = (turn: ReturnType<typeof turnID>, requestID: string | null = nul
   turnID: turn,
   requestID,
   trigger: 'user',
+  content: null,
 })
 
 const textFinal = (turn: ReturnType<typeof turnID> | null, content: string | null, cancelled = false): DomainEvent => ({

@@ -143,6 +143,26 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         user = s.pendingUsers[idx]
         pending = s.pendingUsers.filter((_, i) => i !== idx)
       }
+      // notification trigger：turn_start.content 携带通知内容（后端
+      // TurnStartInfo）。弱网下 inject_user WS 消息丢失时，turn_started 是
+      // 通知内容的唯一载体 —— pending 未命中则用 content 构造通知 user 行
+      //（isNotification → 🔔 badge + muted style），否则用户只看到"思考中"
+      // 看不到 system notification 本身（用户报告）。通知无 REST 请求
+      //（requestID=null），迟到 inject_user 走 useChatMessages →
+      // history_replaced 过滤（dbID undefined），不会双行。
+      if (user === null && ev.trigger === 'notification' && ev.content !== null && ev.content !== '') {
+        user = {
+          id: `notif-${ev.turnID}`,
+          content: ev.content as never,
+          timestamp: new Date().toISOString(),
+          isNotification: true,
+          queued: false,
+          sending: false,
+          requestID: null,
+          turnHint: undefined,
+          dbID: undefined,
+        }
+      }
       // ⚠️ 已存在同 ID turn：live（lazy 采纳过）保留数据；frozen 空壳
       // （user-only 占位）升级为 live（turn_started 是权威开始信号）；committed
       // /有输出 frozen 嫁接 user 不动 phase（I3：指针只指 live，保持原值）。

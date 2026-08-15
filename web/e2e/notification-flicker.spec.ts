@@ -154,4 +154,41 @@ test.describe('Notification turn iteration preservation', () => {
 
     await page.close()
   })
+
+  test('REPRO: 弱网 notification —— turn_started(turn_start.content) 必须渲染通知 user 行', async ({ browser }) => {
+    // 弱网场景：inject_user WS 消息丢失/延迟，只有 SSE turn_started 到达。
+    // 后端 turn_started 事件携带 TurnStart{Trigger:'notification', Content}——
+    // 通知内容在事件里。若前端只建 live turn 不构造 user 行，用户只看到
+    // "思考中"，看不到 system notification 本身（用户报告的 bug）。
+    const page = await browser.newPage()
+    await page.addInitScript(() => {
+      const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+      const w = window as unknown as SSEMockState
+      w.__sseListeners = listeners
+      class M { readyState=1; onopen:((e:Event)=>void)|null=null; onerror:((e:Event)=>void)|null=null; constructor(public url:string){setTimeout(()=>this.onopen?.(new Event('open')),0)} addEventListener(t:string,h:(e:MessageEvent)=>void){if(!listeners[t])listeners[t]=new Set();listeners[t].add(h)} removeEventListener(){} close(){} }
+      ;(window as unknown as { EventSource: typeof M }).EventSource = M
+    })
+    await setupMock(page)
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+    await page.waitForTimeout(2000)
+
+    // notification turn：turn_started 带通知内容 + thinking（思考中）
+    await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: { phase: 'turn_started', turn_id: 5, turn_start: { trigger: 'notification', content: '⏰ bg task done: build passed' }, chat_id: 'web:chat-1' },
+    })
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: { phase: 'thinking', iteration: 1, seq: 2, turn_id: 5, chat_id: 'web:chat-1' },
+    })
+    await page.waitForTimeout(500)
+
+    // 通知 user 行必须显示（不是只有"思考中"）
+    expect(await hasContent(page, 'bg task done: build passed')).toBe(true)
+    await page.close()
+  })
 })

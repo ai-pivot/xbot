@@ -148,7 +148,7 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
     const rawTrigger = optStr(ts?.trigger)
     const trigger: 'user' | 'resume' | 'notification' =
       rawTrigger === 'resume' ? 'resume' : rawTrigger === 'notification' ? 'notification' : 'user'
-    return [{ type: 'turn_started', turnID: turnID(turn), requestID: optStr(ts?.request_id) ?? null, trigger }]
+    return [{ type: 'turn_started', turnID: turnID(turn), requestID: optStr(ts?.request_id) ?? null, trigger, content: optStr(ts?.content) ?? null }]
   }
 
   // ── 纯流式帧（打字机/genui 流）──

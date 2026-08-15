@@ -45,8 +45,8 @@ function generateEvents(rng: () => number, o: GenOptions): DomainEvent[] {
       // turn_started（偶尔重复发送 —— 模拟 SSE replay 的 duplicate turn_started）
       const t = turnID(nextTurn++)
       const dup = rng() < 0.2
-      evs.push({ type: 'turn_started', turnID: t, requestID: rng() < 0.5 ? `req-${t}` : null, trigger: 'user' })
-      if (dup) evs.push({ type: 'turn_started', turnID: t, requestID: null, trigger: 'user' })
+      evs.push({ type: 'turn_started', turnID: t, requestID: rng() < 0.5 ? `req-${t}` : null, trigger: 'user', content: null })
+      if (dup) evs.push({ type: 'turn_started', turnID: t, requestID: null, trigger: 'user', content: null })
     } else if (kind < 0.35) {
       // iteration：乱序 target（模拟迟到 —— 旧 turn 的事件）+ 重放 seq
       const t = turnID(Math.max(1, Math.floor(rng() * nextTurn)))

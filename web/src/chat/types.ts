@@ -211,6 +211,11 @@ export type DomainEvent =
       readonly turnID: TurnID
       readonly requestID: string | null
       readonly trigger: 'user' | 'resume' | 'notification'
+      /** turn_start.content —— notification trigger 携带通知内容（后端
+       * TurnStartInfo{Trigger, Content, RequestID}）。弱网下 inject_user WS
+       * 消息可能丢失，turn_started 是通知内容的唯一载体 —— 必须用它构造
+       * user 行，否则只显示"思考中"看不到通知（用户报告）。 */
+      readonly content: string | null
     }
   | {
       readonly type: 'iteration'
