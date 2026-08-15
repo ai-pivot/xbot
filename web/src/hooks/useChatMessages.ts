@@ -188,7 +188,12 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       displayOnly: false,
       persisted: true,
       eventSeq: m.seq,
-      dbID: m.id,
+      // dbID fallback：真实 DB 消息有 id（auto-increment）。E2E mock / 旧格式
+      // 消息可能没有 id —— 用 index+1 生成 synthetic dbID，使 historyToReplaced
+      // 的 dbID===undefined 过滤（防乐观/echo 副本双渲染）不会误杀 DB 历史。
+      // 乐观/echo 副本不经过 parseHistoryMessages（store.setUser 直接写入），
+      // 仍 dbID=undefined 被过滤 —— 不重新引入双行 bug。
+      dbID: m.id ?? (i + 1),
     })
   }
 
