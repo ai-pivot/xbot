@@ -665,11 +665,13 @@ func (m *cliModel) renderHelpPanel() string {
 	if contentWidth < 40 {
 		contentWidth = 40
 	}
+	commands := m.commandCatalog()
+	commandColWidth := helpCommandColumnWidth(commands)
 
 	// §20 使用缓存样式
 	s := &m.styles
 	titleStyle := s.HelpTitle
-	cmdStyle := s.HelpCmd
+	cmdStyle := s.HelpCmd.UnsetWidth()
 	usageStyle := s.HelpCmd.UnsetWidth()
 	descStyle := s.HelpDesc
 	groupStyle := s.HelpGroup
@@ -682,11 +684,16 @@ func (m *cliModel) renderHelpPanel() string {
 
 	sb.WriteString(groupStyle.Render(m.locale.HelpCommandsTitle))
 	sb.WriteString("\n")
-	for _, command := range m.commandCatalog() {
+	for _, command := range commands {
 		description := m.commandDescription(command)
-		sb.WriteString("  " + cmdStyle.Render(command.Name))
+		nameWidth := lipgloss.Width(command.Name)
+		padding := commandColWidth - nameWidth
+		if padding < 1 {
+			padding = 1
+		}
+		sb.WriteString("  " + cmdStyle.Render(command.Name) + strings.Repeat(" ", padding))
 		if description != "" {
-			sb.WriteString(" " + descStyle.Render(description))
+			sb.WriteString(descStyle.Render(description))
 		}
 		if command.Usage != "" && command.Usage != command.Name {
 			sb.WriteString("\n    " + usageStyle.Render(command.Usage))
@@ -702,4 +709,14 @@ func (m *cliModel) renderHelpPanel() string {
 	}
 
 	return panelStyle.Render(sb.String())
+}
+
+func helpCommandColumnWidth(commands []protocol.CommandInfo) int {
+	width := 12
+	for _, command := range commands {
+		if w := lipgloss.Width(command.Name); w > width {
+			width = w
+		}
+	}
+	return width + 2
 }
