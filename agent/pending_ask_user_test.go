@@ -337,3 +337,41 @@ func TestGenericCancelWithoutActiveRunStillArmsPendingCancel(t *testing.T) {
 		t.Fatal("generic /cancel with no active Run must arm pendingCancel for the queued request")
 	}
 }
+
+func TestAskUserCancelResetsWaitingUserBusy(t *testing.T) {
+	a := &Agent{bus: bus.NewMessageBus()}
+	key := "web:chat-1"
+	// Simulate a WaitingUser turn: chatProcessLoop keeps ss.busy=true while the
+	// AskUser panel is showing (notification-drain semantics), and the pending
+	// AskUser prompt exists. The user taps Cancel (web.go routes /cancel tagged
+	// with ask_user_cancel). interceptCancel clears the pending prompt — but it
+	// MUST also reset the WaitingUser busy state, otherwise the session stays
+	// busy forever: no session(idle) is ever emitted, the frontend sidebar
+	// keeps running=true and the user can't do anything (reported: "后台 web
+	// 会话用 askuser 取消后永远卡 busy，cancel 无效，什么事情都做不了").
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	ss.busy.Store(true)
+	a.bgSessionStates.Store(key, ss)
+	a.setPendingAskUser("web", "chat-1", &protocol.ProgressEvent{RequestID: "request-1"})
+
+	a.interceptCancel(bus.InboundMessage{
+		Channel:  "web",
+		ChatID:   "chat-1",
+		Content:  "/cancel",
+		Metadata: map[string]string{"ask_user_cancel": "true"},
+	})
+	if ss.busy.Load() {
+		t.Fatal("AskUser cancel did not reset the WaitingUser busy state (session stuck busy)")
+	}
+	if pending := a.GetPendingAskUser("web", "chat-1"); pending != nil {
+		t.Fatalf("AskUser prompt remained after cancel: %#v", pending)
+	}
+	select {
+	case ack := <-a.bus.Outbound:
+		if ack.Metadata["cancelled"] != "true" {
+			t.Fatalf("cancel ack metadata = %#v", ack.Metadata)
+		}
+	default:
+		t.Fatal("pending AskUser cancel produced no acknowledgement")
+	}
+}

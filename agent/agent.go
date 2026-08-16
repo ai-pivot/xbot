@@ -1373,6 +1373,21 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		}
 		a.pendingCancel.Delete(cancelKey)
 		a.cancelStateMu.Unlock()
+		// AskUser 交互结束（用户 cancel）：解除 WaitingUser 的 busy 状态并发射
+		// session(idle)。WaitingUser 时 chatProcessLoop 有意保持 ss.busy=true
+		// （防止 chatWorker 在 AskUser panel 显示期间 drain 通知），cancel 若
+		// 不清除，前端 session tree 的 running 状态永远保持 → 会话卡 busy、
+		// cancel 看似无效、无法交互（用户报告："后台 web 会话用 askuser 取消后
+		// 永远卡 busy，cancel 无效，什么事情都做不了"）。
+		if state, ok := a.bgSessionStates.Load(cancelKey); ok {
+			if ss := state.(*bgSessionState); ss.busy.Load() {
+				ss.busy.Store(false)
+				tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
+				a.emitSessionState(protocol.SessionEvent{
+					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+				})
+			}
+		}
 		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
 		return
