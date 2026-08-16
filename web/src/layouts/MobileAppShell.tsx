@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from 'react'
 import { ArrowLeft, Loader2 } from 'lucide-react'
-import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal, Blocks } from 'lucide-react'
+import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal } from 'lucide-react'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
 const TerminalPanel = lazy(() =>
@@ -12,7 +12,9 @@ import type { SessionInfo as SessionInfoType } from '@/types/shared'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
-import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
+import { PluginView } from '@/plugin-runtime/PluginView'
+import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
+import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 
 const SettingsDialog = lazy(() =>
   import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
@@ -39,7 +41,6 @@ const PANEL_BUTTONS: { panel: SidebarPanel; icon: typeof Files; labelKey: string
   { panel: 'info', icon: Info, labelKey: 'sidebar.info' },
   { panel: 'tasks', icon: ListChecks, labelKey: 'sidebar.tasks' },
   { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
-  { panel: 'plugins', icon: Blocks, labelKey: 'sidebar.plugins' },
 ]
 
 const mobilePanelProps: PanelProps = {
@@ -287,16 +288,27 @@ function MobileDetail({
   terminalManager: ReturnType<typeof useTerminal>
 }) {
   const { t } = useI18n()
+  const pluginPanels = usePluginViewPanels('right_sidebar')
+  const pluginViewsMap: Map<string, { pluginId: string; view: import('@/plugin-api').ViewContribution }> = new Map(
+    pluginPanels.map((p) => [p.id, { pluginId: p.pluginId, view: p.view }]),
+  )
+
+  // 内置面板 tab + 插件 view tab（动态）。
+  const buttons = [
+    ...PANEL_BUTTONS.map((p) => ({ panel: p.panel, icon: p.icon, labelKey: p.labelKey })),
+    ...pluginPanels.map((p) => ({ panel: p.id, icon: pluginIcon(p.view.icon), labelKey: p.title })),
+  ]
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-border px-2" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(2.5rem + var(--safe-area-top))' }}>
-        {PANEL_BUTTONS.map(({ panel, icon: Icon, labelKey }) => (
+        {buttons.map(({ panel, icon: Icon, labelKey }) => (
           <Button
             key={panel}
             type="button"
             variant={activePanel === panel ? 'secondary' : 'ghost'}
             size="icon-sm"
-            aria-label={t(labelKey)}
+            aria-label={pluginPanels.some((p) => p.id === panel) ? labelKey : t(labelKey)}
             onClick={() => onPanelChange(panel)}
           >
             <Icon />
@@ -304,13 +316,18 @@ function MobileDetail({
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
-        {renderMobilePanel(activePanel, tabManager, terminalManager)}
+        {renderMobilePanel(activePanel, tabManager, pluginViewsMap, terminalManager)}
       </div>
     </div>
   )
 }
 
-function renderMobilePanel(panel: SidebarPanel, tabManager: ReturnType<typeof useTabManager>, terminalManager?: ReturnType<typeof useTerminal>) {
+function renderMobilePanel(
+  panel: SidebarPanel,
+  tabManager: ReturnType<typeof useTabManager>,
+  pluginViews: Map<string, { pluginId: string; view: import('@/plugin-api').ViewContribution }>,
+  terminalManager?: ReturnType<typeof useTerminal>,
+) {
   switch (panel) {
     case 'files':
       return <FileExplorer tabManager={tabManager} />
@@ -322,7 +339,10 @@ function renderMobilePanel(panel: SidebarPanel, tabManager: ReturnType<typeof us
       return <TasksPanel tabManager={tabManager} />
     case 'terminal':
       return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
-    case 'plugins':
-      return <PluginPanelContainer container="right_sidebar" />
+    default: {
+      const entry = pluginViews.get(panel)
+      if (!entry) return null
+      return <PluginView pluginId={entry.pluginId} view={entry.view} />
+    }
   }
 }

@@ -1,33 +1,26 @@
 /**
  * PluginPanelContainer —— 宿主组件：把贡献到某容器的插件视图渲染出来。
  *
- * 用 usePluginRuntime() 查询 registry（getViewsByContainer）并按 entry
- * 加载组件（loadViewComponent），挂到 ViewSlot。这是插件视图与宿主布局
- * 的接缝——任何声明 container 的插件 view 都会在此渲染。
+ * UI 统一核心：桌面 RightSidebar 和移动 MobileDetail 都渲染同一个容器
+ * （如 right_sidebar），本组件通过 usePluginViewPanels 动态查询该容器下
+ * 所有插件 view，每个 view 用 PluginView（自带 ErrorBoundary）渲染。
+ * 插件只需声明一次 view，两端自动出现——不需要分别在桌面/移动硬编码。
  */
-import { useCallback } from 'react'
-
 import type { ViewContainer } from '@/plugin-api'
-import { usePluginRuntime } from '@/plugin-runtime'
-import { ViewSlot } from '@/plugin-runtime/ViewSlot'
 
-export function PluginPanelContainer({ container }: { container: ViewContainer }) {
-  const runtime = usePluginRuntime()
+import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
+import { PluginView } from '@/plugin-runtime/PluginView'
 
-  const getViews = useCallback(
-    () => runtime.getViewsByContainer(container),
-    [runtime, container],
+export function PluginPanelContainer({ container, className }: { container: ViewContainer; className?: string }) {
+  const panels = usePluginViewPanels(container)
+
+  if (panels.length === 0) return null
+
+  return (
+    <div className={`flex flex-col gap-2 overflow-y-auto ${className ?? ''}`}>
+      {panels.map((panel) => (
+        <PluginView key={panel.id} pluginId={panel.pluginId} view={panel.view} />
+      ))}
+    </div>
   )
-
-  const loadView = useCallback(
-    (view: import('@/plugin-api').ViewContribution) => {
-      // 视图属于哪个插件？从贡献点反查（view.id 形如 "<pluginId>.<viewId>"）。
-      // 简化：取贡献点 id 的第一段作为插件 id（约定）。
-      const pluginId = view.id.split('.')[0]
-      return runtime.loadViewComponent(pluginId, view)
-    },
-    [runtime],
-  )
-
-  return <ViewSlot container={container} getViews={getViews} loadView={loadView} className="h-full" />
 }

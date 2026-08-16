@@ -290,6 +290,9 @@ var nonAdminRESTRPCMethods = map[string]struct{}{
 	// web_plugin_list 是前端插件运行时启动必调方法——只读插件清单
 	// （含贡献点声明 + 模块 URL），对普通登录用户开放（无 admin 需求）。
 	"web_plugin_list": {},
+	// plugin_status 只读返回插件状态（名称/版本/state），供内置插件管理面板
+	// 展示；写操作（plugin_reload/plugin_uninstall）仍保持 admin-only。
+	"plugin_status": {},
 }
 
 func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, method string, params json.RawMessage) (int, error) {

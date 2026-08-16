@@ -174,6 +174,7 @@ export class ContributionRegistry {
       }
     }
     this.hooks.onStateChange?.({ ...record.state })
+    this.notifyViewsChanged()
     return { ok: true }
   }
 
@@ -221,6 +222,7 @@ export class ContributionRegistry {
     }
     this.plugins.delete(pluginId)
     this.hooks.onStateChange?.({ ...record.state, enabled: false, status: 'inactive' })
+    this.notifyViewsChanged()
     return true
   }
 
@@ -233,5 +235,41 @@ export class ContributionRegistry {
   pushDisposable(pluginId: string, d: Disposable): void {
     const record = this.plugins.get(pluginId)
     if (record) record.disposables.push(d)
+  }
+
+  // ─── 动态面板订阅（UI 统一）──────────────────────────────
+  // 插件 view 贡献点是「声明一次，两端自动出现」的核心：宿主侧栏
+  // （桌面 + 移动）订阅此变更，插件注册/卸载 view 时自动重建 tab 列表，
+  // 无需在桌面/移动分别硬编码面板入口。
+
+  private viewSubscribers = new Set<() => void>()
+
+  /** 订阅贡献点集合变化（view 注册/卸载）。返回退订函数。 */
+  subscribeViews(listener: () => void): Disposable {
+    this.viewSubscribers.add(listener)
+    return () => {
+      this.viewSubscribers.delete(listener)
+    }
+  }
+
+  private notifyViewsChanged(): void {
+    for (const listener of this.viewSubscribers) {
+      try {
+        listener()
+      } catch (error) {
+        console.error('[plugin-runtime] view subscriber failed', error)
+      }
+    }
+  }
+
+  /** 查询所有 view 贡献点（跨插件，含所属插件 id），供宿主动态生成面板 tab。 */
+  listAllViews(): Array<{ pluginId: string; view: ViewContribution }> {
+    const out: Array<{ pluginId: string; view: ViewContribution }> = []
+    for (const [pluginId, record] of this.plugins) {
+      for (const c of record.manifest.contributes) {
+        if (c.kind === 'view') out.push({ pluginId, view: c })
+      }
+    }
+    return out
   }
 }

@@ -95,6 +95,12 @@ vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => ({ user: null, loading: false, login: vi.fn(), register: vi.fn(), logout: vi.fn(), refresh: vi.fn() }),
 }))
 
+// 插件运行时面板：测试环境无 PluginRuntimeProvider，mock 为空列表
+// （等同"无插件"），避免 usePluginRuntime 抛错。
+vi.mock('@/plugin-runtime/usePluginViewPanels', () => ({
+  usePluginViewPanels: () => [],
+}))
+
 describe('MobileAppShell', () => {
   beforeEach(() => {
     mocks.sessionStore.createSession.mockReset()

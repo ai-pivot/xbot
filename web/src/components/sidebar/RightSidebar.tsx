@@ -22,11 +22,19 @@ import { FileSearch } from './FileSearch'
 import { SessionInfo } from './SessionInfo'
 import { TasksPanel } from './TasksPanel'
 import { TerminalList } from './TerminalList'
-import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
+import { PluginView } from '@/plugin-runtime/PluginView'
+import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import type { TabManager } from '@/hooks/useTabManager'
 import { useTerminal } from '@/hooks/useTerminal'
 
-export type SidebarPanel = 'files' | 'search' | 'info' | 'tasks' | 'terminal' | 'plugins'
+/**
+ * 内置侧栏面板（宿主固定功能），与插件 view 贡献点是两回事。
+ * 插件 view 的 id 直接作为动态面板 id 出现在侧栏 —— 插件声明一次，
+ * 桌面 + 移动两端自动都有该面板 tab，无需分别 contribute。
+ */
+export type BuiltinSidebarPanel = 'files' | 'search' | 'info' | 'tasks' | 'terminal'
+
+export type SidebarPanel = string
 
 export interface RightSidebarProps {
   activePanel: SidebarPanel | null
@@ -43,6 +51,12 @@ export function RightSidebar({ activePanel, tabManager }: RightSidebarProps) {
   const dragging = useRef(false)
   const userSized = useRef(false)
   const terminalManager = useTerminal(tabManager)
+
+  // 插件 view 贡献点（right_sidebar 容器）——动态面板 tab 的唯一来源。
+  const pluginViews = usePluginViewPanels('right_sidebar')
+  const pluginViewsMap: PluginViewMap = new Map(
+    pluginViews.map((p) => [p.id, { pluginId: p.pluginId, view: p.view }]),
+  )
 
   // Pointer-based resize: hold the handle, move the pointer, clamp to bounds.
   const onPointerDown = useCallback((e: React.PointerEvent) => {
@@ -98,7 +112,7 @@ export function RightSidebar({ activePanel, tabManager }: RightSidebarProps) {
       {panel !== null && (
         <>
           <header className="flex h-9 shrink-0 items-center justify-between pl-3 pr-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
-            <span className="truncate">{titleFor(panel, t)}</span>
+            <span className="truncate">{titleFor(panel, pluginViewsMap, t)}</span>
           </header>
 
           {/* Panel content cross-fade keyed on the active panel. */}
@@ -112,7 +126,7 @@ export function RightSidebar({ activePanel, tabManager }: RightSidebarProps) {
                 transition={{ duration: 0.15 }}
                 className="h-full"
               >
-                {renderPanel(panel, tabManager, terminalManager)}
+                {renderPanel(panel, tabManager, pluginViewsMap, terminalManager)}
               </motion.div>
             </AnimatePresence>
           </div>
@@ -144,6 +158,7 @@ function clampRightWidth(width: number): number {
 function renderPanel(
   panel: SidebarPanel,
   tabManager: TabManager,
+  pluginViews: PluginViewMap,
   terminalManager?: ReturnType<typeof useTerminal>,
 ) {
   switch (panel) {
@@ -157,12 +172,20 @@ function renderPanel(
       return <TasksPanel tabManager={tabManager} />
     case 'terminal':
       return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
-    case 'plugins':
-      return <PluginPanelContainer container="right_sidebar" />
+    default: {
+      // 插件 view 贡献点：id 即面板 id，声明一次两端自动出现。
+      const entry = pluginViews.get(panel)
+      if (!entry) return null
+      return <PluginView pluginId={entry.pluginId} view={entry.view} />
+    }
   }
 }
 
-function titleFor(panel: SidebarPanel, t: (k: string) => string): string {
+function titleFor(
+  panel: SidebarPanel,
+  pluginViews: PluginViewMap,
+  t: (k: string) => string,
+): string {
   switch (panel) {
     case 'files':
       return t('sidebar.files')
@@ -174,7 +197,10 @@ function titleFor(panel: SidebarPanel, t: (k: string) => string): string {
       return t('sidebar.tasks')
     case 'terminal':
       return t('sidebar.terminal')
-    case 'plugins':
-      return t('sidebar.plugins')
+    default:
+      return pluginViews.get(panel)?.view.title ?? panel
   }
 }
+
+/** 插件 view id → 渲染信息 的查找表（由 usePluginViewPanels 派生）。 */
+export type PluginViewMap = Map<string, { pluginId: string; view: import('@/plugin-api').ViewContribution }>

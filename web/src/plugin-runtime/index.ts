@@ -223,6 +223,16 @@ export class PluginRuntime {
     return views
   }
 
+  /** 查询所有 view 贡献点（含所属插件 id）——供宿主动态生成侧栏 tab。 */
+  listAllViews(): Array<{ pluginId: string; view: ViewContribution }> {
+    return this.registry.listAllViews()
+  }
+
+  /** 订阅插件 view 集合变化（插件注册/卸载 view）。返回退订函数。 */
+  subscribeViews(listener: () => void): Disposable {
+    return this.registry.subscribeViews(listener)
+  }
+
   /** 宿主视图组件加载（缓存）。 */
   loadViewComponent(pluginId: string, view: ViewContribution): Promise<React.ComponentType | null> {
     const key = `${pluginId}:${view.id}`
