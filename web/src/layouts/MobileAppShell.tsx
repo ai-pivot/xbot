@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from 'react'
 import { ArrowLeft, Loader2 } from 'lucide-react'
-import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal } from 'lucide-react'
+import { Bot, Files, Info, ListChecks, Menu, Plus, Search, Settings, SquareTerminal, Blocks } from 'lucide-react'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
 const TerminalPanel = lazy(() =>
@@ -12,6 +12,7 @@ import type { SessionInfo as SessionInfoType } from '@/types/shared'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
+import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 
 const SettingsDialog = lazy(() =>
   import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
@@ -38,6 +39,7 @@ const PANEL_BUTTONS: { panel: SidebarPanel; icon: typeof Files; labelKey: string
   { panel: 'info', icon: Info, labelKey: 'sidebar.info' },
   { panel: 'tasks', icon: ListChecks, labelKey: 'sidebar.tasks' },
   { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
+  { panel: 'plugins', icon: Blocks, labelKey: 'sidebar.plugins' },
 ]
 
 const mobilePanelProps: PanelProps = {
@@ -320,5 +322,7 @@ function renderMobilePanel(panel: SidebarPanel, tabManager: ReturnType<typeof us
       return <TasksPanel tabManager={tabManager} />
     case 'terminal':
       return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
+    case 'plugins':
+      return <PluginPanelContainer container="right_sidebar" />
   }
 }
