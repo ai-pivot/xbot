@@ -33,6 +33,18 @@ function isCJK(r: number): boolean {
 
 const TICK_MS = 50
 
+// TAIL controls how far behind the producer the typewriter is allowed to lag.
+// gap/3 alone reaches a steady state where gap stabilises at ~3× the per-tick
+// production rate, so every tick advances by the SAME large distance (stutter).
+// Instead we cap the GAP (not the step): whenever the backlog exceeds TAIL, we
+// jump straight to "TAIL chars behind" in one bounded step, then reveal those
+// last TAIL chars at a fixed small per-tick rate. This guarantees:
+//   - the typer always catches up (no fixed step cap that can fall behind)
+//   - the per-tick reveal is small and constant (no big/equal-distance jumps)
+const TAIL = 12
+// CHAR_PER_TICK is the fixed reveal rate within the tail region.
+const CHAR_PER_TICK = 3
+
 export interface TypewriterState {
   /** Number of visible Unicode code points. The renderer clips its existing DOM to this count. */
   visibleChars: number
@@ -57,23 +69,37 @@ export function useTypewriter(fullText: string): TypewriterState {
 
   fullTextRef.current = fullText
 
-  // Advance visible runes by the TUI exponential catch-up formula.
-  // Returns the new visible count.
+  // Advance visible runes using a tail-bounded reveal:
+  //   - Backlog > TAIL  →  jump to `target - TAIL` in one step (catch up fast,
+  //     no fixed per-tick cap that could fall behind a fast producer).
+  //   - Backlog ≤ TAIL  →  reveal at a fixed small per-tick rate (smooth).
+  // This keeps the steady-state gap pinned at ≤ TAIL instead of drifting to
+  // ~3×production-rate (the old gap/3 invariant that caused equal-distance
+  // jumps / stutter). Returns the new visible count.
   const advanceVisible = (runes: string[], visible: number): number => {
-    const gap = runes.length - visible
+    const target = runes.length
+    const gap = target - visible
     if (gap <= 0) return visible
 
-    const nextIsCJK = visible < runes.length && isCJK(runes[visible].codePointAt(0) ?? 0)
-    const advance = Math.max(1, Math.floor(gap / 3))
-
-    // CJK penalty: if next rune is CJK and we're at slow speed, skip
-    // every other tick (effectively half speed for CJK)
-    if (nextIsCJK && advance <= 3 && gap <= 20) {
-      skipFlipRef.current = !skipFlipRef.current
-      if (skipFlipRef.current) return visible // skip this advance
+    // Large backlog: collapse it to TAIL in a single bounded step. This is the
+    // ONLY "big jump" the user ever sees, and it reflects genuinely catching up
+    // on a burst rather than repeatedly jumping by a steady large distance.
+    if (gap > TAIL) {
+      return target - TAIL
     }
 
-    return Math.min(visible + advance, runes.length)
+    // Tail region: reveal TAIL chars at a fixed small rate.
+    const nextIsCJK = visible < runes.length && isCJK(runes[visible].codePointAt(0) ?? 0)
+    const advance = CHAR_PER_TICK
+
+    // CJK penalty: if next rune is CJK, advance every other tick for slower,
+    // more natural CJK typing feel.
+    if (nextIsCJK) {
+      skipFlipRef.current = !skipFlipRef.current
+      if (skipFlipRef.current) return visible // skip this tick
+    }
+
+    return Math.min(visible + advance, target)
   }
 
   // ── Reset on empty / shrink (new turn) ──

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -829,7 +830,7 @@ func (pm *PluginManager) GetPlugin(id string) (*PluginEntry, bool) {
 	return e, ok
 }
 
-// ListPlugins returns all loaded plugin entries.
+// ListPlugins returns all loaded plugin entries in deterministic order (by ID).
 func (pm *PluginManager) ListPlugins() []*PluginEntry {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -837,6 +838,9 @@ func (pm *PluginManager) ListPlugins() []*PluginEntry {
 	for _, e := range pm.entries {
 		result = append(result, e)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Manifest.ID < result[j].Manifest.ID
+	})
 	return result
 }
 

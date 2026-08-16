@@ -536,6 +536,33 @@ func TestPluginManager_Register(t *testing.T) {
 	}
 }
 
+func TestPluginManager_ListPluginsSorted(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// 注册顺序故意打乱，验证 ListPlugins 返回的是按 ID 排序的确定性结果。
+	ids := []string{"com.zeta", "com.alpha", "com.mike"}
+	for _, id := range ids {
+		m := testManifest()
+		m.ID = id
+		if err := pm.Register(&mockPlugin{manifest: m}); err != nil {
+			t.Fatalf("Register %s failed: %v", id, err)
+		}
+	}
+
+	entries := pm.ListPlugins()
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 plugins, got %d", len(entries))
+	}
+	got := []string{entries[0].Manifest.ID, entries[1].Manifest.ID, entries[2].Manifest.ID}
+	want := []string{"com.alpha", "com.mike", "com.zeta"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ListPlugins not sorted deterministically: got %v, want %v", got, want)
+		}
+	}
+}
+
 func TestPluginManager_Activate(t *testing.T) {
 	t.Parallel()
 	pm := newTestPM(t)
