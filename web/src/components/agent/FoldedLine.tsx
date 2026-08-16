@@ -27,6 +27,10 @@ interface FoldedLineProps {
   className?: string
   /** Extra classes on the content container. */
   contentClassName?: string
+  /** 折叠时保持内容挂载（不 unmount）。streaming 内容（如 reasoning）需要
+   *  持续 typewriter，折叠只是 CSS 隐藏，展开时接续当前追赶位置而非从 0
+   *  重新播放。默认 false（折叠后卸载，省性能）。 */
+  keepMounted?: boolean
 }
 
 export const FoldedLine = memo(function FoldedLine({
@@ -36,6 +40,7 @@ export const FoldedLine = memo(function FoldedLine({
   onToggle,
   className,
   contentClassName,
+  keepMounted = false,
 }: FoldedLineProps) {
   const [open, setOpen] = useState(defaultOpen)
 
@@ -59,7 +64,13 @@ export const FoldedLine = memo(function FoldedLine({
         <span className={cn('fold-arrow shrink-0 text-text-muted select-none', open && 'open')}>▸</span>
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </button>
-      <AnimatedCollapse open={open} lazy unmountOnClose className="ml-4" contentClassName={contentClassName}>
+      <AnimatedCollapse
+        open={open}
+        lazy={!keepMounted}
+        unmountOnClose={!keepMounted}
+        className="ml-4"
+        contentClassName={contentClassName}
+      >
         {children}
       </AnimatedCollapse>
     </div>

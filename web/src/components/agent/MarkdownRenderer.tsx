@@ -266,16 +266,16 @@ function clipTextNodes(root: HTMLElement, visibleChars: number): void {
   const nodes: Text[] = []
   let node: Node | null
   while ((node = walker.nextNode())) nodes.push(node as Text)
-  for (const text of nodes) {
-    const source = text.data
-    const runes = Array.from(source)
+  for (let i = 0; i < nodes.length; i++) {
+    const text = nodes[i]
+    const runes = Array.from(text.data)
     if (remaining >= runes.length) {
       remaining -= runes.length
       continue
     }
     text.data = runes.slice(0, remaining).join('')
     remaining = 0
-    for (const rest of nodes.slice(nodes.indexOf(text) + 1)) rest.data = ''
+    for (let j = i + 1; j < nodes.length; j++) nodes[j].data = ''
     break
   }
 }

@@ -72,13 +72,23 @@ export const LiveIteration = memo(function LiveIteration({
   // fallback that caused streaming-content class to persist after the turn
   // ended (streaming=false but phase still 'thinking' from the last event).
   const isLive = progress.streaming
+  // reasoning 只在 thinking 阶段流式增长；一旦进入 tool_exec/content 阶段，
+  // reasoning 已完成，不应再 typewriter（reload/刚加载时已完成的内容直接全量
+  // 显示，而不是从 0 重新播放）。
+  const reasoningStreaming = isLive && progress.phase === 'thinking'
   const tw = useTypewriter(isLive ? textContent : '')
-  const rw = useTypewriter(isLive ? reasoningContent : '')
+  const rw = useTypewriter(reasoningStreaming ? reasoningContent : '')
   // MarkdownRenderer receives the complete source text. It parses only when
   // this source changes; the typewriter changes visibleChars and clips the
   // already-rendered text nodes instead of reparsing Markdown on every tick.
   const displayText = textContent
   const displayReasoning = reasoningContent
+
+  // 折叠标题显示的思考字符数：reasoning 流式时用 typewriter 追赶值
+  // rw.visibleChars（gap/3 per 50ms 平滑增长，与 content typer 同源），避免
+  // reasoningContent.length 随 SSE chunk 直接跳变导致「一卡一卡」。reasoning
+  // 完成后静止，显示完整长度。
+  const reasoningCount = reasoningStreaming ? rw.visibleChars : reasoningContent.length
 
   // Merge all tool groups, using the shared dedupTools (generating skips dedup).
   // Filter activeTools AND completedTools by iteration number — only keep tools
@@ -161,17 +171,18 @@ export const LiveIteration = memo(function LiveIteration({
         <FoldedLine
           title={reasoningInProgress ? (
             <SweepText
-              text={t('agent.thinkingChars', { count: reasoningContent.length })}
+              text={t('agent.thinkingChars', { count: reasoningCount })}
               color="var(--text-muted)"
               className="text-xs"
             />
-          ) : t('agent.thinkingChars', { count: reasoningContent.length })}
+          ) : t('agent.thinkingChars', { count: reasoningCount })}
           defaultOpen={false}
+          keepMounted
         >
           <div className={rw.isTyping ? 'typewriter-fade' : 'typewriter-done'}>
             <ReasoningBlock
               content={displayReasoning}
-              visibleChars={isLive ? rw.visibleChars : undefined}
+              visibleChars={reasoningStreaming ? rw.visibleChars : undefined}
             />
           </div>
         </FoldedLine>

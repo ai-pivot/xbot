@@ -7,7 +7,8 @@
  *  - No streaming-content class when not streaming
  *  - SubAgent tree renders when subAgents present
  */
-import { describe, expect, it } from 'vitest'
+import { act } from 'react'
+import { describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { LiveIteration } from '@/components/agent/LiveIteration'
@@ -73,18 +74,41 @@ describe('LiveIteration — typewriter cursor', () => {
     expect(streamingDiv).toBeNull()
   })
 
-  it('sweeps the in-progress thought character count without a second reasoning sweep', () => {
-    const snapshot = makeSnapshot({
-      reasoningStreamContent: 'thinking about something',
-      streaming: true,
-      phase: 'thinking',
-    })
-    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
-    const sweep = container.querySelector<HTMLElement>('.sweep-text')
+  it('sweeps the in-progress thought character count with catch-up (smooth, not jump)', () => {
+    vi.useFakeTimers()
+    try {
+      const snapshot = makeSnapshot({
+        reasoningStreamContent: 'thinking about something',
+        streaming: true,
+        phase: 'thinking',
+      })
+      const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
 
-    expect(sweep).not.toBeNull()
-    expect(sweep).toHaveTextContent(String(snapshot.reasoningStreamContent.length))
-    expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
+      const full = snapshot.reasoningStreamContent.length // 24
+      const extractCount = () => {
+        const txt = container.querySelector<HTMLElement>('.sweep-text')?.textContent ?? ''
+        const m = txt.match(/\d+/)
+        return m ? Number(m[0]) : NaN
+      }
+
+      // 初始：typewriter 从 0 开始，数字尚未到达完整长度（不再是跳变到 full）
+      const initial = extractCount()
+      expect(initial).toBeLessThan(full)
+
+      // 追赶中途（gap/3 per 50ms）：数字增长但尚未追满
+      act(() => { vi.advanceTimersByTime(100) })
+      const mid = extractCount()
+      expect(mid).toBeGreaterThan(initial)
+      expect(mid).toBeLessThan(full)
+
+      // 追满：最终收敛到完整长度
+      act(() => { vi.advanceTimersByTime(2000) })
+      expect(extractCount()).toBe(full)
+
+      expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each(['pending', 'generating', 'running'] as const)(
