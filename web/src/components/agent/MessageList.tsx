@@ -102,8 +102,6 @@ export function MessageList({
   // tryScroll loop checks it to know if it's the latest follow (cancel
   // old loops when a new scheduleFollow supersedes them).
   const followGenRef = useRef(0)
-  // Double-rAF cleanup ref for loadMore anchor restore (inner rAF).
-  const cleanupRafRef = useRef<number | null>(null)
   // Marks scrolls caused by our own scheduleFollow (el.scrollTop = scrollHeight).
   // Set before the write and cleared via queueMicrotask after — so the flag is
   // only true during the synchronous scroll event our write dispatches, not
@@ -160,10 +158,11 @@ export function MessageList({
   // so the user's visible region stays put — new older rows appear above it,
   // which pushes the scrollbar toward the middle (not the top).
   const loadMoreAnchorIdRef = useRef<string | null>(null)
-  // 锚点行加载前顶部到视口顶部的偏移（item.start - scrollTop）。加载后
-  // el.scrollTop = 锚点行的新 start - 该偏移，让锚点行保持在视口中的原位置
-  // （用户看到的内容不变，滚动条落在中间）。
-  const loadMoreAnchorOffsetRef = useRef<number>(0)
+  // loadMore prepend 前的 scrollTop 与 totalSize 快照：prepend 后 scrollTop
+  // 增量补偿（ΔscrollTop == ΔtotalSize），让视口内容在 paint 前就保持不变——
+  // 新旧行只出现在视口上方，加载只是「数据多了」，不闪到顶部再跳回底部。
+  const loadMorePrevScrollTopRef = useRef<number>(0)
+  const loadMorePrevTotalSizeRef = useRef<number>(0)
   // Invariant guard: the "thinking…" busy placeholder must never render below
   // a FINISHED assistant (copy button shown — turn complete). A finished turn
   // followed by "thinking…" would imply the completed turn is still running.
@@ -431,17 +430,19 @@ export function MessageList({
           // → recursive loadMore (user report: "加载完后视角变到新内容最上方，
           // 导致再次触发加载").
           if (loadMoreAnchorIdRef.current !== null) return
-          // Capture the first VISIBLE row id BEFORE onLoadMore prepends older
-          // rows — this is the scroll anchor we restore after the load lands,
-          // so the viewport stays on the same content (not jumping to top).
-          const items = virtualizer.getVirtualItems()
-          const firstVisible = items[0]
-          if (firstVisible) {
-            const anchorRow = rowsRef.current[firstVisible.index]
-            loadMoreAnchorIdRef.current = anchorRow?.id ?? null
-            // 记录锚点行顶部到视口顶部的偏移，加载后用它恢复锚点行位置。
-            const scroller = scrollRef.current
-            loadMoreAnchorOffsetRef.current = scroller ? firstVisible.start - scroller.scrollTop : 0
+          // Capture a scroll-anchor snapshot BEFORE onLoadMore prepends older
+          // rows: current scrollTop + totalSize. After the prepend lands we
+          // restore via ΔscrollTop == ΔtotalSize (not absolute anchor-row
+          // lookup). That keeps the viewport pixel-stable on the same content —
+          // older rows appear ABOVE the viewport, so the user only sees "more
+          // data", never a jump-to-top then jump-back.
+          const scroller = scrollRef.current
+          if (scroller) {
+            loadMorePrevScrollTopRef.current = scroller.scrollTop
+            loadMorePrevTotalSizeRef.current = virtualizer.getTotalSize()
+            loadMoreAnchorIdRef.current = '__load-more__'
+          } else {
+            loadMoreAnchorIdRef.current = null
           }
           void onLoadMore()
         }
@@ -452,79 +453,35 @@ export function MessageList({
     return () => observer.disconnect()
   }, [hasMore, loadingMore, onLoadMore, virtualizer])
 
-  // ── loadMore scroll-anchor: restore viewport after older rows prepend ────
-  // Older rows prepend ABOVE the captured anchor, growing scrollHeight. Without
-  // restoring, the viewport jumps to the new top. We scroll the anchor row back
-  // to 'start' so the user's visible content is unchanged; the freshly loaded
-  // older rows sit above it, so the scrollbar lands mid-list (not at the top).
-  // Guarded by loadMoreAnchorIdRef so this is a no-op during normal streaming
-  // (the ref is only set in the IntersectionObserver callback right before a load).
+  // ── loadMore scroll-anchor: keep viewport pixel-stable via ΔscrollTop ────
+  // Older rows prepend ABOVE the captured anchor, growing totalSize. Instead of
+  // looking up an anchor row and scrollToIndex(它) (which required double-rAF +
+  // Retry for ResizeObserver to measure real heights — during which the
+  // viewport flashed to the top then jumped back), we do standard scroll
+  // anchoring: ΔscrollTop == ΔtotalSize. Use useLayoutEffect (runs synchronously
+  // BEFORE paint) so the compensation lands in the same frame as the prepend —
+  // the user sees the identical pixels, only "more data" above, never a jump.
   //
-  // Double-rAF: TanStack Virtual needs TWO frames after prepend — frame 1 mounts
-  // the new rows (estimated heights), frame 2 lets ResizeObserver measure real
-  // heights. Single rAF scrolls against estimated heights → wrong position →
-  // sentinel visible → recursive loadMore (user report: "加载完后视角变到新内容
-  // 最上方，导致再次触发加载").
-  // During the anchor restore, the IntersectionObserver is disabled (via
-  // loadMoreAnchorIdRef non-null check in the observer callback) to prevent
-  // the recursive trigger.
-  useEffect(() => {
+  // The prepend rows are estimated-height at this point (ResizeObserver hasn't
+  // measured them yet), so the ΔtotalSize here is estimated. The residual error
+  // is corrected later by TanStack's shouldAdjustScrollPositionOnItemSizeChange
+  // (configured below to only adjust items FULLY above the viewport), which
+  // fires as a scroll around and keeps visible content stable — no flash.
+  useLayoutEffect(() => {
     const anchorId = loadMoreAnchorIdRef.current
-    if (!anchorId) return
-    const newIdx = rowsRef.current.findIndex((m) => m.id === anchorId)
-    if (newIdx < 0) {
-      // 锚点行被 turnID:role merge 掉了（id 变了）——必须清 guard，否则
-      // loadMoreAnchorIdRef 永久非 null，IntersectionObserver 永远跳过，
-      // 滚动加载只触发一次（用户报告）。
-      loadMoreAnchorIdRef.current = null
-      return
-    }
+    if (anchorId !== '__load-more__') return
     const el = scrollRef.current
-    if (!el) {
-      loadMoreAnchorIdRef.current = null
-      return
-    }
-    const anchorOffset = loadMoreAnchorOffsetRef.current
-    // Double rAF: frame 1 = mount + estimate, frame 2 = measure real heights.
-    const raf1 = requestAnimationFrame(() => {
-      const raf2 = requestAnimationFrame(() => {
-        loadMoreAnchorIdRef.current = null
-        // align='start' 明确返回锚点行顶部 offset（item.start - scrollPaddingStart）。
-        // 默认 align='auto' 会在锚点行已在视口中时返回"当前 scrollOffset"而非其
-        // 位置（getOffsetForIndex 内部 618 行），减去 anchorOffset 后滚动位置错误
-        // （用户报告"卡一下就会跑顶上"）。
-        const applyAnchor = (attempts: number) => {
-          const off = virtualizer.getOffsetForIndex(newIdx, 'start')
-          if (off) {
-            programmaticScrollRef.current = true
-            el.scrollTop = off[0] - anchorOffset
-            queueMicrotask(() => { programmaticScrollRef.current = false })
-            return
-          }
-          // 测量未完成（getOffsetForIndex 对未测量行返回 undefined）——"卡一下"
-          // 时 ResizeObserver 可能还没触发，重试几帧等测量完成，避免锚定失效
-          // （scrollTop 保持加载前的 ≈0，视口显示新加载内容最上方 = 跳顶）。
-          // 重试次数对齐 scheduleFollow 的 30 次（~500ms）：TanStack Virtual 的
-          // lazy measurement（measureElement via ResizeObserver）对 markdown/
-          // code highlight 大列表可 >250ms —— 旧实现只重试 3 次（~50ms），
-          // prepend 的旧消息未测量完就放弃 → 滚动条跑到最上方（用户报告
-          // "加载之后滚动条还是会跑到最上方"）。
-          if (attempts > 0) {
-            requestAnimationFrame(() => applyAnchor(attempts - 1))
-          }
-        }
-        applyAnchor(30)
-      })
-      // Store raf2 for cleanup
-      cleanupRafRef.current = raf2
-    })
-    return () => {
-      cancelAnimationFrame(raf1)
-      if (cleanupRafRef.current !== null) {
-        cancelAnimationFrame(cleanupRafRef.current)
-        cleanupRafRef.current = null
-      }
-    }
+    loadMoreAnchorIdRef.current = null
+    if (!el) return
+    const newTotal = virtualizer.getTotalSize()
+    const delta = newTotal - loadMorePrevTotalSizeRef.current
+    if (delta <= 0) return
+    programmaticScrollRef.current = true
+    // Restore: old scrollTop + the prepended height. Content that was visible
+    // before loadMore stays at the same viewport position; the new older rows
+    // sit above (scrollbar moves toward the middle), exactly "data got more".
+    el.scrollTop = loadMorePrevScrollTopRef.current + delta
+    queueMicrotask(() => { programmaticScrollRef.current = false })
   }, [rows, virtualizer])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
