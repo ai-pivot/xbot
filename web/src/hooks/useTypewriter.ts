@@ -41,9 +41,18 @@ const TICK_MS = 50
 // last TAIL chars at a fixed small per-tick rate. This guarantees:
 //   - the typer always catches up (no fixed step cap that can fall behind)
 //   - the per-tick reveal is small and constant (no big/equal-distance jumps)
-const TAIL = 12
-// CHAR_PER_TICK is the fixed reveal rate within the tail region.
-const CHAR_PER_TICK = 3
+//
+// TAIL is the lag window: too small → a fast producer repeatedly breaches it
+// and re-triggers the "catch-up jump" every tick (the stutter returns); too
+// large → the final tail reveal feels sluggish. 40 chars is a comfortable
+// budget: it absorbs the chunky arrival of SSE text without dominating the
+// visual.
+const TAIL = 40
+// CHAR_PER_TICK is the fixed reveal rate inside the tail region. 6 chars/tick
+// = 120 chars/s comfortably paces typical streaming output; if a producer
+// exceeds it, the gap grows but gets clamped at TAIL (single catch-up jump),
+// which is far smoother than repeated equal-sized jumps.
+const CHAR_PER_TICK = 6
 
 export interface TypewriterState {
   /** Number of visible Unicode code points. The renderer clips its existing DOM to this count. */
