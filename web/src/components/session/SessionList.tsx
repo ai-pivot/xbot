@@ -178,7 +178,7 @@ export function SessionList({
         {showEmpty ? (
           <SessionEmptyState emptyList={emptyList} />
         ) : searching ? (
-          <div className="flex min-w-64 flex-col gap-0.5 p-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5 p-1">
             {searchResults.map((s) => (
               <div key={sessionKey(s)} className="flex flex-col gap-0.5">
                 <SessionItem
@@ -213,7 +213,7 @@ export function SessionList({
             ))}
           </div>
         ) : (
-          <div className="flex min-w-64 flex-col gap-1 p-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1 p-1">
             {mainGroups.map((g) => (
               <SessionGroup
                 key={g.key}
