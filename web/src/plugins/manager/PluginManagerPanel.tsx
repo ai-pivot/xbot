@@ -8,8 +8,9 @@
  * git-info、github、theme-party 等）。这与前端 Web 插件 v2（registry 里
  * 的 plugin-manager）是两套系统；本面板展示后端插件全貌。
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePluginRuntime } from '@/plugin-runtime'
+import { installPluginFile } from '@/components/agent/api'
 
 interface BackendPlugin {
   id: string
@@ -30,6 +31,8 @@ export function PluginManagerPanel() {
   const [backendPlugins, setBackendPlugins] = useState<BackendPlugin[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [installing, setInstalling] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -66,16 +69,48 @@ export function PluginManagerPanel() {
     }
   }
 
+  const onPickZip = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setInstalling(true)
+    setError(null)
+    try {
+      await installPluginFile(file)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setInstalling(false)
+    }
+  }
+
   return (
     <div className="flex h-full flex-col gap-2 p-3 text-xs">
       <div className="flex items-center justify-between">
         <span className="font-semibold uppercase tracking-wide text-text-secondary">插件</span>
-        <button
-          onClick={() => void refresh()}
-          className="rounded border border-border px-2 py-1 text-text-secondary hover:bg-bg-hover"
-        >
-          {loading ? '刷新中…' : '刷新'}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={installing}
+            className="rounded border border-border px-2 py-1 text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+          >
+            {installing ? '安装中…' : '安装'}
+          </button>
+          <button
+            onClick={() => void refresh()}
+            className="rounded border border-border px-2 py-1 text-text-secondary hover:bg-bg-hover"
+          >
+            {loading ? '刷新中…' : '刷新'}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".zip"
+            className="hidden"
+            onChange={onPickZip}
+          />
+        </div>
       </div>
 
       {error && <div className="rounded border border-red-200 bg-red-50 p-2 text-red-600">{error}</div>}

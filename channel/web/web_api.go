@@ -579,6 +579,64 @@ func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// handlePluginInstallFile handles POST /api/plugin/install-file.
+// Accepts multipart/form-data with a "file" field containing a single-plugin
+// zip (plugin.json at root or wrapped in one directory). The zip is saved to a
+// temp file, passed to plugin_install_file RPC (which extracts + installs), then
+// cleaned up. This mirrors handleMarketInstallFile but for single plugins —
+// no OSS round-trip, no cloud dependency.
+func (wc *WebChannel) handlePluginInstallFile(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "failed to parse multipart form"})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "no file uploaded"})
+		return
+	}
+	defer file.Close()
+
+	tmpFile, err := os.CreateTemp("", "xbot-plugin-*.zip")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to create temp file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to save uploaded file"})
+		return
+	}
+	tmpFile.Close()
+
+	_ = header // filename is informational; extraction derives plugin.json path
+
+	var resp struct {
+		ID  string `json:"id"`
+		Dir string `json:"dir"`
+	}
+	if err := wc.rpcCall("plugin_install_file", map[string]any{
+		"zip_path": tmpPath,
+	}, &resp); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":  true,
+		"id":  resp.ID,
+		"dir": resp.Dir,
+	})
+}
+
 // ---------------------------------------------------------------------------
 
 type llmConfigResponse struct {

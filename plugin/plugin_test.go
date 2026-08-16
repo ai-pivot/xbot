@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -2945,6 +2947,136 @@ func TestPluginManager_InstallPlugin(t *testing.T) {
 	// Verify plugin is in entries
 	if _, ok := pm.GetPlugin("com.test.install"); !ok {
 		t.Error("plugin not found in manager after install")
+	}
+}
+
+func TestPluginManager_InstallPlugin_MissingDependency(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	sourceDir := filepath.Join(baseDir, "source", "com.test.depcheck")
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.ID = "com.test.depcheck"
+	m.Dependencies = []PluginDependency{{ID: "com.missing.dep", Version: "1.0.0"}}
+	writeTestManifest(t, sourceDir, &m)
+
+	ctx := context.Background()
+	entry, err := pm.InstallPlugin(ctx, sourceDir)
+	if err == nil {
+		t.Fatal("expected error when installing plugin with missing dependency")
+	}
+
+	// 依赖未安装 → 插件必须停在 error 状态，绝不能进入 active。
+	if entry == nil {
+		t.Fatal("expected non-nil entry even on dependency failure")
+	}
+	if entry.State == StateActive {
+		t.Error("plugin must NOT be active when a dependency is missing")
+	}
+	if entry.State != StateError {
+		t.Errorf("expected StateError for missing dependency, got %v", entry.State)
+	}
+
+	// 插件目录已落到磁盘（安装本身成功），但未激活。
+	expectedDir := filepath.Join(baseDir, "plugins", "com.test.depcheck")
+	if _, statErr := os.Stat(expectedDir); statErr != nil {
+		t.Errorf("plugin dir not installed: %v", statErr)
+	}
+}
+
+func writeZip(t *testing.T, zipPath string, files map[string]string) {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zipPath, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPluginManager_InstallPluginFromZip(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	m := testManifest()
+	m.ID = "com.test.zip"
+	manifestJSON, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("plugin.json at zip root", func(t *testing.T) {
+		zipPath := filepath.Join(baseDir, "root.zip")
+		writeZip(t, zipPath, map[string]string{
+			"plugin.json": string(manifestJSON),
+			"data.txt":    "hello",
+		})
+
+		entry, err := pm.InstallPluginFromZip(context.Background(), zipPath)
+		if err != nil {
+			t.Fatalf("InstallPluginFromZip (root) failed: %v", err)
+		}
+		if entry.Manifest.ID != "com.test.zip" {
+			t.Errorf("expected ID com.test.zip, got %q", entry.Manifest.ID)
+		}
+	})
+
+	t.Run("plugin.json wrapped in a directory", func(t *testing.T) {
+		zipPath := filepath.Join(baseDir, "wrapped.zip")
+		wrapped := testManifest()
+		wrapped.ID = "com.test.zip.wrapped"
+		wrappedJSON, err := json.MarshalIndent(wrapped, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeZip(t, zipPath, map[string]string{
+			"my-plugin/plugin.json": string(wrappedJSON),
+			"my-plugin/data.txt":    "wrapped",
+		})
+
+		entry, err := pm.InstallPluginFromZip(context.Background(), zipPath)
+		if err != nil {
+			t.Fatalf("InstallPluginFromZip (wrapped) failed: %v", err)
+		}
+		if entry.Manifest.ID != "com.test.zip.wrapped" {
+			t.Errorf("expected ID com.test.zip.wrapped, got %q", entry.Manifest.ID)
+		}
+	})
+}
+
+func TestPluginManager_InstallPluginFromZip_NoManifest(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	zipPath := filepath.Join(baseDir, "nomanifest.zip")
+	writeZip(t, zipPath, map[string]string{"readme.txt": "no plugin.json here"})
+
+	_, err := pm.InstallPluginFromZip(context.Background(), zipPath)
+	if err == nil {
+		t.Fatal("expected error when zip has no plugin.json")
 	}
 }
 

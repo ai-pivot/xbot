@@ -1,9 +1,11 @@
 package plugin
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1091,6 +1093,19 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 
 	// Step 7: Auto-activate if has onStart event
 	if hasActivationEvent(installedManifest, "onStart") {
+		// 依赖未安装则不允许激活：缺失依赖会让插件停在 discovered 状态，
+		// 不进入 activate，并返回明确错误。
+		if missing := pm.findMissingDeps(installedManifest); len(missing) > 0 {
+			err := &ErrMissingDependency{PluginID: pluginID, Missing: missing[0]}
+			entry.stateMu.Lock()
+			entry.State = StateError
+			entry.lastError = err
+			entry.lastErrorAt = time.Now()
+			entry.stateMu.Unlock()
+			pm.notifyEvent(PluginEventError, pluginID, err, map[string]any{"phase": "install", "step": "dependencies", "missing": missing})
+			pm.audit(pluginID, AuditInstall, map[string]any{"missing_deps": missing}, err)
+			return entry, fmt.Errorf("install: %w", err)
+		}
 		if err4 := pm.activate(ctx, entry); err4 != nil {
 			return entry, fmt.Errorf("install: activation failed: %w", err4)
 		}
@@ -1100,6 +1115,97 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 	log.WithField("plugin", pluginID).WithField("dir", targetDir).Info("Plugin installed")
 	pm.audit(pluginID, AuditInstall, map[string]any{"dir": targetDir}, nil)
 	return entry, nil
+}
+
+// InstallPluginFromZip extracts a single-plugin zip (containing plugin.json) and
+// installs it. The zip may either have plugin.json at its root, or wrap the
+// plugin in a single top-level directory (both are auto-detected). After
+// extraction the temp dir is removed; InstallPlugin copies the plugin into
+// ~/.xbot/plugins/<id>/ and applies the same dependency validation + activation.
+func (pm *PluginManager) InstallPluginFromZip(ctx context.Context, zipPath string) (*PluginEntry, error) {
+	tmpDir, err := os.MkdirTemp("", "xbot-plugin-*")
+	if err != nil {
+		return nil, fmt.Errorf("plugin zip: create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := extractZip(zipPath, tmpDir); err != nil {
+		return nil, fmt.Errorf("plugin zip: %w", err)
+	}
+
+	pluginDir, err := locatePluginDir(tmpDir)
+	if err != nil {
+		return nil, fmt.Errorf("plugin zip: %w", err)
+	}
+
+	return pm.InstallPlugin(ctx, pluginDir)
+}
+
+// extractZip safely extracts a zip archive into destDir, guarding against zip
+// slip (paths escaping destDir).
+func extractZip(zipPath, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("open zip: %w", err)
+	}
+	defer r.Close()
+
+	destRoot := filepath.Clean(destDir) + string(os.PathSeparator)
+	for _, f := range r.File {
+		destPath := filepath.Join(destDir, f.Name)
+		if !strings.HasPrefix(filepath.Clean(destPath), destRoot) {
+			return fmt.Errorf("zip slip detected: %s", f.Name)
+		}
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(destPath, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+			return err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.Create(destPath)
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		if _, err := io.Copy(out, rc); err != nil {
+			out.Close()
+			rc.Close()
+			return err
+		}
+		out.Close()
+		rc.Close()
+	}
+	return nil
+}
+
+// locatePluginDir finds the directory containing plugin.json inside a freshly
+// extracted zip. It accepts plugin.json at the extraction root, or wrapped in a
+// single first-level subdirectory.
+func locatePluginDir(root string) (string, error) {
+	if _, err := os.Stat(filepath.Join(root, "plugin.json")); err == nil {
+		return root, nil
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return "", fmt.Errorf("read extraction dir: %w", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(root, e.Name())
+		if _, err := os.Stat(filepath.Join(candidate, "plugin.json")); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no plugin.json found in zip (root or first-level directory)")
 }
 
 // UninstallPlugin deactivates (if active), removes the plugin entry from the manager,
@@ -1382,6 +1488,20 @@ func hasActivationEvent(m *PluginManifest, event string) bool {
 		}
 	}
 	return false
+}
+
+// findMissingDeps returns the IDs of manifest dependencies that are not yet
+// installed (absent from pm.entries). Caller must hold pm.mu (write lock).
+// Installed means the dependency exists in entries — regardless of its current
+// active/error state — because activation order is resolved separately.
+func (pm *PluginManager) findMissingDeps(m *PluginManifest) []string {
+	var missing []string
+	for _, dep := range m.Dependencies {
+		if _, ok := pm.entries[dep.ID]; !ok {
+			missing = append(missing, dep.ID)
+		}
+	}
+	return missing
 }
 
 // resolveActivationOrder computes the topological activation order from current entries.

@@ -791,6 +791,9 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/app/install-file", wc.authenticatedPOST(wc.handleMarketInstallFile))
 	mux.HandleFunc("/api/app/uninstall", wc.authenticatedPOST(wc.handleMarketUninstall))
 
+	// Plugin install (single-plugin zip, multipart upload → local temp → install)
+	mux.HandleFunc("/api/plugin/install-file", wc.authenticatedPOST(wc.handlePluginInstallFile))
+
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		jsonErrorResponse(w, http.StatusNotFound, "endpoint not found")
 	})

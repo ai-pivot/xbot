@@ -1939,6 +1939,23 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 		}, nil
 	})
 
+	t["plugin_install_file"] = rpc1(func(ctx context.Context, p struct {
+		ZipPath string `json:"zip_path"`
+	}) (any, error) {
+		pm := h.Ag.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		entry, err := pm.InstallPluginFromZip(context.Background(), p.ZipPath)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{
+			"id":  entry.Manifest.ID,
+			"dir": entry.Dir,
+		}, nil
+	})
+
 	t["plugin_uninstall"] = rpc1(func(ctx context.Context, p struct {
 		ID string `json:"id"`
 	}) (any, error) {
