@@ -20,6 +20,8 @@ export interface PluginValidationIssue {
 
 export interface PluginRuntimeState {
   id: string
+  /** 插件显示名（来自 manifest.name）。 */
+  name: string
   version: string
   enabled: boolean
   status: 'active' | 'inactive' | 'error' | 'reloading'
@@ -144,6 +146,7 @@ export class ContributionRegistry {
       exports,
       state: {
         id: manifest.id,
+        name: manifest.name,
         version: manifest.version,
         enabled: true,
         status: 'active',
