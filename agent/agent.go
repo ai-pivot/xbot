@@ -1378,6 +1378,20 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		return
 	}
 
+	// An AskUser panel cancel (ask_user_response cancelled:true, routed here
+	// from web.go with the ask_user_cancel marker) reaching a state with NO
+	// active Run and NO pending prompt means the AskUser interaction has
+	// already fully resolved (answer processed via this or another client,
+	// or the WaitingUser turn already ended). This is a stale/duplicate cancel
+	// — arming pendingCancel here would poison the user's NEXT message: its
+	// Run starts and registerActiveCancelState immediately cancels it
+	// ("cancel 掉 AskUser 后，下一条消息被取消了"). Ignore it entirely.
+	if msg.Metadata != nil && msg.Metadata["ask_user_cancel"] == "true" {
+		a.cancelStateMu.Unlock()
+		log.WithField("cancel_key", cancelKey).Info("AskUser cancel ignored: no active Run and no pending AskUser prompt")
+		return
+	}
+
 	// The request is queued or waiting for a semaphore. Its worker consumes
 	// this marker before processMessage starts and sends the acknowledgement
 	// only after the cancellation has completed.

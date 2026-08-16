@@ -1724,8 +1724,13 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 				continue
 			}
 			if resp.Cancelled {
-				// User cancelled — send /cancel equivalent
-				cancelMeta := map[string]string{}
+				// User cancelled — send /cancel equivalent. Mark it as an
+				// AskUser cancel so interceptCancel knows NOT to arm
+				// pendingCancel when neither an active Run nor a pending
+				// prompt exists — a stale panel cancel (prompt already
+				// resolved via another client/device) must never cancel the
+				// user's NEXT message.
+				cancelMeta := map[string]string{"ask_user_cancel": "true"}
 				withPhysicalChannel(cancelMeta, c.isCLI)
 				wc.msgBus.Inbound <- bus.InboundMessage{
 					Channel:    respChannel,

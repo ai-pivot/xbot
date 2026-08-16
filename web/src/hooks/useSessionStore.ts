@@ -1257,7 +1257,16 @@ export function useSessionStoreImpl(): SessionStore {
             const options = Array.isArray(o.options)
               ? o.options.filter((x): x is string => typeof x === 'string')
               : undefined
-            questions.push({ question, options })
+            // Backend serializes AskUserQuestion as snake_case (multi_select /
+            // allow_other, see protocol/events.go). Map to the frontend
+            // camelCase fields so AskUserPanel renders multi-select checkboxes
+            // and the "Other" toggle — without this they are always undefined.
+            questions.push({
+              question,
+              options,
+              multiSelect: o.multi_select === true,
+              allowOther: o.allow_other === true,
+            })
           }
         }
         const requestId = (p?.request_id as string | undefined) ?? msg.id ?? String(Date.now())

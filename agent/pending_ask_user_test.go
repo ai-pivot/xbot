@@ -297,3 +297,43 @@ func TestCancelAfterActiveTeardownTargetsNextQueuedContinuation(t *testing.T) {
 	default:
 	}
 }
+
+func TestAskUserCancelAfterPromptResolvedDoesNotArmPendingCancel(t *testing.T) {
+	a := &Agent{bus: bus.NewMessageBus()}
+	key := "web:chat-1"
+	// The AskUser interaction has FULLY resolved: no active Run (WaitingUser
+	// turn finished / answer processed) and no pending prompt (cleared by the
+	// answer path). The web panel may still be showing its Cancel button — the
+	// user taps it, web.go routes an /cancel tagged with ask_user_cancel.
+	// interceptCancel MUST NOT arm pendingCancel here: the very next message
+	// the user types would have its Run cancelled the instant it starts
+	// (registerActiveCancelState consumes the pending marker and calls
+	// reqCancel) — "cancel 掉 AskUser 后发下一条消息被取消了".
+	a.interceptCancel(bus.InboundMessage{
+		Channel:  "web",
+		ChatID:   "chat-1",
+		Content:  "/cancel",
+		Metadata: map[string]string{"ask_user_cancel": "true"},
+	})
+	if _, pending := a.pendingCancel.LoadAndDelete(key); pending {
+		t.Fatal("AskUser cancel after prompt resolution armed pendingCancel for the next turn")
+	}
+	select {
+	case ack := <-a.bus.Outbound:
+		t.Fatalf("no-op AskUser cancel must not emit a cancel ack: %#v", ack)
+	default:
+	}
+}
+
+func TestGenericCancelWithoutActiveRunStillArmsPendingCancel(t *testing.T) {
+	a := &Agent{bus: bus.NewMessageBus()}
+	key := "web:chat-1"
+	// A generic /cancel (user typing /cancel, MessageInput stop button) with no
+	// active Run MUST still arm pendingCancel — that is the documented way to
+	// cancel a request still sitting in the queue. Only AskUser cancels are
+	// exempt (the tagged path above).
+	a.interceptCancel(bus.InboundMessage{Channel: "web", ChatID: "chat-1", Content: "/cancel"})
+	if _, pending := a.pendingCancel.LoadAndDelete(key); !pending {
+		t.Fatal("generic /cancel with no active Run must arm pendingCancel for the queued request")
+	}
+}

@@ -407,7 +407,7 @@ export function AgentPanel({ params }: PanelProps) {
           busy={busy}
           cancelling={chat.cancelling}
           onSend={sendMessage}
-          onCancel={chat.cancel}
+          onCancel={askUser.prompt ? askUser.cancel : chat.cancel}
           onRewindLatest={rewindLatest}
           onOpenTasks={() => rightSidebar.openPanel('tasks')}
           onUpload={chat.upload}
