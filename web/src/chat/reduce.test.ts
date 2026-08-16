@@ -15,6 +15,7 @@ import {
   type ChatState,
   type DomainEvent,
 } from './types'
+import type { WebIteration } from '@/types/shared'
 
 // ─── 测试 DSL ─────────────────────────────────────────────────
 
@@ -386,6 +387,56 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       expect(t1.phase.payload.iterations).toHaveLength(2)
       expect(t1.phase.payload.iterations[0].content).toBe('cancel 补齐的权威迭代内容')
       expect(t1.phase.payload.iterations[1].content).toBe('cancel 前的迭代内容')
+    }
+  })
+
+  it('AskUser cancel: finalText 落到当前迭代（live.iter），不覆盖上一个已完成迭代', () => {
+    // 场景：turn 已完成 iter1、iter2（iterations=[1,2]）；AskUser 工具在 iter3 中
+    // 调用 → WaitingUser（live.iter=3，iter3 未完成、无 in-flight 工具 ——
+    // activeTools 为空）。用户点 Cancel → text_final(cancelled, content=null)，
+    // cancel ack 不带 progressHistory。回归 bug：旧代码把 finalText
+    // （= nonEmptyStr(live.content) = 'iter3 content'）无条件覆盖到【最后一个
+    // 已存在迭代】（iter2）→ iter2 的 content 变成 iter3 的文本（用户报告：
+    // "askuser 取消后迭代渲染混乱顺序错乱"——已完成迭代内容被当前迭代文本覆盖）。
+    // ⚠️ 不能 spread iteration1() 再加 seq —— DomainEvent union 的 turn_started
+    // 成员没有 seq 属性，tsc build 报错。用完整字面量构造。
+    const iterEvent = (iter: number, content: string, seq: number, delta: WebIteration[]): DomainEvent => ({
+      type: 'iteration',
+      turnID: T1,
+      iter: iterNum(iter),
+      seq: seq as never,
+      content,
+      reasoning: undefined,
+      activeTools: [],
+      completedTools: [],
+      iterationsDelta: delta,
+      todos: undefined,
+      subAgents: undefined,
+      tokenUsage: undefined,
+    })
+    const s = run([
+      started(T1),
+      iteration1(T1, 'iter1 content', 1),
+      iterEvent(2, 'iter2 content', 11, [{ iteration: 1, content: 'iter1 content', reasoning: '', tools: [], toolCount: 0 }]),
+      iterEvent(3, 'iter3 content', 12, [{ iteration: 2, content: 'iter2 content', reasoning: '', tools: [], toolCount: 0 }]),
+    ])
+    const t = s.turns.get(T1)!
+    expect(t.phase.kind).toBe('live')
+    if (t.phase.kind === 'live') {
+      expect(t.phase.data.iter).toBe(3)
+      expect(t.phase.data.iterations.map((i) => i.iteration)).toEqual([1, 2])
+      expect(t.phase.data.content).toBe('iter3 content')
+    }
+
+    const s2 = run([textFinal(T1, null, true)], s)
+    const t2 = s2.turns.get(T1)!
+    expect(t2.phase.kind).toBe('committed')
+    if (t2.phase.kind === 'committed') {
+      // iter2 内容必须保持（不被 iter3 的文本覆盖）。
+      expect(t2.phase.payload.iterations.find((i) => i.iteration === 2)?.content).toBe('iter2 content')
+      // 当前迭代 iter3 的内容必须保留（追加为完成迭代）。
+      const it3 = t2.phase.payload.iterations.find((i) => i.iteration === 3)
+      expect(it3?.content).toBe('iter3 content')
     }
   })
 

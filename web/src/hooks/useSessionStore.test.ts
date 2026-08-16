@@ -636,8 +636,60 @@ describe('normalizeSessionTree', () => {
     expect(result.current.sessions[0].status).toBe('waiting_input')
     expect(result.current.askUserPrompts.get('cli:/repo')).toEqual({
       requestId: 'request-1',
-      questions: [{ question: 'Continue?', options: ['yes', 'no'] }],
+      questions: [{ question: 'Continue?', options: ['yes', 'no'], multiSelect: false, allowOther: false }],
     })
+  })
+
+  it('propagates multi_select / allow_other from the backend snake_case fields', async () => {
+    // The backend serializes AskUserQuestion as `multi_select` / `allow_other`
+    // (protocol/events.go JSON tags). The frontend AskUserPrompt uses camelCase
+    // (multiSelect / allowOther) — the parse layer MUST map them, otherwise
+    // AskUserPanel never renders the multi-select checkboxes / Other toggle.
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: '/repo',
+              channel: 'cli',
+              label: 'repo',
+              last_active: '2026-07-08T00:00:00Z',
+              is_current: true,
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'cli',
+        chat_id: '/repo',
+        progress: {
+          request_id: 'request-2',
+          questions: [
+            { question: 'Pick', options: ['a', 'b'], multi_select: true },
+            { question: 'Color', options: ['red'], allow_other: true },
+          ],
+        },
+      })
+    })
+
+    const prompt = result.current.askUserPrompts.get('cli:/repo')
+    expect(prompt?.questions).toEqual([
+      { question: 'Pick', options: ['a', 'b'], multiSelect: true, allowOther: false },
+      { question: 'Color', options: ['red'], multiSelect: false, allowOther: true },
+    ])
   })
 
   it('sends the selected channel when renaming and deleting matching chat IDs', async () => {

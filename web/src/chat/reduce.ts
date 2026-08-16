@@ -395,11 +395,29 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // v55 渲染层 hasIterations=true 时不渲染顶层 content —— 最终回复必须存在于
       // 迭代内（否则 'all' 折叠的 lastText 取最后迭代 reasoning，回复丢失，
       // notification turn 用户报告："Done processing notification" 不显示）。
-      // 无条件覆盖最后迭代 content（AGENTS.md v55 权威语义：text 顶层 content 是
-      // 最终回复的唯一权威值；thinking 会 fallback 到 content，不能用 content
-      // 非空条件判断）。
+      // ⚠️ finalText 属于【进行中的迭代】，不是简单的"最后一个已存在迭代"：
+      //    进行中迭代号 = max(live.iter, progressHistory 最后迭代号) ——
+      //    progressHistory 可能已补齐全（后端权威快照比前端 live 领先，如
+      //    cancel 时后端已到 iter2 而前端只收到 iter1），此时 finalText
+      //    （cancel 定格 content）属于 progressHistory 的最后一个迭代。
+      //    - 该迭代已在 iterations 里 → 覆盖它（正常完成 / progressHistory 补齐）。
+      //    - 未在且比最后一个大（AskUser cancel：AskUser 工具调用中取消，无
+      //      in-flight 工具 → 不触发 foldInFlightTools 追加）→ 【追加】新迭代。
+      //      旧代码无条件覆盖最后一个已存在迭代，把已完成迭代的 content 替换成
+      //      当前迭代文本 —— 用户报告"askuser 取消后迭代渲染混乱顺序错乱"
+      //      （iter2 内容变成 iter3 文本）。
+      const iterListLast = iterations.length > 0 ? iterations[iterations.length - 1].iteration : 0
+      const inFlightIter = Math.max(live.iter, iterListLast)
       const iterationsFinal = finalText !== null && iterations.length > 0
-        ? iterations.map((it, i) => i === iterations.length - 1 ? { ...it, content: finalText } : it)
+        ? (iterations.some((it) => it.iteration === inFlightIter)
+            ? iterations.map((it) => it.iteration === inFlightIter ? { ...it, content: finalText } : it)
+            : [...iterations, {
+                iteration: inFlightIter,
+                content: finalText,
+                reasoning: live.reasoning ?? '',
+                tools: [],
+                toolCount: 0,
+              }])
         : iterations
 
       let payload

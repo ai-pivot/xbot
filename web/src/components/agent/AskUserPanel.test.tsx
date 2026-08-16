@@ -173,4 +173,31 @@ describe('AskUserPanel', () => {
     fireEvent.keyDown(free, { key: 'Enter', isComposing: false })
     expect(onRespond).not.toHaveBeenCalled() // Q2 unanswered → allAnswered=false
   })
+
+  it('clicking the checkbox icon area toggles exactly once (no nested-button double toggle)', () => {
+    // The multi-select option row is a <button role="checkbox">. Its inner
+    // visual check box MUST be a plain <span> — an inner <button> (Checkbox
+    // component renders one) is invalid nested HTML and fires the outer
+    // onClick TWICE (inner handler + event bubbling), so clicking the icon
+    // area selected-and-immediately-deselected the option (looks dead,
+    // especially on phones where the icon is the tap target).
+    renderWithProviders(
+      <AskUserPanel
+        prompt={makePrompt([{ question: 'Pick', options: ['a', 'b'], multiSelect: true }])}
+        onRespond={onRespond}
+        onCancel={onCancel}
+      />,
+    )
+    const outerA = screen.getByRole('checkbox', { name: 'a' })
+    // The inner visual check box: a nested <button> (Checkbox) before the fix,
+    // a plain <span> after. Clicking it must toggle the option exactly once.
+    const innerVisual = outerA.querySelector('button') ?? outerA.querySelector('span')
+    expect(innerVisual).not.toBeNull()
+    fireEvent.click(innerVisual!)
+    // Single toggle → 'a' is selected.
+    expect(outerA).toHaveAttribute('aria-checked', 'true')
+    // Clicking again toggles back off — still exactly one toggle per click.
+    fireEvent.click(innerVisual!)
+    expect(outerA).toHaveAttribute('aria-checked', 'false')
+  })
 })

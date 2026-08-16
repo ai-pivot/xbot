@@ -17,7 +17,6 @@ import { Check, HelpCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { Checkbox } from '@/components/ui/checkbox'
 import { MarkdownRenderer } from '@/components/agent/MarkdownRenderer'
 import { useI18n } from '@/providers/i18n'
 import type { AskUserPrompt } from '@/types/agent'
@@ -165,11 +164,22 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                                 : 'border-border text-text-secondary hover:bg-bg-tertiary',
                             )}
                           >
-                            <Checkbox
-                              checked={selectedOpt}
-                              onCheckedChange={() => toggleOption(i, opt, true)}
-                              className="pointer-events-none"
-                            />
+                            {/* Pure-visual check box — MUST be a <span>, NOT the
+                                Checkbox component (which renders a <button>):
+                                nesting a button inside the option <button> is
+                                invalid HTML and fires the outer onClick TWICE
+                                (inner handler + bubbling), so tapping the icon
+                                area toggled select→deselect in one click. */}
+                            <span
+                              className={cn(
+                                'flex size-4 shrink-0 items-center justify-center rounded-sm border transition-colors',
+                                selectedOpt ? 'border-accent bg-accent' : 'border-input',
+                              )}
+                            >
+                              {selectedOpt && (
+                                <Check className="size-3 text-white dark:text-black" strokeWidth={3} />
+                              )}
+                            </span>
                             {opt}
                           </button>
                         )
