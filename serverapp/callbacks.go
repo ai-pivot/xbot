@@ -525,7 +525,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// For web channel: use ChatService.ListUserChats (includes user-created chatrooms).
 		if channel == "" || channel == "web" {
 			cs := sqlite.NewChatService(webDB)
-			chats, err := cs.ListUserChats("web", senderID, currentChatID)
+			chats, _, err := cs.ListUserChats("web", senderID, currentChatID, 0, -1)
 			if err != nil {
 				return nil, err
 			}
@@ -610,7 +610,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		applyWebRunningStatuses(ag, rows)
 		return rows, nil
 	}
-	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool) (web.SessionTreeResult, error) {
+	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool, offset, limit int) (web.SessionTreeResult, error) {
 		if webDB == nil {
 			return web.SessionTreeResult{}, nil
 		}
@@ -620,7 +620,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			webCurrent = current.ChatID
 		}
 		cs := sqlite.NewChatService(webDB)
-		webChats, err := cs.ListUserChats("web", senderID, webCurrent)
+		// Paginate only the web user_chats (the dominant case). Other channels
+		// (cli/feishu/qq/agent) are always loaded in full — they are far fewer
+		// and their pagination would interleave with buildSessionTree's
+		// sub-agent attachment.
+		webChats, hasMore, err := cs.ListUserChats("web", senderID, webCurrent, offset, limit)
 		if err != nil {
 			return web.SessionTreeResult{}, err
 		}
@@ -706,7 +710,17 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			return web.SessionTreeResult{}, err
 		}
 		applyWebRunningStatuses(ag, subagents)
-		return buildSessionTree(mains, subagents), nil
+		result := buildSessionTree(mains, subagents)
+		result.HasMore = hasMore
+		// NextOffset = offset + user_chats loaded this page. len(webChats)
+		// includes the default chat (always first, not paginated), so subtract
+		// one. The default chat never advances the offset.
+		if len(webChats) > 0 {
+			result.NextOffset = offset + len(webChats) - 1
+		} else {
+			result.NextOffset = offset
+		}
+		return result, nil
 	}
 	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64, model string) (string, error) {
 		if webDB == nil {

@@ -49,20 +49,41 @@ func NewChatService(db *DB) *ChatService {
 // Includes the default chat (chatID=senderID) even if not in user_chats table.
 // If currentChatID is non-empty, marks that chat as current.
 // Uses a single SQL query with LEFT JOIN to avoid N+1 per-chatID queries.
-func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]UserChatWithPreview, error) {
+//
+// Pagination: offset/limit page over the user_chats rows ONLY. The default chat
+// (chat_id == senderID, not stored in user_chats) is always returned first and
+// never counts toward offset/limit. Rows are returned in the same stable order
+// as the frontend sortSessions (minus starred, which is a frontend localStorage
+// state): sort_order>0 first (ascending), then created_at ascending.
+// hasMore reports whether more user_chats rows exist beyond offset+limit.
+func (s *ChatService) ListUserChats(channel, senderID, currentChatID string, offset, limit int) ([]UserChatWithPreview, bool, error) {
 	conn := s.db.Conn()
 
-	// Collect all chat IDs for this user:
-	// 1. Default chat (chat_id = senderID)
-	// 2. User-created chats from user_chats table
+	// Default chat (chat_id == senderID) is always first and not paginated.
 	chatIDs := []string{senderID}
 
+	// Count user_chats rows (excluding the default chat) for hasMore.
+	var totalRows int
+	if err := conn.QueryRow(
+		"SELECT COUNT(*) FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id != ?",
+		channel, senderID, senderID,
+	).Scan(&totalRows); err != nil {
+		return nil, false, fmt.Errorf("count user chats: %w", err)
+	}
+
 	rows, err := conn.Query(
-		"SELECT chat_id, label, created_at, sort_order FROM user_chats WHERE channel = ? AND sender_id = ?",
-		channel, senderID,
+		`SELECT chat_id, label, created_at, sort_order
+		 FROM user_chats
+		 WHERE channel = ? AND sender_id = ? AND chat_id != ?
+		 ORDER BY
+		   CASE WHEN sort_order > 0 THEN 0 ELSE 1 END,
+		   sort_order ASC,
+		   created_at ASC
+		 LIMIT ? OFFSET ?`,
+		channel, senderID, senderID, limit, offset,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list user chats: %w", err)
+		return nil, false, fmt.Errorf("list user chats: %w", err)
 	}
 	defer rows.Close()
 
@@ -82,9 +103,17 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 		chatIDs = append(chatIDs, cid)
 		chatMap[cid] = chatMeta{label: label, createdAt: createdAt, sortOrder: sortOrder}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("iterate user chats: %w", err)
+	}
+
+	// hasMore: whether more user_chats rows exist beyond offset+limit.
+	// limit < 0 means "no pagination" (used by ChatList / admin full views), so
+	// hasMore is always false in that mode.
+	hasMore := limit >= 0 && offset+limit < totalRows
 
 	if len(chatIDs) == 0 {
-		return nil, nil
+		return nil, hasMore, nil
 	}
 
 	// Single query: LEFT JOIN tenants + latest session message preview for all chatIDs.
@@ -107,7 +136,7 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 
 	rows2, err := conn.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query tenant metadata: %w", err)
+		return nil, false, fmt.Errorf("query tenant metadata: %w", err)
 	}
 	defer rows2.Close()
 
@@ -156,7 +185,7 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string) ([]
 		})
 	}
 
-	return result, nil
+	return result, hasMore, nil
 }
 
 // CreateChat creates a new chatroom for a user. Returns the new chatID.

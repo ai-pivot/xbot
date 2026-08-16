@@ -61,6 +61,10 @@ interface SessionListProps {
   onToggleSelect?: (key: string, shiftKey: boolean) => void
   /** Drag-and-drop reorder. Called with the new chatID order. */
   onReorder?: (channel: string, orderedIDs: string[]) => Promise<boolean>
+  /** Backend pagination: whether more web sessions exist beyond the loaded set. */
+  hasMore?: boolean
+  /** Backend pagination: fetch the next page of web sessions. */
+  onLoadMore?: () => void
 }
 
 type DialogState = { id: string; channel: string; label: string } | null
@@ -83,6 +87,8 @@ export function SessionList({
   selectedIds,
   onToggleSelect,
   onReorder,
+  hasMore = false,
+  onLoadMore,
 }: SessionListProps) {
   const { t } = useI18n()
   const [rename, setRename] = useState<DialogState>(null)
@@ -90,7 +96,6 @@ export function SessionList({
   const [renameDraft, setRenameDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const draggedKeyRef = useRef<string | null>(null)
-  const [visibleCount, setVisibleCount] = useState(SESSION_PAGE_SIZE)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
 
   const mainSessions = useMemo(() => sessions.filter((s) => !isSubAgentSession(s) && (!s.synthetic || (s.children || []).some(c => c.running || c.status === 'running' || c.status === 'pending' || c.status === 'waiting_input'))), [sessions])
@@ -119,40 +124,27 @@ export function SessionList({
   const emptyList = mainSessions.length === 0
   const showEmpty = searching ? searchResults.length === 0 : emptyList
 
-  // ── Pagination: bound the rendered window, grow it on scroll near bottom ──
-  // Reset the window whenever the list identity changes (category / search /
-  // main-session set). Only count top-level main sessions.
-  useEffect(() => {
-    setVisibleCount(SESSION_PAGE_SIZE)
-  }, [query, category, sessions])
-
-  const visibleSearchResults = useMemo(
-    () => searchResults.slice(0, visibleCount),
-    [searchResults, visibleCount],
-  )
-  const visibleGroups = useMemo(
-    () => limitGroups(mainGroups, visibleCount),
-    [mainGroups, visibleCount],
-  )
-  const totalMainCount = searching ? searchResults.length : totalGroupSessionCount(mainGroups)
-  const hasMore = visibleCount < totalMainCount
+  // ── Backend pagination: the store already holds the loaded page(s) ─────────
+  // hasMore comes from the store (backend session-tree). When the sentinel at
+  // the bottom becomes visible, request the next page via onLoadMore. Search is
+  // a frontend filter over the already-loaded set, so it does NOT paginate.
 
   // Sentinel at the bottom of the list: when it becomes visible (user scrolled
-  // near the end), grow the window by one page.
+  // near the end), fetch the next backend page.
   useEffect(() => {
     const sentinel = sentinelRef.current
-    if (!sentinel || !hasMore) return
+    if (!sentinel || !hasMore || !onLoadMore) return
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) {
-          setVisibleCount((c) => c + SESSION_PAGE_SIZE)
+          onLoadMore()
         }
       },
       { root: sentinel.closest('[data-slot="scroll-area-viewport"]') as Element | null },
     )
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasMore, visibleGroups, visibleSearchResults])
+  }, [hasMore, onLoadMore, searching, searchResults, mainGroups])
 
   const childrenForSearch = (parent: SessionInfo): SessionInfo[] => {
     const children = childrenForParent(parent).filter(isVisibleSubAgent)
@@ -216,7 +208,7 @@ export function SessionList({
           <SessionEmptyState emptyList={emptyList} />
         ) : searching ? (
           <div className="flex min-w-0 flex-1 flex-col gap-0.5 p-1">
-            {visibleSearchResults.map((s) => (
+            {searchResults.map((s) => (
               <div key={sessionKey(s)} className="flex flex-col gap-0.5">
                 <SessionItem
                   session={s}
@@ -252,7 +244,7 @@ export function SessionList({
           </div>
         ) : (
           <div className="flex min-w-0 flex-1 flex-col gap-1 p-1">
-            {visibleGroups.map((g) => (
+            {mainGroups.map((g) => (
               <SessionGroup
                 key={g.key}
                 groupKey={g.key}
@@ -402,37 +394,4 @@ function isVisibleSubAgent(session: SessionInfo): boolean {
   // (now fixed) unreliable running flag even active ones could disappear.
   // Only historical legacy rows are hidden.
   return session.historical !== true
-}
-
-// ── Sidebar pagination ──────────────────────────────────────────────────────
-// The session list can hold hundreds/thousands of main sessions. Rendering all
-// rows up front is slow and makes the initial sidebar paint heavy, so we render
-// a bounded window and grow it as the user scrolls near the bottom (via a
-// sentinel + IntersectionObserver). Pagination counts TOP-LEVEL main sessions —
-// SubAgent children always render with their parent, so the "count" matches the
-// visible main rows regardless of how many children each has.
-const SESSION_PAGE_SIZE = 60
-
-function limitGroups(
-  groups: { key: string; sessions: SessionInfo[] }[],
-  limit: number,
-): { key: string; sessions: SessionInfo[] }[] {
-  const result: { key: string; sessions: SessionInfo[] }[] = []
-  let count = 0
-  for (const g of groups) {
-    if (count >= limit) break
-    const remaining = limit - count
-    const sessions = g.sessions.slice(0, remaining)
-    if (sessions.length === 0) continue
-    result.push({ key: g.key, sessions })
-    count += sessions.length
-  }
-  return result
-}
-
-/** Total top-level main-session count across all groups. */
-function totalGroupSessionCount(groups: { key: string; sessions: SessionInfo[] }[]): number {
-  let n = 0
-  for (const g of groups) n += g.sessions.length
-  return n
 }

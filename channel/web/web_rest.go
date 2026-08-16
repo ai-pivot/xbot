@@ -643,7 +643,25 @@ func (wc *WebChannel) handleChatDeletePOST(w http.ResponseWriter, r *http.Reques
 }
 
 func (wc *WebChannel) handleSessionTreePOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleSessionTree(w, legacyRequest(r, http.MethodGet, nil, nil))
+	// Read optional pagination params from the POST body and forward them as
+	// query params to the legacy GET handler. Absent limit → full list (limit=-1),
+	// preserving backward compatibility for callers that don't paginate.
+	var req struct {
+		Offset int `json:"offset,omitempty"`
+		Limit  int `json:"limit,omitempty"`
+	}
+	body, _ := io.ReadAll(r.Body)
+	if len(bytes.TrimSpace(body)) > 0 {
+		_ = json.Unmarshal(body, &req)
+	}
+	query := url.Values{}
+	if req.Offset > 0 {
+		query.Set("offset", strconv.Itoa(req.Offset))
+	}
+	if req.Limit != 0 {
+		query.Set("limit", strconv.Itoa(req.Limit))
+	}
+	wc.handleSessionTree(w, legacyRequest(r, http.MethodGet, query, nil))
 }
 
 func (wc *WebChannel) handleRunnersListPOST(w http.ResponseWriter, r *http.Request) {

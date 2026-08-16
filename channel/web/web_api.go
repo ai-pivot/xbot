@@ -1048,7 +1048,7 @@ func (wc *WebChannel) handleChats(w http.ResponseWriter, r *http.Request) {
 		// list. Keep ?channel=... for compatibility with older clients.
 		if _, ok := r.URL.Query()["channel"]; !ok {
 			if wc.callbacks.SessionTree != nil {
-				result, err := wc.callbacks.SessionTree(senderID, sel, wc.isAdmin(r.Context(), senderID))
+				result, err := wc.callbacks.SessionTree(senderID, sel, wc.isAdmin(r.Context(), senderID), 0, -1)
 				if err != nil {
 					jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 					return
@@ -1220,7 +1220,22 @@ func (wc *WebChannel) handleSessionTree(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sessions": []any{}})
 		return
 	}
-	result, err := wc.callbacks.SessionTree(senderID, wc.GetCurrentSession(senderID), wc.isAdmin(r.Context(), senderID))
+
+	// Parse pagination params (default: no pagination). Limit < 0 means "all".
+	offset := 0
+	limit := -1
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			offset = n
+		}
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+
+	result, err := wc.callbacks.SessionTree(senderID, wc.GetCurrentSession(senderID), wc.isAdmin(r.Context(), senderID), offset, limit)
 	if err != nil {
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1229,6 +1244,8 @@ func (wc *WebChannel) handleSessionTree(w http.ResponseWriter, r *http.Request) 
 		"ok":               true,
 		"sessions":         result.Sessions,
 		"orphan_subagents": result.OrphanSubAgents,
+		"has_more":         result.HasMore,
+		"next_offset":      result.NextOffset,
 	})
 }
 

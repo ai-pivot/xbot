@@ -172,7 +172,7 @@ type WebCallbacks struct {
 	// SubAgentList returns Web-only SubAgent rows for the sidebar tree.
 	SubAgentList func(senderID string, admin bool) ([]UserChatWithPreview, error)
 	// SessionTree returns Web-only main sessions with SubAgent children already attached.
-	SessionTree func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error)
+	SessionTree func(senderID string, current SessionSelector, admin bool, offset, limit int) (SessionTreeResult, error)
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
 	// model is an optional explicit model name for the new session; when empty
 	// the backend falls back to the default binding (Balance tier first).
@@ -278,6 +278,13 @@ type SessionTreeNode struct {
 type SessionTreeResult struct {
 	Sessions        []SessionTreeNode     `json:"sessions"`
 	OrphanSubAgents []UserChatWithPreview `json:"orphan_subagents,omitempty"`
+	// HasMore reports whether more paginated web user_chats exist beyond the
+	// requested offset/limit.
+	HasMore bool `json:"has_more,omitempty"`
+	// NextOffset is the offset to pass for the next page. It equals
+	// offset + (web user_chats loaded this page). The default chat is not
+	// paginated and never advances the offset.
+	NextOffset int `json:"next_offset,omitempty"`
 }
 
 // HistorySnapshot is the Web-only /api/history response payload.

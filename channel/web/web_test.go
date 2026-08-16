@@ -402,7 +402,7 @@ func TestChatsDefaultListAggregatesWebAndCLIForAdmin(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
 	wc.SetCallbacks(WebCallbacks{
-		SessionTree: func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error) {
+		SessionTree: func(senderID string, current SessionSelector, admin bool, offset, limit int) (SessionTreeResult, error) {
 			return SessionTreeResult{Sessions: []SessionTreeNode{
 				{UserChatWithPreview: UserChatWithPreview{
 					ChatID: "web-chat", Channel: "web", Label: "Web Chat", WorkDir: "/workspace/web", LastActive: time.Now().Format(time.RFC3339),
@@ -617,7 +617,7 @@ func TestSessionTreeReturnsChildrenForAdmin(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
 	wc.SetCallbacks(WebCallbacks{
-		SessionTree: func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error) {
+		SessionTree: func(senderID string, current SessionSelector, admin bool, offset, limit int) (SessionTreeResult, error) {
 			if !admin {
 				t.Fatal("expected admin")
 			}
