@@ -60,9 +60,9 @@ export function PluginManagerPanel() {
     }
   }
 
-  const doUninstall = async (id: string) => {
+  const doToggleEnabled = async (id: string, enabled: boolean) => {
     try {
-      await runtime.rpc.call('plugin_uninstall' as never, { id } as never)
+      await runtime.rpc.call('plugin_set_enabled' as never, { id, enabled } as never)
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -134,16 +134,18 @@ export function PluginManagerPanel() {
               <div className="mt-1 truncate text-[10px] text-text-muted">{p.id}</div>
               <div className="mt-2 flex gap-1.5">
                 <button
+                  onClick={() => void doToggleEnabled(p.id, !isActive)}
+                  className={isActive
+                    ? 'rounded border border-red-200 px-2 py-0.5 text-red-600 hover:bg-red-50'
+                    : 'rounded border border-green-200 px-2 py-0.5 text-green-600 hover:bg-green-50'}
+                >
+                  {isActive ? '禁用' : '启用'}
+                </button>
+                <button
                   onClick={() => void doReload(p.id)}
                   className="rounded border border-border px-2 py-0.5 text-text-secondary hover:bg-bg-hover"
                 >
                   重载
-                </button>
-                <button
-                  onClick={() => void doUninstall(p.id)}
-                  className="rounded border border-red-200 px-2 py-0.5 text-red-600 hover:bg-red-50"
-                >
-                  卸载
                 </button>
               </div>
             </div>

@@ -751,6 +751,73 @@ func (pm *PluginManager) DeactivateAll(ctx context.Context) {
 }
 
 // ---------------------------------------------------------------------------
+// Enable / Disable (single plugin)
+// ---------------------------------------------------------------------------
+
+// SetPluginEnabled enables or disables a single plugin at runtime. Disabling
+// deactivates the plugin but KEEPS its entry and on-disk directory, so it stays
+// visible in ListPlugins (state=inactive) and can be re-enabled later. Enabling
+// re-activates an inactive/discovered/error plugin.
+func (pm *PluginManager) SetPluginEnabled(ctx context.Context, pluginID string, enabled bool) error {
+	entry, ok := pm.GetPlugin(pluginID)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrPluginNotFound, pluginID)
+	}
+
+	if enabled {
+		return pm.enableEntry(ctx, entry)
+	}
+	return pm.disableEntry(entry)
+}
+
+// disableEntry deactivates an active plugin, leaving it in StateInactive (entry
+// and directory kept). Idempotent for already-inactive plugins.
+func (pm *PluginManager) disableEntry(entry *PluginEntry) error {
+	entry.stateMu.Lock()
+	isActive := entry.State == StateActive
+	if isActive {
+		entry.State = StateDeactivating
+	}
+	entry.stateMu.Unlock()
+
+	if !isActive {
+		return nil
+	}
+
+	if entry.Plugin != nil {
+		if err := entry.Plugin.Deactivate(entry.Context); err != nil {
+			pm.notifyEvent(PluginEventError, entry.Manifest.ID, err, map[string]any{"phase": "deactivate"})
+			log.WithField("plugin", entry.Manifest.ID).Warn("Deactivation error: ", err)
+			pm.audit(entry.Manifest.ID, AuditDeactivate, nil, err)
+		}
+	}
+	entry.stateMu.Lock()
+	entry.State = StateInactive
+	entry.stateMu.Unlock()
+	pm.notifyEvent(PluginEventDeactivated, entry.Manifest.ID, nil, nil)
+	log.WithField("plugin", entry.Manifest.ID).Info("Plugin disabled")
+	pm.audit(entry.Manifest.ID, AuditDeactivate, nil, nil)
+	return nil
+}
+
+// enableEntry resets a non-active plugin to StateDiscovered and re-activates it.
+func (pm *PluginManager) enableEntry(ctx context.Context, entry *PluginEntry) error {
+	entry.stateMu.Lock()
+	if entry.State == StateActive {
+		entry.stateMu.Unlock()
+		return nil
+	}
+	entry.State = StateDiscovered
+	entry.stateMu.Unlock()
+
+	if err := pm.activate(ctx, entry); err != nil {
+		return err
+	}
+	log.WithField("plugin", entry.Manifest.ID).Info("Plugin enabled")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Query
 // ---------------------------------------------------------------------------
 

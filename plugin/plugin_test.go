@@ -2990,6 +2990,68 @@ func TestPluginManager_InstallPlugin_MissingDependency(t *testing.T) {
 	}
 }
 
+func TestPluginManager_SetPluginEnabled(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	sourceDir := filepath.Join(baseDir, "source", "com.test.enable")
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.ID = "com.test.enable"
+	writeTestManifest(t, sourceDir, &m)
+
+	ctx := context.Background()
+	_, err := pm.InstallPlugin(ctx, sourceDir)
+	if err != nil {
+		t.Fatalf("InstallPlugin failed: %v", err)
+	}
+
+	// 初始应为 active（onStart 事件）。
+	entry, _ := pm.GetPlugin("com.test.enable")
+	if entry.State != StateActive {
+		t.Fatalf("expected active after install, got %v", entry.State)
+	}
+
+	// 禁用：state=inactive，但 entry 保留（插件仍显示）。
+	if err := pm.SetPluginEnabled(ctx, "com.test.enable", false); err != nil {
+		t.Fatalf("disable failed: %v", err)
+	}
+	entry, ok := pm.GetPlugin("com.test.enable")
+	if !ok {
+		t.Fatal("plugin must still be listed after disable")
+	}
+	if entry.State != StateInactive {
+		t.Errorf("expected StateInactive after disable, got %v", entry.State)
+	}
+
+	// 重新启用：恢复 active。
+	if err := pm.SetPluginEnabled(ctx, "com.test.enable", true); err != nil {
+		t.Fatalf("enable failed: %v", err)
+	}
+	entry, _ = pm.GetPlugin("com.test.enable")
+	if entry.State != StateActive {
+		t.Errorf("expected StateActive after enable, got %v", entry.State)
+	}
+}
+
+func TestPluginManager_SetPluginEnabled_NotFound(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	err := pm.SetPluginEnabled(context.Background(), "nonexistent", true)
+	if err == nil {
+		t.Fatal("expected error for nonexistent plugin")
+	}
+}
+
 func writeZip(t *testing.T, zipPath string, files map[string]string) {
 	t.Helper()
 	buf := new(bytes.Buffer)

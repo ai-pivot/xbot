@@ -1969,6 +1969,20 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 		return map[string]string{"status": "ok"}, nil
 	})
 
+	t["plugin_set_enabled"] = rpc1(func(ctx context.Context, p struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}) (any, error) {
+		pm := h.Ag.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		if err := pm.SetPluginEnabled(context.Background(), p.ID, p.Enabled); err != nil {
+			return nil, err
+		}
+		return map[string]string{"status": "ok"}, nil
+	})
+
 	t["plugin_health"] = rpc0err(func(ctx context.Context) (any, error) {
 		pm := h.Ag.PluginManager()
 		if pm == nil {

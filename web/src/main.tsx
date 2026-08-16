@@ -84,6 +84,10 @@ function showGlobalErrorOverlay(message: string) {
 
 // window 层错误（React 之外的异步错误、未捕获异常）。
 window.addEventListener('error', (e) => {
+  // ResizeObserver 在单帧内循环触发时，浏览器会丢弃未投递的通知并产生这条
+  // 无害警告（与 Chrome 的实现有关，React 常触发）。它不是真正的崩溃，
+  // 不应弹出全局崩溃覆盖层。
+  if (typeof e.message === 'string' && e.message.includes('ResizeObserver loop')) return
   const msg = e.error instanceof Error
     ? `${e.error.message}\n\n${e.error.stack || '(no stack)'}`
     : `${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`
