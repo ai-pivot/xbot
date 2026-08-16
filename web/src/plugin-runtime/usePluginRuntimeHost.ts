@@ -32,13 +32,16 @@ interface WebPluginDecl {
   contributes?: unknown
 }
 
-/** 视图组件动态 import（插件模块经 versioned URL 加载）。 */
+/** 视图组件动态 import（第三方插件模块经 versioned URL 加载）。 */
 async function loadPluginViewComponent(
   pluginId: string,
   view: ViewContribution,
 ): Promise<React.ComponentType | null> {
   if (!view.entry) return null
   // 内置视图标记：随前端分发的静态组件（自举插件管理面板等）。
+  // 注意：内置视图必须静态 import（而非动态 import）打包进主 bundle，
+  // 否则 rolldown 会把它们的 useState 等 hook 符号错误绑定到 framer-motion
+  // 的导出，触发 React #311（hooks 数量不一致）。
   if (view.entry.startsWith('builtin:')) {
     return loadBuiltinView(view.entry.slice('builtin:'.length))
   }
@@ -53,19 +56,17 @@ async function loadPluginViewComponent(
   }
 }
 
-/** 内置视图组件映射（key = view.id，与 manifest 的 view.id 一致）。 */
-const builtinViews = new Map<string, () => Promise<React.ComponentType>>()
-builtinViews.set('xbot.plugin-manager.panel', () => import('@/plugins/manager/PluginManagerPanel').then((m) => m.PluginManagerPanel))
-builtinViews.set('git-info.status', () => import('@/plugins/git-info/GitStatusPanel').then((m) => m.GitStatusPanel))
+// 内置视图组件：静态 import，随主 bundle 一起打包（不生成独立 chunk）。
+import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
+import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
+
+const builtinViews = new Map<string, React.ComponentType>()
+builtinViews.set('xbot.plugin-manager.panel', PluginManagerPanel)
+builtinViews.set('git-info.status', GitStatusPanel)
 
 async function loadBuiltinView(id: string): Promise<React.ComponentType | null> {
-  const loader = builtinViews.get(id)
-  if (!loader) return null
-  try {
-    return await loader()
-  } catch {
-    return null
-  }
+  const comp = builtinViews.get(id)
+  return comp ?? null
 }
 
 /** 从后端声明构造 PluginManifest（供 registry 校验）。 */
