@@ -28,6 +28,7 @@ const zhCN = {
     tasksCron: '定时任务',
     tasksBg: '后台命令',
     tasksEmpty: '暂无任务',
+    plugins: '插件',
     comingSoon: '后续加入',
     terminalUnavailable: '终端不可用',
     terminalNew: '新建终端',

@@ -1,7 +1,7 @@
 {
   "id": "git-info",
   "name": "git-info",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Shows git branch and working tree status in the info bar. Works with any git repo.",
   "author": "xbot",
   "runtime": "script",
@@ -26,6 +26,18 @@
           "PostToolUse:Grep*",
           "PostToolUse:Read*"
         ]
+      }
+    ]
+  },
+  "web": {
+    "entry": "index.js",
+    "contributes": [
+      {
+        "kind": "view",
+        "id": "git-info.status",
+        "container": "info_bar",
+        "title": "Git Status",
+        "entry": "builtin:git-info.status"
       }
     ]
   }

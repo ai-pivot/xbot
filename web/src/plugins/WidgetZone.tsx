@@ -30,6 +30,8 @@ export interface WidgetZoneProps {
   /** Optional additional className for the container. */
   className?: string
   style?: CSSProperties
+  /** 排除以这些前缀开头的 span（避免与 fancy 插件视图重复渲染）。 */
+  excludePrefixes?: readonly string[]
 }
 
 /** Render a single styled span. */
@@ -51,9 +53,11 @@ export function WidgetSpanView({ span }: { span: WebWidgetSpan }) {
 }
 
 /** Render all spans for a zone as a horizontal inline flow. */
-export function WidgetZone({ zone, empty = null, className, style }: WidgetZoneProps) {
+export function WidgetZone({ zone, empty = null, className, style, excludePrefixes }: WidgetZoneProps) {
   const { zones } = usePluginWidgets()
-  const spans = zones[zone] ?? []
+  const spans = (zones[zone] ?? []).filter(
+    (span) => !excludePrefixes?.some((p) => span.text?.startsWith(p)),
+  )
   if (spans.length === 0) return <>{empty}</>
   return (
     <div className={`flex items-center gap-2 overflow-x-auto ${className ?? ''}`} style={style}>

@@ -1976,6 +1976,85 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 		}
 		return pm.Metrics(), nil
 	})
+
+	// web_plugin_list: 下发所有带 Web 声明的插件清单（贡献点 + 模块 URL + 权限）。
+	// 单一门控：后端只做传输层检查（Web.Entry 非空），贡献点语义由前端 runtime 校验。
+	t["web_plugin_list"] = rpc0err(func(ctx context.Context) (any, error) {
+		pm := h.Ag.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		type webPluginJSON struct {
+			ID          string          `json:"id"`
+			Name        string          `json:"name"`
+			Version     string          `json:"version"`
+			State       string          `json:"state"`
+			Enabled     bool            `json:"enabled"`
+			Permissions []string        `json:"permissions"`
+			Entry       string          `json:"entry"`
+			ModuleURL   string          `json:"module_url"`
+			Contributes json.RawMessage `json:"contributes,omitempty"`
+		}
+		var out []webPluginJSON
+		for _, e := range pm.ListPlugins() {
+			if e.Manifest.Web == nil || e.Manifest.Web.Entry == "" {
+				continue // 纯后端插件，无前端模块
+			}
+			moduleURL := fmt.Sprintf("/plugins/%s/web/%s", e.Manifest.ID, strings.TrimPrefix(e.Manifest.Web.Entry, "/"))
+			out = append(out, webPluginJSON{
+				ID:          e.Manifest.ID,
+				Name:        e.Manifest.Name,
+				Version:     e.Manifest.Version,
+				State:       string(e.State),
+				Enabled:     e.State == plugin.StateActive,
+				Permissions: e.Manifest.Permissions,
+				Entry:       e.Manifest.Web.Entry,
+				ModuleURL:   moduleURL,
+				Contributes: e.Manifest.Web.Contributes,
+			})
+		}
+		return map[string]any{"plugins": out}, nil
+	})
+
+	// web_plugin_rpc: 前端插件调用后端方法（JSON-RPC 2.0 单方法）。
+	// 方法名带 "pluginId." 前缀 → 路由到对应后端插件；否则走核心 RPC 表。
+	t["web_plugin_rpc"] = rpc1(func(ctx context.Context, p struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}) (any, error) {
+		if p.Method == "" {
+			return nil, fmt.Errorf("method is required")
+		}
+		// 核心方法：复用现有 RPC 表（无插件前缀）。
+		if !strings.Contains(p.Method, ".") {
+			if handler, ok := t[p.Method]; ok {
+				return handler(ctx, p.Params)
+			}
+			return nil, fmt.Errorf("unknown method: %s", p.Method)
+		}
+		// 后端插件方法：<pluginId>.<method> → ChannelPluginCall 到对应插件进程。
+		parts := strings.SplitN(p.Method, ".", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid method: %s", p.Method)
+		}
+		pluginID, method := parts[0], parts[1]
+		pm := h.Ag.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		if !pm.IsPluginActive(pluginID) {
+			return nil, fmt.Errorf("plugin not active: %s", pluginID)
+		}
+		payload, err := json.Marshal(map[string]any{"method": method, "params": p.Params})
+		if err != nil {
+			return nil, err
+		}
+		result, callErr := h.Ag.ChannelPluginCall(pluginID, "web_plugin_rpc", payload)
+		if callErr != nil {
+			return nil, callErr
+		}
+		return json.RawMessage(result), nil
+	})
 }
 
 // HandleCLIRPC dispatches RPC requests from CLI RemoteBackend clients.

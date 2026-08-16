@@ -63,6 +63,9 @@ vi.mock('@/components/session/SessionSidebar', () => ({ SessionSidebar: () => <d
 vi.mock('@/components/sidebar/RightSidebar', () => ({ RightSidebar: () => <div data-testid="right-sidebar" /> }))
 vi.mock('@/components/sidebar/RightActivityBar', () => ({ RightActivityBar: () => <div data-testid="right-activity-bar" /> }))
 vi.mock('@/components/settings/SettingsDialog', () => ({ SettingsDialog: () => null }))
+// 布局测试不关心插件视图面板（PluginPanelContainer 需要 PluginRuntimeProvider）；
+// mock 为 null，保持测试聚焦 flex-col 布局回归。
+vi.mock('@/plugins/manager/PluginPanelContainer', () => ({ PluginPanelContainer: () => null }))
 
 import { renderWithProviders } from '@/test-utils'
 import { AppShell } from './AppShell'
@@ -77,7 +80,9 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     renderWithProviders(
       <PluginWidgetsContext.Provider
         value={{
-          zones: { infoBar: [{ text: 'git:feat/iteration-content-v55 Δ8', style: 'warning' }] },
+          // 用非 git widget 内容验证布局——git span 现在由 fancy GitStatusPanel
+          // 渲染（InfoBar 的 WidgetZone 用 excludePrefixes 排除了 git:）。
+          zones: { infoBar: [{ text: 'status: ready', style: 'info' }] },
           components: [],
           revision: 1,
         }}
@@ -87,7 +92,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     )
 
     // InfoBar content is rendered (plugin widget present).
-    expect(screen.getByText('git:feat/iteration-content-v55 Δ8')).toBeInTheDocument()
+    expect(screen.getByText('status: ready')).toBeInTheDocument()
 
     const main = document.querySelector('main')
     expect(main).not.toBeNull()

@@ -9,13 +9,15 @@
  * strip keeps the layout rock-solid (user request: 不要突然跳出来，一直渲染).
  */
 import { WidgetZone } from '@/plugins/WidgetZone'
+import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 
 export function InfoBar() {
-  // WidgetZone consumes the plugin widget registry itself — this component only
-  // provides the always-rendered fixed-height strip.
+  // WidgetZone renders non-git spans (git spans excluded — the fancy
+  // GitStatusPanel in the plugin view container renders them instead).
   return (
     <div className="flex h-6 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-xs">
-      <WidgetZone zone="infoBar" className="min-w-0 flex-1" />
+      <PluginPanelContainer container="info_bar" />
+      <WidgetZone zone="infoBar" className="min-w-0 flex-1" excludePrefixes={['git:']} />
     </div>
   )
 }

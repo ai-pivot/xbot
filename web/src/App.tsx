@@ -14,6 +14,7 @@ import { WSProvider } from '@/providers/WSProvider'
 import { CwdProvider } from '@/providers/CwdProvider'
 import { SessionStoreProvider } from '@/hooks/useSessionStore'
 import { PluginWidgetProvider } from '@/plugins/PluginWidgetProvider'
+import { PluginRuntimeRoot } from '@/plugin-runtime/usePluginRuntimeHost'
 import { AppShell } from '@/layouts/AppShell'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { LoginPage } from '@/pages/LoginPage'
@@ -34,7 +35,9 @@ export default function App() {
                   <SessionStoreProvider>
                     <CwdProvider>
                       <PluginWidgetProvider>
-                        <AppShell />
+                        <PluginRuntimeRoot>
+                          <AppShell />
+                        </PluginRuntimeRoot>
                       </PluginWidgetProvider>
                     </CwdProvider>
                   </SessionStoreProvider>

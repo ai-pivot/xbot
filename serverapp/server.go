@@ -384,6 +384,8 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				if reg := ag.WebUIRegistry(); reg != nil {
 					webCh.SetWebUIRegistry(reg)
 				}
+				// Serve plugin web ESM modules at /plugins/<id>/web/*.
+				webCh.SetPluginDirs(plugin.DefaultPluginDirs(config.XbotHome()))
 			}
 		} else {
 			log.Warn("Web channel enabled but no database available, skipping")

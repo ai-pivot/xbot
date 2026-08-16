@@ -31,6 +31,7 @@ const en: Translations = {
     tasksCron: 'Cron Jobs',
     tasksBg: 'Background Commands',
     tasksEmpty: 'No tasks',
+    plugins: 'Plugins',
     comingSoon: 'Coming soon',
     terminalUnavailable: 'Terminal unavailable',
     terminalNew: 'New Terminal',

@@ -363,6 +363,11 @@ type WebChannel struct {
 	// Static files (external directory)
 	staticDir string
 
+	// Plugin web module directories (plugins/<id>/web served at /plugins/<id>/web/*).
+	// Populated from PluginManager's discovery dirs; nil means plugin static
+	// serving is disabled.
+	pluginDirs []string
+
 	// Working directory (workspace) — used to copy uploaded files into sandbox-accessible path
 	workDir string
 
@@ -615,6 +620,12 @@ func (wc *WebChannel) SetStaticDir(dir string) {
 	}
 }
 
+// SetPluginDirs sets the plugin discovery directories for serving plugin web
+// modules at /plugins/<id>/web/*. Empty list disables plugin static serving.
+func (wc *WebChannel) SetPluginDirs(dirs []string) {
+	wc.pluginDirs = append([]string(nil), dirs...)
+}
+
 // SetWorkDir sets the working directory for sandbox file access.
 func (wc *WebChannel) SetWorkDir(dir string) {
 	if dir != "" {
@@ -786,6 +797,8 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	if wc.staticDir != "" {
 		mux.HandleFunc("/", wc.handleStatic)
 	}
+	// Plugin web modules (ESM) — served before "/" fallback, so they never hit SPA.
+	mux.HandleFunc("/plugins/", wc.handlePluginStatic)
 	return mux
 }
 
@@ -1854,6 +1867,78 @@ func (wc *WebChannel) securityHeadersMiddleware(next http.Handler) http.Handler 
 // ---------------------------------------------------------------------------
 // Static file handler
 // ---------------------------------------------------------------------------
+
+// handlePluginStatic serves plugin web modules at /plugins/<id>/web/*.
+//
+// The plugin ID is constrained to the plugin-id charset (^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$)
+// and the remaining path is cleaned + confined to the plugin's web/ directory,
+// preventing path traversal. Files are served with immutable caching (plugin
+// modules are content-hashed by convention; hot reload uses versioned URLs).
+func (wc *WebChannel) handlePluginStatic(w http.ResponseWriter, r *http.Request) {
+	if len(wc.pluginDirs) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	// Path: /plugins/<id>/web/<rest>
+	rest := strings.TrimPrefix(r.URL.Path, "/plugins/")
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 3 || parts[1] != "web" {
+		http.NotFound(w, r)
+		return
+	}
+	pluginID, subPath := parts[0], parts[2]
+	if !isValidPluginIDForServe(pluginID) {
+		http.NotFound(w, r)
+		return
+	}
+	if subPath == "" {
+		subPath = "index.js"
+	}
+
+	for _, dir := range wc.pluginDirs {
+		webDir := filepath.Join(dir, pluginID, "web")
+		absWebDir, err := filepath.Abs(webDir)
+		if err != nil {
+			continue
+		}
+		cleanSub := filepath.Clean("/" + subPath)
+		absPath := filepath.Join(absWebDir, filepath.FromSlash(cleanSub))
+		absResolved, err := filepath.Abs(absPath)
+		if err != nil {
+			continue
+		}
+		if !strings.HasPrefix(absResolved, absWebDir+string(os.PathSeparator)) {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := os.Stat(absResolved); err == nil {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			http.ServeFile(w, r, absResolved)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+// isValidPluginIDForServe validates a plugin ID path segment against the
+// plugin-id charset (mirrors plugin.isValidPluginID) to block traversal.
+func isValidPluginIDForServe(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.' || c == '_' || c == '-':
+		default:
+			return false
+		}
+	}
+	// First char must be alphanumeric.
+	first := id[0]
+	return (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')
+}
 
 func (wc *WebChannel) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if wc.staticDir == "" {

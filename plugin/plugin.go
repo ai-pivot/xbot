@@ -7,7 +7,7 @@ package plugin
 
 import (
 	"context"
-
+	"encoding/json"
 	"time"
 
 	"xbot/llm"
@@ -108,10 +108,35 @@ type PluginManifest struct {
 	// will be added in a future iteration.
 	Dependencies []PluginDependency `json:"dependencies,omitempty"`
 
+	// Web declares the frontend ESM plugin module (v2 web plugin runtime).
+	// Non-nil means this plugin also contributes to the web UI via the
+	// frontend plugin runtime (types enforced at compile time by @xbot/plugin-api).
+	// The backend does NOT validate web contribution semantics (single gate:
+	// the frontend runtime is the authoritative validator) — it only checks
+	// that the entry path exists and is served statically.
+	Web *WebPluginDecl `json:"web,omitempty"`
+
 	// Timeout is the maximum duration for plugin activation and tool operations.
 	// Zero means DefaultPluginTimeout (30s). Not serialized directly via JSON;
 	// parsed from manifest's "timeout" string field (e.g., "30s", "1m").
 	Timeout time.Duration `json:"-"`
+}
+
+// WebPluginDecl declares the frontend ESM module and its contribution points.
+//
+// The `contributes` field is an opaque JSON blob passed verbatim to the frontend
+// runtime — the frontend is the single authoritative gate for contribution
+// semantics (shapes, permissions↔capability correspondence, ID uniqueness).
+// The backend only performs transport-level checks.
+type WebPluginDecl struct {
+	// Entry is the frontend module path relative to the plugin's web/ dir
+	// (e.g. "index.js"). Served at /plugins/<id>/web/<entry>.
+	Entry string `json:"entry"`
+
+	// Contributes is the type-checked contribution declaration (compiled by
+	// the plugin author against @xbot/plugin-api). Serialized to JSON and
+	// forwarded verbatim to the frontend runtime.
+	Contributes json.RawMessage `json:"contributes,omitempty"`
 }
 
 // PluginDependency declares a dependency on another plugin.

@@ -5,7 +5,7 @@
  * sidebar (collapses if already open). Pure presentational — AppShell owns the
  * active state and passes a setter.
  */
-import { Files, Search, Info, ListChecks, SquareTerminal } from 'lucide-react'
+import { Files, Search, Info, ListChecks, SquareTerminal, Blocks } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { useI18n } from '@/providers/i18n'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -24,6 +24,7 @@ const PANELS: { panel: SidebarPanel; icon: IconComponent; labelKey: string }[] =
   { panel: 'info', icon: Info, labelKey: 'sidebar.info' },
   { panel: 'tasks', icon: ListChecks, labelKey: 'sidebar.tasks' },
   { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
+  { panel: 'plugins', icon: Blocks, labelKey: 'sidebar.plugins' },
 ]
 
 export function RightActivityBar({ activePanel, onTogglePanel }: RightActivityBarProps) {
