@@ -11,12 +11,16 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 
 interface ReasoningBlockProps {
   content: string
+  /** Auth streaming flag — mirrors MarkdownRenderer.streaming. When true the
+   *  typewriter clips the existing DOM; when false renders completed text. */
+  streaming?: boolean
   /** Number of source characters to reveal without reparsing Markdown. */
   visibleChars?: number
 }
 
 export const ReasoningBlock = memo(function ReasoningBlock({
   content,
+  streaming,
   visibleChars,
 }: ReasoningBlockProps) {
   if (!content) return null
@@ -26,7 +30,7 @@ export const ReasoningBlock = memo(function ReasoningBlock({
       <MarkdownRenderer
         content={content}
         className="text-xs text-text-secondary"
-        streaming={visibleChars !== undefined}
+        streaming={streaming}
         visibleChars={visibleChars}
       />
     </div>

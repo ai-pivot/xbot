@@ -438,6 +438,18 @@ func (pm *PluginManager) DisablePlugins(ids []string) {
 	}
 }
 
+// DisabledIDs returns the current set of disabled plugin IDs (deterministic order).
+func (pm *PluginManager) DisabledIDs() []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	ids := make([]string, 0, len(pm.disabled))
+	for id := range pm.disabled {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // ---------------------------------------------------------------------------
 // Discovery & Loading
 // ---------------------------------------------------------------------------
@@ -759,11 +771,25 @@ func (pm *PluginManager) DeactivateAll(ctx context.Context) {
 // deactivates the plugin but KEEPS its entry and on-disk directory, so it stays
 // visible in ListPlugins (state=inactive) and can be re-enabled later. Enabling
 // re-activates an inactive/discovered/error plugin.
+//
+// The disabled flag is ALSO reflected in pm.disabled so that a subsequent
+// ReloadAll/Discover (triggered by e.g. installing another plugin) skips the
+// plugin rather than silently reactivating it.
 func (pm *PluginManager) SetPluginEnabled(ctx context.Context, pluginID string, enabled bool) error {
 	entry, ok := pm.GetPlugin(pluginID)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrPluginNotFound, pluginID)
 	}
+
+	// Reflect the enabled/disabled state in pm.disabled so Discover/ReloadAll
+	// honours it (otherwise a disabled plugin gets reactivated on next reload).
+	pm.mu.Lock()
+	if enabled {
+		delete(pm.disabled, pluginID)
+	} else {
+		pm.disabled[pluginID] = true
+	}
+	pm.mu.Unlock()
 
 	if enabled {
 		return pm.enableEntry(ctx, entry)

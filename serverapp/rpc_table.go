@@ -1980,6 +1980,11 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 		if err := pm.SetPluginEnabled(context.Background(), p.ID, p.Enabled); err != nil {
 			return nil, err
 		}
+		// Persist the disabled set to config so it survives restart.
+		if h.Cfg != nil {
+			h.Cfg.Plugins.DisabledPlugins = pm.DisabledIDs()
+			_ = saveServerConfig(h.Cfg)
+		}
 		return map[string]string{"status": "ok"}, nil
 	})
 

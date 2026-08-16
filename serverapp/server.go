@@ -1325,6 +1325,11 @@ func saveServerConfig(cfg *config.Config) error {
 		merged.Agent.EnableAutoCompress = cfg.Agent.EnableAutoCompress
 	}
 
+	// Plugin enable/disable is server-owned runtime state (plugin_set_enabled RPC).
+	// Persist the disabled list so it survives restart; the set of disabled IDs is
+	// authoritative from PluginManager, not from any user-edited config field.
+	merged.Plugins.DisabledPlugins = cfg.Plugins.DisabledPlugins
+
 	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode)
 	// are NOT written back to config.json. The DB system subscription (reconciled
 	// from config/env at boot) is the single source of truth, and cfg.LLM.* may
