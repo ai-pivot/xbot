@@ -6,21 +6,22 @@
  * 对应后端插件进程。
  */
 import type { BackendRPC, RPCAPI } from '@/plugin-api'
+import { postAPI } from '@/lib/api'
 
 export interface RpcTransport {
   call(method: string, params: unknown): Promise<unknown>
 }
 
-/** 基于现有 /api/rpc fetch 通道的传输（不依赖 WS 连接就绪）。 */
+/**
+ * 基于现有 /api/rpc fetch 通道的传输（不依赖 WS 连接就绪）。
+ *
+ * 后端 /api/rpc 返回 `{ok, data, error}` envelope，这里复用 postAPI 做
+ * envelope 解包——否则返回整个 envelope，`res.plugins` 会读到 undefined
+ * （真实数据在 `res.data.plugins`）。
+ */
 export class FetchRpcTransport implements RpcTransport {
   async call(method: string, params: unknown): Promise<unknown> {
-    const res = await fetch('/api/rpc', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ method, params }),
-    })
-    if (!res.ok) throw new Error(`RPC ${method} 失败: HTTP ${res.status}`)
-    return (await res.json()) as unknown
+    return postAPI('/api/rpc', { method, params })
   }
 }
 
