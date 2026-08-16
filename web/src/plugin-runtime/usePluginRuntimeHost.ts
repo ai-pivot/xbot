@@ -8,7 +8,7 @@
  *
  * 单一门控：激活前 registry.validate 校验贡献点（后端只做传输层检查）。
  */
-import { createElement, useCallback, useEffect, useMemo, useRef } from 'react'
+import { createElement, Fragment, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { ViewContribution } from '@/plugin-api'
 import type { MessageRendererContribution } from '@/plugin-api'
@@ -221,6 +221,6 @@ export function PluginRuntimeRoot({ children }: { children: React.ReactNode }) {
   const host = usePluginRuntimeHost()
   return createElement(
     PluginRuntimeProvider,
-    { host, children: [createElement(PluginRuntimeBootstrap), children] },
+    { host, children: createElement(Fragment, null, createElement(PluginRuntimeBootstrap), children) },
   )
 }

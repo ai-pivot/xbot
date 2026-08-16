@@ -287,6 +287,9 @@ var nonAdminRESTRPCMethods = map[string]struct{}{
 	"kill_bg_task":                       {},
 	"plugin_widgets":                     {},
 	"genui_action":                       {},
+	// web_plugin_list 是前端插件运行时启动必调方法——只读插件清单
+	// （含贡献点声明 + 模块 URL），对普通登录用户开放（无 admin 需求）。
+	"web_plugin_list": {},
 }
 
 func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, method string, params json.RawMessage) (int, error) {
