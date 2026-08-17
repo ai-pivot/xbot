@@ -19,6 +19,10 @@ import { AppShell } from '@/layouts/AppShell'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { LoginPage } from '@/pages/LoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
+import { registerBuiltinLayoutItems } from '@/plugin-runtime/layoutRegistry'
+
+// Register built-in layout items once at app startup (session/view buttons etc).
+registerBuiltinLayoutItems()
 
 export default function App() {
   return (

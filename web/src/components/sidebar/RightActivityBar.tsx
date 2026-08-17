@@ -12,6 +12,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
+import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
+import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -28,14 +30,29 @@ const BUILTIN_PANELS: { panel: SidebarPanel; icon: IconComponent; labelKey: stri
   { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
 ]
 
+// 内置面板 → 布局项 id 映射（布局注册表里的 desktop.sidebar 项）。
+const BUILTIN_PANEL_TO_LAYOUT: Record<string, string> = {
+  files: BUILTIN_LAYOUT_ITEMS.desktopFiles,
+  search: BUILTIN_LAYOUT_ITEMS.desktopSearch,
+  info: BUILTIN_LAYOUT_ITEMS.desktopInfo,
+  tasks: BUILTIN_LAYOUT_ITEMS.desktopTasks,
+  terminal: BUILTIN_LAYOUT_ITEMS.desktopTerminal,
+}
+
 export function RightActivityBar({ activePanel, onTogglePanel }: RightActivityBarProps) {
   const { t } = useI18n()
   const pluginPanels = usePluginViewPanels('right_sidebar')
+  // 布局配置：desktop.sidebar slot 里的项 = 用户希望显示的侧栏 tab。
+  // 被用户移到其他 slot 的项不再显示（布局定制生效）。
+  const layoutItems = useLayoutItems('desktop.sidebar')
+  const enabledIds = new Set(layoutItems.map((i) => i.id))
 
-  // 合并：内置面板 tab + 插件 view tab（动态，插件声明即出现）。
+  // 内置面板 tab（尊重布局配置）+ 插件 view tab（插件声明即出现，也受布局过滤）。
   const tabs: { panel: SidebarPanel; icon: IconComponent; label: string }[] = [
-    ...BUILTIN_PANELS.map((p) => ({ panel: p.panel, icon: p.icon, label: t(p.labelKey) })),
-    ...pluginPanels.map((p) => ({ panel: p.id, icon: pluginIcon(p.view.icon), label: p.title })),
+    ...BUILTIN_PANELS.filter((p) => enabledIds.has(BUILTIN_PANEL_TO_LAYOUT[p.panel]))
+      .map((p) => ({ panel: p.panel, icon: p.icon, label: t(p.labelKey) })),
+    ...pluginPanels.filter((p) => enabledIds.has(p.id))
+      .map((p) => ({ panel: p.id, icon: pluginIcon(p.view.icon), label: p.title })),
   ]
 
   return (

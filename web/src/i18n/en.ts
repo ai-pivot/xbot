@@ -368,6 +368,7 @@ const en: Translations = {
       linking: 'Account Linking',
       users: 'User Management',
       developer: 'Developer',
+      layout: 'Layout',
       about: 'About',
     },
   },

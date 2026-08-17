@@ -24,6 +24,8 @@ import { TasksPanel } from './TasksPanel'
 import { TerminalList } from './TerminalList'
 import { PluginView } from '@/plugin-runtime/PluginView'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
+import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
+import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
 import type { TabManager } from '@/hooks/useTabManager'
 import { useTerminal } from '@/hooks/useTerminal'
 
@@ -45,6 +47,15 @@ const MIN_WIDTH = 200
 const MAX_WIDTH = 500
 const RIGHT_RATIO = 0.26
 
+// 内置面板 → 布局项 id 映射（布局注册表里的 desktop.sidebar 项）。
+const BUILTIN_PANEL_TO_LAYOUT: Record<BuiltinSidebarPanel, string> = {
+  files: BUILTIN_LAYOUT_ITEMS.desktopFiles,
+  search: BUILTIN_LAYOUT_ITEMS.desktopSearch,
+  info: BUILTIN_LAYOUT_ITEMS.desktopInfo,
+  tasks: BUILTIN_LAYOUT_ITEMS.desktopTasks,
+  terminal: BUILTIN_LAYOUT_ITEMS.desktopTerminal,
+}
+
 export function RightSidebar({ activePanel, tabManager }: RightSidebarProps) {
   const { t } = useI18n()
   const [width, setWidth] = useState(() => adaptiveRightWidth())
@@ -57,6 +68,15 @@ export function RightSidebar({ activePanel, tabManager }: RightSidebarProps) {
   const pluginViewsMap: PluginViewMap = new Map(
     pluginViews.map((p) => [p.id, { pluginId: p.pluginId, view: p.view }]),
   )
+  // 布局配置：面板被用户移出 desktop.sidebar slot 时不渲染。
+  const layoutItems = useLayoutItems('desktop.sidebar')
+  const layoutEnabledIds = new Set(layoutItems.map((i) => i.id))
+
+  // 布局过滤：内置面板 id 映射到布局项 id（插件 view id 即布局项 id）。
+  const isPanelEnabled = (panel: SidebarPanel): boolean => {
+    const layoutId = panel in BUILTIN_PANEL_TO_LAYOUT ? BUILTIN_PANEL_TO_LAYOUT[panel as BuiltinSidebarPanel] : panel
+    return layoutEnabledIds.has(layoutId)
+  }
 
   // Pointer-based resize: hold the handle, move the pointer, clamp to bounds.
   const onPointerDown = useCallback((e: React.PointerEvent) => {
@@ -109,7 +129,7 @@ export function RightSidebar({ activePanel, tabManager }: RightSidebarProps) {
       className="absolute right-12 top-0 z-40 flex h-full shrink-0 flex-col overflow-hidden bg-bg-secondary shadow-xl"
       style={{ borderLeftWidth: activePanel === null ? 0 : 1, borderLeftStyle: 'solid', borderLeftColor: 'var(--border)' }}
     >
-      {panel !== null && (
+      {panel !== null && isPanelEnabled(panel) && (
         <>
           <header className="flex h-9 shrink-0 items-center justify-between pl-3 pr-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
             <span className="truncate">{titleFor(panel, pluginViewsMap, t)}</span>

@@ -365,6 +365,7 @@ const zhCN = {
       linking: '账号关联',
       users: '用户管理',
       developer: '开发者',
+      layout: '布局',
       about: '关于',
     },
   },

@@ -15,6 +15,8 @@ import { TerminalList } from '@/components/sidebar/TerminalList'
 import { PluginView } from '@/plugin-runtime/PluginView'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
+import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
+import { BUILTIN_LAYOUT_ITEMS, type LayoutItem } from '@/plugin-runtime/layoutTypes'
 
 const SettingsDialog = lazy(() =>
   import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
@@ -103,6 +105,10 @@ export function MobileAppShell() {
     setView('terminal')
   })
 
+  // 布局定制：底部导航 + 顶栏操作区由 slot 注册表驱动（用户可移动项到别处）。
+  const bottomNavItems = useLayoutItems('mobile.bottom_nav')
+  const topBarItems = useLayoutItems('mobile.top_bar')
+
   const rightSidebar = useMemo(() => ({
     openPanel: (panel: SidebarPanel) => {
       setActivePanel(panel)
@@ -189,12 +195,11 @@ export function MobileAppShell() {
               </Button>
             )}
             <div className="min-w-0 flex-1 truncate text-sm font-medium">{title}</div>
-            <Button type="button" variant="ghost" size="icon-sm" aria-label={t('session.newSession')} onClick={() => void createSession()}>
-              <Plus />
-            </Button>
-            <Button type="button" variant="ghost" size="icon-sm" aria-label={t('settings.appearance')} onClick={() => setSettingsOpen(true)}>
-              <Settings className="size-4" />
-            </Button>
+            {topBarItems.map((item) => renderTopBarItem(item, {
+              onCreateSession: () => void createSession(),
+              onOpenSettings: () => setSettingsOpen(true),
+              t,
+            }))}
           </header>
 
           <main className="min-h-0 flex-1 overflow-hidden">
@@ -241,25 +246,13 @@ export function MobileAppShell() {
             )}
           </main>
 
-          <nav className="grid shrink-0 grid-cols-2 border-t border-border bg-bg-secondary" style={{ paddingBottom: 'var(--safe-area-bottom)', height: 'calc(3.5rem + var(--safe-area-bottom))' }}>
-            <button
-              type="button"
-              className="flex flex-col items-center justify-center gap-0.5 text-xs"
-              style={{ color: view === 'agent' ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-              onClick={() => setView('agent')}
-            >
-              <Bot className="size-5" />
-              <span>会话</span>
-            </button>
-            <button
-              type="button"
-              className="flex flex-col items-center justify-center gap-0.5 text-xs"
-              style={{ color: view === 'detail' || view === 'terminal' ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-              onClick={() => setView('detail')}
-            >
-              <SquareTerminal className="size-5" />
-              <span>工具</span>
-            </button>
+          <nav className="grid shrink-0 border-t border-border bg-bg-secondary" style={{ paddingBottom: 'var(--safe-area-bottom)', height: 'calc(3.5rem + var(--safe-area-bottom))', gridTemplateColumns: `repeat(${Math.max(bottomNavItems.length, 1)}, minmax(0, 1fr))` }}>
+            {bottomNavItems.map((item) => renderBottomNavItem(item, {
+              view,
+              onSelect: (v: MobileView) => setView(v),
+              onOpenPanel: (panel: SidebarPanel) => { setActivePanel(panel); setView('detail') },
+              t,
+            }))}
           </nav>
 
           <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
@@ -277,6 +270,107 @@ export function MobileAppShell() {
         </div>
       </RightSidebarControlContext.Provider>
     </DockviewContext.Provider>
+  )
+}
+
+/**
+ * 渲染底部导航的一个布局项。内置项按 id 分派到对应视图/动作；
+ * 插件 view 项（如 xbot.git-fancy.panel）打开工具页对应 tab。
+ */
+function renderBottomNavItem(item: LayoutItem, actions: {
+  view: MobileView
+  onSelect: (v: MobileView) => void
+  onOpenPanel: (panel: SidebarPanel) => void
+  t: (k: string) => string
+}) {
+  const { view, onSelect, onOpenPanel, t } = actions
+  const active =
+    item.id === BUILTIN_LAYOUT_ITEMS.mobileAgent
+      ? view === 'agent'
+      : item.id === BUILTIN_LAYOUT_ITEMS.mobileTools
+        ? view === 'detail' || view === 'terminal'
+        : false
+  const color = active ? 'var(--text-primary)' : 'var(--text-secondary)'
+  const Icon = iconForItem(item)
+  const label = item.labelKey ? t(item.labelKey) : item.title
+
+  const handleClick = () => {
+    switch (item.id) {
+      case BUILTIN_LAYOUT_ITEMS.mobileAgent:
+        onSelect('agent')
+        break
+      case BUILTIN_LAYOUT_ITEMS.mobileTools:
+        onSelect('detail')
+        break
+      default:
+        // 插件 view 项 → 打开工具页对应 tab。
+        onOpenPanel(item.id as SidebarPanel)
+        break
+    }
+  }
+
+  return (
+    <button
+      key={item.id}
+      type="button"
+      className="flex flex-col items-center justify-center gap-0.5 text-xs"
+      style={{ color }}
+      onClick={handleClick}
+    >
+      {Icon ? <Icon className="size-5" /> : null}
+      <span>{label}</span>
+    </button>
+  )
+}
+
+/** 按布局项 id 解析 lucide 图标组件（内置项 + 插件 view 图标）。 */
+function iconForItem(item: LayoutItem) {
+  const icons: Record<string, typeof Bot> = {
+    [BUILTIN_LAYOUT_ITEMS.mobileAgent]: Bot,
+    [BUILTIN_LAYOUT_ITEMS.mobileTools]: SquareTerminal,
+    [BUILTIN_LAYOUT_ITEMS.mobileNewChat]: Plus,
+    [BUILTIN_LAYOUT_ITEMS.mobileSettings]: Settings,
+    [BUILTIN_LAYOUT_ITEMS.desktopSessions]: Menu,
+    [BUILTIN_LAYOUT_ITEMS.desktopFiles]: Files,
+    [BUILTIN_LAYOUT_ITEMS.desktopSearch]: Search,
+    [BUILTIN_LAYOUT_ITEMS.desktopInfo]: Info,
+    [BUILTIN_LAYOUT_ITEMS.desktopTasks]: ListChecks,
+    [BUILTIN_LAYOUT_ITEMS.desktopTerminal]: SquareTerminal,
+  }
+  return icons[item.id] ?? (item.icon ? pluginIcon(item.icon) : null)
+}
+
+/**
+ * 渲染顶栏操作区的一个布局项。内置 +/设置 按 id 分派动作；
+ * 其他项（如用户把「会话」「工具」移到顶栏）渲染为图标按钮。
+ */
+function renderTopBarItem(item: LayoutItem, actions: {
+  onCreateSession: () => void
+  onOpenSettings: () => void
+  t: (k: string) => string
+}) {
+  const { onCreateSession, onOpenSettings, t } = actions
+  const Icon = iconForItem(item)
+  const label = item.labelKey ? t(item.labelKey) : item.title
+
+  const handleClick = () => {
+    switch (item.id) {
+      case BUILTIN_LAYOUT_ITEMS.mobileNewChat:
+        onCreateSession()
+        break
+      case BUILTIN_LAYOUT_ITEMS.mobileSettings:
+        onOpenSettings()
+        break
+      default:
+        // 被移到顶栏的会话/工具/插件项：无顶栏动作（保持按钮形态）。
+        break
+    }
+  }
+
+  return (
+    <Button key={item.id} type="button" variant="ghost" size="icon-sm" aria-label={label} onClick={handleClick}>
+      {Icon ? <Icon className="size-4" /> : null}
+    </Button>
   )
 }
 

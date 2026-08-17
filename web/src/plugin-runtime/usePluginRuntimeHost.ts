@@ -18,6 +18,7 @@ import { useWSConnection } from '@/hooks/useWSConnection'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { PluginRuntimeProvider, usePluginRuntime, type PluginRuntimeHost } from '@/plugin-runtime'
 import { FetchRpcTransport } from '@/plugin-runtime/rpc'
+import { layoutRegistry, VIEW_CONTAINER_TO_SLOT } from '@/plugin-runtime/layoutRegistry'
 
 /** 后端 web_plugin_list 返回的单个插件声明。 */
 export interface WebPluginDecl {
@@ -230,6 +231,39 @@ export function PluginRuntimeBootstrap() {
     })
     return off
   }, [runtime, ws])
+
+  // 同步插件 view 贡献点 → 布局注册表：每个 view 自动成为可移动布局项
+  // （默认 slot 由 container 映射，用户可在布局设置中移到其他 slot）。
+  useEffect(() => {
+    const synced = new Set<string>()
+    const syncViews = () => {
+      const views = runtime.listAllViews()
+      const currentIds = new Set<string>()
+      for (const { view } of views) {
+        currentIds.add(view.id)
+        const slot = VIEW_CONTAINER_TO_SLOT[view.container] ?? 'desktop.sidebar'
+        layoutRegistry.register({
+          id: view.id,
+          slot,
+          title: view.title,
+          icon: view.icon,
+          weight: 100, // 插件项排在内置项之后
+        })
+      }
+      // 注销已消失的 view 项（插件卸载/热加载移除贡献点时）。
+      for (const id of synced) {
+        if (!currentIds.has(id)) layoutRegistry.unregister(id)
+      }
+      synced.clear()
+      for (const id of currentIds) synced.add(id)
+    }
+    syncViews()
+    const unsub = runtime.subscribeViews(syncViews)
+    return () => {
+      unsub()
+      for (const id of synced) layoutRegistry.unregister(id)
+    }
+  }, [runtime])
 
   return null
 }
