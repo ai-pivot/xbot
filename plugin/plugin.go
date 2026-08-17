@@ -73,7 +73,7 @@ type PluginManifest struct {
 
 	// Entry is the plugin entry point.
 	// For script runtime: command to execute (e.g. "bash my-script.sh")
-	// For grpc runtime: command to start the plugin process
+	// For stdio runtime: command to start the plugin process
 	// This is the default/fallback — platform-specific entries take precedence.
 	Entry string `json:"entry"`
 
@@ -352,13 +352,15 @@ const (
 	// RuntimeNative runs the plugin in-process as Go code.
 	RuntimeNative RuntimeType = "native"
 
-	// RuntimeGRPC runs the plugin as an external process communicating via JSON/stdio.
-	// Deprecated: use RuntimeStdio instead. "grpc" is preserved for backward compatibility.
-	RuntimeGRPC RuntimeType = "grpc"
-
 	// RuntimeStdio runs the plugin as an external process communicating via JSON over stdin/stdout.
-	// This is the recommended name; RuntimeGRPC is an alias for backward compatibility.
+	// This is the canonical name. RuntimeGRPC is a historical alias preserved for
+	// backward compatibility with plugin.json files that predate the rename.
 	RuntimeStdio RuntimeType = "stdio"
+
+	// RuntimeGRPC is a historical alias for RuntimeStdio. It is preserved ONLY for
+	// backward compatibility with existing plugin.json manifests; new plugins must
+	// use RuntimeStdio ("stdio").
+	RuntimeGRPC RuntimeType = "grpc"
 
 	// RuntimeWASM runs the plugin in a WASM sandbox (Phase 2).
 	RuntimeWASM RuntimeType = "wasm"

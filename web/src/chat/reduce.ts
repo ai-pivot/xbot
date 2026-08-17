@@ -49,6 +49,39 @@ function mergeIterations(
   return [...byNum.values()].sort((a, b) => a.iteration - b.iteration)
 }
 
+/** LiveSnapshot['streamStats'] 的字段级合并。
+ *
+ * 后端 stream_stats 帧在滑动窗口数据不足（帧间 <200ms / 增量 0）时会带
+ * tokens_per_sec=0 / ttft_ms=0 —— 这是"无数据"而非"速度为 0"。整体覆盖
+ * 会把上一帧的有效 tkps 清零（前端数字消失只剩 "streaming"）。
+ *
+ * 规则：
+ *  - ttftMs：per-Run 不变（后端闭包 firstChunkAt - requestStartAt 固定），
+ *    迭代前进也不重置 —— 逐字段合并（>0 才覆盖，0/undefined 保留 prev）。
+ *  - tokensPerSec：迭代前进时重置为 0（新迭代从零开始）；非前进时逐字段
+ *    合并（>0 才覆盖，0/undefined 保留 prev —— "没数据用本迭代之前的数据"）。
+ *  - 其余字段（tpotMs/totalMs/chunks）：逐字段合并。
+ */
+function mergeStreamStats(
+  prev: LiveSnapshot['streamStats'],
+  next: LiveSnapshot['streamStats'] | undefined,
+  advanced: boolean,
+): LiveSnapshot['streamStats'] {
+  // 无新数据帧：保留前一帧。
+  if (!next) return prev ?? null
+  if (!prev) return next // 首帧：next 即权威值（advanced 时也如此 —— prev 为 null 无需重置）
+  // ttftMs：per-Run 不变 —— 永远逐字段合并（>0 才覆盖），迭代前进也不重置。
+  // tokensPerSec：迭代前进时重置为 0（新迭代从零开始）；非前进时逐字段合并。
+  const tokensPerSec = advanced ? 0 : (next.tokensPerSec > 0 ? next.tokensPerSec : prev.tokensPerSec)
+  return {
+    ttftMs: next.ttftMs > 0 ? next.ttftMs : prev.ttftMs,
+    tpotMs: next.tpotMs > 0 ? next.tpotMs : prev.tpotMs,
+    tokensPerSec,
+    totalMs: next.totalMs > 0 ? next.totalMs : prev.totalMs,
+    chunks: next.chunks > 0 ? next.chunks : prev.chunks,
+  }
+}
+
 /** turn 是否有实质产出（决定收尸方式：fold commit / 空壳清除）。 */
 function hasOutput(live: LiveSnapshot): boolean {
   return (
@@ -270,6 +303,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         todos: ev.todos ?? prev.todos,
         subAgents: ev.subAgents ?? prev.subAgents,
         tokenUsage: ev.tokenUsage ?? prev.tokenUsage,
+        streamStats: ev.streamStats ?? prev.streamStats,
       }
       // I5 基准推进：成功处理后 lastSeq = ev.seq（重放检测的比较基准）。
       // 会话级 todos：事件携带时同步 state.todos（turn 结束后存活）。
@@ -338,6 +372,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             ? ev.streamingTools.filter((t2) => !prev.activeTools.some((a) => a.name === t2.name))
             : prev.streamingTools,
         genui: ev.genui !== undefined ? ev.genui : prev.genui,
+        // 实时流式时序（stream_stats）：每个 stream SSE 帧都携带 —— live
+        // 据此实时更新 tkps（此前只在 iteration 事件解析，流式帧丢弃导致
+        // "到达太晚 + 每迭代不变"）。
+        // ⚠️ 字段级合并，不是整体覆盖：后端滑动窗口在帧间不足 200ms 或增量
+        // 为 0 时会回传 tokensPerSec=0（"无数据"而非"速度为 0"）——整体覆盖
+        // 会把上一帧的有效 tkps 清零 → 前端数字消失只剩 "streaming"。只有
+        // 新帧提供了 >0 的字段才更新该字段，0/undefined 保留前一帧。
+        // 迭代前进（advanced）时随流式字段一起重置（新迭代从零开始）。
+        streamStats: mergeStreamStats(prev.streamStats, ev.streamStats, advanced),
       }
       return withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
     }

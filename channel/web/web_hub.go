@@ -523,10 +523,25 @@ func (h *Hub) broadcastHistoryResetLocked(routeKey string, msg protocol.WSMessag
 //
 //nolint:unused // Kept for compatibility; Web sessions use channel-aware SSE broadcasting.
 func (h *Hub) broadcastToCLI(msg protocol.WSMessage) {
+	h.broadcastToConnType(msg, func(c *Client) bool { return c.isCLI })
+}
+
+// BroadcastToWeb delivers a control message to all web WS/SSE clients
+// (userID-based conns, not CLI). Used for plugin hot load/unload
+// (web_plugin_init / web_plugin_deactivate) so the frontend can activate or
+// remove plugin views without a page reload.
+func (h *Hub) BroadcastToWeb(msg protocol.WSMessage) {
+	h.broadcastToConnType(msg, func(c *Client) bool { return !c.isCLI })
+}
+
+// broadcastToConnType is the shared implementation for fan-out to a subset of
+// clients by predicate. Stateless (latest-wins) messages are stored so late
+// reconnects replay them; stateful messages go straight to sendCh.
+func (h *Hub) broadcastToConnType(msg protocol.WSMessage, match func(*Client) bool) {
 	h.mu.RLock()
 	var clients []*Client
 	for _, c := range h.conns {
-		if c.isCLI {
+		if match(c) {
 			clients = append(clients, c)
 		}
 	}
@@ -538,7 +553,7 @@ func (h *Hub) broadcastToCLI(msg protocol.WSMessage) {
 			select {
 			case c.sendCh <- msg:
 			default:
-				log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToCLI: sendCh full, skipping")
+				log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastToConnType: sendCh full, skipping")
 			}
 		}
 	}

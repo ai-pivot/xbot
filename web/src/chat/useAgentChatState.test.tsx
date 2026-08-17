@@ -26,25 +26,33 @@ function makeWS() {
   }
 }
 
-function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1') {
+function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1', resetKey = 'k') {
   let messages: readonly ChatMessage[] = []
   let historyReady = false
   let historyOwner: string | null = null
   let activeProgress: unknown = null
+  let curResetKey = resetKey
+  let curProgressChatID = progressChatID
   const api = renderHook(() =>
     useAgentChatState({
-      progressChatID,
+      progressChatID: curProgressChatID,
       ws: ws as never,
       historyMessages: messages,
       historyReady,
       historyOwner,
-      historyChatID: 'chat-1',
+      historyChatID: curProgressChatID,
       initialProgress: activeProgress,
-      resetKey: 'k',
+      resetKey: curResetKey,
     }),
   )
   return {
     ...api,
+    /** 模拟切会话：resetKey + progressChatID 变化 → useAgentChatState 重建 ChatStore。 */
+    switchSession(nextResetKey: string, nextProgressChatID: string) {
+      curResetKey = nextResetKey
+      curProgressChatID = nextProgressChatID
+      api.rerender()
+    },
     setHistory(next: readonly ChatMessage[], owner: string | null = 'chat-1', ready = true) {
       messages = next
       historyOwner = owner
@@ -414,5 +422,62 @@ describe('useAgentChatState 全链路', () => {
       histMsg({ id: 'e21', role: 'user', content: '你好', turnID: 21, persisted: true, requestID: 'req-K1', dbID: 125 }),
     ]))
     expect(h.result.current.messages.filter((m) => m.content === '你好')).toHaveLength(1)
+  })
+
+  it('N: 切会话后新会话 stream_stats 更新（跨会话不残留旧 tok/s —— 用户报告"切换会话后 tok/s 卡住不更新"）', async () => {
+    // 用户报告：会话 A 在跑（170 tok/s），切到会话 B 后 tok/s 卡在 170 不更新。
+    // 复现路径：切会话 → resetKey 变化 → 新 ChatStore（streamStats=null）；B 的
+    // turn_started + stream(stream_stats=200) 必须写入新 store 的 live.streamStats。
+    const ws = makeWS()
+    const h = mountHook(ws, 'chat-A', 'kA')
+    // 会话 A：turn 1 streaming，带有效 stream_stats。
+    ws.emit({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, seq: 1 }, chat_id: 'chat-A' })
+    ws.emit({ type: 'stream_content', progress: { turn_id: 1, iteration: 1, seq: 2, stream_content: 'A 的内容', stream_stats: { tokens_per_sec: 170, ttft_ms: 5800 } }, chat_id: 'chat-A' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamStats?.tokensPerSec).toBe(170))
+
+    // 切到会话 B：resetKey + progressChatID 变化 → 新 ChatStore（干净）。
+    act(() => h.switchSession('kB', 'chat-B'))
+    // 新 store：无 active turn → streamStats 清空（不残留 A 的 170）。
+    expect(h.result.current.liveProgress.streamStats).toBeNull()
+    // B 的 turn 开始 + stream 帧带新 stream_stats。
+    ws.emit({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 50, seq: 1 }, chat_id: 'chat-B' })
+    ws.emit({ type: 'stream_content', progress: { turn_id: 50, iteration: 1, seq: 2, stream_content: 'B 的内容', stream_stats: { tokens_per_sec: 200, ttft_ms: 1200 } }, chat_id: 'chat-B' })
+    // B 的 stream_stats 必须更新为 200（而非卡在 A 的 170 或 null）。
+    await waitFor(() => expect(h.result.current.liveProgress.streamStats?.tokensPerSec).toBe(200))
+    expect(h.result.current.liveProgress.turnID).toBe(50)
+    // 后续帧持续更新（tok/s 实时跳动）。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 50, iteration: 1, seq: 3, stream_content: 'B 的内容继续', stream_stats: { tokens_per_sec: 250, ttft_ms: 1200 } }, chat_id: 'chat-B' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamStats?.tokensPerSec).toBe(250))
+  })
+
+  it('N2: 切到【已在跑】的会话（无 turn_started，stream 直接到达）→ stream_stats 持续更新不卡住', async () => {
+    // 用户报告："切换会话后 170 tok/s 会卡住不更新"。切到 B 时 B 的 turn 已
+    // 在跑（turn_started 已过，不会重发）—— stream 帧直接到达，lazy 采纳建
+    // live。tok/s 必须随每帧 stream_stats 更新（不残留旧会话值、不因某帧
+    // tps=0 永久卡死）。
+    const ws = makeWS()
+    const h = mountHook(ws, 'chat-A', 'kA')
+    // 会话 A 先跑（模拟旧会话有值）。
+    ws.emit({ type: 'progress_structured', progress: { phase: 'turn_started', turn_id: 1, seq: 1 }, chat_id: 'chat-A' })
+    ws.emit({ type: 'stream_content', progress: { turn_id: 1, iteration: 1, seq: 2, stream_content: 'A 内容', stream_stats: { tokens_per_sec: 300, ttft_ms: 900 } }, chat_id: 'chat-A' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamStats?.tokensPerSec).toBe(300))
+
+    // 切到 B（新 ChatStore，干净）。
+    act(() => h.switchSession('kB', 'chat-B'))
+    expect(h.result.current.liveProgress.streamStats).toBeNull()
+    // B 已在跑：无 turn_started，stream 帧直接到达（turn_id=70 已存在）。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 70, iteration: 2, seq: 10, stream_content: 'B 首帧', stream_stats: { tokens_per_sec: 170, ttft_ms: 5800 } }, chat_id: 'chat-B' })
+    await waitFor(() => {
+      expect(h.result.current.liveProgress.turnID).toBe(70)
+      expect(h.result.current.liveProgress.streamStats?.tokensPerSec).toBe(170)
+    })
+    // 后续帧：tok/s 变化（170 → 210）必须更新，不卡住。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 70, iteration: 2, seq: 11, stream_content: 'B 继续', stream_stats: { tokens_per_sec: 210, ttft_ms: 5800 } }, chat_id: 'chat-B' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamStats?.tokensPerSec).toBe(210))
+    // 一帧 tps=0（滑动窗口数据不足）→ 保留前值（设计语义），下一帧有效值恢复更新。
+    ws.emit({ type: 'stream_content', progress: { turn_id: 70, iteration: 2, seq: 12, stream_content: 'B 停顿', stream_stats: { tokens_per_sec: 0, ttft_ms: 5800 } }, chat_id: 'chat-B' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamStats?.tokensPerSec).toBe(210))
+    ws.emit({ type: 'stream_content', progress: { turn_id: 70, iteration: 2, seq: 13, stream_content: 'B 恢复', stream_stats: { tokens_per_sec: 190, ttft_ms: 5800 } }, chat_id: 'chat-B' })
+    await waitFor(() => expect(h.result.current.liveProgress.streamStats?.tokensPerSec).toBe(190))
   })
 })

@@ -5,7 +5,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// CompositeRuntimeFactory — dispatches to native/grpc/script factories
+// CompositeRuntimeFactory — dispatches to native/stdio/script factories
 // ---------------------------------------------------------------------------
 
 // NewCompositeRuntimeFactory creates a RuntimeFactory that handles all
@@ -34,6 +34,6 @@ func (f *compositeRuntimeFactory) Create(manifest *PluginManifest, dir string) (
 	case RuntimeScript:
 		return f.script.Create(manifest, dir)
 	default:
-		return nil, fmt.Errorf("unsupported runtime: %q (supported: native, stdio/grpc, script)", manifest.Runtime)
+		return nil, fmt.Errorf("unsupported runtime: %q (supported: native, stdio, script)", manifest.Runtime)
 	}
 }

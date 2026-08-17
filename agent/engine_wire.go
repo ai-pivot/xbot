@@ -455,7 +455,7 @@ func (a *Agent) buildMainRunConfig(
 		if a.channelFinder != nil {
 			var progressSeq atomic.Uint64
 			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc, cfg.ResetStreamTiming = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
 		}
 	}
 
@@ -1959,7 +1959,7 @@ func (a *Agent) buildProgressEventHandler(chatID, originatingChannel string) fun
 // delivery layer (sendCh batching + ring-buffer mergeStatelessEvent).
 // Tool calls and token usage are low-frequency, also not throttled.
 // All callbacks also write to atomic streamState for GetActiveProgress reconnect.
-func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64, turnID uint64, sessionKey string, tenantID int64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage)) {
+func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic.Uint64, turnID uint64, sessionKey string, tenantID int64) (streamContentFunc func(string), streamReasoningFunc func(string), streamToolCallFunc func([]llm.ToolCallDelta), streamUsageFunc func(*llm.TokenUsage), resetTiming func()) {
 	// Use ONLY the originating channel — its SendProgress broadcasts to ALL
 	// Hub subscribers (including other channels' clients via shared Hub).
 	var sender channelpkg.ProgressSender
@@ -1983,6 +1983,111 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		if sender != nil {
 			sender.SendProgress(chatID, payload)
 		}
+	}
+
+	// Live stream timing: attach a REAL-TIME StreamStats (tkps/ttft/totalMs)
+	// to EVERY stream frame, not just the iteration-end event. Previously
+	// StreamStats was only attached by buildProgressPayload after callLLM
+	// completed, so the frontend tkps indicator only updated once per stream.
+	requestStartAt := time.Now()
+	var firstChunkAt time.Time
+	var mu sync.Mutex
+	// Real-time completion-token counter, updated by streamUsageFunc when the
+	// provider reports usage mid-stream. NOTE: OpenAI/DeepSeek usually emit the
+	// usage event only at stream end, so this is ~0 during generation — liveStats
+	// falls back to estimating tokens from cumulative content length (≈4 chars/token).
+	var streamTokens int64
+	// 1-second sliding window for INSTANT tokens/sec. Keeps (time, cumulativeTokens)
+	// samples; tkps = (newest − oldest within the window) / Δt. No cumulative-average
+	// fallback — cumulative average decays as elapsed grows (that was the
+	// "always decreasing tkps" bug). Reasoning counts as tokens (it is generated
+	// output); when the model is reasoning fast, tkps is high; when it pauses for
+	// tools, tkps drops — that's the actual instantaneous speed.
+	type tokenSample struct {
+		at     time.Time
+		tokens int64
+	}
+	var samples []tokenSample
+	// Reset per-iteration timing baseline. TTFT must reflect THE CURRENT
+	// LLM CALL's first-token latency, not the whole Run's. buildStreamCallbacks
+	// is called once per Run (buildMainRunConfig); without resetting at each
+	// beginIteration, live frames report the Run-wide TTFT (first chunk of
+	// iteration 1) while committed iterations report their own response
+	// StreamStats.TTFTMs — the same iteration showed different ttft values
+	// between its live phase and its committed row ("迭代内 ttft 变化" bug).
+	resetTiming = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		requestStartAt = time.Now()
+		firstChunkAt = time.Time{}
+		streamTokens = 0
+		samples = samples[:0]
+	}
+	liveStats := func(payload *protocol.ProgressEvent) *protocol.StreamStats {
+		now := time.Now()
+		mu.Lock()
+		if firstChunkAt.IsZero() {
+			firstChunkAt = now
+		}
+		first := firstChunkAt
+		tokens := streamTokens
+		// Estimate from CUMULATIVE stream state (reasoning + content) — NOT the
+		// single-frame payload. Each stream frame carries only ONE field
+		// (streamContentFunc sends StreamContent, streamReasoningFunc sends
+		// ReasoningStreamContent); reading the frame would make the estimate
+		// drop when the model switches reasoning→content (dtTokens < 0 → tkps
+		// frozen at the previous value, the "123 tok/s never changes" bug).
+		if tokens <= 0 {
+			n := 0
+			if v, ok := a.streamState.Load(progressKey); ok {
+				if ap, ok := v.(*atomic.Pointer[protocol.ProgressEvent]); ok {
+					if ss := ap.Load(); ss != nil {
+						n = len(ss.StreamContent) + len(ss.ReasoningStreamContent)
+					}
+				}
+			}
+			if n > 0 {
+				tokens = int64(n) / 4
+			}
+		}
+		// Append sample, drop anything older than 1s, then rate = Δtokens/Δt over
+		// the surviving window. Window must be ≥200ms to avoid noise; the very
+		// first frames simply report 0 (frontend shows "streaming").
+		//
+		// CRITICAL: if tokens went BACKWARDS (iteration boundary → clearStreamState
+		// wiped streamState → the estimate drops below the previous sample), the old
+		// samples in the window carry a LARGER tokens value, so dtTokens < 0 → tps
+		// stays 0 until the stale samples age out (≈1s). That made the tkps indicator
+		// freeze between iterations then "suddenly start updating" once the old
+		// samples slid out. Reset the window on regression so the new iteration
+		// starts accumulating from its own baseline.
+		if len(samples) > 0 && tokens < samples[len(samples)-1].tokens {
+			samples = samples[:0]
+		}
+		samples = append(samples, tokenSample{at: now, tokens: tokens})
+		cutoff := now.Add(-time.Second)
+		for len(samples) > 0 && samples[0].at.Before(cutoff) {
+			samples = samples[1:]
+		}
+		tps := int64(0)
+		if len(samples) >= 2 {
+			oldest := samples[0]
+			dtMs := now.Sub(oldest.at).Milliseconds()
+			dtTokens := tokens - oldest.tokens
+			if dtMs >= 200 && dtTokens > 0 {
+				tps = dtTokens * 1000 / dtMs
+			}
+		}
+		mu.Unlock()
+		return &protocol.StreamStats{
+			TTFTMs:       first.Sub(requestStartAt).Milliseconds(),
+			TokensPerSec: tps,
+			TotalMs:      now.Sub(requestStartAt).Milliseconds(),
+		}
+	}
+	withLiveStats := func(payload *protocol.ProgressEvent) {
+		payload.StreamStats = liveStats(payload)
+		broadcastProgress(payload)
 	}
 
 	// All stream callbacks go through broadcastProgress with a qualified
@@ -2010,7 +2115,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 				s.StreamContent = content
 			})
-			broadcastProgress(&protocol.ProgressEvent{
+			withLiveStats(&protocol.ProgressEvent{
 				ChatID:        progressKey,
 				TurnID:        turnID,
 				Iteration:     iter,
@@ -2030,14 +2135,14 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			s.StreamContent = content
 		})
 		if isFull {
-			broadcastProgress(&protocol.ProgressEvent{
+			withLiveStats(&protocol.ProgressEvent{
 				ChatID:        progressKey,
 				TurnID:        turnID,
 				Iteration:     iter,
 				StreamContent: content,
 			})
 		} else {
-			broadcastProgress(&protocol.ProgressEvent{
+			withLiveStats(&protocol.ProgressEvent{
 				ChatID:      progressKey,
 				TurnID:      turnID,
 				Iteration:   iter,
@@ -2051,7 +2156,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 				s.ReasoningStreamContent = content
 			})
-			broadcastProgress(&protocol.ProgressEvent{
+			withLiveStats(&protocol.ProgressEvent{
 				ChatID:                 progressKey,
 				TurnID:                 turnID,
 				Iteration:              iter,
@@ -2070,14 +2175,14 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			s.ReasoningStreamContent = content
 		})
 		if isFull {
-			broadcastProgress(&protocol.ProgressEvent{
+			withLiveStats(&protocol.ProgressEvent{
 				ChatID:                 progressKey,
 				TurnID:                 turnID,
 				Iteration:              iter,
 				ReasoningStreamContent: content,
 			})
 		} else {
-			broadcastProgress(&protocol.ProgressEvent{
+			withLiveStats(&protocol.ProgressEvent{
 				ChatID:               progressKey,
 				TurnID:               turnID,
 				Iteration:            iter,
@@ -2147,17 +2252,20 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		if genuiContent != "" {
 			payload.GenUIContent = genuiContent
 		}
-		broadcastProgress(payload)
+		withLiveStats(payload)
 	}
 	streamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {
 			return
 		}
+		mu.Lock()
+		streamTokens = usage.CompletionTokens
+		mu.Unlock()
 		a.updateStreamState(progressKey, func(s *protocol.ProgressEvent) {
 			s.StreamTokens = usage.CompletionTokens
 		})
 		seq := progressSeq.Add(1)
-		broadcastProgress(&protocol.ProgressEvent{
+		withLiveStats(&protocol.ProgressEvent{
 			ChatID: progressKey,
 			TurnID: turnID,
 			Seq:    seq,
@@ -2169,7 +2277,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			StreamTokens: usage.CompletionTokens,
 		})
 	}
-	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc
+	return streamContentFunc, streamReasoningFunc, streamToolCallFunc, streamUsageFunc, resetTiming
 }
 
 // toolUIDecl looks up the tool's UI declaration (UIDeclProvider) by session

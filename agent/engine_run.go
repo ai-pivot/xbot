@@ -457,6 +457,16 @@ func (s *runState) beginIteration(i int) {
 		s.structuredProgress.ReasoningContent = ""
 		s.structuredProgress.SubAgents = nil
 	}
+	// Reset live stream timing baseline at each iteration boundary: TTFT must
+	// reflect THIS LLM CALL's first-token latency, not the whole Run's.
+	// buildStreamCallbacks is created once per Run (its requestStartAt/firstChunkAt
+	// are Run-wide); without a per-iteration reset, live frames keep reporting
+	// the Run-wide TTFT while committed iterations report their own
+	// response.StreamStats.TTFTMs — the same iteration showed different ttft
+	// values between its live phase and its committed row ("迭代内 ttft 变化").
+	if s.cfg.ResetStreamTiming != nil {
+		s.cfg.ResetStreamTiming()
+	}
 	// Clear subAgentNodes at iteration boundary. SubAgents are one-shot tools
 	// that complete synchronously within execOneTool — by the time the next
 	// iteration begins, they are done. Carrying them forward causes completed

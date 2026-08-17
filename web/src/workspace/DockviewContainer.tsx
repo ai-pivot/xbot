@@ -57,6 +57,7 @@ import { WSContext } from '@/providers/WSProvider'
 import { CwdContext } from '@/providers/CwdProvider'
 import { AuthContext } from '@/providers/AuthProvider'
 import { SessionStoreContext } from '@/hooks/useSessionStore'
+import { useOptionalPluginRuntime, PluginRuntimeContext } from '@/plugin-runtime'
 import { RightSidebarControlContext, useRightSidebarControl } from '@/components/sidebar/RightSidebarControl'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { PanelParams } from '@/types/tab'
@@ -92,6 +93,11 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
   const authValue = useAuth()
   const sessionStoreValue = useSessionStore()
   const rightSidebarValue = useRightSidebarControl()
+  // PluginRuntime for the isolated dockview roots — without this the
+  // iteration UI injection point (IterationSlot → usePluginRuntime) returns
+  // null inside panels, so plugin views (e.g. iteration-stats) only rendered
+  // on mobile (which stays inside the PluginRuntimeProvider tree).
+  const pluginRuntimeValue = useOptionalPluginRuntime()
 
   // Single aggregated value — new reference when any sub-value changes.
   const ctxValue = useMemo<DockviewContextValue>(
@@ -103,9 +109,10 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
       auth: authValue,
       sessionStore: sessionStoreValue,
       rightSidebar: rightSidebarValue ?? { openPanel: () => undefined },
+      pluginRuntime: pluginRuntimeValue,
       openTab: tabManager.openTab,
     }),
-    [themeValue, i18nValue, wsValue, cwdValue, authValue, sessionStoreValue, rightSidebarValue, tabManager.openTab],
+    [themeValue, i18nValue, wsValue, cwdValue, authValue, sessionStoreValue, rightSidebarValue, pluginRuntimeValue, tabManager.openTab],
   )
 
   // Keep ctxRef in sync so isolated panel roots read the latest values.
@@ -194,7 +201,9 @@ export function withDockviewProviders(node: ReactElement, ctx: DockviewContextVa
             createElement(AuthContext.Provider, { value: ctx.auth },
               createElement(SessionStoreContext.Provider, { value: ctx.sessionStore },
                 createElement(RightSidebarControlContext.Provider, { value: ctx.rightSidebar },
-                  createElement(TooltipProvider, { delayDuration: 200, children: node }),
+                  createElement(PluginRuntimeContext.Provider, { value: ctx.pluginRuntime },
+                    createElement(TooltipProvider, { delayDuration: 200, children: node }),
+                  ),
                 ),
               ),
             ),

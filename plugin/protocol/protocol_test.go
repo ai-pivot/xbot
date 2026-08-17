@@ -191,3 +191,95 @@ func TestRun_Enrich(t *testing.T) {
 		t.Errorf("unexpected result: %q", resp.Result)
 	}
 }
+
+func TestRun_DeactivateExits(t *testing.T) {
+	// After "deactivate" the run loop must return (process exits on its own) —
+	// xbot waits a grace period then kills only if we are still alive.
+	var gotDeactivate bool
+	h := &Handler{
+		Activate: func(params *ActivateParams) (*ActivateResult, error) {
+			return &ActivateResult{}, nil
+		},
+		Deactivate: func() {
+			gotDeactivate = true
+		},
+	}
+
+	// Send activate, then deactivate. A third message after deactivate must NOT
+	// be processed (loop already returned).
+	stdin := strings.NewReader(
+		`{"method":"activate"}` + "\n" +
+			`{"method":"deactivate"}` + "\n" +
+			`{"method":"execute_tool","params":{"toolName":"echo","input":"{}"}}` + "\n",
+	)
+	var stdout bytes.Buffer
+	run(h, stdin, &stdout)
+
+	if !gotDeactivate {
+		t.Error("expected Deactivate to be called")
+	}
+	// Only 2 responses (activate + deactivate), not the execute_tool.
+	dec := json.NewDecoder(&stdout)
+	count := 0
+	for {
+		var resp Response
+		if err := dec.Decode(&resp); err != nil {
+			break
+		}
+		count++
+		if resp.Error != "" {
+			t.Errorf("unexpected error response: %s", resp.Error)
+		}
+	}
+	if count != 2 {
+		t.Errorf("expected 2 responses (activate, deactivate), got %d", count)
+	}
+}
+
+func TestRun_WebPluginRPC(t *testing.T) {
+	var gotMethod string
+	var gotPayload string
+	h := &Handler{
+		WebPluginRPC: func(params *WebPluginRPCParams) (*WebPluginRPCResult, error) {
+			gotMethod = params.Method
+			gotPayload = string(params.Params)
+			return &WebPluginRPCResult{Result: `{"branch":"main"}`}, nil
+		},
+	}
+
+	stdin := strings.NewReader(
+		`{"method":"web_plugin_rpc","params":{"method":"status","params":{"chatId":"c1"}}}` + "\n",
+	)
+	var stdout bytes.Buffer
+	run(h, stdin, &stdout)
+
+	if gotMethod != "status" {
+		t.Errorf("expected method=status, got %q", gotMethod)
+	}
+	if !strings.Contains(gotPayload, "c1") {
+		t.Errorf("expected payload to carry chatId, got %q", gotPayload)
+	}
+	var resp Response
+	dec := json.NewDecoder(&stdout)
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Result != `{"branch":"main"}` {
+		t.Errorf("unexpected result: %q", resp.Result)
+	}
+}
+
+func TestRun_WebPluginRPCNotImplemented(t *testing.T) {
+	h := &Handler{}
+	stdin := strings.NewReader(`{"method":"web_plugin_rpc","params":{"method":"status"}}` + "\n")
+	var stdout bytes.Buffer
+	run(h, stdin, &stdout)
+	var resp Response
+	dec := json.NewDecoder(&stdout)
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.Contains(resp.Error, "web_plugin_rpc not implemented") {
+		t.Errorf("expected 'web_plugin_rpc not implemented', got %q", resp.Error)
+	}
+}

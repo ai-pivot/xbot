@@ -45,6 +45,10 @@ function IterationStatsRow({ stats }: { stats: IterationStats }) {
 
 function LiveStatsRow({ live }: { live: LiveStreamStats }) {
   const tps = live.tokensPerSec
+  // IterationSlot 只在 LiveIteration（streaming 中）渲染 → live 存在即表示
+  // 正在流式生成。有 tkps 显示实时速度；stream_stats 尚未到达（首个 SSE 帧
+  // 或后端未带）时也显示 streaming 占位 —— 用户明确要求"只要开始收到 SSE
+  // 没数据时也该显示 streaming"。
   return (
     <div className="flex items-center gap-3 rounded px-2 py-1 text-[11px]">
       <span className="inline-flex items-center gap-1.5 whitespace-nowrap">

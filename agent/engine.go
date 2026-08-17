@@ -306,6 +306,15 @@ type RunConfig struct {
 	// structured event), and keeps rendering the previous iteration's content.
 	OnIterationChange func(iteration int)
 
+	// ResetStreamTiming resets the live stream stats timing baseline
+	// (requestStartAt / firstChunkAt / samples) at each iteration boundary.
+	// TTFT must reflect THE CURRENT LLM CALL's first-token latency, not the
+	// whole Run's — otherwise live frames report the Run-wide TTFT while
+	// committed iterations report their own response.StreamStats.TTFTMs,
+	// making the same iteration show different ttft values between its live
+	// phase and its committed row ("迭代内 ttft 变化" bug).
+	ResetStreamTiming func()
+
 	// StreamContentFunc is called with accumulated text content on each content delta
 	// during LLM streaming. When set (and Stream=true), generateResponse uses
 	// CollectStreamWithCallback instead of CollectStream. Nil by default (no streaming).

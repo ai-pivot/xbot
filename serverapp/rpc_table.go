@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -12,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"os"
 	"path/filepath"
 	"xbot/agent"
 	"xbot/bus"
@@ -48,6 +48,63 @@ type RPCContext struct {
 	// pluginWidgetsMu serializes plugin_widgets RPC calls so concurrent
 	// sessions don't race on the shared PluginContext.workingDir.
 	pluginWidgetsMu sync.Mutex
+}
+
+// broadcastPluginEnablement 向所有 web 客户端广播插件启用/禁用事件，实现热加载。
+// 禁用 → web_plugin_deactivate（前端 runtime.deactivate 移除视图）；
+// 启用 → web_plugin_init（前端 runtime.activate 注册视图）。
+func (h *RPCContext) broadcastPluginEnablement(pluginID string, enabled bool) {
+	if h.Disp == nil {
+		return
+	}
+	ch, ok := h.Disp.GetChannel("web")
+	if !ok {
+		return
+	}
+	wc, ok := ch.(interface{ Hub() *web.Hub })
+	if !ok || wc.Hub() == nil {
+		return
+	}
+	msgType := protocol.MsgTypeWebPluginDeactivate
+	content := fmt.Sprintf(`{"plugin_id":%q}`, pluginID)
+	if enabled {
+		msgType = protocol.MsgTypeWebPluginInit
+		pm := h.Ag.PluginManager()
+		if pm == nil {
+			return
+		}
+		for _, e := range pm.ListPlugins() {
+			if e.Manifest.ID != pluginID || e.Manifest.Web == nil || e.Manifest.Web.Entry == "" {
+				continue
+			}
+			moduleURL := fmt.Sprintf("/plugins/%s/web/%s", e.Manifest.ID, strings.TrimPrefix(e.Manifest.Web.Entry, "/"))
+			decl := struct {
+				ID          string          `json:"id"`
+				Name        string          `json:"name"`
+				Version     string          `json:"version"`
+				Permissions []string        `json:"permissions"`
+				Entry       string          `json:"entry"`
+				ModuleURL   string          `json:"module_url"`
+				Contributes json.RawMessage `json:"contributes,omitempty"`
+			}{
+				ID:          e.Manifest.ID,
+				Name:        e.Manifest.Name,
+				Version:     e.Manifest.Version,
+				Permissions: e.Manifest.Permissions,
+				Entry:       e.Manifest.Web.Entry,
+				ModuleURL:   moduleURL,
+				Contributes: e.Manifest.Web.Contributes,
+			}
+			b, err := json.Marshal(decl)
+			if err != nil {
+				log.WithError(err).Warn("broadcastPluginEnablement: marshal web plugin decl failed")
+				return
+			}
+			content = string(b)
+			break
+		}
+	}
+	wc.Hub().BroadcastToWeb(protocol.WSMessage{Type: msgType, Content: content})
 }
 
 func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
@@ -1812,10 +1869,24 @@ func registerAdminHandlers(t RPCTable, h *RPCContext) {
 
 func registerPluginHandlers(t RPCTable, h *RPCContext) {
 
-	t["plugin_status"] = rpc0err(func(ctx context.Context) (any, error) {
+	t["plugin_status"] = rpc1(func(ctx context.Context, p struct {
+		Rescan bool `json:"rescan"`
+	}) (any, error) {
 		pm := h.Ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
+		}
+		if p.Rescan {
+			// 增量发现：Discover 跳过已存在 entry（保留其激活状态），ActivateAll
+			// 只激活新发现的插件。绝不用 ReloadAll（会 DeactivateAll —— 已有插件
+			// 的 Deactivate 调用可能超时 30s，导致 rescan 阻塞几十秒）。
+			// 激活失败仅记录日志，不阻断 API（失败插件仍以 state=error 返回）。
+			if _, err := pm.Discover(ctx); err != nil {
+				log.WithError(err).Warn("plugin rescan: discover failed")
+			}
+			if err := pm.ActivateAll(ctx); err != nil {
+				log.WithError(err).Warn("plugin rescan: activate failed")
+			}
 		}
 		entries := pm.ListPlugins()
 		type pluginJSON struct {
@@ -1985,6 +2056,9 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 			h.Cfg.Plugins.DisabledPlugins = pm.DisabledIDs()
 			_ = saveServerConfig(h.Cfg)
 		}
+		// 热加载/热卸载：广播给所有 web 客户端，前端实时激活/移除插件视图，
+		// 无需刷新页面。禁用 → web_plugin_deactivate；启用 → web_plugin_init。
+		h.broadcastPluginEnablement(p.ID, p.Enabled)
 		return map[string]string{"status": "ok"}, nil
 	})
 
@@ -2015,10 +2089,21 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 
 	// web_plugin_list: 下发所有带 Web 声明的插件清单（贡献点 + 模块 URL + 权限）。
 	// 单一门控：后端只做传输层检查（Web.Entry 非空），贡献点语义由前端 runtime 校验。
-	t["web_plugin_list"] = rpc0err(func(ctx context.Context) (any, error) {
+	t["web_plugin_list"] = rpc1(func(ctx context.Context, p struct {
+		Rescan bool `json:"rescan"`
+	}) (any, error) {
 		pm := h.Ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
+		}
+		if p.Rescan {
+			// 增量发现（见 plugin_status 注释）：绝不用 ReloadAll（DeactivateAll 超时）。
+			if _, err := pm.Discover(ctx); err != nil {
+				log.WithError(err).Warn("plugin rescan: discover failed")
+			}
+			if err := pm.ActivateAll(ctx); err != nil {
+				log.WithError(err).Warn("plugin rescan: activate failed")
+			}
 		}
 		type webPluginJSON struct {
 			ID          string          `json:"id"`
@@ -2068,29 +2153,73 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 			}
 			return nil, fmt.Errorf("unknown method: %s", p.Method)
 		}
-		// 后端插件方法：<pluginId>.<method> → ChannelPluginCall 到对应插件进程。
-		parts := strings.SplitN(p.Method, ".", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid method: %s", p.Method)
-		}
-		pluginID, method := parts[0], parts[1]
+		// 后端插件方法：<pluginId>.<method> → 直调插件进程（stdio RPC）。
+		// 注意：plugin ID 本身可含点号（如 "xbot.git-fancy"），所以不能用
+		// SplitN(".") 拆——那会把 "xbot.git-fancy.status" 拆成 "xbot"。
+		// 正确做法：遍历已激活插件，按最长 pluginID 前缀匹配。
 		pm := h.Ag.PluginManager()
 		if pm == nil {
 			return nil, fmt.Errorf("plugin system not available")
 		}
-		if !pm.IsPluginActive(pluginID) {
-			return nil, fmt.Errorf("plugin not active: %s", pluginID)
-		}
-		payload, err := json.Marshal(map[string]any{"method": method, "params": p.Params})
+		pluginID, method, err := resolvePluginRPCMethod(pm, p.Method)
 		if err != nil {
 			return nil, err
 		}
-		result, callErr := h.Ag.ChannelPluginCall(pluginID, "web_plugin_rpc", payload)
+		// 注入 session CWD：前端传 {channel, chatID} → 解析 session 当前目录，
+		// 追加到 params（git-fancy 在 session CWD 下执行 git 命令）。
+		params := p.Params
+		if len(p.Params) > 0 {
+			var pmap map[string]any
+			if err := json.Unmarshal(p.Params, &pmap); err == nil {
+				chatID, _ := pmap["chatID"].(string)
+				if chatID != "" && h.Ag.MultiSession() != nil {
+					channel, _ := pmap["channel"].(string)
+					if sess, err := h.Ag.MultiSession().GetOrCreateSession(channel, chatID); err == nil {
+						pmap["cwd"] = sess.GetCurrentDir()
+					}
+				}
+				if data, err := json.Marshal(pmap); err == nil {
+					params = data
+				}
+			}
+		}
+		result, callErr := pm.CallPluginRPC(ctx, pluginID, method, params)
 		if callErr != nil {
 			return nil, callErr
 		}
 		return json.RawMessage(result), nil
 	})
+}
+
+// pluginLister is the minimal interface resolvePluginRPCMethod needs (a real
+// *plugin.PluginManager satisfies it) — kept narrow so tests can inject a fake.
+type pluginLister interface {
+	ListPlugins() []*plugin.PluginEntry
+}
+
+// resolvePluginRPCMethod splits a "pluginId.method" string into its plugin ID
+// and sub-method by longest pluginID prefix match against ACTIVE plugins.
+//
+// A naive strings.SplitN(method, ".", 2) is WRONG here: plugin IDs themselves
+// contain dots (e.g. "xbot.git-fancy"), so "xbot.git-fancy.status" would be
+// split into pluginID="xbot" + method="git-fancy.status" — producing the
+// misleading "plugin not active: xbot" error. Matching against the known set
+// of active plugin IDs (longest prefix wins) is unambiguous.
+func resolvePluginRPCMethod(pm pluginLister, method string) (string, string, error) {
+	bestID := ""
+	for _, e := range pm.ListPlugins() {
+		if e.State != plugin.StateActive {
+			continue
+		}
+		id := e.Manifest.ID
+		if id != "" && strings.HasPrefix(method, id+".") && len(id) > len(bestID) {
+			bestID = id
+		}
+	}
+	if bestID == "" {
+		return "", "", fmt.Errorf("plugin not active: %s", method)
+	}
+	return bestID, strings.TrimPrefix(method, bestID+"."), nil
 }
 
 // HandleCLIRPC dispatches RPC requests from CLI RemoteBackend clients.
@@ -2715,4 +2844,5 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 			"plugins": rm.ListInstalledPlugins(p.SenderID),
 		}, nil
 	})
+
 }

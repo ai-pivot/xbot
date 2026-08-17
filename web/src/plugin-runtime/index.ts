@@ -238,7 +238,28 @@ export class PluginRuntime {
     const key = `${pluginId}:${view.id}`
     let p = this.viewCache.get(key)
     if (!p) {
-      p = this.host.loadViewComponent(pluginId, view)
+      // 优先复用已激活的模块实例：activate() 通过 versionedUrl（?v=）加载并
+      // 调用 mod.activate(ctx)（注入 ctx.rpc 等）。若这里再用不同 URL
+      // （?view=）重新 import，浏览器 ESM 缓存会产生第二个模块实例——模块级
+      // 变量（如 entry.tsx 里的 rpc）不共享，view 会显示"插件未初始化"。
+      // 只有插件未激活时才 fallback 到 host 的独立 import。
+      const mod = this.modules.get(pluginId)
+      if (mod) {
+        const comp = (mod.default ?? mod[view.id] ?? null) as unknown
+        if (typeof comp === 'function') {
+          p = Promise.resolve(comp as React.ComponentType)
+        } else if (comp && typeof comp === 'object' && (comp as { $$typeof?: unknown }).$$typeof) {
+          p = Promise.resolve(comp as React.ComponentType)
+        } else {
+          console.error(
+            `[plugin-runtime] 已激活模块不含有效组件: plugin=${pluginId} view=${view.id}`,
+            { moduleKeys: Object.keys(mod), compType: typeof comp },
+          )
+          p = Promise.resolve(null)
+        }
+      } else {
+        p = this.host.loadViewComponent(pluginId, view)
+      }
       this.viewCache.set(key, p)
     }
     return p
@@ -263,6 +284,9 @@ function collectPluginExports(mod: PluginModule): Record<string, unknown> {
 // ─── React Provider ───────────────────────────────────────────────
 
 const PluginRuntimeContext = createContext<PluginRuntime | null>(null)
+
+/** Dockview 隔离 root 桥接用：面板组件内读取 PluginRuntime（IterationSlot 等）。 */
+export { PluginRuntimeContext }
 
 export function PluginRuntimeProvider({
   host,

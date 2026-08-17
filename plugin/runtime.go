@@ -91,7 +91,7 @@ type stdioRuntimeFactory struct{}
 
 func (f *stdioRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plugin, error) {
 	if manifest.Entry == "" {
-		return nil, fmt.Errorf("grpc plugin %s: entry command is required", manifest.ID)
+		return nil, fmt.Errorf("stdio plugin %s: entry command is required", manifest.ID)
 	}
 	return &stdioPlugin{
 		manifest: *manifest,
@@ -99,7 +99,7 @@ func (f *stdioRuntimeFactory) Create(manifest *PluginManifest, dir string) (Plug
 	}, nil
 }
 
-// stdioPlugin implements Plugin for external gRPC/stdio processes.
+// stdioPlugin implements Plugin for external stdio processes.
 type stdioPlugin struct {
 	manifest        PluginManifest
 	dir             string
@@ -188,7 +188,7 @@ func (g *stdioPlugin) Activate(ctx PluginContext) error {
 		bridge, err := CreateChannelProvider(cp, proc)
 		if err != nil {
 			proc.Stop()
-			return fmt.Errorf("create grpc channel bridge: %w", err)
+			return fmt.Errorf("create stdio channel bridge: %w", err)
 		}
 
 		if err := ctx.RegisterChannelProvider(bridge); err != nil {
@@ -546,12 +546,45 @@ func (p *StdioPluginProcess) IsRunning() bool {
 	return p.running
 }
 
-// stopLocked kills the process without acquiring the lock.
+// gracefulStopTimeout is how long Stop waits for the plugin process to exit on
+// its own after a "deactivate" notification before force-killing it.
+const gracefulStopTimeout = 5 * time.Second
+
+// stopLocked gracefully stops the process without acquiring the lock.
 // Caller must hold p.mu.
+//
+// Unload sequence:
+//  1. Send a "deactivate" notification over stdin (the plugin cleans up its
+//     resources, e.g. file watchers, and then exits on its own — see
+//     protocol.run's deactivate branch).
+//  2. Wait up to gracefulStopTimeout for the process to exit.
+//  3. Only if it is still alive after the grace period, force-kill it.
+//
+// This is the hot-reload / plugin-disable path: plugins must get a chance to
+// clean up before being terminated. Kill is the last resort, not the default.
 func (p *StdioPluginProcess) stopLocked() {
-	if p.running {
-		_ = p.cmd.Process.Kill()
-		_ = p.cmd.Wait()
-		p.running = false
+	if !p.running {
+		return
 	}
+
+	// 1. Notify the plugin to shut down gracefully (best-effort; ignore write
+	//    errors — the process may already be gone).
+	_ = p.stdin.write(&PluginRequest{Method: "deactivate"})
+
+	// 2. Wait for the process to exit on its own.
+	done := make(chan struct{})
+	go func() {
+		_ = p.cmd.Wait()
+		close(done)
+	}()
+
+	// 3. Kill only if the grace period expires first.
+	select {
+	case <-done:
+		// Plugin exited cleanly.
+	case <-time.After(gracefulStopTimeout):
+		_ = p.cmd.Process.Kill()
+		<-done
+	}
+	p.running = false
 }

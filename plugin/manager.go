@@ -470,10 +470,6 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 			log.WithField("plugin", m.ID).Warn("Duplicate plugin ID, skipping")
 			continue
 		}
-		if pm.disabled[m.ID] {
-			log.WithField("plugin", m.ID).Debug("Plugin disabled by config, skipping")
-			continue
-		}
 
 		// Find plugin directory
 		pluginDir := pm.findPluginDir(dirs, m.ID)
@@ -490,6 +486,20 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 				continue
 			}
 			entry.Plugin = plugin
+		}
+
+		// Disabled plugins MUST stay in the entries map (so the plugin panel can
+		// list them and re-enable them), but must NOT be activated. StateInactive
+		// makes ActivateAll skip them; enableEntry flips them back to
+		// StateDiscovered and activates. The old `continue` here removed the
+		// plugin from entries entirely → it vanished from the panel AND
+		// SetPluginEnabled(.., true) failed with ErrPluginNotFound (deadlock).
+		if pm.disabled[m.ID] {
+			entry.State = StateInactive
+			pm.entries[m.ID] = entry
+			loaded++
+			log.WithField("plugin", m.ID).Info("Plugin discovered (disabled)")
+			continue
 		}
 
 		pm.entries[m.ID] = entry
@@ -854,6 +864,40 @@ func (pm *PluginManager) GetPlugin(id string) (*PluginEntry, bool) {
 	defer pm.mu.RUnlock()
 	e, ok := pm.entries[id]
 	return e, ok
+}
+
+// CallPluginRPC sends an RPC to an active stdio plugin process by plugin ID.
+// Unlike ChannelPluginCall (which routes via the channel provider name), this
+// routes directly to the plugin's own process — used by web_plugin_rpc so
+// frontend views can call into any stdio plugin without a channel declaration.
+// Returns the raw JSON result string as opaque bytes.
+func (pm *PluginManager) CallPluginRPC(ctx context.Context, pluginID, method string, params json.RawMessage) (json.RawMessage, error) {
+	entry, ok := pm.GetPlugin(pluginID)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrPluginNotFound, pluginID)
+	}
+	if entry.State != StateActive {
+		return nil, fmt.Errorf("plugin %s not active (state=%s)", pluginID, entry.State)
+	}
+	sp, ok := entry.Plugin.(*stdioPlugin)
+	if !ok || sp.process == nil {
+		return nil, fmt.Errorf("plugin %s is not a stdio plugin (or process not started)", pluginID)
+	}
+	req := &PluginRequest{
+		Method: "web_plugin_rpc",
+		Params: map[string]any{
+			"method": method,
+			"params": params,
+		},
+	}
+	resp, err := sp.process.Call(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, fmt.Errorf("plugin %s: %s", pluginID, resp.Error)
+	}
+	return json.RawMessage(resp.Result), nil
 }
 
 // ListPlugins returns all loaded plugin entries in deterministic order (by ID).

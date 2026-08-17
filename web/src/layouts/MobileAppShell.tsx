@@ -26,6 +26,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useCwd } from '@/providers/CwdProvider'
 import { useI18n } from '@/providers/i18n'
 import { useSessionStore } from '@/hooks/useSessionStore'
+import { useOptionalPluginRuntime } from '@/plugin-runtime'
 import { useTabManager } from '@/hooks/useTabManager'
 import { useTheme } from '@/hooks/useTheme'
 import { useWSConnection } from '@/providers/WSProvider'
@@ -109,6 +110,8 @@ export function MobileAppShell() {
     },
   }), [])
 
+  const pluginRuntime = useOptionalPluginRuntime()
+
   const ctxValue = useMemo<DockviewContextValue>(() => ({
     theme,
     i18n,
@@ -117,7 +120,8 @@ export function MobileAppShell() {
     auth,
     sessionStore,
     rightSidebar,
-  }), [auth, cwd, i18n, rightSidebar, sessionStore, theme, ws])
+    pluginRuntime,
+  }), [auth, cwd, i18n, pluginRuntime, rightSidebar, sessionStore, theme, ws])
 
   const title = subAgentView
     ? (subAgentView.subAgentRole ?? 'SubAgent')

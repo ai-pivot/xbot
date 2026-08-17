@@ -15,7 +15,6 @@ import type { ComponentType } from 'react'
 
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
-import { IterationStatsPanel } from '@/plugins/iteration-stats/IterationStatsPanel'
 import type { ViewContribution } from '@/plugin-api'
 import { usePluginRuntime } from '@/plugin-runtime'
 
@@ -24,23 +23,39 @@ interface LoadedViewProps {
   pluginId: string
 }
 
-/** 插件视图崩溃边界：任何 render 异常只显示错误占位，不 unmount 整棵树。 */
-class PluginViewErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-  state = { failed: false }
+/** 插件视图崩溃边界：任何 render 异常只显示错误占位，不 unmount 整棵树。
+ * 错误详情（message + componentStack）直接渲染在界面上，方便截图诊断。 */
+class PluginViewErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean; message: string; stack: string }
+> {
+  state = { failed: false, message: '', stack: '' }
 
-  static getDerivedStateFromError() {
-    return { failed: true }
+  static getDerivedStateFromError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { failed: true, message, stack: '' }
   }
 
-  componentDidCatch(error: unknown) {
-    console.error('[plugin-runtime] 插件视图渲染崩溃', error)
+  componentDidCatch(error: unknown, info: unknown) {
+    const componentStack =
+      typeof info === 'object' && info !== null && 'componentStack' in info
+        ? String((info as { componentStack: string }).componentStack)
+        : ''
+    console.error('[plugin-runtime] 插件视图渲染崩溃', error, info)
+    this.setState({ message: error instanceof Error ? error.message : String(error), stack: componentStack })
   }
 
   render() {
     if (this.state.failed) {
       return (
-        <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-600">
-          插件视图崩溃（已隔离，不影响应用）
+        <div className="rounded border border-red-200 bg-red-50 p-2 font-mono text-[10px] leading-relaxed text-red-700">
+          <div className="font-sans text-xs font-semibold">插件视图崩溃（已隔离，不影响应用）</div>
+          {this.state.message && (
+            <pre className="mt-1 whitespace-pre-wrap break-all">{this.state.message}</pre>
+          )}
+          {this.state.stack && (
+            <pre className="mt-1 whitespace-pre-wrap break-all text-red-500">{this.state.stack.slice(0, 2000)}</pre>
+          )}
         </div>
       )
     }
@@ -68,12 +83,6 @@ function BuiltinView({ view }: { view: ViewContribution }) {
           <GitStatusPanel />
         </PluginViewErrorBoundary>
       )
-    case 'xbot.iteration-stats.iteration':
-      return (
-        <PluginViewErrorBoundary>
-          <IterationStatsPanel />
-        </PluginViewErrorBoundary>
-      )
     default:
       return null
   }
@@ -91,26 +100,42 @@ export function PluginView({ pluginId, view }: LoadedViewProps) {
 
 function AsyncPluginView({ pluginId, view }: LoadedViewProps) {
   const runtime = usePluginRuntime()
-  const [Comp, setComp] = useState<ComponentType | null>(null)
+  const [state, setState] = useState<{ comp: ComponentType | null; error: string | null }>({ comp: null, error: null })
 
   useEffect(() => {
     let alive = true
-    setComp(null)
+    setState({ comp: null, error: null })
     runtime.loadViewComponent(pluginId, view).then((c) => {
-      if (alive) setComp(c)
+      if (!alive) return
+      // loadViewComponent 成功但返回 null（import 失败/非组件）—— 抛出，让
+      // ErrorBoundary 把诊断信息渲染到崩溃界面（便于直接截图排查）。
+      if (!c) {
+        setState({ comp: null, error: `组件加载失败或返回了非组件对象: plugin=${pluginId} view=${view.id} entry=${view.entry ?? ''}（详见 Console 的 [plugin-runtime] 日志）` })
+        return
+      }
+      setState({ comp: c, error: null })
     })
     return () => {
       alive = false
     }
   }, [runtime, pluginId, view])
 
-  if (!Comp) {
+  if (state.error) {
+    return (
+      <div className="rounded border border-red-200 bg-red-50 p-2 font-mono text-[10px] text-red-700">
+        <div className="font-sans text-xs font-semibold">插件视图加载失败</div>
+        <pre className="mt-1 whitespace-pre-wrap break-all">{state.error}</pre>
+      </div>
+    )
+  }
+
+  if (!state.comp) {
     return <div className="animate-pulse rounded border border-slate-200 p-3 text-xs text-slate-400">加载 {view.title}…</div>
   }
 
   return (
     <PluginViewErrorBoundary>
-      <Comp />
+      <state.comp />
     </PluginViewErrorBoundary>
   )
 }

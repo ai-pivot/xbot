@@ -17,6 +17,7 @@ import type { AuthContextValue } from '@/providers/AuthProvider'
 import type { SessionStore } from '@/hooks/useSessionStore'
 import type { RightSidebarControl } from '@/components/sidebar/RightSidebarControl'
 import type { TabManager } from '@/hooks/useTabManager'
+import type { PluginRuntime } from '@/plugin-runtime'
 
 export interface DockviewContextValue {
   theme: ThemeContextValue
@@ -26,6 +27,10 @@ export interface DockviewContextValue {
   auth: AuthContextValue
   sessionStore: SessionStore
   rightSidebar: RightSidebarControl
+  /** PluginRuntime（插件注册表/迭代 UI 注入点）。Dockview 面板在隔离
+   *  React root，必须经此桥接，否则 IterationSlot/usePluginRuntime
+   *  在电脑端返回 null —— 插件迭代指标只在手机端渲染。 */
+  pluginRuntime: PluginRuntime | null
   openTab?: TabManager['openTab']
 }
 

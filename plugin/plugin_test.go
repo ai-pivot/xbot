@@ -1081,13 +1081,34 @@ func TestPluginManager_DisabledPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover failed: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("expected 0 discovered plugins (disabled), got %d", count)
+	// 修复：disabled 插件仍然注册进 entries（StateInactive）——面板可见、
+	// 可重新启用（SetPluginEnabled 会翻回 StateDiscovered 再激活）。旧的
+	// `continue` 跳过会让插件从面板消失且 GetPlugin 找不到 → 无法重新启用（死锁）。
+	if count != 1 {
+		t.Errorf("expected 1 discovered plugin (disabled but registered), got %d", count)
 	}
 
-	_, found := pm.GetPlugin("com.test.disabled")
-	if found {
-		t.Error("disabled plugin should not be found")
+	entry, found := pm.GetPlugin("com.test.disabled")
+	if !found {
+		t.Fatal("disabled plugin should still be registered (panel needs to list + re-enable it)")
+	}
+	if entry.State != StateInactive {
+		t.Errorf("expected disabled plugin State=%s, got %s", StateInactive, entry.State)
+	}
+
+	// 重新启用后应尝试激活。native 插件未注册 runtimeFactory 时激活会失败
+	// （"no runtime instance"）——这是合理行为（无 runtime 无法激活），
+	// 但插件必须仍然注册（可再次启用/禁用，不会从面板消失）。
+	if err := pm.SetPluginEnabled(ctx, "com.test.disabled", true); err != nil {
+		// 允许 "no runtime instance"（测试未提供 runtimeFactory）
+		t.Logf("re-enable expected to fail without runtimeFactory: %v", err)
+	}
+	entry, _ = pm.GetPlugin("com.test.disabled")
+	if entry == nil {
+		t.Fatal("plugin must remain registered after failed re-enable")
+	}
+	if entry.State == StateInactive {
+		t.Error("plugin should have left StateInactive after re-enable attempt")
 	}
 }
 

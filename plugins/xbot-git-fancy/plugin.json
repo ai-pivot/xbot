@@ -1,0 +1,25 @@
+{
+  "id": "xbot.git-fancy",
+  "name": "Git Fancy",
+  "version": "0.2.1",
+  "description": "Fancy Git 面板：分支、变更文件、diff 统计、提交历史。纯 stdio IPC 后端（独立 Go 进程）。",
+  "author": "xbot",
+  "runtime": "stdio",
+  "entry": "./bin/git-fancy-plugin",
+  "activationEvents": ["onStart"],
+  "permissions": ["rpc"],
+  "contributes": {},
+  "web": {
+    "entry": "index.js",
+    "contributes": [
+      {
+        "kind": "view",
+        "id": "xbot.git-fancy.panel",
+        "container": "right_sidebar",
+        "title": "Git",
+        "icon": "git-branch",
+        "entry": "index.js"
+      }
+    ]
+  }
+}

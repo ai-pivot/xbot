@@ -13,6 +13,32 @@ export interface BackendRPC {
   }
   'agent.cancel': { params: { chatID: string }; result: Record<string, never> }
   'plugin.list': { params: Record<string, never>; result: PluginInfo[] }
+  // ---- xbot.git-fancy：fancy Git 插件数据源 ----
+  'git.status': {
+    params: { channel: string; chatID: string }
+    result: {
+      branch: string
+      repo_name: string
+      changes: Array<{ path: string; status: string; added: number; deleted: number }>
+      ahead: number
+      behind: number
+      commit_hash: string
+      commit_msg: string
+      is_repo: boolean
+    }
+  }
+  'git.log': {
+    params: { channel: string; chatID: string; limit?: number }
+    result: { commits: Array<{ hash: string; author: string; when: string; subject: string }> }
+  }
+  'git.diff': {
+    params: { channel: string; chatID: string; path: string }
+    result: { path: string; content: string }
+  }
+  'git.branches': {
+    params: { channel: string; chatID: string }
+    result: { current: string; branches: string[] }
+  }
 }
 
 export interface SessionDetail {

@@ -20,7 +20,7 @@ import { PluginRuntimeProvider, usePluginRuntime, type PluginRuntimeHost } from 
 import { FetchRpcTransport } from '@/plugin-runtime/rpc'
 
 /** 后端 web_plugin_list 返回的单个插件声明。 */
-interface WebPluginDecl {
+export interface WebPluginDecl {
   id: string
   name: string
   version: string
@@ -49,22 +49,34 @@ async function loadPluginViewComponent(
   const url = view.entry.startsWith('/') ? view.entry : `${base}/${view.entry}`
   try {
     const mod = await import(/* @vite-ignore */ `${url}?view=${encodeURIComponent(view.id)}`)
-    const comp = mod.default ?? mod[view.id] ?? null
-    return typeof comp === 'function' || (comp && typeof comp === 'object') ? (comp as React.ComponentType) : null
-  } catch {
+    const comp = (mod.default ?? mod[view.id] ?? null) as unknown
+    // 只接受函数组件，或带合法 $$typeof 的 memo/forwardRef 对象（React 18+ 支持）。
+    // 绝不放行裸对象 —— React 渲染 `<Comp />` 时会对裸对象抛
+    // "Element type is invalid... got: object"。
+    if (typeof comp === 'function') return comp as React.ComponentType
+    if (comp && typeof comp === 'object' && (comp as { $$typeof?: unknown }).$$typeof) {
+      return comp as React.ComponentType
+    }
+    console.error(
+      `[plugin-runtime] loadViewComponent 返回了非组件对象: plugin=${pluginId} view=${view.id} entry=${view.entry}`,
+      { moduleKeys: Object.keys(mod), compType: typeof comp, comp },
+    )
+    return null
+  } catch (error) {
+    console.error(`[plugin-runtime] loadViewComponent 加载失败: plugin=${pluginId} view=${view.id} url=${url}`, error)
     return null
   }
 }
 
 // 内置视图组件：静态 import，随主 bundle 一起打包（不生成独立 chunk）。
+// xbot.iteration-stats 已改为独立插件（后端 plugin.json + ESM 模块动态加载），
+// 不再走 builtin: 路径。
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
-import { IterationStatsPanel } from '@/plugins/iteration-stats/IterationStatsPanel'
 
 const builtinViews = new Map<string, React.ComponentType>()
 builtinViews.set('xbot.plugin-manager.panel', PluginManagerPanel)
 builtinViews.set('git-info.status', GitStatusPanel)
-builtinViews.set('xbot.iteration-stats.iteration', IterationStatsPanel)
 
 async function loadBuiltinView(id: string): Promise<React.ComponentType | null> {
   const comp = builtinViews.get(id)
@@ -72,7 +84,7 @@ async function loadBuiltinView(id: string): Promise<React.ComponentType | null> 
 }
 
 /** 从后端声明构造 PluginManifest（供 registry 校验）。 */
-function toManifest(decl: WebPluginDecl): import('@/plugin-api').PluginManifest {
+export function toManifest(decl: WebPluginDecl): import('@/plugin-api').PluginManifest {
   const contributes = Array.isArray(decl.contributes)
     ? (decl.contributes as import('@/plugin-api').Contribution[])
     : []
@@ -154,23 +166,25 @@ export function PluginRuntimeBootstrap() {
     let cancelled = false
     ;(async () => {
       // 1. 激活内置插件（随前端分发，静态 import，不走 URL）。
+      //    xbot.iteration-stats 已改为独立插件（后端 plugin.json + ESM 模块），
+      //    由 web_plugin_list 返回后走标准 activate 路径（动态 import）。
       try {
         const builtin = await import('@/plugins/manager/pluginManager')
         await runtime.activateBuiltin(builtin.manifest, builtin as unknown as import('./loader').PluginModule)
       } catch (error) {
         console.error('[plugin-runtime] 激活内置插件失败', error)
       }
+      // 2. 拉取第三方插件清单并激活（rescan=true：重新扫描磁盘发现新安装的插件）。
+      //    仅激活 enabled 的插件 —— 禁用的插件（后端 State=StateInactive → enabled=false）
+      //    必须跳过，否则纯前端插件在禁用后依然注册 view 并生效（严重 bug）。
       try {
-        const stats = await import('@/plugins/iteration-stats/pluginStats')
-        await runtime.activateBuiltin(stats.manifest, stats as unknown as import('./loader').PluginModule)
-      } catch (error) {
-        console.error('[plugin-runtime] 激活 iteration-stats 失败', error)
-      }
-      // 2. 拉取第三方插件清单并激活。
-      try {
-        const res = await ws.rpc<{ plugins?: WebPluginDecl[] }>('web_plugin_list', {})
+        const res = await ws.rpc<{ plugins?: WebPluginDecl[] }>('web_plugin_list', { rescan: true })
         if (cancelled) return
         for (const decl of res?.plugins ?? []) {
+          if (!decl.enabled) {
+            console.debug(`[plugin-runtime] 跳过已禁用的插件 ${decl.id}（enabled=false）`)
+            continue
+          }
           const manifest = toManifest(decl)
           await runtime.activate(manifest, decl.module_url)
         }

@@ -139,6 +139,14 @@ export function AgentPanel({ params }: PanelProps) {
     if (wasSubscribed === false && shouldSubscribe) void reloadChat()
   }, [reloadChat, shouldSubscribe])
 
+  // 暴露当前会话给独立插件视图（window.__xbot_session__）。
+  // 独立 ESM 插件（如 xbot.git-fancy）无法 import 宿主内部模块，通过此全局
+  // 读取当前 channel/chatID，用于 ctx.rpc 拉取会话相关数据（git 状态等）。
+  useEffect(() => {
+    const w = window as unknown as { __xbot_session__?: { channel: string; chatID: string } }
+    w.__xbot_session__ = { channel: messageChannel, chatID: progressChatID ?? '' }
+  }, [messageChannel, progressChatID])
+
   useEffect(() => {
     if (!isSubAgent) return
     return ws.onSession((ev) => {
