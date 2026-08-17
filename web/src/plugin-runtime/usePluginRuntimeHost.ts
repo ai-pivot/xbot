@@ -59,10 +59,12 @@ async function loadPluginViewComponent(
 // 内置视图组件：静态 import，随主 bundle 一起打包（不生成独立 chunk）。
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
+import { IterationStatsPanel } from '@/plugins/iteration-stats/IterationStatsPanel'
 
 const builtinViews = new Map<string, React.ComponentType>()
 builtinViews.set('xbot.plugin-manager.panel', PluginManagerPanel)
 builtinViews.set('git-info.status', GitStatusPanel)
+builtinViews.set('xbot.iteration-stats.iteration', IterationStatsPanel)
 
 async function loadBuiltinView(id: string): Promise<React.ComponentType | null> {
   const comp = builtinViews.get(id)
@@ -157,6 +159,12 @@ export function PluginRuntimeBootstrap() {
         await runtime.activateBuiltin(builtin.manifest, builtin as unknown as import('./loader').PluginModule)
       } catch (error) {
         console.error('[plugin-runtime] 激活内置插件失败', error)
+      }
+      try {
+        const stats = await import('@/plugins/iteration-stats/pluginStats')
+        await runtime.activateBuiltin(stats.manifest, stats as unknown as import('./loader').PluginModule)
+      } catch (error) {
+        console.error('[plugin-runtime] 激活 iteration-stats 失败', error)
       }
       // 2. 拉取第三方插件清单并激活。
       try {

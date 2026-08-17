@@ -23,6 +23,7 @@ import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import { useTypewriter } from '@/hooks/useTypewriter'
 import { dedupTools } from './progressStore'
+import { IterationSlot } from '@/plugin-runtime/iteration-render'
 import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
 
@@ -169,6 +170,17 @@ export const LiveIteration = memo(function LiveIteration({
 
   return (
     <div className="flex flex-col gap-1">
+      {/* 迭代指标（插件注入点）：把 live tokens/s 传给插件。 */}
+      <IterationSlot
+        data={{
+          live: {
+            tokensPerSec: progress.streamStats?.tokensPerSec,
+            ttftMs: progress.streamStats?.ttftMs,
+            completionTokens: progress.tokenUsage?.completionTokens,
+          },
+        }}
+      />
+
       {/* Streaming T — typewriter reveal + character count */}
       {hasReasoning && (
         <FoldedLine

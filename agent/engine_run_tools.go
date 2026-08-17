@@ -388,6 +388,24 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 			Reasoning: s.structuredProgress.ReasoningContent,
 			Tools:     make([]IterationToolSnapshot, len(s.structuredProgress.CompletedTools)),
 		}
+		// Per-iteration token count: delta of cumulative completion tokens since
+		// the previous snapshot. The tracker accumulates across the whole Run;
+		// the first snapshot's delta equals the tracker value (previous = 0).
+		if s.tokenTracker != nil {
+			cur := s.tokenTracker.CompletionTokens()
+			if cur >= s.lastSnapshotCompletionTokens {
+				snap.Tokens = cur - s.lastSnapshotCompletionTokens
+			}
+			s.lastSnapshotCompletionTokens = cur
+		}
+		// Per-iteration stream timing: the most recent LLM call's StreamStats.
+		// snapshotCompletedIteration runs right after callLLM → StreamStats
+		// belongs to the iteration being snapshotted.
+		if s.structuredProgress.StreamStats != nil {
+			snap.TTFTMs = s.structuredProgress.StreamStats.TTFTMs
+			snap.TokensPerSec = s.structuredProgress.StreamStats.TokensPerSec
+			snap.TotalMs = s.structuredProgress.StreamStats.TotalMs
+		}
 		for j, t := range s.structuredProgress.CompletedTools {
 			snap.Tools[j] = IterationToolSnapshot{
 				Name:      t.Name,
@@ -455,12 +473,16 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	// is queried by turn_id on read. This avoids the dependency on
 	// IncrementalPersist populating message IDs.
 	if err := appendFn(0, turnID, sqlite.IterationRecord{
-		MessageID: 0,
-		TurnID:    turnID,
-		Iteration: snap.Iteration,
-		Content:   snap.Content,
-		Reasoning: snap.Reasoning,
-		Tools:     toolsJSON,
+		MessageID:    0,
+		TurnID:       turnID,
+		Iteration:    snap.Iteration,
+		Content:      snap.Content,
+		Reasoning:    snap.Reasoning,
+		Tools:        toolsJSON,
+		Tokens:       snap.Tokens,
+		TTFTMs:       snap.TTFTMs,
+		TokensPerSec: snap.TokensPerSec,
+		TotalMs:      snap.TotalMs,
 	}); err != nil {
 		log.WithError(err).WithField("iteration", iteration).Warn("Failed to write iteration_history")
 	}

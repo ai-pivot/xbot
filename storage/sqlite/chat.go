@@ -52,9 +52,10 @@ func NewChatService(db *DB) *ChatService {
 //
 // Pagination: offset/limit page over the user_chats rows ONLY. The default chat
 // (chat_id == senderID, not stored in user_chats) is always returned first and
-// never counts toward offset/limit. Rows are returned in the same stable order
-// as the frontend sortSessions (minus starred, which is a frontend localStorage
-// state): sort_order>0 first (ascending), then created_at ascending.
+// never counts toward offset/limit. Rows are ordered by last_active desc
+// (matching the frontend time buckets today→yesterday→earlier), then pinned
+// (sort_order>0 ascending), then created_at desc. This keeps the most recently
+// active sessions on page one — NOT the oldest.
 // hasMore reports whether more user_chats rows exist beyond offset+limit.
 func (s *ChatService) ListUserChats(channel, senderID, currentChatID string, offset, limit int) ([]UserChatWithPreview, bool, error) {
 	conn := s.db.Conn()
@@ -72,13 +73,15 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string, off
 	}
 
 	rows, err := conn.Query(
-		`SELECT chat_id, label, created_at, sort_order
-		 FROM user_chats
-		 WHERE channel = ? AND sender_id = ? AND chat_id != ?
+		`SELECT uc.chat_id, uc.label, uc.created_at, uc.sort_order
+		 FROM user_chats uc
+		 LEFT JOIN tenants t ON t.channel = uc.channel AND t.chat_id = uc.chat_id
+		 WHERE uc.channel = ? AND uc.sender_id = ? AND uc.chat_id != ?
 		 ORDER BY
-		   CASE WHEN sort_order > 0 THEN 0 ELSE 1 END,
-		   sort_order ASC,
-		   created_at ASC
+		   t.last_active_at DESC,
+		   CASE WHEN uc.sort_order > 0 THEN 0 ELSE 1 END,
+		   uc.sort_order ASC,
+		   uc.created_at ASC
 		 LIMIT ? OFFSET ?`,
 		channel, senderID, senderID, limit, offset,
 	)

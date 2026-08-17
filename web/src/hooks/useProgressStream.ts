@@ -39,6 +39,7 @@ import type {
   ChatMessage,
   TodoItem,
   TokenUsageInfo,
+  StreamStatsInfo,
 } from '@/types/shared'
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
@@ -1312,6 +1313,21 @@ function handleProgressMessage(
         }
       }
 
+      // Stream timing (protocol.StreamStats): TTFT / TPOT / tokens-per-sec.
+      // The backend emits this per LLM call — it is the source of the live
+      // "current tokens/sec" indicator and the per-iteration TTFT.
+      let streamStats: StreamStatsInfo | undefined
+      const rawSS = p.stream_stats as Record<string, unknown> | undefined
+      if (rawSS && typeof rawSS === 'object') {
+        streamStats = {
+          ttftMs: typeof rawSS.ttft_ms === 'number' ? rawSS.ttft_ms : 0,
+          tpotMs: typeof rawSS.tpot_ms === 'number' ? rawSS.tpot_ms : 0,
+          tokensPerSec: typeof rawSS.tokens_per_sec === 'number' ? rawSS.tokens_per_sec : 0,
+          totalMs: typeof rawSS.total_ms === 'number' ? rawSS.total_ms : 0,
+          chunks: typeof rawSS.chunks === 'number' ? rawSS.chunks : 0,
+        }
+      }
+
       // Stream fields may also arrive inside structured events (the Web
       // channel forwards all ProgressEvents as type=progress_structured,
       // including stream callbacks' reasoning_stream_content / stream_content).
@@ -1437,6 +1453,7 @@ function handleProgressMessage(
         todos,
         subAgents,
         tokenUsage,
+        streamStats,
         turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : undefined,
       })
       // MessageStore live 同步（方案 A Step 3）

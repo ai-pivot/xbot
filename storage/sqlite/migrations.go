@@ -345,6 +345,33 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v57: per-iteration LLM metrics (tokens / TTFT / tokens-per-sec / total ms)
+	// on iteration_history. Enables the iteration-stats plugin to show per-
+	// iteration token count & timing even after a reload.
+	if from < 57 {
+		if err := migrateV56ToV57(conn); err != nil {
+			return fmt.Errorf("migrate to v57: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV56ToV57 adds per-iteration LLM metrics columns to iteration_history.
+// SQLite ALTER TABLE ADD COLUMN with a NOT NULL DEFAULT is cheap and preserves
+// existing rows (metrics default to 0 for pre-v57 iterations).
+func migrateV56ToV57(conn *sql.DB) error {
+	migration := `
+ALTER TABLE iteration_history ADD COLUMN tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE iteration_history ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE iteration_history ADD COLUMN tokens_per_sec INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE iteration_history ADD COLUMN total_ms INTEGER NOT NULL DEFAULT 0;
+UPDATE schema_version SET version = 57;
+`
+	if _, err := conn.Exec(migration); err != nil {
+		return fmt.Errorf("migrate v56->v57: %w", err)
+	}
+	log.Info("Database migrated to v57 (added per-iteration metrics to iteration_history)")
 	return nil
 }
 

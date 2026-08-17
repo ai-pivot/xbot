@@ -164,6 +164,58 @@ func TestTenantService_GetOrCreateTenantID(t *testing.T) {
 	}
 }
 
+// TestTenantService_GetOrCreateDoesNotTouchLastActive guards against the
+// pagination-scrambling regression: GetOrCreateTenantID is a pure lookup for
+// pre-existing rows and must NOT refresh last_active_at. Previously every "get"
+// bumped last_active_at to now, so flipping pages (which touches many tenants
+// via read-only RPCs) made every session's update time jump to today and
+// scrambled last-active ordering during offset pagination.
+func TestTenantService_GetOrCreateDoesNotTouchLastActive(t *testing.T) {
+	db, err := Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	svc := NewTenantService(db)
+
+	// Create the tenant, then pin last_active_at to an old timestamp.
+	if _, err := svc.GetOrCreateTenantID("web", "page1"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var tenantID int64
+	if err := db.Conn().QueryRow(`SELECT id FROM tenants WHERE channel='web' AND chat_id='page1'`).Scan(&tenantID); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	old := "2026-01-01T00:00:00Z"
+	if _, err := db.Conn().Exec(`UPDATE tenants SET last_active_at=? WHERE id=?`, old, tenantID); err != nil {
+		t.Fatalf("pin last_active: %v", err)
+	}
+
+	// Getting the same tenant again must NOT bump last_active_at.
+	if _, err := svc.GetOrCreateTenantID("web", "page1"); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	var lastActive string
+	if err := db.Conn().QueryRow(`SELECT last_active_at FROM tenants WHERE id=?`, tenantID).Scan(&lastActive); err != nil {
+		t.Fatalf("re-select: %v", err)
+	}
+	if lastActive != old {
+		t.Fatalf("GetOrCreateTenantID touched last_active_at: want %q, got %q", old, lastActive)
+	}
+
+	// TouchTenantID is the explicit path that DOES bump it.
+	if err := svc.TouchTenantID("web", "page1"); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	if err := db.Conn().QueryRow(`SELECT last_active_at FROM tenants WHERE id=?`, tenantID).Scan(&lastActive); err != nil {
+		t.Fatalf("re-select after touch: %v", err)
+	}
+	if lastActive == old {
+		t.Fatal("TouchTenantID did not bump last_active_at")
+	}
+}
+
 func TestTenantService_ClaimOrVerifyTenantOwner(t *testing.T) {
 	db, err := Open(t.TempDir() + "/test.db")
 	if err != nil {

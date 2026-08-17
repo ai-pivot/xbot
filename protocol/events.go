@@ -173,6 +173,11 @@ type HistoryIteration struct {
 	Reasoning   string         `json:"reasoning,omitempty"`
 	Tools       []ToolProgress `json:"tools,omitempty"`
 	ElapsedWall int64          `json:"elapsed_wall"`
+	// Per-iteration LLM metrics (from iteration_history table — v57+).
+	Tokens       int64 `json:"tokens,omitempty"`         // completion tokens this iteration
+	TTFTMs       int64 `json:"ttft_ms,omitempty"`        // time to first token
+	TokensPerSec int64 `json:"tokens_per_sec,omitempty"` // generation speed
+	TotalMs      int64 `json:"total_ms,omitempty"`       // stream duration
 }
 
 // HistoryToolCall preserves the raw assistant tool-call relation in the

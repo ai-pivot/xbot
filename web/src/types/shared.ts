@@ -326,6 +326,14 @@ export interface WebIteration {
   toolCount: number
   /** Wall-clock duration (ms), optional — not always available from snapshots. */
   elapsedMs?: number
+  /** 该迭代生成的 completion tokens（per-iteration，非累计）。 */
+  tokens?: number
+  /** 该迭代 LLM 首 token 延迟（ms）。 */
+  ttftMs?: number
+  /** 该迭代平均生成速度（tokens/sec）。 */
+  tokensPerSec?: number
+  /** 该迭代工具总耗时（ms） —— 由 tools 的 elapsedMs 求和。 */
+  toolMs?: number
 }
 
 /**
@@ -362,6 +370,8 @@ export interface ProgressSnapshot {
   subAgents: WebSubAgentProgress[]
   /** Token usage from the last LLM API response (mirrors protocol.TokenUsage). */
   tokenUsage: TokenUsageInfo | null
+  /** Live stream timing (TTFT/tokens-per-sec) from the latest LLM stream. */
+  streamStats?: StreamStatsInfo | null
   /** TurnID of the active turn (0 = untracked). Used by liveMessage to match
    *  committed history messages from the same turn, preventing duplicate
    *  rendering when IncrementalPersist commits mid-turn messages that reload
@@ -374,6 +384,15 @@ export interface TokenUsageInfo {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+}
+
+/** Live stream timing (mirrors protocol.StreamStats). */
+export interface StreamStatsInfo {
+  ttftMs: number
+  tpotMs: number
+  tokensPerSec: number
+  totalMs: number
+  chunks: number
 }
 
 /** Empty snapshot — the idle state. */
@@ -395,6 +414,7 @@ export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
   todos: [],
   subAgents: [],
   tokenUsage: null,
+  streamStats: null,
   turnID: 0,
 }
 

@@ -141,6 +141,13 @@ func (s *TenantService) GetOrCreateTenantIDWithOwner(channel, chatID string, can
 // GetOrCreateTenantID retrieves a tenant ID by (channel, chat_id), creating it if it doesn't exist.
 // Uses INSERT OR IGNORE within a transaction to avoid TOCTOU race conditions.
 // The UNIQUE(channel, chat_id) constraint on the tenants table guarantees uniqueness.
+// GetOrCreateTenantID returns the tenant ID for (channel, chatID), creating it
+// if absent. It is a pure lookup for pre-existing rows — it does NOT refresh
+// last_active_at for existing tenants (see TouchTenantID for that). Only the
+// INSERT path sets last_active_at (creation time). This keeps read-only paths
+// (session-tree pagination, widget CWD lookup) free of write side effects —
+// previously every "get" bumped last_active_at, which scrambled last-active
+// ordering during pagination and made sidebar "update time" jump to today.
 func (s *TenantService) GetOrCreateTenantID(channel, chatID string) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, fmt.Errorf("tenant service not initialized")
@@ -177,19 +184,32 @@ func (s *TenantService) GetOrCreateTenantID(channel, chatID string) (int64, erro
 		return 0, err
 	}
 
-	// Always update last_active_at to reflect current usage.
-	if _, err := tx.Exec(
-		"UPDATE tenants SET last_active_at = ? WHERE id = ?",
-		now, tenantID,
-	); err != nil {
-		log.WithError(err).Warn("Failed to update tenant last_active_at")
-	}
-
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return tenantID, nil
+}
+
+// TouchTenantID bumps last_active_at for an existing tenant (or creates the row
+// first). Use this ONLY for genuine user activity (opening a session, sending a
+// message) — NOT for read-only lookups like session-tree pagination.
+func (s *TenantService) TouchTenantID(channel, chatID string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("tenant service not initialized")
+	}
+	tenantID, err := s.GetOrCreateTenantID(channel, chatID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Conn().Exec(
+		"UPDATE tenants SET last_active_at = ? WHERE id = ?",
+		time.Now(), tenantID,
+	)
+	if err != nil {
+		return fmt.Errorf("touch tenant last_active_at: %w", err)
+	}
+	return nil
 }
 
 // GetTenantInfo retrieves tenant information by ID

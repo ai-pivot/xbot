@@ -311,7 +311,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
 		}
 		if db := ag.MultiSession().DB(); db != nil {
-			if _, err := sqlite.NewTenantService(db).GetOrCreateTenantID(sel.Channel, sel.ChatID); err != nil {
+			if err := sqlite.NewTenantService(db).TouchTenantID(sel.Channel, sel.ChatID); err != nil {
 				log.WithError(err).Warn("Web history: failed to update last_active_at")
 			}
 		}
@@ -619,54 +619,33 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if current.Channel == "web" {
 			webCurrent = current.ChatID
 		}
-		cs := sqlite.NewChatService(webDB)
-		// Paginate only the web user_chats (the dominant case). Other channels
-		// (cli/feishu/qq/agent) are always loaded in full — they are far fewer
-		// and their pagination would interleave with buildSessionTree's
-		// sub-agent attachment.
-		webChats, hasMore, err := cs.ListUserChats("web", senderID, webCurrent, offset, limit)
-		if err != nil {
-			return web.SessionTreeResult{}, err
-		}
-		for _, c := range webChats {
-			mains = append(mains, web.UserChatWithPreview{
-				ChatID:     c.ChatID,
-				Channel:    "web",
-				Label:      c.Label,
-				LastActive: c.LastActive.Format(time.RFC3339),
-				Preview:    c.Preview,
-				IsCurrent:  c.IsCurrent,
-				CreatedAt:  c.CreatedAt.Format(time.RFC3339),
-				SortOrder:  c.SortOrder,
-			})
-			applyWebRunningStatus(ag, &mains[len(mains)-1])
-		}
+
+		// hasMore/nextOffset are defined over the ADMIN main-session list (the
+		// cross-channel union) since that is the dominant case for admins.
+		// Non-admin users paginate web user_chats only (below).
+		var hasMore bool
+		var nextOffset int
 
 		if admin {
-			// Admin: dynamically discover ALL channels from the tenants
-			// table — no hardcoding. This includes feishu, qq, napcat, and
-			// any plugin-registered channels.
+			// Admin: dynamically discover ALL channels from the tenants table
+			// (no hardcoding) and collect every main session, then sort by the
+			// uniform key and paginate in-memory. This is what makes sidebar
+			// pagination actually work for admins — the previous behaviour only
+			// paginated web user_chats and loaded cli/agent/github/... in full.
 			channels, err := listDistinctChannels(webDB.Conn())
 			if err != nil {
 				return web.SessionTreeResult{}, err
 			}
 			for _, ch := range channels {
-				if ch == "web" {
-					// web sessions already added via ListUserChats above;
-					// still call listTenantsByChannel to pick up any tenant
-					// rows not in user_chats (e.g. sessions created outside
-					// the web UI).
-					webTenants, err := listTenantsByChannel(webDB.Conn(), "web", webCurrent)
-					if err != nil {
-						return web.SessionTreeResult{}, err
-					}
-					applyWebRunningStatuses(ag, webTenants)
-					mains = appendMissingSessionRows(mains, webTenants)
+				if ch == "agent" {
+					// Agent rows are SubAgents, loaded in full by SubAgentList
+					// and attached to their parents by buildSessionTree. They
+					// must NOT participate in main-session pagination — doing so
+					// would consume page slots and split a Sub-agent from its
+					// parent across page boundaries.
 					continue
 				}
 				if ch == "cli" {
-					// CLI sessions need special handling: merge local store
-					// sessions with DB tenant rows.
 					cliCurrent := ""
 					if current.Channel == "cli" {
 						cliCurrent = current.ChatID
@@ -679,8 +658,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 					mains = appendMissingSessionRows(mains, cliChats)
 					continue
 				}
-				// All other channels (feishu, qq, napcat, plugin channels):
-				// list tenants directly.
 				chCurrent := ""
 				if current.Channel == ch {
 					chCurrent = current.ChatID
@@ -693,15 +670,62 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				applyWebRunningStatuses(ag, tenants)
 				mains = appendMissingSessionRows(mains, tenants)
 			}
+
+			// Uniform in-memory pagination across all channels.
+			sortSessionTreeMains(mains)
+			total := len(mains)
+			if limit < 0 {
+				limit = total
+			}
+			if offset > total {
+				offset = total
+			}
+			end := offset + limit
+			if end > total {
+				end = total
+			}
+			mains = mains[offset:end]
+			hasMore = end < total
+			nextOffset = end
 		} else {
-			// Non-admin: list the user's own sessions on non-web channels
-			// (e.g. feishu sessions where sender_id matches).
+			// Non-admin: paginate the user's own web user_chats (dominant case);
+			// their non-web sessions are few and appended in full.
+			cs := sqlite.NewChatService(webDB)
+			webChats, more, err := cs.ListUserChats("web", senderID, webCurrent, offset, limit)
+			if err != nil {
+				return web.SessionTreeResult{}, err
+			}
+			for _, c := range webChats {
+				mains = append(mains, web.UserChatWithPreview{
+					ChatID:     c.ChatID,
+					Channel:    "web",
+					Label:      c.Label,
+					LastActive: c.LastActive.Format(time.RFC3339),
+					Preview:    c.Preview,
+					IsCurrent:  c.IsCurrent,
+					CreatedAt:  c.CreatedAt.Format(time.RFC3339),
+					SortOrder:  c.SortOrder,
+				})
+				applyWebRunningStatus(ag, &mains[len(mains)-1])
+			}
+			hasMore = more
+
 			senderTenants, err := listTenantsForSender(webDB.Conn(), senderID, webCurrent)
 			if err != nil {
 				log.WithError(err).Warn("Failed to list tenants for sender")
 			} else {
 				applyWebRunningStatuses(ag, senderTenants)
 				mains = appendMissingSessionRows(mains, senderTenants)
+			}
+
+			// NextOffset = offset + web user_chats loaded this page.
+			// len(webChats) includes the default chat (always first, not
+			// paginated), so subtract one — the default chat never advances
+			// the offset.
+			if len(webChats) > 0 {
+				nextOffset = offset + len(webChats) - 1
+			} else {
+				nextOffset = offset
 			}
 		}
 
@@ -712,14 +736,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		applyWebRunningStatuses(ag, subagents)
 		result := buildSessionTree(mains, subagents)
 		result.HasMore = hasMore
-		// NextOffset = offset + user_chats loaded this page. len(webChats)
-		// includes the default chat (always first, not paginated), so subtract
-		// one. The default chat never advances the offset.
-		if len(webChats) > 0 {
-			result.NextOffset = offset + len(webChats) - 1
-		} else {
-			result.NextOffset = offset
-		}
+		result.NextOffset = nextOffset
 		return result, nil
 	}
 	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64, model string) (string, error) {
@@ -945,13 +962,16 @@ func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, erro
 func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
 	// Single query with correlated subquery for preview — avoids N+1 pattern.
 	rows, err := db.Query(`
-		SELECT t.id, t.chat_id, t.last_active_at,
+		SELECT t.id, t.chat_id, t.created_at, t.last_active_at,
 									COALESCE((SELECT uc.label FROM user_chats uc
 										WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
 										ORDER BY uc.rowid DESC LIMIT 1),
 										(SELECT uc.label FROM user_chats uc
 										WHERE uc.chat_id = t.chat_id AND uc.label != ''
 										ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
+		       COALESCE((SELECT uc.sort_order FROM user_chats uc
+		                 WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
+		                 ORDER BY uc.rowid DESC LIMIT 1), 0) AS sort_order,
 		       (SELECT sm.content FROM session_messages sm
 		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
 		        ORDER BY sm.id DESC LIMIT 1) AS preview
@@ -966,9 +986,10 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 	var result []web.UserChatWithPreview
 	for rows.Next() {
 		var tenantID int64
-		var chatID, lastActiveStr, label string
+		var chatID, createdAtStr, lastActiveStr, label string
+		var sortOrder int
 		var preview sql.NullString
-		if err := rows.Scan(&tenantID, &chatID, &lastActiveStr, &label, &preview); err != nil {
+		if err := rows.Scan(&tenantID, &chatID, &createdAtStr, &lastActiveStr, &label, &sortOrder, &preview); err != nil {
 			log.WithError(err).Warn("Failed to scan tenant row in listTenantsByChannel")
 			continue
 		}
@@ -978,12 +999,18 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 		}
 
 		lastActive := parseTenantTime(lastActiveStr)
+		createdAt := parseTenantTime(createdAtStr)
+		if createdAt.IsZero() {
+			createdAt = lastActive
+		}
 
 		chat := web.UserChatWithPreview{
 			ChatID:     chatID,
 			Channel:    channel,
 			Label:      displayLabelForTenant(channel, chatID, label),
 			LastActive: lastActive.Format(time.RFC3339),
+			CreatedAt:  createdAt.Format(time.RFC3339),
+			SortOrder:  sortOrder,
 			Preview:    previewStr,
 			IsCurrent:  chatID == currentChatID,
 		}
@@ -1149,6 +1176,7 @@ func listCLISessionsFromLocalStore(currentChatID string, tenantByChatID map[stri
 				Channel:    "cli",
 				Label:      displayLabelForCLILocalSession(sess, file.Dir),
 				LastActive: sess.CreatedAt.Format(time.RFC3339),
+				CreatedAt:  sess.CreatedAt.Format(time.RFC3339),
 				IsCurrent:  sess.ChatID == currentChatID,
 			}
 			if tenant, ok := tenantByChatID[sess.ChatID]; ok {
@@ -1157,6 +1185,13 @@ func listCLISessionsFromLocalStore(currentChatID string, tenantByChatID map[stri
 				row.IsCurrent = tenant.IsCurrent
 				if tenant.Label != "" {
 					row.Label = tenant.Label
+				}
+				// Tenant rows carry the authoritative sort_order / created_at
+				// (from user_chats); inherit them so cli rows share the same
+				// uniform sort key as every other channel during pagination.
+				row.SortOrder = tenant.SortOrder
+				if tenant.CreatedAt != "" {
+					row.CreatedAt = tenant.CreatedAt
 				}
 			}
 			rows = append(rows, row)
@@ -1193,6 +1228,43 @@ func displayLabelForCLILocalSession(sess cliDirSessionFile, dir string) string {
 func sortUserChats(rows []web.UserChatWithPreview) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		return rows[i].LastActive > rows[j].LastActive
+	})
+}
+
+// sortSessionTreeMains orders admin main sessions by the frontend sidebar's
+// effective ordering: most recently active first (last_active desc), then
+// pinned (sort_order > 0, ascending), then created_at ascending as a stable
+// tiebreaker.
+//
+// The sidebar groups by time bucket (today → yesterday → earlier) — a
+// last-active-desc ordering — NOT created-at-asc. Paginating by created_at asc
+// put the OLDEST sessions on page one and pushed the current session to the
+// last page.
+//
+// Starred is deliberately ignored — it is a frontend-only localStorage state
+// the backend cannot page over.
+func sortSessionTreeMains(rows []web.UserChatWithPreview) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		// Primary: last_active desc (matches the frontend time buckets).
+		if rows[i].LastActive != rows[j].LastActive {
+			return rows[i].LastActive > rows[j].LastActive
+		}
+		// Secondary: pinned first (sort_order > 0), then ascending.
+		oi, oj := rows[i].SortOrder, rows[j].SortOrder
+		gi, gj := 1, 1
+		if oi > 0 {
+			gi = 0
+		}
+		if oj > 0 {
+			gj = 0
+		}
+		if gi != gj {
+			return gi < gj
+		}
+		if oi != oj {
+			return oi < oj
+		}
+		return rows[i].CreatedAt < rows[j].CreatedAt
 	})
 }
 

@@ -33,7 +33,7 @@ import {
   type WebSubAgentProgress,
   type TokenUsageInfo,
 } from '@/types/shared'
-import type { ProgressEvent } from '@/types/shared'
+import type { ProgressEvent, StreamStatsInfo } from '@/types/shared'
 
 type Listener = () => void
 type Mutator = (draft: ProgressSnapshot) => void
@@ -667,6 +667,7 @@ export class ProgressStore {
     todos?: TodoItem[]
     subAgents?: WebSubAgentProgress[]
     tokenUsage?: TokenUsageInfo | null
+    streamStats?: StreamStatsInfo | null
     turnID?: number
   }): void {
     // ProgressEvent.Seq is the semantic log ID assigned before channel fan-out.
@@ -879,6 +880,11 @@ export class ProgressStore {
       if (opts.tokenUsage !== undefined && opts.tokenUsage !== null) {
         draft.tokenUsage = opts.tokenUsage
       }
+      // streamStats: live per-LLM-call timing (TTFT/tokens-per-sec). Carry-forward
+      // like tokenUsage — only update when a non-null value is provided.
+      if (opts.streamStats !== undefined && opts.streamStats !== null) {
+        draft.streamStats = opts.streamStats
+      }
     })
   }
 
@@ -998,6 +1004,7 @@ export class ProgressStore {
       todos: this.current.todos,
       subAgents: this.current.subAgents,
       tokenUsage: this.current.tokenUsage,
+      streamStats: this.current.streamStats,
       turnID: this.current.turnID,
     }
     this.assertInvariants()

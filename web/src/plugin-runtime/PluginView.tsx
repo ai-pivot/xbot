@@ -15,6 +15,7 @@ import type { ComponentType } from 'react'
 
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
+import { IterationStatsPanel } from '@/plugins/iteration-stats/IterationStatsPanel'
 import type { ViewContribution } from '@/plugin-api'
 import { usePluginRuntime } from '@/plugin-runtime'
 
@@ -65,6 +66,12 @@ function BuiltinView({ view }: { view: ViewContribution }) {
       return (
         <PluginViewErrorBoundary>
           <GitStatusPanel />
+        </PluginViewErrorBoundary>
+      )
+    case 'xbot.iteration-stats.iteration':
+      return (
+        <PluginViewErrorBoundary>
+          <IterationStatsPanel />
         </PluginViewErrorBoundary>
       )
     default:

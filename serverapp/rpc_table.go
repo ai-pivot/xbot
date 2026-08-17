@@ -1321,7 +1321,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		p.Channel, p.ChatID = channelName, chatID
 		// Update last_active_at so we can restore the most recent session on restart.
 		if db := h.Ag.MultiSession().DB(); db != nil {
-			if _, err := sqlite.NewTenantService(db).GetOrCreateTenantID(p.Channel, p.ChatID); err != nil {
+			if err := sqlite.NewTenantService(db).TouchTenantID(p.Channel, p.ChatID); err != nil {
 				log.WithError(err).Warn("RPC get_history: failed to update last_active_at")
 			}
 		}

@@ -25,6 +25,15 @@ export function normalizeWebIteration(raw: unknown): WebIteration | null {
   const r = raw as Record<string, unknown>
   const rawTools = Array.isArray(r.tools) ? r.tools : Array.isArray(r.completed_tools) ? r.completed_tools : []
   const tools = rawTools.map(normalizeWebTool).filter(Boolean) as WebToolProgress[]
+  // Per-iteration LLM metrics. Two sources:
+  //  - stream_stats (live progress event): { ttft_ms, tokens_per_sec, total_ms }
+  //  - tokens (DB persisted iteration record): per-iteration completion tokens
+  const stats = (r.stream_stats ?? r.stats) as Record<string, unknown> | undefined
+  const ttftMs = stats != null && typeof stats.ttft_ms === 'number' ? stats.ttft_ms as number : undefined
+  const tokensPerSec = stats != null && typeof stats.tokens_per_sec === 'number' ? stats.tokens_per_sec as number : undefined
+  const tokens = typeof r.tokens === 'number' ? r.tokens as number : undefined
+  // Tool wall-time = sum of the iteration's tool elapsedMs.
+  const toolMs = tools.reduce((sum, t) => sum + (t.elapsedMs || 0), 0)
   return {
     iteration: typeof r.iteration === 'number' ? r.iteration : 0,
     // 文本输出以 "content" 为准（后端 HistoryIteration.Content = 迭代文本输出，
@@ -35,6 +44,10 @@ export function normalizeWebIteration(raw: unknown): WebIteration | null {
     reasoning: typeof r.reasoning === 'string' ? r.reasoning : '',
     tools,
     toolCount: tools.length,
+    tokens,
+    ttftMs,
+    tokensPerSec,
+    toolMs,
   }
 }
 

@@ -811,6 +811,7 @@ export function useSessionStoreImpl(): SessionStore {
   const activeSessionRef = useRef(activeSession)
   activeSessionRef.current = activeSession
   const refreshSeqRef = useRef(0)
+  const loadMoreSeqRef = useRef(0)
   const switchSeqRef = useRef(0)
   const subAgentRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const transientSubAgentsRef = useRef(new Map<string, TransientSubAgent>())
@@ -858,7 +859,11 @@ export function useSessionStoreImpl(): SessionStore {
   }, [])
 
   const loadMore = useCallback(async () => {
-    const seq = ++refreshSeqRef.current
+    // loadMore uses its own sequence counter so it is NOT cancelled by a
+    // concurrent refresh (SSE events trigger refresh frequently). Previously
+    // they shared refreshSeqRef, so an SSE event mid-loadMore would cancel
+    // the load (seq mismatch → early return → loaded page discarded).
+    const seq = ++loadMoreSeqRef.current
     setError(null)
     try {
       const offset = nextOffsetRef.current
@@ -866,24 +871,32 @@ export function useSessionStoreImpl(): SessionStore {
         offset,
         limit: SESSION_TREE_PAGE_SIZE,
       })
-      if (seq !== refreshSeqRef.current) return
+      if (seq !== loadMoreSeqRef.current) return
       setHasMore(data.has_more ?? false)
       if (typeof data.next_offset === 'number') nextOffsetRef.current = data.next_offset
       const normalized = normalizeCanonicalSessionTree(data.sessions || [], data.orphan_subagents || [])
       const { mainSessions } = mergeTransientSubAgents(normalized.mainSessions, transientSubAgentsRef.current)
-      const { sessions: markedSessions, active } = reconcileActiveSession(mainSessions, activeSessionRef.current)
-      const withUnread = applyPersistedUnreadStatuses(markedSessions, new Set(unreadIdsRef.current), active)
+      const withUnread = applyPersistedUnreadStatuses(mainSessions, new Set(unreadIdsRef.current), activeSessionRef.current)
       // Append the new page to the existing list (dedup by session key), then
       // carry over live status from the existing list.
-      const merged = mergeStatus(appendUniqueSessions(sessionsRef.current, withUnread), withUnread, executingSessionsRef.current)
+      // CRITICAL: loadMore must NOT call reconcileActiveSession or setActiveSession —
+      // the active session is on page 1 and is NOT in the incoming page. Calling
+      // reconcileActiveSession on the incoming page would pick the first session of
+      // the new page as the new active, switching the user's session.
+      //
+      // mergeStatus(prev, next) returns next.map(apply) — it only keeps sessions
+      // in `next`. So `next` MUST be the full merged list (old + new), not just
+      // the incoming page. Passing `withUnread` (new page only) as `next` would
+      // discard all existing sessions.
+      const appended = appendUniqueSessions(sessionsRef.current, withUnread)
+      const merged = mergeStatus(sessionsRef.current, appended, executingSessionsRef.current)
       sessionsRef.current = merged
       const cachedAgents = flattenTreeAgents(merged)
       saveSessionTreeCache(merged, cachedAgents)
       setSessions((prev) => (sameSessionList(prev, merged) ? prev : merged))
       setSubAgents((prev) => (sameSessionList(prev, cachedAgents) ? prev : cachedAgents))
-      if (active) setActiveSession(active)
     } catch (e) {
-      if (seq !== refreshSeqRef.current) return
+      if (seq !== loadMoreSeqRef.current) return
       setError(e instanceof Error ? e.message : 'network error')
     }
   }, [])

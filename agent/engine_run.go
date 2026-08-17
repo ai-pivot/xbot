@@ -77,6 +77,10 @@ type runState struct {
 	localInputTokens  int
 	localOutputTokens int
 	localCachedTokens int
+	// lastSnapshotCompletionTokens is the cumulative completion-token count at
+	// the most recent iteration snapshot. The delta between the current tracker
+	// value and this gives the per-iteration token count.
+	lastSnapshotCompletionTokens int64
 
 	// Progress
 	progressLines      []string

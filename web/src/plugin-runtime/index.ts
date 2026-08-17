@@ -280,9 +280,18 @@ export function PluginRuntimeProvider({
   return createElement(PluginRuntimeContext.Provider, { value: runtime }, children)
 }
 
-/** 消费 PluginRuntime（宿主组件内）。 */
+/** 消费 PluginRuntime（宿主组件内）。无 Provider 时抛错。 */
 export function usePluginRuntime(): PluginRuntime {
   const rt = useContext(PluginRuntimeContext)
   if (!rt) throw new Error('usePluginRuntime 必须在 PluginRuntimeProvider 内使用')
   return rt
+}
+
+/**
+ * 可选消费 PluginRuntime：无 Provider 时返回 null（用于渲染层的注入点，如
+ * IterationSlot —— 组件在未挂载 PluginRuntimeProvider 的单元测试/降级场景下
+ * 优雅返回，不抛错）。
+ */
+export function useOptionalPluginRuntime(): PluginRuntime | null {
+  return useContext(PluginRuntimeContext)
 }

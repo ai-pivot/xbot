@@ -331,6 +331,12 @@ type cliIterationSnapshot struct {
 	Reasoning   string // model's reasoning/thinking chain (reasoning_content)
 	Tools       []protocol.ToolProgress
 	ElapsedWall int64 // wall-clock duration of the iteration (ms)
+	// Per-iteration LLM metrics (v57+; mirror protocol.HistoryIteration so the
+	// struct conversion in messageFromHistory stays valid).
+	Tokens       int64 `json:"tokens,omitempty"`
+	TTFTMs       int64 `json:"ttft_ms,omitempty"`
+	TokensPerSec int64 `json:"tokens_per_sec,omitempty"`
+	TotalMs      int64 `json:"total_ms,omitempty"`
 }
 
 // formatElapsed formats milliseconds into a human-friendly duration string.
