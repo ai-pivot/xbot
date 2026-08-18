@@ -80,6 +80,10 @@ export interface TabManager {
   resetWorkGroup: () => void
   /** Register the DockviewApi (called by DockviewContainer on ready). */
   bindApi: (api: DockviewApi | null) => void
+  /** Serialize the full dockview layout (grid groups, panel positions, multi-instance). */
+  getLayoutJSON: () => unknown
+  /** Restore a dockview layout (grid + panels, including plugin views). */
+  applyLayoutJSON: (layout: unknown) => void
 }
 
 export function useTabManager(): TabManager {
@@ -247,6 +251,12 @@ export function useTabManager(): TabManager {
     rightGroupPanelIdRef.current = null
   }, [])
 
+  const getLayoutJSON = useCallback(() => apiRef.current?.toJSON() ?? null, [])
+  const applyLayoutJSON = useCallback((layout: unknown) => {
+    apiRef.current?.fromJSON(layout as never)
+    resync()
+  }, [resync])
+
   // When unmounting, drop the dockview disposers we attached on bindApi.
   useEffect(() => {
     return () => {
@@ -267,8 +277,10 @@ export function useTabManager(): TabManager {
       splitRight,
       resetWorkGroup,
       bindApi,
+      getLayoutJSON,
+      applyLayoutJSON,
     }),
-    [tabs, activeTabId, openTab, closeTab, setActiveTab, splitRight, resetWorkGroup, bindApi],
+    [tabs, activeTabId, openTab, closeTab, setActiveTab, splitRight, resetWorkGroup, bindApi, getLayoutJSON, applyLayoutJSON],
   )
 }
 
