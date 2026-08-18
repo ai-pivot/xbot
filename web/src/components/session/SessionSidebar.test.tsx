@@ -105,6 +105,7 @@ const tabManager = {
   bindApi: vi.fn(),
   getLayoutJSON: vi.fn(() => null),
   applyLayoutJSON: vi.fn(),
+  getWorkLayoutJSON: vi.fn(() => null),
 } satisfies TabManager
 
 describe('SessionSidebar', () => {
