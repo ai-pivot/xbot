@@ -16,6 +16,7 @@ import {
   type LayoutOverrides,
   type LayoutSlotId,
 } from './layoutTypes'
+import { SETTINGS_SYNCED_EVENT, syncSettingToServer } from '@/lib/userSettings'
 
 /** view container → 默认布局 slot 映射（插件 view 自动注册用）。 */
 export const VIEW_CONTAINER_TO_SLOT: Record<string, LayoutSlotId> = {
@@ -34,6 +35,17 @@ class LayoutRegistryImpl {
 
   constructor() {
     this.loadOverrides()
+    // 后端已有覆盖时（换浏览器/设备，syncAndMigrateSettings 拉取 server →
+    // localStorage），重新加载并通知订阅者。仅在浏览器环境（单例模块在
+    // SSR/单测里可能无 window）。
+    if (typeof window !== 'undefined') {
+      window.addEventListener(SETTINGS_SYNCED_EVENT, this.onSettingsSynced)
+    }
+  }
+
+  private onSettingsSynced = (): void => {
+    this.loadOverrides()
+    this.notify()
   }
 
   /** 注册一个布局项（幂等：同 id 覆盖）。 */
@@ -123,6 +135,10 @@ class LayoutRegistryImpl {
     } catch {
       /* storage full / disabled — non-fatal */
     }
+    // 后端同步（web:ui:layout-overrides → user_settings 表）。localStorage 是
+    // 秒回的读路径，后端是权威源 —— 换浏览器/设备后 syncAndMigrateSettings
+    // 拉回同一份布局覆盖。
+    syncSettingToServer(LAYOUT_OVERRIDES_KEY, JSON.stringify(this.overrides))
   }
 }
 

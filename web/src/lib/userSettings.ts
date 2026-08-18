@@ -29,6 +29,8 @@ const SETTING_MAP: Record<string, string> = {
   'xbot-send-key-mode': 'web:ui:send-key-mode',
   'xbot-code-word-wrap': 'web:ui:code-word-wrap',
   'xbot:leftSidebarWidth': 'web:ui:left-sidebar-width',
+  // Workspace layout (user-authored, VSCode-style dock layout overrides)
+  'xbot:layout:overrides': 'web:ui:layout-overrides',
   // Session data (user-authored)
   'xbot-starred': 'web:session:starred',
   'xbot:session-category': 'web:session:category',

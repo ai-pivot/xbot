@@ -6,41 +6,12 @@
  * tokens-per-sec，渲染一条紧凑的指标行。纯公开 API（无宿主后门）。
  */
 import { useIterationStats } from '@/plugin-runtime/iteration-render'
-import type { IterationStats, LiveStreamStats } from '@/plugin-api'
+import type { LiveStreamStats } from '@/plugin-api'
 
 function fmtMs(ms?: number): string {
   if (!ms || ms <= 0) return '—'
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
-}
-
-function fmtTokens(n?: number): string {
-  if (n === undefined || n <= 0) return '—'
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return String(n)
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap">
-      <span className="text-[10px] uppercase tracking-wide text-text-muted">{label}</span>
-      <span className="font-mono text-xs text-text-secondary">{value}</span>
-    </span>
-  )
-}
-
-function IterationStatsRow({ stats }: { stats: IterationStats }) {
-  return (
-    <div className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 text-xs">
-      <span className="font-mono font-semibold text-text-primary">#{stats.iteration}</span>
-      <Metric label="tokens" value={fmtTokens(stats.tokens)} />
-      <Metric label="ttft" value={fmtMs(stats.ttftMs)} />
-      <Metric label="tools" value={fmtMs(stats.toolMs)} />
-      {stats.tokensPerSec !== undefined && stats.tokensPerSec > 0 && (
-        <Metric label="tok/s" value={stats.tokensPerSec.toFixed(0)} />
-      )}
-    </div>
-  )
 }
 
 function LiveStatsRow({ live }: { live: LiveStreamStats }) {
@@ -69,8 +40,10 @@ function LiveStatsRow({ live }: { live: LiveStreamStats }) {
 
 /** 内置视图组件：由 <IterationSlot> 渲染并注入数据。 */
 export function IterationStatsPanel() {
-  const { stats, live } = useIterationStats()
-  if (stats) return <IterationStatsRow stats={stats} />
+  const { live } = useIterationStats()
+  // 只在 live（streaming 中）显示实时指标，committed 迭代不再逐条渲染 stats
+  // 卡片 —— 那正是「每个迭代都显示很烦」的来源。live 只有一个（当前正在
+  // streaming 的迭代），显示在上方不打扰；tok/s + ttft 本身就是要的实时反馈。
   if (live) return <LiveStatsRow live={live} />
   return null
 }
