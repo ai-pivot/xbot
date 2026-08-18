@@ -8,6 +8,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 
 import {
   BUILTIN_LAYOUT_ITEMS,
+  LAYOUT_COLLAPSED_KEY,
+  LAYOUT_GROUPS,
   LAYOUT_OVERRIDES_KEY,
   type LayoutItem,
 } from './layoutTypes'
@@ -25,6 +27,7 @@ function resetRegistry() {
   layoutRegistry.resetAll()
   try {
     localStorage.removeItem(LAYOUT_OVERRIDES_KEY)
+    localStorage.removeItem(LAYOUT_COLLAPSED_KEY)
   } catch { /* noop */ }
 }
 
@@ -155,5 +158,27 @@ describe('layoutRegistry', () => {
   it('LayoutItem 类型约束：slot 必须合法', () => {
     const item: LayoutItem = { id: 'x', slot: 'desktop.info_bar', title: 'X' }
     expect(item.slot).toBe('desktop.info_bar')
+  })
+
+  it('分组默认展开，可折叠并持久化到 localStorage', () => {
+    // 默认展开。
+    expect(layoutRegistry.isCollapsed(LAYOUT_GROUPS.channels)).toBe(false)
+    expect(layoutRegistry.isCollapsed(LAYOUT_GROUPS.tools)).toBe(false)
+
+    // 收起「渠道」组。
+    layoutRegistry.setCollapsed(LAYOUT_GROUPS.channels, true)
+    expect(layoutRegistry.isCollapsed(LAYOUT_GROUPS.channels)).toBe(true)
+
+    // 持久化：从 localStorage 重建后仍生效。
+    const raw = localStorage.getItem(LAYOUT_COLLAPSED_KEY)
+    expect(raw).toBeTruthy()
+    expect(JSON.parse(raw!)[LAYOUT_GROUPS.channels]).toBe(true)
+  })
+
+  it('toggleCollapsed 切换收起/展开', () => {
+    layoutRegistry.toggleCollapsed(LAYOUT_GROUPS.tools)
+    expect(layoutRegistry.isCollapsed(LAYOUT_GROUPS.tools)).toBe(true)
+    layoutRegistry.toggleCollapsed(LAYOUT_GROUPS.tools)
+    expect(layoutRegistry.isCollapsed(LAYOUT_GROUPS.tools)).toBe(false)
   })
 })

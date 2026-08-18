@@ -41,10 +41,15 @@ export interface LayoutItem {
   weight?: number
   /** 是否允许用户移动（默认 true；核心按钮如会话可移动但可标记重要）。 */
   movable?: boolean
+  /** 分组 id（可选）。同 slot 内相同 group 的项归为一个可折叠分组（如「渠道」「工具」。 */
+  group?: string
 }
 
 /** 用户布局覆盖：itemId → 目标 slot（未列出的项留在默认 slot）。 */
 export type LayoutOverrides = Record<string, LayoutSlotId>
+
+/** 分组折叠状态：groupId → 是否收起（纯前端持久化，不随布局覆盖走后端）。 */
+export type LayoutCollapseState = Record<string, boolean>
 
 /** 内置布局项 id 常量。 */
 export const BUILTIN_LAYOUT_ITEMS = {
@@ -72,3 +77,16 @@ export const BUILTIN_LAYOUT_ITEMS = {
 
 /** localStorage 覆盖配置 key。 */
 export const LAYOUT_OVERRIDES_KEY = 'xbot:layout:overrides'
+
+/** 内置分组 id 常量（分组可折叠收起，状态纯前端持久化）。 */
+export const LAYOUT_GROUPS = {
+  /** 渠道/会话列表（左侧栏会话树）。 */
+  channels: 'channels',
+  /** 工具组（文件/搜索/信息/任务/终端）。 */
+  tools: 'tools',
+  /** 插件视图组（插件 view 移到侧栏后的隔离区）。 */
+  plugins: 'plugins',
+} as const
+
+/** localStorage 折叠状态 key。 */
+export const LAYOUT_COLLAPSED_KEY = 'xbot:layout:collapsed'

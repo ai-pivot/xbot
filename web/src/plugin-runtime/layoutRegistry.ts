@@ -11,7 +11,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   BUILTIN_LAYOUT_ITEMS,
+  LAYOUT_COLLAPSED_KEY,
+  LAYOUT_GROUPS,
   LAYOUT_OVERRIDES_KEY,
+  type LayoutCollapseState,
   type LayoutItem,
   type LayoutOverrides,
   type LayoutSlotId,
@@ -32,10 +35,12 @@ export const VIEW_CONTAINER_TO_SLOT: Record<string, LayoutSlotId> = {
 class LayoutRegistryImpl {
   private items = new Map<string, LayoutItem>()
   private overrides: LayoutOverrides = {}
+  private collapsed: LayoutCollapseState = {}
   private listeners = new Set<() => void>()
 
   constructor() {
     this.loadOverrides()
+    this.loadCollapsed()
     // 后端已有覆盖时（换浏览器/设备，syncAndMigrateSettings 拉取 server →
     // localStorage），重新加载并通知订阅者。仅在浏览器环境（单例模块在
     // SSR/单测里可能无 window）。
@@ -106,6 +111,27 @@ class LayoutRegistryImpl {
     return { ...this.overrides }
   }
 
+  /** 分组是否已收起（默认展开）。 */
+  isCollapsed(groupId: string): boolean {
+    return this.collapsed[groupId] === true
+  }
+
+  /** 设置分组收起/展开状态（纯前端持久化）。 */
+  setCollapsed(groupId: string, collapsed: boolean): void {
+    if (collapsed) {
+      this.collapsed[groupId] = true
+    } else {
+      delete this.collapsed[groupId]
+    }
+    this.saveCollapsed()
+    this.notify()
+  }
+
+  /** 切换分组收起/展开。 */
+  toggleCollapsed(groupId: string): void {
+    this.setCollapsed(groupId, !this.isCollapsed(groupId))
+  }
+
   /** 全部项（设置面板用）。 */
   allItems(): LayoutItem[] {
     return [...this.items.values()].sort((a, b) => (a.weight ?? 0) - (b.weight ?? 0))
@@ -141,6 +167,23 @@ class LayoutRegistryImpl {
     // 拉回同一份布局覆盖。
     syncSettingToServer(LAYOUT_OVERRIDES_KEY, JSON.stringify(this.overrides))
   }
+
+  private loadCollapsed(): void {
+    try {
+      const raw = localStorage.getItem(LAYOUT_COLLAPSED_KEY)
+      if (raw) this.collapsed = JSON.parse(raw) as LayoutCollapseState
+    } catch {
+      this.collapsed = {}
+    }
+  }
+
+  private saveCollapsed(): void {
+    try {
+      localStorage.setItem(LAYOUT_COLLAPSED_KEY, JSON.stringify(this.collapsed))
+    } catch {
+      /* storage full / disabled — non-fatal */
+    }
+  }
 }
 
 /** 全局单例。 */
@@ -153,12 +196,12 @@ export function registerBuiltinLayoutItems(): void {
     { id: BUILTIN_LAYOUT_ITEMS.mobileTools, slot: 'mobile.bottom_nav', title: '工具', labelKey: 'agent.tools', icon: 'square-terminal', weight: 1 },
     { id: BUILTIN_LAYOUT_ITEMS.mobileNewChat, slot: 'mobile.top_bar', title: '新会话', labelKey: 'session.newSession', icon: 'plus', weight: 0 },
     { id: BUILTIN_LAYOUT_ITEMS.mobileSettings, slot: 'mobile.top_bar', title: '设置', labelKey: 'settings.title', icon: 'settings', weight: 1 },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopSessions, slot: 'desktop.activity_bar', title: '会话', labelKey: 'sidebar.sessions', icon: 'panel-left', weight: 0 },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopFiles, slot: 'desktop.sidebar', title: '文件', labelKey: 'sidebar.files', icon: 'files', weight: 0 },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopSearch, slot: 'desktop.sidebar', title: '搜索', labelKey: 'sidebar.search', icon: 'search', weight: 1 },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopInfo, slot: 'desktop.sidebar', title: '信息', labelKey: 'sidebar.info', icon: 'info', weight: 2 },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopTasks, slot: 'desktop.sidebar', title: '任务', labelKey: 'sidebar.tasks', icon: 'list-checks', weight: 3 },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopTerminal, slot: 'desktop.sidebar', title: '终端', labelKey: 'sidebar.terminal', icon: 'square-terminal', weight: 4 },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopSessions, slot: 'desktop.activity_bar', title: '会话', labelKey: 'sidebar.sessions', icon: 'panel-left', weight: 0, group: LAYOUT_GROUPS.channels },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopFiles, slot: 'desktop.sidebar', title: '文件', labelKey: 'sidebar.files', icon: 'files', weight: 0, group: LAYOUT_GROUPS.tools },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopSearch, slot: 'desktop.sidebar', title: '搜索', labelKey: 'sidebar.search', icon: 'search', weight: 1, group: LAYOUT_GROUPS.tools },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopInfo, slot: 'desktop.sidebar', title: '信息', labelKey: 'sidebar.info', icon: 'info', weight: 2, group: LAYOUT_GROUPS.tools },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopTasks, slot: 'desktop.sidebar', title: '任务', labelKey: 'sidebar.tasks', icon: 'list-checks', weight: 3, group: LAYOUT_GROUPS.tools },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopTerminal, slot: 'desktop.sidebar', title: '终端', labelKey: 'sidebar.terminal', icon: 'square-terminal', weight: 4, group: LAYOUT_GROUPS.tools },
   ])
 }
 
@@ -198,4 +241,21 @@ export function useLayoutConfig() {
     resetItem,
     resetAll,
   }
+}
+
+/** React hook：订阅分组折叠状态（isCollapsed/setCollapsed/toggleCollapsed）。 */
+export function useLayoutCollapse() {
+  const [version, setVersion] = useState(0)
+  useEffect(() => layoutRegistry.subscribe(() => setVersion((v) => v + 1)), [])
+  void version
+
+  const isCollapsed = useCallback((groupId: string) => layoutRegistry.isCollapsed(groupId), [])
+  const setCollapsed = useCallback((groupId: string, collapsed: boolean) => {
+    layoutRegistry.setCollapsed(groupId, collapsed)
+  }, [])
+  const toggleCollapsed = useCallback((groupId: string) => {
+    layoutRegistry.toggleCollapsed(groupId)
+  }, [])
+
+  return { isCollapsed, setCollapsed, toggleCollapsed }
 }

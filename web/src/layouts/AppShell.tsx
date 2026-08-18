@@ -18,6 +18,8 @@ import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
 import { LeftActivityBar } from '@/components/sidebar/LeftActivityBar'
+import { CollapsibleGroup } from '@/components/sidebar/CollapsibleGroup'
+import { LAYOUT_GROUPS } from '@/plugin-runtime/layoutTypes'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
@@ -146,11 +148,13 @@ export function AppShell() {
           className="relative flex h-full shrink-0 flex-col"
           style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
         >
-          {/* channel/会话列表 = 整体区域（占左侧主体） */}
+          {/* 渠道/会话列表 = 一个可折叠 group（占左侧主体） */}
           <div className="min-h-0 flex-1">
-            <SessionSidebar tabManager={tabManager} />
+            <CollapsibleGroup groupId={LAYOUT_GROUPS.channels} title="会话">
+              <SessionSidebar tabManager={tabManager} />
+            </CollapsibleGroup>
           </div>
-          {/* 插件 view 隔离区（用户移到桌面左侧 slot 的插件 view，独立渲染） */}
+          {/* 插件 view 隔离区（用户移到桌面左侧 slot 的插件 view） */}
           <LeftActivityBar />
           <div
             role="separator"

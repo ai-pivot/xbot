@@ -13,7 +13,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useOptionalPluginRuntime } from '@/plugin-runtime'
 import { PluginView } from '@/plugin-runtime/PluginView'
 import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
-import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
+import { BUILTIN_LAYOUT_ITEMS, LAYOUT_GROUPS } from '@/plugin-runtime/layoutTypes'
+import { CollapsibleGroup } from './CollapsibleGroup'
 
 interface Panel {
   id: string
@@ -56,28 +57,30 @@ export function LeftActivityBar(): ReactNode {
   const active = panels.find((p) => p.id === activeId) ?? panels[0]
 
   return (
-    <div className="flex shrink-0 flex-col border-t border-[var(--border)]">
-      {panels.length > 1 && (
-        <div className="flex items-center gap-1 border-b border-[var(--border)] px-1 py-1">
-          {panels.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => setActiveId(p.id)}
-              className={`truncate rounded px-2 py-1 text-xs transition-colors ${
-                p.id === active.id
-                  ? 'bg-[var(--bg-tertiary)] font-medium text-text-primary'
-                  : 'text-text-muted hover:text-text-secondary'
-              }`}
-            >
-              {p.title}
-            </button>
-          ))}
+    <CollapsibleGroup groupId={LAYOUT_GROUPS.plugins} title="插件">
+      <div className="flex flex-col">
+        {panels.length > 1 && (
+          <div className="flex items-center gap-1 border-b border-[var(--border)] px-1 py-1">
+            {panels.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setActiveId(p.id)}
+                className={`truncate rounded px-2 py-1 text-xs transition-colors ${
+                  p.id === active.id
+                    ? 'bg-[var(--bg-tertiary)] font-medium text-text-primary'
+                    : 'text-text-muted hover:text-text-secondary'
+                }`}
+              >
+                {p.title}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="min-h-0 overflow-y-auto">
+          <PluginView pluginId={active.pluginId} view={active.view} />
         </div>
-      )}
-      <div className="min-h-0 overflow-y-auto">
-        <PluginView pluginId={active.pluginId} view={active.view} />
       </div>
-    </div>
+    </CollapsibleGroup>
   )
 }
