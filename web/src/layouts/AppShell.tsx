@@ -174,7 +174,19 @@ export function AppShell() {
       />
 
       {/* Right ActivityBar — always visible, toggles right panels. */}
-      <RightActivityBar activePanel={activePanel} onTogglePanel={togglePanel} />
+      <RightActivityBar
+        activePanel={activePanel}
+        onTogglePanel={togglePanel}
+        onOpenMainView={(v) =>
+          tabManager.openTab({
+            type: 'plugin',
+            title: v.title,
+            icon: v.view.icon,
+            closable: true,
+            data: { viewId: v.id, pluginId: v.pluginId },
+          })
+        }
+      />
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
       <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>

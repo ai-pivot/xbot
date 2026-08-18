@@ -11,6 +11,7 @@ import { useI18n } from '@/providers/i18n'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
+import type { PluginViewPanel } from '@/plugin-runtime/usePluginViewPanels'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
@@ -20,6 +21,8 @@ type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | s
 interface RightActivityBarProps {
   activePanel: SidebarPanel | null
   onTogglePanel: (panel: SidebarPanel) => void
+  /** 打开 container='main' 的插件主视图 tab（VSCode editor 语义）。 */
+  onOpenMainView: (view: PluginViewPanel) => void
 }
 
 const BUILTIN_PANELS: { panel: SidebarPanel; icon: IconComponent; labelKey: string }[] = [
@@ -39,9 +42,10 @@ const BUILTIN_PANEL_TO_LAYOUT: Record<string, string> = {
   terminal: BUILTIN_LAYOUT_ITEMS.desktopTerminal,
 }
 
-export function RightActivityBar({ activePanel, onTogglePanel }: RightActivityBarProps) {
+export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }: RightActivityBarProps) {
   const { t } = useI18n()
   const pluginPanels = usePluginViewPanels('right_sidebar')
+  const mainViews = usePluginViewPanels('main')
   // 布局配置：desktop.sidebar slot 里的项 = 用户希望显示的侧栏 tab。
   // 被用户移到其他 slot 的项不再显示（布局定制生效）。
   const layoutItems = useLayoutItems('desktop.sidebar')
@@ -82,6 +86,30 @@ export function RightActivityBar({ activePanel, onTogglePanel }: RightActivityBa
           </Tooltip>
         )
       })}
+      {mainViews.length > 0 && (
+        <>
+          <div className="my-1 h-px w-6 shrink-0 bg-border" />
+          {mainViews.map((v) => (
+            <Tooltip key={v.id}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={v.title}
+                  onClick={() => onOpenMainView(v)}
+                  className="group relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  {(() => {
+                    const Icon = pluginIcon(v.view.icon)
+                    return <Icon className="size-5" />
+                  })()}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="left">{v.title}</TooltipContent>
+            </Tooltip>
+          ))}
+        </>
+      )}
     </div>
   )
 }
