@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -50,6 +51,9 @@ for line in sys.stdin:
 }
 
 func TestStdioPluginProcess_GracefulStop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("graceful stop relies on Unix signal semantics + Python shebang script; not portable to Windows")
+	}
 	proc := startDeactivateAwareProcess(t)
 	if !proc.running {
 		t.Fatal("expected process running")
@@ -68,6 +72,9 @@ func TestStdioPluginProcess_GracefulStop(t *testing.T) {
 }
 
 func TestStdioPluginProcess_StopForcesKillOnTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("force-kill grace period relies on Unix signal semantics + Python shebang script; not portable to Windows")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "plugin.py")
 	// This plugin never exits on deactivate — it ignores the notification.
