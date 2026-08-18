@@ -17,6 +17,7 @@ import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
+import { LeftActivityBar } from '@/components/sidebar/LeftActivityBar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
@@ -142,10 +143,15 @@ export function AppShell() {
       {/* Left sidebar — session list (collapsible) */}
       {!sidebarCollapsed && (
         <div
-          className="relative h-full shrink-0"
+          className="relative flex h-full shrink-0 flex-col"
           style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
         >
-          <SessionSidebar tabManager={tabManager} />
+          {/* channel/会话列表 = 整体区域（占左侧主体） */}
+          <div className="min-h-0 flex-1">
+            <SessionSidebar tabManager={tabManager} />
+          </div>
+          {/* 插件 view 隔离区（用户移到桌面左侧 slot 的插件 view，独立渲染） */}
+          <LeftActivityBar />
           <div
             role="separator"
             aria-orientation="vertical"
