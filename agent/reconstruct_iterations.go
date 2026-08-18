@@ -19,11 +19,26 @@ func reconstructIterationsFromMessages(msgs []llm.ChatMessage) []IterationSnapsh
 		return nil
 	}
 
-	// Find the start of the current turn (after the last user message).
-	turnStart := 0
+	// Find the start of the current turn. We key on TurnID rather than the
+	// last user message because a resume turn (InjectInboundResume) and a
+	// notification turn have NO user message of their own. The old
+	// "scan back to the last user message" heuristic then pointed into the
+	// PREVIOUS turn and rebuilt the wrong iterations (cross-turn content
+	// bleed into iteration_history/Detail).
+	var curTurnID uint64
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
-			turnStart = i + 1
+		if msgs[i].TurnID > 0 {
+			curTurnID = msgs[i].TurnID
+			break
+		}
+	}
+	if curTurnID == 0 {
+		return nil
+	}
+	turnStart := 0
+	for i := 0; i < len(msgs); i++ {
+		if msgs[i].TurnID == curTurnID {
+			turnStart = i
 			break
 		}
 	}

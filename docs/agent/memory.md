@@ -50,6 +50,12 @@ Zero-dependency memory provider (no embedding API) built on SQLite FTS5 BM25.
   to tenant_id (that was the "different sessions see different memories" bug).
 - **Three tiers**: core summary (`MEMORY.md`, ≤2000 chars, always injected) + short-term
   session summaries + long-term atomic memories (fact/preference/event/decision/skill).
+  **Injection budget**: `Recall()` caps TOTAL injected content at `recallMaxRunes=3000`
+  (core + short-term + long-term) — the core summary and most relevant memories stay, the
+  tail is cut with a truncation marker. **Short-term is injected ONLY when `query != ""`**:
+  recentShortTerm() returns OTHER sessions' summaries (unrelated to the current query) — an
+  empty query previously injected them as raw "别的 session 上下文", diluting attention.
+  (This was the "自动注入的别的 session context 过长" report.)
 - **BM25 retrieval**: SQLite FTS5 `unicode61` with a `search_text` column. CJK runs are
   space-separated (`cjkSpaceRuns`: each Chinese char → own token, CJK↔ASCII boundary
   split too) so Chinese substrings match ("记忆" → `"记" OR "忆"`). Query transform

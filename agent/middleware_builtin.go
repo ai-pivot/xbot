@@ -525,6 +525,10 @@ func (m *UserMessageMiddleware) Priority() int { return 200 }
 func (m *UserMessageMiddleware) Process(mc *MessageContext) error {
 	// Resume turn: the user message is already in history from DB.
 	// Skip synthesis — Assemble's empty guard will skip appending.
+	// IMPORTANT: do NOT inject any synthesized text here — the original
+	// bug was UserMessageMiddleware overwriting UserMessage with
+	// timestamp+guide text even when UserContent is empty, which inserted
+	// a DUPLICATE user message into the DB on every resume.
 	if mc.ResumeTurn {
 		return nil
 	}
