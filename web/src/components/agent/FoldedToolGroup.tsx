@@ -208,7 +208,8 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   if (!tools.length) return null
 
   // GenUI tools have special status: always visible, never folded.
-  // Metadata-driven split (ui.mode === 'genui' with legacy name fallback).
+  // Metadata-driven split (ui.mode === 'genui'); ToolRender dispatches via
+  // the messageRenderer runtime (内置 genui renderer).
   const genuiTools = tools.filter((t) => isGenUITool(t))
   const otherTools = tools.filter((t) => !isGenUITool(t))
 

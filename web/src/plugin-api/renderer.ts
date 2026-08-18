@@ -24,6 +24,9 @@ export interface ToolResultMap {
 
 export type Matcher =
   | { tool: keyof ToolResultMap }
+  // metadata-driven 匹配（§9）：UI 能力由工具元数据声明，不由工具名决定。
+  // 如 { uiMode: 'genui' } 匹配任何声明 ui.mode === 'genui' 的工具。
+  | { uiMode: string }
   | { role: 'assistant' | 'user' | 'system' }
   // 通用匹配：空对象（Record<string, never> 保证 excess property 检查生效，
   // 不会像裸 {} 那样吞掉 {role:'admin'} 之类的非法字面量）。
@@ -33,11 +36,13 @@ export type Matcher =
 export type MatchedMessage<M extends Matcher> =
   M extends { tool: infer T extends keyof ToolResultMap }
     ? SafeMessage & { tool: { name: T; result: ToolResultMap[T] } }
-    : M extends { role: 'assistant' }
-      ? SafeAssistantMessage
-      : M extends { role: 'user' }
-        ? SafeUserMessage
-        : SafeMessage
+    : M extends { uiMode: string }
+      ? SafeMessage & { tool: { name: string; uiMode: string; result: unknown } }
+      : M extends { role: 'assistant' }
+        ? SafeAssistantMessage
+        : M extends { role: 'user' }
+          ? SafeUserMessage
+          : SafeMessage
 
 export interface MessageRendererContribution<M extends Matcher = Matcher> {
   kind: 'messageRenderer'
@@ -52,8 +57,8 @@ export interface MessageRendererContribution<M extends Matcher = Matcher> {
 /** 渲染上下文：当前会话、可用 UI 原语。 */
 export interface RenderContext {
   chatID: string
-  /** 渲染到某个已声明视图 slot（返回 JSX 由运行时挂载）。 */
-  renderTo: (slotId: string) => ReactNode
+  /** 渲染到某个已声明视图 slot（返回 JSX 由运行时挂载）。可选——工具级渲染无需 slot。 */
+  renderTo?: (slotId: string) => ReactNode
   /** 本地 UI 状态（如折叠）。 */
   collapsed?: boolean
 }

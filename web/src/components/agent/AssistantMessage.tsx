@@ -18,12 +18,12 @@ import { Copy, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { FoldedLine } from './FoldedLine'
-import { GenUIBlock } from './GenUIBlock'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
-import { isGenUITool, genUICode } from './genui'
+import { ToolRender } from './ToolRender'
+import { isGenUITool } from './genui'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
@@ -174,7 +174,8 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     const lastText = finalContent || lastIteration?.content || lastIteration?.reasoning || ''
 
     // Extract GenUI tools from all iterations — render outside the fold.
-    // Metadata-driven (ui.mode === 'genui') with legacy display_html fallback.
+    // Metadata-driven (ui.mode === 'genui'); ToolRender dispatches via the
+    // messageRenderer runtime (内置 genui renderer) instead of a name special-case.
     const genuiTools: WebToolProgress[] = []
     for (const iter of iterations) {
       for (const tool of iter.tools) {
@@ -203,9 +204,10 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
             <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
           )
         )}
-        {/* GenUI: always visible, never folded */}
+        {/* GenUI: always visible, never folded. ToolRender dispatches via the
+            messageRenderer runtime (内置 genui renderer). */}
         {genuiTools.map((tool, i) => (
-          <GenUIBlock key={`genui-${i}`} code={genUICode(tool)} />
+          <ToolRender key={`genui-${i}`} tool={tool} />
         ))}
         {message.displayOnly && (
           <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">

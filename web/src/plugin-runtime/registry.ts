@@ -275,4 +275,17 @@ export class ContributionRegistry {
     }
     return out
   }
+
+  /** 查询所有 messageRenderer 贡献点（跨插件，含所属插件 id），供宿主动态派发工具渲染。 */
+  listAllRenderers(): Array<{ pluginId: string; renderer: MessageRendererContribution }> {
+    const out: Array<{ pluginId: string; renderer: MessageRendererContribution }> = []
+    for (const [pluginId, record] of this.plugins) {
+      for (const c of record.manifest.contributes) {
+        if (c.kind === 'messageRenderer') out.push({ pluginId, renderer: c })
+      }
+    }
+    // 稳定排序：priority 大者优先（render 返回 null 时 fallback 到下一个）。
+    out.sort((a, b) => b.renderer.priority - a.renderer.priority)
+    return out
+  }
 }

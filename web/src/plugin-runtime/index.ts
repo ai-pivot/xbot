@@ -15,7 +15,7 @@ import { createContext, createElement, useContext, useMemo, useRef } from 'react
 
 import type { Contribution, Disposable, PluginManifest, PluginMeta } from '@/plugin-api'
 import type { ViewContainer, ViewContribution } from '@/plugin-api'
-import type { MessageRendererContribution } from '@/plugin-api'
+import type { Matcher, MessageRendererContribution, RenderContext } from '@/plugin-api'
 
 import { ContributionRegistry } from './registry'
 import { PluginEventBus } from './events'
@@ -65,6 +65,8 @@ export class PluginRuntime {
   private viewCache = new Map<string, Promise<React.ComponentType | null>>()
   /** 已激活插件的 module 引用（热加载时更新）。 */
   private modules = new Map<string, PluginModule>()
+  /** 宿主注册的内置渲染器（如 GenUI —— 宿主组件，不走 ESM 插件模块）。 */
+  private builtinRenderers: MessageRendererContribution[] = []
 
   constructor(host: PluginRuntimeHost) {
     this.host = host
@@ -228,6 +230,53 @@ export class PluginRuntime {
     return this.registry.listAllViews()
   }
 
+  /**
+   * 工具渲染派发（messageRenderer 调度器）——把「工具 → 渲染」从宿主硬编码
+   * 迁移到插件的 messageRenderer 声明。按 priority 降序匹配，render 返回 null
+   * 时 fallback 到下一个；无匹配返回 null（宿主走默认渲染）。
+   *
+   * metadata-driven（§9）：matches 的 { uiMode } 让插件按 UIDecl.mode 匹配，
+   * 而非工具名——这是「删除 display_html 工具名硬编码」的核心。
+   */
+  renderTool(tool: ToolRenderInput, ctx: RenderContext): ReactNode | null {
+    // 内置渲染器（宿主注册）与插件渲染器统一派发，按 priority 降序。
+    const renderers = [
+      ...this.builtinRenderers,
+      ...this.registry.listAllRenderers().map((r) => r.renderer),
+    ].sort((a, b) => b.priority - a.priority)
+
+    for (const renderer of renderers) {
+      if (!matchesTool(renderer.matches, tool)) continue
+      const msg = {
+        tool: {
+          name: tool.name ?? '',
+          uiMode: tool.uiMode,
+          result: tool,
+        },
+      }
+      try {
+        const node = renderer.render(msg as never, ctx)
+        if (node != null) return node
+      } catch (error) {
+        // 渲染器崩溃只降级到默认渲染，不崩整个消息。
+        console.error(`[plugin-runtime] 渲染器 ${renderer.id} 崩溃:`, error)
+      }
+    }
+    return null
+  }
+
+  /**
+   * 注册宿主内置渲染器（如 GenUI —— 宿主组件，不走 ESM 插件模块）。
+   * 返回 disposable 用于注销。内置渲染器与插件渲染器在 renderTool 里统一派发。
+   */
+  registerBuiltinRenderer(renderer: MessageRendererContribution): Disposable {
+    this.builtinRenderers.push(renderer)
+    return () => {
+      const i = this.builtinRenderers.indexOf(renderer)
+      if (i >= 0) this.builtinRenderers.splice(i, 1)
+    }
+  }
+
   /** 订阅插件 view 集合变化（插件注册/卸载 view）。返回退订函数。 */
   subscribeViews(listener: () => void): Disposable {
     return this.registry.subscribeViews(listener)
@@ -279,6 +328,32 @@ function collectPluginExports(mod: PluginModule): Record<string, unknown> {
     if (!reserved.has(key)) out[key] = mod[key]
   }
   return out
+}
+
+/**
+ * 工具渲染输入（宿主 ToolRender 传入的最小视图，不含内部状态）。
+ * 对应的完整类型是 WebToolProgress（@/types/shared），这里只取渲染器
+ * matches 需要的字段，避免 plugin-runtime 依赖 agent 组件层。
+ */
+export interface ToolRenderInput {
+  name?: string
+  /** UI 能力模式（来自 UIDecl 元数据，如 "genui"）。 */
+  uiMode?: string
+  detail?: string
+  args?: string
+  summary?: string
+}
+
+/**
+ * messageRenderer matches 匹配（metadata-driven）。
+ * 顺序：{tool} 按工具名、{uiMode} 按 UIDecl.mode（「删除工具名硬编码」的核心）、
+ * {role} 不适用于工具（工具不是消息角色）、空对象通用匹配。
+ */
+export function matchesTool(matcher: Matcher, tool: ToolRenderInput): boolean {
+  if ('tool' in matcher) return tool.name === matcher.tool
+  if ('uiMode' in matcher) return tool.uiMode === matcher.uiMode
+  if ('role' in matcher) return false
+  return true
 }
 
 // ─── React Provider ───────────────────────────────────────────────

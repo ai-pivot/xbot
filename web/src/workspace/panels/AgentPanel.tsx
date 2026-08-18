@@ -40,6 +40,8 @@ import { useDeveloperMode } from '@/hooks/useDeveloperMode'
 import type { PanelProps } from '@/workspace/panels/types'
 import type { ChatMessage } from '@/types/shared'
 import { useI18n } from '@/providers/i18n'
+import { useOptionalPluginRuntime } from '@/plugin-runtime'
+import { builtinGenuiRenderer, builtinLegacyDisplayHtmlRenderer } from '@/components/agent/genui'
 
 interface RewindHistoryResponse {
   draft?: string
@@ -64,6 +66,20 @@ export function AgentPanel({ params }: PanelProps) {
   const [followResetToken, setFollowResetToken] = useState(0)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const wasSubscribedRef = useRef<boolean | null>(null)
+  const pluginRuntime = useOptionalPluginRuntime()
+
+  // 注册内置 GenUI messageRenderer（宿主组件，经 renderTool 调度器派发），
+  // 替代前端硬编码的 display_html 特判。registerBuiltinRenderer 返回 disposable，
+  // 组件卸载时自动注销；runtime 稳定（useMemo ref），只注册一次。
+  useEffect(() => {
+    if (!pluginRuntime) return
+    const d1 = pluginRuntime.registerBuiltinRenderer(builtinGenuiRenderer)
+    const d2 = pluginRuntime.registerBuiltinRenderer(builtinLegacyDisplayHtmlRenderer)
+    return () => {
+      d1()
+      d2()
+    }
+  }, [pluginRuntime])
 
   // Detect SubAgent mode: when the panel carries SubAgent params, we load
   // messages via get_session_messages RPC instead of get_history.
