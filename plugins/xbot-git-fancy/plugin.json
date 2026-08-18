@@ -15,7 +15,7 @@
       {
         "kind": "view",
         "id": "xbot.git-fancy.panel",
-        "container": "right_sidebar",
+        "container": "main",
         "title": "Git",
         "icon": "git-branch",
         "entry": "index.js"

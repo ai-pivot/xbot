@@ -7,7 +7,7 @@
 
 export type Theme = 'dark' | 'light'
 export type Locale = 'zh-CN' | 'en'
-export type TabType = 'agent' | 'file' | 'terminal' | 'background'
+export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin'
 export type SessionStatus = 'running' | 'waiting_input' | 'pending' | 'idle' | 'unread' | 'error'
 export type SessionCategory = 'time' | 'status' | 'path'
 
@@ -54,6 +54,10 @@ export interface TabData {
   taskChannel?: string
   /** Session chatID for background task RPCs. */
   taskChatID?: string
+  /** Plugin view id（container='main' 的插件主视图 tab，= view.id）。 */
+  viewId?: string
+  /** Plugin id（配合 viewId 定位要渲染的插件视图）。 */
+  pluginId?: string
 }
 
 export interface SessionInfo {

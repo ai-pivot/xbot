@@ -22,7 +22,7 @@ import { sessionKey } from '@/lib/session-grouping'
 
 /** Serializable tab info — a subset of Tab that survives JSON round-trip. */
 interface SavedTab {
-  type: 'file' | 'terminal' | 'agent' | 'background'
+  type: 'file' | 'terminal' | 'agent' | 'background' | 'plugin'
   title: string
   icon?: string
   closable: boolean
@@ -38,6 +38,8 @@ interface SavedTab {
     command?: string
     taskChannel?: string
     taskChatID?: string
+    viewId?: string
+    pluginId?: string
   }
 }
 
@@ -102,6 +104,8 @@ function extractTabs(tabManager: TabManager): SavedTab[] {
         command: t.data?.command,
         taskChannel: t.data?.taskChannel,
         taskChatID: t.data?.taskChatID,
+        viewId: t.data?.viewId,
+        pluginId: t.data?.pluginId,
       },
     }))
 }

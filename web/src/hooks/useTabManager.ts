@@ -59,7 +59,9 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
                   taskChannel: params.taskChannel,
                   taskChatID: params.taskChatID,
                 }
-            : undefined,
+              : params.type === 'plugin'
+                ? { viewId: params.viewId, pluginId: params.pluginId }
+                : undefined,
   }
 }
 
@@ -178,6 +180,8 @@ export function useTabManager(): TabManager {
       command: input.type === 'background' ? input.data?.command : undefined,
       taskChannel: input.type === 'background' ? input.data?.taskChannel : undefined,
       taskChatID: input.type === 'background' ? input.data?.taskChatID : undefined,
+      viewId: input.type === 'plugin' ? input.data?.viewId : undefined,
+      pluginId: input.type === 'plugin' ? input.data?.pluginId : undefined,
     }
     // File/work tabs open in the same group as Agent, as a sibling tab
     // (not a separate right-side column). Agent panels use renderer 'always'
@@ -281,6 +285,7 @@ export function tabLogicalKey(input: Pick<Tab, 'type' | 'data'>): string {
   // gets its own tab (multi-terminal). A missing terminalId → no dedup.
   if (input.type === 'terminal' && input.data?.terminalId) return `terminal:${input.data.terminalId}`
   if (input.type === 'background' && input.data?.taskID) return `background:${input.data.taskID}`
+  if (input.type === 'plugin' && input.data?.viewId) return `plugin:${input.data.viewId}`
   return ''
 }
 
@@ -294,5 +299,6 @@ export function tabLogicalKeyFromParams(p: PanelParams): string {
   if (p.type === 'agent') return p.sessionId ? `agent:${p.sessionId}` : ''
   if (p.type === 'terminal') return p.terminalId ? `terminal:${p.terminalId}` : ''
   if (p.type === 'background') return p.taskID ? `background:${p.taskID}` : ''
+  if (p.type === 'plugin') return p.viewId ? `plugin:${p.viewId}` : ''
   return ''
 }
