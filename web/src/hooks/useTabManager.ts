@@ -324,10 +324,9 @@ export function tabLogicalKeyFromParams(p: PanelParams): string {
 }
 
 /**
- * 从 dockview 完整布局（api.toJSON()）中过滤常驻 agent panel。
- * agent panel 由 sessionStore 驱动（session 切换/重开），不随 work tab 布局
- * 持久化。递归处理 grid 树：leaf group 的 views 移除 agent、空 group 折叠、
- * branch 移除空子、单子节点提升。
+ * 从 dockview 完整布局（api.toJSON()）中按 predicate 过滤 panel（递归处理
+ * grid 树：leaf group 的 views 移除、空 group 折叠、branch 空子移除、单子提升）。
+ * predicate 判断一个 panel 的 params（GroupviewPanelState.params）是否应过滤。
  *
  * 结构（dockview SerializedDockview）：
  *   { grid: { root: SerializedGridObject<GroupPanelViewState> }, panels: Record<string, GroupviewPanelState> }
@@ -335,23 +334,23 @@ export function tabLogicalKeyFromParams(p: PanelParams): string {
  *   GroupPanelViewState = { views: string[]（panel id 列表）, activeView?, id }
  *   GroupviewPanelState = { params: { ...PanelParams }, contentComponent, ... }
  */
-export function filterAgentPanels(layout: unknown): unknown {
+export function filterPanels(layout: unknown, shouldPrune: (params: { type?: string; closable?: boolean }) => boolean): unknown {
   if (!layout || typeof layout !== 'object') return layout
   const l = layout as {
     grid?: { root?: unknown }
     panels?: Record<string, unknown>
     [k: string]: unknown
   }
-  const agentIds = new Set<string>()
+  const prunedIds = new Set<string>()
   for (const [id, p] of Object.entries(l.panels ?? {})) {
-    const type = (p as { params?: { type?: string } })?.params?.type
-    if (type === 'agent') agentIds.add(id)
+    const params = (p as { params?: { type?: string; closable?: boolean } })?.params
+    if (params && shouldPrune(params)) prunedIds.add(id)
   }
-  if (agentIds.size === 0) return layout
+  if (prunedIds.size === 0) return layout
 
   const panels: Record<string, unknown> = {}
   for (const [id, p] of Object.entries(l.panels ?? {})) {
-    if (!agentIds.has(id)) panels[id] = p
+    if (!prunedIds.has(id)) panels[id] = p
   }
 
   const prune = (node: unknown): unknown | null => {
@@ -359,7 +358,7 @@ export function filterAgentPanels(layout: unknown): unknown {
     const n = node as { type?: string; data?: unknown }
     if (n.type === 'leaf') {
       const g = (n.data ?? {}) as { views?: string[]; activeView?: string }
-      const views = (g.views ?? []).filter((id) => !agentIds.has(id))
+      const views = (g.views ?? []).filter((id) => !prunedIds.has(id))
       if (views.length === 0) return null
       const activeView = g.activeView && views.includes(g.activeView) ? g.activeView : views[0]
       return { ...n, data: { ...g, views, activeView } }
@@ -373,4 +372,16 @@ export function filterAgentPanels(layout: unknown): unknown {
 
   const root = prune(l.grid?.root)
   return { ...l, panels, grid: { ...l.grid, root } }
+}
+
+/**
+ * 过滤常驻 agent panel（closable=false 的主 agent tab，由 sessionStore 驱动）。
+ */
+export function filterAgentPanels(layout: unknown): unknown {
+  return filterPanels(layout, (params) => params.closable === false)
+}
+
+/** 过滤 terminal panel（后端 PTY API 禁用时跳过 terminal tab）。 */
+export function filterTerminalPanels(layout: unknown): unknown {
+  return filterPanels(layout, (params) => params.type === 'terminal')
 }

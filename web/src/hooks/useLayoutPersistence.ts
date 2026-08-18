@@ -16,36 +16,14 @@
  *   { tabs: [{type, title, icon, closable, ...data}], activeTabId: string }
  */
 import { useEffect, useRef } from 'react'
-import { tabLogicalKey, type TabManager } from '@/hooks/useTabManager'
+import { filterTerminalPanels, tabLogicalKey, type TabManager } from '@/hooks/useTabManager'
 import type { useSessionStore } from '@/hooks/useSessionStore'
 import { sessionKey } from '@/lib/session-grouping'
 
 /** Serializable tab info — a subset of Tab that survives JSON round-trip. */
-interface SavedTab {
-  type: 'file' | 'terminal' | 'agent' | 'background' | 'plugin'
-  title: string
-  icon?: string
-  closable: boolean
-  data?: {
-    filePath?: string
-    terminalId?: string
-    subAgentRole?: string
-    subAgentInstance?: string
-    parentChatID?: string
-    parentChannel?: string
-    agentChatID?: string
-    taskID?: string
-    command?: string
-    taskChannel?: string
-    taskChatID?: string
-    viewId?: string
-    pluginId?: string
-  }
-}
-
 interface LayoutState {
-  tabs: SavedTab[]
-  activeTabId: string | null
+  /** 完整 dockview 布局（含多组 grid 位置，terminal 已过滤）。 */
+  layout: unknown
   activeKey?: string | null
   workGroupOpen?: boolean
 }
@@ -54,13 +32,17 @@ function layoutKey(chatID: string): string {
   return `xbot-layout:${chatID}`
 }
 
-function saveLayout(chatID: string, tabs: SavedTab[], activeTabId: string | null, activeKey: string | null): void {
+function saveLayout(chatID: string, tabManager: TabManager, activeKey: string | null): void {
   try {
+    // 完整 dockview 布局序列化（保留 group 分割/多实例 grid），filter terminal
+    //（后端 PTY 禁用时跳过 terminal tab）。agent 常驻 tab 完整保留（无 sessionId，
+    // 内容由 AgentPanel 读 activeSession 动态恢复）。
+    const layout = filterTerminalPanels(tabManager.getLayoutJSON())
+    if (!layout) return
     const state: LayoutState = {
-      tabs,
-      activeTabId,
+      layout,
       activeKey,
-      workGroupOpen: tabs.length > 0,
+      workGroupOpen: activeKey !== null,
     }
     localStorage.setItem(layoutKey(chatID), JSON.stringify(state))
   } catch {
@@ -73,7 +55,7 @@ function loadLayout(chatID: string): LayoutState | null {
     const raw = localStorage.getItem(layoutKey(chatID))
     if (!raw) return null
     const parsed = JSON.parse(raw) as LayoutState
-    if (!Array.isArray(parsed.tabs)) return null
+    if (!parsed.layout || typeof parsed.layout !== 'object') return null
     return parsed
   } catch {
     return null
@@ -81,61 +63,17 @@ function loadLayout(chatID: string): LayoutState | null {
 }
 
 /**
- * Extract serializable tab info from the tab manager's current state.
- * Excludes the always-present Agent tab (not closable).
+ * Restore the full dockview layout for a session (grid split + panels, including
+ * plugin views + file tabs). The常驻 agent tab survives the fromJSON round-trip
+ * because it carries no sessionId (AgentPanel reads activeSession dynamically).
  */
-function extractTabs(tabManager: TabManager): SavedTab[] {
-  return tabManager.tabs
-    .filter((t) => t.closable && t.type !== 'terminal')
-    .map((t) => ({
-      type: t.type,
-      title: t.title,
-      icon: t.icon,
-      closable: t.closable,
-      data: {
-        filePath: t.data?.filePath,
-        terminalId: t.data?.terminalId,
-        subAgentRole: t.data?.subAgentRole,
-        subAgentInstance: t.data?.subAgentInstance,
-        parentChatID: t.data?.parentChatID,
-        parentChannel: t.data?.parentChannel,
-        agentChatID: t.data?.agentChatID,
-        taskID: t.data?.taskID,
-        command: t.data?.command,
-        taskChannel: t.data?.taskChannel,
-        taskChatID: t.data?.taskChatID,
-        viewId: t.data?.viewId,
-        pluginId: t.data?.pluginId,
-      },
-    }))
-}
-
-/**
- * Restore tabs for a session: close all closable tabs, then re-open saved ones.
- */
-function restoreTabs(tabManager: TabManager, layout: LayoutState): void {
-  // Close all closable tabs (file/terminal/SubAgent).
-  const closableTabs = tabManager.tabs.filter((t) => t.closable)
-  for (const t of closableTabs) {
-    tabManager.closeTab(t.id)
-  }
-  tabManager.resetWorkGroup()
-  // Re-open saved tabs. Terminal tabs are intentionally skipped while the
-  // backend PTY API is disabled.
-  let restoredActiveId: string | null = null
+function restoreLayout(tabManager: TabManager, layout: LayoutState): void {
+  tabManager.applyLayoutJSON(layout.layout)
+  // 恢复激活的 closable tab（fromJSON 恢复 active group，但精确激活 tab 需 setActive）。
   const activeKey = layout.activeKey ?? null
-  for (const tab of layout.tabs.filter((t) => t.type !== 'terminal')) {
-    const tabId = tabManager.openTab({
-      type: tab.type,
-      title: tab.title,
-      icon: tab.icon,
-      closable: tab.closable,
-      data: tab.data,
-    })
-    if (activeKey && tabLogicalKey(tab) === activeKey) restoredActiveId = tabId
-  }
-  if (restoredActiveId) {
-    tabManager.setActiveTab(restoredActiveId)
+  if (activeKey) {
+    const tab = tabManager.tabs.find((t) => t.closable && tabLogicalKey(t) === activeKey)
+    if (tab) tabManager.setActiveTab(tab.id)
   }
 }
 
@@ -156,17 +94,16 @@ export function useLayoutPersistence(
     // Save layout for the previous session.
     if (prevChatID) {
       const mgr = tabManagerRef.current
-      const tabs = extractTabs(mgr)
       const activeTab = mgr.tabs.find((tab) => tab.id === mgr.activeTabId)
       const activeKey = activeTab?.closable ? tabLogicalKey(activeTab) : null
-      saveLayout(prevChatID, tabs, mgr.activeTabId, activeKey)
+      saveLayout(prevChatID, mgr, activeKey)
     }
 
     // Restore layout for the new session.
     if (currentChatID) {
       const layout = loadLayout(currentChatID)
-      if (layout && layout.tabs.length > 0) {
-        restoreTabs(tabManagerRef.current, layout)
+      if (layout && layout.layout) {
+        restoreLayout(tabManagerRef.current, layout)
       } else {
         // No saved layout — close all closable tabs (fresh session).
         const mgr = tabManagerRef.current

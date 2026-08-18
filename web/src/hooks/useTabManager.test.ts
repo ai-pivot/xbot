@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { filterAgentPanels } from './useTabManager'
 
 function agentPanel(id: string) {
-  return { id, params: { type: 'agent' }, contentComponent: 'agent' }
+  return { id, params: { type: 'agent', closable: false }, contentComponent: 'agent' }
 }
 function workPanel(id: string, type = 'file') {
   return { id, params: { type }, contentComponent: type }

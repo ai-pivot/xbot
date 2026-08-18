@@ -39,6 +39,7 @@ export function SettingsLayout() {
   const { t } = useI18n()
   const { allItems, overrides, moveItem, resetItem, resetAll } = useLayoutConfig()
   const [changed, setChanged] = useState(0) // force re-render after moves
+  const [dragOverId, setDragOverId] = useState<string | null>(null)
 
   const slots = useMemo(() => Object.keys(SLOT_LABELS) as LayoutSlotId[], [])
 
@@ -75,7 +76,35 @@ export function SettingsLayout() {
             {items.map((item) => {
               const eff = overrides[item.id] ?? item.slot
               return (
-                <div key={item.id} className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                <div
+                  key={item.id}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData('text/plain', item.id)
+                    e.dataTransfer.effectAllowed = 'move'
+                  }}
+                  onDragOver={(e) => {
+                    // 拖到另一项上 = 移到该项所在 slot（drop zone）
+                    if (e.dataTransfer.types.includes('text/plain')) {
+                      e.preventDefault()
+                      e.dataTransfer.dropEffect = 'move'
+                      setDragOverId(item.id)
+                    }
+                  }}
+                  onDragLeave={() => setDragOverId((id) => (id === item.id ? null : id))}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    const src = e.dataTransfer.getData('text/plain') || dragOverId
+                    if (src && src !== item.id) {
+                      moveItem(src, slot)
+                      setChanged((v) => v + 1)
+                    }
+                    setDragOverId(null)
+                  }}
+                  className={`flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 transition-shadow ${
+                    dragOverId === item.id ? 'ring-2 ring-accent' : ''
+                  }`}
+                >
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{itemName(item.id, item.title)}</div>
                     <div className="truncate font-mono text-[10px] text-text-muted">{item.id}</div>
