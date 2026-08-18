@@ -22,6 +22,8 @@ export type LayoutSlotId =
   | 'desktop.sidebar'
   /** 桌面底部 InfoBar。 */
   | 'desktop.info_bar'
+  /** 桌面主编辑区（Dockview 的 editor tab，插件 view 可在此全宽渲染）。 */
+  | 'desktop.main'
 
 /** 布局项——可放置到某个 slot 的 UI 元素。 */
 export interface LayoutItem {

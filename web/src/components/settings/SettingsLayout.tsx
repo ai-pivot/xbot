@@ -18,6 +18,7 @@ const SLOT_LABELS: Record<LayoutSlotId, string> = {
   'desktop.activity_bar': '🖥️ 左侧栏',
   'desktop.sidebar': '🖥️ 右侧面板',
   'desktop.info_bar': '🖥️ 底部信息栏',
+  'desktop.main': '🖥️ 主编辑区',
 }
 
 /** 内置项 id → 显示名（插件项用 view 自带 title）。 */

@@ -12,7 +12,7 @@ import type { MessageRendererContribution } from './renderer'
 export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui' | 'plugins'
 
 /** 视图容器（映射到前端布局位）。 */
-export type ViewContainer = 'right_sidebar' | 'panel' | 'bottom' | 'info_bar' | 'status_bar_right' | 'iteration'
+export type ViewContainer = 'right_sidebar' | 'panel' | 'bottom' | 'info_bar' | 'status_bar_right' | 'iteration' | 'main'
 
 export interface ViewContribution {
   kind: 'view'

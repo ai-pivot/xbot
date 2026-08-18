@@ -58,6 +58,7 @@ import { CwdContext } from '@/providers/CwdProvider'
 import { AuthContext } from '@/providers/AuthProvider'
 import { SessionStoreContext } from '@/hooks/useSessionStore'
 import { useOptionalPluginRuntime, PluginRuntimeContext } from '@/plugin-runtime'
+import { PluginView } from '@/plugin-runtime/PluginView'
 import { RightSidebarControlContext, useRightSidebarControl } from '@/components/sidebar/RightSidebarControl'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { PanelParams } from '@/types/tab'
@@ -246,7 +247,12 @@ export class ReactContentRenderer implements IContentRenderer {
   private render(): void {
     if (!this.root || !this.params) return
     const Component = CONTENT_COMPONENTS[this.name as keyof typeof CONTENT_COMPONENTS]
-    if (!Component) return
+    if (!Component) {
+      // 插件 view（container='main'）：component name 就是 view.id，查不到内置
+      // panel 时回退到插件 view —— 插件即可在主编辑区全宽渲染（editor tab）。
+      this.renderPluginView()
+      return
+    }
     this.root.render(
       withDockviewProviders(
         <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-text-muted">Loading…</div>}>
@@ -256,6 +262,20 @@ export class ReactContentRenderer implements IContentRenderer {
             containerApi={this.params.containerApi}
           />
         </Suspense>,
+        this.ctxRef.current,
+      ),
+    )
+  }
+
+  /** 渲染 container='main' 的插件 view（component name === view.id）。 */
+  private renderPluginView(): void {
+    const runtime = this.ctxRef.current.pluginRuntime
+    if (!runtime || !this.root) return
+    const entry = runtime.listAllViews().find(({ view }) => view.id === this.name)
+    if (!entry) return
+    this.root.render(
+      withDockviewProviders(
+        <PluginView pluginId={entry.pluginId} view={entry.view} />,
         this.ctxRef.current,
       ),
     )

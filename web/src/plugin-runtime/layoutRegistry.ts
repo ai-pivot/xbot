@@ -26,6 +26,7 @@ export const VIEW_CONTAINER_TO_SLOT: Record<string, LayoutSlotId> = {
   panel: 'desktop.sidebar',
   status_bar_right: 'desktop.info_bar',
   iteration: 'desktop.sidebar',
+  main: 'desktop.main',
 }
 
 class LayoutRegistryImpl {
