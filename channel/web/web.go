@@ -1911,19 +1911,32 @@ func (wc *WebChannel) handlePluginStatic(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			continue
 		}
+		// Resolve the web dir's real path (symlinks) so the prefix check below
+		// compares against the canonical directory, not a symlinked alias.
+		realWebDir, err := filepath.EvalSymlinks(absWebDir)
+		if err != nil {
+			continue // web dir doesn't exist (plugin has no web artifact)
+		}
 		cleanSub := filepath.Clean("/" + subPath)
 		absPath := filepath.Join(absWebDir, filepath.FromSlash(cleanSub))
 		absResolved, err := filepath.Abs(absPath)
 		if err != nil {
 			continue
 		}
-		if !strings.HasPrefix(absResolved, absWebDir+string(os.PathSeparator)) {
+		// Resolve the final file's real path too — a symlink inside web/ (e.g.
+		// evil.js -> /etc/passwd) would otherwise pass the prefix check on its
+		// symlink alias while os.Stat/http.ServeFile follow it out of web/.
+		realResolved, err := filepath.EvalSymlinks(absResolved)
+		if err != nil {
+			continue // file doesn't exist
+		}
+		if !strings.HasPrefix(realResolved, realWebDir+string(os.PathSeparator)) {
 			http.NotFound(w, r)
 			return
 		}
-		if _, err := os.Stat(absResolved); err == nil {
+		if _, err := os.Stat(realResolved); err == nil {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			http.ServeFile(w, r, absResolved)
+			http.ServeFile(w, r, realResolved)
 			return
 		}
 	}

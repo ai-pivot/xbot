@@ -3190,6 +3190,37 @@ func TestPluginManager_InstallPluginFromZip_NoManifest(t *testing.T) {
 	}
 }
 
+func TestExtractZip_FileCountLimit(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+
+	// A zip with more files than maxExtractFileCount must be rejected BEFORE
+	// extracting anything (zip bomb guard: unbounded file count).
+	zipPath := filepath.Join(baseDir, "too-many-files.zip")
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	for i := 0; i < 2001; i++ {
+		w, err := zw.Create(fmt.Sprintf("f%d.txt", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zipPath, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := extractZip(zipPath, filepath.Join(baseDir, "out"))
+	if err == nil || !strings.Contains(err.Error(), "too many files") {
+		t.Fatalf("expected 'too many files' error, got %v", err)
+	}
+}
+
 func TestPluginManager_InstallPlugin_InvalidPath(t *testing.T) {
 	t.Parallel()
 	baseDir := t.TempDir()

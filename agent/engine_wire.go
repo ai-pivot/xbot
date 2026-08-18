@@ -2031,6 +2031,10 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 		first := firstChunkAt
 		tokens := streamTokens
+		// Copy requestStartAt while holding the lock — resetTiming writes it
+		// under mu.Lock() during beginIteration, so reading it after Unlock()
+		// is a data race with the concurrent resetTiming.
+		reqStart := requestStartAt
 		// Estimate from CUMULATIVE stream state (reasoning + content) — NOT the
 		// single-frame payload. Each stream frame carries only ONE field
 		// (streamContentFunc sends StreamContent, streamReasoningFunc sends
@@ -2080,9 +2084,9 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 		mu.Unlock()
 		return &protocol.StreamStats{
-			TTFTMs:       first.Sub(requestStartAt).Milliseconds(),
+			TTFTMs:       first.Sub(reqStart).Milliseconds(),
 			TokensPerSec: tps,
-			TotalMs:      now.Sub(requestStartAt).Milliseconds(),
+			TotalMs:      now.Sub(reqStart).Milliseconds(),
 		}
 	}
 	withLiveStats := func(payload *protocol.ProgressEvent) {

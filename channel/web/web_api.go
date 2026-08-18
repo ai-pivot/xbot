@@ -591,6 +591,19 @@ func (wc *WebChannel) handlePluginInstallFile(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Plugin install executes arbitrary code (stdio/script runtime) — admin only.
+	// rpcCall below uses RPCIdentity{SenderID:"web_admin"} which bypasses RPC-layer
+	// auth, so the admin check MUST happen here in the handler.
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+	if !wc.isAdmin(r.Context(), senderID) {
+		writeJSON(w, http.StatusForbidden, marketResponse{OK: false, Error: "admin required"})
+		return
+	}
+
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "failed to parse multipart form"})
 		return

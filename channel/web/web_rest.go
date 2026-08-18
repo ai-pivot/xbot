@@ -320,6 +320,16 @@ func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, me
 			return http.StatusForbidden, fmt.Errorf("access denied")
 		}
 	}
+	if method == "plugin_status" {
+		var request struct {
+			Rescan bool `json:"rescan"`
+		}
+		if err := json.Unmarshal(params, &request); err == nil && request.Rescan {
+			// rescan 触发 Discover + ActivateAll（扫描磁盘、激活插件、启动 stdio
+			// 进程）——这是写操作，而 nonAdmin 白名单里的 plugin_status 仅允许只读。
+			return http.StatusForbidden, fmt.Errorf("plugin rescan requires admin access")
+		}
+	}
 	if method == "get_session_subscription" {
 		var request sessionBody
 		if err := json.Unmarshal(params, &request); err != nil {

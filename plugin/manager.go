@@ -826,6 +826,16 @@ func (pm *PluginManager) disableEntry(entry *PluginEntry) error {
 			pm.notifyEvent(PluginEventError, entry.Manifest.ID, err, map[string]any{"phase": "deactivate"})
 			log.WithField("plugin", entry.Manifest.ID).Warn("Deactivation error: ", err)
 			pm.audit(entry.Manifest.ID, AuditDeactivate, nil, err)
+			// Deactivate failed — the subprocess may still be running, so marking
+			// StateInactive would leak it on the next enable (a new process is
+			// spawned while the old one lingers). Mark StateError and return early
+			// to avoid the second, error-free audit below.
+			entry.stateMu.Lock()
+			entry.State = StateError
+			entry.lastError = err
+			entry.lastErrorAt = time.Now()
+			entry.stateMu.Unlock()
+			return err
 		}
 	}
 	entry.stateMu.Lock()
@@ -1283,13 +1293,24 @@ func (pm *PluginManager) InstallPluginFromZip(ctx context.Context, zipPath strin
 }
 
 // extractZip safely extracts a zip archive into destDir, guarding against zip
-// slip (paths escaping destDir).
+// slip (paths escaping destDir) and zip bombs (unbounded file count / size).
 func extractZip(zipPath, destDir string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("open zip: %w", err)
 	}
 	defer r.Close()
+
+	// zip bomb guard: limit file count and per-file decompressed size. The
+	// upload path already caps the compressed archive at 32 MiB, but a
+	// high-ratio zip bomb inflates to TBs on extraction.
+	const (
+		maxExtractFileCount = 2000
+		maxExtractFileSize  = 100 << 20 // 100 MiB per file
+	)
+	if len(r.File) > maxExtractFileCount {
+		return fmt.Errorf("zip contains too many files: %d (max %d)", len(r.File), maxExtractFileCount)
+	}
 
 	destRoot := filepath.Clean(destDir) + string(os.PathSeparator)
 	for _, f := range r.File {
@@ -1315,10 +1336,17 @@ func extractZip(zipPath, destDir string) error {
 			rc.Close()
 			return err
 		}
-		if _, err := io.Copy(out, rc); err != nil {
+		if _, err := io.Copy(out, io.LimitReader(rc, maxExtractFileSize)); err != nil {
 			out.Close()
 			rc.Close()
 			return err
+		}
+		// Detect truncation: if the reader still holds data beyond the limit,
+		// the file exceeded maxExtractFileSize.
+		if remaining, _ := io.Copy(io.Discard, rc); remaining > 0 {
+			out.Close()
+			rc.Close()
+			return fmt.Errorf("file %s exceeds max decompressed size %d", f.Name, maxExtractFileSize)
 		}
 		out.Close()
 		rc.Close()
