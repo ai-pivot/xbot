@@ -22,8 +22,9 @@ Create and manage xbot plugins.
 | **script** | Low | Shell-based plugins: widgets, notifications, simple tools |
 | **native** | Medium | Go in-process plugins (requires compilation) |
 | **stdio** | High | External process plugins: channels, channel-scoped tools, Python/Go/any language |
+| **web** | Medium | Frontend ESM plugins (v2): views, commands, renderers, events, interop — type-as-contract, runs in-browser |
 
-**Prefer script plugins** for widgets and hooks. **Use stdio for channel plugins and channel-scoped tools.**
+**Prefer script plugins** for widgets and hooks. **Use stdio for channel plugins and channel-scoped tools.** **Use web for UI contributed directly into the web frontend.**
 
 ## Plugin Location
 
@@ -42,7 +43,8 @@ User wants to...
 ├─ Add a new message channel (Telegram) → stdio channel plugin → read channel-plugins.md
 ├─ Channel + custom agent prompt (Telegram formatting rules) → stdio channel + channel_prompt → read channel-plugins.md
 ├─ Channel + custom tools (GitHub App CR) → stdio channel + channel_tools → read channel-tools.md
-└─ Register tools/hooks without channel → stdio plugin + contributes.tools
+├─ Register tools/hooks without channel → stdio plugin + contributes.tools
+└─ Contribute UI to the web frontend (view/command/renderer/event) → web plugin → read web-plugins.md
 ```
 
 ## Files in This Skill
@@ -52,6 +54,7 @@ User wants to...
 | `script-plugins.md` | Script plugin: manifest format, UI slots, triggers, env vars, examples |
 | `channel-plugins.md` | stdio channel plugin: protocol, RPC methods, event types, **channel prompt**, Python example |
 | `channel-tools.md` | Channel-scoped tools: `channel_tools` protocol, `execute_tool` RPC, complete example |
+| `web-plugins.md` | Web plugin v2 (type-as-contract): `@xbot/plugin-api`, contribution types, capability-as-type, interop, layout system, builtin plugins, gotchas |
 
 When you need detailed guidance on a specific plugin type, load the relevant file:
 ```
@@ -107,3 +110,6 @@ tui_control(action="reload_plugins")
 - Channel plugins can declare channel-scoped tools via `channel_tools` message (see channel-tools.md)
 - Both `channel_prompt` and `channel_tools` support **hot-update**: sending a new message replaces the previous set
 - Channel names cannot be: `feishu`, `qq`, `napcat`, `web`, `cli`
+- Web plugin: single validation gate is the FRONTEND runtime (`registry.validate()`); backend never schema-validates `contributes`
+- Web plugin: builtin views MUST be static-imported (dynamic `import()` → React #311 black screen). Only third-party `/plugins/<id>/web/` modules dynamic-import
+- Web plugin: plugin ID may contain dots (`xbot.git-fancy`) — RPC routing uses longest-prefix match, never `SplitN(".")`
