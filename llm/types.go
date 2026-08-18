@@ -18,24 +18,32 @@ var (
 
 // ChatMessage 业务层定义的消息类型，与具体 LLM 实现解耦
 type ChatMessage struct {
-	ID               int64      `json:"-"`    // DB auto-increment id (0 for in-memory messages); stable append-only history node used for rewind/trim/dedup; never sent to the LLM
-	Role             string     `json:"role"` // "system", "user", "assistant", "tool"
-	Content          string     `json:"content"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"` // DeepSeek/OpenAI reasoning 模型的思维链内容
-	ToolCallID       string     `json:"tool_call_id,omitempty"`      // 如果是 tool 消息，记录工具调用 ID
-	ToolName         string     `json:"tool_name,omitempty"`         // 如果是 tool 消息，记录工具名称
-	ToolArguments    string     `json:"tool_arguments,omitempty"`    // 如果是 tool 消息，记录工具调用参数
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`        // 如果是 assistant 消息且有工具调用
-	Detail           string     `json:"-"`                           // 工具结果详情（如 diff），不参与 LLM 上下文，仅持久化和前端展示
-	Timestamp        time.Time  `json:"-"`                           // 消息时间戳，不参与 LLM 上下文
-	DisplayOnly      bool       `json:"-"`                           // 仅展示消息（如 cron 结果），不参与 LLM 上下文
-	TurnID           uint64     `json:"-"`                           // Agent turn that produced this message (for dedup)
-	Interrupted      bool       `json:"-"`                           // true = this message marks a cancelled/interrupted turn (replaces string content "[interrupted]" checks)
+	ID               int64          `json:"-"`    // DB auto-increment id (0 for in-memory messages); stable append-only history node used for rewind/trim/dedup; never sent to the LLM
+	Role             string         `json:"role"` // "system", "user", "assistant", "tool"
+	Content          string         `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"` // DeepSeek/OpenAI reasoning 模型的思维链内容
+	ToolCallID       string         `json:"tool_call_id,omitempty"`      // 如果是 tool 消息，记录工具调用 ID
+	ToolName         string         `json:"tool_name,omitempty"`         // 如果是 tool 消息，记录工具名称
+	ToolArguments    string         `json:"tool_arguments,omitempty"`    // 如果是 tool 消息，记录工具调用参数
+	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`        // 如果是 assistant 消息且有工具调用
+	Detail           string         `json:"-"`                           // 工具结果详情（如 diff），不参与 LLM 上下文，仅持久化和前端展示
+	Timestamp        time.Time      `json:"-"`                           // 消息时间戳，不参与 LLM 上下文
+	DisplayOnly      bool           `json:"-"`                           // 仅展示消息（如 cron 结果），不参与 LLM 上下文
+	TurnID           uint64         `json:"-"`                           // Agent turn that produced this message (for dedup)
+	Interrupted      bool           `json:"-"`                           // true = this message marks a cancelled/interrupted turn (replaces string content "[interrupted]" checks)
+	Images           []ImageContent `json:"-"`                           // 图片内容（如 Read 工具读取的图片文件），通过 user message 注入给 LLM
 
 	// CacheHint 提示 LLM 层此消息的缓存特性。
 	// "static" — 跨请求不变的静态内容（system prompt 基础模板等）
 	// "" (默认) — 动态内容，不标注缓存
 	CacheHint string `json:"cache_hint,omitempty"`
+}
+
+// ImageContent 表示一张图片的内容，用于 vision 能力。
+// MediaType 如 "image/png"；Data 为 base64 编码的图片数据（不含 data: 前缀）。
+type ImageContent struct {
+	MediaType string
+	Data      string // base64 encoded, without data: prefix
 }
 
 // NewSystemMessage 创建系统消息

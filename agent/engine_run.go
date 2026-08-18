@@ -1530,6 +1530,11 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 		if tc.Name == "Read" && readArgsHasOffsetOrLimit(tc.Arguments) {
 			skipOffload = true
 		}
+		// Image results must not be offloaded — offload stores text summaries,
+		// and images are delivered via a follow-up user message.
+		if r.result != nil && len(r.result.Images) > 0 {
+			skipOffload = true
+		}
 		if s.cfg.OffloadStore != nil && r.err == nil && !skipOffload {
 			offloadContent := content
 			if r.result != nil && r.result.Summary != "" {
@@ -1574,6 +1579,16 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 			toolMsg.Detail = r.result.Detail
 		}
 		s.messages = s.syncMessages(append(s.messages, toolMsg))
+
+		// Image injection: if the tool result contains images, inject a user
+		// message with the image content. Chat Completions APIs (OpenAI, Kimi,
+		// DeepSeek) only support images in user messages, not tool results.
+		// Anthropic also supports images in user messages.
+		if r.result != nil && len(r.result.Images) > 0 {
+			imgMsg := llm.NewUserMessage(content) // text summary as content
+			imgMsg.Images = r.result.Images
+			s.messages = s.syncMessages(append(s.messages, imgMsg))
+		}
 	}
 
 	// Invalidate stale Read offloads after any tool execution

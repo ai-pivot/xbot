@@ -63,22 +63,19 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int) resp
 			}
 
 		case "user":
-			// Check for embedded images (data: URLs in markdown image syntax)
-			parts := parseEmbeddedImages(msg.Content)
-			if len(parts) > 1 {
-				// Multi-part message with images
-				contentParts := make(responses.ResponseInputMessageContentListParam, 0, len(parts))
-				for _, p := range parts {
-					switch p.Type {
-					case "text":
-						contentParts = append(contentParts, responses.ResponseInputContentUnionParam{
-							OfInputText: &responses.ResponseInputTextParam{Text: p.Text},
-						})
-					case "image":
-						contentParts = append(contentParts, responses.ResponseInputContentUnionParam{
-							OfInputImage: &responses.ResponseInputImageParam{ImageURL: param.Opt[string]{Value: p.URL}},
-						})
-					}
+			// Check for structured images first (from tool result injection)
+			if len(msg.Images) > 0 {
+				contentParts := make(responses.ResponseInputMessageContentListParam, 0, len(msg.Images)+1)
+				if msg.Content != "" {
+					contentParts = append(contentParts, responses.ResponseInputContentUnionParam{
+						OfInputText: &responses.ResponseInputTextParam{Text: msg.Content},
+					})
+				}
+				for _, img := range msg.Images {
+					dataURL := fmt.Sprintf("data:%s;base64,%s", img.MediaType, img.Data)
+					contentParts = append(contentParts, responses.ResponseInputContentUnionParam{
+						OfInputImage: &responses.ResponseInputImageParam{ImageURL: param.Opt[string]{Value: dataURL}},
+					})
 				}
 				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 					OfMessage: &responses.EasyInputMessageParam{
@@ -87,12 +84,37 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int) resp
 					},
 				})
 			} else {
-				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
-					OfMessage: &responses.EasyInputMessageParam{
-						Role:    responses.EasyInputMessageRoleUser,
-						Content: responses.EasyInputMessageContentUnionParam{OfString: param.Opt[string]{Value: msg.Content}},
-					},
-				})
+				// Check for embedded images (data: URLs in markdown image syntax)
+				parts := parseEmbeddedImages(msg.Content)
+				if len(parts) > 1 {
+					// Multi-part message with images
+					contentParts := make(responses.ResponseInputMessageContentListParam, 0, len(parts))
+					for _, p := range parts {
+						switch p.Type {
+						case "text":
+							contentParts = append(contentParts, responses.ResponseInputContentUnionParam{
+								OfInputText: &responses.ResponseInputTextParam{Text: p.Text},
+							})
+						case "image":
+							contentParts = append(contentParts, responses.ResponseInputContentUnionParam{
+								OfInputImage: &responses.ResponseInputImageParam{ImageURL: param.Opt[string]{Value: p.URL}},
+							})
+						}
+					}
+					inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
+						OfMessage: &responses.EasyInputMessageParam{
+							Role:    responses.EasyInputMessageRoleUser,
+							Content: responses.EasyInputMessageContentUnionParam{OfInputItemContentList: contentParts},
+						},
+					})
+				} else {
+					inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
+						OfMessage: &responses.EasyInputMessageParam{
+							Role:    responses.EasyInputMessageRoleUser,
+							Content: responses.EasyInputMessageContentUnionParam{OfString: param.Opt[string]{Value: msg.Content}},
+						},
+					})
+				}
 			}
 
 		case "assistant":

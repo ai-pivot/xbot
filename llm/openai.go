@@ -383,20 +383,17 @@ func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.Chat
 		case "system":
 			result = append(result, openai.SystemMessage(msg.Content))
 		case "user":
-			// Check for embedded images (data: URLs in markdown image syntax)
-			parts := parseEmbeddedImages(msg.Content)
-			if len(parts) > 1 {
-				// Multi-part message with images
+			// Check for structured images first (from tool result injection)
+			if len(msg.Images) > 0 {
 				var contentParts []openai.ChatCompletionContentPartUnionParam
-				for _, p := range parts {
-					switch p.Type {
-					case "text":
-						contentParts = append(contentParts, openai.TextContentPart(p.Text))
-					case "image":
-						contentParts = append(contentParts, openai.ImageContentPart(
-							openai.ChatCompletionContentPartImageImageURLParam{URL: p.URL},
-						))
-					}
+				if msg.Content != "" {
+					contentParts = append(contentParts, openai.TextContentPart(msg.Content))
+				}
+				for _, img := range msg.Images {
+					dataURL := fmt.Sprintf("data:%s;base64,%s", img.MediaType, img.Data)
+					contentParts = append(contentParts, openai.ImageContentPart(
+						openai.ChatCompletionContentPartImageImageURLParam{URL: dataURL},
+					))
 				}
 				result = append(result, openai.ChatCompletionMessageParamUnion{
 					OfUser: &openai.ChatCompletionUserMessageParam{
@@ -406,7 +403,31 @@ func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.Chat
 					},
 				})
 			} else {
-				result = append(result, openai.UserMessage(msg.Content))
+				// Check for embedded images (data: URLs in markdown image syntax)
+				parts := parseEmbeddedImages(msg.Content)
+				if len(parts) > 1 {
+					// Multi-part message with images
+					var contentParts []openai.ChatCompletionContentPartUnionParam
+					for _, p := range parts {
+						switch p.Type {
+						case "text":
+							contentParts = append(contentParts, openai.TextContentPart(p.Text))
+						case "image":
+							contentParts = append(contentParts, openai.ImageContentPart(
+								openai.ChatCompletionContentPartImageImageURLParam{URL: p.URL},
+							))
+						}
+					}
+					result = append(result, openai.ChatCompletionMessageParamUnion{
+						OfUser: &openai.ChatCompletionUserMessageParam{
+							Content: openai.ChatCompletionUserMessageParamContentUnion{
+								OfArrayOfContentParts: contentParts,
+							},
+						},
+					})
+				} else {
+					result = append(result, openai.UserMessage(msg.Content))
+				}
 			}
 		case "assistant":
 			// Thinking mode 开启，或有实际 reasoning_content 时，使用 param.Override 路径

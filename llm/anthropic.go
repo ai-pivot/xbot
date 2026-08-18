@@ -204,7 +204,25 @@ func toAnthropicMessages(messages []ChatMessage, thinkingEnabled bool) []anthrop
 			// system 消息由 buildAnthropicSystem 单独处理，此处跳过
 			i++
 		case "user":
-			msgs = append(msgs, anthropicMessage{Role: "user", Content: msg.Content})
+			if len(msg.Images) > 0 {
+				blocks := make([]any, 0, len(msg.Images)+1)
+				if msg.Content != "" {
+					blocks = append(blocks, anthropicTextBlock{Type: "text", Text: msg.Content})
+				}
+				for _, img := range msg.Images {
+					blocks = append(blocks, map[string]any{
+						"type": "image",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": img.MediaType,
+							"data":       img.Data,
+						},
+					})
+				}
+				msgs = append(msgs, anthropicMessage{Role: "user", Content: blocks})
+			} else {
+				msgs = append(msgs, anthropicMessage{Role: "user", Content: msg.Content})
+			}
 			i++
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
