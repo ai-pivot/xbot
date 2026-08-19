@@ -276,6 +276,35 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('arms the watchdog on first-connect failure so a stalled native retry still reconnects', () => {
+    // Regression: the watchdog was only armed in onopen. If the FIRST connect()
+    // failed (server unreachable / network switch before the first open), onopen
+    // never fired, so the watchdog was never armed. The native EventSource retry
+    // can then stall (background tab / browser gave up after repeated failures),
+    // leaving readyState stuck at CONNECTING(0) forever — the REST poll's
+    // `readyState === 2` check never fires (EventSource never self-closes), so
+    // the UI stayed on "Reconnecting…" with no active reconnect. Arming the
+    // watchdog in onerror forces a fresh connect() until an open succeeds.
+    vi.useFakeTimers()
+    try {
+      const connection = new SSEConnectionImpl()
+      connection.subscribe('chat-a')
+      const source = MockEventSource.instances[0]
+      source.fail() // onerror BEFORE first open → watchdog armed
+
+      // Native retry stalls (no onopen, no events). lastActivityAt is still 0
+      // (never opened), so the watchdog's first check declares the connection
+      // stale and forces a reconnect.
+      vi.advanceTimersByTime(15_000 + 100)
+
+      expect(MockEventSource.instances.length).toBeGreaterThanOrEqual(2)
+      expect(source.closed).toBe(true)
+      connection.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('serializes status polls and ignores a completion from a replaced source', async () => {
     vi.useFakeTimers()
     let resolveStatus: (value: object) => void = () => undefined

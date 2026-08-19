@@ -221,6 +221,17 @@ export class SSEConnectionImpl implements WSConnection {
       this.reconnecting = true
       this.setConnected(false)
       this.startPolling()
+      // Start the half-open watchdog even if the connection NEVER opened.
+      // The watchdog is normally started in onopen; if the first connect() fails
+      // (server unreachable / network switch before the first open), onopen never
+      // fires, so the watchdog is never armed. The native EventSource retry can
+      // then stall (background tab / browser gave up after repeated failures),
+      // leaving readyState stuck at CONNECTING(0) forever — the REST poll's
+      // `readyState === 2` check never fires (EventSource does not self-close),
+      // so the UI stays on "Reconnecting…" with no active reconnect. Arming the
+      // watchdog here forces a fresh connect() every WATCHDOG_CHECK_MS until an
+      // open succeeds (onopen clears/restarts the watchdog and stops the cycle).
+      this.startWatchdog()
     }
   }
 
