@@ -208,6 +208,47 @@ func TestRun_TodosCarriedInMidBusyProgress(t *testing.T) {
 	}
 }
 
+// TestBuildToolExecutor_SessionKeyPhysicalChannel verifies that buildToolExecutor
+// carries the physicalChannel override into ToolContext.SessionKey. When a web
+// user browses a CLI-created session (channel="cli", physical_channel="web"),
+// cfg.SessionKey is overridden to "web:chat1" in buildMainRunConfig. Without
+// this field, buildToolContext produces ToolContext.SessionKey="" and TodoWrite
+// falls back to "cli:chat1", while refreshStructuredTodos reads "web:chat1" —
+// todos are written to the wrong key and never appear in the progress stream.
+func TestBuildToolExecutor_SessionKeyPhysicalChannel(t *testing.T) {
+	a, err := New(Config{
+		WorkDir:        t.TempDir(),
+		MemoryProvider: "none",
+		SandboxMode:    "none",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer a.Close()
+
+	var capturedSessionKey string
+	captureTool := &mockTool{
+		name: "CaptureTool",
+		execFunc: func(ctx *tools.ToolContext, input string) (*tools.ToolResult, error) {
+			capturedSessionKey = ctx.SessionKey
+			return tools.NewResult("ok"), nil
+		},
+	}
+	a.RegisterCoreTool(captureTool)
+
+	// Simulate web user browsing a CLI session: origin channel="cli",
+	// physicalChannel="web" → sessionKey must override to "web:chat1".
+	executor := a.buildToolExecutor(context.Background(), "cli", "chat1", "user1", "User", "user1", "web")
+
+	if _, err := executor(context.Background(), llm.ToolCall{Name: "CaptureTool", Arguments: "{}"}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if capturedSessionKey != "web:chat1" {
+		t.Errorf("BUG REPRODUCED: ToolContext.SessionKey = %q, want %q (physicalChannel override lost → TodoWrite writes to cli:chat1, refreshStructuredTodos reads web:chat1)", capturedSessionKey, "web:chat1")
+	}
+}
+
 func TestRun_SingleToolCall(t *testing.T) {
 	shellTool := &mockTool{
 		name:   "Shell",

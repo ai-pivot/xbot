@@ -946,6 +946,13 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 		SenderName:     senderName,
 		SendFunc:       a.sendMessage,
 		RootSessionKey: qualifyChatID(channel, chatID), // canonical session key for offload_recall
+		// SessionKey must carry the physicalChannel override (computed above)
+		// so ToolContext.SessionKey matches the runState's s.sessionKey that
+		// refreshStructuredTodos reads. Without this, TodoWrite writes to
+		// "cli:chatID" (ToolContext fallback) while refreshStructuredTodos reads
+		// "web:chatID" (overridden cfg.SessionKey) when a web user browses a
+		// CLI-created session → todos never appear in the progress stream.
+		SessionKey: sessionKey,
 
 		WorkingDir:             workingDir,
 		WorkspaceRoot:          workspaceRoot,
