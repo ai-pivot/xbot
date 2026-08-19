@@ -249,6 +249,36 @@ func TestBuildToolExecutor_SessionKeyPhysicalChannel(t *testing.T) {
 	}
 }
 
+func TestRunState_TodoKey_PhysicalChannelOverride(t *testing.T) {
+	// 主 Agent：physicalChannel override 场景（web 用户浏览 CLI 会话）。
+	// sessionKey 被 override 成 "web:chat1"，RootSessionKey 是 canonical "cli:chat1"。
+	// todoKey 必须返回 canonical "cli:chat1"，否则 GetActiveProgress 恢复路径
+	// （读 ch:chatID = "cli:chat1"）读不到 todos —— "手机端实时显示、电脑端
+	// 后打开不显示"的根因。
+	s := &runState{
+		sessionKey: "web:chat1",
+		cfg: RunConfig{
+			AgentID:        "main",
+			RootSessionKey: "cli:chat1",
+		},
+	}
+	if got := s.todoKey(); got != "cli:chat1" {
+		t.Errorf("BUG: main-agent todoKey = %q, want %q (canonical RootSessionKey)", got, "cli:chat1")
+	}
+
+	// SubAgent：用 sessionKey（subAgentID）隔离。
+	sub := &runState{
+		sessionKey: "main/explore",
+		cfg: RunConfig{
+			AgentID:        "main/explore",
+			RootSessionKey: "cli:chat1",
+		},
+	}
+	if got := sub.todoKey(); got != "main/explore" {
+		t.Errorf("SubAgent todoKey = %q, want %q (subAgentID isolation)", got, "main/explore")
+	}
+}
+
 func TestRun_SingleToolCall(t *testing.T) {
 	shellTool := &mockTool{
 		name:   "Shell",

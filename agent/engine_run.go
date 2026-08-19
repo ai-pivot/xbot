@@ -237,8 +237,8 @@ func (s *runState) initDynamicInjector() {
 
 // cleanupTodos clears completed TODOs. Called via defer from Run().
 func (s *runState) cleanupTodos() {
-	if s.cfg.TodoManager != nil && s.sessionKey != "" {
-		items := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
+	if s.cfg.TodoManager != nil && s.todoKey() != "" {
+		items := s.cfg.TodoManager.GetTodoItems(s.todoKey())
 		if len(items) > 0 {
 			allDone := true
 			for _, item := range items {
@@ -248,7 +248,7 @@ func (s *runState) cleanupTodos() {
 				}
 			}
 			if allDone {
-				s.cfg.TodoManager.ClearTodos(s.sessionKey)
+				s.cfg.TodoManager.ClearTodos(s.todoKey())
 			}
 		}
 		// Always refresh structuredProgress.Todos after cleanup so any event
@@ -260,15 +260,35 @@ func (s *runState) cleanupTodos() {
 	}
 }
 
+// todoKey returns the TodoManager key for this run's session.
+//
+// 主 Agent：RootSessionKey（canonical = origin channel:chatID）。todos 是会话级
+// 状态，必须用 canonical key 让所有读写路径一致 —— 写路径（TodoWrite、
+// refreshStructuredTodos、cleanupTodos）与恢复路径（GetActiveProgress 读
+// ch:chatID）对齐。不能用 sessionKey：web 用户浏览 CLI 会话时 physicalChannel
+// override 会把它改成 "web:chatID"，而恢复路径读 "cli:chatID" → turn 结束后
+// 后打开的客户端读不到 todos（"手机端实时显示、电脑端后打开不显示"的根因）。
+//
+// SubAgent（AgentID 含 "/"）：用 sessionKey（subAgentID）隔离，与主 Agent 分开。
+func (s *runState) todoKey() string {
+	if strings.Contains(s.cfg.AgentID, "/") {
+		return s.sessionKey
+	}
+	if s.cfg.RootSessionKey != "" {
+		return s.cfg.RootSessionKey
+	}
+	return s.sessionKey
+}
+
 // refreshStructuredTodos unconditionally copies the TodoManager's current
 // items into structuredProgress.Todos — including an EMPTY slice when the
 // list was cleared. This makes "no todos" an explicit, pushable state:
 // the frontend treats `todos: []` as "cleared" (not "no data → keep old").
 func (s *runState) refreshStructuredTodos() {
-	if s.structuredProgress == nil || s.cfg.TodoManager == nil || s.sessionKey == "" {
+	if s.structuredProgress == nil || s.cfg.TodoManager == nil || s.todoKey() == "" {
 		return
 	}
-	items := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
+	items := s.cfg.TodoManager.GetTodoItems(s.todoKey())
 	todos := make([]TodoProgressItem, len(items))
 	for i, td := range items {
 		todos[i] = TodoProgressItem{
@@ -1645,8 +1665,8 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		}
 
 		var todoSummary string
-		if s.cfg.TodoManager != nil && s.sessionKey != "" {
-			todoSummary = s.cfg.TodoManager.GetTodoSummary(s.sessionKey)
+		if s.cfg.TodoManager != nil && s.todoKey() != "" {
+			todoSummary = s.cfg.TodoManager.GetTodoSummary(s.todoKey())
 		}
 
 		// Get current CWD for system reminder

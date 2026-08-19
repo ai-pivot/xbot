@@ -175,18 +175,30 @@ func (m *TodoManager) GetTodos(sessionKey string) []TodoItem {
 // to isolate their TODOs from the main agent. Main agent (AgentID="main")
 // keeps the original Channel:ChatID key so all readers remain compatible.
 func (m *TodoManager) sessionKey(ctx *ToolContext) string {
-	// Prefer SessionKey (set by engine, accounts for physicalChannel override).
-	// Without this, TodoWrite writes to "cli:chatID" but notifyProgress reads
-	// from "web:chatID" (when physicalChannel overrides the session key) →
-	// todos never appear in the progress stream.
+	// SubAgent（AgentID 含 "/"）：用 SessionKey（subAgentID）隔离 —— 与主 Agent
+	// 的 todos 分开（SubAgent 的子任务列表独立）。
+	if strings.Contains(ctx.AgentID, "/") {
+		if ctx.SessionKey != "" {
+			return ctx.SessionKey
+		}
+		if ctx.Channel != "" && ctx.ChatID != "" {
+			return ctx.AgentID + ":" + ctx.Channel + ":" + ctx.ChatID
+		}
+		return ""
+	}
+	// 主 Agent：用 RootSessionKey（canonical = origin channel:chatID）。
+	// 不能用 SessionKey —— web 用户浏览 CLI 会话时 physicalChannel override 会
+	// 把它改成 "web:chatID"，而 GetActiveProgress 恢复路径读 "cli:chatID"
+	// （canonical）→ turn 结束后（后打开的客户端 / 刷新）读不到 todos
+	// （"手机端实时显示、电脑端后打开不显示"的根因）。todos 是会话级状态，
+	// 必须用 canonical key 让所有读写路径一致。
+	if ctx.RootSessionKey != "" {
+		return ctx.RootSessionKey
+	}
 	if ctx.SessionKey != "" {
 		return ctx.SessionKey
 	}
 	if ctx.Channel != "" && ctx.ChatID != "" {
-		// SubAgent AgentID format: "parentID/roleName" (contains "/")
-		if strings.Contains(ctx.AgentID, "/") {
-			return ctx.AgentID + ":" + ctx.Channel + ":" + ctx.ChatID
-		}
 		return ctx.Channel + ":" + ctx.ChatID
 	}
 	return ""
