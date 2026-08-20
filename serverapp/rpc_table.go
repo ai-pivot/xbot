@@ -2634,13 +2634,13 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 	})
 
 	t["skill_get_content"] = rpc1(func(ctx context.Context, p struct {
-		Name string `json:"name"`
+		Path string `json:"path"`
 	}) (any, error) {
 		ss := h.Ag.Skills()
 		if ss == nil {
 			return nil, fmt.Errorf("skill store not initialized")
 		}
-		content, err := ss.GetSkillContent(p.Name)
+		content, err := ss.GetSkillContent(p.Path)
 		if err != nil {
 			return nil, err
 		}

@@ -859,21 +859,21 @@ func (wc *WebChannel) handleSkillsToggle(w http.ResponseWriter, r *http.Request)
 
 func (wc *WebChannel) handleSkillsContent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Name == "" {
-		jsonErrorResponse(w, http.StatusBadRequest, "name is required")
+	if req.Path == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "path is required")
 		return
 	}
 	var result struct {
 		Content string `json:"content"`
 	}
 	if err := wc.rpcCall("skill_get_content", map[string]any{
-		"name": req.Name,
+		"path": req.Path,
 	}, &result); err != nil {
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return

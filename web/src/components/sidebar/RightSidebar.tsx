@@ -158,7 +158,7 @@ function renderPanel(
     case 'terminal':
       return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
     case 'skills':
-      return <SkillsPanel />
+      return <SkillsPanel tabManager={tabManager} />
   }
 }
 

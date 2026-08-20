@@ -455,65 +455,32 @@ func (s *SkillStore) DisabledSkillNames() []string {
 	return names
 }
 
-// GetSkillContent reads and returns the SKILL.md content for the named skill.
-// For embedded skills (Path = "embedded:name"), reads from the embedded FS.
-// For all others, reads from the skill directory on disk.
-func (s *SkillStore) GetSkillContent(name string) (string, error) {
-	// Try embedded first
-	if strings.HasPrefix(name, "embedded:") {
-		embName := strings.TrimPrefix(name, "embedded:")
-		data, err := tools.ReadEmbeddedSkillFile(embName, "SKILL.md")
+// GetSkillContent reads and returns the SKILL.md content for a skill.
+// path is the skill's Path from SkillInfo/SkillDetail:
+//   - "embedded:<dir>" → read from the embedded FS
+//   - "/abs/path/to/skill-dir" → read SKILL.md from disk
+func (s *SkillStore) GetSkillContent(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("skill path is empty")
+	}
+
+	// Embedded skill: path = "embedded:<dir>"
+	if strings.HasPrefix(path, "embedded:") {
+		embDir := strings.TrimPrefix(path, "embedded:")
+		data, err := tools.ReadEmbeddedSkillFile(embDir, "SKILL.md")
 		if err != nil {
-			return "", fmt.Errorf("read embedded skill %s: %w", embName, err)
+			return "", fmt.Errorf("read embedded skill %s: %w", embDir, err)
 		}
 		return string(data), nil
 	}
 
-	// Resolve skill directory by name across all tiers
-	skillDir := s.resolveSkillDir(name)
-	if skillDir == "" {
-		return "", fmt.Errorf("skill %q not found", name)
-	}
-	data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	// Disk skill: path is the skill directory
+	skillFile := filepath.Join(path, "SKILL.md")
+	data, err := os.ReadFile(skillFile)
 	if err != nil {
-		return "", fmt.Errorf("read SKILL.md for %s: %w", name, err)
+		return "", fmt.Errorf("read %s: %w", skillFile, err)
 	}
 	return string(data), nil
-}
-
-// resolveSkillDir finds the skill directory by name, searching global dirs
-// and the user skills directory. Returns "" if not found.
-func (s *SkillStore) resolveSkillDir(name string) string {
-	// Global dirs
-	for _, dir := range s.globalDirs {
-		skillDir := filepath.Join(dir, name)
-		if info, err := os.Stat(skillDir); err == nil && info.IsDir() {
-			return skillDir
-		}
-	}
-	// User dir (all users share the same skills root in single-user mode)
-	userRoot := tools.UserSkillsRoot(s.workDir, "")
-	entries, err := os.ReadDir(userRoot)
-	if err == nil {
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			skillDir := filepath.Join(userRoot, e.Name())
-			data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
-			if err != nil {
-				continue
-			}
-			parsedName, _ := parseSkillFrontmatter(data)
-			if parsedName == "" {
-				parsedName = e.Name()
-			}
-			if parsedName == name {
-				return skillDir
-			}
-		}
-	}
-	return ""
 }
 
 // scanUserSkills scans the user's private skills directory (sandbox-aware) and appends results to merged/orderedNames.

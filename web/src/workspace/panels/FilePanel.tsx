@@ -46,8 +46,13 @@ export function FilePanel({ params }: PanelProps) {
   const canToggle = canTogglePreview(fileName)
   const language = useMemo(() => languageOf(fileName), [fileName])
 
+  // Virtual content (e.g. embedded skills) bypasses the filesystem load.
+  const isVirtual = params.content !== undefined
   const { content, loading, error, setContent, imageUrl } = useFileContent({ filePath, ws, cwd: cwd.cwd })
   const [mode, setMode] = useState<FileViewMode>(() => defaultViewMode(fileName))
+
+  // Effective content: virtual content takes priority over filesystem content.
+  const effectiveContent = isVirtual ? (params.content ?? '') : content
 
   // Directory of the markdown file — used to resolve relative image paths.
   const baseDir = useMemo(() => {
@@ -89,7 +94,7 @@ export function FilePanel({ params }: PanelProps) {
         canToggle={canToggle}
       />
       <div className="min-h-0 flex-1">
-        {loading ? (
+        {(!isVirtual && loading) ? (
           <PanelLoading />
         ) : error ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-text-secondary">
@@ -98,16 +103,21 @@ export function FilePanel({ params }: PanelProps) {
         ) : canToggle && mode === 'preview' ? (
           isHtmlFile(fileName) ? (
             <iframe
-              srcDoc={content}
+              srcDoc={effectiveContent}
               className="h-full w-full border-0"
               title={fileName}
               sandbox="allow-scripts"
             />
           ) : (
-            <MarkdownPreview source={content} baseDir={baseDir} />
+            <MarkdownPreview source={effectiveContent} baseDir={baseDir} />
           )
         ) : (
-          <MonacoEditor value={content} language={language} onChange={setContent} />
+          <MonacoEditor
+            value={effectiveContent}
+            language={language}
+            onChange={params.readOnly ? undefined : setContent}
+            readOnly={params.readOnly}
+          />
         )}
       </div>
     </div>

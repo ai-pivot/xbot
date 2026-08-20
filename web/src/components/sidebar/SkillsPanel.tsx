@@ -1,19 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { BookOpen, Eye, Loader2, Trash2, Upload } from 'lucide-react'
+import { Eye, Loader2, Trash2, Upload } from 'lucide-react'
 
 import { postAPI } from '@/lib/api'
 import { useI18n } from '@/providers/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
-import { MarkdownRenderer } from '@/components/agent/MarkdownRenderer'
+import type { TabManager } from '@/hooks/useTabManager'
 
 interface SkillDetail {
   name: string
@@ -33,14 +27,12 @@ const SOURCE_VARIANT: Record<string, 'default' | 'secondary' | 'outline' | 'ghos
   project: 'ghost',
 }
 
-export function SkillsPanel() {
+export function SkillsPanel({ tabManager }: { tabManager: TabManager }) {
   const { t } = useI18n()
   const [skills, setSkills] = useState<SkillDetail[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [viewing, setViewing] = useState<SkillDetail | null>(null)
-  const [content, setContent] = useState('')
-  const [contentLoading, setContentLoading] = useState(false)
+  const [viewingSkill, setViewingSkill] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
@@ -80,21 +72,49 @@ export function SkillsPanel() {
     [],
   )
 
-  const handleView = useCallback(async (skill: SkillDetail) => {
-    setViewing(skill)
-    setContent('')
-    setContentLoading(true)
-    try {
-      const res = await postAPI<{ content: string }>('/api/skills/content', {
-        name: skill.name,
-      })
-      setContent(res.content)
-    } catch (e) {
-      setContent(e instanceof Error ? e.message : String(e))
-    } finally {
-      setContentLoading(false)
-    }
-  }, [])
+  const handleView = useCallback(
+    async (skill: SkillDetail) => {
+      const isEmbedded = skill.path.startsWith('embedded:')
+
+      if (isEmbedded) {
+        // Embedded skills have no file on disk — fetch content and open a
+        // read-only tab with virtual content.
+        setViewingSkill(skill.name)
+        try {
+          const res = await postAPI<{ content: string }>('/api/skills/content', {
+            path: skill.path,
+          })
+          tabManager.openTab({
+            type: 'file',
+            title: `${skill.name} (SKILL.md)`,
+            icon: 'BookOpen',
+            closable: true,
+            data: {
+              filePath: `skill://${skill.name}/SKILL.md`,
+              content: res.content,
+              readOnly: true,
+            },
+          })
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e))
+        } finally {
+          setViewingSkill(null)
+        }
+      } else {
+        // Disk skills — open the actual SKILL.md file (editable, like the
+        // file explorer).
+        const filePath = `${skill.path}/SKILL.md`
+        tabManager.openTab({
+          type: 'file',
+          title: `${skill.name} (SKILL.md)`,
+          icon: 'BookOpen',
+          closable: true,
+          data: { filePath },
+        })
+      }
+    },
+    [tabManager],
+  )
 
   const handleUninstall = useCallback(
     async (skill: SkillDetail) => {
@@ -194,8 +214,13 @@ export function SkillsPanel() {
                     className="size-6"
                     onClick={() => handleView(skill)}
                     title={t('skills.view')}
+                    disabled={viewingSkill === skill.name}
                   >
-                    <Eye className="size-3.5" />
+                    {viewingSkill === skill.name ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Eye className="size-3.5" />
+                    )}
                   </Button>
                   {skill.can_uninstall && (
                     <Button
@@ -221,32 +246,6 @@ export function SkillsPanel() {
           </div>
         )}
       </ScrollArea>
-
-      {/* View Dialog */}
-      <Dialog
-        open={viewing !== null}
-        onOpenChange={(open) => !open && setViewing(null)}
-      >
-        <DialogContent className="max-h-[80vh] max-w-2xl overflow-hidden">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <BookOpen className="size-4" />
-              {viewing?.name}
-            </DialogTitle>
-          </DialogHeader>
-          <ScrollArea className="max-h-[60vh]">
-            {contentLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="size-4 animate-spin" />
-              </div>
-            ) : (
-              <div className="prose prose-sm dark:prose-invert max-w-none">
-                <MarkdownRenderer content={content} />
-              </div>
-            )}
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
