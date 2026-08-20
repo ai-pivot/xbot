@@ -48,7 +48,7 @@ export function FilePanel({ params }: PanelProps) {
 
   // Virtual content (e.g. embedded skills) bypasses the filesystem load.
   const isVirtual = params.content !== undefined
-  const { content, loading, error, setContent, imageUrl } = useFileContent({ filePath, ws, cwd: cwd.cwd })
+  const { content, loading, error, setContent, imageUrl } = useFileContent({ filePath, ws, cwd: cwd.cwd, enabled: !isVirtual })
   const [mode, setMode] = useState<FileViewMode>(() => defaultViewMode(fileName))
 
   // Effective content: virtual content takes priority over filesystem content.
@@ -96,7 +96,7 @@ export function FilePanel({ params }: PanelProps) {
       <div className="min-h-0 flex-1">
         {(!isVirtual && loading) ? (
           <PanelLoading />
-        ) : error ? (
+        ) : (!isVirtual && error) ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-text-secondary">
             {error}
           </div>

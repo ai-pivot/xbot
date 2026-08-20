@@ -31,9 +31,11 @@ interface UseFileContentOptions {
   ws: WSConnection
   /** Current working directory (injected from DockviewContext). */
   cwd: string | null
+  /** When false, skip the filesystem load entirely (virtual content). */
+  enabled?: boolean
 }
 
-export function useFileContent({ filePath, cwd }: UseFileContentOptions): UseFileContentResult {
+export function useFileContent({ filePath, cwd, enabled = true }: UseFileContentOptions): UseFileContentResult {
   const [content, setContent] = useState('')
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -42,7 +44,7 @@ export function useFileContent({ filePath, cwd }: UseFileContentOptions): UseFil
   useEffect(() => {
     let cancelled = false
 
-    if (!filePath || !cwd) {
+    if (!enabled || !filePath || !cwd) {
       setLoading(false)
       setError(null)
       return
@@ -97,7 +99,7 @@ export function useFileContent({ filePath, cwd }: UseFileContentOptions): UseFil
     return () => {
       cancelled = true
     }
-  }, [filePath, cwd])
+  }, [enabled, filePath, cwd])
 
   const setContentFn = useCallback((next: string) => setContent(next), [])
 
