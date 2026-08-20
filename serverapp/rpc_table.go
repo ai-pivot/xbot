@@ -1571,6 +1571,8 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 				}
 			}
 		}
+		// Per-iteration records (TTFT/TPOT/tokens/timing + in-flight stream content).
+		session.Iterations = h.Ag.GetExportIterations(channelName, chatID)
 		log.WithFields(log.Fields{
 			"channel": channelName, "chat_id": chatID,
 			"messages": len(session.Messages), "records": len(session.Records),

@@ -117,7 +117,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (57);
+INSERT INTO schema_version (version) VALUES (58);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations)
 CREATE TABLE user_llm_subscriptions (
@@ -320,6 +320,7 @@ CREATE TABLE IF NOT EXISTS iteration_history (
     ttft_ms INTEGER NOT NULL DEFAULT 0,
     tokens_per_sec INTEGER NOT NULL DEFAULT 0,
     total_ms INTEGER NOT NULL DEFAULT 0,
+    tpot_ms INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);

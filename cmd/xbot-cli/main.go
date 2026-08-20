@@ -2255,8 +2255,29 @@ func executeNonInteractive(prompt string, maxContextTokens, maxOutputTokens int,
 	// Send message through unified RPC path (same as interactive mode)
 	_ = app.client.SendInbound("cli", absWorkDir, prompt, "cli_user", "CLI User", "p2p", nil)
 
-	<-done
-	fmt.Println()
+	// Graceful shutdown: on SIGINT/SIGTERM (bench timeout), export the session
+	// — including the in-flight iteration's partial stream content — before
+	// exiting. The export MUST happen BEFORE cancel()/exit so lastProgressSnapshot
+	// (which holds the in-flight stream content) is still available; it is deleted
+	// at turn end (chatProcessLoop) once the Run is cancelled.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	select {
+	case <-done:
+		fmt.Println()
+	case <-sigCh:
+		fmt.Fprintln(os.Stderr, "\nInterrupted — exporting partial result...")
+		if exportAfter != "" {
+			if err := doExportSession(app, exportAfter, "cli", absWorkDir); err != nil {
+				fmt.Fprintf(os.Stderr, "export_session failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "Exported session history to %s\n", exportAfter)
+		}
+		os.Exit(0)
+	}
 
 	// Auto-export session history after the task completes (bench mode).
 	// Runs while the in-memory DB is still alive — no need to re-run a

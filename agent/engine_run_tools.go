@@ -405,6 +405,7 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 			snap.TTFTMs = s.structuredProgress.StreamStats.TTFTMs
 			snap.TokensPerSec = s.structuredProgress.StreamStats.TokensPerSec
 			snap.TotalMs = s.structuredProgress.StreamStats.TotalMs
+			snap.TPOTMs = s.structuredProgress.StreamStats.TPOTMs
 		}
 		for j, t := range s.structuredProgress.CompletedTools {
 			snap.Tools[j] = IterationToolSnapshot{
@@ -483,6 +484,7 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 		TTFTMs:       snap.TTFTMs,
 		TokensPerSec: snap.TokensPerSec,
 		TotalMs:      snap.TotalMs,
+		TPOTMs:       snap.TPOTMs,
 	}); err != nil {
 		log.WithError(err).WithField("iteration", iteration).Warn("Failed to write iteration_history")
 	}

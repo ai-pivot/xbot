@@ -354,22 +354,52 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v58: add per-iteration TPOT (time per output token) to iteration_history.
+	if from < 58 {
+		if err := migrateV57ToV58(conn); err != nil {
+			return fmt.Errorf("migrate to v58: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV57ToV58 adds the per-iteration TPOT column to iteration_history.
+// SQLite ALTER TABLE ADD COLUMN with a NOT NULL DEFAULT is cheap and preserves
+// existing rows (tpot_ms defaults to 0 for pre-v58 iterations). Idempotent: the
+// column may already exist when a test/fixture set schema_version to 57 but the
+// table was created by the current createSchema DDL (which already includes it).
+func migrateV57ToV58(conn *sql.DB) error {
+	exists, err := columnExists(conn, "iteration_history", "tpot_ms")
+	if err == nil && !exists {
+		if _, err := conn.Exec("ALTER TABLE iteration_history ADD COLUMN tpot_ms INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("migrate v57->v58 add tpot_ms: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 58"); err != nil {
+		return fmt.Errorf("migrate v57->v58 update version: %w", err)
+	}
+	log.Info("Database migrated to v58 (added tpot_ms to iteration_history)")
 	return nil
 }
 
 // migrateV56ToV57 adds per-iteration LLM metrics columns to iteration_history.
 // SQLite ALTER TABLE ADD COLUMN with a NOT NULL DEFAULT is cheap and preserves
-// existing rows (metrics default to 0 for pre-v57 iterations).
+// existing rows (metrics default to 0 for pre-v57 iterations). Idempotent: the
+// columns may already exist when a test/fixture set schema_version to 56 but the
+// table was created by the current createSchema DDL (which already includes them).
 func migrateV56ToV57(conn *sql.DB) error {
-	migration := `
-ALTER TABLE iteration_history ADD COLUMN tokens INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE iteration_history ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE iteration_history ADD COLUMN tokens_per_sec INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE iteration_history ADD COLUMN total_ms INTEGER NOT NULL DEFAULT 0;
-UPDATE schema_version SET version = 57;
-`
-	if _, err := conn.Exec(migration); err != nil {
-		return fmt.Errorf("migrate v56->v57: %w", err)
+	cols := []string{"tokens", "ttft_ms", "tokens_per_sec", "total_ms"}
+	for _, c := range cols {
+		exists, err := columnExists(conn, "iteration_history", c)
+		if err == nil && !exists {
+			if _, err := conn.Exec(fmt.Sprintf("ALTER TABLE iteration_history ADD COLUMN %s INTEGER NOT NULL DEFAULT 0", c)); err != nil {
+				return fmt.Errorf("migrate v56->v57 add %s: %w", c, err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 57"); err != nil {
+		return fmt.Errorf("migrate v56->v57 update version: %w", err)
 	}
 	log.Info("Database migrated to v57 (added per-iteration metrics to iteration_history)")
 	return nil

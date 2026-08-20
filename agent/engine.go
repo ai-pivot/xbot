@@ -450,6 +450,9 @@ type IterationSnapshot struct {
 	TokensPerSec int64 `json:"tokens_per_sec,omitempty"`
 	// Total stream duration (ms) for this iteration's LLM stream.
 	TotalMs int64 `json:"total_ms,omitempty"`
+	// Time per output token (ms) for this iteration's LLM stream (true TPOT —
+	// model generation rate, excluding first-token latency).
+	TPOTMs int64 `json:"tpot_ms,omitempty"`
 }
 
 // IterationToolSnapshot captures a single tool's execution result within an iteration.

@@ -375,6 +375,8 @@ type IterationRecord struct {
 	TokensPerSec int64 `json:"tokens_per_sec"`
 	// TotalMs is the total stream duration for this iteration.
 	TotalMs int64 `json:"total_ms"`
+	// TPOTMs is the time-per-output-token (ms) for this iteration's LLM stream.
+	TPOTMs int64 `json:"tpot_ms"`
 }
 
 // AppendIterationHistory inserts a single iteration record linked to a message.
@@ -384,9 +386,9 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 		return err
 	}
 	_, err = conn.Exec(`
-		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs)
+		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs)
 	if err != nil {
 		return fmt.Errorf("append iteration_history: %w", err)
 	}
@@ -402,7 +404,7 @@ func (s *SessionService) GetIterationHistoryByTurn(tenantID int64, turnID uint64
 		return nil, err
 	}
 	rows, err := conn.Query(`
-		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms
 		FROM iteration_history
 		WHERE tenant_id = ? AND turn_id = ?
 		ORDER BY iteration ASC
@@ -434,7 +436,7 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 		args = append(args, id)
 	}
 	query := fmt.Sprintf(`
-		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms
 		FROM iteration_history
 		WHERE tenant_id = ? AND turn_id IN (%s)
 		ORDER BY turn_id ASC, iteration ASC
@@ -446,7 +448,7 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 	defer rows.Close()
 	for rows.Next() {
 		var rec IterationRecord
-		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs); err != nil {
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs); err != nil {
 			continue
 		}
 		result[rec.TurnID] = append(result[rec.TurnID], rec)
@@ -458,10 +460,31 @@ func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {
 	var records []IterationRecord
 	for rows.Next() {
 		var rec IterationRecord
-		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs); err != nil {
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs); err != nil {
 			continue
 		}
 		records = append(records, rec)
 	}
 	return records, nil
+}
+
+// GetAllIterationHistory returns ALL iteration records for a tenant, ordered by
+// (turn_id, iteration). Used by session export to include per-iteration
+// TTFT/TPOT/tokens/timing for every completed iteration.
+func (s *SessionService) GetAllIterationHistory(tenantID int64) ([]IterationRecord, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms
+		FROM iteration_history
+		WHERE tenant_id = ?
+		ORDER BY turn_id ASC, iteration ASC
+	`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("get all iteration_history: %w", err)
+	}
+	defer rows.Close()
+	return scanIterationRecords(rows)
 }

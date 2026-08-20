@@ -37,6 +37,33 @@ type ExportedSession struct {
 	// Records is the complete append-only history (xbot extension).
 	// Empty when the export only contains the active (replayed) message view.
 	Records []ExportedRecord `json:"records,omitempty"`
+	// Iterations is the per-iteration record list (iteration_history table +
+	// the in-flight iteration's partial stream content on graceful shutdown).
+	// Each entry carries per-iteration TTFT/TPOT/tokens/timing. Empty for
+	// exports that predate this field.
+	Iterations []ExportedIteration `json:"iterations,omitempty"`
+}
+
+// ExportedIteration is one per-iteration record. It mirrors the
+// iteration_history table (completed iterations) plus an optional in-flight
+// entry (InFlight=true) carrying the partial stream content that had arrived
+// when the export happened — used to preserve a mid-iteration result on
+// graceful shutdown / benchmark timeout.
+type ExportedIteration struct {
+	TurnID       uint64 `json:"turn_id,omitempty"`
+	Iteration    int    `json:"iteration"`
+	Content      string `json:"content,omitempty"`
+	Reasoning    string `json:"reasoning,omitempty"`
+	Tools        string `json:"tools,omitempty"` // JSON array of tool snapshots
+	Tokens       int64  `json:"tokens,omitempty"`
+	TTFTMs       int64  `json:"ttft_ms,omitempty"`
+	TPOTMs       int64  `json:"tpot_ms,omitempty"`
+	TokensPerSec int64  `json:"tokens_per_sec,omitempty"`
+	TotalMs      int64  `json:"total_ms,omitempty"`
+	// InFlight indicates this iteration was still streaming when the export
+	// happened (graceful shutdown mid-iteration) — Content/Reasoning carry the
+	// partial stream content reached so far.
+	InFlight bool `json:"in_flight,omitempty"`
 }
 
 // ExportedUsage holds token usage statistics.
