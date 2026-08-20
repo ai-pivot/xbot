@@ -1,7 +1,7 @@
 /**
  * RightActivityBar — the icon column that toggles the right sidebar panels.
  *
- * Panels: files / search / info / tasks. Clicking a panel toggles the
+ * Panels: files / search / info / tasks / terminal / skills. Clicking a panel toggles the
  * sidebar (collapses if already open). Pure presentational — AppShell owns the
  * active state and passes a setter.
  */
