@@ -1,12 +1,15 @@
 package web
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -879,6 +882,92 @@ func (wc *WebChannel) handleSkillsContent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// handleSkillsExport zips a skill directory (or embedded skill files) and
+// returns the archive as a download.
+func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Path == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	if req.Name == "" {
+		req.Name = "skill"
+	}
+
+	// Build the zip in memory.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	if strings.HasPrefix(req.Path, "embedded:") {
+		// Embedded skill: read all files from the embed FS.
+		embDir := strings.TrimPrefix(req.Path, "embedded:")
+		files, err := tools.ListEmbeddedSkillFiles(embDir)
+		if err != nil {
+			jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("list embedded skill: %v", err))
+			return
+		}
+		for _, f := range files {
+			data, err := tools.ReadEmbeddedSkillFile(embDir, f)
+			if err != nil {
+				jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("read %s: %v", f, err))
+				return
+			}
+			fw, err := zw.Create(filepath.Join(req.Name, f))
+			if err != nil {
+				jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("zip %s: %v", f, err))
+				return
+			}
+			fw.Write(data)
+		}
+	} else {
+		// Disk skill: walk the directory.
+		err := filepath.Walk(req.Path, func(p string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(req.Path, p)
+			if err != nil {
+				return err
+			}
+			fw, err := zw.Create(filepath.Join(req.Name, rel))
+			if err != nil {
+				return err
+			}
+			f, err := os.Open(p)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(fw, f)
+			return err
+		})
+		if err != nil {
+			jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("zip skill: %v", err))
+			return
+		}
+	}
+
+	if err := zw.Close(); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("close zip: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, req.Name))
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.Write(buf.Bytes())
 }
 
 type searchResponse struct {

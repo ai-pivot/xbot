@@ -377,6 +377,7 @@ const zhCN = {
     install: '安装',
     empty: '未找到技能',
     view: '查看内容',
+    export: '导出为 zip',
     uninstall: '卸载',
   },
   auth: {

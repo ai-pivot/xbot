@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Eye, Loader2, Trash2, Upload } from 'lucide-react'
+import { Eye, Download, Loader2, Trash2, Upload } from 'lucide-react'
 
 import { postAPI } from '@/lib/api'
 import { useI18n } from '@/providers/i18n'
@@ -116,6 +116,32 @@ export function SkillsPanel({ tabManager }: { tabManager: TabManager }) {
     [tabManager],
   )
 
+  const handleExport = useCallback(async (skill: SkillDetail) => {
+    try {
+      const resp = await fetch('/api/skills/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: skill.path, name: skill.name }),
+      })
+      if (!resp.ok) {
+        const text = await resp.text()
+        setError(text || `Export failed (${resp.status})`)
+        return
+      }
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${skill.name}.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
   const handleUninstall = useCallback(
     async (skill: SkillDetail) => {
       try {
@@ -221,6 +247,15 @@ export function SkillsPanel({ tabManager }: { tabManager: TabManager }) {
                     ) : (
                       <Eye className="size-3.5" />
                     )}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6"
+                    onClick={() => handleExport(skill)}
+                    title={t('skills.export')}
+                  >
+                    <Download className="size-3.5" />
                   </Button>
                   {skill.can_uninstall && (
                     <Button

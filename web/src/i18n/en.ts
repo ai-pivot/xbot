@@ -380,6 +380,7 @@ const en: Translations = {
     install: 'Install',
     empty: 'No skills found',
     view: 'View content',
+    export: 'Export as zip',
     uninstall: 'Uninstall',
   },
   auth: {
