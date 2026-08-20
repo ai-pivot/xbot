@@ -352,6 +352,170 @@ func (s *SkillStore) InvalidateCache() {
 	s.mu.Unlock()
 }
 
+// SkillDetail extends SkillInfo with management metadata for the web UI.
+type SkillDetail struct {
+	SkillInfo
+	Source       string `json:"source"`        // embedded | global | user | project
+	Enabled      bool   `json:"enabled"`       // false if in the disabled_skills blacklist
+	CanUninstall bool   `json:"can_uninstall"` // true only for user-installed skills
+}
+
+// ListSkillsDetailed returns all skills (embedded + global + user + project)
+// with source/enabled/canUninstall metadata for the management UI.
+// projectDir is the session workspace root; if non-empty, project-local skills
+// under {projectDir}/.xbot/skills/ and {projectDir}/.agents/skills/ are included.
+func (s *SkillStore) ListSkillsDetailed(ctx context.Context, senderID, projectDir string) ([]SkillDetail, error) {
+	skills, err := s.ListSkills(ctx, senderID)
+	if err != nil {
+		return nil, err
+	}
+
+	userDir := s.userSkillsDir(senderID)
+
+	// Derive source for the 3 base tiers
+	details := make([]SkillDetail, 0, len(skills))
+	for _, sk := range skills {
+		details = append(details, SkillDetail{
+			SkillInfo:    sk,
+			Source:       s.deriveSource(sk.Path, userDir),
+			Enabled:      !s.isDisabled(sk.Name),
+			CanUninstall: s.isUnderDir(sk.Path, userDir),
+		})
+	}
+
+	// Append project-local skills
+	if projectDir != "" {
+		projectSkills := s.scanProjectSkills(projectDir, skills)
+		for _, sk := range projectSkills {
+			details = append(details, SkillDetail{
+				SkillInfo:    sk,
+				Source:       "project",
+				Enabled:      !s.isDisabled(sk.Name),
+				CanUninstall: false,
+			})
+		}
+	}
+
+	return details, nil
+}
+
+// deriveSource determines the skill tier from its Path.
+func (s *SkillStore) deriveSource(path, userDir string) string {
+	if strings.HasPrefix(path, "embedded:") {
+		return "embedded"
+	}
+	for _, g := range s.globalDirs {
+		if s.isUnderDir(path, g) {
+			return "global"
+		}
+	}
+	if s.isUnderDir(path, userDir) {
+		return "user"
+	}
+	return "project"
+}
+
+// isUnderDir reports whether path is inside dir.
+func (s *SkillStore) isUnderDir(path, dir string) bool {
+	if path == "" || dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel != "." && !strings.HasPrefix(rel, "..") && !strings.HasPrefix(rel, "/")
+}
+
+// SetSkillEnabled toggles a skill in the disabled_skills blacklist and
+// invalidates the cache so the change takes effect immediately.
+func (s *SkillStore) SetSkillEnabled(name string, enabled bool) {
+	s.mu.Lock()
+	if s.disabledSkills == nil {
+		s.disabledSkills = make(map[string]bool)
+	}
+	if enabled {
+		delete(s.disabledSkills, name)
+	} else {
+		s.disabledSkills[name] = true
+	}
+	s.mu.Unlock()
+	s.InvalidateCache()
+}
+
+// DisabledSkillNames returns the current disabled skills list (for config persistence).
+func (s *SkillStore) DisabledSkillNames() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	names := make([]string, 0, len(s.disabledSkills))
+	for name := range s.disabledSkills {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// GetSkillContent reads and returns the SKILL.md content for the named skill.
+// For embedded skills (Path = "embedded:name"), reads from the embedded FS.
+// For all others, reads from the skill directory on disk.
+func (s *SkillStore) GetSkillContent(name string) (string, error) {
+	// Try embedded first
+	if strings.HasPrefix(name, "embedded:") {
+		embName := strings.TrimPrefix(name, "embedded:")
+		data, err := tools.ReadEmbeddedSkillFile(embName, "SKILL.md")
+		if err != nil {
+			return "", fmt.Errorf("read embedded skill %s: %w", embName, err)
+		}
+		return string(data), nil
+	}
+
+	// Resolve skill directory by name across all tiers
+	skillDir := s.resolveSkillDir(name)
+	if skillDir == "" {
+		return "", fmt.Errorf("skill %q not found", name)
+	}
+	data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		return "", fmt.Errorf("read SKILL.md for %s: %w", name, err)
+	}
+	return string(data), nil
+}
+
+// resolveSkillDir finds the skill directory by name, searching global dirs
+// and the user skills directory. Returns "" if not found.
+func (s *SkillStore) resolveSkillDir(name string) string {
+	// Global dirs
+	for _, dir := range s.globalDirs {
+		skillDir := filepath.Join(dir, name)
+		if info, err := os.Stat(skillDir); err == nil && info.IsDir() {
+			return skillDir
+		}
+	}
+	// User dir (all users share the same skills root in single-user mode)
+	userRoot := tools.UserSkillsRoot(s.workDir, "")
+	entries, err := os.ReadDir(userRoot)
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			skillDir := filepath.Join(userRoot, e.Name())
+			data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+			if err != nil {
+				continue
+			}
+			parsedName, _ := parseSkillFrontmatter(data)
+			if parsedName == "" {
+				parsedName = e.Name()
+			}
+			if parsedName == name {
+				return skillDir
+			}
+		}
+	}
+	return ""
+}
+
 // scanUserSkills scans the user's private skills directory (sandbox-aware) and appends results to merged/orderedNames.
 // Returns early (without error) if the user directory doesn't exist — missing directory is not an error.
 func (s *SkillStore) scanUserSkills(ctx context.Context, senderID string, merged map[string]SkillInfo, orderedNames *[]string) {

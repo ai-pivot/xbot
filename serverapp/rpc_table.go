@@ -2600,4 +2600,50 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 			"plugins": rm.ListInstalledPlugins(p.SenderID),
 		}, nil
 	})
+
+	// ── Skill management ──
+	t["skill_list"] = rpc1(func(ctx context.Context, p struct {
+		SenderID   string `json:"sender_id"`
+		ProjectDir string `json:"project_dir"`
+	}) (any, error) {
+		ss := h.Ag.Skills()
+		if ss == nil {
+			return nil, fmt.Errorf("skill store not initialized")
+		}
+		return ss.ListSkillsDetailed(ctx, p.SenderID, p.ProjectDir)
+	})
+
+	t["skill_set_enabled"] = rpc1(func(ctx context.Context, p struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}) (any, error) {
+		ss := h.Ag.Skills()
+		if ss == nil {
+			return nil, fmt.Errorf("skill store not initialized")
+		}
+		ss.SetSkillEnabled(p.Name, p.Enabled)
+		// Persist to config.json so the change survives restart
+		cfg := config.LoadFromFile(config.ConfigFilePath())
+		if cfg != nil {
+			cfg.DisabledSkills = ss.DisabledSkillNames()
+			if err := config.SaveToFile(config.ConfigFilePath(), cfg); err != nil {
+				log.WithError(err).Warn("Failed to persist disabled_skills to config")
+			}
+		}
+		return map[string]bool{"ok": true}, nil
+	})
+
+	t["skill_get_content"] = rpc1(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) (any, error) {
+		ss := h.Ag.Skills()
+		if ss == nil {
+			return nil, fmt.Errorf("skill store not initialized")
+		}
+		content, err := ss.GetSkillContent(p.Name)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"content": content}, nil
+	})
 }

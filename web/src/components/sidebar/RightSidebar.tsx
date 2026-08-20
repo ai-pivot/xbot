@@ -22,10 +22,11 @@ import { FileSearch } from './FileSearch'
 import { SessionInfo } from './SessionInfo'
 import { TasksPanel } from './TasksPanel'
 import { TerminalList } from './TerminalList'
+import { SkillsPanel } from './SkillsPanel'
 import type { TabManager } from '@/hooks/useTabManager'
 import { useTerminal } from '@/hooks/useTerminal'
 
-export type SidebarPanel = 'files' | 'search' | 'info' | 'tasks' | 'terminal'
+export type SidebarPanel = 'files' | 'search' | 'info' | 'tasks' | 'terminal' | 'skills'
 
 export interface RightSidebarProps {
   activePanel: SidebarPanel | null
@@ -156,6 +157,8 @@ function renderPanel(
       return <TasksPanel tabManager={tabManager} />
     case 'terminal':
       return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
+    case 'skills':
+      return <SkillsPanel />
   }
 }
 
@@ -171,5 +174,7 @@ function titleFor(panel: SidebarPanel, t: (k: string) => string): string {
       return t('sidebar.tasks')
     case 'terminal':
       return t('sidebar.terminal')
+    case 'skills':
+      return t('sidebar.skills')
   }
 }

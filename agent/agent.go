@@ -864,6 +864,9 @@ func (a *Agent) SettingsService() *SettingsService {
 // MultiSession returns the Agent's MultiTenantSession (for external injection of callbacks).
 func (a *Agent) MultiSession() *session.MultiTenantSession { return a.multiSession }
 
+// Skills returns the skill store for management operations (list/toggle/view).
+func (a *Agent) Skills() *SkillStore { return a.skills }
+
 // WorkDir returns the Agent's configured working directory. Used as a
 // fallback for web sessions that have no persisted CWD.
 func (a *Agent) WorkDir() string { return a.workDir }

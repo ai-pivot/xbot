@@ -813,8 +813,73 @@ func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Reque
 }
 
 // ---------------------------------------------------------------------------
-// Search API
+// Skill management API
 // ---------------------------------------------------------------------------
+
+func (wc *WebChannel) handleSkillsList(w http.ResponseWriter, r *http.Request) {
+	senderID := senderIDFromContext(r.Context())
+	var req struct {
+		ProjectDir string `json:"project_dir"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req) // body is optional
+
+	var result json.RawMessage
+	if err := wc.rpcCall("skill_list", map[string]any{
+		"sender_id":   senderID,
+		"project_dir": req.ProjectDir,
+	}, &result); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (wc *WebChannel) handleSkillsToggle(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := wc.rpcCall("skill_set_enabled", map[string]any{
+		"name":    req.Name,
+		"enabled": req.Enabled,
+	}, nil); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (wc *WebChannel) handleSkillsContent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	var result struct {
+		Content string `json:"content"`
+	}
+	if err := wc.rpcCall("skill_get_content", map[string]any{
+		"name": req.Name,
+	}, &result); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
 
 type searchResponse struct {
 	OK      bool        `json:"ok"`

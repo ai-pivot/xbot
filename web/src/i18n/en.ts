@@ -28,6 +28,7 @@ const en: Translations = {
     info: 'Info',
     terminal: 'Terminal',
     tasks: 'Tasks',
+    skills: 'Skills',
     tasksCron: 'Cron Jobs',
     tasksBg: 'Background Commands',
     tasksEmpty: 'No tasks',
@@ -374,6 +375,12 @@ const en: Translations = {
     title: 'Design System Foundation',
     themeToggle: 'Toggle theme',
     languageToggle: 'Toggle language',
+  },
+  skills: {
+    install: 'Install',
+    empty: 'No skills found',
+    view: 'View content',
+    uninstall: 'Uninstall',
   },
   auth: {
     login: 'Login',
