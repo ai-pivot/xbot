@@ -17,9 +17,9 @@ import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
-import { LeftActivityBar } from '@/components/sidebar/LeftActivityBar'
-import { CollapsibleGroup } from '@/components/sidebar/CollapsibleGroup'
-import { LAYOUT_GROUPS } from '@/plugin-runtime/layoutTypes'
+import { useLeftPluginPanels } from '@/components/sidebar/LeftActivityBar'
+import { SidebarSectionStack, type SidebarSection } from '@/components/sidebar/SidebarSectionStack'
+import { PluginView } from '@/plugin-runtime/PluginView'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
@@ -44,6 +44,8 @@ export function AppShell() {
   const isMobile = useIsMobile()
   const tabManager = useTabManager()
   const sessionStore = useSessionStore()
+  // 左侧栏的用户插件 view（每个渲染为 VSCode 式独立 section，可拖拽/折叠/记忆）
+  const pluginPanels = useLeftPluginPanels()
   const [activePanel, setActivePanel] = useState<SidebarPanel | null>(null)
   const [leftWidth, setLeftWidth] = useState(() => {
     const stored = localStorage.getItem(LEFT_WIDTH_KEY)
@@ -142,20 +144,27 @@ export function AppShell() {
         onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
       />
 
-      {/* Left sidebar — session list (collapsible) */}
+      {/* Left sidebar — VSCode 式 section 堆叠（会话列表 + 插件 view，可拖拽/折叠/记忆） */}
       {!sidebarCollapsed && (
         <div
-          className="relative flex h-full shrink-0 flex-col"
+          className="relative flex h-full shrink-0 flex-col overflow-hidden"
           style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
         >
-          {/* 渠道/会话列表 = 一个可折叠 group（占左侧主体） */}
-          <div className="min-h-0 flex-1">
-            <CollapsibleGroup groupId={LAYOUT_GROUPS.channels} title="会话">
-              <SessionSidebar tabManager={tabManager} />
-            </CollapsibleGroup>
-          </div>
-          {/* 插件 view 隔离区（用户移到桌面左侧 slot 的插件 view） */}
-          <LeftActivityBar />
+          <SidebarSectionStack
+            sections={[
+              {
+                id: 'sessions',
+                title: '会话',
+                content: <SessionSidebar tabManager={tabManager} />,
+              },
+              ...pluginPanels.map<SidebarSection>((p) => ({
+                id: p.id,
+                title: p.title,
+                defaultHeight: 240,
+                content: <PluginView pluginId={p.pluginId} view={p.view} />,
+              })),
+            ]}
+          />
           <div
             role="separator"
             aria-orientation="vertical"
