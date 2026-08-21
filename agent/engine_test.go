@@ -279,6 +279,58 @@ func TestRunState_TodoKey_PhysicalChannelOverride(t *testing.T) {
 	}
 }
 
+func TestBuildToolContext_BgSessionKeyCanonical(t *testing.T) {
+	// Regression: web 用户浏览 CLI 会话时 physicalChannel override 把
+	// cfg.SessionKey 改成 "web:chat1"，BgSessionKey 曾直接用 cfg.SessionKey →
+	// Shell 后台任务注册到 (web, chat1) → 完成通知注入时 GetOrCreateSession
+	// 创建重复 tenant（"会话变两个 + cancel 后 busy + 历史丢失"的根因：
+	// [System Notification] turn 跑在新 tenant 里）。主 Agent 必须用
+	// canonical RootSessionKey；SubAgent 用自己的 SessionKey（subAgentID）隔离。
+	mgr := tools.NewBackgroundTaskManager()
+
+	// 主 Agent：physicalChannel override 场景。
+	cfg := &RunConfig{
+		AgentID:        "main",
+		Channel:        "cli",
+		ChatID:         "chat1",
+		SessionKey:     "web:chat1", // physicalChannel override
+		RootSessionKey: "cli:chat1", // canonical
+		BgTaskManager:  mgr,
+	}
+	tc := buildToolContext(context.Background(), cfg)
+	if tc.BgSessionKey != "cli:chat1" {
+		t.Errorf("BUG: main-agent BgSessionKey = %q, want canonical %q (RootSessionKey)", tc.BgSessionKey, "cli:chat1")
+	}
+
+	// 主 Agent 无 override：SessionKey 就是 canonical，行为不变。
+	plainCfg := &RunConfig{
+		AgentID:        "main",
+		Channel:        "web",
+		ChatID:         "chat1",
+		SessionKey:     "web:chat1",
+		RootSessionKey: "web:chat1",
+		BgTaskManager:  mgr,
+	}
+	plainTc := buildToolContext(context.Background(), plainCfg)
+	if plainTc.BgSessionKey != "web:chat1" {
+		t.Errorf("plain main-agent BgSessionKey = %q, want %q", plainTc.BgSessionKey, "web:chat1")
+	}
+
+	// SubAgent：用自己的 SessionKey（subAgentID）隔离。
+	subCfg := &RunConfig{
+		AgentID:        "main/explore",
+		Channel:        "cli",
+		ChatID:         "chat1",
+		SessionKey:     "main/explore", // subAgentID
+		RootSessionKey: "cli:chat1",    // parent canonical — must NOT be used
+		BgTaskManager:  mgr,
+	}
+	subTc := buildToolContext(context.Background(), subCfg)
+	if subTc.BgSessionKey != "main/explore" {
+		t.Errorf("SubAgent BgSessionKey = %q, want %q (subAgentID isolation)", subTc.BgSessionKey, "main/explore")
+	}
+}
+
 func TestRun_SingleToolCall(t *testing.T) {
 	shellTool := &mockTool{
 		name:   "Shell",

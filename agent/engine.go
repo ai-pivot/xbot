@@ -1194,7 +1194,17 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	// 注入 BgTaskManager 后台任务管理器
 	if cfg.BgTaskManager != nil {
 		tc.BgTaskManager = cfg.BgTaskManager
+		// BgSessionKey：主 Agent 用 canonical sessionKey（RootSessionKey =
+		// origin channel:chatID），SubAgent（AgentID 含 "/"）用自己的
+		// SessionKey（subAgentID）隔离。不能无条件用 cfg.SessionKey ——
+		// web 用户浏览 CLI 会话时 physicalChannel override 把它改成
+		// "web:chatID"，Shell 后台任务会注册到 (web, chatID) → 完成通知注入时
+		// GetOrCreateSession("web", chatID) 创建重复 tenant（"会话变两个 +
+		// cancel 后 busy + 历史丢失"的根因：通知 turn 跑在新 tenant 里）。
 		sessionKey := cfg.SessionKey
+		if !strings.Contains(cfg.AgentID, "/") && cfg.RootSessionKey != "" {
+			sessionKey = cfg.RootSessionKey
+		}
 		if sessionKey == "" {
 			sessionKey = cfg.Channel + ":" + cfg.ChatID
 		}
