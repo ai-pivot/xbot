@@ -455,6 +455,41 @@ func (s *SkillStore) DisabledSkillNames() []string {
 	return names
 }
 
+// IsKnownSkillPath returns true if path is a known skill directory.
+// For embedded skills (path = "embedded:<dir>"), always true (embed FS validates).
+// For disk skills, checks if the path is under a known skill root directory
+// (global dirs, user skills dir, or project .xbot/skills/.agents/skills dirs).
+func (s *SkillStore) IsKnownSkillPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	if strings.HasPrefix(path, "embedded:") {
+		return true
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	// Global skill directories
+	for _, dir := range s.globalDirs {
+		if s.isUnderDir(abs, dir) {
+			return true
+		}
+	}
+	// User skills directory
+	if userDir := s.userSkillsDir(""); s.isUnderDir(abs, userDir) {
+		return true
+	}
+	// Project skills directories (.xbot/skills/ or .agents/skills/)
+	parts := strings.Split(abs, string(filepath.Separator))
+	for i, part := range parts {
+		if (part == ".xbot" || part == ".agents") && i+1 < len(parts) && parts[i+1] == "skills" {
+			return true
+		}
+	}
+	return false
+}
+
 // GetSkillContent reads and returns the SKILL.md content for a skill.
 // path is the skill's Path from SkillInfo/SkillDetail:
 //   - "embedded:<dir>" → read from the embedded FS
@@ -462,6 +497,9 @@ func (s *SkillStore) DisabledSkillNames() []string {
 func (s *SkillStore) GetSkillContent(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("skill path is empty")
+	}
+	if !s.IsKnownSkillPath(path) {
+		return "", fmt.Errorf("skill path %q is not a known skill", path)
 	}
 
 	// Embedded skill: path = "embedded:<dir>"

@@ -2624,11 +2624,12 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 		ss.SetSkillEnabled(p.Name, p.Enabled)
 		// Persist to config.json so the change survives restart
 		cfg := config.LoadFromFile(config.ConfigFilePath())
-		if cfg != nil {
-			cfg.DisabledSkills = ss.DisabledSkillNames()
-			if err := config.SaveToFile(config.ConfigFilePath(), cfg); err != nil {
-				log.WithError(err).Warn("Failed to persist disabled_skills to config")
-			}
+		if cfg == nil {
+			cfg = &config.Config{}
+		}
+		cfg.DisabledSkills = ss.DisabledSkillNames()
+		if err := config.SaveToFile(config.ConfigFilePath(), cfg); err != nil {
+			log.WithError(err).Warn("Failed to persist disabled_skills to config")
 		}
 		return map[string]bool{"ok": true}, nil
 	})
@@ -2645,5 +2646,15 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 			return nil, err
 		}
 		return map[string]any{"content": content}, nil
+	})
+
+	t["skill_validate_path"] = rpc1(func(ctx context.Context, p struct {
+		Path string `json:"path"`
+	}) (any, error) {
+		ss := h.Ag.Skills()
+		if ss == nil {
+			return nil, fmt.Errorf("skill store not initialized")
+		}
+		return map[string]bool{"valid": ss.IsKnownSkillPath(p.Path)}, nil
 	})
 }

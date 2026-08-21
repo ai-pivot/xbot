@@ -824,7 +824,13 @@ func (wc *WebChannel) handleSkillsList(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ProjectDir string `json:"project_dir"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req) // body is optional
+	// Body is optional; only error on malformed JSON, not on empty body.
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
 
 	var result json.RawMessage
 	if err := wc.rpcCall("skill_list", map[string]any{
@@ -903,6 +909,30 @@ func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request)
 		req.Name = "skill"
 	}
 
+	// Validate that the path is a known skill path (prevent arbitrary directory access).
+	var validResult struct {
+		Valid bool `json:"valid"`
+	}
+	if err := wc.rpcCall("skill_validate_path", map[string]any{"path": req.Path}, &validResult); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !validResult.Valid {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid skill path")
+		return
+	}
+
+	// Sanitize filename: keep only alphanumerics, dash, underscore, dot.
+	safeName := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '_'
+	}, req.Name)
+	if safeName == "" {
+		safeName = "skill"
+	}
+
 	// Build the zip in memory.
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -921,7 +951,7 @@ func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request)
 				jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("read %s: %v", f, err))
 				return
 			}
-			fw, err := zw.Create(filepath.Join(req.Name, f))
+			fw, err := zw.Create(filepath.Join(safeName, f))
 			if err != nil {
 				jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("zip %s: %v", f, err))
 				return
@@ -941,7 +971,7 @@ func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request)
 			if err != nil {
 				return err
 			}
-			fw, err := zw.Create(filepath.Join(req.Name, rel))
+			fw, err := zw.Create(filepath.Join(safeName, rel))
 			if err != nil {
 				return err
 			}
@@ -965,7 +995,7 @@ func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, req.Name))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, safeName))
 	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.Write(buf.Bytes())
 }

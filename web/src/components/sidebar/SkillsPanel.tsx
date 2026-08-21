@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Eye, Download, Loader2, Trash2, Upload } from 'lucide-react'
 
-import { postAPI } from '@/lib/api'
+import { postAPI, postRawAPI } from '@/lib/api'
 import { useI18n } from '@/providers/i18n'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -118,10 +118,9 @@ export function SkillsPanel({ tabManager }: { tabManager: TabManager }) {
 
   const handleExport = useCallback(async (skill: SkillDetail) => {
     try {
-      const resp = await fetch('/api/skills/export', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: skill.path, name: skill.name }),
+      const resp = await postRawAPI('/api/skills/export', {
+        path: skill.path,
+        name: skill.name,
       })
       if (!resp.ok) {
         const text = await resp.text()
