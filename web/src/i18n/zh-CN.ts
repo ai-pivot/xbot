@@ -25,6 +25,7 @@ const zhCN = {
     info: '信息',
     terminal: '终端',
     tasks: '任务',
+    skills: '技能',
     tasksCron: '定时任务',
     tasksBg: '后台命令',
     tasksEmpty: '暂无任务',
@@ -371,6 +372,13 @@ const zhCN = {
     title: '设计系统基础',
     themeToggle: '切换主题',
     languageToggle: '切换语言',
+  },
+  skills: {
+    install: '安装',
+    empty: '未找到技能',
+    view: '查看内容',
+    export: '导出为 zip',
+    uninstall: '卸载',
   },
   auth: {
     login: '登录',

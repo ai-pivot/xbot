@@ -34,6 +34,8 @@ export interface TabData {
   content?: string
   language?: string
   previewMode?: boolean
+  /** Disable editing (read-only preview, e.g. embedded skills). */
+  readOnly?: boolean
   /** Frontend terminal id (TerminalSession.id) for terminal tabs. */
   terminalId?: string
   /** SubAgent role (for agent tabs viewing a SubAgent conversation). */

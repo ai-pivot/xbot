@@ -1,12 +1,15 @@
 package web
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -813,8 +816,189 @@ func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Reque
 }
 
 // ---------------------------------------------------------------------------
-// Search API
+// Skill management API
 // ---------------------------------------------------------------------------
+
+func (wc *WebChannel) handleSkillsList(w http.ResponseWriter, r *http.Request) {
+	senderID := senderIDFromContext(r.Context())
+	var req struct {
+		ProjectDir string `json:"project_dir"`
+	}
+	// Body is optional; only error on malformed JSON, not on empty body.
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+
+	var result json.RawMessage
+	if err := wc.rpcCall("skill_list", map[string]any{
+		"sender_id":   senderID,
+		"project_dir": req.ProjectDir,
+	}, &result); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (wc *WebChannel) handleSkillsToggle(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := wc.rpcCall("skill_set_enabled", map[string]any{
+		"name":    req.Name,
+		"enabled": req.Enabled,
+	}, nil); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (wc *WebChannel) handleSkillsContent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Path == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	var result struct {
+		Content string `json:"content"`
+	}
+	if err := wc.rpcCall("skill_get_content", map[string]any{
+		"path": req.Path,
+	}, &result); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleSkillsExport zips a skill directory (or embedded skill files) and
+// returns the archive as a download.
+func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Path == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	if req.Name == "" {
+		req.Name = "skill"
+	}
+
+	// Validate that the path is a known skill path (prevent arbitrary directory access).
+	var validResult struct {
+		Valid bool `json:"valid"`
+	}
+	if err := wc.rpcCall("skill_validate_path", map[string]any{"path": req.Path}, &validResult); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !validResult.Valid {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid skill path")
+		return
+	}
+
+	// Sanitize filename: keep only alphanumerics, dash, underscore, dot.
+	safeName := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '_'
+	}, req.Name)
+	if safeName == "" {
+		safeName = "skill"
+	}
+
+	// Build the zip in memory.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	if strings.HasPrefix(req.Path, "embedded:") {
+		// Embedded skill: read all files from the embed FS.
+		embDir := strings.TrimPrefix(req.Path, "embedded:")
+		files, err := tools.ListEmbeddedSkillFiles(embDir)
+		if err != nil {
+			jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("list embedded skill: %v", err))
+			return
+		}
+		for _, f := range files {
+			data, err := tools.ReadEmbeddedSkillFile(embDir, f)
+			if err != nil {
+				jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("read %s: %v", f, err))
+				return
+			}
+			fw, err := zw.Create(filepath.Join(safeName, f))
+			if err != nil {
+				jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("zip %s: %v", f, err))
+				return
+			}
+			fw.Write(data)
+		}
+	} else {
+		// Disk skill: walk the directory.
+		err := filepath.Walk(req.Path, func(p string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(req.Path, p)
+			if err != nil {
+				return err
+			}
+			fw, err := zw.Create(filepath.Join(safeName, rel))
+			if err != nil {
+				return err
+			}
+			f, err := os.Open(p)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(fw, f)
+			return err
+		})
+		if err != nil {
+			jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("zip skill: %v", err))
+			return
+		}
+	}
+
+	if err := zw.Close(); err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("close zip: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, safeName))
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.Write(buf.Bytes())
+}
 
 type searchResponse struct {
 	OK      bool        `json:"ok"`

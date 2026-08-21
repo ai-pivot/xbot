@@ -46,11 +46,11 @@ test.afterEach(() => {
 })
 
 test.describe('Right sidebar (Spec 6)', () => {
-  test('expands/collapses and renders all five panels', async ({ page }) => {
+  test('expands/collapses and renders all six panels', async ({ page }) => {
     const rightBar = page.locator('.flex.h-full.w-12.shrink-0.flex-col').last()
     await rightBar.waitFor({ timeout: 10_000 })
     const panels = rightBar.locator('button[aria-pressed]')
-    await expect(panels).toHaveCount(5)
+    await expect(panels).toHaveCount(6)
   })
 
   test('file tree toggles and opens a workspace tab on click', async ({ page }) => {

@@ -1,11 +1,11 @@
 /**
  * RightActivityBar — the icon column that toggles the right sidebar panels.
  *
- * Panels: files / search / info / tasks. Clicking a panel toggles the
+ * Panels: files / search / info / tasks / terminal / skills. Clicking a panel toggles the
  * sidebar (collapses if already open). Pure presentational — AppShell owns the
  * active state and passes a setter.
  */
-import { Files, Search, Info, ListChecks, SquareTerminal } from 'lucide-react'
+import { Files, Search, Info, ListChecks, SquareTerminal, Sparkles } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { useI18n } from '@/providers/i18n'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -24,6 +24,7 @@ const PANELS: { panel: SidebarPanel; icon: IconComponent; labelKey: string }[] =
   { panel: 'info', icon: Info, labelKey: 'sidebar.info' },
   { panel: 'tasks', icon: ListChecks, labelKey: 'sidebar.tasks' },
   { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
+  { panel: 'skills', icon: Sparkles, labelKey: 'sidebar.skills' },
 ]
 
 export function RightActivityBar({ activePanel, onTogglePanel }: RightActivityBarProps) {

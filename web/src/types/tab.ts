@@ -39,4 +39,8 @@ export interface PanelParams {
   taskChatID?: string
   /** True when this dockview panel is the active panel. */
   active?: boolean
+  /** Virtual content for tabs not backed by a file (e.g. embedded skills). */
+  content?: string
+  /** Disable editing (read-only preview). */
+  readOnly?: boolean
 }

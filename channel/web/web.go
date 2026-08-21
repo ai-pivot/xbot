@@ -780,6 +780,12 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/app/install-file", wc.authenticatedPOST(wc.handleMarketInstallFile))
 	mux.HandleFunc("/api/app/uninstall", wc.authenticatedPOST(wc.handleMarketUninstall))
 
+	// Skill management API
+	mux.HandleFunc("/api/skills/list", wc.authenticatedPOST(wc.handleSkillsList))
+	mux.HandleFunc("/api/skills/toggle", wc.authenticatedPOST(wc.handleSkillsToggle))
+	mux.HandleFunc("/api/skills/content", wc.authenticatedPOST(wc.handleSkillsContent))
+	mux.HandleFunc("/api/skills/export", wc.authenticatedPOST(wc.handleSkillsExport))
+
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		jsonErrorResponse(w, http.StatusNotFound, "endpoint not found")
 	})

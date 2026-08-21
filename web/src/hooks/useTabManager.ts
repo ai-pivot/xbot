@@ -178,6 +178,8 @@ export function useTabManager(): TabManager {
       command: input.type === 'background' ? input.data?.command : undefined,
       taskChannel: input.type === 'background' ? input.data?.taskChannel : undefined,
       taskChatID: input.type === 'background' ? input.data?.taskChatID : undefined,
+      content: input.type === 'file' ? input.data?.content : undefined,
+      readOnly: input.type === 'file' ? input.data?.readOnly : undefined,
     }
     // File/work tabs open in the same group as Agent, as a sibling tab
     // (not a separate right-side column). Agent panels use renderer 'always'
