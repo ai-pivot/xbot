@@ -5,9 +5,10 @@
  * 插件 view 的 id/title/icon 由 usePluginViewPanels('right_sidebar') 动态提供——
  * 插件声明一次，桌面 + 移动两端自动出现对应 tab，无需分别硬编码。
  *
- * VSCode 式拖拽重排：图标按 layoutRegistry 的 desktop.sidebar 顺序渲染，
- * 拖动图标到另一图标上/下方显示插入线，松手重排（setSlotOrder 持久化到
- * localStorage + 后端 web:ui:layout-order）。被移到其他 slot 的项不显示。
+ * VSCode 式拖拽：
+ * - 同 slot 重排：拖图标到另一图标上/下方，插入线指示
+ * - 跨 slot 拖入：左栏 section 拖到右栏图标上 → moveItemTo 跨 slot 移动
+ * - drop 判定放宽：整个图标按钮区域可放置
  */
 import { Files, Search, Info, ListChecks, SquareTerminal } from 'lucide-react'
 import {
@@ -29,6 +30,11 @@ import { computeReorder } from '@/lib/reorder'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
+/** 拖拽协议：dataTransfer 里存 itemId + 来源 slot。 */
+const DRAG_TYPE = 'application/x-xbot-layout-item'
+const DRAG_SLOT_TYPE = 'application/x-xbot-layout-slot'
+const RIGHT_SLOT = 'desktop.sidebar' as const
+
 interface RightActivityBarProps {
   activePanel: SidebarPanel | null
   onTogglePanel: (panel: SidebarPanel) => void
@@ -44,7 +50,6 @@ const BUILTIN_PANELS: { panel: SidebarPanel; icon: IconComponent; labelKey: stri
   { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
 ]
 
-// 内置面板 → 布局项 id 映射（布局注册表里的 desktop.sidebar 项）。
 const BUILTIN_PANEL_TO_LAYOUT: Record<string, string> = {
   files: BUILTIN_LAYOUT_ITEMS.desktopFiles,
   search: BUILTIN_LAYOUT_ITEMS.desktopSearch,
@@ -57,14 +62,10 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
   const { t } = useI18n()
   const pluginPanels = usePluginViewPanels('right_sidebar')
   const mainViews = usePluginViewPanels('main')
-  // 布局配置：desktop.sidebar slot 里的项 = 用户希望显示的侧栏 tab（registry
-  // 排序 = 用户拖拽顺序）。被用户移到其他 slot 的项不再显示（布局定制生效）。
-  const layoutItems = useLayoutItems('desktop.sidebar')
+  const layoutItems = useLayoutItems(RIGHT_SLOT)
   const pluginPanelMap = new Map(pluginPanels.map((p) => [p.id, p]))
 
-  // 布局项顺序统一渲染：内置面板 + 插件 view 都按 layoutItems 顺序出现。
-  const tabs: { layoutId: string; panel: SidebarPanel; icon: IconComponent; label: string }[] =
-    []
+  const tabs: { layoutId: string; panel: SidebarPanel; icon: IconComponent; label: string }[] = []
   for (const item of layoutItems) {
     const builtin = BUILTIN_PANELS.find((p) => BUILTIN_PANEL_TO_LAYOUT[p.panel] === item.id)
     if (builtin) {
@@ -80,19 +81,43 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
         label: plugin.title,
       })
     }
-    // 其他布局项（未解析的 id）：跳过 —— 前面 enabledIds 语义一致。
   }
 
-  // ── VSCode 式重排（HTML5 DnD）──
+  // ── VSCode 式拖拽（HTML5 DnD）──
   const [reorderSrc, setReorderSrc] = useState<string | null>(null)
   const [dropHint, setDropHint] = useState<{ targetId: string; before: boolean } | null>(null)
   const canReorder = tabs.length > 1
+
+  // 判断拖拽来源：同 slot 重排（reorderSrc）还是跨 slot 拖入（dataTransfer）。
+  const getDragSource = useCallback(
+    (e: ReactDragEvent): string | null => {
+      if (reorderSrc) return reorderSrc
+      try {
+        const id = e.dataTransfer.getData(DRAG_TYPE)
+        if (id && id !== '') return id
+      } catch {
+        /* dragOver 阶段 getData 可能抛错 */
+      }
+      return null
+    },
+    [reorderSrc],
+  )
+
+  const isCrossSlot = useCallback((e: ReactDragEvent): boolean => {
+    try {
+      const srcSlot = e.dataTransfer.getData(DRAG_SLOT_TYPE)
+      return srcSlot !== '' && srcSlot !== RIGHT_SLOT
+    } catch {
+      return false
+    }
+  }, [])
 
   const onIconDragStart = useCallback(
     (layoutId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
       if (!canReorder) return
       setReorderSrc(layoutId)
-      e.dataTransfer.setData('text/plain', layoutId)
+      e.dataTransfer.setData(DRAG_TYPE, layoutId)
+      e.dataTransfer.setData(DRAG_SLOT_TYPE, RIGHT_SLOT)
       e.dataTransfer.effectAllowed = 'move'
     },
     [canReorder],
@@ -100,30 +125,39 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
 
   const onIconDragOver = useCallback(
     (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
-      if (!canReorder || !reorderSrc || reorderSrc === targetId) return
+      const src = getDragSource(e)
+      if (!src || src === targetId) return
       e.preventDefault()
       e.dataTransfer.dropEffect = 'move'
       const rect = e.currentTarget.getBoundingClientRect()
       const before = e.clientY < rect.top + rect.height / 2
-      const next = computeReorder(tabs.map((x) => x.layoutId), reorderSrc, targetId, before)
-      setDropHint(next ? { targetId, before } : null)
+      if (!isCrossSlot(e)) {
+        const next = computeReorder(tabs.map((x) => x.layoutId), src, targetId, before)
+        setDropHint(next ? { targetId, before } : null)
+      } else {
+        setDropHint({ targetId, before })
+      }
     },
-    [canReorder, reorderSrc, tabs],
+    [getDragSource, isCrossSlot, tabs],
   )
 
   const onIconDrop = useCallback(
     (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
       e.preventDefault()
-      const src = reorderSrc
+      const src = getDragSource(e)
       setReorderSrc(null)
       setDropHint(null)
       if (!src || src === targetId) return
       const rect = e.currentTarget.getBoundingClientRect()
       const before = e.clientY < rect.top + rect.height / 2
-      const next = computeReorder(tabs.map((x) => x.layoutId), src, targetId, before)
-      if (next) layoutRegistry.setSlotOrder('desktop.sidebar', next)
+      if (isCrossSlot(e)) {
+        layoutRegistry.moveItemTo(src, RIGHT_SLOT, { beforeId: before ? targetId : undefined })
+      } else {
+        const next = computeReorder(tabs.map((x) => x.layoutId), src, targetId, before)
+        if (next) layoutRegistry.setSlotOrder(RIGHT_SLOT, next)
+      }
     },
-    [reorderSrc, tabs],
+    [getDragSource, isCrossSlot, tabs],
   )
 
   const onIconDragEnd = useCallback(() => {
@@ -157,7 +191,6 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
                   className="group relative flex size-9 shrink-0 select-none items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
                   style={{ color: active ? 'var(--text-primary)' : 'var(--text-secondary)' }}
                 >
-                  {/* active accent bar (right edge) */}
                   <span
                     className="absolute right-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-l"
                     style={{ backgroundColor: active ? 'var(--accent)' : 'transparent' }}

@@ -5,20 +5,17 @@
  * header；相邻 section 之间有拖拽分隔条（拖动调整上方 section 高度，像素级）；
  * 高度与折叠状态纯前端持久化（localStorage），清缓存后回到默认自动 layout。
  *
- * VSCode 式拖拽重排（slotId 提供时启用）：拖 section header 到另一个
- * section 上方/下方，显示插入线（before/after 按指针相对 header 中线判定），
- * 松手重排并经 layoutRegistry.setSlotOrder 持久化（localStorage + 后端
- * web:ui:layout-order）。宽度/高度/折叠等细节不进后端。
+ * VSCode 式拖拽（slotId 提供时启用）：
+ * - 同 slot 重排：拖 section 到另一个 section 上方/下方，插入线指示
+ * - 跨 slot 拖入：右栏图标拖到左栏 section 上 → moveItemTo 跨 slot 移动
+ * - drop 判定放宽：整个 section 区域可放置（不只 header），指针在 section
+ *   上半区=before、下半区=after
  *
  * 高度模型（自动 layout 与手动拖拽共存）：
  * - 用户拖过分隔条的 section：固定 px（localStorage 记忆）
  * - 未拖过但有 defaultHeight 的 section：固定 defaultHeight
  * - 两者皆无的 section：flex 平分剩余空间（自动 layout）
  * - 折叠的 section：只渲染 header（高度 auto）
- *
- * 每个 section 有确定的高度约束 + overflow-hidden —— 根治「会话列表自然
- * 高度溢出覆盖下方插件区」的重叠 bug（旧结构的外层容器不是 flex 容器也
- * 没有 overflow-hidden，CollapsibleGroup 高度由内容决定）。
  */
 import { ChevronRight } from 'lucide-react'
 import {
@@ -39,6 +36,10 @@ import { computeReorder } from '@/lib/reorder'
 const HEIGHTS_KEY = 'xbot:leftbar:section-heights'
 const COLLAPSED_KEY = 'xbot:leftbar:section-collapsed'
 const MIN_SECTION_H = 80
+
+/** 拖拽协议：dataTransfer 里存 itemId，types 里标记来源 slot。 */
+const DRAG_TYPE = 'application/x-xbot-layout-item'
+const DRAG_SLOT_TYPE = 'application/x-xbot-layout-slot'
 
 export interface SidebarSection {
   id: string
@@ -66,7 +67,6 @@ function readJSON<T>(key: string, fallback: T): T {
 export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackProps): ReactNode {
   const [heights, setHeights] = useState<Record<string, number>>(() => {
     const h = readJSON<Record<string, number>>(HEIGHTS_KEY, {})
-    // 一次性迁移：sessions section id 从 'sessions' 改为布局项 id。
     if (h.sessions !== undefined && h[BUILTIN_LAYOUT_ITEMS.desktopSessions] === undefined) {
       h[BUILTIN_LAYOUT_ITEMS.desktopSessions] = h.sessions
       delete h.sessions
@@ -78,7 +78,6 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
   )
   const containerRef = useRef<HTMLDivElement>(null)
   const [draggingId, setDraggingId] = useState('')
-  // 重排拖拽状态（HTML5 DnD；dragOver 里读不到 dataTransfer，用 state 记源 id）。
   const [reorderSrc, setReorderSrc] = useState<string | null>(null)
   const [dropHint, setDropHint] = useState<{ targetId: string; before: boolean } | null>(null)
 
@@ -86,7 +85,7 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
     try {
       localStorage.setItem(HEIGHTS_KEY, JSON.stringify(heights))
     } catch {
-      /* storage unavailable — layout still works, just not remembered */
+      /* storage unavailable */
     }
   }, [heights])
 
@@ -101,54 +100,97 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
   const toggle = useCallback((id: string) => {
     setCollapsed((prev) => {
       const cur = prev[id] ?? false
-      // 展开一个之前无固定高度的 section 时保持自动 layout；折叠不需要高度。
-      const next = { ...prev, [id]: !cur }
-      return next
+      return { ...prev, [id]: !cur }
     })
   }, [])
 
-  // ── VSCode 式重排（HTML5 DnD，仅 header 是拖拽源和放置目标）──
+  // ── VSCode 式拖拽（HTML5 DnD）──
+  // 同 slot 重排 + 跨 slot 拖入（右栏图标拖到左栏）。
+  // drop 判定放宽：整个 section 区域可放置（不只 header）。
   const canReorder = Boolean(slotId) && sections.length > 1
 
-  const onHeaderDragStart = useCallback(
-    (id: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
+  const onSectionDragStart = useCallback(
+    (id: string) => (e: ReactDragEvent<HTMLElement>) => {
       if (!canReorder) return
       setReorderSrc(id)
-      e.dataTransfer.setData('text/plain', id)
+      e.dataTransfer.setData(DRAG_TYPE, id)
+      if (slotId) e.dataTransfer.setData(DRAG_SLOT_TYPE, slotId)
       e.dataTransfer.effectAllowed = 'move'
     },
-    [canReorder],
+    [canReorder, slotId],
   )
 
-  const onHeaderDragOver = useCallback(
-    (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
-      if (!canReorder || !reorderSrc || reorderSrc === targetId) return
+  // 判断拖拽来源：同 slot 重排（reorderSrc 有值）还是跨 slot 拖入（dataTransfer）。
+  const getDragSource = useCallback(
+    (e: ReactDragEvent): string | null => {
+      // 同 slot：reorderSrc（dragOver 里读不到 dataTransfer，用 state）。
+      if (reorderSrc) return reorderSrc
+      // 跨 slot：从 dataTransfer 读（drop 时可读）。
+      try {
+        const id = e.dataTransfer.getData(DRAG_TYPE)
+        if (id && id !== '') return id
+      } catch {
+        /* dragOver 阶段 getData 可能抛错（部分浏览器）—— drop 时一定能读 */
+      }
+      return null
+    },
+    [reorderSrc],
+  )
+
+  const isCrossSlot = useCallback(
+    (e: ReactDragEvent): boolean => {
+      try {
+        const srcSlot = e.dataTransfer.getData(DRAG_SLOT_TYPE)
+        return srcSlot !== '' && srcSlot !== slotId
+      } catch {
+        return false
+      }
+    },
+    [slotId],
+  )
+
+  const onSectionDragOver = useCallback(
+    (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
+      if (!slotId) return
+      const src = getDragSource(e)
+      if (!src || src === targetId) return
       e.preventDefault()
       e.dataTransfer.dropEffect = 'move'
       const rect = e.currentTarget.getBoundingClientRect()
       const before = e.clientY < rect.top + rect.height / 2
-      const next = computeReorder(sections.map((s) => s.id), reorderSrc, targetId, before)
-      setDropHint(next ? { targetId, before } : null)
+      // 同 slot：computeReorder 判 no-op；跨 slot：总是有效（moveItemTo）。
+      if (!isCrossSlot(e)) {
+        const next = computeReorder(sections.map((s) => s.id), src, targetId, before)
+        setDropHint(next ? { targetId, before } : null)
+      } else {
+        setDropHint({ targetId, before })
+      }
     },
-    [canReorder, reorderSrc, sections],
+    [slotId, getDragSource, isCrossSlot, sections],
   )
 
-  const onHeaderDrop = useCallback(
-    (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
+  const onSectionDrop = useCallback(
+    (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
       e.preventDefault()
-      const src = reorderSrc
+      const src = getDragSource(e)
       setReorderSrc(null)
       setDropHint(null)
       if (!slotId || !src || src === targetId) return
       const rect = e.currentTarget.getBoundingClientRect()
       const before = e.clientY < rect.top + rect.height / 2
-      const next = computeReorder(sections.map((s) => s.id), src, targetId, before)
-      if (next) layoutRegistry.setSlotOrder(slotId, next)
+      if (isCrossSlot(e)) {
+        // 跨 slot：moveItemTo 把项从原 slot 移到本 slot 的指定位置。
+        layoutRegistry.moveItemTo(src, slotId, { beforeId: before ? targetId : undefined })
+      } else {
+        // 同 slot：setSlotOrder 重排。
+        const next = computeReorder(sections.map((s) => s.id), src, targetId, before)
+        if (next) layoutRegistry.setSlotOrder(slotId, next)
+      }
     },
-    [reorderSrc, slotId, sections],
+    [slotId, getDragSource, isCrossSlot, sections],
   )
 
-  const onHeaderDragEnd = useCallback(() => {
+  const onSectionDragEnd = useCallback(() => {
     setReorderSrc(null)
     setDropHint(null)
   }, [])
@@ -160,10 +202,9 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
       try {
         handle.setPointerCapture(e.pointerId)
       } catch {
-        /* pointer capture unsupported (jsdom) — listeners still work on the handle */
+        /* pointer capture unsupported (jsdom) */
       }
       const startY = e.clientY
-      // 起始高度：已记忆高度，否则用 DOM 实测高度（自动 layout 下的当前值）。
       const sectionEl = containerRef.current?.querySelector<HTMLElement>(
         `[data-section-id="${sectionId}"]`,
       )
@@ -212,16 +253,16 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
               data-section-id={sec.id}
               className="flex min-h-0 flex-col overflow-hidden"
               style={style}
+              onDragOver={onSectionDragOver(sec.id)}
+              onDrop={onSectionDrop(sec.id)}
+              onDragLeave={() => setDropHint((h) => (h?.targetId === sec.id ? null : h))}
             >
               <button
                 type="button"
                 onClick={() => toggle(sec.id)}
                 draggable={canReorder}
-                onDragStart={onHeaderDragStart(sec.id)}
-                onDragOver={onHeaderDragOver(sec.id)}
-                onDrop={onHeaderDrop(sec.id)}
-                onDragEnd={onHeaderDragEnd}
-                onDragLeave={() => setDropHint((h) => (h?.targetId === sec.id ? null : h))}
+                onDragStart={onSectionDragStart(sec.id)}
+                onDragEnd={onSectionDragEnd}
                 title={isCollapsed ? `展开${sec.title}` : `收起${sec.title}`}
                 className={`flex shrink-0 select-none items-center gap-1.5 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text-secondary ${
                   canReorder ? 'cursor-grab active:cursor-grabbing' : ''

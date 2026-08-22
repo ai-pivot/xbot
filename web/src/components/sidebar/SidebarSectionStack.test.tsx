@@ -157,7 +157,13 @@ describe('SidebarSectionStack', () => {
     const gitHeader = screen.getByTitle('收起Git')
     const noteHeader = screen.getByTitle('收起Notes')
     // jsdom 的 DragEvent 不自动创建 dataTransfer —— 测试注入 mock。
-    const dt = () => ({ setData: vi.fn(), getData: vi.fn(), effectAllowed: 'move', dropEffect: 'move', types: ['text/plain'] })
+    const dt = () => ({
+      setData: vi.fn(),
+      getData: (type: string) => type === 'application/x-xbot-layout-item' ? '' : '',
+      effectAllowed: 'move',
+      dropEffect: 'move',
+      types: ['application/x-xbot-layout-item', 'application/x-xbot-layout-slot'],
+    })
 
     // 开始拖 git；悬停在 notes 下方（jsdom rect 全 0，clientY>0 → after）。
     fireEvent.dragStart(gitHeader, { dataTransfer: dt() })
