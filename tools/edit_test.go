@@ -134,6 +134,32 @@ func TestDoReplace_OldStringEqualsNewString(t *testing.T) {
 	}
 }
 
+func TestDoReplace_NewContainsOld_InfiniteLoopGuard(t *testing.T) {
+	// Regression: when new_string CONTAINS old_string as a substring, every
+	// replace "succeeds" but old_string reappears in the file (as part of the
+	// new content) → the LLM calls FileReplace again with the same old_string →
+	// infinite loop (user report: "反复改同一处还每次都成功，停不下来").
+	// The tool MUST detect this and return a warning so the LLM knows the
+	// replacement is a no-op (old still present after replace).
+	content := "line A\nline B\nline C"
+	oldStr := "line B"
+	newStr := "line B (updated)\nline B" // new ENDS with old → old survives
+	params := FileReplaceParams{OldString: oldStr, NewString: newStr}
+	result, summary, err := doReplace(content, params, "/test/file.txt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// old_string still present in result (the guard cannot prevent this — the
+	// LLM asked for it). But the summary MUST warn about it.
+	if !strings.Contains(summary, "still present") && !strings.Contains(summary, "contains") {
+		t.Errorf("summary should warn that old_string survives in new_string, got: %s", summary)
+	}
+	// The replacement itself still happens (we don't block it — just warn).
+	if !strings.Contains(result, "line B (updated)") {
+		t.Errorf("replacement should still occur, got: %s", result)
+	}
+}
+
 func TestDoReplace_ExactMatchOnly(t *testing.T) {
 	t.Run("substring should partially match", func(t *testing.T) {
 		content := "foobar"
