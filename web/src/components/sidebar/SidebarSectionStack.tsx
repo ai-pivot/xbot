@@ -272,16 +272,11 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
               ? [...sections.slice(0, idx), ghost, ...sections.slice(idx)]
               : [...sections.slice(0, idx + 1), ghost, ...sections.slice(idx + 1)]
           }
-          // 同 slot：重排现有 sections（源半透明，目标位置插入线）。
-          const next = computeReorder(
-            sections.map((s) => s.id),
-            drag.itemId,
-            dropHint.targetId,
-            dropHint.before,
-          )
-          if (!next) return sections
-          const map = new Map(sections.map((s) => [s.id, s]))
-          return next.map((id) => map.get(id)!).filter(Boolean)
+        // 同 slot：不重排预览（只显示插入线 + 源半透明）。
+        // 重排预览会导致源 section 移动到新位置，用户松手在源自身上 →
+        // onSectionDrop 检测到 drag.itemId === targetId → return → 不重排。
+        // 插入线已足够指示目标位置。
+        return sections
         })()
 
         return previewSections.map((sec, i) => {
