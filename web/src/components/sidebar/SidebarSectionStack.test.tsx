@@ -119,9 +119,8 @@ describe('SidebarSectionStack', () => {
     const git = container.querySelector<HTMLElement>('[data-section-id="git"]')
     // 会话 section：自动 layout（flex: 1 1 0%）。
     expect(sessions?.style.flex).toBe('1 1 0%')
-    // 插件 section：固定 defaultHeight。
-    expect(git?.style.height).toBe('240px')
-    expect(git?.style.flex).toBe('0 0 auto')
+    // 插件 section：最后一个 section 也用 flex-1（占满剩余空间，VSCode 行为）。
+    expect(git?.style.flex).toBe('1 1 0%')
   })
 
   it('overflow-guard: every section and the stack container clip content (no overlay)', () => {

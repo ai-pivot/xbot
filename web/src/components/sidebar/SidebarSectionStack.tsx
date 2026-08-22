@@ -195,21 +195,19 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
     clearDrag()
   }, [])
 
-  // dragLeave 闪烁修复：检查 relatedTarget 是否仍在当前 section 内，
-  // 只有真正离开才清 dropHint（子元素间移动不触发清除）。
-  // 额外：ghost 占位（__drag_ghost__）不触发 dragLeave 清除——ghost 是
-  // 预览占位，鼠标在它上面时 dragOver 事件来自下方的真实 section（ghost
-  // 没有 onDragOver），但 dragLeave 会从相邻 section 冒泡过来，导致
-  // dropHint 被清除又重新设置 → 闪烁。
+  // dragLeave 闪烁修复：拖拽期间不在 dragLeave 清除 dropHint。
+  // 根因：同 slot 拖拽时，从一个 section 移到另一个 section，dragLeave 清了
+  // dropHint，下一帧 dragOver 又设回来 → 闪烁。改为只在 dragEnd/drop 清除。
   const onSectionDragLeave = useCallback(
     (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
+      // 拖拽进行中：不清除（让 dragOver 在新 section 上更新 dropHint）。
+      if (getDrag()) return
+      // 非拖拽状态（如鼠标离开整个区域）：清除。
       const related = e.relatedTarget as Node | null
       if (related && e.currentTarget.contains(related)) return
-      // ghost 占位期间不清除 dropHint（避免 ghost 自身触发 dragLeave 闪烁）。
-      if (getDrag() && getDrag()?.sourceSlot !== slotId) return
       setDropHint((h) => (h?.targetId === targetId ? null : h))
     },
-    [slotId],
+    [],
   )
 
   const startResize = useCallback(
@@ -290,10 +288,10 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
           const isGhost = sec.id === '__drag_ghost__'
           const isCollapsed = isGhost ? false : (collapsed[sec.id] ?? false)
           const fixedH = isGhost ? sec.defaultHeight : (heights[sec.id] ?? sec.defaultHeight)
-          const isOnlySection = previewSections.length === 1
+          const isLast = i === previewSections.length - 1
           const style: CSSProperties = isCollapsed
             ? { flex: '0 0 auto' }
-            : fixedH != null && !isOnlySection
+            : fixedH != null && !isLast
               ? { height: fixedH, flex: '0 0 auto' }
               : { flex: '1 1 0%' }
           const showLine = !isGhost && dropHint?.targetId === sec.id
