@@ -81,6 +81,20 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
   // 拖拽中的源 itemId（用于 ghost 半透明渲染）。
   const [dragSrcId, setDragSrcId] = useState<string | null>(null)
 
+  // window 级 dragend 兜底：松手后无论 drop 是否触发（松在源自身上、松在
+  // 空白处），都清除 dropHint + dragSrcId + 模块级 dragState。header button
+  // 的 onDragEnd 在某些场景（松在源自身上时 onDragOver 没 preventDefault →
+  // onDrop 不触发）可能不可靠，window 级监听保证一定清理。
+  useEffect(() => {
+    const handler = () => {
+      setDropHint(null)
+      setDragSrcId(null)
+      clearDrag()
+    }
+    window.addEventListener('dragend', handler)
+    return () => window.removeEventListener('dragend', handler)
+  }, [])
+
   useEffect(() => {
     try {
       localStorage.setItem(HEIGHTS_KEY, JSON.stringify(heights))
