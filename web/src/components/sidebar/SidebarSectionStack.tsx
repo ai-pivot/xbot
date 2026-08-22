@@ -228,9 +228,12 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
       {sections.map((sec, i) => {
         const isCollapsed = collapsed[sec.id] ?? false
         const fixedH = heights[sec.id] ?? sec.defaultHeight
+        // 当只剩一个 section 时，忽略保存的固定高度，用 flex-1 占满空间
+        // （拖走其他 section 后自动 layout，不留黑色空区域）。
+        const isOnlySection = sections.length === 1
         const style: CSSProperties = isCollapsed
           ? { flex: '0 0 auto' }
-          : fixedH != null
+          : fixedH != null && !isOnlySection
             ? { height: fixedH, flex: '0 0 auto' }
             : { flex: '1 1 0%' }
         const showLine = dropHint?.targetId === sec.id
