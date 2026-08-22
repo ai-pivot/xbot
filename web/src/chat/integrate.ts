@@ -29,6 +29,9 @@ export function historyToReplaced(
   const byTurn = new Map<number, { user: ChatMessage | null; assistants: ChatMessage[] }>()
 
   for (const m of messages) {
+    // Skip system messages EXCEPT compacted context markers — those are
+    // user-role messages with "[Compacted context]" prefix that must survive
+    // in the legacy array for display (collapsed placeholder in UserMessage).
     if (m.role === 'system') continue
     // ⚠️ useChatMessages 的 store（旧 MessageStore）仍在运行 —— 它往 messages
     // 数组里写乐观行/echo 行/patchUser 行。这些行与状态机的 pendingUsers/

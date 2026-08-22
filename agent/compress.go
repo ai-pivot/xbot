@@ -51,9 +51,10 @@ entirely to save space for recent work. NEVER sacrifice recent context for old h
 
 ### Historical Context (from previous compactions)
 If this conversation contains a summary from a previous compaction (marked with
-"[Compacted context]"), extract only what remains relevant to the CURRENT topic.
-If older context is unrelated to recent work, summarize it in 1-2 sentences or omit it.
-Do NOT bloat this section — relevance to the current task is the filter.
+"[Compacted context]"), extract ONLY what remains directly relevant to the CURRENT
+task. If older context is unrelated to recent work, OMIT it entirely — do not
+summarize it. Keep this section to at most 2-3 sentences. Relevance to the current
+task is the ONLY filter.
 
 ### Task Summary
 What the user asked for and current overall progress (1-3 sentences).
@@ -91,7 +92,8 @@ What should happen next to continue from where we left off.
 - Allocate the majority of your output budget to "Recent Work" — this is the most important section`
 
 // continuationMessage is injected after compaction to tell the LLM to resume work.
-const continuationMessage = `This conversation was compacted from a longer session. The "Recent Work" section above is the most critical context — it reflects what was happening immediately before compaction. Continue from where you left off without re-asking the user any questions.`
+// NOTE: This is kept short to avoid polluting the context with an extra user message.
+const continuationMessage = `Continue from where you left off without re-asking the user any questions.`
 
 // extractDialogueFromTail extracts a pure user/assistant view from a tail
 // that may contain tool messages. Tool group summaries are folded into
