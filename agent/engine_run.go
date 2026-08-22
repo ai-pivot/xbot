@@ -1104,17 +1104,20 @@ func (s *runState) detectIterationLoop(ctx context.Context, response *llm.LLMRes
 			"tool_count": len(response.ToolCalls),
 		}).Warn("ITERATION_LOOP_DETECTED: consecutive iterations produced identical content + tool_calls, injecting loop-breaker warning")
 
-		// Inject a synthetic tool result so the LLM sees explicit feedback.
-		// Use a fake tool_call_id that won't match any real tool_call — SanitizeMessages
-		// will strip orphaned tool messages, but the assistant message's tool_calls
-		// are still in context, so the model sees its own repeated call + this warning.
+		// Inject a synthetic USER message so the LLM sees explicit feedback.
+		// NOTE: must NOT use a tool message with a fake tool_call_id —
+		// SanitizeMessages strips orphaned tool messages (tool_call_id not
+		// matching any assistant tool_call), so the warning would never reach
+		// the LLM. A user message is never stripped.
 		warning := "⚠️ LOOP DETECTED: You are repeating the exact same action as the previous iteration " +
 			"(identical content and tool calls). This will loop forever. " +
 			"If the previous tool call succeeded, the task is already done — stop calling the same tool. " +
 			"If it failed, try a DIFFERENT approach. Do not repeat the same call."
-		s.messages = s.syncMessages(append(s.messages, llm.NewToolMessage(
-			"loop_detection", "loop_breaker", "", warning,
-		)))
+		s.messages = s.syncMessages(append(s.messages, llm.ChatMessage{
+			Role:    "user",
+			Content: warning,
+			TurnID:  s.cfg.TurnID,
+		}))
 	}
 
 	// Update state for the next iteration. Reset error flag; it will be set

@@ -316,7 +316,7 @@ func TestDetectIterationLoop_InjectsWarning(t *testing.T) {
 	s.recordAssistantMsg(context.Background(), resp)
 	found := false
 	for _, m := range s.messages {
-		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+		if m.Role == "user" && strings.Contains(m.Content, "LOOP DETECTED") {
 			found = true
 		}
 	}
@@ -328,7 +328,7 @@ func TestDetectIterationLoop_InjectsWarning(t *testing.T) {
 	s.recordAssistantMsg(context.Background(), resp)
 	found = false
 	for _, m := range s.messages {
-		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+		if m.Role == "user" && strings.Contains(m.Content, "LOOP DETECTED") {
 			found = true
 		}
 	}
@@ -357,7 +357,7 @@ func TestDetectIterationLoop_SkipsAfterToolError(t *testing.T) {
 	// 第二次迭代：签名相同，但上一迭代有报错 → 不触发
 	s.recordAssistantMsg(context.Background(), resp)
 	for _, m := range s.messages {
-		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+		if m.Role == "user" && strings.Contains(m.Content, "LOOP DETECTED") {
 			t.Fatal("should NOT inject loop warning when previous iteration had a tool error")
 		}
 	}
