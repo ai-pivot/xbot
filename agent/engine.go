@@ -537,6 +537,10 @@ func generateResponse(ctx context.Context, client llm.LLM, model string, message
 //   - SubAgent: ToolExecutor=simpleExecutor, ProgressNotifier=nil, ContextManager=independent_phase1, ...
 func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	s := newRunState(cfg)
+	// Mark the run as done on EVERY return path — background-subagent progress
+	// callbacks outlive the Run and check this flag to stop broadcasting into
+	// the main session's progress stream after the turn ended (see execOneTool).
+	defer s.runDone.Store(true)
 
 	// Inject observability identifiers into ctx so every LLM call
 	// (generateResponse → transport) attaches X-Session-Id / X-Request-Id /

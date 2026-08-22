@@ -834,6 +834,10 @@ func (a *Agent) SpawnInteractiveSession(
 		return nil, fmt.Errorf("create agent tenant session: %w", err)
 	}
 	cfg.Session = agentTenantSession
+	// Assign the per-session turn ID (covers BOTH Run paths — background 1032
+	// and foreground 1311 share this cfg). turn_id=0 breaks the frontend's
+	// turn↔iteration association (session view loses content/reasoning).
+	a.assignSubAgentTurnID(&cfg, agentTenantSession)
 	operationGate := a.sessionOperationGate("agent", key)
 	if !operationGate.lock(ctx) {
 		a.destroyInteractiveSession(key)
@@ -1568,6 +1572,14 @@ func (a *Agent) SendToInteractiveSession(
 	cfg := *ia.cfg // 浅拷贝 RunConfig 模板（已有正确的 LLMClient + Model + ThinkingMode）
 	// 不再无条件用 GetLLM 覆盖：ia.cfg 在 spawn 时已通过 buildSubAgentRunConfig
 	// 正确解析了角色/tier 对应的 LLM，直接复用即可。
+	// Each send is a NEW turn in the subagent session — allocate the next
+	// per-session turn_id (GetMaxTurnID+1). turn_id=0 breaks the frontend's
+	// turn↔iteration association (session view loses content/reasoning).
+	if a.multiSession != nil {
+		if sess, serr := a.multiSession.GetOrCreateSession("agent", key); serr == nil {
+			a.assignSubAgentTurnID(&cfg, sess)
+		}
+	}
 
 	var newMessages []llm.ChatMessage
 	newMessages = append(newMessages, ia.systemPrompt)

@@ -84,6 +84,16 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 			if pi < len(s.progressLines) {
 				execCtx = WithSubAgentProgress(execCtx, func(detail SubAgentProgressDetail) {
 					s.progressMu.Lock()
+					// Run has ENDED: drop the callback entirely. After Run returns,
+					// structuredProgress.Iteration is frozen at its final value —
+					// for subagents spawned by the LAST iteration the
+					// stale-iteration check below is false forever, and this
+					// callback would keep broadcasting into the main session's
+					// progress stream ("进度泄漏到最新 iter" 的盲区).
+					if s.runDone.Load() {
+						s.progressMu.Unlock()
+						return
+					}
 					// Stamp the spawning iteration so every consumer (progress
 					// events, iteration snapshots) can attribute this subagent's
 					// progress to the iteration that spawned it — background

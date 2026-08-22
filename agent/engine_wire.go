@@ -554,6 +554,30 @@ func resolveSubAgentCWD(parentCtx *tools.ToolContext, workDir string) (cwd strin
 // SubAgent 使用独立工具集、无 session、有压缩（独立 ContextManager）、无进度通知。
 // Phase 2: SubAgent 通过 RunConfig 继承父 Agent 的工作区配置，
 // 使用统一的 defaultToolExecutor + buildToolContext 构建 ToolContext。
+// assignSubAgentTurnID allocates the next per-session turn_id for a SubAgent
+// Run. SubAgent sessions are separate tenants (channel "agent"); every Run of
+// that session is one turn. Without this, every persisted message and
+// iteration_history row carries turn_id=0 — an invariant violation ("turn_id
+// must be non-zero") that breaks the frontend's turn↔iteration association:
+// iterations render detached from their turn and the session view shows no
+// iteration content/reasoning (user report). Mirrors chatProcessLoop's
+// per-session monotonic counter, restored from DB via GetMaxTurnID.
+func (a *Agent) assignSubAgentTurnID(cfg *RunConfig, sess *session.TenantSession) {
+	if cfg == nil || sess == nil {
+		return
+	}
+	if max, err := sess.GetMaxTurnID(); err == nil && max > 0 {
+		cfg.TurnID = max + 1
+	} else {
+		cfg.TurnID = 1
+	}
+	log.WithFields(log.Fields{
+		"chat_id":  cfg.ChatID,
+		"agent_id": cfg.AgentID,
+		"turn_id":  cfg.TurnID,
+	}).Debug("SubAgent turn ID assigned")
+}
+
 func (a *Agent) buildSubAgentRunConfig(
 	ctx context.Context,
 	parentCtx *tools.ToolContext,
@@ -1512,6 +1536,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		return nil, fmt.Errorf("create oneshot agent tenant session: %w", err)
 	}
 	cfg.Session = agentTenantSession
+	// Assign the per-session turn ID — without it every persisted message and
+	// iteration row carries turn_id=0 and the frontend cannot associate
+	// iterations with the turn (session view renders no content/reasoning).
+	a.assignSubAgentTurnID(&cfg, agentTenantSession)
 	operationGate := a.sessionOperationGate("agent", oneshotKey)
 	if !operationGate.lock(subCtx) {
 		a.interactiveSubAgents.Delete(oneshotKey)

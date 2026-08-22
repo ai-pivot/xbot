@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"xbot/agent/hooks"
@@ -98,6 +99,15 @@ type runState struct {
 	// it, breaking the cycle. See detectIterationLoop.
 	lastIterSignature string // "" = no previous iteration (first iter)
 	lastIterHadError  bool   // whether the previous iteration's tool execution had an error
+
+	// runDone is set when Run() returns. Background-subagent progress callbacks
+	// outlive the Run (their runCtx derives from the agent lifecycle) — after
+	// the Run ends, structuredProgress.Iteration is frozen at its final value,
+	// so the stale-iteration check (Iteration != entry.iteration) is FALSE
+	// forever for subagents spawned by the LAST iteration, and the callback
+	// would keep broadcasting into the main session's progress stream
+	// ("泄漏到最新 iter"). The runDone check closes that hole.
+	runDone atomic.Bool
 }
 
 // newRunState creates and initializes a runState from the given RunConfig.
